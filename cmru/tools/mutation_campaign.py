@@ -12,16 +12,21 @@ to CMRU.  The evidence records the resolved Assay version and source commit.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
-import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from dataclasses import asdict, dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, Sequence
 
+try:
+    from .project_fixture import copy_project_fixture
+except ImportError:  # direct ``python tools/mutation_campaign.py`` execution
+    from project_fixture import copy_project_fixture
 
 OPERATORS = (
     "python:compare-swap",
@@ -29,17 +34,6 @@ OPERATORS = (
     "python:bool-const-flip",
     "python:falsy-swap",
 )
-
-# These tracked repository-root artifacts are part of CMRU's checked-in test
-# contract.  Keep the list explicit: copying a whole monorepo would reintroduce
-# the unrelated hostile Topos fixtures that this consumer-scoped runner avoids.
-ROOT_CMRU_ARTIFACTS = (
-    "cmru.orchestration.sample.toml",
-    "cmru.orchestration.toml",
-    "cmru.project.sample.toml",
-    "cmru.release.sh",
-)
-
 
 @dataclass(frozen=True)
 class Result:
@@ -49,6 +43,8 @@ class Result:
     description: str
     exit_code: int
     outcome: str
+    termination: str
+    elapsed_seconds: float
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -63,6 +59,9 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--base", required=True)
     parser.add_argument("--max-mutants", type=int, required=True)
     parser.add_argument("--evidence", type=Path, required=True)
+    parser.add_argument("--progress", type=Path, required=True)
+    parser.add_argument("--timeout-seconds", type=float, required=True)
+    parser.add_argument("--resume", action="store_true")
     parser.add_argument("--require-candidates", action="store_true")
     parser.add_argument("test_argv", nargs=argparse.REMAINDER)
     return parser
@@ -93,8 +92,216 @@ def _write_evidence(path: Path, document: dict[str, Any]) -> None:
         raise
 
 
-def _run(argv: Sequence[str], *, cwd: Path) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(list(argv), cwd=cwd, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+def _run(
+    argv: Sequence[str], *, cwd: Path, timeout_seconds: float,
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        list(argv), cwd=cwd, text=True, stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT, timeout=timeout_seconds,
+    )
+
+
+def _append_progress(path: Path, event: dict[str, Any]) -> None:
+    if path.is_symlink() or not path.parent.is_dir() or path.parent.is_symlink():
+        raise ValueError(f"progress parent must be a real directory: {path.parent}")
+    with path.open("a", encoding="utf-8") as stream:
+        json.dump(event, stream, sort_keys=True)
+        stream.write("\n")
+        stream.flush()
+        os.fsync(stream.fileno())
+
+
+def _job_identity(job: Any) -> tuple[str, int, str, str]:
+    return job.path, job.site.lineno, job.site.operator, job.site.description
+
+
+def _result_identity(result: dict[str, Any]) -> tuple[str, int, str, str]:
+    return result["path"], result["line"], result["operator"], result["description"]
+
+
+def _candidate_result(
+    job: Any, *, returncode: int | None, elapsed_seconds: float, timed_out: bool,
+) -> Result:
+    if timed_out:
+        exit_code = 124
+        outcome = "killed"
+        termination = "timeout"
+    else:
+        assert returncode is not None
+        exit_code = returncode
+        outcome = "killed" if returncode == 1 else "survived" if returncode == 0 else "crashed"
+        termination = "exit"
+    return Result(
+        path=job.path,
+        line=job.site.lineno,
+        operator=job.site.operator,
+        description=job.site.description,
+        exit_code=exit_code,
+        outcome=outcome,
+        termination=termination,
+        elapsed_seconds=round(elapsed_seconds, 3),
+    )
+
+
+def _changed_since(repo_root: Path, older: str, newer: str, paths: Sequence[str]) -> bool:
+    if subprocess.run(
+        ["git", "merge-base", "--is-ancestor", older, newer],
+        cwd=repo_root, check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    ).returncode:
+        return True
+    return subprocess.run(
+        ["git", "diff", "--quiet", older, newer, "--", *paths],
+        cwd=repo_root, check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    ).returncode != 0
+
+
+def _campaign_tree_status(repo_root: Path, project_prefix: Path) -> str:
+    paths = [
+        (project_prefix / "src").as_posix(),
+        (project_prefix / "tests").as_posix(),
+        (project_prefix / "pyproject.toml").as_posix(),
+    ]
+    result = subprocess.run(
+        ["git", "status", "--porcelain=v1", "--untracked-files=all", "--", *paths],
+        cwd=repo_root, check=False, text=True, capture_output=True,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"could not inspect mutation source/test state: {result.stderr.strip()}")
+    return result.stdout
+
+
+def _test_manifest(repo_root: Path, project_prefix: Path) -> dict[str, Any]:
+    """Fingerprint the committed tests and pytest config used by candidates."""
+    project_root = repo_root / project_prefix
+    listed = subprocess.run(
+        ["git", "ls-files", "-z", "--", (project_prefix / "tests").as_posix()],
+        cwd=repo_root, check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    )
+    if listed.returncode != 0:
+        raise RuntimeError(f"could not list mutation test files: {listed.stderr.decode(errors='replace').strip()}")
+    files: dict[str, str] = {}
+    for raw_path in listed.stdout.split(b"\0"):
+        if not raw_path:
+            continue
+        relative = raw_path.decode("utf-8")
+        path = repo_root / relative
+        if path.is_symlink() or not path.is_file():
+            raise ValueError(f"mutation test must be a regular file: {relative}")
+        files[relative] = hashlib.sha256(path.read_bytes()).hexdigest()
+    pyproject = project_root / "pyproject.toml"
+    if pyproject.is_symlink() or not pyproject.is_file():
+        raise ValueError(f"mutation pytest configuration must be a regular file: {pyproject}")
+    return {
+        "files": files,
+        "pyproject_sha256": hashlib.sha256(pyproject.read_bytes()).hexdigest(),
+    }
+
+
+def _test_manifest_is_superset(previous: Any, current: dict[str, Any]) -> bool:
+    if not isinstance(previous, dict) or not isinstance(previous.get("files"), dict):
+        return False
+    if previous.get("pyproject_sha256") != current["pyproject_sha256"]:
+        return False
+    current_files = current["files"]
+    return all(current_files.get(path) == digest for path, digest in previous["files"].items())
+
+
+def _resume_results(
+    *,
+    evidence_path: Path,
+    repo_root: Path,
+    resume: bool,
+    base: str,
+    head: str,
+    project_prefix: Path,
+    assay_source_commit: str,
+    assay_source_prefix: Path | None = None,
+    test_argv: Sequence[str],
+    jobs: Sequence[Any],
+    max_mutants: int,
+    timeout_seconds: float,
+) -> list[dict[str, Any] | None]:
+    if evidence_path.is_symlink():
+        raise ValueError(f"mutation evidence must not be a symlink: {evidence_path}")
+    if not evidence_path.exists():
+        return [None] * len(jobs)
+    if not resume:
+        raise ValueError(f"mutation evidence already exists; pass --resume to continue: {evidence_path}")
+    if not evidence_path.is_file() or evidence_path.is_symlink():
+        raise ValueError(f"--resume requires a regular mutation evidence file: {evidence_path}")
+    try:
+        previous = json.loads(evidence_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f"could not read mutation resume evidence: {evidence_path}") from exc
+    previous_head = previous.get("head") if isinstance(previous, dict) else None
+    source_paths = [(project_prefix / "src").as_posix()]
+    test_paths = [
+        (project_prefix / "tests").as_posix(),
+        (project_prefix / "pyproject.toml").as_posix(),
+    ]
+    if not isinstance(previous_head, str):
+        raise ValueError("mutation resume evidence has no prior head commit")
+    if _changed_since(repo_root, previous_head, head, source_paths):
+        raise ValueError("mutation resume evidence predates a product-source change")
+    if _changed_since(repo_root, previous_head, head, [test_paths[-1]]):
+        raise ValueError("mutation resume evidence predates a pytest configuration change")
+    if _campaign_tree_status(repo_root, project_prefix):
+        raise ValueError("mutation resume requires committed source, tests, and pytest configuration")
+    current_test_manifest = _test_manifest(repo_root, project_prefix)
+    previous_test_manifest = previous.get("test_manifest")
+    if previous_test_manifest is None and previous_head == head:
+        # Legacy evidence is resumable at the identical clean commit only. New
+        # runs persist this fingerprint so additive test files can be proven safe.
+        previous_test_manifest = current_test_manifest
+    if not _test_manifest_is_superset(previous_test_manifest, current_test_manifest):
+        raise ValueError(
+            "mutation resume requires an unchanged or strictly additive test suite"
+        )
+    # Adding tests is monotonic: an old killed candidate still fails the larger
+    # suite. Existing tests, test configuration, and product source must match.
+    previous_assay_source_commit = previous.get("assay_source_commit")
+    if previous_assay_source_commit != assay_source_commit:
+        assay_paths = (
+            [
+                (assay_source_prefix / "src").as_posix(),
+                (assay_source_prefix / "pyproject.toml").as_posix(),
+            ]
+            if assay_source_prefix is not None else []
+        )
+        if not assay_paths or _changed_since(
+            repo_root, previous_assay_source_commit, assay_source_commit, assay_paths,
+        ):
+            raise ValueError("mutation resume evidence predates an Assay source change")
+    if (
+        previous.get("base") != base
+        or previous.get("candidate_count") != len(jobs)
+        or previous.get("max_mutants") != max_mutants
+        or previous.get("project_prefix") != (project_prefix.as_posix() or ".")
+        or previous.get("operators") != list(OPERATORS)
+        or previous.get("test_argv") != list(test_argv)
+    ):
+        raise ValueError("mutation resume evidence does not match this campaign")
+    prior_results = previous.get("results")
+    if not isinstance(prior_results, list) or len(prior_results) > len(jobs):
+        raise ValueError("mutation resume evidence has an invalid result list")
+    reusable: list[dict[str, Any] | None] = [None] * len(jobs)
+    for index, prior in enumerate(prior_results):
+        if prior is None:
+            continue
+        if not isinstance(prior, dict) or _result_identity(prior) != _job_identity(jobs[index]):
+            raise ValueError(f"mutation resume evidence does not match candidate {index}")
+        if (
+            prior.get("outcome") == "killed"
+            and (
+                (prior.get("termination", "exit") == "exit" and prior.get("exit_code") == 1)
+                or (
+                    prior.get("termination") == "timeout"
+                    and previous.get("timeout_seconds") == timeout_seconds
+                )
+            )
+        ):
+            reusable[index] = prior
+    return reusable
 
 
 def _relative_project_path(path: str, *, repo_root: Path, project_root: Path) -> Path:
@@ -103,23 +310,6 @@ def _relative_project_path(path: str, *, repo_root: Path, project_root: Path) ->
         return source.relative_to(project_root)
     except ValueError as exc:
         raise ValueError(f"mutation target {path!r} is outside project root") from exc
-
-
-def _copy_project_fixture(*, repo_root: Path, project_root: Path, workspace: Path) -> Path:
-    """Copy the tested project plus its checked-in root CMRU artifacts.
-
-    CMRU's own tests intentionally locate these files relative to the project
-    directory's parent.  Copying just ``cmru/`` changes that contract and can
-    make every mutation appear killed by a broken control instead.
-    """
-    for name in ROOT_CMRU_ARTIFACTS:
-        artifact = repo_root / name
-        if not artifact.is_file() or artifact.is_symlink():
-            raise ValueError(f"required root CMRU artifact is not a real file: {artifact}")
-        shutil.copy2(artifact, workspace / artifact.name)
-    copied = workspace / project_root.name
-    shutil.copytree(project_root, copied, symlinks=True)
-    return copied
 
 
 def run(argv: Sequence[str] | None = None) -> int:
@@ -131,6 +321,8 @@ def run(argv: Sequence[str] | None = None) -> int:
         raise ValueError("test argv is required after '--'")
     if args.max_mutants < 1:
         raise ValueError("--max-mutants must be positive")
+    if args.timeout_seconds <= 0:
+        raise ValueError("--timeout-seconds must be positive")
 
     repo_root = _require_directory(args.repo_root, "--repo-root")
     project_root = _require_directory(args.project_root, "--project-root")
@@ -145,6 +337,12 @@ def run(argv: Sequence[str] | None = None) -> int:
         project_prefix = project_root.relative_to(repo_root)
     except ValueError as exc:
         raise ValueError("--project-root must be inside --repo-root") from exc
+    try:
+        assay_source_prefix = assay_source.relative_to(repo_root)
+    except ValueError:
+        assay_source_prefix = None
+    if _campaign_tree_status(repo_root, project_prefix):
+        raise ValueError("mutation campaign requires committed source, tests, and pytest configuration")
 
     sys.path.insert(0, str(assay_source / "src"))
     from assay import __version__ as assay_version
@@ -177,45 +375,38 @@ def run(argv: Sequence[str] | None = None) -> int:
     if args.require_candidates and not jobs:
         raise RuntimeError("the declared source diff produced no mutation candidates")
 
-    with tempfile.TemporaryDirectory(prefix="cmru-mutation-baseline-") as temporary:
-        baseline_root = _copy_project_fixture(
-            repo_root=repo_root, project_root=project_root, workspace=Path(temporary)
-        )
-        baseline = _run(test_argv, cwd=baseline_root)
+    started = time.monotonic()
+    try:
+        with tempfile.TemporaryDirectory(prefix="cmru-mutation-baseline-") as temporary:
+            baseline_root = copy_project_fixture(
+                repo_root=repo_root, project_root=project_root, workspace=Path(temporary)
+            )
+            baseline = _run(test_argv, cwd=baseline_root, timeout_seconds=args.timeout_seconds)
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(
+            f"the known-good mutation control exceeded {args.timeout_seconds:g} seconds"
+        ) from exc
     if baseline.returncode != 0:
         raise RuntimeError(
             f"the known-good mutation control failed with exit {baseline.returncode}: "
             f"{baseline.stdout[-1000:]}"
         )
 
-    results: list[Result] = []
-    for job in jobs:
-        relative = _relative_project_path(
-            job.path, repo_root=repo_root, project_root=project_root
-        )
-        with tempfile.TemporaryDirectory(prefix="cmru-mutation-") as temporary:
-            candidate_root = _copy_project_fixture(
-                repo_root=repo_root, project_root=project_root, workspace=Path(temporary)
-            )
-            target = candidate_root / relative
-            original = target.read_text(encoding="utf-8")
-            if original != job.original_text:
-                raise RuntimeError(f"copied mutation target differs from pinned source: {job.path}")
-            target.write_bytes(job.site.apply(original.encode("utf-8")))
-            completed = _run(test_argv, cwd=candidate_root)
-        outcome = "killed" if completed.returncode == 1 else "survived" if completed.returncode == 0 else "crashed"
-        results.append(
-            Result(
-                path=job.path,
-                line=job.site.lineno,
-                operator=job.site.operator,
-                description=job.site.description,
-                exit_code=completed.returncode,
-                outcome=outcome,
-            )
-        )
-
-    document = {
+    results = _resume_results(
+        evidence_path=args.evidence,
+        repo_root=repo_root,
+        resume=args.resume,
+        base=base,
+        head=head,
+        project_prefix=project_prefix,
+        assay_source_commit=assay_source_commit,
+        assay_source_prefix=assay_source_prefix,
+        test_argv=test_argv,
+        jobs=jobs,
+        max_mutants=args.max_mutants,
+        timeout_seconds=args.timeout_seconds,
+    )
+    document: dict[str, Any] = {
         "schema_version": 1,
         "tool": "cmru mutation campaign using worktree Assay mutation sites",
         "assay_version": assay_version,
@@ -225,18 +416,103 @@ def run(argv: Sequence[str] | None = None) -> int:
         "head": head,
         "project_prefix": project_prefix.as_posix() or ".",
         "max_mutants": args.max_mutants,
+        "timeout_seconds": args.timeout_seconds,
         "operators": list(OPERATORS),
         "test_argv": test_argv,
+        "test_manifest": _test_manifest(repo_root, project_prefix),
         "candidate_count": len(jobs),
         "baseline_exit_code": baseline.returncode,
-        "results": [asdict(result) for result in results],
+        "status": "running",
+        "results": results,
     }
     _write_evidence(args.evidence, document)
-    survivors = [result for result in results if result.outcome != "killed"]
+    _append_progress(args.progress, {
+        "event": "start",
+        "base": base,
+        "head": head,
+        "candidate_total": len(jobs),
+        "resumed_total": sum(item is not None for item in results),
+        "timeout_seconds": args.timeout_seconds,
+    })
+
+    for index, job in enumerate(jobs):
+        existing = results[index]
+        if existing is not None and existing.get("outcome") == "killed":
+            _append_progress(args.progress, {
+                "event": "candidate",
+                "candidate_index": index,
+                "candidate_total": len(jobs),
+                "path": job.path,
+                "line": job.site.lineno,
+                "operator": job.site.operator,
+                "outcome": "killed",
+                "reused": True,
+                "elapsed_seconds": time.monotonic() - started,
+            })
+            continue
+        relative = _relative_project_path(
+            job.path, repo_root=repo_root, project_root=project_root
+        )
+        with tempfile.TemporaryDirectory(prefix="cmru-mutation-") as temporary:
+            candidate_root = copy_project_fixture(
+                repo_root=repo_root, project_root=project_root, workspace=Path(temporary)
+            )
+            target = candidate_root / relative
+            original = target.read_text(encoding="utf-8")
+            if original != job.original_text:
+                raise RuntimeError(f"copied mutation target differs from pinned source: {job.path}")
+            target.write_bytes(job.site.apply(original.encode("utf-8")))
+            candidate_started = time.monotonic()
+            try:
+                completed = _run(
+                    test_argv, cwd=candidate_root, timeout_seconds=args.timeout_seconds,
+                )
+            except subprocess.TimeoutExpired:
+                result = _candidate_result(
+                    job, returncode=None,
+                    elapsed_seconds=time.monotonic() - candidate_started,
+                    timed_out=True,
+                )
+            else:
+                result = _candidate_result(
+                    job, returncode=completed.returncode,
+                    elapsed_seconds=time.monotonic() - candidate_started,
+                    timed_out=False,
+                )
+        results[index] = asdict(result)
+        document["results"] = results
+        _write_evidence(args.evidence, document)
+        _append_progress(args.progress, {
+            "event": "candidate",
+            "candidate_index": index,
+            "candidate_total": len(jobs),
+            "path": result.path,
+            "line": result.line,
+            "operator": result.operator,
+            "description": result.description,
+            "outcome": result.outcome,
+            "termination": result.termination,
+            "elapsed_seconds": result.elapsed_seconds,
+            "campaign_elapsed_seconds": round(time.monotonic() - started, 3),
+        })
+
+    survivors = [result for result in results if result is not None and result["outcome"] != "killed"]
+    document["status"] = "failed" if survivors else "passed"
+    _write_evidence(args.evidence, document)
+    _append_progress(args.progress, {
+        "event": "complete",
+        "status": document["status"],
+        "candidate_total": len(jobs),
+        "survivor_total": len(survivors),
+        "campaign_elapsed_seconds": round(time.monotonic() - started, 3),
+    })
     if survivors:
         raise RuntimeError(
             "mutation campaign did not kill every candidate: "
-            + ", ".join(f"{item.path}:{item.line}:{item.operator}:{item.outcome}" for item in survivors)
+            + ", ".join(
+                f"{item['path']}:{item['line']}:{item['operator']}:{item['outcome']}"
+                for item in survivors
+            )
         )
     return 0
 

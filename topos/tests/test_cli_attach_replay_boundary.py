@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 import topos.cli as cli
+from topos.cli_diagnostics import cli_headline
 from conftest import fixture_frame
 from topos.daemon.client import DaemonClientError
 
@@ -48,7 +49,7 @@ def test_attach_rejects_incompatible_options_before_live_boundaries(
     assert calls == []
     captured = capsys.readouterr()
     assert captured.out == ""
-    assert captured.err.strip() == message
+    assert captured.err.strip() == cli_headline() + "\n" + message
 
 
 def test_attach_once_json_forwards_socket_and_prints_frame(
@@ -102,7 +103,9 @@ def test_replay_rejects_collection_filters_before_driver(monkeypatch: pytest.Mon
 
     assert cli.main(["--replay", "record.jsonl", "--entities", "a"]) == 2
     assert calls == []
-    assert capsys.readouterr().err.strip() == "--replay does not accept --entities/--slice/--metrics/--container"
+    assert capsys.readouterr().err.strip() == (
+        cli_headline() + "\n--replay does not accept --entities/--slice/--metrics/--container"
+    )
 
 
 def test_replay_forwards_driver_and_ui_options_and_maps_success(monkeypatch: pytest.MonkeyPatch) -> None:

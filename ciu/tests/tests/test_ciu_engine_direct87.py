@@ -15,6 +15,8 @@ from ciu import engine
 def test_main_execution_rejects_misplaced_secret_before_side_effect_pipeline(monkeypatch, tmp_path: Path):
     """S4.5 rejects plausible-looking but wrongly scoped secret declarations early."""
 
+    (tmp_path / "ciu.global.defaults.toml.j2").write_text("", encoding="utf-8")
+
     stack = tmp_path / "stack"
     stack.mkdir()
     monkeypatch.setattr(engine, "check_runtime_dependencies", lambda: None)

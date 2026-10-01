@@ -30,14 +30,16 @@ from dataclasses import dataclass
 
 @dataclass
 class ExtractConfig:
-    # --- Three independent walk-stop conditions (max_checkpoints, max_words,
-    # max_lifecycle_markers below): select.py's backward walk halts the
-    # instant ANY ONE of them trips, whichever comes first. Each accepts -1
-    # to mean "never trips due to this condition" -- setting all three to
-    # their permissive extreme walks the entire log unconditionally.
+    # --- Walk-stop conditions (max_checkpoints, max_words, max_compactions,
+    # max_time_minutes below): select.py's backward walk halts the instant
+    # ANY ONE enabled condition trips, whichever comes first. Each accepts
+    # -1 to mean never trips due to this condition. Epoch selection is a
+    # separate source-span filter applied before this walk.
 
     # How many of the most-recent detected checkpoints to anchor on.
-    # -1 = never stop due to checkpoint count (see the group note above).
+    # A checkpoint is a classifier-scored assistant prose message, not a
+    # semantic session boundary or a known-safe compaction point. -1 disables
+    # this stop condition.
     max_checkpoints: int = 5
 
     # classifier.py score (see CheckpointClassifier.WEIGHTS) an ASSISTANT_TEXT
@@ -87,8 +89,9 @@ class ExtractConfig:
     # own file path>`, same as targeting any other adapter's session.
 
     # Opaque marker (an event.marker from a prior extract() call) to resume
-    # from -- only events strictly after it are considered. None = walk the
-    # whole session (bounded by the nearest LIFECYCLE_MARKER regardless).
+    # from -- only events strictly after it are considered. None = no lower
+    # cursor bound; epoch selection and the walk's configured stop conditions
+    # still apply.
     since_marker: str | None = None
 
     # Opaque marker to stop at (inclusive) -- only events at/before it are
@@ -99,32 +102,25 @@ class ExtractConfig:
     # withhold from normal use.
     until_marker: str | None = None
 
-    # The third of the three independent walk-stop conditions (see the group
-    # note above max_checkpoints). How many LIFECYCLE_MARKER events (a real
-    # compaction boundary, or an operator /compact//clear) the backward walk
-    # is allowed to walk PAST before finally hard-stopping at one, instead of
-    # stopping at the very first one it meets.
-    #   0  -- current/default behavior: stop at (and keep) the first marker
-    #         encountered. Every marker's own label text ("[compact
-    #         boundary]", "[compact summary]", "[/compact] ...") is kept
-    #         regardless of this setting -- it's the walk CONTINUING past it
-    #         that this knob controls, not whether the marker itself shows up.
-    #   N  -- walk past N markers (keeping each one's label), hard-stop at
-    #         marker N+1.
-    #   -1 -- indefinite: never stop due to markers at all; only max_words /
-    #         max_checkpoints / reaching the start of the log bound the walk.
+    # How many actual compaction boundaries the backward walk may cross
+    # before it stops at the next one. `/clear`, `/compact` command records,
+    # and summary echoes are not counted as actual compactions. -1 disables
+    # this stop condition. The default is -1; `/clear` is handled separately
+    # by epoch selection.
     #
-    # Raising this above 0 is an explicit escape hatch, not a general
-    # recommendation -- see config.py's own "append-only / cache-stable"
-    # principle above. Walking past a real compaction pulls in prose from
-    # BEFORE a point where the original live session's own context was
-    # reset; that prose is genuine and unaltered, but whatever happened
-    # between then and the compaction is only represented by the compact
-    # summary's own condensed text, not by this older material. Fine for a
-    # one-time manual extraction meant to seed a fresh session (where the
-    # only goal is the richest possible brief within a word budget, not
-    # long-run chained --since stability); left at 0 for anything chained.
-    max_lifecycle_markers: int = 0
+    max_compactions: int = -1
+
+    # Compatibility for callers constructing ExtractConfig with the old
+    # field. CLI help and documentation use max_compactions.
+    max_lifecycle_markers: int | None = None
+
+    # Stop once walking backward exceeds this many minutes from the newest
+    # event timestamp in the selected span. -1 disables the stop condition.
+    max_time_minutes: int = -1
+
+    # Epoch selection is parsed as a 1-based epoch number, inclusive A:B
+    # range, or "all". None means the newest epoch only.
+    epochs: str | None = None
 
     # "text" (delimited prose, ready to paste into a fresh session) or
     # "json" (structured, for a script/second-stage tool to consume).
@@ -148,15 +144,16 @@ class ExtractConfig:
     # token in each gap/stop-reason note ("...raw log continues after
     # marker <marker>") instead of a bare count. That marker is the exact
     # same token --since/--until already resolve -- a Claude Code uuid, a
-    # Codex ordinal, an opencode message-table row id -- so this is a "go
+    # Codex ordinal or `response_item-<position>` fallback, an opencode
+    # message-table row id -- so this is a "go
     # look it up yourself" pointer into the raw log, not new data. Off by
     # default (see render.py's module docstring): most readers most of the
     # time only need to know a gap existed, not recover it.
     gap_note_show_marker: bool = False
 
-    # Text rendering only (2026-09-11, operator direction): how many blank
-    # lines render.py pads around each "---" block separator.
-    #    1  -- default, this package's long-standing behavior: one blank
+    # Text rendering only: how many blank lines render.py pads around each
+    # "---" block separator.
+    #    1  -- one blank
     #          line on each side ("block\n\n---\n\nblock").
     #    0  -- tight: "---" gets its own line, no blank line either side
     #          ("block\n---\nblock").
@@ -165,13 +162,13 @@ class ExtractConfig:
     #          block's last line, separated by one space, no blank line
     #          ("block ---\nblock").
     #    N>1 -- N blank lines on each side, a plain generalization of 1.
-    insert_blank_lines: int = 1
+    insert_blank_lines: int = 0
 
     # Text rendering only (2026-09-11, operator direction): how a kept
     # event's gap_after annotation (select.py's own meta field -- a raw-
     # record gap to the next-newer kept event, at/above min_gap_to_annotate
     # above) is surfaced.
-    #   "full"        -- default, this package's long-standing behavior: a
+    #   "full"        -- a
     #                    STANDALONE block of its own ("[gap: N records
     #                    omitted]"), separated from its neighbors by the
     #                    same insert_blank_lines-controlled separator as
@@ -191,7 +188,18 @@ class ExtractConfig:
     # gap_note_show_marker above still applies to "full"/the three inline
     # variants (appending the adapter's own marker token) but is a no-op
     # under "none".
-    gap_marker_mode: str = "full"
+    gap_marker_mode: str = "inline"
+
+    # Event visibility is a content-selection option. Tool inputs/results
+    # remain omitted; when requested, adapters emit a short tool-call label.
+    show_tool_calls: bool = False
+    show_tool_call_intent: bool = False
+
+    # Text-only timestamps. The source event timestamp is used; empty source
+    # timestamps stay absent rather than being invented.
+    show_timestamps: str = "pre"
+    timestamp_format: str = "[%H:%M:%S]"
+    extract_metadata: str = "both"
 
     # Upstream API-transport noise (429/rate-limit/overloaded_error --
     # adapters/claude_code.py's own "[API ERROR: ...]" tag,
@@ -258,34 +266,46 @@ class ExtractConfig:
     # that motivated this.
     redact_patterns: tuple[str, ...] = ()
 
+    def __post_init__(self) -> None:
+        if self.max_lifecycle_markers is not None:
+            self.max_compactions = self.max_lifecycle_markers
+        for name in ("max_checkpoints", "max_words", "max_compactions", "max_time_minutes"):
+            value = getattr(self, name)
+            if value < -1:
+                raise ValueError(f"{name} must be -1 (unlimited) or non-negative")
+        if self.max_checkpoints == 0:
+            raise ValueError("max_checkpoints must be -1 (unlimited) or positive")
+        if self.insert_blank_lines < -1:
+            raise ValueError("insert_blank_lines must be -1 or non-negative")
+        if self.min_gap_to_annotate < 0:
+            raise ValueError("min_gap_to_annotate must be non-negative")
+        if self.show_timestamps not in {"pre", "post", "both", "none"}:
+            raise ValueError("show_timestamps must be pre, post, both, or none")
+        if self.extract_metadata not in {"pre", "post", "both"}:
+            raise ValueError("extract_metadata must be pre, post, or both")
+        if self.epochs is not None and self.epochs != "all":
+            parts = self.epochs.split(":")
+            if len(parts) == 1:
+                parts *= 2
+            if len(parts) != 2 or not all(part.isdigit() and int(part) > 0 for part in parts):
+                raise ValueError("epochs must be N, A:B, or all using positive 1-based numbers")
+            if int(parts[0]) > int(parts[1]):
+                raise ValueError("epochs range must satisfy 1 <= A <= B")
 
-# Named presets bundling the "how aggressively should selection filter
-# content" knobs -- max_checkpoints, checkpoint_score_threshold,
-# long_comment_chars, max_lifecycle_markers. Deliberately does NOT bundle
-# max_words as a fixed, profile-defining value: target length is its own
-# axis (an operator asked for this explicitly, 2026-09-10) -- "how
-# permissive is the selection bar" and "how big should the final output be"
-# are independent questions, and conflating them into one preset value
-# makes "strict criteria, generous budget" or "lenient criteria, tight
-# budget" impossible to ask for. Each profile below still carries a
-# max_words value, but ONLY as a sensible per-profile DEFAULT that
-# `nyxloom extract --profile X --max-words N` (or ExtractConfig's own
-# dataclass replace) freely overrides -- see cli.py's cmd_extract for how
-# the override is applied. See also
-# design-context-lifecycle-experiments.md's E-009 "Named compression
-# profiles" open question and its 2026-09-10 follow-up.
+
+# Profiles name operator use cases. Explicit CLI values override the
+# corresponding profile value. Gap surfacing follows the profile; timestamp
+# and metadata placement, Markdown rendering, ANSI color, and tool visibility
+# remain independent options.
+DEFAULT_PROFILE = "operator-review"
 PROFILES: dict[str, ExtractConfig] = {
-    # Strict bar, no walking past a real compaction -- the default chained-
-    # snapshot-pipeline shape (config.py's own append-only/cache-stable
-    # principle governs this one).
-    "tight": ExtractConfig(max_checkpoints=3, max_words=4_000, long_comment_chars=240),
-    # This package's plain, unnamed default -- kept as a named profile too
-    # so every extraction, --profile or not, is expressible as "some
-    # profile plus overrides."
-    "default": ExtractConfig(),
-    # Ignores lifecycle markers entirely -- the one-time manual-extraction-
-    # for-a-fresh-session use case (validated against a real dstdns session,
-    # E-009's follow-up): richest possible brief within a word budget, not
-    # chained-run cache stability.
-    "manual_fresh": ExtractConfig(max_checkpoints=1_000_000, max_words=8_000, max_lifecycle_markers=-1),
+    "operator-review": ExtractConfig(
+        max_checkpoints=5, long_comment_chars=180, max_words=10_000,
+        max_compactions=-1, max_time_minutes=-1, epochs=None,
+    ),
+    "all": ExtractConfig(
+        max_checkpoints=-1, long_comment_chars=-1, max_words=-1,
+        max_compactions=-1, max_time_minutes=-1, epochs="all",
+        min_gap_to_annotate=1, gap_marker_mode="inline", insert_blank_lines=0,
+    ),
 }

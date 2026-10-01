@@ -1,0 +1,17 @@
+{
+  "ok": true,
+  "contract": 1,
+  "session": "s-20260912T101500Z-9f01",
+  "reused": false,
+  "started_at": "2026-09-12T10:15:00Z",
+  "scope": "container-shared",
+  "damon": "on",
+  "interval_seconds": 1.0,
+  "target": {
+    "container_id": "deadbeefcafebabefeedfacefeedbeadf00dbabe1234567890abcdef00112233",
+    "cgroup": "/dev.slice/dev-background.slice/docker-deadbeefcafebabefeedfacefeedbeadf00dbabe1234567890abcdef00112233.scope",
+    "baseline_memory_bytes": 524288000,
+    "pids_at_start": 3,
+    "token": null
+  }
+}

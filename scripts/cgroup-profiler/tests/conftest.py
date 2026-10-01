@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import threading
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -26,6 +27,38 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from lib.model import Analysis, Event, Phase, Proposal, Series  # noqa: E402
+
+
+# ── non-daemon thread leak safety net (RW-48) ───────────────────────────────
+#
+# `lib.serve`'s session-loop thread is created `daemon=True` (serve.py:479)
+# specifically so a leaked/never-joined one never blocks interpreter exit --
+# but the r2 mutation lane flips exactly that flag, and every test that
+# starts a real session and skips its own cleanup (an assertion failing
+# before it reaches the `stop_event.set()`/`thread.join()` lines, of which
+# `tests/test_serve.py` has dozens written that way) then leaks a now-
+# non-daemon thread the interpreter must wait on forever. `tests/test_serve.
+# py`'s own `_stop_leaked_session_threads` fixture stops every session on
+# every `SessionServer` it constructs, exception-safe, after each test; this
+# fixture is the session-wide backstop in case a thread escapes that anyway
+# (a different fixture, a future test file) -- it never fixes anything
+# itself, it only names what leaked so the leak has a stack trace pointing
+# at it instead of a silent interpreter hang.
+@pytest.fixture(scope="session", autouse=True)
+def _no_leaked_non_daemon_threads_at_session_end():
+    main = threading.main_thread()
+    baseline_idents = {t.ident for t in threading.enumerate()}
+    yield
+    leaked = [
+        t for t in threading.enumerate()
+        if t.ident not in baseline_idents and t is not main and t.is_alive() and not t.daemon
+    ]
+    assert not leaked, (
+        "non-daemon thread(s) still alive at the end of the test session -- "
+        "the interpreter cannot exit until these finish naturally, which is "
+        "exactly the RW-28 hang mechanism: "
+        + ", ".join(f"{t.name!r}" for t in leaked)
+    )
 
 
 # ── fake cgroup tree ────────────────────────────────────────────────────────

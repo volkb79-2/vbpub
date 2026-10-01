@@ -92,7 +92,10 @@ def test_generate_writes_the_six_generated_keys(monkeypatch, tmp_path):
     # generate any more — the facts have their own file.
     assert not (tmp_path / OVERLAY).exists()
     table = _generated_table(facts_file)
-    assert sorted(table) == sorted(workspace_env.GENERATED_FACTS_KEYS)
+    assert table["schema_version"] == workspace_env.GENERATED_FACTS_SCHEMA_VERSION
+    assert sorted(set(table) - {"schema_version"}) == sorted(
+        workspace_env.GENERATED_FACTS_KEYS
+    )
 
     # Same in-memory tuple as ciu.env: assert the two records AGREE, which is
     # the property a second, independent derivation could not guarantee.
@@ -183,7 +186,9 @@ def test_block_key_order_is_fixed_not_mapping_order(tmp_path):
     reversed_facts = dict(reversed(list(FACTS.items())))
     lines = workspace_env.render_generated_facts_block(reversed_facts)
     keys = [line.split(" = ")[0] for line in lines if " = " in line]
-    assert tuple(keys) == workspace_env.GENERATED_FACTS_KEYS
+    assert tuple(keys) == (
+        "schema_version", *workspace_env.GENERATED_FACTS_KEYS
+    )
 
 
 def test_the_writer_never_reads_the_file_it_is_about_to_replace(
@@ -205,7 +210,9 @@ def test_the_writer_never_reads_the_file_it_is_about_to_replace(
     workspace_env.write_generated_facts(tmp_path, FACTS)
 
     monkeypatch.undo()
-    assert _generated_table(tmp_path / FACTS_FILE) == FACTS
+    table = _generated_table(tmp_path / FACTS_FILE)
+    assert table.pop("schema_version") == workspace_env.GENERATED_FACTS_SCHEMA_VERSION
+    assert table == FACTS
 
 
 def test_an_unwritable_target_is_reported_and_leaves_no_temp_file(
@@ -365,7 +372,10 @@ def test_generated_facts_land_in_the_merged_global_config(monkeypatch, tmp_path)
     generated = merged["ciu"]["instance"]["generated"]
     assert generated["physical_repo_root"] == str(tmp_path)
     assert generated["repo_root"] == str(tmp_path)
-    assert sorted(generated) == sorted(workspace_env.GENERATED_FACTS_KEYS)
+    assert generated["schema_version"] == workspace_env.GENERATED_FACTS_SCHEMA_VERSION
+    assert sorted(set(generated) - {"schema_version"}) == sorted(
+        workspace_env.GENERATED_FACTS_KEYS
+    )
 
 
 def test_a_jinja_template_can_read_the_facts_like_any_other_value(
@@ -513,7 +523,8 @@ def test_a_worktree_instances_overlay_and_the_facts_merge_into_one_view(
     instance = render_global_chain(tmp_path, tmp_path)["ciu"]["instance"]
     assert instance["service_profiles"] == ["core", "db"]
     assert instance["shared_infra"]["ref_projects"] == ["idp-dev-idp"]
-    assert sorted(instance["generated"]) == sorted(
+    assert instance["generated"]["schema_version"] == workspace_env.GENERATED_FACTS_SCHEMA_VERSION
+    assert sorted(set(instance["generated"]) - {"schema_version"}) == sorted(
         workspace_env.GENERATED_FACTS_KEYS
     )
 
@@ -644,22 +655,23 @@ def test_env_print_reports_an_unreadable_ciu_env(monkeypatch, tmp_path, capsys):
 
 def test_env_print_reports_a_bad_define_root(monkeypatch, tmp_path, capsys):
     rc = _run_env_print(
-        monkeypatch, tmp_path, ["--define-root", str(tmp_path / "nope")]
+        monkeypatch, tmp_path, ["--root-folder", str(tmp_path / "nope")]
     )
     out = capsys.readouterr()
     assert rc == 1
     assert "[ERROR]" in out.err
 
 
-def test_env_print_honours_define_root(monkeypatch, tmp_path, capsys):
+def test_env_print_honours_root_folder(monkeypatch, tmp_path, capsys):
     repo = tmp_path / "repo"
     repo.mkdir()
     elsewhere = tmp_path / "elsewhere"
     elsewhere.mkdir()
+    (repo / "ciu.global.defaults.toml.j2").write_text("", encoding="utf-8")
     _hermetic_generate(monkeypatch, repo)
 
     monkeypatch.chdir(elsewhere)
-    rc = cli._env_print(["--define-root", str(repo)])
+    rc = cli._env_print(["--root-folder", str(repo)])
     out = capsys.readouterr()
 
     assert rc == 0
@@ -719,7 +731,7 @@ def test_env_print_help_is_reachable_and_names_eval(capsys):
     with pytest.raises(SystemExit) as exc:
         cli._env_print(["--help"])
     assert exc.value.code == 0
-    assert "--define-root" in capsys.readouterr().out
+    assert "--root-folder" in capsys.readouterr().out
 
 
 def test_ciu_env_print_is_reachable_from_the_public_dispatcher(

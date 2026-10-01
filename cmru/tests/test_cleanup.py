@@ -426,7 +426,7 @@ class TestRunCleanupVerb:
         assert rec["clean_steps"] == []
 
     def test_project_filter_limits_scope(self):
-        """--project limits cleanup to one project."""
+        """A positional project target limits cleanup to one project."""
         releases = [
             _release("ciu-v1.0.0", 10),
             _release("cmru-v1.0.0", 20),
@@ -458,7 +458,7 @@ class TestRunCleanupVerb:
         assert "ciu" in rec["commits"]
 
     def test_unknown_project_filter_raises(self):
-        """An unknown --project name raises ValueError."""
+        """An unknown positional project name raises ValueError."""
         with pytest.raises(ValueError, match="Unknown project"):
             self._run_verb(
                 ["ciu"], {"ciu": "ciu-v"},

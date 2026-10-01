@@ -45,6 +45,11 @@ scripts/debian-install/mem_write_bench
 scripts/debian-install/mem_read_bench
 scripts/debian-install/mem_mixed_bench
 
+# debian-install-v2 VM test state: downloaded base images, SSH keys, and
+# disposable qcow2 overlays are regenerable and must never enter the tree.
+scripts/debian-install-v2/testing/.cache/
+scripts/debian-install-v2/testing/vm/.vm/
+
 # Distribution / packaging
 .Python
 build/
@@ -313,8 +318,15 @@ scripts/*.key
 # writeable and visible to the agents and test-runner 
 .worktrees/
 
-# Claude Code local config
-.claude/
+# Claude Code local config -- runtime/session state stays ignored, but
+# .claude/skills/ is checked-in, shared, cross-machine content (never
+# session-local), so it gets an explicit exception (2026-09-17, corrected
+# same day: `.claude/*` contains a mid-pattern slash, which anchors it to
+# THIS .gitignore's own directory per git's own rules -- it silently
+# stopped matching every nested .claude/ in this monorepo, e.g.
+# ciu/.claude/, tls-edge/.claude/. `**/.claude/*` matches at any depth.)
+**/.claude/*
+!**/.claude/skills/
 /claude/
 CLAUDE.md
 
@@ -343,5 +355,6 @@ core
 /logs/
 **/logs/
 **/artifacts/
+**/evidence/
 nyxloom/ntfy/.secrets/
 nyxloom/nyxloomd/secrets.env

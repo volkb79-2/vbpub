@@ -24,13 +24,12 @@
 # is unlike every other consumer's suite, which doesn't test run-gate's own
 # docker-orchestration internals and gates cleanly in tester-unified.
 #
-# Coverage discipline (2026-08-24 decision): TOTAL line+branch coverage sits
-# at ~47% today, so a passing --cov-fail-under=100 does not exist yet. The
-# floor enforced here is DIFF coverage at 100% (topos/nyxloom estate pattern,
-# vendored thin gate in tools/coverage_gate.py): every executable line added
-# or changed since the merge-base with main must be covered, same-commit.
-# The total-100 campaign is Phase 2 of the release-adoption program; when it
-# lands this lane flips to --cov-fail-under=100 like cmru's.
+# Coverage discipline (2026-08-24 decision): the release lane enforces DIFF
+# coverage at 100% (topos/nyxloom estate pattern, vendored thin gate in
+# tools/coverage_gate.py): every executable line added or changed since the
+# merge-base with main must be covered, same-commit. It does not claim a
+# whole-project 100% floor; the broader line-and-branch `assay-r1` lane is a
+# separate, explicitly invoked judge.
 #
 # --source is scoped to run-gate.py ALONE (not the whole project directory),
 # mirroring topos's own `--source topos/src/topos`: the gate never measures

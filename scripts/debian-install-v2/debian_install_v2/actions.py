@@ -39,8 +39,7 @@ _SAFE_COMMANDS = {
     "mkdir": {"-p"},
     "mkswap": set(),
     "modprobe": {"zstd"},
-    "partprobe": set(),
-    "partx": {"-a", "-d", "-u"},
+    "partx": {"-a", "-d", "-u", "--nr"},
     "pip3": {"install"},
     "resize2fs": set(),
     "sfdisk": {"--dump", "--force", "--no-reread"},
@@ -54,17 +53,21 @@ _SAFE_COMMANDS = {
         "daemon-reload",
         "disable",
         "enable",
-        "enable-now",
         "reboot",
         "restart",
         "show",
         "start",
     },
     "systemd-detect-virt": set(),
+    # Used only to schedule the delayed, detached stage1->stage2 reboot
+    # (see installer.py's _reboot()) -- "--" is required so systemd-run's
+    # own option parsing doesn't try to interpret the target command as
+    # more systemd-run flags.
+    "systemd-run": {"--on-active", "--"},
     "tee": {"-a"},
     "udevadm": {"settle", "trigger"},
     "update-grub": set(),
-    "update-initramfs": {"-u"},
+    "update-initramfs": {"-u", "-k"},
     "wget": {"-q"},
     "xfs_growfs": {"/"},
 }
@@ -107,7 +110,9 @@ class HostActions:
         if not allow_shell and command in {"bash", "sh"}:
             raise ActionError("shell commands are only accepted through write_file templates")
 
-    def run(self, argv: list[str], description: str = "", dangerous: bool = False) -> str | None:
+    def run(
+        self, argv: list[str], description: str = "", dangerous: bool = False, input: str | None = None
+    ) -> str | None:
         self._validate(list(argv))
         planned = PlannedAction(tuple(argv), description or shlex.join(argv), dangerous)
         self.planned.append(planned)
@@ -117,6 +122,7 @@ class HostActions:
             argv,
             check=False,
             text=True,
+            input=input,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
         )

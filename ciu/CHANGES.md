@@ -21,6 +21,88 @@ restatement of the technical detail below it.
 
 <!-- cmru: release history -->
 
+## [7.15.1] - 2026-09-25
+<!-- cmru: generated -->
+<!-- cmru: source-end=563ca7ce7345513b56b95e340f298bc8d4d0d812 -->
+
+### Changed
+- doc(ciu): CIU-112 cannot remove worktree with ciu instance (f5e50ce0)
+- close remaining worktree mutation survivors (6b5d7fe3)
+- test qualify shared worktree and deterministic properties (b6ce9752)
+- test CIU worktree root guard boolean edges (4a59d43a)
+- fix shared CIU and CMRU workspace ownership review (84b7919d)
+- Share native Git worktree inventory across CIU and CMRU (b9cad87c)
+- bound mutation candidates and document gate liveness (343d17e7)
+- record gate boundary and deduplicate CIU naming (33dbc009)
+- Merge main into workspace instance feature (e2a4a68d)
+- tighten CIU schema mutation oracles (20236e43)
+- enable liveness in CIU assay mutation lane (245765e0)
+- docs(ciu) add backlog CIU-110, CIU-111 (1d8989b5)
+- harden workspace lifecycle and gate oracles (8d634211)
+- Merge branch 'main' into feat/ciu-cmru-workspace-instance (15e1a346)
+- ci: raise serialized tester gate memory ceiling (e518a9fd)
+- Run CIU gate tests without xdist (a7642484)
+- Bound CIU gate test worker fanout (a3fa81ed)
+- Bound Assay Git index preload resources (294aaf94)
+- Harden CIU gate Git snapshot concurrency (69e1c304)
+- Bound CIU tester mutation worker fanout (52e86cd3)
+- Strengthen CIU mutation witnesses (79c16fa1)
+- Adapt cleanup durability test to network invariant (abc2e4a3)
+- Implement CIU CMRU workspace instance plan (d1eb9877)
+
+### Documentation
+- docs(backlog): CIU-109 — `ciu profiles` persists ciu.global.toml as a side effect (83d93915)
+
+### Testing
+- test(ciu): keep installer oracle compatible with CMRU policy tables (0ff63aa6)
+
+## [7.15.0] - 2026-09-19
+<!-- cmru: generated -->
+<!-- cmru: source-end=3e5e336d5696659744edab0202ef52740f23d944 -->
+
+### Added
+- feat: add estate cli version compatibility (05f373a4)
+
+### Changed
+- cli: universalize vbpub parser diagnostics (aa0e69fa)
+- chore: land run-gate root and dev-gates migration (41c1cafb)
+
+### Testing
+- test(ciu): cover universal diagnostic branches (6c687916)
+- test(ciu): render installer from effective project config (f653ad81)
+- test(ciu): align gate witnesses with central config (98e31d36)
+- test(ciu): add property coverage for core grammars (2da81384)
+
+## [7.14.0] - 2026-09-17
+<!-- cmru: generated -->
+<!-- cmru: source-end=8ff62e94efef00b5d15514d9cfd17a1476df5f1a -->
+
+### Added
+- feat(skills): add canonical single-tool skills for ciu, run-gate, assay, cmru, cgprofile (33c0b0c2)
+- feat(skills): add canonical estate skills; promote D-496 measurement rule to AUTHORING.md (99edfbe6)
+
+### Fixed
+- fix(skills): repair defects found by independent review of new canonical skills (abcb6e27)
+
+### Changed
+- chore(nyxloom): archive historical handoffs and reports (28801a95)
+- backlog(CIU-108): [deployment.resources] has no declarative nice-value key (a8296804)
+
+## [7.13.2] - 2026-09-16
+<!-- cmru: generated -->
+<!-- cmru: source-end=3693a9aea02aa746293ba28ed3b52f4bf6e6a014 -->
+
+### Changed
+- Merge current main before Assay source-backed release (05efe06a)
+- refactor(gates): consume assay from selected worktree source (cd4d19b0)
+- Merge nyxloom Reasonix session extraction (fd966376)
+
+### Documentation
+- docs(ciu): land RG-55 profiling note in SPEC-V8 (c2edde35)
+- docs(gates): describe source-backed assay image (82bd569a)
+- docs: propagate MDT governance ownership and names (2e5f6463)
+- docs(ciu): clarify managed worktree CLI help (54d105df)
+
 ## [7.13.1] - 2026-09-13
 <!-- cmru: generated -->
 <!-- cmru: source-end=13ecbc71a4274dca7e23043f3e08ec7d138a706c -->
@@ -39,6 +121,10 @@ restatement of the technical detail below it.
      Check every ID here against the dated sections below BEFORE trusting
      this block is actually unreleased -- see 2026-09-11's entry under
      7.12.0 for why. -->
+
+### Changed
+- Governance injects per-container memory, CPU, and IO limits only when configured. Omitted read/write IOPS no longer add caps; `read_iops = 0` is an explicit derivation opt-in.
+- `ciu init` emits the complete, disabled governance table with no resource caps configured.
 
 ## [7.13.0] - 2026-09-11
 <!-- cmru: generated -->

@@ -23,11 +23,11 @@ variable "REASONIX_VERSION" { default = "1.17.12" }
 variable "OPENCODE_VERSION" { default = "1.18.1" }
 
 # The daemon: mdt base + a self-contained /opt venv with the nyxloom wheel. The
-# build context is the nyxloom package root so the Dockerfile's stage-1 can build
-# the wheel from src/ + pyproject.toml.
+# build context is the vbpub monorepo root so the Dockerfile's stage-1 can copy
+# both nyxloom/ and libraries/cli-extended/ before building the wheel.
 target "nyxloomd" {
-  context    = "."
-  dockerfile = "nyxloomd/Dockerfile"
+  context    = ".."
+  dockerfile = "nyxloom/nyxloomd/Dockerfile"
   args = {
     NYXLOOM_VERSION = "${NYXLOOM_VERSION}"
   }

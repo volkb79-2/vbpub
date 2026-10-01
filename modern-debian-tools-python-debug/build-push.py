@@ -16,6 +16,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+from mdt_cli import MdtArgumentParser
 import json
 import os
 import re
@@ -28,7 +29,16 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 REPO_ROOT = ROOT.parent
-sys.path.insert(0, str(REPO_ROOT / "cmru" / "src"))
+# Load CMRU and its shared libraries from this monorepo snapshot. The package
+# metadata declares these sibling source roots, but direct imports from this
+# release script do not run the editable-install path setup.
+for source_root in (
+    REPO_ROOT / "libraries" / "cli-extended" / "src",
+    REPO_ROOT / "libraries" / "worktree" / "src",
+    REPO_ROOT / "cmru" / "src",
+):
+    if str(source_root) not in sys.path:
+        sys.path.insert(0, str(source_root))
 
 from cmru import exit_codes  # noqa: E402
 from cmru.ghcr import GitHubPackages  # noqa: E402
@@ -41,9 +51,10 @@ _PUSH_STEP_GUARD = "MDT_RELEASE_PUSH_STEP_ACTIVE"
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
+    parser = MdtArgumentParser(
         description="Build and/or push modern-debian-tools-python-debug images"
     )
+    parser.add_version_argument()
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("--build", action="store_true", help="Resolve env and build images locally")
     mode.add_argument("--push", action="store_true", help="Push previously built images to registry")

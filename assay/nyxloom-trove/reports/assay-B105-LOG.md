@@ -1,0 +1,349 @@
+# B105 self qualification — implementation log
+
+**Status:** ACTIVE. The package is implementing the B105 backlog acceptance
+recorded at `4-backlog.md:10653` on current main
+`94009fbba09c798d8759dce5c4039db2ddb2b196`.
+
+## Baseline and worktree
+
+- `git log --all --grep='B105'` found no implementation commit; the backlog
+  still marks B105 OPEN and the shipped `assay.toml` release lane still declares
+  R0 only.
+- CIU's repo-wide worktree validation refused creation in the primary checkout
+  because `.worktrees/rg55-p6-r2-ciu/ciu.worktree-instance.json` claims branch
+  `rg55-p6-r2-ciu` while Git registers that unrelated checkout as detached. I
+  left that RG-55 checkout and record untouched.
+- A temporary clone at `/tmp/vbpub-b105-ciu-root-20260926` isolates CIU's
+  instance registry. CIU created logical worktree and branch
+  `assay-b105-self-qualification` there at then-current `main`
+  `456164d528b11adea23b8812094bb510d4d5cfb4`. Its worktree is
+  `/tmp/vbpub-b105-ciu-root-20260926/.worktrees/assay-b105-self-qualification`.
+  Reachable Git objects have since been repacked into the clone's own object
+  store, and the external alternate was removed. Its eventual branch can be
+  fetched into the primary repository for serial merge.
+- The CIU worktree was first created at `456164d5`; before final qualification,
+  the branch was rebased onto current `origin/main` `94009fbb` (a CMRU
+  release-input documentation change) with no conflicts. The final source
+  qualification therefore includes the latest main history.
+
+## Planned construction
+
+- Preserve `tester-unified` as the fast R0 release gate and add a distinct,
+  discoverable B105 self-qualification lane.
+- Enumerate every production `src/assay/**/*.py` file explicitly in the
+  `whole_target` R1/R2 declaration. Add a shipped-loader test that compares
+  that inventory with the current source tree, so new production files cannot
+  silently fall outside the denominator or mutation plan.
+- Run the declared pytest suite at R0; require whole-source line and branch
+  coverage at R1 with a 100% floor; run native Python R2 over the complete,
+  unsharded source inventory; and run the declared import-break R3 canary with
+  its control and transformed attempts.
+- The B105 gate will execute inside `tester-unified`, invoke Assay with
+  `--resume --progress .assay/progress-self-qualification.jsonl`, preserve the
+  verdict under ignored `.assay/`, and run `assay verify` on that same verdict
+  before it reports success. The full gate log and verifier-accepted verdict
+  will be retained with the source revision after the gate runs.
+
+## Live record
+
+Implementation, focused checks, plan estimate, complete R0-R3 gate, artifact
+verification, review, and merge results will be appended below as they occur.
+
+### Initial implementation — 2026-09-26
+
+- Added `self-qualification` as a second `assay.toml` lane while retaining
+  `tester-unified` as R0-only. Its R1 declaration literally names the 50
+  production Python files under `src/assay`; the self-lane test compares that
+  list with the live source inventory.
+- Registered `./run-gate.py self-qualification` as a tester-unified command.
+  Its driver installs the selected worktree's source, invokes `assay run` with
+  `--resume`, `.assay/progress-self-qualification.jsonl`, and a persistent
+  `.assay/mutation-state` directory, verifies the emitted report, and checks
+  HEAD/tree identity before printing its success marker.
+- Declared whole-target R1 at 100% with required branch measurement, all four
+  Python native operators at `jobs = 1` with no sharding, explicit `auto`
+  per-candidate bounds and liveness, plus a bounded `import-break` canary on
+  `src/assay/cli.py`.
+- Added A-462, updated README/DESIGN-GUIDE/CONSUMERS, and aligned Assay's
+  Nyxloom gate registry. The initial controller timeout and run-gate advisory
+  budget were 96 hours; attempt 2's 8m49s full-suite run showed the planner's
+  60-second-per-candidate fallback was not a reliable campaign runtime
+  estimate. The controller watchdog and advisory budget are now 90 days; the
+  Assay lane itself remains unbounded, and a controller timeout cannot accept
+  partial evidence.
+- Source-backed `assay lanes --file assay.toml` passed. `./run-gate.py --list`
+  lists `self-qualification` in `tester-unified`. `bash -n` and
+  `git diff --check` passed. After implementation commit `774d99bb`,
+  `assay plan self-qualification --file assay.toml` returned `status=ok`,
+  `candidate_count=3774`, `jobs=1`, and `shard=null`. By operator inventory:
+  `compare-swap=2180`, `boolop-swap=961`, `bool-const-flip=498`, and
+  `falsy-swap=135`; the inventory is below the 10,000 ceiling and is not
+  sharded. The planner estimated `226440` serial seconds (about 62h54m),
+  using its 60-second-per-candidate fallback because no campaign baseline had
+  yet been measured. This is a forecast, not elapsed-time evidence or a gate
+  deadline.
+- Repacked reachable Git objects into the temporary CIU clone and removed its
+  object-store alternate. A targeted connectivity check for main tip
+  `456164d5` then passed, so the tester-unified container will not depend on
+  mounting `/workspaces/vbpub/.git/objects` from outside the selected clone.
+
+The initial candidate-count and shard checks completed before the first gate
+attempt. The rebased `f23bc6b1` preflight now establishes the 100% whole-source
+R0/R1 result. The final full R0-R3 run, retained report/log, backlog closeout,
+review, and serial merge remain open.
+
+### Gate attempt 1 — 2026-09-26
+
+- The first registered gate started in `tester-unified` on source commit
+  `322459e2640ff393d46db994381cc1c94033c44e` (tree
+  `f8a92178583e617c13af2dccf883333f3beca824`) and stopped at the baseline in
+  about seven seconds, before coverage or mutation work. Its verdict was
+  verifier-written `NO_MEASUREMENT/EMPTY_COVERAGE`; the captured pytest stderr
+  was `/usr/local/bin/python: No module named pytest`.
+- The failure came from the lane resolving bare `python` on tester-unified's
+  ambient PATH instead of the declared gate interpreter. A detached,
+  cgroup-placed probe confirmed `/opt/tester-venv/bin/python` has pytest 9.1.1
+  and coverage.py 7.16.1, while ambient `python` is `/usr/local/bin/python`.
+  The gate driver now puts the tester interpreter's bin directory first on
+  PATH before invoking Assay; this is the PATH that the lane explicitly
+  passes through. The failed verdict and progress stream were saved under
+  `/tmp/b105-gate-attempt-1-20260926/` for diagnostic retention.
+
+### Gate attempt 2 — 2026-09-26
+
+- The interpreter fix reached and completed the full baseline pytest command
+  in 8m49s: 5,053 passed, 21 skipped, 17 failed. The failures all read
+  historical project commits that Assay's default shallow snapshot omitted;
+  the suite's parent-repository guard did not skip because the isolated tree
+  is itself a repository. The baseline's coverage file contained no data
+  because `--override-ini=pythonpath=` caused imports to resolve through the
+  editable package in the invoking worktree, outside the measured snapshot.
+  R1 correctly refused `BRANCH_UNAVAILABLE`; R2 did not start.
+- The lane now explicitly uses `snapshot_history = "full"`, sets
+  `pythonpath=src` so each baseline/mutant imports its own snapshot source,
+  and deselects only the two tag-ref audit tests because snapshot materializes
+  commit history but intentionally does not preserve refs/tags. The ordinary
+  checkout-based release lane continues to run those two tests. A drift test
+  pins the exact history policy, import path, and deselections. The failed
+  verdict and logs were saved under `/tmp/b105-gate-attempt-2-20260926/`.
+  The outer controller watchdog and run-gate advisory budget were also widened
+  together to 90 days. Assay's lane budget remains `unbounded`; reaching the
+  controller watchdog is an incomplete gate, never an R2 pass.
+
+### Gate attempt 3 — 2026-09-26
+
+- An earlier full-lane attempt on source commit
+  `a7542820e2a19cbf4065bc02825d03e1f3583300` (tree
+  `338a9b5cc9707f67b02fb323ee9d53a2f4153bc2`) completed its baseline in
+  10m12s: 5,065 passed, 21 skipped, and 3 failed. The command imported Assay
+  from the mounted source tree rather than a built wheel, so the R0 tests that
+  require wheel provenance failed. R1 also refused `EXCLUDED_LINES` at
+  12,257/13,174 executable statements and 5,215/5,910 branch arcs, with 66
+  excluded lines, 917 missing statements, and 695 missing arcs. R2 was
+  `COMMAND_FAILED` for missing `judge_provenance`; no candidate campaign ran,
+  and R3 was inconclusive.
+- The B105 driver now builds the selected exact-OID source as a wheel in a
+  private clone, installs it into the run venv, requires wheel provenance, and
+  keeps R0/R1 preflight ahead of R2. This failed attempt remains under
+  `.assay/verdict-self-qualification.json`,
+  `.assay/progress-self-qualification.jsonl`, and
+  `/tmp/run-gate/run-gate-vbpub-b105-ciu-root-20260926-self-qualification-201605-1790392180.log`.
+
+### Gate attempt 4 — 2026-09-26
+
+- The R0/R1 preflight on `f1850f21` completed the suite in 8m27s but correctly
+  failed at R0: the real-descendant cleanup test read `/proc/<pid>/stat` after
+  the child had exited, and the file read raised `ProcessLookupError` between
+  the path lookup and read. The same report identified six uncovered
+  executable lines and seven missing branch arcs; coverage was not yet
+  release-acceptable. Its artifacts remain in `.assay/` for commit `f1850f21`.
+- The cleanup probe now treats both `FileNotFoundError` and
+  `ProcessLookupError` as an already-exited child. Added boundary cases for
+  the uncovered runner paths, and routed normal mutation outcome recording
+  through the same classifier used for witness eligibility so equivalence and
+  kill-signal rules have one implementation. A focused debug run passed 48
+  tests. The branch was then rebased onto current main before the next gate.
+
+### Gate attempt 5 — 2026-09-26
+
+- The registered `self-qualification-preflight` lane passed in
+  `tester-unified` on source commit `f23bc6b19716f360ecd2145eddb05f683fa30ff5`
+  (tree `c21be711556c34b4f217de0317df59f2cb85847c`); the gate's `assay verify`
+  step accepted its R0/R1 verdict. Its exact whole-target inventory is 50
+  source files, matching all 50 production Python files under `src/assay`.
+  Coverage was 13,175/13,175 executable statements and 5,892/5,892 branch
+  arcs, with no missing lines or branches. Thirteen explicitly marked
+  non-executable lines remain excluded as recorded by the raw coverage
+  report; no source file was omitted. The baseline completed in 8m26s.
+- Retained preflight outputs are under the worktree's ignored
+  `assay/.assay/`: `verdict-self-qualification-preflight.json`,
+  `progress-self-qualification-preflight.jsonl`, and
+  `coverage-self-qualification-preflight-snapshot.json`. The complete
+  run-gate invocation/output is `/tmp/b105-self-qualification-preflight-f23.log`.
+  The final full qualification gate will repeat this preflight on its own
+  exact source commit before starting native R2.
+
+### Final candidate plan — 2026-09-26
+
+- On clean source commit `1ee6832e14d0a98d4a8da12c9f0d962977ea08d4`,
+  `assay plan self-qualification --file assay.toml` returned `status=ok`,
+  `candidate_count=3760`, `jobs=1`, and `shard=null`. The operator counts are
+  `compare-swap=2169`, `boolop-swap=958`, `bool-const-flip=498`, and
+  `falsy-swap=135`; all planned candidates are below the configured
+  `max_mutants=10000` ceiling. The planner estimated 225,600 serial seconds
+  (about 62h40m) using the current automatic per-candidate estimate. This is a
+  forecast, not a lane deadline or evidence of elapsed campaign time; the
+  self-qualification lane has an unbounded campaign budget and the full gate
+  will verify the actual complete candidate inventory.
+
+### Stopped full attempt on e79eb8f5 — 2026-09-26
+
+- The controller's full `self-qualification` run used source commit
+  `e79eb8f507d2060ff1429d1ea13ed3fe671f21da` (tree
+  `a43d50644256f78c610dd14ced0a4b3a4e85ac29`) in the CIU worktree
+  `assay-b105-self-qualification`. The repeated R0/R1 preflight passed and
+  `assay verify` accepted its report. The native campaign plan contained
+  3,760 candidates; the progress stream recorded 39 candidate events before
+  the controller deliberately stopped the run after 38 candidate completions
+  to investigate evidence-integrity defects. `assay analyze progress`
+  confirmed the captured stream belongs to e79 and records the 3,760-candidate
+  campaign. This did not complete R2, run R3, or produce final accepted
+  qualification evidence.
+- The detached gate's actual exit was 143. Its run-gate log is
+  `/tmp/b105-self-qualification-e79.log`; the detailed run-gate evidence is
+  `/tmp/run-gate/run-gate-vbpub-b105-ciu-root-20260926-self-qualification-903325-1790419726.log`.
+  The reported 987 MiB peak and 20-second memory-full stall are measurements
+  from the stopped run, not test criteria or a verdict.
+
+### Controller evidence-integrity remediation — 2026-09-26
+
+- A GPT-6-Sol xhigh review found that mutant pytest sessions could replace the
+  retained preflight coverage artifact and that the outer gate did not bind a
+  passing verdict to the captured source and lane. The full mutation lane now
+  receives no B105 coverage-export variables. Each preflight gets a persistent
+  reserved attempt directory; its raw coverage filename includes the exact
+  source commit and tree, timestamp-only repeats preserve the first raw report,
+  and changed evidence cannot replace it. This keeps corrected commits and
+  retries separate.
+- The external checker now validates the expected commit/tree, lane, declared
+  rigor, PASS outcome and claims, producer exit, Assay version, and wheel
+  digest. The controller runs it from the private exact-OID source clone, and
+  the final guard checks HEAD, its tree, and a clean worktree.
+- The positive report fixtures pass Assay's verifier for both R0/R1 and
+  R0-R3; the nonzero-producer test starts from a verifier-accepted PASS report.
+  Focused checks passed: `python -m pytest tests/test_self_lane.py
+  tests/test_b105_report_check.py -q` (24 passed), `git diff --check`, shell
+  syntax, and TOML parsing. A fresh GPT-6-Sol xhigh follow-up found no
+  actionable findings. It noted that the private-clone invocation and final
+  worktree guard are currently covered by source assertions; the registered
+  non-R2 gates remain pending. No final B105 pass is claimed.
+
+### Tester-unified launcher refused the temporary CIU root — 2026-09-26
+
+- After provisional commit `d9873a24bca008f876349a8be2f8c284e516dcf5`,
+  `python ./run-gate.py tester-unified` was first invoked from the temporary
+  CIU repository under `/tmp/vbpub-b105-ciu-root-20260926`. The registered
+  launcher exited 1 before starting tests because
+  `tester-unified-gate.sh` accepts only worktrees under `/workspaces/vbpub`.
+  This attempt has no test result; its log is
+  `/tmp/b105-tester-unified-d9873a24.log`. The same commit will be gated from
+  a separate CIU worktree under the canonical workspace.
+
+### Stopped full attempt on 30eec294 — 2026-09-27
+
+- The registered gate ran on source commit `30eec29415cb0e28936edaa174becbcac164962c`
+  (tree `9347e3b3df2d5423456c88058572258b34a4d186`). Its R0/R1 preflight
+  passed and the controller entered native R2. The progress stream records
+  15 completed candidates out of 3,760 (8 killed, 7 survived), each after all
+  5,831 tests; the mean candidate duration was 560.3 seconds. The run therefore
+  had no final R2 verdict, did not run R3, and cannot be accepted as
+  self-qualification evidence.
+- The operator stopped container `b98696fe74ef` after the measured rate
+  projected several days, outside the agreed 6–8 hour ceiling. The detached
+  auto-remove container is no longer present; its complete progress stream and
+  per-candidate state records remain in the worktree's ignored `.assay/`
+  directory. B105 remains open pending a structural runtime rework; this
+  partial run is retained for diagnostics and resume-state validation only.
+
+### Runtime cap and structural rework filed on 2026-09-27
+
+- Rebased the isolated B105 branch onto current local `main` at `f0bebc82`,
+  excluding the branch's unrelated CMRU release-input commit. This exposed an
+  ID collision: local main already uses B107 for time-aligned candidate
+  liveness evidence. The branch's campaign-analysis and optimized-B106 entries
+  are now B108 and B109; B110 records the B105 runtime rework.
+- Added an 8-hour outer Nyxloom watchdog, a 7h30m in-container command timeout,
+  and a 5-hour full R0–R3 Assay lane budget after the separately bounded
+  60-minute R0/R1 preflight. The registered run-gate container remains at
+  3 CPUs, 2 GiB memory, and an 8 GiB combined memory-plus-swap ceiling. These
+  limits only make a late run incomplete; they do not
+  classify candidates. The full lane has not been rerun with these limits.
+- B110 requires a measured pilot, an absolute campaign deadline that survives
+  resume/retry/shard replacement, a reduced mutation-only command with an
+  equivalent ordered test collection, opt-in `witness-cold` receipts for
+  verified call failures, and deterministic bounded shards with one final
+  verifier-accepted complete verdict. Survivors and uncertain executions
+  remain full-suite. The cold-kill report must disclose that tests after the
+  witnessed failure did not run and may independently hang, crash, or fail.
+- The v14 cold-witness contract and argv/collection-proof boundary were
+  previously reviewed by GPT-6-Luna xhigh; the runtime plan was reviewed by
+  GPT-6-Sol xhigh. Existing notes: `/tmp/b109-verdict-schema-luna.txt`,
+  `/tmp/b105-r2-command-design-luna.txt`, and
+  `/tmp/b105-runtime-rework-sol.txt`. No Buildkite agent or pipeline is
+  configured in this worktree's host environment, so remote fan-out remains
+  conditional on measured capacity.
+- No tester-unified gate has run for this controller update. `git diff
+  --check` is the only check so far; B105 remains unqualified and no full R2
+  attempt is authorized until B110's pilot and runtime plan fit the ceiling.
+
+### R0/R1 controller verification on 2026-09-27
+
+- After the preceding note, `./run-gate.py tester-unified` passed on commit
+  `b152ea3a848c26d17228aee737326eeaeb623895` (tree
+  `a72a1113f3ebd2388d113a369b2979307f2a6a18`). The Assay R0 lane passed in
+  573.17 seconds. The outer tester-unified qualification also passed its
+  independent self-hosting witness, Topos and CMRU qualification phases, and
+  pyflakes check. The gate emitted `ASSAY_GATE_CONTAINER_EXIT=0` and
+  `ASSAY_REGISTERED_GATE_COMPLETE=1`.
+- `./run-gate.py self-qualification-preflight` then passed R0/R1 on the same
+  exact commit/tree; its report passed both `assay verify` and B105's
+  source-bound report check. The coverage-instrumented baseline command took
+  548.35 seconds. Run-gate measured a 738 MiB peak (612 MiB p90), 0.89 average
+  CPU cores, and a 2.3-second memory-full stall under its explicit 2 GiB
+  container cap, plus 8 GiB combined memory-plus-swap ceiling and 3 CPUs.
+  Retained branch-arc evidence is under
+  `.assay/coverage-self-qualification-preflight-snapshots/attempt.F8xNz2ul/`.
+- Run-gate warned that the host profiler daemon was unavailable and the
+  private cgroup namespace did not expose a host slice memory ceiling; it
+  applied the configured per-container memory cap and `dev-gates.slice`
+  placement. These were non-R2 runs. The stopped multi-day R2 campaign was not
+  restarted; B105 remains unqualified pending B110 implementation, pilot, and
+  a complete verifier-accepted R0–R3 report.
+
+### B110 structural runtime review — 2026-09-27
+
+- Rechecked container `b98696fe74ef`: it is absent from Docker, and the
+  retained attempt record above confirms it was stopped by the operator after
+  15/3,760 candidates. No B105 R2 gate is running now; unrelated active gate
+  containers were left untouched.
+- GPT-6-Sol xhigh's read-only plan review recommends implementing the
+  mutation-only command and opt-in cold-witness kills first, then reducing
+  full-suite candidate cost or proving external CPU capacity. Coverage-derived
+  test slices cannot be used as candidate outcomes: omitted tests may affect
+  fixtures/order, a passing full baseline does not prove a sliced baseline,
+  and even a passing slice control does not prove a slice failure will persist
+  in the declared full suite. A slice failure must rerun fully, and a slice
+  pass still requires the full suite, so this path does not save survivor work.
+- The review reserves one hour of the six-hour target for preflight, R3,
+  queueing, aggregation, and evidence. That leaves 18,000 worker-seconds for
+  3,760 candidates: required average R2 cost is under 4.8 seconds with one
+  worker, 9.6 seconds with two, or 14.4 seconds with three. These are required
+  rates, not forecasts. A fixed 64-ID pilot should be source/operator
+  stratified and record each candidate's CPU, RAM, and elapsed time, plus
+  full-suite slow-test timings, queue and consolidation cost, and headroom.
+  Local concurrency must remain within the aggregate 2 GiB RAM cap. No live
+  Buildkite workers or artifact-transfer acceptance exist, so remote capacity
+  remains uncounted.
+- Added A-464 and expanded B110's runtime evidence and pilot requirements.
+  This design update does not qualify B105 and no R2 attempt was started.
+  Review output: `/tmp/assay-b110-sol-plan.txt`.

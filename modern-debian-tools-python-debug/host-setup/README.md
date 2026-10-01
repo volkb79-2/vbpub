@@ -1,6 +1,6 @@
 # mdt host-setup — dev-tier resource governance (cgroup v2 slices)
 
-Prepares a Docker host so devcontainers and the test/build/gate containers
+Prepares a Docker host so devcontainers, gate/lane containers, and long-running stacks
 they spawn run in **bounded systemd slices** instead of the host's default
 (unlimited) cgroup — the host-side counterpart of the
 `"--cgroup-parent=dev-interactive.slice"` runArg shipped in
@@ -57,9 +57,10 @@ one tighter sub-ceiling per child" treatment as IO:**
   (default 3) independently.
 - `MemorySwapMax`: auto-detected from this host's real total swap at
   `DEV_SWAP_CASCADE_PCT`% (default 80), cascading — `dev.slice` = 80% of
-  host swap, each child = 80% of `dev.slice`'s derived number, and the
-  reactive watcher's per-container swap cap (below) = 80% again of whichever
-  child applies.
+  host swap and each child = 80% of `dev.slice`'s derived number. The
+  inotify watcher's per-container swap cap is conditional: it applies 80%
+  again only when that slice has an explicitly configured per-container
+  memory pair; shipped pairs are disabled.
 - `MemoryZSwapWriteback`: explicit on all five. **Does not cascade from
   `dev.slice`** — it's a plain per-cgroup toggle, verified live (2026-09-12)
   to NOT propagate a parent's own value down; each slice states its own
@@ -90,14 +91,18 @@ estate's single cap. `CPUWeight`/memory/OOM policy stay per-child, since
 interactive, background, and the shared builder genuinely need different
 shapes there.
 
-Genuine **per-container** guarantees have two layers. A caller's explicit
-`docker run --memory`/`--cpus`/`--device-*-iops` flags always win; for an
-unlabelled Docker scope, MDT's memory inotify watcher supplies the configured
-per-slice `MemoryHigh`/`MemoryMax` pair and the IO events watcher supplies the
-measured per-container `io.max` cap. Both are backstops for callers that do not
-set their own leaf policy. A slice's own limits still bound the *whole tier
-combined*, never one container in it. See `AGENTS.md` in the repo root
-("Host resource governance").
+Per-container policy is optional and separate from the aggregate tier limit.
+A caller's explicit `docker run --memory`/`--cpus`/`--device-*-iops` flags
+always win. The memory inotify watcher can fill in a configured
+`MemoryHigh`/`MemoryMax` pair for a Docker scope with no explicit Docker memory
+limit; its shipped values are `-`, so it applies no additional leaf memory or
+swap cap unless the operator configures one. CIU-managed Compose services
+commonly set their own `mem_limit`, which makes this watcher leave that scope
+alone. CIU can also set `MemoryMin`; configure any MDT leaf `MemoryHigh`/
+`MemoryMax` so they remain compatible with that scope property. The IO events
+watcher separately supplies the measured per-container `io.max` cap. A
+slice's own limits still bound the *whole tier combined*, never one container
+in it. See `AGENTS.md` in the repo root ("Host resource governance").
 
 Weights (`CPUWeight`/`IOWeight`) settle contention *between* the two child
 tiers; `dev.slice`'s `io.max` bounds the **whole estate** absolutely so a
@@ -124,7 +129,7 @@ available.
 |---|---:|---:|---:|---|---|
 | `dev.slice` (root estate) | `12G / 16G` | `700%` | `80% of host swap` | `60% of measured device` | One aggregate shield for production. |
 | ├─ `dev-interactive.slice` (IDE) | `3G / 5G` | `500%` | `80% of parent` | parent + per-container leaf | Keep the IDE/devcontainer responsive. |
-| ├─ `dev-background.slice` (stacks/tests) | `5G / 8G` | `500%` | `80% of parent` | parent + per-container leaf | Absorb ordinary stack and test load. |
+| ├─ `dev-background.slice` (long-running stacks) | `5G / 8G` | `500%` | `80% of parent` | parent + per-container leaf | Absorb ordinary stack load. |
 | ├─ `dev-gates.slice` (short lanes) | `800M / 1.5G` | `500%` | `80% of parent` | `60% of parent IOPS` | Bound disposable lanes without starving them. |
 | ├─ `dev-buildkitd.slice` (shared builder) | `1.5G / 2G` | `500%` | `80% of parent` | `60% of parent IOPS` | Protect the shared builder and its cache. |
 | └─ `dev-memory_min_guaranteed.slice` (admitted floor) | optional | inherited | inherited | inherited | Share `MemoryMin` only when explicitly admitted. |
@@ -150,6 +155,17 @@ normal backend for MDT builds, including release builds. The service is a
 plain `docker run --cgroup-parent=dev-buildkitd.slice`; it does not rely on a
 Buildx container-driver cgroup option.
 
+The runtime directory is writable while rootless BuildKit creates its socket.
+Before systemd reports the service ready, the post-start check makes the
+root-owned directory non-writable (mode `0711`), rechecks that the endpoint is
+a real socket, verifies its owner from inside the service container's user
+namespace, then assigns the socket to host group `docker` with mode `0660`.
+The next service start restores the bind directory to mode `01777` and removes
+any stale socket before launching BuildKit. This closes a path-replacement
+race and keeps the owner check valid with Docker `userns-remap`. Devcontainer
+clients must receive the same host group; the directory itself is never made
+broadly writable as a substitute for socket permissions.
+
 The installer verifies Docker and Buildx before changing host state, waits for
 the service socket, verifies the service container's image/cgroup/labels, then
 creates or verifies the remote builder. It installs `/etc/profile.d/mdt-buildkit.sh`
@@ -163,9 +179,25 @@ The accidental-worker guard is an event-driven systemd service. It inspects
 reserved `buildx_buildkit_*` and `buildkit_buildkit_*` candidates, approves only
 the exact managed service identity (name, configured image, cgroup parent, and
 labels), and logs every decision. `BUILDX_ACCIDENTAL_CONTAINER_POLICY` is the
-closed vocabulary: `terminate` (default) removes an unapproved BuildKit worker;
-`report-only` detects and logs it without removal. Missing or invalid policy
-configuration stops the guard rather than weakening the boundary.
+closed vocabulary: `report-only` (default) detects and logs without removal;
+`terminate` removes an unapproved BuildKit worker and is an explicit opt-in.
+The wizard asks for a second confirmation because termination can interrupt a
+live Buildx build. Missing or invalid policy configuration stops the guard.
+A plain install that finds `terminate` stops and disables the guard, then
+refuses to continue until `install.sh --wizard` confirms the choice again.
+
+The wizard also configures `DEVCONTAINER_MISSING_BIND_SOURCE_POLICY` for the
+host-side `initialize_container_environment.py` that runs before a devcontainer
+starts. Its default, `create-by-spelling`, creates a missing source ending in
+`/` as a directory and a missing source without `/` as an empty file with mode
+`0600`.
+The `fail` option refuses every missing `$HOME` source managed by the bootstrap.
+Existing sources are classified from the host filesystem; filenames and suffixes
+do not select their type. Keep
+the trailing `/` on directory sources in `devcontainer.json` so the bootstrap
+can create the intended kind. Docker itself does not interpret this MDT marker.
+Change the value by running `sudo ./install.sh --wizard` from this directory on
+the Docker host; the bootstrap reads the saved host config at its next run.
 
 The wizard is slice-first. For every governed slice it asks `MemoryMin`,
 `MemoryLow`, `MemoryHigh`, and `MemoryMax`; an operator may enter an explicit
@@ -218,23 +250,28 @@ top-level `cgprofile.slice` with the `cgroup-profiler` stack instead — see
 that project's own docs, out of this project's scope. `dev.slice`'s job stays
 "contain dev load and nothing else."
 
-**Container memory inotify backstop (RW-32/D1).** `mdt-container-memory-inotify-watcher.py`
-also watches `dev-gates.slice` and applies a default `MemoryMax`/
-`MemoryHigh`/`MemorySwapMax` the instant a new unlabelled `docker-*.scope`
-appears there. `WATCHER_GATES_MEMORY_HIGH` and
+**Optional per-container memory defaults.** `mdt-container-memory-inotify-watcher.py`
+watches `dev-interactive.slice`, `dev-background.slice`, and `dev-gates.slice`
+for new `docker-*.scope` units. Its six per-container
+`WATCHER_*_MEMORY_HIGH/MAX` values default to `-`, which means no leaf memory
+or swap cap. The wizard asks each setting and explains that parent slice limits
+continue to govern the whole tier. An operator can set a value for a workload
+that needs a separate leaf limit; the wizard requires an explicit confirmation
+before applying any non-`-` pair. `WATCHER_GATES_MEMORY_HIGH` and
 `WATCHER_GATES_MEMORY_MAX` are its own per-container pair. Interactive and
 background have separate `WATCHER_INTERACTIVE_MEMORY_HIGH/MAX` and
 `WATCHER_BACKGROUND_MEMORY_HIGH/MAX` pairs, so one workload's setting is not
 silently reused for another. Today's run-gate lane containers pass no
-`--memory` of their own
-and are exactly the containers this watcher exists for — the moment any
-consumer honours `CGROUP_PARENT_DEV_GATES`, they land here instead of
-`dev-background.slice`, unlabelled, and this is what keeps one runaway
-lane from silently consuming the whole 6 G tier. This is the COARSE,
-tier-wide backstop — it COMPOSES with, and is not withdrawn by, a future
-daemon's per-lane placement caps (D-20/D-25): placement gives an exact
-ceiling to a lane that asks for one, this watcher still catches whatever a
-lane does not ask for.
+`--memory` of their own and are bounded by `dev-gates.slice`'s aggregate
+limits. A CIU-managed service with explicit Docker `mem_limit` is left alone;
+any CIU `MemoryMin` and an explicitly configured watcher cap must fit together.
+`WATCHER_MEMORY_POLICY=disabled` is the default and requires all six values to
+be `-`. Set it to `enabled` only when at least one value is configured; the
+installer refuses inconsistent policy/value pairs, and the health check
+reports if the service is active against a disabled policy. The wizard asks
+this service setting explicitly. On upgrades from configs without the policy
+key, it preserves existing non-`-` values for review rather than treating them
+as defaults to erase.
 
 **Sizing choices (RW-32/D2, D3).** `ManagedOOMSwap=kill` is deliberately
 ABSENT from `dev-gates.slice.in` (unlike `dev-background.slice`'s own,
@@ -270,15 +307,16 @@ Env keys (`host-setup.env.example`): `DEV_GATES_MEMORY_HIGH`/`_MAX`/
 `_ZSWAP_WRITEBACK`, sized for a 16 GiB host and expected to be re-tuned from
 real admission-usage data (design doc §7: "measure first"); also gets a
 runtime IOPS sub-ceiling from `DEV_SUBSLICE_IOPS_PCT` (dev.slice section, no
-separate gates-specific key). The three `WATCHER_*_MEMORY_HIGH/MAX` pairs are
-the reactive watcher's own per-slice knobs. `CGROUP_PARENT_DEV_GATES=dev-gates.slice` travels the same
-export path as `CGROUP_PARENT_DEV_INTERACTIVE`/`_BACKGROUND` —
-`templates/devcontainer.json`'s `containerEnv` — with the same consumer
-fallback rule (D-24), precisely stated: it protects a **devcontainer that
-was not rebuilt** (the variable is simply absent from its environment until
-recreated), **not** a **host that was not upgraded** (the slice unit
-missing). That case is **NOT self-announcing**: a `--cgroup-parent` naming
-a slice with no unit file fails **open** — systemd auto-creates an
+separate gates-specific key). `WATCHER_MEMORY_POLICY` enables/disables the
+optional per-container memory watcher; the three `WATCHER_*_MEMORY_HIGH/MAX`
+pairs are its per-slice knobs. `CGROUP_PARENT_DEV_GATES=dev-gates.slice`
+travels the same export path as `CGROUP_PARENT_DEV_INTERACTIVE`/`_BACKGROUND` —
+`templates/devcontainer.json`'s `containerEnv` — and gate consumers require it
+before launch. A devcontainer that was not rebuilt simply lacks the variable,
+so its gate tools fail before creating a container; it is not allowed to fall
+back to the background tier. A host that was not upgraded still needs the
+slice unit installed; a `--cgroup-parent` naming a slice with no unit file
+fails **open** — systemd auto-creates an
 unlimited transient slice and the container starts normally
 (`units/docker-scope-default-limits.conf.in`, `AGENTS.md`), which is
 exactly why the `docker-.scope.d` backstop exists. It is caught by
@@ -296,23 +334,17 @@ fully upgraded. Both operator sequences below end at `mdt-host-check.sh`;
 after that, rebuild/recreate the devcontainer too so the new variable
 actually reaches whatever tool inside it reads it (round-1 review S10).
 
-**Onward propagation — declared here, not yet read anywhere (round-1
-review S4, RW-32/D4).** `CGROUP_PARENT_DEV_GATES` is exported by this
-package; no downstream consumer reads it yet — each is its own future work,
-filed to the controller's backlog after this package merges, not part of
-this package:
-- `run-gate`'s own default `--cgroup-parent` (`run-gate-project/{SPEC.md,
-  CONSUMERS.md}`) — still documents only the interactive/background pair;
-- `cmru`'s tester-gate (`cmru/src/cmru/tester_gate.py`) — forwards only
-  `CGROUP_PARENT_DEV_BACKGROUND` into spawned gate containers;
-- `srdm`'s gate script (`shared-ramdisk-depot-manager/tools/
-  cgroup-parent.sh`) — exports only the background-tier variable.
-
-Until one of these adopts it, every gate/lane container keeps landing in
-`dev-background.slice` (today's placement, per D-24) regardless of whether
-a host has `dev-gates.slice` installed — which is exactly what this
-session's own `run-gate.py smoke` gate run shows in its argv (`--cgroup-
-parent dev-background.slice`).
+**Onward propagation is now wired.** The host setup exports
+`CGROUP_PARENT_DEV_GATES`, and the gate consumers resolve and validate it
+before launch: `run-gate`, CMRU's `tester-gate`, Assay's tester-unified gate
+driver, the `tester-unified/run` launcher, SRDM's gate helper, and the
+debian-install-v2 VM runner. Their container argv carries the same value as
+both `--cgroup-parent` and the in-container `CGROUP_PARENT_DEV_GATES` fact.
+CMRU and tester-unified also forward `CGROUP_PARENT_DEV_BACKGROUND` only when
+a gate test deliberately starts a long-running application stack; that stack
+then remains in its background tier. Missing gate placement is a hard error,
+so no consumer silently returns to `dev-background.slice` or Docker's
+unbounded default.
 
 **The socket carrier's mount (RW-31/A2, D-30, M5).** `templates/
 devcontainer.json` bind-mounts `/run/cgprofile` (the profiler daemon's
@@ -410,7 +442,9 @@ it knows, preserves non-prompted values represented by the template, and
 rejects per-slice hierarchy violations before rendering. A child
 MemoryHigh/MemoryMax larger than its configured parent is re-prompted; sibling
 totals larger than the parent are reported for review but do not block
-rendering.
+rendering. If the config predates `WATCHER_MEMORY_POLICY`, existing explicit
+per-container memory values select `enabled` as the wizard's starting answer;
+each pair is still reviewed and confirmed before the candidate is written.
 
 ## Quick start
 
@@ -472,16 +506,16 @@ the test stacks.
 | `scripts/mdt_buildkit_builder.py` | `/usr/local/sbin/mdt-buildkit-builder.py` | idempotent `mdt-managed` remote registration/verification; never creates a container-driver worker |
 | `etc/profile.d/mdt-buildkit.sh` | `/etc/profile.d/` | host-shell `BUILDX_BUILDER` and `BUILDKIT_HOST` exports |
 | `units/docker-scope-default-limits.conf.in` | `/etc/systemd/system/docker-.scope.d/50-default-limits.conf` | D-G8 backstop — a generous "never truly unbounded" floor for EVERY container's transient scope, regardless of which slice (or none) it named |
-| `units/mdt-dev-governance-reconcile.service` | systemd (enabled) | boot-time reconciliation of measured IO, zswap, transient caps, mount flags, and the memory min/low audit |
+| `units/mdt-dev-governance-reconcile.service` | systemd (enabled) | boot-time reconciliation of measured IO, zswap, transient IO caps, mount flags, and the memory min/low audit |
 | `units/mdt-dev-governance-reconcile.timer.in` | systemd (enabled) | periodic reconciliation (default 5min) — the event watchers are immediate paths; this is the backstop |
 | `units/mdt-container-io-events-watcher.service` | systemd (enabled, unconditional) | `docker events` watcher applying measured IO caps to governed scopes and named out-of-tree Buildx workers |
-| `units/mdt-container-memory-inotify-watcher.service` | systemd (enabled iff `INOTIFY_OK=1`) | cgroupfs inotify watcher applying default memory caps to new container scopes |
+| `units/mdt-container-memory-inotify-watcher.service` | systemd (enabled only when inotify works, `WATCHER_MEMORY_POLICY=enabled`, and at least one per-container value is explicitly configured) | optional cgroupfs inotify watcher applying configured per-container memory caps to new scopes; shipped policy disables the unit |
 | `scripts/mdt-dev-governance-reconcile.sh` | `/usr/local/sbin/` | reconciliation implementation (see below) |
 | `scripts/mdt-container-io-events-watcher.sh` | `/usr/local/sbin/` | `docker events` event watcher — instant counterpart to reconciliation's per-container IO pass |
 | `scripts/mdt-container-io-caps.lib.sh` | `/usr/local/sbin/` | shared `_mdt_*` matching/cap-application functions — sourced by both of the above, one definition of "how a container gets capped" |
-| `scripts/mdt-container-memory-inotify-watcher.py` | `/usr/local/sbin/` (iff `INOTIFY_OK=1`) | inotify watcher — instant counterpart to the sweep's per-container `MemoryMax` |
+| `scripts/mdt-container-memory-inotify-watcher.py` | `/usr/local/sbin/` (iff `INOTIFY_OK=1`) | optional inotify watcher for explicitly configured per-container `MemoryHigh`/`MemoryMax`; the periodic sweep does not apply memory caps |
 | `scripts/mdt-slice-memory-min-low-audit.py` | `/usr/local/sbin/` | read-only audit of only `memory.min`/`memory.low` — logs a `[WARN]` when an ancestor makes a value ineffective |
-| `scripts/mdt-io-baseline.py` | `/usr/local/sbin/` | official kernel `io.cost` coefficient matrix against a persistent file → `/var/lib/mdt/io-baseline.env` (identity-bound benchmark results) |
+| `scripts/mdt-io-baseline.py` | `/usr/local/sbin/` | shared Linux-derived `io.cost` coefficient matrix against a persistent file → `/var/lib/mdt/io-baseline.env` (identity-bound benchmark results) |
 | `mdt-host-setup-wizard.py` (a sibling of `install.sh`, not under `scripts/`, because it is never installed onto the host) | not installed — run from this directory via `install.sh --wizard`, or directly as `sudo ./mdt-host-setup-wizard.py` to reconfigure an already-installed host | interactive `/etc/mdt/host-setup.env` builder (see Quick start); template surgery on `host-setup.env.example`, never generated from scratch |
 | `scripts/check.sh` | `/usr/local/sbin/mdt-host-check.sh` | health check, non-zero exit on failure |
 | `etc/modules-load.d/bfq.conf`, `etc/udev/rules.d/60-bfq-scheduler.rules` | `/etc/…` (`mdt-` prefixed) | BFQ at boot so IO weights bite |
@@ -614,16 +648,32 @@ Full reasoning for each gap, and why raw cgroupfs writes lose to
 
 ## The IO baseline
 
-`mdt-io-baseline.py` invokes the same official kernel `io.cost` coefficient
-matrix generator used by `scripts/debian-install-v2`: sequential and random
-read/write measurements against a persistent file. It never writes a raw block
-device. The six raw matrix values and the four `io.max` derived ceilings
+`mdt-io-baseline.py` and `scripts/debian-install-v2/tools/iocost-calibrate.sh`
+use the same generated Linux-derived `iocost_coef_gen.py` in
+`scripts/debian-install-v2/tools/`. The pristine source and patch series are
+under `debian_install_v2/vendor/`; run
+`python3 scripts/debian-install-v2/tools/build-iocost-generator.py --check`
+to detect drift. Both paths produce the sequential and random read/write
+matrix against a persistent file by default. MDT's test-file identity check
+requires that its file and Docker data share a filesystem, so MDT does not
+currently use a separate scratch partition. The debian-install-v2 design
+prefers a mounted file target on a dedicated partition over raw `--testdev`
+mode. The six raw matrix values and four `io.max` derived ceilings
 are written as `KEY=VALUE` benchmark results in `IO_BASELINE_ENV` (default
 `/var/lib/mdt/io-baseline.env`) with an atomic write. The persistent target is
 `IO_BASELINE_TESTFILE` (default `/var/lib/mdt/iocost-coef-fio.testfile`) and
-must be on the same filesystem/device as Docker data. **The benchmark saturates
+must be on the same filesystem/device as Docker data. It is persistent
+benchmark scratch: calibration rewrites its contents on every run. Existing
+targets with the wrong type, link count, or size are refused without being
+replaced. **The benchmark saturates
 that device for about 12 minutes at default settings** — run it in a quiet
 window.
+
+The installed/operator Python entrypoints accept top-level `--version`; for
+example, `sudo mdt-io-baseline.py --version` prints exactly one `MDT <version>`
+line and exits 0 before host checks or writes. Parser diagnostics begin with
+the MDT headline at every parser depth. Service watchers and timer-only audits
+are not separate versioned CLI entrypoints.
 
 There is no arbitrary age expiry. The results are reusable only when the target
 path and size, Docker-data filesystem, resolved block-device identity/topology,
@@ -690,7 +740,8 @@ hardware: point `IO_BASELINE_ENV` at it or copy the file.
 ## Verification
 
 `mdt-host-check.sh` checks: `memory_recursiveprot` mount flag, unit presence +
-activity (`dev.slice`, `dev-interactive.slice`, `dev-background.slice`),
+activity (`dev.slice`, `dev-interactive.slice`, `dev-background.slice`,
+`dev-gates.slice`, `dev-buildkitd.slice`),
 effective cgroupfs values (including `io.bfq.weight` next to `io.weight` —
 under BFQ only the former is what schedules), zswap-writeback policy,
 `dev.slice`'s `io.max` + baseline device/target identity, the `docker-.scope.d` backstop's

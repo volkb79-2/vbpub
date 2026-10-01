@@ -15,12 +15,12 @@ def test_standards_update_reloads_when_revision_was_already_current(monkeypatch,
         project_root=project_root,
         template_revision=4,
         changelog="CHANGES.md",
-        steps={},
-        runner_steps={},
+        steps={"run-tests": []},
+        runner_steps={"run-tests": SimpleNamespace(quiet=True)},
         env={},
     )
-    loaded = (tmp_path, {"demo": project}, [])
+    loaded = (tmp_path, {"demo": project}, ["demo"])
     monkeypatch.setattr("cmru.cli._resolve_config", lambda _: tmp_path / "cmru.toml")
     monkeypatch.setattr("cmru.cli.load_config", lambda _: loaded)
-    standards.standards_main(["--project", "demo", "--update"])
+    standards.standards_main(["demo", "--update"])
     assert "CMRU standards: 1 project(s) conform" in capsys.readouterr().out

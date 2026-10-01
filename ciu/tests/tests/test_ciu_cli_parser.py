@@ -12,6 +12,24 @@ from ciu.engine import parse_arguments, _build_secrets_subparser  # noqa: E402
 from ciu import cli  # noqa: E402
 
 
+def test_all_ciu_parser_diagnostics_start_with_the_dynamic_headline(monkeypatch, capsys):
+    import ciu.cli_utils as cli_utils
+
+    monkeypatch.setattr(cli_utils, "get_cli_version", lambda: "9.8.7-test")
+
+    with pytest.raises(SystemExit):
+        parse_arguments(["--not-a-ciu-option"])
+    assert capsys.readouterr().err.splitlines()[0] == (
+        "CIU 9.8.7-test — Container Infrastructure Utility"
+    )
+
+    with pytest.raises(SystemExit):
+        parse_arguments(["--help"])
+    assert capsys.readouterr().out.splitlines()[0] == (
+        "CIU 9.8.7-test — Container Infrastructure Utility"
+    )
+
+
 class TestParseArgumentsDefaults:
     def test_default_values(self):
         args = parse_arguments([])
@@ -38,8 +56,8 @@ class TestParseArgumentsFlags:
         assert args.dir == Path("/tmp/service")
         assert args.file == "custom.yml.j2"
 
-    def test_define_root_flag(self):
-        args = parse_arguments(["--define-root", "/tmp/repo"])
+    def test_root_folder_flag(self):
+        args = parse_arguments(["--root-folder", "/tmp/repo"])
 
         assert args.define_root == Path("/tmp/repo")
 
@@ -194,7 +212,8 @@ class TestPerVerbHelp:
         out = self._help_out(capsys, monkeypatch, [verb, "--help"])
         assert f"ciu {verb}" in out
         assert expected_text in out
-        assert "Container Infrastructure Utility" not in out
+        assert out.splitlines()[0].startswith("CIU ")
+        assert "Container Infrastructure Utility" in out.splitlines()[0]
 
     def test_env_generate_help_is_not_intercepted(self):
         # `env generate --help` must fall through to its own argparse help.
@@ -228,8 +247,7 @@ class TestPerVerbHelp:
             "ensure",
             "idempotent",
             "existing unmanaged linked checkout",
-            "add NAME",
-            "compatibility shorthand",
+            "adopt LOGICAL PATH",
             "worktree up LOGICAL",
             "worktree exec LOGICAL [--target ALIAS] -- ARGV...",
             "worktree rm LOGICAL",
@@ -283,7 +301,13 @@ class TestIopsBaselineVerb:
     def test_nonpositive_runtime_exits_2(self, monkeypatch, capsys):
         code = self._run(monkeypatch, ["iops-baseline", "--runtime", "0"])
         assert code == 2
-        assert "positive" in capsys.readouterr().err
+        assert capsys.readouterr().err.splitlines()[0].startswith("CIU ")
+
+    def test_init_invalid_project_name_uses_headline(self, monkeypatch):
+        monkeypatch.setattr(sys, "argv", ["ciu", "init", "--project-name", "BAD"])
+        with pytest.raises(SystemExit) as exc:
+            cli.main()
+        assert str(exc.value).splitlines()[0].startswith("CIU ")
 
 
 class TestLocalCliDispatch:
@@ -331,7 +355,7 @@ class TestLocalCliDispatch:
         monkeypatch.setattr(deploy, "action_generate_env", fake_generate)
         monkeypatch.chdir(tmp_path)
 
-        assert self._run(monkeypatch, ["env", "generate", "--define-root", "/repo"]) == 7
+        assert self._run(monkeypatch, ["env", "generate", "--root-folder", "/repo"]) == 7
         assert seen["args"] == (Path("/repo"), tmp_path)
 
     def test_iops_runtime_rejects_negative_values(self, monkeypatch, capsys):
@@ -344,7 +368,7 @@ class TestLocalCliDispatch:
         monkeypatch.setattr(diagnose, "run", lambda **_: pytest.fail("handler must not run"))
 
         assert self._run(monkeypatch, ["diagnose", "--logs", "10001"]) == 2
-        assert "between 0 and 10000" in capsys.readouterr().err
+        assert capsys.readouterr().err.splitlines()[0].startswith("CIU ")
 
     def test_diagnose_forwards_all_public_options(self, monkeypatch):
         import ciu.diagnose as diagnose

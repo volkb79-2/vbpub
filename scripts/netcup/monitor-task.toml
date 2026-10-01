@@ -1,0 +1,9 @@
+# monitor-task.toml
+#
+# Polling settings for `monitor-task.py watch`. `show`, help, and version do
+# not read this file. The watch verb refuses to run if a required key is
+# missing or if this file contains an unknown key (typo/stale-key protection).
+# There is no Python-side fallback; `watch --poll` overrides this value.
+
+[monitor]
+poll_interval = 5.0

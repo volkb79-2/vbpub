@@ -17,7 +17,7 @@ refusal type keeps that distinction structural rather than remembered.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from ..records import record
 
 __all__ = [
     "ReportSummary",
@@ -37,7 +37,7 @@ class ReportUnusable(Exception):
     """
 
 
-@dataclass(frozen=True, kw_only=True)
+@record
 class ReportSummary:
     """One test framework's own account of the run it just finished.
 

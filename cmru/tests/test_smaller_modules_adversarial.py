@@ -153,7 +153,7 @@ def test_manifest_build_uses_fallback_cmru_version_and_image_facts(tmp_path, mon
     assert result["ciu"]["version"] == "2.3.4"
 
 
-def test_output_stream_handles_partial_prefix_and_literal_passthrough(monkeypatch):
+def test_output_stream_handles_partial_prefix_and_literal_passthrough():
     stream = io.StringIO()
     decorated = output.SeverityStream(stream, time_short=False, colour=False)
     assert decorated.write("[WA") == 3
@@ -162,8 +162,6 @@ def test_output_stream_handles_partial_prefix_and_literal_passthrough(monkeypatc
     stream = io.StringIO(); decorated = output.SeverityStream(stream, time_short=False, colour=False)
     decorated.write("[INFO] ok\n")
     assert stream.getvalue() == "[INFO] ok\n"
-    monkeypatch.delenv(output._TIME_ENV, raising=False)
-    assert output.consume_cli_flags(["x", "--", "--log-prefix-time-short"]) == ["x", "--", "--log-prefix-time-short"]
 
 
 def test_selfupdate_handoff_updates_link_and_reports_restart_failure(tmp_path, monkeypatch):

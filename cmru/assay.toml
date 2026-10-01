@@ -1,25 +1,59 @@
 # CMRU's release-gate test claim.  The outer command in cmru.toml invokes the
 # selected-worktree Assay source installed by run-gate in tester-unified; this lane's command is deliberately
 # the existing project test command, rather than recursively invoking CMRU's
-# tester-gate wrapper.
+# tester-gate wrapper. CLI implementation dependencies are sibling source
+# packages in this monorepo, so they are explicit import roots alongside CMRU.
 #
-# R0 is the only honest Assay declaration in this monorepo today.  The
-# published R1+ snapshot substrate deliberately refuses Topos's tracked
-# absolute-symlink security fixtures before it can run CMRU's isolated
-# snapshot.  A project-scoped snapshot is a versioned Assay product decision,
-# not a consumer-side bypass.  CMRU's outer tester-unified gate separately
-# enforces whole-source line and branch coverage at 100% until that capability
-# is released and pinned here.
+# Assay owns R0/R1/R3 here. R1 uses the latest ancestor CMRU release tag as
+# its changed-line baseline; advance that pinned tag with each CMRU release.
+# R2 lives in run-gate.toml's tag-based mutation lane, which resolves that
+# nearest ancestor tag dynamically. `main` is unsuitable after merge because
+# Assay can resolve it to HEAD and correctly refuse an empty coverage delta.
+# The repository-minus-unsafe-symlinks selection is the
+# estate-approved monorepo boundary: it omits only the three tracked Topos
+# fixture links that cannot be materialised safely, while preserving every
+# other tracked path from the judged commit.
 schema_version = 2
 
 [lanes.cmru]
 scope = "S1"
-rigor = ["R0"]
+rigor = ["R0", "R1", "R3"]
 enforcement = "gate"
-argv = ["/opt/tester-venv/bin/python", "-m", "pytest", "tests", "-q"]
-# These are project test facts, not ambient conveniences: pytest must import
-# the source snapshot it is judging, and it must not create bytecode there.
-env = { PYTHONPATH = "src", PYTHONDONTWRITEBYTECODE = "1" }
-env_passthrough = []
+argv = ["/opt/tester-venv/bin/python", "-m", "pytest", "tests", "-q", "--maxfail=1",
+  "--cov=src/cmru", "--cov-branch", "--cov-report=json:coverage.json"]
+# A green run still executes the complete suite. These are project test facts,
+# not ambient conveniences: pytest must import the source snapshot it is
+# judging, and it must not create bytecode there. The separate R2 campaign
+# uses the nearest release tag, fail-fast candidates, and a bounded timeout.
+# Source-checkout tests import CMRU's sibling shared libraries explicitly.
+env = { PYTHONPATH = "src:../libraries/cli-extended/src:../libraries/worktree/src", PYTHONDONTWRITEBYTECODE = "1" }
+env_passthrough = ["PATH"]
 budget = "20m"
 allow_argv_append = false
+
+[lanes.cmru.isolation]
+snapshot_selection = "repository-minus-unsafe-symlinks"
+unsafe_symlink_omissions = [
+  "topos/tests/fixtures/inspect_files/_danger/passwd_link",
+  "topos/tests/fixtures/inspect_files/cgroup_escape/system.slice/ssh.service/dangerous_link/passwd_escape",
+  "topos/tests/fixtures/inspect_files/cgroup_nonreg/system.slice/ssh.service/memory.current",
+]
+
+[lanes.cmru.judge]
+language = "python"
+source_roots = ["src"]
+fail_under = 100.0
+allow_excluded = false
+require_branch = true
+base = "cmru-v5.4.1"
+
+[lanes.cmru.judge.coverage]
+format = "coverage-py-json"
+artifact = "coverage.json"
+
+[lanes.cmru.judge.canary]
+# Import-break proves that the complete declared gate rejects a known-bad
+# source snapshot, independent of the mutation campaign's individual tests.
+mechanism = "import-break"
+target = "src/cmru/config.py"
+budget_per_attempt = "20m"

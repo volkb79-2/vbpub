@@ -32,11 +32,13 @@ ARG NYXLOOM_BASE=ghcr.io/volkb79-2/modern-debian-tools-python-debug-php85-vsc-de
 # ─── stage 1: build the nyxloom wheel from source (hermetic, no git) ──────────
 FROM python:3.14-slim AS wheelbuild
 ARG NYXLOOM_VERSION=0.0.0-dev
-WORKDIR /build/nyxloom
+WORKDIR /build
 # Only the wheel inputs — deliberately NOT the .git dir. The version comes from
 # the ARG below, so setuptools-scm never shells out to git.
-COPY pyproject.toml ./
-COPY src ./src
+COPY nyxloom/pyproject.toml ./nyxloom/pyproject.toml
+COPY nyxloom/src ./nyxloom/src
+COPY libraries/cli-extended/src/cli_extended ./libraries/cli-extended/src/cli_extended
+WORKDIR /build/nyxloom
 # Pretend-version short-circuits setuptools-scm's git lookup (which would fail with
 # no .git in the context). Targeted `_FOR_NYXLOOM` form so it can only affect this
 # dist, never a transitively-built one.

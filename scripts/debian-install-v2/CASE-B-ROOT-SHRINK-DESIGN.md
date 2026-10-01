@@ -151,12 +151,19 @@ because at that point "do nothing" would leave a shrunk filesystem inside
 a still-large partition, which is safe but wasteful, not dangerous; growing
 back is strictly better and cheap.
 
-`e2fsck`/`resize2fs` are already bundled into every Debian initramfs by
-default (`e2fsprogs` ships its own `/usr/share/initramfs-tools/hooks/e2fsprogs`
-hook) — no extra `copy_exec` needed for those. `sfdisk` (from `util-linux`)
-needs verifying; if it's not already present, the planning-time hook
-installer must also install a small companion `hooks/` script that
-`copy_exec`s `sfdisk` (and its shared libs) into the image at
+`e2fsck` is already bundled into every Debian initramfs by default
+(`e2fsprogs` ships its own `/usr/share/initramfs-tools/hooks/e2fsprogs`
+hook, needed for the standard boot-time root fsck) — no extra `copy_exec`
+needed for it. **`resize2fs` is NOT bundled by that same hook** — this
+document previously claimed otherwise and was wrong; live-confirmed
+2026-09-09 (r1002, via `lsinitramfs` on a real booted initrd) that its
+absence makes the premount hook's `resize2fs -P` fail as "not found" and
+silently no-op the whole shrink. `sfdisk` (from `util-linux`) also needs
+it. Both are `copy_exec`'d explicitly by the implementation's
+`ROOT_SHRINK_BUILD_HOOK` (`debian_install_v2/templates.py`) — the
+planning-time hook installer must also install a small companion `hooks/`
+script that `copy_exec`s `sfdisk` and `resize2fs` (and their shared libs)
+into the image at
 `update-initramfs` time.
 
 ### Stage2 addition: verify, apply, and clean up
@@ -208,10 +215,9 @@ First action in `_stage2()`, before the existing zswap/cgroup2-flags work:
    command sequence before it's wired into a hook that only gets exercised
    at real boot time.
 4. A real end-to-end proof needs an actual initramfs rebuild + reboot
-   cycle — almost certainly `scripts/debian-install-v2/testing/`'s existing
-   privileged-container harness (built for exactly this class of
-   real-`sfdisk`/`--commit` testing) rather than anything mockable in the
-   normal r0-r1 dry-run lane.
+   cycle. It belongs in the isolated QEMU/TCG VM harness under
+   `scripts/debian-install-v2/testing/vm/`, never in a Docker container that
+   shares the host kernel and never in the cockpit's ordinary r0-r1 lane.
 5. `dumpe2fs`/`resize2fs -P` output parsing (exact field names/units) needs
    verifying against the real tool versions this fleet's Debian release
    ships, not assumed from the old script's `awk` pattern.

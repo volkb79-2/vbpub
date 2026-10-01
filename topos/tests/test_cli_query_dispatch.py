@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 from topos.cli import _main_query
+from topos.cli_diagnostics import cli_headline
 from topos.query import Caps, MetricRef, Query, Selector, SortSpec
 from topos.query.errors import QueryError
 
@@ -22,6 +23,7 @@ def test_parser_misuse_and_missing_metric_are_pre_io(
 
     captured = capsys.readouterr()
     assert captured.out == ""
+    assert captured.err.splitlines()[0] == cli_headline()
     assert "invalid choice" in captured.err
     assert "topos query requires at least one --metric" in captured.err
     assert calls == []

@@ -263,6 +263,8 @@ def test_materialize_empty_entries_noop(tmp_path):
 @pytest.fixture
 def cli_env(monkeypatch, tmp_path):
     monkeypatch.setenv("REPO_ROOT", str(tmp_path))
+    (tmp_path / "ciu.global.defaults.toml.j2").write_text("", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
     _write_hosts(tmp_path)
     return tmp_path
 
@@ -292,13 +294,13 @@ def test_cli_list_no_secrets(cli_env, monkeypatch, capsys):
 
 
 def test_cli_list_accepts_define_root_with_no_ambient_repo_root(monkeypatch, capsys, tmp_path):
-    """ciu-P45 / CIU-54: `host-secrets` previously ignored --define-root
+    """ciu-P45 / CIU-54: `host-secrets` previously ignored --root-folder
     entirely (bare REPO_ROOT-or-cwd fallback); now it resolves via
     `deploy.resolve_repo_root` (S1.1) like every other verb."""
     monkeypatch.delenv("REPO_ROOT", raising=False)
     _write_hosts(tmp_path)
     assert _run(monkeypatch, [
-        "host-secrets", "devbox", "--list", "--define-root", str(tmp_path),
+        "host-secrets", "devbox", "--list", "--root-folder", str(tmp_path),
     ]) == 0
     out = capsys.readouterr().out
     assert "ts_authkey  absent" in out
@@ -308,7 +310,7 @@ def test_cli_list_refuses_when_repo_root_not_set_and_no_define_root(monkeypatch,
     monkeypatch.delenv("REPO_ROOT", raising=False)
     assert _run(monkeypatch, ["host-secrets", "devbox", "--list"]) == 2
     err = capsys.readouterr().err
-    assert "[ERROR]" in err and "REPO_ROOT not set" in err
+    assert "[ERROR]" in err and "[no-ciu-root]" in err
 
 
 def test_cli_path_prints_store_file(cli_env, monkeypatch, capsys):

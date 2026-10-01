@@ -242,3 +242,47 @@ Draft-2 may take over a duty only with, for that duty:
    capability exists.
 
 Automatic merging remains a separately approved, later decision (inherited).
+
+## 15. Installed command contract
+
+The installed Nyxloom wheel provides three user CLIs and one service entrypoint:
+
+- `nyxloom` edits project-local trove/config/backlog files. Local `lint` works
+  from the project checkout and does not require registry registration.
+- `nyxloom-harness` reads supported AI-harness session files and stores for
+  discovery and extraction. It does not initialize Nyxloom host state.
+- `nyxloomctl` performs local host administration, workflow operations, and
+  developer diagnostics. It is not an HTTP client for remote administration;
+  the dashboard remains the existing HTTP/SSE client.
+- `nyxloomd` directly starts the daemon lifecycle for the service manager and
+  existing container.
+
+Project-local authoring and harness workflows MUST remain usable when the
+daemon is unavailable. `nyxloomctl lint` is the all-registered-project lint
+scan; `nyxloom lint` is limited to the current project or explicit handoff
+paths. The full verb/option grammar, effects, omitted behavior, compatibility
+map, and migration examples are normative in the
+[CLI reference](CLI-REFERENCE.md#current-command-and-option-contract).
+
+Each human executable's parser, generated help, usage, common-option placement,
+and dispatch MUST come from its cli-extended `CliRegistry` declaration. A
+command invocation MUST be parsed once. Help, usage, version, and parser-error
+paths MUST not write project or host state. Bare invocation prints complete
+help and exits `0`; `--help`, `help`, `help VERB`, and `VERB --help` are the
+supported help forms. `-h` is not a compatibility alias. Invalid grammar and
+prohibited option combinations exit `2`; handled command refusals preserve
+their documented exit status.
+
+Nyxloom mutations MUST keep their domain safeguards: explicit state-changing
+verbs, validated state transitions, role checks, `--apply` and evidence
+confidence requirements, and persistent-store safety checks. Correctly using
+these checks satisfies authorization; the CLI MUST NOT add a duplicate generic
+`--yes` prompt unless a command has an operation that truly lacks an existing
+authorization boundary. Help MUST label mutating actions accurately while
+only enabling confirmation where the command requires it.
+
+The interactive managed-backlog create/edit commands use the shared prompt
+API behind the optional `nyxloom[interactive]` extra. The base wheel and
+noninteractive paths MUST work without Questionary. Complete candidate
+frontmatter MUST validate against the shipped schema before writes; edit MUST
+preserve metadata outside the editable form and the body bytes.

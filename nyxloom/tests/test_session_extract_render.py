@@ -76,6 +76,34 @@ def test_render_text_does_not_double_prefix_a_preformatted_qa_pair():
     assert text.count("OPERATOR: ") == 1
 
 
+def test_render_text_timestamp_placement_and_metadata_position():
+    events = [_ev(EventKind.OPERATOR_TEXT, "do the thing", marker="op1")]
+
+    pre = render_text(
+        events, fmt="claude-code", last_marker="op1", show_timestamps="pre",
+        timestamp_format="%H:%M:%S", metadata_position="pre",
+        source_metadata={"path": "/tmp/session file.jsonl", "name": "session file.jsonl",
+                         "bytes": "42", "created": "unavailable"},
+    )
+    assert pre.startswith("<!-- nyxloom-extract: format=claude-code marker=op1 ")
+    assert "OPERATOR: 00:00:00 do the thing" in pre
+    assert "name=session%20file.jsonl" in pre
+    assert pre.count("nyxloom-extract:") == 1
+    assert MARKER_FOOTER_RE.search(pre).group(2) == "op1"
+
+    post = render_text(
+        events, fmt="claude-code", last_marker=None, show_timestamps="post",
+        timestamp_format="%H:%M:%S",
+    )
+    assert "OPERATOR: do the thing 00:00:00" in post
+
+    both = render_text(
+        events, fmt="claude-code", last_marker=None, show_timestamps="both",
+        timestamp_format="%H:%M:%S",
+    )
+    assert "OPERATOR: 00:00:00 do the thing 00:00:00" in both
+
+
 def test_render_text_no_marker_omits_footer():
     events = [_ev(EventKind.OPERATOR_TEXT, "hi")]
     text = render_text(events, fmt="claude-code", last_marker=None)
@@ -165,6 +193,14 @@ def test_render_text_shows_stop_reason_before_the_oldest_event():
     assert "older session content exists but was not included" in text
     assert "word budget reached" in text
     assert text.index("older session content exists") < text.index("oldest kept text")
+
+
+def test_render_text_explains_compaction_limit_stop():
+    oldest = _ev(EventKind.LIFECYCLE_MARKER, "[compact boundary]", marker="lc0")
+    oldest.meta["walk_stopped_because"] = "max_compactions"
+    text = render_text([oldest], fmt="claude-code", last_marker=None)
+    assert "compaction limit reached (--max-compactions)" in text
+    assert text.index("older session content exists") < text.index("[compact boundary]")
 
 
 def test_render_text_no_stop_reason_note_when_meta_absent():

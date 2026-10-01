@@ -1,0 +1,17 @@
+anon 492830720
+file 104857600
+kernel_stack 8192000
+shmem 10485760
+file_mapped 20971520
+file_dirty 0
+file_writeback 0
+pgfault 57500
+pgmajfault 1032
+pgrefill 240
+pgscan 340
+pgsteal 320
+pgactivate 120
+workingset_refault_anon 0
+workingset_refault_file 2210
+workingset_activate_anon 0
+workingset_activate_file 60

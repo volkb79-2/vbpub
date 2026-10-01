@@ -16,6 +16,8 @@ from ciu import engine
 def test_hook_readiness_adapters_normalize_docker_outcomes_and_forward_tcp(monkeypatch, tmp_path: Path):
     """Hooks see stable statuses rather than raw Docker failures or JSON details."""
 
+    (tmp_path / "ciu.global.defaults.toml.j2").write_text("", encoding="utf-8")
+
     stack = tmp_path / "stack"
     stack.mkdir()
     merged = {"deploy": {"project_name": "project", "environment_tag": "prod"}, "demo": {"hooks": {"pre_secrets": ["ready"]}}}

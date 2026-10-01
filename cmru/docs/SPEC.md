@@ -11,6 +11,20 @@ RFC 2119 key words (MUST, SHOULD, MAY, etc.) are normative.
 cmru is one CLI over a monorepo of independently-versioned **projects**. Everything a user
 touches is named `cmru.*` so the association is unambiguous.
 
+**Root and Git-family scope.** CMRU discovers the nearest
+`cmru.orchestration.toml` as the CMRU root, even when that directory is above
+several independent Git repositories. Project selection is resolved from that
+root. Git snapshots, locks, branches and isolated workspaces are then selected
+per project from the project's own Git family; the orchestration directory is
+never treated as a Git repository merely because it contains the registry.
+Each project declares `[runtime].kind = "none"` or `"ciu"`; CMRU supplies the
+workspace context and does not infer or manage arbitrary Docker runtimes.
+
+The workflow sketch below is not the complete command catalog. The canonical
+registered grammar, option inventory, and semantic review are in
+[S-CLI.9](#s-cli9-canonical-cli-grammar-and-semantic-audit); every CLI product update MUST keep that
+inventory current in the same change.
+
 ### Verbs, in the order you use them
 
 ```
@@ -22,76 +36,168 @@ cmru worktrees              # discover retained failed build/release worktrees (
 cmru tool-deps [--allow-stale-tool-deps] [--refresh PROJECT]
                              # verify declared tool dependencies (S15): integrity/authenticity/freshness
                              # (network; also runs inside `release`'s preflight — never during tests)
-cmru changelog --project P --backfill-tag TAG  # migration: catalog an already-published tagged release
-cmru cleanup --remove-assets 30d   # 3. prune old releases/images (optional)
-cmru cleanup --project P --delete-unmanaged-release-tag TAG --yes
+cmru versions init [all|P[,P...]] [--dry-run]    # derive source targets from package manifests
+cmru versions resolve [all|P[,P...]] [--dry-run] # explicitly resolve and write native artifacts
+cmru versions check [all|P[,P...]] [--json]      # read-only fresh registry comparison
+cmru changelog P --backfill-tag TAG  # migration: catalog an already-published tagged release
+cmru cleanup --remove-assets 30d --dry-run
+                                  # preview the configured age-based remote cleanup
+cmru cleanup --remove-assets 30d --yes
+                                  # 3. prune old releases/images after confirmation
+cmru abandon [BRANCH] [--dry-run] [--yes]
+                                  # inspect and discard retained local release transactions
+cmru cleanup P --delete-unmanaged-release-tag TAG --yes
                                   # delete one old GitHub Release only, never its Git tag
-cmru cleanup --project P --delete-build-output ID --yes
+cmru cleanup P --delete-build-output ID --yes
                                   # delete one exact local non-release output record
 cmru cleanup --discard-build-worktree PATH --yes
                                   # discard one exact inspected failed build worktree
 cmru version                      # print the CMRU version
 
-cmru resolve --project P    # consumer: highest-semver published version  (read-only)
-cmru get     --project P    # consumer: emit a standalone installer       (read-only)
-cmru run     [--build --push ...]  # escape hatch: run explicit steps × projects
+cmru resolve P    # consumer: highest-semver published version  (read-only)
+cmru get-py P    # consumer: emit a standalone installer
+cmru run     [--run-tests --build --push --validate] [--dry-run]
+                                  # explicit steps, or configured default_steps when omitted
+                                  # --dry-run previews resolved projects/commands; nothing runs
 cmru run-step --config C --step S  # raw single-step runner (rarely needed)
 ```
 
 **S-CLI.1** `release` is the normal path. A failed transaction retains its worktree for
-inspection; `--resume <worktree>` is an explicit attempt to continue that exact retained
-source transaction, not a durable publish-phase retry. cmru MUST NOT silently reuse, move,
-or republish an existing tag. Durable post-tag publication recovery is not implemented; see
-KI-06.
+inspection. Before tagging, an operator MAY commit corrections on that retained release
+branch and resume that exact worktree; prepare and the required gate run again against the
+corrected branch tip, and that commit is the candidate CMRU tags, builds, publishes, and
+promotes. Uncommitted changes MUST be refused on resume so the released candidate cannot
+silently omit them. `--resume <worktree>` is not a durable post-tag publication retry. CMRU
+MUST NOT silently reuse, move, or republish an existing tag. Durable post-tag publication
+recovery is not implemented; see KI-06.
 
 **S-CLI.2** `status` and `release` MUST operate only on the orchestrated set
 (`orchestration.project_order`); a project is released only once it is listed there.
 
-**S-CLI.3** Verbs that write to the host or source tree (`release`, `changelog`, `build`,
-`publish`, `run`) MUST be
-clearly distinguished in `--help` from read-only verbs (`status`, `resolve`, `get`).
+**S-CLI.3** Verbs that write to the host, source tree, remote service, or controller state
+MUST be clearly distinguished in `--help` from read-only verbs. `--dry-run` MUST be exposed
+on mutating verbs and MUST preview the complete selected action without performing it. A
+verb that is read-only MUST NOT expose `--dry-run` as a no-op. Conditional writers such as
+`dependencies --write`, `standards --update`, and `tool-deps --refresh` require their
+explicit mutation selector when `--dry-run` is supplied.
+
+**S-CLI.6 — Version refresh is explicit.** `cmru versions init` and `cmru versions resolve`
+are the only CMRU commands that create or refresh version targets and their native outputs.
+`cmru build`, `cmru release`, tester gates, and schedules MUST NOT invoke them implicitly.
+`cmru versions check` performs fresh registry reads and MUST NOT write files.
+
+**S-CLI.7 — The installed CLI grammar has one source.** The `cmru`, `cmru-agent`, and
+`cmru-controller` entrypoints MUST declare their public verbs, arguments, aliases, option
+constraints, help text, and handlers through `cli-extended` registries. CMRU MUST NOT
+maintain a second hand-written parser or a hand-written `usage()` synopsis for those
+entrypoints. Root help is the registered verb catalog; `cmru help VERB` and `cmru VERB
+--help` render each command's declared grammar. Nested commands MUST delegate their
+remaining argv to the registered child CLI rather than parse it a second time. An accepted
+option MUST affect the behavior named by its help, and unsupported options MUST fail with
+status 2. The long `--help` spelling is the shared interface; there is no `-h` alias.
+Invoking a registered command group without a child verb prints that group's registered
+catalog and exits successfully; unknown verbs and malformed arguments fail with status 2.
+`cmru main(argv)` MUST return the dispatched status for embedding, with console scripts
+propagating it as the process exit status.
+
+**S-CLI.8 — Release abandonment is exact and dry-run safe (KI-29).**
+`cmru abandon [BRANCH]` MUST inspect retained release transactions only. With no branch,
+it MUST display the complete retained release-candidate set; with a branch, it MUST match
+one exact managed release branch and MUST NOT widen or prefix-match the selection. Before
+confirmation it MUST show the branch, worktree, recorded project scope, and every known
+origin candidate or release coordinate. An interactive confirmation is required unless
+`--yes` is supplied; `--yes` applies to the complete displayed set. Declining MUST make no
+changes.
+
+Abandonment MUST refuse a candidate whose results or remote refs show publication or
+promotion, or whose worktree, scope, progress, backup-ref, or project publication policy is
+missing, stale, malformed, or ambiguous. Remote inspection failures MUST fail closed.
+Abandonment MUST remove only the selected CMRU origin candidate ref, local worktree and
+branch, and transaction sidecars. It MUST NOT rewrite `origin/main`, delete public release
+assets, or remove unrelated refs. If deleting the remote candidate fails or cannot be
+verified, the local worktree and sidecars MUST remain for inspection.
+
+`--dry-run` MUST be strictly read-only: it may inspect Git/sidecar state and render the
+complete candidate plan, but MUST NOT call a mutation helper, remove local or remote refs,
+remove a worktree, delete a sidecar, or alter public assets. Candidate output MUST state
+that the worktree and its in-worktree logs/artifacts will be removed and that `origin/main`
+will remain unchanged.
+
+`cmru cleanup` is separate from abandonment. Its configured remote policy may delete GitHub
+Release records and their assets, matching Git tags, and GHCR package versions; it MUST NOT
+be described as deleting a retained local release transaction or its candidate branch.
 
 **S-CLI.4 — Retained-worktree discovery.** `cmru worktrees` is read-only and derives the
 current Git repository without loading a CMRU config. It MUST list every CMRU-managed
 `cmru-release-*` and `cmru-build-*` worktree (and legacy nested `cmru/release/*`,
 `cmru/build/*` ones; see S-CLI.5b), including a path not visible through the current
-bind-mount view. It MUST print the exact `--resume` or `--discard-build-worktree` command only
-for a visible path; it MUST never guess a cleanup target.
+bind-mount view. The adapter MUST use `worktree.list_git_worktrees()` and MUST NOT stat a
+literal path that may name another filesystem namespace. It MUST preserve Git's reported HEAD
+whether or not the record is prunable. JSON MUST report that HEAD as `source_commit` and the
+native marker as boolean `prunable`; it MUST NOT claim that the marker proves path visibility
+or absence. The adapter MUST print the exact `--resume` or `--discard-build-worktree` command
+only when the shared inventory does not mark the path prunable; that is an action policy, not
+a claim that the path is accessible from this process. It MUST never guess a cleanup target.
+
+For shared records created by CMRU, the record purpose (`cmru-release` or `cmru-build`) MUST
+agree with the transaction branch before CMRU offers or performs a transaction action. The
+`cmru-legacy` purpose written by the compatibility removal bridge is accepted only with a
+matching release/build branch. A branch-name match alone is accepted only for older worktrees
+with no shared record. Non-prunable inventory is not a filesystem-access guarantee; every
+operation MUST validate the exact checkout through shared lifecycle preflight.
 
 **S-CLI.5 — Isolated release transaction.** `release` MUST NOT publish from the caller's
-working tree. It acquires a repository-local exclusive lock, rejects local-only commits on
-local `main` that the remote snapshot would omit (and warns if local `main` is behind), and
+working tree. For each selected project it resolves that project's Git family and acquires
+its exclusive lock; the CMRU orchestration root itself is not used as a Git root. It rejects
+local-only commits on local `main` that the remote snapshot would omit (and warns if local
+`main` is behind), and
 rejects any uncommitted change (tracked or untracked) under a project's own path for every
-project in this run's scope (`--project <name>`, else every orchestrated project — the same
+project in this run's scope (`<name>`, else every orchestrated project — the same
 `project_order`-derived set `release` itself iterates, not the possibly-different
 `orchestration.default_projects`) — skipped entirely for `--dry-run` (nothing is published, so
 there is nothing to protect). `--allow-uncommitted` overrides this second check only; there is
 no override for local-only commits. It then fetches `origin/main`, creates an ephemeral
-`cmru-release-<YYYYMMDD_HHMMSS>-<scope>-<uuid8>` worktree (KI-16; see S-CLI.5b) at that exact
+`cmru-release-<YYYYMMDD_HHMMSS>-<scope>-<workspace-id>` worktree (KI-16; see S-CLI.5b) at that exact
 remote commit, and re-execs there. All caller
 working-tree edits that survive the preflight (i.e. that don't touch a released project's path)
 are still ignored: they cannot enter the immutable remote snapshot regardless.
+The child MUST resolve each selected project's `cmru.toml` from the isolated
+snapshot. If the loaded orchestration paths already point inside that snapshot,
+it MUST use them relative to the snapshot root directly; if the central
+orchestration file is external, it MUST map project paths relative to the
+source Git root. It MUST reject project paths outside both roots and any
+resolved project config that escapes the isolated snapshot.
 
-**S-CLI.5a — Projects release one after another, not in a shared batch.** Inside the worktree,
-every changed project (`orchestration.project_order`, filtered to what actually changed) runs
-its own full cycle — prepare → gate → promote → tag → build → publish — to completion before
-the next project's cycle begins. Before any given project's tag or public artifact, cmru MUST
-run that project's declared `run-tests` gate in its real gate environment, then fast-forward
-`origin/main` from the worktree's current `HEAD` (a non-fast-forward remote update aborts
-before that project's publication). The origin backup branch (durability: a crashed machine or
-lost worktree still leaves an inspectable, resumable copy on origin) is pushed once up front
-and refreshed again after each project's own promote, so it stays current with this run's
-progress rather than forever holding only the pre-run base. This ordering is what lets a later
-project (e.g. an OCI image) resolve an earlier project's (e.g. a wheel) brand-new release
-within the same `cmru release` run, instead of always trailing one run behind.
+#### S-CLI.5a — Projects release one after another, not in a shared batch
 
-On success: the origin backup branch and the local worktree/branch are removed, and cmru
+Inside each
+Git-family workspace, every changed project in that family (`orchestration.project_order`,
+filtered to what actually changed) runs its own full cycle — prepare → gate → tag → build →
+publish → promote — to completion before the next project's cycle begins. Independent Git
+families are dispatched as separate ordered transactions; their results are coordinated but
+cannot be one atomic Git commit. The gate runs in the real gate environment before any tag or
+public artifact. The public artifact is built from the exact gated candidate commit; only after
+that build/publish succeeds does cmru fast-forward `origin/main` from that same `HEAD`.
+A non-fast-forward remote update therefore fails closed after publication and never rewrites the
+candidate by rebasing it onto a different source commit.
+If a versioning strategy creates a mechanical version commit after the initial pre-tag gate,
+cmru runs the gate again on that exact candidate before it publishes.
+
+The origin candidate branch is durable. cmru pushes it once up front, refreshes it after every
+prepare or tag commit, and refreshes it before each public build or publish step. A crashed
+machine or lost worktree leaves the exact candidate on that branch for inspection. The branch
+is removed only after the complete transaction succeeds; on failure it stays with the retained
+worktree. This ordering lets a later project (e.g. an OCI image) resolve an earlier project's
+(e.g. a wheel) brand-new release within the same `cmru release` run, instead of always trailing
+one run behind.
+
+On success: the origin candidate branch and the local worktree/branch are removed, and cmru
 attempts to sync the caller's local `main` with `origin/main`: a fast-forward when local main
 hasn't moved (the common case), or a `git rebase` when it has (e.g. ongoing work in another
 terminal while the release built) — rebase, not merge, to stay consistent with the rest of
 this pipeline, which is fast-forward-only end to end (`promote_workspace`'s push,
-`revert_promotion`'s push, the "local main not ahead" precondition below); no other step here
-ever produces a merge commit. Safe to replay because a release only ever commits declared,
+the "local main not ahead" precondition below); no other step here ever produces a merge
+commit. Safe to replay because a release only ever commits declared,
 mechanical generated paths (S-REL.4a), never hand-edited source, so local commits essentially
 never touch the same files. When the caller is currently on `main`, cmru first requires the
 checkout to be clean, including tracked and untracked changes. A dirty checkout returns a
@@ -109,29 +215,25 @@ rather than ignored.
 Before the release:
   origin/main:     ──●(base)
   local main:      ──●(base)                          [repo_root's own checkout — untouched]
-  release branch:  (does not exist yet)
+  candidate branch: (does not exist yet)
 
-The release runs entirely inside an ISOLATED WORKTREE — a separate checkout on
-its own cmru-release-<id> branch. repo_root's own `main` is never checked out,
-never touched, during any of this. push_backup_branch runs once, up front
-(origin gets a copy of this branch for durability, before any project starts).
-Each changed project then promotes SEPARATELY, one after another (S-CLI.5a) —
-shown here for two projects, "alpha" then "beta":
+The release runs entirely inside an ISOLATED WORKTREE. The candidate branch is pushed to origin
+before any project starts and refreshed as each candidate commit is made:
 
-  release branch:  ──●(base)──●(A1: alpha's prep/tag commit, if any)
-                                │
-                      promote_workspace → git push origin HEAD:refs/heads/main
-                                ▼
-  origin/main:     ──●(base)──●(A1)          ← alpha fully tagged/built/published here;
-                                                checkpoint records A1 as the last full success
+  candidate:       ──●(base)──●(A1: alpha's prep/tag commit, if any)
+                                  │
+                                  ├─ gate → build → publish alpha
+                                  └─ promote exact A1 → origin/main
 
-  release branch:  ──●(base)──●(A1)──●(B1: beta's prep commit, if any)
-                                       │
-                           promote_workspace → git push origin HEAD:refs/heads/main
-                                       ▼
-  origin/main:     ──●(base)──●(A1)──●(B1)   ← beta fully tagged/built/published here;
-                                                checkpoint advances to B1
-  local main:      ──●(base)                 ← still here; nothing touched it
+  origin/main:     ──●(base)──●(A1)
+
+  candidate:       ──●(base)──●(A1)──●(B1: beta's prep/tag commit, if any)
+                                             │
+                                             ├─ gate → build → publish beta
+                                             └─ promote exact B1 → origin/main
+
+  origin/main:     ──●(base)──●(A1)──●(B1)
+  local main:      ──●(base)                 ← still here until final cleanup
 
 Meanwhile, if the caller committed their own work locally while the release built:
   local main:      ──●(base)──●(D1)──●(D2)             [unrelated local work]
@@ -146,7 +248,7 @@ When the caller is dirty, cleanup refuses before the rebase instead:
   result:          warning with the dirty-checkout reason; local main/ref untouched
 ```
 
-Deleting the release branch on success (both locally and its origin backup) is cleanup of a
+Deleting the release branch on success (both locally and its origin candidate branch) is cleanup of a
 now-redundant ref — A1/B1 are already permanently part of `origin/main`'s history, so the
 branch's job is done. That deletion does nothing to `local main` by itself; `sync_local_main`
 is the only step that touches it. If synchronization returns false, the parent reports
@@ -156,99 +258,307 @@ undetermined clean-rebase failure as a rebase conflict, or claims that local mai
 synchronized. The warning is the reason captured by that synchronization call, not a later
 guess based only on the checkout's final state.
 
-On failure: the local worktree/branch and its origin backup are retained for inspection —
-`release` never resumes one automatically; the caller explicitly chooses `--resume <path>` to
-continue that exact attempt, or lets the next `release` invocation start fresh instead (the
-normal/default case: gates must re-validate against a fresh snapshot rather than a debugged,
-possibly hand-edited one — see S-REL.4a). Because projects release one after another
-(S-CLI.5a), a failing project's own promotion — if it landed before the failure — is reverted
-*without disturbing any earlier project in the same run that already fully released*: cmru
-tracks a checkpoint (the commit as of the last project to fully succeed, written after each
-project's complete cycle, and seeded to this run's own `base` before the loop starts — so a
-`--resume` reusing the same branch/token never reads a stale checkpoint left over from an
-earlier, different attempt on that token) and reverts only `(checkpoint, origin/main]`, never
-the whole transaction's `(base, origin/main]` range. If the failing project is the first one in
-the run and never got as far as its own promote, the checkpoint equals `base` and this degrades
-to "nothing to revert" — the classic all-or-nothing case. (The checkpoint tracks source-tree
-commits only: a project with no `prepare` step commits nothing of its own, so the checkpoint can
-still equal `base` even after that project's tag and published artifact are real — those are
-untouched regardless, since a source-tree `git revert` never touches tags/Releases/registry
-pushes.) The revert itself is always a plain
-`git revert` commit pushed on top of `origin/main` — never a force-push or history rewrite. It
-is skipped, requiring manual cleanup, if it does not apply cleanly or if `origin/main` has
-advanced past the release since promotion (a concurrent push landed on top). Local `main`
-cleanup is attempted with the same clean-checkout guard regardless of outcome; a false result
-is reported and does not claim that local main was synchronized. This includes a child
-failure, while a plan refusal also performs and reports the same cleanup attempt.
-On a later `release` invocation (fresh or via `--resume`), each already-fully-released project
-in the failed attempt shows as unchanged (S12.2 is tag-based) and is skipped automatically —
-only the reverted project and anything after it in `project_order` are attempted again.
+On failure: the local worktree/branch and its origin candidate branch are retained for
+inspection — `release` never resumes one automatically; the caller explicitly chooses
+`--resume <path>` to continue that exact attempt, or lets the next `release` invocation start
+fresh instead. Promotion is the final step of a project's cycle, so `origin/main` contains only
+earlier, fully completed projects. cmru does not create a source-tree revert commit and does not
+silently rebase a candidate after its artifact was built. If publication succeeded but promotion
+lost a fast-forward race, the candidate SHA and public artifact remain visible together on the
+retained branch/logs; resolving that post-publication state is an explicit operator action.
+Local `main` cleanup is attempted with the same clean-checkout guard regardless of outcome; a
+false result is reported and does not claim that local main was synchronized. On a later fresh
+release, tag-based plan detection skips projects already released; `--resume` remains an
+explicit continuation of the retained candidate.
 
-**`--abandon <path>|all-previous`** discards a retained attempt instead of resuming it, then
-proceeds with a normal fresh release in the same invocation: its origin backup branch, local
-worktree/branch, and scope marker are removed (never touching `origin/main` — a retained
-attempt's gates ran, if at all, before promote, so there is nothing there to undo). `all-previous`
-abandons every retained worktree whose recorded project scope overlaps this run's — `--project X`
-narrows that to just `X`; otherwise it's the full `orchestration.default_projects`. Worktrees
-retained before this feature existed (no recorded scope) are left for an explicit `--abandon
-<path>`. `--resume` and `--abandon` are mutually exclusive. `cmru.release.sh` never abandons
-a failed worktree implicitly: inspect it, resume it explicitly when appropriate, or explicitly
-request `--abandon <path>|all-previous` after its logs and artifacts are no longer needed.
+Explicit local abandonment is the separate top-level `cmru abandon [BRANCH]` lifecycle
+operation (S-CLI.8). `cmru release` never abandons a failed worktree implicitly.
 
 The repository-root secret document is copied mode `0600`, never committed.
 
-**S-CLI.5b — Transaction branch/worktree naming (KI-16, ciu-aligned).** Every `cmru-release-*`
-and `cmru-build-*` transaction this tool creates is named:
+**S-CLI.5b — Transaction branch/worktree naming (KI-16, shared-library aligned).** Every
+`cmru-release-*` and `cmru-build-*` transaction this tool creates is named:
 
 ```
-branch:     cmru-<purpose>-<YYYYMMDD_HHMMSS>-<scope>-<uuid8>
-directory:  .worktrees/cmru-<purpose>-<YYYYMMDD_HHMMSS>-<scope>-<uuid8>
+branch:     cmru-<purpose>-<YYYYMMDD_HHMMSS>-<scope>-<workspace-id>
+directory:  .worktrees/cmru-<purpose>-<YYYYMMDD_HHMMSS>-<scope>-<workspace-id>
 ```
 
 The branch is a FLAT single token with no nested ref path, so the branch string and the
 worktree directory basename are byte-for-byte identical — true 1:1 naming, matching ciu's
 `<prefix>-<YYYYMMDD_HHMMSS>-<feature>` scheme. `<purpose>` is `release` or `build`.
 `<YYYYMMDD_HHMMSS>` is UTC, for chronological sort, with `_` separating date from time so that
-boundary stays visually distinct from the `-` field separators. `<scope>` is the `--project`
-value when the run is scoped, sanitised to `[a-z0-9-]`, else `all`. `<uuid8>` is 8 hex
-characters from `uuid4()` and MUST NOT be removed or made deterministic: cleanup
-(`remove_workspace`, `abandon_workspace`) depends on a transaction being able to assume it
-exclusively owns the name it created, so the scheme MUST stay collision-free even for two runs
-on the same scope in the same second — this collision-freedom is why the name is NOT purely
-`<prefix>-<timestamp>-<feature>` like ciu's. The directory basename equals the branch (identity;
-never computed by `mkdtemp`-then-`rmdir`). `git worktree add` on its own is NOT sufficient here:
-it fails closed on a non-empty existing directory but silently ADOPTS an empty one, which would
-violate "this ONE transaction exclusively owns the name it created" if a uuid8 collision or a
-stale leftover ever left an empty directory in the way — the code MUST therefore refuse
-explicitly (any existing path, empty or not) before ever calling `git worktree add`.
+boundary stays visually distinct from the `-` field separators. `<scope>` is the the selected target
+value when the run is scoped, sanitised to `[a-z0-9-]`, else `all`. The shared allocator derives
+a six-character lower-case base-36 identity and exposes it in the branch/worktree token,
+family record, and child environment; it does not append an unrelated UUID. CMRU supplies the
+allocator's explicit canonical allocation identity path while constructing that visible token,
+because hashing a final basename that already contains its own digest would be circular. The
+record persists and rechecks that identity input. If the identity is already claimed by a
+different path, allocation refuses and names both paths. The directory basename equals the
+branch; the allocator refuses any existing path, empty or not, before calling `git worktree add`.
 
 Discovery, resume, and cleanup recognise a transaction branch through predicates
 (`_is_release_branch`, `_is_build_branch`) that accept BOTH the flat `cmru-<purpose>-` names
 created here AND the legacy nested `cmru/<purpose>/` prefix, so a worktree retained under either
 the current scheme or the OLDER `cmru/<purpose>/<12-hex>` naming remains just as discoverable
 (`cmru worktrees`, `list_cmru_workspaces`), resumable (`--resume`), and removable — nothing in
-discovery or cleanup parses the directory name; only the branch and whatever `git worktree list
---porcelain` itself reports are load-bearing.
+discovery or cleanup parses the directory name. The shared `worktree.list_git_worktrees()` API
+owns the NUL-safe `git worktree list --porcelain -z` parser; CMRU filters its typed branch and
+HEAD facts by transaction policy and preserves Git's `prunable` state without probing a path
+that may belong to another filesystem namespace. A shared CMRU record, when present, supplies
+the lifecycle context; the legacy removal bridge is used only when no shared record exists.
 
 ### File conventions (all `cmru.`-prefixed)
 
 | File | Tracked? | Purpose |
 |---|---|---|
 | `<project>/cmru.toml` | committed | Complete portable product contract. **No secrets.** |
-| `cmru.orchestration.toml` | committed | Optional estate ordering/dependencies/cleanup only. |
+| `cmru.orchestration.toml` | committed | Nearest CMRU root: central facts, ordering/dependencies/cleanup. |
 | `cmru.secret.toml` | gitignored | Repository credential document; optional explicit per-project overrides (see S2.4). |
 | `cmru.project.sample.toml` | committed | Template for a project contract (no secrets). |
 | `cmru.vars` | gitignored | Generated `KEY=VALUE` build vars a step emits for later steps. |
 | `cmru` console script | installed | Canonical portable entry point for every verb. |
-| `cmru.release.sh` | committed | vbpub-only convenience wrapper for the complete estate release. |
 | `cmru/build-initial-standalone.sh` | committed | Fresh-checkout bootstrap that builds the first CMRU wheel without CMRU installed. |
 
 **S-CLI.4** The names `release.toml`, `release.sample.toml`, `.release-vars`,
 `build-push.toml`, `release-all.py`, `release-runner.py` are **retired and removed** — no
 legacy remains. The installed `cmru` console script is the only general release entry
-point; vbpub additionally keeps `cmru.release.sh` as a convenience wrapper.
+point; native `cmru release` owns the aggregate log and live tee.
 
 ---
+
+### S-CLI.9: Canonical CLI grammar and semantic audit
+
+The tables in this clause are the canonical current-state record for CMRU's
+installed `cmru`, `cmru-agent`, and `cmru-controller` command surfaces and the
+one supported executable module adapter, `python -m cmru.handlers`. They record registered
+leaf verbs and each exact positional/option spelling, including hidden
+internal options and deprecated aliases. Shared options are recorded once per
+entrypoint family; verb-local options are listed per leaf. An option's absence
+from a leaf is deliberate.
+
+**Keeping the contract current is mandatory.** Any product change that adds,
+removes, renames, aliases, re-scopes, constrains, or changes the behavior of a
+verb, positional argument, option, default, or choice MUST update the grammar
+inventory and its semantic result in the same change. The CMRU gate checks that
+the inventory exactly matches the built registries, including aliases and
+hidden flags, and that every registered surface and option has a semantic
+review row. A grammar change without both updates is incomplete.
+
+`cli-extended` supplies the common presentation options shown here and the
+built-in `help [VERB]`, `version`, `--help`, and `--version` interfaces. Its
+long help spelling is intentional; there is no `-h` alias. The installed CMRU
+CLIs and the active handlers module adapter render these common controls from
+their registries. Long options require their exact spelling: registry parsers
+disable argparse prefix abbreviation, so a removed option cannot be accepted
+accidentally as a prefix of another option.
+CMRU's generated standalone `get.py` remains an intentional exception: it is a
+separate installer artifact with its own `argparse` parser; `cmru get-py`
+itself uses the registered CMRU grammar below.
+
+#### Grammar inventory
+
+The common flags column names the flags available on every leaf in that
+entrypoint family. The verb-local column gives all remaining option strings;
+comma-separated alternate spellings belong to the same option. Arguments use
+`?` for optional and `...` for remainder/pass-through arguments. The test
+compares these rows with the registered parser objects, not a second parser.
+
+<!-- cmru-cli-common:start -->
+| Entry point family | Common flags on every leaf |
+|---|---|
+| cmru and handlers module adapter | --help; --version; --log-level; --quiet; --debug; --verbose; --debug-raw; --color; --no-color; --log-prefix-time-short |
+| cmru-agent | --help; --version; --log-level; --quiet; --debug; --verbose; --debug-raw; --color; --no-color; --scope; --consul-addr; --token |
+| cmru-controller | --help; --version; --log-level; --quiet; --debug; --verbose; --debug-raw; --color; --no-color; --landscape; --consul-addr; --token |
+<!-- cmru-cli-common:end -->
+
+<!-- cmru-cli-builtins:start -->
+| Entry point | Built-in commands |
+|---|---|
+| cmru | help [VERB]; version |
+| cmru-agent | help [VERB]; version |
+| cmru-controller | help [VERB]; version |
+<!-- cmru-cli-builtins:end -->
+
+<!-- cmru-cli-grammar:start -->
+| Surface | Help group | Positional arguments | Verb-local options |
+|---|---|---|---|
+| cmru run | MODIFICATION | target? | --build; --config; --dry-run; --log-append; --push; --run-tests; --show-run-details; --validate |
+| cmru worktrees | EXPLORATION | — | --json |
+| cmru dependencies | MIXED OPERATIONS | — | --config; --dry-run; --json; --write |
+| cmru build | MODIFICATION | target? | --config; --dry-run; --log-append; --show-run-details |
+| cmru publish | MODIFICATION | target? | --build-output; --config; --dry-run; --log-append; --show-run-details |
+| cmru changelog | MODIFICATION | target? | --backfill-tag; --config; --dry-run |
+| cmru release | MIXED OPERATIONS | target? | --allow-stale-tool-deps; --allow-tag-ahead-of-head; --allow-uncommitted; --config; --discard-artifacts-on-release; --discard-evidence-on-release; --discard-logs-on-release; --dry-run; --log-append; --major; --minor; --no-build; --ref; --resume; --set-version; --show-run-details |
+| cmru status | EXPLORATION | target? | --config; --log-append; --major; --minor; --ref; --set-version; --show-run-details |
+| cmru cleanup | MAINTENANCE | target? | --config; --delete-build-output; --delete-unmanaged-release-tag; --discard-build-worktree; --dry-run; --remove-assets; --yes |
+| cmru abandon | MAINTENANCE | branch? | --dry-run; --yes |
+| cmru init | MODIFICATION | — | --dry-run; --layout; --owner; --owner-type; --repo; --root |
+| cmru versions init | MODIFICATION | target? | --config; --dry-run |
+| cmru versions resolve | MODIFICATION | target? | --config; --dry-run |
+| cmru versions check | EXPLORATION | target? | --config; --json |
+| cmru run-step | MODIFICATION | target? | --config; --dry-run; --log-append; --show-run-details; --step |
+| cmru handler wheel-build | MODIFICATION | — | --cwd; --dry-run |
+| cmru handler wheel-publish | MODIFICATION | — | --cwd; --dry-run; --extra-asset; --glob; --notes-env; --prefix |
+| cmru handler wheel-validate | EXPLORATION | — | --prefix |
+| cmru handler tarball-publish | MODIFICATION | — | --cwd; --dry-run; --glob; --notes-env; --prefix; --version-env; --version-file |
+| cmru handler tarball-validate | EXPLORATION | — | --artifact-suffix; --prefix |
+| cmru handler oci-image-build | MODIFICATION | — | --bake-file; --cwd; --dry-run; --repack; --target |
+| cmru handler oci-image-push | MODIFICATION | — | --bake-file; --cwd; --dry-run; --repack; --target |
+| cmru tester-gate | MODIFICATION | command... | --cgroup-parent; --cgroup-probe-image; --cpus; --cwd; --device-read-bps; --device-read-iops; --device-write-bps; --device-write-iops; --dind-image; --dry-run; --enable-docker; --forward-cgroup-parent-gates-var; --forward-cgroup-parent-var; --image; --memory; --memory-swap |
+| cmru resolve | EXPLORATION | target? | --config; --format |
+| cmru get-py | MODIFICATION | target? | --config; --dry-run; --output; --output-dir |
+| cmru standards | MIXED OPERATIONS | target? | --config; --dry-run; --update |
+| cmru tool-deps | MIXED OPERATIONS | target? | --allow-stale-tool-deps; --config; --dry-run; --json; --refresh; --timeout |
+| cmru-agent enroll | AUTHENTICATION / SETUP | — | --dry-run; --landscape; --minisign-pubkey; --node-id |
+| cmru-agent run | MODIFICATION | — | --dry-run; --release-root |
+| cmru-agent once | MODIFICATION | — | --dry-run; --release-root |
+| cmru-agent status | EXPLORATION | — | — |
+| cmru-controller publish | MODIFICATION | — | --dry-run; --generation-base; --plan |
+| cmru-controller approve | MODIFICATION | — | --dry-run; --plan |
+| cmru-controller hold | MODIFICATION | — | --dry-run; --plan |
+| cmru-controller status | EXPLORATION | — | --plan |
+| cmru-controller rollback | MODIFICATION | — | --dry-run; --generation; --plan |
+| python -m cmru.handlers wheel-build | MODIFICATION | — | --cwd; --dry-run |
+| python -m cmru.handlers wheel-publish | MODIFICATION | — | --cwd; --dry-run; --extra-asset; --glob; --notes-env; --prefix |
+| python -m cmru.handlers wheel-validate | EXPLORATION | — | --prefix |
+| python -m cmru.handlers tarball-publish | MODIFICATION | — | --cwd; --dry-run; --glob; --notes-env; --prefix; --version-env; --version-file |
+| python -m cmru.handlers tarball-validate | EXPLORATION | — | --artifact-suffix; --prefix |
+| python -m cmru.handlers oci-image-build | MODIFICATION | — | --bake-file; --cwd; --dry-run; --repack; --target |
+| python -m cmru.handlers oci-image-push | MODIFICATION | — | --bake-file; --cwd; --dry-run; --repack; --target |
+<!-- cmru-cli-grammar:end -->
+
+#### Invocation roles and support policy
+
+The installed `cmru`, `cmru-agent`, and `cmru-controller` scripts are the
+operator entrypoints. `python -m cmru.handlers` is the one supported component
+CLI because active project steps and the first-wheel bootstrap call it. The
+`cmru.bundle` and `cmru.runner` modules remain Python libraries; their unused
+module CLI aliases and module aliases for the three operator commands were
+removed. `cmru run-step` remains the registered single-step operator verb.
+
+| Invocation or API | Support role | Intended use and boundary |
+|---|---|---|
+| `cmru`, `cmru-agent`, `cmru-controller` | Operator CLI | Canonical installed commands for product operations; registered verbs are the operator grammar. |
+| `python -m cmru.handlers` | Project-step and bootstrap CLI | Run explicit artifact handlers from project contracts. `build-initial-standalone.sh` uses it to build the first CMRU wheel before the installed `cmru` script exists. |
+| `cmru run-step` | Single-step diagnostic CLI | Preview or reproduce one declared project step with its normal project config and registered grammar. The `cmru.runner.run_step` API is also consumed by MDT. |
+| `cmru.bundle` | Python library | Build a stack bundle from its dedicated TOML through `run_bundle`; PWMCP consumes the library. No CLI exists because no distinct operator workflow needs one. |
+| `cmru.runner.run_step`, `cmru.bundle.run_bundle` | Supported Python APIs | Compose the documented component behavior from Python. Other module internals are not promised as public API. |
+| `worktree` package | Bundled shared library API | Stable, product-neutral Git workspace primitives shipped inside the CMRU wheel; its own consumer guide and spec define the API. CMRU layers release/transaction policy on top. |
+| Generated `get.py` | Standalone generated CLI | Runs without the CMRU wheel and intentionally keeps its own `argparse` parser. |
+
+Low usage alone is not a reason to remove a component. The module CLIs for
+bundle, runner, and the three operator scripts had no distinct caller use case;
+the installed commands and Python APIs remain. The active handler module CLI
+stays because project contracts and the first-wheel bootstrap depend on it.
+The bundle and runner libraries remain independently supported.
+
+#### Audit prompt and semantic result table
+
+Before accepting a CLI or workflow change, reviewers MUST apply this prompt:
+
+> **Audit every verb and option semantically.** For each verb, positional
+> argument, and option, state the supported use case; accepted values and
+> defaults; what omission means; selection scope; interactions and invalid
+> combinations; effects on source files, local state, remote services,
+> credentials, and network; dry-run and confirmation boundaries; output and
+> exit-status behavior; whether the help and user documentation describe the
+> actual effect; and whether an alias or legacy spelling still earns its
+> compatibility cost. Review verbs and groups together: identify duplicate
+> paths, missing operator use cases, hidden coupling, misleading grouping, and
+> legacy surface that could be retired. Use source, generated help, behavior
+> probes, the backlog, and behavioral tests as evidence. Record product choices
+> as explicit decisions; do not silently preserve or change ambiguous behavior.
+> Also inventory installed scripts, registered verbs, module CLIs, bootstrap
+> and project-step adapters, public Python APIs, and generated standalone tools
+> separately. For each, record its intended caller, wheel availability,
+> corresponding shared registry or library implementation, support tier, and a
+> pasteable consumer use case. Do not classify a component as bloat solely
+> because no current repository invokes it; do remove no-op or redundant
+> spellings that provide no distinct caller value.
+
+This table records the reviewed semantics, accepted product choices, and open
+decisions that still block a stronger guarantee. Module-adapter rows share the
+registered implementation named beside them.
+
+<!-- cmru-cli-semantic-audit:start -->
+| Surface | Verb, arguments, and option semantics reviewed | Result |
+|---|---|---|
+| CMRU common controls | `--help` shows registered help, `--version` matches `version`, and `--log-level LEVEL` accepts the library's supported levels. `--quiet` suppresses routine output; `--debug` and `--verbose` are the same diagnostic setting; `--debug-raw` preserves raw diagnostics; `--color` and `--no-color` are mutually exclusive; `--log-prefix-time-short` timestamps severity lines. Long options require exact spelling; prefixes are not aliases. | ACCEPTED; shared controls come from cli-extended and are inherited by the installed `cmru` CLI and active handlers module adapter. |
+| Agent/controller common controls | `--help`, `--version`, `--log-level`, `--quiet`, `--debug`, `--verbose`, `--debug-raw`, `--color`, and `--no-color` have the shared CMRU meanings. Agent `--scope` selects user (default) or system state; `--consul-addr` overrides `CONSUL_HTTP_ADDR` and its documented local default; `--token` overrides `CONSUL_HTTP_TOKEN`, though environment use avoids exposing a secret in process arguments. Controller `--landscape` overrides the plan's landscape; `--consul-addr` and `--token` select its Consul endpoint and credentials. All options require exact spellings; prefixes are not aliases. | ACCEPTED; controller `--dry-run` was removed from shared options and exists only on writes. Protect token visibility through the environment by default. |
+| cmru run | Optional target uses invocation context/default project selection; `--config` selects the project or orchestration file. `--run-tests`, `--build`, `--push`, and `--validate` compose an explicit step set; if none is supplied, `default_steps` remains the configured policy. An empty configured default is a no-op and performs no project environment setup. `--dry-run` resolves the same target, steps, and project-first or step-first order and prints declared cleanup, environment inputs, command argv, and command cwd without starting project commands. Dynamic `env_command` output is named but not run, so that generated value is intentionally unresolved. `--show-run-details` streams subprocess output; `--log-append` retains prior step logs. | ACCEPTED; configured defaults are preserved and made visible in help. `--remove-assets` was removed from `run`; remote cleanup has one home in `cleanup`. Project `cmru` calls use the runtime launcher bound to this invocation, with identity checked before execution (KI-11). |
+| cmru worktrees | No positional target; `--json` emits machine-readable retained build/release worktree records. Default output is human-readable. This is read-only and does not require project selection. | ACCEPTED; JSON is a genuine output mode, not a mutation selector. |
+| cmru dependencies | `--config` selects the orchestration file; `--json` selects machine output; `--write` updates only the marked generated graph block. `--dry-run` requires `--write` and prints the exact diff without writing; `--json` can accompany `--write` to report the same graph. | ACCEPTED; `dependency-graph` and `graph` aliases were removed to leave one canonical verb. |
+| cmru build | Optional target selects projects; `--config` selects their contract. A normal build uses an isolated snapshot, runs declared prepare/gate/build steps, and retains successful local outputs addressed by source commit. `--dry-run` prints the declared plan without starting project commands. `--show-run-details` and `--log-append` control diagnostic streaming and log retention. | ACCEPTED; `--_transaction-child` is absent from user grammar. A present transaction-child marker requires complete workspace, source-root, and branch facts and is validated against the managed worktree; incomplete or mismatched context fails closed instead of falling back to ordinary execution. The manifest records tracked and untracked source changes; any such change makes the retained output ineligible for publication (KI-10). |
+| cmru publish | Optional target and `--config` select projects, each of which must declare a `push` step. Without `--build-output`, publication uses the caller checkout as before. `--build-output ID` accepts the exact UTC timestamp plus 40-character commit ID printed by `cmru build`, requires one selected project, validates that retained record and its artifact bytes, and gives the declared push step that record as its artifact input without rebuilding. Retained output with any recorded tracked or untracked source-tree change is refused. `--dry-run` resolves and displays the record, digests, and publisher commands without requiring credentials or executing them; it does not query remote tags. `--show-run-details` streams output and `--log-append` retains logs. | ACCEPTED; missing push steps fail as a usage/configuration error before credentials or external actions. Built-in publishers require existing GitHub Releases and tags, verify the versioned tag against the recorded source commit, and update assets without creating or moving Git refs. The retained inventory stays unchanged; `release` owns source promotion (KI-10). |
+| cmru changelog | Optional target selects projects; required repeatable `--backfill-tag TAG` provides one already-published tag per selected project; `--config` selects the source contract. `--dry-run` prints the exact changelog diff and creates or writes no file. | ACCEPTED; the verb is a post-release migration and refuses ambiguous tag/project matches. |
+| cmru release | Optional target selects projects. `--minor`, `--major`, and `--set-version VER` are mutually exclusive and are rejected for external-version or no-tag projects. `--dry-run` executes the declared external-version preparation only inside a disposable managed candidate so it can derive the plan; it does not gate, tag, build, publish, or promote. `--no-build` intentionally stops after tag/push. `--resume WORKTREE` resumes a retained pre-tag candidate; corrections must be committed there, then prepare and required gates rerun so the corrected commit is tagged and shipped. It is not post-tag publication recovery (KI-06). `--allow-uncommitted` permits caller edits to be omitted from the origin/main snapshot. `--allow-tag-ahead-of-head` allows only the strictly-ahead baseline case. `--allow-stale-tool-deps` relaxes freshness only; `--ref REF` changes comparison ref. `--discard-logs-on-release`, `--discard-artifacts-on-release`, and `--discard-evidence-on-release` change successful retention. `--config`, `--show-run-details`, and `--log-append` select config and diagnostics. | ACCEPTED; the removed `--allow-tag-at-head` spelling has no compatibility window. Dry-run preparation is confined to the managed candidate; if that preparation fails, the retained candidate remains inspectable. KI-06 now supports corrected pre-tag resume; durable post-tag retry remains open. |
+| cmru status | Optional target and `--config` choose the release view. `--minor`, `--major`, and `--set-version VER` are mutually exclusive preview selectors and are rejected for external-version/no-tag projects. `--ref REF` selects the comparison ref. `--show-run-details` and `--log-append` configure diagnostics, though status itself runs no project command. | ACCEPTED; read-only status has no `--dry-run`, and it no longer accepts a hidden transaction switch. |
+| cmru cleanup | Optional target selects projects; omission applies configured policy to its resolved scope. Exactly one explicit mode may be selected: `--remove-assets AGE` prunes configured age-based remote Releases/tags/GHCR versions; `--delete-unmanaged-release-tag TAG` deletes one exact unmanaged GitHub Release but never its Git tag; `--delete-build-output ID` deletes the exact validated local retained record; `--discard-build-worktree PATH` removes one exact failed build worktree and forbids a project target. `--config` selects policy. Every mutating mode first displays the pending actions and asks for confirmation; `--yes` accepts that displayed plan. `--dry-run` displays the plan and performs no deletion. | ACCEPTED; explicit cleanup modes are mutually exclusive, and age cleanup has the same confirmation boundary as exact-delete and default-policy cleanup. |
+| cmru abandon | Optional `branch` must exactly match a managed release branch; omission selects the complete retained release set. `--dry-run` reports exact local and known remote candidates without changing them. `--yes` confirms the complete displayed set; otherwise interactive confirmation is required. | ACCEPTED; KI-29 exact selection, publication-evidence refusal, and no-widening semantics remain canonical in S-CLI.8. |
+| cmru init | `--root PATH` selects the adoption directory; `--layout` is exactly `single` or `monorepo`; `--owner`, `--repo`, and `--owner-type user or org` supply facts otherwise read from the Git origin or interactive prompts. `--dry-run` renders and validates generated files without prompting to write or changing the filesystem. | ACCEPTED; numeric `1`/`2` layout spellings were removed rather than carried as compatibility aliases. |
+| cmru versions init | Optional target and `--config` select manifests from which version targets are derived. `--dry-run` reports the prospective target changes without writing. | ACCEPTED; init remains the explicit target-creation operation. |
+| cmru versions resolve | Optional target and `--config` select version resolution; normal execution writes the declared version record/native artifacts. `--dry-run` performs the read/derivation path and suppresses every declared file write. | ACCEPTED; no implicit resolution was added to build or release. |
+| cmru versions check | Optional target and `--config` select the recorded target set; `--json` changes output format. Registry reads are fresh and read-only; no `--dry-run` is offered. | ACCEPTED; JSON is a real read mode, not a dry-run substitute. |
+| cmru run-step | Optional `target` must select exactly one project; required `--step NAME` names a declared step; `--config` selects its contract. `--dry-run` uses the shared step-plan renderer to show clean dirs, environment requirements, helper commands, argv, and resolved cwd without invoking them. `--show-run-details` streams output and `--log-append` retains logs. | ACCEPTED; this registered verb is the one operator interface for single-step diagnostics. The separate `cmru.runner.run_step` library API is used by MDT. |
+| cmru handler wheel-build; python -m cmru.handlers wheel-build | Required `--cwd` identifies the project tree. `--dry-run` validates and displays inputs without running the build. | ACCEPTED; project contracts use this explicit adapter, and the fresh-checkout bootstrap needs it before the CMRU console script exists. It is not a second parser. |
+| cmru handler wheel-publish; python -m cmru.handlers wheel-publish | Required `--prefix` and `--cwd` select the release namespace and source tree; `--glob` overrides the prefix-derived asset selector; `--notes-env` names the release-notes environment variable; repeatable `--extra-asset PATH` adds uploads. `--dry-run` shows the full accepted inputs and performs no publication. | ACCEPTED; it remains a low-level declared handler; future glob/asset overlap must retain a fail-closed oracle. |
+| cmru handler wheel-validate; python -m cmru.handlers wheel-validate | Required `--prefix` selects the latest release to validate. It is read-only, so no `--dry-run` is offered. | ACCEPTED; validation does not accept a meaningless mutation flag. |
+| cmru handler tarball-publish; python -m cmru.handlers tarball-publish | Required `--prefix`, `--cwd`, and `--glob` select the one source; exactly one of `--version-file PATH` or `--version-env NAME` supplies its version; optional `--notes-env` supplies notes. `--dry-run` displays inputs and skips publication. | ACCEPTED; the mutually exclusive version source is semantically necessary. |
+| cmru handler tarball-validate; python -m cmru.handlers tarball-validate | Required `--prefix` selects the release; `--artifact-suffix` defaults to `.tar.xz` and selects the expected extension. This is read-only and has no `--dry-run`. | ACCEPTED; a future suffix change must preserve non-empty/path-safe validation. |
+| cmru handler oci-image-build; python -m cmru.handlers oci-image-build | Required `--cwd`, `--bake-file`, and `--target` select the project build. `--repack` is accepted only to fail immediately with a clear disabled-feature error; no Docker login or command runs. `--dry-run` previews only the supported non-repack path. | ACCEPTED; KI-02 repack tuning flags were removed, and the disabled path is covered by a pre-side-effect test. |
+| cmru handler oci-image-push; python -m cmru.handlers oci-image-push | Required `--cwd`, `--bake-file`, and `--target` select the image. `--repack` fails before login or Docker; ordinary operation uses buildx bake push. `--dry-run` shows inputs without pushing. | ACCEPTED; no dormant repack grammar remains beyond the explicit refusal switch. |
+| cmru tester-gate | Required `--cwd DIR` selects the in-container checkout path and positional `command...` is the command after `--`. `--image` selects the pinned tester image; `--cgroup-parent` overrides the required gates slice; `--forward-cgroup-parent-var` and `--forward-cgroup-parent-gates-var` control nested slice fact forwarding; `--memory`, `--memory-swap`, and `--cpus` set container resource bounds. CPU must be a finite decimal of at least `0.00001` that Docker can represent; CMRU pins the period at 100000 microseconds and refuses zero/smaller, non-finite, or unrepresentable values before host probes because Docker otherwise maps them to no per-container CPU limit. `--cgroup-probe-image` and `--dind-image` select helper images; `--device-read-iops`, `--device-write-iops`, `--device-read-bps`, and `--device-write-bps` set device I/O limits; `--enable-docker` requests DinD and requires its configured image; the sidecar receives the gates-slice parent but has no separate per-container CPU or memory cap. `--dry-run` prints the workload argv and, when enabled, the DinD startup argv; it starts no container and skips privileged host slice/IO probes. Every helper and workload container receives the required `--cgroup-parent`. | ACCEPTED WITH OPEN DECISION: live Docker refused `--memory 1g --memory-swap 512m` with status 125 before workload creation. A live `docker create` plus inspect showed `--cpus 0` left `NanoCpus`, `CpuQuota`, and `CpuPeriod` all zero; live runs showed values below `0.00001` produce `cpu.max = max 100000`, whereas `0.00001` produces a bounded quota; CMRU fixes the period at 100000 microseconds. CMRU rejects zero, smaller, non-finite, and unrepresentable limits before privileged probes. `--dry-run` still intentionally skips host slice/IO capability checks. Decide whether DinD should inherit workload limits or have separate required CPU/memory inputs; recommendation: separate explicit limits to avoid doubling the workload envelope. |
+| cmru resolve | Optional target and `--config` select a project; `--format` is `json` by default or `env`/`url`. It reads the latest published artifact facts, including the selected digest, and performs no write; no `--dry-run` is offered. | ACCEPTED; supported output formats are closed and distinguishable. |
+| cmru get-py | Optional target and `--config` select installer templates; `--output` writes exactly one selected installer, `--output-dir` writes one per project, and those destination options are mutually exclusive. Omission of both writes rendered scripts to stdout. `--dry-run` renders/validates selected templates and destinations but writes no file. Generated installers intentionally keep standalone `argparse`. | ACCEPTED; the installed-wheel fix for KI-26 is in scope, and the `get` alias was removed. |
+| cmru standards | Optional target and `--config` choose projects; default mode checks conformance. `--update` writes only CMRU-owned template revision markers; `--dry-run` requires `--update` and prints diffs without writing. | ACCEPTED; mixed read/write verb exposes dry-run only for its explicit mutation path. |
+| cmru tool-deps | Optional target and `--config` select declarations; `--timeout SECONDS` defaults to 10 for each network request; `--json` renders verification results; `--allow-stale-tool-deps` relaxes freshness only during verification. `--refresh PROJECT` replaces selected pins and hashes; it refuses `--json` and `--allow-stale-tool-deps` because those have no refresh meaning. `--dry-run` requires `--refresh`, fetches/verifies the proposed artifact, and prints planned file/config changes without writing. | ACCEPTED; invalid early-return combinations now fail with status 2 rather than silently ignoring options. |
+| cmru-agent enroll | `--node-id`, `--landscape`, and `--minisign-pubkey` identify enrollment facts, otherwise read from their documented environment sources; common `--scope`, `--consul-addr`, and `--token` select local state and backend credentials. `--dry-run` validates and prints targets without backend writes or local identity files. | ACCEPTED; environment-derived facts remain the default and token values should not be placed in process arguments. |
+| cmru-agent run; cmru-agent once | Common `--scope`, `--consul-addr`, and `--token` select state/backend; `--release-root DIR` overrides release storage. `run` is the long-running service; `once` performs one reconciliation. `--dry-run` on `run` reports intent without starting it; on `once` it reads/validates desired state and reports a prospective apply without lock, adapter, state, health, or backend writes. | ACCEPTED; both mutation-capable verbs have a real dry-run path; read-only `status` does not. |
+| cmru-agent status | Common `--scope`, `--consul-addr`, and `--token` select the state/backend view; it displays observed state and applied generation without a mutation option. | ACCEPTED; status is read-only. |
+| cmru-controller publish | Required `--plan PLAN_TOML` selects local rollout plan; `--generation-base N` defaults to 1 and must be positive. Common `--landscape`, `--consul-addr`, and `--token` select destination and credentials. `--dry-run` prints generation, node, tag, digest, approval barrier, and wait plan without Consul reads or writes. | ACCEPTED; generation validation fails before backend launch. |
+| cmru-controller approve | Required `--plan PLAN_ID` selects approval key; common landscape/backend controls select destination. `--dry-run` identifies the approval write and performs no Consul access. | ACCEPTED; approval is a distinct explicit state mutation. |
+| cmru-controller hold | Required `--plan PLAN_ID` selects hold key; common landscape/backend controls select destination. `--dry-run` identifies the hold write and performs no Consul access. | ACCEPTED; holding is separate from plan publication. |
+| cmru-controller status | Optional `--plan` accepts a plan file or plan ID; common landscape/backend controls choose the read view. It queries Consul or observed state and emits JSON/human status; no `--dry-run` is offered. | ACCEPTED; read-only status no longer accepts a no-op dry-run flag. |
+| cmru-controller rollback | Required `--plan PLAN_TOML` selects nodes and the first wave's complete release coordinate; `--generation N` overrides the generated number and must be positive. Common landscape/backend controls choose destination; `--dry-run` prints proposed generation, tag, digest, URL, nodes, and suppresses Consul writes. | ACCEPTED; rollback remains available while `--to` is removed because a tag-only override could disagree with the plan's immutable URL/digest tuple (KI-32). |
+<!-- cmru-cli-semantic-audit:end -->
+
+The verb/group review keeps distinct paths for atomic source-first release,
+retained local build and artifact publication, caller-checkout publication,
+configured step execution, read-only inspection, dependency/version work,
+consumer resolution, maintenance/recovery, and the agent/controller deployment plane. The grammar
+inventory records each cli-extended help group, and the gate compares those
+groups to registration so grouping changes update this spec. Setup belongs in
+`MODIFICATION`; read-only validators belong in `EXPLORATION`; conditional
+read/write verbs belong in `MIXED OPERATIONS`; cleanup and abandonment belong
+in `MAINTENANCE`. The only authentication/setup group is agent enrollment.
+
+The review removed duplicate names and legacy spellings (`get`,
+`dependency-graph`, `graph`, numeric layout values, and `--allow-tag-at-head`),
+moved remote cleanup out of `run`, and removed the hidden transaction switch
+and unused repack tuning flags. KI-06 now supports committed pre-tag correction
+and gated resume; durable post-tag publication recovery remains open. KI-10 now permits
+publishing retained build bytes to existing Release/tag targets without creating or moving refs;
+source branch promotion remains in `release`.
+KI-11 binds project `cmru` calls to the invoking runtime, and KI-32 removes the
+unsafe tag-only rollback override while retaining rollback. R7 keeps only the
+active handlers module CLI and removes unused module launchers. The tester gate
+still needs live acceptance of resource-flag combinations. These are recorded
+as open work rather than described as shipped guarantees.
+
+Every review MUST inspect confirmation and dry-run boundaries, credential
+exposure, environment/default derivation, return-code and stdout/stderr
+stability, use-case gaps, and compatibility cost alongside parser/help
+correctness.
+
+**S-CLI.10 — CLI grammar and semantics gate.** The CMRU gate MUST run the
+grammar synchronization test in `tests/test_cli_spec_inventory.py`. A change is
+not complete if a registered leaf, argument shape, option spelling (including
+hidden/deprecated aliases), help group, shared option, or semantic audit row is
+absent or stale. The test proves inventory coverage and source-of-truth
+alignment; it does not replace behavioral oracles for option effects, refusal
+paths, dry-run, confirmation, output, or exit status.
 
 ## S0 — Terminology
 
@@ -317,8 +627,10 @@ A `cmru release` separates generic source policy from project-owned artifact beh
 
 **S-REL.1 — Versioning** (`[project.version].strategy`): `scm` | `counter` | `file:PATH`
 | `external:VAR` | `none`. It determines version discovery only. `external:VAR` reads its
-value from transaction-local `cmru.vars` written by `steps.prepare`; `none` leaves identity
-to the declared project commands.
+value from transaction-local `cmru.vars` written by `steps.prepare`; in a dry-run, the declared
+external-version prepare step runs in the disposable candidate before plan computation so that
+the preview observes the same derived value. `none` leaves identity to the declared project
+commands.
 
 **S-REL.2 — Outputs and tag policy.** `[project].artifacts` is a non-empty inventory of
 `wheel`, `oci-image`, `tarball`, and/or `bundle`. It never produces a command. The required
@@ -352,19 +664,19 @@ finds no new source or generated output beyond the cursor) and does not duplicat
 `release.changelog = "path/CHANGES.md"` selects a different project-relative filename;
 `release.changelog = false` is the explicit opt-out.
 
-`cmru changelog --project P --backfill-tag <prefix><version>` is the one-time migration for a
+`cmru changelog P --backfill-tag <prefix><version>` is the one-time migration for a
 tag that predates source-first history. It writes a generated `backfilled-after-release` entry
 to the current source tree and never moves the immutable tag; the caller reviews and commits
 that migration explicitly.
 
-**S-REL.4c — Unmanaged-release cleanup.** `cmru cleanup --project P
+**S-REL.4c — Unmanaged-release cleanup.** `cmru cleanup P
 --delete-unmanaged-release-tag TAG --yes` is a migration-only operation for an old GitHub
 Release outside P's normal `<prefix>-v<semver>`/`<prefix>-latest` lifecycle. It requires the
 explicit project namespace and confirmation (or `--dry-run`), deletes exactly one GitHub
 Release with that tag, and MUST NOT delete its Git tag. A managed release is rejected; normal
 project cleanup remains the sole operation allowed to delete managed Releases and tags.
 
-**S-REL.4d — Local-build cleanup.** `cmru cleanup --project P --delete-build-output ID --yes`
+**S-REL.4d — Local-build cleanup.** `cmru cleanup P --delete-build-output ID --yes`
 deletes only the exact commit-addressed local build record identified by its `build.json`;
 `--dry-run` is the non-mutating preview. `cmru cleanup --discard-build-worktree PATH --yes`
 deletes only an exact, visible `cmru-build-*` (or legacy `cmru/build/*`) worktree under this repository's managed
@@ -375,16 +687,20 @@ fail rather than widen deletion.
 **S-REL.4b — Release declaration.** `[project.release]` MUST contain `git_tag` and
 `build_step`. `build_step` MUST name an explicit `[steps.<name>]` command. Optional
 `commit_generated = ["<project-relative path>", …]` lists mechanical tracked outputs CMRU
-may commit; optional `artifact_dirs` lists directories eligible for explicit retention.
+may commit; optional `artifact_dirs` lists publishable-output directories eligible for
+artifact retention. Optional `evidence_paths` lists commit-bound files or directories
+the successful release gate produces for retention. Evidence paths MUST be project-relative,
+MUST contain no `..` escape, and MUST resolve without symlinks in the isolated worktree;
+they are a bounded declaration, never a glob or an inferred directory.
 
 **S-REL.5 — Reproducibility / commit model.** The isolated worktree starts clean, so wheels
 cannot inherit unrelated caller dirt through setuptools-scm. cmru auto-commits **only**
 declared mechanical outputs, never hand-edited source. Every project follows the same
-prepare → gate → backup-push → promote → optional tag → `build_step` → `push` frame;
-the project commands define what the last two phases do.
-`backup-push` (S-CLI.5) is a durability step only — it pushes the validated branch to origin
-under its own name, never touching `main`; the fast-forward of `main` remains a separate,
-subsequent step.
+prepare → gate → backup-push → optional tag → `build_step` → `push` → promote frame;
+the project commands define what the publication phases do.
+`backup-push` (S-CLI.5) is a durability step only — it pushes the candidate branch to origin
+under its own name, never touching `main`; the final fast-forward of `main` integrates the exact
+candidate commit after its public artifact succeeds. A candidate is never rebased at that point.
 
 **S-REL.6 — Multi-variant releases (per-interpreter artifact matrix).** A `bundle` or
 `tarball` project MAY declare N named **variants** so that ONE release tag publishes one
@@ -416,13 +732,13 @@ separate keystone (`publish_versioned_variants`) so the legacy path is provably 
 
 ## S2 — Config Schema
 
-CMRU has exactly two non-overlapping documents (select a non-default path only with
-`--config`). A portable product owns `<project>/cmru.toml`; it contains every fact
-and command needed to test, build, publish, retain, and release that product in a fresh
-repository root. An optional repository-root `cmru.orchestration.toml` names only those
-project documents, their order/dependencies, and cleanup policy. The repository-root
-secret document is the credential baseline; a selected project may explicitly overlay it
-from its own folder as defined in S2.4. Secrets are never committed.
+CMRU has two document grammars (select a non-default path only with `--config`). Without
+an explicit path, CMRU walks ancestors to the filesystem root and selects the nearest
+`cmru.orchestration.toml`; that file establishes the CMRU root and may serve several
+repositories below it. A nested orchestration file starts a new root. A standalone
+`cmru.toml` remains valid when it contains its own repository facts. The selected
+CMRU-root secret document is the credential baseline; a selected project may explicitly
+overlay it from its own folder as defined in S2.4. Secrets are never committed.
 
 **S2.1** The config MUST be validated on startup. An invalid config MUST cause an exit 2 (S8).
 
@@ -446,6 +762,9 @@ owner_type = "user"                # required: user | org
 host     = "github"               # required: provider for releases
 registry = ["ghcr.io"]            # list: image registries to push to (S11)
 
+[runtime]
+kind = "none"                      # required: none | ciu
+
 [env]
 CMRU_WHEEL_BUILDER_IMAGE = "wheel-builder@sha256:<digest>"       # required by wheel-build
 CMRU_TESTER_UNIFIED_IMAGE = "tester-unified@sha256:<digest>"     # required by tester-gate
@@ -453,6 +772,7 @@ CMRU_TESTER_MEMORY = "3g"                                         # required by 
 CMRU_TESTER_MEMORY_SWAP = "16g"                                   # required by tester-gate
 CMRU_TESTER_CPUS = "1.5"                                          # required by tester-gate
 CMRU_TESTER_CGROUP_PROBE_IMAGE = "debian@sha256:<digest>"         # required by tester-gate
+CMRU_TESTER_CGROUP_PARENT = "${CGROUP_PARENT_DEV_GATES}"          # required host gates slice
 # CMRU_TESTER_DIND_IMAGE = "docker@sha256:<digest>"               # required with --enable-docker
 
 [project]
@@ -473,6 +793,7 @@ git_tag = true                              # required; only source of tag polic
 build_step = "build"                         # required; one declared [steps.<name>]
 commit_generated = ["generated-input.json"]  # project-relative, mechanical only
 artifact_dirs = ["dist"]                     # required only when retaining artifacts
+# evidence_paths = ["coverage.json"]        # only files/dirs the release gate produces
 # changelog defaults to "CHANGES.md". Override only for another project-relative path;
 # `changelog = false` is the explicit opt-out.
 
@@ -529,11 +850,30 @@ label     = "Python 3.11 (glibc)"
 # cmru.build.toml are retired and rejected. There is no compatibility parser.
 ```
 
-**S2.2a — Orchestration document** (`cmru.orchestration.toml`) is a separate,
-strictly estate-level document:
+`[runtime].kind` is a closed declaration. `none` means CMRU supplies the
+isolated workspace and invokes the project's declared steps without owning an
+external runtime lifecycle. `ciu` means the project step is responsible for
+invoking CIU from that prepared worktree and for its explicit up/health/cleanup
+sequence. CMRU does not inspect Compose files or guess ownership from arbitrary
+Docker commands; a missing or unknown kind is rejected before a runner starts.
+
+**S2.2a — Central repository facts.** An orchestration document contains one
+`[github]` and one `[targets]` table. Registered project documents omit those
+tables; duplicates are rejected. A project document used without orchestration
+keeps the tables as its standalone source of repository identity and targets.
+
+**S2.2b — Orchestration document** (`cmru.orchestration.toml`) is the central
+project registry and execution policy:
 
 ```toml
 schema_version = 1
+[github]
+owner = "your-github-owner"
+repo = "your-repository"
+owner_type = "user"
+[targets]
+host = "github"
+registry = ["ghcr.io"]
 [orchestration]
 project_order = ["example"]
 default_projects = ["example"]
@@ -565,7 +905,7 @@ declared step; `--show-run-details` is the explicit live-detail override.
 
 **S2.4** Token resolution, so project `cmru.toml` stays secret-free:
 1. `GITHUB_PUSH_PAT` env var, then `GITHUB_TOKEN` env var.
-2. Deep merge repository-root `cmru.secret.toml` with the selected
+2. Deep merge CMRU-root `cmru.secret.toml` with the selected
    `<project>/cmru.secret.toml`; the nearer project table wins. The merged
    `[github].token` is the credential.
 
@@ -590,20 +930,33 @@ host-systemd probe-image values (CLI options or the effective `[env]`). `--enabl
 requires a nested-Docker image. `wheel-build` requires `CMRU_WHEEL_BUILDER_IMAGE`; CMRU
 does not fall back to the cockpit's Python environment.
 
-**S2.6a — tester-gate environment preflight (KI-17).** These values are normally supplied by
+### S2.6a — tester-gate environment preflight (KI-17)
+
+These values are normally supplied by
 `cmru.orchestration.toml [env]` and reach a step through `cmru release`; they are NOT usually
 set in the project's own `cmru.toml [env]`. So a step copied out of `cmru.toml` and run by hand
 (what an operator does when a release goes red) would otherwise fail one missing variable at a
 time, each costing a container spin-up, and each message would send the reader to the wrong
-file. `tester-gate` MUST therefore, before any resolver with a side effect (the slice-existence
-probe, the container launch): (1) validate the full required set at once — image, memory,
-memory/swap, CPU, probe image, and the nested-Docker image when `--enable-docker` — resolving
+file. `tester-gate` MUST therefore, before any actual-launch resolver with a side effect
+(the slice-existence probe, the container launch): (1) validate the full required set at once — image, memory,
+memory/swap, CPU, probe image, gates slice, and the nested-Docker image when `--enable-docker` — resolving
 each at `explicit flag > environment` precedence, and abort naming EVERY still-missing variable
 together; and (2) in that report and in each individual resolver's message, name
 `cmru.orchestration.toml [env]` (inherited through `cmru release`) as the real source. This is
 the same required set `cmru standards` validates statically against a project's declared config
-(one shared constant, `REQUIRED_TESTER_ENV`); `cgroup_parent` is deliberately excluded from the
-preflight because it has the ambient `CGROUP_PARENT_DEV_BACKGROUND` fallback.
+(one shared constant, `REQUIRED_TESTER_ENV`), including the required
+`CMRU_TESTER_CGROUP_PARENT` gates binding. Direct CLI use must pass that binding
+or an explicit `--cgroup-parent`; an unscoped launch is refused. CMRU MUST set Docker's CPU
+period to 100000 microseconds. Before the privileged slice or IO probe, the resolved CPU limit
+MUST be a finite value of at least `0.00001` that Docker can represent as a nonzero per-container
+quota; this check applies equally to `--cpus` and the environment value.
+
+`--dry-run` is the deliberate exception to host probes: it prints the resolved workload
+argv and, with `--enable-docker`, the DinD startup argv, but starts no container. The
+slice and IO-support checks themselves require temporary privileged containers, so dry-run
+prints a note that those host checks were skipped. An actual launch runs them first. The
+slice probe, IO probe, DinD sidecar, and workload all receive the resolved gates
+`--cgroup-parent`; no helper container may fall through to Docker's default tier.
 
 If none is found and a write verb is invoked, cmru MUST exit 3 (V10).
 
@@ -638,6 +991,89 @@ this estate cannot be checked from one project document alone (a project
 document stays portable to a fresh repository root, S2's own design
 constraint) — that cross-project check is performed by `cmru.dependencies`'
 `build_report`, alongside the analogous check for `depends_on` (S15.1).
+
+**S2.7 — Version policy and generated state** (`[versions]`). Both
+`cmru.orchestration.toml` and `cmru.toml` MAY declare `[versions]` with a positive
+`age_window_days` (default 14), `targets`, optional `outputs`, and optional `discovery`. Unknown keys and source
+families are rejected (exit 2). Target source tables use the closed values `.pypi`, `.npm`,
+`.go`, and `.oci`; `mode` is exactly `single` or `aligned`. Constraints use the documented
+common SemVer-compatible subset. A single target has exactly one source; an aligned target has
+at least two and CMRU MUST find the same version in every source whose timestamp is at or before
+the target's cutoff. OCI source tables name a fully-qualified image. Their `selection` field is
+`selection = "semver"` by default or `selection = "rolling"`. SemVer selection uses a tag template with exactly one
+`{version}` placeholder; every other tag character is literal. Rolling selection uses one
+literal OCI tag, requires `mode = "single"` and `constraint = "*"`, and MUST NOT be aligned with
+other sources or use an exact version override. CMRU MUST record a valid `Docker-Content-Digest`
+sha256 digest for a rolling tag, and `check` MUST treat a digest change as a refresh even when
+the tag string is unchanged.
+When an OCI index contains Docker attestation descriptors marked
+`vnd.docker.reference.type = "attestation-manifest"`, CMRU MUST exclude those descriptors from
+runtime-platform age calculation. Every remaining runtime platform MUST have a usable registry or
+publisher-created timestamp; missing evidence MUST fail closed. This keeps build provenance and
+SBOM metadata manifests from being treated as deployable image variants.
+
+Each registry source table MUST name only environment-variable references (`token_env` or the
+complete `username_env`/`password_env` pair) for credentials; it MUST NOT contain credential
+values or embedded-credential URLs. Missing referenced credentials are unavailable prerequisites
+(exit 3). CMRU MUST NOT forward credentials to an OCI bearer-token realm outside the configured
+registry origin, except Docker Hub's documented `auth.docker.io` token host.
+
+A target's exact `version` override MUST carry a non-empty `reason`. If its version is newer
+than the age cutoff in any configured source, it MUST carry a future ISO-date `expires`; CMRU
+refuses an expired override. Otherwise CMRU selects the highest SemVer-compatible, age-eligible
+version. The cutoff is `resolve time - age_window_days`, and releases exactly at the cutoff are
+eligible for every source family, including literal rolling OCI tags. When an age-window refusal
+is determined by Go `.info` commit time or publisher-created OCI time, the refusal diagnostic MUST
+include the corresponding weaker-evidence warning.
+
+Root targets and their `resolved` state belong to `cmru.orchestration.toml` and use the root age
+window. A project target declaration or overlay is project-local: it uses that project's
+effective age window and stores `resolved` in that project's `cmru.toml`. A project age-window
+setting alone MUST NOT alter a root target. Deep table values merge recursively; scalars and
+arrays replace.
+
+`[versions.discovery]` MAY set `scope` to `shipped` or `all`. Omitted `scope` means `shipped`.
+The orchestration root MAY set the shared scope default; `pypi_extras` and `requirements_files`
+are project-local fields and MUST be declared in a project's `cmru.toml`. `pypi_extras` is an
+array of names from `pyproject.toml [project.optional-dependencies]`; it is valid only with
+`scope = "shipped"`. `requirements_files` is an array of project-relative `.in` or `.txt` files.
+
+With `scope = "shipped"`, `cmru versions init` derives supported dependency facts from
+`requirements.in` and configured `requirements_files`, `pyproject.toml` project dependencies
+and selected extras, npm `dependencies`/`optionalDependencies`/`peerDependencies`, and Go
+`go.mod` require entries (including `// indirect` entries). With `scope = "all"`, it also reads
+all Python optional extras, PEP 735 dependency groups, `build-system.requires`, conventional
+root `requirements*.in`/`requirements*.txt` files and files under `requirements/`, and npm
+`devDependencies`. Skipped non-registry, unsupported-syntax, and unsupported-source entries
+MUST be reported. `cmru versions resolve` writes the
+generated result plus native outputs: Python constraints, npm direct versions/overrides and
+lockfile, Go `go.mod`/`go.sum`, OCI JSON, and any configured strict Jinja2 output. `cmru versions
+check` performs a fresh read-only comparison. None of these actions is coupled to build, release,
+gates, or scheduling.
+
+Timestamp evidence is recorded per source. PyPI uses upload time; npm uses registry version
+time; Go uses module proxy `.info` `Time`, which is VCS commit time rather than proxy publication
+time, and MUST emit a warning; OCI uses HTTP `Last-Modified` when present and may fall back to the
+publisher-provided `org.opencontainers.image.created` annotation or image config `created`, also
+with a warning. A missing usable timestamp MUST fail closed. Native Python constraints apply
+uv's age cutoff to the transitive resolution; npm's lock update applies `--before` and the
+package-specific `--min-release-age-exclude` for explicit overrides/looser project cutoffs. Go
+CMRU age-checks each declared Go module target against proxy `.info` metadata before `go get`
+writes its native files. Because Go proxy `@v/list` omits pseudo-versions, CMRU also checks a
+pseudo-version named by the target constraint and requests `@latest` when no listed version
+satisfies that constraint. If `.info` and `@latest` return the same version with different commit
+times, CMRU MUST refuse the inconsistent age evidence. In active workspace mode, `go get` may
+update `go.work` and `go.work.sum`; resolve MUST snapshot those files and restore them if any later
+writer fails.
+
+The built-in OCI output is JSON schema 1 at `versions/oci-images-YYYYMMDD.json` and the stable
+`versions/oci-images.json`; existing files may be replaced only when their `generated_by` marker
+is `cmru versions resolve`. Rolling OCI entries include the recorded `digest`. A configured
+`[versions.outputs.<id>]` requires `template`, `path`,
+and `dated_path` (with `{date}`), all project-relative. It renders with Jinja2 `StrictUndefined`
+and is an optional feature requiring the `versions-templates` extra. The context contains
+`resolved_at` and `targets`, whose entries contain `version`, `override`, `reason`, `expires`,
+`owner`, `age_cutoff`, and per-source `version`, `released_at`, `age_source`, and optional `tag`.
 
 ---
 
@@ -676,7 +1112,7 @@ bake_set_vars = ["OCI_VERSION"]
 
 **S3.4** Step logs MUST be line-flushed and written to the stable path
 `<project>/logs/cmru/<step>.log`; a normal run overwrites that path. `--log-append`
-MUST insert `\n---\n` before the new record. The root `cmru.release.sh` wrapper overwrites
+MUST insert `\n---\n` before the new record. Native `cmru release` overwrites
 `cmru.release.log` by default and includes the full subprocess transcript even while the
 console is quiet. By default the orchestration console shows labels, elapsed time, known
 test-framework success evidence, and failure excerpts only. `--show-run-details` streams
@@ -689,47 +1125,71 @@ three severity tokens green/yellow/red; redirected stdout/stderr is deliberately
 the stable logs and machine consumers retain plain text.
 
 **S3.5 — Transaction evidence lifecycle.** Release failure MUST retain its worktree, logs,
-and artifacts for inspection/resume. Successful release MUST remove the worktree, but MUST
-retain its project logs and artifacts by default before doing so: logs move to
-`<project>/logs/cmru-release/<immutable-id>/`, and any declared `project.release.artifact_dirs`
-move to `<project>/artifacts/<immutable-id>/` with a `release.json` recording source commit and
-SHA-256 inventory. `--discard-logs-on-release` / `--discard-artifacts-on-release` opt out of
-either half. A project declaring no `artifact_dirs` has nothing to retain and is skipped for
-the artifact half without error — retention applies uniformly across every orchestrated
-project, not all of which build a local artifact (S15 first-party tool consumers and
-OCI-image-only projects are the common case). `cmru build` MUST use an isolated
-`cmru-build-<YYYYMMDD_HHMMSS>-<scope>-<uuid8>` worktree (S-CLI.5b). On child success it MUST copy that project's logs to
+artifacts, and generated gate evidence for inspection/resume. Successful release MUST remove
+the worktree, but MUST retain its project logs, declared artifacts, and declared gate evidence
+by default before doing so: logs move to `<project>/logs/cmru-release/<immutable-id>/`, declared
+`project.release.artifact_dirs` move to `<project>/artifacts/<immutable-id>/` with the existing
+`release.json` source-commit and SHA-256 inventory, and declared `project.release.evidence_paths`
+move to `<project>/evidence/cmru-release/<immutable-id>/`. The evidence coordinate contains
+the declared files/directories and an `evidence.json` manifest recording the source commit and
+SHA-256 hash/byte inventory. `--discard-logs-on-release`, `--discard-artifacts-on-release`,
+and `--discard-evidence-on-release` are explicit independent opt-outs. A project declaring no
+`artifact_dirs` or no `evidence_paths` has nothing to retain for that half and is skipped
+without error — retention applies uniformly across every orchestrated project, not all of
+which build a local artifact or produce commit-bound evidence. `cmru build` MUST use an isolated
+`cmru-build-<YYYYMMDD_HHMMSS>-<scope>-<workspace-id>` worktree (S-CLI.5b). On child success it MUST copy that project's logs to
 `<project>/logs/<commit-date>_<full-commit>/` and every declared
 `project.release.artifact_dirs` directory to
 `<project>/artifacts/<commit-date>_<full-commit>/`, write a `build.json` SHA-256
 inventory, then remove the worktree. The coordinate is the built HEAD's UTC commit timestamp
 and full SHA; an existing coordinate is an error, never an overwrite. `build.json` MUST record
-that publication is forbidden and any tracked source-tree changes, so it cannot be confused with
-a release candidate. A child or retention failure MUST retain the worktree and print its exact
-path for debugging; use `cmru worktrees` to discover it and the exact cleanup verb after
-inspection.
+the source identity, artifact and log inventories, and any tracked or untracked source-tree
+changes. Any non-empty `source_tree_changes` makes the record ineligible for publication; CMRU
+MUST refuse real and dry-run `publish --build-output` for it. Projects MUST ignore their expected
+generated build outputs so those outputs do not appear as source-tree changes, without ignoring
+source files or using ignore rules to conceal source edits. Ignore rules do not hide modifications
+to already-tracked files; a build that modifies tracked source or generated files remains ineligible.
+A clean record is eligible for explicit
+`cmru publish --build-output ID` only after CMRU revalidates the complete inventory; it is not a
+source release candidate. A child or retention failure MUST retain the
+worktree and print its exact path for debugging; use `cmru worktrees` to discover it and the
+exact cleanup verb after inspection.
 
 ---
 
 ## S4 — Publication boundary
 
-**S4.1** `cmru publish` requires a resolved publication credential (exit 3 when absent),
-then runs the selected project's explicit `push` step through the unified runner. It does not
+**S4.1** An actual `cmru publish` requires a resolved publication credential (exit 3 when absent),
+then runs the selected project's explicit `push` step through the unified runner. A dry-run
+does not require credentials. It does not
 discover an artifact, choose a host, or infer a release-asset policy.
 
-`publish` is a low-level caller-worktree operation. It is not the second half of
-`cmru build`: a normal build retains artifacts as explicitly non-publishable local records,
-not at the caller's declared push input. The source-first composable operation is `cmru release`; see
-[`KI-10`](../KNOWN_ISSUES_TODO_BACKLOG.md#ki-10--cmru-build-artifacts-cannot-safely-feed-cmru-publish--open-decision-required).
+Without `--build-output`, `publish` runs the declared push step against the caller worktree.
+With `--build-output ID`, it validates the selected build record and supplies its exact
+inventoried bytes to the project's push step without rebuilding. Built-in wheel and tarball
+handlers consume the retained inventory directly; a custom publisher MUST consume files beneath
+`CMRU_BUILD_OUTPUT_ROOT` and MUST NOT rebuild from the caller worktree or create/move Git refs.
+Publication MUST refuse if the manifest records any tracked or untracked source-tree change,
+including during `--dry-run`; expected generated outputs therefore need appropriate ignore rules.
+The built-in handlers require existing versioned and `<prefix>-latest` GitHub Releases and tags;
+the versioned tag MUST resolve to the retained source commit. They update Release assets in place,
+without creating Release records or Git refs. A dry-run verifies the local record but does not
+query remote tags. The retained record is not modified while the handlers generate sidecars and
+`latest.json`; those files are created from temporary copies. This path publishes artifact bytes
+without source branch promotion; the source-first tagged workflow remains `cmru release`. See
+[KI-10](../KNOWN_ISSUES_TODO_BACKLOG.md#ki-10--publish-retained-build-output-by-id--shipped).
 
 **S4.2** A project command that publishes a GitHub Release asset MUST create a `.sha256`
-sidecar in `sha256sum -c` format and bind the release to the build commit. It SHOULD include
-the artifact digest in release notes; an OCI publisher SHOULD also verify the final registry
-manifest digest.
+sidecar in `sha256sum -c` format and bind the release tag to the build commit. A retained-build
+publisher MUST refuse an absent or mismatched version tag instead of creating or moving one. It
+SHOULD include the artifact digest in release notes; an OCI publisher SHOULD also verify the final
+registry manifest digest.
 
 **S4.3** A project that maintains a `<prefix>latest/latest.json` pointer MUST update it in
 the same explicit push contract. `cmru resolve` can consume that pointer, but CMRU does not
-invent one for a project that did not choose it.
+invent one for a project that did not choose it. Retained-build publication updates an existing
+pointer Release in place and MUST refuse if its GitHub Release or tag is absent; it does not
+delete/recreate the pointer tag.
 
 **S4.4** CMRU's reusable wheel/tarball handler commands implement the S4.2/S4.3 GitHub
 Release convention. Projects with another publication mechanism must provide equivalent
@@ -748,7 +1208,7 @@ CMRU must not report a visibility change as an enforced release guarantee.
 
 The resolver implements differentiator #2: highest-semver selection, replacing GitHub's single repo-global "Latest" badge.
 
-**S5.1** `cmru resolve --project <name>` returns `{version, tag, asset, sha256, url}` for the highest-semver release matching `prefix`.
+**S5.1** `cmru resolve <name>` returns `{version, tag, asset, sha256, url}` for the highest-semver release matching `prefix`.
 
 **S5.2** Semver comparison MUST be numeric-aware per segment: `r10 > r2 > r1` (not lexicographic).
 
@@ -794,11 +1254,15 @@ update, rollback, and status. Unlike a curl-only bootstrap, `get.py` ships **ins
 release artifact, so `<project> update` works out of the box. Configuration lives in
 `[project.installer]` (see S2).
 
-**S6.1** `cmru get-py --project <name> --config cmru.toml` emits a standalone Python 3
-installer to stdout. The output is a rendering of `templates/get.py.tmpl` with
+**S6.1** `cmru get-py <name> --config cmru.toml` emits a standalone Python 3
+installer to stdout. The output is a rendering of the packaged
+`cmru/templates/get.py.tmpl` resource (resolved with `importlib.resources`) with
 `[[VARNAME]]` placeholders replaced from the `[installer]` config. The rendering is
-deterministic (byte-identical for identical config). Any unreplaced `[[...]]` placeholder
-triggers a warning.
+deterministic (byte-identical for identical config) from both a source checkout and an
+installed wheel. The CMRU wheel MUST include the template resource and `cli-extended` runtime
+package. The gate MUST build/install that wheel into an isolated environment, invoke its
+`cmru get-py` console script from outside the source checkout, and compile the emitted
+installer. Any unreplaced `[[...]]` placeholder triggers a warning.
 
 **S6.2** Commands emitted:
 
@@ -900,7 +1364,7 @@ asset `<tag><asset_suffix>`).
 
 ---
 
-## S7 — External (third-party) supply-chain tooling (not yet a CMRU config feature)
+## S7 — External third-party tool integration (not yet config-enabled)
 
 CMRU does **not** accept a `[project.delegated]` table. Earlier documentation
 advertised one even though no release lifecycle invoked it; the strict schema rejects it.
@@ -928,9 +1392,9 @@ cmru uses a four-value exit code scheme identical to CIU S10.3:
 | Code | Meaning |
 |---|---|
 | `0` | Success |
-| `1` | Build or publish failure (artifact error, upload failed, tag push failed) |
+| `1` | Build/publish failure or native version-artifact writer failure |
 | `2` | Configuration error (missing required field, unknown key, parse error) |
-| `3` | Missing prerequisite (required environment variable, installer command, or external tool absent) |
+| `3` | Missing prerequisite, including an unavailable registry metadata source, required environment variable, or external tool |
 
 ---
 
@@ -952,6 +1416,49 @@ invokes the builder; it never accepts a static fallback version. `_wheel_builder
 supplies this mount and is a no-op
 (nothing extra to mount) for an ordinary non-worktree checkout, where the common dir is already
 covered by the existing subtree mount.
+
+**S9.4a — Bundle configuration** `cmru.bundle.run_bundle(CONFIG_PATH)` MUST read this component configuration. `cmru.bundle` is a Python library; no `python -m cmru.bundle` command is supported. Paths may be absolute; relative paths use the bases below. The schema is closed: unknown keys at the root or in any table MUST be rejected, and values MUST have the declared TOML types. Paths, strings, and string arrays MUST be non-empty where required; the loader MUST NOT coerce strings, booleans, or array members from another type.
+
+| Key | Type | Requirement and meaning |
+|---|---|---|
+| `project_root` | path | Required. Relative to the directory containing the config. It is the base for copied source paths and for the default wheel project root. |
+| `dist_dir` | path | Optional; defaults to `dist`. Relative to `project_root`. The builder removes this whole tree before a real build. |
+| `bundle_dir` | path | Optional; defaults to `bundle`. Relative to `dist_dir`; this is the assembled archive root. |
+| `client_dir` | path | Optional; defaults to `client`. Relative to `dist_dir`; enabled wheel builds place client wheels here. |
+| `[wheel].enabled` | boolean | Optional; defaults to `false`. Enables `python -m pip wheel`. |
+| `[wheel].python_bin` | string | Optional; defaults to `python3`. Executable used for the wheel build. |
+| `[wheel].project_root` | path | Optional; defaults to `project_root`. A relative value is based on the config directory. |
+| `[wheel].find_links` | path | Optional. Adds a local package source to the wheel build; a relative value is based on the config directory. |
+| `[archive].name_template` | string | Required. Filename template containing exactly one plain `{version}` field and no path separators; it is replaced with the value of the named environment variable. The resulting filename is checked again after substitution. |
+| `[archive].version_env` | string | Required. Name of the environment variable that must be set for preview and build. |
+| `[archive].format` | string | Optional; defaults to `gztar`. Allowed values: `tar`, `gztar`, `bztar`, `xztar`, `zip`. The deterministic normalized writer is guaranteed for `xztar`. |
+| `[copy].files` | array of strings | Within the required `[copy]` table; defaults to an empty list when omitted. File paths are resolved from `project_root`. |
+| `[copy].dirs` | array of strings | Within the required `[copy]` table; defaults to an empty list when omitted. Directory paths are resolved from `project_root`. |
+
+For example, a project with no client wheel can start with:
+
+```toml
+project_root = "."
+
+[archive]
+name_template = "example-{version}.tar.xz"
+version_env = "EXAMPLE_VERSION"
+format = "xztar"
+
+[copy]
+files = ["README.md"]
+dirs = ["src"]
+```
+
+Set `EXAMPLE_VERSION` before calling `run_bundle()`; the library validates the
+configuration and then performs the build, including removing `dist_dir` before
+assembling output. The template must contain one plain `{version}` field; other
+placeholders, format conversions, and path separators are refused. The rendered
+filename is also refused if the environment value introduces a path separator.
+There is no bundle CLI or library dry-run API. Consumers
+that need a review step should inspect their declared source inputs before
+calling the build function. Unknown keys and wrong TOML types fail at the
+configuration boundary (KI-33).
 
 **S9.4** Given the same source commit and toolchain pin, two independent builds MUST produce byte-identical artifacts (deterministic build contract). For the `bundle` profile specifically:
 
@@ -1006,6 +1513,7 @@ _This section enumerates all config validation rules. Each rule references the s
 | V26 | `[[project.tool_dependencies]].sha256` is exactly 64 lowercase hex characters | 2 |
 | V27 | `[[project.tool_dependencies]].project` names a real first-party project in the loaded estate (cross-project check, `cmru.dependencies.build_report`, S15.1) | 2 |
 | V28 | A tool dependency (S15) whose integrity, authenticity, or (absent `--allow-stale-tool-deps`) freshness check fails MUST refuse `cmru release`; `cmru tool-deps` exits the same way on demand | 2 |
+| V29 | `[versions]` keys, modes, source tables, timestamp state, and exact-override requirements validate strictly (S2.7) | 2 |
 
 ---
 
@@ -1089,9 +1597,9 @@ directly:
    an error naming the project, the tag, the snapshot commit, that likely cause, and the remedy
    (continuing would silently produce an empty release for a project that already has unpromoted
    work waiting). `cmru release --allow-tag-ahead-of-head` downgrades this one refusal — and only
-   this one — back to an ordinary skip, for the deliberate case (`--allow-tag-at-head` is a
-   deprecated alias kept for compatibility: after this three-state fix the "equal" case never
-   aborts, so the old name no longer describes what the flag actually overrides).
+   this one — back to an ordinary skip, for the deliberate case. The former
+   `--allow-tag-at-head` alias was removed; the supported spelling is
+   `--allow-tag-ahead-of-head`.
 3. **Behind** — `<last_tag>`'s commit is a strict ancestor of HEAD (the ordinary case: some
    other project's commits moved HEAD forward, nothing under this project's own paths changed).
    Indistinguishable from, and handled identically to, S12.2's plain "genuinely unchanged" skip.
@@ -1108,7 +1616,7 @@ is actually a half-completed cmru release, not a hand-made tag — but the tool 
 apart from git state alone). Never tag a cmru-managed project by hand.
 
 **S12.2d — A release-plan refusal (S12.2a/S12.2b) is a typed, clean failure that discards its
-worktree.** No project's `prepare`/gate/promote/tag cycle has started when the plan itself
+worktree.** No project's `prepare`/gate/tag cycle has started when the plan itself
 refuses — nothing was gated, promoted, or tagged, and the durability backup branch (S-CLI.5a)
 was never pushed either, since it is pushed only after the plan is accepted. The isolated
 release transaction MUST therefore surface this as a clean operator-facing `[ERROR]` message
@@ -1150,8 +1658,12 @@ wall of duplicated prose, and never the old bare `Unchanged, skipping: a, b, c` 
 skipped project has already printed its own line above.
 
 **S-CLI.5c — `--dry-run` MUST NOT be the only way to learn something about a real run
-(KI-14).** The isolated release transaction computes its plan (S12.2a/S12.2b, S12.2e) exactly
-once, unconditionally, before branching on `--dry-run` — both paths therefore observe identical
+(KI-14).** Before plan computation, a dry run MAY execute each selected project's declared
+external-version `steps.prepare` in the disposable candidate, because `external:VAR` cannot be
+observed without its declared source query. This phase commits only declared generated outputs
+inside that candidate and performs no gate, tag, build, push, or promotion. The isolated release
+transaction then computes its plan (S12.2a/S12.2b, S12.2e) exactly once, unconditionally,
+before branching on `--dry-run` — both paths therefore observe identical
 decision-level diagnostics (the plan summary, the baseline, the derived version, and every
 per-project unchanged reason), differing only in the `[DRY] Would …` prefix on what a real run
 instead performs for real, and in the absence of that run's effects. `--dry-run` MAY show
@@ -1190,7 +1702,7 @@ or appear to fail, over cleanup of a branch whose job is already done) but MUST 
 | `scm` | Tag HEAD; setuptools_scm reads it | No extra commit |
 | `file:<PATH>` | Write version to file, commit, then tag | Yes (one bump commit) |
 | `counter` | Find latest `-r<N>` suffix, increment; tag HEAD | No extra commit |
-| `external:VAR` | Read VAR from `<cwd>/cmru.vars` after prepare; tag HEAD | Prepare commit, if changed |
+| `external:VAR` | Read VAR from `<cwd>/cmru.vars` after prepare; in `--dry-run`, run only the declared external-version prepare first; tag HEAD | Prepare commit, if changed |
 
 **S12.6** Dev builds: when HEAD is untagged, the version MUST be `X.Y.Z.devN+g<hash>`. These MUST NOT produce a `<prefix>-v` tag or immutable release.
 
@@ -1321,12 +1833,12 @@ distinction exists precisely so this cannot happen), and "could not check"
 MUST NEVER be reported as success.
 
 **S15.6 — Verification runs at release time and on demand; NEVER during
-tests.** `cmru tool-deps [--project P ...] [--json] [--allow-stale-tool-deps]
+tests.** `cmru tool-deps [P[,P...]] [--json] [--allow-stale-tool-deps]
 [--refresh PROVIDER_PROJECT] [--timeout S]` runs all three checks and reports
 per dependency (read-only; `--refresh` is the one exception, S15.8). The same
 verification is wired into the isolated release transaction's plan-computation
 phase (S12.2a/S12.2b's own network-touching preflight, before any project's
-prepare/gate/promote cycle starts), scoped to exactly the projects this run
+prepare/gate cycle starts), scoped to exactly the projects this run
 will release — an unrelated orchestrated project's stale or unreachable tool
 dependency MUST NOT block a run that never touches it, and a no-op run (no
 project changed) makes zero network calls for this check. It runs identically
@@ -1379,6 +1891,58 @@ discipline as `cmru dependencies --write`'s generated comment block and `cmru
 standards --update`'s revision-marker edit). No verification path, and no
 release, ever calls this on its own; it is a deliberate, separate operator
 action, reviewed like any other source change before it is committed.
+
+---
+
+## S16 — Release-gate rigor (Assay-backed)
+
+CMRU's internal `assay.toml` declares the `cmru` lane at R0/R1/R3. R0 runs
+the full CMRU test suite. R1 judges the `coverage.json` artifact against
+the latest ancestor CMRU release tag (currently `cmru-v5.4.1`), requires 100%
+line and branch coverage, and forbids excluded source. Advance this pinned R1
+base to the new release tag during each CMRU release. `main` is not a stable
+post-merge baseline: Assay's merge-base can resolve it to the tested commit,
+leaving no changed lines to measure. R3 runs an import-break canary against
+`src/cmru/config.py`.
+`--maxfail=1` is inert on the passing baseline, so it does not shorten a green
+full-suite run.
+
+The release `gate` supplies R2 separately through `run-gate.toml`'s
+`mutation` lane. A release candidate is already at `origin/main`; using
+`main` as Assay's mutation base would leave no changed-source candidates and
+correctly produce `NO_MUTANTS`. The dedicated lane resolves the nearest
+ancestor `cmru-v*` tag dynamically and mutates CMRU source changed since that release tag,
+with a serial campaign, a 120-second per-candidate timeout, `--maxfail=1`,
+`--resume`, and a progress stream. An empty source diff writes explicit
+skipped evidence.
+`run-gate.py gate` runs the Assay R0/R1/R3 lane plus the tag-based R2 campaign,
+total coverage, cause-sensitive canary, and real-system enrollment checks.
+
+**S16.1 — Snapshot boundary.** Assay R1/R3 run in
+`repository-minus-unsafe-symlinks`, with exactly the three tracked Topos
+fixture paths listed in `cmru/assay.toml` omitted because their absolute link
+targets cannot be materialised safely. A new unsafe symlink is a gate error;
+the omission list is not a general exclusion mechanism.
+
+**S16.2 — Gate ownership and evidence.** The `assay` lane in
+`run-gate.toml` installs Assay from the selected vbpub worktree and invokes
+the `cmru` lane with the mandatory resume/progress arguments. Its verdict is
+`.assay/verdict-cmru.json` and its progress stream is
+`.assay/progress-cmru.jsonl`, both outside the judged tree. The separate R2
+mutation lane records `.assay/mutation-cmru.json` and appends
+`.assay/progress-mutation-cmru.jsonl`; its first-failure limit stops a bad
+mutant from running the rest of the suite. Both campaigns preserve their own
+resume state. The mutation and canary controls copy the CMRU test closure,
+including `topos/cmru.toml` and `nyxloom/cmru.toml`, which the estate adoption
+contract test reads. Missing closure files fail the control before mutation or
+canary evidence is written. The `gate` lane runs these with the total-coverage,
+cause-sensitive canary, and real-system enrollment checks as one release
+contract.
+
+**S16.3 — Admission boundary.** The canonical entrypoint is
+`./run-gate.py`; the tester-unified lane requires the estate-provided
+`$CGROUP_PARENT_DEV_GATES` slice and fails closed when it is absent or not a
+loaded unit. A local devcontainer pytest result is not gate evidence.
 
 ---
 

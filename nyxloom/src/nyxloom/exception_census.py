@@ -118,8 +118,10 @@ LEGACY_BUDGET: dict[str, int] = {
     # P108 (7 -> 6): the two push functions' identical send-failure handlers
     # collapsed into the single `_push` helper when both stopped hand-building
     # an ntfy-shaped NotifyConfig -- one fewer handler, not a reclassified one.
+    # P112 (6 -> 5): the old CLI dispatch boundary moved to cli_registry.py,
+    # where its process-boundary translation handler is explicitly classified.
     "decision_chat.py": 6,
-    "cli.py": 6,
+    "cli.py": 5,
     "commands.py": 5,
     # Store and process boundaries. CR-04 owns the store's; CR-13a owned the
     # wrapper's and retired two of three (3 -> 1): containment changed what a

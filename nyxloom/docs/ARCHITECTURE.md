@@ -64,7 +64,7 @@ reproduces every statefile (a unit test, and a `doctor --rebuild` command).
 
 ## 2. The tick engine (F2)
 
-`nyxloom tick` is a stateless reconciler — the v2 §10 controller loop with
+`nyxloomctl tick` is a stateless reconciler — the v2 §10 controller loop with
 the LLM removed. Each invocation:
 
 1. **Scan**: handoff frontmatter (repo), statefiles, git (merged branches,
@@ -91,7 +91,7 @@ the LLM removed. Each invocation:
 Properties: **idempotent** (every action guarded by current state; reruns are
 no-ops), **bounded** (does a fixed amount of work, then exits), **crash-safe
 by construction** (no in-memory state to lose). Scheduling: cron or systemd
-timer on the host; inside a devcontainer without an init, `nyxloom tick
+timer on the host; inside a devcontainer without an init, `nyxloomctl tick
 --loop --interval 120` — a foreground repeater whose iterations are still
 stateless (state stays on disk; killing it loses nothing).
 
@@ -197,7 +197,7 @@ per-tier/per-route quality×cost table (§7), turning
 
 ## 7. Zero-AI dashboard: static render, tiny serving surface
 
-`nyxloom render` regenerates `www/` on every tick and on every mutating
+`nyxloomctl render` regenerates `www/` on every tick and on every mutating
 command (<100 ms at this scale). No app server, no DB, no AI — a directory of
 static HTML served by anything (`python -m http.server` on loopback, or a
 read-only vhost on the existing reverse-proxy).
@@ -260,11 +260,11 @@ The decision loop, end to end:
    recommendation, context pointers, **resume prompt**) → `DECISION_OPENED`.
 2. Push notification → dashboard decision page.
 3. User decides, three equivalent surfaces:
-   - `nyxloom decide D-013 --choose b --note "..."` (CLI);
+   - `nyxloomctl decide D-013 --choose b --note "..."` (CLI);
    - edit the inbox entry to DECIDED — next tick ingests it;
    - **discuss first**: open any Claude surface — mobile app, claude.ai/code,
      or Claude Remote Control into a local session — and paste the entry's
-     resume prompt (`nyxloom discuss D-013` prints/launches it). The
+     resume prompt (`nyxloomctl discuss D-013` prints/launches it). The
      session updates the entry per current practice.
 4. Tick releases `depends_on: [D-013]` holds, appends `DECISION_RESOLVED`,
    re-renders.
@@ -368,3 +368,24 @@ work, not a line change here.
 Per-task resource and permission policy (CPU, memory, pids, wall-time, mounts
 and network as selector constraints) and a recorded containment identity are
 CR-13b and are NOT shipped. Do not read this section as claiming them.
+
+## 11. Installed CLI and service boundaries
+
+One Nyxloom wheel installs three human-facing CLIs and one service executable.
+`nyxloom` handles project-local trove authoring (`init`, `onboard`, local
+`lint`, and `backlog *`). `nyxloom-harness` handles harness session discovery
+and extraction. `nyxloomctl` handles local host administration, workflow
+operations, diagnostics, and the operator `daemon` command. Those operations
+invoke Nyxloom modules directly and do not call an HTTP daemon API; the
+dashboard remains the current HTTP/SSE client. Project authoring and session
+extraction therefore remain usable when no daemon is running.
+
+The service manager invokes `nyxloomd` directly inside the existing container.
+That executable enters the same `Daemon(config.load_registry()).run()`
+lifecycle as the former `nyxloom daemon` path without routing startup through
+human help/version parsing. The wheel bundles cli-extended as an importable
+package, so its installed command registries do not depend on a repository
+checkout or a separate cli-extended runtime distribution.
+
+Command ownership and the old-to-new path table are maintained in the
+[canonical CLI reference](CLI-REFERENCE.md#current-command-and-option-contract).

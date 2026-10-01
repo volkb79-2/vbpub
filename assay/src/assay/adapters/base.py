@@ -58,7 +58,8 @@ learning what a ``go.mod`` is. Every adapter but Go returns ``self``.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from ..guards import is_strict_int
+from ..records import record
 from pathlib import Path
 from types import MappingProxyType
 from typing import Callable, Literal, Mapping, Protocol, Sequence
@@ -74,7 +75,7 @@ __all__ = [
 ]
 
 
-@dataclass(frozen=True, kw_only=True)
+@record
 class StatementSpan:
     """The physical line range of one statement an adapter located by its own
     (language-specific) means — P07's one deliberate protocol extension
@@ -103,7 +104,7 @@ class StatementSpan:
     def __post_init__(self) -> None:
         for name in ("start_line", "end_line"):
             value = getattr(self, name)
-            if isinstance(value, bool) or not isinstance(value, int):
+            if not is_strict_int(value):
                 raise ValueError(
                     f"StatementSpan.{name} must be an integer, got {value!r}"
                 )
@@ -126,7 +127,7 @@ class StatementSpan:
 Remaining = Callable[[], float]
 
 
-@dataclass(frozen=True, kw_only=True)
+@record
 class HelperInvocation:
     """Which external program actually produced a helper's answer, recorded
     at the moment it was run (A-397).
@@ -161,7 +162,7 @@ class HelperInvocation:
                 )
 
 
-@dataclass(frozen=True, kw_only=True)
+@record
 class StatementBlockReport:
     """One :meth:`LanguageAdapter.statement_blocks` answer: every requested
     path's own blocks, plus the identity of whatever produced them.

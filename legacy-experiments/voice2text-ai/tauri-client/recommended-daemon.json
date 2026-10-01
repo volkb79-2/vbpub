@@ -1,0 +1,93 @@
+# Recommended daemon.json Configuration
+# For modern Docker daemon (Docker 20.10+)
+# Location: /etc/docker/daemon.json on Docker HOST
+
+{
+  "# ===== LOGGING (Most Important for Your Use Case) =====": "",
+  "log-driver": "local",
+  "log-opts": {
+    "max-size": "10m",
+    "max-file": "5",
+    "compress": "true",
+    "mode": "non-blocking",
+    "max-buffer-size": "4m"
+  },
+  
+  "# ===== BUILD FEATURES =====": "",
+  "features": {
+    "buildkit": true
+  },
+  
+  "# ===== PERFORMANCE =====": "",
+  "live-restore": true,
+  "userland-proxy": false,
+  "max-concurrent-downloads": 10,
+  "max-concurrent-uploads": 5,
+  
+  "# ===== RESOURCE LIMITS =====": "",
+  "default-ulimits": {
+    "nofile": {
+      "Name": "nofile",
+      "Hard": 64000,
+      "Soft": 64000
+    }
+  },
+  
+  "# ===== NETWORKING =====": "",
+  "default-address-pools": [
+    {
+      "base": "172.17.0.0/12",
+      "size": 24
+    }
+  ],
+  "dns": ["8.8.8.8", "8.8.4.4"],
+  
+  "# ===== STORAGE =====": "",
+  "storage-driver": "overlay2",
+  
+  "# ===== MONITORING (Optional) =====": "",
+  "metrics-addr": "127.0.0.1:9323",
+  
+  "# ===== DEBUG =====": "",
+  "debug": false,
+  "log-level": "info"
+}
+
+# Key Features Explained:
+#
+# 1. LOG DRIVER: "local"
+#    - Keeps logs even with --rm flag
+#    - Better performance than json-file
+#    - Automatic rotation and compression
+#
+# 2. NON-BLOCKING LOGS
+#    - Containers don't block on log writes
+#    - Uses 4MB buffer
+#
+# 3. BUILDKIT
+#    - Modern build engine
+#    - Faster builds, better caching
+#    - Required for Docker build secrets
+#
+# 4. LIVE-RESTORE
+#    - Containers survive daemon restart
+#    - Zero downtime during upgrades
+#
+# 5. USERLAND-PROXY: false
+#    - Uses kernel iptables directly
+#    - Better performance, less CPU
+#
+# 6. DEFAULT-ADDRESS-POOLS
+#    - Prevents IP exhaustion
+#    - Important for many Docker networks
+#
+# 7. METRICS
+#    - Prometheus endpoint at :9323
+#    - Monitor Docker daemon health
+#
+# How to Apply:
+#   1. SSH to Docker HOST machine
+#   2. sudo nano /etc/docker/daemon.json
+#   3. Paste configuration above (remove comments starting with "#")
+#   4. sudo systemctl restart docker
+#   5. docker info | grep "Logging Driver"  # Should show "local"

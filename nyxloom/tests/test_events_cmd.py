@@ -1,4 +1,4 @@
-"""Tests for `nyxloom events` -- PACKAGE SP04 (docs/plan-state-integrity.md
+"""Tests for `nyxloomctl events` -- PACKAGE SP04 (docs/plan-state-integrity.md
 A.3): the greppability bridge that dumps the event store as JSONL to stdout,
 restoring `| jq` / `| lnav` over the (now backend-agnostic, file or SQLite)
 event log.
@@ -22,6 +22,8 @@ Oracles:
 """
 
 from __future__ import annotations
+
+from nyxloom.cli_ctl import main as ctl_main
 
 import argparse
 import json
@@ -63,7 +65,7 @@ def test_round_trip_sqlite_backend(sqlite_backend, capsys):
     project = "sp04-roundtrip-sqlite"
     _seed(project, 4)
 
-    exit_code = cli.main(["events", project])
+    exit_code = ctl_main(["events", project])
     assert exit_code == 0
 
     dumped = _parse_lines(capsys.readouterr().out)
@@ -80,7 +82,7 @@ def test_round_trip_file_backend(tmp_state, capsys):
     project = "sp04-roundtrip-file"
     _seed(project, 3)
 
-    exit_code = cli.main(["events", project, "--json"])
+    exit_code = ctl_main(["events", project, "--json"])
     assert exit_code == 0
 
     dumped = _parse_lines(capsys.readouterr().out)
@@ -95,10 +97,10 @@ def test_json_flag_is_explicit_alias_for_default_output(sqlite_backend, capsys):
     project = "sp04-json-flag"
     _seed(project, 2)
 
-    assert cli.main(["events", project, "--json"]) == 0
+    assert ctl_main(["events", project, "--json"]) == 0
     with_flag = capsys.readouterr().out
 
-    assert cli.main(["events", project]) == 0
+    assert ctl_main(["events", project]) == 0
     without_flag = capsys.readouterr().out
 
     assert with_flag == without_flag
@@ -112,7 +114,7 @@ def test_since_filters_to_higher_sequence(sqlite_backend, capsys):
     project = "sp04-since"
     _seed(project, 5)  # seq 1..5
 
-    exit_code = cli.main(["events", project, "--since", "2"])
+    exit_code = ctl_main(["events", project, "--since", "2"])
     assert exit_code == 0
 
     dumped = _parse_lines(capsys.readouterr().out)
@@ -123,7 +125,7 @@ def test_since_filters_file_backend(tmp_state, capsys):
     project = "sp04-since-file"
     _seed(project, 3)  # seq 1..3
 
-    exit_code = cli.main(["events", project, "--since", "1"])
+    exit_code = ctl_main(["events", project, "--since", "1"])
     assert exit_code == 0
 
     dumped = _parse_lines(capsys.readouterr().out)
@@ -185,12 +187,12 @@ def test_tail_with_no_new_events_still_interrupts_cleanly(sqlite_backend, capsys
 # Oracle 4: unknown/never-written project -- no crash, nothing printed, exit 0
 
 def test_unknown_project_file_backend_emits_nothing(tmp_state, capsys):
-    exit_code = cli.main(["events", "sp04-never-registered-project"])
+    exit_code = ctl_main(["events", "sp04-never-registered-project"])
     assert exit_code == 0
     assert capsys.readouterr().out == ""
 
 
 def test_unknown_project_sqlite_backend_emits_nothing(sqlite_backend, capsys):
-    exit_code = cli.main(["events", "sp04-never-registered-sqlite"])
+    exit_code = ctl_main(["events", "sp04-never-registered-sqlite"])
     assert exit_code == 0
     assert capsys.readouterr().out == ""

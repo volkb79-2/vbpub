@@ -1,0 +1,146 @@
+[
+  {
+    "id": "K01",
+    "line": 9,
+    "operator": "sql:drop-not-null",
+    "expected": "killed"
+  },
+  {
+    "id": "K02",
+    "line": 10,
+    "operator": "sql:drop-not-null",
+    "expected": "survived"
+  },
+  {
+    "id": "K03",
+    "line": 27,
+    "operator": "sql:drop-not-null",
+    "expected": "killed"
+  },
+  {
+    "id": "K04",
+    "line": 5,
+    "operator": "sql:drop-not-null",
+    "expected": "killed"
+  },
+  {
+    "id": "K05",
+    "line": 13,
+    "operator": "sql:drop-check",
+    "expected": "killed"
+  },
+  {
+    "id": "K06",
+    "line": 11,
+    "operator": "sql:drop-check",
+    "expected": "killed"
+  },
+  {
+    "id": "K07",
+    "line": 28,
+    "operator": "sql:drop-check",
+    "expected": "killed"
+  },
+  {
+    "id": "K08",
+    "line": 6,
+    "operator": "sql:drop-check",
+    "expected": "killed"
+  },
+  {
+    "id": "K09",
+    "line": 44,
+    "operator": "sql:drop-check",
+    "expected": "equivalent"
+  },
+  {
+    "id": "K10",
+    "line": 14,
+    "operator": "sql:drop-unique",
+    "expected": "killed"
+  },
+  {
+    "id": "K11",
+    "line": 23,
+    "operator": "sql:drop-unique",
+    "expected": "killed"
+  },
+  {
+    "id": "K13",
+    "line": 30,
+    "operator": "sql:drop-unique",
+    "expected": "killed"
+  },
+  {
+    "id": "K14",
+    "line": 31,
+    "operator": "sql:drop-unique",
+    "expected": "killed"
+  },
+  {
+    "id": "K15",
+    "line": 19,
+    "operator": "sql:drop-foreign-key",
+    "expected": "killed"
+  },
+  {
+    "id": "K16",
+    "line": 24,
+    "operator": "sql:drop-foreign-key",
+    "expected": "killed"
+  },
+  {
+    "id": "K17",
+    "line": 38,
+    "operator": "sql:drop-foreign-key",
+    "expected": "killed"
+  },
+  {
+    "id": "K18",
+    "line": 25,
+    "operator": "sql:weaken-delete-action",
+    "expected": "killed"
+  },
+  {
+    "id": "K19",
+    "line": 19,
+    "operator": "sql:weaken-delete-action",
+    "expected": "killed"
+  },
+  {
+    "id": "K20",
+    "line": 38,
+    "operator": "sql:weaken-delete-action",
+    "expected": "killed"
+  },
+  {
+    "id": "K21",
+    "line": 57,
+    "operator": "sql:drop-trigger",
+    "expected": "killed"
+  },
+  {
+    "id": "K22",
+    "line": 64,
+    "operator": "sql:drop-trigger",
+    "expected": "killed"
+  },
+  {
+    "id": "K23",
+    "line": 72,
+    "operator": "sql:drop-trigger",
+    "expected": "killed"
+  },
+  {
+    "id": "K24",
+    "line": 13,
+    "operator": "sql:widen-check-in",
+    "expected": "killed"
+  },
+  {
+    "id": "K25",
+    "line": 11,
+    "operator": "sql:widen-check-in",
+    "expected": "survived"
+  }
+]

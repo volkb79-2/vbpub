@@ -76,16 +76,17 @@ def test_main_dispatches_read_only_version_help_and_rejects_unknown_controller(m
     assert "cmru " in capsys.readouterr().out
     cli.main(["--help"])
     assert "cmru" in capsys.readouterr().out
-    with pytest.raises(SystemExit) as error:
-        controller_cli.main(["unknown"])
-    assert error.value.code == 2  # argparse's unsupported subcommand status
+    assert controller_cli.main(["unknown"]) == 2
+    assert "invalid choice" in capsys.readouterr().err
 
 
 def test_main_run_step_routes_exact_remaining_argv(monkeypatch):
-    seen = []
-    monkeypatch.setattr("cmru.runner.main", lambda argv: seen.append(argv))
-    cli.main(["run-step", "--project", "demo", "test"])
-    assert seen == [["--project", "demo", "test"]]
+    from cmru.runner import runner_cli
+
+    parser = runner_cli().parser
+    args = parser.parse_args(["demo", "--step", "test"])
+    assert args.target == "demo"
+    assert args.step == "test"
 
 
 def test_controller_commands_return_contractual_statuses_without_network(tmp_path, monkeypatch, capsys):
@@ -111,10 +112,15 @@ def test_controller_engine_errors_are_reported_as_failure(monkeypatch, capsys):
 
 
 def test_worktree_dispatch_refuses_non_git_directory(monkeypatch):
-    monkeypatch.setattr(cli.subprocess, "run", lambda *args, **kwargs: SimpleNamespace(returncode=1, stdout="", stderr="not git"))
-    with pytest.raises(SystemExit) as error:
-        cli.main(["worktrees", "--json"])
-    assert error.value.code == 2
+    shared = cli.transaction._shared_worktree()
+    monkeypatch.setattr(
+        cli,
+        "_current_git_root",
+        lambda: (_ for _ in ()).throw(
+            shared.WorkspaceError("not git", category="git-error")
+        ),
+    )
+    assert cli.main(["worktrees", "--json"]) == 2
 
 
 def test_build_dispatch_rejects_unknown_project_before_child_execution(monkeypatch, tmp_path, capsys):
@@ -126,7 +132,5 @@ def test_build_dispatch_rejects_unknown_project_before_child_execution(monkeypat
     monkeypatch.setattr(cli, "_resolve_config", lambda _: config)
     monkeypatch.setattr(cli, "apply_release_env", lambda *args: None)
     monkeypatch.setattr(cli, "load_config", lambda path: (tmp_path, {"demo": project}, ["demo"], ["demo"], [], "project-first", {}, SimpleNamespace(), cli.GitHubConfig("o", "r", "t", "user"), cli.ReleaseEnvConfig({}, None)))
-    with pytest.raises(SystemExit) as error:
-        cli.main(["build", "--config", str(config), "--project", "missing"])
-    assert error.value.code == 2
-    assert "Unknown project" in capsys.readouterr().err
+    assert cli.main(["build", "--config", str(config), "missing"]) == 2
+    assert "unknown project(s): missing" in capsys.readouterr().err

@@ -45,9 +45,11 @@ visible container-start failure rather than an embedded-Builder fallback.
 The installed Docker-events guard inspects every reserved
 `buildx_buildkit_*`/`buildkit_buildkit_*` candidate. It approves only matching
 name, configured image, `dev-buildkitd.slice` cgroup parent, and service labels.
-The policy vocabulary is `terminate` (default: remove an unapproved worker) or
-`report-only` (log without removal). Invalid/missing policy is an error; an
-inspect failure is indeterminate and stops the watcher for systemd to restart.
+The policy vocabulary is `report-only` (default: log without removal) or
+`terminate` (explicit opt-in: remove an unapproved worker). Termination can
+interrupt an active Docker-container Buildx build, so the host wizard requires
+a second confirmation. Invalid/missing policy is an error; an inspect failure
+is indeterminate and stops the watcher for systemd to restart.
 
 The host wizard follows the same fail-closed resource model. It is slice-first,
 asks all four memory controls for every governed slice, distinguishes optional
@@ -92,9 +94,14 @@ MemoryMin key and is mirrored on the guaranteed sibling; `DEV_MEMORY_LOW/HIGH/MA
 are the other root controls. CPUWeight, CPUQuota, IOWeight, swap, and zswap are
 walked inside each slice's flow.
 
-Current registry publication uses OCI media types and forced native zstd level
-3 compression. BuildKit preserves the normal layer topology and attaches max
-provenance plus an SPDX SBOM. These settings live in `cmru.toml`. See
+Current registry publication uses OCI media types and native zstd level 3
+compression with forced recompression disabled. The persistent cache belongs to
+the managed remote; releases do not export a second local cache stream through
+the client API. Disabling forced recompression avoids an unnecessary second
+compression pass for large layers that already have a suitable encoding.
+BuildKit preserves the normal layer topology and attaches max provenance plus an
+SPDX SBOM. These
+settings live in `cmru.toml`. See
 [Image delivery benchmarks](IMAGE-DELIVERY-BENCHMARKS.md) for cold-pull
 evidence and [OCI image tooling](OCI-IMAGE-TOOLING.md) for the distinction
 between OCI manifests, attestations and MDT's human manifest.
@@ -133,7 +140,12 @@ The phases are:
 3. `scripts/release-bake.sh` selects the governed named builder and runs the
    release matrix with OCI output, one target at a time. BuildKit performs
    Dockerfile execution, cache lookup, layer compression, and OCI export inside
-   its limited worker.
+   its limited worker. The persistent cache remains in the managed worker; the
+   release wrapper does not stream a second local cache export through the
+   client API after the image tarball. The toolkit requirements are installed before the
+   offline first-party-wheel layer; their minimums therefore form the explicit
+   runtime-dependency closure for every staged wheel (including Nyxloom's
+   `rich>=15.0.0` and `pygments>=2.21.0`).
 4. `build-push.py` extracts the canonical in-image manifests and records release
    metadata. CMRU then runs the gate and promotes the source commit before its
    post-gate push step dispatches back to `build-push.py --push`. No second image
@@ -195,8 +207,9 @@ and destination layouts coexist.
 The named `mdt-managed` remote owns a persistent BuildKit cache distinct from
 Docker's embedded builder. Its first release is therefore cold even if another
 builder recently built the same Dockerfile; later releases reuse its layers
-and cache mounts. Host service replacement may interrupt active builds, but the
-named remote is preserved and verified rather than silently recreated.
+and cache mounts. The release client does not export that cache through the
+Docker API. Host service replacement may interrupt active builds, but the named
+remote is preserved and verified rather than silently recreated.
 
 Volatile OCI labels such as revision, creation time, and release version are
 applied after all filesystem instructions in the Dockerfile. Changing release
@@ -230,20 +243,23 @@ flowchart TD
     R --> V[dev.slice]
     V --> I[dev-interactive.slice]
     V --> B[dev-background.slice]
+    V --> G[dev-gates.slice]
     V --> K[dev-buildkitd.slice]
     S --> D[docker.service / dockerd]
     K --> W[mdt-buildkitd.service<br/>mdt-managed remote]
     I --> V[MDT devcontainer]
     V --> C[build-push / docker-buildx / tar]
     V --> P[docker-repack<br/>one target, concurrency 2]
-    B --> T[dstdns stacks and test-runner]
+    B --> T[dstdns and long-running stacks]
+    G --> Q[run-gate / tester-unified / VM lanes]
 ```
 
 The managed service container is intentionally in `dev-buildkitd.slice`, while
 `dockerd` remains in `system.slice`. The `mdt-managed` remote endpoint is a
 Unix socket mounted into the devcontainer; no generated Buildx worker scope is
-part of the normal path. `dev-background.slice` is shown for context: dstdns
-uses it, while release orchestration runs in the invoking devcontainer's
+part of the normal path. `dev-background.slice` holds dstdns and other
+long-running stacks, while disposable gate and VM lanes use the sibling
+`dev-gates.slice`. Release orchestration runs in the invoking devcontainer's
 `dev-interactive.slice`.
 
 | Work | Process/container to inspect | Governance |
@@ -260,16 +276,17 @@ mismatched instance fails before work starts. The important distinction is:
 
 - A systemd **slice** controls an aggregate workload tier. The shipped
   devcontainer template requests `dev-interactive.slice`; dstdns stack containers
-  normally request `dev-background.slice`. Slice policy is installed and owned by
+  normally request `dev-background.slice`, while run-gate and other disposable
+  gate lanes request `dev-gates.slice`. Slice policy is installed and owned by
   the host.
 - The managed service's Docker container is placed directly in
   `dev-buildkitd.slice`; `dockerd` itself remains in `system.slice`.
 - The Buildx node is `remote`, so no Buildx worker container or Buildx
   `cgroup-parent` driver option participates in placement.
 - Docker has no Buildx driver option for the host's dynamic per-device I/O
-  ceilings. The installed guard terminates or reports accidental
-  `buildx_buildkit_*`/`buildkit_buildkit_*` containers according to the
-  explicit host policy.
+  ceilings. The installed guard reports accidental `buildx_buildkit_*`/
+  `buildkit_buildkit_*` containers by default and removes them only when the
+  host explicitly selects `terminate`.
 
 The default controls are deliberately layered. The BuildKit worker's hard
 cgroup limits contain a runaway build. Repack is a local process: worker count
@@ -523,8 +540,8 @@ The governed defaults are in the `[env]` table of
 
 - `BUILDX_BUILDER=mdt-managed` and `BUILDKIT_HOST=unix:///run/mdt-buildkitd/buildkitd.sock`
   select the host-managed remote; host-setup's slice config controls its
-  resources. `BUILDX_ACCIDENTAL_CONTAINER_POLICY` is `terminate` or
-  `report-only`.
+  resources. `BUILDX_ACCIDENTAL_CONTAINER_POLICY` defaults to `report-only`;
+  `terminate` removes unapproved Buildx workers and requires explicit opt-in.
 - `REPACK_WORK_DIR`, `REPACK_TARGET_SIZE`, `REPACK_JOBS`,
   `REPACK_CONCURRENCY`, `REPACK_COMPRESSION_LEVEL`, and `REPACK_VMEM_KB`
   control repack. `REPACK_VMEM_KB` accepts `unlimited` or a positive numeric

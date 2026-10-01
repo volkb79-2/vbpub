@@ -28,7 +28,7 @@ Every claim below names its command; failures are logged where they happened.
      quoting (lossless `\x1f`-joined recording); module monkeypatches do NOT
      cross the subprocess boundary (assert REAL derived paths instead).
 3. **Commits:** `9f2f765d` tool+spec+tests; `09cd343d` adoption (central
-   `run-gate.toml` at vbpub root, `nyxloom/run-gate.py` symlink,
+   `run-gate.root.toml` at vbpub root, `nyxloom/run-gate.py` symlink,
    `nyxloom/run-gate.toml` lane, thin `[gates]` argv, AGENTS.md pointer).
    Build-time catches: TOML has no implicit string concat (lane file
    rewritten); exec bit required on the symlink target.

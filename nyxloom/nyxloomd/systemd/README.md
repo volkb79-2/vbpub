@@ -8,7 +8,7 @@ nyxloom dies.
 ## The gap these close
 
 CR-16 gave nyxloom a durable heartbeat and a reader that needs no live daemon:
-`nyxloom doctor --liveness` opens the store directly and reports how long it
+`nyxloomctl doctor --liveness` opens the store directly and reports how long it
 has been since each project completed a reconcile pass. That mechanism was
 verified end to end against copies of all five real production stores with the
 daemon stopped, and it is genuinely independent of the daemon.
@@ -35,7 +35,7 @@ Two properties are required and neither can live inside the container:
 
 | unit | role |
 | --- | --- |
-| `nyxloom-liveness.service` | runs `nyxloom doctor --liveness` against the host's state root; non-zero exit means a deadman or tick-error-streak fired |
+| `nyxloom-liveness.service` | runs `nyxloomctl doctor --liveness` against the host's state root; non-zero exit means a deadman or tick-error-streak fired |
 | `nyxloom-liveness.timer` | drives it every 5 minutes, `Persistent=true` so a suspended host catches up |
 | `nyxloom-liveness-alarm@.service` | `OnFailure=` handler — journal at `emerg`, `wall`, and an operator hook |
 

@@ -1,0 +1,108 @@
+# Oobabooga Local LLM + OpenAI-Compatible Shim (CPU-only)
+# Template for: oobabooga-llm compose stack
+# Communication: Services communicate via voice2text-prod-network
+# Target: <=6 CPU cores, <=10GB RAM. Uses quantized GGUF/ggml model.
+
+x-defaults: &service-defaults
+  labels:
+    - "project={{ deploy.project_name }}"
+    - "environment={{ deploy.environment_tag }}"
+  user: "${CONTAINER_UID:-0}:${CONTAINER_GID:-0}"
+  environment:
+    {% for key, value in deploy.env.defaults.items() %}
+    - {{ key }}={{ value }}
+    {% endfor %}
+
+services:
+  {{ services.llm_webui.name }}:
+    <<: *service-defaults
+    image: {{ services.llm_webui.image_name }}:{{ services.llm_webui.image_tag }}
+    hostname: {{ services.llm_webui.name }}
+    environment:
+      - TRANSFORMERS_CACHE=/app/user_data/cache
+      - MODEL_NAME={{ llm.model_name }}
+      - MODEL_THREADS={{ llm.model_threads }}
+      - MODEL_CONTEXT_LENGTH={{ llm.model_context_length }}
+      - OOBABOOGA_API_PORT={{ services.llm_webui.internal_port }}
+    volumes:
+      - {{ llm.hostdir.models }}:/app/user_data/models:ro
+      - {{ llm.hostdir.cache }}:/app/user_data/cache
+      - ${PHYSICAL_REPO_ROOT:-{{ ciu.physical_repo_root }}}/legacy-experiments/voice2text-ai/oobabooga-llm/config/system-prompt.txt:{{ llm.prompt_system_path }}:ro
+      - ${PHYSICAL_REPO_ROOT:-{{ ciu.physical_repo_root }}}/legacy-experiments/voice2text-ai/oobabooga-llm/load-model.py:/app/load-model.py:ro
+    # No external ports - accessed only via reverse proxy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:{{ services.llm_webui.internal_port }}/v1/models').read()"]
+      interval: {{ deploy.health.interval }}
+      timeout: {{ deploy.health.timeout }}
+      retries: {{ deploy.health.retries }}
+      start_period: {{ deploy.health.start_period }}
+    deploy:
+      resources:
+        limits:
+          memory: {{ llm.resource_memory_limit }}
+          cpus: '{{ llm.resource_cpu_limit }}'
+    restart: unless-stopped
+    labels:
+      - "{{ deploy.labels.prefix }}.component={{ services.llm_webui.name }}"
+      - "{{ deploy.labels.prefix }}.stack=application"
+      - "{{ deploy.labels.prefix }}.service-type=api"
+    networks:
+      - {{ deploy.network_name }}
+
+  {{ llm.model_loader_name }}:
+    <<: *service-defaults
+    image: {{ llm.model_loader_image_name }}:{{ llm.model_loader_image_tag }}
+    hostname: {{ llm.model_loader_name }}
+    environment:
+      - MODEL_NAME={{ llm.model_name }}
+      - MODEL_THREADS={{ llm.model_threads }}
+      - MODEL_CONTEXT_LENGTH={{ llm.model_context_length }}
+      - OOBABOOGA_API_URL=http://{{ services.llm_webui.name }}:{{ services.llm_webui.internal_port }}
+    volumes:
+      - ${PHYSICAL_REPO_ROOT:-{{ ciu.physical_repo_root }}}/legacy-experiments/voice2text-ai/oobabooga-llm/load-model.py:/app/load-model.py:ro
+    depends_on:
+      {{ services.llm_webui.name }}:
+        condition: service_healthy
+    command: ["sh", "-c", "pip install requests && python /app/load-model.py"]
+    restart: "no"
+    labels:
+      - "{{ deploy.labels.prefix }}.component=model-loader"
+      - "{{ deploy.labels.prefix }}.stack=application"
+      - "{{ deploy.labels.prefix }}.service-type=worker"
+    networks:
+      - {{ deploy.network_name }}
+
+  {{ services.openai_shim.name }}:
+    <<: *service-defaults
+    image: {{ services.openai_shim.image_name }}:{{ services.openai_shim.image_tag }}
+    hostname: {{ services.openai_shim.name }}
+    environment:
+      - TARGET_URL=http://{{ services.llm_webui.name }}:{{ services.llm_webui.internal_port }}
+      - SHIM_MODEL_ALIAS={{ llm.shim_model_alias }}
+      - MAX_TOKENS={{ llm.max_tokens }}
+      - LOG_LEVEL={{ llm.log_level }}
+      - SYSTEM_PROMPT_FILE={{ llm.prompt_system_path }}
+      - PORT={{ services.openai_shim.internal_port }}
+    volumes:
+      - ${PHYSICAL_REPO_ROOT:-{{ ciu.physical_repo_root }}}/legacy-experiments/voice2text-ai/oobabooga-llm/config/system-prompt.txt:{{ llm.prompt_system_path }}:ro
+    depends_on:
+      {{ services.llm_webui.name }}:
+        condition: service_healthy
+    # No external ports - accessed only via reverse proxy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:{{ services.openai_shim.internal_port }}/health').read()"]
+      interval: {{ deploy.health.interval }}
+      timeout: {{ deploy.health.timeout }}
+      retries: {{ deploy.health.retries }}
+      start_period: {{ deploy.health.start_period }}
+    labels:
+      - "{{ deploy.labels.prefix }}.component={{ services.openai_shim.name }}"
+      - "{{ deploy.labels.prefix }}.stack=application"
+      - "{{ deploy.labels.prefix }}.service-type=api"
+    networks:
+      - {{ deploy.network_name }}
+
+networks:
+  {{ deploy.network_name }}:
+    external: true
+    name: {{ deploy.network_name }}

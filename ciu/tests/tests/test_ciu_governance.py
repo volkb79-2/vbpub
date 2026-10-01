@@ -46,7 +46,11 @@ class TestResolveConfig:
         cfg = gov.resolve_config({"enabled": True, "write_iops": 999})
         assert cfg["enabled"] is True
         assert cfg["write_iops"] == 999
-        assert cfg["mem_limit"] == "1g"  # untouched default
+        assert cfg["mem_limit"] == ""
+        assert cfg["mem_swap_limit"] == ""
+        assert cfg["mem_reservation"] == ""
+        assert cfg["read_iops"] == ""
+        assert cfg["write_iops"] == 0
         assert cfg["cgroup_parent"] == ""
 
     def test_exempt_services_defaults_to_empty_list(self) -> None:
@@ -123,12 +127,35 @@ class TestResolveConfig:
 
     # -- S15.14/S15.15/S15.16 — new keys default to inert/off ---------------
 
-    def test_new_keys_default_to_off(self) -> None:
+    def test_new_keys_and_memory_controls_default_to_off(self) -> None:
         cfg = gov.resolve_config(None)
+        assert cfg["read_iops"] == ""
+        assert cfg["write_iops"] == 0
         assert cfg["io_weight"] == 0
         assert cfg["read_bps"] == 0
         assert cfg["write_bps"] == 0
         assert cfg["mem_min"] == ""
+        assert cfg["mem_limit"] == ""
+        assert cfg["mem_swap_limit"] == ""
+        assert cfg["mem_reservation"] == ""
+
+    def test_explicit_zero_read_iops_retains_baseline_opt_in(self) -> None:
+        cfg = gov.resolve_config({"enabled": True, "read_iops": 0})
+        assert cfg["read_iops"] == 0
+
+    def test_empty_read_iops_means_uncapped(self) -> None:
+        cfg = gov.resolve_config({"enabled": True, "read_iops": ""})
+        assert cfg["read_iops"] == ""
+
+    @pytest.mark.parametrize("value", [-1, 1.5, "invalid", "1.5", True])
+    def test_invalid_read_iops_is_rejected(self, value) -> None:
+        with pytest.raises(ValueError, match=r"\[S15\.4\].*read_iops"):
+            gov.resolve_config({"enabled": True, "read_iops": value})
+
+    @pytest.mark.parametrize("value", [-1, 1.5, "invalid", "1.5", True])
+    def test_invalid_write_iops_is_rejected(self, value) -> None:
+        with pytest.raises(ValueError, match=r"\[S15\.4\].*write_iops"):
+            gov.resolve_config({"enabled": True, "write_iops": value})
 
     # -- S15.14 — io_weight range validation ---------------------------------
 
@@ -731,25 +758,80 @@ class TestBuildInjections:
         cfg = gov.resolve_config(raw)
         return cfg
 
-    def test_injects_all_five_keys_when_author_sets_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_memory_governance_defaults_inject_no_memory_controls(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         monkeypatch.setattr(gov, "resolve_device", lambda configured: ("/dev/vda", "explicit"))
         cfg = self._cfg(device="/dev/vda", read_iops=100, write_iops=400)
         injections, notes = gov.build_injections({"redis": {"image": "redis"}}, cfg)
         assert set(injections) == {"redis"}
         frag = injections["redis"]
         assert frag["cgroup_parent"] == "dev-background.slice"
-        assert frag["mem_limit"] == "1g"
-        assert frag["memswap_limit"] == "17g"
-        assert frag["mem_reservation"] == "256m"
+        assert not {"mem_limit", "memswap_limit", "mem_reservation"} & frag.keys()
         assert frag["blkio_config"] == {
             "device_read_iops": [{"path": "/dev/vda", "rate": 100}],
             "device_write_iops": [{"path": "/dev/vda", "rate": 400}],
         }
+        assert "mem_limit=(not set)" in notes
+        assert "mem_swap_limit=(not set)" in notes
+        assert "mem_reservation=(not set)" in notes
         assert any("services_injected=1" in n for n in notes)
+
+    def test_omitted_resource_caps_inject_no_memory_cpu_or_io_limits(self) -> None:
+        cfg = self._cfg(device="/dev/vda")
+        injections, notes = gov.build_injections({"redis": {"image": "redis"}}, cfg)
+        frag = injections["redis"]
+        assert frag == {"cgroup_parent": "dev-background.slice"}
+        assert "read_iops=(not set)" in notes
+        assert "write_iops=(not set)" in notes
+
+    def test_explicit_memory_controls_are_injected(self) -> None:
+        cfg = self._cfg(
+            mem_limit="2g", mem_swap_limit="6g", mem_reservation="512m"
+        )
+        injections, _ = gov.build_injections(
+            {"redis": {"image": "redis"}}, cfg
+        )
+        assert injections["redis"]["mem_limit"] == "2g"
+        assert injections["redis"]["memswap_limit"] == "6g"
+        assert injections["redis"]["mem_reservation"] == "512m"
+
+    @pytest.mark.parametrize(
+        ("overrides", "expected"),
+        [
+            (
+                {"read_iops": 120},
+                {"device_read_iops": [{"path": "/dev/vda", "rate": 120}]},
+            ),
+            (
+                {"write_iops": 240},
+                {"device_write_iops": [{"path": "/dev/vda", "rate": 240}]},
+            ),
+        ],
+    )
+    def test_iops_caps_apply_only_to_configured_direction(
+        self, overrides, expected
+    ) -> None:
+        cfg = self._cfg(device="/dev/vda", **overrides)
+        injections, _ = gov.build_injections({"redis": {"image": "redis"}}, cfg)
+        assert injections["redis"]["blkio_config"] == expected
+
+    def test_zero_baseline_derived_iops_refuses_instead_of_omitting_cap(
+        self, tmp_path: Path
+    ) -> None:
+        baseline = tmp_path / "io-baseline.env"
+        baseline.write_text("RIOPS_MAX=1\n", encoding="utf-8")
+        cfg = self._cfg(
+            device="/dev/vda", read_iops=0, baseline_path=str(baseline)
+        )
+        with pytest.raises(ValueError, match=r"\[S15\.4\].*not positive"):
+            gov.build_injections({"redis": {"image": "redis"}}, cfg)
 
     def test_author_set_key_is_skipped_others_still_injected(self) -> None:
         """S15.3 — per-key precedence: author's mem_limit wins; others still injected."""
-        cfg = self._cfg(device="/dev/vda")
+        cfg = self._cfg(
+            device="/dev/vda", mem_swap_limit="17g", mem_reservation="256m"
+        )
         block = {"image": "redis", "mem_limit": "4g"}
         injections, _ = gov.build_injections({"redis": block}, cfg)
         frag = injections["redis"]
@@ -757,11 +839,13 @@ class TestBuildInjections:
         assert frag["cgroup_parent"] == "dev-background.slice"
         assert frag["memswap_limit"] == "17g"
         assert frag["mem_reservation"] == "256m"
-        assert "blkio_config" in frag
+        assert "blkio_config" not in frag
 
     def test_author_set_swap_key_is_skipped_others_still_injected(self) -> None:
         """S15.3 — per-key precedence: author's memswap_limit wins; others still injected."""
-        cfg = self._cfg(device="/dev/vda")
+        cfg = self._cfg(
+            device="/dev/vda", mem_limit="1g", mem_reservation="256m"
+        )
         block = {"image": "redis", "memswap_limit": "unlimited"}
         injections, _ = gov.build_injections({"redis": block}, cfg)
         frag = injections["redis"]
@@ -769,7 +853,7 @@ class TestBuildInjections:
         assert frag["cgroup_parent"] == "dev-background.slice"
         assert frag["mem_limit"] == "1g"
         assert frag["mem_reservation"] == "256m"
-        assert "blkio_config" in frag
+        assert "blkio_config" not in frag
 
     def test_author_sets_all_five_keys_service_absent_from_injections(self) -> None:
         cfg = self._cfg(device="/dev/vda")
@@ -872,10 +956,11 @@ class TestBuildInjections:
     def test_cpus_unset_injects_no_cpus_key(self) -> None:
         """Regression guard (CIU-90's whole point): governance.cpus left at
         its default ("") must NOT inject a `cpus` key — uncapped stays
-        uncapped, unlike every other always-on governance key."""
+        uncapped. Per-container memory controls are explicit-only too."""
         cfg = self._cfg(device="/dev/vda")
         injections, notes = gov.build_injections({"redis": {"image": "redis"}}, cfg)
         assert "cpus" not in injections["redis"]
+        assert "blkio_config" not in injections["redis"]
         assert not any(n.startswith("cpus=") for n in notes)
 
     def test_cpus_configured_injects_the_key(self) -> None:

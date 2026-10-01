@@ -23,6 +23,8 @@ are deliberately generous failsafes against hanging the suite, never oracles.
 
 from __future__ import annotations
 
+from nyxloom.cli_ctl import main as ctl_main
+
 import ast
 import json
 import logging
@@ -882,7 +884,7 @@ def test_forced_rotation_is_the_documented_recovery_path(tmp_state):
 
 def test_bootstrap_losing_the_creation_race_adopts_the_winner_never_a_second_secret(
         tmp_state):
-    """Two daemons (or a daemon and `nyxloom auth bootstrap`) can reach an
+    """Two daemons (or a daemon and `nyxloomctl auth bootstrap`) can reach an
     absent store at once. The O_EXCL create is what makes that safe: the loser
     must adopt the winner's credential, NOT mint a second one -- an operator
     holding the value printed by the first would otherwise be silently locked
@@ -1009,7 +1011,7 @@ def test_a_broken_store_does_not_stop_the_daemon_from_starting(
         tmp_state, sample_project, monkeypatch):
     """Availability half of failing closed: a bad credential file must not
     take the factory down with it. Reads and reconcile keep working; only
-    mutations refuse, so `nyxloom auth rotate --force` can fix it live."""
+    mutations refuse, so `nyxloomctl auth rotate --force` can fix it live."""
     monkeypatch.setattr(lint, "lint_project", lambda cfg: {})
     monkeypatch.setattr(reconcile, "plan_project", lambda inp: [])
     _set_ephemeral_http_port(sample_project)
@@ -1727,7 +1729,7 @@ def test_control_ledger_is_readable_with_the_events_command(served, capsys):
               _json_headers())
     capsys.readouterr()
 
-    assert cli.main(["events", control_auth.CONTROL_LEDGER_PROJECT]) == 0
+    assert ctl_main(["events", control_auth.CONTROL_LEDGER_PROJECT]) == 0
     out = capsys.readouterr().out
     records = [json.loads(line) for line in out.splitlines() if line.strip()]
     assert [r["type"] for r in records] == ["CONTROL_MUTATION_REFUSED"]
@@ -1785,7 +1787,7 @@ def test_cli_bootstrap_show_and_rotate_round_trip(served, capsys):
     """The operator-facing flow end to end: bootstrap/show print a credential
     that actually authenticates, and rotate prints one that replaces it."""
     capsys.readouterr()
-    assert cli.main(["auth", "show"]) == 0
+    assert ctl_main(["auth", "show"]) == 0
     shown = capsys.readouterr().out
     credential = _credential_from(shown)
     assert f"operator: {_store().load().operator_id}" in shown
@@ -1797,7 +1799,7 @@ def test_cli_bootstrap_show_and_rotate_round_trip(served, capsys):
                      _json_headers(Authorization=f"Bearer {credential}"))[0] == 200
     paths.pause_flag("demo").unlink()
 
-    assert cli.main(["auth", "rotate", "--operator", "alice"]) == 0
+    assert ctl_main(["auth", "rotate", "--operator", "alice"]) == 0
     rotated = _credential_from(capsys.readouterr().out)
     assert rotated != credential
 
@@ -1830,7 +1832,7 @@ def _credential_from(stdout: str) -> str:
 
 def test_cli_bootstrap_creates_the_store_when_absent(tmp_state, capsys):
     assert not _store().path.exists()
-    assert cli.main(["auth", "bootstrap", "--operator", "alice"]) == 0
+    assert ctl_main(["auth", "bootstrap", "--operator", "alice"]) == 0
     printed = _credential_from(capsys.readouterr().out)
     record = _store().load()
     assert record.operator_id == "alice"
@@ -1844,15 +1846,15 @@ def test_cli_reports_an_untrustworthy_store_instead_of_raising(tmp_state, capsys
     store.path.chmod(0o644)
     capsys.readouterr()
 
-    assert cli.main(["auth", "show"]) == 1
+    assert ctl_main(["auth", "show"]) == 1
     captured = capsys.readouterr()
     assert captured.out == ""                     # no partial secret on stdout
     assert "0600" in captured.err
 
-    assert cli.main(["auth", "rotate"]) == 1
+    assert ctl_main(["auth", "rotate"]) == 1
     assert "--force" in capsys.readouterr().err
 
-    assert cli.main(["auth", "rotate", "--force"]) == 0
+    assert ctl_main(["auth", "rotate", "--force"]) == 0
     out = capsys.readouterr().out
     assert _credential_from(out) == store.load().credential
     assert "generation: 1" in out
@@ -1861,8 +1863,9 @@ def test_cli_reports_an_untrustworthy_store_instead_of_raising(tmp_state, capsys
     assert forced[-1].payload == {"generation": 1, "forced": True}
 
 
-def test_cli_auth_without_a_subcommand_is_a_usage_error(tmp_state, capsys):
-    assert cli.main(["auth"]) == 2
+def test_cli_auth_without_a_subcommand_prints_help(tmp_state, capsys):
+    assert ctl_main(["auth"]) == 0
+    assert "bootstrap" in capsys.readouterr().out
     assert not _store().path.exists()
 
 
@@ -1877,7 +1880,7 @@ def test_cli_rotation_prints_the_credential_even_if_the_audit_append_fails(
                         lambda *a, **kw: (_ for _ in ()).throw(OSError("nope")))
     capsys.readouterr()
 
-    assert cli.main(["auth", "rotate"]) == 1
+    assert ctl_main(["auth", "rotate"]) == 1
     captured = capsys.readouterr()
     assert _credential_from(captured.out) == store.load().credential
     assert "could not be audited" in captured.err

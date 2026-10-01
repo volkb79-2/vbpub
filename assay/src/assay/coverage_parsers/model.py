@@ -38,7 +38,7 @@ only, no import of ``model`` or any parser), so no cycle is introduced.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from ..records import record
 from typing import Mapping
 
 from ..errors import AssayError, Outcome, ReasonCode
@@ -131,7 +131,7 @@ class ClassifiedLineBudget:
             )
 
 
-@dataclass(frozen=True, kw_only=True)
+@record
 class BranchCoverage:
     """One file's per-line branch-arc counts, format-normalized (wave-1 §3.1).
 
@@ -175,7 +175,7 @@ class BranchCoverage:
                 )
 
 
-@dataclass(frozen=True, kw_only=True)
+@record
 class CoverageBlock:
     """One coverage record's positional EXTENT, kept unmerged (A-239).
 
@@ -281,7 +281,7 @@ class CoverageBlock:
         return self.start_col == 0 or self.end_col == 0
 
 
-@dataclass(frozen=True, kw_only=True)
+@record
 class FileCoverage:
     """One file's line classification, format-normalized.
 
@@ -497,7 +497,7 @@ class FileCoverage:
         return any(block.has_remapped_position for block in self.blocks)
 
 
-@dataclass(frozen=True, kw_only=True)
+@record
 class CoverageProfile:
     """A whole parsed coverage artifact: one :class:`FileCoverage` per file
     path exactly as that format's artifact names it (no source-root

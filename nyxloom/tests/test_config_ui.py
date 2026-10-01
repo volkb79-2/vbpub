@@ -180,17 +180,22 @@ def test_policy_update_full_flow(cfg_daemon, sample_project, monkeypatch):
     assert changed[0].actor.id == _operator().operator_id
 
     captured = []
-    monkeypatch.setattr(reconcile, "plan_project", lambda inp: (captured.append(inp), [])[1])
+    test_thread = threading.current_thread()
+
+    def capture_test_thread_input(inp):
+        # The fixture's live daemon may already be in a reconcile pass when
+        # the policy POST writes the new file. That in-flight pass can finish
+        # after this explicit run_pass() and still carry its pre-update
+        # snapshot, so only the test thread's input is evidence for this
+        # synchronous contract.
+        if threading.current_thread() is test_thread:
+            captured.append(inp)
+        return []
+
+    monkeypatch.setattr(reconcile, "plan_project", capture_test_thread_input)
     d.run_pass("demo")
-    # NB: assert the CONTRACT ("a reconcile pass after the config change sees
-    # the new cap"), not an exact call count. The cfg_daemon fixture runs a
-    # LIVE Daemon.run() reconcile loop in the background, which shares this same
-    # monkeypatched plan_project and can slip in its own "demo" pass between the
-    # setattr above and this assertion -- a real ~5%-under-xdist race that
-    # `== 1` turned into an intermittent gate failure (2026-07-27). Every
-    # captured input reflects the post-change config, so check the last one.
-    assert captured, "run_pass did not invoke plan_project"
-    assert captured[-1].cfg.policy.max_active_tasks == 5
+    assert len(captured) == 1, "the synchronous run_pass did not invoke plan_project once"
+    assert captured[0].cfg.policy.max_active_tasks == 5
 
 
 # ==========================================================================

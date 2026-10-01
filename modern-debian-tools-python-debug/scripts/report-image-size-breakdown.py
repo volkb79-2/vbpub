@@ -19,6 +19,7 @@ leaf registry, so a byte measured once renders consistently in both.
 from __future__ import annotations
 
 import argparse
+from mdt_cli import MdtArgumentParser
 import re
 import shlex
 import subprocess
@@ -461,7 +462,7 @@ def du_leaf_line(leaf: Leaf) -> str:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = MdtArgumentParser(description=__doc__)
     parser.add_argument("--image", default=DEFAULT_IMAGE)
     parser.add_argument("--view", choices=("layer", "logical", "both"), default="both")
     parser.add_argument("--threshold", type=float, default=1.0, help="unattributed %% that triggers a warning")

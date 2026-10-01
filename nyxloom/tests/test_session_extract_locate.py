@@ -37,6 +37,7 @@ def home(tmp_path, monkeypatch):
     h.mkdir()
     monkeypatch.setenv("HOME", str(h))
     monkeypatch.delenv("XDG_DATA_HOME", raising=False)
+    monkeypatch.delenv("CODEX_HOME", raising=False)
     return h
 
 
@@ -56,8 +57,8 @@ def _claude_subagent(home: Path, project: str, uuid: str, agent_id: str) -> Path
     return f
 
 
-def _codex_rollout(home: Path, uuid: str) -> Path:
-    d = home / ".codex" / "sessions" / "2026" / "09" / "12"
+def _codex_rollout(home: Path, uuid: str, codex_home: str | Path = ".codex") -> Path:
+    d = home / codex_home / "sessions" / "2026" / "09" / "12"
     d.mkdir(parents=True, exist_ok=True)
     f = d / f"rollout-2026-09-12T10-11-40-{uuid}.jsonl"
     f.write_text("{}\n", encoding="utf-8")
@@ -244,6 +245,30 @@ def test_bare_uuid_resolves_to_a_codex_rollout_by_filename_suffix(home):
     assert resolve_session_ref(_UUID, Path("/workspaces/vbpub")).path == f
 
 
+def test_codex_home_override_resolves_a_rollout_in_that_home(home, monkeypatch):
+    # Keep the configured home outside $HOME so this proves the environment
+    # variable is used, rather than accidentally passing through sibling
+    # ~/.codex* discovery.
+    codex_home = home.parent / "codex2"
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    f = _codex_rollout(home, _UUID, codex_home=codex_home)
+
+    assert locate._codex_sessions_root() == codex_home / "sessions"
+    assert resolve_session_ref(_UUID, Path("/workspaces/vbpub")).path == f
+
+
+def test_same_uuid_in_two_codex_homes_is_ambiguous(home):
+    default = _codex_rollout(home, _UUID)
+    alternate = _codex_rollout(home, _UUID, codex_home=".codex2")
+
+    with pytest.raises(LocateError) as e:
+        resolve_session_ref(_UUID, Path("/workspaces/vbpub"))
+
+    message = str(e.value)
+    assert "matches 2 sessions" in message
+    assert str(default) in message and str(alternate) in message
+
+
 def test_no_match_errors_and_names_where_it_looked(home):
     _claude_session(home, "-workspaces-vbpub", _OTHER_UUID)
     with pytest.raises(LocateError) as e:
@@ -353,6 +378,18 @@ def test_xdg_data_home_equal_to_the_default_is_not_searched_twice(home, monkeypa
     monkeypatch.setenv("XDG_DATA_HOME", str(home / ".local" / "share"))
     assert locate._opencode_db_candidates() == [
         home / ".local" / "share" / "opencode" / "opencode.db"
+    ]
+
+
+def test_opencode_db_equal_to_xdg_store_is_not_searched_twice(home, tmp_path, monkeypatch):
+    xdg = tmp_path / "xdg"
+    configured = xdg / "opencode" / "opencode.db"
+    monkeypatch.setenv("XDG_DATA_HOME", str(xdg))
+    monkeypatch.setenv("OPENCODE_DB", str(configured))
+
+    assert locate._opencode_db_candidates() == [
+        configured,
+        home / ".local" / "share" / "opencode" / "opencode.db",
     ]
 
 
@@ -475,7 +512,7 @@ def test_claude_match_scan_ignores_a_non_directory_non_file_nested_entry(
 
 
 def test_codex_match_scan_ignores_a_non_directory_non_file_entry(
-    tmp_path, monkeypatch
+    home, tmp_path, monkeypatch
 ):
     root = tmp_path / "sessions"
     root.mkdir()

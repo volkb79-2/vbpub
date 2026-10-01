@@ -48,9 +48,16 @@ def test_output_stream_configure_flush_and_empty_write_contract(monkeypatch):
     assert wrapped.encoding == stream.encoding
     monkeypatch.setattr(output.sys, "stdout", wrapped)
     try:
-        output.configure(time_short=False)
-        assert output.consume_cli_flags(["--log-prefix-time-short", "build", "--", "--log-prefix-time-short"]) == ["build", "--", "--log-prefix-time-short"]
+        from cmru import cli as cmru_cli
+
+        configured = []
+        monkeypatch.setattr(output, "configure", configured.append)
+        args = cmru_cli._build_cli().parser.parse_args(
+            ["build", "--log-prefix-time-short"]
+        )
+        assert args.log_prefix_time_short is True
         assert output.os.environ[output._TIME_ENV] == "1"
+        assert configured == [True]
     finally:
         output.sys.stderr = original_stderr
         monkeypatch.delenv(output._TIME_ENV, raising=False)
@@ -107,11 +114,14 @@ def test_state_identity_absence_and_manifest_image_shape_are_explicit(monkeypatc
         manifest._validate_images([], "demo")
 
 
-def test_controller_cli_module_guard_executes_parser(monkeypatch, capsys):
+def test_controller_cli_module_guard_refuses_removed_alias(monkeypatch, capsys):
     monkeypatch.setattr(sys, "argv", ["cmru-controller", "--help"])
     with pytest.raises(SystemExit) as error:
         runpy.run_path(str(Path(controller_cli.__file__)), run_name="__main__")
-    assert error.value.code == 0 and "publish" in capsys.readouterr().out
+    assert str(error.value) == (
+        "Use the installed 'cmru-controller' command; its module alias is not supported."
+    )
+    assert capsys.readouterr().out == ""
 
 
 def test_github_host_resolve_latest_without_sha_url_does_not_fetch(monkeypatch):

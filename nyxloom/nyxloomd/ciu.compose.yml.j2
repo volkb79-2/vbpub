@@ -39,15 +39,14 @@ name: nyxloom-nyxloomd
 
 services:
   nyxloomd:
-    # Context is the nyxloom PACKAGE ROOT (..), not this dir: the Dockerfile is
-    # multi-stage and its first stage builds the nyxloom wheel from src/ +
-    # pyproject.toml. Same Dockerfile + same NYXLOOM_VERSION arg that
+    # Context is the vbpub repository root (../..) so the Nyxloom wheel can
+    # bundle libraries/cli-extended. Same Dockerfile + same NYXLOOM_VERSION arg that
     # ../docker-bake.hcl uses, so a local `ciu up` build and a cmru release build
     # produce the SAME image — one recipe, two drivers. NYXLOOM_VERSION defaults
     # to 0.0.0-dev here; build-push.py injects the real git-tag version at release.
     build:
-      context: ..
-      dockerfile: nyxloomd/Dockerfile
+      context: ../..
+      dockerfile: nyxloom/nyxloomd/Dockerfile
       args:
         NYXLOOM_VERSION: "{{ nyxloomd.version }}"
     image: {{ nyxloomd.image }}
@@ -115,7 +114,7 @@ services:
       # probe against the bind address (0.0.0.0, set via NYXLOOM_HTTP_BIND
       # above) -- cheap, and still catches "the dashboard thread is not even
       # listening" before spending a python startup on the second stage.
-      # SECOND `nyxloom doctor --liveness`, which reads the store directly
+      # SECOND `nyxloomctl doctor --liveness`, which reads the store directly
       # (no Daemon constructed, no dependency on the daemon process being
       # responsive) for what a TCP connect cannot see: the durable
       # per-project heartbeat gauge (storage.record_heartbeat, stamped at
@@ -132,7 +131,7 @@ services:
       # the last few healthcheck outputs in `docker inspect .State.Health`,
       # and the findings table is the only thing that says WHICH project is
       # dead and why.
-      test: ["CMD-SHELL", "timeout 3 bash -c '</dev/tcp/0.0.0.0/{{ nyxloomd.dashboard_port }}' 2>/dev/null && /opt/nyxloom-venv/bin/python -m nyxloom.cli doctor --liveness 2>&1 || exit 1"]
+      test: ["CMD-SHELL", "timeout 3 bash -c '</dev/tcp/0.0.0.0/{{ nyxloomd.dashboard_port }}' 2>/dev/null && /opt/nyxloom-venv/bin/nyxloomctl doctor --liveness 2>&1 || exit 1"]
       interval: {{ nyxloomd.health.interval }}
       timeout: {{ nyxloomd.health.timeout }}
       retries: {{ nyxloomd.health.retries }}

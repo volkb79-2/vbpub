@@ -35,15 +35,18 @@ def test_bundle_parse_config_requires_archive_and_copy_tables(tmp_path):
     with pytest.raises(ValueError, match="archive"):
         bundle.parse_config(path)
     path.write_text("project_root='.'\n[archive]\nname_template='x-{version}'\nversion_env='V'\n[copy]\nfiles='bad'\n", encoding="utf-8")
-    with pytest.raises(ValueError, match="must be lists"):
+    with pytest.raises(ValueError, match="must be an array of non-empty strings"):
         bundle.parse_config(path)
 
 
 def test_agent_cli_parser_requires_known_agent_verb_and_preserves_options():
     args = agent_cli._build_parser().parse_args(["--scope", "system", "once", "--release-root", "/srv/cmru"])
     assert args.verb == "once" and args.scope == "system" and args.release_root == "/srv/cmru"
-    with pytest.raises(SystemExit):
+    from cli_extended import UsageError
+    with pytest.raises(UsageError):
         agent_cli._build_parser().parse_args(["unknown"])
+    with pytest.raises(UsageError):
+        agent_cli._build_parser().parse_args([])
 
 
 def test_resolve_format_env_omits_absent_digest_and_url_is_empty():
@@ -63,7 +66,21 @@ def test_consul_observed_and_signature_fail_closed_on_invalid_base64():
 def test_tester_gate_required_resource_resolution_prefers_explicit(monkeypatch):
     monkeypatch.setenv("CMRU_TESTER_CPUS", "2")
     assert tester_gate.resolve_cpus("1") == "1"
+    assert tester_gate.resolve_cpus("1.5") == "1.5"
+    assert tester_gate.resolve_cpus("0.00001") == "0.00001"
     assert tester_gate.resolve_cpus(None) == "2"
     monkeypatch.delenv("CMRU_TESTER_CPUS")
     with pytest.raises(SystemExit, match="CPU limit"):
         tester_gate.resolve_cpus(None)
+    monkeypatch.setenv("CMRU_TESTER_CPUS", "0.000001")
+    with pytest.raises(SystemExit, match="minimum 0.00001 CPUs"):
+        tester_gate.resolve_cpus(None)
+
+
+@pytest.mark.parametrize("value", [
+    "0", "-1", "NaN", "Infinity", "0.0000099", "bad",
+    "1e99999999999999999999999999",
+])
+def test_tester_gate_cpu_limit_must_be_positive_finite_and_representable(value):
+    with pytest.raises(SystemExit, match="minimum 0.00001 CPUs"):
+        tester_gate.resolve_cpus(value)

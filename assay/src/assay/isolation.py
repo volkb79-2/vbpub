@@ -35,7 +35,6 @@ from __future__ import annotations
 
 import fnmatch
 import hashlib
-import math
 import os
 import re
 import shutil
@@ -43,13 +42,14 @@ import stat
 import tempfile
 import threading
 from contextlib import contextmanager
-from dataclasses import dataclass
+from .records import record
 from pathlib import Path, PurePosixPath
 from typing import Callable, ContextManager, Iterator, Mapping, Sequence
 
 from . import git as _git
 from .config import IsolationConfig
-from .errors import AssayError, LaneConfigError, Outcome, ReasonCode
+from .errors import AssayError, LaneConfigError, Outcome, ReasonCode, require_advance
+from .guards import is_int_at_least, is_positive_or_inf
 
 __all__ = [
     "DEFAULT_SNAPSHOT_LIMITS",
@@ -110,9 +110,15 @@ def _stale_site(message: str) -> AssayError:
     )
 
 
-@dataclass(frozen=True, kw_only=True)
+@record
 class SnapshotLimits:
-    """Fixed ceilings for source inspection, transfer, and materialization."""
+    """Ceilings for source inspection, transfer, and materialization.
+
+    All byte fields are uncompressed logical bytes.  ``max_total_object_bytes``
+    applies to the exact object set transferred into the seed; the narrower
+    ``max_total_tree_blob_bytes`` applies only to unique blob objects reachable
+    from the judged commit's own tree.
+    """
 
     max_objects: int
     max_entries: int
@@ -120,18 +126,24 @@ class SnapshotLimits:
     max_total_path_bytes: int
     max_blob_bytes: int
     max_total_object_bytes: int
+    max_total_tree_blob_bytes: int
     max_pack_bytes: int
 
     def __post_init__(self) -> None:
         """Reject booleans/non-positive/incoherent bounds."""
         for name in self.__dataclass_fields__:
             value = getattr(self, name)
-            if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+            if not is_int_at_least(value, 1):
                 raise ValueError(f"{name} must be a positive integer, got {value!r}")
         if self.max_blob_bytes > self.max_total_object_bytes:
             raise ValueError(
                 "max_blob_bytes cannot exceed max_total_object_bytes "
                 f"({self.max_blob_bytes} > {self.max_total_object_bytes})"
+            )
+        if self.max_total_tree_blob_bytes > self.max_total_object_bytes:
+            raise ValueError(
+                "max_total_tree_blob_bytes cannot exceed max_total_object_bytes "
+                f"({self.max_total_tree_blob_bytes} > {self.max_total_object_bytes})"
             )
 
 
@@ -142,11 +154,12 @@ DEFAULT_SNAPSHOT_LIMITS = SnapshotLimits(
     max_total_path_bytes=64 * 1024 * 1024,
     max_blob_bytes=64 * 1024 * 1024,
     max_total_object_bytes=1024 * 1024 * 1024,
+    max_total_tree_blob_bytes=512 * 1024 * 1024,
     max_pack_bytes=512 * 1024 * 1024,
 )
 
 
-@dataclass(frozen=True, kw_only=True)
+@record
 class SnapshotSpec:
     """One source commit and caller-owned scratch namespace.
 
@@ -166,6 +179,10 @@ class SnapshotSpec:
     project_prefix: PurePosixPath
     scratch_root: Path
     snapshot_policy: IsolationConfig
+    #: The base resolved against the consumer repository before the snapshot
+    #: exists.  It is carried into the shallow seed; P1 forbids resolving it
+    #: again inside that seed.
+    resolved_base: str | None = None
     limits: SnapshotLimits = DEFAULT_SNAPSHOT_LIMITS
 
     def __post_init__(self) -> None:
@@ -202,9 +219,14 @@ class SnapshotSpec:
                 "project_prefix must be a normalized repo-relative POSIX path, "
                 f"got {self.project_prefix!s}"
             )
+        if self.resolved_base is not None and re.fullmatch(r"[0-9a-f]{40}", self.resolved_base) is None:
+            raise ValueError(
+                "resolved_base must be exactly 40 lowercase hex characters or None, "
+                f"got {self.resolved_base!r}"
+            )
 
 
-@dataclass(frozen=True, kw_only=True)
+@record
 class Snapshot:
     """One independently owned working repository, valid for its context."""
 
@@ -233,7 +255,7 @@ class Snapshot:
     tracked_directories: frozenset[PurePosixPath]
 
 
-@dataclass(frozen=True, kw_only=True)
+@record
 class _Entry:
     """One validated leaf of the prepared commit's tree, repo-top-relative."""
 
@@ -246,7 +268,7 @@ class _Entry:
     target: str | None = None
 
 
-@dataclass(frozen=True, kw_only=True)
+@record
 class _Manifest:
     """The frozen content of one commit: what materialization may write.
 
@@ -754,6 +776,11 @@ class SnapshotRepository:
         )
         git_dir = root / ".git"
         _copy_objects(self._seed_git_dir, git_dir)
+        # ``_copy_objects`` deliberately copies only packed objects.  The
+        # shallow boundary is repository metadata and must be recreated in
+        # every materialization before read-tree, commit-tree, or any closure
+        # walk can inspect the repository.
+        _write_shallow(git_dir, spec)
 
         def run(*args: str, stdin_bytes: bytes = b"", identity: bool = False) -> bytes:
             return _git._p22_git(
@@ -960,17 +987,26 @@ class SnapshotRepository:
             deadline=deadline,
             max_objects=limits.max_objects,
         )
-        _enforce_object_limits(
-            _object_metadata(
-                self._source.git_executable,
-                git_dir=git_dir,
-                work_tree=None,
-                cwd=git_dir,
-                oids=oids,
-                deadline=deadline,
-            ),
-            limits,
+        child_metadata = _object_metadata(
+            self._source.git_executable,
+            git_dir=git_dir,
+            work_tree=None,
+            cwd=git_dir,
+            oids=oids,
+            deadline=deadline,
         )
+        _enforce_object_limits(child_metadata, limits)
+        tree_oids = _closure_oids(
+            self._source.git_executable,
+            git_dir=git_dir,
+            work_tree=None,
+            cwd=git_dir,
+            commit=commit,
+            deadline=deadline,
+            max_objects=limits.max_objects,
+            no_walk=True,
+        )
+        _enforce_tree_blob_limits(child_metadata, tree_oids, limits)
 
     def _verify(
         self,
@@ -983,6 +1019,24 @@ class SnapshotRepository:
         head = _decode(run("rev-parse", "HEAD")).strip()
         if head != commit:
             raise _git_failed(f"private HEAD is {head}, expected {commit}")
+        expected_boundaries = _shallow_boundaries(self._spec)
+        actual_boundaries = _read_shallow(git_dir)
+        if actual_boundaries != expected_boundaries:
+            raise _git_failed(
+                f"private snapshot shallow boundaries are {sorted(actual_boundaries)!r}, "
+                f"expected {sorted(expected_boundaries)!r}"
+            )
+        try:
+            count = int(_decode(run("rev-list", "--count", "HEAD")).strip())
+        except (TypeError, ValueError) as exc:
+            raise _git_failed("private snapshot rev-list --count HEAD was not an integer") from exc
+        if count < 1:
+            raise _git_failed("private snapshot rev-list --count HEAD returned no commits")
+        if expected_boundaries and count != (2 if commit != self._spec.commit else 1):
+            raise _git_failed(
+                f"private snapshot HEAD has {count} visible commits; expected "
+                f"{2 if commit != self._spec.commit else 1} for a shallow materialization"
+            )
         status = run("status", "--porcelain=v1", "-z")
         if status:
             raise _git_failed(
@@ -1065,12 +1119,7 @@ def _check_timeout(timeout: float) -> None:
     # `_git._P22Deadline`, which converts it to the "no timeout" spelling its
     # own two consumers accept. Every other non-finite value (NaN, -inf) is
     # refused exactly as before.
-    if (
-        isinstance(timeout, bool)
-        or not isinstance(timeout, (int, float))
-        or (not math.isfinite(timeout) and timeout != math.inf)
-        or timeout <= 0
-    ):
+    if not is_positive_or_inf(timeout):
         raise ValueError(
             f"timeout must be a positive finite number or math.inf, got {timeout!r}"
         )
@@ -1110,6 +1159,42 @@ def _copy_objects(seed_git_dir: Path, destination_git_dir: Path) -> None:
     for item in sorted(source_pack.iterdir()):
         if item.is_file() and not item.is_symlink():
             shutil.copyfile(item, destination_pack / item.name)
+
+
+def _shallow_boundaries(spec: SnapshotSpec) -> frozenset[str]:
+    """Return the exact boundaries assay chose for a shallow seed."""
+    if spec.snapshot_policy.snapshot_history == "full":
+        return frozenset()
+    boundaries = [spec.commit]
+    if spec.resolved_base is not None and spec.resolved_base != spec.commit:
+        boundaries.append(spec.resolved_base)
+    return frozenset(boundaries)
+
+
+def _write_shallow(git_dir: Path, spec: SnapshotSpec) -> None:
+    boundaries = _shallow_boundaries(spec)
+    shallow = git_dir / "shallow"
+    if not boundaries:
+        # A fresh private repository should not inherit a stale file from a
+        # template.  Full history means the file is absent, not empty.
+        shallow.unlink(missing_ok=True)
+        return
+    shallow.write_text(
+        "".join(f"{oid}\n" for oid in sorted(boundaries)), encoding="ascii"
+    )
+
+
+def _read_shallow(git_dir: Path) -> frozenset[str]:
+    shallow = git_dir / "shallow"
+    if not shallow.exists():
+        return frozenset()
+    try:
+        lines = shallow.read_text(encoding="ascii").splitlines()
+    except (OSError, UnicodeDecodeError) as exc:
+        raise _git_failed(f"private snapshot shallow file is unreadable: {shallow}") from exc
+    if any(_OID_RE.fullmatch(line) is None for line in lines) or len(lines) != len(set(lines)):
+        raise _git_failed(f"private snapshot shallow file is not an exact OID list: {shallow}")
+    return frozenset(lines)
 
 
 def _batch_objects(
@@ -1157,23 +1242,32 @@ def _closure_oids(
     commit: str,
     deadline: "_git._P22Deadline",
     max_objects: int,
+    resolved_base: str | None = None,
+    no_walk: bool = False,
 ) -> tuple[str, ...]:
-    """The complete reachable closure as validated full OIDs.
+    """Enumerate an exact object closure as validated full OIDs.
 
     ``--no-object-names`` is what keeps this phase free of display paths
     (A-185): the alternative prints ``<oid> SP <path>``, and a path printed
     here would be a second, quoting-dependent spelling of a name the raw
     tree grammar already answers exactly.
     """
+    args = ["rev-list", "--objects", "--no-object-names"]
+    if no_walk:
+        args.append("--no-walk")
+    args.append(commit)
+    if resolved_base is not None:
+        args.append(resolved_base)
     raw = _git._p22_git(
         git_executable,
         git_dir=git_dir,
         work_tree=work_tree,
-        args=("rev-list", "--objects", "--no-object-names", commit),
+        args=tuple(args),
         deadline=deadline,
         cwd=cwd,
     )
     oids: list[str] = []
+    seen: set[str] = set()
     for line in _decode(raw).splitlines():
         candidate = line.strip()
         # No blank-line skip: ``rev-list`` never emits one, so a skip would be
@@ -1181,6 +1275,9 @@ def _closure_oids(
         # is the stricter reading anyway.
         if _OID_RE.fullmatch(candidate) is None:
             raise _git_failed(f"git rev-list emitted {candidate!r}, not a full object name")
+        if candidate in seen:
+            continue
+        seen.add(candidate)
         oids.append(candidate)
         if len(oids) > max_objects:
             raise _limit_exceeded(
@@ -1247,6 +1344,28 @@ def _enforce_object_limits(
             )
 
 
+def _enforce_tree_blob_limits(
+    metadata: Mapping[str, tuple[str, int]],
+    tree_oids: Sequence[str],
+    limits: SnapshotLimits,
+) -> None:
+    """Bound unique blob bytes reachable from the judged commit's tree."""
+    # ``metadata`` is the output of ``_object_metadata`` for the exact
+    # closure being checked.  Indexing is deliberate: a missing key means
+    # the inventory and the tree walk disagree, which must fail loudly rather
+    # than turn an incomplete comparison into an under-count.
+    total = sum(
+        metadata[oid][1]
+        for oid in set(tree_oids)
+        if metadata[oid][0] == "blob"
+    )
+    if total > limits.max_total_tree_blob_bytes:
+        raise _limit_exceeded(
+            "the judged tree exceeds max_total_tree_blob_bytes "
+            f"({limits.max_total_tree_blob_bytes}) with {total} bytes"
+        )
+
+
 def _parse_tree(raw: bytes, oid: str) -> tuple[tuple[str, bytes, str], ...]:
     """Parse one raw SHA-1 tree object.
 
@@ -1279,7 +1398,7 @@ def _parse_tree(raw: bytes, oid: str) -> tuple[tuple[str, bytes, str], ...]:
         except UnicodeDecodeError as exc:
             raise _git_failed(f"tree {oid} has a non-ASCII mode {mode_bytes!r}") from exc
         records.append((mode, name, raw[oid_start:oid_end].hex()))
-        index = oid_end
+        index = require_advance(index, oid_end)
     return tuple(records)
 
 
@@ -1389,9 +1508,9 @@ def _parse_skip_worktree_paths(raw: bytes) -> frozenset[bytes]:
     place -- only a DECLARED omission is ever required to be.
     """
     skipped: set[bytes] = set()
-    for record in raw.split(b"\x00"):
-        if record[:2] == b"S ":
-            skipped.add(record[2:])
+    for record_entry in raw.split(b"\x00"):
+        if record_entry[:2] == b"S ":
+            skipped.add(record_entry[2:])
     return frozenset(skipped)
 
 
@@ -1865,6 +1984,7 @@ def prepare_snapshot(
             f"is a snapshot identity"
         )
 
+    shallow = spec.snapshot_policy.snapshot_history == "shallow"
     oids = _closure_oids(
         executable,
         git_dir=source.git_dir,
@@ -1873,6 +1993,8 @@ def prepare_snapshot(
         commit=spec.commit,
         deadline=deadline,
         max_objects=spec.limits.max_objects,
+        resolved_base=spec.resolved_base if shallow else None,
+        no_walk=shallow,
     )
     metadata = _object_metadata(
         executable,
@@ -1907,6 +2029,12 @@ def prepare_snapshot(
             deadline=deadline,
             max_pack_bytes=spec.limits.max_pack_bytes,
         )
+        # The pack is indexed before this metadata is written.  From this
+        # point onward every seed-side ancestry walk sees assay's intentional
+        # boundary rather than treating the missing parents as corruption.
+        _write_shallow(seed_git_dir, spec)
+        if _read_shallow(seed_git_dir) != _shallow_boundaries(spec):
+            raise _git_failed("the private seed's shallow boundaries are not exact")
 
         # From here the source is logically disconnected: every fact below is
         # re-derived from the private seed, so a seed that silently depended
@@ -1921,6 +2049,8 @@ def prepare_snapshot(
                 commit=spec.commit,
                 deadline=deadline,
                 max_objects=spec.limits.max_objects,
+                resolved_base=spec.resolved_base if shallow else None,
+                no_walk=False,
             )
         )
         if seed_oids != set(oids):
@@ -1949,6 +2079,21 @@ def prepare_snapshot(
             spec=spec,
             metadata=metadata,
             deadline=deadline,
+        )
+        judged_tree_oids = _closure_oids(
+            executable,
+            git_dir=seed_git_dir,
+            work_tree=None,
+            cwd=seed_git_dir,
+            commit=spec.commit,
+            deadline=deadline,
+            max_objects=spec.limits.max_objects,
+            no_walk=True,
+        )
+        _enforce_tree_blob_limits(
+            metadata,
+            judged_tree_oids,
+            spec.limits,
         )
         repository = SnapshotRepository(
             spec=spec,

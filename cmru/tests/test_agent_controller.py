@@ -1119,18 +1119,12 @@ class TestSelfUpdate:
 
 class TestEntryPoints:
     def test_cmru_agent_help_no_crash(self):
-        from cmru.agent.cli import _build_parser
-        parser = _build_parser()
-        with pytest.raises(SystemExit) as exc:
-            parser.parse_args(["--help"])
-        assert exc.value.code == 0
+        from cmru.agent.cli import main
+        assert main(["--help"]) == 0
 
     def test_cmru_controller_help_no_crash(self):
-        from cmru.controller.cli import _build_parser
-        parser = _build_parser()
-        with pytest.raises(SystemExit) as exc:
-            parser.parse_args(["--help"])
-        assert exc.value.code == 0
+        from cmru.controller.cli import main
+        assert main(["--help"]) == 0
 
     def test_cmru_agent_status_not_enrolled(self, tmp_path, monkeypatch, capsys):
         monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))

@@ -91,7 +91,55 @@ investigation.
    has for preserving the rest of the host's existing cgroup2 mount state;
    this ask is about auditing that command itself, not something `mdt
    doctor` changes either way.
+6. **DONE (2026-09-27):** add useful help at the top-level and each
+   subcommand, make `host-escape --help` show usage instead of treating it as
+   a command to run on the host, and reject invalid target arguments before
+   starting the privileged helper.
 
 _Captured 2026-09-08 from a live gstammtisch investigation (soulmask periodic
 stall incident); filed by Claude per operator request ("how about mdt ships a
 companion script to escape the devcontainer in a defined way")._
+
+## Bug: managed BuildKit socket group does not match consumer group
+
+Filed 2026-09-24 after a live devcontainer connection failed with
+`PermissionError: [Errno 13]`. The Docker API socket was `root:docker` mode
+`0660` (GID 994, available to the consumer), while rootless BuildKit created
+`/run/mdt-buildkitd/buildkitd.sock` as `1000:1000` mode `0660`. The parent
+directory's permissive mode did not grant permission to connect to the socket.
+
+Fix: retain a sticky runtime directory while BuildKit creates the socket;
+before systemd marks the service ready, seal the root-owned directory against
+entry changes, verify the endpoint is a non-symlink socket owned by the
+running container user, then set only that socket to host group `docker` and
+mode `0660`. Ownership is compared inside the container's user namespace, so
+Docker `userns-remap` does not create a false mismatch. Each restart restores
+the writable directory and removes a stale socket before BuildKit starts.
+Consumer instructions require the existing host `DOCKER_GID` supplementary
+group and explicitly reject making the socket world-accessible. Live
+acceptance passed after applying the same socket ownership/mode correction:
+`docker buildx inspect mdt-managed` reported the remote builder running.
+Independent review on 2026-09-30 found that systemd expands `stat` format
+strings before the shell; escaped specifiers, directory sealing, and the
+namespace-relative owner check now have renderer assertions. The registered
+smoke and release gates pass on the integrated candidate, and the final
+independent review found no further actionable regressions.
+
+## Feature request: one canonical io.cost coefficient generator — DONE 2026-09-27
+
+Both MDT host setup and `scripts/debian-install-v2/tools/iocost-calibrate.sh`
+now consume `tools/iocost_coef_gen.py`, generated from the pristine Linux
+vendor source plus the ordered patch series. The generated header records the
+source and patch hashes; `tools/build-iocost-generator.py --check` detects
+drift. The patch set includes LVM/dm discovery, explicit file-target support,
+no-COW fallback, safer argument handling, and raw partition sysfs lookup.
+
+Partition creation, formatting, mounting, benchmarking, and cleanup are still
+not automated. MDT requires its persistent benchmark file to share a
+filesystem with Docker data. For future installer integration, prefer a
+mounted file target on a dedicated partition; do not add partition surgery
+without the existing plan/apply/readback/rollback path. See
+`host-setup/plan-iocost-integration.md` and
+`scripts/debian-install-v2/IO-BENCHMARK-DESIGN.md`.
+
+_Captured 2026-09-27 after a live runtime-path audit._

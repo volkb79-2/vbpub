@@ -1,6 +1,6 @@
-"""`nyxloom extract-debug` -- a colored diff between the full lossless base
-(`lossless.py`'s own "dumb, independent" dump, the ground truth of
-everything a session COULD have kept) and what a given `extract()` call
+"""`nyxloom extract-debug` -- a colored diff between the lossless base for
+the requested source span (`lossless.py`'s own "dumb, independent" dump, the
+ground truth of everything in that span it can recover) and what a given `extract()` call
 --profile/--max-words/etc. actually kept, so a reader can see EXACTLY what a
 profile/budget threw away, in place, instead of trusting a bare word count
 or re-deriving it by eye. Operator ask, verbatim: "it compares our dumb
@@ -78,14 +78,16 @@ labeled, is more honest than merging them.
 from __future__ import annotations
 
 import re
+from datetime import datetime, timezone
 
-from . import classifier, select
+from . import classifier, mangle, select
 from .events import EventKind, NormalizedEvent
 
 _LOSSLESS_HEADER_RE = re.compile(r"^===\[[^\]]*\]===\n", re.MULTILINE)
 _HEADER_PARSE_RE = re.compile(r"^===\[([^|\]]*)\|([^|\]]*)\|([^\]]*)\]===")
 _OPERATOR_PREFIX = "OPERATOR: "
-_MARKER_FOOTER_RE = re.compile(r"\n<!-- nyxloom-extract: format=\S+ marker=\S+ -->\n$")
+_MARKER_FOOTER_RE = re.compile(r"\n<!-- nyxloom-extract: format=\S+ marker=\S+(?:\s+[^>]*?)? -->\n$")
+_METADATA_COMMENT_RE = re.compile(r"^<!-- nyxloom-extract: format=\S+ marker=\S+(?:\s+[^>]*?)? -->\n", re.MULTILINE)
 
 _RESET = "\x1b[0m"
 _GREY = "\x1b[90m"
@@ -98,8 +100,9 @@ _BLUE = "\x1b[34m"
 # notes -- kept in sync by hand (small, stable set); see each module's own
 # note-formatting code (render.py's _gap_note/_STOP_REASON_TEXT,
 # ledger.py's Ledger.render()).
-_CYAN_NOTE_PREFIXES = ("[gap:", "[older session content")
+_CYAN_NOTE_PREFIXES = ("[gap:", "[older session content", "[epoch ")
 _GREEN_NOTE_PREFIXES = ("[files read:", "[files edited:", "[commits created:", "[branches involved:", "[tests:")
+_ANSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 
 
 def _lossless_blocks(text: str) -> list[str]:
@@ -115,17 +118,45 @@ def _lossless_blocks(text: str) -> list[str]:
 
 def _extract_blocks(text: str) -> list[str]:
     text = _MARKER_FOOTER_RE.sub("", text.strip())
-    parts = text.split("\n\n---\n\n")
+    text = _METADATA_COMMENT_RE.sub("", text)
+    # render.separator() permits any configured blank-line count, and -1
+    # fuses the separator onto the preceding block. Parse that complete
+    # grammar here so extract-debug stays aligned with extract for every
+    # rendering choice, not just the default one or two newline forms.
+    parts = re.split(
+        r"(?:\n+|[ \t])---(?:[ \t]+[^\n]*?)?[ \t]*---(?:\n+|$)|"
+        r"(?:\n+|[ \t])---(?:\n+|$)",
+        text,
+    )
     return [p for p in parts if p.strip()]
 
 
 def _normalize_lossless(block: str) -> str:
-    return _LOSSLESS_HEADER_RE.sub("", block, count=1).strip()
+    return _ANSI_RE.sub("", _LOSSLESS_HEADER_RE.sub("", block, count=1)).strip()
 
 
-def _normalize_extract(block: str) -> str:
-    b = block.strip()
-    return b[len(_OPERATOR_PREFIX):] if b.startswith(_OPERATOR_PREFIX) else b
+def _normalize_extract(block: str, timestamp_values: set[str] | None = None) -> str:
+    b = _ANSI_RE.sub("", block).strip()
+    if b.startswith(_OPERATOR_PREFIX):
+        b = b[len(_OPERATOR_PREFIX):]
+    if timestamp_values:
+        for value in timestamp_values:
+            if b.startswith(value + " "):
+                b = b[len(value) + 1:]
+                break
+        for value in timestamp_values:
+            if b.endswith(" " + value):
+                b = b[:-(len(value) + 1)]
+                break
+        return b.strip()
+    return re.sub(r"^\[[^\]]+\]\s+", "", b, count=1)
+
+
+def _render_lossless_block(block: str, block_render) -> str:
+    if block_render is None:
+        return block
+    header, sep, body = block.partition("\n")
+    return header + sep + block_render(body) if sep else block_render(header)
 
 
 def _note_color(block: str) -> str | None:
@@ -162,6 +193,10 @@ def _expected_kinds(tag: str) -> tuple[EventKind, ...]:
         return (EventKind.ASSISTANT_TEXT,)
     if role == "USER":
         return (EventKind.OPERATOR_TEXT, EventKind.QA_PAIR)
+    if role in {"INTERVIEW", "QA_PAIR"}:
+        return (EventKind.QA_PAIR,)
+    if role == "TOOL_CALL":
+        return (EventKind.TOOL_CALL,)
     if role == "SYSTEM" or role == "LIFECYCLE":
         return (EventKind.LIFECYCLE_MARKER,)
     return ()
@@ -214,6 +249,7 @@ def _drop_reason(
     is_leading_gap: bool,
     events_by_marker: dict[str, list[NormalizedEvent]],
     kept_markers: set[str],
+    post_selection_removed_markers: set[str] | None = None,
 ) -> str:
     """WHY select.py's walk didn't keep this lossless block. `block_norm`
     must already be header-stripped (the caller passes lossless_norm, not
@@ -276,10 +312,23 @@ def _drop_reason(
     evaluated for any content-level reason at all -- the walk simply
     stopped before getting here.
     """
+    ev = _marker_lookup(marker, tag, events_by_marker)
+    if ev is not None and ev.meta.get("excluded_epoch") == "true":
+        return (
+            f"reason: source epoch {ev.meta.get('epoch')} is outside the selected --epochs span; "
+            "the record was excluded before content filtering"
+        )
+    if ev is not None and marker in (post_selection_removed_markers or set()):
+        return (
+            "reason: this event survived the configured selection walk but was removed by "
+            "the post-selection --strip-stale-wakeups transform, which keeps the earliest "
+            "event in a repeated stale-wakeup tail and removes later repeats"
+        )
     if is_leading_gap:
         return (
-            "reason: never reached by the walk -- a --checkpoints/--max-words/"
-            "--max-lifecycle-markers stop (or the true start of the log) was hit before the walk "
+            "reason: never reached by the walk -- a --max-checkpoints/--max-words/"
+            "--max-compactions/--max-time-minutes stop (or the true start of the selected epoch) "
+            "was hit before the walk "
             "got this far back; see any '[older session content...]' note above"
         )
 
@@ -321,16 +370,16 @@ def _drop_reason(
             "default (config.hide_api_errors / --show-api-errors to include)"
         )
 
-    ev = _marker_lookup(marker, tag, events_by_marker)
     if ev is not None:
         if marker in kept_markers:
             return (
                 f"reason: NOT actually a selection drop -- a real event with this exact marker "
-                f"({ev.kind.value}) survived select()'s walk and is present in the extract output; "
+                f"({ev.kind.value}) survived selection and is represented in the extract output; "
                 "this block only shows grey here because lossless.py's raw rendering and extract's "
-                "cleaned/rendered text of the SAME record differ enough that the text-level diff "
-                "didn't align them (a formatting mismatch, not a content decision) -- look for the "
-                "matching marker in a white block elsewhere in this diff"
+                "cleaned/rendered text of the SAME record differ: a formatting mismatch, not a "
+                "content decision, or a matching paragraph replaced by --redact-pattern, prevented "
+                "the text-level diff from aligning "
+                "them -- look for the matching marker in a white block elsewhere in this diff"
             )
         if ev.kind is EventKind.ASSISTANT_TEXT and config.hide_api_errors and classifier.is_api_error(ev.text):
             return (
@@ -357,7 +406,7 @@ def _drop_reason(
             )
         return (
             f"reason: the real event for this exact record is {len(ev.text)} chars (its own text, not "
-            f"lossless.py's rendering) -- at/below --long-threshold ({config.long_comment_chars}) and no "
+            f"lossless.py's rendering) -- at/below --answer-length ({config.long_comment_chars}) and no "
             f"finding signal, and scored {ev.checkpoint_score or 0.0:.1f} < the checkpoint threshold "
             f"{config.checkpoint_score_threshold} (already including score_events()'s lookahead bonus) -- "
             "select() correctly dropped it for length"
@@ -384,7 +433,7 @@ def _checkpoint_tag(marker: str | None, tag: str, config, events_by_marker: dict
     is why it survived; for a grey (dropped) block it's additional context
     alongside its own yellow reason line (typically "never reached by the
     walk" -- a real checkpoint that just sits too far back for the current
-    --checkpoints/--max-words budget)."""
+    --max-checkpoints/--max-words budget)."""
     ev = _marker_lookup(marker, tag, events_by_marker)
     if ev is not None and _is_checkpoint_event(ev, config):
         return f"[checkpoint detected: score {ev.checkpoint_score:.1f} >= threshold {config.checkpoint_score_threshold}]"
@@ -393,7 +442,7 @@ def _checkpoint_tag(marker: str | None, tag: str, config, events_by_marker: dict
 
 def render_debug(
     lossless_text: str, extract_text: str, use_color: bool, config=None, fmt: str | None = None,
-    all_events: list[NormalizedEvent] | None = None,
+    all_events: list[NormalizedEvent] | None = None, block_render=None,
 ) -> str:
     """Pure function: both text inputs are already-rendered strings (the
     caller -- cmd_extract_debug -- owns calling `lossless.dump_*`/
@@ -412,25 +461,55 @@ def render_debug(
     straight to the "no scored event exists" approximate branch for every
     grey block, same as before this feature existed.
 
-    Re-runs `select.select(all_events, config)` internally to know which
-    markers actually survived selection -- cheap (pure function over an
-    already-parsed list) and exactly reproduces `extract()`'s own `kept`
-    since cmd_extract_debug's own ExtractConfig never sets
-    strip_stale_wakeups/redact_patterns (those are mangle.py's post-
-    selection step, out of scope for this comparison).
+    Re-runs extract's epoch filter and selection over the already-parsed
+    events, then mirrors its post-selection stale-wakeup trimming. Redaction
+    changes event text but does not remove event markers; extract() keeps the
+    full parse unmodified so these explanations use source text, not redacted
+    output text.
     """
     import difflib
 
-    lossless_raw = _lossless_blocks(lossless_text)
+    lossless_raw = [_render_lossless_block(b, block_render) for b in _lossless_blocks(lossless_text)]
     extract_raw = _extract_blocks(extract_text)
     lossless_norm = [_normalize_lossless(b) for b in lossless_raw]
-    extract_norm = [_normalize_extract(b) for b in extract_raw]
+    timestamp_values: set[str] = set()
+    if config is not None and config.show_timestamps != "none" and all_events:
+        for ev in all_events:
+            if not ev.timestamp:
+                continue
+            try:
+                value = datetime.fromisoformat(ev.timestamp.replace("Z", "+00:00"))
+            except ValueError:
+                continue
+            if value.tzinfo is None:
+                value = value.replace(tzinfo=timezone.utc)
+            timestamp_values.add(value.astimezone(timezone.utc).strftime(config.timestamp_format))
+    extract_norm = [_normalize_extract(b, timestamp_values) for b in extract_raw]
 
     events_by_marker: dict[str, list[NormalizedEvent]] = {}
     kept_markers: set[str] = set()
+    post_selection_removed_markers: set[str] = set()
     if config is not None and all_events is not None:
         events_by_marker = _index_events(all_events)
-        kept_markers = {ev.marker for ev in select.select(all_events, config)}
+        # _select_epochs annotates excluded records for exact reason labels.
+        # Copy metadata so a diagnostic render never mutates the caller's
+        # full parse, even when render_debug is used independently of extract.
+        from dataclasses import replace
+        from . import _select_epochs
+
+        diagnostic_events = [replace(ev, meta=dict(ev.meta)) for ev in all_events]
+        for ev in diagnostic_events:
+            ev.meta.pop("excluded_epoch", None)
+            ev.meta.pop("epoch_count", None)
+        epoch_events = _select_epochs(diagnostic_events, config.epochs)
+        selected_events = select.select(epoch_events, config)
+        after_transforms = selected_events
+        if config.strip_stale_wakeups:
+            after_transforms, _ = mangle.strip_stale_wakeup_tail(selected_events)
+        kept_markers = {ev.marker for ev in after_transforms}
+        post_selection_removed_markers = (
+            {ev.marker for ev in selected_events} - kept_markers
+        )
 
     def paint(code: str, text: str) -> str:
         return f"{code}{text}{_RESET}" if use_color and code else text
@@ -478,6 +557,7 @@ def render_debug(
                 out.append(paint(_YELLOW, _drop_reason(
                     None, "", "", config, fmt=fmt, is_leading_gap=True,
                     events_by_marker=events_by_marker, kept_markers=kept_markers,
+                    post_selection_removed_markers=post_selection_removed_markers,
                 )))
             grey_lines: list[str] = []
             for b, b_norm in zip(dropped, dropped_norm):
@@ -495,6 +575,7 @@ def render_debug(
                     grey_lines.append(paint(_YELLOW, _drop_reason(
                         marker, block_tag, b_norm, config, fmt=fmt, is_leading_gap=False,
                         events_by_marker=events_by_marker, kept_markers=kept_markers,
+                        post_selection_removed_markers=post_selection_removed_markers,
                     )))
                 if config is not None and all_events is not None:
                     note = _checkpoint_tag(marker, block_tag, config, events_by_marker)

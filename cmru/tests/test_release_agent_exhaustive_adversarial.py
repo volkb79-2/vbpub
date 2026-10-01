@@ -172,7 +172,7 @@ def test_transaction_secret_overlay_is_private_and_rejects_outside_config(tmp_pa
     transaction.copy_secret_overlays(root, ws, [config])
     copied = child / "cmru.secret.toml"
     assert copied.read_text() == "token = 'secret'\n" and copied.stat().st_mode & 0o777 == 0o600
-    with pytest.raises(RuntimeError, match="outside repository"):
+    with pytest.raises(RuntimeError, match="outside selected Git workspace"):
         transaction.copy_secret_overlays(root, ws, [tmp_path / "outside.toml"])
     _git(root, "worktree", "remove", "--force", str(child)); _git(root, "branch", "-D", "cmru/release/secret")
 
@@ -263,15 +263,18 @@ def test_tester_gate_resolvers_fail_closed_and_prefer_explicit(monkeypatch):
 
 
 def test_tester_gate_cgroup_parent_declared_only(monkeypatch):
-    """No ambient reads, no hardcoded default: the resolver returns the
-    DECLARED value only — unset/empty means None (launch unscoped, announced
-    by main), and whatever resolves is slice-probed before launch."""
-    for name in ("CMRU_TESTER_CGROUP_PARENT", "CGROUP_PARENT_DEV_BACKGROUND"):
+    """No ambient reads, no hardcoded default: the resolver requires the
+    declared gates value and whatever resolves is slice-probed before launch."""
+    for name in ("CMRU_TESTER_CGROUP_PARENT", "CGROUP_PARENT_DEV_GATES",
+                 "CGROUP_PARENT_DEV_BACKGROUND"):
         monkeypatch.delenv(name, raising=False)
-    # Ambient var deliberately set to prove it is NO LONGER read.
+    # Ambient vars deliberately set to prove the resolver reads only its
+    # declared configuration binding.
     monkeypatch.setenv("CGROUP_PARENT_DEV_BACKGROUND", "ambient.slice")
-    assert tester_gate.resolve_cgroup_parent(None) is None
-    assert tester_gate.resolve_cgroup_parent("") is None
+    with pytest.raises(SystemExit, match="cgroup_parent"):
+        tester_gate.resolve_cgroup_parent(None)
+    with pytest.raises(SystemExit, match="cgroup_parent"):
+        tester_gate.resolve_cgroup_parent("")
 
     monkeypatch.setenv("CMRU_TESTER_CGROUP_PARENT", "declared.slice")
     assert tester_gate.resolve_cgroup_parent(None) == "declared.slice"
@@ -293,13 +296,18 @@ def test_tester_gate_io_probe_verdicts(monkeypatch):
         "garbage\n": (False, "could not determine"),
     }
     for stdout, (want_ok, want_note) in cases.items():
-        monkeypatch.setattr(tester_gate.subprocess, "run", _fake_io_probe(stdout))
-        ok, note = tester_gate._probe_io_support("debian:test")
+        seen = {}
+        def fake_run(argv, **kwargs):
+            seen["argv"] = argv
+            return SimpleNamespace(returncode=0, stdout=stdout, stderr="")
+        monkeypatch.setattr(tester_gate.subprocess, "run", fake_run)
+        ok, note = tester_gate._probe_io_support("debian:test", "dev-gates.slice")
         assert ok is want_ok, (stdout, ok, note)
         assert want_note in note
+        assert "--cgroup-parent=dev-gates.slice" in seen["argv"]
 
     monkeypatch.setattr(tester_gate.shutil, "which", lambda name: None)
-    ok, note = tester_gate._probe_io_support("debian:test")
+    ok, note = tester_gate._probe_io_support("debian:test", "dev-gates.slice")
     assert ok is None and "skipping" in note
 
 
@@ -329,8 +337,7 @@ def _run_main_with_caps(monkeypatch, probe_result):
     monkeypatch.setattr(tester_gate.Path, "cwd", staticmethod(lambda: Path(".")))
     monkeypatch.setattr(tester_gate, "_resolve_worktree_context",
                         lambda c, r: (Path("."), r))
-    with _pytest.raises(SystemExit) as ei:
-        tester_gate.main(["--cwd", ".", "--device-read-iops", "/dev/vda:1000",
+    ei = tester_gate.main(["--cwd", ".", "--device-read-iops", "/dev/vda:1000",
                           "--", "true"])
     return ei, argv_seen
 
@@ -339,13 +346,13 @@ def test_main_refuses_when_io_controller_unavailable(monkeypatch):
     """Wiring-level contract: caps requested + unsupported host = named
     refusal BEFORE any launch (deleting the gating block must fail this)."""
     ei, seen = _run_main_with_caps(monkeypatch, (False, "io controller missing"))
-    assert ei.value.code != 0
+    assert ei != 0
     assert "kwargs" not in seen  # never reached argv assembly
 
 
 def test_main_warns_and_proceeds_when_probe_indeterminate(monkeypatch, capsys):
     ei, seen = _run_main_with_caps(monkeypatch, (None, "no docker here"))
-    assert ei.value.code == 0
+    assert ei == 0
     assert "kwargs" in seen and seen["kwargs"]["device_read_iops"] == "/dev/vda:1000"
     assert "no docker here" in capsys.readouterr().err  # probe note forwarded verbatim
 
@@ -377,10 +384,9 @@ def test_main_strips_whitespace_device_caps(monkeypatch):
                         ) if False else None
     monkeypatch.setattr(tester_gate, "_resolve_worktree_context",
                         lambda c, r: (Path("."), r))
-    with pytest.raises(SystemExit) as ei:
-        tester_gate.main(["--cwd", ".",
+    ei = tester_gate.main(["--cwd", ".",
                           "--device-read-iops", "   ", "--", "true"])
-    assert ei.value.code == 0
+    assert ei == 0
     assert probe_called == []  # whitespace = unset: no preflight triggered
     assert argv_seen["kwargs"]["device_read_iops"] == ""
 
@@ -389,5 +395,5 @@ def test_main_proceeds_to_launch_when_io_caps_supported(monkeypatch):
     """io_ok True skips both the refusal and the warning and proceeds to
     argv assembly — the third verdict the gating block can produce."""
     ei, seen = _run_main_with_caps(monkeypatch, (True, "io controller present"))
-    assert ei.value.code == 0
+    assert ei == 0
     assert seen["kwargs"]["device_read_iops"] == "/dev/vda:1000"

@@ -1,10 +1,11 @@
 # =============================================================================
 # nyxloom project gate lanes -- parsed ONLY by run-gate.py (one parser, D-110).
-# Environment facts come from the CENTRAL vbpub-root run-gate.toml (nearest
+# Environment facts come from the CENTRAL vbpub-root run-gate.root.toml (nearest
 # ancestor); judgment policy lives in assay.toml [lanes.tester-unified] (R0+R1:
-# the existing pytest-cov suite, D-064-L2 changed-line floor). NL-1 landed
+# the existing pytest-cov suite with a whole-source line and branch floor).
+# NL-1 landed
 # here (nyxloom-P48): judgment moved from `nyxloom.coverage_gate`
-# self-judgment to Assay's own R1 changed-line judge -- ciu/run-gate.toml is
+# self-judgment to Assay's own R1 whole-source judge -- ciu/run-gate.toml is
 # the proven precedent this mirrors. See run-gate-project/SPEC.md.
 # =============================================================================
 schema_version = 1
@@ -24,8 +25,8 @@ budget = "30m"                       # advisory; consumers may enforce
 # installs assay from the selected worktree in the lane environment; the
 # verdict records the exact runtime assay version and source commit.
 
-# session-extract: a NARROW, package-scoped lane for src/nyxloom/session_extract
-# (+ its cli.py wiring and exact selector regression nodes), added 2026-09-10
+# session-extract: a NARROW, package-scoped lane for
+# src/nyxloom/session_extract, added 2026-09-10
 # to carry R1 branch coverage and R2 mutation for that package without
 # touching tester-unified's existing R0+R1 contract. The full branch fork point
 # at this HEAD is main's merge-base 364945ddaaa528e4ca105bbe3af371d4d0360b04,
@@ -37,6 +38,7 @@ budget = "30m"                       # advisory; consumers may enforce
 kind = "assay"
 assay_lane = "session-extract"       # -> assay.toml [lanes.session-extract]
 environment = "tester-unified"       # central [environments.tester-unified]
-# session-extract's serial R2 campaign currently has 413 candidates; this is
-# the outer/advisory mirror of assay.toml's complete-campaign budget.
-budget = "8h"
+# session-extract's selected current-main R2 boundary has 45 candidates, run
+# two-at-a-time with four pytest workers per candidate. This is the
+# outer/advisory mirror of assay.toml's two-hour campaign budget.
+budget = "2h"

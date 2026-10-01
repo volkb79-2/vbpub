@@ -15,6 +15,15 @@ from typing import Iterable, Mapping
 
 from cmru.config_names import ORCHESTRATION_CONFIG_FILENAME, PROJECT_CONFIG_FILENAME
 from cmru.tester_gate import REQUIRED_TESTER_ENV
+from cli_extended import (
+    ArgumentSpec,
+    CliFailure,
+    CliRegistry,
+    OptionSpec,
+    VerbGroup,
+    VerbSpec,
+)
+from cmru.cli_support import cmru_identity, cmru_presentation_options
 
 
 PROJECT_TEMPLATE_REVISION = 4
@@ -129,7 +138,9 @@ def _atomic_write(path: Path, contents: str) -> None:
             temporary.unlink()
 
 
-def _update_project_revision(config_path: Path) -> bool:
+def _update_project_revision(config_path: Path, *, dry_run: bool = False) -> bool:
+    import difflib
+
     contents = config_path.read_text(encoding="utf-8")
     section = re.compile(r"(?ms)^(\[project\]\n)(.*?)(?=^\[|\Z)")
     match = section.search(contents)
@@ -142,23 +153,69 @@ def _update_project_revision(config_path: Path) -> bool:
     changed = updated_body != body
     if changed:
         contents = contents[:match.start(2)] + updated_body + contents[match.end(2):]
-        _atomic_write(config_path, contents)
+        if dry_run:
+            print("".join(difflib.unified_diff(
+                config_path.read_text(encoding="utf-8").splitlines(keepends=True),
+                contents.splitlines(keepends=True),
+                fromfile=str(config_path), tofile=f"{config_path} (planned)",
+            )), end="")
+        else:
+            _atomic_write(config_path, contents)
     return changed
 
 
-def standards_main(argv: list[str] | None = None) -> None:
-    parser = argparse.ArgumentParser(
+def standards_cli():
+    registry = CliRegistry(
+        cmru_identity(command="cmru", long_name="Configurable Multi Release Utility"),
+        prog="cmru standards",
         description=(
-            "Check CMRU project-framework conformance.  --update changes only CMRU "
+            "Check CMRU project-framework conformance. `--update` changes only CMRU "
             "template revision markers; it never rewrites project-owned commands."
-        )
+        ),
+        single_command=True,
+        no_args_action=True,
+        logging_logger="cmru",
+        global_options=cmru_presentation_options(),
     )
-    parser.add_argument("--project", action="append", help="Check one project (repeatable)")
-    parser.add_argument(
-        "--config", help=f"Path to {PROJECT_CONFIG_FILENAME} or {ORCHESTRATION_CONFIG_FILENAME}"
-    )
-    parser.add_argument("--update", action="store_true", help="Update stale CMRU-owned revision markers")
-    args = parser.parse_args(argv)
+    registry.register(VerbSpec(
+        "standards",
+        description="Check or update CMRU-owned framework markers for projects.",
+        group=VerbGroup.MIXED.value,
+        mutating=True,
+        include_confirmation=False,
+        arguments=(ArgumentSpec(
+            "target", "project target; omitted uses the current project or estate default",
+            metavar="[all|PROJECT[,PROJECT...]]",
+            parser_kwargs={"nargs": "?", "default": None},
+        ),),
+        options=(
+            OptionSpec(
+                ("--config",),
+                f"path to {PROJECT_CONFIG_FILENAME} or {ORCHESTRATION_CONFIG_FILENAME}",
+                metavar="FILE", parser_kwargs={"default": None},
+            ),
+            OptionSpec(
+                ("--update",), "update stale CMRU-owned revision markers",
+                parser_kwargs={"action": "store_true", "default": False},
+            ),
+            OptionSpec(
+                ("--dry-run",), "preview marker updates without writing them; requires --update",
+                parser_kwargs={"action": "store_true", "default": False},
+            ),
+        ),
+        include_json=False,
+        include_progress=False,
+        handler=_run_standards,
+    ))
+    return registry.build()
+
+
+def standards_main(argv: list[str] | None = None) -> int:
+    return standards_cli().run(argv=argv)
+
+
+def _run_standards(args, _runtime) -> None:
+    from cmru.cli_support import TargetSelectionError, select_target_names
 
     # Import lazily: cli dispatches this verb, and is itself the configuration
     # model used by the report.
@@ -166,10 +223,28 @@ def standards_main(argv: list[str] | None = None) -> None:
 
     config_path = _resolve_config(args.config)
     repo_root, projects, project_order, *_ = load_config(config_path)
-    selected = args.project or list(projects)
-    unknown = sorted(set(selected) - set(projects))
-    if unknown:
-        parser.error(f"unknown project(s): {', '.join(unknown)}")
+    from cmru.config import resolve_invocation_context
+    if args.target is None and config_path.name == PROJECT_CONFIG_FILENAME and len(projects) == 1:
+        context_project = next(iter(projects))
+        estate_scope = False
+    elif args.target is None:
+        context = resolve_invocation_context(config_path)
+        context_project = context.project_name
+        estate_scope = context.scope == "estate"
+    else:
+        context_project = None
+        estate_scope = False
+    try:
+        selected = select_target_names(
+            args.target, projects, project_order,
+            context_project=context_project,
+            estate_scope=estate_scope,
+        )
+    except TargetSelectionError as exc:
+        raise CliFailure(str(exc), exit_code=2, show_help=True) from exc
+
+    if args.dry_run and not args.update:
+        raise CliFailure("standards --dry-run requires --update", exit_code=2, show_help=True)
 
     if args.update:
         changed = False
@@ -180,12 +255,16 @@ def standards_main(argv: list[str] | None = None) -> None:
                     f"{name}: project-local {PROJECT_CONFIG_FILENAME} is required for standards update"
                 )
             changed = _update_project_revision(
-                Path(project_path) / PROJECT_CONFIG_FILENAME
+                Path(project_path) / PROJECT_CONFIG_FILENAME,
+                dry_run=args.dry_run,
             ) or changed
-        if changed:
+        if changed and args.dry_run:
+            print("[DRY RUN] Marker updates were previewed; no files were written.")
+        elif changed:
             print("[INFO] Updated CMRU-owned template revision marker(s).", flush=True)
         # Re-read to ensure a malformed update can never be reported as conformant.
-        repo_root, projects, project_order, *_ = load_config(config_path)
+        if not args.dry_run:
+            repo_root, projects, project_order, *_ = load_config(config_path)
 
     results = assess_projects(repo_root, projects, project_order, selected)
     problem_count = 0

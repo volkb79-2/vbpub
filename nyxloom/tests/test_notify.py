@@ -1124,7 +1124,7 @@ def test_probe_transport_malformed_url_is_unreachable_not_a_crash():
     """A real defect this package found in its OWN first draft: a
     scheme-less/malformed configured URL makes urllib raise ValueError
     (not URLError/OSError), which a narrower except tuple let escape --
-    turning an operator's URL typo into `nyxloom doctor` crashing instead of
+    turning an operator's URL typo into `nyxloomctl doctor` crashing instead of
     reporting. Fixed by widening the except tuple; this is the regression
     test for it."""
     nc = NotifyConfig(ntfy_url="not-a-valid-url", ntfy_topic="alerts")

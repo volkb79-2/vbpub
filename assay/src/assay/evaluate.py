@@ -73,7 +73,7 @@ the same way ``FORMAT_MISMATCH``/``UNREADABLE_ARTIFACT`` already do.
 from __future__ import annotations
 
 import fnmatch
-from dataclasses import dataclass
+from .records import record
 from enum import Enum, auto
 from pathlib import Path, PurePosixPath
 from types import MappingProxyType
@@ -298,7 +298,7 @@ def _attribute_line(
     return ordered[0].start_line
 
 
-@dataclass(frozen=True, kw_only=True)
+@record
 class CoverageEvaluation:
     """The four-way union's result — everything :mod:`assay.runner` needs to
     build an R1 :class:`~assay.verdict.Claim`, already typed rather than a
@@ -428,6 +428,14 @@ def _is_considered(
     if adapter.is_test_path(path):
         return False
     return True
+
+
+def _branch_only_shortfall(
+    missing_lines: Mapping[str, frozenset[int]], covered: int, total: int
+) -> bool:
+    """Whether a missed floor is purely a branch shortfall: no missing LINES
+    and at least one uncovered arc (*covered* < *total*)."""
+    return not missing_lines and covered < total
 
 
 def evaluate_coverage(
@@ -675,7 +683,7 @@ def evaluate_coverage(
         # branches -- zero missing LINES, at least one uncovered arc -- is
         # UNCOVERED_BRANCHES, never UNCOVERED_LINES. "Which mechanism
         # refused" is the distinction this project exists to keep.
-        if not missing_lines and total_branches_covered < total_branches_total:
+        if _branch_only_shortfall(missing_lines, total_branches_covered, total_branches_total):
             reason_code = ReasonCode.UNCOVERED_BRANCHES
         else:
             reason_code = ReasonCode.UNCOVERED_LINES
@@ -1304,7 +1312,7 @@ def evaluate_targets(
         reason_code: ReasonCode | None = ReasonCode.EXCLUDED_LINES
     elif pct < fail_under:
         outcome = Outcome.FAIL
-        if not missing_lines and total_branches_covered < total_branches_total:
+        if _branch_only_shortfall(missing_lines, total_branches_covered, total_branches_total):
             reason_code = ReasonCode.UNCOVERED_BRANCHES
         else:
             reason_code = ReasonCode.UNCOVERED_LINES

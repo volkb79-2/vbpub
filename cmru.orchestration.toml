@@ -1,5 +1,14 @@
 schema_version = 1
 
+[github]
+owner = "volkb79-2"
+repo = "vbpub"
+owner_type = "user"
+
+[targets]
+host = "github"
+registry = ["ghcr.io"]
+
 # Estate-only coordination. Every project owns its own release/build/test
 # contract in <project>/cmru.toml and remains runnable after being moved into a
 # fresh repository root.
@@ -17,12 +26,13 @@ schema_version = 1
 #   pwmcp <- cmru  (declared release order)
 #   tls-edge <- cmru  (declared release order)
 #   run-gate-project <- none  (declared release order)
+#   cgroup-profiler <- cmru  (declared release order)
 #
 # PREFLIGHT: PASS
 # END CMRU GENERATED DEPENDENCY GRAPH
 [orchestration]
-project_order = ["ciu", "cmru", "assay", "topos", "nyxloom", "modern-debian-tools-python-debug", "pwmcp", "tls-edge", "run-gate-project"]
-default_projects = ["ciu", "cmru", "assay", "topos", "nyxloom", "modern-debian-tools-python-debug", "pwmcp", "tls-edge", "run-gate-project"]
+project_order = ["ciu", "cmru", "assay", "topos", "nyxloom", "modern-debian-tools-python-debug", "pwmcp", "tls-edge", "run-gate-project", "cgroup-profiler"]
+default_projects = ["ciu", "cmru", "assay", "topos", "nyxloom", "modern-debian-tools-python-debug", "pwmcp", "tls-edge", "run-gate-project", "cgroup-profiler"]
 default_steps = ["run-tests", "build", "push"]
 execution_mode = "project-first"
 # Repository credentials live in gitignored root cmru.secret.toml. A project may
@@ -73,24 +83,20 @@ CMRU_TESTER_CPUS = "2.5"
 #     any --device-* cap is passed).
 CMRU_TESTER_CGROUP_PROBE_IMAGE = "debian:trixie-slim"
 
-# GOVERNANCE SLICE for gate containers. Declared, never ambient: the value
-# may reference the devcontainer-injected var, and resolves ONCE at load.
-#   devcontainer host -> CGROUP_PARENT_DEV_BACKGROUND (e.g.
-#                        dev-background.slice, injected by devcontainer.json)
-#   bare host         -> the :-default below (the tier host-setup installs)
-# Empty result means NO slice tier ON PURPOSE: gates launch unscoped (with an
-# announcement) while per-container caps above still apply. A project may
-# override per-project (its own cmru.toml [env]), including to "".
-# Whatever non-empty value resolves is verified against the host systemd
-# before launch — a typo'd or fail-open transient slice REFUSES the gate.
-CMRU_TESTER_CGROUP_PARENT = "${CGROUP_PARENT_DEV_BACKGROUND:-dev-background.slice}"
+# GOVERNANCE SLICE for gate containers. Gate/lane containers belong to the
+# dedicated admission tier, not the long-running background tier. The value
+# is declared and resolved once at load time; an absent variable is an error
+# rather than a silent fall-through to Docker's unconfined default.
+CMRU_TESTER_CGROUP_PARENT = "${CGROUP_PARENT_DEV_GATES}"
 
-# Forwarded INTO the gate container as $CGROUP_PARENT_DEV_BACKGROUND for
-# ciu's own in-container governance resolver (Docker never passes host env
-# through on its own). Same reference, same resolution rules.
-# Same floor as placement: bare-host consumers (ciu governance inside the
-# gate) must learn the tier that actually governs the container.
-CMRU_TESTER_CGROUP_FORWARD_VAR = "${CGROUP_PARENT_DEV_BACKGROUND:-dev-background.slice}"
+# Forward both host-tier facts into the gate container. CMRU's tester-gate
+# itself is placed in dev-gates.slice, while tests that start a long-running
+# application stack still need to see the background tier explicitly.
+# Optional: only needed when a gate test starts a long-running application
+# stack. An absent background tier must not prevent the gate itself from
+# launching in its required gates tier.
+CMRU_TESTER_CGROUP_FORWARD_VAR = "${CGROUP_PARENT_DEV_BACKGROUND:-}"
+CMRU_TESTER_CGROUP_FORWARD_GATES_VAR = "${CGROUP_PARENT_DEV_GATES}"
 
 # ---------------------------------------------------------------------------
 # Per-container IO caps (docker --device-read/write-bps / -iops). OPTIONAL —
@@ -144,8 +150,20 @@ depends_on = ["cmru"]
 config = "run-gate-project/cmru.toml"
 depends_on = []
 
+# RG-55 daemon image release. Its lifecycle is CIU-owned; CMRU builds and
+# publishes the tagged image, while the controller deploys it via `ciu up`.
+[orchestration.project.cgroup-profiler]
+config = "scripts/cgroup-profiler/cmru.toml"
+depends_on = ["cmru"]
+
 [cleanup]
 release_tag_prefixes = ["*"]
 keep_release_tags = ["ciu-latest", "cmru-latest", "pwmcp-latest"]
 ghcr_packages = ["*"]
 ghcr_delete_packages = ["modern-debian-tools-python-debug-vsc-devcontainer-dev"]
+
+[versions]
+age_window_days = 14
+
+[versions.discovery]
+scope = "shipped"

@@ -1,42 +1,34 @@
 # nyxloom runtime process model & operability
 
-> Status: **§2 (tini+supervisor) and §3 (bridge dashboard) are now DEPLOYED**
-> (2026-07-16 rebuild: PID1=tini, daemon a supervised grandchild, dashboard on
-> the `nyxloom-1dd3d1-nyxloomd-net` ciu bridge, `NTFY_URL` single-source). §1
-> below describes the *superseded* host-net / daemon-as-PID-1 layout that the
-> rebuild replaced — kept as the rationale record.
+> Status: **the direct `nyxloomd` entrypoint, tini+supervisor, and bridge
+> dashboard are deployed.** Compose starts `supervise.sh`, which launches the
+> installed `/opt/nyxloom-venv/bin/nyxloomd`; the service binary is part of the
+> Nyxloom wheel. §2 records the crash-safety rationale; §3 preserves the
+> earlier host-network diagnosis as history.
 > Concerns the *running* daemon (container, PID tree, restart/crash behaviour,
 > dashboard reachability) and the review merge-gate contract. Distinct from
 > `SPEC.md` (the behavioural contract) and `ARCHITECTURE.md` (the module map).
 
 ## 1. The process tree (as deployed)
 
-The `nyxloomd` container runs **host-network** with this entrypoint:
+Compose sets `init: true` and runs the supervisor script. The supervisor
+launches the installed service executable directly; it does not route service
+startup through the human CLI parser or a `python -m` command.
 
-```
-bash -c "rm -f nyxloomd.pid; exec python -m nyxloom.cli daemon"
-                             ^^^^ the daemon REPLACES bash → it is container PID 1
-```
-
-Live tree (`docker top nyxloom-1dd3d1-nyxloomd`):
-
-```
-PID 1  python -m nyxloom.cli daemon          ← the daemon (container PID 1)
- └─ python -m nyxloom.cli daemon (wrapper)    ← one detached wrapper per attempt
-     └─ claude -p <handoff> ... --model ...   ← the actual implementation/review agent
-         └─ (its gate: docker run tester-unified ...)
+```text
+tini (container PID 1)
+└─ bash /workspaces/vbpub/nyxloom/nyxloomd/supervise.sh
+   └─ /opt/nyxloom-venv/bin/nyxloomd
+      └─ detached wrapper per attempt
+         └─ agent CLI and its gate container
 ```
 
-Key facts:
-- **The daemon is PID 1.** The `exec` in the entrypoint means there is no
-  init/supervisor above it.
-- **Agent wrappers are children of the daemon.** They are launched
-  "detached" (own session/process-group) so that, per the daemon's design
-  (`daemon.py`: *"Wrappers are detached and keep running across daemon
-  restarts … never kill wrappers on shutdown"*), a daemon **process** restart
-  can re-adopt them from their pidfiles. All authority is on disk (the
-  append-only event log); the residency is an optimization — *"kill -9 on the
-  daemon loses nothing."*
+The supervisor owns the daemon process lifecycle and crash-loop breaker. A
+daemon restart can leave detached wrappers alive for re-adoption; container
+shutdown still terminates the whole process namespace. The append-only event
+store remains authoritative workflow history. `nyxloomctl daemon` is the
+human operator command for starting the same local daemon outside the service
+manager; `nyxloomd` is the stable service-manager boundary.
 
 ## 2. The restart / crash hazard (and the fix)
 
@@ -69,7 +61,7 @@ end the container:
 
 ```
 PID 1  tini (or `docker run --init`)         ← reaps zombies, forwards signals; never crashes
- └─ supervisor: `while true; do python -m nyxloom.cli daemon; done`
+ └─ supervisor: `while true; do /opt/nyxloom-venv/bin/nyxloomd; done`
      └─ the daemon                            ← may crash/restart freely
          └─ agent wrappers                    ← reparent to tini on daemon death; SURVIVE
 ```
@@ -94,9 +86,10 @@ which is the same code path, just finally reachable. Net: **tini gives both
 crash- and restart-without-consequence; the signal approach gives only the
 latter — prefer tini** (optionally + execv for zero-downtime reloads).
 
-## 3. Dashboard reachability & VS Code port-forwarding
+## 3. Dashboard reachability & VS Code port-forwarding (historical diagnosis)
 
-The daemon serves a read-only HTTP/SSE surface **loopback-only** at
+Before P38 moved the deployment to its private bridge network, the daemon
+served a read-only HTTP/SSE surface **loopback-only** at
 `min(policy.http_port)` over projects (default **8942**). Because the container
 is **host-network**, that binds `127.0.0.1:8942` on the **docker host** (the
 `vb` machine). In-container `curl` → HTTP 302 (alive); from the host itself a
@@ -131,7 +124,7 @@ the SSH-client machine is two hops removed.
 3. **`docker exec` from the devcontainer** for one-off inspection
    (`docker exec nyxloom-1dd3d1-nyxloomd curl 127.0.0.1:8942/…`). Debug-only.
 
-`nyxloom doctor` now prints the URL + the host-network caveat so the port is at
+`nyxloomctl doctor` now prints the URL + the host-network caveat so the port is at
 least discoverable (2026-07-16).
 
 ## 4. Implications of a richer (React) UI

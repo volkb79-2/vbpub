@@ -1,0 +1,113 @@
+{
+  "argv_appended": [],
+  "argv_declared": [
+    "/opt/tester-venv/bin/python",
+    "-m",
+    "pytest",
+    "tests",
+    "-n",
+    "auto",
+    "-q",
+    "--cov=src/nyxloom",
+    "--cov-branch",
+    "--cov-report=json:coverage.json"
+  ],
+  "argv_effective": [
+    "/opt/tester-venv/bin/python",
+    "-m",
+    "pytest",
+    "tests",
+    "-n",
+    "auto",
+    "-q",
+    "--cov=src/nyxloom",
+    "--cov-branch",
+    "--cov-report=json:coverage.json"
+  ],
+  "argv_modified": false,
+  "assay_version": "7.2.1.dev55+gcc818af1d",
+  "claims": [
+    {
+      "rigor": "R0",
+      "source": "computed",
+      "status": "PASS",
+      "verified_by_assay": true
+    },
+    {
+      "coverage": {
+        "branch_capability": "reported",
+        "branches_covered": 2,
+        "branches_total": 2,
+        "considered": 1,
+        "covered": 15,
+        "excluded_lines": {},
+        "exclusion_capability": "reported",
+        "executable": 15,
+        "files_missing_coverage": [],
+        "files_with_excluded_lines": [],
+        "files_with_missing_branch_lines": [],
+        "files_with_unclassified_lines": [],
+        "missing_branch_lines": {},
+        "missing_lines": {},
+        "pct": 100.0,
+        "unclassified_lines": {}
+      },
+      "rigor": "R1",
+      "source": "computed",
+      "status": "PASS",
+      "verified_by_assay": true
+    }
+  ],
+  "commit": "cc818af1dea16b3d8bc52e01cbcdd1b6df453d32",
+  "declared_evidence": [],
+  "declared_rigor": [
+    "R0",
+    "R1"
+  ],
+  "ended": "2026-10-01T01:44:31.819024+00:00",
+  "enforcement": "gate",
+  "env_declared": {
+    "PYTHONDONTWRITEBYTECODE": "1",
+    "PYTHONPATH": "src:../libraries/cli-extended/src"
+  },
+  "env_effective": {
+    "HOME": "/home/tester",
+    "LANG": "en_US.UTF-8",
+    "PATH": "/home/vscode/.venv/bin:/home/vscode/.local/bin:/usr/local/python/current/bin:/usr/local/py-utils/bin:/usr/local/jupyter:/usr/local/share/nvm/current/bin:/usr/local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+    "PYTHONDONTWRITEBYTECODE": "1",
+    "PYTHONPATH": "src:../libraries/cli-extended/src"
+  },
+  "evidence": [],
+  "exit_code": 0,
+  "judgment": {
+    "r1": {
+      "allow_excluded": false,
+      "coverage_artifact": "coverage.json",
+      "coverage_format": "coverage-py-json",
+      "fail_under": 100.0,
+      "mode": "changed_lines",
+      "require_branch": true
+    },
+    "resolved": {
+      "base": "2ba90c10f00c67f7786ed0f63747c284867ba0be",
+      "base_resolution": "merge-base",
+      "language": "python",
+      "source_roots": [
+        "src"
+      ]
+    }
+  },
+  "lane": "tester-unified",
+  "outcome": "PASS",
+  "schema_version": 13,
+  "scope": "S1",
+  "snapshot_policy": {
+    "selection": "repository-minus-unsafe-symlinks",
+    "unsafe_symlink_omissions": [
+      "topos/tests/fixtures/inspect_files/_danger/passwd_link",
+      "topos/tests/fixtures/inspect_files/cgroup_escape/system.slice/ssh.service/dangerous_link/passwd_escape",
+      "topos/tests/fixtures/inspect_files/cgroup_nonreg/system.slice/ssh.service/memory.current"
+    ]
+  },
+  "started": "2026-10-01T01:41:13.499957+00:00"
+}

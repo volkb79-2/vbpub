@@ -298,6 +298,29 @@ incident history and will otherwise reproduce these by default.
 - ✗ `datetime.now()` / `time.time()` where the assertion depends on the value.
 - ✓ Inject or mock the boundary; make offline the default path.
 
+**F. No predicted measurements.** (distilled 2026-09-17 from an incident in a
+consuming project's own decision ledger — the specific entry isn't cited here
+since a canonical doc shouldn't hard-reference a consumer's private,
+renumberable ledger; see that project's own decisions.md around the same
+date for the full incident writeup if useful.)
+- ✗ A carve or oracle asserting a specific coverage/mutation number, a "missing
+  lines" list, or a "this branch is permanently uncoverable" claim computed by
+  reasoning about a tool's rendered report instead of running the tool.
+- ✗ Trusting `coverage.py`'s rendered "Missing" column as a complete branch-arc
+  list — it silently suppresses an arc whose destination line is already
+  reported missing elsewhere, so a hand-derived read of the report undercounts
+  by exactly that arc. This exact mistake recurred three times independently
+  in one wave before being traced to this display artifact.
+- ✓ Assert the POLICY requirement instead — the project's coverage target, its
+  R0-R3 (or equivalent) testing tier, the design decision — as the oracle.
+  Never a predicted number; the number does not exist until the implementer's
+  own gate run produces it.
+- ✓ If a carve must justify "this is achievable" or "this line is
+  unreachable" before dispatch, PROVE it by executing the tool
+  (`coverage.py`/`runpy.run_module(mod, run_name="__main__")`, or the
+  project's own judge) against real or synthetic stand-in code — never by
+  reading a report and reasoning about what it would show.
+
 **Author's check:** for every test you specify, ask *"could this flip its verdict
 on a slower machine, in a different worker, or in a different order?"* If yes,
 it is not an oracle yet.
@@ -419,6 +442,16 @@ escalate_if:
   daemon holds the task until they resolve.
 - `gate` on each oracle + top-level `gates` must reference a `[gates.*]` id
   declared in the project's `nyxloom.toml`.
+- **`input_revision` is a TWO-STEP freeze, not a value chosen up front**
+  (2026-09-17, distilled from a lesson that recurred across an entire wave
+  of packages): commit the carve first, THEN a second commit that sets
+  `input_revision` to the FIRST commit's own hash — the pin cannot be
+  correct any earlier, because the commit it names does not exist yet while
+  you are still writing it. The same two-step applies after every repair
+  round: land the repair, then re-freeze `input_revision` to the repair's
+  own hash in a follow-up commit. A carve whose `input_revision` matches its
+  OWN commit (rather than the one before it) got this backwards; a reviewer
+  should check this explicitly, not assume it self-evidently worked.
 
 Naming + lifecycle live in `STANDARD.md`; this file goes to
 `nyxloom-trove/handoffs/<id>.md` — the filename stem MUST equal the frontmatter

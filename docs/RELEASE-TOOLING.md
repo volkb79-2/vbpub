@@ -20,7 +20,6 @@ One config, one installed CLI. The normative contract is
 | [`cmru.orchestration.toml`](../cmru.orchestration.toml) | committed | Estate order/dependencies/cleanup only. |
 | `<project>/cmru.vars` | gitignored | Generated `KEY=VALUE` build vars passed between steps. |
 | `cmru` console script | installed | Canonical entry point for every verb. |
-| [`cmru.release.sh`](../cmru.release.sh) | committed | Convenience wrapper for the complete estate release. |
 | [`cmru/build-initial-standalone.sh`](../cmru/build-initial-standalone.sh) | committed | Fresh-checkout CMRU bootstrap. |
 
 Token resolution (SPEC S2.4): `$GITHUB_PUSH_PAT`/`$GITHUB_TOKEN` → deep merge root
@@ -30,11 +29,11 @@ and selected project secret files. A committed `cmru.toml` credential is rejecte
 
 ```bash
 cmru status                             # preview what would be released (read-only)
-./cmru.release.sh                      # one-shot: detect → tag → push → build → publish
-./cmru.release.sh --dry-run            # preview tags, no writes
-cmru changelog --project assay --backfill-tag assay-v0.1.0  # migrate a missed history entry
-cmru build --project cmru             # retained isolated gate + build_step; no publish
-cmru publish --project cmru           # run the declared push step
+cmru release                           # one-shot: detect → tag → push → build → publish
+cmru release --dry-run                 # preview tags, no writes
+cmru changelog assay --backfill-tag assay-v0.1.0  # migrate a missed history entry
+cmru build cmru                        # retained isolated gate + build_step; no publish
+cmru publish cmru                      # run the declared push step
 cmru cleanup --remove-assets 30d      # prune old releases/GHCR versions
 cmru --help                           # all verbs
 ```

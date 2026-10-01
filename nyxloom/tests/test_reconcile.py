@@ -3759,7 +3759,7 @@ def test_auto_merge_fires_when_guarded_automatic_and_merge_ready():
 
 def test_auto_merge_none_when_merge_mode_manual():
     """Item 13 (regression pin): the existing manual-mode behavior --
-    MERGE_READY sits inert until an operator's own `nyxloom merge` -- must
+    MERGE_READY sits inert until an operator's own `nyxloomctl merge` -- must
     be completely unchanged. policy.merge_mode defaults to 'manual', so a
     MERGE_READY task with no explicit override plans no AutoMergeTask at
     all."""

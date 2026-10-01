@@ -1,14 +1,12 @@
-# mdt host-setup — reactive counterpart to mdt-dev-governance-reconcile.timer's periodic
-# sweep: watches dev-interactive.slice + dev-background.slice + dev-gates.slice
-# via inotify and applies a PER-SLICE default MemoryMax (dev-gates.slice gets
-# its own WATCHER_GATES_MEMORY_HIGH/MAX pair, RW-32/D1) to any new container that
-# didn't request its own, within the same second it's created rather than up
-# to WATCHER_INTERVAL later. Proven live (2026-08-28) with a plain read-only
-# inotify watch on cgroupfs — no Docker API, no authorization plugin, no
-# socket proxy. See scripts/mdt-container-memory-inotify-watcher.py's own docstring and
-# CGROUP-NOTES.md for why a periodic sweep alone leaves a real exposure
-# window and why this can't replace it entirely (cgroup-parent placement
-# stays create-time-only either way).
+# Optional mdt host-setup watcher for explicitly configured per-container
+# MemoryHigh/MemoryMax values. It watches dev-interactive.slice,
+# dev-background.slice, and dev-gates.slice via inotify. All shipped values
+# are '-', so install.sh leaves this unit disabled unless the validated host
+# config explicitly enables the policy and sets at least one value. This
+# watcher applies no memory fallback when disabled; parent slice limits remain
+# the aggregate control.
+# The separate Docker-events watcher and periodic reconcile service manage IO.
+# See scripts/mdt-container-memory-inotify-watcher.py and host-setup/README.md.
 [Unit]
 Description=mdt host-setup — container memory inotify watcher
 Documentation=file:/etc/mdt/host-setup.env

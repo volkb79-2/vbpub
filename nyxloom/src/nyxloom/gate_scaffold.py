@@ -142,7 +142,7 @@ def render_gate_def(
     # game servers). Naming a slice puts the whole container tree under that
     # accounting; the slice carries the CPU weight and IO caps. A MISSING slice
     # fails OPEN (systemd silently creates a transient, limitless one), which is why
-    # `nyxloom doctor` asserts every gate-argv slice exists as a real unit and fails
+    # `nyxloomctl doctor` asserts every gate-argv slice exists as a real unit and fails
     # closed otherwise (doctor.doctor_host). Carries an ADJUST_MARKER because the
     # slice must actually be installed on the target host (infra/slices/README.md) --
     # this scaffold cannot create it (that needs host root, by design).

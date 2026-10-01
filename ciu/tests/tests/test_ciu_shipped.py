@@ -102,6 +102,21 @@ def _write_env_file(tmp_path: Path) -> None:
     )
     (tmp_path / "ciu.global.defaults.toml.j2").write_text(GLOBAL_DEFAULTS)
     (tmp_path / ".gitignore").write_text("**/.ciu/\n")
+    from ciu.workspace_env import GENERATED_FACTS_KEYS, MACHINE_FACT_ENV_KEYS, write_generated_facts
+
+    facts = {key: "" for key in GENERATED_FACTS_KEYS}
+    facts.update(
+        repo_name="repo",
+        instance_id="abc123",
+        network=os.environ["DOCKER_NETWORK_INTERNAL"],
+        repo_root=str(tmp_path),
+        physical_repo_root=str(tmp_path),
+    )
+    machine = {
+        key: os.environ.get(env_key, "")
+        for key, env_key in MACHINE_FACT_ENV_KEYS.items()
+    }
+    write_generated_facts(tmp_path, facts, machine_facts=machine)
 
 
 # ---------------------------------------------------------------------------

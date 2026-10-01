@@ -11,6 +11,16 @@
 !topos
 !nyxloom
 !wheel-builder
+# Nyxloom's image now builds with the repository root as context. Expose only
+# the cli-extended package source that its wheel build copies; keep the rest of
+# libraries/ out of unrelated root-context builds.
+!libraries
+libraries/*
+!libraries/cli-extended
+libraries/cli-extended/*
+!libraries/cli-extended/src
+libraries/cli-extended/src/*
+!libraries/cli-extended/src/cli_extended
 # scripts/ is otherwise excluded wholesale; whitelist just the one project
 # tester-unified installs from (its pyproject is the closure's source of truth).
 # The parent directory must be re-included first or the child is never reached.

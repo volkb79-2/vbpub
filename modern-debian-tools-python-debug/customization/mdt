@@ -50,13 +50,102 @@
 set -euo pipefail
 
 usage() {
-    cat >&2 <<'EOF'
+    cat <<'EOF'
+MDT host namespace tools
+
 Usage:
   mdt host-exec [-t|--target PID] [--] <cmd> [args...]
   mdt host-shell [-t|--target PID]
   mdt doctor [--check-only]
+
+Commands:
+  host-exec   Run one command in the host namespaces. PID defaults to 1.
+              With no command, open an interactive host shell.
+  host-shell  Open an interactive host shell. PID defaults to 1.
+  doctor      Check cgroup2 mount flags; repair missing flags by default.
+              Uses a privileged helper on the Docker host.
+
+Examples:
+  host-escape -- systemctl show dev-interactive.slice -p MemoryMax
+  host-escape -- docker inspect dstdns-devcontainer-vb
+  host-escape                         # interactive host shell
+  mdt host-exec --target 1234 -- ps -ef
+  mdt doctor --check-only             # inspect without repairing
+
+Host access warning:
+  host-exec, host-shell, and doctor start a privileged helper and enter host
+  namespaces. Commands run against the real host with host-root authority.
+  Review every command before running it. host-exec and host-shell run
+  `mdt doctor` afterward; if required cgroup2 mount flags are missing, that
+  pass remounts it. `mdt doctor --check-only` still starts the helper but does
+  not change the host mount.
+
+The `host-escape` command is a compatibility alias for `mdt host-exec`; with
+no arguments it opens `mdt host-shell`.
 EOF
-    exit 1
+}
+
+usage_host_run() {
+    local command_name="$1"
+    cat <<EOF
+Usage:
+  mdt ${command_name} [-t|--target PID] [--] <cmd> [args...]
+EOF
+    if [[ "$command_name" == "host-shell" ]]; then
+        cat <<'EOF'
+
+Open an interactive shell in the selected host process's mount, UTS, network,
+IPC, and cgroup namespaces. PID defaults to 1 (the host init process). The
+shell has host-root authority; exit it when the maintenance task is complete.
+After it exits, mdt doctor checks and repairs required cgroup2 flags if needed.
+
+Examples:
+  mdt host-shell
+  mdt host-shell --target 1234
+  host-escape
+EOF
+    else
+        cat <<'EOF'
+
+Run a command in the selected host process's mount, UTS, network, IPC, and
+cgroup namespaces. PID defaults to 1 (the host init process). Use `--` before
+the command when its first argument could be mistaken for an mdt option.
+With no command, host-exec opens an interactive shell for compatibility.
+
+Examples:
+  host-escape -- systemctl show dev-interactive.slice -p MemoryMax
+  mdt host-exec --target 1234 -- ps -ef
+
+The command has host-root authority. After it exits, mdt doctor checks and
+repairs required cgroup2 mount flags if needed.
+EOF
+    fi
+}
+
+usage_doctor() {
+    cat <<'EOF'
+Usage:
+  mdt doctor [--check-only]
+
+Check the host cgroup2 mount for MDT's required flags. By default, remount the
+host cgroup2 filesystem to restore missing flags. `--check-only` reports a
+missing flag and exits nonzero without attempting the repair.
+
+This command starts a privileged helper through the Docker host and enters the
+host's mount namespace. Use `--check-only` when you only want to inspect flags;
+it does not remount the host filesystem.
+
+Examples:
+  mdt doctor
+  mdt doctor --check-only
+EOF
+}
+
+usage_error() {
+    echo "[mdt] $1" >&2
+    echo >&2
+    usage_host_run "$2" >&2
+    return 2
 }
 
 # ── cgroup2 mount-flag self-heal (host-setup/CGROUP-NOTES.md §5) ────────────
@@ -64,12 +153,18 @@ mdt_doctor() {
     local check_only=0
     while [[ $# -gt 0 ]]; do
         case "$1" in
+            -h|--help)
+                usage_doctor
+                return 0
+                ;;
             --check-only)
                 check_only=1
                 shift
                 ;;
             *)
-                usage
+                echo "[mdt] unknown doctor option: $1" >&2
+                usage_doctor >&2
+                return 2
                 ;;
         esac
     done
@@ -116,22 +211,49 @@ exit 1
 
 # ── host-exec / host-shell ───────────────────────────────────────────────────
 mdt_host_run() {
+    local command_name="$1"
+    shift
     local target=1
     while [[ $# -gt 0 ]]; do
         case "$1" in
+            -h|--help)
+                usage_host_run "$command_name"
+                return 0
+                ;;
             -t|--target)
+                if [[ $# -lt 2 ]]; then
+                    usage_error "${1} requires a host PID" "$command_name"
+                    return $?
+                fi
                 target="$2"
                 shift 2
+                ;;
+            --target=*)
+                target="${1#*=}"
+                shift
                 ;;
             --)
                 shift
                 break
+                ;;
+            -*)
+                usage_error "unknown ${command_name} option: $1" "$command_name"
+                return $?
                 ;;
             *)
                 break
                 ;;
         esac
     done
+
+    if [[ ! "$target" =~ ^[1-9][0-9]*$ ]]; then
+        usage_error "target must be a positive host PID, got ${target@Q}" "$command_name"
+        return $?
+    fi
+    if [[ "$command_name" == "host-shell" && $# -gt 0 ]]; then
+        usage_error "host-shell does not accept a command; use host-exec" "$command_name"
+        return $?
+    fi
 
     echo "[mdt] running in the namespace of pid ${target}, not this devcontainer" >&2
 
@@ -161,19 +283,21 @@ cmd="${1:-}"
 
 case "$cmd" in
     host-exec)
-        mdt_host_run "$@"
+        mdt_host_run host-exec "$@"
         ;;
     host-shell)
-        mdt_host_run "$@"
+        mdt_host_run host-shell "$@"
         ;;
     doctor)
         mdt_doctor "$@"
         ;;
-    ""|-h|--help)
+    ""|-h|--help|help)
         usage
+        exit 0
         ;;
     *)
         echo "[mdt] unknown subcommand: $cmd" >&2
-        usage
+        usage >&2
+        exit 2
         ;;
 esac

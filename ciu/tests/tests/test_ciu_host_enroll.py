@@ -23,6 +23,7 @@ sshd and therefore a container; it skips where docker is unavailable.
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -37,6 +38,21 @@ from ciu.host_enroll import EnrollError
 from ciu.hosts import load_hosts, resolve_hosts_file, write_host_row
 
 CIU_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _without_toml_table_tree(text: str, root: str) -> str:
+    """Remove one TOML table and its nested tables from compatibility input."""
+    output: list[str] = []
+    dropping = False
+    header_re = re.compile(r"\[{1,2}(.+?)\]{1,2}(?:\s+#.*)?$")
+    for line in text.splitlines(keepends=True):
+        header = header_re.fullmatch(line.strip())
+        if header:
+            table_name = header.group(1).strip()
+            dropping = table_name == root or table_name.startswith(f"{root}.")
+        if not dropping:
+            output.append(line)
+    return "".join(output)
 
 # A deliberately hostile inventory: a multi-line string whose BODY looks like a
 # table header, hand-aligned whitespace, comments in three positions, a quoted
@@ -86,6 +102,7 @@ def repo(tmp_path, monkeypatch):
         '[topology.external]\npublic_fqdn = "ctl.example"\n',
         encoding="utf-8",
     )
+    monkeypatch.chdir(root)
     monkeypatch.delenv("CIU_HOSTS_FILE", raising=False)
     return root
 
@@ -1075,11 +1092,14 @@ class TestRenderedInstaller:
         cmru_toml = CIU_ROOT / "cmru.toml"
         if not cmru_toml.exists():
             pytest.skip("ciu/cmru.toml not available")
-        doc = tomllib.loads(cmru_toml.read_text(encoding="utf-8"))
-        assert doc["github"]["owner"] == host_enroll.INSTALLER_REPO_OWNER
-        assert doc["github"]["repo"] == host_enroll.INSTALLER_REPO_NAME
-        assert doc["project"]["prefix"] == host_enroll.INSTALLER_TAG_PREFIX
-        assert "installer" in doc["project"]
+        project = tomllib.loads(cmru_toml.read_text(encoding="utf-8"))
+        central = tomllib.loads(
+            (CIU_ROOT.parent / "cmru.orchestration.toml").read_text(encoding="utf-8")
+        )
+        assert central["github"]["owner"] == host_enroll.INSTALLER_REPO_OWNER
+        assert central["github"]["repo"] == host_enroll.INSTALLER_REPO_NAME
+        assert project["project"]["prefix"] == host_enroll.INSTALLER_TAG_PREFIX
+        assert "installer" in project["project"]
 
     def test_release_publishes_get_py_as_an_asset(self):
         cmru_toml = CIU_ROOT / "cmru.toml"
@@ -1090,7 +1110,7 @@ class TestRenderedInstaller:
         assert "--extra-asset" in argv
         assert argv[argv.index("--extra-asset") + 1] == "get.py"
 
-    def test_render_is_byte_identical_to_the_committed_file(self):
+    def test_render_is_byte_identical_to_the_committed_file(self, tmp_path, capsys):
         """O6's byte-identity half. It needs cmru's `get.py.tmpl`, which the
         installed cmru wheel does not ship (`[tool.setuptools.package-data]`
         packages only `templates/*.toml`), so it runs against a cmru source
@@ -1111,7 +1131,46 @@ class TestRenderedInstaller:
 
         from cmru.config import load_forge_config
 
-        cfg = load_forge_config(CIU_ROOT / "cmru.toml")
+        project_text = (CIU_ROOT / "cmru.toml").read_text(encoding="utf-8")
+        central = tomllib.loads(
+            (CIU_ROOT.parent / "cmru.orchestration.toml").read_text(encoding="utf-8")
+        )
+        schema, rest = project_text.split("\n", 1)
+        effective_project = tmp_path / "cmru.toml"
+        effective_project.write_text(
+            schema
+            + "\n[github]\n"
+            + f"owner = {central['github']['owner']!r}\n"
+            + f"repo = {central['github']['repo']!r}\n"
+            + f"owner_type = {central['github']['owner_type']!r}\n"
+            + "\n[targets]\n"
+            + f"host = {central['targets']['host']!r}\n"
+            + f"registry = {central['targets']['registry']!r}\n"
+            + rest,
+            encoding="utf-8",
+        )
+        try:
+            cfg = load_forge_config(effective_project)
+        except SystemExit:
+            # The installed cmru may predate the runtime declaration or
+            # version-tracking policy. This test exercises get.py rendering,
+            # so retry only when the loader explicitly rejects those newer,
+            # unrelated tables; current CMRU validates both in its own
+            # configuration contract tests.
+            output = capsys.readouterr().out
+            unknown_tables = re.findall(r"unknown keys \[([^\]]*)\]", output)
+            rejected = [set(re.findall(r"'([^']+)'", item)) for item in unknown_tables]
+            allowed_legacy_gaps = {"runtime", "versions"}
+            if (
+                not rejected
+                or any(not tables or tables - allowed_legacy_gaps for tables in rejected)
+            ):
+                pytest.fail(f"unexpected installed cmru config refusal: {output}")
+            compatible = effective_project.read_text(encoding="utf-8")
+            for table in set.union(*rejected):
+                compatible = _without_toml_table_tree(compatible, table)
+            effective_project.write_text(compatible, encoding="utf-8")
+            cfg = load_forge_config(effective_project)
         proj = cfg.projects["ciu"]
         ins = proj.installer
         rendered = getpy.render_get_py(
@@ -1178,7 +1237,7 @@ class TestHostVerbDispatch:
         monkeypatch.delenv("REPO_ROOT", raising=False)
         assert _cli(
             monkeypatch,
-            ["host", "enroll", "rs1002", "--define-root", str(repo)],
+            ["host", "enroll", "rs1002", "--root-folder", str(repo)],
         ) == 0
         assert host_enroll.key_paths(repo, "rs1002")[0].exists()
 

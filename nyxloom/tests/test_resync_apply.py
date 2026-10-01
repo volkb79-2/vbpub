@@ -10,13 +10,15 @@ edit. Two disjoint concerns, mirroring `test_resync.py`'s own split:
     (but tmp-state-isolated) storage writes -- no git subprocess needed,
     since the merge *evidence* is supplied directly (mirrors how
     `resync_plan`'s own tests build `GitFacts` by hand in test_resync.py).
-  * A couple of end-to-end `cli.main(["resync", ..., "--apply"])`
+  * A couple of end-to-end `ctl_main(["resync", ..., "--apply"])`
     integration tests (real git repo via `sample_project`) cover the CLI
     wiring itself (--apply / --apply-content-merges flags) and the
     paused-project oracle.
 """
 
 from __future__ import annotations
+
+from nyxloom.cli_ctl import main as ctl_main
 
 import subprocess
 from pathlib import Path
@@ -286,7 +288,7 @@ def test_cli_resync_without_apply_flag_still_pure_dry_run(sample_project, tmp_st
 
     storage.save_state(_tsf("demo-P40-dryrun", TaskState.MERGE_READY))
 
-    exit_code = cli.main(["resync", "demo"])
+    exit_code = ctl_main(["resync", "demo"])
     assert exit_code == 0
 
     reloaded = storage.load_state("demo", "demo-P40-dryrun")
@@ -305,7 +307,7 @@ def test_cli_resync_apply_advances_and_prints_summary(sample_project, tmp_state,
 
     storage.save_state(_tsf("demo-P41-apply", TaskState.MERGE_READY))
 
-    exit_code = cli.main(["resync", "demo", "--apply"])
+    exit_code = ctl_main(["resync", "demo", "--apply"])
     assert exit_code == 0
 
     out = capsys.readouterr().out
@@ -320,7 +322,7 @@ def test_cli_resync_apply_advances_and_prints_summary(sample_project, tmp_state,
     assert events[0].actor.kind is ActorKind.RESYNC
 
     # Second --apply: idempotent, no further events.
-    exit_code2 = cli.main(["resync", "demo", "--apply"])
+    exit_code2 = ctl_main(["resync", "demo", "--apply"])
     assert exit_code2 == 0
     assert len(list(storage.iter_events("demo"))) == 1
 
@@ -338,14 +340,14 @@ def test_cli_resync_apply_content_merges_flag_gates_the_squash_case(
     storage.save_state(_tsf("demo-P42-squash", TaskState.MERGE_READY))
 
     # Bare --apply: content-check-only evidence, must NOT apply.
-    exit_code = cli.main(["resync", "demo", "--apply"])
+    exit_code = ctl_main(["resync", "demo", "--apply"])
     assert exit_code == 0
     reloaded = storage.load_state("demo", "demo-P42-squash")
     assert reloaded.state is TaskState.MERGE_READY
     assert list(storage.iter_events("demo")) == []
 
     # With the explicit opt-in: applies.
-    exit_code2 = cli.main(["resync", "demo", "--apply", "--apply-content-merges"])
+    exit_code2 = ctl_main(["resync", "demo", "--apply", "--apply-content-merges"])
     assert exit_code2 == 0
     reloaded2 = storage.load_state("demo", "demo-P42-squash")
     assert reloaded2.state is TaskState.MERGED
@@ -371,7 +373,7 @@ def test_apply_works_on_paused_project(sample_project, tmp_state, capsys):
     pause_path.touch()
     assert pause_path.exists()
 
-    exit_code = cli.main(["resync", "demo", "--apply"])
+    exit_code = ctl_main(["resync", "demo", "--apply"])
     assert exit_code == 0
 
     reloaded = storage.load_state("demo", "demo-P43-paused")

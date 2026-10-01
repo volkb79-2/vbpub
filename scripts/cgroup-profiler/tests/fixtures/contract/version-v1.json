@@ -1,0 +1,13 @@
+{
+  "ok": true,
+  "contract": 1,
+  "cgprofile": "1.0.0",
+  "daemon": {
+    "name": "cgprofile-host-daemon",
+    "started_at": "2026-09-12T09:00:00Z",
+    "damon": "available",
+    "damon_default": "on",
+    "sessions_live": 1,
+    "max_sessions": 16
+  }
+}

@@ -64,6 +64,9 @@ SPEC §9.
 | RG-45 | a `vitest`-backed lane (`kind = "command"` or `kind = "assay"` coverage) can exit non-zero purely from vitest's own internal worker/main RPC heartbeat (birpc, hardcoded 60s timeout, no config path in any pool type) tripping under HOST-WIDE multi-tenant CPU contention across DIFFERENT repos' containers — RG-39's exec lock only serializes SAME-container access within one tool, it does not bound the SUM of concurrently-active gate containers' CPU quotas against the host's real core count | Major | OPEN 2026-09-08 — reproduced 5/5 identical (dstdns P176, `frontend-unit`+`ui_unit`, all real tests green every time); NOT run-gate's to fix — traced to assay's own R0 exit-code-only evaluation, moved to assay as B078 (design: `assay/nyxloom-trove/R0-STRUCTURED-REPORT-DESIGN.md`), see disposition in prose section below |
 | RG-46 | a FOLLOWER (a client re-attaching to a lane whose inflight record names a still-alive owner) performs no independent stall detection of its own — `follow_container` arms neither `ProgressWatch` nor `LogStreamWatch`, by design (RW-14: "does NOT remove the container... all three belong to the client that started the run"), so if the OWNER is killed before its own `stall_timeout` fires, the follower just blocks on `docker wait`/`docker logs -f` forever, with nothing left to notice the container is silent | Minor | OPEN 2026-09-08 — found during RG-41's round-2 adversarial review; pre-existing (the same gap already applied to any assay lane declaring `stall_timeout` — `follow_container` has never armed a watch), RG-41 only widens exposure by lane COUNT (5 command lanes vs 3 assay lanes, RG-41's own backlog count). Not fixed as part of RG-41: a follower deciding to act on a stall it detects independently is a real design question (does it save evidence and `rm -f` a container it does not own? at minimum it would need the SAME owner-liveness re-check `promote_follower` already does before acting) that deserves its own scoped decision, not a silent addition to an unrelated item |
 | RG-39 | run-gate has no internal mutual exclusion around the `docker exec`/`docker run` it performs into a resolved container, so every consumer must remember to wrap each invocation in its own `flock` (dstdns `GUIDE.md` §1) or two lanes racing the SAME container silently contaminate each other's evidence — but `resolve_container_name()` (the same function RG-37 tracks) already computes the exact container identity BEFORE that exec, every single call, so the tool already has everything it needs to serialize itself | Medium | FIXED 2026-09-03 (rev 35, SPEC `R-41`) — refinements (1) and (2) below, built exactly as specified; refinement (3) deliberately NOT built (RG-37, the v8 `ciu.resolved.toml` container-identity path, doesn't exist yet). New `acquire_exec_lock()` takes `/tmp/run-gate-exec-<container>.lock` (RG-20's `_open_lockfile()` discipline, now factored into a shared helper) on the container name `resolve_container_name()` resolves — resolved ONCE in `main()`, threaded into `run_exec_lane()` (no longer re-derived there) so the lock key and the `docker exec` target can never drift apart. Acquired strictly after `acquire_shared_locks()`'s locks in `main()`'s dispatch, released from the SAME `finally` (`exec_lock_fd`, closed before the shared-infra fds — LIFO, not load-bearing). `LOCK_EX` blocking with a `waiting for container '<name>' — another gate holds <path>` line; `--dry-run` prints the planned lock (name + path) and never blocks. Five new tests in `TestExecModeMutex`: same-container serialization (thread-raced, proven genuinely red pre-fix — a leaked lock fd on that test's own assertion failure path self-deadlocked the NEXT test via flock()'s per-open-file-description semantics, fixed with a try/finally, unrelated to the shipped fix itself), isolated containers never contend, `--dry-run` never blocks, the lock releases even when the lane raises (finally path), and a direct ordering assertion (shared-infra locks acquired before the exec lock); a sixth test (added after the first `selftest` run below caught it uncovered) exercises `acquire_exec_lock()`'s OSError branch, in-process (a `run_tool()` subprocess, RG-20's own precedent's pattern, is invisible to this suite's coverage instrumentation). Red-first proven: a scoped `git stash` of `run-gate.py` alone (fix reverted, tests kept) reproduced 3/5 new tests failing for the expected reasons before the fix, restored clean after. `./run-gate.py selftest` green (post-commit `2c6b2bbc` + a same-day coverage follow-up): 495 passed, 2 skipped, diff-coverage 25/25 = 100.0% (≥ 100.0% floor), exit 0. Originally filed from dstdns (D-321/D-339/D-321-correction): acquire an internal `flock` keyed by the resolved container name (or `${project_name}-${environment_tag}`, the same pair `resolve_container_name()` already reads) around the exec/run call itself, so a caller-side `flock` is no longer required for correctness, only for pre-emptive scheduling (e.g. a caller who wants to skip a busy container rather than block). A genuinely independent container (different `project_name`/`environment_tag`, including a Mode-B instance) naturally gets a distinct lock name and runs unblocked; two consumers that resolve to the SAME container (main's shared instance, or ciu's `--shared-infra-ref-services`) naturally serialize correctly with no caller coordination needed. Cross-reference RG-37: whichever container-identity resolution path RG-37 adds for `ciu.resolved.toml` (v8) should feed the SAME lock key, not a second scheme. **2026-09-03 (ciu v8 design, SPEC-V8 draft.5 / proposal rev 3.2 §4.11 N22): buildable as described, with three refinements.** (1) Exec mode only — an ephemeral `docker run` container is per invocation, there is nothing to serialize. (2) Take the lock AFTER `acquire_shared_locks()`' sorted shared-infra locks and release it in the same `finally` — a fixed global order (shared-infra, then the exec target) so no ABBA with RG-20 is possible; `/tmp/run-gate-exec-<container>.lock` with RG-20's 0600+O_NOFOLLOW discipline, LOCK_EX blocking with a "waiting for container X — another gate holds …" line, dry runs plan but never block (`acquire_shared_locks` is the pattern to copy); hold across the whole `run_exec_lane()` including evidence collection, and keep `flush_run_record` outside it (RG-27). (3) Alignment with v8: once RG-37 reads `ciu.resolved.toml`, key the lock on the owning Realization's **stack directory** (`[realization.<R>] location` of the container's owner, `flock` on the directory) instead of a name — draft.5 S14.4.7 declares the checkout root and the stack directory the ONLY canonical lock keys, `ciu gate` exec lanes take that same directory lock (S16.5.7) and `ciu lease acquire --realization` exposes it, so v7 run-gate and v8 ciu serialize against each other during the cutover; the name-keyed `/tmp` file is the v7-only form. The caller-side `flock` of dstdns GUIDE §1 stays valid as an outer lock (always acquired first → consistent order) and becomes optional for correctness |
+| RG-66 | no way to pass assay's `--reuse-from` / `--rejudge` through `run-gate <lane>`, so assay 7.1+ provenance-safe selective R2 reruns cannot be used via the gate | Minor | OPEN |
+| RG-67 | no per-environment (per-runner-container) invocation limit, and a composite lane does not declare which runners its members use, so consumers hand-hold whole-invocation flocks and the composite over-holds a second runner | Minor | OPEN |
+| RG-68 | `footprint` only counts PASS runs; a completed FAIL (for example surviving mutants) is a valid resource measurement, so first-run budget calibration stalls on a red first run | Minor | OPEN |
 
 ---
 
@@ -361,7 +364,7 @@ asserts the lifecycle AND `ciu.global.toml` are named.
 `name/kind/environment` only; the flags section documents neither semantics
 nor caveats; the environment contract is invisible until first failure:
 
-- `$CGROUP_PARENT_DEV_BACKGROUND` required for container lanes (absent = hard
+- `$CGROUP_PARENT_DEV_GATES` required for container lanes (absent = hard
   error at runtime);
 - `RUN_GATE_EXTRA_MOUNTS` colon-separated `host=container` pairs (ephemeral
   lanes only) — documented only in SPEC R-14b;
@@ -380,7 +383,7 @@ Schema change additive; one parser owns it.
 **FIXED 2026-08-24:** `usage()` gains FLAGS (`--worktree`; `--allow-dirty`
 with the explicit two-layer caveat that assay still enforces its own
 clean-tree rule) and ENVIRONMENT CONTRACT sections naming all three
-variables the tool reads — `CGROUP_PARENT_DEV_BACKGROUND`,
+variables the tool reads — `CGROUP_PARENT_DEV_GATES`,
 `RUN_GATE_EXTRA_MOUNTS`, `RUN_GATE_MOUNT_ALIAS` — with failure semantics.
 The human lane table now shows `clean_tree`, advisory `budget`, `memory`,
 and a new validated optional `description` key (one line, `--help` only).
@@ -534,7 +537,7 @@ they share the same fix surface:
    adopted project has any (verified by ls). Retro-execute during the next
    touch of each project.
 4. **No root-level discovery affordance:** repo-root has central
-   `run-gate.toml` but no pointer down to "cd <project> && ./run-gate.py
+   `run-gate.root.toml` but no pointer down to "cd <project> && ./run-gate.py
    --list"; add one line to the root README.
 5. **Budget↔timeout drift unguarded:** every project pairs run-gate `budget`
    with a consumer `timeout_seconds` by manual sync; assay pioneered the
@@ -709,7 +712,7 @@ CONSUMERS central-defaults section rewritten with a real shared-lane recipe.
 
 ### The observation
 
-dstdns' central `run-gate.toml` declared
+dstdns' central `run-gate.root.toml` declared
 `forward_env = ["SCHEMA_GATE_DSN", "SCHEMA_GATE_PG_DUMP"]` but omitted `SCHEMA_GATE_PW`.
 The schema lane's `as_role` fixture reads `os.environ["SCHEMA_GATE_PW"]`; when absent, the
 privilege oracles could not connect as service roles. The mutation helper's equivalence run
@@ -1178,7 +1181,7 @@ after: present once `forward_env` is corrected, refused loudly by
 in its own repo (cross-repo pointer, deliberately not owned here).**
 
 1. *Breaking change documented, with the migration.* SPEC `R-24a` (forwarding
-   is DECLARED, never implicit — `CGROUP_PARENT_DEV_BACKGROUND` is the sole
+   is DECLARED, never implicit — `CGROUP_PARENT_DEV_GATES` is the sole
    exception, being infrastructure the tool itself owns), CONSUMERS "BREAKING
    CHANGE — migrate if you use `mode = "exec"`" (a pasteable two-half
    migration: `forward_env` restores the old behaviour, `required_env` is
@@ -3252,7 +3255,17 @@ assay's R0 stops trusting the wrapped target's bare exit code. Design doc:
 assay B078. This entry stays OPEN here as the pointer/provenance record,
 not because run-gate.py itself needs a fix.
 
-### Status — OPEN 2026-09-08 (moved to assay, see disposition above)
+### Status — CLOSED 2026-09-30 (resolved in Assay B078; no run-gate fix)
+
+Assay B078 owns the defect: R0 now accepts a nonzero wrapped-command exit
+only when the declared structured report proves the complete test run had no
+failures. Its live Vitest `onTaskUpdate` reproduction and report-completeness
+oracles are recorded in `assay/nyxloom-trove/reports/assay-WAVE-B078-REPORT.md`.
+B078 is merged and included in released `assay-v7.1.1`. run-gate remains a
+pass-through for Assay's verdict; it must not retry or suppress the Vitest
+signature itself. This closes RG-45 as a run-gate responsibility while
+preserving this row as the cross-project provenance pointer. Any later defect
+in report parsing or completeness belongs in Assay.
 
 ## RG-47 — `run-gate.toml` resolves relative to the invoking process's CWD, not `--worktree`; a stale/diverged config from outside the target worktree silently wins
 
@@ -3358,10 +3371,10 @@ workaround-only lesson.
 
 **Found by:** nyxloom-P109 gate runs, 2026-09-09.
 
-`[environments.tester-unified]` in the monorepo-root `run-gate.toml` declares
+`[environments.tester-unified]` in the monorepo-root `run-gate.root.toml` declares
 `image` only — no `resources.cpus`. The gate container therefore starts
-**CPU-uncapped**, restrained only by `$CGROUP_PARENT_DEV_BACKGROUND`
-(`dev-background.slice`), which deprioritises but does not bound it. Because
+**CPU-uncapped**, restrained only by `$CGROUP_PARENT_DEV_GATES`
+(`dev-gates.slice`), which deprioritises but does not bound it. Because
 this host is shared with a live production game server, every agent prompt
 carries a standing rule to run `docker update --cpus=3` on any container it
 launches, immediately after launch. Meanwhile the lane's judged argv is
@@ -4210,10 +4223,22 @@ therefore documents its rule as "sound at run-gate's OWN boundary only"
 (`SPEC.md` R-35a) rather than claiming an end-to-end guarantee it cannot
 make.
 
-### Status — OPEN
+### Status — CLOSED 2026-09-30 (first-parent is deliberate; false PASS is blocked)
 
-Not obviously run-gate's to fix, which is why it is filed and not
-folded:
+The first-parent policy itself remains deliberate and unchanged. Assay B008
+resolved the silent-certification defect by recording
+`judgment.resolved.base_resolution = "first-parent"` on merge-commit HEADs and
+documenting that field for consumers; B008 is in released `assay-v7.1.1`.
+run-gate rev 41 (23.7.0) also made its own empty changed-line coverage result
+refuse by default, naming merge-commit first-parent resolution as a route to
+0/0; only an explicit `--allow-empty-diff` permits that result. Native Assay
+R2 with no selected mutants is `INCONCLUSIVE/NO_MUTANTS`, not PASS. Thus the
+behavior remains visible and cannot certify an unjudged diff as green. This
+closes the false-certification issue without changing Assay's intentional
+merge semantics. A future request to judge sibling-branch work at a merge tip
+with merge-base semantics is a new product decision, not an open RG-54 fix.
+
+Historical disposition before closure:
 
 - The first-parent rule is deliberate in assay (B008) — for a merge that
   only brings in an already-judged upstream, first-parent is the RIGHT
@@ -4721,6 +4746,206 @@ convention that a tool's own defects, found while working in it, are
 recorded in the tool's backlog — never worked around locally without a
 record.
 
+## RG-65 — `run-gate` resolves lane config from the invoking CWD, not `--worktree`; a resulting "unknown lane" failure was reported as exit 0 by the background wrapper
+
+**Provenance:** found live 2026-09-18 during dstdns Track B Wave B2, by
+`p195-b2-ctl`/P201 while trying to launch a worktree-only lane.
+
+### What's wrong
+
+Invoking `run-gate <lane> --worktree /workspaces/dstdns/.worktrees/<branch>`
+from the REPO ROOT (`/workspaces/dstdns`), for a lane declared only in the
+worktree's own (not-yet-merged) `run-gate.toml`/`nyxloom-trove/nyxloom.toml`,
+fails with `unknown lane` — `--worktree` scopes where the judged tree and
+per-worktree history store live (per this project's own documented
+contract), but lane/config RESOLUTION itself apparently still reads from the
+process's current working directory rather than the `--worktree` path. The
+practical trap: an agent working inside a worktree who runs a command from
+outside it (or a background-wrapper script whose own CWD isn't the
+worktree) gets a config file that doesn't yet contain the lane they just
+declared, and the failure message (`unknown lane`) does not obviously point
+at "you're resolving config from the wrong directory."
+
+**Worse than a confusing error**: the background-task wrapper used to launch
+this invocation reported **exit code 0** for the run despite it never
+executing a single test — a silent false-green. A caller trusting the
+wrapper's own exit code (rather than reading run-gate's own stdout/log for
+an actual `unknown lane` message) would conclude the lane passed when it
+never ran at all.
+
+### Why it matters
+
+`--worktree` is this project's own documented, load-bearing mechanism for
+running gates against in-progress worktree branches (see dstdns
+`CLAUDE.md` "Feature worktrees" and `nyxloom-trove/GUIDE.md`) — every
+Wave B2 package relies on it. If lane-config resolution silently follows
+CWD instead, the flag's own promise ("scopes both the judged tree and the
+per-(worktree × project) history store to that worktree") is incomplete:
+it scopes execution and history, but not lane discovery. Combined with a
+false exit-0 on the resulting failure, this is a genuine correctness risk —
+a merge decision made on a background wrapper's reported success alone
+could be based on a gate that never ran.
+
+### Proposed fix
+
+- `run-gate <lane> --worktree <path>` should resolve lane/config
+  definitions from `<path>` unconditionally, regardless of the invoking
+  process's CWD — the flag's whole point is to make CWD irrelevant.
+- An `unknown lane` failure (or any failure) must never surface as exit 0
+  through any wrapping mechanism; audit whatever produced the exit-0 result
+  here (a shell wrapper swallowing the real exit code, or run-gate itself
+  writing a 0 on a config-resolution failure before attempting execution).
+- Not fixed by this session; reported rather than worked around locally.
+
+### Update 2026-09-18 (same day, later) — independently reproduced by a second package; explains why a green gate can hide the bug
+
+`p194-b2-io-fault` hit the identical failure independently while launching its own worktree-only lanes: `cd /workspaces/dstdns && ... run-gate <lane> --worktree /workspaces/dstdns/.worktrees/p194-b2-io-fault` died with `unknown lane ... (config: /workspaces/dstdns/run-gate.toml)` — CWD was the repo root, `--worktree` pointed at the branch, and config resolution followed CWD exactly as RG-65 describes. This package also identified WHY the bug had survived eight of its own prior gate runs undetected: its `test-runner` lane happens to be declared identically in both `main`'s and the worktree's own `run-gate.toml` (a lane common to the whole project, not worktree-specific), so a CWD-rooted invocation "worked" by accident — reading the wrong file but finding the same lane definition in it. The bug only becomes visible the moment a lane exists ONLY in the worktree's own copy (any package's own newly-declared `assay-*` lanes), which is exactly the shape every Wave B2 package's own lane declarations take. This means **a package's own green `test-runner`/shared-lane results provide no assurance that its own newly-declared lanes would resolve correctly** — each must be checked independently, not inferred from a passing shared lane.
+
+**Provenance:** found live 2026-09-18 during dstdns Track B Wave B2 (same
+six-package concurrent-container wave as RG-63), by a package (`p194-b2-io-fault`)
+diagnosing why its own backgrounded gate run never produced a verdict.
+
+### What's wrong
+
+dstdns's own dispatch convention has each package take a caller-side
+per-instance lock file (`/tmp/<repo>-<instance>-testrunner.lock`) before
+running a gate, intended to serialize concurrent packages' access to a
+shared `test-runner` container. Separately, `run-gate` itself always takes
+its own internal exec lock (`/tmp/run-gate-exec-<container>.lock`,
+referenced elsewhere in this file as the RG-63 mechanism) before actually
+touching the container. These are two independent locks with no relationship
+enforced between them:
+
+- A package holding the CONVENTIONAL lock is not guaranteed exclusive
+  container access — a sibling package that never took the convention's
+  lock (e.g. dispatched without that instruction, or simply not following
+  it) can still be mid-execution via run-gate's own internal lock alone,
+  and the first package's gate will queue invisibly behind it.
+- Checking `fuser`/liveness on the CONVENTIONAL lock alone is therefore not
+  a reliable way to distinguish "queued behind a real holder" from "never
+  acquired, actually stuck" — it will only correctly diagnose contention
+  when the actual occupier happens to also be using the same convention.
+  The reporting package got a correct diagnosis once this way purely
+  because that specific sibling used the convention too; it does not
+  generalize, and the package's own BRIEF nearly propagated the false
+  confidence forward to its successor before self-correcting.
+
+The package's own concrete incident: a backgrounded `run-gate` invocation
+held its conventional instance lock the entire time but produced ZERO
+executed tests for 30+ minutes; the actual blocker was a sibling package
+mid-run in the shared container holding run-gate's own internal exec lock
+(`/tmp/run-gate-exec-dstdns-98535c-test-runner.lock`), which the
+conventional-lock check never surfaced.
+
+### Why it matters
+
+`run-gate`'s own internal exec lock is the only universally-taken,
+authoritative signal of real container occupancy (it is architecturally
+guaranteed by `run-gate` itself, not opt-in). Any dispatch convention, doc,
+or agent guidance that tells a caller to check its OWN convention's lock as
+a proxy for "is the container free" is checking the wrong thing — it can
+report false negatives (looks free, isn't) whenever a sibling invocation
+does not participate in that same convention.
+
+### Proposed fix
+
+- Document explicitly (in `run-gate`'s own docs, and in any consumer's
+  dispatch guidance) that `/tmp/run-gate-exec-<container>.lock` is the ONLY
+  authoritative liveness signal for a shared container, and that a
+  caller-side convention lock is a scheduling nicety, never a substitute.
+- Consider whether `run-gate` should expose a documented, first-class way
+  to query current exec-lock holder/queue depth directly (rather than a
+  caller having to `fuser` a raw lock file path and interpret PIDs itself),
+  so consumers don't need to reason about lock internals at all.
+- Not fixed by this session; dstdns's own dispatch prompts/BRIEFs should be
+  corrected to check the internal exec lock, not the convention lock, when
+  diagnosing "is my gate actually queued or stuck" — a dstdns-side action
+  item, tracked in that project's own controller record.
+
+## RG-63 — an assay lane's `LANE_TIMEOUT` budget appears to include exec-lock queue-wait time under multi-package contention, not just execution time
+
+**Provenance:** found live 2026-09-18 during dstdns Track B Wave B2, six
+concurrent T1 implementer packages sharing ONE `test-runner` container
+(`dstdns-98535c-test-runner`). Filed here per the standing convention (a
+tool defect found while working in it goes in the tool's own backlog, not
+worked around locally).
+
+### What's wrong
+
+A package's (`p195-b2-ctl`) `assay` lane failed `BUDGET_EXCEEDED/LANE_TIMEOUT`
+("the lane-wide deadline expired") against its declared `budget = "30m"`.
+The run-gate log for that attempt shows it first blocked on a SECOND,
+finer-grained lock before the mutation run itself began:
+
+```
+run-gate: lane 'assay': waiting for container 'dstdns-98535c-test-runner' —
+another gate holds /tmp/run-gate-exec-dstdns-98535c-test-runner.lock
+```
+
+five other T1 packages' own gates/assay lanes were concurrently contending
+for the same shared container's exec lock at that moment. The package's own
+after-the-fact measurement (not run-gate's own diagnostics, which don't
+surface this breakdown): `main`'s history for this lane runs in ~450-470s;
+this attempt ran 1887.6s against the 1800s (30m) budget — and the lane's own
+footprint recorded 1.19 cores avg sustained (i.e. genuinely executing, not
+merely parked once it started) plus 158.5s stalled on memory (full). Whether
+the exec-lock queue-wait itself is counted inside the 1800s deadline, or the
+deadline only started once execution began (making the ~4x overrun purely
+instrumentation+memory-stall cost), is not something either the log or the
+`.assay/progress-*.jsonl` heartbeat distinguishes — the package correctly
+declined to assert either reading and is retrying the lane alone instead.
+
+### Why it matters
+
+RG-36 (fixed) added progress-file disclosure so a genuinely-slow mutation
+lane's health can be judged from candidate-rate/ETA rather than a guessed
+wall budget — but that's about the lane's OWN execution taking long. This is
+a different failure shape: a healthy, normal-duration lane can be pushed
+over its fixed budget purely by how many OTHER packages are queued on the
+same shared container's exec lock, with no signal distinguishing
+"contention ate my budget" from "my mutation run is genuinely slow this
+time" in the lane's own output. On a host running several concurrent
+gate-dispatched packages against one shared container (this project's own
+normal multi-package wave pattern), this makes `LANE_TIMEOUT` an
+ambiguous verdict rather than a real judgment.
+
+### Proposed fix
+
+- Emit the exec-lock acquisition wait duration explicitly in the lane's own
+  log/progress output (e.g. `run-gate: lane 'assay': exec lock acquired
+  after 812s wait`), separate from execution time, so a reader (human or
+  agent) doesn't have to reconstruct it from `main`'s history and the
+  lane's own footprint sampling.
+- Consider whether the `LANE_TIMEOUT` deadline should start counting only
+  once the exec lock is actually acquired (execution time only), rather
+  than from lane invocation (which bundles in an unbounded, contention-
+  dependent queue wait) — or, if deliberate, document that choice explicitly
+  so a BUDGET_EXCEEDED verdict's cause is knowable without independent
+  forensics.
+- Not fixed by this session; not touched by any Wave B2 package's own diff.
+
+### Update 2026-09-18 (same day, later) — a THIRD attempt on a genuinely quiet host also timed out; the pure-contention explanation is likely wrong, or at least incomplete
+
+The same package (`p195-b2-ctl`) retried this lane a third time, deliberately timed against a host with `some avg10=0.14` memory PSI (confirmed quiet, no other package's docker exec active at launch) — and it **still** hit `BUDGET_EXCEEDED/LANE_TIMEOUT`, this time recording only **0.36 cores avg** (i.e. genuinely NOT CPU-bound this run, unlike attempt 1's 1.19 cores avg). The package's own corrected diagnosis, arrived at by abandoning its own earlier (more convenient) contention explanation once the evidence stopped fitting it: `test-runner` runs a *superset* of the paths this lane covers in 535s, while `assay` covers *fewer* paths and still exceeds 1800s — and the lane's own ~450-470s historical baseline predates roughly a week of six Wave B2 packages each adding tests to the very suite this lane instruments. The working hypothesis is that the instrumented suite has organically outgrown its 30-minute budget over the course of the wave, independent of any single package's diff (the reporting package's own statement coverage in the measured modules has zero delta, confirmed via AST comparison) and independent of concurrent-exec-lock contention (this attempt's low core-average argues against CPU contention specifically, though it doesn't rule out I/O-level contention the controller's own host-wide PSI checks that same day did still show elevated).
+
+**The decisive experiment — running this exact lane against `main` (no package's diff applied) on an equally quiet host — is named but was deliberately NOT run**, correctly left to whoever owns the shared config (the controller, or this backlog's resolver) rather than a package agent altering shared infrastructure to explain away its own gate. Recorded here rather than left only in the dstdns session record so the next person to hit this (in this project or another consumer) has both data points (contended AND quiet-host timeouts) rather than re-deriving the contention half of the story from scratch.
+
+**Sharpened proposed fix**: in addition to the exec-lock-wait disclosure above, a `budget` that hasn't been re-measured against a growing instrumented suite is exactly the "unbounded budget by convention" shape RG-36 was partly written to close — worth checking on this project's own next assay-lane budget review whether `[lanes.assay]`-shaped budgets anywhere in this estate are still sized against a stale baseline. Not fixed by this session.
+
+### Update 2026-09-18 (same day, later still yet again) — likely the actual root cause: an R2 lane re-runs its FULL R1-scoped argv once PER MUTATION CANDIDATE, so a slow baseline argv multiplies straight past any budget
+
+A third package in the same wave (`p195-b2-ctl`/P201) measured, rather than guessed, the actual per-candidate cost of one of its own R2 lanes (`p201_controller_main`): the lane's declared argv (inherited from its R1 baseline) takes **533s to execute once**. assay's R2/mutation mode re-executes that SAME argv once per surviving-candidate probe — ten mutants at ~533s each is **~90 minutes of real, necessary work** against a 20-minute budget. This is not a queue-wait artifact and not a stale-budget artifact: it reproduces on an uncontended lane, with a budget that was never touched, purely because the declared per-mutant test command is broad (the whole R1 target set) rather than narrow (just the fast unit tests that actually exercise the mutated lines). The package's own conclusion, which reads as the most concrete, actionable explanation of the whole RG-63 thread to date: **this class of `BUDGET_EXCEEDED` is not fixable by tuning `budget` or `max_mutants`** — the fix has to be a narrower per-mutant argv declared at the lane level, so each candidate's re-run cost is seconds, not many hundreds of seconds. Everything in this backlog entry's four earlier updates (queue-wait ambiguity, "suite outgrew its budget," the LANE_TIMEOUT-vs-`assay.toml`-budget mismatch) is consistent with — and possibly fully explained by — this same underlying mechanism: R2 lane argvs across this wave were declared by copying the R1 lane's own (broad, whole-module) argv, and multiplying any broad argv's runtime by a double-digit candidate count was never going to fit a 20-45 minute budget regardless of what number is in the config.
+
+**Sharpest proposed fix yet**: document explicitly, wherever R2/mutation lane declaration is taught (this project's own lane-authoring docs, `nyxloom` AUTHORING.md's R2-lane guidance, or both), that a mutation lane's argv must be scoped to the FASTEST test subset that still exercises the mutated code — never simply copy-pasted from the R1 lane's own (whole-module, broader-coverage) argv — and that `budget` should be sized as `candidate_count × per-candidate-argv-runtime × safety-margin`, not picked independent of that arithmetic. Consider whether `assay` itself could warn (not block) at lane-declaration or first-run time when a lane's own measured per-candidate cost times its candidate count would obviously blow its configured budget, so this is caught before a wasted 20-90 minute run rather than after. Not fixed by this session.
+
+**CORRECTION 2026-09-18 (same day, later) — the 533s figure above was contention-inflated; re-measured on a quiet container at 70s.** The SAME package re-measured the SAME 17-file argv once host contention had eased: 70s, not 533s — a ~7.6x difference. Ten candidates at 70s each is ~12 minutes quiet, comfortably inside a 20-45m budget without any narrowing at all. **This materially changes the conclusion above**: the per-candidate-argv-cost mechanism is still real and mathematically sound (multiplying any argv time by candidate count is a genuine cost, and narrowing the argv is still a correct, independently-verified improvement — see below), but it was NOT, on its own, sufficient to explain the original 90-minute-vs-20-minute gap this update reported. Contention was the dominant term in that specific measurement, putting this finding back closer to this entry's ORIGINAL 2026-09-18 hypothesis (queue-wait/host-load inflating a lane's effective per-candidate cost) rather than superseding it. **The corrected picture: both mechanisms are real and compound** — a broad argv makes each candidate more expensive, and contention makes each candidate more expensive on top of that; neither alone was "the" root cause. Any downstream fix (dstdns's own D-498, this session) that narrowed an argv anyway remains a real, valid improvement (verified via branch-coverage-equivalence, not just line-coverage, catching a partial-arc regression a naive narrowing would have silently introduced) — narrowing an argv is good practice regardless of which mechanism dominates on a given run. But do not carry forward "argv breadth alone explains BUDGET_EXCEEDED" as settled; both this entry's contention-based updates and its argv-based updates are each partial explanations of the same wave's failures.
+
+### Update 2026-09-18 (same day, later still) — a fourth data point: raising the assay-level `budget` had ZERO effect, pointing at a separate, un-configured timeout surface
+
+A different package in the same wave (`p196-b2-db-ops`) hit `BUDGET_EXCEEDED/LANE_TIMEOUT` on its `worker_db_main_r2_compare` lane after having ALREADY raised that lane's own `assay.toml` `budget` from 20m to 45m specifically to get ahead of this class of failure (commit `5c3c8222`, disclosed and reasoned, not a cover-up). The run still failed at **~21.7 minutes elapsed** (`.assay/progress-worker_db_main_r2_compare.jsonl`: `end` event at `elapsed_s=1256.8`, `verdict_written` at `elapsed_s=1302.8`, `exit_code=4`, `reason_code="LANE_TIMEOUT"`) — well under half of the newly-configured 45-minute (2700s) budget, and the progress file shows all 13 declared mutation candidates actually ran to individual completion (9 killed, 3 survived, 1 internally bucketed `budget_exceeded`) before the overall verdict was still stamped as budget-exceeded.
+
+This is a sharper data point than either of the two above: it isn't ambiguous between queue-wait and execution time, because the number that mattered here (~21-22 min) did not move at all when the package doubled-plus its own `assay.toml` lane budget. That strongly suggests `LANE_TIMEOUT` as a *reason_code* is being enforced by a **separate timeout surface** the `assay.toml` per-lane `budget` field does not control at all — most likely a run-gate exec-lock/wrapper-level env var or config default (plausibly literally named something like `LANE_TIMEOUT`) that sits outside `assay.toml` and was never touched by either package's own budget bump. If so, every package's per-lane `budget` increase this wave (P196's 20m→45m, and any other package's similar move) has been sizing a knob that isn't the one actually cutting the run off — worth checking directly against the run-gate/exec-lock source for a hardcoded or separately-configured ~20-minute default before assuming any `assay.toml` budget value is load-bearing for this failure mode at all. Not fixed by this session; P196 was asked to investigate which config surface is actually enforcing the cutoff and report back.
+
 **1. `TestEstateBudgetTimeoutPairing::test_estate_pairing_sweep_is_alive`
 is order-dependent.** `PAIRINGS_SEEN` (a class-level `list`) is populated
 incrementally by the class's OTHER, parametrized test
@@ -4826,3 +5051,127 @@ an ended stream without a verdict is never itself a lane verdict.
 
 ### Status — FIXED in P5 implementation; final status closes with the P5
 R1/R2/R3 evidence and release.
+
+### Update 2026-09-18 (same wave, sixth package) — a fifth data point corroborating the ORIGINAL queue-wait-inside-the-budget-clock hypothesis, with a nuance: partial real progress before the aggregate clock still tripped
+
+A sixth package in the same wave (`p199-b2-io-main`) hit
+`BUDGET_EXCEEDED/LANE_TIMEOUT` on its `worker_io_main_r2_compare` lane
+(`python:compare-swap` over two small target files, only 8 total
+candidates — nowhere near `max_mutants=200`, so this was never a
+candidate-volume problem). The verdict bucketed **2 killed, 1 survived,
+5 `budget_exceeded`** — i.e. real, individual candidate execution
+genuinely happened and completed for 3 of the 8 (one of them a genuine,
+non-equivalent surviving mutant, later fixed with a new test), yet the
+LANE still tripped `LANE_TIMEOUT` overall. The lane's declared aggregate
+`budget` was `"60m"`; the invoking host-side `run-gate` process itself
+had been launched (and left legitimately queued on the shared
+container's exec lock, `/tmp/run-gate-exec-<container>.lock`, contended
+by five OTHER concurrently-dispatched packages in this same wave) hours
+before assay ever got a chance to execute a single candidate. Re-running
+the SAME lane once the exec lock actually freed up (assay's own
+`--resume` picking up from `.assay/mutation-state/`, only re-testing the
+one candidate whose source had changed via the fix) completed normally,
+comfortably inside budget.
+
+This is a straightforward, low-ambiguity corroboration of the entry's
+ORIGINAL 2026-09-18 hypothesis (queue-wait counted inside the lane-wide
+deadline, not just execution time) — it does not by itself distinguish
+between "the deadline clock starts at host-side process launch" vs.
+"starts at container-exec-lock acquisition", since both readings predict
+the observed outcome here equally well. The nuance worth recording
+separately from the other data points in this thread: **partial genuine
+completion (3/8 candidates individually judged, including a real
+survivor) can still end in an aggregate `LANE_TIMEOUT`** — so seeing SOME
+real candidate outcomes in a `BUDGET_EXCEEDED` verdict's bucket counts is
+not, by itself, evidence against the queue-wait-inside-budget mechanism;
+a reader should not conclude "the lane was genuinely almost done" just
+because a few candidates completed before the clock tripped. Not fixed
+by this package's diff (same reasoning as every other update in this
+thread) — filed as a note per the standing convention (a second/Nth
+reproduction of the SAME underlying defect goes here, not a new entry).
+
+## RG-66 — no pass-through for assay's `--reuse-from` / `--rejudge`
+
+**Provenance:** found in dstdns 2026-09-30 (R2 campaign planning, `nyxloom-trove/decisions.md` D-569..D-573, dstdns@682c7ef4); run-gate 23.9.2.dev305, assay 7.2.0.
+
+**Observed:** `build_assay_inner` (`run_gate.py` ~l.6250-6340) constructs the assay argv from the lane declaration plus a fixed set of flags (`--resume --progress --state-dir`, base, verdict). The request surface (`run-gate <lane> [--worktree] [--allow-dirty] [--base] [--fresh]`) has no way to add assay's `--reuse-from PRIOR_VERDICT` (assay 7.1.0, B106, provenance-safe reuse of killed native mutants) or `--rejudge ID` / `--rejudge-outcome` (assay 5.2.0, B091). Assay 7.1+ selective reruns therefore cannot be driven through the gate; the only routes are invoking `assay run` by hand (a manual path AGENTS.md 4.9 forbids) or a custom lane.
+
+**Why run-gate owns it:** run-gate owns the argv of an assay lane and refuses unknown flags; a consumer cannot append to it.
+
+**Proposed contract:** explicit, named request flags (for example `--reuse-from PATH`, `--rejudge ID` repeatable, `--rejudge-outcome BUCKET`), each valid only for `kind = "assay"` lanes that declare R2, refused by name elsewhere, and forwarded verbatim. `--reuse-from` paths must be resolved into the container namespace (the verdict must be readable inside the lane's environment). Bump the `ASSAY_FLAG_FLOOR` to the release that knows the flags when used, refusing by name otherwise. The reuse source and rejudge ids must appear in the run record so history shows the run was selective.
+
+**Oracles:** `--dry-run` shows the forwarded flags; a command lane given `--reuse-from` refuses; a judge older than the floor refuses at construction; a controlled wrong implementation that forwards the flags for every lane kind must fail the refusal test.
+
+**Spec owner:** SPEC (assay lane argv construction, R-38).
+
+## RG-67 — no per-environment invocation limit; composite lanes do not declare their runners
+
+**Provenance:** found in dstdns 2026-09-30 while carving P220, which adds a second runner container (`test-runner-ui`); `nyxloom-trove/decisions.md` D-573.
+
+**Observed:** RG-39 (FIXED, `acquire_exec_lock`) serializes exec-mode invocations per resolved container with a blocking exclusive lock. Two gaps remain. (1) There is no declarable limit N per environment: a runner that can safely host two lanes is either exclusive (N=1) or unguarded, and consumers add their own whole-invocation `flock` (dstdns GUIDE section 1) to get a cap. (2) A composite lane (`[lanes.gate]`, `environment = "host"`) does not declare which runner environments its members use, so a consumer wrapping the composite in one flock over-holds: it blocks a concurrent lane that only needs the second runner, since run-gate cannot tell the wrapper which locks the composite will take.
+
+**Why run-gate owns it:** it is the only component that knows, at resolution time, which container each member of a composite will execute in.
+
+**Proposed contract:** (a) an optional `max_concurrent` per environment in `run-gate.toml` (default 1, preserving RG-39), implemented as N lock slots keyed by container. (b) `run-gate <composite> --dry-run` and `--list` print the transitive set of environments the composite's members use, and run-gate takes each member's exec lock itself, so a consumer needs no outer flock for correctness. Keep the RG-39 ordering rule (fixed global order) to avoid ABBA.
+
+**Oracles:** with `max_concurrent = 2` a third invocation blocks and two run; a composite using runner A does not block a lane using runner B; `--dry-run` lists the composite's environments; a controlled wrong implementation that keeps a single global lock must fail the second-runner test.
+
+**Spec owner:** SPEC R-41 (exec lock).
+
+**Consumer evidence (dstdns 2026-10-01, `dstdns@5cf2ed55`, decisions D-619/D-620):** the operator authorised two concurrent gates on the shared `dstdns-98535c-test-runner`: the container ceiling is 3000M, a mock suite peaks at about 1.3–1.5 GB and uses about 0.9 cores, the host has 8 cores, and CPU PSI was about 5–8%. Six gates were queued behind N=1. A caller-side two-slot semaphore did nothing alone, because R-41's exec lock kept the second run "waiting for container". The working consumer workaround, `scripts/gate-slot.sh`, gives slot 2 its own `RUN_GATE_LOCK_DIR`. That is safe there only because the project declares no RG-20 shared-infra locks; under a project that declares them, the knob would also silently split the shared-infra mutex. This hazard is the strongest argument for (a): `max_concurrent` keyed per container, which leaves the shared-infra locks single. A second gap belongs with (a): with N>1, the per-invocation resource profile (RG-27 history, `footprint`) measures a container cgroup shared by both runs. Either record `concurrent_with` in the history entry, or refuse `footprint --write` from a run that overlapped another.
+
+## RG-68 — `footprint` ignores completed FAIL runs
+
+**Provenance:** found in dstdns 2026-09-30 (first-run budget calibration for new R2 lanes, D-572 section 3).
+
+**Observed:** `build_footprint_manifest` (`run_gate.py` ~l.3974-3990) distills PASS plus history-eligible entries for the numeric series; a lane whose only completed runs are FAILs (for example an R2 lane that finished with surviving mutants) is omitted from the manifest ("absent means unknown"), though `completed_runs` counts fails. A red first run of a new lane is a full, valid resource measurement (peak RSS, CPU, wall-clock), yet `run-gate footprint` reports nothing, so the consumer's first-run budget has nothing to calibrate against until a run goes green, which for a mutation lane may take many runs.
+
+**Why run-gate owns it:** it owns the profile store and the eligibility rule.
+
+**Proposed contract:** keep PASS as the default population for the committed manifest, but let `footprint` (report mode) include completed FAIL runs whose profile is complete (a measured `resources`, run reached its natural end, not timeout/kill/infra error), labelled `outcome=FAIL` in every line, and add a flag (for example `--include-failed`) for the manifest write so the choice is explicit. A TIMEOUT or aborted run stays excluded (its peak is a floor, not a measurement).
+
+**Oracles:** a lane with one completed FAIL and no PASS reports a measured footprint under `--include-failed` and stays omitted without it; a killed run is never included; a controlled wrong implementation that includes timeouts must fail.
+
+**Spec owner:** SPEC R-44 (footprint manifest).
+
+## RG-69 — `footprint --write` has no per-lane mode: a package cannot record one new lane's footprint without regenerating the whole tracked manifest
+
+**Provenance:** found in dstdns 2026-09-30, P224 (adds a lane); `nyxloom-trove/decisions.md` D-572 section 3. run-gate rev 46.
+
+**Observed:** `run-gate footprint --help`: "A LANE filter queries one lane's numbers but is REFUSED together with --write (a partial write would silently drop every other lane's data)" (`cmd_footprint`, `run_gate.py` ~l.4104-4140: `fail("footprint --write does not accept a LANE filter ...")`). `--write` rewrites all of `run-gate.footprint.json`, a TRACKED file, from the local history store. A package that adds one lane and wants its first footprint committed must regenerate every lane's entry from whatever the current checkout's store holds (a worktree store may lack other lanes' history), producing a large unrelated diff and risking dropped entries.
+
+**Why it matters:** dstdns makes `footprint --write` controller-only after merge to avoid exactly that conflict-prone whole-file rewrite, so a new lane's manifest entry lands a step late and packages cannot carry their own calibration.
+
+**Proposed fix direction:** `footprint --write --lane X` (repeatable) that reads the existing manifest and replaces or adds only the named lanes' entries, leaving every other entry byte-identical (the refusal's stated reason, silent drop, does not apply to a merge). Refuse by name when the named lane has no completed, profiled run; refuse when the existing manifest is absent or unparseable rather than writing a one-lane file silently.
+
+**Oracles:** with a two-lane manifest, `--write --lane B` changes only B's entry (other entry bytes equal); unknown/unprofiled lane refuses with exit 2; a missing manifest refuses; a controlled wrong implementation that writes only the named lane (dropping others) must fail the first oracle.
+
+**Spec owner:** SPEC R-44 (footprint manifest).
+
+## RG-70 — no canonical way to exec a repo script or command inside a worktree's test-runner (the app-runtime dependency closure)
+
+**Provenance:** found in dstdns 2026-09-30, P224 (needs `scripts/regen-openapi.py` run in the app's dependency closure against the package worktree). run-gate rev 46.
+
+**Observed:** run-gate's request surface is `<lane> [--worktree] [--allow-dirty] [--base] [--fresh]` plus `--list/doctor/history/footprint/validate-pointers`; `main()` (`run_gate.py` ~l.8444) has no verb that runs an arbitrary command in a lane environment. A task that must run a repo script in the runner's dependency closure (the cockpit venv carries different pins, so it is not equivalent) has no sanctioned path: implementers improvise `docker exec <container> ...`, guessing the container name (RG-24 shows the name resolution is worktree-sensitive, Mode-A shared vs Mode-B per-worktree) and the in-container path of a worktree (Mode-B mounts only the worktree subtree). The one declared-lane route requires a committed lane per script.
+
+**Why it matters:** AGENTS.md 4.9 makes run-gate the canonical tool and forbids manual alternatives, yet nothing canonical exists here, so the mandated behaviour cannot be followed; improvised `docker exec` also bypasses the exec lock (RG-39) and profiler.
+
+**Proposed fix direction:** `run-gate exec [--environment ENV] --worktree <wt> -- <cmd...>`: resolves the environment's container exactly as a lane would (same worktree-aware resolution as RG-24), translates the worktree path into the container namespace, takes the RG-39 exec lock, runs with the lane env forwarding, and returns the command's exit status. Default environment: the project's primary runner. Alternatively, document a `kind = "command"` lane idiom with a caller-supplied argv (less general). Refuse by name when the environment is not a container environment.
+
+**Oracles:** `run-gate exec --worktree <wt> -- python -c 'import sys; print(sys.prefix)'` runs in the runner, not the host; a Mode-B worktree resolves to its own container; `--dry-run` prints the resolved container and translated cwd; a concurrent lane on the same container is serialized by the lock; a controlled wrong implementation that runs on the host must fail the first oracle.
+
+**Spec owner:** SPEC (exec-mode environments, R-41).
+
+## RG-71 — the `schema` lane cannot take a single-file target: iterating on one `tests/schema/` test costs the full lane every time
+
+**Provenance:** found in dstdns 2026-09-30 (schema-test authoring in the P2xx packages). run-gate rev 46.
+
+**Observed:** dstdns's `[lanes.schema]` is a fixed-argv command lane (`["{worktree}/scripts/schema-gate.sh", "{worktree}"]`). The script itself accepts an optional second argument `pytest-target` (header: "scripts/schema-gate.sh <worktree-path> [pytest-target], defaults to tests/schema"), but run-gate has no way to forward a per-invocation argument into a declared lane's argv, so the only way to run one new test is to invoke the script by hand, bypassing run-gate (AGENTS.md 4.9 forbids that as a first choice) and its lock, profiler and history. Every iteration therefore pays the full schema lane (throwaway PG provisioning plus the whole suite).
+
+**Why it matters:** an implementer adding one `tests/schema/` test iterates many times; the canonical path makes each iteration a full-lane run, which pushes agents to the manual path.
+
+**Proposed fix direction:** a generic, declared pass-through for command lanes: lane key `accepts_args = true` (or `passthrough = "pytest"`) plus CLI `run-gate <lane> [...] -- <args>` appended to the lane argv after `{worktree}` substitution, refused by name for lanes that do not opt in and for composite and assay lanes. Such ad-hoc runs are recorded in history as `selective` and never count toward the footprint manifest or a ship signal (a single-file run is not a gate). The throwaway-DB provisioning stays in the script, so the isolation is unchanged.
+
+**Oracles:** `run-gate schema --worktree <wt> -- tests/schema/test_x.py::test_y` runs only that node and still provisions and disposes the throwaway DB; the same flag on a non-opted lane refuses by name; history marks the run selective; a controlled wrong implementation that lets a selective run satisfy the gate lane's freshness check must fail.
+
+**Spec owner:** SPEC (lane argv construction).

@@ -2,7 +2,7 @@
 
 The credential is instance state, not project configuration.  Starting the
 HTTP server creates ``daemon/control-credential.json`` with mode 0600 when it
-is absent; operators retrieve or rotate it explicitly with ``nyxloom auth``.
+is absent; operators retrieve or rotate it explicitly with ``nyxloomctl auth``.
 The file is read for every mutation, so an atomic rotation invalidates the old
 credential immediately -- no daemon restart, no in-memory cache to expire.
 
@@ -76,7 +76,7 @@ _OPERATOR_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._@-]{0,127}")
 # rotations, daemon-scoped config changes).  A synthetic project id keeps
 # exactly-one-event semantics for operations that affect every registered
 # project -- or none of them, as an unauthenticated refusal does, since the
-# target is never parsed.  Readable with `nyxloom events _nyxloom-control`.
+# target is never parsed.  Readable with `nyxloomctl events _nyxloom-control`.
 # The leading underscore cannot collide with a real project id: `nyxloom
 # register` resolves ids from a project's own [project].id, and the dashboard
 # only ever renders registered projects, so nothing enumerates this ledger as

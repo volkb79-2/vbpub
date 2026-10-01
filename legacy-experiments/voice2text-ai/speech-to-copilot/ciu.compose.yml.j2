@@ -1,0 +1,82 @@
+# Speech-to-Copilot Enhanced Pipeline
+# Template for: speech-to-copilot compose stack
+# Communication: Services communicate via voice2text-prod-network
+# External access via reverse proxy with TLS
+
+x-defaults: &service-defaults
+  labels:
+    - "project={{ deploy.project_name }}"
+    - "environment={{ deploy.environment_tag }}"
+  user: "${CONTAINER_UID:-0}:${CONTAINER_GID:-0}"
+  environment:
+    {% for key, value in deploy.env.defaults.items() %}
+    - {{ key }}={{ value }}
+    {% endfor %}
+
+services:
+  # API Service (FastAPI)
+  {{ services.speech_api.name }}:
+    <<: *service-defaults
+    image: {{ services.speech_api.image_name }}:{{ services.speech_api.image_tag }}
+    hostname: {{ services.speech_api.name }}
+    environment:
+      - DEMO_MODE={{ api.demo_mode }}
+      - LOG_LEVEL={{ api.log_level }}
+      - API_KEY_REQUIRED={{ api.key_required }}
+      - API_TOKEN=${API_TOKEN}
+      - WORKSPACE_PATH={{ api.workspace_container_path }}
+      - CORS_ORIGINS={{ api.cors_origins }}
+      - PUBLIC_FQDN={{ deploy.env.shared.PUBLIC_FQDN }}
+      - WHISPER_SERVICE_URL={{ api.whisper_service_url }}
+      - LLM_SERVICE_URL={{ api.llm_service_url }}
+      - RATE_LIMIT_RPM={{ api.rate_limit_rpm }}
+      - MAX_AUDIO_DURATION={{ api.max_audio_duration }}
+    volumes:
+      - ${PHYSICAL_REPO_ROOT:-{{ ciu.physical_repo_root }}}/legacy-experiments/voice2text-ai/speech-to-copilot/api:/app
+      - {{ api.workspace_path }}:{{ api.workspace_container_path }}:ro
+      - {{ api.hostdir.logs }}:/app/logs
+    restart: unless-stopped
+    # No external ports - accessed only via reverse proxy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:{{ services.speech_api.internal_port }}/health').read()"]
+      interval: {{ deploy.health.interval }}
+      timeout: {{ deploy.health.timeout }}
+      retries: {{ deploy.health.retries }}
+      start_period: {{ deploy.health.start_period }}
+    labels:
+      - "{{ deploy.labels.prefix }}.component={{ services.speech_api.name }}"
+      - "{{ deploy.labels.prefix }}.stack=application"
+      - "{{ deploy.labels.prefix }}.service-type=api"
+    networks:
+      - {{ deploy.network_name }}
+    command: >
+      uvicorn main:app 
+      --host 0.0.0.0 
+      --port {{ services.speech_api.internal_port }}
+      --log-level info
+
+  # Redis for caching
+  {{ services.speech_redis.name }}:
+    <<: *service-defaults
+    image: {{ services.speech_redis.image_name }}:{{ services.speech_redis.image_tag }}
+    hostname: {{ services.speech_redis.name }}
+    volumes:
+      - {{ redis.hostdir.data }}:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: {{ deploy.health.interval }}
+      timeout: {{ deploy.health.timeout }}
+      retries: {{ deploy.health.retries }}
+      start_period: {{ deploy.health.start_period }}
+    labels:
+      - "{{ deploy.labels.prefix }}.component={{ services.speech_redis.name }}"
+      - "{{ deploy.labels.prefix }}.stack=data"
+      - "{{ deploy.labels.prefix }}.service-type=database"
+    networks:
+      - {{ deploy.network_name }}
+
+networks:
+  {{ deploy.network_name }}:
+    external: true
+    name: {{ deploy.network_name }}

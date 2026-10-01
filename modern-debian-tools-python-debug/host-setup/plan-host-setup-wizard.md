@@ -12,7 +12,7 @@ is the section this wizard's step 5 walks an operator through), `README.md`
 `host-setup.env.example` (the file this wizard replaces hand-editing of).
 
 Sibling package, different repo/subproject:
-`ciu/nyxloom-trove/handoffs/ciu-P50-ciu94-ciu95-memory-min-guaranteed-slice.md`
+`ciu/nyxloom-trove/archive/ciu-P50-ciu94-ciu95-memory-min-guaranteed-slice.md`
 builds the consumer-side (ciu governance) half of the same memory.min design
 — **forbidden territory for this package**, see Scope/forbid below.
 
@@ -63,7 +63,7 @@ without touching the render/apply machinery it feeds.
    `write_cache_atomic` (~line 237, the atomic-write pattern — temp file in
    the same directory + `os.replace` — your own `/etc/mdt/host-setup.env`
    write must use the identical pattern), `main()` (~line 273).
-6. `run-gate.toml` (repo root) — read its header comment. This subproject's
+6. `run-gate.root.toml` (repo root) — read its header comment. This subproject's
    gate is a `py_compile` syntax smoke over every tracked `.py` file, by
    deliberate policy ("Image-build tooling: no unit suite exists"). Do not
    introduce a pytest requirement this project has explicitly opted out of;

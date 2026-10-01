@@ -1,7 +1,7 @@
 # mdt host-setup — reconciles the runtime half of the dev-tier governance:
 # dev.slice measured IO caps (covers every dev.slice child combined), zswap
-# policy, per-container caps for bench/buildkit/devcontainer containers, and
-# the cgroup2 mount flags. It also runs the read-only memory.min/memory.low
+# policy, transient per-container IO caps, and cgroup2 mount flags. It also
+# runs the read-only memory.min/memory.low
 # effectiveness audit. Idempotent oneshot; run at boot and periodically.
 #
 # Second ExecStart: mdt-slice-memory-min-low-audit.py — read-only; walks the SAME dev.slice

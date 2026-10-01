@@ -22,6 +22,7 @@ Persisted via host bind mounts (login once, keys + history survive rebuilds):
 | `~/.claude` | Claude Code config / auth / projects / memory |
 | `~/.claudelink` | ClaudeLink durable hub state: `nexus.db`, scheduler state/logs, and related runtime files |
 | `~/.codex` | Codex CLI auth + history |
+| `~/.codex2` | Optional second Codex profile state |
 | `~/.reasonix` | Reasonix config / `.env` / session state |
 | `~/.openclaw` | OpenClaw config / `.env` / session state |
 | `~/.config` | `gh` auth + tool configs + mdt customization root |
@@ -56,16 +57,21 @@ That directory holds `ai.env` for central API keys, `aliases.sh` for local shell
 
 **Intentionally ephemeral:** `~/.cache`, `~/.npm` — rebuildable, not worth persisting.
 
+The template sets `CODEX_SQLITE_HOME=/home/vscode/.codex/sqlite-shared`; that database lives
+under the persistent `.codex` mount and is shared by the configured Codex profiles. It also
+sets `shutdownAction` to `none`, so the container remains running when its Dev Containers
+session disconnects.
+
 ### Migrate existing Pi, ClaudeLink, and OpenCode state once
 
-The host bootstrap creates empty source directories; it never copies existing state. Before
+The host bootstrap creates missing source directories and files; it never copies existing state. Before
 the first rebuild after adopting this template, run this on the host. It contains no
 credentials; it copies the state already present on your machine:
 
 ```sh
 mdt_state="$HOME/mdt--mounted-folders"
 mkdir -p "$mdt_state"
-for d in .claude .claudelink .codex .config .gnupg .local .minisign .openclaw .pi .reasonix; do
+for d in .claude .claudelink .codex .codex2 .config .gnupg .local .minisign .openclaw .pi .reasonix; do
   if [ -d "$HOME/$d" ]; then
     mkdir -p "$mdt_state/$d"
     cp -a "$HOME/$d/." "$mdt_state/$d/"
@@ -89,15 +95,20 @@ recipe above for any state that already lives on the host.
 
 ## initialize_container_environment.py — host bootstrap (why it exists)
 `devcontainer.json` wires `"initializeCommand": "python3 .devcontainer/initialize_container_environment.py"`. It runs **on the
-host, before the container is created**, and ensures every `$HOME` bind-mount source exists with correct
-modes (0700 for `.ssh`/`.gnupg`/`.minisign`). Without it, a missing source makes Docker create the
-path as **root**, and the in-container `vscode` user then can't write its own `~/.codex` etc. — or the
-container fails to start outright. It is stdlib-only, idempotent, best-effort (never blocks start), and
-**derives its dir list from the mounts** in the same file, so adding a mount auto-creates its dir.
+host, before the container is created**, and prepares `$HOME` bind-mount sources. It is stdlib-only,
+idempotent, and **derives its source list from the mounts** in the same file. Existing regular files
+and directories are recognized by their actual host filesystem type, independent of their names or
+suffixes. Under the default policy, MDT creates its known directory sources. Secret directories
+(`.ssh`/`.gnupg`/`.minisign`) get mode `0700`.
 
-For **file-level mounts** (`.json`, `.toml`, `.yaml`, `.yml`), it creates the **parent directory**
-on the host; Docker creates the file itself on first mount. This keeps the bootstrap logic
-consistent while supporting both directory and individual file mounts.
+The host bootstrap classifies existing sources by their actual type. For a missing source, the
+default `DEVCONTAINER_MISSING_BIND_SOURCE_POLICY=create-by-spelling` interprets a trailing `/` as a
+directory and no trailing `/` as an empty regular file (mode `0600`). The host-setup wizard can set
+the policy to `fail` to require every `$HOME` source managed by the bootstrap to exist before
+startup. Keep `/` on every directory source in `devcontainer.json`; this marker is read by MDT's
+host bootstrap and is not a Docker mount-kind option. `.gitconfig` must be a regular file, and a
+directory at that path is reported as an error. See
+[the consumer example](../docs/CONSUMERS.md#optional-git-config-mount).
 
 > **Naming:** this bootstrap is `initialize_container_environment.py`. The name `get.py` is reserved for
 > the CMRU release *installer* (`cmru/templates/get.py.tmpl`) — a different, manually-run host-side tool.

@@ -12,7 +12,6 @@ Controlled wrong implementation: restoring the bare
 
 from __future__ import annotations
 
-import hashlib
 import os
 import sys
 from pathlib import Path
@@ -41,7 +40,9 @@ def _derived(root: Path) -> dict:
 
 def _expected(root: Path) -> tuple[str, str, str]:
     repo_name = root.name.lower()
-    instance_id = hashlib.sha256(str(root).encode("utf-8")).hexdigest()[:6]
+    from worktree import workspace_id_for_path
+
+    instance_id = workspace_id_for_path(root)
     return repo_name, instance_id, f"{repo_name}-{instance_id}-network"
 
 

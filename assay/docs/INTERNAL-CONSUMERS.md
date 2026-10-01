@@ -19,6 +19,16 @@ copied anywhere at all).
 
 No artifact, no pin, no cache:
 
+The editable source also carries the current P22 lane surface. If an internal
+project adopts B101's shallow-seed policy, its checked-in `assay.toml` can use
+the project-level `[isolation.limits]` table and a lane can opt into
+`snapshot_history = "full"`; B102's project-level `dirty_ignore` and the
+`assay run/plan --allow-dirty` flags are available from the same source. The
+editable install reads those keys from this worktree's shipped loader. An older
+pinned zipapp fails closed on the new keys, so these settings must land together
+with the worktree that installs them. The `run-gate.py --allow-dirty` flag is an
+independent outer clean-tree decision and is not forwarded to assay.
+
 In a `run-gate.toml` lane this is selected simply by omitting both
 `assay_command` and `pins`; run-gate performs the editable install and invokes
 the resulting console script for every assay lane, including its inventory
@@ -50,6 +60,37 @@ argv = ["bash", "-c",
   None of that applies inside a container that already has the live source
   mounted and a working pip; building one here would be solving a problem
   this consumption path doesn't have.
+
+## Read one live gate snapshot (B100)
+
+The same worktree-installed CLI includes `assay analyze report` (its code is
+the separate `assay_analysis` package in the same wheel). An editable install
+made before B127 maps only `src/`: re-run `pip install --no-deps
+--no-build-isolation --editable assay` once, or `assay analyze` fails with
+`ModuleNotFoundError: No module named 'assay_analysis'` and exit 1, the code
+`report` otherwise uses for a failing lane. Use it when a
+registered gate is still running or its full output no longer fits the
+controller's terminal buffer. Set `WORKTREE` to the checkout, `REVIEW_HEAD` to
+the agreed full commit, and `GATE_LOG` to the retained output file. The command
+reads the files you name, returns once, and does not launch or poll the gate:
+
+<!-- assay-analysis-example -->
+```bash
+assay analyze report --expected-commit "$REVIEW_HEAD" \
+  --verdict tester-unified "$WORKTREE/.assay/verdict-tester-unified.json" \
+  --progress tester-unified "$WORKTREE/.assay/progress-tester-unified.jsonl" \
+  --log tester-unified "$GATE_LOG" --format text
+```
+
+The verdict is checked by Assay's verifier and bound to the controller's full
+expected commit. Fresh, nonterminal progress can report `running`; a stale
+heartbeat or terminal stream without a verdict reports an evidence error.
+The log contributes only bounded diagnostics and a displayed phase, never a
+status. Every named file's complete byte count and SHA-256 are included so the
+controller can locate and verify the original artifact. Exit codes are 0 for
+all-pass, 1 for a valid failure, 2 for evidence errors, and 3 when running is
+the highest-priority status present. Mixed states prioritize evidence error,
+then fail, running, and pass. See Assay's [B100 design notes](DESIGN-GUIDE.md#bounded-live-gate-snapshot-b100).
 
 ## Why this is not the "ambient image version" failure CONSUMERS.md warns about
 

@@ -260,8 +260,9 @@ containers: at most 2 across the estate — check `docker ps --format
 '{{.Image}}'` for `tester-unified:local` before starting yours, run
 `docker update --cpus=3 <id>` right after launch, remove in a `finally`.
 No image build concurrent with a suite run. The daemon container is exempt
-from the count but must be idle before an overhead measurement. Never
-pass `--cgroupns=host`/`--pid=host` to anything but the daemon.
+from the count but must be idle before an overhead measurement. No container
+may use `--cgroupns=host`, `--pid=host`, or `--net=host`; the daemon and helper
+use explicit read-only host proc/cgroup binds with private namespaces.
 
 ## 7. Rules
 

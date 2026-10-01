@@ -25,6 +25,8 @@ subprocess result.
 
 from __future__ import annotations
 
+from nyxloom.cli_ctl import main as ctl_main
+
 import io
 import json
 import logging
@@ -872,7 +874,7 @@ transport = "smoke-signal"
 def test_cli_poll_reports_and_exits_zero_when_unconfigured(sample_project, capsys):
     from nyxloom import cli
 
-    assert cli.main(["intake-bridge", "poll", "demo"]) == 0
+    assert ctl_main(["intake-bridge", "poll", "demo"]) == 0
     assert "status=unconfigured" in capsys.readouterr().out
 
 
@@ -884,7 +886,7 @@ def test_cli_poll_exits_one_on_a_refusal(sample_project, monkeypatch, capsys):
     monkeypatch.setattr(
         config.ProjectConfig, "load",
         classmethod(lambda _cls, _root: _with_bridge(sample_project)))
-    assert cli.main(["intake-bridge", "poll", "demo"]) == 1
+    assert ctl_main(["intake-bridge", "poll", "demo"]) == 1
     assert "status=refused" in capsys.readouterr().out
 
 
@@ -904,7 +906,7 @@ def test_cli_poll_also_exits_one_on_a_bridge_error(sample_project, monkeypatch, 
     monkeypatch.setattr(
         config.ProjectConfig, "load",
         classmethod(lambda _cls, _root: _with_bridge(sample_project)))
-    assert cli.main(["intake-bridge", "poll", "demo"]) == 1
+    assert ctl_main(["intake-bridge", "poll", "demo"]) == 1
     assert "stdout is not JSON" in capsys.readouterr().err
 
 
@@ -926,7 +928,7 @@ team = "nyxloom"
 channel = "intake"
 container = "nyxloom-prod-mattermost"
 """, encoding="utf-8")
-    assert cli.main(["intake-bridge", "poll", "demo", "--transport", "rest"]) == 0
+    assert ctl_main(["intake-bridge", "poll", "demo", "--transport", "rest"]) == 0
     out = capsys.readouterr().out
     assert "status=unconfigured" in out
 
@@ -934,10 +936,9 @@ container = "nyxloom-prod-mattermost"
 def test_cli_rejects_an_unknown_transport_override(sample_project):
     from nyxloom import cli
 
-    assert cli.main(["intake-bridge", "poll", "demo", "--transport", "carrier"]) == 2
+    assert ctl_main(["intake-bridge", "poll", "demo", "--transport", "carrier"]) == 2
 
 
-def test_cli_bare_verb_group_prints_usage(sample_project):
-    from nyxloom import cli
-
-    assert cli.main(["intake-bridge"]) == 2
+def test_cli_bare_verb_group_prints_usage(sample_project, capsys):
+    assert ctl_main(["intake-bridge"]) == 0
+    assert "poll" in capsys.readouterr().out

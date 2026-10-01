@@ -33,10 +33,19 @@ class ReleaseFlowTests(unittest.TestCase):
         self.assertIn("if explicit_build_date:", source)
         self.assertIn("build_date = explicit_build_date", source)
 
+    def test_release_gate_runs_from_the_candidate_repository_root(self) -> None:
+        commands = self.config["steps"]["run-tests"]["commands"]
+        self.assertEqual(commands[0]["argv"], ["./run-gate.py", "release"])
+
+    def test_vm_acceptance_resolves_the_project_and_shared_harness_roots(self) -> None:
+        source = (ROOT / "host-setup/tests/run-vm-acceptance.sh").read_text()
+        self.assertIn('MDT_ROOT="$(cd "$HERE/../.." && pwd)"', source)
+        self.assertIn('"$WORKTREE_ROOT/scripts/debian-install-v2/testing/vm"', source)
+
     def test_registry_release_uses_native_zstd_and_standard_attestations(self) -> None:
         self.assertEqual(self.env["IMAGE_COMPRESSION"], "zstd")
         self.assertEqual(self.env["IMAGE_COMPRESSION_LEVEL"], "3")
-        self.assertEqual(self.env["IMAGE_FORCE_COMPRESSION"], "true")
+        self.assertEqual(self.env["IMAGE_FORCE_COMPRESSION"], "false")
         self.assertEqual(self.env["IMAGE_OCI_MEDIA_TYPES"], "true")
         self.assertEqual(self.env["IMAGE_PROVENANCE_MODE"], "max")
         self.assertEqual(self.env["IMAGE_SBOM"], "true")
@@ -63,11 +72,111 @@ class ReleaseFlowTests(unittest.TestCase):
         self.assertNotIn("buildx rm", builder)
         self.assertNotIn("docker-container", builder)
 
-    def test_release_build_persists_cache_outside_disposable_worktrees(self) -> None:
+    def test_offline_first_party_wheels_have_runtime_dependency_floors(self) -> None:
+        """The final venv closure must happen after Aider and before wheels."""
+        requirements = (ROOT / "requirements/toolkit.txt").read_text()
+        self.assertIn("rich>=15.0.0", requirements)
+        self.assertIn("pygments>=2.21.0", requirements)
+        wheels = (ROOT / "pip/wheels.list").read_text()
+        self.assertRegex(wheels, r"(?m)^nyxloom\s+#")
+        dockerfile = (ROOT / "Dockerfile").read_text()
+        self.assertIn("rich/pygments", dockerfile)
+        self.assertIn("--no-index", dockerfile)
+        aider = dockerfile.index("python3 /tmp/install_ai_cli_tools.py venv")
+        reconcile = dockerfile.index("-r /tmp/requirements/toolkit.txt", aider)
+        wheels_layer = dockerfile.index("# ── First-party wheels")
+        self.assertGreater(reconcile, aider)
+        self.assertLess(reconcile, wheels_layer)
+        self.assertIn("--upgrade", dockerfile[aider:wheels_layer])
+
+    def test_staged_ai_cli_installer_has_its_parser_module(self) -> None:
+        """The installer runs from /tmp and must receive its local import too."""
+        dockerfile = (ROOT / "Dockerfile").read_text()
+        self.assertIn("COPY scripts/mdt_cli.py /tmp/mdt_cli.py", dockerfile)
+        self.assertLess(
+            dockerfile.index("COPY scripts/mdt_cli.py /tmp/mdt_cli.py"),
+            dockerfile.index("COPY scripts/install_ai_cli_tools.py /tmp/install_ai_cli_tools.py"),
+        )
+
+    def test_baked_container_finalizer_has_its_parser_module(self) -> None:
+        """The finalizer runs from /usr/local/bin and imports its sibling module."""
+        dockerfile = (ROOT / "Dockerfile").read_text()
+        script_copy = "COPY scripts/finalize_container_environment.py /usr/local/bin/finalize_container_environment.py"
+        helper_copy = "COPY scripts/mdt_cli.py /usr/local/bin/mdt_cli.py"
+        self.assertIn(script_copy, dockerfile)
+        self.assertIn(helper_copy, dockerfile)
+        self.assertLess(dockerfile.index(script_copy), dockerfile.index(helper_copy))
+
+    def test_host_governance_readme_links_to_reasoning_and_consumer_steps(self) -> None:
+        readme = (ROOT / "README.md").read_text()
+        design = (ROOT / "docs/DESIGN-GUIDE.md").read_text()
+        consumers = (ROOT / "docs/CONSUMERS.md").read_text()
+        self.assertIn("docs/CONSUMERS.md#host-commands-from-an-mdt-devcontainer", readme)
+        self.assertIn("docs/DESIGN-GUIDE.md#host-namespace-access", readme)
+        self.assertIn("## Host namespace access", design)
+        self.assertIn("## Host commands from an MDT devcontainer", consumers)
+        self.assertIn("mdt doctor` also starts a privileged host helper", consumers)
+        self.assertIn("report-only", readme)
+        self.assertIn("defaults to `report-only`", design)
+        self.assertIn("BUILDX_ACCIDENTAL_CONTAINER_POLICY=report-only", consumers)
+        self.assertIn("BUILDX_ACCIDENTAL_CONTAINER_POLICY=terminate", consumers)
+        self.assertIn("stops and disables the guard", consumers)
+
+    def test_memory_watcher_policy_docs_and_example_match_the_host_parser(self) -> None:
+        readme = (ROOT / "README.md").read_text()
+        design = (ROOT / "docs/DESIGN-GUIDE.md").read_text()
+        consumers = (ROOT / "docs/CONSUMERS.md").read_text()
+        self.assertIn("docs/DESIGN-GUIDE.md#per-container-memory-policy", readme)
+        self.assertIn("docs/CONSUMERS.md#per-container-memory-watcher", readme)
+        self.assertIn("## Per-container memory policy", design)
+        self.assertIn("WATCHER_MEMORY_POLICY=disabled", design)
+        self.assertIn("WATCHER_MEMORY_POLICY=enabled", design)
+        self.assertIn("## Per-container memory watcher", consumers)
+
+        example = consumers.split("```dotenv\n", 1)[1].split("```", 1)[0]
+        spec = importlib.util.spec_from_file_location(
+            "mdt_host_setup_wizard_docs", ROOT / "host-setup/mdt-host-setup-wizard.py"
+        )
+        assert spec and spec.loader
+        wizard = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = wizard
+        spec.loader.exec_module(wizard)
+        values = wizard.parse_env_file(example, strict=True)
+        self.assertEqual(values["WATCHER_MEMORY_POLICY"], "enabled")
+        self.assertFalse(wizard.memory_relationship_errors(values))
+
+    def test_cockpit_declares_headless_vm_tooling_without_a_vm_daemon(self) -> None:
+        package_names = {
+            line.split("#", 1)[0].strip()
+            for line in (ROOT / "apt/packages.list").read_text().splitlines()
+            if line.split("#", 1)[0].strip()
+        }
+        self.assertTrue(
+            {"qemu-system-x86", "qemu-utils", "ovmf", "cloud-image-utils"}
+            <= package_names
+        )
+        self.assertNotIn("libvirt-daemon-system", package_names)
+        readme = " ".join((ROOT / "README.md").read_text().split())
+        self.assertIn("Package installation does not grant a container access to KVM", readme)
+        self.assertIn("does not install or start libvirt", readme)
+        self.assertIn("loop and swap are not container-namespaced", readme)
+        self.assertIn("Put those tests in a QEMU guest", readme)
+        consumers = " ".join((ROOT / "docs/CONSUMERS.md").read_text().split())
+        self.assertIn("Use a VM for loop devices, partition devices", consumers)
+        self.assertNotIn("--device=/dev/kvm", consumers)
+        self.assertNotIn("--device=/dev/net/tun", consumers)
+
+    def test_release_build_uses_persistent_remote_cache_without_client_export(self) -> None:
         wrapper = (ROOT / "scripts/release-bake.sh").read_text()
-        self.assertIn('git rev-parse --git-common-dir', wrapper)
-        self.assertIn('*.cache-from=type=local,src=${CACHE_DIR}', wrapper)
-        self.assertIn('*.cache-to=type=local,dest=${CACHE_DIR},mode=max', wrapper)
+        self.assertIn("CACHE_ARGS=()", wrapper)
+        self.assertIn("persistent mdt-buildkitd cache", wrapper)
+        self.assertNotIn("cache-from=type=local", wrapper)
+        self.assertNotIn("cache-to=type=local", wrapper)
+
+    def test_release_cache_export_is_not_a_client_visible_stream(self) -> None:
+        wrapper = (ROOT / "scripts/release-bake.sh").read_text()
+        self.assertIn("configure_cache_args", wrapper)
+        self.assertIn("client-visible cache transfer", wrapper)
 
     def test_volatile_staging_metadata_does_not_invalidate_tool_install_layers(self) -> None:
         dockerfile = (ROOT / "Dockerfile").read_text()

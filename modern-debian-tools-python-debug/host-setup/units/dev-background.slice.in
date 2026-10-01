@@ -1,7 +1,7 @@
 # RENDERED by host-setup/install.sh from host-setup.env — do not edit the
 # installed copy; edit /etc/mdt/host-setup.env and re-run install.sh.
 [Unit]
-Description=Dev/test/build/gate containers — bounded, OOM-first, yields to every other tier
+Description=Long-running dev stacks — bounded, OOM-first, yields to every other tier
 Before=slices.target
 
 [Slice]
@@ -10,9 +10,8 @@ Before=slices.target
 # automatically once dev.slice.in is also installed. See units/dev.slice.in
 # for the shared IOPS/bandwidth ceiling this tier inherits from there — this
 # is the merged besteffort.slice + dev-workloads.slice tier (host dev-tier
-# cgroup governance rollout): both the Docker daemon-wide fallback for
-# anything unconfigured AND the explicit convention every project's
-# test/gate/build container opts into ($CGROUP_PARENT_DEV_BACKGROUND).
+# cgroup governance rollout): the Docker daemon-wide fallback for anything
+# unconfigured and the explicit tier for long-running application stacks.
 
 # Soft ceiling first (throttle into zswap), hard cap so a leak can never
 # poison the host, swap cap so it can't poison swap/zswap either. Swap cap
@@ -58,4 +57,5 @@ MemoryZSwapWriteback=@DEV_BACKGROUND_ZSWAP_WRITEBACK@
 # Containers join via the Docker daemon-wide default (cgroup-parent in
 # /etc/docker/daemon.json — see host-setup.env.example), an explicit
 # `docker run --cgroup-parent=dev-background.slice`, or compose
-# `cgroup_parent: dev-background.slice` (ciu governance injects it).
+# `cgroup_parent: dev-background.slice` (ciu governance injects it). Gate/lane
+# launchers use the sibling dev-gates.slice instead.

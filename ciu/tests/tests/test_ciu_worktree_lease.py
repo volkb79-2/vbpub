@@ -53,11 +53,12 @@ def tmp_repo(tmp_path: Path) -> Path:
     assert _git(["config", "user.email", "t@example.com"], repo).returncode == 0
     assert _git(["config", "user.name", "Test"], repo).returncode == 0
     (repo / "README.md").write_text("hello\n", encoding="utf-8")
+    (repo / "ciu.global.defaults.toml.j2").write_text("[ciu]\n", encoding="utf-8")
     (repo / ".gitignore").write_text(
         "ciu.env\nciu.global.instance.toml.j2\nciu.instance.generated.toml\n",
         encoding="utf-8",
     )
-    assert _git(["add", "README.md", ".gitignore"], repo).returncode == 0
+    assert _git(["add", "README.md", ".gitignore", "ciu.global.defaults.toml.j2"], repo).returncode == 0
     assert _git(["commit", "-m", "init"], repo).returncode == 0
     return repo
 
@@ -427,6 +428,25 @@ class TestOwnRecordOperations:
         assert released.lease is None
         assert json.loads(path.read_text(encoding="utf-8"))["lease"] is None
 
+    def test_up_lease_is_mirrored_into_the_shared_lifecycle_record(
+        self, tmp_repo, fake_generate_env
+    ):
+        record = worktree.create(tmp_repo, "one", base="main")
+        updated = worktree.acquire_own_lease(
+            record.ciu_root, ttl_hours=24, now=datetime.now(timezone.utc)
+        )
+
+        shared = worktree._shared_worktree()
+        common = worktree._git_common_dir(tmp_repo)
+        shared_record = next(
+            item for item in shared.list_workspaces(common)
+            if item.worktree_path == record.git_worktree_path
+        )
+        assert updated.lease is not None
+        assert shared_record.lease == updated.lease
+        with pytest.raises(shared.WorkspaceError, match="active lease"):
+            shared.remove_workspace(shared_record)
+
     def test_release_never_drags_a_v1_record_up_to_v2(self, tmp_path):
         """Nothing was claimed, so nothing is written — a teardown of an
         instance that never leased leaves its record byte-identical."""
@@ -663,7 +683,7 @@ class TestLeaseCli:
         worktree.create(tmp_repo, "one", base="main")
         code, out = self._run(
             capsys,
-            ["lease", "one", "--extend", "24h", "--define-root", str(tmp_repo)],
+            ["lease", "one", "--extend", "24h", "--root-folder", str(tmp_repo)],
         )
         assert code == 0
         assert "mode: held" in out
@@ -674,7 +694,7 @@ class TestLeaseCli:
     ):
         worktree.create(tmp_repo, "one", base="main")
         code, out = self._run(
-            capsys, ["lease", "one", "--perpetual", "--define-root", str(tmp_repo)]
+            capsys, ["lease", "one", "--perpetual", "--root-folder", str(tmp_repo)]
         )
         assert code == 0
         assert "never (perpetual)" in out
@@ -682,7 +702,7 @@ class TestLeaseCli:
     def test_release_human_output(self, tmp_repo, fake_generate_env, capsys):
         worktree.create(tmp_repo, "one", base="main")
         code, out = self._run(
-            capsys, ["lease", "one", "--release", "--define-root", str(tmp_repo)]
+            capsys, ["lease", "one", "--release", "--root-folder", str(tmp_repo)]
         )
         assert code == 0
         assert "lease: none (released)" in out
@@ -694,7 +714,7 @@ class TestLeaseCli:
         code, out = self._run(
             capsys,
             ["lease", "one", "--extend", "2h", "--json",
-             "--define-root", str(tmp_repo)],
+             "--root-folder", str(tmp_repo)],
         )
         assert code == 0
         doc = json.loads(out)
@@ -704,13 +724,13 @@ class TestLeaseCli:
 
     def test_unknown_instance_exits_two(self, tmp_repo, capsys):
         code, _ = self._run(
-            capsys, ["lease", "nope", "--release", "--define-root", str(tmp_repo)]
+            capsys, ["lease", "nope", "--release", "--root-folder", str(tmp_repo)]
         )
         assert code == 2
 
     def test_no_mode_is_an_argparse_refusal(self, tmp_repo):
         with pytest.raises(SystemExit):
-            cli._worktree(["lease", "one", "--define-root", str(tmp_repo)])
+            cli._worktree(["lease", "one", "--root-folder", str(tmp_repo)])
 
     def test_the_verb_is_documented_in_usage_and_verb_help(self):
         assert "worktree lease" in cli._USAGE
@@ -733,18 +753,18 @@ class TestTeardownClearsTheLease:
         def clean_ok(wt, *, yes):
             return 0
 
-        real_git = worktree._git
 
-        def fail_remove(args, cwd):
-            if args[:2] == ["worktree", "remove"]:
-                # Snapshot the record at the exact moment the checkout would
-                # be destroyed, then refuse — the record is otherwise gone.
-                seen.append(json.loads(record.record_path.read_text("utf-8")))
-                return subprocess.CompletedProcess(["git"], 1, "", "locked")
-            return real_git(args, cwd)
+        shared = worktree._shared_worktree()
+
+        def fail_remove(_shared_record):
+            # Snapshot the CIU adapter record at the exact moment the neutral
+            # checkout removal would run, then refuse it. The product lease
+            # was cleared only after `ciu clean` succeeded.
+            seen.append(json.loads(record.record_path.read_text("utf-8")))
+            raise worktree.WorktreeError("locked")
 
         monkeypatch.setattr(worktree, "_clean_in", clean_ok)
-        monkeypatch.setattr(worktree, "_git", fail_remove)
+        monkeypatch.setattr(shared, "remove_workspace", fail_remove)
         with pytest.raises(worktree.WorktreeError, match="locked"):
             worktree.remove(tmp_repo, "one")
         assert seen[0]["lease"] is None
@@ -769,17 +789,16 @@ class TestTeardownClearsTheLease:
         record = worktree.create(tmp_repo, "one", base="main")
         worktree.apply_lease(tmp_repo, "one", extend="24h")
         before = record.record_path.read_text(encoding="utf-8")
-        real_git = worktree._git
         seen: list[str] = []
 
-        def fail_remove(args, cwd):
-            if args[:2] == ["worktree", "remove"]:
-                seen.append(record.record_path.read_text(encoding="utf-8"))
-                return subprocess.CompletedProcess(["git"], 1, "", "locked")
-            return real_git(args, cwd)
+        shared = worktree._shared_worktree()
+
+        def fail_remove(_shared_record):
+            seen.append(record.record_path.read_text(encoding="utf-8"))
+            raise worktree.WorktreeError("locked")
 
         monkeypatch.setattr(worktree, "_clean_in", lambda wt, *, yes: 1)
-        monkeypatch.setattr(worktree, "_git", fail_remove)
+        monkeypatch.setattr(shared, "remove_workspace", fail_remove)
         with pytest.raises(worktree.WorktreeError, match="locked"):
             worktree.remove(tmp_repo, "one", force=True)
         assert seen == [before]

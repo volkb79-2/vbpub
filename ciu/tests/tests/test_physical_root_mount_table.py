@@ -8,7 +8,7 @@ Covers:
   characterizes the pre-existing devcontainer-origin / identity behavior.
 - Contract 4: hard regression bound — a dstdns-shaped fixture must reproduce
   today's live REPO_NAME / INSTANCE_ID / PHYSICAL_REPO_ROOT byte-for-byte.
-- Contract 5: --define-root reaches the physical derivation (generate_ciu_env
+- Contract 5: --root-folder reaches the physical derivation (generate_ciu_env
   receiving repo_root=PATH resolves PATH's own physical root, not some other
   repo's).
 """
@@ -264,7 +264,7 @@ class TestPresetEnvConsistency:
 
 
 class TestRegressionBoundDstdns:
-    """Locks REPO_NAME=dstdns, INSTANCE_ID=98535c,
+    """Locks REPO_NAME=dstdns and the shared base-36 path identity,
     PHYSICAL_REPO_ROOT=/home/vb/volkb79-2/dstdns for repo_root=/workspaces/dstdns
     against a dstdns-shaped mountinfo fixture (Contract 4 / Oracle 3).
     """
@@ -279,7 +279,8 @@ class TestRegressionBoundDstdns:
 
         network_values = _compute_network_name(physical_root)
         assert network_values["REPO_NAME"] == "dstdns"
-        assert network_values["INSTANCE_ID"] == "98535c"
+        from worktree import workspace_id_for_path
+        assert network_values["INSTANCE_ID"] == workspace_id_for_path(physical_root)
 
     def test_generate_ciu_env_dstdns_shaped_end_to_end(self, tmp_path, monkeypatch):
         """Full generate_ciu_env pass through the REAL mountinfo-parsing path
@@ -312,7 +313,8 @@ class TestRegressionBoundDstdns:
         content = out.read_text(encoding="utf-8")
         assert 'export PHYSICAL_REPO_ROOT="/home/vb/volkb79-2/dstdns"' in content
         assert 'export REPO_NAME="dstdns"' in content
-        assert 'export INSTANCE_ID="98535c"' in content
+        from worktree import workspace_id_for_path
+        assert f'export INSTANCE_ID="{workspace_id_for_path(Path("/home/vb/volkb79-2/dstdns"))}"' in content
 
 
 # ---------------------------------------------------------------------------
@@ -370,13 +372,13 @@ class TestRegressionBoundNestedPresetEnvContamination:
 
 
 # ---------------------------------------------------------------------------
-# Contract 5 — --define-root reaches the physical derivation
+# Contract 5 — --root-folder reaches the physical derivation
 # ---------------------------------------------------------------------------
 
 
 class TestDefineRootReachesPhysicalDerivation:
     """generate_ciu_env(repo_root=PATH) must derive PATH's own physical root,
-    not some other repo's — this is exactly what --define-root PATH feeds
+    not some other repo's — this is exactly what --root-folder PATH feeds
     into (cli.py -> resolve_env_root(define_root=PATH) -> that PATH is passed
     straight through as repo_root).
     """
@@ -393,7 +395,7 @@ class TestDefineRootReachesPhysicalDerivation:
         monkeypatch.delenv("PUBLIC_FQDN", raising=False)
         monkeypatch.delenv("PUBLIC_IP", raising=False)
 
-        # Simulate `--define-root /workspaces/vbpub` by calling
+        # Simulate `--root-folder /workspaces/vbpub` by calling
         # _detect_physical_repo_root with that literal path directly (this is
         # exactly what generate_ciu_env(repo_root=Path("/workspaces/vbpub"))
         # would do internally).

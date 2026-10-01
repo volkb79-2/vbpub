@@ -342,7 +342,7 @@ def test_ntfy_resume_drift_refuses_and_writes_nothing(tmp_state, sample_project,
     reply = cl.handle_message("resume demo", [])
 
     assert "demo-P60-drift" in reply
-    assert "nyxloom resync demo" in reply
+    assert "nyxloomctl resync demo" in reply
     assert flag.exists()
     assert list(storage.iter_events("demo")) == []
 

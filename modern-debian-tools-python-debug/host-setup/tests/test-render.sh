@@ -67,6 +67,18 @@ trap 'rm -rf "$TMP"' EXIT
 export TMPDIR="$TMP"   # nothing this test (or anything it shells out to) does
                         # can write outside its own scratch dir (S14)
 
+# tester-unified owns the gate interpreter and its dependency closure.  The
+# cockpit fallback remains useful when this renderer is run by hand on a host
+# that has no tester image, but a gate must not silently select system Python.
+MDT_TEST_PYTHON="${MDT_TEST_PYTHON:-}"
+if [ -z "$MDT_TEST_PYTHON" ]; then
+  if [ -x /opt/tester-venv/bin/python ]; then
+    MDT_TEST_PYTHON=/opt/tester-venv/bin/python
+  else
+    MDT_TEST_PYTHON="$(command -v python3)"
+  fi
+fi
+
 fail() { echo "FAIL: $*" >&2; exit 1; }
 pass() { echo "ok: $*"; }
 
@@ -136,6 +148,54 @@ grep -qxF "  max-parallelism = $DEV_BUILDKITD_MAX_PARALLELISM" "$BUILDKIT_TOML_O
 grep -qF 'buildkitd.toml.in' "$INSTALL_SH" \
   || fail "install.sh never renders buildkitd.toml.in"
 pass "managed BuildKit TOML renders its configured solver parallelism"
+
+# Rootless BuildKit creates its socket with the mapped user's gid, so the
+# directory's group alone is not authoritative. Keep the parent writable only
+# while BuildKit binds, then seal it before root changes socket permissions.
+BUILDKIT_UNIT_OUT="$TMP/mdt-buildkitd.service"
+render "$HERE/units/mdt-buildkitd.service.in" "$BUILDKIT_UNIT_OUT"
+grep -qxF 'RuntimeDirectoryMode=01777' "$BUILDKIT_UNIT_OUT" \
+  || fail "managed BuildKit runtime directory is not sticky"
+grep -qxF 'ExecStartPre=/bin/chmod 01777 /run/mdt-buildkitd' "$BUILDKIT_UNIT_OUT" \
+  || fail "managed BuildKit service does not restore its writable bind directory before restart"
+grep -qxF 'ExecStartPre=/bin/rm -f /run/mdt-buildkitd/buildkitd.sock' "$BUILDKIT_UNIT_OUT" \
+  || fail "managed BuildKit service does not remove a stale socket before restart"
+grep -qF 'ExecStartPost=/bin/sh -ec' "$BUILDKIT_UNIT_OUT" \
+  || fail "managed BuildKit service has no socket-readiness permission step"
+grep -qF '[ ! -L "$socket" ]' "$BUILDKIT_UNIT_OUT" \
+  || fail "managed BuildKit permission step does not reject symlink substitution"
+grep -qF '/bin/chmod 0711 /run/mdt-buildkitd' "$BUILDKIT_UNIT_OUT" \
+  || fail "managed BuildKit permission step does not lock directory entry changes"
+grep -qF 'socket_uid" = "$daemon_uid' "$BUILDKIT_UNIT_OUT" \
+  || fail "managed BuildKit permission step does not verify socket ownership"
+grep -qF 'docker exec mdt-buildkitd stat -c %%u /run/buildkit/buildkitd.sock' "$BUILDKIT_UNIT_OUT" \
+  || fail "managed BuildKit ownership comparison is not made inside its user namespace"
+if grep -qF '/usr/bin/stat -c %%u "$socket"' "$BUILDKIT_UNIT_OUT"; then
+  fail "managed BuildKit ownership comparison incorrectly uses the host uid namespace"
+fi
+grep -qF '/bin/chgrp docker "$socket"' "$BUILDKIT_UNIT_OUT" \
+  || fail "managed BuildKit socket is not assigned to the existing docker group"
+grep -qF '/bin/chmod 0660 "$socket"' "$BUILDKIT_UNIT_OUT" \
+  || fail "managed BuildKit socket is not restricted to owner and docker group"
+POSTSTART_UNIT_LINE="$(grep '^ExecStartPost=' "$BUILDKIT_UNIT_OUT")"
+for format in g a; do
+  grep -qF "stat -c %%$format \"\$socket\"" <<<"$POSTSTART_UNIT_LINE" \
+    || fail "managed BuildKit stat format %$format is not escaped for systemd"
+done
+[[ "$POSTSTART_UNIT_LINE" == *'/bin/chmod 0711 /run/mdt-buildkitd; if [ ! -S "$socket" ] || [ -L "$socket" ]; then'*'docker exec mdt-buildkitd stat -c %%u /run/buildkit/buildkitd.sock'*'/bin/chgrp docker "$socket"'* ]] \
+  || fail "managed BuildKit must seal and revalidate its directory before changing socket ownership"
+# systemd consumes %% as one literal percent before /bin/sh runs. Any percent
+# left after removing those escapes would be interpreted as a unit specifier,
+# not passed through as shell text (e.g. %u becomes the manager's user name).
+if printf '%s\n' "$POSTSTART_UNIT_LINE" | sed 's/%%//g' | grep -q '%'; then
+  fail "managed BuildKit post-start command contains an unescaped systemd specifier"
+fi
+POSTSTART_SCRIPT="$(sed -n "s/^ExecStartPost=\/bin\/sh -ec '\(.*\)'$/\1/p" "$BUILDKIT_UNIT_OUT")"
+[ -n "$POSTSTART_SCRIPT" ] \
+  || fail "could not extract the managed BuildKit post-start command"
+printf '%s\n' "$POSTSTART_SCRIPT" | /bin/sh -n \
+  || fail "managed BuildKit post-start shell command does not parse"
+pass "managed BuildKit socket is validated and restricted to docker-group clients"
 
 # --- (2) dev-gates.slice.in renders the shipped example's own values --------
 # ${VAR:?msg} rather than a bare ${VAR}: under `set -u` a mistyped/missing key
@@ -248,7 +308,7 @@ pass "install.sh installs and applies the cgprofile tmpfiles.d entry"
 # ZERO doctests too -- a deleted doctest would not go red. Run with -v and
 # require a non-zero "N passed" count, so an empty doctest run itself fails
 # this assertion.
-DOCTEST_OUT="$(python3 -m doctest -v "$HERE/mdt-host-setup-wizard.py" 2>&1)" \
+DOCTEST_OUT="$($MDT_TEST_PYTHON -m doctest -v "$HERE/mdt-host-setup-wizard.py" 2>&1)" \
   || fail "mdt-host-setup-wizard.py doctest failed (propose_memory_min_guaranteed_suggestion's before/after earmark-sum demonstration, S2):
 $DOCTEST_OUT"
 printf '%s\n' "$DOCTEST_OUT" | grep -qE '^[1-9][0-9]* passed' \
@@ -306,13 +366,13 @@ pass "check.sh's _bytes_of parses legal-systemd non-integer sizes (4.5G) to the 
 
 # --- focused BuildKit/config/wizard identity tests --------------------------
 GOVERNANCE_TEST_OUT="$TMP/buildkit-governance-tests.log"
-if python3 "$HERE/tests/test_buildkit_governance.py" >"$GOVERNANCE_TEST_OUT" 2>&1; then
+if "$MDT_TEST_PYTHON" "$HERE/tests/test_buildkit_governance.py" >"$GOVERNANCE_TEST_OUT" 2>&1; then
   GOV_RC=0
 else
   GOV_RC=$?
 fi
 if [ "$GOV_RC" -ne 0 ]; then
-  sed -n '1,240p' "$GOVERNANCE_TEST_OUT"
+  tail -n 240 "$GOVERNANCE_TEST_OUT"
   fail "focused BuildKit governance tests failed"
 fi
 echo "GOVERNANCE_TEST_EXIT=$GOV_RC"
@@ -322,7 +382,7 @@ pass "focused BuildKit guard identity, policy, builder idempotency, memory const
 SCRIPTS=("$INSTALL_SH" "$HERE/scripts/mdt-dev-governance-reconcile.sh" "$HERE/scripts/mdt-container-io-events-watcher.sh" "$HERE/scripts/check.sh" "$HERE/scripts/mdt-container-memory-inotify-watcher.py" "$HERE/scripts/mdt-slice-memory-min-low-audit.py" "$HERE/scripts/mdt-buildkit-guard.py" "$HERE/../scripts/mdt_buildkit_builder.py" "$HERE/mdt-host-setup-wizard.py" "${BASH_SOURCE[0]}")
 for s in "${SCRIPTS[@]}"; do
   case "$s" in
-    *.py) python3 -m py_compile "$s" || fail "py_compile failed: $s" ;;
+    *.py) "$MDT_TEST_PYTHON" -m py_compile "$s" || fail "py_compile failed: $s" ;;
     *)    bash -n "$s" || fail "bash -n failed: $s" ;;
   esac
 done

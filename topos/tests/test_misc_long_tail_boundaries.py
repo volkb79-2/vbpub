@@ -35,6 +35,10 @@ def test_stream_window_without_bounds_and_frame_response_without_sequence() -> N
     """An unbounded history request has no synthetic gap or cursor field."""
     base = fixture_frame()
     broker = FrameBroker([base])
+    # stream_window() is deliberately nonblocking. Wait through the broker's
+    # public startup API so this assertion tests its history semantics rather
+    # than relying on the producer thread being scheduled first.
+    assert broker.current() == base
     batch = broker.stream_window()
 
     assert [frame for _seq, frame in batch.entries] == [base]

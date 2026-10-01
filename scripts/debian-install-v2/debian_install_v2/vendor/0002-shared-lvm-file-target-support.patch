@@ -1,0 +1,165 @@
+--- a/iocost_coef_gen.py
++++ b/iocost_coef_gen.py
+@@ -5,0 +6,7 @@
++#
++# Shared MDT/debian-install-v2 artifact generated from the pristine Linux
++# kernel tools/cgroup/iocost_coef_gen.py source plus the patch series listed in
++# debian_install_v2/vendor/README.md. Do not edit this generated copy; update
++# the source or patch series and run tools/build-iocost-generator.py instead.
++# The shared patches cover LVM-backed file targets, explicit testfile paths,
++# partition sysfs lookup for raw --testdev targets, and optional no-COW setup.
+@@ -25,0 +33 @@
++import stat
+@@ -30,0 +39 @@
++import signal
+@@ -35,0 +45,2 @@
++parser.add_argument('--testfile', metavar='PATH',
++                    help='Dedicated scratch file; calibration overwrites its contents (default: ./iocost-coef-fio.testfile)')
+@@ -62,2 +73,4 @@
+-    devname = subprocess.run(f'findmnt -nvo SOURCE -T{path}',
+-                             stdout=subprocess.PIPE, shell=True).stdout
++    devname = subprocess.run(
++        ['findmnt', '-nvo', 'SOURCE', '-T', path],
++        stdout=subprocess.PIPE, check=True,
++    ).stdout
+@@ -66,4 +79,16 @@
+-    # partition -> whole device
+-    parents = glob.glob('/sys/block/*/' + devname)
+-    if len(parents):
+-        devname = os.path.basename(os.path.dirname(parents[0]))
++    # Resolve LVM-backed file targets as well as ordinary partitions. The
++    # underlying scheduler queue can sit behind dm-N -> partition.
++    if not os.path.exists(f'/dev/{devname}') and os.path.exists(f'/dev/mapper/{devname}'):
++        devname = os.path.basename(os.path.realpath(f'/dev/mapper/{devname}'))
++    for _ in range(5):
++        if os.path.exists(f'/sys/block/{devname}/queue/scheduler'):
++            break
++        parents = glob.glob('/sys/block/*/' + devname)
++        if len(parents):
++            devname = os.path.basename(os.path.dirname(parents[0]))
++            continue
++        slaves = glob.glob(f'/sys/block/{devname}/slaves/*')
++        if len(slaves) == 1:
++            devname = os.path.basename(slaves[0])
++            continue
++        break
+@@ -72,0 +98,9 @@
++def resolve_testdev_sysfs_name(devname):
++    """Resolve a partition name to its parent disk for queue sysfs access."""
++    parents = glob.glob('/sys/block/*/' + devname)
++    if len(parents) > 1:
++        raise RuntimeError(f'ambiguous whole-disk parent for test device {devname}')
++    if parents:
++        return os.path.basename(os.path.dirname(parents[0]))
++    return devname
++
+@@ -76 +110,12 @@
+-    if os.path.isfile(path) and os.stat(path).st_size == size:
++    try:
++        existing = os.lstat(path)
++    except FileNotFoundError:
++        existing = None
++    if existing is not None:
++        if not stat.S_ISREG(existing.st_mode) or existing.st_nlink != 1:
++            raise ValueError(f'benchmark testfile target must be a single-link regular file: {path}')
++        if existing.st_size != size:
++            raise ValueError(
++                f'benchmark testfile exists with size {existing.st_size} bytes; refusing to replace '
++                f'it (expected {size} bytes): {path}'
++            )
+@@ -80,8 +125,51 @@
+-    subprocess.check_call(f'rm -f {path}', shell=True)
+-    subprocess.check_call(f'touch {path}', shell=True)
+-    subprocess.call(f'chattr +C {path}', shell=True)
+-    subprocess.check_call(
+-        f'pv -s {size} -pr /dev/urandom {"-q" if args.quiet else ""} | '
+-        f'dd of={path} count={size} '
+-        f'iflag=count_bytes,fullblock oflag=direct bs=16M status=none',
+-        shell=True)
++    fd = os.open(
++        path,
++        os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, 'O_NOFOLLOW', 0),
++        0o600,
++    )
++    os.close(fd)
++    # No-COW improves repeatability on filesystems that support it, but it is
++    # not part of the measurement contract. Some valid Docker data
++    # filesystems reject this inode flag. Keep that advisory failure out of
++    # stderr: fio can measure the persistent regular file normally.
++    try:
++        no_cow = subprocess.run(
++            ['chattr', '+C', path],
++            stdout=subprocess.PIPE,
++            stderr=subprocess.PIPE,
++            text=True,
++            check=False,
++        )
++    except FileNotFoundError:
++        no_cow = None
++    if no_cow is not None and no_cow.returncode != 0:
++        detail = (no_cow.stderr or no_cow.stdout or '').strip()
++        info(
++            f'NOTICE: filesystem does not support the optional no-COW flag for {path}'
++            f'{f": {detail}" if detail else ""}; continuing with the file target'
++        )
++    pv = subprocess.Popen(
++        ['pv', '-s', str(size), '-pr', '/dev/urandom']
++        + (['-q'] if args.quiet else []),
++        stdout=subprocess.PIPE,
++    )
++    assert pv.stdout is not None
++    try:
++        dd = subprocess.run(
++            ['dd', f'of={path}', f'count={size}', 'iflag=count_bytes,fullblock',
++             'oflag=direct', 'bs=16M', 'status=none'],
++            stdin=pv.stdout,
++            check=False,
++        )
++    finally:
++        pv.stdout.close()
++    pv_status = pv.wait()
++    if dd.returncode != 0:
++        raise subprocess.CalledProcessError(dd.returncode, dd.args)
++    if not os.path.isfile(path) or os.path.getsize(path) != size:
++        raise RuntimeError(f'benchmark testfile was not filled to {size} bytes: {path}')
++    # pv may receive SIGPIPE when dd has consumed exactly the requested byte
++    # count. The exact-size check above distinguishes that expected close from
++    # an incomplete fill; other pv failures still fail the calibration.
++    if pv_status not in (0, -signal.SIGPIPE):
++        raise subprocess.CalledProcessError(pv_status, pv.args)
+@@ -94,5 +182,7 @@
+-    cmd = (f'fio --direct=1 --ioengine=libaio --name=coef '
+-           f'--filename={testfile} --runtime={round(duration)} '
+-           f'--readwrite={iotype} --iodepth={iodepth} --blocksize={blocksize} '
+-           f'--eta={eta} --output-format json --output={outfile.name} '
+-           f'--time_based --numjobs={jobs}')
++    cmd = [
++        'fio', '--direct=1', '--ioengine=libaio', '--name=coef',
++        f'--filename={testfile}', f'--runtime={round(duration)}',
++        f'--readwrite={iotype}', f'--iodepth={iodepth}', f'--blocksize={blocksize}',
++        f'--eta={eta}', '--output-format', 'json', '--output', outfile.name,
++        '--time_based', f'--numjobs={jobs}',
++    ]
+@@ -101 +191 @@
+-    subprocess.check_call(cmd, shell=True)
++    subprocess.check_call(cmd)
+@@ -132,9 +222,3 @@
+-    # vbpub patch 0001: resolve
+-    # partition -> whole device for the /sys/block/<devname>/queue/*
+-    # lookups below -- those are whole-disk properties and don't exist
+-    # as a per-partition sysfs path (e.g. /sys/block/vda5 is not a
+-    # thing; only /sys/block/vda/vda5 is). devno/testfile above stay
+-    # exactly what --testdev named; only this devname is widened.
+-    parents = glob.glob('/sys/block/*/' + devname)
+-    if len(parents):
+-        devname = os.path.basename(os.path.dirname(parents[0]))
++    # Queue scheduler and nomerges live on the whole-disk parent, while fio
++    # must still target the requested partition.
++    devname = resolve_testdev_sysfs_name(devname)
+@@ -142,2 +226,4 @@
+-    devname, devno = dir_to_dev('.')
+-    testfile = 'iocost-coef-fio.testfile'
++    # Derive the benchmark device from the file target, not the caller's cwd.
++    probe_path = os.path.dirname(os.path.abspath(args.testfile)) if args.testfile else '.'
++    devname, devno = dir_to_dev(probe_path)
++    testfile = args.testfile or 'iocost-coef-fio.testfile'

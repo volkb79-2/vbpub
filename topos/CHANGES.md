@@ -4,6 +4,38 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 <!-- cmru: release history -->
 
+## [0.4.1] - 2026-09-26
+<!-- cmru: generated -->
+<!-- cmru: source-end=d22feaab860607938505380ef9ddacb521307e66 -->
+
+### Testing
+- test(topos): synchronize broker history boundary test (8823bfea)
+
+## [0.4.0] - 2026-09-19
+<!-- cmru: generated -->
+<!-- cmru: source-end=a2def16c934a888245a0d088ca9e44ddcf31792e -->
+
+### Added
+- feat: add estate cli version compatibility (05f373a4)
+
+### Changed
+- cli: universalize vbpub parser diagnostics (aa0e69fa)
+- chore: land run-gate root and dev-gates migration (41c1cafb)
+
+## [0.3.2] - 2026-09-17
+<!-- cmru: generated -->
+<!-- cmru: source-end=fba1be96e9ec571e6567800869e0c6cd740e2f02 -->
+
+### Changed
+- chore(nyxloom): archive historical handoffs and reports (28801a95)
+
+## [0.3.1] - 2026-09-16
+<!-- cmru: generated -->
+<!-- cmru: source-end=54dfca2f0d6e075f23941afbcfe7836fca4bdda0 -->
+
+### Documentation
+- docs: propagate MDT governance ownership and names (2e5f6463)
+
 ## [0.3.0] - 2026-09-13
 <!-- cmru: generated -->
 <!-- cmru: source-end=94917b55f7274f8c3665f706fd2550cdbfb9435f -->

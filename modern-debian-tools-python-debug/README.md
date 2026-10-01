@@ -130,7 +130,38 @@ and `isort`, so neither is installed.
 > repo's AI instruction files.
 
 Debian packages come from [`apt/packages.list`](apt/packages.list); first-party wheels
-(`ciu`, `cmru`) are staged from their GitHub releases into [`pip/`](pip/).
+(`ciu`, `cmru`, `topos`, and `nyxloom`) are staged from their GitHub releases into
+[`pip/`](pip/). Their runtime dependencies are deliberately installed in the primary
+toolkit before the wheel layer, because that layer uses `pip --no-index`; the
+`rich>=15.0.0` and `pygments>=2.21.0` floors in `requirements/toolkit.txt` are part of
+that offline closure for Nyxloom.
+
+### Headless VM tooling
+
+The cockpit includes the userland needed to provision and boot disposable x86
+test guests:
+
+- `qemu-system-x86` — headless x86 guest execution, with KVM acceleration when
+  the host exposes `/dev/kvm`;
+- `qemu-utils` — create and inspect disk images with `qemu-img`;
+- `ovmf` — UEFI firmware for x86 guests;
+- `cloud-image-utils` — create cloud-init seed media such as `cloud-localds`.
+
+These are command-line tools, not a VM service: MDT does not install or start
+libvirt, a system-wide QEMU daemon, or a guest agent. Package installation does
+not grant a container access to KVM or TAP networking. The default test shape is
+an unprivileged runner using QEMU's TCG software emulation and user-mode
+networking; it needs neither `/dev/kvm` nor `/dev/net/tun`. If a runner opts in
+to KVM or TAP, it must request those host devices explicitly and remain in the
+host's governed slice. Keep VM images and firmware scratch files on disposable
+storage.
+
+Do not use a privileged container as the isolation boundary for loop devices,
+partition devices, `mkswap`, `swapon`, `swapoff`, initramfs, reboot, or other
+host-kernel state. Docker containers share the host kernel; loop and swap are
+not container-namespaced. Put those tests in a QEMU guest, whose own kernel
+owns its loop devices and swap. A privileged container is suitable only for
+tests that do not create/access such devices or mutate global kernel state.
 
 ### AI CLI tools
 
@@ -268,21 +299,37 @@ duplicating secrets. Supported keys: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`,
 
 To survive rebuilds, keep these persistent (the shipped mount layout already does):
 the workspace root, `/home/vscode/.claude`, `/home/vscode/.claudelink`, `/home/vscode/.codex`,
+`/home/vscode/.codex2` (optional second Codex profile),
 `/home/vscode/.config`, `/home/vscode/.local`, `/home/vscode/.minisign`,
 `/home/vscode/.openclaw`, `/home/vscode/.pi`, `/home/vscode/.reasonix`, and
 `/home/vscode/.local/share/opencode`.
 
+The template sets `CODEX_SQLITE_HOME` to `/home/vscode/.codex/sqlite-shared`, under the
+persistent Codex mount, and keeps the container running when its Dev Containers session
+disconnects with `shutdownAction: "none"`. See the
+[Codex profile and container-lifetime notes](docs/CONSUMERS.md#codex-profile-state-and-container-lifetime).
+
 The template's Pi mount preserves the whole `~/.pi` root, including `~/.pi/agent/sessions/`.
 Its ClaudeLink mount preserves the whole `~/.claudelink` root, including `nexus.db`, scheduler
 state/logs, and related runtime files. Their grouped host sources are
-`${localEnv:HOME}/mdt--mounted-folders/.pi` and
-`${localEnv:HOME}/mdt--mounted-folders/.claudelink`. The host bootstrap creates empty sources;
+`${localEnv:HOME}/mdt--mounted-folders/.pi/` and
+`${localEnv:HOME}/mdt--mounted-folders/.claudelink/`. These are directory sources; the bootstrap
+does not migrate their data. Existing custom bind sources are identified as files or directories
+from the host filesystem. For a missing source, the default `create-by-spelling` policy creates a
+directory when its source ends in `/` and an empty regular file when it does not. The MDT host-setup
+wizard can set `DEVCONTAINER_MISSING_BIND_SOURCE_POLICY=fail` to require every `$HOME` source
+managed by the bootstrap to exist.
 OpenCode's `/home/vscode/.local/share/opencode` target is backed by the grouped
 `opencode-data` source. For the one-time migration from an existing host install, follow
 the [running-container migration runbook](DEVCONTAINER-LIFECYCLE.md#migrating-a-running-devcontainer-before-adopting-the-mounts)
 first when state is still in a devcontainer; otherwise use
 [the template migration recipe](templates/README.md#migrate-existing-pi-claudelink-and-opencode-state-once)
 and then rebuild the container.
+
+Consuming repos can add file mounts with any filename. Existing sources use their actual host type;
+missing sources follow the configured policy and source spelling. See the
+[consumer example](docs/CONSUMERS.md#optional-git-config-mount) and the
+[design rationale](docs/DESIGN-GUIDE.md#bootstrap-uses-the-source-filesystem-type).
 
 ### Canonical manifest
 
@@ -325,16 +372,16 @@ image, so it lives in two places that must agree:
 
 - **Container side** — `templates/devcontainer.json` ships
   `"--cgroup-parent=dev-interactive.slice"` in `runArgs`, plus `containerEnv` vars
-  (`CGROUP_PARENT_DEV_INTERACTIVE`/`CGROUP_PARENT_DEV_BACKGROUND`) any in-container tool
+  (`CGROUP_PARENT_DEV_INTERACTIVE`/`CGROUP_PARENT_DEV_BACKGROUND`/`CGROUP_PARENT_DEV_GATES`) any in-container tool
   reads instead of hardcoding a slice name. Host setup is a prerequisite for the bounded
   behavior: if the host has no such unit, systemd may create a transient unlimited slice
   and the container can start without the intended protection. Verify the host with
   `mdt-host-check.sh` before relying on placement.
 - **Host side** — [`host-setup/`](host-setup/README.md) installs and maintains the tiers
-  themselves: `dev-interactive.slice` for devcontainers, `dev-background.slice` for the
-  test/build/gate stacks they spawn (also the Docker daemon-wide fallback via
-  `/etc/docker/daemon.json`, which this owns), one shared `dev.slice` IOPS/bandwidth
-  ceiling for both, and a health check. Run this part from the Docker host shell only;
+  themselves: `dev-interactive.slice` for devcontainers, `dev-gates.slice` for gate/lane
+  containers, and `dev-background.slice` for long-running stacks plus the Docker daemon-wide
+  fallback via `/etc/docker/daemon.json`, all under one shared `dev.slice` IOPS/bandwidth
+  ceiling and a health check. Run this part from the Docker host shell only;
   the installer, wizard, and baseline benchmark refuse a devcontainer because container
   root cannot modify the host's `/etc`, systemd, or cgroup tree.
 
@@ -343,19 +390,38 @@ sudo host-setup/install.sh --with-baseline    # ~12 min of saturated disk — qu
 sudo mdt-host-check.sh
 ```
 
+For host inspection from an MDT devcontainer, `host-escape -- <command>` runs
+the command in the host's namespaces with host-root authority; `host-escape`
+opens a host shell. Review commands before running them. The helper runs
+`mdt doctor` afterward and may remount cgroup2 to restore required flags.
+See the [operator examples and safety details](docs/CONSUMERS.md#host-commands-from-an-mdt-devcontainer)
+and the [host-escape design](docs/DESIGN-GUIDE.md#host-namespace-access).
+
 [`host-setup/CGROUP-NOTES.md`](host-setup/CGROUP-NOTES.md) explains what a slice unit
 fundamentally cannot express — and the BFQ caveats, where `IOWeight` does not mean what it
 says. Read it before changing any weight.
 
 All MDT devcontainer and release builds use the host-managed `mdt-managed`
 Buildx remote backed by `mdt-buildkitd.service`; the template supplies
-`BUILDX_BUILDER` and `BUILDKIT_HOST` explicitly. Host installation, the
-accidental-worker guard, and the fail-closed memory policy are documented in
-[the managed BuildKit architecture](docs/BUILD-ARCHITECTURE.md#managed-buildkit-backend)
-and [consumer instructions](docs/CONSUMERS.md).
+`BUILDX_BUILDER` and `BUILDKIT_HOST` explicitly. The accidental-worker guard
+defaults to report-only; termination is an explicit opt-in. Per-container
+leaf caps from the inotify watcher default off while parent slice limits
+remain active. The host wizard asks whether that optional memory watcher is
+enabled and requires explicit values for it. See the [memory policy rationale](docs/DESIGN-GUIDE.md#per-container-memory-policy)
+and [pasteable host configuration](docs/CONSUMERS.md#per-container-memory-watcher).
+Host installation and the guard policy are documented in
+[the managed BuildKit architecture](docs/BUILD-ARCHITECTURE.md#managed-buildkit-backend).
+The service exposes its socket only to the host `docker` group; see the
+[socket-access design](docs/DESIGN-GUIDE.md#managed-buildkit-socket-access).
 The host wizard also writes `DEV_BUILDKITD_MAX_PARALLELISM` into the managed
 daemon configuration; it limits one BuildKit daemon's internal solver work and
 is independent of release repack concurrency.
+The `io.cost` coefficient generator is shared with `debian-install-v2` and
+built from the pristine Linux source plus a checked patch series; see the
+[generator design](docs/DESIGN-GUIDE.md#shared-iocost-generator) and
+[host usage](docs/CONSUMERS.md#host-benchmark-file-targets). Its file target
+must be dedicated benchmark scratch space because calibration overwrites the
+file contents.
 
 ## Building and publishing
 
@@ -516,9 +582,12 @@ docker image inspect <image> \
 ### Compression and layer topology
 
 BuildKit's generic registry exporter defaults to gzip. `cmru.toml` overrides that:
-release publication uses OCI media types, forced **zstd level 3**, and the original layer
-topology. The level is deliberately modest — cold time-to-connect and governed export cost
-matter more than the last few compressed bytes.
+release publication uses OCI media types and **zstd level 3** while preserving the
+original layer topology. Forced recompression is disabled so large, already-compressed
+layers can pass through the exporter without an unnecessary second compression pass. Its
+persistent BuildKit cache is owned by the managed remote and is reused without exporting a
+second cache stream through the client API. The level is deliberately modest — cold
+time-to-connect and governed export cost matter more than the last few compressed bytes.
 
 Cold tests on both Docker stores showed native zstd level 3 faster than gzip, while a
 three-layer 2 GB repack was substantially slower despite the smaller download. Methodology,
@@ -608,7 +677,8 @@ production-quality. Windows as of June 2026:
 | [docs/CONSUMER-AI-GUIDANCE.md](docs/CONSUMER-AI-GUIDANCE.md) | What to put in a consumer repo's AI instruction files |
 | [docs/AI-AGENT-TOOL-DISCOVERY.md](docs/AI-AGENT-TOOL-DISCOVERY.md) | Cross-CLI adapter pattern; why exact versions stay in the generated inventory |
 | [docs/BUILD-ARCHITECTURE.md](docs/BUILD-ARCHITECTURE.md) | Build/repack/publication flow, cgroup boundaries, load attribution |
-| [docs/CONSUMERS.md](docs/CONSUMERS.md) | Pasteable managed BuildKit host, devcontainer, and release adoption |
+| [docs/DESIGN-GUIDE.md](docs/DESIGN-GUIDE.md) | Why the Python, tester-unified, and QEMU lanes are separate; managed socket access and host namespace access |
+| [docs/CONSUMERS.md](docs/CONSUMERS.md) | Pasteable host governance, host escape, managed BuildKit, and release adoption |
 | [docs/OCI-IMAGE-TOOLING.md](docs/OCI-IMAGE-TOOLING.md) | Human-manifest vs OCI-manifest, registry clients, layer trade-offs, CMRU reuse boundary |
 | [docs/IMAGE-DELIVERY-BENCHMARKS.md](docs/IMAGE-DELIVERY-BENCHMARKS.md) | Compression and time-to-connect measurements and policy |
 | [docs/DOCKER-IMAGE-STORE.md](docs/DOCKER-IMAGE-STORE.md) | Docker image store behavior |
@@ -632,13 +702,37 @@ The declared lanes run in `tester-unified`, not in the cockpit devcontainer:
 
 - `./run-gate.py smoke` runs Python syntax checks, the host-setup renderer and
   the complete `scripts/` pytest suite (73 tests at the current baseline).
+- `./run-gate.py release` is the image-release gate for the Docker/OCI release
+  flow tests; CMRU consumes this declaration instead of carrying a second
+  `tester-gate` command.
 - `./run-gate.py assay-full` runs the wizard's assay lane at R0, R1, R2 and R3.
   R2 generates and runs the full native mutation campaign for the current
   source, and resumes from the git-ignored `.assay/` progress stream after an
   interrupted session.
+- `./run-gate.py vm-system` runs the MDT host setup acceptance in the shared
+  QEMU/TCG harness. The bare-host lane only drives the runner; its assertions
+  execute inside the guest and verify systemd PID 1, cgroup v2, Docker,
+  rendered slice units, daemon configuration, and the installed host check.
 
-`assay.toml` is the judgment contract for the wizard. The shell installer and
-renderer remain command-tested because assay's Python adapter cannot judge
-shell behavior. The source checkout's `assay/` package is imported at lane
-runtime, as required for same-repository vbpub consumers; no stale vendored
-assay copy is used.
+`assay.toml` is the judgment contract for the wizard and the VM receipt. The
+shell installer and renderer remain command-tested because assay's Python
+adapter cannot judge shell behavior. The source checkout's `assay/` package is
+imported at lane runtime, as required for same-repository vbpub consumers; no
+stale vendored assay copy is used. MDT has no HTTP/OpenAPI surface, so
+Schemathesis is not applicable; Hypothesis covers pure configuration invariants
+in the Python R0-R3 lane.
+
+### CLI diagnostics
+
+The shipped MDT Python parser scripts prefix help, usage, missing-argument,
+unknown-argument, and configuration diagnostics at every parser depth with
+`MDT <version> — modern Debian tools and Python debug` as line 1. The value is
+read from the existing `MDT_VERSION` or `MDT_IMAGE_VERSION` runtime
+environment; when neither is supplied the diagnostic says `unknown` rather
+than inventing a release version.
+The declared operator entrypoints also accept top-level `--version` and print
+exactly one `MDT <version>` line on stdout with exit 0 and no stderr output.
+Normal command output is unchanged. This
+surface covers `build-push.py`, `check-mcr-devcontainer-tags.py`, the host
+setup wizard, `mdt-io-baseline.py`, and `mdt_buildkit_builder.py`; service
+watchers and build-time helper scripts remain internal interfaces.

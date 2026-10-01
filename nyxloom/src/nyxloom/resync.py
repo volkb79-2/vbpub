@@ -10,7 +10,7 @@ decision table.
 
 RP01 (`resync_plan`) is data-only: pure, I/O-free, produces a
 `list[ProposedTransition]`, never an event, never a statefile write.
-`nyxloom resync <project>` prints the plan as a table.
+`nyxloomctl resync <project>` prints the plan as a table.
 
 RP02 (`resync_apply`, below) turns the `ACTION_ADVANCE` rows of that same
 plan into REAL audited events via `storage.append_and_apply` — never a

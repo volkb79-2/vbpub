@@ -58,10 +58,10 @@ from __future__ import annotations
 import os
 import re
 import tomllib
-from dataclasses import dataclass
+from dataclasses import field as dataclass_field
 from pathlib import Path, PurePosixPath
 from types import MappingProxyType
-from typing import Any, Iterable, Mapping
+from typing import TYPE_CHECKING, Any, Iterable, Mapping
 
 from .coverage import FORMAT_REGISTRY
 from .errors import LaneConfigError
@@ -73,6 +73,8 @@ from .errors import LaneConfigError
 # the registry lived in `assay.mutation`.
 from .liveness import LIVENESS_AUTO, LIVENESS_FALSE, LIVENESS_TRUE, argv_invokes_pytest
 from .mutation_parsers import MUTATION_FORMAT_REGISTRY
+from .guards import is_nonempty_str, is_percentage, is_real, is_strict_int
+from .records import positional_record
 # (B078) The result-report reader registry, imported at module level for
 # `FORMAT_REGISTRY`'s own reason (A-068): `result_report.format` is closed
 # against the registry's own keys, never a second hardcoded list that could
@@ -90,6 +92,9 @@ from .vocabulary import (
     WITHDRAWN_MUTATION_OPERATORS,
     operator_language,
 )
+
+if TYPE_CHECKING:  # pragma: no cover -- annotation-only import; importing at runtime creates a cycle
+    from .isolation import SnapshotLimits
 
 __all__ = [
     "CanaryConfig",
@@ -111,6 +116,7 @@ __all__ = [
     "RIGOR_LEVELS",
     "ResultReportConfig",
     "SCOPES",
+    "SNAPSHOT_HISTORIES",
     "SNAPSHOT_SELECTIONS",
     "find_lane_file",
     "load_lane_file",
@@ -228,8 +234,14 @@ SNAPSHOT_SELECTIONS: frozenset[str] = frozenset(
     {"repository", "repository-minus-unsafe-symlinks"}
 )
 
+# B101: the seed is deliberately shallow unless the lane's command walks
+# ancestry.  This is a lane policy, not a source-repository property; source
+# shallow/promisor/alternate refusals remain owned by the Git boundary.
+SNAPSHOT_HISTORIES: frozenset[str] = frozenset({"shallow", "full"})
+
 _ISOLATION_FIELDS: tuple[str, ...] = (
     "snapshot_selection",
+    "snapshot_history",
     "unsafe_symlink_omissions",
     # (B041(b), schema v9) paths symlinked IN from the invoking checkout.
     "link_paths",
@@ -351,6 +363,8 @@ _DURATION_HINT = "expected a duration such as '90s', '5m' or '1h30m'"
 #: **Admissible only where every unit is bounded** (see
 #: :func:`_refuse_unbounded_without_unit_bounds`): an R0/R1 lane is ONE
 #: command whose only bound IS ``budget``, so it is refused there by name.
+#: A native R2 lane's pre-sweep baseline intentionally remains ``timeout=None``
+#: under A-457; stall detection for that command belongs to the caller.
 #: Stall detection is NOT assay's -- assay's job stops at emitting a rich
 #: enough progress stream (B064/B065) for an external watcher (run-gate
 #: RG-36) to compute staleness. assay gains no stall threshold of its own.
@@ -391,7 +405,7 @@ def parse_duration(text: str) -> float:
     return seconds
 
 
-@dataclass(frozen=True)
+@positional_record
 class CoverageConfig:
     """``[lanes.X.judge.coverage]`` — the declared format, artifact path and
     (B045, schema v9) the declared PRODUCER.
@@ -480,7 +494,7 @@ MAX_MAX_MUTANTS = 10_000
 MAX_SHARD_COUNT = 10_000
 
 
-@dataclass(frozen=True)
+@positional_record
 class MutationConfig:
     """``[lanes.X.judge.mutation]`` (P18) -- the closed R2 execution policy:
     a required positive ``jobs`` worker count (A-082/A-122: never derived
@@ -644,7 +658,7 @@ _CANARY_FIELDS: tuple[str, ...] = (
 )
 
 
-@dataclass(frozen=True)
+@positional_record
 class CanaryConfig:
     """``[lanes.X.judge.canary]`` (P19, B007/A-432) -- the closed R3
     declaration: which :mod:`assay.canary` mechanism to attempt, and which
@@ -760,7 +774,7 @@ class CanaryConfig:
         return parse_duration(self.budget_per_attempt)
 
 
-@dataclass(frozen=True)
+@positional_record
 class EvidenceConfig:
     """``judge.evidence[]`` (P26/A-209, widened B004/A-430) -- one declared
     Tier-3 (``"attested"``) or Tier-2 (``"adjudicated"``) identity.
@@ -781,7 +795,7 @@ class EvidenceConfig:
         return {"source": self.source, "key": self.key}
 
 
-@dataclass(frozen=True)
+@positional_record
 class JudgeConfig:
     """``[lanes.X.judge]`` — HOW to judge (D7's second question, A-015).
 
@@ -903,7 +917,7 @@ def _validate_omission_path(value: Any, *, where: str, field: str) -> str:
     above (a leading ``.`` component, an empty component from a doubled or
     trailing slash), so equality to that round-trip is a THEOREM of the
     accepted grammar, not a separate check -- proved for every accepted path
-    by the accept-side matrix in ``tests/test_config_snapshot_selection.py``,
+    by the accept-side matrix in ``tests/core/test_config_snapshot_selection.py``,
     never by an unreachable extra refusal branch here.
     """
     if not isinstance(value, str):
@@ -945,7 +959,7 @@ def _validate_omission_path(value: Any, *, where: str, field: str) -> str:
 _RESULT_REPORT_FIELDS: tuple[str, ...] = ("format", "path")
 
 
-@dataclass(frozen=True)
+@positional_record
 class ResultReportConfig:
     """``[lanes.X.result_report]`` (B078) -- the lane's opt-in declaration of
     a structured test report R0 may consult INSTEAD of the wrapped command's
@@ -1027,7 +1041,7 @@ def _load_result_report(value: Any, where: str) -> ResultReportConfig | None:
     return ResultReportConfig(format=report_format, path=path)
 
 
-@dataclass(frozen=True)
+@positional_record
 class IsolationConfig:
     """``[lanes.X.isolation]`` (B006a/A-269, §3.2) -- the declared repository
     snapshot materialisation policy for an R1/R2/R3 lane. A POLICY object,
@@ -1045,6 +1059,15 @@ class IsolationConfig:
 
     snapshot_selection: str
     unsafe_symlink_omissions: tuple[str, ...]
+    #: B101: default seed history policy.  ``shallow`` carries only the
+    #: judged commit and the already-resolved comparison base; ``full`` is an
+    #: explicit opt-in for commands that walk ancestry.
+    snapshot_history: str = "shallow"
+    #: Preserve whether TOML explicitly wrote the native default so
+    #: ``as_declared`` remains an exact projection of the lane table.
+    snapshot_history_declared: bool = dataclass_field(
+        default=False, repr=False, compare=False
+    )
     #: (B041(b), schema v9) Repo-top-relative directories symlinked from the
     #: INVOKING CHECKOUT into every snapshot this lane creates, immediately
     #: after ``read-tree`` and before any command runs. Empty -- the only
@@ -1065,6 +1088,14 @@ class IsolationConfig:
 
     def __post_init__(self) -> None:
         where = "IsolationConfig"
+        if (
+            not isinstance(self.snapshot_history, str)
+            or self.snapshot_history not in SNAPSHOT_HISTORIES
+        ):
+            raise LaneConfigError(
+                f"{where}: 'snapshot_history' must be one of "
+                f"{sorted(SNAPSHOT_HISTORIES)}, got {self.snapshot_history!r}"
+            )
         self._check_link_paths(where)
         if (
             not isinstance(self.snapshot_selection, str)
@@ -1150,6 +1181,8 @@ class IsolationConfig:
 
     def as_declared(self) -> dict[str, Any]:
         declared: dict[str, Any] = {"snapshot_selection": self.snapshot_selection}
+        if self.snapshot_history_declared or self.snapshot_history != "shallow":
+            declared["snapshot_history"] = self.snapshot_history
         if self.unsafe_symlink_omissions:
             declared["unsafe_symlink_omissions"] = list(self.unsafe_symlink_omissions)
         if self.link_paths:
@@ -1157,7 +1190,7 @@ class IsolationConfig:
         return declared
 
 
-@dataclass(frozen=True)
+@positional_record
 class Lane:
     """One declared lane. Every attribute came out of the file."""
 
@@ -1258,7 +1291,7 @@ class Lane:
         return declared
 
 
-@dataclass(frozen=True)
+@positional_record
 class LaneFile:
     """A parsed ``assay.toml``."""
 
@@ -1269,6 +1302,15 @@ class LaneFile:
     project_root: Path
     schema_version: int
     lanes: Mapping[str, Lane]
+    #: Project-level P22 ceilings.  IsolationConfig and SnapshotLimits live in
+    #: different modules to keep the config boundary acyclic; the loader
+    #: constructs this type lazily after TOML parsing.
+    snapshot_limits: "SnapshotLimits"
+    #: Project-top-relative POSIX globs whose pre-existing dirt may be
+    #: recorded rather than rejected by snapshot lanes when the operator
+    #: explicitly opts in.  This is deliberately separate from the lane's
+    #: own isolation table: it is project policy, not a per-lane escape hatch.
+    dirty_ignore: tuple[str, ...] = ()
 
     def lane(self, name: str) -> Lane:
         try:
@@ -1298,6 +1340,66 @@ def find_lane_file(start: Path | None = None) -> Path:
     )
 
 
+def _load_project_snapshot_limits(
+    value: Any, file_path: Path
+) -> tuple["SnapshotLimits", tuple[str, ...]]:
+    """Load optional project-level ``[isolation]`` policy.
+
+    The isolation module owns the bounds and its ``__post_init__`` is the
+    single validation authority.  This function only closes the TOML grammar,
+    supplies the explicit policy defaults when a field is absent, and
+    translates the dataclass's ValueError into the loader's stable
+    ``BAD_LANE_CONFIG`` terminal.
+    """
+    from .isolation import DEFAULT_SNAPSHOT_LIMITS, SnapshotLimits
+
+    if value is None:
+        return DEFAULT_SNAPSHOT_LIMITS, ()
+    if not isinstance(value, dict):
+        raise LaneConfigError(
+            f"{file_path}: top-level 'isolation' must be a table containing "
+            f"dirty_ignore and/or [isolation.limits], got {_type_name(value)}"
+        )
+    unknown = sorted(set(value) - {"limits", "dirty_ignore"})
+    if unknown:
+        raise LaneConfigError(
+            f"{file_path}: unknown top-level isolation key(s): {', '.join(unknown)}; "
+            f"expected only: dirty_ignore, limits"
+        )
+    dirty_ignore: tuple[str, ...] = ()
+    if "dirty_ignore" in value:
+        dirty_ignore = _load_posix_glob_list(
+            value["dirty_ignore"], str(file_path), "isolation.dirty_ignore"
+        )
+
+    if "limits" not in value:
+        return DEFAULT_SNAPSHOT_LIMITS, dirty_ignore
+    limits = value["limits"]
+    if not isinstance(limits, dict):
+        raise LaneConfigError(
+            f"{file_path}: [isolation.limits] must be a table, got "
+            f"{_type_name(limits)}"
+        )
+    known = set(DEFAULT_SNAPSHOT_LIMITS.__dataclass_fields__)
+    unknown = sorted(set(limits) - known)
+    if unknown:
+        raise LaneConfigError(
+            f"{file_path}: unknown [isolation.limits] key(s): {', '.join(unknown)}; "
+            f"expected only: {', '.join(sorted(known))}"
+        )
+    fields = {
+        name: getattr(DEFAULT_SNAPSHOT_LIMITS, name)
+        for name in DEFAULT_SNAPSHOT_LIMITS.__dataclass_fields__
+    }
+    fields.update(limits)
+    try:
+        return SnapshotLimits(**fields), dirty_ignore
+    except ValueError as exc:
+        raise LaneConfigError(
+            f"{file_path}: invalid [isolation.limits] value: {exc}"
+        ) from exc
+
+
 def load_lane_file(path: Path) -> LaneFile:
     """Load and fully validate an ``assay.toml``.
 
@@ -1317,12 +1419,16 @@ def load_lane_file(path: Path) -> LaneFile:
     project_root = file_path.parent
     schema_version = _load_schema_version(document, file_path)
 
-    unknown = sorted(set(document) - {"schema_version", "lanes"})
+    unknown = sorted(set(document) - {"schema_version", "lanes", "isolation"})
     if unknown:
         raise LaneConfigError(
             f"{file_path}: unknown top-level key(s): {', '.join(unknown)}; "
-            f"expected only: schema_version, lanes"
+            f"expected only: schema_version, lanes, isolation"
         )
+
+    snapshot_limits, dirty_ignore = _load_project_snapshot_limits(
+        document.get("isolation"), file_path
+    )
 
     if "lanes" not in document:
         raise LaneConfigError(
@@ -1350,6 +1456,8 @@ def load_lane_file(path: Path) -> LaneFile:
         project_root=project_root,
         schema_version=schema_version,
         lanes=MappingProxyType(lanes),
+        snapshot_limits=snapshot_limits,
+        dirty_ignore=dirty_ignore,
     )
 
 
@@ -1367,7 +1475,7 @@ def _load_schema_version(document: Mapping[str, Any], file_path: Path) -> int:
             f"(this assay understands schema_version = {LANE_SCHEMA_VERSION})"
         )
     value = document["schema_version"]
-    if not isinstance(value, int) or isinstance(value, bool):
+    if not is_strict_int(value):
         raise LaneConfigError(
             f"{file_path}: 'schema_version' must be an integer, got {_type_name(value)}"
         )
@@ -1487,11 +1595,11 @@ def _load_lane(
             )
         parsed_facts: dict[str, str] = {}
         for key, declaration in raw_infrastructure.items():
-            if not isinstance(key, str) or not key:
+            if not is_nonempty_str(key):
                 raise LaneConfigError(
                     f"{where}: infrastructure names must be non-empty strings"
                 )
-            if not isinstance(declaration, str) or not declaration:
+            if not is_nonempty_str(declaration):
                 raise LaneConfigError(
                     f"{where}: 'infrastructure.{key}' must be a non-empty string, "
                     f"got {_type_name(declaration)}"
@@ -1815,6 +1923,15 @@ def _load_isolation(value: Any, where: str) -> IsolationConfig:
             f"{where}: 'isolation.snapshot_selection' must be one of "
             f"{sorted(SNAPSHOT_SELECTIONS)}, got {selection!r}"
         )
+    snapshot_history = "shallow"
+    snapshot_history_declared = "snapshot_history" in value
+    if "snapshot_history" in value:
+        snapshot_history = _as_str(value["snapshot_history"], where, "isolation.snapshot_history")
+        if snapshot_history not in SNAPSHOT_HISTORIES:
+            raise LaneConfigError(
+                f"{where}: 'isolation.snapshot_history' must be one of "
+                f"{sorted(SNAPSHOT_HISTORIES)}, got {snapshot_history!r}"
+            )
     # (B041(b)/A-366) Read BEFORE the selection fork and passed to both
     # branches: `link_paths` is independent of `snapshot_selection`, and
     # reading it inside one branch is how a key silently becomes legal under
@@ -1841,6 +1958,8 @@ def _load_isolation(value: Any, where: str) -> IsolationConfig:
         return IsolationConfig(
             snapshot_selection=selection,
             unsafe_symlink_omissions=(),
+            snapshot_history=snapshot_history,
+            snapshot_history_declared=snapshot_history_declared,
             link_paths=link_paths,
         )
     if not has_omissions:
@@ -1855,6 +1974,8 @@ def _load_isolation(value: Any, where: str) -> IsolationConfig:
     return IsolationConfig(
         snapshot_selection=selection,
         unsafe_symlink_omissions=tuple(omissions),
+        snapshot_history=snapshot_history,
+        snapshot_history_declared=snapshot_history_declared,
         link_paths=link_paths,
     )
 
@@ -1952,8 +2073,9 @@ def _refuse_unbounded_without_unit_bounds(
     ``judge.mutation.budget_per_candidate``, so the unguessable bulk -- the
     part whose length genuinely cannot be predicted, which is the reason
     ``unbounded`` exists at all -- is bounded per unit. The single command
-    that shape still leaves unbounded is the pre-sweep baseline, which is
-    B076: filed, reasoned, and deliberately not closed here.
+    that shape still leaves unbounded is the pre-sweep baseline. B076's A-457
+    ruling intentionally leaves it at ``timeout=None`` for the caller to
+    watch; ``--progress``'s ``command_running`` heartbeat is the signal.
 
     **An R3 canary does not make a lane admissible.** This was the shipped
     bug: both refusal arms were conditioned on the ABSENCE of R3
@@ -1985,11 +2107,15 @@ def _refuse_unbounded_without_unit_bounds(
     the suite is green before any mutant -- is not covered by
     ``budget_per_candidate`` and is deliberately NOT bounded by it here:
     a baseline runs the whole suite while a mutant runs it once under a
-    per-mutant bound, so tightening the baseline to the per-candidate value
-    would refuse healthy lanes. On an unbounded lane that one command is
+    per-mutant bound. The first baseline can also pay cold-cache,
+    fixture-setup and first-run compilation costs that later mutant
+    invocations do not, so reusing the per-candidate value can refuse healthy
+    lanes. On an unbounded lane that one command is
     therefore bounded only by the caller's own stall detection, for which
-    B064's ``command_running`` heartbeat is the signal. Recorded here rather
-    than left for a reader to discover, and filed as its own backlog entry.
+    B064's ``command_running`` heartbeat is the signal when ``--progress``
+    is enabled. B076 is ruled by A-457: no baseline key is added, and this
+    function's admission rule does not claim that the baseline itself is
+    bounded.
     """
     rigor = tuple(rigor)
     r2 = "R2" in rigor
@@ -2255,12 +2381,15 @@ def _load_judge(
         # inert `base` (the inverse of docs/CONSUMERS.md's own rule) while
         # never firing on an R2 lane at all, and it left `judge.base`
         # REQUIRED on a whole-target R2 lane that reads it nowhere:
-        # `whole_file_r2` skips both `check_base_is_head` and the `git diff`,
-        # and a whole-target R1 never resolves a base either (evaluate_r1's
+        # `whole_file_r2` skips both `check_resolved_base_is_head` and the
+        # `git diff`, and a whole-target R1 never resolves a base either (evaluate_r1's
         # own docstring). Whole-target scope and a comparison commit are
         # mutually exclusive by construction, in every language.
-        if "base" in required:
-            required.remove("base")
+        # This mode is legal only on R1/R2, and each of those rigor entries
+        # requires `base`; the whole-target policy removes that required key
+        # unconditionally. A membership guard here would add an impossible
+        # false branch.
+        required.remove("base")
         # `targets` is never a member of any `JUDGE_FIELDS_BY_RIGOR` tuple
         # (only this mode-specific branch ever requires it), so it can
         # never already be in `required` here -- appended unconditionally
@@ -2274,8 +2403,9 @@ def _load_judge(
         # for the mirror-image reason -- and the explicit both-declared
         # refusal above (not the generic surplus message) is what catches a
         # lane that delegates and hardcodes at once.
-        if "base" in required:
-            required.remove("base")
+        # `base_source = "request"` is legal only on R1/R2, and each requires
+        # `base`; delegation therefore always removes the required key.
+        required.remove("base")
     required = tuple(required)
 
     for field in required:
@@ -2393,7 +2523,7 @@ def _load_judge(
     fail_under = None
     if "fail_under" in table:
         fail_under = _as_float(table["fail_under"], where, "judge.fail_under")
-        if not 0.0 <= fail_under <= 100.0:
+        if not is_percentage(fail_under):
             raise LaneConfigError(
                 f"{where}: 'judge.fail_under' must be a percentage between 0 and "
                 f"100, got {fail_under}"
@@ -2486,7 +2616,7 @@ def _validate_evidence_dir(value: Any, where: str, field_name: str) -> str:
     this is NOT shared across that module boundary, only within this one.
     """
     label = f"judge.{field_name}"
-    if not isinstance(value, str) or not value:
+    if not is_nonempty_str(value):
         raise LaneConfigError(
             f"{where}: '{label}' must be a non-empty string, "
             f"got {_type_name(value)}"
@@ -2859,7 +2989,7 @@ def _load_mutation(
                 f"{where}: missing required field 'judge.mutation.{field}'"
             )
     jobs = value["jobs"]
-    if isinstance(jobs, bool) or not isinstance(jobs, int):
+    if not is_strict_int(jobs):
         raise LaneConfigError(
             f"{where}: 'judge.mutation.jobs' must be an integer, got "
             f"{_type_name(jobs)}"
@@ -2869,7 +2999,7 @@ def _load_mutation(
             f"{where}: 'judge.mutation.jobs' must be a positive integer, got {jobs}"
         )
     max_mutants = value["max_mutants"]
-    if isinstance(max_mutants, bool) or not isinstance(max_mutants, int):
+    if not is_strict_int(max_mutants):
         raise LaneConfigError(
             f"{where}: 'judge.mutation.max_mutants' must be an integer, got "
             f"{_type_name(max_mutants)}"
@@ -2986,7 +3116,7 @@ def _load_mutation(
             )
     budget_per_candidate = value.get("budget_per_candidate")
     if budget_per_candidate is not None:
-        if not isinstance(budget_per_candidate, str) or not budget_per_candidate:
+        if not is_nonempty_str(budget_per_candidate):
             raise LaneConfigError(
                 f"{where}: 'judge.mutation.budget_per_candidate' must be a "
                 f"non-empty string, got {_type_name(budget_per_candidate)}"
@@ -3074,7 +3204,7 @@ def _load_mutation(
             ("shard_index", shard_index),
             ("shard_count", shard_count),
         ):
-            if isinstance(number, bool) or not isinstance(number, int):
+            if not is_strict_int(number):
                 raise LaneConfigError(
                     f"{where}: 'judge.mutation.{field}' must be an integer, got {_type_name(number)}"
                 )
@@ -3171,7 +3301,7 @@ def _load_ingested_mutation(
         value["artifact"], where, project_root, "judge.mutation.artifact"
     )
     fail_under = _as_float(value["fail_under"], where, "judge.mutation.fail_under")
-    if not 0.0 <= fail_under <= 100.0:
+    if not is_percentage(fail_under):
         raise LaneConfigError(
             f"{where}: 'judge.mutation.fail_under' must be in 0.0..100.0, got "
             f"{fail_under}"
@@ -3393,7 +3523,7 @@ def _load_canary(
     # author writes the two per-unit bounds identically.
     budget_per_attempt = value.get("budget_per_attempt")
     if budget_per_attempt is not None:
-        if not isinstance(budget_per_attempt, str) or not budget_per_attempt:
+        if not is_nonempty_str(budget_per_attempt):
             raise LaneConfigError(
                 f"{where}: 'judge.canary.budget_per_attempt' must be a "
                 f"non-empty string, got {_type_name(budget_per_attempt)}"
@@ -3557,7 +3687,7 @@ def _as_bool(value: Any, where: str, field: str) -> bool:
 
 
 def _as_float(value: Any, where: str, field: str) -> float:
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
+    if not is_real(value):
         raise LaneConfigError(
             f"{where}: {field!r} must be a number, got {_type_name(value)}"
         )
@@ -3578,50 +3708,54 @@ def _as_str_list(value: Any, where: str, field: str) -> list[str]:
     return list(value)
 
 
-def _load_identity_exclude(value: Any, where: str) -> tuple[str, ...]:
-    """Load the native-R2 ``identity_exclude`` POSIX glob list (B092).
+def _load_posix_glob_list(
+    value: Any, where: str, field: str
+) -> tuple[str, ...]:
+    """Load one declared POSIX glob list.
 
     Patterns are normalized with :class:`PurePosixPath` after rejecting
     ambiguous namespace spellings. The normalized values are matched against
-    normalized Git tree paths by ``fnmatch.fnmatchcase`` in the frozen-manifest
-    digest code; no local filesystem fact participates.
+    normalized repository paths by ``fnmatch.fnmatchcase``; no local
+    filesystem fact participates. B092's native mutation exclusion and P3's
+    project-level dirty policy intentionally share this grammar.
     """
-    patterns = _as_str_list(value, where, "judge.mutation.identity_exclude")
+    patterns = _as_str_list(value, where, field)
     normalized: list[str] = []
     for index, pattern in enumerate(patterns):
-        field = f"judge.mutation.identity_exclude[{index}]"
+        item_field = f"{field}[{index}]"
         if not pattern:
             raise LaneConfigError(
-                f"{where}: '{field}' must be a non-empty string"
+                f"{where}: '{item_field}' must be a non-empty string"
             )
         if "\\" in pattern:
             raise LaneConfigError(
-                f"{where}: '{field}' {pattern!r} must use POSIX separators; "
+                f"{where}: '{item_field}' {pattern!r} must use POSIX separators; "
                 f"backslashes are forbidden"
             )
         if "\x00" in pattern:
             raise LaneConfigError(
-                f"{where}: '{field}' {pattern!r} contains a NUL character"
+                f"{where}: '{item_field}' {pattern!r} contains a NUL character"
             )
         candidate = PurePosixPath(pattern)
         if candidate.is_absolute():
             raise LaneConfigError(
-                f"{where}: '{field}' {pattern!r} must be relative to the "
+                f"{where}: '{item_field}' {pattern!r} must be relative to the "
                 f"judged repository root"
             )
         components = pattern.split("/")
         if any(component in {".", ".."} for component in components):
             raise LaneConfigError(
-                f"{where}: '{field}' {pattern!r} contains a '.' or '..' "
+                f"{where}: '{item_field}' {pattern!r} contains a '.' or '..' "
                 f"path component"
             )
         normalized_pattern = candidate.as_posix()
-        if not normalized_pattern or normalized_pattern == ".":
-            raise LaneConfigError(
-                f"{where}: '{field}' {pattern!r} is not a usable POSIX glob"
-            )
         normalized.append(normalized_pattern)
     return tuple(normalized)
+
+
+def _load_identity_exclude(value: Any, where: str) -> tuple[str, ...]:
+    """Load the native-R2 ``identity_exclude`` POSIX glob list (B092)."""
+    return _load_posix_glob_list(value, where, "judge.mutation.identity_exclude")
 
 
 def _as_str_table(value: Any, where: str, field: str) -> dict[str, str]:

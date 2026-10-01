@@ -12,7 +12,9 @@ shipped loader and the closed public vocabulary.
 from __future__ import annotations
 
 import re
+import runpy
 import sys
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -111,6 +113,42 @@ def test_every_toml_example_parses_with_the_shipped_loader():
             config_model.parse_toml_string(block, str(doc))
 
 
+def test_governance_resource_examples_parse_and_document_explicit_policy():
+    consumers = REPO_ROOT / "docs" / "CONSUMERS.md"
+    config = REPO_ROOT / "docs" / "CONFIG.md"
+    governance_examples = [
+        block
+        for doc in (consumers, config)
+        for block in _toml_blocks(doc)
+        if "[app.governance]" in block
+    ]
+    assert len(governance_examples) >= 2
+    for block in governance_examples:
+        parsed = config_model.parse_toml_string(block, "governance documentation")
+        governance = parsed["app"]["governance"]
+        assert "mem_limit" in governance
+        assert "read_iops" in governance
+        assert "write_iops" in governance
+
+    for doc in (REPO_ROOT / "README.md", consumers, config):
+        content = doc.read_text(encoding="utf-8")
+        assert "mem_limit" in content
+        assert "mem_reservation" in content
+    readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    assert "does not add per-container RAM, swap, reservation, CPU, IOPS," in readme
+    assert "or bandwidth caps by default" in readme
+    design = (REPO_ROOT / "docs" / "DESIGN-GUIDE.md").read_text(encoding="utf-8")
+    assert "must not silently impose" in design
+    assert "read IOPS is unset by default" in design
+    consumer_text = consumers.read_text(encoding="utf-8")
+    assert "Memory and CPU controls are unset by default" in consumer_text
+    assert "read_iops = 0" in consumer_text
+    assert 'mem_limit = "1g"' in consumer_text
+    assert 'mem_swap_limit = "17g"' in consumer_text
+    assert 'write_iops = 400' in consumer_text
+    assert "If the measured read IOPS formula produces zero" in consumer_text
+
+
 WAVE_KEY_DOCS = [
     d
     for d in sorted((Path(__file__).resolve().parents[2] / "docs").glob("*.md"))
@@ -168,3 +206,28 @@ def test_every_cross_document_anchor_resolves():
                     f"in {path_part}"
                 )
     assert failures == []
+
+
+def test_workspace_identity_spec_keeps_export_and_authority_distinct():
+    spec = (REPO_ROOT / "docs" / "SPEC.md").read_text(encoding="utf-8")
+    assert "`ciu.env` is a legacy export, and never an internal source of facts." in spec
+    assert "Root selection and generated identity facts are" in spec
+    assert "Derived identity has one source." in spec
+    assert "a pre-set environment value always wins" not in spec
+
+
+def test_assay_lane_declares_the_complete_rigor_ladder():
+    lane = tomllib.loads((REPO_ROOT / "assay.toml").read_text(encoding="utf-8"))["lanes"]["ciu"]
+    assert lane["rigor"] == ["R0", "R1", "R2", "R3"]
+    assert lane["isolation"]["snapshot_selection"] == "repository-minus-unsafe-symlinks"
+    assert lane["judge"]["coverage"]["artifact"] == "coverage.json"
+    assert lane["judge"]["mutation"]["jobs"] == 1
+    assert lane["judge"]["mutation"]["liveness"] is True
+    helper = runpy.run_path(str(REPO_ROOT / "run-ciu-tests.py"))
+    assert lane["argv"][1:] == helper["pytest_args"]("0")
+    assert "--maxfail=1" in lane["argv"]
+    assert lane["judge"]["canary"]["mechanism"] == "import-break"
+    spec = (REPO_ROOT / "docs" / "SPEC.md").read_text(encoding="utf-8")
+    readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    assert "--maxfail=1" in spec and "liveness monitoring" in spec
+    assert "active liveness" in readme

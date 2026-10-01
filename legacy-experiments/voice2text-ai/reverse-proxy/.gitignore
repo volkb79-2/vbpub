@@ -1,0 +1,11 @@
+# Generated files
+docker-compose.yml
+compose.config.active.toml
+compose.config.local.toml
+nginx.conf
+
+# Volume directories
+vol-*/
+
+# Logs
+*.log

@@ -1,10 +1,12 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field, fields
 import json
+import os
 import re
+import tempfile
+from dataclasses import asdict, dataclass, field, fields
+from pathlib import Path
 from typing import Any, Literal
-
 
 SCHEMA_VERSION = 1
 OBSOLETE_VARIABLES = {
@@ -69,7 +71,13 @@ class Config:
     # host in the gstammtisch mold. See debian_install_v2/README.md.
     vm_swappiness: int = 50
     docker_live_restore: bool = True
-    docker_log_driver: str = "json-file"
+    # journald, not json-file: container logs must survive `docker rm`
+    # (operator requirement, 2026-09-09) -- json-file's log is deleted with
+    # the container's own directory, journald's is not. docker_log_max_size/
+    # _max_file below only apply when a driver that honors them (json-file,
+    # local) is selected instead -- see _configure_journald()'s own
+    # SystemMaxUse/MaxRetentionSec for the journald-driver retention knobs.
+    docker_log_driver: str = "journald"
     docker_log_max_size: str = "50m"
     docker_log_max_file: str = "3"
     docker_cleanup_max_age_hours: int = 240
@@ -79,6 +87,40 @@ class Config:
     telegram_chat_id: str = field(default="", repr=False)
     telegram_verbose_progress: bool = False
     credential_mode: Literal["root-storage", "systemd"] = "root-storage"
+    # A one-line `authorized_keys` entry (type + base64 + comment) for the
+    # controller's own ephemeral, per-host, per-run bootstrap key -- installed
+    # into /root/.ssh/authorized_keys as the first stage1 step (so SSH
+    # monitoring works without depending on netcup's own account-level
+    # sshKeyIds injection actually landing) and removed again as the last
+    # stage2 step once no further controller access is needed. Empty means
+    # this feature is off; the operator's own persistent key (via sshKeyIds,
+    # or however else it got there) is never touched either way.
+    controller_ssh_pubkey: str = field(default="", repr=False)
+    # Runs the kernel's own official iocost calibration tool
+    # (tools/cgroup/iocost_coef_gen.py, vendored -- not apt-packaged) against
+    # a throwaway partition carved from the same free space swap will use,
+    # deleted again before the real swap layout is written. NOT a v1-style
+    # fio sweep, and NOT targeted at the swap partitions themselves
+    # (operator correction, 2026-09-09: "we do not want to replicate the
+    # swap-specific tests we did in v1" -- this measures the underlying
+    # block device generally, the same input io.cost's own model wants).
+    # Off by default: it's destructive-by-design against its target and
+    # adds real time to every install. Persists rbps/rseqiops/rrandiops/
+    # wbps/wseqiops/wrandiops (io.cost.model's own fields) to state_dir/
+    # io-benchmark.json; nothing yet enables io.cost itself from the
+    # result -- that's a separate, later decision. See
+    # debian_install_v2/README.md and the design note this same commit adds.
+    run_io_benchmark: bool = False
+    # Per sub-test duration in seconds (iocost_coef_gen.py's own --duration;
+    # it runs 6 sub-tests, so wall-clock cost is roughly 6x this). Its own
+    # upstream default is 120 (~12 minutes total) -- operator-set default
+    # here is far shorter; 5 is enough for fast VM-harness iteration.
+    io_benchmark_duration_s: int = 30
+    # Upper bound on the throwaway benchmark partition's size; the actual
+    # size used is min(this, available free space minus the swap shape's
+    # own requirement minus a safety margin) -- never let the benchmark
+    # itself eat space the real swap layout needs.
+    io_benchmark_max_size_gb: int = 32
 
 
 _SIZE_RE = re.compile(r"^[0-9]+$")
@@ -94,7 +136,8 @@ def _reject_obsolete(data: dict[str, Any]) -> None:
         raise ConfigError(f"setting(s) are not part of minimal v2: {', '.join(unsupported)}")
 
 
-def _validate(config: Config) -> None:
+def validate_config(config: Config) -> None:
+    """Validate a Config instance with the same rules used by JSON loading."""
     if config.schema_version != SCHEMA_VERSION:
         raise ConfigError(
             f"schema_version must be {SCHEMA_VERSION}, got {config.schema_version}"
@@ -106,24 +149,28 @@ def _validate(config: Config) -> None:
     integer_names = [
         "schema_version", "swap_disk_total_gb", "swap_file_count", "swap_priority",
         "preserve_root_size_gb", "zswap_pool_percent", "vm_swappiness",
-        "docker_cleanup_max_age_hours",
+        "docker_cleanup_max_age_hours", "io_benchmark_duration_s", "io_benchmark_max_size_gb",
     ]
     for name in integer_names:
         value = getattr(config, name)
         if isinstance(value, bool) or not isinstance(value, int):
             raise ConfigError(f"{name} must be an integer")
-        string_names = [
-            "log_dir", "state_dir", "stage2_output",
-            "telegram_bot_token", "telegram_chat_id",
-            "docker_log_driver", "docker_log_max_size", "docker_log_max_file",
-            "reboot_window_time",
-        ]
+    string_names = [
+        "log_dir", "state_dir", "stage2_output",
+        "telegram_bot_token", "telegram_chat_id",
+        "docker_log_driver", "docker_log_max_size", "docker_log_max_file",
+        "reboot_window_time", "controller_ssh_pubkey",
+    ]
     for name in string_names:
         if not isinstance(getattr(config, name), str):
             raise ConfigError(f"{name} must be a string")
-    if config.zswap_compressor not in {"zstd", "lz4", "lzo-rle"}:
+    if any(char in config.controller_ssh_pubkey for char in "\r\n\x00"):
+        raise ConfigError(
+            "controller_ssh_pubkey must be one authorized_keys line without CR, LF, or NUL"
+        )
+    if not isinstance(config.zswap_compressor, str) or config.zswap_compressor not in {"zstd", "lz4", "lzo-rle"}:
         raise ConfigError("zswap_compressor must be zstd, lz4, or lzo-rle")
-    if config.zswap_zpool not in {"z3fold", "zbud", "zsmalloc"}:
+    if not isinstance(config.zswap_zpool, str) or config.zswap_zpool not in {"z3fold", "zbud", "zsmalloc"}:
         raise ConfigError("zswap_zpool must be z3fold, zbud, or zsmalloc")
     if not config.docker_log_driver:
         raise ConfigError("docker_log_driver must not be empty")
@@ -135,6 +182,8 @@ def _validate(config: Config) -> None:
         raise ConfigError("v2 install is restricted to fresh_install=true in this release")
     for name in ("log_dir", "state_dir", "stage2_output"):
         value = getattr(config, name)
+        if "\x00" in value:
+            raise ConfigError(f"{name} must not contain a NUL character")
         if not value.startswith("/") or value.endswith("/"):
             raise ConfigError(f"{name} must be an absolute path without a trailing slash")
     if not _SIZE_RE.fullmatch(str(config.swap_disk_total_gb)) or not 1 <= config.swap_disk_total_gb <= 10240:
@@ -153,13 +202,17 @@ def _validate(config: Config) -> None:
         raise ConfigError("vm_swappiness must be from 0 to 100")
     if not 1 <= config.docker_cleanup_max_age_hours <= 8760:
         raise ConfigError("docker_cleanup_max_age_hours must be from 1 to 8760")
-    if config.apt_auto_upgrade_mode not in {"full", "security-only", "notify-only"}:
+    if not 1 <= config.io_benchmark_duration_s <= 300:
+        raise ConfigError("io_benchmark_duration_s must be from 1 to 300")
+    if not 1 <= config.io_benchmark_max_size_gb <= 1024:
+        raise ConfigError("io_benchmark_max_size_gb must be from 1 to 1024")
+    if not isinstance(config.apt_auto_upgrade_mode, str) or config.apt_auto_upgrade_mode not in {"full", "security-only", "notify-only"}:
         raise ConfigError("apt_auto_upgrade_mode must be full, security-only, or notify-only")
     if not _HHMM_RE.fullmatch(config.reboot_window_time):
         raise ConfigError("reboot_window_time must be 24h HH:MM (e.g. '03:00')")
     if bool(config.telegram_bot_token) != bool(config.telegram_chat_id):
         raise ConfigError("telegram_bot_token and telegram_chat_id must be supplied together")
-    if config.credential_mode not in {"root-storage", "systemd"}:
+    if not isinstance(config.credential_mode, str) or config.credential_mode not in {"root-storage", "systemd"}:
         raise ConfigError("credential_mode must be root-storage or systemd")
     if config.credential_mode == "root-storage" and not (config.state_dir.startswith("/var/lib/") or config.state_dir == "/var/lib/vbpub/bootstrap"):
         raise ConfigError("credential_mode=root-storage requires state_dir under /var/lib")
@@ -168,8 +221,10 @@ def _validate(config: Config) -> None:
 def load_config(path: str | None = None, raw_json: str | None = None) -> Config:
     if bool(path) == bool(raw_json):
         raise ConfigError("supply exactly one of --config FILE or --config-json JSON")
+    if path is not None and "\x00" in path:
+        raise ConfigError("configuration path must not contain a NUL character")
     try:
-        data = json.loads(open(path, encoding="utf-8").read() if path else raw_json or "")
+        data = json.loads(Path(path).read_text(encoding="utf-8") if path else raw_json or "")
     except (OSError, json.JSONDecodeError) as exc:
         raise ConfigError(f"cannot read configuration as JSON: {exc}") from exc
     if not isinstance(data, dict):
@@ -180,5 +235,53 @@ def load_config(path: str | None = None, raw_json: str | None = None) -> Config:
     if unknown:
         raise ConfigError(f"unknown configuration key(s): {', '.join(unknown)}")
     config = Config(**data)
-    _validate(config)
+    validate_config(config)
     return config
+
+
+def save_config(path: str, config: Config, *, overwrite: bool = False) -> None:
+    """Atomically write a validated install configuration with mode 0600."""
+    validate_config(config)
+    if "\x00" in path:
+        raise ConfigError("configuration output path must not contain a NUL character")
+    destination = Path(path).expanduser()
+    if destination.is_symlink():
+        raise ConfigError(f"refusing to write configuration through a symlink: {destination}")
+    if destination.exists() and not destination.is_file():
+        raise ConfigError(f"configuration output is not a regular file: {destination}")
+    if destination.exists() and not overwrite:
+        raise ConfigError(f"configuration already exists: {destination}")
+    if not destination.parent.is_dir():
+        raise ConfigError(f"configuration output directory does not exist: {destination.parent}")
+
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=destination.parent,
+            prefix=f".{destination.name}.",
+            delete=False,
+        ) as handle:
+            temporary = handle.name
+            os.fchmod(handle.fileno(), 0o600)
+            handle.write(json.dumps(asdict(config), indent=2, sort_keys=True) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+
+        if overwrite:
+            os.replace(temporary, destination)
+            temporary = None
+        else:
+            # link() is an atomic no-clobber commit on the same filesystem.
+            os.link(temporary, destination)
+            os.unlink(temporary)
+            temporary = None
+    except FileExistsError as exc:
+        raise ConfigError(f"configuration appeared while writing: {destination}") from exc
+    finally:
+        if temporary is not None:
+            try:
+                os.unlink(temporary)
+            except FileNotFoundError:
+                pass

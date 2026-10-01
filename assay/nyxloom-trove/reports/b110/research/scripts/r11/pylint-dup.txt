@@ -1,0 +1,162 @@
+************* Module assay.coverage_parsers.coverage_py_json
+assay/coverage_parsers/coverage_py_json.py:1:0: R0801: Similar lines in 2 files
+==assay.adapters.python:[758:788]
+==assay.adapters.sql:[747:773]
+                continue
+            key = (
+                site.start,
+                site.end,
+                hashlib.sha256(site.replacement).hexdigest(),
+                site.operator,
+            )
+            seen += 1
+            entry = (_Worst(key), seen, site)
+            if len(heap) < limit:
+                heapq.heappush(heap, entry)
+            elif key < heap[0][0].key:
+                heapq.heapreplace(heap, entry)
+
+        retained = sorted(heap, key=lambda entry: entry[0].key)
+        return tuple(
+            MutationSite(
+                start_byte=site.start,
+                end_byte=site.end,
+                replacement=site.replacement,
+                lineno=site.lineno,
+                operator=site.operator,
+                description=site.description,
+            )
+            for _, _, site in retained
+        ) (duplicate-code)
+assay/coverage_parsers/coverage_py_json.py:1:0: R0801: Similar lines in 2 files
+==assay.canary:[963:1021]
+==assay.verify:[2743:2772]
+    )
+
+
+def judge_attempt(attempt: CanaryAttempt) -> tuple[Outcome, ReasonCode | None]:
+    """ONE target's judgement. A-109 maps it onto the two existing reason
+    codes:
+
+    * a broken control, or a transform that never genuinely ran (a
+      malformed mechanism or a no-op) — ``INCONCLUSIVE``/``CANARY_INCONCLUSIVE``
+      (nothing proven either way);
+    * the bad case unexpectedly PASSED, or it failed for a reason OTHER
+      than the configured expected one — both ``FAIL``/``CANARY_SURVIVED``
+      ("survived" means the specific intended defect was never proven
+      caught, whichever way);
+    * otherwise — a PASSING control and a transformed run that failed for
+      EXACTLY the expected reason — ``PASS``.
+
+    A ``"not_attempted"`` entry has no judgement of its own: it is
+    bookkeeping about an aggregation, and :func:`judge_canary` reads it as
+    such.
+    """
+    if attempt.control_outcome is not Outcome.PASS:
+        return Outcome.INCONCLUSIVE, ReasonCode.CANARY_INCONCLUSIVE
+    if attempt.transformed_outcome is None:
+        return Outcome.INCONCLUSIVE, ReasonCode.CANARY_INCONCLUSIVE
+    if attempt.transformed_outcome is Outcome.PASS:
+        return Outcome.FAIL, ReasonCode.CANARY_SURVIVED
+    if attempt.observed_reason_code != attempt.expected_reason_code:
+        return Outcome.FAIL, ReasonCode.CANARY_SURVIVED
+    return Outcome.PASS, None
+
+
+def judge_canary(
+    result: CanaryResult, *, aggregation: str | None = None
+) -> tuple[Outcome, ReasonCode | None]:
+    """The R3 claim's judgement over the whole ordered attempt array
+    (B007/A-432, schema v10).
+
+    With ONE declared target ``aggregation`` is absent and this is
+    :func:`judge_attempt` verbatim — the v9 behaviour, unchanged, which is
+    why every existing single-target lane keeps its exact verdict.
+
+    With several, attempts run in DECLARED order and:
+
+    * under ``"any"`` the first ``PASS`` SHORT-CIRCUITS (the question is
+      answered and each further target costs a measured ~2.76 s plus two
+      command runs); if every attempt ran without a ``PASS`` the claim is
+      ``FAIL``/``CANARY_SURVIVED``;
+    * under ``"all"`` every target is attempted even after a ``FAIL``
+      (DA-R19 affirms the deliberate 2N bound: naming EVERY surviving probe
+      is the whole reason a lane declares several), and any ``FAIL`` is
+      ``FAIL``/``CANARY_SURVIVED``.
+
+    In BOTH modes an ``INCONCLUSIVE``/``CANARY_INCONCLUSIVE`` attempt is
+    **TERMINAL, not aggregated**: the claim takes that outcome and code
+    exactly as a single-target lane does today, and every later target is
+    recorded ``not_attempted``.
+    """ (duplicate-code)
+assay/coverage_parsers/coverage_py_json.py:1:0: R0801: Similar lines in 2 files
+==assay.isolation:[1121:1133]
+==assay.runner:[1151:1160]
+    if (
+        isinstance(timeout, bool)
+        or not isinstance(timeout, (int, float))
+        or (not math.isfinite(timeout) and timeout != math.inf)
+        or timeout <= 0
+    ):
+        raise ValueError(
+            f"timeout must be a positive finite number or math.inf, got {timeout!r}"
+        ) (duplicate-code)
+assay/coverage_parsers/coverage_py_json.py:1:0: R0801: Similar lines in 2 files
+==assay.mutation_parsers.model:[89:96]
+==assay.verdict:[1622:1637]
+    path: str
+    lineno: int
+    start_byte: int
+    end_byte: int
+    replacement_sha256: str
+    operator: str
+    description: str (duplicate-code)
+assay/coverage_parsers/coverage_py_json.py:1:0: R0801: Similar lines in 2 files
+==assay.adapters.python:[479:521]
+==assay.adapters.sql:[267:282]
+class _Site(NamedTuple):
+    """One candidate mutation site, before line-eligibility filtering and
+    before it becomes a :class:`~assay.mutation.Mutant`. ``start``/``end``
+    are absolute UTF-8 BYTE offsets into the source
+    (:func:`assay.mutation.byte_offset`) bounding the EXACT bytes this site
+    replaces -- never a whole node's span, only the operator/value token
+    itself, so splicing preserves every surrounding byte untouched (O1)."""
+
+    lineno: int
+    operator: str
+    description: str
+    start: int
+    end: int
+    replacement: bytes
+
+
+def _find_token_span(
+    text_bytes: bytes, gap_start: int, gap_end: int, token: str, *, whole_word: bool
+) -> tuple[int, int]:
+    """The exact absolute byte span of *token* inside
+    ``text_bytes[gap_start:gap_end]`` (A-115's own "locate the exact
+    operator substring within that gap").
+
+    *whole_word* guards Python KEYWORD operators (``and``/``or``/``is``/
+    ``is not``) with ``\\b`` boundaries -- ``is`` must never match inside a
+    longer identifier, and ``is not``'s embedded whitespace is matched with
+    ``\\s+`` rather than a literal single space, since Python's grammar
+    tolerates any amount of whitespace (including a line break) between the
+    two keywords. Symbolic operators (``<``, ``<=``, ...) need no such
+    guard: ``ast`` has already disambiguated which one is actually present
+    at this site, so a plain literal search is unambiguous.
+
+    The AST guarantees an operator token lies entirely within the gap
+    between its two operands' own offsets -- Python's grammar allows
+    nothing else there but the operator itself and surrounding whitespace --
+    so a failed search is trusted to be unreachable for any text that
+    genuinely parsed to produce this site, rather than guarded with a
+    silently-skipping ``None`` branch: if ``pattern.search`` ever returned
+    no match here, that would mean the AST and the source text it was
+    parsed from disagree, which should crash loudly (a real bug), not
+    vanish as a quietly-dropped mutant.
+    """ (duplicate-code)
+
+------------------------------------
+Your code has been rated at 10.00/10
+

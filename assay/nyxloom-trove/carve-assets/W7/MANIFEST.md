@@ -170,3 +170,5 @@ of documents that must be ACCEPTED.
   the model half, asserted directly because no document can exhibit it: a bare
   `Mutation` now ACCEPTS a residual it cannot attribute, and the layer that
   can see both objects is what refuses an unattributed one.
+
+dstdns-sql-r2-v6-witness.json: retired by A-480; frozen at v13; no longer migrated

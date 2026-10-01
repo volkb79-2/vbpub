@@ -1,6 +1,6 @@
 """``assay`` command line entry point.
 
-Three subcommands ship so far:
+CLI entry points:
 
 * ``assay lanes`` (P01a) — list and validate the declared lanes. **It must not
   execute one.** A-054 governs its output contract: it renders **no verdict
@@ -65,9 +65,10 @@ import sys
 import tempfile
 import time
 from dataclasses import replace
+from .records import record
 from pathlib import Path
 from collections import Counter
-from typing import Any, Sequence, TextIO
+from typing import Any, Literal, Sequence, TextIO, TypedDict
 
 from . import __version__
 from . import (
@@ -96,6 +97,31 @@ from .config import (
     load_lane_file,
     parse_duration,
 )
+
+
+def cli_headline() -> str:
+    return f"ASSAY {__version__} — declared-lane judge"
+
+
+class AssayArgumentParser(argparse.ArgumentParser):
+    """Make help, usage and parse failures identify the assay build."""
+
+    def add_subparsers(self, **kwargs):
+        """Use the headline-aware parser for every nested command."""
+        kwargs.setdefault("parser_class", type(self))
+        return super().add_subparsers(**kwargs)
+
+    def format_help(self) -> str:
+        return f"{cli_headline()}\n\n{argparse.ArgumentParser.format_help(self)}"
+
+    def format_usage(self) -> str:
+        return f"{cli_headline()}\n{argparse.ArgumentParser.format_usage(self)}"
+
+    def error(self, message: str) -> None:
+        self._print_message(f"{cli_headline()}\n", sys.stderr)
+        self._print_message(argparse.ArgumentParser.format_usage(self), sys.stderr)
+        self._print_message(f"{self.prog}: error: {message}\n", sys.stderr)
+        self.exit(2)
 from .errors import AssayError, LaneConfigError, Outcome, ReasonCode
 from .output import (
     VerdictOutput,
@@ -107,7 +133,7 @@ from .verdict import Evidence, EvidenceDeclaration, Verdict
 from .vocabulary import MUTATION_OPERATORS, WITHDRAWN_MUTATION_OPERATORS
 from .verify import build_verify_parser, cmd_verify
 
-__all__ = ["build_parser", "main"]
+__all__ = ["build_parser", "main", "plan_jobs", "resolve_declared_adapters"]
 
 
 #: (B028/DA-R13, A-425) The bound on the ONE Git call assay makes *after* a
@@ -185,12 +211,13 @@ def _rejudge_outcome_help() -> str:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
+    parser = AssayArgumentParser(
         prog="assay",
         description="assay — judge a change against a project's declared lanes",
     )
     parser.add_argument("--version", action="version", version=f"assay {__version__}")
     subparsers = parser.add_subparsers(dest="command", required=True)
+    subparsers.add_parser("analyze", help="collect and inspect existing review artifacts")
 
     lanes = subparsers.add_parser(
         "lanes",
@@ -248,8 +275,29 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     run.add_argument("--resume", action="store_true")
+    run.add_argument(
+        "--allow-dirty",
+        action="store_true",
+        help=(
+            "for snapshot lanes only, admit unignored dirty paths and record "
+            "them in the v12 verdict; project isolation.dirty_ignore paths "
+            "are recorded separately. R0 lanes remain strict. This flag is "
+            "independent of run-gate's own --allow-dirty policy."
+        ),
+    )
     run.add_argument("--operators", default=None)
     run.add_argument("--shard", default=None, metavar="INDEX/COUNT")
+    run.add_argument(
+        "--reuse-from",
+        type=Path,
+        default=None,
+        metavar="VERDICT",
+        help=(
+            "reuse only current pytest kill witnesses from a verified complete "
+            "native v13 verdict; v12 starts cold, and every uncertain candidate "
+            "runs fully. Cannot be combined with --shard."
+        ),
+    )
     run.add_argument(
         "--rejudge",
         default=None,
@@ -291,7 +339,25 @@ def build_parser() -> argparse.ArgumentParser:
     )
     plan.add_argument("lane", help="the mutation lane name to inspect")
     plan.add_argument("--operators", default=None)
+    plan.add_argument(
+        "--allow-dirty",
+        action="store_true",
+        help=(
+            "apply the same snapshot dirty-tree policy as assay run; the plan "
+            "does not judge the dirty tree and reports no verdict"
+        ),
+    )
     plan.add_argument("--shard", default=None, metavar="INDEX/COUNT")
+    plan.add_argument(
+        "--reuse-from",
+        type=Path,
+        default=None,
+        metavar="VERDICT",
+        help=(
+            "classify planned candidates against a bounded, verified prior "
+            "verdict without executing the lane"
+        ),
+    )
     _add_request_base_argument(plan)
     plan.add_argument(
         "--file",
@@ -387,6 +453,13 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _run_analyze(argv: list[str], stdout: TextIO, stderr: TextIO) -> int:
+    """(A-478) The only place the judge names assay_analysis; imported only for `analyze`."""
+    from assay_analysis.cli import main as analyze_main
+
+    return analyze_main(argv, stdout=stdout, stderr=stderr)
+
+
 def main(
     argv: Sequence[str] | None = None,
     *,
@@ -399,6 +472,10 @@ def main(
     out = sys.stdout if stdout is None else stdout
     err = sys.stderr if stderr is None else stderr
     raw = list(sys.argv[1:] if argv is None else argv)
+    # Analysis owns its record-command separator. Lane argv appending belongs
+    # to the existing lane commands and must not consume the recorded command.
+    if raw[:1] == ["analyze"]:
+        return _run_analyze(raw[1:], out, err)
     cli_argv, appended = _split_appended_argv(raw)
     args = build_parser().parse_args(cli_argv)
     try:
@@ -411,10 +488,10 @@ def main(
         elif args.command == "run":
             return _cmd_run(args, appended, out, err)
         elif args.command == "plan":
-            return _cmd_plan(args, out)
+            return _cmd_plan(args, out, err)
         elif args.command == "verify":
             return cmd_verify(args.path, stdin=inp, stderr=err)
-        else:  # pragma: no cover - argparse rejects unknown subcommands first
+        else:
             raise AssertionError(f"unhandled command {args.command!r}")
     except AssayError as exc:
         # (B053/A-409) The same one emitter every internal conversion site
@@ -493,7 +570,7 @@ def _built_in_registry() -> registry.Registry:
     real statement positions or cleanly refused, and there is no third state
     in which it is silently wrong. This devcontainer and the registered
     gate's own image (``tester-unified``) both have no Go and both take the
-    refusal -- see ``tests/qualification/`` for where the real-toolchain
+    refusal -- see ``gate/tests/qualification/`` for where the real-toolchain
     proof lives instead (DESIGN-GUIDE §10's pattern).
 
     **R2 and R3 stay unregistered for Go**, which the Wave C prompt's own
@@ -502,7 +579,7 @@ def _built_in_registry() -> registry.Registry:
     unconditionally ``"UNSUPPORTED"``, so an R2 entry would advertise a
     producer path that does not exist -- the failure this docstring's first
     paragraph is about. Both refusals are asserted as controls in
-    ``tests/test_cli_run.py``
+    ``tests/core/test_cli_run.py``
     (``test_run_refuses_go_at_r2_the_language_is_registered_r1_only`` and its
     R3 sibling), alongside the R1 test that now inverts.
 
@@ -650,6 +727,10 @@ def _resolve_declared_adapters(lane: Lane) -> LanguageAdapter | None:
         if level in lane.rigor:
             return registry.get_adapter(built_in, lane.judge.language, level)
     return None
+
+
+# CD18: public for assay_analysis.
+resolve_declared_adapters = _resolve_declared_adapters
 
 
 def _cmd_run(
@@ -872,8 +953,7 @@ def _containments(target: Path, project_root: Path) -> "list[tuple[Path, Path]]"
                 relative = candidate.relative_to(root)
             except ValueError:
                 continue
-            if (root, relative) not in found:
-                found.append((root, relative))
+            found.append((root, relative))
     return found
 
 
@@ -971,7 +1051,7 @@ def _refuse_a_destination_reached_through_a_symlink(
             continue
         try:
             points_to = os.readlink(walked)
-        except OSError:  # pragma: no cover - raced away between the two calls
+        except OSError:
             points_to = "<unreadable>"
         real = _resolve_through_existing_prefix(walked)
         raise LaneConfigError(
@@ -1165,6 +1245,21 @@ def _run_reserved(
             }
         )
 
+    def _deliver_verdict(verdict: Verdict) -> int:
+        """(B129) Write the artifact (when one was asked for), close the
+        stream, print the summary, and return the exit code. Nested, because
+        it closes over `destination`, `args`, `out` and `_emit_verdict_written`.
+        """
+        if destination is not None:
+            # Exactly once, and the summary is printed only after it succeeded:
+            # a run that could not deliver the artifact it was asked for must not
+            # also print a line that reads like a completed run (A-181).
+            runner.write_verdict(verdict, destination)
+        _emit_verdict_written(verdict)
+        if args.verdict_json != "-":
+            _print_run_summary(verdict, out)
+        return verdict.exit_code
+
     try:
         commit = git.head_rev(lane_file.project_root, remaining=deadline.remaining)
     except AssayError as exc:
@@ -1248,12 +1343,7 @@ def _run_reserved(
             declared_evidence=declared_evidence,
         )
         _emit_run_header(commit)
-        if destination is not None:
-            runner.write_verdict(verdict, destination)
-        _emit_verdict_written(verdict)
-        if args.verdict_json != "-":
-            _print_run_summary(verdict, out)
-        return verdict.exit_code
+        return _deliver_verdict(verdict)
 
     # (B064) The commit label exists from here on, so the stream gets its
     # header before any further work -- attestation, adapter resolution and
@@ -1336,12 +1426,7 @@ def _run_reserved(
                 evidence=_timed_out_evidence(declared_evidence, exc),
                 declared_evidence=declared_evidence,
             )
-            if destination is not None:
-                runner.write_verdict(verdict, destination)
-            _emit_verdict_written(verdict)
-            if args.verdict_json != "-":
-                _print_run_summary(verdict, out)
-            return verdict.exit_code
+            return _deliver_verdict(verdict)
         else:
             # Merge back into the lane's own declared order -- see the
             # comment above this block for why concatenation alone is not
@@ -1440,11 +1525,15 @@ def _run_reserved(
                 progress_stream=progress_stream,
                 progress_heartbeat_seconds=progress_heartbeat_seconds,
                 state_dir=state_dir,
+                reuse_from=getattr(args, "reuse_from", None),
                 # B019/A-328: the gate request's own comparison base, threaded
                 # verbatim. `run_lane` decides whether this lane delegated to
                 # it, and refuses every disagreement -- the CLI does not
                 # adjudicate.
                 request_base=getattr(args, "request_base", None),
+                snapshot_limits=lane_file.snapshot_limits,
+                allow_dirty=getattr(args, "allow_dirty", False),
+                dirty_ignore=lane_file.dirty_ignore,
                 # B032/A-322: where the `environment_command` probe's refusal
                 # message goes. `run_lane` returns a Verdict and carries no
                 # free-text field for a cause (A-138/A-170), so B010's "refuse
@@ -1469,15 +1558,7 @@ def _run_reserved(
                 evidence=evidence,
                 declared_evidence=declared_evidence,
             )
-    if destination is not None:
-        # Exactly once, and the summary is printed only after it succeeded:
-        # a run that could not deliver the artifact it was asked for must not
-        # also print a line that reads like a completed run (A-181).
-        runner.write_verdict(verdict, destination)
-    _emit_verdict_written(verdict)
-    if args.verdict_json != "-":
-        _print_run_summary(verdict, out)
-    return verdict.exit_code
+    return _deliver_verdict(verdict)
 
 
 def _print_run_summary(verdict: Verdict, out: TextIO) -> None:
@@ -1495,7 +1576,233 @@ def _plan_candidate_id(job: mutation.MutantJob) -> str:
     return mutation.candidate_id(job)
 
 
-def _cmd_plan(args: argparse.Namespace, out: TextIO) -> int:
+PLAN_ESTIMATE_HINT = (
+    "assay plan: estimated_serial_seconds and estimated_wall_seconds come from the "
+    "declared budget_per_candidate (a 60 s placeholder when it is omitted, auto or "
+    "none), not a measurement; for a measured projection run: assay analyze "
+    "plan-estimate --plan-json PLAN --progress PROGRESS [--workers N]"
+)
+
+
+@record
+class _PlanDiscovery:
+    commit: str
+    tree: str
+    jobs: Any  # the FULL pre-shard tuple, or mutation.UNSUPPORTED unchanged
+    worktree_integrity: Any
+    reuse_command_plan: Any
+    reuse_command_cwd: Path | None
+
+
+def _discover_plan_jobs(
+    lane_file: LaneFile,
+    lane: Lane,
+    *,
+    adapter: LanguageAdapter,
+    base_declaration: str | None,
+    operators: tuple[str, ...],
+    allow_dirty: bool,
+    resolve_reuse_command: bool,
+) -> _PlanDiscovery:
+    """Single planner-jobs extraction (C29); P6 reuses it."""
+    deadline = runner.LaneDeadline.start(
+        budget_seconds=lane.budget_seconds, monotonic=time.monotonic
+    )
+    commit = git.head_rev(lane_file.project_root, remaining=deadline.remaining)
+    tree = git.run(
+        lane_file.project_root,
+        "rev-parse",
+        f"{commit}^{{tree}}",
+        remaining=deadline.remaining,
+    ).strip()
+    repo_top = git.repo_top(lane_file.project_root, remaining=deadline.remaining)
+    worktree_integrity = runner._resolve_snapshot_worktree_integrity(
+        repo=lane_file.project_root,
+        repo_top=repo_top,
+        project_root=lane_file.project_root,
+        dirty_ignore=lane_file.dirty_ignore,
+        allow_dirty=allow_dirty,
+        remaining=deadline.remaining,
+    )
+    project_prefix = runner._resolved_project_prefix(repo_top, lane_file.project_root)
+    reuse_command_plan = None
+    reuse_command_cwd = None
+    if resolve_reuse_command:
+        try:
+            reuse_command_plan = runner.resolve_command_plan(
+                lane,
+                passthrough_source=os.environ,
+                project_prefix=project_prefix,
+            )
+            reuse_command_cwd = runner.resolve_run_cwd(
+                lane_file.project_root,
+                reuse_command_plan,
+            )
+        except AssayError:
+            # A plan is only a preview. If the effective command environment
+            # cannot be resolved here, do not promise a witness replay.
+            reuse_command_plan = None
+            reuse_command_cwd = None
+    snapshot_policy = runner._snapshot_policy_for_lane(lane)
+    assert snapshot_policy is not None
+    resolved_base = runner._resolve_declared_base(
+        lane_file.project_root,
+        base_declaration,
+        remaining=deadline.remaining,
+    )
+
+    with tempfile.TemporaryDirectory(prefix="assay-plan-seed-") as raw_seed:
+        seed_root = Path(raw_seed).resolve()
+        spec = isolation.SnapshotSpec(
+            repo_top=repo_top,
+            commit=commit,
+            project_prefix=project_prefix,
+            scratch_root=seed_root,
+            snapshot_policy=snapshot_policy,
+            resolved_base=resolved_base,
+            limits=lane_file.snapshot_limits,
+        )
+        with isolation.prepare_snapshot(spec, timeout=deadline.remaining()) as prepared:
+            # B030/A-319: source roots are NOT relocated here, on purpose.
+            # `_relocate_source_roots` respells `judge.source_root_paths`
+            # against a MATERIALIZED snapshot's own project root, and the two
+            # target resolvers below are handed
+            # `snapshot_repo_top=prepared.spec.repo_top` -- the CONSUMER's
+            # real repository top, since `plan` reads blobs out of the
+            # prepared seed (`_read_prepared_source_text`) and never
+            # materializes a snapshot at all. Relocating against a directory
+            # that does not exist made
+            # `resolve_mutation_targets`'s unconditional
+            # `is_relative_to(root)` containment gate unsatisfiable, so every
+            # lane planned as `candidate_count: 0`; a `whole_target` lane
+            # failed outright naming the phantom path. The roots the gate
+            # must be compared against here are the ones the lane actually
+            # declares.
+            source_root_paths = lane.judge.source_root_paths
+            # B019/A-328: the identical declaration `run` resolves, through
+            # the identical helper -- `plan` predicts a run, so a plan scoped
+            # against a different base than the run it predicts would be
+            # worse than emitting none.
+            if lane.judge.mode == "whole_target":
+                targets = runner._mutation_targets_whole(
+                    prepared=prepared,
+                    snapshot_repo_top=prepared.spec.repo_top,
+                    project_prefix=project_prefix,
+                    deadline=deadline,
+                    adapter=adapter,
+                    source_root_paths=source_root_paths,
+                    targets=lane.judge.targets or (),
+                )
+            else:
+                # B101 P1: the same carried-OID guard `run`'s R2 diff uses,
+                # so the plan predicts the run exactly. This runs against
+                # the consumer's repository (plan never materializes a
+                # snapshot), where re-resolving would give the same OID;
+                # consuming it keeps "resolved once" true here as well.
+                checked = measurability.check_resolved_base_is_head(
+                    prepared.spec.repo_top,
+                    resolved_base,
+                    remaining=deadline.remaining,
+                )
+                diff_text = git.run(
+                    prepared.spec.repo_top,
+                    "diff",
+                    "--unified=0",
+                    checked.base_rev,
+                    checked.head_rev,
+                    remaining=deadline.remaining,
+                )
+                added = diff.parse_added_lines(diff_text)
+                targets = runner._mutation_targets_from_diff(
+                    added,
+                    prepared=prepared,
+                    deadline=deadline,
+                    adapter=adapter,
+                    snapshot_repo_top=prepared.spec.repo_top,
+                    source_root_paths=source_root_paths,
+                )
+            jobs = mutation.collect_mutation_sites(
+                targets,
+                adapter=adapter,
+                operators=operators,
+                limit=lane.judge.mutation.max_mutants + 1,
+            )
+    return _PlanDiscovery(
+        commit=commit,
+        tree=tree,
+        jobs=jobs,
+        worktree_integrity=worktree_integrity,
+        reuse_command_plan=reuse_command_plan,
+        reuse_command_cwd=reuse_command_cwd,
+    )
+
+
+class PlanRow(TypedDict):
+    id: str
+    path: str
+    operator: str
+    start_byte: int
+    end_byte: int
+    lineno: int
+    description: str
+    source_sha256: str
+    mutated_file_sha256: str
+
+
+def _plan_rows_from_jobs(jobs: Any) -> list[dict[str, Any]]:
+    """One row per job: today's 7 keys plus the two candidate-identity digests."""
+    rows: list[dict[str, Any]] = []
+    for job in jobs:
+        identity = mutation.candidate_identity_fields(job)
+        rows.append(
+            {
+                "id": _plan_candidate_id(job),
+                "path": job.path,
+                "operator": job.site.operator,
+                "start_byte": job.site.start_byte,
+                "end_byte": job.site.end_byte,
+                "lineno": job.site.lineno,
+                "description": job.site.description,
+                "source_sha256": identity["source_sha256"],
+                "mutated_file_sha256": identity["mutated_file_sha256"],
+            }
+        )
+    return rows
+
+
+def plan_jobs(
+    lane_file: LaneFile,
+    lane: Lane,
+    *,
+    request_base: str | None = None,
+    allow_dirty: bool = False,
+) -> list[PlanRow] | Literal["UNSUPPORTED"]:
+    """The full, unsharded plan rows of an R2 mutation lane, or ``"UNSUPPORTED"``.
+
+    The one public planner entry the analysis package uses (C13); it refuses
+    exactly as ``assay plan`` does.
+    """
+    if lane.judge is None or lane.judge.mutation is None or "R2" not in lane.rigor:
+        raise LaneConfigError(f"lane {lane.name!r} does not declare an R2 mutation judge")
+    adapter = _resolve_declared_adapters(lane)
+    if adapter is None:
+        raise LaneConfigError(f"lane {lane.name!r} resolves no mutation adapter")
+    base_declaration = runner.resolve_base_declaration(lane, request_base)
+    discovered = _discover_plan_jobs(
+        lane_file,
+        lane,
+        adapter=adapter,
+        base_declaration=base_declaration,
+        operators=lane.judge.mutation.operators,
+        allow_dirty=allow_dirty,
+        resolve_reuse_command=False,
+    )
+    if discovered.jobs == mutation.UNSUPPORTED:
+        return mutation.UNSUPPORTED
+    return _plan_rows_from_jobs(discovered.jobs)
+
+
+def _cmd_plan(args: argparse.Namespace, out: TextIO, err: TextIO | None = None) -> int:
     """Report a mutation lane's plan without executing it.
 
     ``--operators`` and ``--shard`` are planning-only selections. They do not
@@ -1506,6 +1813,18 @@ def _cmd_plan(args: argparse.Namespace, out: TextIO) -> int:
     lane = lane_file.lane(args.lane)
     if lane.judge is None or lane.judge.mutation is None or "R2" not in lane.rigor:
         raise LaneConfigError(f"lane {lane.name!r} does not declare an R2 mutation judge")
+    reuse_source = None
+    if args.reuse_from is not None:
+        if args.shard is not None:
+            raise LaneConfigError(
+                "--reuse-from cannot be combined with --shard; selective reuse "
+                "produces only a complete unsharded campaign"
+            )
+        if lane.judge.mutation.format is not None:
+            raise LaneConfigError("--reuse-from requires a native R2 mutation lane")
+        from .reuse import load_reuse_source
+
+        reuse_source = load_reuse_source(args.reuse_from)
     adapter = _resolve_declared_adapters(lane)
     if adapter is None:
         raise LaneConfigError(f"lane {lane.name!r} resolves no mutation adapter")
@@ -1560,94 +1879,29 @@ def _cmd_plan(args: argparse.Namespace, out: TextIO) -> int:
         except ValueError as exc:
             raise LaneConfigError(f"--shard {args.shard!r}: {exc}") from exc
 
-    deadline = runner.LaneDeadline.start(
-        budget_seconds=lane.budget_seconds, monotonic=time.monotonic
+    discovered = _discover_plan_jobs(
+        lane_file,
+        lane,
+        adapter=adapter,
+        base_declaration=base_declaration,
+        operators=operators,
+        allow_dirty=getattr(args, "allow_dirty", False),
+        resolve_reuse_command=reuse_source is not None,
     )
-    commit = git.head_rev(lane_file.project_root, remaining=deadline.remaining)
-    repo_top = git.repo_top(lane_file.project_root, remaining=deadline.remaining)
-    project_prefix = runner._resolved_project_prefix(repo_top, lane_file.project_root)
-    snapshot_policy = runner._snapshot_policy_for_lane(lane)
-    assert snapshot_policy is not None
-
-    with tempfile.TemporaryDirectory(prefix="assay-plan-seed-") as raw_seed:
-        seed_root = Path(raw_seed).resolve()
-        spec = isolation.SnapshotSpec(
-            repo_top=repo_top,
-            commit=commit,
-            project_prefix=project_prefix,
-            scratch_root=seed_root,
-            snapshot_policy=snapshot_policy,
-        )
-        with isolation.prepare_snapshot(spec, timeout=deadline.remaining()) as prepared:
-            # B030/A-319: source roots are NOT relocated here, on purpose.
-            # `_relocate_source_roots` respells `judge.source_root_paths`
-            # against a MATERIALIZED snapshot's own project root, and the two
-            # target resolvers below are handed
-            # `snapshot_repo_top=prepared.spec.repo_top` -- the CONSUMER's
-            # real repository top, since `plan` reads blobs out of the
-            # prepared seed (`_read_prepared_source_text`) and never
-            # materializes a snapshot at all. Relocating against a directory
-            # that does not exist made
-            # `resolve_mutation_targets`'s unconditional
-            # `is_relative_to(root)` containment gate unsatisfiable, so every
-            # lane planned as `candidate_count: 0`; a `whole_target` lane
-            # failed outright naming the phantom path. The roots the gate
-            # must be compared against here are the ones the lane actually
-            # declares.
-            source_root_paths = lane.judge.source_root_paths
-            # B019/A-328: the identical declaration `run` resolves, through
-            # the identical helper -- `plan` predicts a run, so a plan scoped
-            # against a different base than the run it predicts would be
-            # worse than emitting none.
-            resolved_base = runner._resolve_declared_base(
-                lane_file.project_root,
-                base_declaration,
-                remaining=deadline.remaining,
-            )
-            if lane.judge.mode == "whole_target":
-                targets = runner._mutation_targets_whole(
-                    prepared=prepared,
-                    snapshot_repo_top=prepared.spec.repo_top,
-                    project_prefix=project_prefix,
-                    deadline=deadline,
-                    adapter=adapter,
-                    source_root_paths=source_root_paths,
-                    targets=lane.judge.targets or (),
-                )
-            else:
-                checked = measurability.check_base_is_head(
-                    prepared.spec.repo_top,
-                    resolved_base,
-                    remaining=deadline.remaining,
-                )
-                diff_text = git.run(
-                    prepared.spec.repo_top,
-                    "diff",
-                    "--unified=0",
-                    checked.base_rev,
-                    checked.head_rev,
-                    remaining=deadline.remaining,
-                )
-                added = diff.parse_added_lines(diff_text)
-                targets = runner._mutation_targets_from_diff(
-                    added,
-                    prepared=prepared,
-                    deadline=deadline,
-                    adapter=adapter,
-                    snapshot_repo_top=prepared.spec.repo_top,
-                    source_root_paths=source_root_paths,
-                )
-            jobs = mutation.collect_mutation_sites(
-                targets,
-                adapter=adapter,
-                operators=operators,
-                limit=lane.judge.mutation.max_mutants + 1,
-            )
+    commit = discovered.commit
+    tree = discovered.tree
+    jobs = discovered.jobs
+    worktree_integrity = discovered.worktree_integrity
+    reuse_command_plan = discovered.reuse_command_plan
+    reuse_command_cwd = discovered.reuse_command_cwd
 
     if jobs == mutation.UNSUPPORTED:
         payload: dict[str, Any] = {
             "status": "unsupported",
             "reason_code": "MUTATION_UNSUPPORTED",
+            "worktree_integrity": (
+                None if worktree_integrity is None else worktree_integrity.to_dict()
+            ),
         }
     else:
         selected_indices = mutation.select_mutation_shard(
@@ -1680,8 +1934,37 @@ def _cmd_plan(args: argparse.Namespace, out: TextIO) -> int:
             per_candidate_seconds = parse_duration(per_candidate)
         serial_estimate = len(jobs) * per_candidate_seconds
         wall_estimate = serial_estimate / max(1, lane.judge.mutation.jobs)
+        candidate_rows = _plan_rows_from_jobs(jobs)
+        sequential_pytest_supported = False
+        if reuse_source is not None:
+            from .mutation_witness import supports_sequential_pytest
+            from .reuse import classify_candidate
+
+            sequential_pytest_supported = (
+                worktree_integrity is None
+                and reuse_command_plan is not None
+                and reuse_command_cwd is not None
+                and supports_sequential_pytest(
+                    reuse_command_plan.argv_effective,
+                    cwd=reuse_command_cwd,
+                    env=reuse_command_plan.env_effective,
+                )
+            )
+        if reuse_source is not None:
+            for row in candidate_rows:
+                classification, detail = classify_candidate(
+                    reuse_source,
+                    row["id"],
+                    sequential_pytest_supported=sequential_pytest_supported,
+                )
+                row["reuse"] = {
+                    "classification": classification,
+                    "detail": detail,
+                }
         payload = {
             "status": "ok",
+            "commit": commit,
+            "tree": tree,
             "candidate_count": len(jobs),
             "max_mutants": lane.judge.mutation.max_mutants,
             "jobs": lane.judge.mutation.jobs,
@@ -1691,20 +1974,43 @@ def _cmd_plan(args: argparse.Namespace, out: TextIO) -> int:
             "estimated_wall_seconds": round(wall_estimate, 3),
             "by_operator": dict(sorted(by_operator.items())),
             "by_file": dict(sorted(by_file.items())),
-            "candidates": [
-                {
-                    "id": _plan_candidate_id(job),
-                    "path": job.path,
-                    "operator": job.site.operator,
-                    "start_byte": job.site.start_byte,
-                    "end_byte": job.site.end_byte,
-                    "lineno": job.site.lineno,
-                    "description": job.site.description,
-                }
-                for job in jobs
-            ],
+            "candidates": candidate_rows,
+            "worktree_integrity": (
+                None if worktree_integrity is None else worktree_integrity.to_dict()
+            ),
         }
+        if reuse_source is not None:
+            from .reuse import prior_only_candidates, classify_candidate
+
+            labels = [
+                classify_candidate(
+                    reuse_source,
+                    candidate["id"],
+                    sequential_pytest_supported=sequential_pytest_supported,
+                )[0]
+                for candidate in candidate_rows
+            ]
+            payload["reuse_from"] = {
+                "path": str(reuse_source.path),
+                "schema_version": reuse_source.schema_version,
+                "verdict_sha256": reuse_source.sha256,
+                "cold_start": reuse_source.cold_start,
+                "complete_unsharded_native": reuse_source.complete_unsharded_native,
+                "sequential_pytest_supported": sequential_pytest_supported,
+                "prior_candidate_count": len(reuse_source.candidate_ids),
+                "prior_only_candidates": prior_only_candidates(
+                    reuse_source,
+                    [_plan_candidate_id(job) for job in jobs],
+                ),
+                "classification_counts": dict(
+                    sorted(
+                        Counter(labels).items()
+                    )
+                ),
+            }
     print(json.dumps(payload, indent=2, sort_keys=True), file=out)
+    if payload["status"] == "ok" and err is not None:
+        print(PLAN_ESTIMATE_HINT, file=err)
     return 0
 
 
@@ -1879,5 +2185,5 @@ def _lane_inventory_entry(lane: Lane, built_in: registry.Registry) -> dict[str, 
     }
 
 
-if __name__ == "__main__":  # pragma: no cover - exercised as a subprocess
+if __name__ == "__main__":
     sys.exit(main())

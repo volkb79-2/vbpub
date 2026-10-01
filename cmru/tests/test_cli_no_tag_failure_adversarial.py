@@ -12,6 +12,7 @@ def test_sequential_tagged_release_fails_closed_when_no_tag_reaches_head(monkeyp
     monkeypatch.setattr(cli, "_run_release_gates", lambda *args: None)
     monkeypatch.setattr(transaction, "promote_workspace", lambda *args: None)
     monkeypatch.setattr(transaction, "push_backup_branch", lambda *args: None)
+    monkeypatch.setattr(cli, "_git", lambda *args, **kwargs: "a" * 40)
     monkeypatch.setattr(version, "release_cmd", lambda *args, **kwargs: None)
     monkeypatch.setattr(cli, "_tag_on_head", lambda *args: None)
     monkeypatch.setattr(cli, "_run_project_steps", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("build/publish")))

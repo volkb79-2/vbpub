@@ -1,7 +1,7 @@
 # nyxloom deadman -- the HOST-SIDE invoker for CR-16's liveness check.
 #
 # WHY THIS EXISTS AT ALL. CR-16 gave nyxloom a durable heartbeat and a reader
-# that needs no live daemon: `nyxloom doctor --liveness` opens the store
+# that needs no live daemon: `nyxloomctl doctor --liveness` opens the store
 # directly and reports how long it has been since any project completed a
 # reconcile pass. That mechanism was verified against the real production
 # stores with the daemon stopped.
@@ -42,7 +42,7 @@ Environment=NYXLOOM_STATE=%h/.local/state/nyxloom
 # CR-16's review specifically fixed the container healthcheck discarding it,
 # and repeating that mistake here would leave an operator with a failed unit
 # and no cause attached.
-ExecStart=/usr/local/bin/nyxloom doctor --liveness
+ExecStart=/usr/local/bin/nyxloomctl doctor --liveness
 
 # Bound the run. CR-16 measured 0.36-0.39s against copies of all five real
 # production stores after the heartbeat became a gauge; 60s is slack for a

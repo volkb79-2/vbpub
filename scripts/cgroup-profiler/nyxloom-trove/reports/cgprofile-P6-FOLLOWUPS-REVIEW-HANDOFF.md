@@ -130,9 +130,10 @@ The singleton `cgprofile-host-daemon` is the controller's (it may be up from
 `main` at 1.0.0 or down) — never start, stop or `ciu down` it. Build
 `cgprofile:local` from the tip (`python3 build-push.py --build`, once, under
 PSI) and run YOUR OWN instance `cgprofile-p6-review-probe` with the compose
-template's flags (privileged, `--pid=host`, `--cgroupns=host`, `--network
-none`, `--cgroup-parent cgprofile.slice`, `-v /tmp/cgprofile-p6-review:/run/
-cgprofile`), removed in a `finally`:
+template's flags (privileged, private PID/cgroup namespaces, `--network none`,
+`--cgroup-parent cgprofile.slice`, read-only host `/proc` at `/hostproc`,
+read-only host cgroup v2 at `/sys/fs/cgroup`, `CGPROFILE_PROC_ROOT=/hostproc`,
+`-v /tmp/cgprofile-p6-review:/run/cgprofile`), removed in a `finally`:
 - every verb over BOTH carriers from a throwaway `cmru-enroll-fixture:local`
   container that mounts the same scratch dir (`--group-add <dir gid>`) —
   diff the JSON; `peer-refused` with an allowlist that excludes your uid;
@@ -162,6 +163,6 @@ SERIAL only, `nice -n 19 ionice -c 3`; targeted files while iterating, the
 whole suite at most once. ≤ 2 gate containers estate-wide (`docker ps` for
 `run-gate-`/`tester-unified`/`cgprofile-` first; other packages' mutation
 runs may be live); one image build, under PSI; `docker update --cpus=3`
-after any launch; remove in a `finally`. Only your daemon probe may use
-`--pid=host --cgroupns=host`. Never touch `run-gate-project/run-gate.py`,
+after any launch; remove in a `finally`. No container may use host
+PID/cgroup/network namespace modes. Never touch `run-gate-project/run-gate.py`,
 `ciu/src/`, `/workspaces/dstdns`, other worktrees.

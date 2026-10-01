@@ -1,6 +1,6 @@
 """Resolver — pick highest-semver release for a project prefix (S5).
 
-CLI: cmru resolve --project <name> [--format json|env|url]
+CLI: cmru resolve [all|project[,project...]] [--format json|env|url]
 
 The resolver is differentiator #2: monorepo-safe per-project "latest",
 replacing GitHub's single repo-global "Latest" badge.
@@ -13,6 +13,15 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from cmru.config_names import ORCHESTRATION_CONFIG_FILENAME, PROJECT_CONFIG_FILENAME
+from cli_extended import (
+    ArgumentSpec,
+    CliFailure,
+    CliRegistry,
+    OptionSpec,
+    VerbGroup,
+    VerbSpec,
+)
+from cmru.cli_support import cmru_identity, cmru_presentation_options
 
 
 def resolve_via_latest_json(
@@ -83,31 +92,78 @@ def format_result(result: Dict[str, Any], fmt: str) -> str:
     return json.dumps(result, indent=2)
 
 
-def resolve_main(argv: Optional[list] = None) -> None:
-    """Entry point for ``cmru resolve``.
+def resolve_cli():
+    """Build the registered grammar for ``cmru resolve``.
 
     The selected CMRU configuration supplies the project prefix plus GitHub identity.
     Tokens retain S2.4's explicit secret-source precedence; owner/repo are not
     guessed from an incomplete environment.
     """
-    import argparse
-    parser = argparse.ArgumentParser(description="Resolve latest release for a project (S5)")
-    parser.add_argument("--project", help="Project name (maps to prefix via config)")
-    parser.add_argument("--prefix", help="Tag prefix override (e.g. ciu-v, tls-edge-v)")
-    parser.add_argument("--format", choices=["json", "env", "url"], default="json")
-    parser.add_argument(
-        "--config", help=f"Path to {PROJECT_CONFIG_FILENAME} or {ORCHESTRATION_CONFIG_FILENAME}"
+    registry = CliRegistry(
+        cmru_identity(command="cmru", long_name="Configurable Multi Release Utility"),
+        prog="cmru resolve",
+        description="Resolve the latest published release for configured projects.",
+        single_command=True,
+        no_args_action=True,
+        logging_logger="cmru",
+        global_options=cmru_presentation_options(),
     )
-    args = parser.parse_args(argv)
+    registry.register(VerbSpec(
+        "resolve",
+        description="Resolve release version, tag, asset URL and digest.",
+        group=VerbGroup.EXPLORATION.value,
+        arguments=(ArgumentSpec(
+            "target", "project target; omitted uses the current project or estate default",
+            metavar="[all|PROJECT[,PROJECT...]]",
+            parser_kwargs={"nargs": "?", "default": None},
+        ),),
+        options=(
+            OptionSpec(
+                ("--format",), "result format", metavar="FORMAT",
+                parser_kwargs={"choices": ("json", "env", "url"), "default": "json"},
+            ),
+            OptionSpec(
+                ("--config",),
+                f"path to {PROJECT_CONFIG_FILENAME} or {ORCHESTRATION_CONFIG_FILENAME}",
+                metavar="FILE", parser_kwargs={"default": None},
+            ),
+        ),
+        include_json=False,
+        include_progress=False,
+        handler=_run_resolve,
+    ))
+    return registry.build()
 
-    if not args.project and not args.prefix:
-        parser.error("one of --project or --prefix is required")
+
+def _run_resolve(args, _runtime) -> int | None:
+    """Perform one fully parsed resolve invocation."""
+    from cmru.cli_support import TargetSelectionError, select_target_names
 
     from cmru.cli import load_config, _resolve_config
     cfg_path = _resolve_config(args.config)
     result_tuple = load_config(cfg_path)
     configs = result_tuple[1]
+    project_order = result_tuple[2]
     github_cfg = result_tuple[8]
+    from cmru.config import resolve_invocation_context
+    if args.target is None and cfg_path is not None and cfg_path.name == PROJECT_CONFIG_FILENAME and len(configs) == 1:
+        context_project = next(iter(configs))
+        estate_scope = False
+    elif args.target is None:
+        context = resolve_invocation_context(cfg_path)
+        context_project = context.project_name
+        estate_scope = context.scope == "estate"
+    else:
+        context_project = None
+        estate_scope = False
+    try:
+        names = select_target_names(
+            args.target, configs, project_order,
+            context_project=context_project,
+            estate_scope=estate_scope,
+        )
+    except TargetSelectionError as exc:
+        raise CliFailure(str(exc), exit_code=2, show_help=True) from exc
 
     # Owner/repo are source facts in the strict config. ``load_config`` has
     # already resolved the one S2.4 credential contract, including a selected
@@ -116,31 +172,46 @@ def resolve_main(argv: Optional[list] = None) -> None:
     owner = github_cfg.owner
     repo = github_cfg.repo
 
-    proj = configs.get(args.project) if args.project else None
-    if args.project and proj is None:
-        parser.error(f"unknown project: {args.project}")
-
-    prefix = args.prefix
-    project_token = proj.github_token if proj is not None else ""
-    if not prefix:
-        assert proj is not None  # enforced by the one-of --project/--prefix check above
-        prefix = proj.prefix
-    token = project_token or github_cfg.token
-
     if not owner or not repo:
-        print("[ERROR] GitHub owner/repo unknown in the selected CMRU config", file=sys.stderr)
-        sys.exit(2)
+        raise CliFailure(
+            "GitHub owner/repo unknown in the selected CMRU config",
+            exit_code=2,
+            show_help=True,
+        )
 
     from cmru.hosts.github import GitHubReleaseHost
-
-    host = GitHubReleaseHost(owner=owner, repo=repo, token=token)
 
     # Build the Releases base URL so resolve() can try the fast latest.json path
     # (single request) before falling back to scanning the releases list (S5.3/S5.4).
     gh_releases_url = f"https://github.com/{owner}/{repo}/releases"
 
-    result = resolve(host, prefix, gh_releases_url=gh_releases_url)
-    if not result:
-        print(f"[ERROR] No releases found for prefix '{prefix}'", file=sys.stderr)
-        sys.exit(1)
-    print(format_result(result, args.format))
+    results = {}
+    for name in names:
+        proj = configs[name]
+        token = proj.github_token or github_cfg.token
+        host = GitHubReleaseHost(owner=owner, repo=repo, token=token)
+        result = resolve(host, proj.prefix, gh_releases_url=gh_releases_url)
+        if not result:
+            print(f"[ERROR] No releases found for project {name!r} (prefix {proj.prefix!r})", file=sys.stderr)
+            return 1
+        results[name] = result
+    if len(results) == 1:
+        print(format_result(next(iter(results.values())), args.format))
+    elif args.format == "json":
+        print(json.dumps(results, indent=2, sort_keys=True))
+    elif args.format == "env":
+        print("\n\n".join(
+            f"# Project: {name}\n{format_result(result, 'env')}"
+            for name, result in results.items()
+        ))
+    else:
+        print("\n".join(
+            f"===== Resolve Project: {name.upper()} =====\n{format_result(result, 'url')}"
+            for name, result in results.items()
+        ))
+    return
+
+
+def resolve_main(argv: Optional[list] = None) -> int:
+    """Entry point for ``cmru resolve`` when called directly."""
+    return resolve_cli().run(argv=argv)

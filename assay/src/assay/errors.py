@@ -34,6 +34,7 @@ __all__ = [
     "Outcome",
     "REASON_CODES",
     "ReasonCode",
+    "require_advance",
 ]
 
 
@@ -321,3 +322,19 @@ class LaneConfigError(AssayError):
         super().__init__(
             message, outcome=Outcome.ERROR, reason_code=ReasonCode.BAD_LANE_CONFIG
         )
+
+
+def require_advance(old: int, new: int) -> int:
+    """Return *new*; a scanner cursor that did not move strictly forward is an
+    internal defect (never an input property), so refuse instead of spinning.
+
+    (B113/A-466) Scanner loops advance a cursor by assignment. A single
+    mutant can make that assignment stall or step backwards, and a spinning
+    candidate never looks idle to the liveness monitor, so it would burn its
+    whole per-candidate budget. Raising here turns it into an ordinary test
+    failure. One shared comparison means one mutation site, killed by
+    tests/core/test_errors.py, instead of one unkillable site per scanner.
+    """
+    if new <= old:
+        raise AssertionError(f"scanner cursor did not advance ({old} -> {new})")
+    return new

@@ -3,7 +3,7 @@
 `cmru release` is intentionally safe to start from a busy developer checkout.
 It does not build, tag, or publish from that checkout. Instead it takes a
 committed snapshot of `origin/main` and performs all release work in a private
-`cmru-release-<YYYYMMDD_HHMMSS>-<scope>-<uuid8>` worktree (SPEC S-CLI.5b; flat,
+`cmru-release-<YYYYMMDD_HHMMSS>-<scope>-<workspace-id>` worktree (SPEC S-CLI.5b; flat,
 so the branch name and its `.worktrees/` directory name are identical) — one
 project **at a time**, each project's own cycle running to completion before
 the next project starts (see "Transaction order" below).
@@ -14,7 +14,7 @@ Use the ordinary entry point. It creates/overwrites `cmru.release.log`; do not
 wrap it in `tee` yourself:
 
 ```bash
-./cmru.release.sh --project <project>
+cmru release <project>
 ```
 
 cmru obtains a local release lock and checks two things about the caller's own
@@ -26,7 +26,7 @@ checkout before it creates the release worktree:
    that is *behind* is reported but safe — the fetched remote commit is
    authoritative regardless.
 2. **No uncommitted change may touch a project's own path** for any project in
-   this run's scope (`--project <name>`, or every orchestrated project
+   this run's scope (`<name>`, or every orchestrated project
    otherwise) — whether or not that project would otherwise show as "changed".
    The release source is the fetched `origin/main` commit, never the caller's
    working tree, so an uncommitted edit under, say, `ciu/` would be silently
@@ -46,6 +46,11 @@ repository-root `cmru.secret.toml` and each selected project's explicit secret o
 into that worktree with mode `0600`; they are removed with a successful worktree and are
 never staged.
 
+The re-execed child reads project configs from the isolated snapshot. A central
+orchestration file in the snapshot already names project configs relative to
+that checkout; an external central file maps them from the source Git root.
+Either way, a selected project config must resolve inside the isolated worktree.
+
 Inside the worktree, before touching any project, cmru also validates the release
 *plan* itself against `origin` two ways a purely local `git tag --list` read cannot (SPEC
 S12.2a): the local clone's chosen `<prefix>-v*` tag must resolve to the exact same commit
@@ -62,7 +67,8 @@ and pushed but failed before promoting `origin/main` — aborts, because folding
 an ordinary "unchanged" skip would make an empty release look successful.
 `--allow-tag-ahead-of-head` downgrades only that "ahead" abort — for the deliberate case
 (e.g. re-running before `origin/main` has caught up) — back to a normal skip
-(`--allow-tag-at-head` is a deprecated alias). Any plan-time refusal here is a clean,
+The old `--allow-tag-at-head` spelling was removed; there is no alias or compatibility window.
+Any plan-time refusal here is a clean,
 typed failure: no project's cycle has started yet, so cmru discards the just-created
 worktree exactly like a success would, instead of retaining it the way a genuine
 mid-release failure is retained for inspection.
@@ -85,8 +91,9 @@ dependency, or when nothing changed. See `cmru tool-deps` for the standalone ver
 
 Every project this plan skips (equal, ahead-and-allowed, or the ordinary "behind" case) prints
 its own `[INFO] Unchanged, skipping: <name> (…)` line naming the exact baseline tag and reason —
-never a bare list of names (SPEC S12.2e); see the worked example below. This computation runs
-exactly once, before `--dry-run` is ever considered, so a preview and a real run report
+never a bare list of names (SPEC S12.2e); see the worked example below. After a dry run has
+performed any selected external-version prepare in its disposable candidate, this computation
+runs exactly once before the preview branch, so a preview and a real run report
 identical plan/baseline/reason diagnostics — a dry run only adds the `[DRY] Would …` prefix on
 what a real run instead performs for real (SPEC S-CLI.5c).
 
@@ -94,21 +101,28 @@ The re-execed child inherits the parent transaction lock; it does not try to
 acquire a second lock against its own release.
 
 Failure retains the worktree and prints its path and branch. A **pre-tag** failure
-can be inspected, deliberately corrected, re-gated, and resumed there:
+can be inspected and corrected on that branch. Commit the fixes there before
+resuming; CMRU refuses a dirty candidate so the final tag and artifacts cannot
+silently omit the correction. Resume reruns prepare and the required gate against
+the corrected branch tip, then ships that candidate commit:
 
 ```bash
-./cmru.release.sh --resume /path/reported/by/cmru --project <project>
+cmru release <project> --resume /path/reported/by/cmru
 ```
 
 Do not copy generated files back into the caller's dirty checkout. A successful
-transaction removes the ephemeral branch/worktree, but retains its project logs
-and artifacts by default first: logs move into
-`<project>/logs/cmru-release/<immutable-id>/`, and any explicitly declared
-artifact directories move into `<project>/artifacts/<immutable-id>/` with a
-`release.json` SHA-256 inventory. Pass `--discard-logs-on-release` and/or
-`--discard-artifacts-on-release` to opt out of either half. A project that
-declares no `project.release.artifact_dirs` simply has nothing to retain and is
-skipped for the artifact half, not an error.
+transaction removes the ephemeral branch/worktree, but retains its project logs, declared
+artifacts, and declared gate evidence by default first: logs move into
+`<project>/logs/cmru-release/<immutable-id>/`, explicitly declared artifact directories move
+into `<project>/artifacts/<immutable-id>/` with the existing `release.json` SHA-256 inventory,
+and `evidence_paths` move into `<project>/evidence/cmru-release/<immutable-id>/` with an
+`evidence.json` source-commit/hash inventory. Pass `--discard-logs-on-release`,
+`--discard-artifacts-on-release`, and/or `--discard-evidence-on-release` to opt out of each
+half. A project that declares no `project.release.artifact_dirs` or no
+`project.release.evidence_paths` simply has nothing to retain for that half and is skipped,
+not an error. Evidence declarations name only project-relative files/directories produced by
+the release gate; missing, escaping, or symlinked paths fail retention and preserve the
+worktree for inspection.
 
 ### Caller-main cleanup
 
@@ -131,15 +145,25 @@ safe behavior remains: a clean checkout may fast-forward its local `main`, while
 local `main` is left untouched rather than force-moved. A false cleanup result is reported on
 the success, plan-refusal, and child-failure paths, so no path claims that the caller was synced.
 
-`cmru build` uses the same fetched snapshot but stops before every release action. A successful
+`cmru build` uses the same fetched snapshot but stops before source release actions. A successful
 build copies logs into `<project>/logs/<commit-date>_<full-commit>/` and declared artifact
 directories into `<project>/artifacts/<commit-date>_<full-commit>/`, writes a `build.json`
-SHA-256 inventory marked `publication: forbidden`, then removes its
-`cmru-build-<YYYYMMDD_HHMMSS>-<scope>-<uuid8>` worktree. It is local consumption evidence, not a candidate that `publish` may consume. A build
-or retention failure keeps that worktree and prints its path; `cmru worktrees` discovers it and
+SHA-256 inventory, then removes its
+`cmru-build-<YYYYMMDD_HHMMSS>-<scope>-<workspace-id>` worktree. `cmru publish --build-output ID`
+revalidates the record and publishes those exact retained bytes through the declared push step;
+it refuses any record with tracked or untracked source-tree changes, including during dry-run. A
+project must ignore expected untracked generated build outputs while leaving source paths visible
+to Git; ignore rules do not hide modified tracked files.
+It does not rebuild, create Release records/Git refs, or promote a source branch. Built-in
+publishers require existing versioned and `<prefix>-latest` Release/tag targets, verify that a
+stable version tag points at the recorded source commit, and update assets in place. Generated
+sidecars and `latest.json` use temporary copies, so the retained record stays valid. A custom
+publisher must consume files beneath `CMRU_BUILD_OUTPUT_ROOT` and must not create or move Git
+refs. A build or retention failure keeps that
+worktree and prints its path; `cmru worktrees` discovers it and
 `cmru cleanup --discard-build-worktree <path> --yes` removes it after inspection. Rebuilding the
 same commit requires explicit deletion of the existing output record with
-`cmru cleanup --project <name> --delete-build-output <id> --yes`.
+`cmru cleanup <name> --delete-build-output <id> --yes`.
 
 > **Current recovery limit:** a post-tag publication failure is not an automatic retry.
 > Preserve the worktree, the stable logs, and generated provenance; do not assume a plain
@@ -149,7 +173,7 @@ same commit requires explicit deletion of the existing output record with
 ## Transaction order
 
 Every changed project releases **one after another** — its own prepare, gate,
-promote, tag, build, and publish all finish before the next project's cycle
+tag, build, publish, and promote all finish before the next project's cycle
 begins. This is what lets a later project resolve an earlier project's
 brand-new release within the *same* `cmru release` run (an OCI image project
 like `modern-debian-tools-python-debug` picking up a wheel project's
@@ -160,13 +184,14 @@ caller checkout
     │  lock + reject uncommitted release-path edits + reject local-only main commits
     │  fetch origin/main → immutable snapshot base
     ▼
-cmru-release-<YYYYMMDD_HHMMSS>-<scope>-<uuid8> worktree, one project at a time (project_order, changed only):
+cmru-release-<YYYYMMDD_HHMMSS>-<scope>-<workspace-id> worktree, one project at a time (project_order, changed only):
     ┌─────────────────────────────────────────────────────────────────────┐
     │  optional prepare → generate CHANGES.md → commit declared outputs  │
-    │  required tester-unified gate                                      │
-    │  fast-forward origin/main to current HEAD (or fail on a concurrent  │
-    │    remote update)                                                  │
+    │  required tester-unified gate (again if versioning adds a commit)  │
+    │  refresh durable candidate branch                                  │
     │  explicit tag (if versioned) → build → publish/push                │
+    │  fast-forward origin/main from this exact candidate (or fail closed │
+    │    on a concurrent remote update)                                  │
     │  checkpoint: record this project's HEAD as the last full success   │
     └─────────────────────────────────────────────────────────────────────┘
     → repeat for the next project, or stop and report on failure
@@ -176,49 +201,42 @@ source commit
 ```
 
 There is no in-place release mode. A local lock prevents two releases on one
-clone; each project's fast-forward push protects that slice of the source
-integration from a concurrent remote update. Publication for a project cannot
-begin until its own promotion has landed.
+clone; each project's final fast-forward push integrates the exact source commit
+that produced its public artifact. The durable candidate branch is refreshed
+before publication and retained if the final promotion fails. Publication for a
+project therefore does not silently turn into a different source commit through
+an automatic rebase.
 
-### Failure and revert
+### Failure and retained candidate
 
 If project *N* fails, cmru stops — it does not attempt project *N+1* onward.
-What gets reverted on `origin/main` depends on how far project *N* got:
-
-- **Before its own promote** (its prepare step failed, or its gate failed):
-  nothing new was pushed for it, so there is nothing to revert. Every earlier
-  project's release stands untouched.
-- **After its own promote, but before publish finished** (tag/build/push
-  failed): cmru pushes a revert commit on `origin/main` that undoes *only*
-  project *N*'s promoted commit — never an earlier project's. This is tracked
-  via a small checkpoint file, written after each project's complete success
-  and read back by the failure handler instead of the transaction's original
-  starting point. The checkpoint is seeded to *this run's own* starting point
-  before the loop begins, so a `--resume` (which reuses the same branch/token
-  as the attempt it's continuing) never reads a stale checkpoint left over
-  from an earlier, different attempt on that same token.
-- **The very first project in the run fails before its own promote**: nothing
-  in the whole transaction was ever pushed, so this degrades to the classic
-  "abort, nothing published" case — there's still nothing to revert, and the
-  worktree is retained exactly as before this feature existed.
-
-Note the checkpoint tracks *source-tree commits only* — a project with no
-`prepare` step (most wheel projects, e.g. ciu/nyxloom below) commits nothing
-of its own, so the checkpoint can still equal the run's starting point even
-after that project's tag and published artifact are real and live; those are
-never touched by any of this regardless, since tags/GitHub Releases/ghcr
-pushes aren't reverted by a source-tree `git revert`. cmru always reports
-"attempting automatic revert" and then whether anything actually needed
-reverting — it does not try to guess from the checkpoint alone whether an
-earlier project in the same run succeeded (tags/artifacts are the source of
-truth for that, not the checkpoint).
+The failed project's candidate is never promoted: promotion is the final step,
+after its tag/build/publish work. `origin/main` therefore remains at the last
+fully completed project, while the candidate branch and worktree retain the exact
+source SHA, logs, and any generated release output. cmru does not push a source
+revert commit and does not rebase the candidate after publication. If an artifact
+was already published when a concurrent remote update rejected promotion, the
+artifact and candidate branch are retained as an explicit post-publication state
+for operator resolution; the release engine does not claim that source history
+can undo an external publication.
 
 In every case the worktree/branch is retained for inspection and `--resume`.
-Starting a fresh release after an explicit `--abandon all-previous` is also safe:
-`detect_changed_projects` is tag-based, so any project that already fully
-released in the failed attempt shows as unchanged on the next run and is
-skipped — only the failed project (now reverted) and anything after it in
-`project_order` are attempted again.
+Use the separate local transaction command after reviewing its exact plan:
+
+```sh
+cmru abandon --dry-run
+cmru abandon cmru-release-20260924_120000-example-a1b2c3 --dry-run
+cmru abandon cmru-release-20260924_120000-example-a1b2c3 --yes
+```
+
+The branch argument is an exact managed branch name. Without it, CMRU displays
+the complete retained release set and `--yes` confirms exactly that set. The
+command refuses any transaction with publication/promotion evidence or
+uncertain metadata and never removes a public Release, tag, or GHCR version.
+It removes the candidate worktree and its in-worktree logs/artifacts as well as
+the private candidate ref and sidecars. Run `cmru cleanup --dry-run` separately
+to inspect configured remote asset pruning; `cleanup` does not remove retained
+release worktrees.
 
 ### Worked example: releasing ciu, nyxloom, and modern-debian-tools-python-debug together
 
@@ -237,18 +255,18 @@ Suppose only these three have real changes this run (`project_order` puts
 
 === ciu: releasing ===
 [INFO] ciu: running required release gate
-[INFO] ciu: promoted to origin/main            # origin/main → <sha A> (no prepare step; nothing new to commit)
 [INFO] ciu: ciu-v4.8.1 → ciu-v4.9.0 (minor)
 [INFO] Tagged: ciu-v4.9.0
 [INFO] Pushing tags to origin: ciu-v4.9.0
 [INFO] Building + publishing ciu (ciu-v4.9.0)   # wheel built + GitHub Release ciu-v4.9.0 published
+[INFO] ciu: promoted release candidate to origin/main  # exact <sha A>
 
 === nyxloom: releasing ===
 [INFO] nyxloom: running required release gate
-[INFO] nyxloom: promoted to origin/main         # origin/main → <sha B>
 [INFO] nyxloom: nyxloom-v0.1.0 → nyxloom-v0.2.0 (minor)
 [INFO] Tagged: nyxloom-v0.2.0
 [INFO] Building + publishing nyxloom (nyxloom-v0.2.0)   # wheel + 2 OCI images published
+[INFO] nyxloom: promoted release candidate to origin/main  # exact <sha B>
 
 === modern-debian-tools-python-debug: releasing ===
 [INFO] modern-debian-tools-python-debug: preparing release inputs   # build-push.py --build:
@@ -256,21 +274,21 @@ Suppose only these three have real changes this run (`project_order` puts
                                                                      #   LIVE — they're already published
 [INFO] modern-debian-tools-python-debug: committed prepared release inputs   # package-manifests-versioned/ diff
 [INFO] modern-debian-tools-python-debug: running required release gate
-[INFO] modern-debian-tools-python-debug: promoted to origin/main   # origin/main → <sha C> (includes the manifest commit)
 [INFO] Building + pushing modern-debian-tools-python-debug (oci-image — registry, no tag)   # image pushed to ghcr
+[INFO] modern-debian-tools-python-debug: promoted release candidate to origin/main  # exact <sha C>
 
 [INFO] Released: ciu (ciu-v4.9.0), nyxloom (nyxloom-v0.2.0), modern-debian-tools-python-debug (image)
 ```
 
 End state: `origin/main` is at `<sha C>`; `ciu-v4.9.0` and `nyxloom-v0.2.0` are
 real GitHub Releases with wheels attached; the mdt image on ghcr was built
-against those exact wheel versions. The `cmru-release-<YYYYMMDD_HHMMSS>-<scope>-<uuid8>`
-branch/worktree and its origin backup are removed; your local `main` is synced to `<sha C>`.
+against those exact wheel versions. The `cmru-release-<YYYYMMDD_HHMMSS>-<scope>-<workspace-id>`
+branch/worktree and its origin candidate branch are removed; your local `main` is synced to `<sha C>`.
 That removal is real here because this run actually pushed the backup once at least one
 project changed; a run that never pushes one (a dry run, "nothing to release", or a refused
 plan) has nothing to remove and prints nothing about it either (SPEC S-CLI.5d).
 
-**Partial failure — before that project's own promote (nothing to revert)**
+**Partial failure — before that project's own promotion**
 
 nyxloom's gate fails. ciu already fully succeeded (checkpoint at `<sha A>`);
 nyxloom's gate runs *before* its promote, so nothing new was ever pushed for
@@ -280,51 +298,42 @@ it:
 === nyxloom: releasing ===
 [INFO] nyxloom: running required release gate
 [ERROR] ... test failure ...
-[ERROR] Release failed after origin/main was already promoted; attempting
-        automatic revert of the in-flight project's changes...
-[INFO] Nothing to revert on origin/main — the in-flight project never got as
-       far as its own promotion.
+[ERROR] Release candidate was not promoted; origin/main was left at the last
+        fully completed project. The durable candidate branch was retained.
 ```
 
 `origin/main` is still exactly at ciu's checkpoint (nyxloom's gate ran
-*before* its own promote, so nothing new was ever pushed for it) — there was
+before its own promotion, so nothing new was integrated for it). There is
 nothing to revert. `ciu-v4.9.0` stands. mdt is never attempted. Fix nyxloom's
 test, then re-run: ciu shows unchanged (already tagged) and is skipped;
 nyxloom and mdt are attempted again.
 
-**Partial failure — after that project's own promote (scoped revert)**
+**Publication succeeds but final promotion loses a race**
 
-mdt's `prepare` succeeds and promotes its manifest commit to `origin/main`,
-but its subsequent `push` (uploading the image to ghcr) fails:
+mdt's `prepare` succeeds, its image is built and pushed, but the final candidate
+promotion loses a concurrent fast-forward race:
 
 ```
 === modern-debian-tools-python-debug: releasing ===
 [INFO] modern-debian-tools-python-debug: committed prepared release inputs
-[INFO] modern-debian-tools-python-debug: promoted to origin/main   # origin/main → <sha C>
 [INFO] Building + pushing modern-debian-tools-python-debug (oci-image — registry, no tag)
-[ERROR] ... ghcr push failed ...
-[ERROR] Release failed after origin/main was already promoted; attempting
-        automatic revert of the in-flight project's changes...
-[INFO] origin/main reverted to its last-known-good state.
-[ERROR] Release transaction failed; retained .../cmru-release-20260818_195012-all-a3ae580d on branch
-        cmru-release-20260818_195012-all-a3ae580d for inspection/resume.
+[INFO] ... ghcr push succeeded ...
+[ERROR] release candidate was not promoted to origin/main; the candidate branch was retained
+[ERROR] Release transaction failed; retained .../cmru-release-20260818_195012-all-abc123 on branch
+        cmru-release-20260818_195012-all-abc123 for inspection/resume.
 ```
 
-`origin/main` is now a *new* revert commit on top of `<sha B>` (nyxloom's
-checkpoint) that undoes mdt's manifest commit — `ciu-v4.9.0` and
-`nyxloom-v0.2.0` are completely untouched, still published. The worktree
-itself still has mdt's un-reverted manifest commit on its own branch (the
-revert only added a commit to `origin/main`, it never rewrites history), so
-`--resume` can pick up the investigation. Re-running fresh instead: ciu and
-nyxloom show unchanged and are skipped; mdt is attempted again from scratch.
+`origin/main` remains at `<sha B>` (nyxloom's completed commit); `ciu-v4.9.0`
+and `nyxloom-v0.2.0` are untouched, and the mdt candidate remains on the durable
+branch at `<sha C>`. The artifact is intentionally retained for operator
+resolution. Re-running fresh: ciu and nyxloom show unchanged and are skipped;
+mdt is attempted again from a new snapshot after the retained state is handled.
 
-**Full abort — the first project fails before promoting**
+**Full abort — the first project fails before promotion**
 
-If ciu's own gate had failed instead (the very first project in the run,
-before anything was ever promoted), this degrades to the original all-or-
-nothing case: `origin/main` never moved, `promotion_landed` reports false, no
-revert is attempted (there is nothing to revert), and the worktree is
-retained for inspection exactly as it always was.
+If ciu's own gate had failed instead, `origin/main` never moved and the durable
+candidate branch contains the prepared candidate for inspection. No revert is
+needed because no failed candidate was promoted.
 
 ## Project author contract
 
@@ -343,8 +352,9 @@ List every tracked output in `release.commit_generated`; cmru rejects an
 undeclared write. A prepare step that derives a version writes it to
 `<project>/cmru.vars`, and the project declares `version.strategy =
 "external:VAR"`. cmru then creates the annotated tag after the prepared source
-is gated and integrated. Projects do not create release tags through a build
-script or an implicit GitHub Release API side effect.
+is gated and integrated. The source-first release transaction creates its tag
+explicitly before publication. The retained-build publication path only updates
+existing Release/tag targets and refuses a missing target.
 
 OCI projects must not push while gathering generated provenance. Build privately
 first, commit/promote declared provenance, then run the separate registry push.
@@ -374,7 +384,7 @@ The following release gates are now declared through `cmru tester-gate`:
 | Project | Current state | Required follow-up |
 |---|---|---|
 | ciu | Full pytest coverage floor | `run-ciu-tests.py` |
-| cmru | Full unit/contract suite | `pytest tests -q` |
+| cmru | Assay R0/R1/R3, tag-based R2 mutation, coverage, canary, and enrollment | `./run-gate.py gate` |
 | nyxloom | Full unit/contract suite | `pytest tests -q` |
 | MDT | Source-first release-flow and OCI-staging contracts | focused `unittest` modules |
 | pwmcp | Resolver and builder contracts | `pytest tests -q` |

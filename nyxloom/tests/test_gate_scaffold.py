@@ -108,7 +108,7 @@ def test_scaffolded_gate_runs_in_the_batch_cgroup_slice():
     """The scaffolded argv must place the gate container in the dedicated
     gates slice: a gate is CPU/IO-heavy batch work that must not compete with
     whatever else the host runs. A missing slice fails OPEN (systemd creates a
-    transient limitless one), so `nyxloom doctor` re-checks it exists; that
+    transient limitless one), so `nyxloomctl doctor` re-checks it exists; that
     check only has something to check because the slice is named HERE."""
     gate = gate_scaffold.render_gate_def()
     outer = gate.argv[-1]

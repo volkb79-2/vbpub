@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from nyxloom.cli_ctl import main as ctl_main
+
 import json
 import os
 import subprocess
@@ -921,7 +923,7 @@ def test_liveness_tick_error_streak_from_a_resolved_burst_is_not_reported(sample
 
 def test_liveness_transport_probe_is_shared_across_projects_via_the_cache(
         sample_project, monkeypatch):
-    """One invocation of `nyxloom doctor --liveness` sweeps every registered
+    """One invocation of `nyxloomctl doctor --liveness` sweeps every registered
     project, and they all resolve the SAME ntfy URL by default -- so the
     probe must run once, not once per project. Without this the healthcheck
     serialises N probe timeouts into its own wall-clock budget."""
@@ -1001,7 +1003,7 @@ def test_liveness_one_check_failing_does_not_silence_the_others(
 
 
 def test_doctor_project_folds_in_liveness_findings(sample_project):
-    """`nyxloom doctor`'s ordinary sweep (no --liveness) ALSO reports these
+    """`nyxloomctl doctor`'s ordinary sweep (no --liveness) ALSO reports these
     three -- an operator running the plain command sees them too, not only
     the fast healthcheck path."""
     _aged_heartbeat("demo", age_seconds=999)
@@ -1015,12 +1017,12 @@ def test_doctor_project_folds_in_liveness_findings(sample_project):
 
 def test_cmd_doctor_liveness_flag_reports_critical_and_exits_nonzero(
         sample_project, tmp_state, capsys):
-    """The container-healthcheck path end to end: a plain `nyxloom doctor
+    """The container-healthcheck path end to end: a plain `nyxloomctl doctor
     --liveness` CLI invocation -- no Daemon constructed anywhere in this
     call -- observes a stale heartbeat and exits non-zero."""
     _aged_heartbeat("demo", age_seconds=999)
 
-    exit_code = cli.main(["doctor", "--liveness"])
+    exit_code = ctl_main(["doctor", "--liveness"])
     out = capsys.readouterr().out
 
     assert exit_code == 1
@@ -1029,7 +1031,7 @@ def test_cmd_doctor_liveness_flag_reports_critical_and_exits_nonzero(
 
 def test_cmd_doctor_liveness_flag_healthy_exits_zero(sample_project, tmp_state, capsys):
     _aged_heartbeat("demo", age_seconds=1)
-    exit_code = cli.main(["doctor", "--liveness"])
+    exit_code = ctl_main(["doctor", "--liveness"])
     assert exit_code == 0
 
 
@@ -1045,7 +1047,7 @@ def test_cmd_doctor_liveness_flag_skips_the_other_checks(sample_project, tmp_sta
         return []
     monkeypatch.setattr("nyxloom.doctor.doctor_project", _tripwire_doctor_project)
 
-    cli.main(["doctor", "--liveness"])
+    ctl_main(["doctor", "--liveness"])
     assert called == []
 
 
@@ -1395,7 +1397,7 @@ def test_cmd_doctor_critical_host_finding_forces_nonzero_exit(
     sample_project, tmp_state, capsys, monkeypatch
 ):
     """A critical host finding (e.g. missing cgroup slice / lying transport)
-    must make `nyxloom doctor` exit non-zero, even with zero project-level
+    must make `nyxloomctl doctor` exit non-zero, even with zero project-level
     findings."""
     monkeypatch.setattr('nyxloom.doctor.doctor_project', lambda cfg: [])
     host_finding = DoctorFinding(
@@ -1407,7 +1409,7 @@ def test_cmd_doctor_critical_host_finding_forces_nonzero_exit(
     )
     monkeypatch.setattr('nyxloom.doctor.doctor_host', lambda: [host_finding])
 
-    exit_code = cli.main(['doctor'])
+    exit_code = ctl_main(['doctor'])
     out = capsys.readouterr().out
     assert exit_code != 0
     assert 'cgroup-slice-missing' in out
@@ -1417,9 +1419,9 @@ def test_cmd_doctor_critical_host_finding_forces_nonzero_exit(
 def test_cmd_doctor_no_critical_findings_zero_exit(
     sample_project, tmp_state, capsys, monkeypatch
 ):
-    """No project findings and no host findings -> `nyxloom doctor` exits 0."""
+    """No project findings and no host findings -> `nyxloomctl doctor` exits 0."""
     monkeypatch.setattr('nyxloom.doctor.doctor_project', lambda cfg: [])
     monkeypatch.setattr('nyxloom.doctor.doctor_host', lambda: [])
 
-    exit_code = cli.main(['doctor'])
+    exit_code = ctl_main(['doctor'])
     assert exit_code == 0

@@ -20,7 +20,7 @@ For contributors. Normative contract: [SPEC.md](SPEC.md).
 | `procutil.py` | **All** subprocess calls behind `run_cmd` / `docker`; no `shell=True` | `run_cmd`, `docker` | S7.3, S7.8 | `test_ciu_paths_procutil.py` |
 | `config_constants.py` | **Single source of truth** for every CIU file/dir name (committed/worktree/rendered config, compose, `ciu.env`, `.ciu/` overlay/secrets/rendered/lock, `SHIPPED_COMPOSE`); all modules import from here so a rename is one edit | `get_rendered_config_name`, `get_defaults_template_name`, `is_config_file` | S1.6–S1.8, S3.1, S8.5 | — |
 | `deploy.py` | Multi-stack CLI entry point; action dispatch; Vault/registry preflights; phase execution; health gate | `action_deploy`, `action_stop`, `action_clean`, `action_build`, `vault_preflight`, `registry_preflight`, `run_health_gate` | S7.1–S7.9, S8.2 | `test_ciu_deploy_actions.py`, `test_ciu_deploy_pkg.py` |
-| `governance.py` | Resource-policy resolution, cgroup slice checks, KSM/memory-profile strategy selection | `resolve_stack_governance`, `resolve_ksm_optin`, `check_slice_unit` | S15 | `test_ciu_governance.py` |
+| `governance.py` | Resource-policy resolution, explicit-only per-container memory controls, cgroup slice checks, KSM/memory-profile strategy selection | `resolve_stack_governance`, `resolve_ksm_optin`, `check_slice_unit` | S15 | `test_ciu_governance.py` |
 | `ksm.py` | Builds and verifies CIU-shipped KSM shim and exec wrapper caches | `build`, `build_wrapper`, `_verify` (internal) | S15.17–S15.20 | `test_ciu_ksm.py` |
 | `worktree.py` | Managed Git-worktree identity/state records, create/adopt/ensure/remove lifecycle, shared infrastructure, cross-instance deployment budget, structured JSON documents + capability allowlist (S16.4/S16.5), exact selected-worktree `up`/`exec` (S16.6), and declared container-target `exec` with worktree-mount proof (S16.7) | `create`, `adopt`, `ensure`, `remove`, `inspect_instance`, `list_instances`, `remove_document`, `capabilities_document`, `up_instance`, `exec_instance`, `exec_target_instance`, `resolve_worktree_cap`, `worktree_budget_slot` | S16 | `test_ciu_worktree.py`, `test_ciu_engine_worktree_budget.py`, `test_ciu_documentation_contract.py` |
 | `diagnose.py` | Read-only runtime diagnosis and structured findings | `collect`, `run` | S10.5 | `test_ciu_diagnose.py` |
@@ -103,18 +103,19 @@ The gate is orchestration above the released Assay CLI, not a CIU module:
 
 ```
 operator / nyxloomd
-  └─ bash (host): CGP="${CGROUP_PARENT_DEV_BACKGROUND:?}"        (S18.3)
-       └─ systemctl show "$CGP" --property=LoadState  == loaded  (fail-closed)
-            └─ docker run --cgroup-parent="$CGP" tester-unified:local
-                 └─ bash: cd <worktree>/ciu
-                      ├─ sha256sum -c tools/assay/assay-<v>.pyz.sha256   (S18.1)
-                      └─ python tools/assay/assay-<v>.pyz run ciu --file assay.toml
-                           ├─ Assay snapshot (repository-minus-unsafe-symlinks)
-                           ├─ lane argv: run-ciu-tests.py  (100% line+branch)
-                           └─ Assay R1 judges base..HEAD changed-line floor
-                                → .assay/verdict-ciu.json (gitignored evidence)
+  └─ ./ciu/run-gate.py ciu (host; clean-tree check)
+       └─ resolve CGROUP_PARENT_DEV_GATES from the root gate config
+            └─ detached tester-unified container in that cgroup slice
+                 ├─ install Assay from the selected worktree's assay/
+                 └─ assay run ciu --resume --progress .assay/progress-ciu.jsonl
+                      ├─ Assay snapshot (repository-minus-unsafe-symlinks)
+                      ├─ lane argv: python -m pytest (100% line+branch)
+                      ├─ R2 liveness required; argv matches
+                      │  run-ciu-tests.py's pytest_args()
+                      └─ R1 judges base..HEAD changed-line floor
+                           → .assay/verdict-ciu.json (gitignored evidence)
 ```
 
 CIU source never imports Assay and never runs a nyxloom coverage/mutation/
-canary judge; the lane command is CIU's own release runner, and the Assay CLI
-is the sole evidence judge.
+canary judge; run-gate installs Assay from the selected worktree and the Assay
+CLI is the sole evidence judge.

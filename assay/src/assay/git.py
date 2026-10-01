@@ -81,6 +81,7 @@ package's ``scope.touch``).
 
 from __future__ import annotations
 
+import errno
 import math
 import os
 import selectors
@@ -88,9 +89,11 @@ import shutil
 import signal
 import stat as stat_module
 import subprocess
+import tempfile
 import time
-from dataclasses import dataclass
+from .records import record
 from pathlib import Path
+import re
 from types import MappingProxyType
 from typing import Callable, Mapping, Sequence
 
@@ -163,9 +166,23 @@ _FIXED_CONFIG: tuple[str, ...] = (
     "-c", "core.quotePath=false",
     "-c", "core.hooksPath=/dev/null",
     "-c", "core.fsmonitor=",
+    # Git's index-preload worker pool is an optional optimisation, not part of
+    # the repository fact being measured. A gate can run many isolated
+    # snapshots concurrently, so allowing each status call to create its own
+    # lstat threads can exhaust the tester cgroup before Git reports any
+    # useful result ("unable to create threaded lstat"). Pin the option at
+    # the Git boundary; ambient GIT_CONFIG_* is intentionally discarded above.
+    "-c", "core.preloadIndex=false",
     "-c", "commit.gpgSign=false",
     "-c", "core.excludesFile=",
 )
+
+# A tester cgroup may transiently reject fork/clone with EAGAIN while another
+# bounded Git child is being reaped.  Keep the retry at the shared spawn
+# boundary so both ordinary Git calls and P22's explicit-object calls have the
+# same finite policy.
+_GIT_SPAWN_RETRY_ATTEMPTS = 60
+_GIT_SPAWN_RETRY_SECONDS = 0.5
 
 #: The fixed ceiling on how many bytes of a git child's stdout this process
 #: will retain (O4: a FIXED byte bound, never an ambient or elapsed-time
@@ -197,6 +214,24 @@ def _git_failed(message: str) -> AssayError:
     return AssayError(message, outcome=Outcome.ERROR, reason_code=ReasonCode.GIT_FAILED)
 
 
+def _zero_true_one_false(returncode: int, stderr: bytes, label: str) -> bool:
+    """Read a git exit code that means 0 is ``True``, 1 is ``False``.
+
+    Any other code is a typed Git failure naming *label* and the first 200
+    characters of *stderr* (B129: the one shared reading of the three
+    ``check-ignore -q`` / ``merge-base --is-ancestor`` / ``diff --quiet``
+    exit-code conventions).
+    """
+    if returncode == 0:
+        return True
+    if returncode == 1:
+        return False
+    raise _git_failed(
+        f"{label} failed ({returncode}): "
+        f"{stderr.decode('utf-8', errors='replace').strip()[:200]}"
+    )
+
+
 def _sample_remaining(remaining: Remaining | None) -> float | None:
     """Sample *remaining* once, or ``None`` when no lane deadline applies.
 
@@ -223,6 +258,27 @@ def _sample_remaining(remaining: Remaining | None) -> float | None:
     return sampled
 
 
+def _spawn_with_eagain_retry(
+    spawn: Callable[[], subprocess.Popen[bytes]],
+    *,
+    remaining: Callable[[], float | None],
+    what: str,
+) -> subprocess.Popen[bytes]:
+    """Run one child launcher, retrying only transient fork exhaustion."""
+    for attempt in range(_GIT_SPAWN_RETRY_ATTEMPTS):
+        try:
+            return spawn()
+        except OSError as exc:
+            if exc.errno != errno.EAGAIN or attempt + 1 == _GIT_SPAWN_RETRY_ATTEMPTS:
+                raise
+            left = remaining()
+            time.sleep(
+                _GIT_SPAWN_RETRY_SECONDS
+                if left is None else min(_GIT_SPAWN_RETRY_SECONDS, left)
+            )
+    raise AssertionError("the Git spawn retry budget must be positive")
+
+
 def _kill_owned_group(proc: subprocess.Popen[bytes]) -> None:
     """Best-effort SIGKILL of the whole process group, regardless of whether
     the direct child has already exited (P26/A-212).
@@ -242,7 +298,7 @@ def _kill_owned_group(proc: subprocess.Popen[bytes]) -> None:
             pass
 
 
-def _run_bounded(argv: list[str], *, remaining: Remaining | None = None) -> tuple[int, bytes, bytes]:
+def _run_bounded(argv: list[str], *, remaining: Remaining | None = None, stdin=None) -> tuple[int, bytes, bytes]:
     """Run *argv* with the sanitized environment and return
     ``(returncode, stdout, stderr)`` with BOTH streams bounded.
 
@@ -271,12 +327,17 @@ def _run_bounded(argv: list[str], *, remaining: Remaining | None = None) -> tupl
     """
     _sample_remaining(remaining)
     try:
-        proc = subprocess.Popen(
-            argv,
-            env=dict(_REPLACEMENT_ENV),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            start_new_session=True,
+        proc = _spawn_with_eagain_retry(
+            lambda: subprocess.Popen(
+                argv,
+                env=dict(_REPLACEMENT_ENV),
+                **({"stdin": stdin} if stdin is not None else {}),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                start_new_session=True,
+            ),
+            remaining=lambda: _sample_remaining(remaining),
+            what="bounded Git",
         )
     except OSError as exc:
         raise _git_failed(f"could not start git: {exc}") from exc
@@ -289,7 +350,7 @@ def _run_bounded(argv: list[str], *, remaining: Remaining | None = None) -> tupl
     try:
         selector.register(proc.stdout, selectors.EVENT_READ, "out")
         selector.register(proc.stderr, selectors.EVENT_READ, "err")
-        while selector.get_map() and overflowed is None:
+        while selector.get_map():
             timeout = _sample_remaining(remaining)
             for key, _ in selector.select(timeout):
                 chunk = key.fileobj.read1(65536)
@@ -311,6 +372,8 @@ def _run_bounded(argv: list[str], *, remaining: Remaining | None = None) -> tupl
                     if len(chunk) > room:
                         overflowed = ("standard error", _MAX_GIT_STDERR_BYTES)
                         break
+            if overflowed:
+                break
         while overflowed is None and proc.poll() is None:
             timeout = _sample_remaining(remaining)
             if timeout is None:
@@ -376,7 +439,7 @@ def _resolve_git_executable() -> Path:
     return resolved
 
 
-@dataclass(frozen=True, kw_only=True)
+@record
 class _ResolvedRepo:
     """The exact repository identity every substantive command anchors to:
     a trusted work-tree root (found by OUR OWN filesystem walk, never by
@@ -489,6 +552,34 @@ def _linked_worktree_gap(repo_top: Path) -> str | None:
     )
 
 
+def _dubious_ownership_gap(repo_top: Path, stderr: str) -> str | None:
+    """Name Git's dubious-ownership refusal and replace its unusable remedy.
+
+    Git recommends granting ``safe.directory`` through global configuration
+    for this refusal. Assay deliberately replaces the child environment and
+    points Git's global/system configuration at ``os.devnull`` (A-173), so
+    that recommendation cannot work here. This is a diagnostic-only probe:
+    it is called only after the bootstrap command failed, and it recognizes
+    Git's measured fatal line rather than treating every bootstrap failure as
+    an ownership problem.
+    """
+    fatal_prefix = "fatal: detected dubious ownership in repository at "
+    fatal_line = next(
+        (line for line in stderr.splitlines() if line.startswith(fatal_prefix)),
+        None,
+    )
+    if fatal_line is None:
+        return None
+    return (
+        f"Git reported a dubious ownership mismatch for {repo_top}. Assay "
+        f"replaces Git's environment with `GIT_CONFIG_NOSYSTEM=1` and "
+        f"`GIT_CONFIG_GLOBAL={os.devnull}`, so `safe.directory` cannot be "
+        f"granted through configuration Git can consult here. Run assay as "
+        f"the repository owner or fix the tree's ownership/uid mapping. "
+        f"{fatal_line}"
+    )
+
+
 def _resolve_repo(
     repo: Path, git_executable: Path, *, remaining: Remaining | None = None
 ) -> _ResolvedRepo:
@@ -516,7 +607,8 @@ def _resolve_repo(
     ]
     returncode, stdout, stderr = _run_bounded(argv, remaining=remaining)
     if returncode != 0:
-        detail = stderr.decode("utf-8", errors="replace").strip()[:200]
+        stderr_text = stderr.decode("utf-8", errors="replace").strip()
+        detail = stderr_text[:200]
         # (B068) The bare git `fatal:` is kept -- it is the primary evidence
         # and must not be renamed -- but when the cause is the one this
         # project has actually measured in the field, it is NAMED first,
@@ -528,6 +620,12 @@ def _resolve_repo(
                 f"{gap}. git rev-parse --absolute-git-dir failed resolving "
                 f"{repo_top} ({returncode}): {detail}"
             )
+        # Keep the historical cap on generic stderr passthrough, but inspect
+        # the already-bounded raw stderr for Git's ownership fatal line: a
+        # legitimate long checkout path can make that line exceed 200 chars.
+        ownership_gap = _dubious_ownership_gap(repo_top, stderr_text)
+        if ownership_gap is not None:
+            raise _git_failed(ownership_gap)
         raise _git_failed(
             f"git rev-parse --absolute-git-dir failed resolving {repo_top} "
             f"({returncode}): {detail}"
@@ -580,6 +678,7 @@ def _run_raw(
     *args: str,
     remaining: Remaining | None = None,
     literal_pathspecs: bool = True,
+    input_bytes: bytes | None = None,
 ) -> tuple[int, bytes, bytes]:
     """Resolve *repo* and run *args* against it, returning the RAW
     ``(returncode, stdout, stderr)`` without interpreting a non-zero exit.
@@ -613,7 +712,16 @@ def _run_raw(
         str(resolved.repo_top),
         *_prepare_subcommand_args(args),
     ]
-    return _run_bounded(argv, remaining=remaining)
+    if input_bytes is None:
+        return _run_bounded(argv, remaining=remaining)
+    if len(input_bytes) > MAX_GIT_OUTPUT_BYTES:
+        raise _git_failed("git input exceeds the bounded input limit")
+    # A bounded regular-file input needs no blocking pipe writer and keeps the
+    # existing concurrent output pump, deadline and process-group ownership.
+    with tempfile.TemporaryFile() as stream:
+        stream.write(input_bytes)
+        stream.seek(0)
+        return _run_bounded(argv, remaining=remaining, stdin=stream)
 
 
 def _run_bytes(repo: Path, *args: str, remaining: Remaining | None = None) -> bytes:
@@ -796,9 +904,9 @@ def dirty_paths(repo: Path, *, remaining: Remaining | None = None) -> tuple[str,
     paths: set[str] = set()
     index = 0
     while index < len(tokens):
-        record = tokens[index]
+        record_entry = tokens[index]
         index += 1
-        status, path = record[:2], record[3:]
+        status, path = record_entry[:2], record_entry[3:]
         paths.add(_decode_or_reject(path, "a path reported by git status -z"))
         if b"R" in status or b"C" in status:
             # A rename/copy record's OLD path is the next NUL-terminated
@@ -861,14 +969,36 @@ def path_is_ignored(
         remaining=remaining,
         literal_pathspecs=False,
     )
-    if returncode == 0:
-        return True
-    if returncode == 1:
-        return False
-    raise _git_failed(
-        f"git check-ignore {relative_path} failed ({returncode}): "
-        f"{stderr.decode('utf-8', errors='replace').strip()[:200]}"
+    return _zero_true_one_false(returncode, stderr, f"git check-ignore {relative_path}")
+
+
+def ignore_rule_source(repo: Path, relative_path: str) -> str | None:
+    """Source of the effective ignore rule, or None for an unignored path.
+
+    Review telemetry must distinguish repository policy from personal excludes.
+    Like path_is_ignored, check-ignore needs the sanitized boundary without
+    Git's unsupported --literal-pathspecs option. Fail on unknown job statuses.
+    """
+    try:
+        payload = relative_path.encode("utf-8") + b"\0"
+    except UnicodeEncodeError as exc:
+        raise _git_failed("ignore path is not representable as UTF-8") from exc
+    if "\0" in relative_path:
+        raise _git_failed("ignore path contains a NUL byte")
+    returncode, stdout, stderr = _run_raw(
+        repo, "check-ignore", "-v", "-z", "--stdin", literal_pathspecs=False,
+        input_bytes=payload,
     )
+    if returncode == 1:
+        return None
+    if returncode != 0:
+        raise _git_failed(f"git check-ignore failed ({returncode}): "
+                          f"{stderr.decode('utf-8', errors='replace').strip()[:200]}")
+    fields = _decode_or_reject(stdout, "ignore rule metadata").split("\0")
+    if (len(fields) != 5 or fields[-1] != "" or not fields[0]
+            or re.fullmatch(r"[1-9][0-9]*", fields[1]) is None or fields[3] != relative_path):
+        raise _git_failed("malformed git check-ignore rule metadata")
+    return None if fields[2].startswith("!") else fields[0]
 
 
 def verify_exact_commit(repo: Path, oid: str, *, remaining: Remaining) -> None:
@@ -906,14 +1036,7 @@ def is_ancestor(repo: Path, ancestor: str, descendant: str, *, remaining: Remain
     returncode, _, stderr = _run_raw(
         repo, "merge-base", "--is-ancestor", ancestor, descendant, remaining=remaining
     )
-    if returncode == 0:
-        return True
-    if returncode == 1:
-        return False
-    raise _git_failed(
-        f"git merge-base --is-ancestor failed ({returncode}): "
-        f"{stderr.decode('utf-8', errors='replace').strip()[:200]}"
-    )
+    return _zero_true_one_false(returncode, stderr, "git merge-base --is-ancestor")
 
 
 def tree_entry_kind(repo: Path, commit: str, path: str, *, remaining: Remaining) -> str | None:
@@ -939,7 +1062,7 @@ def tree_entry_kind(repo: Path, commit: str, path: str, *, remaining: Remaining)
         )
     if not stdout:
         return None
-    records = [record for record in stdout.split(b"\x00") if record]
+    records = [record_entry for record_entry in stdout.split(b"\x00") if record_entry]
     if len(records) != 1:
         raise _git_failed(
             f"git ls-tree returned {len(records)} entries for a single exact "
@@ -977,14 +1100,7 @@ def path_is_current(
         repo, "diff", "--quiet", "--exit-code", before, after, "--", path,
         remaining=remaining,
     )
-    if returncode == 0:
-        return True
-    if returncode == 1:
-        return False
-    raise _git_failed(
-        f"git diff --quiet failed ({returncode}): "
-        f"{stderr.decode('utf-8', errors='replace').strip()[:200]}"
-    )
+    return _zero_true_one_false(returncode, stderr, "git diff --quiet")
 
 
 # --------------------------------------------------------------------------
@@ -1125,7 +1241,8 @@ def _p22_argv(
 
 
 def _p22_spawn(
-    argv: Sequence[str], *, cwd: Path, identity: bool, stdin: int
+    argv: Sequence[str], *, cwd: Path, identity: bool, stdin: int,
+    deadline: _P22Deadline,
 ) -> subprocess.Popen[bytes]:
     """Launch one P22 child in its OWN process group.
 
@@ -1134,14 +1251,18 @@ def _p22_spawn(
     running with the pipe still open. Assay owns the whole group and kills
     the group.
     """
-    return subprocess.Popen(
-        list(argv),
-        cwd=str(cwd),
-        env=_p22_env(identity=identity),
-        stdin=stdin,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        start_new_session=True,
+    return _spawn_with_eagain_retry(
+        lambda: subprocess.Popen(
+            list(argv),
+            cwd=str(cwd),
+            env=_p22_env(identity=identity),
+            stdin=stdin,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            start_new_session=True,
+        ),
+        remaining=lambda: deadline.remaining("starting a private Git child"),
+        what="private Git",
     )
 
 
@@ -1150,7 +1271,7 @@ def _p22_kill(proc: subprocess.Popen[bytes] | None) -> None:
         return
     try:
         os.killpg(proc.pid, signal.SIGKILL)
-    except (OSError, ProcessLookupError):  # pragma: no cover - race with exit
+    except (OSError, ProcessLookupError):
         proc.kill()
 
 
@@ -1253,15 +1374,12 @@ def _p22_git(
     what = f"running git {' '.join(args[:2])}"
     out = bytearray()
     err = bytearray()
-    overflow: list[str] = []
-
     def take_stdout(chunk: bytes) -> None:
         if on_stdout is not None:
             on_stdout(chunk)
             return
         out.extend(chunk)
         if len(out) > max_stdout:
-            overflow.append("standard output")
             raise _git_failed(
                 f"git {' '.join(args[:2])} produced more than {max_stdout} "
                 f"bytes on standard output; refusing to process an unbounded "
@@ -1274,7 +1392,7 @@ def _p22_git(
             err.extend(chunk[:remaining])
 
     proc = _p22_spawn(
-        argv, cwd=cwd, identity=identity, stdin=subprocess.PIPE
+        argv, cwd=cwd, identity=identity, stdin=subprocess.PIPE, deadline=deadline
     )
     assert proc.stdin is not None and proc.stdout is not None
     assert proc.stderr is not None
@@ -1298,8 +1416,6 @@ def _p22_git(
     finally:
         proc.stdout.close()
         proc.stderr.close()
-    if overflow:  # pragma: no cover - take_stdout already raised
-        raise _git_failed(f"git {' '.join(args[:2])} overflowed {overflow[0]}")
     if proc.returncode != 0:
         raise _git_failed(
             f"git {' '.join(args)} failed in {git_dir} ({proc.returncode}): "
@@ -1342,20 +1458,32 @@ def _p22_stream_pack(
         args=("index-pack", "--stdin"),
     )
     producer = _p22_spawn(
-        producer_argv, cwd=source_cwd, identity=False, stdin=subprocess.PIPE
+        producer_argv, cwd=source_cwd, identity=False, stdin=subprocess.PIPE,
+        deadline=deadline,
     )
-    consumer: subprocess.Popen[bytes] | None = None
+    try:
+        consumer = _p22_spawn(
+            consumer_argv, cwd=seed_git_dir, identity=False, stdin=subprocess.PIPE,
+            deadline=deadline,
+        )
+    except BaseException:
+        _p22_kill(producer)
+        producer.wait()
+        assert producer.stdin is not None and producer.stdout is not None
+        assert producer.stderr is not None
+        producer.stdin.close()
+        producer.stdout.close()
+        producer.stderr.close()
+        raise
+
+    assert producer.stdin is not None and producer.stdout is not None
+    assert producer.stderr is not None
+    assert consumer.stdin is not None and consumer.stdout is not None
+    assert consumer.stderr is not None
     counted = 0
     producer_err = bytearray()
     consumer_err = bytearray()
     try:
-        consumer = _p22_spawn(
-            consumer_argv, cwd=seed_git_dir, identity=False, stdin=subprocess.PIPE
-        )
-        assert producer.stdin is not None and producer.stdout is not None
-        assert producer.stderr is not None
-        assert consumer.stdin is not None and consumer.stdout is not None
-        assert consumer.stderr is not None
         producer_stdin = os.dup(producer.stdin.fileno())
         producer.stdin.close()
         consumer_stdin = consumer.stdin.fileno()
@@ -1407,17 +1535,17 @@ def _p22_stream_pack(
         _p22_kill(producer)
         _p22_kill(consumer)
         producer.wait()
-        if consumer is not None:
-            consumer.wait()
+        consumer.wait()
         raise
     finally:
+        if producer.stdin is not None and not producer.stdin.closed:
+            producer.stdin.close()
         producer.stdout.close()
         producer.stderr.close()
-        if consumer is not None:
-            if consumer.stdin is not None and not consumer.stdin.closed:
-                consumer.stdin.close()
-            consumer.stdout.close()
-            consumer.stderr.close()
+        if consumer.stdin is not None and not consumer.stdin.closed:
+            consumer.stdin.close()
+        consumer.stdout.close()
+        consumer.stderr.close()
     if producer.returncode != 0:
         raise _git_failed(
             f"git pack-objects failed reading {source_git_dir} "
@@ -1462,7 +1590,7 @@ def _p22_init_private(
         *args,
     ]
     proc = _p22_spawn(
-        argv, cwd=template, identity=False, stdin=subprocess.DEVNULL
+        argv, cwd=template, identity=False, stdin=subprocess.DEVNULL, deadline=deadline
     )
     assert proc.stdout is not None and proc.stderr is not None
     err = bytearray()
@@ -1491,7 +1619,7 @@ def _p22_init_private(
         )
 
 
-@dataclass(frozen=True, kw_only=True)
+@record
 class _P22Source:
     """A consumer repository proven safe to read objects from.
 
@@ -1563,10 +1691,10 @@ def _p22_reject_external_topology(source: _P22Source, deadline: _P22Deadline) ->
         deadline=deadline,
         cwd=source.repo_top,
     )
-    for record in config.split(b"\x00"):
-        if not record:
+    for record_entry in config.split(b"\x00"):
+        if not record_entry:
             continue
-        key, _, value = record.partition(b"\n")
+        key, _, value = record_entry.partition(b"\n")
         name = _decode_or_reject(key, "a source config key").lower()
         if name.startswith("extensions.partialclone"):
             raise _git_failed(

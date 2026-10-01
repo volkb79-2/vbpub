@@ -32,7 +32,7 @@ def test_load_config_refuses_project_root_outside_orchestration_root(monkeypatch
         targets=SimpleNamespace(registry=[]), cleanup=None, env={},
     )
     monkeypatch.setattr(cli, "load_forge_config", lambda _: forge)
-    with pytest.raises(ValueError, match="project root is outside orchestration root"):
+    with pytest.raises(ValueError, match="project root .* outside the selected Git root"):
         cli.load_config(tmp_path / "cmru.toml", validate_dependencies=False)
 
 
@@ -44,7 +44,11 @@ def test_source_tree_version_returns_none_for_non_checkout_path(monkeypatch, tmp
     assert cli._source_tree_version() is None
 
 
-def test_cli_module_guard_runs_main_for_help(monkeypatch, capsys):
+def test_cli_module_guard_refuses_removed_module_alias(monkeypatch, capsys):
     monkeypatch.setattr(sys, "argv", ["cmru", "--help"])
-    runpy.run_path(str(cli.__file__), run_name="__main__")
-    assert "Configurable Multi Release Utility" in capsys.readouterr().out
+    with pytest.raises(SystemExit) as raised:
+        runpy.run_path(str(cli.__file__), run_name="__main__")
+    assert str(raised.value) == (
+        "Use the installed 'cmru' command; python -m cmru.cli is not supported."
+    )
+    assert capsys.readouterr().out == ""

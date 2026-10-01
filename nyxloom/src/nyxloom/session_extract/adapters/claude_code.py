@@ -222,12 +222,94 @@ def _split_qa_pairs(text: str, questions: list[Any]) -> list[tuple[str, str]] | 
     return pairs or None
 
 
+def _rejected_qa_question_text(line: str) -> str | None:
+    """Decode a quoted question row from Claude's rejection envelope."""
+    stripped = line.strip()
+    if not stripped.startswith("- "):
+        return None
+    try:
+        value = json.loads(stripped[2:])
+    except json.JSONDecodeError:
+        return None
+    return value if isinstance(value, str) else None
+
+
+def _split_rejected_qa_pairs(
+    text: str, questions: list[Any],
+) -> list[tuple[str, str | None]] | None:
+    """Parse the IDE's rejected-question reply envelope.
+
+    When a user asks to clarify an `AskUserQuestion` batch, Claude Code can
+    return a tool-result message headed by ``Questions asked:`` with one
+    ``Answer:`` or ``(No answer provided)`` row per question. This is a
+    different shape from the usual flattened ``"Q"="A"`` response. Parse
+    only when every question supplied by the original tool call is present
+    and each row has a recognized answer form; otherwise let the caller keep
+    the source text intact.
+    """
+    heading = "Questions asked:"
+    heading_at = text.find(heading)
+    if heading_at < 0:
+        return None
+
+    lines = text[heading_at + len(heading):].splitlines()
+    index = 0
+    pairs: list[tuple[str, str | None]] = []
+    for question in questions:
+        qtext = question.get("question") if isinstance(question, dict) else None
+        if not isinstance(qtext, str) or not qtext:
+            return None
+        while index < len(lines) and _rejected_qa_question_text(lines[index]) != qtext:
+            if (lines[index].strip().startswith("- ")
+                    or lines[index].strip().startswith("Answer:")
+                    or lines[index].strip() == "(No answer provided)"):
+                return None
+            index += 1
+        # The matching question row and its answer row must both exist. This
+        # single boundary check handles both an absent question and a final
+        # question with no following answer.
+        if index + 1 >= len(lines):
+            return None
+        index += 1
+
+        answer_line = lines[index].strip()
+        if answer_line == "(No answer provided)":
+            pairs.append((qtext, None))
+            index += 1
+            continue
+        if not answer_line.startswith("Answer:"):
+            return None
+
+        first_line = answer_line.partition(":")[2].lstrip()
+        answer_lines = [first_line] if first_line else []
+        index += 1
+        while index < len(lines):
+            line = lines[index]
+            stripped = line.strip()
+            if (_rejected_qa_question_text(line) is not None
+                    or stripped == "(No answer provided)"):
+                break
+            if stripped.startswith(("- ", "Answer:")):
+                return None
+            answer_lines.append(stripped)
+            index += 1
+        answer = "\n".join(answer_lines).strip()
+        if not answer:
+            return None
+        pairs.append((qtext, answer))
+
+    if any(line.strip() for line in lines[index:]):
+        return None
+    return pairs or None
+
+
 def _format_qa_pairs(text: str, questions: list[Any]) -> str:
     """Render an AskUserQuestion tool_result as, per question: an
-    `INTERVIEW: <question text>` line, every declared option as a bullet
-    list, a blank line, then `OPERATOR: <the actual answer>` -- a batch
-    answering several questions at once gets one such block per question,
-    blank line between blocks (operator-reported, 2026-09-10: the harness's
+    `INTERVIEW: <question text>` block with its displayed header, option
+    labels and descriptions, and multi-select behavior, then
+    `OPERATOR: <the actual answer>` -- a batch answering several questions
+    at once gets one such block per question, blank line between blocks
+    (operator-reported, 2026-09-10: the harness's
     own verbatim '"Q"="A"'-joined string was unreadable; INTERVIEW: prefix
     added 2026-09-11, operator direction, so a question line reads as a
     labeled question at a glance, distinct from the OPERATOR: answer below
@@ -240,20 +322,44 @@ def _format_qa_pairs(text: str, questions: list[Any]) -> str:
         return text
     pairs = _split_qa_pairs(text, questions)
     if pairs is None:
+        pairs = _split_rejected_qa_pairs(text, questions)
+    if pairs is None:
         return text
     blocks = []
     for (qtext, answer), q in zip(pairs, questions):
-        options = q.get("options") if isinstance(q, dict) else None
-        lines = [f"INTERVIEW: {qtext}"]
-        if isinstance(options, list):
-            for opt in options:
-                label = opt.get("label") if isinstance(opt, dict) else None
-                if label:
-                    lines.append(f"- {label}")
+        prompt = _format_askuserquestion_prompt(q)
+        lines = prompt.splitlines() if prompt is not None else [f"INTERVIEW: {qtext}"]
         lines.append("")
-        lines.append(f"OPERATOR: {answer}")
+        lines.append(f"OPERATOR: {answer if answer is not None else '(No answer provided)'}")
         blocks.append("\n".join(lines))
     return "\n\n".join(blocks)
+
+
+def _format_askuserquestion_prompt(question: Any) -> str | None:
+    """Render one Claude Code UI question at the record where it was shown."""
+    if not isinstance(question, dict):
+        return None
+    qtext = question.get("question")
+    if not isinstance(qtext, str) or not qtext:
+        return None
+    lines = [f"INTERVIEW: {qtext}"]
+    header = question.get("header")
+    if isinstance(header, str) and header:
+        lines.append(f"Header: {header}")
+    options = question.get("options")
+    if isinstance(options, list):
+        for option in options:
+            label = option.get("label") if isinstance(option, dict) else None
+            if isinstance(label, str) and label:
+                description = option.get("description")
+                if (isinstance(description, str) and description
+                        and description != label):
+                    lines.append(f"- {label}: {description}")
+                else:
+                    lines.append(f"- {label}")
+    if question.get("multiSelect") is True:
+        lines.append("Multiple selections are allowed.")
+    return "\n".join(lines)
 
 
 _SNIFF_SCAN_LINES = 50
@@ -491,7 +597,10 @@ def _remember_askuserquestion(rec: dict[str, Any], state: StreamState) -> None:
     for block in rec.get("message", {}).get("content", []) or []:
         if (isinstance(block, dict) and block.get("type") == "tool_use"
                 and block.get("name") == "AskUserQuestion" and block.get("id")):
-            questions = block.get("input", {}).get("questions")
+            tool_input = block.get("input")
+            questions = (
+                tool_input.get("questions") if isinstance(tool_input, dict) else None
+            )
             state.askuserquestion_inputs[block["id"]] = (
                 questions if isinstance(questions, list) else []
             )
@@ -558,7 +667,11 @@ def update_interview_pending(rec: dict[str, Any], pending: dict[str, str]) -> st
         for block in content or []:
             if (isinstance(block, dict) and block.get("type") == "tool_use"
                     and block.get("name") == "AskUserQuestion" and block.get("id")):
-                questions = block.get("input", {}).get("questions")
+                tool_input = block.get("input")
+                questions = (
+                    tool_input.get("questions")
+                    if isinstance(tool_input, dict) else None
+                )
                 first = questions[0] if isinstance(questions, list) and questions else None
                 text = first.get("question") if isinstance(first, dict) else None
                 pending[block["id"]] = text or "(question)"
@@ -605,8 +718,10 @@ def parse_record(
             # the first place -- only the trigger/token metadata that flag
             # has no reason to gate, a strict improvement over the old bare
             # "[compact boundary]" text either way.
-            events.append(NormalizedEvent(
-                seq, uuid, ts, EventKind.LIFECYCLE_MARKER, _compaction_boundary_label(rec)))
+            event = NormalizedEvent(
+                seq, uuid, ts, EventKind.LIFECYCLE_MARKER, _compaction_boundary_label(rec))
+            event.meta["boundary_type"] = "compaction"
+            events.append(event)
         return events
 
     if rtype == "assistant":
@@ -650,6 +765,26 @@ def parse_record(
                 text = block.get("text", "")
                 if text:
                     events.append(NormalizedEvent(seq, uuid, ts, EventKind.ASSISTANT_TEXT, text))
+            elif btype == "tool_use":
+                name = str(block.get("name") or "unknown")
+                tool_input = block.get("input")
+                if name == "AskUserQuestion" and isinstance(tool_input, dict):
+                    questions = tool_input.get("questions")
+                    if isinstance(questions, list):
+                        for question in questions:
+                            prompt = _format_askuserquestion_prompt(question)
+                            if prompt is not None:
+                                events.append(NormalizedEvent(
+                                    seq, uuid, ts, EventKind.QA_PAIR, prompt,
+                                ))
+                if config.show_tool_calls:
+                    intent = ""
+                    if config.show_tool_call_intent and isinstance(tool_input, dict):
+                        raw_intent = tool_input.get("description") or tool_input.get("intent")
+                        if isinstance(raw_intent, str):
+                            intent = " ".join(raw_intent.split())[:240]
+                    label = f"[tool call: {name}]" + (f" {intent}" if intent else "")
+                    events.append(NormalizedEvent(seq, uuid, ts, EventKind.TOOL_CALL, label))
             elif btype == "thinking" and config.include_thinking:
                 text = block.get("thinking", "")
                 if text:
@@ -658,7 +793,9 @@ def parse_record(
 
     if rtype == "user":
         if rec.get("isCompactSummary"):
-            events.append(NormalizedEvent(seq, uuid, ts, EventKind.LIFECYCLE_MARKER, "[compact summary]"))
+            event = NormalizedEvent(seq, uuid, ts, EventKind.LIFECYCLE_MARKER, "[compact summary]")
+            event.meta["boundary_type"] = "compaction_summary"
+            events.append(event)
             return events
 
         if rec.get("interruptedMessageId"):
@@ -725,7 +862,9 @@ def parse_record(
                 label = "[compaction: steered dispatched]"
             else:
                 label = f"[/{cmd}]" + (f" {cleaned}" if cleaned else "")
-            events.append(NormalizedEvent(seq, uuid, ts, EventKind.LIFECYCLE_MARKER, label))
+            event = NormalizedEvent(seq, uuid, ts, EventKind.LIFECYCLE_MARKER, label)
+            event.meta["boundary_type"] = "clear" if cmd == "clear" else "compact_command"
+            events.append(event)
             return events
         if not cleaned:
             return events
@@ -774,24 +913,28 @@ def parse(path: Path, session_id: str, config: ExtractConfig) -> list[Normalized
             if isinstance(block, dict) and block.get("type") == "tool_use" and block.get("name") == "AskUserQuestion":
                 tid = block.get("id")
                 if tid:
-                    questions = block.get("input", {}).get("questions")
+                    tool_input = block.get("input")
+                    questions = (
+                        tool_input.get("questions")
+                        if isinstance(tool_input, dict) else None
+                    )
                     askuserquestion_inputs[tid] = questions if isinstance(questions, list) else []
 
+    since_idx = None
     if config.since_marker is not None:
-        idx = next((i for i, r in indexed if (r.get("uuid") or f"line{i}") == config.since_marker), None)
-        if idx is None:
+        since_idx = next((i for i, r in indexed if (r.get("uuid") or f"line{i}") == config.since_marker), None)
+        if since_idx is None:
             raise ValueError(
                 f"--since marker {config.since_marker!r} not found as a uuid in {path}"
             )
-        indexed = [(i, r) for i, r in indexed if i > idx]
 
+    until_idx = None
     if config.until_marker is not None:
-        idx = next((i for i, r in indexed if (r.get("uuid") or f"line{i}") == config.until_marker), None)
-        if idx is None:
+        until_idx = next((i for i, r in indexed if (r.get("uuid") or f"line{i}") == config.until_marker), None)
+        if until_idx is None:
             raise ValueError(
                 f"--until marker {config.until_marker!r} not found as a uuid in {path}"
             )
-        indexed = [(i, r) for i, r in indexed if i <= idx]
 
     # isSidechain targeting is auto-detected from the file's OWN content, not
     # a CLI flag (an earlier --include-sidechain flag was removed 2026-09-11,
@@ -820,7 +963,17 @@ def parse(path: Path, session_id: str, config: ExtractConfig) -> list[Normalized
         has_primary_thread=has_primary_thread, askuserquestion_inputs=askuserquestion_inputs
     )
     events: list[NormalizedEvent] = []
-    for seq, (abs_i, rec) in enumerate(indexed):
-        events += parse_record(rec, seq, f"line{abs_i}", config, state)
+    epoch = 1
+    for abs_i, rec in indexed:
+        record_events = parse_record(rec, abs_i, f"line{abs_i}", config, state)
+        if any(event.meta.get("boundary_type") == "clear" for event in record_events):
+            epoch += 1
+        for event in record_events:
+            event.meta["epoch"] = str(epoch)
+        if since_idx is not None and abs_i <= since_idx:
+            continue
+        if until_idx is not None and abs_i > until_idx:
+            continue
+        events.extend(record_events)
 
     return events

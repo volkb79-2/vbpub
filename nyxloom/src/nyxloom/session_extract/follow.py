@@ -64,9 +64,10 @@ reason:
   1. `interview_pending` -- **Claude Code only**, and the only structural
      one: an `AskUserQuestion` tool_use with no matching tool_result yet
      (adapters/claude_code.update_interview_pending, reusing that adapter's
-     own tool_use/tool_result pairing). **Documented gap**: no equivalent
-     exists in Codex's, Reasonix's, or opencode's schema as currently understood -- see
-     both adapters' own "Known gaps" notes. Not guessed at.
+     own tool_use/tool_result pairing). Codex prompts and replies are now
+     extracted from `request_user_input_async` and its reply envelope, but
+     Codex pending-question state is not yet wired into attention. No
+     equivalent has been identified in Reasonix's or opencode's schema.
   2. `checkpoint_detected` -- all adapters. Under `extract --follow` this is
      the real scored decision above. Under `extract-lossless --follow` there
      is no scoring at all by design, so it falls back to
@@ -382,6 +383,7 @@ class JsonlSource:
         self._lossless = lossless_mode
         self._seq = 0
         self._state = claude_code.StreamState(has_primary_thread=has_primary_thread)
+        self._codex_state = codex.StreamState()
         self.initial_interview_pending: dict[str, str] = {}
         if self._fmt == "claude-code":
             # The first live answer may refer to an AskUserQuestion whose
@@ -390,6 +392,10 @@ class JsonlSource:
             claude_code.prime_stream_state(path, self._state, offset)
             self.initial_interview_pending = _prime_interview_pending(
                 path, offset, has_primary_thread,
+            )
+        elif self._fmt == "codex":
+            codex.prime_stream_state(
+                path, self._codex_state, offset, since_marker=config.since_marker,
             )
 
     def close(self) -> None:
@@ -435,7 +441,9 @@ class JsonlSource:
                 if self._fmt == "claude-code":
                     blocks = claude_code_blocks(rec, marker)
                 elif self._fmt == "codex":
-                    blocks = codex_blocks(rec, str(rec.get("ordinal", marker)))
+                    blocks = codex_blocks(
+                        rec, str(rec.get("ordinal", marker)), state=self._codex_state,
+                    )
                 else:
                     blocks = reasonix_blocks(rec, marker)
                 arrivals.append(Arrival(blocks=blocks, raw=rec))
@@ -443,7 +451,7 @@ class JsonlSource:
                 if self._fmt == "claude-code":
                     events = claude_code.parse_record(rec, self._seq, marker, self._config, self._state)
                 elif self._fmt == "codex":
-                    events = codex.parse_record(rec, self._seq, marker, self._config)
+                    events = codex.parse_record(rec, self._seq, marker, self._config, self._codex_state)
                 else:
                     events = reasonix.parse_record(rec, self._seq, marker, self._config)
                 arrivals.append(Arrival(events=events, raw=rec))
@@ -869,6 +877,7 @@ class Follower:
         insert_blank_lines: int = 1,
         printed_any: bool = True,
         bell_out=None,
+        source_metadata: dict[str, str] | None = None,
     ):
         self._source = source
         self._harness = harness
@@ -879,6 +888,7 @@ class Follower:
         self._bell_out = bell_out if bell_out is not None else sys.stderr
         self._lossless = lossless_mode
         self._block_render = block_render
+        self._source_metadata = source_metadata
         self._selector = None if lossless_mode else FollowSelector(config)
         # lossless blocks join with a blank line, exactly as its own dump
         # does; extract blocks join with the same "---" separator render.py
@@ -977,7 +987,19 @@ class Follower:
                 result = self._selector.feed(ev)
                 for emitted in result.emitted:
                     self._redact(emitted)
-                    self._write(render.render_event_block(emitted, self._block_render))
+                    self._write(render.render_event_block(
+                        emitted, self._block_render,
+                        self._config.show_timestamps, self._config.timestamp_format,
+                    ))
+                    if self._config.extract_metadata in {"post", "both"}:
+                        # Keep a saved follow stream resumable from its newest
+                        # emitted source event. It may contain many cursor
+                        # comments; read_marker chooses the trailing post one.
+                        self._out.write("\n\n")
+                        self._out.write(render._metadata_comment(
+                            self._harness, emitted.marker, self._source_metadata, "post",
+                        ))
+                        self._out.write("\n")
                     printed += 1
                 for checkpoint in result.checkpoints:
                     self._fire("checkpoint_detected", checkpoint.text)

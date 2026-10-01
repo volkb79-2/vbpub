@@ -10,6 +10,17 @@ the elevator/IOWeight traps, the `io.max`-composes-not-competes proof). This
 plan does not repeat that content; it only adds what CGROUP-NOTES.md itself
 flagged as missing: "What's new provisioning work, not yet built."
 
+## Shared generator source (2026-09-27)
+
+Both MDT and `debian-install-v2` consume
+`scripts/debian-install-v2/tools/iocost_coef_gen.py`, generated from the
+pristine vendor copy and the ordered patch series. Run
+`python3 scripts/debian-install-v2/tools/build-iocost-generator.py --check`
+to detect drift. Raw `--testdev` now resolves partition scheduler sysfs, but
+MDT's host benchmark still requires its file target to share a filesystem
+with Docker data. This plan does not create or mount a scratch partition;
+integrating partition lifecycle remains a separate safety pass.
+
 ## Correction to carry forward
 
 An earlier live check this session mis-reported `io.cost.model`/`io.cost.qos`

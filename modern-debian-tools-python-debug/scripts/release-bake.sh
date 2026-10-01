@@ -32,6 +32,7 @@ oci_layout_bake() {
         return 2
     }
 
+    configure_cache_args
     rm -rf "${OCI_LAYOUT_DIR}"
     mkdir -p "${OCI_LAYOUT_DIR}"
 
@@ -52,8 +53,8 @@ oci_layout_bake() {
     # governed builder's content store at once. Under host memory/IO pressure the
     # loser's write blocks on the winner's lock long enough to trip the builder's
     # health check and get killed mid-write ("ref layer-... locked for Ns...
-    # unavailable" -> "context canceled" -> EOF). Serializing avoids the race, and
-    # the second target's shared layers hit the local cache-from dir for free.
+    # unavailable" -> "context canceled" -> EOF). Serializing avoids the race;
+    # the second target reuses shared layers from the persistent remote cache.
     for target in "${targets[@]}"; do
         safe="${target//[^A-Za-z0-9._-]/_}"
         bake_args=(docker buildx bake -f docker-bake.hcl "${target}")
@@ -88,6 +89,7 @@ registry_bake() {
         return 2
     }
 
+    configure_cache_args
     local bake_json target output
     local -a targets bake_args
     bake_json="$(docker buildx bake -f docker-bake.hcl all --print)"
@@ -118,18 +120,17 @@ fi
 
 bash scripts/ensure-release-builder.sh
 
-# The common Git directory is shared by disposable cmru release worktrees.
-COMMON_GIT_DIR="$(git rev-parse --git-common-dir)"
-if [[ "${COMMON_GIT_DIR}" != /* ]]; then
-    COMMON_GIT_DIR="$(pwd)/${COMMON_GIT_DIR}"
-fi
-CACHE_DIR="${MDT_BUILDKIT_CACHE_DIR:-${COMMON_GIT_DIR}/mdt-buildkit-cache}"
-mkdir -p "${CACHE_DIR}"
-CACHE_ARGS=(
-    --set "*.cache-from=type=local,src=${CACHE_DIR}"
-    --set "*.cache-to=type=local,dest=${CACHE_DIR},mode=max"
-)
 OCI_LAYOUT_DIR="${MDT_OCI_LAYOUT_DIR:-build/oci-layouts}"
+
+configure_cache_args() {
+    # The managed remote owns a persistent cache volume. A type=local cache
+    # exporter streams the entire cache through the client-visible Docker API
+    # after the OCI tarball has completed; large exports can hit the same EOF
+    # boundary as any other long client stream. Keep the release path on the
+    # remote cache and do not add a second client-visible cache transfer.
+    CACHE_ARGS=()
+    echo "[INFO] Using persistent mdt-buildkitd cache; local client cache export disabled"
+}
 
 case "${FLOW}" in
     load)
@@ -163,6 +164,7 @@ case "${FLOW}" in
         fi
 
         : "${REPACK_WORK_DIR:?REPACK_WORK_DIR must be configured}"
+        configure_cache_args
         rm -rf "${REPACK_WORK_DIR}"
         mkdir -p "${REPACK_WORK_DIR}"
 

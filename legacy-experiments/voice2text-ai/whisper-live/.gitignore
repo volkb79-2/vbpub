@@ -1,0 +1,6 @@
+*.active.toml
+docker-compose.yml
+vol-*
+.env
+__pycache__
+*.pyc

@@ -19,7 +19,7 @@ CommandListener, and it does not import decision_chat.
 NO DAEMON, NO LOOP (deliberate). `poll_once` polls exactly once and returns.
 There is no thread, no sleep and no signal handling anywhere in this module,
 so the scheduled-jobs subsystem (B20/F015, unbuilt) can adopt it as a job
-without unpicking a loop first. `nyxloom intake-bridge poll` is the CLI
+without unpicking a loop first. `nyxloomctl intake-bridge poll` is the CLI
 consumer today.
 
 TWO READ TRANSPORTS, ONE INTERFACE (`MessageReader`). Both are real; the

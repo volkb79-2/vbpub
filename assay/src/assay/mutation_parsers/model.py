@@ -14,7 +14,7 @@ translation belongs, since a parser cannot know a lane's diff.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from ..records import record
 from typing import Mapping
 
 __all__ = [
@@ -49,7 +49,7 @@ INGESTED_MUTANT_STATUSES: frozenset[str] = frozenset(
 )
 
 
-@dataclass(frozen=True, kw_only=True)
+@record
 class MutationProducerIdentity:
     """WHO wrote the report, copied verbatim out of it.
 
@@ -63,7 +63,7 @@ class MutationProducerIdentity:
     report_schema_version: str
 
 
-@dataclass(frozen=True, kw_only=True)
+@record
 class IngestedMutant:
     """One mutant, normalized onto assay's own identity grammar.
 
@@ -97,7 +97,7 @@ class IngestedMutant:
     status: str
 
 
-@dataclass(frozen=True, kw_only=True)
+@record
 class IngestedMutationReport:
     """One parsed mutation report.
 

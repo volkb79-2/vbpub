@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# debian-install-v2 — io.cost calibration wrapper around the vendored,
-# unmodified tools/iocost_coef_gen.py (Linux kernel source, GPL-2.0).
+# debian-install-v2 — io.cost calibration wrapper around the shared
+# Linux-derived tools/iocost_coef_gen.py copy (GPL-2.0; local patches are
+# documented inline and in the host-setup TODO).
 #
 # WHY THIS EXISTS, and why it's separate from mdt-io-baseline.py's own
 # fio benchmark (modern-debian-tools-python-debug/host-setup): that one
@@ -89,7 +90,7 @@ DEVNO="${RESULT_LINE%% *}"
 {
   echo "MEASURED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   echo "DEVNO=$DEVNO"
-  echo "MEASURE_METHOD=iocost_coef_gen-upstream"
+  echo "MEASURE_METHOD=iocost_coef_gen-shared-local-patches"
   for pair in ${RESULT_LINE#* }; do
     key="${pair%%=*}"
     val="${pair#*=}"

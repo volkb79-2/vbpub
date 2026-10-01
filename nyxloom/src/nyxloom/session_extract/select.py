@@ -31,19 +31,18 @@ Windowing contract:
     recency alone rescuing one. See config.py's module docstring
     ("append-only / cache-stable") for why the tool should default toward
     dropping marginal content rather than keeping it;
-  - OPERATOR_TEXT and QA_PAIR are always kept, anywhere in the walked span;
+  - OPERATOR_TEXT, QA_PAIR, and explicitly-enabled TOOL_CALL events are
+    always kept, anywhere in the walked span;
   - a LIFECYCLE_MARKER is always kept (as a note) REGARDLESS of max_words --
     never rejected for its own length -- but its own word count DOES count
     toward the running total (2026-09-11 bug fix; previously it counted for
     zero, so a large marker body -- e.g. an operator's /compact <prompt>
     dispatch under --show-compaction-content, see config.py -- could
     silently blow straight through the budget with no trim ever
-    triggering). By default (config.max_lifecycle_markers == 0) the FIRST
-    one hard-stops the walk -- content on the far side of a compaction
-    boundary or an explicit /compact//clear is a different kind of
-    artifact, not walked past, by default. config.max_lifecycle_markers
-    raises how many markers the walk is allowed to pass before it finally
-    stops at one -- see config.py;
+    triggering). Only actual compaction boundaries count toward
+    config.max_compactions. `/clear` is handled as an epoch boundary before
+    this walk; `/compact` command records and compact-summary echoes are not
+    counted as actual compactions;
   - once max_checkpoints have been found, the walk stops immediately
     (the window never reaches further back than the oldest of the target
     checkpoints) -- max_checkpoints=-1 disables this condition entirely;
@@ -51,13 +50,10 @@ Windowing contract:
     included) exceeds max_words, the walk stops -- max_words=-1 disables
     this condition entirely.
 
-These three (max_checkpoints, max_words, max_lifecycle_markers) are
-independent stop conditions checked every iteration -- the walk halts the
-instant ANY ONE of them trips, whichever comes first scanning backward from
-the newest event. Each accepts -1 to mean "never trips due to this
-condition"; with all three at their permissive extreme (max_checkpoints=-1,
-max_words=-1, max_lifecycle_markers=-1) the walk only stops at the true
-start of the log.
+Checkpoint count, word count, compaction count, and elapsed session time
+are independent stop conditions. Any one can end the backward walk; -1
+disables that condition. With every condition disabled, the walk reaches the
+start of the selected epoch span.
 
 Two annotations, purely additive via NormalizedEvent.meta (never the return
 type or an event's own .text -- so this changes nothing about equality
@@ -77,16 +73,11 @@ reads .text):
     seeing," which is exactly the gap E-011 (docs/design-context-lifecycle-
     experiments.md) flagged: two adjacent kept events currently look
     time-adjacent whether or not they actually were.
-  - `meta["walk_stopped_because"]` -- set on the OLDEST kept event, but
-    ONLY for the two ways the walk can stop with more session left unread:
-    "max_words" or "max_checkpoints". Reaching the true start of the
-    session (the for/else below) and hard-stopping at a LIFECYCLE_MARKER
-    are both left untagged on purpose -- the former genuinely lost nothing,
-    and the marker's own kept text ("[compact boundary]" etc) already says
-    why the walk stopped there; a second tag would be redundant. This is
-    the "why did selection stop here" signal E-011 asked for: today
-    reaching the real start of the log and hitting a budget wall render
-    identically, with no way for a reader to tell the difference.
+  - `meta["walk_stopped_because"]` -- set on the OLDEST kept event when a
+    checkpoint, word, compaction, or time stop leaves older source content
+    unread. Reaching the true start of the selected epoch is left untagged;
+    the walk genuinely lost nothing there. This is the "why did selection
+    stop here" signal E-011 asked for.
 
 Both are a property of THIS render's own walk over its own span, computed
 fresh every call -- nothing already emitted by a prior --since run is ever
@@ -95,16 +86,18 @@ retroactively edited (config.py's append-only / cache-stable principle).
 `decide()` below is the PER-EVENT half of that contract, factored out of
 the walk (2026-09-12) so `--follow`'s forward stream (follow.py) can apply
 the identical rule to a newly-arrived event instead of reimplementing it.
-Only the per-event half generalizes: the three aggregate stop conditions
-(max_checkpoints / max_words / max_lifecycle_markers) are statements about
-a fixed, already-known span and mean nothing against an unbounded stream,
-so they stay here in the walk. The split is behavior-preserving -- select()
-now consumes decide() rather than repeating it.
+Only the per-event half generalizes: aggregate stop conditions
+(max_checkpoints / max_words / max_compactions / max_time_minutes) are
+statements about a fixed, already-known span and mean nothing against an
+unbounded stream, so they stay here in the walk. The split is
+behavior-preserving -- select() now consumes decide() rather than repeating
+it.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 
 from . import classifier
 from .config import ExtractConfig
@@ -137,7 +130,7 @@ def decide(ev: NormalizedEvent, config: ExtractConfig) -> EventDecision:
     if ev.kind is EventKind.LIFECYCLE_MARKER:
         return EventDecision(keep=True, is_lifecycle_marker=True)
 
-    if ev.kind in (EventKind.OPERATOR_TEXT, EventKind.QA_PAIR):
+    if ev.kind in (EventKind.OPERATOR_TEXT, EventKind.QA_PAIR, EventKind.TOOL_CALL):
         return EventDecision(keep=True)
 
     if ev.kind in (EventKind.ASSISTANT_TEXT, EventKind.THINKING):
@@ -160,8 +153,24 @@ def select(events: list[NormalizedEvent], config: ExtractConfig) -> list[Normali
     kept: list[NormalizedEvent] = []
     checkpoints_found = 0
     word_count = 0
-    markers_passed = 0
+    compactions_passed = 0
     last_kept_seq: int | None = None
+
+    def _parse_timestamp(raw: str) -> datetime | None:
+        if not raw:
+            return None
+        try:
+            value = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value
+
+    timestamps = [_parse_timestamp(ev.timestamp) for ev in events]
+    end_timestamp = max((value for value in timestamps if value is not None), default=None)
+    if config.max_time_minutes != -1 and events and any(value is None for value in timestamps):
+        raise ValueError(
+            "--max-time-minutes requires a valid timestamp on every selected event"
+        )
 
     def _keep(ev: NormalizedEvent) -> None:
         nonlocal last_kept_seq
@@ -172,7 +181,20 @@ def select(events: list[NormalizedEvent], config: ExtractConfig) -> list[Normali
         kept.append(ev)
         last_kept_seq = ev.seq
 
-    for ev in reversed(events):
+    for reverse_index, ev in enumerate(reversed(events)):
+        older_events_remain = reverse_index + 1 < len(events)
+
+        def _record_stop(reason: str, *, current_omitted: bool = False) -> None:
+            if kept and (older_events_remain or current_omitted):
+                kept[-1].meta["walk_stopped_because"] = reason
+
+        event_timestamp = _parse_timestamp(ev.timestamp)
+        if (config.max_time_minutes != -1 and event_timestamp is not None
+                and end_timestamp is not None
+                and (end_timestamp - event_timestamp).total_seconds() > config.max_time_minutes * 60):
+            _record_stop("max_time_minutes", current_omitted=True)
+            break
+
         # A rejected event is not skipped silently -- it falls into the
         # next-older kept event's own gap_after count, exactly like a raw
         # record that never became a NormalizedEvent at all.
@@ -193,10 +215,17 @@ def select(events: list[NormalizedEvent], config: ExtractConfig) -> list[Normali
             # through (no `continue`) to the shared max_words check at the
             # bottom of the loop, exactly like every other kept event.
             word_count += len(ev.text.split())
-            may_pass = config.max_lifecycle_markers == -1 or markers_passed < config.max_lifecycle_markers
-            if not may_pass:
-                break
-            markers_passed += 1
+            boundary_type = ev.meta.get("boundary_type")
+            if boundary_type == "compaction" or (
+                boundary_type is None and ev.text.startswith((
+                    "[compacted]", "[context_compacted]", "[compaction:", "[compact boundary]",
+                ))
+            ):
+                may_pass = config.max_compactions == -1 or compactions_passed < config.max_compactions
+                if not may_pass:
+                    _record_stop("max_compactions")
+                    break
+                compactions_passed += 1
 
         elif verdict.keep:
             _keep(ev)
@@ -204,13 +233,11 @@ def select(events: list[NormalizedEvent], config: ExtractConfig) -> list[Normali
             if verdict.is_checkpoint:
                 checkpoints_found += 1
                 if config.max_checkpoints != -1 and checkpoints_found >= config.max_checkpoints:
-                    if kept:
-                        kept[-1].meta["walk_stopped_because"] = "max_checkpoints"
+                    _record_stop("max_checkpoints")
                     break
 
         if config.max_words != -1 and word_count > config.max_words:
-            if kept:
-                kept[-1].meta["walk_stopped_because"] = "max_words"
+            _record_stop("max_words")
             break
 
     kept.reverse()

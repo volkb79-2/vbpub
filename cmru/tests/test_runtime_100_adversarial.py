@@ -168,7 +168,6 @@ def test_output_stream_preserves_partial_severity_and_passthrough():
     wrapped.write("ROR] bad\nplain")
     wrapped.flush()
     assert stream.getvalue() == "[ERROR] bad\nplain"
-    assert output.consume_cli_flags(["--log-prefix-time-short", "run", "--", "--log-prefix-time-short"]) == ["run", "--", "--log-prefix-time-short"]
 
 
 def test_standards_assessment_reports_tester_and_wheel_policy_gaps(tmp_path):

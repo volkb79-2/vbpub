@@ -100,6 +100,27 @@ else (see [DEVCONTAINER-LIFECYCLE.md](../DEVCONTAINER-LIFECYCLE.md) § "Host res
 prerequisite, graceful degradation, and how to introspect effective limits from inside the
 container).
 
+### VM userland is a cockpit tool, not a service boundary
+
+Headless QEMU is a useful exception to the specialized-service boundary when a
+human is provisioning a disposable guest from the cockpit. The image carries
+only the command-line client, disk-image tools, UEFI firmware, and cloud-image
+seed tooling. It does not carry libvirt or run a QEMU daemon, because that would
+turn every cockpit into a privileged VM host.
+
+The default runner uses QEMU TCG and user-mode networking, so it needs no
+`/dev/kvm`, `/dev/net/tun`, or extra host capability. KVM and TAP are optional
+host resources and must be exposed explicitly only when a test requires them;
+such a runner still belongs in the host's governed test/build tier and must use
+disposable guest disks.
+
+A privileged Docker container is not a safe boundary for loop devices,
+partition devices, `mkswap`, `swapon`, `swapoff`, initramfs, reboot, or other
+host-kernel state: containers share the host kernel, and loop/swap are not
+namespaced. Those tests belong inside the guest. Keep a privileged container
+only for userland/systemd tests that do not create or activate host-visible
+devices or mutate global kernel state.
+
 ## Applications of the doctrine
 
 ### Browsers live in a service, never in the image — *security*

@@ -8,6 +8,8 @@ contain no real prompts, credentials, or session history.
 
 from __future__ import annotations
 
+from nyxloom.cli_harness import main as harness_main
+
 import json
 from pathlib import Path
 
@@ -184,10 +186,10 @@ def test_report_and_discovery_do_not_claim_unsupported_reasonix_surfaces(
 ):
     path = _write_reasonix_fixture(tmp_path)
 
-    assert cli.main(["extract-report", str(path)]) == 1
+    assert harness_main(["extract-report", str(path)]) == 1
     assert "does not support 'reasonix'" in capsys.readouterr().err
 
-    assert cli.main(["extract-sessions", str(path)]) == 1
+    assert harness_main(["extract-sessions", str(path)]) == 1
     assert "does not support 'reasonix'" in capsys.readouterr().err
 
 
@@ -337,13 +339,13 @@ def test_cli_extract_and_lossless_accept_reasonix_format_and_auto_detection(
     tmp_path, capsys
 ):
     path = _write_reasonix_fixture(tmp_path)
-    assert cli.main(["extract-lossless", str(path)]) == 0
+    assert harness_main(["extract-lossless", str(path)]) == 0
     auto_output = capsys.readouterr().out
     assert "format=reasonix" in auto_output
     assert "assistant answer" in auto_output
 
     assert (
-        cli.main(
+        harness_main(
             [
                 "extract",
                 str(path),
@@ -360,7 +362,7 @@ def test_cli_extract_and_lossless_accept_reasonix_format_and_auto_detection(
     assert "operator request" in explicit_output
 
     assert (
-        cli.main(["extract-debug", str(path), "--format", "reasonix", "--no-color"])
+        harness_main(["extract-debug", str(path), "--format", "reasonix", "--no-color"])
         == 0
     )
     debug_output = capsys.readouterr().out

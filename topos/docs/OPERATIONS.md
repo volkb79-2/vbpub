@@ -11,6 +11,13 @@ pip install -e topos/
 topos --version
 ```
 
+`topos --version` is the one-line identity probe. Help, usage, and configuration
+diagnostics from the operational and acceptance parsers begin with the TOPOS
+headline as line 1 at every command depth; normal command output is unchanged.
+The documented `python -m topos.acceptance` entrypoint accepts the same
+top-level `--version` probe and prints `topos <version>`; use either this
+module or the installed `topos` console for the product identity.
+
 For test/dev without installing:
 
 ```bash
@@ -23,6 +30,7 @@ Collect one frame as JSON:
 
 ```bash
 topos --once --json
+topos --version
 ```
 
 Open the live TUI:

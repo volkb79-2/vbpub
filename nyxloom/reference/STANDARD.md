@@ -235,7 +235,7 @@ beyond "a gate exists", a *meaningful* gate should:
   *inside* the container. Two defenses: run container gates **detached**
   (`docker run -d` → `docker wait` for the code → `docker logs` for the output,
   never the attached/hijacked stream — this is what `gate_scaffold` emits); and
-  probe the transport before trusting a verdict — `nyxloom doctor` fails closed
+  probe the transport before trusting a verdict — `nyxloomctl doctor` fails closed
   when `transport_check.probe_default()` detects a truncating transport;
 - ideally enforce a **completeness floor** (e.g. changed-line coverage) and run in
   **parallel** so the floor stays affordable.

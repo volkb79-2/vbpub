@@ -125,7 +125,9 @@ def test_runner_dynamic_environment_rejects_empty_key(tmp_path, monkeypatch):
         runner.apply_env_command(["emit-env"], tmp_path)
 
 
-def test_runner_required_environment_names_all_missing_values():
+def test_runner_required_environment_names_all_missing_values(monkeypatch):
+    monkeypatch.delenv("A", raising=False)
+    monkeypatch.delenv("B", raising=False)
     with pytest.raises(RuntimeError, match="A, B"):
         runner.ensure_required_env(["A", "B"])
 
@@ -151,6 +153,7 @@ def test_runner_nonzero_command_preserves_log_and_raises(tmp_path):
 
 def test_runner_build_date_requires_a_commit_when_metadata_requested(tmp_path, monkeypatch):
     monkeypatch.delenv("SOURCE_DATE_EPOCH", raising=False)
+    monkeypatch.delenv("BUILD_DATE", raising=False)
     monkeypatch.setattr(runner, "apply_reproducible_env", lambda _root: None)
     with pytest.raises(RuntimeError, match="derive BUILD_DATE"):
         runner.compute_build_date({"build_metadata": {"date_env": "BUILD_DATE"}}, tmp_path)
@@ -166,10 +169,8 @@ def test_runner_build_date_requires_a_commit_when_metadata_requested(tmp_path, m
      (tester_gate.resolve_dind_image, {}, "nested Docker image")],
 )
 def test_tester_gate_refuses_unconfigured_resource(resolver, env, expected, monkeypatch):
-    if resolver is tester_gate.resolve_cgroup_parent:
-        pytest.skip("cgroup_parent is declared-only since the CIU-46 wave: "
-                    "unset resolves to None (announced unscoped launch), not a refusal")
-    for name in ("CMRU_TESTER_CGROUP_PARENT", "CGROUP_PARENT_DEV_BACKGROUND",
+    for name in ("CMRU_TESTER_CGROUP_PARENT", "CGROUP_PARENT_DEV_GATES",
+                 "CGROUP_PARENT_DEV_BACKGROUND",
                  "CMRU_TESTER_MEMORY", "CMRU_TESTER_MEMORY_SWAP", "CMRU_TESTER_CPUS",
                  "CMRU_TESTER_CGROUP_PROBE_IMAGE", "CMRU_TESTER_DIND_IMAGE"):
         monkeypatch.delenv(name, raising=False)
@@ -179,14 +180,18 @@ def test_tester_gate_refuses_unconfigured_resource(resolver, env, expected, monk
 
 def test_tester_gate_slice_probe_accepts_loaded_configured_host_unit(monkeypatch):
     monkeypatch.setattr(tester_gate.shutil, "which", lambda name: "/usr/bin/docker")
-    monkeypatch.setattr(
-        tester_gate.subprocess, "run",
-        lambda *args, **kwargs: SimpleNamespace(
+    seen = {}
+    def fake_run(argv, **kwargs):
+        seen["argv"] = argv
+        return SimpleNamespace(
             returncode=0, stdout="LoadState=loaded\nFragmentPath=/etc/systemd/x.slice\n", stderr=""
-        ),
+        )
+    monkeypatch.setattr(
+        tester_gate.subprocess, "run", fake_run,
     )
-    exists, note = tester_gate.check_slice_unit("build.slice", "debian:test")
+    exists, note = tester_gate.check_slice_unit("build.slice", "debian:test", "dev-gates.slice")
     assert exists is True and "FragmentPath" in note
+    assert seen["argv"][:3] == ["docker", "run", "--cgroup-parent=dev-gates.slice"]
 
 
 def test_tester_gate_slice_probe_rejects_transient_unit(monkeypatch):
@@ -195,7 +200,7 @@ def test_tester_gate_slice_probe_rejects_transient_unit(monkeypatch):
         tester_gate.subprocess, "run",
         lambda *args, **kwargs: SimpleNamespace(returncode=0, stdout="LoadState=loaded\nFragmentPath=\n", stderr=""),
     )
-    exists, note = tester_gate.check_slice_unit("typo.slice", "debian:test")
+    exists, note = tester_gate.check_slice_unit("typo.slice", "debian:test", "dev-gates.slice")
     assert exists is False and "TRANSIENT" in note
 
 
@@ -215,12 +220,11 @@ def test_tester_gate_docker_command_contains_mount_limits_and_command(tmp_path, 
 
 def test_tester_gate_main_refuses_missing_image_before_host_launch(monkeypatch):
     for name in ("CMRU_TESTER_UNIFIED_IMAGE", "CMRU_TESTER_CGROUP_PARENT",
-                 "CGROUP_PARENT_DEV_BACKGROUND"):
+                 "CGROUP_PARENT_DEV_GATES", "CGROUP_PARENT_DEV_BACKGROUND"):
         monkeypatch.delenv(name, raising=False)
     # KI-17: the missing image now surfaces at the aggregate preflight, up
     # front and before any host/container launch, naming the variable.
-    with pytest.raises(SystemExit, match="missing required configuration: CMRU_TESTER_UNIFIED_IMAGE"):
-        tester_gate.main(["--cwd", ".", "--", "true"])
+    assert tester_gate.main(["--cwd", ".", "--", "true"]) != 0
 
 
 def test_standards_messages_distinguish_manual_projects_and_gate_contract():

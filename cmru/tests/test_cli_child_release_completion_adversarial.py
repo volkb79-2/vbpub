@@ -31,6 +31,7 @@ def test_child_release_persists_scope_pushes_backup_and_reports_completion(monke
     monkeypatch.setattr(transaction, "write_release_scope", lambda *args: scope.append(args[-1]))
     monkeypatch.setattr(transaction, "push_backup_branch", lambda *args: scope.append("backup"))
     monkeypatch.setattr(cli, "_release_projects_sequentially", lambda *args, **kwargs: released)
-    cli.main(["release", "--_transaction-child", "--config", str(tmp_path / "cmru.toml")] + (["--no-build"] if no_build else []))
+    monkeypatch.setattr(cli.transaction, "is_transaction_child", lambda _root: True)
+    cli.main(["release", "--config", str(tmp_path / "cmru.toml")] + (["--no-build"] if no_build else []))
     assert scope == [["demo"], "backup"]
     assert message in capsys.readouterr().out

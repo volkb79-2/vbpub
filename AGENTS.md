@@ -8,10 +8,11 @@ Reasonix). Repo-wide rules; each project adds its own specifics under its
 nyxloom's cross-project doctrine lives **with the product**, never copied into a
 trove: `reference/AUTHORING.md` (handoff contract), `reference/STANDARD.md`
 (trove spec), `reference/DOCTRINE.md` (operational lessons — gates, evidence,
-review, merge discipline). A project adds to or overrides any of them with the
-**same-named sibling** in its own `nyxloom-trove/` — read canonical first, then
-the sibling, which refines (never replaces) it. Everything below is *this repo's*
-delta on top of that doctrine.
+review, merge discipline). Project-specific additions or overrides live in the
+**same-named sibling** in that project's `nyxloom-trove/`. Read canonical first,
+then the sibling: it may refine or define project-scoped exceptions to particular
+rules, but it does not replace the canonical document as a whole. Everything
+below is *this repo's* delta on top of that doctrine.
 
 **Working on nyxloom itself?** Also read **`nyxloom/nyxloom-trove/DOCTRINE.md`**
 (its project delta: structlog reserved-key traps, and `build_dispatch`'s hard
@@ -30,6 +31,45 @@ and a **mechanical BLOCKED escape hatch** (escalation is trigger-based, not
 "reflect on your expertise"). Product calls become `D-<NNN>` decisions, not
 BLOCKED. The guide's frontmatter section makes the handoff nyxloom-compatible
 (schema-validated by `nyxloom lint`).
+
+## Model routing is the caller's responsibility
+
+When a task requires a particular model or reasoning effort, the caller must
+select that route in the invocation and verify it from the invocation or saved
+session metadata. Never require a Codex agent to verify or attest its own model
+or effort: it cannot reliably inspect authoritative route metadata, and a
+self-verification requirement can incorrectly force the task to BLOCKED. The
+caller records the route evidence and corrects or relaunches a mismatched
+invocation before assigning repository work; an agent's self-report is not the
+route evidence.
+
+For programmatic Codex invocations in this environment, always set
+`CODEX_SQLITE_HOME="$HOME/.codex/sqlite-shared"`. Also set `CODEX_HOME`
+explicitly to `$HOME/.codex` or `$HOME/.codex2`, exactly as the operator
+directs; do not rely on an inherited value. Ordinary tasks use GPT-6-Luna at
+xhigh when that is the operator's route; programmatic reviews and plans use
+GPT-6-Sol at xhigh when directed. Keep the route, shared session database, and
+Codex home explicit:
+
+```bash
+export CODEX_SQLITE_HOME="$HOME/.codex/sqlite-shared"
+# Use "$HOME/.codex2" instead only when the operator directs.
+export CODEX_HOME="$HOME/.codex"
+printf '%s' "$PROMPT" |
+  codex exec -m gpt-6-sol \
+    -c 'model_reasoning_effort="xhigh"' \
+    -
+```
+
+For a Luna-routed task, use the same stdin form with `-m gpt-6-luna` and
+`-c 'model_reasoning_effort="xhigh"'`; choose `.codex` or `.codex2` as the
+operator directs.
+
+When stdin carries the prompt, pass `-` as the prompt argument and do not also
+pass a positional prompt. Codex appends piped stdin to a positional prompt as a
+`<stdin>` block; some versions can also wait on inherited non-TTY stdin when a
+positional prompt is used. Explicit stdin keeps the invocation predictable in
+Python, Node, CI, and shell callers.
 
 ## Defaults and fallbacks are hazards (MANDATORY, estate-wide)
 
@@ -68,6 +108,10 @@ dedicated container, never here. For the vbpub family that is
 identity (passwd+group+HOME+XDG). "Green in the devcontainer venv" is not a ship
 signal.
 
+When installing a locally built wheel for inspection or a bounded local test,
+use the estate venv: `/home/vscode/.venv/bin/python -m pip install ...`.
+`/home/vscode/.local` is not the wheel installation environment.
+
 ## Host cgroup placement for spawned containers
 This host runs real production workloads (game servers, edge/site infra)
 alongside dev/test/build work, so any container you or a tool starts must be
@@ -79,28 +123,20 @@ slice name:
 - `$CGROUP_PARENT_DEV_INTERACTIVE` — this devcontainer's own tier (already
   applied via `runArgs`; you don't need to pass this yourself).
 - `$CGROUP_PARENT_DEV_BACKGROUND` — the shared tier for a long-running dev
-  stack or (until a spawner adopts `$CGROUP_PARENT_DEV_GATES` below) a
-  test/gate/build container you spawn (`docker run
-  --cgroup-parent=$CGROUP_PARENT_DEV_BACKGROUND ...`). `ciu`'s governance
-  mechanism (`ciu/src/ciu/governance.py`) resolves this automatically.
-  **cmru's `tester-gate` is DECLARED-CONFIG instead** (2026-08-22): it reads
-  only `CMRU_TESTER_CGROUP_PARENT`, normally set once in
-  `cmru.orchestration.toml [env]` via a `${CGROUP_PARENT_DEV_BACKGROUND:-
-  dev-background.slice}` reference — cmru expands `${NAME:-default}` at load
-  time; an EMPTY result means "no slice tier" on purpose (unscoped launch,
-  announced; per-container memory/CPU/IO caps still apply). Per-project
-  override through the project's own cmru.toml [env]. Whatever non-empty
-  value resolves is verified against the HOST systemd (LoadState=loaded AND
-  FragmentPath) before launch.
+  stack. `ciu`'s governance mechanism
+  (`ciu/src/ciu/governance.py`) resolves this for those stacks. Gate tests
+  that start a long-running stack receive this value separately from their
+  own gate placement.
 - `$CGROUP_PARENT_DEV_GATES` (RG-55 D-19/D-24, 2026-09-12) — the admission
   capacity object for gate/lane containers and placed lane leaves
   `rg-<token>` specifically, a SIBLING of `$CGROUP_PARENT_DEV_BACKGROUND`'s
   tier rather than a child of it; see `modern-debian-tools-python-debug/
-  host-setup/README.md` "dev-gates: why". No spawner reads it yet as of
-  this entry — `run-gate`'s own default, cmru's `tester-gate`, and srdm's
-  gate script all still resolve only `$CGROUP_PARENT_DEV_BACKGROUND`, so
-  every gate/lane container keeps landing there (today's placement) until
-  each adopts the new variable; adoption is tracked per-tool, not here.
+  host-setup/README.md` "dev-gates: why". Gate spawners resolve this
+  variable: `run-gate`, cmru's `tester-gate`, assay's gate driver,
+  tester-unified, srdm's gate scripts, and the debian-install-v2 VM runner.
+  `$CGROUP_PARENT_DEV_BACKGROUND` remains the explicit tier for long-running
+  application stacks and is forwarded separately where a gate test starts
+  one.
 
 **No hardcoded fallbacks.** If neither variable nor an explicit override is
 set where a resolver REQUIRES one, that is a configuration error — refuse to
@@ -110,11 +146,14 @@ silently auto-creates an unlimited transient slice), so any code that accepts
 a slice name should verify it's actually a loaded unit first
 (`systemctl show <slice> --property=LoadState`) rather than trust it blindly.
 
-## Manual tester-unified gate runs — the four traps (estate-wide)
+## Manual tester-unified fallback runs — the four traps (estate-wide)
 
-**For any project with a root `run-gate.py`, the manual recipe below is
-SUPERSEDED: run `./run-gate.py <lane>` — the mechanics are tested code
-(`run-gate-project/SPEC.md`), not doctrine prose.** Adopted estate-wide
+**For any project with a root `run-gate.py`, use `./run-gate.py <lane>` for
+registered gates — the mechanics are tested code (`run-gate-project/SPEC.md`),
+not doctrine prose.** The manual recipe below is only a fallback for projects
+without a root runner or for a narrowly-scoped live acceptance probe that the
+registered lane cannot express; it is not a substitute for registered gate
+evidence. Adopted estate-wide
 2026-08-22 (ciu, cmru, assay, nyxloom, topos, pwmcp,
 shared-ramdisk-depot-manager, plesk-mailbox-create,
 modern-debian-tools-python-debug); projects without an executable test
@@ -126,9 +165,12 @@ reproducing a trove gate at review) needs ALL four, or it fails in misleading
 ways (first measured at the ciu checkpoint-A review, 2026-08-19 — record:
 `ciu/nyxloom-trove/reports/checkpoint-A-review-2026-08-19.md`):
 
-1. **Pass `-e CGROUP_PARENT_DEV_BACKGROUND=$CGROUP_PARENT_DEV_BACKGROUND`** —
-   governance tests read it ambiently (S15.2 by design) and fail without it;
-   the failures look like product bugs, not a missing variable.
+1. **Pass `-e CGROUP_PARENT_DEV_GATES=$CGROUP_PARENT_DEV_GATES`** —
+   gate placement and governance tests read it ambiently (S15.2 by design) and fail without it;
+   the failures look like product bugs, not a missing variable. If the gate
+   starts a long-running application stack, also pass
+   `-e CGROUP_PARENT_DEV_BACKGROUND=$CGROUP_PARENT_DEV_BACKGROUND` so that
+   nested stack governance receives its separate tier fact.
 2. **Dual-mount the repo** at BOTH its physical host path and its devcontainer
    path (`-v /home/.../vbpub:/home/.../vbpub -v /home/.../vbpub:/workspaces/vbpub`):
    a git WORKTREE's `.git` gitfile records the path of whichever namespace
@@ -136,7 +178,7 @@ ways (first measured at the ciu checkpoint-A review, 2026-08-19 — record:
 3. **`git config --global safe.directory '*'`** inside the container (uid
    mismatch between the mount's owner and the container user).
 4. **Detached form** — `docker run -d` → `docker wait` → `docker logs`, with
-   `--cgroup-parent=nyxloom-gates.slice` (see the cgroup section above; the
+   `--cgroup-parent="$CGROUP_PARENT_DEV_GATES"` (see the cgroup section above; the
    attached form can forge exit codes over a lying transport — LESSONS L18).
 
 Related, from the same review wave: an argv **pinned against a fake docker
@@ -151,7 +193,16 @@ every `kind = "assay"` lane, and a gate that calls `assay run` directly (assay's
 own) passes them itself. Both are no-ops on an R0/R1 lane; on a mutation lane
 they are what lets a budget-capped retry continue instead of restarting from
 mutant #1. Resume state and the progress stream live under the git-ignored
-`.assay/`, never in the judged tree. The judge must be assay >= 2.4.1.
+`.assay/`, never in the judged tree. For consumers outside this monorepo, use
+the latest released Assay version available and verify it satisfies the
+consumer's current declared judge floor and passes its current preflight
+(including run-gate R-38's resume/progress requirements and any required
+`--state-dir` support). If it does not, resolve the availability or
+compatibility mismatch; do not silently fall back to an older release. Do not
+infer today's minimum from historical version numbers in old instructions or
+reports. For in-repo consumers, use the source-backed installation rule below;
+it takes precedence over released-wheel selection for this same-repository
+boundary.
 
 ## Consuming assay from inside vbpub (estate-wide, 2026-08-27)
 
@@ -168,10 +219,22 @@ OUTSIDE this repo (`assay/docs/CONSUMERS.md`) — the two docs are for two
 different trust boundaries, not two options for the same one.
 
 ## Worktree protocol
-Parallel implementation runs in `.worktrees/<branch>` (branch from `main`).
-Merge serially onto `main` with `--no-ff`; expect minor overlap reconciliation.
-Keep packages small + non-overlapping to parallelize. Each worktree has its own
-index, so `git add`/`commit` there is private and safe.
+Use isolated Git worktrees for parallel implementation. In vbpub, the default
+is `.worktrees/<branch>`, based on the task's declared base (normally current
+`main`). When a task needs a CIU-managed identity or a CIU/gate-visible checkout,
+use the supported `ciu worktree create` or `adopt` flow and read
+`ciu/docs/CONSUMERS.md` first. CIU treats its generated identity record and live
+Git path/branch as one contract: inspect with `ciu worktree inspect`, and do not
+move, rename, or hand-edit a managed checkout/record to make them agree. Do not
+leave a managed checkout detached or on a branch different from its record. A
+temporary detach required by an exact-tree test is permitted, but restore the
+recorded branch before invoking any CIU lifecycle command. CIU deliberately
+refuses a record/Git mismatch rather than silently repairing it; preserve the
+checkout and ask for direction before changing its identity.
+Merge serially onto the task's integration branch (normally `main`) with
+`--no-ff`; expect minor overlap reconciliation. Keep packages small +
+non-overlapping to parallelize. Each worktree has its own index, so
+`git add`/`commit` there is private and safe.
 
 ## Committing from the shared `main` checkout
 The main checkout (`/workspaces/vbpub`) is shared: another agent's serial merge

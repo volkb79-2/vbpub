@@ -30,13 +30,15 @@ _ALL_REQUIRED = (
     "CMRU_TESTER_MEMORY_SWAP",
     "CMRU_TESTER_CPUS",
     "CMRU_TESTER_CGROUP_PROBE_IMAGE",
+    "CMRU_TESTER_CGROUP_PARENT",
 )
 
 
 def _args(**overrides) -> argparse.Namespace:
     base = dict(
         image=None, memory=None, memory_swap=None, cpus=None,
-        cgroup_probe_image=None, dind_image=None, enable_docker=False,
+        cgroup_probe_image=None, cgroup_parent=None, dind_image=None,
+        enable_docker=False,
     )
     base.update(overrides)
     return argparse.Namespace(**base)
@@ -49,7 +51,7 @@ def _clear_env(monkeypatch) -> None:
 
 def test_reports_every_missing_variable_at_once_not_one_at_a_time(monkeypatch):
     """The core KI-17 (a) behaviour: with nothing set, the report lists ALL
-    five required variables in one shot, in declared order."""
+    six required variables in one shot, in declared order."""
     _clear_env(monkeypatch)
     assert tester_gate._missing_orchestration_env(_args()) == list(_ALL_REQUIRED)
 
@@ -75,7 +77,7 @@ def test_explicit_flags_suppress_missing_env_matching_resolver_precedence(monkey
     _clear_env(monkeypatch)
     args = _args(
         image="img", memory="3g", memory_swap="16g", cpus="1.5",
-        cgroup_probe_image="debian:test",
+        cgroup_probe_image="debian:test", cgroup_parent="dev-gates.slice",
     )
     assert tester_gate._missing_orchestration_env(args) == []
 
@@ -121,17 +123,16 @@ def test_blank_or_whitespace_values_count_as_missing(monkeypatch):
 # (b) messages name the real source
 # ---------------------------------------------------------------------------
 
-def test_aggregate_message_names_the_orchestration_document(monkeypatch, tmp_path):
+def test_aggregate_message_names_the_orchestration_document(monkeypatch, tmp_path, capsys):
     """KI-17 (b): the up-front failure sends the reader to
     cmru.orchestration.toml [env] and `cmru release`, and explicitly says it is
     NOT usually the project's own cmru.toml."""
     _clear_env(monkeypatch)
     monkeypatch.setattr(tester_gate.Path, "cwd", staticmethod(lambda: tmp_path))
 
-    with pytest.raises(SystemExit) as excinfo:
-        tester_gate.main(["--cwd", "cmru", "--", "true"])
-
-    message = str(excinfo.value)
+    status = tester_gate.main(["--cwd", "cmru", "--", "true"])
+    assert status != 0
+    message = capsys.readouterr().err
     assert "cmru.orchestration.toml [env]" in message
     assert "cmru release" in message
     assert "NOT usually" in message
@@ -171,9 +172,17 @@ def test_io_probe_subprocess_failure_is_indeterminate_fail_closed(monkeypatch):
     def boom(*a, **kw):
         raise OSError("docker daemon vanished mid-probe")
     monkeypatch.setattr(tester_gate.subprocess, "run", boom)
-    ok, note = tester_gate._probe_io_support("debian:test")
+    ok, note = tester_gate._probe_io_support("debian:test", "dev-gates.slice")
     assert ok is False
     assert "could not probe the Docker host's IO support" in note
+
+
+def test_docker_run_argv_requires_non_empty_cgroup_parent():
+    assert tester_gate._docker_run_argv(
+        " dev-gates.slice ", "--rm", "image"
+    ) == ["docker", "run", "--cgroup-parent=dev-gates.slice", "--rm", "image"]
+    with pytest.raises(ValueError, match="require a cgroup parent"):
+        tester_gate._docker_run_argv(" \t ", "--rm", "image")
 
 
 def test_io_probe_nonzero_rc_is_fail_closed_with_real_cause(monkeypatch):
@@ -182,9 +191,34 @@ def test_io_probe_nonzero_rc_is_fail_closed_with_real_cause(monkeypatch):
     monkeypatch.setattr(
         tester_gate.subprocess, "run",
         lambda *a, **kw: SimpleNamespace(returncode=42, stdout="", stderr="nsenter: boom"))
-    ok, note = tester_gate._probe_io_support("debian:test")
+    ok, note = tester_gate._probe_io_support("debian:test", "dev-gates.slice")
     assert ok is False
     assert "rc=42" in note and "nsenter: boom" in note
+
+
+def test_tester_gate_dry_run_skips_privileged_io_probe(monkeypatch, tmp_path, capsys):
+    for name in _ALL_REQUIRED:
+        monkeypatch.setenv(name, "value")
+    monkeypatch.setattr(tester_gate, "check_slice_unit", lambda *_args: (True, "ok"))
+    monkeypatch.setattr(tester_gate, "_resolve_worktree_context", lambda *_args: (tmp_path, "."))
+    monkeypatch.setattr(
+        tester_gate, "_probe_io_support",
+        lambda *_args: pytest.fail("dry-run started the privileged IO probe container"),
+    )
+    monkeypatch.setattr(
+        tester_gate, "build_docker_command",
+        lambda *_args, **_kwargs: ["docker", "run", "--device-read-iops", "/dev/vda:10"],
+    )
+    args = _args(
+        cwd=".", image="tester", cgroup_parent="dev-gates.slice",
+        memory="1g", memory_swap="2g", cpus="1", command=["true"],
+        device_read_iops="/dev/vda:10", device_write_iops="",
+        device_read_bps="", device_write_bps="", dry_run=True,
+    )
+    assert tester_gate._run_tester_gate(args, None) == 0
+    output = capsys.readouterr().out
+    assert "Host IO capability probe skipped" in output
+    assert "[DRY RUN] docker run" in output
 
 
 def test_resolve_memory_from_env(monkeypatch):

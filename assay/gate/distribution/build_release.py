@@ -22,7 +22,7 @@ path. The two builders share the *inputs* instead (``build-requirements.txt``
 and ``build-wheelhouse/``), and each derives the pin table its own way -- this
 one reads the requirements file, the gate transcribes it independently -- so the
 two are cross-witnesses rather than one file trusting itself
-(``tests/test_distribution_build_release.py`` pins that agreement).
+(``gate/tests/test_distribution_build_release.py`` pins that agreement).
 
 Five things here are load-bearing and each has a test that fails without it:
 

@@ -1,6 +1,6 @@
 """Statefile-authoritative FILE -> SQLite importer.
 
-`nyxloom migrate-store <project>` reads the FILE backend directly, carrying
+`nyxloomctl migrate-store <project>` reads the FILE backend directly, carrying
 every valid `events.jsonl` record into SQLite's `events` table in source order
 as an opaque audit trail. It does *not* replay that audit trail: incumbent FILE
 logs can contain non-atomic-write drift, such as an event appended before its
@@ -127,7 +127,7 @@ def _already_imported(project: str, source_events: list[Event]) -> bool:
 
 
 def migrate(project: str) -> MigrationResult:
-    """`nyxloom migrate-store <project>` -- see module docstring for the
+    """`nyxloomctl migrate-store <project>` -- see module docstring for the
     full contract."""
     src = paths.events_path(project)
     backup = _backup_path(project)

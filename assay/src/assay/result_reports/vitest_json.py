@@ -16,6 +16,8 @@ RG-44 demonstrated the cost of one live, one layer over, the same day).
 from __future__ import annotations
 
 import json
+
+from ..guards import is_strict_int
 from typing import Any
 
 from .model import ReportSummary, ReportUnusable
@@ -34,7 +36,7 @@ def _count(document: dict[str, Any], field: str) -> int:
     if field not in document:
         raise ReportUnusable(f"{FORMAT} report has no {field!r} field")
     value = document[field]
-    if isinstance(value, bool) or not isinstance(value, int):
+    if not is_strict_int(value):
         raise ReportUnusable(
             f"{FORMAT} report's {field!r} is {type(value).__name__}, not an integer"
         )
@@ -68,7 +70,7 @@ def read(raw: bytes) -> ReportSummary:
         raise ReportUnusable(f"{FORMAT} report is not valid UTF-8: {exc}") from exc
     except (json.JSONDecodeError, RecursionError) as exc:
         # `RecursionError` belongs in the SAME clause (the estate-wide rule
-        # `tests/test_untrusted_json_parse_sweep.py` enforces): a deeply
+        # `tests/core/test_untrusted_json_parse_sweep.py` enforces): a deeply
         # nested document blows CPython's stack inside the decoder, and this
         # is an untrusted third-party artifact. Here it is not merely a
         # crash-vs-refusal question -- an uncaught `RecursionError` would

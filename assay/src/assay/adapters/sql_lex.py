@@ -59,8 +59,9 @@ clean run; a wrong raise on genuinely valid DDL is at worst a false failure
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from ..records import record
 
+from ..errors import require_advance
 from ..mutation import MutationDiscoveryError
 
 __all__ = ["LexResult", "lex_sql"]
@@ -194,7 +195,7 @@ def _lex_once(source: bytes) -> tuple[bytearray, list[tuple[int, int]]]:
             end = source.find(b"\n", i)
             end = n if end == -1 else end
             _blank(mask, i, end)
-            i = end
+            i = require_advance(i, end)
             continue
 
         # /* block comment */ -- nests.
@@ -277,7 +278,7 @@ def _lex_once(source: bytes) -> tuple[bytearray, list[tuple[int, int]]]:
                     )
                 dollar_bodies.append((tag_end, close))
                 _blank(mask, i, close + len(delimiter))
-                i = close + len(delimiter)
+                i = require_advance(i, close + len(delimiter))
                 continue
             i += 1
             continue
@@ -287,7 +288,7 @@ def _lex_once(source: bytes) -> tuple[bytearray, list[tuple[int, int]]]:
     return mask, dollar_bodies
 
 
-@dataclass(frozen=True, kw_only=True)
+@record
 class LexResult:
     """The fully-recursed (phase 1 + phase 2) lex of one source file.
 

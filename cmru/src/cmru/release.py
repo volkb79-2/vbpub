@@ -29,6 +29,7 @@ from hashlib import sha256
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 from urllib.error import HTTPError
+from urllib.parse import quote
 from urllib.request import Request, urlopen
 
 API_BASE = "https://api.github.com"
@@ -121,6 +122,23 @@ class GitHubReleases:
             self._fail(f"fetch release {tag}", status, body)
         return json.loads(body)
 
+    def get_tag_commit(self, tag: str) -> Optional[str]:
+        """Resolve an existing lightweight or annotated Git tag to its commit."""
+        commit_ref = quote(f"tags/{tag}", safe="/")
+        status, body = self._request("GET", self._repo_url(f"/commits/{commit_ref}"))
+        if status == 404:
+            return None
+        if status >= 400:
+            self._fail(f"fetch Git tag {tag}", status, body)
+        try:
+            commit = json.loads(body)
+        except ValueError:
+            self._fail(f"decode Git tag {tag}", status, body)
+        sha = commit.get("sha") if isinstance(commit, dict) else None
+        if not isinstance(sha, str) or not re.fullmatch(r"[0-9a-f]{40}", sha):
+            self._fail(f"resolve Git tag {tag}", 0, body)
+        return sha
+
     def list_releases(self, per_page: int = 100) -> List[Dict[str, Any]]:
         out: List[Dict[str, Any]] = []
         page = 1
@@ -182,12 +200,17 @@ class GitHubReleases:
     # composite -----------------------------------------------------------------
     def publish(self, tag: str, title: str, notes: str, assets: List[Path],
                 *, recreate: bool = False,
-                target_commitish: Optional[str] = None) -> Dict[str, Any]:
+                target_commitish: Optional[str] = None,
+                require_existing_release: bool = False) -> Dict[str, Any]:
         """Create/refresh ``tag`` and (re)upload ``assets`` (same-named ones replaced)."""
         release = self.get_release_by_tag(tag)
         if release is None:
+            if require_existing_release:
+                _die(f"refusing to create GitHub Release {tag}: an existing release is required")
             release = self.create_release(tag, title, notes, target_commitish)
         elif recreate and release.get("id"):
+            if require_existing_release:
+                _die(f"refusing to recreate GitHub Release {tag}: existing refs must remain untouched")
             self.delete_release(int(release["id"]))
             release = self.create_release(tag, title, notes, target_commitish)
         elif release.get("id"):
@@ -245,6 +268,9 @@ def publish_versioned(
     extra_assets: Optional[List[Path]] = None,
     latest_pointer: bool = True,
     target_commitish: Optional[str] = None,
+    require_existing_targets: bool = False,
+    latest_pointer_recreate: bool = True,
+    expected_tag_commit: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Publish ``asset_path`` for ``version`` under the uniform scheme.
 
@@ -267,8 +293,52 @@ def publish_versioned(
                               "release_tag": None, "asset_url": None}
 
     released = is_release_version(version)
+    release_tag = version_to_tag(prefix, version) if released else None
+    latest_tag = f"{prefix}-latest"
+    if require_existing_targets:
+        if target_commitish is not None or (latest_pointer and latest_pointer_recreate):
+            _die(
+                "require_existing_targets cannot create or recreate Git refs; "
+                "omit target_commitish and disable latest_pointer_recreate"
+            )
+        required_tags = ([release_tag] if release_tag else [])
+        if latest_pointer:
+            required_tags.append(latest_tag)
+        resolved: dict[str, Optional[str]] = {}
+        for tag in required_tags:
+            if gh.get_release_by_tag(tag) is None:
+                _die(
+                    f"build-output publication cannot verify the existing GitHub Release {tag}; "
+                    "confirm it exists and is accessible"
+                )
+            resolved[tag] = gh.get_tag_commit(tag)
+            if resolved[tag] is None:
+                _die(
+                    f"build-output publication cannot verify the existing Git tag {tag}; "
+                    "confirm it exists and is accessible"
+                )
+        if release_tag and (
+            not expected_tag_commit or resolved[release_tag] != expected_tag_commit
+        ):
+            _die(
+                f"build-output source commit {expected_tag_commit!r} "
+                f"does not match existing release tag {release_tag} "
+                f"({resolved[release_tag]})"
+            )
+
+    def publish_assets(
+        tag: str, title: str, body: str, assets: List[Path], *, recreate: bool = False,
+    ) -> Dict[str, Any]:
+        options: dict[str, Any] = {
+            "recreate": recreate,
+            "target_commitish": target_commitish,
+        }
+        if require_existing_targets:
+            options["require_existing_release"] = True
+        return gh.publish(tag, title, body, assets, **options)
+
     if released:
-        release_tag = version_to_tag(prefix, version)
+        assert release_tag is not None
         body = (notes or f"{prefix} {version}") + (
             f"\n\n**Artifact:** `{asset_path.name}`\n"
             f"**SHA256:** `{digest}`\n\n"
@@ -276,8 +346,7 @@ def publish_versioned(
             f"Resolve latest programmatically by scanning `{prefix}-v*` releases "
             f"(highest semver); see cmru docs/SPEC.md S5."
         )
-        gh.publish(release_tag, release_tag, body, [asset_path, sidecar, *extras],
-                   target_commitish=target_commitish)
+        publish_assets(release_tag, release_tag, body, [asset_path, sidecar, *extras])
         result["release_tag"] = release_tag
         result["asset_url"] = gh.asset_download_url(release_tag, asset_path.name)
         print(f"[INFO] Published immutable release {release_tag} (+ .sha256)")
@@ -285,7 +354,6 @@ def publish_versioned(
         print(f"[INFO] Dev build {version} — no immutable version release")
 
     if latest_pointer:
-        latest_tag = f"{prefix}-latest"
         if released:
             manifest = asset_path.with_name("latest.json")
             manifest.write_text(json.dumps({
@@ -297,13 +365,17 @@ def publish_versioned(
                 "url": result["asset_url"],
                 "note": "thin redirect — the real artifact lives on the versioned release",
             }, indent=2) + "\n", encoding="utf-8")
-            gh.publish(latest_tag, latest_tag,
-                       f"{prefix} latest → {version} (thin pointer; see latest.json)",
-                       [manifest], recreate=True)
+            publish_assets(
+                latest_tag, latest_tag,
+                f"{prefix} latest → {version} (thin pointer; see latest.json)",
+                [manifest], recreate=latest_pointer_recreate,
+            )
             print(f"[INFO] Refreshed thin pointer {latest_tag} → {result['release_tag']}")
         else:
-            gh.publish(latest_tag, latest_tag, f"{prefix} latest (dev → {version})",
-                       [asset_path, sidecar], recreate=True)
+            publish_assets(
+                latest_tag, latest_tag, f"{prefix} latest (dev → {version})",
+                [asset_path, sidecar], recreate=latest_pointer_recreate,
+            )
             print(f"[INFO] Moved {latest_tag} (dev asset → {version})")
 
     return result

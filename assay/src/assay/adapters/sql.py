@@ -96,7 +96,7 @@ from __future__ import annotations
 import hashlib
 import heapq
 import re
-from dataclasses import dataclass
+from ..records import positional_record, record
 from pathlib import Path
 from typing import Literal, NamedTuple, Sequence
 
@@ -635,7 +635,7 @@ def _all_candidate_sites(
 # --- A-281: the bounded worst-eviction heap, mirroring python.py's own ------
 
 
-@dataclass(frozen=True)
+@positional_record
 class _Worst:
     """Inverted ordering so :mod:`heapq`'s min-heap retains the identity-
     SMALLEST candidates (evicting the identity-largest, i.e. worst, first) --
@@ -657,7 +657,7 @@ _UNREACHABLE = (
 )
 
 
-@dataclass(frozen=True, kw_only=True)
+@record
 class SqlAdapter:
     """The SQL union of the carve's seven ``sql:*`` mutation operators
     (A-097/A-101/A-105/A-114 protocol, A-180/A-183 bounded discovery,

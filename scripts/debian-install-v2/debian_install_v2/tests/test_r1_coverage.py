@@ -4,11 +4,13 @@ import json
 import hashlib
 import os
 from pathlib import Path
+import subprocess
+import sys
 
 import pytest
 
 from debian_install_v2.actions import ActionError, HostActions
-from debian_install_v2.bootstrap import build_parser, main
+from debian_install_v2.bootstrap import build_cli, main
 from debian_install_v2.config import Config, ConfigError, load_config
 from debian_install_v2.installer import Installer
 from debian_install_v2.state import StateError, StateStore
@@ -39,24 +41,68 @@ def write_config(tmp_path, **overrides):
 
 # --- bootstrap.py CLI ---
 
+def test_cli_top_level_version_is_clean(capsys):
+    assert main(["--version"]) == 0
+    captured = capsys.readouterr()
+    assert captured.out == "debian-install-v2 2\n"
+    assert captured.err == ""
+
+def test_documented_wrapper_top_level_version_is_clean():
+    wrapper = Path(__file__).resolve().parents[2] / "debian-install-v2.py"
+    proc = subprocess.run(
+        [sys.executable, str(wrapper), "--version"],
+        capture_output=True, text=True, check=False,
+    )
+    assert proc.returncode == 0
+    assert proc.stdout == "debian-install-v2 2\n"
+    assert proc.stderr == ""
+
+
+def test_cli_parser_diagnostics_are_separated_from_help(capsys):
+    assert main(["--unknown"]) == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err.startswith(
+        "[ERROR] debian-install-v2.py: the following arguments are required: VERB"
+        "\n\nDEBIAN-INSTALL-V2 2 — Debian host installer\n\nUsage:"
+    )
+
 
 def test_cli_install_dry_run(tmp_path, capsys):
     cfg = write_config(tmp_path)
-    rc = main(["--action", "install", "--config", cfg, "--dry-run"])
+    rc = main(["install", "--config", cfg, "--dry-run"])
     assert rc == 0
     out = capsys.readouterr().out
     plan = json.loads(out)
     assert plan["result"] == "planned"
 
 
+def test_cli_install_dry_run_via_inline_config_json(tmp_path, capsys):
+    """--config-json (inline, no file) is the mechanism a user pastes into a
+    web-hoster's custom-command field would need -- it has existed since
+    build_parser() added it but had zero test coverage."""
+    data = {**BASE_CONFIG,
+            "state_dir": str(tmp_path / "state"),
+            "log_dir": str(tmp_path / "logs")}
+    rc = main(["install", "--config-json", json.dumps(data), "--dry-run"])
+    assert rc == 0
+    plan = json.loads(capsys.readouterr().out)
+    assert plan["result"] == "planned"
+
+
+def test_cli_config_and_config_json_mutually_exclusive(tmp_path):
+    cfg = write_config(tmp_path)
+    assert main(["install", "--config", cfg, "--config-json", "{}", "--dry-run"]) == 2
+
+
 def test_cli_status_requires_state(tmp_path):
     cfg = write_config(tmp_path)
-    rc = main(["--action", "status", "--config", cfg, "--dry-run"])
+    rc = main(["status", "--config", cfg])
     assert rc == 1
 
 
 def test_cli_missing_config_refused():
-    rc = main(["--action", "install"])
+    rc = main(["install"])
     assert rc == 2
 
 
@@ -65,14 +111,33 @@ def test_cli_resume_uses_state_config(tmp_path, monkeypatch):
         state_dir=str(tmp_path / "state"), log_dir=str(tmp_path / "logs"),
         telegram_bot_token="", telegram_chat_id="",
         auto_reboot_after_stage1=False,
+        credential_mode="systemd",
     )
     installer = Installer(config, HostActions(dry_run=True))
     StateStore(config.state_dir).save_new(StateStore.new(config))
     monkeypatch.setenv("VBPUB_STATE_DIR", config.state_dir)
-    assert main(["--action", "resume", "--dry-run"]) == 0
+    assert main(["resume", "--dry-run"]) == 0
 
 
-def test_cli_verify_after_manifest(tmp_path):
+def test_resume_refuses_manifest_with_different_state_dir(tmp_path):
+    current = Config(
+        state_dir=str(tmp_path / "current"),
+        log_dir=str(tmp_path / "logs"),
+        credential_mode="systemd",
+    )
+    persisted = Config(
+        state_dir=str(tmp_path / "other"),
+        log_dir=str(tmp_path / "logs"),
+        credential_mode="systemd",
+    )
+    store = StateStore(current.state_dir)
+    store.save_new(StateStore.new(persisted))
+    installer = Installer(current, HostActions(dry_run=True), inspect_host=False)
+    with pytest.raises(StateError, match="does not match the loaded state directory"):
+        installer.resume()
+
+
+def test_cli_verify_after_manifest_is_read_only(tmp_path, monkeypatch):
     config = Config(
         state_dir=str(tmp_path / "state"), log_dir=str(tmp_path / "logs"),
         telegram_bot_token="", telegram_chat_id="",
@@ -89,13 +154,56 @@ def test_cli_verify_after_manifest(tmp_path):
     (state_dir / "disk-transaction.json").write_text(json.dumps({
         "backup": str(backup), "checksum": str(checksum)
     }))
-    assert main(["--action", "verify", "--config", write_config(tmp_path), "--dry-run"]) == 0
+    state_path = state_dir / "state.json"
+    StateStore(config.state_dir).save_new(StateStore.new(config))
+    before_state = state_path.read_bytes()
+    monkeypatch.setattr(Installer, "_health_gate_swap_devices", lambda self, **kwargs: None)
+    assert main(["verify", "--config", write_config(tmp_path)]) == 0
+    assert state_path.read_bytes() == before_state
 
 
-def test_cli_disable_and_show_plan(tmp_path):
+def test_verify_does_not_claim_a_dry_run_is_a_live_check(tmp_path):
+    config = Config(
+        state_dir=str(tmp_path / "state"), log_dir=str(tmp_path / "logs"),
+        telegram_bot_token="", telegram_chat_id="", credential_mode="systemd",
+    )
+    installer = Installer(config, HostActions(dry_run=True))
+    state_dir = Path(config.state_dir)
+    backup_dir = state_dir / "backups"
+    backup_dir.mkdir(parents=True)
+    backup = backup_dir / "ptable.sfdisk"
+    backup.write_text("label: gpt\n")
+    checksum = backup_dir / "ptable.sfdisk.sha256"
+    checksum.write_text(
+        f"{hashlib.sha256(backup.read_bytes()).hexdigest()}  ptable.sfdisk\n"
+    )
+    (state_dir / "disk-transaction.json").write_text(json.dumps({
+        "backup": str(backup), "checksum": str(checksum)
+    }))
+    with pytest.raises(RuntimeError, match="requires live host checks"):
+        installer.verify()
+
+
+def test_cli_disable_and_show_plan(tmp_path, monkeypatch):
     cfg = write_config(tmp_path)
-    assert main(["--action", "disable-stage2", "--config", cfg, "--dry-run"]) == 0
-    assert main(["--action", "show-plan", "--config", cfg, "--dry-run"]) == 0
+    assert main(["disable-stage2", "--config", cfg, "--dry-run"]) == 0
+    plan = {
+        "release": "trixie",
+        "root_device": "/dev/vda3",
+        "new_root_size_sectors": 1024,
+        "swap_partitions": [],
+        "sfdisk_plan": "label: gpt\n",
+    }
+
+    class PlanOnly:
+        def show_plan(self):
+            return plan
+
+    monkeypatch.setattr(
+        "debian_install_v2.bootstrap._make_installer",
+        lambda args, runtime: PlanOnly(),
+    )
+    assert main(["plan", "--config", cfg]) == 0
 
 
 def test_module_invocation_help():
@@ -106,11 +214,11 @@ def test_module_invocation_help():
         capture_output=True, text=True,
     )
     assert result.returncode == 0
-    assert "--action" in result.stdout
+    assert "<verb>" in result.stdout
 
 
 def test_cli_resume_without_env():
-    rc = main(["--action", "resume"])
+    rc = main(["resume"])
     assert rc == 2
 
 
@@ -376,6 +484,7 @@ def _make_with_state(tmp_path):
         state_dir=str(tmp_path / "state"), log_dir=str(tmp_path / "logs"),
         telegram_bot_token="", telegram_chat_id="",
         auto_reboot_after_stage1=False,
+        credential_mode="systemd",
     )
     actions = HostActions(dry_run=True)
     installer = Installer(config, actions)
@@ -412,23 +521,61 @@ def test_disable_stage2_sets_state(tmp_path):
     )
 
 
+def test_resume_removes_controller_ssh_key_only_after_stage2_done_marker(tmp_path, monkeypatch):
+    # Regression, 2026-09-09 (v1001 round 12, the first fully successful
+    # live install this whole effort): _remove_controller_ssh_key() used
+    # to run INSIDE _stage2(), before the caller (resume()) ever touches
+    # the stage2_done marker file. scp-api-install-host.py's own
+    # completion poller authenticates with that exact controller key --
+    # revoking it before the marker exists let a successful install
+    # permanently strand its own external poller (unable to reconnect to
+    # ever see the marker it's waiting for), which then spuriously
+    # reported a TimeoutError for an install that had actually succeeded.
+    # Must happen strictly after the marker is on disk.
+    from debian_install_v2.tests.test_fake_integration import FakeHostActions
+    config = Config(
+        state_dir=str(tmp_path / "state"), log_dir=str(tmp_path / "logs"),
+        telegram_bot_token="", telegram_chat_id="",
+        auto_reboot_after_stage1=False,
+        credential_mode="systemd",
+    )
+    actions = FakeHostActions()
+    actions.outputs[("/usr/bin/findmnt", "-n", "-o", "SOURCE", "/")] = "/dev/vda3\n"
+    installer = Installer(config, actions)
+    StateStore(config.state_dir).save_new(StateStore.new(config))
+    monkeypatch.setattr(installer, "_stage2", lambda: None)
+
+    marker_existed_at_call_time = {}
+
+    def fake_remove_key():
+        marker_existed_at_call_time["value"] = (
+            Path(config.state_dir, "stage2_done").exists()
+        )
+
+    monkeypatch.setattr(installer, "_remove_controller_ssh_key", fake_remove_key)
+    installer.resume()
+    assert marker_existed_at_call_time["value"] is True
+
+
 def test_resume_loads_credentials_and_thread(tmp_path, monkeypatch):
     from debian_install_v2.tests.test_fake_integration import FakeHostActions
     config = Config(
         state_dir=str(tmp_path / "state"), log_dir=str(tmp_path / "logs"),
         telegram_bot_token="", telegram_chat_id="",
         auto_reboot_after_stage1=False,
+        credential_mode="systemd",
     )
     state_dir = Path(config.state_dir)
-    cred_dir = state_dir / "credentials"
+    cred_dir = tmp_path / "systemd-credentials"
     cred_dir.mkdir(parents=True)
     (cred_dir / "telegram_bot_token").write_text("123:token\n")
     (cred_dir / "telegram_chat_id").write_text("456\n")
-    (state_dir / "telegram_thread_id").write_text("789\n")
+    monkeypatch.setenv("CREDENTIALS_DIRECTORY", str(cred_dir))
     actions = FakeHostActions()
     actions.outputs[("/usr/bin/findmnt", "-n", "-o", "SOURCE", "/")] = "/dev/vda3\n"
     installer = Installer(config, actions)
     StateStore(config.state_dir).save_new(StateStore.new(config))
+    (state_dir / "telegram_thread_id").write_text("789\n")
     monkeypatch.setattr(installer, "_stage2", lambda: None)
     installer.resume()
     assert installer.config.telegram_bot_token == "123:token"
@@ -445,6 +592,7 @@ def test_resume_failure_records_state(tmp_path, monkeypatch):
         state_dir=str(tmp_path / "state"), log_dir=str(tmp_path / "logs"),
         telegram_bot_token="", telegram_chat_id="",
         auto_reboot_after_stage1=False,
+        credential_mode="systemd",
     )
     actions = FakeHostActions()
     actions.outputs[("/usr/bin/findmnt", "-n", "-o", "SOURCE", "/")] = "/dev/vda3\n"
@@ -540,6 +688,55 @@ def test_preflight_rejects_unexpected_mounts(tmp_path):
         installer._preflight_disk_transaction()
 
 
+def test_preflight_allows_lower_numbered_boot_partitions(tmp_path):
+    """Regression for a real bug found live 2026-09-08 on a freshly
+    provisioned netcup trixie host: a standard UEFI/GPT layout (ESP +
+    /boot + root, all on one disk) always has vda1/vda2 mounted alongside
+    root. _write_sfdisk_plan()'s own `kept` pass already leaves every
+    partition numbered below root_number byte-for-byte untouched, so their
+    being mounted is not a hazard and must not abort the transaction --
+    the original allowlist-only-root check refused every single run on
+    this (extremely common) layout.
+    """
+    from debian_install_v2.tests.test_fake_integration import FakeHostActions
+    config = Config(
+        state_dir=str(tmp_path / "state"), log_dir=str(tmp_path / "logs"),
+        telegram_bot_token="", telegram_chat_id="",
+        auto_reboot_after_stage1=False,
+    )
+    actions = FakeHostActions()
+    actions.outputs[("/usr/bin/findmnt", "-n", "-o", "SOURCE", "/")] = "/dev/vda3\n"
+    actions.outputs[("/usr/bin/findmnt", "-rn", "-o", "SOURCE,TARGET,FSTYPE")] = (
+        "/dev/vda1 /boot/efi vfat\n/dev/vda2 /boot ext4\n/dev/vda3 / ext4\n"
+    )
+    installer = Installer(config, actions)
+    preflight = installer._preflight_disk_transaction()
+    assert preflight["holders"] == []
+    assert len(preflight["mounts"]) == 3
+
+
+def test_preflight_still_rejects_higher_numbered_mount_alongside_boot_partitions(tmp_path):
+    """A partition numbered ABOVE root (e.g. a leftover swap partition
+    still mounted from a previous attempt) is exactly what
+    _write_sfdisk_plan() would append new entries after / could clobber --
+    it must still be rejected even when normal lower-numbered boot
+    partitions are also mounted."""
+    from debian_install_v2.tests.test_fake_integration import FakeHostActions
+    config = Config(
+        state_dir=str(tmp_path / "state"), log_dir=str(tmp_path / "logs"),
+        telegram_bot_token="", telegram_chat_id="",
+        auto_reboot_after_stage1=False,
+    )
+    actions = FakeHostActions()
+    actions.outputs[("/usr/bin/findmnt", "-n", "-o", "SOURCE", "/")] = "/dev/vda3\n"
+    actions.outputs[("/usr/bin/findmnt", "-rn", "-o", "SOURCE,TARGET,FSTYPE")] = (
+        "/dev/vda1 /boot/efi vfat\n/dev/vda2 /boot ext4\n/dev/vda3 / ext4\n/dev/vda4 /mnt ext4\n"
+    )
+    installer = Installer(config, actions)
+    with pytest.raises(RuntimeError, match="partitions are mounted"):
+        installer._preflight_disk_transaction()
+
+
 def test_preflight_rejects_holders(tmp_path, monkeypatch):
     from debian_install_v2.tests.test_fake_integration import FakeHostActions
     config = Config(
@@ -555,3 +752,122 @@ def test_preflight_rejects_holders(tmp_path, monkeypatch):
     monkeypatch.setattr("pathlib.Path.iterdir", lambda self, **kw: iter([Path("/fake/dm-0")]))
     with pytest.raises(RuntimeError, match="active holder"):
         installer._preflight_disk_transaction()
+
+
+# --- controller SSH key install/removal ---------------------------------
+
+_AUTHORIZED_KEYS = "/root/.ssh/authorized_keys"
+_real_path_is_file = Path.is_file
+_real_path_read_text = Path.read_text
+
+
+def _fake_is_file(result):
+    # Scoped to /root/.ssh/authorized_keys only -- a blanket Path.is_file
+    # monkeypatch also breaks StateStore.load()'s own is_file() check, since
+    # _mark_step() (called by both methods under test) reads real state.json.
+    def _fn(self, *a, **kw):
+        if str(self) == _AUTHORIZED_KEYS:
+            return result
+        return _real_path_is_file(self, *a, **kw)
+    return _fn
+
+
+def _fake_read_text(content):
+    def _fn(self, *a, **kw):
+        if str(self) == _AUTHORIZED_KEYS:
+            return content
+        return _real_path_read_text(self, *a, **kw)
+    return _fn
+
+
+def _make_with_pubkey(tmp_path, pubkey=""):
+    from debian_install_v2.actions import PlannedAction
+    from debian_install_v2.tests.test_fake_integration import FakeHostActions
+
+    class _FakeActionsWithSSH(FakeHostActions):
+        # FakeHostActions fakes run()/write_file() but not mkdir() -- these
+        # tests need dry_run=False (to reach _configure_controller_ssh_key's
+        # real, non-dry-run branches), and the real mkdir() would otherwise
+        # try to create /root/.ssh on the test host for real.
+        def mkdir(self, path: str) -> None:
+            self.planned.append(PlannedAction(("/usr/bin/mkdir", "-p", path), f"create directory {path}", True))
+
+    config = Config(
+        state_dir=str(tmp_path / "state"), log_dir=str(tmp_path / "logs"),
+        telegram_bot_token="", telegram_chat_id="",
+        auto_reboot_after_stage1=False,
+        controller_ssh_pubkey=pubkey,
+    )
+    actions = _FakeActionsWithSSH()
+    actions.outputs[("/usr/bin/findmnt", "-n", "-o", "SOURCE", "/")] = "/dev/vda3\n"
+    StateStore(config.state_dir).save_new(StateStore.new(config))
+    return Installer(config, actions), actions
+
+
+def test_configure_controller_ssh_key_skipped_when_not_configured(tmp_path):
+    installer, actions = _make_with_pubkey(tmp_path)
+    installer._configure_controller_ssh_key()
+    assert "/root/.ssh/authorized_keys" not in actions.files
+    assert not any(a.argv[0] == "/usr/bin/mkdir" for a in actions.planned)
+
+
+def test_configure_controller_ssh_key_installs_when_configured(tmp_path, monkeypatch):
+    pubkey = "ssh-ed25519 AAAAtest vbpub-controller-ephemeral-v1001-20260908"
+    installer, actions = _make_with_pubkey(tmp_path, pubkey)
+    monkeypatch.setattr(Path, "is_file", _fake_is_file(False))
+    installer._configure_controller_ssh_key()
+    assert actions.files["/root/.ssh/authorized_keys"].decode() == pubkey + "\n"
+
+
+def test_configure_controller_ssh_key_preserves_existing_entries(tmp_path, monkeypatch):
+    """Regression: Config.controller_ssh_pubkey is meant to be an ADDITIONAL
+    safety net alongside whatever the provider's own key injection already
+    put in authorized_keys (the operator's real, persistent key) -- it must
+    never clobber that."""
+    operator_key = "ssh-ed25519 AAAAoperator operator@laptop"
+    pubkey = "ssh-ed25519 AAAAephemeral vbpub-controller-ephemeral"
+    installer, actions = _make_with_pubkey(tmp_path, pubkey)
+    monkeypatch.setattr(Path, "is_file", _fake_is_file(True))
+    monkeypatch.setattr(Path, "read_text", _fake_read_text(operator_key + "\n"))
+    installer._configure_controller_ssh_key()
+    content = actions.files["/root/.ssh/authorized_keys"].decode()
+    assert operator_key in content
+    assert pubkey in content
+
+
+def test_configure_controller_ssh_key_idempotent(tmp_path, monkeypatch):
+    pubkey = "ssh-ed25519 AAAAtest vbpub-controller-ephemeral"
+    installer, actions = _make_with_pubkey(tmp_path, pubkey)
+    monkeypatch.setattr(Path, "is_file", _fake_is_file(True))
+    monkeypatch.setattr(Path, "read_text", _fake_read_text(pubkey + "\n"))
+    installer._configure_controller_ssh_key()
+    assert "/root/.ssh/authorized_keys" not in actions.files
+
+
+def test_remove_controller_ssh_key_noop_when_not_configured(tmp_path):
+    installer, actions = _make_with_pubkey(tmp_path)
+    installer._remove_controller_ssh_key()
+    assert "/root/.ssh/authorized_keys" not in actions.files
+
+
+def test_remove_controller_ssh_key_strips_only_the_ephemeral_line(tmp_path, monkeypatch):
+    """Regression / design requirement: at the end of stage2, the
+    controller's own ephemeral key must be removed -- no further controller
+    access is needed -- but the operator's own persistent key must survive."""
+    operator_key = "ssh-ed25519 AAAAoperator operator@laptop"
+    pubkey = "ssh-ed25519 AAAAephemeral vbpub-controller-ephemeral"
+    installer, actions = _make_with_pubkey(tmp_path, pubkey)
+    monkeypatch.setattr(Path, "is_file", _fake_is_file(True))
+    monkeypatch.setattr(Path, "read_text", _fake_read_text(f"{operator_key}\n{pubkey}\n"))
+    installer._remove_controller_ssh_key()
+    content = actions.files["/root/.ssh/authorized_keys"].decode()
+    assert operator_key in content
+    assert pubkey not in content
+
+
+def test_remove_controller_ssh_key_skips_when_file_missing(tmp_path, monkeypatch):
+    pubkey = "ssh-ed25519 AAAAtest vbpub-controller-ephemeral"
+    installer, actions = _make_with_pubkey(tmp_path, pubkey)
+    monkeypatch.setattr(Path, "is_file", _fake_is_file(False))
+    installer._remove_controller_ssh_key()
+    assert "/root/.ssh/authorized_keys" not in actions.files

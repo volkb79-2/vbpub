@@ -39,7 +39,7 @@ of what bytes it starts with. Only while genuinely awaiting a header are
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from .records import record
 from enum import Enum, auto
 from types import MappingProxyType
 from typing import Mapping
@@ -94,7 +94,7 @@ class _State(Enum):
     IN_HUNK = auto()
 
 
-@dataclass(frozen=True, kw_only=True)
+@record
 class AddedLines:
     """New-side added line numbers from a diff, keyed by new-side path.
 

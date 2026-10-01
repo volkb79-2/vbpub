@@ -80,7 +80,8 @@ import threading
 import time
 import tomllib
 from contextlib import contextmanager
-from dataclasses import dataclass, replace
+from dataclasses import replace
+from .records import record
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from types import MappingProxyType
@@ -120,6 +121,7 @@ from .config import (
 from .coverage import derive_branch_capability
 from .coverage_parsers.model import CoverageProfile
 from .errors import AssayError, LaneConfigError, Outcome, ReasonCode
+from .guards import is_finite_positive, is_nonempty_str, is_positive_or_inf, is_real
 from .adapters.base import HelperInvocation
 from .evaluate import (
     # (B074) `_is_test_filename` is imported rather than reproduced: R2's
@@ -149,7 +151,10 @@ from .verdict import (
     JudgmentResolved,
     RefusalDetail,
     SnapshotPolicy,
+    WorktreeIntegrity,
     Verdict,
+    claim_carries,
+    claim_for,
     iso_utc,
     refusal_detail,
     rollup,
@@ -175,6 +180,8 @@ __all__ = [
     "resolve_command_plan",
     "run_lane",
     "write_verdict",
+    # CD18: public for assay_analysis.
+    "resolve_declared_base",
 ]
 
 
@@ -205,7 +212,7 @@ Clock = Callable[[], datetime]
 MonotonicClock = Callable[[], float]
 
 
-@dataclass(frozen=True, kw_only=True)
+@record
 class LaneDeadline:
     """One lane-wide monotonic deadline; no lower layer chooses a clock.
 
@@ -238,22 +245,13 @@ class LaneDeadline:
         and only ``None`` -- for ``budget = "unbounded"``; every other
         invalid value is refused exactly as before.
         """
-        if budget_seconds is not None and (
-            isinstance(budget_seconds, bool)
-            or not isinstance(budget_seconds, (int, float))
-            or not math.isfinite(budget_seconds)
-            or budget_seconds <= 0
-        ):
+        if budget_seconds is not None and not is_finite_positive(budget_seconds):
             raise ValueError(
                 f"budget_seconds must be a positive finite number or None, "
                 f"got {budget_seconds!r}"
             )
         started = monotonic()
-        if (
-            isinstance(started, bool)
-            or not isinstance(started, (int, float))
-            or not math.isfinite(started)
-        ):
+        if not is_real(started) or not math.isfinite(started):
             raise ValueError(f"monotonic clock returned invalid value {started!r}")
         if budget_seconds is None:
             return cls(expires_at=math.inf, monotonic=monotonic)
@@ -277,12 +275,7 @@ class LaneDeadline:
         """
         if seconds is None:
             return self
-        if (
-            isinstance(seconds, bool)
-            or not isinstance(seconds, (int, float))
-            or not math.isfinite(seconds)
-            or seconds <= 0
-        ):
+        if not is_finite_positive(seconds):
             raise ValueError(
                 f"tightened seconds must be a positive finite number or None, "
                 f"got {seconds!r}"
@@ -682,7 +675,7 @@ def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-@dataclass(frozen=True, kw_only=True)
+@record
 class CommandPlan:
     """What WILL run, resolved before anything executes.
 
@@ -739,7 +732,7 @@ class CommandPlan:
     cwd_declared: str | None = None
 
 
-@dataclass(frozen=True, kw_only=True)
+@record
 class CommandResult:
     """The real outcome of the R0 step -- append rejected, executable
     missing, budget exceeded, command failed, or command passed. Exactly what
@@ -774,6 +767,10 @@ class CommandResult:
     stderr_dropped_bytes: int = 0
     started: str
     ended: str
+    #: Native R2 liveness time-series, populated only when the pressure-aware
+    #: candidate watchdog terminates this command. It is carried to the
+    #: per-candidate mutation artifacts, never used as a functional verdict.
+    liveness_resource_evidence: Mapping[str, Any] | None = None
 
 
 def resolve_command_plan(
@@ -857,7 +854,7 @@ def resolve_command_plan(
                         node = None
                         break
                     node = node[part]
-                if not isinstance(node, str) or not node:
+                if not is_nonempty_str(node):
                     raise AssayError(
                         f"infrastructure fact {name!r} derived {expression!r} is absent, "
                         f"not a string, or empty",
@@ -1148,12 +1145,7 @@ def execute_plan(
     :func:`_reserve_result_report`; only the snapshot baseline passes ``True``,
     because only it owns an ephemeral, assay-managed checkout.
     """
-    if (
-        isinstance(timeout, bool)
-        or not isinstance(timeout, (int, float))
-        or (not math.isfinite(timeout) and timeout != math.inf)
-        or timeout <= 0
-    ):
+    if not is_positive_or_inf(timeout):
         raise ValueError(
             f"timeout must be a positive finite number or math.inf, got {timeout!r}"
         )
@@ -1271,6 +1263,9 @@ def _execute_plan_inner(
             stderr_dropped_bytes=stderr_dropped_bytes,
             started=iso_utc(started_at),
             ended=iso_utc(clock()),
+            liveness_resource_evidence=getattr(
+                exc, "resource_evidence", getattr(exc, "liveness_resource_evidence", None)
+            ),
         )
     except OSError:
         return CommandResult(
@@ -1326,7 +1321,7 @@ def _execute_plan_inner(
     # The reason code stays A-073's own, unchanged in MEANING (B078 changes
     # WHEN `COMMAND_FAILED` fires, never what it means) -- no new `ReasonCode`
     # member, so the closed vocabulary A-050 guards is untouched. The two
-    # fields below are also `tests/test_self_hosting.py`'s pinned mutation
+    # fields below are also `gate/tests/test_self_hosting.py`'s pinned mutation
     # target (A-131), which is why they sit adjacent with no comment between
     # them: that test collapses this conditional pair to its PASS arm to prove
     # `assay verify` alone cannot catch a universal-PASS producer bug.
@@ -1728,6 +1723,7 @@ def evaluate_r1(
     project_root: Path,
     base: str | None,
     adapter: LanguageAdapter,
+    resolved_base: str | None = None,
     on_base_resolved: Callable[[str], None] | None = None,
     on_added_resolved: Callable[[diff.AddedLines], None] | None = None,
     profile: CoverageProfile | None = None,
@@ -1767,7 +1763,16 @@ def evaluate_r1(
     :mod:`assay.config`'s loader for any lane that actually declares R1
     rigor, which is the only way a caller should reach this function.
     *base* is the declared comparison ref, exactly as ``judge.base``
-    declares it (a caller resolves nothing before passing it in).
+    declares it. *resolved_base* is an optional full commit already resolved
+    against the consumer repository before a P22 snapshot was materialized
+    (B101 P1); when supplied, the base-is-HEAD guard consumes it directly
+    (:func:`~assay.measurability.check_resolved_base_is_head`) and *base* is
+    not read at all, because the snapshot carries no symbolic refs and must
+    not be asked an ancestry question (``merge-base``, a merge ``HEAD``'s
+    parents) it may not be able to answer. ``None`` keeps the resolving
+    :func:`~assay.measurability.check_base_is_head` path for a direct caller
+    in a full repository. The two values remain separate so the recorded
+    judgment is the resolved commit, never the declaration.
 
     *profile* (P20): when given, it is the artifact :func:`run_lane` already
     consumed and parsed through its own single-owner reservation -- used
@@ -1778,8 +1783,8 @@ def evaluate_r1(
 
     *on_base_resolved* (P17), if given, is called EXACTLY ONCE with the
     resolved full base commit (:attr:`~assay.measurability.ResolvedBase.
-    base_rev`) the moment :func:`assay.measurability.check_base_is_head`
-    produces it -- never on a path where that guard itself trips. This is
+    base_rev`) the moment the base-is-HEAD guard produces it -- never on a
+    path where that guard itself trips. This is
     how :func:`run_lane` builds ``judgment.resolved.base`` (V5-1 hoisted it out
     of ``judgment.r1``; P16's "the FULL
     resolved comparison commit, never the lane's own possibly-symbolic
@@ -1825,7 +1830,14 @@ def evaluate_r1(
 
         resolved = None
         if effective_mode == "changed_lines":
-            resolved = measurability.check_base_is_head(repo, base, remaining=remaining)
+            if resolved_base is None:
+                resolved = measurability.check_base_is_head(
+                    repo, base, remaining=remaining
+                )
+            else:
+                resolved = measurability.check_resolved_base_is_head(
+                    repo, resolved_base, remaining=remaining
+                )
             if on_base_resolved is not None:
                 on_base_resolved(resolved.base_rev)
 
@@ -2052,6 +2064,7 @@ def assemble_verdict(
     ended: str | None = None,
     env_effective_incomplete: bool = False,
     helpers: tuple[Helper, ...] = (),
+    worktree_integrity: WorktreeIntegrity | None = None,
 ) -> Verdict:
     """Final verdict assembly (A-094): separable from :func:`execute_command`.
 
@@ -2147,8 +2160,8 @@ def assemble_verdict(
             outcome=Outcome.ERROR,
             reason_code=ReasonCode.BAD_LANE_CONFIG,
         )
-    r1_claim = next((claim for claim in claims if claim.rigor == "R1"), None)
-    r1_judged = r1_claim is not None and r1_claim.coverage is not None
+    r1_claim = claim_for(claims, "R1")
+    r1_judged = claim_carries(r1_claim, "coverage")
     judgment_r1 = None if judgment is None else judgment.r1
     if r1_judged and judgment_r1 is None:
         raise AssayError(
@@ -2232,6 +2245,7 @@ def assemble_verdict(
         # (A-395) while the Go lane's parallel test asserts the opposite.
         helpers=helpers or None,
         snapshot_policy=_verdict_snapshot_policy(lane),
+        worktree_integrity=worktree_integrity,
         # (B043) Straight from the loaded lane, at the SINGLE verdict
         # construction site every producer path funnels through -- normal
         # completion, `refuse_lane`, and every CLI refusal branch alike. A
@@ -2381,6 +2395,7 @@ def _refuse_lane_with_plan(
     clock: Clock = _utc_now,
     env_effective_incomplete: bool = False,
     detail: RefusalDetail | None = None,
+    worktree_integrity: WorktreeIntegrity | None = None,
 ) -> Verdict:
     """The identical shape :func:`refuse_lane` builds, given an
     ALREADY-RESOLVED *plan* (P23/A-193): the higher-rigor path resolves its
@@ -2436,6 +2451,7 @@ def _refuse_lane_with_plan(
         evidence=evidence,
         declared_evidence=declared_evidence,
         env_effective_incomplete=env_effective_incomplete,
+        worktree_integrity=worktree_integrity,
     )
 
 
@@ -2477,6 +2493,90 @@ def _resolved_project_prefix(repo_top: Path, project_root: Path) -> PurePosixPat
         ) from exc
     return (
         PurePosixPath(".") if relative == Path(".") else PurePosixPath(relative.as_posix())
+    )
+
+
+def _resolve_snapshot_worktree_integrity(
+    *,
+    repo: Path,
+    repo_top: Path,
+    project_root: Path,
+    dirty_ignore: tuple[str, ...],
+    allow_dirty: bool,
+    remaining: Callable[[], float] | None = None,
+) -> WorktreeIntegrity | None:
+    """Apply P3's snapshot-only dirty-tree policy.
+
+    ``git.dirty_paths`` is already repo-top-relative, so the project policy
+    uses that same namespace. The lane file is always protected: it was loaded
+    from the invoking working tree, and allowing a dirty copy would let the
+    policy that decides which paths are ignored change after it was read.
+    ``allow_dirty`` admits only the remaining unignored paths and records them
+    separately; it never changes the commit identity or snapshot contents.
+    """
+    raw_dirty = git.dirty_paths(repo, remaining=remaining)
+    # Git reports an untracked directory once from porcelain (``src/``) and
+    # then reports its actual files from the explicit ls-files pass.  The
+    # verdict vocabulary is a file/tree path, not a display directory marker;
+    # retain the descendants when present and normalize a lone directory
+    # marker before glob matching and wire construction.
+    dirty = tuple(
+        sorted(
+            {
+                path.rstrip("/")
+                for path in raw_dirty
+                if not (
+                    path.endswith("/")
+                    and any(
+                        other != path and other.startswith(path)
+                        for other in raw_dirty
+                    )
+                )
+            },
+            key=lambda path: path.encode("utf-8"),
+        )
+    )
+    if not dirty:
+        return None
+    protected_path = (project_root / "assay.toml").resolve()
+    try:
+        protected = protected_path.relative_to(repo_top.resolve()).as_posix()
+    except ValueError:
+        protected = "assay.toml"
+    if protected in dirty:
+        raise AssayError(
+            f"the loaded lane file {protected!r} is uncommitted; assay refuses "
+            f"to judge a snapshot using a working-tree policy that may have "
+            f"changed. Commit or stash it, then re-run",
+            outcome=Outcome.NO_MEASUREMENT,
+            reason_code=ReasonCode.DIRTY_TREE,
+        )
+    ignored = tuple(
+        sorted(
+            (
+                path
+                for path in dirty
+                if any(fnmatch.fnmatchcase(path, pattern) for pattern in dirty_ignore)
+            ),
+            key=lambda path: path.encode("utf-8"),
+        )
+    )
+    ignored_set = set(ignored)
+    unignored = tuple(path for path in dirty if path not in ignored_set)
+    if unignored and not allow_dirty:
+        raise AssayError(
+            f"{len(unignored)} unignored uncommitted file(s) in {repo} -- a "
+            f"snapshot lane refuses to measure a tree whose changes are not "
+            f"covered by isolation.dirty_ignore. Commit or stash them, or "
+            f"re-run with --allow-dirty to record an explicit override. "
+            f"Affected: {', '.join(unignored)}",
+            outcome=Outcome.NO_MEASUREMENT,
+            reason_code=ReasonCode.DIRTY_TREE,
+        )
+    overridden = tuple(sorted(unignored, key=lambda path: path.encode("utf-8")))
+    return WorktreeIntegrity(
+        ignored_dirty_paths=ignored,
+        overridden_dirty_paths=overridden,
     )
 
 
@@ -2647,7 +2747,7 @@ def _relocate_source_roots(
     return replace(lane, judge=replace(judge, source_root_paths=relocated))
 
 
-@dataclass(frozen=True, kw_only=True)
+@record
 class SnapshotUnitResult:
     """One executed higher-rigor unit (P23): the real :class:`CommandResult`,
     the post-run Git-state verdict (``None`` when the snapshot is still
@@ -3345,7 +3445,7 @@ def _mutation_targets_whole(
     return tuple(resolved)
 
 
-@dataclass(frozen=True, kw_only=True)
+@record
 class _PreparedOutcome:
     """The raw materials :func:`_run_higher_rigor_lane` needs to build the
     final :class:`~assay.verdict.Verdict` -- kept separate from an actually
@@ -3366,6 +3466,7 @@ class _PreparedOutcome:
     #: the same reason ``judgment`` is: a cleanup-only failure can still void
     #: the claim a helper produced, and the record has to be voidable with it.
     helpers: tuple[Helper, ...] = ()
+    worktree_integrity: WorktreeIntegrity | None = None
 
 
 def resolve_base_declaration(lane: Lane, request_base: str | None) -> str | None:
@@ -3438,14 +3539,21 @@ def _resolve_declared_base(
     merge-base HERE, once, against the consumer's own full repository, is
     what makes the result an ANCESTOR of the resolved commit by construction
     -- and therefore always present inside the snapshot's own closure.
-    :func:`~assay.measurability.check_base_is_head` still calls
-    :func:`~assay.git.resolve_base` again, inside the snapshot, but merge-base
-    is idempotent on an already-ancestor value, so that second call reproduces
-    the identical OID rather than re-deriving a different one.
+    Snapshot-side guards -- R1, R2's own diff, and both R3 canary halves --
+    consume this OID directly through
+    :func:`~assay.measurability.check_resolved_base_is_head` (B101 P1); the
+    declaration is never re-resolved after P22 has removed symbolic refs,
+    and the first-parent rule for a merge ``HEAD`` is decided HERE, where
+    ``HEAD``'s parents are certainly visible, never inside a snapshot whose
+    seed may cut them off.
     """
     if base is None:
         return None
     return git.resolve_base(repo, base, remaining=remaining)
+
+
+# CD18: public for assay_analysis.
+resolve_declared_base = _resolve_declared_base
 
 
 def _run_prepared_lane(
@@ -3472,9 +3580,11 @@ def _run_prepared_lane(
     #: see its own docstring. Empty for every call site that never asked.
     rejudge_ids: frozenset[str] = frozenset(),
     rejudge_outcomes: frozenset[str] = frozenset(),
+    reuse_source: Any = None,
     progress_stream: "mutation.ProgressStream | None" = None,
     progress_heartbeat_seconds: float | None = None,
     state_dir: Path | None = None,
+    liveness_dir: Path | None = None,
     diagnostics: "TextIO | None" = None,
 ) -> _PreparedOutcome:
     """Baseline, then R1/R2/R3 as declared -- entirely inside *prepared*'s
@@ -3536,7 +3646,11 @@ def _run_prepared_lane(
     if r2_declared and not r2_ingested and adapter is not None and adapter.name == "python":
         liveness_injection = liveness.inject_liveness_plugin(
             plan,
-            liveness_dir=project_root / ".assay" / "liveness",
+            liveness_dir=(
+                liveness_dir
+                if liveness_dir is not None
+                else project_root / ".assay" / "liveness"
+            ),
             diagnostics=diagnostics,
             liveness_policy=lane.judge.mutation.liveness,
         )
@@ -3587,14 +3701,19 @@ def _run_prepared_lane(
     # value, never two independently-typed-out paths that could drift.
     liveness_candidates_dir: Path | None = None
     baseline_plan = plan
+    reuse_sequential_supported: bool | None = None
     if liveness_injected:
-        liveness_baseline_events_path = project_root / ".assay" / "liveness" / "baseline.ndjson"
+        liveness_baseline_events_path = (
+            liveness_dir
+            if liveness_dir is not None
+            else project_root / ".assay" / "liveness"
+        ) / "baseline.ndjson"
         liveness_baseline_events_path.parent.mkdir(parents=True, exist_ok=True)
         try:
             liveness_baseline_events_path.unlink()
         except FileNotFoundError:
             pass
-        liveness_candidates_dir = project_root / ".assay" / "liveness" / "candidates"
+        liveness_candidates_dir = liveness_baseline_events_path.parent / "candidates"
         baseline_plan = replace(
             plan,
             env_effective=MappingProxyType(
@@ -3605,6 +3724,17 @@ def _run_prepared_lane(
             ),
         )
     with prepared.materialize(timeout=deadline.remaining()) as baseline_snapshot:
+        if reuse_source is not None:
+            from .mutation_witness import supports_sequential_pytest
+
+            # Inspect the same committed snapshot whose baseline is about
+            # to run. The invoking worktree can contain allowed dirty
+            # paths, so it cannot be the source of pytest configuration.
+            reuse_sequential_supported = supports_sequential_pytest(
+                plan.argv_effective,
+                cwd=resolve_run_cwd(baseline_snapshot.project_root, plan),
+                env=plan.env_effective,
+            )
         if progress_stream is not None:
             progress_stream.emit(
                 {
@@ -3810,8 +3940,18 @@ def _run_prepared_lane(
                     relocated_lane,
                     repo=baseline_snapshot.root,
                     project_root=baseline_snapshot.project_root,
+                    # B101 P1: the carried pre-snapshot resolution is what
+                    # R1 consumes; nothing is re-resolved inside the
+                    # snapshot. `base` is only evaluate_r1's fallback for a
+                    # direct (non-snapshot) caller and is never read when
+                    # `resolved_base` is supplied. The effective
+                    # declaration (possibly request-supplied, B019) is not
+                    # known at this layer, so the resolved OID -- a valid
+                    # spelling of itself -- stands in rather than
+                    # `judge.base`, which is None for a request-owned lane.
                     base=resolved_base,
                     adapter=adapter,
+                    resolved_base=resolved_base,
                     profile=unit.profile,
                     diagnostics=diagnostics,
                     on_base_resolved=resolved_base_holder.append,
@@ -3883,18 +4023,18 @@ def _run_prepared_lane(
                     ReasonCode.TARGET_NOT_MEASURED,
                 )
                 if r1_attempted:
-                    # (P33/A-223f) v5 collapses two independently-resolved
-                    # `base` values into ONE field, so which wins is stated
-                    # rather than left to whoever writes the code next:
-                    # `judgment.resolved.base` is the PRE-SNAPSHOT resolution
-                    # against the consumer's own repository, and R1's
-                    # in-snapshot resolution must EQUAL it. Merge-base is
-                    # idempotent on an already-ancestor value, so the second
-                    # call reproduces the first's OID -- and if it ever
-                    # stops doing so, that is a real divergence between the
-                    # commit assay measured and the one it recorded, which
-                    # must be loud rather than silently resolved in favour
-                    # of whichever value happened to be assigned last.
+                    # (P33/A-223f) `judgment.resolved.base` is the
+                    # PRE-SNAPSHOT resolution against the consumer's own
+                    # repository, and the base R1 actually diffed against
+                    # must EQUAL it. Since B101 P1, R1 no longer re-resolves
+                    # inside the snapshot -- it consumes that same carried
+                    # OID (`evaluate_r1(resolved_base=...)`) -- so this is
+                    # an invariant check rather than a reconciliation: if a
+                    # future path ever hands R1 a different commit, the
+                    # divergence between the commit assay measured and the
+                    # one it recorded must be loud rather than silently
+                    # resolved in favour of whichever value was assigned
+                    # last.
                     # wave-1 §5/A-260: a whole-target R1 never resolves a
                     # base at all (`on_base_resolved` is never called on
                     # that path, evaluate_r1's own docstring), so
@@ -3961,8 +4101,12 @@ def _run_prepared_lane(
             )
             if added is None and not whole_file_r2:
                 try:
-                    resolved = measurability.check_base_is_head(
-                        baseline_snapshot.root, resolved_base, remaining=deadline.remaining
+                    # B101 P1: consume the carried pre-snapshot resolution;
+                    # never re-resolve inside the snapshot.
+                    resolved = measurability.check_resolved_base_is_head(
+                        baseline_snapshot.root,
+                        resolved_base,
+                        remaining=deadline.remaining,
                     )
                     diff_text = git.run(
                         baseline_snapshot.root,
@@ -4208,8 +4352,12 @@ def _run_prepared_lane(
                     discarded=len(ingested_r2.discarded),
                 )
                 claims += (r2_claim,)
-                if r2_claim.mutation is not None:
-                    judgment_r2 = _build_ingested_judgment_r2(lane, ingested_r2)
+                # `ingested_r2.mutation` is always a concrete `Mutation`:
+                # ingest either returns the complete normalized payload or
+                # raises a typed refusal above. Unlike native R2's
+                # `UNSUPPORTED` capability marker, this branch has no
+                # payload-free success shape.
+                judgment_r2 = _build_ingested_judgment_r2(lane, ingested_r2)
             ended = iso_utc(clock())
         else:
             assert targets is not None
@@ -4275,9 +4423,27 @@ def _run_prepared_lane(
                     pre_first_event_within_s=(
                         liveness_calibration.pre_first_event_within_s
                     ),
+                    sampler=liveness.tree_sample,
                 )
             else:
                 candidate_process_runner = process_runner
+            reuse_witnesses: dict[str, tuple[str, str]] = {}
+            if reuse_source is not None:
+                from .reuse import eligible_witnesses
+
+                assert reuse_sequential_supported is not None
+                if reuse_sequential_supported:
+                    reuse_witnesses = eligible_witnesses(
+                        reuse_source,
+                        sequential_pytest_supported=True,
+                    )
+                elif diagnostics is not None:
+                    print(
+                        "assay: --reuse-from witness replay is unsupported for "
+                        "this lane command; every current candidate will run "
+                        "fully after baseline PASS",
+                        file=diagnostics,
+                    )
             try:
                 mutation_result = mutation.run_mutation(
                     baseline=result,
@@ -4360,7 +4526,18 @@ def _run_prepared_lane(
                     shard_count=shard_count,
                     rejudge_ids=rejudge_ids,
                     rejudge_outcomes=rejudge_outcomes,
+                    reuse_witnesses=reuse_witnesses,
                 )
+            except mutation.InvalidRejudgeIdError:
+                # (B094/A-458) The current candidate set exists only here,
+                # after the baseline (and any R1 result) has been measured.
+                # Let the existing outer whole-lane refusal render
+                # BAD_LANE_CONFIG identically at every declared level; an
+                # R2-only claim beside a passing baseline is not verifiable
+                # for this input error. The whole-lane shape deliberately
+                # discards the earlier measurements rather than widening
+                # verify.py's accepted terminals.
+                raise
             except AssayError as exc:
                 # (B053/A-409) Announced once, here. The SAME error also
                 # refuses R3 below (`r2_orchestration_fault`), and a second
@@ -4383,37 +4560,24 @@ def _run_prepared_lane(
             else:
                 r2_claim = mutation.build_mutation_claim(result, mutation_result)
                 claims += (r2_claim,)
-                if r2_claim.mutation is not None:
-                    # The EXECUTED shard, from the `--shard` CLI argument
-                    # (this function's own parameter) -- not the lane's
-                    # declared config, which selects nothing and would let a
-                    # verdict claim a shard identity it never enforced.
-                    judgment_r2 = _build_judgment_r2(
-                        lane,
-                        shard_index=shard_index,
-                        shard_count=shard_count,
-                        # (B091/D-23) `run_mutation` is the one place the
-                        # derived number was actually computed, against the
-                        # measured baseline; read back here (via the CLAIM's
-                        # own `Mutation`, already narrowed non-`None` by the
-                        # `if` above -- unlike `mutation_result`, whose
-                        # static type also admits `"UNSUPPORTED"`) rather
-                        # than recomputed, exactly the reason the field's own
-                        # docstring gives.
-                        budget_per_candidate_derived_s=(
-                            r2_claim.mutation.budget_per_candidate_derived_s
-                        ),
-                        # (B091/RW-36) Straight from THIS function's own
-                        # local variables, not read back off `Mutation` --
-                        # unlike `budget_per_candidate_derived_s`, nothing
-                        # about liveness is computed inside `run_mutation`;
-                        # `inject_liveness_plugin` already decided all three
-                        # before `run_mutation` was even called, so there is
-                        # no second derivation here to drift from the first.
-                        liveness_active=liveness_injected,
-                        liveness_reason=liveness_reason,
-                        liveness_plugin=liveness_plugin_path,
-                    )
+                # R2 is attempted on this path even when the adapter reports
+                # UNSUPPORTED and the claim therefore has no mutation payload.
+                # Verdict verification still needs the policy that governed
+                # that attempt; only a payload can carry a baseline-derived
+                # per-candidate budget.
+                judgment_r2 = _build_judgment_r2(
+                    lane,
+                    shard_index=shard_index,
+                    shard_count=shard_count,
+                    budget_per_candidate_derived_s=(
+                        r2_claim.mutation.budget_per_candidate_derived_s
+                        if r2_claim.mutation is not None
+                        else None
+                    ),
+                    liveness_active=liveness_injected,
+                    liveness_reason=liveness_reason,
+                    liveness_plugin=liveness_plugin_path,
+                )
         ended = iso_utc(clock())
 
     judgment_r3: JudgmentR3 | None = None
@@ -4568,8 +4732,8 @@ def _run_prepared_lane(
         # tier that READS a base ran", and whole-target scope is exactly
         # where the two diverge. A whole-target R1 never resolves a base
         # (`on_base_resolved` is never called on that path), and a
-        # whole-target R2 skips both `check_base_is_head` and the `git diff`
-        # -- so on a whole-target lane NEITHER tier compares against a
+        # whole-target R2 skips both `check_resolved_base_is_head` and the
+        # `git diff` -- so on a whole-target lane NEITHER tier compares against a
         # comparison commit, and recording one would be the invented fact
         # `_build_judgment_resolved`'s own docstring forbids.
         whole_target_scope = lane.judge.mode == "whole_target"
@@ -4990,11 +5154,13 @@ def _run_higher_rigor_lane(
     r2_declared: bool,
     r3_declared: bool,
     snapshot_policy: IsolationConfig,
+    snapshot_limits: isolation.SnapshotLimits = isolation.DEFAULT_SNAPSHOT_LIMITS,
     resume: bool = False,
     shard_index: int | None = None,
     shard_count: int | None = None,
     rejudge_ids: frozenset[str] = frozenset(),
     rejudge_outcomes: frozenset[str] = frozenset(),
+    reuse_source: Any = None,
     evidence: tuple[Evidence, ...] = (),
     declared_evidence: tuple[EvidenceDeclaration, ...] = (),
     infrastructure_source: Path | None = None,
@@ -5002,6 +5168,8 @@ def _run_higher_rigor_lane(
     progress_stream: "mutation.ProgressStream | None" = None,
     progress_heartbeat_seconds: float | None = None,
     state_dir: Path | None = None,
+    allow_dirty: bool = False,
+    dirty_ignore: tuple[str, ...] = (),
     #: (B019/A-328) `run_lane`'s already-resolved comparison DECLARATION --
     #: the lane's `judge.base` or the gate request's `--request-base`,
     #: whichever the lane's `judge.base_source` named, with every
@@ -5067,6 +5235,7 @@ def _run_higher_rigor_lane(
             clock=clock,
         )
     rigor_levels = tuple(lane.rigor)
+    worktree_integrity: WorktreeIntegrity | None = None
 
     def refuse_all(
         status: Outcome,
@@ -5086,6 +5255,7 @@ def _run_higher_rigor_lane(
             declared_evidence=declared_evidence,
             clock=clock,
             detail=detail,
+            worktree_integrity=worktree_integrity,
         )
 
     # (B053/DA-R3) Both guards compose their sentence HERE, where the fact is
@@ -5095,21 +5265,22 @@ def _run_higher_rigor_lane(
     # operator got `NO_MEASUREMENT/DIRTY_TREE` and nothing else: the emitter's
     # contract is a MESSAGE, and a refusal site that has the fact and does
     # not compose it is the same defect B053 filed one layer down.
-    dirty = git.dirty_paths(repo, remaining=deadline.remaining)
-    if dirty:
+    try:
+        worktree_integrity = _resolve_snapshot_worktree_integrity(
+            repo=repo,
+            repo_top=repo_top,
+            project_root=project_root,
+            dirty_ignore=dirty_ignore,
+            allow_dirty=allow_dirty,
+            remaining=deadline.remaining,
+        )
+    except AssayError as exc:
         dirty_detail = announce_refusal(
-            AssayError(
-                f"{len(dirty)} uncommitted file(s) in {repo} -- a higher-rigor "
-                f"lane measures the RESOLVED COMMIT from a snapshot, so an "
-                f"uncommitted change is invisible to it. Commit or stash, then "
-                f"re-run. Affected: {', '.join(dirty)}",
-                outcome=Outcome.NO_MEASUREMENT,
-                reason_code=ReasonCode.DIRTY_TREE,
-            ),
+            exc,
             diagnostics=diagnostics,
         )
         return refuse_all(
-            Outcome.NO_MEASUREMENT, ReasonCode.DIRTY_TREE, detail=dirty_detail
+            exc.outcome, exc.reason_code, detail=dirty_detail
         )
     observed_head = git.head_rev(repo, remaining=deadline.remaining)
     if observed_head != commit:
@@ -5134,7 +5305,8 @@ def _run_higher_rigor_lane(
     try:
         # A P22 snapshot carries the resolved commit's full reachable OBJECT
         # closure, never a branch/tag REF -- a symbolic `judge.base` (the
-        # common case) only the CONSUMER's own repository can resolve.
+        # common case) only the CONSUMER's own repository can resolve. The
+        # resolved OID is carried into the snapshot-side checks below.
         # Resolved once, here, before any snapshot exists.
         # B019/A-328: ONE effective declaration, decided by
         # `resolve_base_declaration` in `run_lane` before the dispatch, then
@@ -5159,7 +5331,8 @@ def _run_higher_rigor_lane(
                 project_prefix=project_prefix,
                 scratch_root=scratch_root,
                 snapshot_policy=snapshot_policy,
-                limits=isolation.DEFAULT_SNAPSHOT_LIMITS,
+                resolved_base=resolved_base,
+                limits=snapshot_limits,
             )
             with isolation.prepare_snapshot(spec, timeout=deadline.remaining()) as prepared:
                 # (B006a/A-269 WI-3, §3.4) After `prepare_snapshot` has
@@ -5173,8 +5346,8 @@ def _run_higher_rigor_lane(
                     snapshot_policy=snapshot_policy,
                     project_prefix=project_prefix,
                 )
-                outcome_holder.append(
-                    _run_prepared_lane(
+                with tempfile.TemporaryDirectory(prefix="assay-liveness-") as raw_liveness_dir:
+                    prepared_outcome = _run_prepared_lane(
                         lane,
                         plan=plan,
                         deadline=deadline,
@@ -5195,10 +5368,17 @@ def _run_higher_rigor_lane(
                         shard_count=shard_count,
                         rejudge_ids=rejudge_ids,
                         rejudge_outcomes=rejudge_outcomes,
+                        reuse_source=reuse_source,
                         progress_stream=progress_stream,
                         progress_heartbeat_seconds=progress_heartbeat_seconds,
                         state_dir=state_dir,
+                        liveness_dir=Path(raw_liveness_dir),
                         diagnostics=diagnostics,
+                    )
+                outcome_holder.append(
+                    replace(
+                        prepared_outcome,
+                        worktree_integrity=worktree_integrity,
                     )
                 )
     except AssayError as exc:
@@ -5297,6 +5477,7 @@ def _run_higher_rigor_lane(
         judgment=outcome.judgment,
         ended=outcome.ended,
         helpers=outcome.helpers,
+        worktree_integrity=outcome.worktree_integrity,
     )
 
 
@@ -5380,12 +5561,16 @@ def run_lane(
     #: instance -- points this at a durable directory so `--resume` stops
     #: being inert exactly where budget-capped retries happen most.
     state_dir: Path | None = None,
+    reuse_from: str | Path | None = None,
     #: (B019/A-328) the comparison ref the invoking GATE REQUEST supplies,
     #: for a lane that declared `judge.base_source = "request"`. It is a ref
     #: or an already-resolved commit and goes through the identical merge-base
     #: contract `judge.base` does; `resolve_base_declaration` refuses every
     #: disagreement between the two owners before any Git call.
     request_base: str | None = None,
+    snapshot_limits: isolation.SnapshotLimits = isolation.DEFAULT_SNAPSHOT_LIMITS,
+    allow_dirty: bool = False,
+    dirty_ignore: tuple[str, ...] = (),
     diagnostics: "TextIO | None" = None,
 ) -> Verdict:
     """``assay run``'s entry point (P17-P19; P23 two-state split A-189):
@@ -5490,7 +5675,11 @@ def run_lane(
                 progress_stream=stream,
                 progress_heartbeat_seconds=progress_heartbeat_seconds,
                 state_dir=state_dir,
+                reuse_from=reuse_from,
                 request_base=request_base,
+                snapshot_limits=snapshot_limits,
+                allow_dirty=allow_dirty,
+                dirty_ignore=dirty_ignore,
                 diagnostics=diagnostics,
             )
 
@@ -5790,6 +5979,71 @@ def run_lane(
                 clock=clock,
             )
 
+    reuse_source = None
+    if reuse_from is not None:
+        def _refuse_reuse(exc: AssayError) -> Verdict:
+            detail = announce_refusal(exc, diagnostics=diagnostics)
+            return refuse_lane(
+                lane,
+                commit=commit,
+                status=exc.outcome,
+                reason_code=exc.reason_code,
+                detail=detail,
+                argv_append=argv_append,
+                passthrough_source=passthrough_source,
+                infrastructure_source=infrastructure_source,
+                infrastructure_environment=infrastructure_environment,
+                assay_version=assay_version,
+                judge_provenance=judge_provenance,
+                evidence=evidence,
+                declared_evidence=declared_evidence,
+                clock=clock,
+            )
+
+        if shard is not None:
+            return _refuse_reuse(
+                AssayError(
+                    "--reuse-from cannot be combined with --shard; selective "
+                    "reuse produces only a complete unsharded campaign",
+                    outcome=Outcome.ERROR,
+                    reason_code=ReasonCode.BAD_LANE_CONFIG,
+                )
+            )
+        if (
+            not r2_declared
+            or lane.judge is None
+            or lane.judge.mutation is None
+            or lane.judge.mutation.format is not None
+        ):
+            return _refuse_reuse(
+                AssayError(
+                    "--reuse-from requires a native R2 mutation lane",
+                    outcome=Outcome.ERROR,
+                    reason_code=ReasonCode.BAD_LANE_CONFIG,
+                )
+            )
+        from .reuse import load_reuse_source
+
+        try:
+            reuse_source = load_reuse_source(reuse_from)
+        except AssayError as exc:
+            return _refuse_reuse(exc)
+        if diagnostics is not None:
+            if reuse_source.cold_start:
+                print(
+                    f"assay: --reuse-from {str(reuse_from)!r} is a v12 cold "
+                    "start; no prior candidates are reusable, so every "
+                    "current candidate will run fully after baseline PASS",
+                    file=diagnostics,
+                )
+            elif not reuse_source.complete_unsharded_native:
+                print(
+                    f"assay: --reuse-from {str(reuse_from)!r} is not a "
+                    "complete unsharded native campaign; every current "
+                    "candidate will run fully after baseline PASS",
+                    file=diagnostics,
+                )
+
     # (B091/D-23, P7 A5) `--rejudge`/`--rejudge-outcome`, parsed and refused
     # HERE -- the same point *shard* is, and the same clean `BAD_LANE_CONFIG`
     # shape (a complete refused verdict, never an uncaught exception) rather
@@ -5894,6 +6148,7 @@ def run_lane(
             r2_declared=r2_declared,
             r3_declared=r3_declared,
             snapshot_policy=snapshot_policy,
+            snapshot_limits=snapshot_limits,
             infrastructure_source=infrastructure_source,
             infrastructure_environment=infrastructure_environment,
             resume=resume,
@@ -5901,11 +6156,14 @@ def run_lane(
             shard_count=shard_count,
             rejudge_ids=rejudge_ids,
             rejudge_outcomes=rejudge_outcomes,
+            reuse_source=reuse_source,
             evidence=evidence,
             declared_evidence=declared_evidence,
             progress_stream=progress_stream,
             progress_heartbeat_seconds=progress_heartbeat_seconds,
             state_dir=state_dir,
+            allow_dirty=allow_dirty,
+            dirty_ignore=dirty_ignore,
             base_declaration=base_declaration,
             diagnostics=diagnostics,
         )

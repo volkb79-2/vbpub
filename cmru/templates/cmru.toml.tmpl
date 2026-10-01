@@ -39,6 +39,14 @@ git_tag = true
 build_step = "build"
 artifact_dirs = ["dist"]
 
+[versions]
+age_window_days = 14
+
+[versions.discovery]
+scope = "shipped"
+# Optional: list files/directories actually produced by the release gate.
+# evidence_paths = ["coverage.json"]
+
 [steps.run-tests]
 quiet = true
 commands = [

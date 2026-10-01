@@ -45,10 +45,10 @@ def test_the_service_invokes_a_cli_verb_that_actually_exists(tmp_state):
     `main()` is also the only honest way to ask -- and it exercises the whole
     path the unit actually takes, not a parser reconstructed to resemble it.
     """
-    from nyxloom import cli
+    from nyxloom.cli_ctl import main as ctl_main
 
-    match = re.search(r"^ExecStart=\S*nyxloom\s+(.+)$", _body(SERVICE), re.M)
-    assert match, "the service does not invoke the nyxloom CLI"
+    match = re.search(r"^ExecStart=\S*nyxloomctl\s+(.+)$", _body(SERVICE), re.M)
+    assert match, "the service does not invoke the nyxloomctl CLI"
     argv = match.group(1).split()
     assert argv[0] == "doctor", f"unexpected verb: {argv[0]}"
 
@@ -56,7 +56,7 @@ def test_the_service_invokes_a_cli_verb_that_actually_exists(tmp_state):
     # is being asserted is that argparse ACCEPTED the unit's argv -- an
     # unknown flag raises, because the CLI builds its parser with
     # exit_on_error=False.
-    assert cli.main(argv) == 0
+    assert ctl_main(argv) == 0
 
 
 def test_the_alarm_path_does_not_route_through_the_daemons_own_transport():

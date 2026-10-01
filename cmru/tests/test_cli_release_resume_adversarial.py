@@ -5,6 +5,15 @@ import pytest
 from cmru import cli, transaction
 
 
+@pytest.fixture(autouse=True)
+def fake_git_family(monkeypatch):
+    monkeypatch.setattr(
+        cli.transaction,
+        "project_git_family_groups",
+        lambda root, projects: {root: list(projects)},
+    )
+
+
 def test_release_resume_cleans_workspace_and_reports_sync_failure(monkeypatch, tmp_path, capsys):
     project = cli.ProjectConfig("demo", {}, {}, project_root=tmp_path / "demo", prefix="demo-v", github_token="token")
     config = (
@@ -15,10 +24,12 @@ def test_release_resume_cleans_workspace_and_reports_sync_failure(monkeypatch, t
     workspace = transaction.ReleaseWorkspace(tmp_path, tmp_path / "retained", "cmru/release/resume", "a" * 40)
     monkeypatch.setattr(cli, "_resolve_config", lambda _: tmp_path / "cmru.toml")
     monkeypatch.setattr(cli, "load_config", lambda _: config)
+    monkeypatch.setattr(cli.transaction, "project_git_family_groups", lambda root, projects: {root: list(projects)})
     monkeypatch.setattr(cli, "apply_release_env", lambda *_: None)
     monkeypatch.setattr(cli.transaction, "release_lock", lambda _: nullcontext())
     monkeypatch.setattr(cli, "_uncommitted_release_paths", lambda *args: {})
     monkeypatch.setattr(cli.transaction, "resume_workspace", lambda *args: workspace)
+    monkeypatch.setattr(cli.transaction, "assert_resume_workspace_committed", lambda _path: None)
     calls = []
     monkeypatch.setattr(cli.transaction, "copy_secret_overlays", lambda *args: calls.append("copy"))
     monkeypatch.setattr(cli.transaction, "run_child", lambda *args, **kwargs: calls.append(("child", args[1], kwargs)) or 0)
@@ -32,15 +43,14 @@ def test_release_resume_cleans_workspace_and_reports_sync_failure(monkeypatch, t
             "Could not sync local main automatically: caller checkout is dirty; local main was left untouched.",
         ),
     )
-    with pytest.raises(SystemExit) as exc:
-        cli.main([
+    exc = cli.main([
             "release", "--resume", str(workspace.path), "--config", str(tmp_path / "cmru.toml"),
             "--discard-logs-on-release", "--discard-artifacts-on-release",
         ])
-    assert exc.value.code == 0
+    assert exc == 0
     assert calls[:2] == [
         "copy",
-        ("child", ["--discard-logs-on-release", "--discard-artifacts-on-release", "--config", "cmru.toml"], {}),
+        ("child", ["demo", "--discard-logs-on-release", "--discard-artifacts-on-release", "--config", "cmru.toml"], {"project_names": ["demo"]}),
     ]
     assert calls[2:] == ["backup", "workspace", "forget"]
     output = capsys.readouterr().out

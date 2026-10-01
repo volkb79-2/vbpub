@@ -1,0 +1,63 @@
+{
+  "ok": true,
+  "contract": 1,
+  "host": {
+    "at": "2026-09-12T10:15:04Z",
+    "loadavg": [3.40, 3.05, 2.62],
+    "meminfo": {
+      "total_bytes": 17179869184,
+      "available_bytes": 6144000000,
+      "swap_total_bytes": 8589934592,
+      "swap_free_bytes": 8192000000
+    },
+    "pressure": {
+      "memory": {"some_avg10": 0.60, "some_avg60": 0.65, "some_avg300": 0.59, "some_total_seconds": 53.0,
+                 "full_avg10": 0.15, "full_avg60": 0.16, "full_avg300": 0.14, "full_total_seconds": 11.8},
+      "cpu": {"some_avg10": 0.95, "some_avg60": 0.82, "some_avg300": 0.71, "some_total_seconds": 24.0,
+              "full_avg10": 0.00, "full_avg60": 0.00, "full_avg300": 0.00, "full_total_seconds": 0.0},
+      "io": {"some_avg10": 0.06, "some_avg60": 0.05, "some_avg300": 0.04, "some_total_seconds": 0.9,
+             "full_avg10": 0.02, "full_avg60": 0.02, "full_avg300": 0.01, "full_total_seconds": 0.3}
+    },
+    "slices": {
+      "dev-background.slice": {
+        "cgroup": "/dev.slice/dev-background.slice",
+        "memory_current_bytes": 2254438400,
+        "memory_max_bytes": null,
+        "memory_high_bytes": null,
+        "memory_swap_current_bytes": null,
+        "pressure": {
+          "memory": {"some_avg10": 0.50, "some_avg60": 0.45, "some_avg300": 0.40, "some_total_seconds": 4.2,
+                     "full_avg10": 0.20, "full_avg60": 0.15, "full_avg300": 0.10, "full_total_seconds": 2.7},
+          "cpu": {"some_avg10": 0.40, "some_avg60": 0.35, "some_avg300": 0.30, "some_total_seconds": 5.8,
+                  "full_avg10": 0.00, "full_avg60": 0.00, "full_avg300": 0.00, "full_total_seconds": 0.0}
+        }
+      },
+      "dev-interactive.slice": {
+        "cgroup": "/dev.slice/dev-interactive.slice",
+        "memory_current_bytes": 838860800,
+        "memory_max_bytes": null,
+        "memory_high_bytes": null,
+        "memory_swap_current_bytes": null,
+        "pressure": {
+          "memory": {"some_avg10": 0.05, "some_avg60": 0.04, "some_avg300": 0.03, "some_total_seconds": 0.28,
+                     "full_avg10": 0.00, "full_avg60": 0.00, "full_avg300": 0.00, "full_total_seconds": 0.0},
+          "cpu": {"some_avg10": 0.10, "some_avg60": 0.08, "some_avg300": 0.06, "some_total_seconds": 0.52,
+                  "full_avg10": 0.00, "full_avg60": 0.00, "full_avg300": 0.00, "full_total_seconds": 0.0}
+        }
+      },
+      "dev.slice": {
+        "cgroup": "/dev.slice",
+        "memory_current_bytes": 3355443200,
+        "memory_max_bytes": null,
+        "memory_high_bytes": null,
+        "memory_swap_current_bytes": null,
+        "pressure": {
+          "memory": {"some_avg10": 0.55, "some_avg60": 0.50, "some_avg300": 0.45, "some_total_seconds": 4.8,
+                     "full_avg10": 0.12, "full_avg60": 0.10, "full_avg300": 0.09, "full_total_seconds": 2.1},
+          "cpu": {"some_avg10": 0.60, "some_avg60": 0.55, "some_avg300": 0.50, "some_total_seconds": 9.0,
+                  "full_avg10": 0.00, "full_avg60": 0.00, "full_avg300": 0.00, "full_total_seconds": 0.0}
+        }
+      }
+    }
+  }
+}

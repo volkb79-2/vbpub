@@ -8,7 +8,7 @@
 # sweep, 2026-09-03): as of rev 36, plain "host" is a CONTAINER default with
 # no pytest reachable (measured live: `/usr/local/bin/python3 -m pytest` ->
 # "No module named pytest") — tester-unified (the shared
-# [environments.tester-unified] in the repo-root run-gate.toml) DOES carry
+# [environments.tester-unified] in the repo-root run-gate.root.toml) DOES carry
 # test tooling, in its own dedicated venv at $TESTER_VENV (baked into the
 # image), not on the default PATH. r2 additionally can't `pip install -e
 # assay` there (its site-packages is root-owned, read-only for the non-root

@@ -4,6 +4,165 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 <!-- cmru: release history -->
 
+## [0.9.0] - 2026-09-26
+<!-- cmru: generated -->
+<!-- cmru: source-end=cd9f35482becb1c18a514fde3322b941e50ff6c1 -->
+
+### Added
+- feat(tools): relocate jsonl-metrics.py from dstdns, resolve pack.py score xfails (5600a1b4)
+- feat(tools): relocate pack.py orientation-pack builder from dstdns (7e2aedff)
+
+### Changed
+- Make lifecycle rejection tests deterministic (c9d38a12)
+- Cover empty question prose separators (e82cf460)
+- Cover remaining question correlation branches (97907871)
+- Cover remaining extraction adapter branches (c44f8aec)
+- Close extraction review coverage gaps (bb473c75)
+- Improve session extraction and preserve Codex Q&A (ce292bc8)
+- doc(nyxloom): add session-extract.md (22850997)
+- E-019/NL-22: correct overclaimed Bash description fill-rate (100% -> 70.6%) (f10a9ada)
+- E-018/E-019: recon-agent orientation packs + tool-intent visibility (NL-21, NL-22) (c32c3c6f)
+- pack.py: document score's methodology limitations; note worktree-local out-dir direction; jsonl-metrics curve --raw (67aa8794)
+
+### Documentation
+- docs(backlog): NL-19/NL-20 -- pack.py CLI integration decision, session-introspection design doc tracking (d7795dba)
+
+## [0.8.0] - 2026-09-19
+<!-- cmru: generated -->
+<!-- cmru: source-end=cd8cbe873dab9b71dd950bf46348cccb13e662fa -->
+
+### Added
+- feat: add estate cli version compatibility (05f373a4)
+
+### Fixed
+- fix: preserve nested gate stack governance (eb9a0a59)
+
+### Changed
+- cli: universalize vbpub parser diagnostics (aa0e69fa)
+- chore: land run-gate root and dev-gates migration (41c1cafb)
+
+### Documentation
+- docs(nyxloom): clarify whole-source gate judge (d4e0b44d)
+- docs(nyxloom): align gate comments with coverage contract (d2ae6d7e)
+- docs(nyxloom): codex session id creation and log storage (fb9995a2)
+- docs: add nyxloom CLI diagnostic guidance (23a0f925)
+- docs: document universal nyxloom CLI diagnostics (881a8ebe)
+
+### Testing
+- test(nyxloom): enforce branch coverage for CLI lane (5174cf36)
+
+## [0.7.1] - 2026-09-18
+<!-- cmru: generated -->
+<!-- cmru: source-end=6f680f185d3091989077b616b53ad5426eae8208 -->
+
+### Documentation
+- docs(nyxloom): design doc for session self-introspection + a process/resource registry (fd67aece)
+
+## [0.7.0] - 2026-09-17
+<!-- cmru: generated -->
+<!-- cmru: source-end=9ac429ec6f92d366949943af4672a5d280206177 -->
+
+### Added
+- feat(skills): add canonical estate skills; promote D-496 measurement rule to AUTHORING.md (99edfbe6)
+
+### Fixed
+- fix(nyxloom): refuse duplicate Codex home session IDs (79ff1a23)
+- fix(docs): stop citing a consumer's private decision ledger ID from canonical doctrine (8cb213bd)
+- fix(skills): repair defects found by independent review of new canonical skills (abcb6e27)
+
+### Changed
+- chore(nyxloom): archive historical handoffs and reports (28801a95)
+- backlog(NL-18): status/resync/digest have no on-ramp for manual-controller tasks (521c1139)
+
+### Documentation
+- docs(nyxloom): keep Codex session example generic (642d9e83)
+- docs(authoring): document input_revision's two-step freeze explicitly (23164f07)
+- docs(testing-methodology): promote coverage-exclusion/prefer-deletion principle from dstdns delta (b40900b1)
+
+## [0.6.0] - 2026-09-17
+<!-- cmru: generated -->
+<!-- cmru: source-end=5b693da907f37018a813e2d7993950036b26c71b -->
+
+### Added
+- feat(nyxloom): add Reasonix session extraction (cf4e819e)
+- feat(nyxloom-P123): --follow/-f on extract and extract-lossless (c7b87f91)
+- feat(nyxloom-P121): extract --render-markdown, for reading a brief (a6a07347)
+- feat(nyxloom-P120): resolve a bare session id to its own log file (dd2ad4d8)
+
+### Fixed
+- fix(nyxloom): clarify Reasonix command boundaries (a018d448)
+- fix(nyxloom): close session-extract review gaps (2da010e0)
+- fix(nyxloom): set exact session-extract mutation cap (745c46c5)
+- fix(nyxloom): close tick and follow attention gaps (8addf5f0)
+- fix(nyxloom): retain bounded opencode follow anchors (bde8c92a)
+- fix(nyxloom): make session scans fail-closed (bcd9c95d)
+- fix(nyxloom): align session-extract mutation cap (ff8ccae0)
+- fix(nyxloom): close live session extract review gaps (eb894e0f)
+- fix(nyxloom): reject strip-stale-wakeups in follow mode (449865d9)
+- fix(nyxloom): close follow redaction and attention gaps (76ebd1f4)
+- fix(nyxloom): review session-location resolution (226229ed)
+- fix(nyxloom): keep empty highlighted input empty (70f671f1)
+- fix(nyxloom): register follow and locate tests in gate (9cb26cda)
+- fix(nyxloom): scope session-extract gate to feature base (c8203298)
+- fix(nyxloom): close session follow review findings (cd9a1e71)
+- fix(nyxloom-P123): --bell rings on stderr, not into the content stream (914760d4)
+- fix(nyxloom-P123): classify follow.py's notify-delivery handler (CR-02b census) (056e0c0b)
+- fix(nyxloom): lossless dropped every Claude Code thinking block (f6ad2dfa)
+- fix(nyxloom): finish CLI-wide project-id/session-log clarity pass + fix 2 stale tests (3d27c67e)
+
+### Changed
+- Merge survivor coverage into source-backed Nyxloom branch (24ac95df)
+- refactor(gates): consume assay from selected worktree source (cd4d19b0)
+- tidy mutation cap rationale (1fdf3c3d)
+- recount session mutation candidates after safety fixes (ac4dd4f6)
+- keep session mutation cap complete after fixes (db5e182e)
+- fix session follow and resume marker safety (8581d6b8)
+- ci(nyxloom): align mutation cap with candidate inventory (29724093)
+- Set session-extract mutation cap to native count (223296b4)
+- Update session-extract mutant budget (6348ab8c)
+- Cover lossless explicit opencode follow (e73864a6)
+- Observe explicit opencode resolution boundary (2f04ed62)
+- Cover explicit opencode session wiring (2b52f695)
+- Cover non-Claude follow state (7279beb2)
+- Cover CLI and Claude follow wiring (27890b29)
+- Cover zero-offset follow anchors (272a4175)
+- Assert session resolution failure contract (662ec847)
+- Update session-extract mutation cap (cd851d53)
+- Cover follow edge branches (1a3c87ec)
+- Fix follow boundary and highlighting edge cases (4ccd32d7)
+- chore(nyxloom): set measured session-extract mutation cap (95d3830f)
+- refactor(nyxloom-P122): factor out the per-event and per-record seams --follow needs (ff79daa6)
+
+### Documentation
+- docs(nyxloom): clarify mutation cap provenance (37d7adcc)
+- docs(gates): describe source-backed assay image (82bd569a)
+- docs(nyxloom): update lossless resume limitation (a61d872f)
+- docs(nyxloom): renumber the session_extract wave P120-P123 -> P112-P115 (25ab9deb)
+- docs(nyxloom): re-measure cli.py's inventory row after the P120-P123 wave (2334b698)
+
+### Testing
+- test(nyxloom): close follow mutation boundary gaps (34f63c60)
+- test(nyxloom): cover remaining session follow boundaries (56086482)
+- test(nyxloom): integrate remaining mutation regressions (764cb368)
+- test(nyxloom): match nonregular claude session filename (fef7a72b)
+- test(nyxloom): cover incomplete opencode anchor state (e4a2864a)
+- test(nyxloom): exercise explicit format follow detection guard (6e7c14fd)
+- test(nyxloom): allow complete session extraction campaign (42b2c22a)
+- test(nyxloom): cover explicit format extraction path (236b91cb)
+- test(nyxloom): set complete session extraction mutant cap (526f31a8)
+- test(nyxloom): record complete session extraction mutant set (6ce283ba)
+- test(nyxloom): raise session extraction mutant cap (9029ae02)
+- test(nyxloom): close session extraction gate gaps (fb3f878e)
+- test(nyxloom): kill Claude pending interview mutant (ec1d7028)
+- test(nyxloom): close locate branch coverage (a4e7a54d)
+- test(nyxloom): cover session extract R1 edge lines (3cee4f14)
+- test(nyxloom): kill session follow interview survivors (daad6846)
+- test(nyxloom): close final session-extract branch arcs (7070f395)
+- test(nyxloom): close follow lane branch gaps (2ab4f1d3)
+- test(nyxloom): cover registered follow lane edges (50b19842)
+- test(nyxloom-P123): pin --highlight's scope at the render layer too (5a70b25a)
+- test(nyxloom-P123): cover --notify-project's unknown-project error path (d6888ec9)
+
 ## [Unreleased] - UNRELEASED
 
 Hand-authored draft section for the session_extract wave below; fold into the

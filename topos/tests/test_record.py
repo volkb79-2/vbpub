@@ -373,5 +373,8 @@ def test_cli_version_reports_package_version() -> None:
         env=env,
         text=True,
         stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
     )
     assert proc.stdout.strip() == "topos 0.1.0"
+    assert proc.stdout == "topos 0.1.0\n"
+    assert proc.stderr == ""

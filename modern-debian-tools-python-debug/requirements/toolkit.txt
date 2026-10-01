@@ -60,5 +60,6 @@ jsonschema            # JSON-Schema validation for interactive inspection
 jinja2                # templating (also a CIU dependency)
 tomli_w               # write TOML (also a CIU dependency)
 click                 # build quick CLIs
-rich                  # pretty terminal output / tables
+rich>=15.0.0          # nyxloom wheel dependency; also pretty terminal output / tables
+pygments>=2.21.0      # nyxloom highlighting dependency (used by rich Markdown rendering)
 textual               # TUI framework (topos wheel dep: `topos --attach` interactive UI)

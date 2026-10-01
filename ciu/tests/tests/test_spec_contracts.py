@@ -725,6 +725,7 @@ class TestConfigfile:
             repo,
             {**_we_split.read_generated_facts(repo),
              "physical_repo_root": str(physical_prefix)},
+            machine_facts=_we_split.read_generated_machine_facts(repo),
         )
         # (CIU_SKIP_DOOD_PREFLIGHT=1 from the autouse fixture.)
         run_engine(stack, monkeypatch)

@@ -9,12 +9,11 @@ conflict, SPEC wins.
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│  Layer 1 — Machine identity    (ciu.env)                       │
-│  Autodetected facts about THIS machine. Never project config.   │
+│  Layer 1 — Machine facts + shell export                         │
+│  [ciu.instance.machine] + ciu.env; never project config.        │
 │  Keys: REPO_ROOT, PHYSICAL_REPO_ROOT, DOCKER_GID,              │
 │        CONTAINER_UID, DOCKER_NETWORK_INTERNAL, ENV_TYPE, …     │
-│  7.7.0: the six INSTANCE-identity keys here are seeded from     │
-│  [ciu.instance.generated] (S3.1c), not read from this file.     │
+│  7.7.0: generated tables are authoritative; ciu.env is export. │
 ├─────────────────────────────────────────────────────────────────┤
 │  Layer 2 — Project config      (*.toml.j2 templates)           │
 │  Committed, human-authored TOML templates; rendered each run.   │
@@ -76,7 +75,7 @@ generated."
 | `ciu.global.instance.toml.j2` | **Gitignored, OPTIONAL** | Sparse per-checkout override; created initially by managed lifecycle options and then operator-editable; preserved by clean/env regeneration (S3.1b/S16). **CIU never writes it after that** — since ciu-P47 it holds nothing CIU owns, so nothing in it can be clobbered. Removed only by `ciu clean --vanilla`. Was `ciu.global.worktree.toml.j2` before ciu-P47 (hard cutover; `ciu migration-check` reports a leftover) |
 | `ciu.instance.generated.toml` | Gitignored, generated | CIU-OWNED identity facts, `[ciu.instance.generated]` (CIU-60). Plain TOML, never a template; rewritten in full by every `ciu env generate`; merged LAST in the chain. Hand edits do not survive. Removed only by `ciu clean --vanilla` |
 | `ciu.global.toml` | Gitignored, rendered | Runtime global config; read by profile-based CIU verbs |
-| `ciu.env` | Gitignored, generated | Machine-identity env (S2); written by `ciu env generate`. **Since 7.7.0 CIU reads no INSTANCE identity from it** — that comes from `[ciu.instance.generated]` above (S3.1c); this file still carries the machine facts and is what a shell `source`s |
+| `ciu.env` | Gitignored, generated | Shell export of generated identity and machine facts (S2); written by `ciu env generate`. **Since 7.7.0 CIU reads no facts from it** — internal reads use the exact `[ciu.instance.generated]` and `[ciu.instance.machine]` tables above (S3.1c); this file is for shell consumers |
 | `<stack>/ciu.defaults.toml.j2` | Committed (stack marker) | Stack defaults |
 | `<stack>/ciu.toml.j2` | **Committed, OPTIONAL** | Stack sparse override; **not auto-created** (S3.1a, CIU-8) — author only the keys that differ from defaults; absent = defaults apply alone |
 | `<stack>/ciu.toml` | Gitignored, rendered | Runtime stack config; `[state]` preserved across re-renders |
@@ -835,6 +834,12 @@ opt-in:
 enabled = true
 cgroup_parent = "dev-background.slice"
 cpus = "2"              # CPU quota -- OPT-IN, default "" (uncapped); see below
+# Memory controls have no CIU defaults; set only the policies this stack needs:
+mem_limit = ""          # e.g. "2g" to opt into a RAM cap
+mem_swap_limit = ""     # Docker's combined RAM+swap total; optional
+mem_reservation = ""    # memory.low protection; optional
+read_iops = ""          # unset/uncapped; set 0 to opt into baseline derivation
+write_iops = 0           # 0 = unset/uncapped; a positive value is an explicit cap
 ksm_optin = "builtin"  # CIU builds/caches its shipped universal shim
 exempt_services = ["vault"]
 
@@ -856,16 +861,39 @@ re-states the verified image entrypoint. See [SPEC S15.11](SPEC.md#s1511--ksm-op
 [S15.19](SPEC.md#s1519--per-service-memory-policy-governancememory_profile),
 and [S15.20](SPEC.md#s1520--the-exec-wrapper-ksm--wrapper) for the constraints.
 
+`ciu init` writes the complete `[governance]` table into its generated global
+config. It sets `enabled = false`, leaves memory/CPU/read IOPS controls empty,
+and sets numeric IO caps to zero. The options are active TOML fields, so an
+operator can edit the generated config directly; none imposes a per-container
+cap until changed to an explicit value.
+
+CIU does not add per-container memory, CPU, or IO limits just because
+governance is enabled. Memory controls and `read_iops` default to `""`;
+`write_iops` defaults to `0`. Each cap is omitted from the generated Compose
+overlay unless you set it in this stack's table or the global `[governance]`
+table. An explicit `read_iops = 0` opts into baseline-derived capping; a
+positive value sets a fixed cap. A service's own Compose key still wins. See
+[SPEC S15.1–S15.4](SPEC.md#s151--declaration) for the injection contract.
+
 `cpus` (default `""` = unset/uncapped, CIU-90) declares a CPU quota — a
 fractional CPU count, e.g. `"1.5"` — injected as compose's own `cpus` key for
 every non-exempt service that hasn't set one itself (S15.3 author
-precedence). **Unlike `mem_limit`/`mem_reservation`, there is no nonzero
-default**: leaving it unset means the service stays exactly as uncapped as
-it was before this key existed — an already-governed stack that wants a
-quota (memory/IO capped, CPU previously unbounded) must opt in explicitly.
+precedence). Like the memory controls, there is no nonzero default: leaving it
+unset means the service stays exactly as uncapped as it was before this key
+existed — an already-governed stack that wants a quota must opt in explicitly.
 `""` or a positive number are the only valid values — `0`, a negative value,
 or a non-numeric string all refuse at render time. See
 [SPEC S15.21](SPEC.md#s1521--cpu-quota-cpus-ciu-90-ciu-p49).
+
+`read_iops` and `write_iops` are also explicit-only. `read_iops = ""` leaves
+reads uncapped; setting `read_iops = 0` in the config file opts into the
+baseline formula from S15.4, and a positive integer sets a fixed read cap.
+`write_iops = 0` leaves writes uncapped; a positive integer sets a write cap.
+CIU emits only the configured IOPS fields into `blkio_config`, so configuring
+one direction does not set a cap for the other. If baseline derivation yields
+a zero read rate, CIU refuses rather than omitting the requested cap; set a
+positive `read_iops` value or update the baseline. See
+[SPEC S15.4](SPEC.md#s154--read_iops-derivation).
 
 `mem_min` (default `""` = not declared) declares a cgroup-v2 `memory.min`
 FLOOR — a Docker-style size string, e.g. `"128m"`. It is the one governance
@@ -1119,7 +1147,7 @@ as a configuration error even when nothing else would check it. Undeclared
 
 | Key | Always required | Detection (when not pre-set) |
 |---|---|---|
-| `REPO_ROOT` | Yes | `--define-root` (always wins outright) → walk-up to `ciu.global.defaults.toml.j2`, REFUSING if a successful walk-up disagrees with a pre-set `REPO_ROOT` → `REPO_ROOT` env (only when the walk-up finds nothing) → cwd [S1.1, CIU-53] |
+| `REPO_ROOT` | Yes | explicit `--root-folder` → nearest `ciu.global.defaults.toml.j2` above the invocation directory; ambient `REPO_ROOT` is never a selector [S1.1] |
 | `PHYSICAL_REPO_ROOT` | Yes | env override (only if consistent with mountinfo, or mountinfo absent) → per-repo longest-prefix match of `REPO_ROOT` in `/proc/self/mountinfo` → `devcontainer.local_folder` label via `docker ps` (container-origin fallback); native host: `= REPO_ROOT` [S1.3, S1.4] |
 | `DOCKER_NETWORK_INTERNAL` | Yes | `<repo-name>-<instance-id>-network` (hash of physical path) |
 | `CONTAINER_UID` | Yes | Current user UID |
@@ -1270,7 +1298,6 @@ internal_port = 8200
 # Reference instance already up, on network repo-ab12cd-network, with the
 # idp and vault stacks running as Compose projects idp-dev-idp / vault-dev-vault.
 $ ciu worktree create pkg-under-test --prefix myapp --feature pkg-under-test \
-    --profile core,db \
     --shared-infra primary \
     --shared-infra-services api,worker \
     --shared-infra-ref-projects idp-dev-idp,vault-dev-vault \
@@ -1318,7 +1345,8 @@ overlay merges last it overrides a committed bare default while leaving an
 - Never hand-edit the recorded `container`. It is re-verified against live
   Docker at every `ciu up`, so a reference re-created under a new identity
   fails loudly there rather than being silently addressed; re-run
-  `ciu worktree add --shared-infra ...` to refresh it.
+  `ciu worktree create --shared-infra ...` to create a fresh workspace with the
+  reference intent refreshed.
 
 ### Machine-facing worktree facts [S16.4]
 
@@ -1524,7 +1552,7 @@ documented here because a consumer adopts the gate, not the keys):
 - **`.assay/verdict-ciu.json`** (gitignored) — the retained Assay verdict from
   the last gate run, used as review evidence.
 
-The container slice for a gate run is resolved from `$CGROUP_PARENT_DEV_BACKGROUND`
+The container slice for a gate run is resolved from `$CGROUP_PARENT_DEV_GATES`
 (no literal, no fallback) and verified `LoadState=loaded` before `docker run` where systemd is
 reachable (`[ -d /run/systemd/system ]`; containerized contexts skip the
 check — S18.3, P07 review fix).

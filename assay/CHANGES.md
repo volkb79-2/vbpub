@@ -4,7 +4,625 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ## [Unreleased]
 
+### Added
+- feat(assay): `assay analyze plan-estimate`; `assay plan` JSON `commit`/`tree`
+  and a stderr hint; `candidate` progress `cpu_seconds`/`peak_rss_bytes`/
+  `phase_seconds`/`startup_seconds` and state `resources` (with the
+  `<events>.resources.json` sidecar); baseline `test` `setup_s`/`teardown_s`.
+  All additive; no schema version changes (B111)
+- feat(assay): `assay analyze campaign <lane>` (B108 phase 1), a read-only,
+  deterministic campaign closeout: `--file`, `--expected-commit`, `--progress`,
+  `--verdict`, `--command-exit`, `--state-dir`, `--request-base`, `--project`,
+  `--project-jobs`, `--coverage`, `--log`, `--outcome`, `--path-prefix`,
+  `--offset`, `--limit`, `--format`. Its JSON (schema
+  `analysis-campaign.schema.json`) carries `errors[].source`,
+  `complete_blockers`, `reclassified`, `state`, `adverse`, `unresolved`,
+  `projection` and `campaign.selected_total`; exit 0/1/2/3 (3 is `incomplete`,
+  unlike `analyze report`, where 3 is `running`). Additive judge surfaces it
+  needs: the `candidates` progress key `judge_sha256`; the `assay plan` row keys
+  `source_sha256` and `mutated_file_sha256`; the public `cli.plan_jobs` and
+  `mutation.candidate_identity_fields`; and the public aliases replacing the
+  private judge names the analysis package used to reach. No existing verdict,
+  progress or plan key changes meaning; no schema version changes
+
+### Changed
+- refactor(assay): repeated judge rules now live once: `assay.records` (the
+  frozen/keyword-only record decorators), `assay.guards` (strict-int, finite,
+  positive, at-least, sha256-hex and aware-datetime predicates), producer-side
+  claim/policy helpers in `verdict`, and same-side helpers in git, isolation,
+  liveness_resources, runner, mutation, cli, evaluate and coverage; the raw
+  verifier `assay.verify` keeps its own independent copies (A-182). Messages,
+  exception types and reason codes are unchanged, and `assay.verdict.__all__`
+  gains only `claim_for` and `claim_carries` (the runner uses both); mutation
+  candidates in `src/assay` fall from 3733 to 3367. Assay-internal: no
+  consumer-facing change (B129)
+- chore(assay): assay's own two B105 self-qualification lanes now use the
+  shallow snapshot (`snapshot_history = "shallow"`, the A-451 default) instead of
+  full history, since no collected judge test reads history; a new test proves a
+  shallow snapshot has no `HEAD~1`. Assay-internal: no consumer-facing change
+  (B128)
+- feat(assay): the registered gate has an explicit shared-host opt-in,
+  `ASSAY_GATE_ALLOW_SHARED_HOST=1` (and `qualify_sql.py --allow-shared-host`),
+  that runs alongside other projects' `run-gate-*` containers and prints
+  `ASSAY_GATE_SHARED_HOST=<names>`. Two scopes: the gate
+  (`ASSAY_GATE_ALLOW_SHARED_HOST=1`) still refuses any other `run-gate-assay-*`
+  container, and the harness (`--allow-shared-host`) still refuses only another
+  `run-gate-assay-sql-*` container; the default stays the exit-3 `host busy`
+  refusal (CD50). Assay-internal: no consumer-facing change
+- refactor(assay): judge tests (`tests/`) and tooling tests (`gate/tests/`, for
+  the gate script, checker, wheel and zipapp, packaging and lane-config drift)
+  are separate trees; `tester-unified` runs both, the B105 lanes collect
+  `tests/` only without `--override-ini`, and the full `self-qualification`
+  lane requires a same-commit `tester-unified` receipt
+  (`assay/.assay/registered-gate/tester-unified.json`, written by the gate
+  script after a green run); the gate exits 3 with
+  `ASSAY_GATE_INCONCLUSIVE=host busy` when another `run-gate-*` container is
+  running. Assay-internal: no consumer-facing change (B123, A-476)
+- chore(assay): the registered gate retires the Topos and CMRU qualification
+  harnesses and the historical schema phases; one refusal test per schema
+  remains (A-475/A-477, B124/B125). Nothing in the product changes.
+- refactor(assay): move `assay analyze` into a second top-level package,
+  `assay_analysis`, shipped in the same wheel and zipapp; `assay analyze`
+  behaviour, exit codes and schema paths are unchanged (a usage error for
+  unrecognized arguments now prints the `assay analyze` usage line and prefix),
+  the undocumented `import assay.analysis` is removed, an editable install
+  made before this change must be re-run so `assay analyze` finds the new
+  package, the package has its own R0+R1 lane, and the B105 report checker
+  now names its scope (`src/assay` only; analysis out of scope by A-478)
+  (B127)
+
+### Fixed
+- fix(assay): liveness test leak; CONSUMERS 'upper bound' claim (the plan
+  estimate is declaration-derived, not an upper bound); the B105 report checker
+  refuses a partial, sharded or foreign R2 campaign against the plan (B111)
+- fix(assay): require time-aligned resource evidence and a CPU-quiet window
+  before classifying an R2 candidate as hung (B107/RW-57)
+- fix(assay): restart the hung CPU window when an exiting descendant lowers
+  the live process-tree CPU total, and reject cached hung traces that cannot
+  prove their idle span or contain malformed counters (B107 final review)
+- fix(assay): single-operator mutants of the Go, JavaScript, SQL and go.mod
+  scanners, and of the git tree parser, now fail fast instead of spinning until
+  the per-candidate budget; the `git.py` pipe-drain loop's exit test
+  no longer offers a mutant that blocks forever (B113/A-466)
+
+### Testing
+- test(assay): characterization tests pin the accept/refuse verdict and exact
+  message of every judge rule that B129 consolidated, a dataclass-contract test
+  (resolved decorator objects plus a committed fixture), boundary-value tests
+  for the shared guard predicates, and `tests/core/test_trust_boundary.py`,
+  which keeps `assay.verify` free of `assay.guards`/`assay.records` and of the
+  producer-only verdict helpers (B129)
+- test(assay): G1–G5 snapshot invariant guards (B111)
+- test(assay): deterministic mutant-guard tests, one per component, under a
+  line-event budget (B113)
+
 <!-- cmru: release history -->
+
+## [7.2.0] - 2026-09-30
+<!-- cmru: generated -->
+<!-- cmru: source-end=5248b345d018d3917cde6c25b88a06149f705eec -->
+
+### Added
+- feat(assay): committed SQL witness (24 rows) and the three witness tests (B126, A-480) (ae5e97f8)
+- feat(assay): campaign evidence modes, state reconciliation, rows, ETA, projection (B108 steps 3b-3f, code) (70ab9239)
+- feat(assay): CD50 shared-host opt-in for the gate and the SQL harness (98195e04)
+- feat(assay): campaign exit mapping and evidence_error documents (B108 step 3a) (c71bd31b)
+- feat(assay): port campaign analysis draft (B108 phase 1) (e251f6ef)
+- feat(assay): public plan_jobs, candidate identity fields and judge in the candidates event (B108 phase 1 J1-J5) (814494ac)
+- feat(assay): B105 checker refuses partial or foreign R2 campaigns via --plan-json; driver plans first (W8-C, B111) (42405437)
+- feat(assay): assay analyze plan-estimate and assay plan commit/tree/hint (W8-P+H, B111) (0484018c)
+- feat(assay): per-candidate resource, phase and startup evidence (W8-R, B111) (73003664)
+- feat(assay): self-contained SQL qualification on a digest-pinned PostgreSQL 18.6 (B126, A-480) (a0cca9db)
+- feat(assay): forward baseline setup_s/teardown_s on test progress events, O9 (W8-S, B111) (9675b112)
+- feat(assay): B105 self-qualification lanes use snapshot_history=shallow (B128 W7, commit SHALLOW) (a3a6d733)
+- feat(assay): require_advance loop guards, git drain exit test without mutation sites (B113, A-466) (f13bf1d0)
+- feat(assay): B105 scope check, analysis gate lane and package tests (B127, W2 steps 7-9, T3, T8-T10) (4f2fd892)
+- feat(assay): move assay analyze into the assay_analysis package (B127, W2 steps 1-6, T1-T7) (1cd16baf)
+- feat(assay): retire cross-project harnesses and historical schema phases from the gate (B124, B125, A-475, A-477) (bb696f53)
+- feat(assay): retain B105 snapshot coverage arcs (8ed5c2b6)
+- feat(assay): add full-source self-qualification gate (B105) (97031375)
+
+### Fixed
+- fix(assay): unknown judge cannot vouch for a resume claim (W9 V-1) (883a74de)
+- fix(assay): W9R-1/W9R-2 — complete needs an event per pending candidate and a backed resume claim (e7127416)
+- fix(assay): W5 review fixes W5C-1..W5C-6 (docker ps inconclusive, pins at run time, rm failure loud, lost docker env, CD50 scope docs) (e1cd59cf)
+- fix(assay): --command-exit without --verdict is an evidence error (CD55 Q12, B108) (db6cecad)
+- fix(assay): K18/K20 catch restrict_violation (CD53), re-pin probes digest (b45b8ae1)
+- fix(assay): campaign error source names the refused input (CD51 Q1, B108 step 3a) (94e1f616)
+- fix(assay): CD41 commit/tree check also runs when only expected_tree is given (B111, W8R-4) (1359762c)
+- fix(assay): plan-estimate refuses a projection that overflows to infinity (B111, W8R-3) (3df040e7)
+- fix(assay): a failing docker ps is inconclusive, exit 3, receipt untouched (B123, W4R-2) (353f8431)
+- fix(assay): the tester container proves it judged the host-captured commit (B123, W4R-8) (210b45dd)
+- fix(assay): a non-zero exit after launch removes the tester-unified receipt (B123, W4R-1) (3d51d412)
+- fix(assay): re-pin liveness.py TYPE_CHECKING exclusion after B107 (55611561)
+- fix(assay): add B107's liveness_resources.py to the B105 whole-source targets (ef9bb3bb)
+- fix(assay): close B107 final review evidence gaps (76325aa5)
+- fix(assay): require CPU-quiet post-finish grace (RW-57) (3c63ca34)
+- fix(assay): make hung classification pressure-aware (B107) (193b8dd0)
+- fix(assay): bound unfinished B105 qualification gate (b152ea3a)
+- fix(assay): bind B105 evidence to exact runs (67ac2872)
+- fix(assay): unify R2 classification and close B105 coverage gaps (62b41112)
+- fix(assay): preflight B105 before full qualification (61bc5f43)
+- fix(assay): qualify the isolated source snapshot (afd8c5bf)
+- fix(assay): use tester interpreter for B105 lane (9f1d78bb)
+
+### Changed
+- merge: Wave A W9 campaign analysis (B108 phase 1, assay analyze campaign) into landing (2ab0e737)
+- merge: Wave A W10 DRY consolidation (B129; records/guards; 3733→3367 candidates) into landing (82ae03d2)
+- refactor(assay): W10 step 5 — same-side cluster helpers E1-E3, E5-E10 (B129 I4) (44755782)
+- refactor(assay): W10 step 4 — policy-iff-attempted and claim lookup helpers (B129 I3) (7e715276)
+- refactor(assay): W10 step 3 part 3 — verdict and verify private twins (B129 I2) (8e23eddc)
+- merge: Wave A W5 self-contained SQL qualification + CD50 shared-host opt-in into landing (2b12781f)
+- refactor(assay): W10 step 3 part 2 — config, mutation, runner, isolation, liveness, liveness_resources, adjudication (B129 I2) (8f48a2f9)
+- refactor(assay): W10 step 3 part 1 — guards.py, test_guards.py, first eight producer files (B129 I2) (6f70871e)
+- refactor(assay): W10 CD57 — rename local record loop variables to record_entry (pyflakes clean) (6de38226)
+- refactor(assay): W10 step 2 — @record/@positional_record replace 81 dataclass decorators (B129 I1) (c6809420)
+- merge: W9 judge seams J1-J5 (814494ac) as W10 base (CD52) (e32b09d6)
+- merge: Wave A W8 measurement hygiene + plan-estimate (P0, B111) into landing (5a695516)
+- Merge assay-b110-landing (W6 and latest decisions) into wave-a-w7-shallow (08d059ad)
+- Merge assay-b110-landing (W6 and latest decisions) into wave-a-w5-sql (c8e6b783)
+- Merge W6 (B113): P2 loop guards (75ceb9e9)
+- Merge W2 (B127): assay analyze as its own package in the same distribution (42dd7285)
+- Merge W1 (B124/B125): retire cross-project harnesses and historical schema phases (83f099e5)
+- Merge W3 (B130): component boundaries report, import contracts, component test layout (eb0acea6)
+- Merge assay-b110-landing (latest Wave A decisions) into wave-a-w6-guards (20846716)
+- Merge assay-b110-landing (latest Wave A decisions) into wave-a-w2-analysis (4c53f28c)
+- Merge assay-b110-landing (latest Wave A decisions) into wave-a-w1-retire (762b500d)
+- merge: main (B107 load-independent tests) into assay-b110-landing (1e3c8a49)
+- merge: main (B107 pressure-aware liveness) into assay-b110-landing (7d7b0fb9)
+- review(assay): accept B107 current-main candidate (415686f5)
+
+### Documentation
+- docs(assay): W9 LOG — V-1 fix, READY-FOR-GATE 883a74de (code commit) (ab65c996)
+- docs(assay): W9 LOG — review fixes (W9R), READY-FOR-GATE d2e4b0b3 (da68919b)
+- docs(assay): CD60 — W9 review rulings (90459553)
+- docs(assay): W10 review fixes (W10R-1 CHANGES __all__ wording, W10R-2 CD56 fail_under ruling) (ac52eba1)
+- docs(assay): W9 checkpoint 11 (QUESTIONS 24-25, controller's gate run, READY-FOR-GATE 14bc8588) (827b51c5)
+- docs(assay): W10 traceability table, finish results, gate-run notes, READY-FOR-GATE f5498920 (488c3809)
+- docs(assay): analyze campaign in README, DESIGN-GUIDE, CONSUMERS and CHANGES; B108 boxes 1, 2, 4 (B108 step 4, W9) (33076c79)
+- docs(assay): W10 steps 7-8 — moved-path comments, B129 docs, assay.toml targets, final inventory (CD43, CD48) (f5498920)
+- docs(assay): W10 step 5 LOG and checkpoint 10 continuation (step 6 next) (6ee92c4e)
+- docs(assay): W10 checkpoint 9 continuation (step 4 done; step 5 next) (ee52f10a)
+- docs(assay): W10 LOG step 3 parts 2-3, O1 and O3 results (304e9c2f)
+- docs(assay): W10 checkpoint 8 continuation (step 3 done; O1 break done; step 4 next) (b4588822)
+- docs(assay): W9 checkpoint 8 (CD58 deletions logged, state/verdict tables, continuation brief) (592a039b)
+- docs(assay): W5-LOG review fixes (W5C) and READY-FOR-GATE e1cd59cf (fe857a7e)
+- docs(assay): W10 checkpoint 7 continuation (step 3 part 2 done; verdict.py and verify.py remain) (1a48ffcf)
+- docs(assay): CD59 — W5 code review rulings (f56e744a)
+- docs(assay): W10 checkpoint 6 continuation (CD57 and step 3 part 1 done) (8e12475e)
+- docs(assay): CD58 — W9 Q22 accepted, Q23 redundant raises deleted not pragma'd (302abf88)
+- docs(assay): W9 checkpoint 7 (O15, O25, Q18 done; step 3a table in progress; continuation brief) (163db49f)
+- docs(assay): CD57 — rename shadowing loop variables for pyflakes (a706c68d)
+- docs(assay): W10 checkpoint 5 continuation (steps 1-2 finished) (46de81b6)
+- docs(assay): W5 Work 0 re-run, Work 5 results, final log and continuation (READY-FOR-GATE ae5e97f8) (429ff988)
+- docs(assay): CD56 — W10 drops E4; deliberate transcriptions stay (741fc4c1)
+- docs(assay): W10 checkpoint 4 continuation (step 1 finished) (3800afa9)
+- docs(assay): W9 checkpoint 5 (oracles O1-O14a, O16b, O22-O26 partly done; continuation brief) (0d3683c6)
+- docs(assay): W10 checkpoint 2 continuation brief and step-1 LOG (c26c2623)
+- docs(assay): CD55 answers W9 questions 9-18 (81237fc9)
+- docs(assay): W9 checkpoint 4 after the campaign core (continuation brief, LOG questions 9-18) (db340684)
+- docs(assay): CD53 (K18/K20 restrict_violation) and CD54 (CD50 env hygiene) (74b20e7e)
+- docs(assay): W5 Work 0 result: K18/K20 probes fail unmutated on PostgreSQL 18.6 (blocked, QUESTION 1) (b36e31e5)
+- docs(assay): W10 checkpoint 1 continuation brief (0331d74f)
+- docs(assay): W10 step 0 base inventory LOG (B129) (4a448cba)
+- docs(assay): CD52 — W10 early base, gate ownership, FORCE_COLOR test pin (be7f02e6)
+- docs(assay): Wave A stage-2 integration — CD49, handoff rows, 2026-09-30 operator rules (ce86fed4)
+- docs(assay): CD51 answers W9 questions 1-8 (075023d7)
+- docs(assay): W9 checkpoint 3 after exit mapping (continuation brief) (c5d980a6)
+- docs(assay): W9 checkpoint 2 after the port (continuation brief) (500112f7)
+- docs(assay): W9 checkpoint 1 after judge step (continuation brief) (a91d463d)
+- docs(assay): W8 review recorded (40317e29)
+- docs(assay): W8 review fixes logged, READY-FOR-GATE 7e83bcab (B111) (b6096460)
+- docs(assay): state the TreeSample lower-bound semantics and which candidates carry phase_seconds (B111, W8R-5) (30a38b93)
+- docs(assay): W7 review recorded (8b5ff9ac)
+- docs(assay): W7 log READY-FOR-GATE after review fixes (B128) (baf24995)
+- docs(assay): record the step-0 root-layout directory follow-up (B128, W7R-4) (9e1a932f)
+- docs(assay): flag the W7 full-run figures as approximate (B128, W7R-3) (988feed6)
+- docs(assay): W7 log carries the counts-capable drift proof and local result (B128, W7R-1) (1d777195)
+- docs(assay): W8 LOG complete, READY-FOR-GATE 2d3a0e58 (B111) (cd110f2c)
+- docs(assay): W8 docs sync, measured plan estimate, resource evidence, R2 plan check (B111) (f5fb9098)
+- docs(assay): correct what the shallow seed holds for the B105 lanes (B128, W7R-2) (952a5329)
+- docs(assay): W8 checkpoint 2 continuation after P+H, C, G (B111) (8c7abdbd)
+- docs(assay): W8 checkpoint LOG and continuation after step R (B111) (d461e91b)
+- docs(assay): W5 log and continuation checkpoint (host busy; container steps pending) (c45d0e1b)
+- docs(assay): SQL qualification design, out-of-scope list, decision notes and backlog (B126, B132, A-480) (d2143b06)
+- docs(assay): W7 log and READY-FOR-GATE (B128) (bdd9cde7)
+- docs(assay): B105 lanes use the shallow snapshot; CHANGES and backlog B128 (W7) (157421f2)
+- docs(assay): W4 log, review fixes and READY-FOR-GATE (B123) (21a7b1f0)
+- docs(assay): W4 report lists the out-of-scope files naming moved test paths (B123, W4R-6) (f9ba8212)
+- docs(assay): S1 and CD32 operational rules in README, CONSUMERS, DESIGN-GUIDE (B123, W4R-5) (fb784413)
+- docs(assay): W4 review recorded; CD48; B135 (witness ignores pytest.toml) (fae0727c)
+- docs(assay): CD47 W4 P5 stand-in for go_stmtpos is two judge files (2bdd7ef0)
+- docs(assay): W4 log and report, READY-FOR-GATE (B123) (d9f1a990)
+- docs(assay): W4 two test trees and S1 in README, DESIGN-GUIDE, CONSUMERS, CHANGES, decisions, backlog; moved-test path prose (B123, CD43) (da355733)
+- docs(assay): handoff timestamp fix (068c7729)
+- docs(assay): W6 review-fix log and READY-FOR-GATE (B113) (7a02c24d)
+- docs(assay): correct the O4 missing anchor in the W6 log (B113, W6R-5) (fa59dad7)
+- docs(assay): scope the drain 'cannot block' claim to its exit test (B113, W6R-4) (12690707)
+- docs(assay): Wave A handoff: W2 merged, W6 in fix, W4 dispatched (957252e6)
+- docs(assay): B134 host-dependent git-marker test; W6 review recorded; W5 new ids from B135 (11ace522)
+- docs(assay): W4 brief: nyxloom.toml pythonpath comment (W2 D10) (00b42101)
+- docs(assay): W2 review-fix log, oracle results and READY-FOR-GATE (B127) (f0492d23)
+- docs(assay): correct verify_scope wording, assay.toml pythonpath comment and B127 status (B127, W2R-6) (141ac746)
+- docs(assay): tell pre-B127 editable installs to reinstall (B127, W2R-5) (617d1055)
+- docs(assay): W2 review recorded; CD46, CD31 amended (package-based fixture loader) (eaa9fccb)
+- docs(assay): W6 READY-FOR-GATE marker (4979f6d0)
+- docs(assay): W6 loop guards docs and log (B113) (8036bd8d)
+- docs(assay): Wave A handoff: stage gates; W3 and W1 merged (40ecb20f)
+- docs(assay): W1 review recorded (e920e0db)
+- docs(assay): W1 review-fix log, READY-FOR-GATE (B124/B125) (f98f58e0)
+- docs(assay): REPORT anchor-shift note and review-fix records (B124/B125, W1R-7) (9b567d0e)
+- docs(assay): B124 status notes the open dstdns-checkout item (B124/B125, W1R-6) (0c306c03)
+- docs(assay): correct the REPORT's tests/qualification classification (B124/B125, W1R-5) (15fa9940)
+- docs(assay): retire the stale A-468 --ignore in the B105 criterion (B124/B125, W1R-4) (a7775c49)
+- docs(assay): Wave A handoff: W1/W2 done and in review, W6 dispatched (17c46012)
+- docs(assay): W2 final log, oracle table and READY-FOR-GATE (B127) (e81dce9c)
+- docs(assay): W1 docs, decisions, backlog, log and report (B124, B125) (fb4b0cc7)
+- docs(assay): document the assay_analysis package boundary (B127, W2 step 11) (d816dbf4)
+- docs(assay): W2 checkpoint log and continuation brief (B127) (5e763cb2)
+- docs(assay): Wave A handoff: W3 fixed and queued, W1/W2 dispatched (bd08657b)
+- docs(assay): W3 review-fix log (B130) (7a9c8948)
+- docs(assay): fix W3 durations.py component attribution on post-move junit (B130, W3R-5) (b4139c18)
+- docs(assay): W3 review recorded; CD43 moved-path prose, CD44 controller owns gates, CD45 tests/core ignore trap (1fc887a3)
+- docs(assay): Wave A handoff: controller owns package gates; W3 status (e54deb16)
+- docs(assay): W3 log, oracle results; gate not run (host busy) (ea990a53)
+- docs(assay): W8/W9 pre-dispatch review applied; CD39-CD42, CD38 amended (189ec19a)
+- docs(assay): W5 brief round-2 review applied; CD21 exit-3 rule (9e34f7f9)
+- docs(assay): Wave A handoff status (03cd67f3)
+- docs(assay): Wave A W8/W9 self-contained briefs (CD26); CD34-CD38 (ec427945)
+- docs(assay): Wave A W5 brief fixed per review; CD21 amended, CD32 gate-entry host check, CD33 (43abf9e8)
+- docs(assay): W3 Part 1 component boundaries report (B130) (be0357de)
+- docs(assay): Wave A controller handoff (living file) (76ad4c1c)
+- docs(assay): apply Wave A pre-dispatch review to W1-W4, W10 and rebase notes; CD31 (3daf62a7)
+- docs(assay): Wave A pre-dispatch review round 1 and carver decisions CD25-CD30 (f27fbdea)
+- docs(assay): Wave A briefs W1-W5, W10, P0/P2 and P8 rebase notes, carver decisions CD1-CD24 (be803c3a)
+- docs(assay): preserve the uncommitted B108 campaign-analysis draft for W9 (c40ec3b8)
+- docs(assay): Wave A -- B130 moves to stage 0; implementers are Sonnet only (2160de12)
+- docs(assay): record Wave A decisions A-475..A-480, backlog B123..B130, plan (5bbd916e)
+- docs(assay): record B107 load-independent final review (ad32d14e)
+- docs(assay): file B122 pluggable per-candidate scratch provider (CoW requirements) (02e46b1a)
+- docs(assay): apply round-2 verification of the B110 reuse/testability report (a41cf441)
+- docs(assay): apply fresh review of the B110 reuse/testability report (29b791bd)
+- docs(assay): add structural research R9-R11 and Part C to the B110 reuse review (84e4618f)
+- docs(assay): add B110 reuse and testability review (non-binding) (95622e3a)
+- docs(assay): apply round-3 (final) pre-dispatch review to the B110 plan (5eb5768f)
+- docs(assay): apply round-2 pre-dispatch review to the B110 plan (210d6130)
+- docs(assay): apply round-1 pre-dispatch review to the B110 plan (3ee09b61)
+- docs(assay): carve B110 runtime plan, split into B111-B121 (a3b68800)
+- docs(assay): record B105 runtime ceiling and proof plan (db85f747)
+- docs(assay): record B105 gate results and capacity bounds (509feb89)
+- docs(assay): record stopped B105 runtime attempt (be2d2dff)
+- docs(assay): record B105 gate launcher refusal (94b547e5)
+- docs(assay): file B106 impact-aware reuse follow-up (f8ad7b3b)
+- docs(assay): file campaign analysis backlog item (8cdaed3c)
+- docs(assay): capture prior B105 gate failure (13477882)
+- docs(assay): record final B105 candidate plan (25c4f4ea)
+- docs(assay): record B105 whole-source preflight (5b851bc4)
+- docs(assay): record B105 mutation plan (e138f0c3)
+- docs(assay): qualify B107 cross-run comparison (659a92a5)
+- docs(assay): track pressure-ambiguous candidate liveness (4241cdc1)
+
+### Testing
+- test(assay): W9R-3..W9R-6 pins and W9R-7 CONSUMERS correction (d2e4b0b3)
+- test(assay): pin keyword-before-punctuation case in _preceding_word (W5b) (e1b0c76e)
+- test(assay): owed controlled breaks for campaign pins; two weak pins strengthened; CD58 deletes the unobservable in-selection filter; complete raise-to-case map (B108 step 3a, W9) (14bc8588)
+- test(assay): pin drop-not-null with no preceding word (sql.py:157 coverage) (f37d9595)
+- test(assay): campaign.py to 100% line+branch over table rows and pins; CD58 deletes the candidate_id None branch; controlled breaks owed (B108 step 3a, W9) (b9a2225d)
+- test(assay): W10 step 6 — trust-boundary contract for verify vs guards/records (B129 O5) (2918cb89)
+- test(assay): --coverage block over a real R1 run; owed controlled breaks recorded; CD58 deletes 13 coverage-block raises and the redundant commit check (B108 step 3a, W9) (190d91de)
+- test(assay): state-dir and verdict refusal tables; CD58 deletes 10 verifier-dominated verdict-shape raises and 5 reader-dominated progress raises (B108 step 3a, W9) (2181a9e8)
+- test(assay): campaign refusal table, field helpers, verdict bytes, lane-file binding rows (B108 step 3a, W9) (78aab8ff)
+- test(assay): campaign refusal-reachability table, progress half (B108 step 3a, W9) (9b9e35fc)
+- test(assay): campaign oracle O15 on a real R2 rejudge run; fix effective judge.mode default (B108, W9) (001a3b95)
+- test(assay): campaign oracles O17-O19 on real R1 evidence; fix two coverage-path crashes (B108, W9) (c7084318)
+- test(assay): W10 step 1 finished: verify int sites and I4 E1-E10 pins (48c300f4)
+- test(assay): W10 step 1 verify strict-int/text pins; checkpoint 3 continuation (fa8a0725)
+- test(assay): campaign oracles O4, O5, O8, O9, O14a, O22, O23 (B108, W9) (39cb2707)
+- test(assay): W10 step 1 I3 verify-side raw policy-presence pins (93afecbd)
+- test(assay): W10 step 1 I3 producer-side policy-present-iff-attempted pins (6abbd8c4)
+- test(assay): campaign oracles O1-O3, O6, O7, O10, O12, O13, O16b, O24, O26 (B108, W9) (4699cb44)
+- test(assay): W10 CD52 _no_ambient_color autouse fixture in the three conftests (c35a4254)
+- test(assay): characterize runner, mutation and liveness scalar guards (B129 W10 step 1) (18c2dfaf)
+- test(assay): drop ASSAY_GATE_ALLOW_SHARED_HOST from gate-test subprocess envs (CD54) (e4b4769d)
+- test(assay): move W10 characterization files into their layout folders (2320fcbf)
+- test(assay): characterize adapter and parser strict-int guards (B129 W10 step 1) (44c67854)
+- test(assay): characterize verdict policy and execution guards (B129 W10 step 1) (dd2e17ec)
+- test(assay): characterize attestation, provenance, shard and runner guards (B129 W10 step 1) (76907bc8)
+- test(assay): characterize config scalar guards before guard helpers (B129 W10 step 1) (cc7e6760)
+- test(assay): characterize isolation, mutation and liveness scalar guards (B129 W10 step 1) (8e016971)
+- test(assay): characterize verdict wire validators before guard helpers (B129 W10 step 1) (08b3f996)
+- test(assay): dataclass contract test and fixture, resolved-decorator detection (B129 W10 step 1) (0ec04d82)
+- test(assay): O7 diagnostics-never-fail tests cover normal, hung and timeout rows (B111, W8R-7) (7e83bcab)
+- test(assay): plan-estimate fixture has jobs 3 so dividing by jobs is caught (B111, W8R-6) (80926dbb)
+- test(assay): O8 resume must reuse both records with none rejected (B111, W8R-2) (5835f56a)
+- test(assay): pin the startup_seconds differences by value (B111, W8R-1) (602ff951)
+- test(assay): analysis package file set names plan_estimate.py (W8, B111) (2d3a0e58)
+- test(assay): snapshot invariant guards G1-G5 (W8-G, B111, A-472) (7f6b7cf7)
+- test(assay): scope liveness plugin unit tests off the outer stream, O10 (W8-L, B111) (eee1de96)
+- test(assay): negative proof that a shallow snapshot hides HEAD~1 (B128 W7, commit FULL) (c1c0e817)
+- test(assay): allow root *_support.py helpers in the layout check (CD23 amended; W4+W6 integration) (a4a0010a)
+- test(assay): allow root *_support.py helpers in the layout check (CD23 amended; W4+W6 integration) (2faa6426)
+- test(assay): the S1 refusal test asserts the receipt is the cause (B123, W4R-7) (5aaa9e4c)
+- test(assay): gate/tests imports W2's one judge-conftest loader, with a one-loader test (B123, W4R-4) (91979dda)
+- test(assay): the pytest config pin also covers pytest.toml and native tool.pytest keys (B123, W4R-3) (737b7dd3)
+- test(assay): the shipped-tree lint test links gate/tests into its scratch clone (B123, W4) (730f2db7)
+- test(assay): split judge tests from tooling tests; same-commit tester-unified receipt binds self-qualification (B123, W4) (8a8dc69e)
+- test(assay): positive control for the drain exit-test site check (B113, W6R-3) (8bccafdf)
+- test(assay): reach all 8 guarded lines with ordinary input and assert results (B113, W6R-2) (094667f6)
+- test(assay): O4b refuses a wait before the group kill and always cleans up its child (B113, W6R-1) (f0e2258d)
+- test(assay): pin the no-analysis-tree lint refusal to its own message (B127, W2R-7) (194cf74a)
+- test(assay): run the zipapp analyze test without site-packages (B127, W2R-2) (6d3cf1bd)
+- test(assay): pin the analysis to judge module dependency set (B127, W2R-8) (1b1c66b2)
+- test(assay): key analysis sources by path and pin the packages under analysis/src (B127, W2R-3) (34651582)
+- test(assay): make analysis/tests a package so its conftest never rebinds the judge's (B127, W2R-1) (c84bdd7d)
+- test(assay): exact, distinct shard schema refusal rows (B124/B125, W1R-3) (241e32f6)
+- test(assay): refuse a non-current hung-evidence schema version (B124/B125, W1R-2) (f299aef8)
+- test(assay): freeze the shipped verdict schema bytes per version (B124/B125, W1R-1) (2e0265f8)
+- test(assay): W6 red - scanner progress guard tests, drain and exclusion structure tests (B113) (06e0a790)
+- test(assay): guard cross-folder test-module imports (B130, W3R-4) (5a072d0b)
+- test(assay): forbid *_test.py files that escape the layout rule (B130, W3R-3) (175cf326)
+- test(assay): guard adapter and parser modules against silent core classification (B130, W3R-2) (c2da2f2a)
+- test(assay): commit W3's import-contract test that the root .gitignore hid (B130, W3R-1) (b751a37f)
+- test(assay): W3 component import contracts and component-organized judge-test layout (B130) (f2c249fe)
+- test(assay): remove timing-dependent liveness assertions (35adca38)
+- test(assay): reject inflated cached idle spans (801fa033)
+- test(assay): preserve deterministic B107 liveness coverage (afa0ef40)
+- test(assay): close B105 source coverage gaps (f9d8910f)
+- test(assay): close B105 source coverage gaps (35eede15)
+
+## [7.1.1] - 2026-09-26
+<!-- cmru: generated -->
+<!-- cmru: source-end=94009fbba09c798d8759dce5c4039db2ddb2b196 -->
+
+### Documentation
+- docs(assay): correct Wave C closeout date (4b3ff6e2)
+- docs(assay): close Wave C release records (35540ab6)
+
+## [7.1.0] - 2026-09-25
+<!-- cmru: generated -->
+<!-- cmru: source-end=e5e9b95c5ac8be3452c93f1066f9436347f862fd -->
+
+### Added
+- feat(assay): add provenance-safe selective mutation reuse (d43167c6)
+- feat(assay): add bounded live gate report (0624ab95)
+
+### Fixed
+- fix(assay): preserve legacy Topos release smoke (7d45deaa)
+- fix(assay): report progress for nested gate runs (11ff984f)
+- fix(assay): name shard-scoped rejudge refusal (045dac4c)
+
+### Changed
+- merge: current main into B106 P5 worktree (bf2e5ab2)
+- perf(assay): bound mutation liveness monitor state (09d1f38d)
+- merge: current main into Wave C P2 worktree (f7895bd2)
+- Merge branch 'main' into assay-b080-js-default-arg (c5a13a4a)
+- Preserve Wave C refusal evidence and doc anchors (a0daf185)
+- Fix Wave C refusal diagnostics and classification (e7c5dbe4)
+- Merge current main into Wave C P1 (40bd4906)
+- Fix statement-less JavaScript default-arg coverage (86c16f85)
+- Record Wave C P0 tester-unified gate evidence (24fad0c2)
+
+### Documentation
+- docs(assay): record Wave C P5 gate pass (b5014bc3)
+- docs(assay): record stale-base P5 gate stop (a0e2fe23)
+- docs(assay): record B106 v13 reuse contract (3f117b27)
+- docs(assay): record Wave C P4 gate result (dc7c5cbe)
+- docs(assay): carve Wave C P4 report command (63d618ac)
+- docs(assay): record Wave C P3 gate evidence (5c83bf92)
+- docs(assay): record P2 final gate evidence (587c4a57)
+- docs(assay): tighten B106 verdict and replay contract (247cb72a)
+- docs(assay): approve B106 provenance-safe reuse as P5 (8d79a48a)
+- docs(assay): reconcile Wave C gate evidence (b42156a4)
+- docs(assay): record Wave C P1 review and gate (e6c7685a)
+- docs(assay): file selective mutation rerun use case (0777a571)
+- docs(assay): record Wave C P1 review (b925d203)
+- docs(assay): correct resolved B028 cross-reference (c0ce884f)
+- docs(assay): carve B080 default-arg classification (b13707ad)
+- docs(assay): correct Wave C review chronology (26ec6b39)
+- docs(assay): close v7 release records and log Wave C findings (36723684)
+- docs(assay): Wave C handoff -- fix-verification corrections (9dcb7a3e)
+- docs(assay): Wave C handoff for a third-party controller (B080, refusals, liveness, B100) (ab66c149)
+- docs(assay): close B101 release records (a3e0dcce)
+
+### Testing
+- test(assay): repair v13 self-hosted gate fixtures (c28fbbb9)
+- test(assay): preserve verdict successors through v13 (222c8cb8)
+- test(assay): align historical gate check with schema v13 (8aa1d61d)
+- test(assay): preserve qualification diagnostic stub (f21f9629)
+- test(assay): align rejudge message assertions (9595548e)
+- test(assay): guard all Wave C documentation anchors (5ba8e0a5)
+- test(assay): close Wave C P1 adversarial case (e29c1fb0)
+
+### Added (hand-written release detail)
+- feat(assay): add provenance-safe selective native R2 reruns using current
+  pytest kill-witness replay, with bounded v13 candidate inventory and a
+  full-suite fallback for uncertain cases (B106)
+
+### Fixed (hand-written release detail)
+- fix(assay): classify istanbul `default-arg` signature lines from the
+  enclosing function's call count (`fnMap`/`f`) when an arm of that same
+  branch is attributed to the node's physical line, preserving its branch arcs
+  even when the default is unused (B080; resolves withdrawn duplicate B089).
+  Judged files now produce coverage numbers instead of a contradictory-record
+  refusal; bystanders keep their arcs without a contradiction diagnostic.
+  Previously-PASS numbers are unchanged. Multiline defaults whose arms all
+  start on other lines retain their unclassified node-line gap (A-459); the
+  broader function-call alternative would change some prior 0/0 PASS counts
+  to 1/1. Previously-refused whole-target lanes can now count those signatures:
+  the measured consumer artifact gains
+  six executable lines (ChartCard 54→55, DataTable 105→108, StatCard 1→2,
+  StatTile 37→38). Required missing, malformed, or ambiguous function metadata
+  refuses `UNREADABLE_ARTIFACT`. B054's braceless-`if` disposition and all
+  `FileCoverage` invariants are unchanged.
+- fix(assay): replace Git's unreachable `safe.directory` remedy on dubious-
+  ownership failures, and classify unknown/stale `--rejudge` ids as
+  `BAD_LANE_CONFIG` while preserving corrupt-store errors (B081/B094)
+
+### Documentation (hand-written release detail)
+- docs(assay): explain Git ownership refusals, rejudge input classification,
+  and the consumer remedies (B081/B094)
+- docs(assay): document selective R2 reuse, v12 cold starts, and supported
+  JavaScript R2 ingestion (B106)
+
+### Testing (hand-written release detail)
+- test(assay): drive unknown, stale, valid, and corrupt `--rejudge` state
+  through the CLI and `assay verify`; guard the attestation-timeout
+  infrastructure forward (B094/B025)
+- test(assay): verify B106 identity inventories and current pytest witness
+  replay, including fallback to a full run (B106)
+
+## [7.0.0] - 2026-09-23
+<!-- cmru: generated -->
+<!-- cmru: source-end=e434b2938551ad6edfb49d35da88ce5eac996822 -->
+
+### Added
+- feat(assay)!: record v12 isolation provenance (452cf976)
+- feat(assay): use shallow snapshot seeds by default (5bf832a4)
+
+### Fixed
+- fix(assay): advance dstdns witness to verdict v12 (c183a371)
+- fix(assay): avoid pyflakes field shadowing (4ed15f31)
+- fix(assay): refresh dstdns qualification witness (c6a97f1e)
+- fix(assay): consume the pre-snapshot resolved base inside P22 snapshots (port of assay-b096 84baffb4; B101 P1) (36f8551c)
+
+### Changed
+- backlog(assay): operator triage 2026-09-23 and the B101 wave plan (96ac8197)
+- Merge assay B101 P1: consume the pre-snapshot resolved base inside P22 snapshots (e785b955)
+- backlog(assay): audit — complete B001-B087 status normalization, finish report (83446781)
+- backlog(assay): audit — complete frontmatter index, normalize B088-B103 status (5689b85d)
+- backlog(assay): B101 design interview decided; file B102 dirty-tree override (ffa1264a)
+- Share native Git worktree inventory across CIU and CMRU (b9cad87c)
+- Merge main into workspace instance feature (e2a4a68d)
+- backlog(assay): B101 -- note that a design interview is needed before implementation (d05939b9)
+- backlog(assay): B101 -- snapshot_selection=repository's max_total_object_bytes measures full git-history closure, unconfigurable, 74-lane blast radius on dstdns (0361b211)
+- Merge branch 'main' into feat/ciu-cmru-workspace-instance (19828b67)
+- harden workspace lifecycle and gate oracles (8d634211)
+- reap gate descendants before PID exhaustion (b552e0e2)
+- Retry transient Assay Git child launch failures (d14c9ddb)
+- Bound Assay Git index preload resources (294aaf94)
+
+### Documentation
+- docs(assay): close provisional gate evidence (e434b293)
+- docs(assay): record B101 wave gate evidence (171c9045)
+- docs(assay): fix B101 wave handoff per independent review (4 blocking, 12 major) (a02dcb32)
+- docs(assay): B101 isolation wave handoff for a third-party controller (7a3c0571)
+- docs(assay): fix independent-reviewer findings in backlog audit (B047, B089/B080, B092, frontmatter titles, ID-collision mechanism, dates, B104) (a127067e)
+- docs(assay): B101 P1 review nits -- stale re-resolution prose, R3 test scope (260055ee)
+- docs(assay): preserve assay-b096 review records and gate-repair briefs (6bd0ed51)
+- docs(assay): fix B096-B099 release date/version citations in audit (080bdb2c)
+- docs(assay): correct assay-b096 WIP finding using the B101 triage (baaf780c)
+- docs(assay): B101 shallow-seed explanation and assay-b096 triage (f5e702bc)
+- docs(assay): audit checkpoint — continuation brief for B001-B087 (390e651b)
+- docs(assay): audit — WIP-branch findings and ID collisions (5aeb0f84)
+- docs(assay): begin backlog audit report (93d64b29)
+- docs(backlog): B089 -- two more reproductions of the istanbul branch-arc contradiction (e7fbb50f)
+
+### Testing
+- test: close CMRU mutation survivors and Git spawn retries (67c45c8d)
+
+### Added (hand-written release detail)
+- feat(assay): make P22 seeds shallow by default, add an explicit full-history
+  lane opt-in, project-level snapshot limits, and a judged-tree blob ceiling
+  (B101)
+- feat(assay): record snapshot dirty-path provenance, support declared
+  `dirty_ignore` globs and the snapshot-only `--allow-dirty` override, and
+  refuse release receipts for overridden verdicts (B102)
+- feat(assay): keep higher-rigor liveness side files outside the checkout and
+  retain their bounded evidence in the verdict (B093)
+- feat(assay): distinguish ingested compile and runtime discards with the
+  `discard_reason` vocabulary (B079)
+
+### Documentation (hand-written release detail)
+- docs(assay): document shallow source/seed distinctions, snapshot limits,
+  Go lane-file cleanliness, source unshallowing, measured Go image support,
+  and the current dstdns assay pin (B082-B084/B101)
+- docs(assay): document verdict schema v12, dirty-tree provenance, liveness
+  cleanup, and ingested discard reasons (B079/B093/B102)
+
+### Fixed (hand-written release detail)
+- fix(assay): refresh the W3 dstdns SQL witness for the shipped v11 liveness
+  fields and normalize its per-run derived candidate budget (B104)
+- fix(assay): base checks inside P22 snapshots and `assay plan` diffs on the
+  base resolved before snapshot creation (B101 P1, port of `assay-b096`
+  `84baffb4`); `judgment.resolved.base`, `BASE_IS_HEAD`, and the merge-HEAD
+  first-parent rule retain their existing behavior
+- fix(assay): include the scenario artifact and bounded assay/pytest output
+  when a P25 qualification scenario's terminal mismatches; other mismatch and
+  missing-artifact errors keep their prior evidence behavior
+
+### Testing (hand-written release detail)
+- test(assay): cover history-cut snapshots with real Git for R1, a merge HEAD's
+  first-parent rule, R2 without R1, and the R3 canary control; the transformed
+  R3 half remains outside this fixture's scope
+
+## [6.5.0] - 2026-09-19
+<!-- cmru: generated -->
+<!-- cmru: source-end=55473fd56a77ba8f4a209f64bdd207ac82366641 -->
+
+### Added
+- feat: add estate cli version compatibility (05f373a4)
+
+### Fixed
+- fix: preserve nested gate stack governance (eb9a0a59)
+
+### Changed
+- Merge branch 'feat/estate-cli-version-20260919' (0795ebb9)
+- cli: universalize vbpub parser diagnostics (aa0e69fa)
+- chore: land run-gate root and dev-gates migration (41c1cafb)
+
+### Documentation
+- docs(assay): add bounded gate report backlog item (e225d705)
+
+## [6.4.0] - 2026-09-17
+<!-- cmru: generated -->
+<!-- cmru: source-end=8512408c83c37759bb317d5023c94e554f708013 -->
+
+### Added
+- feat(skills): add canonical single-tool skills for ciu, run-gate, assay, cmru, cgprofile (33c0b0c2)
+- feat(assay): consume captured gate failures without replaying tests (d3bacd31)
+- feat(assay): share review evidence capture and analysis (fde9527a)
+
+### Fixed
+- fix(skills): repair defects found by independent review of new canonical skills (abcb6e27)
+- fix(assay): preserve verdicts for resume decoder resource errors (a84581fc)
+- fix(assay): read ignore provenance as bounded NUL-delimited Git records (0320a160)
+- fix(assay): decode quoted Git ignore origins with shared path parser (3a7f6f3e)
+- fix(assay): keep receipt argv schema consistent and refuse special files (da0c3a58)
+- fix(assay): refuse deeply nested analysis JSON and expose captured failures (b48e873d)
+- fix(assay): refuse non-object mutation resume records (12e061b1)
+
+### Changed
+- Merge accepted Assay RG-49 B9 provider repair (fb24a852)
+
+### Documentation
+- docs(assay): record completed review evidence tooling qualification (0ae3c56c)
+- docs(assay): record evidence extraction and blocked final gate admission (9cb98651)
+
+### Testing
+- test(assay): retire guarded resume decoder exemption (e6ac4730)
+- test(assay): invoke shipped CLI and use valid capture metadata (f55bfba8)
+- test(assay): qualify failure and refusal oracles across gate interpreters (25269e30)
+
+### Release detail (hand-written)
+- `assay analyze` records commands with before/after Git identities and actual
+  job exits; collects and checks portable artifact archives; inspects verdicts
+  and appended mutation progress; and produces receipts from these facts and
+  `tester-unified/run` evidence. JSON is the default output; verdict inspection
+  also offers a concise text summary. No runtime dependencies are added.
+
+### Fixed
+- fix(assay): reject non-object JSON mutation resume records as structured
+  `ERROR`/`UNREADABLE_ARTIFACT` instead of allowing a `TypeError` traceback
+  and a missing verdict (B099, RG-49 review B9)
+- fix(assay): preserve that structured refusal when bounded JSON exceeds
+  the decoder's integer-conversion or nesting limits (RG-49 review B11)
+
+## [6.3.1] - 2026-09-16
+<!-- cmru: generated -->
+<!-- cmru: source-end=f07cc6c55dc784b7b03141b58a331f4dd300947c -->
+
+### Testing
+- test(debian-install-v2): harden isolated VM lane (d472d58d)
 
 ## [6.3.0] - 2026-09-16
 <!-- cmru: generated -->

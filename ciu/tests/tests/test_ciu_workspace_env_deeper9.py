@@ -15,7 +15,7 @@ from ciu.workspace_env import bootstrap_workspace_env  # noqa: E402
 def test_define_root_replaces_stale_workspace_identity(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, write_instance_facts
 ) -> None:
-    """``--define-root`` loads its chosen repo, not inherited shell state.
+    """``--root-folder`` loads its chosen repo, not inherited shell state.
 
     A shell can retain ``REPO_ROOT`` and related identity values from a
     previously sourced workspace.  An explicit root is the user's unambiguous
@@ -44,6 +44,11 @@ def test_define_root_replaces_stale_workspace_identity(
         + "\n",
         encoding="utf-8",
     )
+    # Machine facts are now load-bearing too; make the generated record agree
+    # with the selected checkout's machine export rather than relying on the
+    # retired ciu.env reader.
+    monkeypatch.setenv("CONTAINER_UID", "1001")
+    monkeypatch.setenv("DOCKER_GID", "1002")
     write_instance_facts(
         selected,
         repo_root="/chosen/repo",

@@ -99,7 +99,7 @@ runs inside the transaction before the INSERT.
   the full existing storage test-suite passes against the SQLite backend unchanged (API parity);
   concurrent writer+reader under WAL (a reader sees a consistent snapshot); `seq` is gap-free
   monotonic. **Gate:** full.
-- **SP02 — importer + verification.** `nyxloom migrate-store <project>`: read the existing
+- **SP02 — importer + verification.** `nyxloomctl migrate-store <project>`: read the existing
   `events.jsonl`, insert all events into the SQLite `events` table in order, rebuild `states`,
   and **verify** the rebuilt projection equals the current on-disk statefiles (reuse `doctor`'s
   `_replayable_projection` diff as the acceptance test). Rename `events.jsonl` →
@@ -116,7 +116,7 @@ runs inside the transaction before the INSERT.
   runs a full pass against SQLite; doctor is green; the pre-sqlite backups exist; a restart reads
   state from the DB (not the backup). **Gate:** full + **redeploy** (daemon-core change → restart;
   no image rebuild — sqlite3 is stdlib).
-- **SP04 — greppability bridge.** `nyxloom events <project> [--tail] [--since SEQ] [--json]` dumps
+- **SP04 — greppability bridge.** `nyxloomctl events <project> [--tail] [--since SEQ] [--json]` dumps
   the event table as JSONL to stdout, restoring `| jq` / `| lnav` over the (now-DB) event log.
   Preserves the one real thing SQLite costs us. **Oracle:** the dump round-trips to the same
   records `iter_events` yields; `--tail` follows new appends. **Gate:** full.
@@ -126,7 +126,7 @@ runs inside the transaction before the INSERT.
 # Part B — ground-truth re-baseline (the `resync` CLI verb)
 
 ## B.0 What & why
-A verb — **`nyxloom resync <project>`** (distinct name from the daemon's *reconcile* loop) — that
+A verb — **`nyxloomctl resync <project>`** (distinct name from the daemon's *reconcile* loop) — that
 compares each task's nyxloom-believed state against **ground truth** (the trove + git) and
 advances/retires stale states via **audited event transitions**. Run it before resuming a
 project that advanced manually. It doubles as the safe **on-ramp for onboarding an
@@ -158,7 +158,7 @@ re-baseline is itself in the event log, replayable and inspectable — not a mag
 
 ## B.4 Phases
 - **RP01 — probe + dry-run (default).** A pure-ish `resync_plan(states, frontmatters, git_facts)
-  → list[ProposedTransition]` + `nyxloom resync <project>` printing a table (task, believed,
+  → list[ProposedTransition]` + `nyxloomctl resync <project>` printing a table (task, believed,
   ground-truth, proposed action, evidence). No writes. **Oracles:** the dstdns fixture (P30/P10
   merged+archived) yields `→ COMPLETED`; a genuinely-open `QUEUED` with no merge yields no action;
   an orphan (statefile, no handoff, no merge) yields a `NEEDS_OPERATOR` flag; merge detection

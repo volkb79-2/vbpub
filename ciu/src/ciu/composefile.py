@@ -26,8 +26,8 @@ Normative contract: docs/SPEC.md
          (service, variable) pairs are collected into ONE error.
   S1.3/S1.4  bind sources handed to the daemon are physical paths
   S15    stack-wide resource governance ([<root>.governance]): overlay
-         injects cgroup_parent/mem_limit/mem_reservation/blkio_config into
-         every enumerated service, author-set keys winning (S15.3)
+         injects cgroup_parent and explicitly configured memory/CPU/IO
+         controls into enumerated services; author-set keys win (S15.3)
 
 This module is standalone: it does NOT import from engine.py or deploy.py.
 PyYAML is an existing dependency. ``governance.py`` is a sibling standalone
@@ -1170,8 +1170,9 @@ def generate_overlay(
                 target: <target's parent directory>
                 read_only: true
             cgroup_parent: ...                             # governance (S15), when enabled
-            mem_limit: ...
-            mem_reservation: ...
+            mem_limit: ...                                # when configured
+            mem_reservation: ...                          # when configured
+            cpus: ...                                     # when configured
             blkio_config: {                                # device_*/weight only when applicable
               device_read_iops: [...], device_write_iops: [...],
               device_read_bps: [...], device_write_bps: [...],  # S15.15, when nonzero
@@ -1186,10 +1187,10 @@ def generate_overlay(
     fully backward compatible: no computation, no log line). When present, it
     is resolved against :data:`governance.GOVERNANCE_DEFAULTS` (S15.2); when
     ``enabled`` is true, every service enumerated in *compose_yaml_text*
-    (except ``exempt_services``) gets ``cgroup_parent``/``mem_limit``/
-    ``mem_reservation``/``blkio_config`` injected — but only for keys the
-    stack author did NOT already set on that service in the rendered base
-    compose (S15.3 precedence). ``blkio_config`` additionally carries
+    (except ``exempt_services``) gets ``cgroup_parent`` plus any explicitly
+    configured memory, CPU, and IO controls — but only for keys the stack
+    author did NOT already set on that service in the rendered base compose
+    (S15.3 precedence). ``blkio_config`` carries
     bandwidth caps (S15.15, ``read_bps``/``write_bps``) and a proportional
     weight (S15.14, ``io_weight``) when those are configured non-zero.
     ``mem_min`` (S15.16) is declared intent only — no compose field exists
@@ -1247,7 +1248,12 @@ def generate_overlay(
                 # is the explicit form. A cached artifact is reused (and still
                 # re-verified), so this is a no-op after the first render.
                 from . import ksm as ksm_mod
-                base = repo_root or Path(os.environ.get("REPO_ROOT", Path.cwd()))
+                if repo_root is None:
+                    raise ValueError(
+                        "repo_root is required for the builtin KSM source; "
+                        "resolve the CIU root before rendering"
+                    )
+                base = repo_root
                 # physical_root=None is the NORMAL call shape (engine.py passes
                 # it that way): to_physical_path resolves it from the
                 # environment. Resolve it the same way rather than refusing —
@@ -1276,7 +1282,12 @@ def generate_overlay(
             elif ksm_rel:
                 ksm_path = Path(ksm_rel)
                 if not ksm_path.is_absolute():
-                    base = repo_root or Path(os.environ.get("REPO_ROOT", Path.cwd()))
+                    if repo_root is None:
+                        raise ValueError(
+                            "repo_root is required for a relative KSM source; "
+                            "resolve the CIU root before rendering"
+                        )
+                    base = repo_root
                     ksm_path = base / ksm_path
                 physical_ksm_path = to_physical_path(
                     ksm_path, repo_root=repo_root, physical_root=physical_root

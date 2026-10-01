@@ -1,0 +1,48 @@
+# ============================================================================
+# WHISPERLIVE STREAMING SERVICE - PROJECT-SPECIFIC CONFIGURATION
+# This section contains ONLY project-specific settings.
+# Shared defaults are inherited from ../ciu-global.defaults.toml.j2.
+# ============================================================================
+
+[compinit]
+enable_env_expansion = true
+
+# ============================================================================
+# WHISPERLIVE SERVICE CONFIGURATION
+# ============================================================================
+
+[whisperlive]
+# WhisperLive service configuration
+port = 80  # Internal port (reverse proxy handles external routing)
+model = "base"  # whisper model: tiny, base, small, medium, large
+device = "cpu"
+compute_type = "int8"  # int8 for CPU, float16 for GPU
+language = "en"  # language code or "auto" for auto-detection
+task = "transcribe"  # transcribe or translate
+vad_filter = true  # Voice Activity Detection
+vad_threshold = 0.5
+chunk_length_s = 5  # Audio chunk length in seconds
+
+# Resource limits
+resource_memory_limit = "4G"
+resource_cpu_limit = "4"
+
+# Volume host directories
+[whisperlive.hostdir]
+models = ""  # Empty = auto-generates ./vol-whisperlive-models
+audio_temp = ""  # Empty = auto-generates ./vol-whisperlive-audio-temp
+
+# ============================================================================
+# HOOKS
+# ============================================================================
+
+[hooks]
+pre_compose = []
+post_compose = []
+
+# ============================================================================
+# ENVIRONMENT VARIABLES (Flat structure - no nesting)
+# ============================================================================
+
+[env]
+# Auto-detection of UID/GID handled by global config

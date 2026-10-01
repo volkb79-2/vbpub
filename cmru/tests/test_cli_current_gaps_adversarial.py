@@ -61,7 +61,7 @@ def test_orchestrate_all_selection_runs_requested_validate_step(monkeypatch, tmp
     monkeypatch.setattr(cli, "apply_project_release_env", lambda *_: None)
     seen = []
     monkeypatch.setattr(cli, "run_project_step", lambda project, step, root, logs: seen.append((project.name, step)))
-    monkeypatch.setattr(cli.sys, "argv", ["cmru", "--project", "all", "--validate"])
+    monkeypatch.setattr(cli.sys, "argv", ["cmru", "all", "--validate"])
     cli._orchestrate()
     assert seen == [("demo", "validate")]
 

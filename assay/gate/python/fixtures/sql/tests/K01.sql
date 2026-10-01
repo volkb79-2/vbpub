@@ -1,0 +1,10 @@
+BEGIN;
+DO $$
+BEGIN
+  BEGIN
+    INSERT INTO parent (id,label) VALUES (1,NULL);
+  EXCEPTION WHEN not_null_violation THEN RETURN;
+  END;
+  RAISE EXCEPTION 'K01';
+END $$;
+ROLLBACK;

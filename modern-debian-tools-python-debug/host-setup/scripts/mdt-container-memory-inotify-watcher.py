@@ -1,59 +1,28 @@
 #!/usr/bin/env python3
-"""mdt host-setup — reactive dev-tier container cap watcher.
+"""Optional per-container memory defaults for MDT-governed Docker scopes.
 
-Everything mdt-dev-governance-reconcile.sh's periodic sweep does for per-container
-caps, it does up to WATCHER_INTERVAL late: a container created right after a
-sweep runs unbounded until the next one. This watches dev-interactive.slice,
-dev-background.slice AND dev-gates.slice directly via inotify and applies a
-per-slice default MemoryMax/MemoryHigh/MemorySwapMax the moment a new
-docker-*.scope appears — proven live (2026-08-28) to fire within the same
-second a container is created, using nothing but a read-only inotify watch
-on cgroupfs (no Docker API, no plugin, no proxy).
+The watcher observes dev-interactive.slice, dev-background.slice, and
+dev-gates.slice with inotify. For each new docker-*.scope, it applies the
+configured MemoryHigh/MemoryMax only when Docker did not set an explicit
+memory limit. Both values default to ``-``, meaning no extra leaf memory or
+swap cap; the parent slice continues to govern the aggregate tier. Hosts can
+configure either value per watched slice when they deliberately want this
+watcher to own a per-container cap.
 
-Default per-container memory limits exist to bound the blast radius of any single
-unlabelled dev/test/build/gate container: without it, one container
-ballooning under memory pressure can force reclaim on every OTHER cgroup
-sharing the tier (including, transitively, anything memory.low/min
-protection on a sibling tier is supposed to shield) before the tier's own
-MemoryHigh/Max ever triggers. A caller's own explicit `--memory` always
-wins — this only fills in containers that didn't ask for anything.
+The wizard asks MemoryHigh before MemoryMax and checks their relationship.
+If at least one memory directive is configured, the watcher may also apply a
+MemorySwapMax based on the matched slice's live memory.swap.max. When both
+memory values are ``-``, it applies no memory or swap property.
 
-MemoryHigh is configured separately for each watched slice and is asked before
-that slice's MemoryMax in the wizard. MemorySwapMax is what makes this a real
-per-consumer "tight ceiling, generous swap" pair rather than MemoryMax
-alone: cgroup v2 has no anon-only cap, so bounding total resident while
-allowing swap absorbs anon growth beyond the cap rather than OOM-killing at
-the boundary. Computed from the matched slice's own LIVE memory.swap.max
-(cgroupfs), not re-derived from host-setup.env — see
-read_slice_swap_max_bytes()'s own docstring for why.
+CIU-managed Compose services commonly receive an explicit Docker ``mem_limit``;
+Docker records that in HostConfig.Memory and this watcher leaves such scopes
+alone. CIU can also set MemoryMin on a scope, so any explicitly configured
+watcher limits must remain compatible with the scope's other memory controls.
 
-dev-gates.slice (RG-55 D-19, RW-32/D1) gets its own high/max pair,
-WATCHER_GATES_MEMORY_HIGH and WATCHER_GATES_MEMORY_MAX. Interactive and
-background have their own corresponding pairs, so one setting does not
-silently cover two different workloads:
-today's run-gate lane containers
-land in dev-background.slice with no --memory of their own (this watcher's
-whole reason to exist), and the moment a consumer honours
-CGROUP_PARENT_DEV_GATES those same unlabelled containers move to
-dev-gates.slice. The shipped gates pair is 3G MemoryHigh and 4G MemoryMax,
-so one unlabelled lane has room for a realistic gate workload while still
-being bounded before it can consume the whole gates tier. The pair is a
-per-container default; the slice's own limits and systemd-oomd remain the
-aggregate safeguards when several lanes run together.
-
-This is the COARSE, tier-wide backstop. It COMPOSES with, and is NOT
-withdrawn by, the daemon's future per-lane placement caps (D-20/D-25,
-cgroup-profiler/run-gate packages): placement gives an exact per-lane
-memory.high/max on a leaf under dev-gates.slice for lanes that ask for one;
-this watcher still catches whatever a lane did NOT ask for, exactly as it
-already does for the other two tiers today.
-
-Cannot fix cgroup-parent placement itself (create-time only, see
-CGROUP-NOTES.md #1) — this only reacts to attributes WITHIN a cgroup
-Docker already placed correctly. Keep mdt-dev-governance-reconcile.sh's periodic
-sweep running too: it is the backstop for whatever this watcher misses
-across its own restart window, and it is still the only mechanism for the
-IO caps this script does not touch.
+This watcher does not place containers; Docker's cgroup-parent must already
+have put each scope under the intended slice. The periodic reconciliation
+service manages the separate IO policy and cgroup2 mount flags; it does not
+provide a per-container memory fallback if inotify is unavailable.
 """
 import ctypes
 import ctypes.util
@@ -123,12 +92,12 @@ def _get_pct(name: str, default: int) -> int:
 
 # Per-container defaults, namespaced separately from the DEV_* slice-level
 # settings (see host-setup.env.example).
-WATCHER_INTERACTIVE_MEMORY_HIGH = _get("WATCHER_INTERACTIVE_MEMORY_HIGH", "800M")
-WATCHER_INTERACTIVE_MEMORY_MAX = _get("WATCHER_INTERACTIVE_MEMORY_MAX", "1G")
-WATCHER_BACKGROUND_MEMORY_HIGH = _get("WATCHER_BACKGROUND_MEMORY_HIGH", "800M")
-WATCHER_BACKGROUND_MEMORY_MAX = _get("WATCHER_BACKGROUND_MEMORY_MAX", "1G")
-WATCHER_GATES_MEMORY_HIGH = _get("WATCHER_GATES_MEMORY_HIGH", "3G")
-WATCHER_GATES_MEMORY_MAX = _get("WATCHER_GATES_MEMORY_MAX", "4G")
+WATCHER_INTERACTIVE_MEMORY_HIGH = _get("WATCHER_INTERACTIVE_MEMORY_HIGH", "-")
+WATCHER_INTERACTIVE_MEMORY_MAX = _get("WATCHER_INTERACTIVE_MEMORY_MAX", "-")
+WATCHER_BACKGROUND_MEMORY_HIGH = _get("WATCHER_BACKGROUND_MEMORY_HIGH", "-")
+WATCHER_BACKGROUND_MEMORY_MAX = _get("WATCHER_BACKGROUND_MEMORY_MAX", "-")
+WATCHER_GATES_MEMORY_HIGH = _get("WATCHER_GATES_MEMORY_HIGH", "-")
+WATCHER_GATES_MEMORY_MAX = _get("WATCHER_GATES_MEMORY_MAX", "-")
 # Per-container swap ceiling: DEV_SWAP_CASCADE_PCT% of the MATCHED SLICE's
 # own LIVE memory.swap.max (read from cgroupfs at apply time, not re-derived
 # from host-setup.env) -- install.sh auto-computes DEV_*_MEMORY_SWAP_MAX
@@ -170,9 +139,9 @@ def check_inotify_available() -> None:
         errno = ctypes.get_errno()
         log(f"FATAL: inotify_init1 failed (errno={errno}) — this kernel/"
             f"container cannot use inotify; the reactive watcher cannot "
-            f"run. mdt-dev-governance-reconcile.sh's periodic sweep still applies IO "
-            f"caps on its own schedule, but per-container MemoryMax will "
-            f"only ever be as fresh as that sweep without this.")
+            f"run. mdt-dev-governance-reconcile.sh continues the separate IO "
+            f"and cgroup2-flag policy, but it does not apply per-container "
+            f"memory limits.")
         sys.exit(1)
     os.close(fd)
 

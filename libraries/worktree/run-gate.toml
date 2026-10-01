@@ -1,0 +1,13 @@
+# The neutral worktree substrate has its own complete qualification lane. It
+# is an internal dependency, not an independently released product.
+schema_version = 1
+
+[lanes.worktree]
+kind = "assay"
+assay_lane = "worktree"
+environment = "tester-unified"
+budget = "8h"
+
+[lanes.worktree.resources]
+memory = "2g"
+memory_swap = "16g"

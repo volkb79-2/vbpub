@@ -12,16 +12,87 @@ linking against assay itself.
 - **Status:** Python is fully supported (R0–R3). SQL/DDL mutation testing is
   supported at **R2 only** (no SQL R1, no SQL R3 — see
   [SQL/DDL mutation testing](#sqlddl-mutation-testing-r2-only) below).
-  JavaScript/TypeScript is supported at **R1 and R2** — changed-line coverage
-  plus mutation testing over externally-ingested evidence (no native JS mutant
-  generator yet), see
-  [JavaScript/TypeScript changed-line coverage](#javascripttypescript-changed-line-coverage-r1-only)
+  JavaScript/TypeScript is supported at **R1 and R2 by ingestion** — changed-
+  line coverage plus mutation testing over externally-generated evidence (no
+  native JS mutant generator yet), see
+  [JavaScript/TypeScript coverage and mutation ingestion](#javascripttypescript-coverage-and-mutation-ingestion)
   below. Go is supported at **R1 only** — changed-line coverage for `.go`,
   statement-granular, requiring a real Go toolchain on the judging machine;
   see the Go section below. **Full matrix, and what R0–R3 each actually mean:
   [Rigor levels, and what's registered where](#rigor-levels-and-whats-registered-where).**
 
 ---
+
+## Review evidence analysis
+
+`assay analyze` reduces the scripts needed to create and consume review
+evidence. It ships in the same wheel and standalone zipapp as `assay run`
+and `assay verify`, and adds no runtime dependencies. The code lives in its own
+top-level package, `assay_analysis` (`analysis/src/assay_analysis/`), which the
+CLI loads only when you run `assay analyze`; the judge (`src/assay`) never
+imports it, and B105 scores only `src/assay`. The analysis package has its own
+R0+R1 lane and tests (`analysis/tests/`). A source checkout needs both `src`
+and `analysis/src` on the path for `analyze`; an installed wheel or zipapp
+needs nothing extra:
+
+- `record` captures an explicit command, before/after Git identities and
+  cleanliness, merged job output, and the actual job exit.
+- `collect` copies explicitly named files into a fresh archive with SHA256
+  and byte counts, or collects a receipt and all its referenced inputs with
+  `--receipt`; `check` verifies that archive after relocation.
+- `verdict` uses the existing Assay verifier and an explicitly expected commit;
+  `--format text` shows the outcome, claims, coverage and mutant buckets,
+  plus captured output tails and recorded dropped-byte counts for adverse outcomes.
+  Assay's own gate uses this diagnosis when its self-hosted suite fails.
+- `progress` separates appended JSONL runs at the expected commit, showing
+  resume/candidate facts and terminal events without folding retries together.
+- `report` takes one bounded snapshot of explicitly named verdict, progress,
+  and log files for live gate triage. It binds verdicts to the agreed commit,
+  marks fresh nonterminal progress as `running`, and keeps child logs diagnostic
+  only; see the [design and status rules](docs/DESIGN-GUIDE.md#bounded-live-gate-snapshot-b100).
+- `receipt` binds selected recorded jobs, `tester-unified/run` evidence,
+  verdicts and progress to the current clean worktree's exact HEAD and tree.
+- `launcher` inspects an existing `tester-unified/run` evidence directory,
+  including historical runs, at its explicitly expected commit.
+- `plan-estimate` projects a campaign's hours from an `assay plan` JSON file
+  and a progress stream that holds a completed baseline (a preflight or an R0/R1
+  run at the same commit). It is a measured, advisory projection: it never
+  classifies a candidate, and `assay plan` itself keeps its declared-budget
+  estimate and prints a stderr line pointing here.
+- `campaign` closes out one declared mutation lane from its committed lane
+  file, its progress stream and, when you have it, its verified verdict. It is
+  read-only: it never judges, never runs a test and never writes a file. It
+  counts every candidate once as its latest bucket, lists survivors and other
+  adverse candidates by id, path and operator, names why a campaign is not
+  complete, and exits 0 (complete PASS), 1 (complete, not PASS), 2 (evidence
+  error) or 3 (incomplete). Timing, ETA and `--project` estimates are
+  diagnostic: they never change the status or the exit code. See the
+  [workflow](docs/CONSUMERS.md#close-out-a-mutation-campaign-with-assay-analyze-campaign-b108).
+
+<!-- assay-analysis-example -->
+```bash
+assay analyze verdict .assay/verdict-r2.json --expected-commit "$REVIEW_HEAD" --format text
+assay analyze progress .assay/progress-r2.jsonl --expected-commit "$REVIEW_HEAD"
+assay analyze plan-estimate --plan-json plan.json --progress .assay/progress-self-qualification-preflight.jsonl --workers 3
+assay analyze report --expected-commit "$REVIEW_HEAD" \
+  --verdict r2 .assay/verdict-r2.json \
+  --progress r2 .assay/progress-r2.jsonl --log r2 "$GATE_LOG" --format text
+assay analyze campaign r2 --file assay.toml --expected-commit "$REVIEW_HEAD" \
+  --progress .assay/progress-r2.jsonl --verdict .assay/verdict-r2.json --command-exit 0
+```
+
+Set `REVIEW_HEAD` to the full Git commit agreed with the controller and
+`GATE_LOG` to the retained gate output file. Analysis
+success means its stated checks succeeded; a valid FAIL or ERROR verdict
+remains FAIL or ERROR. Receipts do not decide ACCEPT or REJECT. See the
+[worked review workflow](docs/CONSUMERS.md#review-evidence-analysis) and
+[design and limits](docs/DESIGN-GUIDE.md#review-evidence-analysis).
+
+Machine consumers can validate manifests and receipts against the packaged
+`schemas/analysis-archive.schema.json`, `schemas/analysis-receipt.schema.json`,
+and `schemas/analysis-report.schema.json`.
+Receipt verdicts are checked against the current v13 verdict schema; a receipt
+with an `--allow-dirty` override is refused by default.
 
 ## Why use it
 
@@ -72,6 +143,19 @@ assay exists to close that gap mechanically, not by policy:
   commit-validated P22-unsafe symlink is absent and every other P22-supported
   tracked path from the resolved commit is materialised.* See
   [§6, snapshot selection](docs/DESIGN-GUIDE.md#snapshot-selection-an-affirmative-materialisation-boundary-not-a-sandbox-b006a).
+- **Snapshot history is shallow by default.** A seed carries the judged commit
+  and the pre-snapshot resolved base, with exact Git shallow boundaries. A
+  lane whose command genuinely walks ancestry opts in with
+  `snapshot_history = "full"`; project-level `[isolation.limits]` ceilings
+  bound the seed and materialized trees. See [§6, snapshot history and seed
+  limits](docs/DESIGN-GUIDE.md#snapshot-history-and-seed-limits-b101).
+- **Snapshot dirt is explicit and auditable.** Project-level
+  `[isolation].dirty_ignore` may cover known ledger/output paths using the
+  same repo-top-relative POSIX glob grammar as `identity_exclude`. Other dirty
+  paths still refuse; `assay run --allow-dirty` admits them only for R1+
+  snapshot lanes and records them in the `worktree_integrity` marker.
+  `assay verify` accepts but warns about that marker, while release receipts
+  refuse it. See the [design rationale](docs/DESIGN-GUIDE.md#snapshot-dirty-tree-policy-b102).
 - **An escalating rigor ladder (R0–R3)**, so "tested" means something
   specific instead of one undifferentiated green checkmark:
   - **R0** — the declared command ran and produced a result.
@@ -97,6 +181,21 @@ assay exists to close that gap mechanically, not by policy:
   ambient environment names, cwd, links, project prefix, and assay version
   remain identity inputs. See the
   [B092 design rationale](docs/DESIGN-GUIDE.md#filtered-native-r2-judge-identity-b092).
+- **Native R2 can selectively replay verified kill witnesses after a fresh
+  baseline.** `assay plan --reuse-from` previews candidate classifications;
+  `assay run --reuse-from` always re-runs R0 first, then replays eligible prior
+  kill witnesses against the current sequential pytest suite. Any uncertainty
+  runs the candidate's full suite. A v12 verdict is a cold start, and `assay
+  verify` still rejects it. See the
+  [B106 design](docs/DESIGN-GUIDE.md#selective-reuse-replays-a-current-failure-witness-b106)
+  and [worked consumer example](docs/CONSUMERS.md#reusing-killed-native-mutants-after-the-baseline-b106).
+- **Refusals name the usable cause and keep unrelated failures distinct.** A
+  Git dubious-ownership refusal explains why `safe.directory` cannot be set in
+  assay's replacement environment and points to the ownership fix. Unknown or
+  stale `--rejudge` ids use `ERROR`/`BAD_LANE_CONFIG`; unreadable or corrupt
+  state remains `ERROR`/`UNREADABLE_ARTIFACT`. See the
+  [refusal design](docs/DESIGN-GUIDE.md#git-dubious-ownership-and-safe-directory-b081)
+  and [consumer pitfall](docs/CONSUMERS.md#b081-ownership-remedy).
 - **Zero runtime dependencies.** assay imports nothing but the Python
   standard library. It consumes the *output* of tools like `coverage.py`; it
   never imports them. Adoption risk is close to zero — there is no
@@ -109,9 +208,9 @@ assay exists to close that gap mechanically, not by policy:
   for the receipts.
 
 **Compatibility, read before upgrading.** The verdict artifact is schema
-`VERDICT_SCHEMA_VERSION = 8` and the lane file is `LANE_SCHEMA_VERSION = 2`.
-Both are hard cuts: `assay verify` refuses a v7 verdict exactly as it refuses
-v6 today (no dual-version verifier, no upgrade-in-place), and a v2 assay
+`VERDICT_SCHEMA_VERSION = 13` and the lane file is `LANE_SCHEMA_VERSION = 2`.
+Both are hard cuts: `assay verify` refuses a v12 verdict exactly as it refuses
+v11 (no dual-version verifier, no upgrade-in-place), and a v2 assay
 refuses a v1 `assay.toml`'s `[isolation]`-less R1+ lane while a v1-pinned
 assay cannot parse a v2 file's `[isolation]` table at all. Repin the release
 and bump `schema_version` **in the same commit** — see
@@ -248,6 +347,16 @@ last-resort kill switch — "stall detection stays with the caller"
 choose to extend a wait based on the heartbeat still ticking, in front of
 assay's unconditional numeric backstop, not instead of it.
 
+**An admitted native R2 lane's unbounded baseline is caller-watched too
+(A-457).** Its baseline command receives `timeout=None`; Assay does not
+derive a baseline limit from the per-mutant bound: the baseline is first and
+can pay cold-cache, fixture-setup, and first-run compilation costs that later
+mutant invocations do not. With `--progress`, the
+`command_running` heartbeat lets the caller's stall watch observe that
+command. See the [design rationale](docs/DESIGN-GUIDE.md#an-unbounded-r2-baseline-remains-caller-watched-a-457)
+and [worked consumer guidance](docs/CONSUMERS.md#budget--unbounded-the-recommended-shape-for-a-long-mutation-lane-b067)
+for the ruling and invocation.
+
 **What the heartbeat does *not* give you: true percentage/ETA of the
 runner's own internal progress.** `command_finished` can legitimately be the
 longest phase by a wide margin — a multi-minute test suite is one opaque
@@ -265,7 +374,8 @@ and see B073 if per-test detail becomes worth the design cost.
 **B091 has since delivered a SCOPED instance of exactly this**, for one case
 only: a native R2 python/pytest mutation lane. When `judge.mutation.liveness`
 is active (the default, `"auto"`, whenever the lane's own argv invokes
-pytest), assay materializes a small pytest plugin that emits one `test`
+pytest), assay materializes a small pytest plugin in an ephemeral directory
+outside the live checkout that emits one `test`
 event per test to a side file; the progress stream forwards the BASELINE's
 own per-test events verbatim, and each `candidate` record carries its own
 `tests_completed` count. This is the mechanism that also makes a hung mutant
@@ -276,15 +386,38 @@ silently consuming a whole `budget_per_candidate` window — see
 An early xdist worker finish does not expire a candidate still emitting
 events or output: the post-finish grace requires 30 s without either.
 See the [design rationale](docs/DESIGN-GUIDE.md#liveness-session-finish-grace)
-and the consumer section's xdist identity rules. Every materialized-plugin
-record now carries its positive producer `pid` and, when present, the
-descriptive `PYTEST_XDIST_WORKER` value. Stamped xdist test records are read
+and the consumer section's xdist identity rules. The candidate process group
+is cleaned up even when its leader exits first, so descendants cannot
+accumulate across mutants and exhaust the gate cgroup's PID budget. Every
+materialized-plugin record carries its positive producer `pid` and, when
+present, the descriptive `PYTEST_XDIST_WORKER` value. Stamped xdist test
+records are read
 from the process owning the first `session_start`, so controller/worker
 duplicates do not inflate `tests_completed`; baseline gaps are computed on
 each pid timeline and the largest per-process gap is used. The monitor's own
 candidate pid is the only stamped `session_finish` that arms the finish grace.
 Old, malformed, or mixed records retain the merged legacy interpretation, and
 the worker label is never used as identity.
+
+RG-55/B107 also makes the `hung` decision resource-aware: it records
+time-aligned process-tree CPU, host/cgroup PSI, and cgroup-throttle evidence.
+Because aggregate pressure cannot be converted into this candidate's lost
+runtime, any pressure delta or unavailable/reset counter pauses the liveness
+clock; an unknown/reset observation also restarts the idle evidence window.
+Pressure is never prorated into a verdict. A configured candidate budget
+that expires before a complete clean idle window remains an incomplete
+`budget_exceeded` result, not `killed`, `survived`, or `hung`. See the
+[design rationale](docs/DESIGN-GUIDE.md#liveness-pressure-and-resource-evidence-b107)
+and [consumer guidance](docs/CONSUMERS.md#resource-aware-hung-classification-b107).
+Both hang paths require process-tree CPU to stay below the quiet threshold
+over a complete trailing window; after `session_finish`, that CPU-quiet window
+is required in addition to 30 seconds without event or output growth.
+If a busy descendant exits and lowers the live tree's CPU total, the CPU
+window restarts; the lower total is not evidence that the tree was quiet.
+On resume, cached `hung` evidence must also account for the full idle span
+without an intervening event or output increase.
+Continued CPU work reaches the configured budget instead of being mislabeled
+`hung`.
 **B073 itself is not resolved**: this is per-test data for one runner
 (pytest) on one rigor tier (R2 candidates + the R1/R0 baseline), driven by a
 plugin assay itself materializes — not the general, per-language,
@@ -366,8 +499,9 @@ unconditionally `UNSUPPORTED`, and declaring a rigor level a lane can't
 actually back up is exactly the failure this project exists to prevent.
 
 **Getting assay into a Go gate image costs nothing extra**, and this is what
-stdlib-only (A-005) buys: a `golang:1.25`-based image already carries
-`/usr/bin/python3` 3.13.5, above assay's `>=3.11` floor. It has no pip, so
+stdlib-only (A-005) buys: any image with `python3` at or above assay's
+`>=3.11` floor works; a `golang:1.25` image was measured carrying
+`/usr/bin/python3` 3.13.5. It has no pip, so
 the shipped **zipapp** is the install path — copy the `.pyz` in, check its
 `.sha256`, run it with the interpreter that is there. The Go oracle rides
 inside that archive and is staged out to a real directory when it runs, so
@@ -385,11 +519,16 @@ modules, or in none, refuses and says which — it never picks one silently.
 section](docs/CONSUMERS.md#go-lanes-what-exists-today-and-what-a-go-lane-will-require)
 point 6 has the detail; `go.work` is not supported.
 
+A shallow or grafted **source checkout** is refused as `ERROR`/`GIT_FAILED`;
+run `git fetch --unshallow` before judging it. This is independent of the
+deliberately shallow private seed described above: use
+`snapshot_history = "full"` when the lane's own command walks ancestry.
+
 Why the oracle is a subprocess rather than a Python rule:
 [DESIGN-GUIDE §11, "Go statement positions"](docs/DESIGN-GUIDE.md#go-statement-positions-come-from-the-source-never-from-the-profile-a-217a-239a-397).
 **`sql:*` is different — see below.**
 
-### JavaScript/TypeScript changed-line coverage (R1 only)
+### JavaScript/TypeScript coverage and mutation ingestion
 
 `judge.language = "javascript"` resolves at **R1 only** — changed-line
 coverage over `.js`, `.jsx`, `.ts` and `.tsx`. One language name covers all
@@ -407,6 +546,13 @@ as `judgment.r1.coverage_producer`; declaring `istanbul` is also what makes
 `require_branch = true` legal on a JavaScript lane. The vocabulary, the three
 producers assay refuses **by name**, and the one-line migration are in
 [`docs/CONSUMERS.md`](docs/CONSUMERS.md#declaring-the-coverage-producer-b045).
+
+Defaulted parameters with an arc on their signature line are included: a
+statement-less node line is classified from its function's call count, and
+its default branch is counted even when the default was never used. If all
+arms start on other lines, the node line stays unclassified. See the
+[classification rationale](docs/DESIGN-GUIDE.md#default-argument-signature-lines-b080-a-456)
+and the [JavaScript consumer examples](docs/CONSUMERS.md#javascripttypescript-lanes-r1-and-r2-by-ingestion).
 
 The `coverage-final.json` document is emitted natively by nyc/istanbul and by
 Jest (`--coverageReporters=json`), and by Vitest through either coverage
@@ -488,14 +634,14 @@ and gitignored. See
 for the offline-install pattern, the `npx` fetch hazard, and a worked
 monorepo lane (B041).
 
-**There is deliberately no JavaScript R2 yet.** Whether JS/TS mutation should
-be a native engine (as Python's and SQL's are) or should ingest an external
-producer's evidence (Stryker Mutator's per-mutant report) is a real
-architectural ruling that has not been made — it is tracked as **B037**, and
-until it is, `judge.language = "javascript"` declaring R2 is refused
-`ERROR`/`BAD_LANE_CONFIG`, exactly like an unregistered language. R3 (the
-cause-sensitive canary) is unwired for the same "a method existing is not a
-producer path" reason, though both canary injection mechanisms are real.
+**JavaScript/TypeScript R2 is registered for ingestion.** The lane's command
+must run its external mutation producer and write the declared report inside
+the Assay snapshot; Assay then verifies and judges that report. Assay does not
+generate JavaScript mutants itself. The supported report path and its exact
+producer contract are in the
+[JavaScript consumer guide](docs/CONSUMERS.md#javascripttypescript-lanes-r1-and-r2-by-ingestion).
+R3 (the cause-sensitive canary) remains unregistered because its producer path
+is not wired into the CLI.
 
 **Branch coverage depends on the declared producer.** istanbul's `branchMap`
 means different things under different producers (real per-arm arcs under the
@@ -520,6 +666,16 @@ itself declares. See
 [§11 of the design guide](docs/DESIGN-GUIDE.md#sqlddl-mutation-a-stdlib-lexer-not-a-database-connection)
 for why, and [the consumer guide](docs/CONSUMERS.md#sqlddl-lanes-r2-only) for
 a worked, pasteable lane.
+
+The adapter is qualified against a **real PostgreSQL 18.6** by assay's own gate
+(A-480), with no consumer checkout: an outer phase of the registered
+`tester-unified` gate runs `gate/python/qualify_sql.py` on the host after a green
+tester container, against assay's own schema
+(`tests/fixtures/mutation/sql/qualification/01-schema.sql`), a 24-row probe
+matrix and a witnessed `assay run`, in one digest-pinned, never-pulled container
+named `run-gate-assay-sql-<pid>-<epoch>`. A busy host or an absent image is an
+inconclusive run (`ASSAY_GATE_INCONCLUSIVE=`, exit 3), never a green one. See
+[§11 of the design guide](docs/DESIGN-GUIDE.md#how-the-sql-adapter-is-qualified-against-a-real-postgresql-a-480-b126).
 
 The two B015 semantic families, `python:uuid-equality-swap` and
 `python:enum-comparison-swap`, are **withdrawn** (A-326). Measured
@@ -640,6 +796,13 @@ assign candidates by deterministic digest, and require a manifest merge that
 proves every shard is present, shares one lane/commit, and contains no repeated
 candidate.
 
+During `--resume`, a present state file must decode to a JSON object before
+its identity fields are read. A `null`, scalar, array, or malformed record is
+reported as structured `ERROR`/`UNREADABLE_ARTIFACT`, never as an uncaught
+parser traceback. Decoder resource refusals, such as an integer exceeding
+Python's configured conversion limit, use the same structured error. See
+[the resume design](docs/DESIGN-GUIDE.md#mutation-resume-and-sharding-b012).
+
 When a lane command fails or times out, its verdict can retain at most the last
 64 KiB of each output stream in `result_stdout_tail` and `result_stderr_tail`.
 Truncation is head-side and visible through the paired dropped-byte counts, so
@@ -720,6 +883,15 @@ answer.
 # assay.toml
 schema_version = 2
 
+# Optional project-top-relative paths whose pre-existing dirt is recorded.
+[isolation]
+dirty_ignore = ["nyxloom-trove/**", ".assay/**"]
+
+# Optional project-wide P22 ceilings. All *_bytes values are uncompressed
+# logical bytes; omitted fields use Assay's shipped defaults.
+[isolation.limits]
+max_total_tree_blob_bytes = 536870912
+
 [lanes.unit]
 scope = "S1"
 rigor = ["R0", "R1"]
@@ -731,8 +903,8 @@ budget = "20m"
 allow_argv_append = false
 
 # Required the moment a lane declares R1, R2 or R3 (refused on an R0-only
-# lane); no default. "repository" materialises the whole commit -- see the
-# design guide for "repository-minus-unsafe-symlinks", the monorepo case.
+# lane); no selection default. History is shallow unless this lane needs
+# ancestry, in which case add snapshot_history = "full".
 [lanes.unit.isolation]
 snapshot_selection = "repository"
 
@@ -748,6 +920,13 @@ format = "coverage-py-json"
 artifact = "cov.json"
 ```
 
+`dirty_ignore` is policy for pre-existing dirt only; the lane file itself is
+always protected because it is loaded from the working tree. An unignored
+path requires an explicit `assay run --allow-dirty` (and the same independent
+flag is available on `assay plan` for parity). R0 remains strict. The
+`run-gate.py` flag with the same spelling controls run-gate's outer clean-tree
+check and is independent; it does not silently change assay's policy.
+
 ```bash
 pip install ./assay-*.whl   # see Installing
 assay run unit --verdict-json verdict.json
@@ -760,7 +939,13 @@ Two more CLI verbs round out the surface:
   useful for auditing what a project claims before trusting its gate.
 - `assay plan <mutation-lane>` discovers candidates through a private commit
   snapshot, reports total/per-file/per-operator counts and deterministic IDs,
-  and estimates runtime without running the lane command or any mutant.
+  and estimates runtime without running the lane command or any mutant. Its
+  JSON carries the `commit` and `tree` it was made at, and the estimate is the
+  declared budget (a placeholder when none is numeric), not a measurement; save
+  the JSON and pass it to `assay analyze plan-estimate` for a measured
+  projection. The B105 R2 driver plans first and its checker refuses a report
+  whose campaign is not exactly that complete, unsharded plan at the expected
+  commit and tree.
 - `assay verify <verdict.json>` independently re-checks that a verdict
   artifact is schema-conformant and internally self-consistent. It never
   re-runs a lane and is never the *sole* witness to a producer's
@@ -829,9 +1014,40 @@ you're changing assay itself:
   something is an oversight rather than a deliberate choice.
 - [`nyxloom-trove/handoffs/README.md`](nyxloom-trove/handoffs/README.md)
   tracks the current package queue and its dependency order.
-- The registered gate (`tools/tester-unified-gate.sh`, run only inside its
-  dedicated container, never the interactive devcontainer) is the only
-  accepted ship signal.
+- `./run-gate.py tester-unified` is the ordinary R0 release gate. It collects both
+  test trees (`tests/` and `gate/tests/`), and after a green run at a commit it writes
+  the same-commit receipt `.assay/registered-gate/tester-unified.json`
+  (`ASSAY_REGISTERED_GATE_RECEIPT=` names it). The
+  separately invoked `./run-gate.py self-qualification` requires that receipt for
+  its own commit and tree (run `./run-gate.py tester-unified` first, in the same worktree and with no commit in between: any later commit, a docs-only or merge commit included, needs a fresh `tester-unified` run; `tester-unified` exits 3 with `ASSAY_GATE_INCONCLUSIVE=` when another `run-gate-*` container is running, which means rerun), then runs full-source
+  R0-R3 qualification in `tester-unified`, writes its verdict, progress, and
+  raw baseline coverage arcs in
+  `.assay/coverage-self-qualification-preflight-snapshots/`, keyed by source
+  commit and tree under a separately reserved directory for each attempt, and verifies
+  each report against the captured source and lane before success. The full
+  mutation lane cannot overwrite the preflight coverage artifact. Before
+  starting mutation, it runs
+  the same full-source R0/R1 check as
+  `./run-gate.py self-qualification-preflight`; that preflight stops on a red
+  baseline or coverage floor. Both lanes build the selected commit as a
+  wheel, while each qualification snapshot imports its own source tree. The
+  full lane judges code imported from each
+  isolated snapshot. See the
+  [self-qualification design](docs/DESIGN-GUIDE.md#full-source-self-qualification-b105)
+  and [worked invocation](docs/CONSUMERS.md#assays-own-full-source-self-qualification-b105).
+  The full-source attempt is currently unqualified: the latest run stopped at
+  15/3,760 candidates; an earlier attempt stopped after 38 completions. The
+  full R0–R3 Assay lane has a 5-hour per-invocation cap; reaching it is
+  incomplete. The in-container gate has a 7h30m timeout and Nyxloom has an
+  8-hour outer watchdog. Do not treat partial or timed-out state as a pass;
+  B110's structural rework and bounded pilot must land before another full
+  qualification attempt.
+
+  B110 also proposes an opt-in cold-witness policy, which is not shipped yet.
+  Under that policy, one verified test-call failure would be enough to classify
+  a candidate as killed; tests after the failure would be reported as unrun and
+  could independently fail, hang, or crash. Survivors and uncertain executions
+  would still run the full declared suite.
 
 ## Further reading
 
@@ -852,3 +1068,21 @@ you're changing assay itself:
 `./run-gate.py` is the canonical test entrypoint — `./run-gate.py --list`
 discovers the declared lanes; definitions live in `run-gate.toml`.
 See [`../run-gate-project/CONSUMERS.md`](../run-gate-project/CONSUMERS.md).
+
+There are two test trees. Judge tests (`tests/`, plus `analysis/tests/`) are organized by
+component under `tests/core/`, `tests/adapters/<lang>/` and `tests/parsers/`, and
+`tests/core/test_import_contracts.py` enforces the import boundaries between components and that
+no judge test reaches into the other tree; the rules are in the DESIGN-GUIDE section
+"Component boundaries and test layout". Tooling tests (`gate/tests/`: the gate script, the B105
+checker, the wheel and zipapp, packaging, lane-config drift) run only in the `tester-unified`
+gate; the B105 qualification lanes collect `tests/` alone.
+
+### CLI diagnostics
+
+All parser help, usage, missing-argument, unknown-argument, and configuration
+diagnostics begin with `ASSAY <version> — declared-lane judge` as line 1 at
+every lane and analysis verb depth, using the existing metadata-backed
+`assay.__version__`. The top-level `assay --version` probe prints exactly one
+`assay <version>` line to stdout, exits 0, and writes nothing to stderr.
+Normal command output is unchanged. See the [design guide](docs/DESIGN-GUIDE.md#top-level-version-compatibility)
+for why this is a separate identity probe from lane execution.

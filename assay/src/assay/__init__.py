@@ -11,7 +11,7 @@ The one invariant, from which every exclusion follows:
     assay never renders a judgement it cannot make deterministically.
 
 **Zero runtime dependencies — stdlib only** (A-005), enforced mechanically by
-``tests/test_dependency_purity.py``.
+``gate/tests/test_dependency_purity.py``.
 """
 
 from __future__ import annotations
@@ -33,6 +33,7 @@ from .verdict import (
     Claim,
     Coverage,
     Verdict,
+    WorktreeIntegrity,
     iso_utc,
     load_schema,
     rollup,
@@ -56,6 +57,7 @@ __all__ = [
     "ReasonCode",
     "VERDICT_SCHEMA_VERSION",
     "Verdict",
+    "WorktreeIntegrity",
     "__version__",
     "find_lane_file",
     "iso_utc",

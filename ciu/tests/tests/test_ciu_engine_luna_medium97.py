@@ -47,6 +47,7 @@ def _stub_native_pipeline(monkeypatch: pytest.MonkeyPatch, observed: dict[str, o
 def test_main_execution_consumes_literal_compose_text_in_dry_run(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    (tmp_path / "ciu.global.defaults.toml.j2").write_text("", encoding="utf-8")
     stack = tmp_path / "stack"
     stack.mkdir()
     compose_text = "services:\n  api:\n    image: example:literal\n"
@@ -71,11 +72,12 @@ def test_main_execution_consumes_literal_compose_text_in_dry_run(
 def test_run_shipped_without_define_root_uses_repo_root_environment(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    stack = tmp_path / "stack"
-    stack.mkdir()
-    (stack / "vendor.yml").write_text("services: {}\n", encoding="utf-8")
     repo_root = tmp_path / "repository"
     repo_root.mkdir()
+    (repo_root / "ciu.global.defaults.toml.j2").write_text("", encoding="utf-8")
+    stack = repo_root / "stack"
+    stack.mkdir()
+    (stack / "vendor.yml").write_text("services: {}\n", encoding="utf-8")
     observed: dict[str, object] = {}
     monkeypatch.setattr(engine, "check_runtime_dependencies", lambda: None)
     monkeypatch.setattr(engine, "bootstrap_workspace_env", lambda **_kwargs: None)

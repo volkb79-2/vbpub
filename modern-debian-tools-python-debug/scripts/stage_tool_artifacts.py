@@ -8,6 +8,7 @@ before docker buildx bake starts.
 from __future__ import annotations
 
 import argparse
+from mdt_cli import MdtArgumentParser
 import hashlib
 import json
 import os
@@ -1672,7 +1673,7 @@ def stage_tool_artifacts(*, build_date: str) -> StagingResult:
 
 
 def _parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Stage tool artifacts before docker bake")
+    parser = MdtArgumentParser(description="Stage tool artifacts before docker bake")
     parser.add_argument(
         "--build-date",
         default=os.getenv("BUILD_DATE") or "",

@@ -1,0 +1,67 @@
+{
+  "name": "egress-web-dns-only",
+  "description": "Allow web, DNS, and NTP egress; drop the remaining protocols",
+  "rules": [
+    {
+      "description": "Allow HTTPS egress",
+      "direction": "EGRESS",
+      "protocol": "TCP",
+      "action": "ACCEPT",
+      "destinationPorts": "443"
+    },
+    {
+      "description": "Allow HTTP egress for package mirrors",
+      "direction": "EGRESS",
+      "protocol": "TCP",
+      "action": "ACCEPT",
+      "destinationPorts": "80"
+    },
+    {
+      "description": "Allow DNS to the selected resolvers",
+      "direction": "EGRESS",
+      "protocol": "UDP",
+      "action": "ACCEPT",
+      "destinations": ["1.1.1.1", "9.9.9.9"],
+      "destinationPorts": "53"
+    },
+    {
+      "description": "Allow TCP DNS to the selected resolvers",
+      "direction": "EGRESS",
+      "protocol": "TCP",
+      "action": "ACCEPT",
+      "destinations": ["1.1.1.1", "9.9.9.9"],
+      "destinationPorts": "53"
+    },
+    {
+      "description": "Allow NTP egress",
+      "direction": "EGRESS",
+      "protocol": "UDP",
+      "action": "ACCEPT",
+      "destinationPorts": "123"
+    },
+    {
+      "description": "Drop other TCP egress",
+      "direction": "EGRESS",
+      "protocol": "TCP",
+      "action": "DROP"
+    },
+    {
+      "description": "Drop other UDP egress",
+      "direction": "EGRESS",
+      "protocol": "UDP",
+      "action": "DROP"
+    },
+    {
+      "description": "Drop ICMP egress",
+      "direction": "EGRESS",
+      "protocol": "ICMP",
+      "action": "DROP"
+    },
+    {
+      "description": "Drop IPv6 ICMP egress",
+      "direction": "EGRESS",
+      "protocol": "ICMPv6",
+      "action": "DROP"
+    }
+  ]
+}

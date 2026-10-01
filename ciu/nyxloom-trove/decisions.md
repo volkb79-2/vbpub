@@ -155,3 +155,31 @@ CGROUP-NOTES.md` §"Per-container memory.min guarantees" (the
 `dev-memory_min_guaranteed.slice` static-ceiling design this mechanism
 admits against). Implementing package: `nyxloom-trove/handoffs/
 ciu-P50-ciu94-ciu95-memory-min-guaranteed-slice.md`.
+
+## D-013 — governance memory settings are explicit-only (2026-09-27)
+
+CIU must not silently impose per-container `mem_limit`, `mem_swap_limit`, or
+`mem_reservation` values when a stack enables governance for placement or IO.
+Their code defaults are empty, and CIU injects each Compose key only when the
+user sets it in a stack's `[<root>.governance]` or global `[governance]`
+configuration. A memory key authored directly on a Compose service continues
+to win. Parent slice policy remains independent. This also means an explicit
+CIU `mem_limit` is respected by MDT's watcher, while MDT's own per-container
+memory defaults remain disabled unless a host operator configures them.
+
+## D-014 — CIU resource caps require explicit config (2026-09-27)
+
+CIU must not silently add per-container resource caps when governance is
+enabled for cgroup placement or another governance feature. Memory and CPU
+controls stay unset by default; IOPS defaults are also uncapped. A positive
+`read_iops` or `write_iops` value is a cap only when the resolved user config
+sets it. `read_iops = 0` is an explicit opt-in to the measured baseline
+formula, while omitted/empty `read_iops` stays uncapped. Bandwidth caps and
+other resource controls retain their existing explicit-only/zero-unset
+semantics. Compose-authored keys remain authoritative, and host parent-slice
+policy remains independent. This extends D-013's memory rule to the IOPS
+defaults CIU also used to add implicitly. `ciu init` exposes the full
+governance table as editable TOML, disabled and uncapped by default, so
+supported controls are discoverable without inventing values in code. If the
+baseline formula yields zero, CIU refuses to render so the explicit derive
+request cannot turn into a silently omitted cap.

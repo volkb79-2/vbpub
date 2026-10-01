@@ -155,6 +155,61 @@ _TEST_REPO_DIR = Path(__file__).resolve().parent.parent / "test-repo"
 
 _TEST_REPO_INPLACE_MARK = "ciu_test_repo_inplace"
 _TEST_REPO_READER_MARK = "ciu_test_repo_reader"
+_NO_AUTO_CIU_ROOT_MARK = "ciu_no_auto_root"
+
+# Most older engine/CLI tests build a temporary checkout by writing ciu.env
+# and setting REPO_ROOT.  S1.1 deliberately stopped treating either as a root
+# selector, so those fixtures need the committed marker as well.  Keep this
+# compatibility aid scoped to the suites that exercise a CIU root; generic
+# filesystem tests must not acquire a surprising extra file.
+_CIU_ROOT_FIXTURE_FILES = frozenset({
+    "test_ciu_clean_identity_project.py",
+    "test_ciu_cli_luna_medium58.py",
+    "test_ciu_config_model_layouts_eager.py",
+    "test_ciu_deploy_deeper10.py",
+    "test_ciu_engine_branch101.py",
+    "test_ciu_engine_deep_remaining.py",
+    "test_ciu_engine_deeper12.py",
+    "test_ciu_engine_deeper15.py",
+    "test_ciu_engine_deeper16.py",
+    "test_ciu_engine_deeper17.py",
+    "test_ciu_engine_deeper18.py",
+    "test_ciu_engine_deeper2.py",
+    "test_ciu_engine_deeper8.py",
+    "test_ciu_engine_direct86.py",
+    "test_ciu_engine_direct87.py",
+    "test_ciu_engine_direct88.py",
+    "test_ciu_engine_direct89.py",
+    "test_ciu_engine_direct90.py",
+    "test_ciu_engine_direct91.py",
+    "test_ciu_engine_direct92.py",
+    "test_ciu_engine_direct94.py",
+    "test_ciu_engine_direct99.py",
+    "test_ciu_engine_luna_medium97.py",
+    "test_ciu_engine_remaining_boundaries.py",
+    "test_ciu_engine_shared_infra.py",
+    "test_ciu_engine_worktree_budget.py",
+    "test_ciu_env_generate_ambient_identity.py",
+    "test_ciu_env_generate_public_fqdn.py",
+    "test_ciu_hook_persisted_secrets.py",
+    "test_ciu_hooks_execution.py",
+    "test_ciu_host_secrets.py",
+    "test_ciu_identity_cutover_ciu75.py",
+    "test_ciu_migration_check.py",
+    "test_ciu_shipped.py",
+    "test_ciu_ssh.py",
+    "test_ciu_thin_deploy.py",
+    "test_ciu_workspace_env_branch106.py",
+    "test_ciu_workspace_env_deeper9.py",
+    "test_ciu_workspace_env_luna_medium44.py",
+    "test_ciu_workspace_env_luna_medium56.py",
+    "test_ciu_worktree_lease.py",
+    "test_ciu_worktree_lifecycle.py",
+    "test_ciu_worktree_reap.py",
+    "test_ciu_worktree_shared_infra.py",
+    "test_physical_root_mount_table.py",
+    "test_spec_contracts.py",
+})
 
 
 def _test_repo_lock_path() -> Path:
@@ -190,6 +245,11 @@ def pytest_configure(config: pytest.Config) -> None:
         f"{_TEST_REPO_READER_MARK}: this test WALKS/COPIES the shared, "
         "committed test-repo/ tree out of place (CIU-91/CIU-58) — hold the "
         "cross-worker shared lock for its whole body.",
+    )
+    config.addinivalue_line(
+        "markers",
+        f"{_NO_AUTO_CIU_ROOT_MARK}: this test intentionally exercises a "
+        "temporary tree without the default CIU root marker.",
     )
 
 
@@ -251,6 +311,19 @@ def _ciu_test_suite_gate(monkeypatch: pytest.MonkeyPatch) -> None:
     including ``real_network_side_effects``, which deletes it on purpose.
     """
     monkeypatch.setenv(CIU_TEST_SUITE_ENV, "1")
+
+
+@pytest.fixture(autouse=True)
+def _adapt_legacy_ciu_root_fixtures(
+    request: pytest.FixtureRequest, tmp_path: Path,
+) -> None:
+    """Give legacy temporary CIU roots the now-required committed marker."""
+    filename = Path(str(request.node.fspath)).name
+    if filename not in _CIU_ROOT_FIXTURE_FILES:
+        return
+    if request.node.get_closest_marker(_NO_AUTO_CIU_ROOT_MARK) is not None:
+        return
+    (tmp_path / "ciu.global.defaults.toml.j2").touch()
 
 
 Runner = Callable[..., "subprocess.CompletedProcess[str]"]
@@ -496,11 +569,21 @@ def write_instance_facts():
     Unspecified facts default to ``""`` — the same shape ``ciu env generate``
     writes for a fact it could not derive (an FQDN-less workspace).
     """
-    from ciu.workspace_env import GENERATED_FACTS_KEYS, write_generated_facts
+    from ciu.workspace_env import (
+        GENERATED_FACTS_KEYS,
+        MACHINE_FACT_ENV_KEYS,
+        write_generated_facts,
+    )
 
     def _write(ciu_root: Path | str, **facts: str) -> Path:
         payload = {key: "" for key in GENERATED_FACTS_KEYS}
         payload.update(facts)
-        return write_generated_facts(Path(ciu_root), payload)
+        machine = {
+            key: os.environ.get(env_key, "")
+            for key, env_key in MACHINE_FACT_ENV_KEYS.items()
+        }
+        for key in ("container_uid", "container_gid", "docker_uid", "docker_gid"):
+            machine[key] = machine[key] or "0"
+        return write_generated_facts(Path(ciu_root), payload, machine_facts=machine)
 
     return _write

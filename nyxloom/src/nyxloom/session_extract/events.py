@@ -26,23 +26,25 @@ class EventKind(str, Enum):
       OPERATOR_TEXT     - real operator-authored (or controller-injected,
                           e.g. a /loop wakeup) prompt text. Never a tool
                           result, never harness-injected framing.
-      QA_PAIR           - a structured question/answer exchange (Claude
-                          Code's AskUserQuestion; adapters for other CLIs
-                          may never emit this kind if the CLI has no
-                          equivalent).
+      QA_PAIR           - a structured interview prompt or question/answer
+                          exchange (Claude Code's AskUserQuestion or Codex's
+                          request_user_input_async / reply envelope).
       LIFECYCLE_MARKER  - an explicit session-lifecycle event: a compaction
                           boundary, or an operator-issued /compact or
-                          /clear. Selection treats these as hard stops.
+                          /clear. Compactions are optional walk stops;
+                          /clear is handled as an epoch boundary.
       ASSISTANT_TEXT    - assistant prose. select.py's classifier decides
                           which of these count as "checkpoints"; this kind
                           itself makes no such claim.
+      TOOL_CALL         - an optional short tool-name/intent label. Tool
+                          inputs and results are never included.
       THINKING          - assistant reasoning content. Only emitted when
                           the adapter is asked to include it
                           (ExtractConfig.include_thinking); dropped by
                           adapters otherwise, at parse time, not later.
 
     Adapters never emit a kind for tool_use/tool_result content that isn't
-    one of the above (AskUserQuestion aside) — that's the noise this whole
+    one of the above (interactive Q&A aside) — that's the noise this whole
     tool exists to discard.
     """
 
@@ -51,6 +53,7 @@ class EventKind(str, Enum):
     LIFECYCLE_MARKER = "lifecycle_marker"
     ASSISTANT_TEXT = "assistant_text"
     THINKING = "thinking"
+    TOOL_CALL = "tool_call"
 
 
 @dataclass

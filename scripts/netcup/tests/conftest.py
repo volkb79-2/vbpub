@@ -1,6 +1,6 @@
 """Shared fixtures for scripts/netcup's pytest suite.
 
-Both scp-api-install-host.py and scp-api-monitor-task.py are hyphenated
+Both install-host.py and monitor-task.py are hyphenated
 top-level scripts (not importable packages), so they're loaded by path via
 importlib - same pattern as
 debian-install-v2/debian_install_v2/tests/test_bootstrap_remote.py.
@@ -14,8 +14,9 @@ from pathlib import Path
 import pytest
 
 NETCUP_DIR = Path(__file__).resolve().parent.parent
-INSTALL_HOST_PATH = NETCUP_DIR / "scp-api-install-host.py"
-MONITOR_TASK_PATH = NETCUP_DIR / "scp-api-monitor-task.py"
+INSTALL_HOST_PATH = NETCUP_DIR / "install-host.py"
+MONITOR_TASK_PATH = NETCUP_DIR / "monitor-task.py"
+EXPLORE_PATH = NETCUP_DIR / "scp-api.py"
 
 
 def _load_module(path: Path, name: str) -> types.ModuleType:
@@ -26,13 +27,31 @@ def _load_module(path: Path, name: str) -> types.ModuleType:
 
 
 @pytest.fixture()
-def install_host_mod():
-    return _load_module(INSTALL_HOST_PATH, "scp_api_install_host")
+def install_host_mod(monkeypatch):
+    mod = _load_module(INSTALL_HOST_PATH, "scp_api_install_host")
+    settings = mod.netcup_scp_client.load_api_settings(NETCUP_DIR / "netcup.toml")
+    monkeypatch.setattr(mod.netcup_scp_client, "BASE_URL", settings["api.base_url"])
+    monkeypatch.setattr(mod.netcup_scp_client, "KEYCLOAK_URL", settings["api.keycloak_url"])
+    return mod
 
 
 @pytest.fixture()
 def monitor_task_mod():
     return _load_module(MONITOR_TASK_PATH, "scp_api_monitor_task")
+
+
+@pytest.fixture()
+def explore_mod(monkeypatch):
+    # A developer's ignored scripts/netcup/.env is real operator state.  Do
+    # not let a local protected-server denylist leak from install-host tests
+    # into explorer tests; individual tests opt into the policy explicitly.
+    monkeypatch.delenv("NETCUP_SCP_API_PROTECTED_SERVERS", raising=False)
+    monkeypatch.delenv("NETCUP_SCP_API_PROTECTED_SERVER_IDS", raising=False)
+    mod = _load_module(EXPLORE_PATH, "scp_api_explore")
+    settings = mod.netcup_scp_client.load_api_settings(NETCUP_DIR / "netcup.toml")
+    monkeypatch.setattr(mod.netcup_scp_client, "BASE_URL", settings["api.base_url"])
+    monkeypatch.setattr(mod.netcup_scp_client, "KEYCLOAK_URL", settings["api.keycloak_url"])
+    return mod
 
 
 class FakeHTTPResponse:
@@ -55,14 +74,15 @@ class FakeHTTPResponse:
 class FakeClient:
     """Records calls instead of hitting the network - for --dry-run tests.
 
-    Any of get/post/patch/get_user_info raises AssertionError if called
+    Any of get/post/patch/put/delete/get_user_info raises AssertionError if called
     when the test didn't expect it (pass `allow=set()` to permit specific
     method names).
     """
 
-    def __init__(self, *, get_responses=None, user_info=None, allow=("get", "get_user_info")):
+    def __init__(self, *, get_responses=None, post_responses=None, user_info=None, allow=("get", "get_user_info")):
         self.calls = []
         self._get_responses = list(get_responses or [])
+        self._post_responses = list(post_responses or [])
         self._user_info = user_info or {"id": 1}
         self._allow = set(allow)
 
@@ -78,13 +98,31 @@ class FakeClient:
         if "post" not in self._allow:
             raise AssertionError(f"unexpected mutating POST {endpoint} (dry-run must not call this)")
         self.calls.append(("post", endpoint, data))
-        return {}
+        return self._post_responses.pop(0) if self._post_responses else {}
 
     def patch(self, endpoint, data, params=None):
         if "patch" not in self._allow:
             raise AssertionError(f"unexpected mutating PATCH {endpoint} (dry-run must not call this)")
         self.calls.append(("patch", endpoint, data, params))
         return {}
+
+    def put(self, endpoint, data=None, params=None):
+        if "put" not in self._allow:
+            raise AssertionError(f"unexpected mutating PUT {endpoint} (dry-run/declined-confirm must not call this)")
+        self.calls.append(("put", endpoint, data, params))
+        return {}
+
+    def delete(self, endpoint, params=None):
+        if "delete" not in self._allow:
+            raise AssertionError(f"unexpected mutating DELETE {endpoint} (dry-run/declined-confirm must not call this)")
+        self.calls.append(("delete", endpoint, params))
+        return {}
+
+    def upload_file(self, url, path, offset=0, size=None):
+        if "upload_file" not in self._allow:
+            raise AssertionError(f"unexpected presigned upload {url}")
+        self.calls.append(("upload_file", url, path, offset, size))
+        return {"etag": '"fake-etag"'}
 
     def get_user_info(self):
         if "get_user_info" not in self._allow:

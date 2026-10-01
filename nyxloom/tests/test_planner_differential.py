@@ -50,8 +50,8 @@ package. It is not written down as expected.
 from __future__ import annotations
 
 import dataclasses
+import hashlib
 import inspect
-import subprocess
 from dataclasses import fields, is_dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -79,6 +79,7 @@ LEGACY_PATH = Path(__file__).with_name("legacy_planner.py")
 #: The commit `tests/legacy_planner.py` was copied from -- CR-06's branch
 #: point on `main`.
 BRANCH_POINT = "052857ae"
+BRANCH_POINT_BLOB = "bdda24f81de92650d092fbef34748c74851747c6"
 SOURCE_IN_TREE = "nyxloom/src/nyxloom/reconcile.py"
 
 #: The two mechanical edits the frozen copy declares in its own header, as
@@ -165,12 +166,11 @@ def test_legacy_baseline_is_the_committed_branch_point():
 
     Without this the baseline is only as trustworthy as the promise that
     nobody edited it, and the cheapest way past a failing differential would
-    be to edit the thing it is measured against.
+    be to edit the thing it is measured against. Compare the Git blob ID
+    recorded at the branch point rather than running `git show`: assay's
+    isolated source snapshot intentionally need not contain the repository's
+    older commit history.
     """
-    committed = subprocess.run(
-        ["git", "show", f"{BRANCH_POINT}:{SOURCE_IN_TREE}"],
-        cwd=REPO.parent, capture_output=True, text=True, check=True,
-    ).stdout
     frozen = LEGACY_PATH.read_text(encoding="utf-8")
     head, _, rest = frozen.partition(_HEADER_END)
     assert head.startswith('"""FROZEN LEGACY PLANNER'), "frozen header missing"
@@ -178,7 +178,9 @@ def test_legacy_baseline_is_the_committed_branch_point():
     for frozen_text, original_text in _FROZEN_EDITS:
         assert frozen_text in restored, f"declared edit not present: {frozen_text}"
         restored = restored.replace(frozen_text, original_text)
-    assert '"""' + restored == committed, (
+    restored_bytes = ('"""' + restored).encode("utf-8")
+    git_blob = b"blob " + str(len(restored_bytes)).encode("ascii") + b"\0" + restored_bytes
+    assert hashlib.sha1(git_blob).hexdigest() == BRANCH_POINT_BLOB, (
         "tests/legacy_planner.py is no longer a verbatim copy of "
         f"{BRANCH_POINT}:{SOURCE_IN_TREE} modulo its two declared edits"
     )

@@ -4,8 +4,11 @@
 
 The cockpit has editor tooling and Docker control, but its own cgroup and
 Python environment are not release evidence. `tester-unified/run` makes the
-boundary executable: it starts `tester-unified:local` detached in the declared
-background slice and waits for Docker's job status before reading logs.
+boundary executable: it starts `tester-unified:local` detached with Docker's
+init reaper in the declared background slice and waits for Docker's job status
+before reading logs. The reaper is part of the lifecycle contract: a gate or
+test command that leaves descendants behind must not turn them into zombies
+that consume the shared gate cgroup's PID budget.
 
 The workspace is mounted twice because linked-worktree gitfiles can name the
 cockpit path while Docker resolves bind sources in the host namespace. A
@@ -39,3 +42,15 @@ lock. These are infrastructure outcomes, not functional test verdicts.
 
 See [the user-facing overview](../README.md) and
 [consumer commands](CONSUMERS.md#running-a-project-gate).
+
+## Offline gates
+
+`--network none` lets exact-OID wheel/self-hosting gates reuse this launcher
+while retaining their existing offline container boundary. Reimplementing the
+P4 namespace, identity, admission and transport recipe just to disable network
+access would recreate the duplication the canonical launcher removed. Docker
+must accept `NetworkMode=none`, and this fact is recorded with the launch
+metadata; a mismatch aborts only the owned container. The only explicit network
+value is `none`. Omitting the option preserves existing Docker selection;
+the launcher does not invent a network name. The Docker socket remains mounted
+for product boundary tests, so this is network isolation, not a security sandbox.

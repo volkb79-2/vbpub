@@ -113,18 +113,15 @@ def test_profile_running_words_matches_what_select_would_keep(tmp_path):
     fp = _write_fixture(tmp_path)
     rows = stats.build_call_rows(fp)
 
-    from nyxloom.session_extract.events import EventKind
-
     events = claude_code.parse(fp, str(fp), ExtractConfig())
     classifier.score_events(events)
     kept = select(events, ExtractConfig())
 
-    # select()'s own `word_count` budget variable never counts a
-    # LIFECYCLE_MARKER's cosmetic label text (markers are exempt from the
-    # word budget by design -- see select.py) -- match that semantics here.
-    default_total = sum(len(e.text.split()) for e in kept if e.kind is not EventKind.LIFECYCLE_MARKER)
-    last_kept_row = next(r for r in reversed(rows) if r.profile_running_words.get("default") is not None)
-    assert last_kept_row.profile_running_words["default"] == default_total
+    # The oldest kept event has accumulated the full backward-walk count.
+    # Lifecycle marker labels count toward the budget too.
+    default_total = sum(len(e.text.split()) for e in kept)
+    first_kept_row = next(r for r in rows if r.profile_running_words.get("operator-review") is not None)
+    assert first_kept_row.profile_running_words["operator-review"] == default_total
 
 
 def test_build_blocks_groups_by_prompt_boundary_and_flags_real_compaction(tmp_path):
@@ -639,6 +636,45 @@ def test_simulate_profile_agrees_with_select_across_checkpoint_and_length_branch
     assert "long1" in running
     assert "too_old" not in running
     assert running["cp0"] == kept_total
+
+
+def test_profile_simulation_obeys_epoch_selection():
+    from nyxloom.session_extract.config import PROFILES
+    from nyxloom.session_extract.events import EventKind, NormalizedEvent
+
+    events = [
+        NormalizedEvent(0, "old", "2026-01-01T00:00:00Z", EventKind.OPERATOR_TEXT,
+                        "old epoch content", meta={"epoch": "1"}),
+        NormalizedEvent(1, "new", "2026-01-01T00:00:01Z", EventKind.OPERATOR_TEXT,
+                        "new epoch content", meta={"epoch": "2"}),
+    ]
+
+    review = stats._simulate_profile(events, PROFILES["operator-review"])
+    all_content = stats._simulate_profile(events, PROFILES["all"])
+
+    assert "old" not in review and review["new"] == 3
+    assert all_content["old"] == 6 and all_content["new"] == 3
+
+
+def test_profile_simulation_counts_lifecycle_words_before_hitting_word_limit():
+    from nyxloom.session_extract.config import ExtractConfig
+    from nyxloom.session_extract.events import EventKind, NormalizedEvent
+    from nyxloom.session_extract.select import select
+
+    ts = "2026-01-01T00:00:00Z"
+    events = [
+        NormalizedEvent(0, "old", ts, EventKind.OPERATOR_TEXT, "old words"),
+        NormalizedEvent(1, "compact", ts, EventKind.LIFECYCLE_MARKER, "[compact boundary]"),
+        NormalizedEvent(2, "new", ts, EventKind.OPERATOR_TEXT, "new words"),
+    ]
+    config = ExtractConfig(max_checkpoints=-1, max_words=3)
+
+    running = stats._simulate_profile(events, config)
+    kept = select(events, config)
+
+    assert "old" not in running
+    assert {event.marker for event in kept} == {"compact", "new"}
+    assert running["compact"] == sum(len(event.text.split()) for event in kept)
 
 
 def test_unsupported_format_raises_not_implemented(tmp_path):

@@ -18,7 +18,11 @@ enforcement = "gate"
 argv = ["/opt/tester-venv/bin/python3", "-m", "pytest", "tests", "-q"]
 env = { PYTHONDONTWRITEBYTECODE = "1" }
 env_passthrough = ["PATH"]
-budget = "45m"
+# Controller ruling RW-19 (2026-09-12): 45m does not hold. Measured live,
+# this commit, jobs=2: 217 candidates at ~84s each -> ~2.5h wall clock: a
+# 90m budget would not hold either. Raised to 4h; run-gate.toml's own
+# [lanes.r2] budget raised to match.
+budget = "4h"
 allow_argv_append = false
 
 # This is a monorepo lane: assay's snapshot walks the whole resolved commit,
@@ -49,3 +53,18 @@ operators = [
   "python:bool-const-flip",
   "python:falsy-swap",
 ]
+# Controller ruling RW-28 (2026-09-12): candidate 47 (lib/serve.py:479, the
+# session-loop's `threading.Thread(..., daemon=True)` flipped to
+# `daemon=False`) let pytest finish reporting results but then HUNG at
+# interpreter exit for 37 minutes waiting on the now-non-daemon thread
+# (other tests that start a real session and rely on daemon=True to let
+# the process exit cleanly, without themselves joining the thread, leave
+# it dangling under this exact mutation) -- with no per-candidate budget,
+# assay waited indefinitely; the controller SIGKILLed it live. Mandatory
+# for every r2 lane in the wave per this ruling: ~6x the ~100s baseline
+# candidate cost measured for this project. Belongs under
+# `[lanes.r2.judge.mutation]` (assay's `_MUTATION_OPTIONAL_FIELDS`,
+# src/assay/config.py) -- NOT under `[lanes.r2]` itself; a first attempt
+# placed it at the lane's top level and assay's loader correctly refused
+# it as an unknown key (BAD_LANE_CONFIG) on the very next real invocation.
+budget_per_candidate = "600s"

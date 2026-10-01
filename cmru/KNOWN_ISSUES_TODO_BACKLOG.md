@@ -102,105 +102,26 @@ multi-variant `dist/` to one file, so the old ">1 match" guard no longer fires s
 
 ---
 
-## Known Issues
 
-### FEAT-03 — `cmru versions`: central multi-language version determination with a supply-chain age window — *decided, ready to carve*
-**Status:** contract DECIDED (operator interview 2026-08-20, dstdns session, final round;
-supersedes the same-day *proposed* draft). Not yet implemented.
-**Why:** centrally-determined dependency versions across the estate that (a) defend against
-freshly-published malware releases via a configurable AGE WINDOW ("latest release at least
-N days old", default 14 — defends the fast-detected npm/PyPI/AUR species, NOT long-dwell
-compromises; the reviewed refresh diff is the layer for those); (b) track upstream via
-deliberate refreshes; (c) cover ALL projects including non-ciu ones; (d) allow exact-version
-overrides (both directions: hold back, or adopt an urgent fix newer than the window);
-(e) keep ciu and cmru independent — consumption is via each language's NATIVE artifact, no
-tool-to-tool dependency.
+### FEAT-03 — `cmru versions`: multi-source dependency resolution with an age window — *implemented*
+**Status:** the core resolver and estate-wide age-window tracking shipped in `cmru-v5.5.0`. Follow-on coverage—configurable shipped/all dependency discovery, selected Python extras, project-local requirements manifests, rolling OCI digest checks, and the nine-project adoption—is in `main` and listed under `[Unreleased]` in `CHANGES.md`. Rerun the CMRU tester-unified coverage lane on the release candidate before release.
+**SPEC:** `S-CLI.6`, `S2.7`, `V29`.
 
-**Config schema — `cmru.orchestration.toml` is the single home** for policy, dev decisions
-(pins/holds with mandatory reason strings), and the LAST RESOLVED STATE (written back by
-refresh, so the central file is self-documenting):
-```toml
-[versions]
-age_window_days = 14              # global default; per-language override allowed
+`cmru versions init` derives supported targets from Python, npm, and Go manifests;
+`resolve` queries registries and writes resolved records plus Python constraints, npm package
+and lock state, Go module state, OCI JSON, and optional strict Jinja2 outputs; `check` is a
+read-only fresh comparison. Sources are `.pypi`, `.npm`, `.go`, and `.oci`, with a 14-day default
+window, single-source or aligned selection, and exact overrides requiring a reason and (when
+newer than cutoff) a future expiry. Shared target state is stored centrally; project declarations
+and their effective policy/state are stored in each project's `cmru.toml`. Refresh stays explicit
+and is never coupled to build, release, gates, or schedules.
 
-[versions.python]
-# floors and dev decisions; every pin/hold carries a reason
-floors = { fastapi = ">=0.141.0" }          # reason strings alongside, schema TBD at carve
-pins   = { somelib = { version = "==1.2.3", reason = "1.3 breaks X; revisit" } }
-
-[versions.python.resolved]        # WRITTEN BY `cmru versions refresh` — do not hand-edit
-_date = "2026-08-20"
-fastapi = "0.141.1"
-# ...
-
-[versions.npm]    # same shape
-[versions.go]     # same shape
-```
-**Per-project overrides live in the project's own `cmru.toml`** (`[versions.<lang>.pins]`),
-winning over the central decision for that project only.
-
-**Resolution engines (all three languages in the first cut):** python = `uv pip compile
---exclude-newer <now - window>` (the window is a native uv flag); npm = registry metadata
-with the same window logic; go = module-proxy metadata ditto.
-
-**Replication:** refresh renders the resolved state into each project in that language's
-native form (python: committed `constraints.txt` consumed via `PIP_CONSTRAINT`/`-c` — ciu
-build environments need only that env var, zero cmru knowledge; npm/go: the native
-mechanism, exact form decided at carve). Builds are reproducible between refreshes — the
-DECISION has a commit hash; only the APPLICATION happens at build time.
-
-**Commands:**
-- `cmru versions refresh [--language L] [--project P]` — resolve per policy, honor
-  pins/holds, write resolved state back to `cmru.orchestration.toml`, replicate into
-  projects; the diff is the review surface.
-- `cmru versions check` — read-only report, three columns per dependency: currently USED
-  (from the projects' committed artifacts), PLANNED/available (a fresh resolution preview,
-  nothing written), HELD/pinned (with reasons).
-- Build/release integration: an EXPLICIT flag only (e.g. `cmru release --refresh-versions`)
-  runs a refresh as part of that invocation; the default never resolves implicitly.
-
-**Non-goals (operator-decided):** no release-gate coupling, no staleness bound, no
-scheduled/automatic refresh.
-**Provenance:** dstdns session 2026-08-20; trigger was assay B010 / stale cockpit FastAPI
-vs dstdns root `requirements.txt` floors (`fastapi>=0.141.0`, P105 F4).
-
+Timestamp evidence is recorded in resolved state. Go proxy `.info` time is VCS commit time and
+emits a warning. OCI prefers registry `Last-Modified`, with a warned image-created annotation/config
+fallback. Missing timestamp evidence and unavailable registry metadata fail closed. `init` reports
+manifest syntax/source forms outside its supported registry subset.
 
 ## Known Issues
-
-### FEAT-03 — Central Python version determination: dated constraints artifact with a supply-chain age window — *proposed*
-**Status:** proposed (operator design discussion 2026-08-20, dstdns session; detailed design
-below is a starting point, not a decided contract).
-**Why:** The estate wants centrally-determined Python dependency versions that (a) protect
-against freshly-published malware releases (several npm/AUR/PyPI incidents in recent months)
-via an AGE WINDOW — "use the latest release that is at least N days old (default 14)"; (b)
-still track upstream for features/fixes via deliberate refreshes; (c) trickle into ALL
-projects, including non-ciu ones (modern-debian-tools-python-debug); (d) allow a manual
-per-package override to an exact version (incl. overriding the window for an urgent security
-fix); (e) keep ciu and cmru independent of each other.
-**Design sketch (the decoupling insight):** version determination is neither orchestration
-(ciu) nor release (cmru) — it is a DATA ARTIFACT. A committed, dated `constraints.txt`
-(pip's native constraints mechanism) is the interface; no tool depends on another tool,
-everything consumes the file:
-1. **Input:** a curated `versions.in` per estate (floors with documented reasons — the
-   dstdns root `requirements.txt` pattern — plus `== ` overrides).
-2. **Resolution:** `uv pip compile` already implements the age window natively via
-   `--exclude-newer <date>` (e.g. now − 14 days); overrides pass through. Phase 2 candidate:
-   `--generate-hashes` for full supply-chain pinning.
-3. **Artifact:** committed `constraints-<date>.txt` + a `constraints.txt` pointer —
-   auditable, reproducible, reviewable diff per refresh.
-4. **Refresh is an explicit act** (`cmru versions refresh`?), gate-verified per consuming
-   repo — NOT re-resolved on every build. Builds must be reproducible between refreshes;
-   resolving at build time would make builds irreproducible and move the supply-chain
-   exposure to the worst possible moment.
-5. **Distribution:** cmru replicates the artifact into its projects (it already owns the
-   multi-project build/release workflow) — covering non-ciu projects; ciu-built images need
-   only `PIP_CONSTRAINT` set in build environments (generic env, no cmru knowledge).
-**Open questions for the decided contract:** artifact home (one estate-wide file in vbpub
-vs per-project copies with provenance headers); whether cmru's release gate should refuse a
-release whose constraints are older than some staleness bound; interplay with per-project
-floors that exceed the central resolution.
-**Provenance:** dstdns session 2026-08-20; the immediate trigger was assay B010 / stale
-cockpit FastAPI vs root `requirements.txt` floors (`fastapi>=0.141.0`, P105 F4).
 
 
 > **KI-12 … KI-16 shipped together** in `merge(cmru): KI-12..KI-17 and S15 tool
@@ -270,12 +191,17 @@ from `cmru.build.toml` to `cmru.toml`; there is no alternate parser, sourceable 
 environment config override, or compatibility alias in the release path.
 
 ### KI-06 — Durable post-tag publication resume — *open; scoped deliberately*
-**Status:** the documented promise was narrowed to current behavior: `--resume` is useful for
-investigating/correcting a retained **pre-tag** transaction worktree; it is not an automatic
-post-tag publish retry. It remains useful when a prepare step or the tester gate fails: inspect
-the isolated source tree, make a deliberate correction there, re-run the required gate, then
-resume. The worktree is also the right forensic location for logs and generated provenance;
-do not copy unreviewed files into the caller checkout.
+**Status:** the CLI adoption review closes the pre-tag correction gap. If a prepare step or
+required gate fails and CMRU retains the release worktree, an operator may fix the candidate,
+commit those fixes on its release branch, and rerun `cmru release --resume <worktree>`. Resume
+refuses a dirty candidate; after the fixes are committed, prepare and the required gate run
+again against that branch tip. The resulting candidate commit is the one CMRU tags, builds,
+publishes, and promotes. The worktree remains the forensic location for logs and generated
+provenance; fixes should not be copied into the caller checkout and silently left out.
+
+**Still open:** this does not resume after a tag or publication phase has begun. There is no
+durable phase record or remote reconciliation protocol for post-tag retry; do not infer that
+`--resume` will republish an existing tag or artifact.
 
 **Why this matters for MDT:** its `prepare` phase can spend substantial time downloading/staging
 tools and producing exact OCI layouts before it extracts and commits manifest provenance. A
@@ -297,7 +223,7 @@ private image layouts consumes disk and crosses retention/cleanup policy; reusin
 after debugging invalidates previous gate evidence. A simplistic `--resume` would therefore
 be more dangerous than a fresh release.
 
-**Recommendation:** retain the current pre-tag debug use case and add a separately designed
+**Recommendation:** retain the current pre-tag correction flow and add a separately designed
 `resume-publish` state machine only when MDT’s elapsed prepare time justifies it. Start with
 MDT’s OCI layout/digest contract; do not promise a universal resume mechanism first.
 
@@ -324,67 +250,71 @@ must provide equivalent consumer-verifiable evidence itself.
 `bake_set_vars`, `no_cache_env`, and argv-valued `env_command`. There is no shell-string
 environment loader and no alias for the removed names. `quiet` is mandatory on every step.
 
-### KI-10 — `cmru build` artifacts cannot safely feed `cmru publish` — *open; decision required*
-**Evidence:** `cmru build` creates an isolated `cmru-build-<id>` worktree, runs its
-prepare/gate/build phases there, and on success copies logs and declared artifact directories
-into commit-addressed, gitignored local records under `<project>/logs/` and
-`<project>/artifacts/`. The `build.json` inventory binds their source SHA, digest inventory,
-and any tracked prepared-tree changes and explicitly says `publication: forbidden`. CMRU then
-removes the successful worktree; a failed child or output-retention failure retains it for
-debugging. `cmru publish`, by contrast, runs the project's declared `push` step in the caller
-checkout and is deliberately unaware of those local records. Consequently the seemingly natural
-sequence `cmru build --project X` then `cmru publish --project X` still does **not** publish the
-reviewed build; it finds no declared push input or can publish a different caller-side artifact.
+### KI-10 — publish retained build output by ID — *shipped*
 
-**Current safe workflow:** use `cmru release`, whose one source-first transaction
-performs gate → tag policy → build → push in one worktree. `cmru build` is a
-local-consumption/inspection verb, not a pre-publication staging verb.
+**Decision:** the operator may publish the exact bytes produced by `cmru build`.
+`cmru publish PROJECT --build-output ID` selects the retained build record,
+revalidates its manifest and complete artifact inventory, then runs the project's
+declared `push` step with protected `CMRU_BUILD_OUTPUT_ROOT`,
+`CMRU_BUILD_OUTPUT_ID`, and source identity environment. It does not rebuild.
+Built-in wheel and tarball handlers select files from the retained inventory;
+a custom publisher must read from `CMRU_BUILD_OUTPUT_ROOT` and must not rebuild
+from the caller checkout. The user supplies publication credentials as usual.
 
-**`--from-candidate` is deliberately postponed.** It would be a release-verb addition for a
-different use case, not an alias for `--resume`: a durable, deliberate promotion boundary after
-an immutable commit has been built and gated, while offsite fuzzing/mutation evidence, review,
-or an approval may take hours or days. `--resume <worktree>` instead continues one retained
-pre-tag source transaction after immediate investigation; a manual worktree edit invalidates its
-old gate evidence and it is not a durable post-tag publication retry (KI-06). Holding such a
-mutable worktree while waiting for a remote result is not a candidate protocol.
+This publishes retained artifact bytes without promoting a source branch. The
+built-in wheel and tarball handlers require the versioned GitHub Release and
+its Git tag to exist already; for a versioned artifact the tag must resolve to
+the record's exact source commit. They also require the project's existing
+`<prefix>-latest` release and tag, then update its release assets without
+deleting or recreating the tag. The command creates no Git refs or GitHub
+Release records. `cmru release` remains the source-first tag/build/publish/
+promote workflow. A custom publisher must consume the retained record and must
+not create or move Git refs or promote a source branch. `release --from-candidate`
+and durable post-tag retry remain separate, unimplemented workflows;
+`--build-output` does not claim their source promotion or recovery semantics.
 
-**What a future candidate must prove:** a persisted immutable record must bind the exact source
-SHA and resolved version/tag intent, artifact digests, declared gate verdict, pinned build
-toolchain/image, remote-job request and returned evidence/attestation, and idempotent remote
-publication state. Promotion must revalidate every identity before minting/pushing the tag and
-publishing the recorded artifacts. A normal local `build.json` cannot qualify: it explicitly
-forbids publication and may truthfully record uncommitted deterministic `prepare` outputs.
+Built-in handlers copy selected inventoried files to a temporary publish area
+before generating checksum sidecars or `latest.json`; the immutable retained
+record remains valid and can be published again. Dry-run validates local
+evidence but does not query remote release or tag availability.
 
-**Decision for now:** keep `publish` as a low-level caller-worktree command and retain this
-non-composability. Do not add `publish --worktree`, `release --from-candidate`, or a convenience
-alias until a concrete remote-qualification release policy requires it. At that point design
-`release --from-candidate <id>` as a full immutable promotion state machine, not a generic
-retry. Copying `dist/` back merely to make the command chain work would defeat the isolation rule.
+The build record must refuse publication if any inventoried path is unsafe,
+missing, changed, has a different size/digest, or if the record contains an
+unexpected file. It must also refuse publication when `source_tree_changes` is
+non-empty; projects should ignore expected untracked build outputs so they are
+not mistaken for source edits. Ignore rules do not hide modifications to tracked
+files. `--dry-run` validates the selected record, shows its exact
+source and artifact digests, and displays the declared push commands without
+requiring credentials or executing them. `cmru cleanup --delete-build-output`
+continues to remove a retained record explicitly.
 
-### KI-11 — Project commands can invoke a different CMRU than the transaction engine — *open; strict runtime binding required*
+**Files:** `src/cmru/transaction.py`, `src/cmru/handlers.py`,
+`src/cmru/release.py`, `src/cmru/cli.py`, `src/cmru/runner.py`, tests,
+`README.md`, `docs/SPEC.md`, `docs/RELEASE-TRANSACTIONS.md`,
+`docs/DESIGN-GUIDE.md`, and `docs/CONSUMERS.md`.
+
+### KI-11 — project commands can invoke a different CMRU than the transaction engine — *shipped*
+
 **Evidence:** an estate checkout can run a source-tree CMRU engine, including
-inside its isolated release/build worktree. Several portable project contracts nevertheless use
-an argv beginning `cmru tester-gate` (CIU, MDT, TLS-edge, Nyxloom, Topos, PWMCP). That resolves
-through the worker's ambient `PATH`, which can be an older installed wheel. On 2026-08-12 the
-source engine reported `3.0.1.dev4+g128a3da5` while `/home/vscode/.local/bin/cmru` was installed
-as `2.0.1`; the latter does not even expose the current `cmru version` verb. A release can thus
-orchestrate with one CMRU contract but run its tester boundary with another.
+inside its isolated release/build worktree. Portable project contracts often
+use an argv beginning `cmru tester-gate`; ambient `PATH` could resolve an older
+installed wheel. In the 2026-08-12 incident the source engine was
+`3.0.1.dev4+g128a3da5` while `/home/vscode/.local/bin/cmru` was `2.0.1` and did
+not expose the current `cmru version` verb.
 
-**Impact:** it invalidates the intended one-framework version boundary and makes a project gate's
-behaviour depend on ambient devcontainer state. Referencing a repository-local source launcher
-would make standalone consumers depend on this monorepo, so it is not a valid fix.
+**Resolution:** before running project commands, CMRU creates a launcher bound
+to the exact Python executable and installed/source module root that started
+the current transaction. It prepends the launcher directory to project `PATH`,
+sets protected `CMRU_BIN`, and reapplies both after project environment setup
+and `env_command`. The launcher is resolved and its `version` output compared
+to the active runtime identity. Missing or mismatched identity fails before the
+project command starts; CMRU does not fall back to ambient `PATH`. The same
+binding is used by direct `cmru run-step`.
 
-**Required design:** CMRU's transaction runtime must expose one explicit, portable self-command
-binding for project steps, and the project grammar/template must name that binding rather than
-re-resolve `cmru` through PATH. The child must prove the invoked command library's version and
-source/installed identity agree with the transaction engine before it runs a gate. A missing or
-mismatched binding must fail before container launch; it must never fall back to PATH. The design
-must work both for an installed third-party CMRU wheel and for the vbpub source wrapper without
-adding a sourceable config alias or a hidden environment default.
-
-**Immediate operational rule:** until KI-11 is resolved, install the last verified released CMRU
-wheel into the gate environment before an estate release and treat a source-versus-installed
-version mismatch as a release preflight failure. Do not paper over it by editing each consumer.
+This keeps portable project contracts independent of the CMRU source checkout
+while making nested CMRU calls part of the transaction's runtime boundary.
+Behavioral tests cover an ambient fake executable and attempts by step
+configuration to replace the protected binding.
 
 ### KI-02 — CMRU OCI repack is disabled pending production equivalence — *fail-closed*
 **Status:** guarded; do not enable for production releases.
@@ -464,7 +394,7 @@ last_tag, *paths)`, gets an empty list because the tag *is* HEAD, and `continue`
            This usually means a tag was created by hand (cmru owns tag creation) or a
            previous release half-completed. Inspect:  git tag --list 'assay-v*'
            If hand-made and unpushed:                git tag -d assay-v2.1.0
-           Re-run, or pass --allow-tag-at-head to skip this project deliberately.
+           Re-run, or pass --allow-tag-ahead-of-head to skip this project deliberately.
    ```
 
    > **CORRECTION, 2026-08-18, measured against the first implementation — the
@@ -485,7 +415,7 @@ last_tag, *paths)`, gets an empty list because the tag *is* HEAD, and `continue`
    > 3. **tag pushed AND strictly ahead of the snapshot commit** → genuine
    >    anomaly: a tag exists on a commit absent from the snapshot's history,
    >    i.e. a previous release tagged and pushed but failed before promoting
-   >    `main`. Abort here, worded for *that* cause, with `--allow-tag-at-head`
+   >    `main`. Abort here, worded for *that* cause, with `--allow-tag-ahead-of-head`
    >    as the override.
    >
    > `git merge-base --is-ancestor` cannot separate 2 from 3; compare the
@@ -594,14 +524,14 @@ older than N days" expressible for the first time.
 > `S2.6a`'s sibling, `S-CLI.5b`):
 >
 > ```
-> cmru-release-<YYYYMMDD_HHMMSS>-<scope>-<uuid8>
->   e.g.  cmru-release-20260819_143022-assay-a3ae580d   (branch string == worktree dir string)
+> cmru-release-<YYYYMMDD_HHMMSS>-<scope>
+>   e.g.  cmru-release-20260819_143022-assay   (branch string == worktree dir string)
 > ```
 >
-> Two deliberate divergences from ciu, decided with the operator: the trailing **`uuid8` is
-> kept** — this section's own "collision-freedom is non-negotiable" argument stands, and ciu's
-> suffix-free name cannot make it, so cmru is ciu-*shaped* but not byte-identical — and the
-> date/time separator is **`_`** to match ciu exactly. The nested `cmru/release/` and
+> The shared allocator derives a six-character lower-case base-36 identity from the canonical
+> physical worktree path and records it with the transaction context; a same-second/same-scope
+> allocation receives a numeric suffix, while a short-identity collision refuses with both
+> paths. The date/time separator is **`_`** to match ciu exactly. The nested `cmru/release/` and
 > `cmru/build/` prefixes are **still recognised** for discovery/resume/cleanup (predicates
 > `_is_release_branch`/`_is_build_branch`), so the ~50 worktrees retained under the old naming
 > in this checkout are not stranded. The retention-policy point above is still open.
@@ -620,8 +550,9 @@ precedence and, if anything is missing, aborts **once, naming every missing vari
 `cmru.orchestration.toml [env]` (inherited through `cmru release`) as the real source, and say
 it is NOT usually the project's own `cmru.toml [env]` (b). The required set is one shared
 constant, `REQUIRED_TESTER_ENV`, that `cmru standards` imports for its static config check — so
-the runtime preflight and the static validator can never drift. `cgroup_parent` is deliberately
-excluded (it has the ambient `CGROUP_PARENT_DEV_BACKGROUND` fallback). The workaround formerly
+the runtime preflight and the static validator can never drift. `cgroup_parent` is required as
+`CMRU_TESTER_CGROUP_PARENT`, normally bound to `$CGROUP_PARENT_DEV_GATES`; there is no ambient
+fallback. The workaround formerly
 in `docs/CONTRIBUTING.md §3` now records the fix.
 
 **Original report (kept for the record).** The `argv` entries in a project's `[steps.*]` depend on environment injected by the
@@ -834,8 +765,8 @@ failed at the build/publish step (missing `wheel-builder:local` image, unrelated
 environment gap, not a cmru defect) and retained its worktree/branch for inspection per
 S-CLI.1; `cmru worktrees` on that same checkout crashed instead of listing it.
 
-**Why it matters.** `worktrees` is the documented way to discover what a `--resume`/`--abandon`
-should target after exactly this kind of failure — the one command an operator reaches for
+**Why it matters.** `worktrees` is the documented way to discover what a `--resume` or
+`cmru abandon` should target after exactly this kind of failure — the one command an operator reaches for
 immediately after a failed release is the one that crashes, forcing a manual
 `ls .worktrees/` + branch-name guess instead (which is how the resume in this incident
 actually proceeded).
@@ -846,45 +777,20 @@ blind. Add a regression fixture: a retained worktree whose branch is a bare
 `cmru-release-...-<hash>` name (today's actual release-branch shape) must list without
 crashing, in both plain and `--json` output.
 
-### KI-22 — a release's tag is pushed before build/publish; a build failure reverts `origin/main` but leaves the tag pointing at reverted content, and it goes undetected
+### KI-22 — a failed publication could revert `origin/main` while leaving a misleading tag — *resolved 2026-09-19*
 
-**Status:** open (filed 2026-08-31, same incident as KI-21).
+**Status:** resolved by `1a7b5941` (`cmru: promote release candidates after publication`).
+That release-order change moved promotion after tag, build, and publication. A build or
+publication failure therefore leaves `origin/main` at its last completed project and retains
+the unpromoted candidate branch; it no longer auto-reverts an already-promoted commit while
+leaving a tag behind. The release transaction contract and failure-path tests record this
+ordering (`docs/RELEASE-TRANSACTIONS.md`; `tests/test_cli_release_revert_outcomes_adversarial.py`).
 
-**Mechanism.** The release transaction's step order is: prepare → gate → **promote
-`origin/main`** → **tag + push tag** → build → publish. When build/publish fails (this
-incident: `wheel-builder:local` image absent locally, a `docker run --rm ... wheel-builder:local`
-pull-access-denied), the transaction's own failure handler reverts `origin/main` with an
-auto-generated `revert:` commit — but does **not** delete or move the tag it already pushed
-one step earlier. The tag (e.g. `run-gate-v23.1.0`) is left pointing at the now-reverted
-commit, which remains a real ancestor of the reverted `main` (the revert adds an inverse
-commit on top; it does not rewrite history) — so `S12.2b`'s three-state classification reads
-this as the ordinary **"behind"** case (case 3: ordinary, ancestor tag, ancestor of HEAD) and
-silently skips it as "genuinely unchanged" on the next `cmru release` invocation, rather than
-recognizing it as the "ahead"-shaped half-completed-release anomaly `S12.2b` case 2 already has
-a named remedy for (`--allow-tag-ahead-of-head`). The tag therefore permanently names a commit
-with no corresponding published wheel, undetectably to a later release run — which is exactly
-the state `S12.2c` says "a hand-made tag is indistinguishable from a completed release" warns
-about, just reached by cmru's own transaction instead of an operator.
-
-**Live recovery used (not a fix, a workaround):** `git tag -d <tag> && git push origin
-:refs/tags/<tag>`, then re-run `cmru release --project <name>` fresh from the already-reverted
-`main` (confirmed byte-identical to pre-prep content via `git diff`) — this re-created the
-tag correctly once the actual root cause (missing docker image) was fixed, and the second
-attempt built, published, and promoted cleanly.
-
-**Proposed fix.** Either (a) don't push the tag until build+publish have both succeeded — move
-tag creation/push to after `publish`, so a build/publish failure has nothing to revert on the
-tag side at all; or (b) if the tag must be pushed early (some ordering reason not evaluated
-here), the failure-handler's auto-revert must also delete/move the now-orphaned tag it just
-pushed, so a subsequent release run hits a clean "nothing tagged yet" state instead of a
-silent, permanent S12.2b-case-3 false skip.
-
-**Oracles.** A release whose build/publish step fails after the tag-push (fault-injected, e.g.
-point the wheel-builder image at a nonexistent tag) must leave the repository in a state where
-a subsequent `cmru release --project <name>` either (a) proceeds to actually build/publish
-against the SAME tag (fix a), or (b) refuses/re-prepares rather than silently reporting
-"Unchanged, skipping" (fix b) — never the latter with no operator-visible signal that nothing
-was ever actually published for that tag.
+The original silent-skip scenario is also guarded by S12.2b: a tag strictly ahead of
+`origin/main` is refused by default, and the override is explicit. The candidate can be
+inspected and resumed under KI-06. Durable retry after tagging/publication has begun remains
+open under KI-06; this resolution does not claim that a failed post-tag publication can
+always resume automatically.
 
 ### KI-23 — a hand-authored pre-release CHANGES.md draft (`## [X.Y.Z] - UNRELEASED`) is silently duplicated, never folded, by `generate_release_changelog` — *FIXED 2026-09-08 (minimal fix a)*
 
@@ -997,7 +903,7 @@ UNCONFIRMED); `do_enroll` at L1373; parser at L1540; dispatch at L1572. Tests:
 `TestEnrollAgainstRealSystem` at L2097 — the repo's first container-backed
 "run the installer for real and assert on real system state" oracle; its fixture
 image is built and torn down by the test file itself and the group SKIPS where
-docker or `$CGROUP_PARENT_DEV_BACKGROUND` is absent, which is the case inside
+docker or `$CGROUP_PARENT_DEV_GATES` is absent, which is the case inside
 the gate's own tester-unified container). `src/cmru/getpy.py` needed no change:
 the template is placeholder-substituted, not parsed.
 
@@ -1110,11 +1016,18 @@ docker access.
 
 ### KI-26 — `cmru get-py` cannot render ANY project's `get.py` from an installed `cmru` — only from a source checkout
 
-**Status:** open (found 2026-09-08 by ciu-P52's adversarial reviewer while
+**Status:** SHIPPED 2026-09-24 (code, installed-wheel acceptance, SPEC, and adopter docs).
+The template now lives under `src/cmru/templates/`, renders through
+`importlib.resources`, and is included as `cmru/templates/*.tmpl` in the wheel.
+`./run-gate.py gate` includes `installed-wheel`, which builds CMRU, installs it
+into an isolated venv without system packages, runs the installed `cmru get-py`
+from outside the source tree, and compiles the emitted installer.
+
+**Historical status:** open (found 2026-09-08 by ciu-P52's adversarial reviewer while
 verifying a related claim; independently confirmed by the controller with
 a live check against the actual installed `cmru-5.1.0`).
 
-**Mechanism.** `src/cmru/getpy.py:23`:
+**Historical mechanism.** `src/cmru/getpy.py:23`:
 ```python
 _TEMPLATE_PATH = Path(__file__).resolve().parents[2] / "templates" / "get.py.tmpl"
 ```
@@ -1149,13 +1062,13 @@ invisible in every context anyone has actually exercised the command
 from, and only surfaces the first time someone runs it against a real
 installed release.
 
-**Proposed fix** (per the finding's own suggestion, mirroring
+**Fix implemented** (per the finding's own suggestion, mirroring
 `src/cmru/scaffold.py:18-26`'s existing pattern for a similar problem):
 resolve the template via `importlib.resources` (package-relative, works
 identically whether running from source or an installed wheel) instead of
 a `parents[N]`-from-`__file__` filesystem walk, AND move/duplicate
 `get.py.tmpl` into `src/cmru/templates/` (inside the actual package
-directory `importlib.resources` can address) rather than the current
+directory `importlib.resources` can address) rather than the former
 repo-root-relative `cmru/templates/`, AND widen `package-data` to include
 `templates/*.tmpl` (widening the glob alone, without also fixing
 `_TEMPLATE_PATH`'s resolution logic and the file's location relative to
@@ -1264,3 +1177,188 @@ child-failure and plan-refusal tests prove false cleanup results are reported
 without calling them conflicts. The normative contract is `docs/SPEC.md`
 S-CLI.5/S-CLI.5a; operator steps are in `docs/RELEASE-TRANSACTIONS.md` under
 Caller-main cleanup.
+
+### KI-29 — Release abandonment needs a first-class, dry-run-safe operation
+
+**Status:** SHIPPED 2026-09-24 (code, safety tests, SPEC, and adopter docs).
+
+`cmru abandon [BRANCH] [--dry-run] [--yes]` now handles retained release transactions
+as a separate top-level operation. It selects an exact branch or the complete retained
+release set, displays scope/worktree/known remote refs, requires confirmation, and fails
+closed on publication, promotion, untagged publication, or unclear metadata/origin state.
+Dry-run is read-only. Remote candidate deletion is verified before the local worktree and
+transaction sidecars are removed; if deletion fails, local evidence remains. The old
+`release --abandon` parser option and its "abandon and then proceed with a new release"
+behavior have been removed. `cleanup` docs now name the GitHub Release/assets, matching Git
+tags, and GHCR version classes covered by configured remote cleanup policy.
+
+**Historical status:** OPEN 2026-09-22.
+
+The former release surface hid a whole cleanup operation behind
+`release --abandon`; that switch is removed. The shipped top-level
+`cmru abandon` verb has this contract:
+
+* With no branch argument, discover the retained release candidates, show the
+  exact branch, worktree, transaction/scope, and any remote refs or release
+  assets involved, then ask for explicit interactive confirmation. `--yes`
+  may pre-confirm that complete candidate set.
+* With a branch-name argument, resolve exactly that managed release branch,
+  verify its worktree and transaction metadata, and abandon/clean only that
+  candidate. Do not infer a different branch from a prefix or silently widen
+  the selection.
+* The operation fails closed for a promoted/published transaction or for
+  ambiguous/stale metadata. Its help and confirmation state what is removed.
+  In-worktree logs and artifacts are removed with the candidate checkout;
+  `origin/main` is not changed.
+* `--dry-run` is a strict no-mutation mode. Candidate discovery, confirmation
+  rendering, branch/worktree inspection, and remote-state inspection may run,
+  but no abandon, worktree removal, branch deletion, sidecar deletion, or
+  remote cleanup may execute. The regression oracle fails if abandonment,
+  worktree/ref removal, sidecar deletion, or remote cleanup runs.
+* Clarify `cleanup` in help and consumer documentation: it cleans the remote
+  release assets on the configured `origin` (for example the origin release,
+  tag, and GHCR assets covered by the selected cleanup policy); it is not a
+  synonym for abandoning a retained local release transaction or its worktree.
+  The docs must say which remote asset classes are actually in scope rather
+  than implying that every origin ref is removed.
+
+Evidence is in `tests/test_cli_abandon.py` and the existing shared-worktree
+transaction tests. The former covers exact selection, full-set `--yes`
+confirmation, publication refusal, and the dry-run mutation oracle. User-facing
+surface and normative details are synced in `README.md`, `docs/DESIGN-GUIDE.md`,
+`docs/CONSUMERS.md`, `docs/RELEASE-TRANSACTIONS.md`, and `docs/SPEC.md`.
+
+### KI-30 — release leaves the hand-written `## [Unreleased]` section orphaned
+
+**Status:** OPEN 2026-09-23; filed from assay Wave C P0.
+
+The assay changelog's hand-written `## [Unreleased]` block was left in place
+through releases 6.4.0, 6.5.0 and 7.0.0. Its `assay analyze` entry had already
+shipped in 6.4.0, while the B101/B102/B093/B079 entries described features
+released in 7.0.0. CMRU's changelog generator inserts a generated section after
+`<!-- cmru: release history -->` but does not fold the plain `## [Unreleased]`
+heading. KI-23 guards the distinct `## [X.Y.Z] - UNRELEASED` form, so that
+guard does not detect this recurrence. This is filed as a question for a
+separate design decision: should CMRU fold the canonical plain heading, and if
+so under what rules? No CMRU implementation change is part of the assay wave.
+
+### KI-31 — transaction child nests a relative project config path twice
+
+**Status:** FIXED 2026-09-25 by `0e96f960` (`fix(cmru): resolve child worktree project configs correctly`).
+The child loader now uses project paths already loaded from the execution worktree rather
+than remapping them a second time. The regression oracle
+`tests/test_workspace_adversarial_review.py::test_load_config_uses_project_paths_already_loaded_from_child`
+proves the project config resolves once from the child worktree. The following report is the
+historical reproduction against the earlier code.
+
+Exact commands, full stdout/stderr, exit markers and cleanup results for a
+fresh reproduction are in
+[`assay-WAVE-C-CMRU-probes-2026-09-23.md`](../assay/nyxloom-trove/reports/assay-WAVE-C-CMRU-probes-2026-09-23.md).
+The default relative-config route reproduced the doubled child path again.
+Passing the central absolute `--config` directly did not correct it. At the time,
+the now-removed `release --abandon` flag also continued into a new release attempt
+unless it encountered a preflight failure (KI-29 replaced that behavior with the
+standalone `cmru abandon` command); the evidence report records the additional
+attempts and the exact root-level path needed to clean the last one.
+
+From `/workspaces/vbpub/.worktrees/assay-wave-c-controller`, the exact command
+`cmru release assay --dry-run` created a transaction snapshot at
+`/workspaces/vbpub/.worktrees/assay-wave-c-controller/.worktrees/cmru-release-20260923_213534-assay-0uror9`
+and the child failed with:
+
+```
+ValueError: assay: transaction project config is missing from the isolated worktree: /workspaces/vbpub/.worktrees/assay-wave-c-controller/.worktrees/cmru-release-20260923_213534-assay-0uror9/.worktrees/cmru-release-20260923_213534-assay-0uror9/assay/cmru.toml
+```
+
+The project path is prefixed by the transaction worktree twice. A second
+attempt passing `--config /workspaces/vbpub/cmru.orchestration.toml` directly
+from that worktree also failed with the same doubled-path shape, because the
+parent rebuilds the child argv in `_child_release_args`. The prior B101
+controller log reports a temporary `CMRU_BIN` wrapper that rewrote the child
+`--config` argument to that absolute central path and allowed the v7.0.0 dry
+run/release to complete; the wrapper itself is no longer present. The retained
+`/tmp/assay-release-wrapper-args.log` records the argv rewrite, but the direct
+absolute `--config` retry here did not prove that workaround. Treat the wrapper
+as a reported workaround until its exact implementation is recovered and
+verified. The failed probe transactions were not promoted and were removed by
+targeted CMRU abandonment; no older retained release worktree was touched.
+
+The old reproduction and failed workaround attempts above are retained as
+historical evidence; they describe the pre-fix code and do not represent current
+behavior.
+
+### KI-32 — controller rollback tag can disagree with its manifest identity — *resolved*
+
+**Decision:** keep controller rollback and remove `--to`. Rollback always uses
+the first wave's complete release coordinate from the plan: tag, manifest URL,
+and SHA-256 digest. A tag-only override could select a different artifact while
+keeping the plan's URL and digest. `--generation` remains available to choose a
+positive generation number. The canonical grammar and semantic result are in
+[`docs/SPEC.md` S-CLI.9](docs/SPEC.md#s-cli9-canonical-cli-grammar-and-semantic-audit).
+
+### KI-33 — bundle config silently accepts unknown keys and coerces values — *resolved*
+
+`cmru.bundle.run_bundle()` now rejects unknown keys at the root and in
+`[wheel]`, `[archive]`, and `[copy]`. It checks booleans, strings, and arrays
+against their declared TOML types rather than coercing values. Invalid
+configuration fails before planning or mutating output. Tests cover unknown
+keys, malformed values, and valid omitted defaults. The full contract is in
+[`docs/SPEC.md` S9.4a](docs/SPEC.md#s9--reproducibility).
+
+### KI-34 — bundle help overstates determinism for non-xztar formats — *superseded*
+
+The `python -m cmru.bundle` CLI was removed because it had no distinct operator
+workflow; `cmru.bundle` remains a library. The public bundle contract states
+that the normalized deterministic writer is guaranteed for `xztar`, while the
+other accepted archive formats use the platform archive writer. There is no
+bundle CLI help surface left to overstate this guarantee.
+
+### KI-35 — retained worktrees of published or ambiguous releases have no supported cleanup path — *open*
+
+**Reported by:** an estate worktree cleanup, 2026-09-28 (vbpub `main` at `c57cac82`).
+
+**Observed.** `cmru abandon --dry-run`, run from current source, classified the 24 retained
+`cmru-release-*` worktrees in the vbpub checkout at cleanup time as follows:
+- 5 abandonable candidates, abandoned in that cleanup: `20260925_131953-ciu`,
+  `20260925_133944-cmru`, `20260925_140101-cmru`, `20260925_141239-cmru`,
+  `20260925_211129-cmru`;
+- 19 withheld, the oldest dating from 2026-09-13.
+
+The withheld reasons (current tally of the 19):
+- 9: "original snapshot commit is unavailable; promotion state is ambiguous";
+- 5: "release scope metadata is missing, malformed, or ambiguous" (`20260925_130716-ciu`,
+  `cmru-release-dirty-sync`);
+- 3: "release result metadata records a published project" (for example
+  `20260919_170629-…`, which published assay-v6.5.0, and `20260925_203056-assay`, which published
+  assay-v7.1.0);
+- 1: release progress metadata is missing (`20260917_041022-all-891e9fce`);
+- 1: the untagged-publisher rule (`modern-debian-tools-python-debug`).
+
+Eight of the withheld worktrees also hold uncommitted generated package manifests. One more
+(`20260917_043157-all-d5847937`) has an empty index (4,644 staged deletions while the files remain
+on disk). Several branches still exist on `origin`.
+
+**Why it matters.** KI-29 correctly makes `abandon` fail closed on publication or ambiguity. That
+leaves no supported operation for a transaction that *succeeded* (published) yet kept its
+worktree, or whose metadata can no longer be proven. So these worktrees only accumulate: an
+operator must remove them with raw git, bypassing the sidecar and remote-ref bookkeeping that
+`abandon` exists to keep consistent. Together with KI-16, this is why a busy checkout collects
+dozens of release worktrees.
+
+**Also observed:** the devcontainer's installed `cmru` (`5.4.2.dev365+ge5e9b95c`) predates
+KI-29, so `cmru abandon` is unavailable from the installed CLI. There, only the removed
+`release --abandon` exists, and it still starts a fresh release after abandoning. The dry run
+above used the source tree. No released cmru (latest `cmru-v5.5.0`) contains `cmru abandon`:
+KI-29 is shipped in source only, and `CHANGES.md` `[Unreleased]` does not list it.
+
+**Wanted:**
+1. A distinct, dry-run-safe operation for **completed** transactions ("retire"): verify that the
+   published tag or release matches the transaction's recorded result, then remove the local
+   worktree, local branch, sidecars and the origin candidate ref, never the published tag or
+   assets.
+2. For **ambiguous** transactions: a report that says exactly which fact is missing and the
+   manual command that would resolve it, instead of a bare "withheld". This includes the
+empty-index worktree (`20260917_043157-all-d5847937`), where a raw-git removal is the most
+hazardous.
+3. Decide whether a successful release should remove its own worktree at the end, and if a
+   worktree is intentionally kept, why the release keeps it.

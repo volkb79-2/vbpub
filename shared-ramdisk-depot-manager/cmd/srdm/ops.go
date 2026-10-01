@@ -201,11 +201,11 @@ func refused(err error) error {
 // ---------------------------------------------------------------- activate --
 
 func cmdActivate(args []string) error {
-	fs := flag.NewFlagSet("activate", flag.ContinueOnError)
+	fs := newFlagSet("activate")
 	cfg, profilePath, opID := opFlags(fs)
 	releaseID := fs.String("release", "", "release to activate (required)")
 	owner := writeOwnerFlag(fs)
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlagSet(fs, args); err != nil {
 		return err
 	}
 	if *releaseID == "" {
@@ -234,11 +234,11 @@ func cmdActivate(args []string) error {
 // ------------------------------------------------------------------ update --
 
 func cmdUpdate(args []string) error {
-	fs := flag.NewFlagSet("update", flag.ContinueOnError)
+	fs := newFlagSet("update")
 	cfg, profilePath, opID := opFlags(fs)
 	releaseID := fs.String("release", "", "release to update to (required)")
 	from := fs.String("from", "", "stage this directory into --release first, then update to it")
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlagSet(fs, args); err != nil {
 		return err
 	}
 	if *releaseID == "" {
@@ -291,10 +291,10 @@ func stageRelease(env *opEnv, from, releaseID string) error {
 }
 
 func cmdRollback(args []string) error {
-	fs := flag.NewFlagSet("rollback", flag.ContinueOnError)
+	fs := newFlagSet("rollback")
 	cfg, profilePath, opID := opFlags(fs)
 	owner := writeOwnerFlag(fs)
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlagSet(fs, args); err != nil {
 		return err
 	}
 	if err := applyWriteOwner(cfg, *owner); err != nil {
@@ -321,7 +321,7 @@ func cmdRollback(args []string) error {
 // ------------------------------------------------------- attach and detach --
 
 func cmdAttach(args []string) error {
-	fs := flag.NewFlagSet("attach", flag.ContinueOnError)
+	fs := newFlagSet("attach")
 	cfg, profilePath, opID := opFlags(fs)
 	serverID := fs.String("server", "", "Wings server uuid (required)")
 	access := fs.String("access", string(expose.AccessRO), "ro or rw")
@@ -330,7 +330,7 @@ func cmdAttach(args []string) error {
 			"main, and no slave starts before main signals ready. Exactly one server per "+
 			"profile may be main; re-attaching an already-attached server updates its role")
 	owner := writeOwnerFlag(fs)
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlagSet(fs, args); err != nil {
 		return err
 	}
 	if *serverID == "" {
@@ -356,10 +356,10 @@ func cmdAttach(args []string) error {
 }
 
 func cmdDetach(args []string) error {
-	fs := flag.NewFlagSet("detach", flag.ContinueOnError)
+	fs := newFlagSet("detach")
 	cfg, profilePath, opID := opFlags(fs)
 	serverID := fs.String("server", "", "Wings server uuid (required)")
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlagSet(fs, args); err != nil {
 		return err
 	}
 	if *serverID == "" {
@@ -384,9 +384,9 @@ func cmdDetach(args []string) error {
 // --------------------------------------------------------------- teardown --
 
 func cmdTeardown(args []string) error {
-	fs := flag.NewFlagSet("teardown", flag.ContinueOnError)
+	fs := newFlagSet("teardown")
 	cfg, profilePath, opID := opFlags(fs)
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlagSet(fs, args); err != nil {
 		return err
 	}
 	if *opID == "" {
@@ -408,10 +408,10 @@ func cmdTeardown(args []string) error {
 // ---------------------------------------------------------------- harvest --
 
 func cmdHarvest(args []string) error {
-	fs := flag.NewFlagSet("harvest", flag.ContinueOnError)
+	fs := newFlagSet("harvest")
 	cfg, profilePath, opID := opFlags(fs)
 	releaseID := fs.String("release", "", "release id the harvest becomes (required)")
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlagSet(fs, args); err != nil {
 		return err
 	}
 	if *releaseID == "" {
@@ -442,10 +442,10 @@ func cmdHarvest(args []string) error {
 // --------------------------------------------------------------------- gc --
 
 func cmdGC(args []string) error {
-	fs := flag.NewFlagSet("gc", flag.ContinueOnError)
+	fs := newFlagSet("gc")
 	cfg, profilePath, opID := opFlags(fs)
 	dryRun := fs.Bool("dry-run", false, "report what would be removed, and remove nothing")
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlagSet(fs, args); err != nil {
 		return err
 	}
 	if *opID == "" {
@@ -480,10 +480,10 @@ func cmdGC(args []string) error {
 // ----------------------------------------------------------------- status --
 
 func cmdStatus(args []string) error {
-	fs := flag.NewFlagSet("status", flag.ContinueOnError)
+	fs := newFlagSet("status")
 	cfg, profilePath, _ := opFlags(fs)
 	asJSON := fs.Bool("json", false, "emit the status as JSON")
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlagSet(fs, args); err != nil {
 		return err
 	}
 	env, err := newOpEnv(*cfg, *profilePath, false)
@@ -579,10 +579,10 @@ func persistProfile(cfg config.Config, path string, prof *profile.Profile) error
 // ------------------------------------------------------------- reconcile --
 
 func cmdReconcile(args []string) error {
-	fs := flag.NewFlagSet("reconcile", flag.ContinueOnError)
+	fs := newFlagSet("reconcile")
 	cfg, _, opID := opFlags(fs)
 	asJSON := fs.Bool("json", false, "emit the report as JSON")
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlagSet(fs, args); err != nil {
 		return err
 	}
 	if *opID == "" {
@@ -604,10 +604,10 @@ func cmdReconcile(args []string) error {
 // ---------------------------------------------------------------- restore --
 
 func cmdRestore(args []string) error {
-	fs := flag.NewFlagSet("restore", flag.ContinueOnError)
+	fs := newFlagSet("restore")
 	cfg, _, opID := opFlags(fs)
 	asJSON := fs.Bool("json", false, "emit the report as JSON")
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlagSet(fs, args); err != nil {
 		return err
 	}
 	if *opID == "" {

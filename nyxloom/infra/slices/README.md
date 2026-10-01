@@ -129,7 +129,7 @@ comfort.
 causality, not on elapsed wall-clock: wait on a real synchronization point
 (`join()`, an event), or eliminate the wait entirely by calling an extracted
 pure step function directly from the main thread. topos set the precedent
-(`topos/nyxloom-trove/reports/P96-SELFREVIEW.md`: a wall-clock failure "fixed
+(`topos/nyxloom-trove/archive/P96-SELFREVIEW.md`: a wall-clock failure "fixed
 with deterministic oracle"). **Never raise a cgroup weight to make a test pass**
 — that hides the defect and leaves it to fire on slower hardware, under load, or
 in CI.

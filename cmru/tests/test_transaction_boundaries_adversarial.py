@@ -24,7 +24,9 @@ def test_transaction_git_and_divergence_failures_preserve_repair_guidance(monkey
 
 
 def test_transaction_scope_and_result_records_are_sorted_and_validated(tmp_path, monkeypatch):
-    monkeypatch.setattr(transaction, "_common_git_dir", lambda _root: tmp_path / ".git")
+    common_git_dir = tmp_path / ".git"
+    common_git_dir.mkdir()
+    monkeypatch.setattr(transaction, "_common_git_dir", lambda _root: common_git_dir)
     workspace = _workspace(tmp_path, tmp_path / "child", "cmru/release/tok")
     transaction.write_release_scope(tmp_path, workspace, ["z", "a"])
     assert transaction.read_release_scope(tmp_path, workspace) == ["a", "z"]
@@ -48,7 +50,7 @@ def test_transaction_copy_secret_overlays_preserves_private_mode_and_rejects_out
     assert (child / "cmru.secret.toml").read_text() == "token=secret\n"
     assert (child / "demo" / "cmru.secret.toml").read_text() == "project=true\n"
     assert oct((child / "cmru.secret.toml").stat().st_mode & 0o777) == "0o600"
-    with pytest.raises(RuntimeError, match="outside repository"):
+    with pytest.raises(RuntimeError, match="outside selected Git workspace"):
         transaction.copy_secret_overlays(repo, ws, [tmp_path / "outside" / "cmru.toml"])
 
 

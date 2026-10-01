@@ -123,3 +123,5 @@ the field is omitted rather than filled with the source tree's own identity.
   ship beside three closed ones: the frozen schema and `assay.vocabulary` must
   hold one string, so a second ingested namespace cannot be added to one and
   forgotten in the other.
+
+dstdns-sql-r2-v6-witness.json: retired by A-480; frozen at v13; no longer migrated

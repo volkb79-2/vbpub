@@ -1,0 +1,73 @@
+# install-host.toml
+#
+# Settings for install-host.py. Every key here is REQUIRED - the
+# script refuses to start if any key is missing, and also refuses to start
+# if this file contains any key NOT listed here (typo/stale-key protection).
+# There is no Python-side fallback for any of these: this file is the single
+# source of truth for tunable defaults. CLI flags and the NETCUP_SCP_API_*
+# env vars documented in --help override these values per-run; nothing below
+# is meant to be edited per-run.
+
+[ssh]
+# Ephemeral, per-host controller key -- one keypair per install, NOT
+# a shared file reused across hosts (confirmed live 2026-09-08: a shared key
+# meant SSH monitoring for one host could silently pick up a key netcup had
+# actually registered for a *different* host). `{host}`/`{date}` are
+# rendered before use -- see _render_identity_file_path() -- from today's UTC
+# date and the best host label main() can resolve WITHOUT an extra API call
+# where possible: a --payload file's own "hostname" (or "netcup<serverId>" if
+# only that's present); otherwise one early /api/v1/servers lookup by
+# $NETCUP_SCP_API_SERVER_NAME, reused for step 1 so it isn't a second/
+# duplicate call. Falls back to the raw (opaque) $NETCUP_SCP_API_SERVER_NAME
+# value, then "unknown-host", only when neither resolves (confirmed live
+# 2026-09-08: using the raw netcup-internal server name -- e.g.
+# "v2202511209318406253" -- produced unreadable filenames with no way to
+# tell which key belonged to which host at a glance; operator asked for
+# real FQDNs / "netcup<id>" instead).
+# Matches netcup-api-filter's own `<service>-<host-id>-<algorithm>` naming
+# convention (.devcontainer/finalize.post.d/10-netcup-setup.sh's SSH_KEYS) --
+# service is "scp_installer" (this tool), not "netcup", to stay
+# unambiguous against netcup-api-filter's OWN differently-scoped keys on the
+# same account -- with a date segment added per the operator's own request.
+# Kept under ~/.ssh/ - the devcontainer's writable, mdt-managed SSH dir (see
+# .devcontainer/devcontainer.json), NOT ~/.ssh-host (the host's *native*
+# ~/.ssh, bind-mounted readonly for known_hosts/reference - writing there
+# fails with "Read-only file system", confirmed live 2026-09-08). Auto-
+# generated on first use if missing - see _ensure_local_identity_file_exists().
+# This is separate from any production access key the consumed customScript
+# generates on the host. This key is transient: it is passed through as the
+# generic CONTROLLER_SSH_PUBKEY marker so the hook can install/remove it,
+# independent of whether Netcup's own sshKeyIds injection worked.
+identity_file = "~/.ssh/vbpub-scp_installer-{host}-{date}-ed25519"
+user = "root"
+
+# Feeds into the *comment* on the auto-generated key above, alongside the
+# "vbpub-controller-ephemeral" marker and the same {host}/{date} identity_file
+# uses (see _ensure_local_identity_file_exists()). This comment lives in
+# authorized_keys on the INSTALLED HOST, not here - so what's meaningful is
+# how that host sees us: the public IP we connect from, reverse-DNS'd if
+# possible. Not this controller's own internal/container hostname, which
+# means nothing to anyone looking at authorized_keys on a different machine.
+#
+# "automatic" (the default below) detects our public IP the same way
+# netcup-api-filter's own shell aliases do (`alias myip='curl -s
+# ifconfig.me'`, .devcontainer/finalize.post.d/10-netcup-setup.sh) and
+# reverse-DNS's it; falls back to the bare IP if there's no PTR record, and
+# only as a last resort (no network egress at all) to this machine's own
+# local hostname (socket.getfqdn()) - see _resolve_controller_fqdn()'s
+# docstring for the full fallback chain. Set an explicit hostname instead of
+# "automatic" if you'd rather not depend on an external IP-lookup service,
+# or want a stable identity that doesn't depend on network state at
+# key-generation time. Either way, an empty value or one ending in
+# .invalid/.example.invalid is treated as unset and refuses to generate a
+# new key.
+controller_fqdn = "automatic"
+
+poll_interval = 5.0
+attach_initial_delay = 0.0
+attach_max_wait_seconds = 300.0
+completion_wait_seconds = 1800.0
+# The local controller key is retained by default so the same host-specific
+# key can be reused later. The customScript producer owns any remote key
+# cleanup policy.
+controller_local_key_retention = "retain"

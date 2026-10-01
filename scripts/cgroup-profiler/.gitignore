@@ -4,3 +4,15 @@ runs/
 __pycache__/
 .pytest_cache/
 *.pyc
+
+# CIU-generated artifacts (RG-55 C7) — never commit a rendered file, only
+# its .j2 source. ciu itself names this exact list at `ciu check`/`ciu up`
+# time when it is missing (S3.1c gitignore-gaps note).
+ciu.env
+ciu.global.toml
+ciu.toml
+ciu.compose.yml
+.ciu/
+ciu.worktree-instance.json
+ciu.global.instance.toml.j2
+ciu.instance.generated.toml

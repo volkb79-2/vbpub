@@ -22,6 +22,7 @@ def run_dry_install(tmp_path: Path) -> tuple[Installer, list[str]]:
         telegram_chat_id="",
         never_reboot=True,
         auto_reboot_after_stage1=False,
+        credential_mode="systemd",
     )
     actions = HostActions(dry_run=True)
     installer = Installer(config, actions)
@@ -47,6 +48,7 @@ def test_state_new_excludes_secret_and_uses_stable_schema(tmp_path):
         state_dir=str(tmp_path / "state"), log_dir=str(tmp_path / "logs"),
         swap_disk_total_gb=32, swap_file_count=8,
         telegram_bot_token="", telegram_chat_id="", auto_reboot_after_stage1=False,
+        credential_mode="systemd",
     )
     store = StateStore(config.state_dir)
     store.save_new(StateStore.new(config))
@@ -61,6 +63,7 @@ def test_known_shape_partition_plan_has_exact_eight_devices(tmp_path):
     config = Config(
         state_dir=str(tmp_path / "state"), log_dir=str(tmp_path / "logs"),
         telegram_bot_token="", telegram_chat_id="", auto_reboot_after_stage1=False,
+        credential_mode="systemd",
     )
     actions = HostActions(dry_run=True)
     installer = Installer(config, actions)
@@ -75,13 +78,20 @@ def test_known_shape_partition_plan_has_exact_eight_devices(tmp_path):
     assert all("start=" in line and "size=" in line and ", type=0657fd6d-a4ab-43c4-84e5-0933c84b4f4f" in line for line in swaps)
     root_lines = [line for line in plan.splitlines() if line.startswith("/dev/vda3 ")]
     assert len(root_lines) == 1
-    assert any(part.startswith("size=20971520") for part in root_lines[0].split())
+    # Root keeps its own (dry-run synthetic) size, 8 GiB in sectors -- it
+    # must NOT be inflated to the (larger, 10 GiB default) preserve_root_size_gb
+    # floor. That inflation was a real bug (see
+    # test_plan_swap_partitions_never_grows_root_below_preserve_floor in
+    # test_fake_integration.py for the live-host-confirmed regression): Case
+    # A never resizes root, so the plan must show root's real, unchanged size.
+    assert any(part.startswith("size=16777216") for part in root_lines[0].split())
 
 
 def test_fstab_swap_entries_are_planned(tmp_path):
     config = Config(
         state_dir=str(tmp_path / "state"), log_dir=str(tmp_path / "logs"),
         telegram_bot_token="", telegram_chat_id="", auto_reboot_after_stage1=False,
+        credential_mode="systemd",
     )
     actions = HostActions(dry_run=True)
     installer = Installer(config, actions)
@@ -95,6 +105,7 @@ def test_disk_transaction_manifest_and_health_gate_are_planned(tmp_path):
     config = Config(
         state_dir=str(tmp_path / "state"), log_dir=str(tmp_path / "logs"),
         telegram_bot_token="", telegram_chat_id="", auto_reboot_after_stage1=False,
+        credential_mode="systemd",
     )
     actions = HostActions(dry_run=True)
     installer = Installer(config, actions)
@@ -145,6 +156,7 @@ def test_resume_restores_config_from_manifest_and_records_success(tmp_path):
     config = Config(
         state_dir=str(tmp_path / "state"), log_dir=str(tmp_path / "logs"),
         telegram_bot_token="", telegram_chat_id="", auto_reboot_after_stage1=False,
+        credential_mode="systemd",
     )
     actions = HostActions(dry_run=True)
     installer = Installer(config, actions)

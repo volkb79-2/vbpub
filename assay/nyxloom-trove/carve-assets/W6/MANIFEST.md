@@ -145,3 +145,5 @@ installed-wheel provenance to record.
   characters, the ruling counts bytes, and a 2048-character string of 3-byte
   codepoints is exactly the document that would slip through the first bound
   and must be caught by the second.
+
+dstdns-sql-r2-v6-witness.json: retired by A-480; frozen at v13; no longer migrated

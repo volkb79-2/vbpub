@@ -1,0 +1,891 @@
+{
+ "families": [
+  {
+   "cand": 27,
+   "n": 27,
+   "key": "Or: not isinstance:str | not truthy",
+   "occ": [
+    [
+     "attestation.py",
+     423,
+     1
+    ],
+    [
+     "attestation.py",
+     156,
+     1
+    ],
+    [
+     "candidate_identity.py",
+     22,
+     1
+    ],
+    [
+     "candidate_identity.py",
+     24,
+     1
+    ],
+    [
+     "config.py",
+     2617,
+     1
+    ],
+    [
+     "config.py",
+     3117,
+     1
+    ],
+    [
+     "config.py",
+     3524,
+     1
+    ],
+    [
+     "config.py",
+     1596,
+     1
+    ],
+    [
+     "config.py",
+     1600,
+     1
+    ],
+    [
+     "mutation.py",
+     1560,
+     1
+    ],
+    [
+     "mutation.py",
+     1560,
+     1
+    ],
+    [
+     "mutation_parsers/mutation_report_json.py",
+     289,
+     1
+    ],
+    [
+     "mutation_parsers/mutation_report_json.py",
+     169,
+     1
+    ],
+    [
+     "mutation_parsers/mutation_report_json.py",
+     276,
+     1
+    ],
+    [
+     "provenance.py",
+     180,
+     1
+    ],
+    [
+     "runner.py",
+     861,
+     1
+    ],
+    [
+     "verdict.py",
+     738,
+     1
+    ],
+    [
+     "verdict.py",
+     3954,
+     1
+    ],
+    [
+     "verdict.py",
+     795,
+     1
+    ],
+    [
+     "verdict.py",
+     820,
+     1
+    ],
+    [
+     "verdict.py",
+     1552,
+     1
+    ],
+    [
+     "verdict.py",
+     2951,
+     1
+    ],
+    [
+     "verdict.py",
+     4439,
+     1
+    ],
+    [
+     "verdict.py",
+     2956,
+     1
+    ],
+    [
+     "verify.py",
+     1826,
+     1
+    ],
+    [
+     "verify.py",
+     511,
+     1
+    ],
+    [
+     "verify.py",
+     478,
+     1
+    ]
+   ]
+  },
+  {
+   "cand": 24,
+   "n": 24,
+   "key": "Or: isinstance:bool | not isinstance:int",
+   "occ": [
+    [
+     "adapters/base.py",
+     106,
+     1
+    ],
+    [
+     "adapters/go_stmtpos.py",
+     408,
+     1
+    ],
+    [
+     "adapters/go_stmtpos.py",
+     417,
+     1
+    ],
+    [
+     "config.py",
+     2990,
+     1
+    ],
+    [
+     "config.py",
+     3000,
+     1
+    ],
+    [
+     "config.py",
+     3205,
+     1
+    ],
+    [
+     "coverage_parsers/coverage_istanbul_json.py",
+     682,
+     1
+    ],
+    [
+     "coverage_parsers/coverage_istanbul_json.py",
+     748,
+     1
+    ],
+    [
+     "coverage_parsers/coverage_istanbul_json.py",
+     762,
+     1
+    ],
+    [
+     "coverage_parsers/coverage_py_json.py",
+     269,
+     1
+    ],
+    [
+     "mutation.py",
+     709,
+     1
+    ],
+    [
+     "mutation.py",
+     2099,
+     1
+    ],
+    [
+     "mutation.py",
+     2103,
+     1
+    ],
+    [
+     "mutation.py",
+     351,
+     1
+    ],
+    [
+     "mutation_parsers/mutation_report_json.py",
+     414,
+     1
+    ],
+    [
+     "result_reports/vitest_json.py",
+     37,
+     1
+    ],
+    [
+     "verdict.py",
+     2465,
+     1
+    ],
+    [
+     "verdict.py",
+     2886,
+     1
+    ],
+    [
+     "verdict.py",
+     2890,
+     1
+    ],
+    [
+     "verdict.py",
+     3505,
+     1
+    ],
+    [
+     "verdict.py",
+     954,
+     1
+    ],
+    [
+     "verdict.py",
+     1653,
+     1
+    ],
+    [
+     "verdict.py",
+     1896,
+     1
+    ],
+    [
+     "verify.py",
+     392,
+     1
+    ]
+   ]
+  },
+  {
+   "cand": 21,
+   "n": 7,
+   "key": "Or: isinstance:bool | not isinstance:int | cmp:Lt",
+   "occ": [
+    [
+     "coverage_parsers/coverage_istanbul_json.py",
+     463,
+     3
+    ],
+    [
+     "coverage_parsers/coverage_istanbul_json.py",
+     450,
+     3
+    ],
+    [
+     "coverage_parsers/coverage_istanbul_json.py",
+     641,
+     3
+    ],
+    [
+     "isolation.py",
+     136,
+     3
+    ],
+    [
+     "mutation.py",
+     491,
+     3
+    ],
+    [
+     "verdict.py",
+     804,
+     3
+    ],
+    [
+     "verdict.py",
+     4493,
+     3
+    ]
+   ]
+  },
+  {
+   "cand": 20,
+   "n": 5,
+   "key": "Or: isinstance:bool | not isinstance:(int, float) | not math.isfinite | cmp:LtE",
+   "occ": [
+    [
+     "mutation.py",
+     2121,
+     4
+    ],
+    [
+     "runner.py",
+     282,
+     4
+    ],
+    [
+     "runner.py",
+     243,
+     4
+    ],
+    [
+     "verdict.py",
+     1935,
+     4
+    ],
+    [
+     "verdict.py",
+     2924,
+     4
+    ]
+   ]
+  },
+  {
+   "cand": 8,
+   "n": 8,
+   "key": "Or: isinstance:bool | not isinstance:(int, float)",
+   "occ": [
+    [
+     "config.py",
+     3688,
+     1
+    ],
+    [
+     "isolation.py",
+     1123,
+     1
+    ],
+    [
+     "liveness.py",
+     778,
+     1
+    ],
+    [
+     "liveness.py",
+     885,
+     1
+    ],
+    [
+     "runner.py",
+     1153,
+     1
+    ],
+    [
+     "verdict.py",
+     958,
+     1
+    ],
+    [
+     "verdict.py",
+     2345,
+     1
+    ],
+    [
+     "verdict.py",
+     3024,
+     1
+    ]
+   ]
+  },
+  {
+   "cand": 6,
+   "n": 6,
+   "key": "And: isinstance:int | not isinstance:bool",
+   "occ": [
+    [
+     "verify.py",
+     1559,
+     1
+    ],
+    [
+     "verify.py",
+     1663,
+     1
+    ],
+    [
+     "verify.py",
+     1665,
+     1
+    ],
+    [
+     "verify.py",
+     1186,
+     1
+    ],
+    [
+     "verify.py",
+     1188,
+     1
+    ],
+    [
+     "verify.py",
+     1594,
+     1
+    ]
+   ]
+  },
+  {
+   "cand": 6,
+   "n": 3,
+   "key": "Or: not isinstance:str | len-cmp:NotEq",
+   "occ": [
+    [
+     "candidate_identity.py",
+     31,
+     2
+    ],
+    [
+     "verdict.py",
+     2152,
+     2
+    ],
+    [
+     "verdict.py",
+     1927,
+     2
+    ]
+   ]
+  },
+  {
+   "cand": 5,
+   "n": 1,
+   "key": "Or: cmp:Is | isinstance:bool | not isinstance:int | cmp:Lt",
+   "occ": [
+    [
+     "verdict.py",
+     3741,
+     5
+    ]
+   ]
+  },
+  {
+   "cand": 4,
+   "n": 4,
+   "key": "Or: not isinstance:int | isinstance:bool",
+   "occ": [
+    [
+     "config.py",
+     1476,
+     1
+    ],
+    [
+     "coverage_parsers/coverage_py_json.py",
+     320,
+     1
+    ],
+    [
+     "verify.py",
+     1577,
+     1
+    ],
+    [
+     "verify.py",
+     1579,
+     1
+    ]
+   ]
+  },
+  {
+   "cand": 4,
+   "n": 2,
+   "key": "Or: not isinstance:list | len-cmp:NotEq",
+   "occ": [
+    [
+     "analysis.py",
+     274,
+     2
+    ],
+    [
+     "coverage_parsers/coverage_py_json.py",
+     267,
+     2
+    ]
+   ]
+  },
+  {
+   "cand": 4,
+   "n": 2,
+   "key": "And: isinstance:str | len-cmp:Gt",
+   "occ": [
+    [
+     "analysis.py",
+     758,
+     2
+    ],
+    [
+     "analysis.py",
+     764,
+     2
+    ]
+   ]
+  },
+  {
+   "cand": 4,
+   "n": 2,
+   "key": "And: cmp:IsNot | not isinstance:Outcome",
+   "occ": [
+    [
+     "verdict.py",
+     1346,
+     2
+    ],
+    [
+     "verdict.py",
+     3301,
+     2
+    ]
+   ]
+  },
+  {
+   "cand": 3,
+   "n": 3,
+   "key": "Or: not isinstance:str | not regex:re",
+   "occ": [
+    [
+     "analysis.py",
+     172,
+     1
+    ],
+    [
+     "analysis.py",
+     115,
+     1
+    ],
+    [
+     "analysis.py",
+     734,
+     1
+    ]
+   ]
+  },
+  {
+   "cand": 3,
+   "n": 3,
+   "key": "Or: not isinstance:str | not regex:_SHA256_RE",
+   "occ": [
+    [
+     "verdict.py",
+     1544,
+     1
+    ],
+    [
+     "verdict.py",
+     1669,
+     1
+    ],
+    [
+     "verdict.py",
+     1720,
+     1
+    ]
+   ]
+  },
+  {
+   "cand": 3,
+   "n": 3,
+   "key": "Or: not isinstance:str | cmp:NotIn",
+   "occ": [
+    [
+     "config.py",
+     1090,
+     1
+    ],
+    [
+     "config.py",
+     1099,
+     1
+    ],
+    [
+     "mutation_parsers/mutation_report_json.py",
+     374,
+     1
+    ]
+   ]
+  },
+  {
+   "cand": 3,
+   "n": 1,
+   "key": "Or: isinstance:bool | not isinstance:int | cmp:NotEq",
+   "occ": [
+    [
+     "verdict.py",
+     1498,
+     3
+    ]
+   ]
+  },
+  {
+   "cand": 3,
+   "n": 1,
+   "key": "Or: isinstance:bool | not isinstance:int | cmp:LtE",
+   "occ": [
+    [
+     "liveness.py",
+     688,
+     3
+    ]
+   ]
+  },
+  {
+   "cand": 2,
+   "n": 2,
+   "key": "Or: not isinstance:list | not truthy",
+   "occ": [
+    [
+     "analysis.py",
+     251,
+     1
+    ],
+    [
+     "verify.py",
+     1298,
+     1
+    ]
+   ]
+  },
+  {
+   "cand": 2,
+   "n": 1,
+   "key": "Or: not isinstance:str | cmp:NotEq",
+   "occ": [
+    [
+     "mutation.py",
+     1400,
+     2
+    ]
+   ]
+  },
+  {
+   "cand": 2,
+   "n": 1,
+   "key": "Or: not isinstance:int | isinstance:bool | cmp:NotIn",
+   "occ": [
+    [
+     "adjudication.py",
+     182,
+     2
+    ]
+   ]
+  },
+  {
+   "cand": 2,
+   "n": 1,
+   "key": "Or: isinstance:bool | not isinstance:(int, float) | not math.isfinite",
+   "occ": [
+    [
+     "runner.py",
+     254,
+     2
+    ]
+   ]
+  },
+  {
+   "cand": 2,
+   "n": 1,
+   "key": "And: isinstance:str | len-cmp:Eq",
+   "occ": [
+    [
+     "verify.py",
+     1819,
+     2
+    ]
+   ]
+  },
+  {
+   "cand": 2,
+   "n": 1,
+   "key": "And: isinstance:int | cmp:LtE",
+   "occ": [
+    [
+     "verify.py",
+     1854,
+     2
+    ]
+   ]
+  },
+  {
+   "cand": 2,
+   "n": 1,
+   "key": "And: cmp:IsNot | not isinstance:dict",
+   "occ": [
+    [
+     "config.py",
+     1731,
+     2
+    ]
+   ]
+  },
+  {
+   "cand": 2,
+   "n": 1,
+   "key": "And: cmp:IsNot | not isinstance:WorktreeIntegrity",
+   "occ": [
+    [
+     "verdict.py",
+     4460,
+     2
+    ]
+   ]
+  },
+  {
+   "cand": 2,
+   "n": 1,
+   "key": "And: cmp:IsNot | not isinstance:MutationWitnessReceipt",
+   "occ": [
+    [
+     "verdict.py",
+     1526,
+     2
+    ]
+   ]
+  },
+  {
+   "cand": 2,
+   "n": 1,
+   "key": "And: cmp:IsNot | not isinstance:JudgeProvenance",
+   "occ": [
+    [
+     "verdict.py",
+     4453,
+     2
+    ]
+   ]
+  },
+  {
+   "cand": 1,
+   "n": 1,
+   "key": "Or: not isinstance:tuple | not truthy",
+   "occ": [
+    [
+     "mutation.py",
+     580,
+     1
+    ]
+   ]
+  },
+  {
+   "cand": 1,
+   "n": 1,
+   "key": "Or: not isinstance:str | not regex:_TIMESTAMP_RE",
+   "occ": [
+    [
+     "verdict.py",
+     4443,
+     1
+    ]
+   ]
+  },
+  {
+   "cand": 1,
+   "n": 1,
+   "key": "Or: not isinstance:str | not regex:_OID_RE",
+   "occ": [
+    [
+     "attestation.py",
+     280,
+     1
+    ]
+   ]
+  },
+  {
+   "cand": 1,
+   "n": 1,
+   "key": "Or: not isinstance:str | not regex:_MUTATOR_NAME_RE",
+   "occ": [
+    [
+     "mutation_parsers/mutation_report_json.py",
+     385,
+     1
+    ]
+   ]
+  },
+  {
+   "cand": 1,
+   "n": 1,
+   "key": "Or: not isinstance:str | not regex:_KEY_RE",
+   "occ": [
+    [
+     "attestation.py",
+     461,
+     1
+    ]
+   ]
+  },
+  {
+   "cand": 1,
+   "n": 1,
+   "key": "Or: not isinstance:str | not regex:_COMMIT_RE",
+   "occ": [
+    [
+     "adjudication.py",
+     203,
+     1
+    ]
+   ]
+  },
+  {
+   "cand": 1,
+   "n": 1,
+   "key": "Or: not isinstance:frozenset | not truthy",
+   "occ": [
+    [
+     "verdict.py",
+     797,
+     1
+    ]
+   ]
+  },
+  {
+   "cand": 1,
+   "n": 1,
+   "key": "Or: not isinstance:dict | not truthy",
+   "occ": [
+    [
+     "analysis.py",
+     162,
+     1
+    ]
+   ]
+  },
+  {
+   "cand": 1,
+   "n": 1,
+   "key": "Or: isinstance:bool | not isinstance:(str, int, float)",
+   "occ": [
+    [
+     "mutation_parsers/mutation_report_json.py",
+     232,
+     1
+    ]
+   ]
+  }
+ ],
+ "fixed": {
+  "sha256-hex": 8,
+  "aware-datetime": 3
+ },
+ "fixed_cand": {
+  "sha256-hex": 17,
+  "aware-datetime": 9
+ },
+ "fixed_where": {
+  "sha256-hex": [
+   "candidate_identity.py:31",
+   "provenance.py:186",
+   "verdict.py:1544",
+   "verdict.py:1669",
+   "verdict.py:2152",
+   "verdict.py:1720",
+   "verdict.py:1927",
+   "verify.py:1819"
+  ],
+  "aware-datetime": [
+   "verdict.py:612",
+   "verdict.py:777",
+   "verify.py:1479"
+  ]
+ }
+}

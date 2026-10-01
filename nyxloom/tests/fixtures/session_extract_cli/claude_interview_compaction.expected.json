@@ -1,0 +1,133 @@
+{
+  "format": "claude-code",
+  "stop_reason": null,
+  "events": [
+    {
+      "timestamp": "2026-09-28T10:00:00Z",
+      "kind": "operator_text",
+      "checkpoint": false,
+      "marker": "u1",
+      "text": "Please ask about these extraction decisions.",
+      "gap_after": 0,
+      "epoch": 1
+    },
+    {
+      "timestamp": "2026-09-28T10:00:01Z",
+      "kind": "qa_pair",
+      "checkpoint": false,
+      "marker": "a1",
+      "text": "INTERVIEW: Which prompt label should be used?\nHeader: Prompt\n- Labeled prose: Mark the displayed question.\n- Plain prose: Keep the bare question.",
+      "gap_after": 0,
+      "epoch": 1
+    },
+    {
+      "timestamp": "2026-09-28T10:00:01Z",
+      "kind": "qa_pair",
+      "checkpoint": false,
+      "marker": "a1",
+      "text": "INTERVIEW: Should an unanswered row be explicit?\nHeader: Missing answer\n- Yes: Show that the operator did not answer.\n- No: Leave the answer area blank.\nMultiple selections are allowed.",
+      "gap_after": 0,
+      "epoch": 1
+    },
+    {
+      "timestamp": "2026-09-28T10:00:01Z",
+      "kind": "tool_call",
+      "checkpoint": false,
+      "marker": "a1",
+      "text": "[tool call: AskUserQuestion]",
+      "gap_after": 0,
+      "epoch": 1
+    },
+    {
+      "timestamp": "2026-09-28T10:00:02Z",
+      "kind": "qa_pair",
+      "checkpoint": false,
+      "marker": "u2",
+      "text": "INTERVIEW: Which prompt label should be used?\nHeader: Prompt\n- Labeled prose: Mark the displayed question.\n- Plain prose: Keep the bare question.\n\nOPERATOR: Something else\n\nINTERVIEW: Should an unanswered row be explicit?\nHeader: Missing answer\n- Yes: Show that the operator did not answer.\n- No: Leave the answer area blank.\nMultiple selections are allowed.\n\nOPERATOR: (No answer provided)",
+      "gap_after": 0,
+      "epoch": 1
+    },
+    {
+      "timestamp": "2026-09-28T10:00:03Z",
+      "kind": "qa_pair",
+      "checkpoint": false,
+      "marker": "a2",
+      "text": "INTERVIEW: Which word should label the answer?\nHeader: Answer label\n- OPERATOR: Label the user's answer.\n- USER: Use a shorter label.",
+      "gap_after": 0,
+      "epoch": 1
+    },
+    {
+      "timestamp": "2026-09-28T10:00:03Z",
+      "kind": "tool_call",
+      "checkpoint": false,
+      "marker": "a2",
+      "text": "[tool call: AskUserQuestion]",
+      "gap_after": 0,
+      "epoch": 1
+    },
+    {
+      "timestamp": "2026-09-28T10:00:04Z",
+      "kind": "qa_pair",
+      "checkpoint": false,
+      "marker": "u3",
+      "text": "INTERVIEW: Which word should label the answer?\nHeader: Answer label\n- OPERATOR: Label the user's answer.\n- USER: Use a shorter label.\n\nOPERATOR: OPERATOR",
+      "gap_after": 0,
+      "epoch": 1
+    },
+    {
+      "timestamp": "2026-09-28T10:00:05Z",
+      "kind": "tool_call",
+      "checkpoint": false,
+      "marker": "a3",
+      "text": "[tool call: Bash] Inspect the sanitized test fixture",
+      "gap_after": 1,
+      "epoch": 1
+    },
+    {
+      "timestamp": "2026-09-28T10:00:07Z",
+      "kind": "lifecycle_marker",
+      "checkpoint": false,
+      "marker": "u5",
+      "text": "[/compact]",
+      "gap_after": 0,
+      "epoch": 1
+    },
+    {
+      "timestamp": "2026-09-28T10:00:08Z",
+      "kind": "lifecycle_marker",
+      "checkpoint": false,
+      "marker": "c1",
+      "text": "[compaction: steered happened, 305,120→14,154 tok, 143.8s]",
+      "gap_after": 0,
+      "epoch": 1
+    },
+    {
+      "timestamp": "2026-09-28T10:00:09Z",
+      "kind": "assistant_text",
+      "checkpoint": false,
+      "marker": "a4",
+      "text": "Continue with the same extraction decisions after compaction.",
+      "gap_after": 0,
+      "epoch": 1
+    },
+    {
+      "timestamp": "2026-09-28T10:00:10Z",
+      "kind": "qa_pair",
+      "checkpoint": false,
+      "marker": "a5",
+      "text": "INTERVIEW: What should the extract show if the operator has not replied yet?\nHeader: Pending question\n- Show the prompt: Keep the pending question visible.\n- Hide the prompt: Omit the interaction.",
+      "gap_after": 0,
+      "epoch": 1
+    },
+    {
+      "timestamp": "2026-09-28T10:00:10Z",
+      "kind": "tool_call",
+      "checkpoint": false,
+      "marker": "a5",
+      "text": "[tool call: AskUserQuestion]",
+      "gap_after": 0,
+      "epoch": 1
+    }
+  ],
+  "last_marker": "a5"
+}

@@ -3,14 +3,8 @@
 # Secrets never belong here (gitignored cmru.secret.toml overlays supply them).
 schema_version = 1
 
-[github]
-owner = "@@OWNER@@"
-repo = "@@REPO@@"
-owner_type = "@@OWNER_TYPE@@"
-
-[targets]
-host = "github"
-registry = ["ghcr.io"]
+[runtime]
+kind = "none"
 
 [env]
 @@NOTES_ENV_KEY@@ = "## @@PROJECT_ID@@ wheel\n\n<release notes markdown>"
@@ -31,6 +25,8 @@ bump = "conventional"
 git_tag = true
 build_step = "build"
 artifact_dirs = ["dist"]
+# Optional: list files/directories actually produced by the release gate.
+# evidence_paths = ["coverage.json"]
 
 [steps.run-tests]
 quiet = true

@@ -70,11 +70,13 @@ def test_selfupdate_replaces_stale_link_atomically_in_dry_run(tmp_path):
     assert not stale.exists()
 
 
-def test_controller_cli_module_entrypoint_exposes_help():
+def test_controller_cli_module_entrypoint_refuses_removed_alias():
     with patch("sys.argv", ["cmru-controller", "--help"]):
         with pytest.raises(SystemExit) as raised:
             runpy.run_path(__import__("cmru.controller.cli", fromlist=["__file__"]).__file__, run_name="__main__")
-    assert raised.value.code == 0
+    assert str(raised.value) == (
+        "Use the installed 'cmru-controller' command; its module alias is not supported."
+    )
 
 
 def test_adapter_loader_reports_unloadable_spec(tmp_path):
@@ -238,19 +240,33 @@ def test_tester_gate_public_cli_strips_separator_command(monkeypatch, tmp_path):
     monkeypatch.setattr(tester_gate, "build_docker_command", lambda *args, **kwargs: commands.append(args[2]) or ["true"])
     monkeypatch.setattr(tester_gate, "_resolve_worktree_context", lambda *_: (tmp_path, "."))
     monkeypatch.setattr(tester_gate.subprocess, "run", lambda *args, **kwargs: SimpleNamespace(returncode=0))
-    parsed = SimpleNamespace(
-        cwd=".", image="img", cgroup_parent="slice", cgroup_probe_image="probe",
-        memory="1G", memory_swap="2G", cpus="1", device_read_iops="",
-        device_write_iops="", device_read_bps="", device_write_bps="",
-        enable_docker=False, dind_image=None, command=["--", "true"],
-    )
-    with patch.object(argparse.ArgumentParser, "parse_args", return_value=parsed):
-        with pytest.raises(SystemExit) as raised:
-            tester_gate.main([])
-    assert raised.value.code == 0
+    for key, value in {
+        "CMRU_TESTER_UNIFIED_IMAGE": "img",
+        "CMRU_TESTER_CGROUP_PARENT": "slice",
+        "CMRU_TESTER_CGROUP_PROBE_IMAGE": "probe",
+        "CMRU_TESTER_MEMORY": "1G",
+        "CMRU_TESTER_MEMORY_SWAP": "2G",
+        "CMRU_TESTER_CPUS": "1",
+    }.items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setattr(tester_gate.Path, "cwd", staticmethod(lambda: tmp_path))
+    assert tester_gate.main(["--cwd", ".", "--", "true"]) == 0
     assert commands == [["true"]]
 
 
-def test_transaction_worktree_listing_ignores_malformed_records(tmp_path, monkeypatch):
-    monkeypatch.setattr(transaction, "_git", lambda *args, **kwargs: "worktree\n\n")
+def test_transaction_worktree_listing_preserves_shared_inventory_refusals(tmp_path, monkeypatch):
+    shared = transaction._shared_worktree()
+    monkeypatch.setattr(shared, "list_git_worktrees", lambda _root: [])
+    monkeypatch.setattr(shared, "list_workspaces", lambda _common: [])
+    monkeypatch.setattr(transaction, "_common_git_dir", lambda _root: tmp_path / ".git")
     assert transaction.list_cmru_workspaces(tmp_path) == []
+
+    monkeypatch.setattr(
+        shared,
+        "list_git_worktrees",
+        lambda _root: (_ for _ in ()).throw(
+            shared.WorkspaceError("malformed inventory", category="git-error")
+        ),
+    )
+    with pytest.raises(shared.WorkspaceError, match="malformed inventory"):
+        transaction.list_cmru_workspaces(tmp_path)

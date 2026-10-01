@@ -12,6 +12,7 @@ import pytest
 import structlog.contextvars
 
 from nyxloom import cli, config, frontmatter, lint, log, paths
+from nyxloom.cli_ctl import main as ctl_main
 
 
 @pytest.fixture(autouse=True)
@@ -1994,7 +1995,7 @@ def test_cmd_lint_all_fails_closed_on_invalid_project_config(
     config_path.write_text("this is not = valid toml\n", encoding="utf-8")
     monkeypatch.setattr("nyxloom.config.load_registry", lambda: {"broken": root})
 
-    exit_code = cli.main(["lint"])
+    exit_code = ctl_main(["lint"])
     output = capsys.readouterr().out
 
     assert exit_code == 1

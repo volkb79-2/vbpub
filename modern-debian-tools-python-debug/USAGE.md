@@ -299,6 +299,7 @@ The vendored template uses grouped host sources under
 - `/home/vscode/.claude` for Claude Code state
 - `/home/vscode/.claudelink` for ClaudeLink's complete durable hub state (`nexus.db`, scheduler state/logs, and related runtime files)
 - `/home/vscode/.codex` for Codex state
+- `/home/vscode/.codex2` for an optional second Codex profile
 - `/home/vscode/.reasonix` for Reasonix user config and session state
 - `/home/vscode/.openclaw` for OpenClaw config and gateway state
 - `/home/vscode/.pi` for Pi config and session state under `~/.pi/agent/sessions/`

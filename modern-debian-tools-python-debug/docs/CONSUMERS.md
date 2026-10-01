@@ -1,8 +1,8 @@
 # Consumer configuration
 
-This document is the pasteable adoption contract for MDT's managed BuildKit
-backend. Host setup is intentionally manual because it changes systemd,
-Docker, and cgroup policy.
+This document is the pasteable adoption contract for MDT's host governance and
+managed BuildKit backend. Host setup is intentionally manual because it
+changes systemd, Docker, and cgroup policy.
 
 ## Host prerequisite
 
@@ -12,6 +12,14 @@ On the Docker host, review and apply the shipped host configuration:
 sudo ./host-setup/install.sh --wizard
 sudo mdt-host-check.sh
 ```
+To identify the MDT build before choosing an operation, run:
+
+    ./build-push.py --version
+
+The declared MDT entrypoints use the same top-level probe and print exactly one
+`MDT <version>` line on stdout, exit 0, and write nothing to stderr. Their
+parser help, usage, and configuration diagnostics begin with the MDT headline
+as line 1 at every parser depth; normal command output is unchanged.
 
 On a fresh host, use the wizard: a plain first run refuses the incomplete
 example and leaves `/etc/mdt` untouched. A manual `install.sh` run requires a
@@ -23,6 +31,12 @@ passes strict validation. Deleting the old file first loses those defaults and
 does not create the automatic backup. The watcher configuration uses the
 current `WATCHER_*` names shown in `host-setup.env.example`; old names are not
 aliases for the new clean configuration.
+
+Fresh installs default to `report-only`. If a plain install finds an existing
+`terminate` policy, it stops and disables the guard, then refuses to continue
+until `--wizard` explicitly confirms that policy again; it leaves the host
+config available for review. During `--wizard`, accepting the default answer
+changes `terminate` to `report-only`.
 
 The wizard reads live `MemTotal`, `MemAvailable`, CPU count, swap, the
 configured `IO_BASELINE_ENV` benchmark-results file and `IO_BASELINE_TESTFILE`, and Docker mount
@@ -44,7 +58,8 @@ zswap controls. Its memory policy is:
 Enter accepts the shown default. For CPUQuota/MemorySwapMax, `auto` derives at
 install time and `-` omits the directive (unlimited/default); for optional
 memory fields, `-` also omits the directive. MemoryMax is RAM only;
-MemorySwapMax is swap only. A benchmark uses the official kernel `io.cost` matrix against the persistent
+MemorySwapMax is swap only. A benchmark uses the shared Linux-derived
+`io.cost` matrix against the persistent
 `IO_BASELINE_TESTFILE`, never a raw device, and is reusable by identity rather
 than by age. It saturates the disk for about 12 minutes at default settings,
 so run it in a quiet window. `--with-baseline` installs missing `fio`/`pv`
@@ -53,6 +68,32 @@ background measurement while the remaining questions continue. Without that
 flag, the wizard offers the measurement only when both tools are already
 installed; otherwise the candidate is installed first and you can run the
 benchmark later.
+
+### Host benchmark file targets
+
+MDT and `debian-install-v2` use the same generated Linux-derived coefficient
+tool. MDT always writes to a persistent file on the Docker-data filesystem;
+its identity check refuses a target on a different filesystem. To run the
+manual debian-install-v2 wrapper against an already mounted scratch target,
+use file mode:
+
+```bash
+sudo scripts/debian-install-v2/tools/iocost-calibrate.sh --duration 30 -- \
+  --testfile /mnt/iocost-benchmark/target.bin --testfile-size-gb 1
+```
+
+This writes and measures a regular file on that mounted filesystem. Raw
+`--testdev /dev/DEVICE` mode is destructive to the named block device; the
+shared tool can resolve a partition's scheduler sysfs path, but it does not
+make raw testing non-destructive. Do not use it on a disk or partition with
+data you need. Partition creation, formatting, mounting, and cleanup remain
+operator-managed until the debian-install-v2 installer integration is built.
+
+The file path must be dedicated disposable benchmark scratch space: the tool
+fills a new file with random data, and fio overwrites the target during its
+measurements. An existing target is reused only when it is a single-link
+regular file with exactly the requested size; any other existing target is
+refused and left untouched. Reuse does not preserve the file's contents.
 
 After that run, the wizard asks for four explicit static IO fallback values:
 `DEV_STATIC_RIOPS`, `DEV_STATIC_WIOPS`, `DEV_STATIC_RBW`, and
@@ -71,6 +112,44 @@ patterns are space-separated shell globs. The wizard also asks for
 `DEV_BUILDKITD_MAX_PARALLELISM`. This limits one
 managed BuildKit daemon's internal solver parallelism; it does not serialize
 client requests and is separate from release repack concurrency.
+
+It asks for each per-container `WATCHER_*_MEMORY_HIGH` and
+`WATCHER_*_MEMORY_MAX` setting. The shipped default for all six is `-`, which
+leaves per-container memory and swap uncapped by this watcher while the parent
+slice still bounds the aggregate tier. Enter explicit sizes only when this
+host wants the watcher to add a leaf cap. It only fills in scopes whose Docker
+configuration has no `mem_limit`; CIU-managed Compose services commonly set
+one. CIU can also apply `MemoryMin` to a scope, so any explicitly configured
+watcher limits must be compatible with that value. The wizard requires a
+separate confirmation before it writes any non-`-` per-container memory pair.
+
+## Per-container memory watcher
+
+The shipped policy disables MDT's inotify memory watcher. Correctly placed
+containers remain under their parent slice's aggregate limit. The separate
+`docker-.scope.d` backstop still applies its configured generous MemoryMax and
+MemorySwapMax to every Docker scope; the wizard reviews those in section f.
+The memory wizard asks for the service policy and all six values. Set
+`WATCHER_MEMORY_POLICY=enabled` only
+when at least one per-container value is configured; unused values must stay
+`-`. This is a complete example for an operator who explicitly wants an
+interactive-container leaf cap. Size it for the workload and host:
+
+```dotenv
+WATCHER_MEMORY_POLICY=enabled
+WATCHER_INTERACTIVE_MEMORY_HIGH=3G
+WATCHER_INTERACTIVE_MEMORY_MAX=4G
+WATCHER_BACKGROUND_MEMORY_HIGH=-
+WATCHER_BACKGROUND_MEMORY_MAX=-
+WATCHER_GATES_MEMORY_HIGH=-
+WATCHER_GATES_MEMORY_MAX=-
+```
+
+The installer refuses an enabled policy with no caps or a disabled policy with
+configured caps. The health check reports policy/service drift. During an
+upgrade from a config that predates `WATCHER_MEMORY_POLICY`, the wizard treats
+existing non-`-` caps as user settings and presents them for review. See the
+[design rationale](DESIGN-GUIDE.md#per-container-memory-policy).
 
 Host setup is host-only: run the installer and wizard from a shell on the
 Docker host, never from the consumer devcontainer. UID 0 in a devcontainer is
@@ -91,16 +170,46 @@ RAM ceiling. `DEV_MEMORY_MIN_GUARANTEED_CEILING` is the one authoritative
 root controls. Keep sizes/weights host-specific; do not copy values from this
 repository's example onto a different host.
 
-The accidental-worker policy vocabulary is:
+The default accidental-worker policy is report-only:
 
 ```text
-BUILDX_ACCIDENTAL_CONTAINER_POLICY=terminate    # default; remove unapproved workers
-BUILDX_ACCIDENTAL_CONTAINER_POLICY=report-only  # detect and log, do not remove
+BUILDX_ACCIDENTAL_CONTAINER_POLICY=report-only
 ```
 
-Missing or invalid policy fails closed. The guard approves only the service
-container whose inspected name, configured image, cgroup parent, and labels
-match the host setup. A reserved name alone is not approval.
+`terminate` can interrupt a live Docker-container Buildx build. The wizard asks
+for a second confirmation before writing the explicit opt-in:
+
+```text
+BUILDX_ACCIDENTAL_CONTAINER_POLICY=terminate
+```
+
+These are the complete closed vocabulary. Missing or invalid policy fails
+closed. The guard approves only the service container whose inspected name,
+configured image, cgroup parent, and labels match the host setup. A reserved
+name alone is not approval.
+
+## Host commands from an MDT devcontainer
+
+`host-escape` is a compatibility alias for the MDT host-exec helper. It starts
+a privileged helper, enters the host's namespaces, and runs with host-root
+authority; use it like a root shell and review each command before executing
+it. It runs `mdt doctor` afterward, which repairs missing required cgroup2
+mount flags. The standalone check-only form does not repair:
+
+```bash
+host-escape -- systemctl show dev-interactive.slice -p MemoryMax
+host-escape -- docker inspect dstdns-devcontainer-vb
+host-escape                         # interactive host shell
+mdt doctor --check-only             # inspect cgroup2 flags without repair
+host-escape --help
+```
+
+`mdt doctor` also starts a privileged host helper. Without `--check-only`, it
+may remount the host cgroup2 filesystem to restore required flags.
+
+For host changes, run the command from the Docker host shell where possible.
+The escape helper exists for host diagnostics and operations that genuinely
+need host namespaces; it does not preserve devcontainer isolation.
 
 ## Consumer devcontainer
 
@@ -129,6 +238,16 @@ does not create a per-container or container-driver builder. A partial or
 different `BUILDX_BUILDER`/`BUILDKIT_HOST` pair fails finalization. With the
 explicit environment above, both commands use the managed remote:
 
+Host setup keeps the socket at mode `0660` and assigns it to the host
+`docker` group after verifying the live service socket. The consumer must
+receive that same supplementary group (the MDT template wires it from the
+host's `DOCKER_GID`). Do not make the socket world-accessible to work around a
+group mismatch; check `id` in the consumer and `stat` on the host socket. See
+the [socket-access design](DESIGN-GUIDE.md#managed-buildkit-socket-access).
+The service seals its runtime directory after socket creation and compares
+ownership within the container's user namespace, so host-side UID remapping
+does not require manual `chown` or a directory permission change.
+
 ```bash
 docker build -t example:dev .
 docker buildx build --load -t example:dev .
@@ -137,6 +256,62 @@ docker buildx inspect mdt-managed
 
 Do not rely on a user's Buildx “current builder” state. The environment is the
 consumer contract and is re-applied by the template/finalizer.
+
+## VM-backed test runners
+
+The MDT cockpit has headless x86 QEMU, `qemu-img`, OVMF firmware, and
+`cloud-localds` available for disposable guest tests. This is an opt-in runner
+capability, not a host VM service. Package presence alone does not expose host
+virtualization devices.
+
+Use a VM for loop devices, partition devices, `partx`, `mkswap`, `swapon`,
+`swapoff`, initramfs, reboot, UEFI, kernel, or any other test that changes
+kernel-global state. A privileged Docker container shares the host kernel;
+loop and swap are not namespaced, so it is not an acceptable boundary for
+those operations. Keep the existing privileged container only for tests that
+need its userland/systemd shape without creating or activating host-visible
+devices.
+
+The standard runner uses QEMU TCG and user-mode networking, so it needs no
+`--privileged`, `/dev/kvm`, or `/dev/net/tun`. Place it in the configured test
+slice and keep its guest disks on disposable storage:
+
+```bash
+docker run --rm -d --name debian-vm-test \
+  --cgroup-parent="$CGROUP_PARENT_DEV_GATES" \
+  --tmpfs /run --tmpfs /tmp \
+  -v "$PWD/.vm-state:/vm:rw" \
+  <vm-runner-image>
+```
+
+Inside that runner, the MDT tools are used directly, for example:
+
+```bash
+qemu-img create -f qcow2 /vm/guest.qcow2 20G
+qemu-system-x86_64 -accel tcg,thread=multi -nographic \
+  -nic user,hostfwd=tcp:127.0.0.1:2222-:22 \
+  -drive file=/vm/guest.qcow2,format=qcow2
+```
+
+The device arguments are intentionally absent: exposing KVM or TAP by default
+would silently broaden the cockpit's privilege. KVM may be selected explicitly
+on hosts that provide it; otherwise TCG is slower but keeps the runner
+unprivileged. Keep VM disks under disposable storage and never attach a
+production block device.
+
+MDT's system acceptance uses the repository's shared Debian-install VM
+harness. From the MDT project root, run `./run-gate.py vm-system`; the lane
+requires the governed `CGROUP_PARENT_DEV_GATES`,
+`CGROUP_PARENT_DEV_INTERACTIVE`, and `BUILDX_BUILDER` variables. The harness
+maps the selected worktree's physical source mount and runs the installer,
+systemd, cgroup, Docker, and slice assertions inside the QEMU guest. It does
+not run those product checks in the cockpit. The harness override is
+`MDT_VM_SOURCE_DIR`, which is resolved through Docker's authoritative mount
+table and refuses an unmapped or missing source.
+
+The image release gate is `./run-gate.py release`. CMRU invokes that declared
+lane, so the OCI release-flow tests remain in `tester-unified` and do not have
+a second hand-written tester command in `cmru.toml`.
 
 ### Persistent AI CLI state
 
@@ -150,15 +325,71 @@ OpenCode source is `${localEnv:HOME}/mdt--mounted-folders/opencode-data`.
 | ClaudeLink | `.claudelink` | `/home/vscode/.claudelink` | `nexus.db`, scheduler state/logs, and related runtime files |
 | OpenCode | `opencode-data` | `/home/vscode/.local/share/opencode` | auth, sessions, logs, and runtime state |
 
+### Codex profile state and container lifetime
+
+The shipped template persists `.codex` and an optional `.codex2` profile directory. It sets
+`CODEX_SQLITE_HOME=/home/vscode/.codex/sqlite-shared`, placing the shared SQLite database
+under the persistent `.codex` host mount. The template also sets `shutdownAction` to `none`,
+so the container remains running when the attached Dev Containers session disconnects.
+
+### Optional Git config mount
+
+The shipped template does not mount `.gitconfig`. If a consumer needs a grouped, persistent Git
+config, add this entry to its `mounts` array:
+
+```jsonc
+"source=${localEnv:HOME}/mdt--mounted-folders/.gitconfig,target=/home/vscode/.gitconfig,type=bind"
+```
+
+The bootstrap uses the host filesystem type for existing sources, so an existing regular-file
+source works regardless of its filename or suffix. The default
+`DEVCONTAINER_MISSING_BIND_SOURCE_POLICY=create-by-spelling` creates missing sources according to
+their spelling: append `/` for a directory; without `/`, MDT creates an empty regular file with
+mode `0600`. This is an MDT convention, not a Docker mount type option. For example, this missing
+custom directory source is marked for creation:
+
+```jsonc
+"source=${localEnv:HOME}/mdt--mounted-folders/.my-cache/,target=/home/vscode/.my-cache,type=bind"
+```
+
+A directory mount must keep its trailing `/`, including in copied template entries. For a missing
+`$HOME` source without `/`, MDT creates a file regardless of its basename or suffix. Other existing
+host sources retain their actual type. The MDT host-setup wizard can instead set
+`DEVCONTAINER_MISSING_BIND_SOURCE_POLICY=fail`; this requires every `$HOME` source managed by the
+bootstrap to exist before Docker starts the devcontainer. `.gitconfig` is recognized as a file name
+and a directory at that path is refused.
+
+Choose the policy with `sudo ./install.sh --wizard` from MDT's `host-setup/` directory on the Docker
+host. The bootstrap reads the resulting `/etc/mdt/host-setup.env` when `initializeCommand` runs.
+
+To seed the source from the host's native Git config, run this on the host before the bootstrap has
+created the source, or after inspecting any already-created file:
+
+```sh
+set -eu
+source_file="$HOME/.gitconfig"
+target_file="$HOME/mdt--mounted-folders/.gitconfig"
+test -f "$source_file"
+if [ -e "$target_file" ] || [ -L "$target_file" ]; then
+  printf 'Refusing to overwrite existing Git config source: %s\n' "$target_file" >&2
+  exit 1
+fi
+install -D -m 600 "$source_file" "$target_file"
+```
+
+If an earlier bootstrap created a directory or empty file at the grouped `.gitconfig` path, inspect
+it before moving, replacing, or removing it. If Git config is not needed in the container, remove
+the mount instead.
+
 Copy the current template's mount entries unchanged so the host sources and container
-targets stay aligned. The bootstrap creates empty sources but does not migrate existing
-data. Before the first rebuild, run this on the host; it contains no credentials or
-secret literals:
+targets stay aligned. By default the bootstrap creates missing directories and empty files from
+their source spellings, but it does not migrate existing data. Before the first rebuild, run this
+on the host; it contains no credentials or secret literals:
 
 ```sh
 mdt_state="$HOME/mdt--mounted-folders"
 mkdir -p "$mdt_state"
-for d in .claude .claudelink .codex .config .gnupg .local .minisign .openclaw .pi .reasonix; do
+for d in .claude .claudelink .codex .codex2 .config .gnupg .local .minisign .openclaw .pi .reasonix; do
   if [ -d "$HOME/$d" ]; then
     mkdir -p "$mdt_state/$d"
     cp -a "$HOME/$d/." "$mdt_state/$d/"
@@ -200,4 +431,10 @@ builder is unavailable, the release stops; it cannot silently create an
 ungoverned replacement. `load` is the shipped source-first OCI-layout flow:
 the build phase creates the artifact once and the push phase publishes that
 same artifact with digest verification. Set `push` for direct registry export,
-or `repack` for the optional validated OCI-layout compression path.
+or `repack` for the optional validated OCI-layout compression path. The named
+`mdt-managed` remote owns the persistent BuildKit cache; the release wrapper
+reuses that cache without streaming a second local cache export through the
+client API. Forced recompression is disabled so large layers that already have
+a suitable encoding do not take a second compression pass.
+
+When collecting an MDT script failure, keep the first diagnostic line: `MDT <version> — modern Debian tools and Python debug`, with the version read from `MDT_VERSION` or `MDT_IMAGE_VERSION` at invocation time.

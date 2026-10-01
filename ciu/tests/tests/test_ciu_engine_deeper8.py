@@ -35,7 +35,7 @@ def test_secrets_list_reports_empty_declaration_without_a_table(tmp_path, monkey
     _prepare_empty_secret_command(monkeypatch, tmp_path)
     monkeypatch.setattr(engine.secret_materialize, "list_secrets", lambda *args: [])
 
-    assert engine.main(["secrets", "list", "-d", str(tmp_path), "--define-root", str(tmp_path)]) == 0
+    assert engine.main(["secrets", "list", "-d", str(tmp_path), "--root-folder", str(tmp_path)]) == 0
 
     output = capsys.readouterr().out
     assert "No secrets declared in this stack." in output
@@ -47,7 +47,7 @@ def test_secrets_reset_reports_no_artifacts_after_affirmative_empty_reset(tmp_pa
     _prepare_empty_secret_command(monkeypatch, tmp_path)
     monkeypatch.setattr(engine.secret_materialize, "reset_secrets", lambda *args, **kwargs: [])
 
-    assert engine.main(["secrets", "reset", "-y", "-d", str(tmp_path), "--define-root", str(tmp_path)]) == 0
+    assert engine.main(["secrets", "reset", "-y", "-d", str(tmp_path), "--root-folder", str(tmp_path)]) == 0
 
     output = capsys.readouterr().out
     assert "No secret store files to remove" in output

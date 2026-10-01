@@ -30,7 +30,7 @@ Both need a **verified** host cgroup tier. Resolution order:
 
 1. `$SRDM_CGROUP_PARENT` — the explicit per-project override, which is what
    `nyxloom.toml`'s gate argv sets.
-2. `$CGROUP_PARENT_DEV_BACKGROUND` — the ambient devcontainer tier.
+2. `$CGROUP_PARENT_DEV_GATES` — the ambient gate/lane tier.
 3. Nothing — refuse to launch.
 
 `tools/cgroup-parent.sh` does not trust the name. A slice systemd does not
@@ -41,15 +41,14 @@ through a `--cgroupns=host` probe and requires both that the slice's cgroup
 exists and that at least one resource knob differs from the kernel default.
 An unconfigured slice satisfies the first and fails the second.
 
-> **This devcontainer, as of 2026-08-03:** `$CGROUP_PARENT_DEV_BACKGROUND`
+> **This devcontainer, as of 2026-08-03:** `$CGROUP_PARENT_DEV_GATES`
 > is unset — the image predates the mdt host-setup rollout that injects it,
-> and it cannot be rebuilt mid-session. The tier itself IS installed and
-> configured (`dev-background.slice`: MemoryMax 16G, MemoryHigh 8G,
-> MemorySwapMax 48G, CPUWeight 20, IOWeight 10, under a `dev.slice`
-> carrying the measured io.max). Export it by hand:
+> and it cannot be rebuilt mid-session. Export it by hand only after verifying
+> that the host-installed gate tier exists and is configured:
 >
 > ```bash
-> export CGROUP_PARENT_DEV_BACKGROUND=dev-background.slice
+> export CGROUP_PARENT_DEV_GATES=dev-gates.slice
+> mdt-host-check.sh
 > ```
 >
 > Do not hardcode it anywhere that is not an explicit, verified override.

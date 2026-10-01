@@ -1,0 +1,74 @@
+# Whisper Transcription Service Stack
+# Template for: whisper-trans compose stack
+# Communication: Services communicate via voice2text-prod-network
+# External access via reverse proxy with TLS
+
+x-defaults: &service-defaults
+  labels:
+    - "project={{ deploy.project_name }}"
+    - "environment={{ deploy.environment_tag }}"
+  user: "${CONTAINER_UID:-0}:${CONTAINER_GID:-0}"
+  environment:
+    {% for key, value in deploy.env.defaults.items() %}
+    - {{ key }}={{ value }}
+    {% endfor %}
+
+services:
+  {{ services.whisper.name }}:
+    <<: *service-defaults
+    # source: https://hub.docker.com/r/onerahmet/openai-whisper-asr-webservice
+    # see also https://ahmetoner.com/whisper-asr-webservice/
+    # https://github.com/ahmetoner/whisper-asr-webservice
+    image: {{ services.whisper.image_name }}:{{ services.whisper.image_tag }}
+    hostname: {{ services.whisper.name }}
+    environment:
+      - ASR_ENGINE={{ whisper.asr_engine }}
+      - ASR_MODEL={{ whisper.asr_model }}
+      - ASR_DEVICE={{ whisper.asr_device }}
+      - ASR_MODEL_PATH={{ whisper.asr_model_path }}
+      - OMP_NUM_THREADS={{ whisper.omp_num_threads }}
+      - OPENBLAS_NUM_THREADS={{ whisper.openblas_num_threads }}
+      - MKL_NUM_THREADS={{ whisper.mkl_num_threads }}
+      - SAMPLE_RATE={{ whisper.sample_rate }}
+      - MODEL_QUANTIZATION={{ whisper.model_quantization }}
+      - ENABLE_POST_PROCESSING={{ whisper.enable_post_processing }}
+      - POST_PROCESSING_MODEL={{ whisper.post_processing_model }}
+      - MIN_TEXT_LENGTH={{ whisper.min_text_length }}
+      - POST_PROCESSING_PROMPT_PATH={{ whisper.post_processing_prompt_path }}
+      - WHISPER_PORT={{ services.whisper.internal_port }}
+    volumes:
+      - {{ whisper.hostdir.cache }}:/data/whisper
+      - {{ whisper.hostdir.audio_temp }}:/tmp/audio
+      - ${PHYSICAL_REPO_ROOT:-{{ ciu.physical_repo_root }}}/legacy-experiments/voice2text-ai/whisper-trans/test.wav:/tmp/audio/test.wav:ro
+      - /dev/shm:/dev/shm:rw
+    deploy:
+      resources:
+        limits:
+          memory: {{ whisper.resource_memory_limit }}
+          cpus: '{{ whisper.resource_cpu_limit }}'
+        reservations:
+          memory: 2G
+          cpus: '2'
+    shm_size: 2gb
+    ulimits:
+      memlock: -1
+      stack: 67108864
+    restart: unless-stopped
+    # No external ports - accessed only via reverse proxy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:{{ services.whisper.internal_port }}/docs').read()"]
+      interval: {{ deploy.health.interval }}
+      timeout: {{ deploy.health.timeout }}
+      retries: {{ deploy.health.retries }}
+      start_period: {{ deploy.health.start_period }}
+    labels:
+      - "{{ deploy.labels.prefix }}.component={{ services.whisper.name }}"
+      - "{{ deploy.labels.prefix }}.stack=application"
+      - "{{ deploy.labels.prefix }}.service-type=api"
+    networks:
+      - {{ deploy.network_name }}
+
+networks:
+  {{ deploy.network_name }}:
+    external: true
+    name: {{ deploy.network_name }}

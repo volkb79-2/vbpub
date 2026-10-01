@@ -103,6 +103,7 @@ class Reconciler:
         release_root: Optional[Path] = None,
         minisign_pubkey: str = "",
         max_iterations: Optional[int] = None,  # None = infinite; set in tests
+        dry_run: bool = False,
     ) -> None:
         self._backend = backend
         self._node_id = node_id
@@ -112,6 +113,7 @@ class Reconciler:
         self._pubkey = minisign_pubkey
         self._index = 0
         self._max_iterations = max_iterations
+        self._dry_run = dry_run
 
     # ------------------------------------------------------------------
     # Public API
@@ -158,7 +160,8 @@ class Reconciler:
 
         if raw is None:
             # Standby: no desired state yet; refresh health check and loop
-            self._backend.pass_health_check(self._node_id)
+            if not self._dry_run:
+                self._backend.pass_health_check(self._node_id)
             return False
 
         # --- 2. Verify schema + optional signature ------------------------
@@ -182,8 +185,17 @@ class Reconciler:
         observed = read_observed(self._scope) or ObservedState()
         if self._is_noop(desired, observed):
             log.debug("Generation %s already applied — no-op", desired.generation)
-            self._backend.pass_health_check(self._node_id)
+            if not self._dry_run:
+                self._backend.pass_health_check(self._node_id)
             return False
+
+        if self._dry_run:
+            log.info(
+                "[DRY RUN] Would apply action=%s generation=%s tag=%s digest=%s step=%s",
+                desired.action, desired.generation, desired.release.tag,
+                desired.release.manifest_sha256, desired.step_id,
+            )
+            return True
 
         # --- 4. Acquire host session/lock ----------------------------------
         lock = self._acquire_lock_with_retry(desired.generation)
@@ -465,6 +477,9 @@ class Reconciler:
 
     def _publish_error(self, error_class: str, message: str) -> None:
         """Publish an error observed state without advancing generation."""
+        if self._dry_run:
+            log.error("[DRY RUN] Would publish error state %s: %s", error_class, message)
+            return
         observed = read_observed(self._scope) or ObservedState()
         obs = ObservedState(
             applied_generation=observed.applied_generation,

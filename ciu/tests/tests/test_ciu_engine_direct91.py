@@ -14,6 +14,7 @@ from ciu import engine
 
 
 def _setup_before_secrets(monkeypatch, tmp_path: Path, specs):
+    (tmp_path / "ciu.global.defaults.toml.j2").write_text("", encoding="utf-8")
     stack = tmp_path / "stack"
     stack.mkdir()
     merged = {"demo": {}}

@@ -43,6 +43,8 @@ def test_missing_pyyaml_reports_overlay_remediation(monkeypatch, capsys):
 def test_native_compose_error_propagates_after_rendered_pipeline(monkeypatch, tmp_path: Path):
     """A failed native compose invocation remains a ComposeError after safe render stages."""
 
+    (tmp_path / "ciu.global.defaults.toml.j2").write_text("", encoding="utf-8")
+
     stack = tmp_path / "stack"
     stack.mkdir()
     (stack / "compose.yml").write_text("services: {}\n", encoding="utf-8")

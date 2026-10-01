@@ -12,6 +12,16 @@ to that production container?"* — so observing a **victim** alongside the
 
 ---
 
+## CLI identity
+
+The documented shell entrypoint and `cgprofile.py` parser share the project
+version from `pyproject.toml`. A top-level `--version` probe prints
+`cgprofile 0.1.0` on stdout, exits 0, and does not require the reporting venv;
+the shim routes this probe directly to the standard-library parser before its
+missing-venv diagnostic. At every nested parser depth, help, usage, and
+configuration diagnostics begin with `CGPROFILE 0.1.0 — cgroup resource
+profiler` as line 1; normal profiling output is unchanged.
+
 ## 1. Why the shape is what it is
 
 **The devcontainer cannot see the host cgroup tree.** `/sys/fs/cgroup` inside it
@@ -19,10 +29,27 @@ is a read-only, cgroup-namespaced view of its own subtree; `dev.slice`,
 `wings.slice` and everything else simply do not exist there. Shuttling
 individual file reads across a container boundary cannot sustain a 250 ms
 cadence, so instead the profiler **re-executes its entire self** inside a
-privileged helper container (`--privileged --user 0:0 --cgroupns=host
---pid=host`) with the repo and the output directory bind-mounted. Sampling code
-is then byte-identical in both modes, and `access.py` is the only module that
-knows the difference.
+privileged helper container with private PID/cgroup namespaces, the repo and
+output directory bind-mounted, and explicit read-only host `/proc` and cgroup
+mounts. Host process data is read from `/hostproc` through
+`CGPROFILE_PROC_ROOT`; the host cgroup tree is mounted at
+`/sys/fs/cgroup`. Sampling code is then byte-identical in both modes, and
+`access.py` owns the proc-root selection. A helper's private PID namespace
+cannot match host PIDs against `cgroup.procs` (the kernel translates
+invisible host tasks to PID `0`), so the Docker-aware caller resolves
+container names, labels, and `self` to immutable container IDs before
+re-exec. `self` therefore continues to mean the invoking container rather
+than the short-lived helper. The ID is located in the read-only host cgroup
+tree; it is never inferred from a namespace-relative `/proc/<pid>/cgroup`
+string.
+
+Before starting a helper, `access.py` launches a bounded placement probe under
+the injected interactive slice, after checking that it matches the cockpit's
+actual Docker parent. The probe uses the local `tester-unified:local` image by
+default (or `CGPROFILE_PLACEMENT_PROBE_IMAGE`), queries host systemd over a
+read-only DBus mount, and confirms both the probe and requested slices are
+loaded, non-transient units with instantiated cgroups. Only then is the
+privileged collector launched under the requested parent.
 
 **Bind sources are host paths.** A path handed to the Docker daemon is resolved
 on the host, not inside this container, so `/workspaces/vbpub` must be
@@ -43,15 +70,29 @@ than a huge negative spike. Nothing downstream may reintroduce that spike.
 **Two dependency tiers, and the split is deliberate.**
 
 - The **collector** (`access`, `targets`, `metrics`, `limits`, `sampler`,
-  `events`, `store`, `caps`, `damon`, `phases`' mark IO) is **standard library
-  only**. It is the half that runs inside the helper container, on a host under
-  memory pressure, next to production. It must not need a venv, must not import
-  pandas to read a counter, and must keep working in a minimal image.
+  `events`, `store`, `caps`, `damon`, `phases`' mark IO, and — RG-55 — `serve`,
+  `subtree`, `summary`) is **standard library only**. It is the half that runs
+  inside the helper container, on a host under memory pressure, next to
+  production. It must not need a venv, must not import pandas to read a
+  counter, and must keep working in a minimal image.
 - The **analyser and reports** (`analyze`, `report_html`, `report_md`,
   changepoint detection) run afterwards, outside, and **use real libraries**:
   pandas for resampling/correlation/grouping, plotly for the interactive
   report, matplotlib for the static twin, ruptures for changepoint detection,
   scipy/numpy underneath. Do not hand-roll any of that.
+
+**A third mode, RG-55: the always-on daemon.** `cgprofile serve` is a
+privileged, long-lived process with private PID/cgroup namespaces and
+explicit read-only host proc/cgroup mounts, that run-gate talks to over a Unix socket
+per lane instead of spawning a collector each time —
+`RG55-INTERFACE-CONTRACT.md` is the full wire contract, and it is STILL
+collector-tier: `lib/serve.py` never imports pandas, even for `ctl report`
+(§4.13 below explains how that verb still renders the real interactive
+report without breaking the tier split). The daemon owns its own ciu
+stack (`ciu.*.toml.j2`/`ciu.compose.yml.j2` at the project root) and image
+(`Dockerfile`/`build-push.py`/`docker-bake.hcl`) — see the README's
+"Running the daemon" section for the operator's-eye view; this file stays
+the module-contract reference.
 
 **Built once, never assembled at run time.** Dependencies are pinned in
 `requirements.txt` and installed into `venv/` by `./setup.sh`, ahead of any
@@ -66,13 +107,25 @@ a local read, not a fetch.
 
 ```
 scripts/cgroup-profiler/
-  cgprofile              thin exec shim → venv/bin/python cgprofile.py
+  cgprofile              exec shim → system python3 (serve/ctl/mark/_collect)
+                          or venv/bin/python (everything else, incl. report)
   cgprofile.py           CLI: run | attach | mark | report | targets | doctor
+                          | serve | ctl  (RG-55)
+  Dockerfile              RG-55: the cgprofile-host-daemon image (2-stage build)
+  build-push.py           RG-55: docker buildx bake --build/--push
+  docker-bake.hcl         RG-55: separate local-only and versioned GHCR targets
+  .dockerignore           RG-55
+  cmru.toml               RG-55: release contract (scm versioning, oci-image)
+  ciu.global.defaults.toml.j2  RG-55: standalone ciu root, host-singleton identity
+  ciu.defaults.toml.j2         RG-55: daemon service config defaults
+  ciu.compose.yml.j2           RG-55: the daemon's compose service block
+  ciu.toml.j2                  RG-55: sparse per-stack override (optional)
   setup.sh               build venv/ from pinned requirements (run once)
   requirements.txt       pinned: pandas, plotly, matplotlib, ruptures, scipy…
   DESIGN.md              this file
-  README.md              what it is, quickstart
-  ATTACH-GUIDE.md        how to wrap or attach it to a gate in any repo
+  README.md              what it is, quickstart; "Running the daemon" (RG-55)
+  ATTACH-GUIDE.md        how to wrap/attach to a gate; "Profiling a run-gate
+                          lane" (RG-55, the daemon-talks-to-run-gate path)
   lib/
     model.py      ✅ shared dataclasses (Mark/Phase/Event/Series/Proposal/Analysis)
     util.py       ✅ file readers, unit parsing, rate(), ancestors(), formatting
@@ -84,11 +137,14 @@ scripts/cgroup-profiler/
     phases.py     ← agent B
     events.py     ← agent B
     store.py      ← agent C
-    damon.py      ← agent C
+    damon.py      ← agent C (+ RG-55 C3: KdamondPool, multi-session DAMON)
     caps.py       ← agent C
     analyze.py    ← agent D
     report_md.py  ← agent D
     report_html.py← agent E
+    subtree.py    ← RG-55 C2: token→pid-subtree resolver (§4.13)
+    summary.py    ← RG-55 C1: the incremental Summary accumulator (§4.14)
+    serve.py      ← RG-55 C4/C5: SessionServer, the daemon's own socket loop (§4.15)
   tests/
 ```
 
@@ -546,7 +602,87 @@ cgprofile mark    <name> [--kind phase|event] [--run-dir D]
 cgprofile report  [--run-dir D] [--html] [--md]
 cgprofile targets [--target …]                                 resolve and print
 cgprofile doctor                                               access/DAMON check
+cgprofile serve   [--sessions D] [--socket P] [--damon-default on|off]
+                  [--interval S] [--keep-sessions N] [--keep-days N]
+                  [--observe-slices a,b] [--max-sessions N]     RG-55 daemon, PID 1
+cgprofile ctl     <version|start|status|host|stop|report|gc>    RG-55 socket client
 ```
+
+---
+
+### 4.13 `subtree.py` (RG-55 C2) — token → pid-subtree resolver
+
+`SubtreeResolver(cgroup, cgroup_root, token, proc_root)`: direct target-cgroup
+PIDs come from `cgroup.procs`, or from host `/proc/<pid>/cgroup` resolution
+when a private PID namespace renders those entries as zero. A pid belongs to
+the profiled lane iff it is directly in the target cgroup and
+`/proc/<pid>/environ` (NUL-separated, `errors="replace"`) carries
+`RUN_GATE_PROFILE_SESSION=<token>`, plus every descendant of such a pid
+(walked via `/proc/<pid>/task/*/children` when the kernel exposes it, else
+a ppid map built from `/proc/*/stat`, parsed past the last `)` since a
+command containing spaces/parens would otherwise misalign the fixed-field
+parse). `refresh()` re-resolves from scratch and returns the current set;
+`current_pids` is the last-refreshed cache. `targets_seen` (owned by the
+caller, `summary.SummaryAccumulator`) is the union of every pid ever
+returned across the session's life, not merely the current set — a worker
+that exits mid-session still counts. An unreadable `environ` (a zombie, a
+pid that vanished between `cgroup.procs` and the `/proc/<pid>/environ`
+read) is skipped, never raised — exactly the "absent is not zero, and
+neither is it fatal" rule §1 states for the rest of this package.
+
+### 4.14 `summary.py` (RG-55 C1) — the incremental Summary accumulator
+
+`SummaryAccumulator` implements `RG55-INTERFACE-CONTRACT.md` §3/§7 exactly:
+fed one tick at a time (`add_sample(cgroup, host, slice_cgroup, damon,
+pids)`), it produces the Summary document `ctl stop` returns
+(`finalize(ended_at)`) in O(1) wall time regardless of session length — the
+one O(samples) cost (nearest-rank percentiles) is paid incrementally, one
+append per tick, never re-scanned at `stop` time (the contract's own 30 s
+budget for `stop`, §1.5, depends on this). Percentiles are nearest-rank
+over the STORED per-sample values (ints; memory for hours of 1 Hz sampling
+is cheap enough not to bound). Null discipline is the same rule `util.py`'s
+readers already follow, applied to every derived field: a delta or
+percentile whose *inputs* were ever unreadable is `null`, never computed
+against a substituted zero. `sample_target_cgroup`/`sample_slice_cgroup`
+are thin wrappers around `metrics.sample_cgroup` (plus the two limit-drift
+fields, `memory.max`/`memory.high`, that group does not itself read — see
+that function's own docstring for why summary.py reads them directly
+rather than threading `limits.py` through the sampler).
+
+### 4.15 `serve.py` (RG-55 C4/C5) — the session server + CLI verbs
+
+`SessionServer` listens on a Unix socket (JSON-lines request/response, one
+request per connection — `_accept_loop`/`_handle_connection`), running one
+sampling thread per live session at a FIXED cadence (the adaptive
+hot/idle back-off §4.4 describes for `run`/`attach` is deliberately off
+here — the contract's own computation rules, §7, assume samples land every
+`interval_seconds` with no gaps). It owns: the in-memory + on-disk session
+registry (restart recovery finalizes any session a previous daemon process
+left `"live"` — `_recover_orphans`), retention (`--keep-sessions`/
+`--keep-days`, run on every `stop` and on demand via `gc`), the
+`WRITABLE_ROOTS` host-mutation boundary (the sessions directory and the
+DAMON admin sysfs root — every raw write this module or `damon.py` issues
+directly is checked against it; `RunDir`'s own writes are already confined
+by construction), and SIGTERM/SIGINT handling (`serve_forever` — every
+live session is finalized `aborted: "daemon-stopped"` before the socket
+closes). `cgprofile.py`'s `cmd_serve`/`cmd_ctl` (§4.12) are the CLI layer;
+`cmd_ctl`'s wire client (`_ctl_roundtrip`) is a 25 s-timeout, one-document-
+in/one-document-out socket call, nothing more.
+
+**`ctl report` and the tier split.** This module never imports pandas —
+`handle_report` instead shells out to the report tier's OWN interpreter
+(`self.report_python`/`self.report_script`, defaulting to the image's own
+`venv/bin/python` + `cgprofile.py`, both constructor-injectable for tests)
+as a subprocess, exactly the split the `cgprofile` bash shim already draws
+between collector verbs and `report`. For that subprocess to work at all,
+every session directory this module writes is ALSO a valid
+`lib.store.RunDir` in the §3/§4.3 sense — `_manifest_for` carries
+`run_id`/`started`/`ended`/`duration`/`targets`/`host`/`config` alongside
+the RG-55 registry fields, and `_on_session_sample` persists `samples`
+keyed by cgroup path (`{"cg": {cgroup: entry}, "mono": …}`), the same
+shape `cmd_collect`'s own collector writes. `limits` is deliberately
+always `{}` (CP-7) and `damon.jsonl` is not read by `analyze.py` at all
+(CP-6) — both recorded as backlog, not silently reproduced as if solved.
 
 ---
 
@@ -588,9 +724,6 @@ number.
 - cgroup v2 at `/sys/fs/cgroup`, mounted **without `memory_recursiveprot`**.
 - Devcontainer runs in `dev-interactive.slice`; gates run in
   `dev-background.slice` (`$CGROUP_PARENT_DEV_BACKGROUND`).
-- Helper container verified working:
-  `docker run --rm -i --privileged --user 0:0 --cgroupns=host --pid=host …`
-  gives rw host cgroupfs, host `/proc`, and writable DAMON sysfs.
 - Workspace bind: host `/home/vb/volkb79-2/vbpub` → `/workspaces/vbpub`.
 - Python 3.14.6 in both the devcontainer and the helper image. The
   devcontainer's own interpreter is itself a venv (`/home/vscode/.venv`), so

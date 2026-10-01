@@ -1,0 +1,227 @@
+{
+  "lanes": {
+    "session-extract": {
+      "history": [
+        {
+          "commit": "8df26ed143925c882e65a1fe673d1447055bd754",
+          "dirty": false,
+          "duration_seconds": 771.803,
+          "excluded_reason": null,
+          "exit_code": 0,
+          "git_operation": null,
+          "history_eligible": true,
+          "lane": "session-extract",
+          "outcome": "pass",
+          "profile_error": null,
+          "profile_ref": null,
+          "repo": "/workspaces/vbpub",
+          "resources": {
+            "cpu": {
+              "cores_avg": 1.801,
+              "cores_max": 3.344,
+              "nr_throttled": 0,
+              "seconds": 1388.512,
+              "throttled_seconds": 0.0
+            },
+            "daemon": null,
+            "damon": null,
+            "duration_seconds": 771.0,
+            "ended_at": "2026-10-01T02:31:19Z",
+            "events": {
+              "limit_drift": 0,
+              "memory_high_breach": 0,
+              "oom_kill": 0
+            },
+            "faults": {
+              "pgmajfault": 908394,
+              "workingset_refault_anon": 896287,
+              "workingset_refault_file": 1012836
+            },
+            "host": {
+              "end": {
+                "cpu_pressure": {
+                  "full_avg10": 0.0,
+                  "full_avg60": 0.0,
+                  "some_avg10": 22.3,
+                  "some_avg60": 35.92
+                },
+                "loadavg1": 14.09,
+                "memory_pressure": {
+                  "full_avg10": 0.09,
+                  "full_avg60": 0.24,
+                  "some_avg10": 0.1,
+                  "some_avg60": 0.63
+                }
+              },
+              "memory_full_stall_seconds": 15.403,
+              "memory_some_stall_seconds": 32.291,
+              "slice": null,
+              "start": {
+                "cpu_pressure": {
+                  "full_avg10": 0.0,
+                  "full_avg60": 0.0,
+                  "some_avg10": 15.19,
+                  "some_avg60": 11.81
+                },
+                "loadavg1": 7.21,
+                "memory_pressure": {
+                  "full_avg10": 0.32,
+                  "full_avg60": 0.07,
+                  "some_avg10": 0.32,
+                  "some_avg60": 0.11
+                }
+              }
+            },
+            "interval_seconds": 5.274,
+            "memory": {
+              "anon_peak_bytes": 695775232,
+              "baseline_bytes": 17510400,
+              "file_peak_bytes": 326733824,
+              "median_bytes": 534245376,
+              "p90_bytes": 768598016,
+              "peak_bytes": 894480384,
+              "peak_over_baseline_bytes": null,
+              "source": "memory.peak",
+              "swap_peak_bytes": 473616384
+            },
+            "method": "basic",
+            "pids": {
+              "peak": 42
+            },
+            "pressure": {
+              "cpu_some_stall_seconds": 256.82,
+              "io_full_stall_seconds": 29.949,
+              "io_some_stall_seconds": 36.884,
+              "memory_full_stall_seconds": 12.002,
+              "memory_some_stall_seconds": 20.35
+            },
+            "samples": 147,
+            "schema": 1,
+            "scope": "container",
+            "session": null,
+            "started_at": "2026-10-01T02:18:28Z",
+            "target": {
+              "cgroup": null,
+              "container_id": "64e93347a4167c72de09b8001341733f6c52721182f5b69272ba6077a8e17143",
+              "targets_seen": null,
+              "token": null
+            }
+          },
+          "revision": 46,
+          "started_at": "2026-10-01T02:18:28Z",
+          "worktree": "/workspaces/vbpub/.worktrees/nyxloom-r2-decoder-fix"
+        }
+      ],
+      "latest": {
+        "commit": "8df26ed143925c882e65a1fe673d1447055bd754",
+        "dirty": false,
+        "duration_seconds": 771.803,
+        "excluded_reason": null,
+        "exit_code": 0,
+        "git_operation": null,
+        "history_eligible": true,
+        "lane": "session-extract",
+        "outcome": "pass",
+        "profile_error": null,
+        "profile_ref": null,
+        "repo": "/workspaces/vbpub",
+        "resources": {
+          "cpu": {
+            "cores_avg": 1.801,
+            "cores_max": 3.344,
+            "nr_throttled": 0,
+            "seconds": 1388.512,
+            "throttled_seconds": 0.0
+          },
+          "daemon": null,
+          "damon": null,
+          "duration_seconds": 771.0,
+          "ended_at": "2026-10-01T02:31:19Z",
+          "events": {
+            "limit_drift": 0,
+            "memory_high_breach": 0,
+            "oom_kill": 0
+          },
+          "faults": {
+            "pgmajfault": 908394,
+            "workingset_refault_anon": 896287,
+            "workingset_refault_file": 1012836
+          },
+          "host": {
+            "end": {
+              "cpu_pressure": {
+                "full_avg10": 0.0,
+                "full_avg60": 0.0,
+                "some_avg10": 22.3,
+                "some_avg60": 35.92
+              },
+              "loadavg1": 14.09,
+              "memory_pressure": {
+                "full_avg10": 0.09,
+                "full_avg60": 0.24,
+                "some_avg10": 0.1,
+                "some_avg60": 0.63
+              }
+            },
+            "memory_full_stall_seconds": 15.403,
+            "memory_some_stall_seconds": 32.291,
+            "slice": null,
+            "start": {
+              "cpu_pressure": {
+                "full_avg10": 0.0,
+                "full_avg60": 0.0,
+                "some_avg10": 15.19,
+                "some_avg60": 11.81
+              },
+              "loadavg1": 7.21,
+              "memory_pressure": {
+                "full_avg10": 0.32,
+                "full_avg60": 0.07,
+                "some_avg10": 0.32,
+                "some_avg60": 0.11
+              }
+            }
+          },
+          "interval_seconds": 5.274,
+          "memory": {
+            "anon_peak_bytes": 695775232,
+            "baseline_bytes": 17510400,
+            "file_peak_bytes": 326733824,
+            "median_bytes": 534245376,
+            "p90_bytes": 768598016,
+            "peak_bytes": 894480384,
+            "peak_over_baseline_bytes": null,
+            "source": "memory.peak",
+            "swap_peak_bytes": 473616384
+          },
+          "method": "basic",
+          "pids": {
+            "peak": 42
+          },
+          "pressure": {
+            "cpu_some_stall_seconds": 256.82,
+            "io_full_stall_seconds": 29.949,
+            "io_some_stall_seconds": 36.884,
+            "memory_full_stall_seconds": 12.002,
+            "memory_some_stall_seconds": 20.35
+          },
+          "samples": 147,
+          "schema": 1,
+          "scope": "container",
+          "session": null,
+          "started_at": "2026-10-01T02:18:28Z",
+          "target": {
+            "cgroup": null,
+            "container_id": "64e93347a4167c72de09b8001341733f6c52721182f5b69272ba6077a8e17143",
+            "targets_seen": null,
+            "token": null
+          }
+        },
+        "revision": 46,
+        "started_at": "2026-10-01T02:18:28Z",
+        "worktree": "/workspaces/vbpub/.worktrees/nyxloom-r2-decoder-fix"
+      }
+    }
+  },
+  "schema": 2
+}

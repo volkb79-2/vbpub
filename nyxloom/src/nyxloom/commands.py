@@ -301,7 +301,7 @@ class CommandListener:
         SHARED detector, not a reimplementation). There is no `--force`
         available over ntfy, so a refusal here is unconditional: an
         operator who hits it must go verify/repair via the CLI
-        (`nyxloom resync <project>` / `--apply`) -- intentional, since a
+                (`nyxloomctl resync <project>` / `--apply`) -- intentional, since a
         chat-ops override of the riskiest operator action in the system
         with no audit-trail nuance (no forced-payload distinction like the
         CLI's) would be worse than just requiring the CLI for that case.
@@ -322,7 +322,7 @@ class CommandListener:
             return (
                 f"error: refusing to resume '{project}' -- could not verify "
                 f"its state first (failed to load its project config). Use "
-                f"the CLI: nyxloom resync {project}"
+                f"the CLI: nyxloomctl resync {project}"
             )
 
         drift = _pre_resume_drift_scan(project, cfg)
@@ -334,7 +334,7 @@ class CommandListener:
             return (
                 f"error: refusing to resume '{project}' -- could not verify "
                 f"its state first (the pre-resume drift scan itself "
-                f"failed). Inspect manually: nyxloom resync {project}"
+                f"failed). Inspect manually: nyxloomctl resync {project}"
             )
         if drift:
             summary = "; ".join(
@@ -345,7 +345,7 @@ class CommandListener:
             return (
                 f"error: refusing to resume '{project}' -- drift detected "
                 f"in {len(drift)} task(s): {summary}. Repair via the CLI: "
-                f"nyxloom resync {project} / nyxloom resync {project} --apply"
+                f"nyxloomctl resync {project} / nyxloomctl resync {project} --apply"
             )[:DIGEST_MAX_CHARS]
 
         # drift == [] -- verified clean, resume proceeds exactly as before

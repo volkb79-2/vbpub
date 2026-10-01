@@ -141,12 +141,16 @@ class TestOutputContract:
         stream.flush()
         assert raw.getvalue() == "[ERROR] bad\nordinary"
 
-    def test_consume_flags_stops_at_separator_and_propagates_env(self, monkeypatch):
-        import cmru.output as output
-        monkeypatch.delenv("CMRU_LOG_PREFIX_TIME_SHORT", raising=False)
+    def test_registered_timestamp_option_reaches_delegated_grammar(self, monkeypatch):
+        from cmru import cli, output
+
+        monkeypatch.delenv(output._TIME_ENV, raising=False)
         monkeypatch.setattr(output, "configure", lambda value: setattr(output, "_seen", value))
-        assert output.consume_cli_flags(["--log-prefix-time-short", "run", "--", "--log-prefix-time-short"]) == ["run", "--", "--log-prefix-time-short"]
-        assert os.environ["CMRU_LOG_PREFIX_TIME_SHORT"] == "1" and output._seen
+        delegated = cli._build_cli().delegates["versions"]
+        args = delegated.parser.parse_args(["check", "--log-prefix-time-short"])
+
+        assert args.log_prefix_time_short is True
+        assert os.environ[output._TIME_ENV] == "1" and output._seen
 
     def test_colour_is_disabled_for_dumb_or_no_color(self, monkeypatch):
         from cmru.output import _colour_enabled
@@ -167,7 +171,7 @@ class TestTesterGateContracts:
         argv = gate.build_docker_command(tmp_path, "cmru", ["pytest", "-q"], image="tester", cgroup_parent="dev.slice", memory="1g", memory_swap="2g", cpus="1")
         assert "--cgroup-parent=dev.slice" in argv and "/host/repo" in " ".join(argv)
         with pytest.raises(ValueError, match="command"):
-            gate.build_docker_command(tmp_path, ".", [], image="tester", memory="1g", memory_swap="2g", cpus="1")
+            gate.build_docker_command(tmp_path, ".", [], image="tester", memory="1g", memory_swap="2g", cpus="1", cgroup_parent="dev-gates.slice")
 
     @pytest.mark.parametrize("fn,env,label", [
         ("resolve_cgroup_parent", "CMRU_TESTER_CGROUP_PARENT", "cgroup_parent"),
@@ -181,31 +185,36 @@ class TestTesterGateContracts:
         import cmru.tester_gate as gate
         monkeypatch.delenv(env, raising=False)
         if fn == "resolve_cgroup_parent":
-            # Declared-only (CIU-46 wave): unset resolves to None — the
-            # unscoped launch is announced in main(), not a refusal here.
-            monkeypatch.delenv("CGROUP_PARENT_DEV_BACKGROUND", raising=False)
-            assert gate.resolve_cgroup_parent(None) is None
+            # Gate placement is mandatory: an absent declared tier must refuse
+            # before any Docker command can be assembled.
+            with pytest.raises(SystemExit, match="cgroup_parent"):
+                gate.resolve_cgroup_parent(None)
             monkeypatch.setenv(env, "from-env")
             assert gate.resolve_cgroup_parent(None) == "from-env"
             assert gate.resolve_cgroup_parent("explicit") == "explicit"
             return
         with pytest.raises(SystemExit, match=label):
             getattr(gate, fn)(None)
-        monkeypatch.setenv(env, "from-env")
-        assert getattr(gate, fn)("explicit") == "explicit"
+        if fn == "resolve_cpus":
+            monkeypatch.setenv(env, "1.5")
+            assert gate.resolve_cpus(None) == "1.5"
+            assert gate.resolve_cpus("0.75") == "0.75"
+        else:
+            monkeypatch.setenv(env, "from-env")
+            assert getattr(gate, fn)("explicit") == "explicit"
 
     def test_slice_probe_distinguishes_loaded_transient_and_no_docker(self, monkeypatch):
         import cmru.tester_gate as gate
         monkeypatch.setattr(gate.shutil, "which", lambda name: None)
-        assert gate.check_slice_unit("dev.slice", "probe")[0] is None
+        assert gate.check_slice_unit("dev.slice", "probe", "dev-gates.slice")[0] is None
         monkeypatch.setattr(gate.shutil, "which", lambda name: "/usr/bin/docker")
         monkeypatch.setattr(gate.subprocess, "run", lambda *a, **k: SimpleNamespace(returncode=0, stdout="LoadState=loaded\nFragmentPath=\n", stderr=""))
-        assert gate.check_slice_unit("typo.slice", "probe")[0] is False
+        assert gate.check_slice_unit("typo.slice", "probe", "dev-gates.slice")[0] is False
 
 
 class TestCliExecutionContracts:
     def _args(self, **overrides):
-        values = dict(plan=None, landscape=None, to_tag=None, generation=None,
+        values = dict(plan=None, landscape=None, generation=None,
                       scope="user", node_id=None, token=None, minisign_pubkey=None,
                       release_root=None, consul_addr=None, dry_run=False,
                       log_level="INFO")
@@ -245,7 +254,7 @@ profiles = []
         assert cli.cmd_publish(self._args(plan=str(plan))) == 0
         assert cli.cmd_approve(self._args(plan="p")) == 0
         assert cli.cmd_hold(self._args(plan="p")) == 0
-        assert cli.cmd_rollback(self._args(plan=str(plan), to_tag="old", generation=8)) == 0
+        assert cli.cmd_rollback(self._args(plan=str(plan), generation=8)) == 0
         assert cli.cmd_status(self._args(plan=str(plan))) == 0
         assert events[:3] == ["publish", ("approve", "p"), ("hold", "p")]
         assert '"ok": true' in capsys.readouterr().out

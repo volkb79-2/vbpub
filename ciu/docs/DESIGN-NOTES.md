@@ -7,6 +7,11 @@ explicitly **not** normative: `docs/SPEC.md` is the single source of truth for
 what CIU actually does. Entries are dated; nothing here should be read as a
 commitment or a roadmap item unless a SPEC section says otherwise.
 
+**Current-policy correction:** D1–D4 below preserve the August 2026 design
+discussion, including then-shipped unconditional memory and IOPS defaults.
+CIU no longer applies those defaults; see D10 and normative `SPEC.md`
+S15.1–S15.4 for the current explicit-only policy.
+
 ---
 
 ## D1 — Where per-container cgroup settings actually live (2026-08-03)
@@ -591,3 +596,36 @@ WARN. Anything wider — writing to a slice, creating a unit, mounting D-Bus,
 spawning a privileged helper, or persisting a drop-in that survives the
 container — is a new decision that must re-open D2's options table on its own
 merits, not an incremental extension of this one.
+
+## D10 — Do not invent per-container memory policy (2026-09-27)
+
+The original S15 defaults applied `mem_limit = "1g"`, a combined
+`mem_swap_limit = "17g"`, and `mem_reservation = "256m"` to every non-exempt
+service whenever governance was enabled. That made a placement or IO choice
+silently become a memory policy. It could also surprise workloads with a
+small leaf ceiling or make the Compose memory reservation interact badly with
+host `MemoryMin` policy.
+
+The operator decision is explicit-only: these three code defaults are empty,
+and CIU omits each Compose key unless the user sets it in the stack's or
+global governance table. Service-authored Compose keys remain authoritative.
+This mirrors `cpus`' no-surprise default and leaves the parent slice's
+aggregate limits intact. Existing global or stack configuration that sets a
+memory value continues to apply; the change removes only invented code-level
+values.
+
+The same rule applies to the old IOPS defaults. Missing/empty `read_iops` and
+`write_iops = 0` leave both directions uncapped; only explicit config values
+add caps. `read_iops = 0` is itself an explicit request for baseline-derived
+capping. Fresh `ciu init` output includes every governance option as active
+TOML data with governance disabled and no cap values, and its scaffold test
+checks the full table against `GOVERNANCE_DEFAULTS`.
+
+MDT's inotify watcher follows the same operator intent with its own disabled
+defaults. It applies explicit host-configured per-container caps only when a
+Docker scope has no explicit Docker memory limit. If CIU configures
+`mem_limit`, Docker records it and the watcher leaves that scope alone. If a
+host explicitly configures MDT leaf caps alongside CIU `mem_min` or other
+memory properties, the operator is responsible for keeping those controls
+compatible. The periodic MDT reconciliation service owns IO/cgroup-flag
+reconciliation; it is not a memory-cap fallback.

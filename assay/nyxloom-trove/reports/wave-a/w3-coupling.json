@@ -1,0 +1,209 @@
+{
+ "candidate_classes": {
+  "adapter.go": {
+   "import_time_only": 5,
+   "own_only": 127
+  },
+  "adapter.javascript": {
+   "both": 17,
+   "import_time_only": 4,
+   "own_only": 28
+  },
+  "adapter.python": {
+   "both": 34,
+   "import_time_only": 5,
+   "none": 4,
+   "own_only": 8
+  },
+  "adapter.sql": {
+   "both": 25,
+   "import_time_only": 7,
+   "none": 7,
+   "own_only": 117
+  },
+  "analysis": {
+   "both": 12,
+   "import_time_only": 1,
+   "own_only": 304
+  },
+  "cli": {
+   "both": 63,
+   "foreign_only": 7,
+   "none": 5,
+   "own_only": 42
+  },
+  "core": {
+   "both": 1969,
+   "foreign_only": 36,
+   "import_time_only": 150,
+   "none": 239,
+   "own_only": 599
+  },
+  "parsers.coverage": {
+   "both": 59,
+   "import_time_only": 9,
+   "none": 4,
+   "own_only": 81
+  },
+  "parsers.mutation": {
+   "both": 23,
+   "import_time_only": 6,
+   "own_only": 1
+  },
+  "parsers.result_reports": {
+   "both": 7,
+   "import_time_only": 2
+  }
+ },
+ "matrix_distinct_lines": {
+  "adapters/go": {
+   "adapter.go": 475,
+   "adapter.python": 4,
+   "cli": 7,
+   "core": 513,
+   "parsers.coverage": 108
+  },
+  "adapters/javascript": {
+   "adapter.javascript": 102,
+   "analysis": 38,
+   "cli": 258,
+   "core": 2741,
+   "parsers.coverage": 119
+  },
+  "adapters/python": {
+   "adapter.python": 225,
+   "core": 2802,
+   "parsers.coverage": 57
+  },
+  "adapters/sql": {
+   "adapter.sql": 440,
+   "core": 93
+  },
+  "core": {
+   "adapter.go": 3,
+   "adapter.javascript": 1,
+   "adapter.python": 189,
+   "adapter.sql": 121,
+   "analysis": 38,
+   "cli": 861,
+   "core": 12953,
+   "parsers.coverage": 168,
+   "parsers.mutation": 140,
+   "parsers.result_reports": 46
+  },
+  "parsers/coverage": {
+   "adapter.javascript": 49,
+   "analysis": 38,
+   "cli": 240,
+   "core": 2851,
+   "parsers.coverage": 841
+  },
+  "parsers/mutation": {
+   "core": 10,
+   "parsers.mutation": 194
+  },
+  "parsers/result_reports": {
+   "parsers.result_reports": 52
+  },
+  "root": {
+   "adapter.python": 114,
+   "analysis": 927,
+   "cli": 367,
+   "core": 6988,
+   "parsers.coverage": 56
+  }
+ },
+ "own_partition": {
+  "adapter.go": [
+   "adapters/go"
+  ],
+  "adapter.javascript": [
+   "adapters/javascript"
+  ],
+  "adapter.python": [
+   "adapters/python"
+  ],
+  "adapter.sql": [
+   "adapters/sql"
+  ],
+  "analysis": [
+   "root"
+  ],
+  "cli": [
+   "core"
+  ],
+  "core": [
+   "core"
+  ],
+  "parsers.coverage": [
+   "parsers/coverage"
+  ],
+  "parsers.mutation": [
+   "parsers/mutation"
+  ],
+  "parsers.result_reports": [
+   "parsers/result_reports"
+  ]
+ },
+ "stats": {
+  "core": "ctrace-expected",
+  "distinct_nodeids": 4902,
+  "empty_context_line_entries": 3593,
+  "has_nonempty_context": true,
+  "junit_testcases": 5628,
+  "raw_contexts": 5036,
+  "sites_remapped_to_statement_start": 816
+ },
+ "union_check": {
+  "adapter.go": {
+   "coverage_lines": 593,
+   "equal": true,
+   "union_over_contexts": 593
+  },
+  "adapter.javascript": {
+   "coverage_lines": 152,
+   "equal": true,
+   "union_over_contexts": 152
+  },
+  "adapter.python": {
+   "coverage_lines": 327,
+   "equal": true,
+   "union_over_contexts": 327
+  },
+  "adapter.sql": {
+   "coverage_lines": 559,
+   "equal": true,
+   "union_over_contexts": 559
+  },
+  "analysis": {
+   "coverage_lines": 995,
+   "equal": true,
+   "union_over_contexts": 995
+  },
+  "cli": {
+   "coverage_lines": 919,
+   "equal": true,
+   "union_over_contexts": 919
+  },
+  "core": {
+   "coverage_lines": 15855,
+   "equal": true,
+   "union_over_contexts": 15855
+  },
+  "parsers.coverage": {
+   "coverage_lines": 984,
+   "equal": true,
+   "union_over_contexts": 984
+  },
+  "parsers.mutation": {
+   "coverage_lines": 266,
+   "equal": true,
+   "union_over_contexts": 266
+  },
+  "parsers.result_reports": {
+   "coverage_lines": 88,
+   "equal": true,
+   "union_over_contexts": 88
+  }
+ }
+}

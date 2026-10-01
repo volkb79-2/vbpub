@@ -4,7 +4,7 @@
 # The lane command is nyxloom's existing pytest invocation (pytest-cov, NOT
 # `coverage run` -- coverage run traces only the parent, measuring ~nothing
 # of xdist workers, which would false-FAIL under `-n auto`). R1 makes Assay
-# JUDGE that coverage: the changed-line floor on base..HEAD (the role the
+# JUDGE that coverage: the whole-source line and branch floor (the role the
 # retired `nyxloom.coverage_gate` used to play) and a verifiable verdict
 # artifact. tester-unified supplies the environment; run-gate installs the
 # selected worktree's assay source as the Assay CLI boundary, and the verdict
@@ -21,11 +21,9 @@
 # not something this lane exercises or any other project consumes as a
 # toolkit.
 #
-# require_branch = false: nyxloom's suite does not measure branch coverage
-# today (no --cov-branch, no [tool.coverage] config) -- this migration swaps
-# the JUDGE for the existing line-only floor (D-064-L2); it does not raise
-# the bar. Declaring require_branch=true here would hard-fail every run on
-# an unmeasured property. Widening to branch coverage is a separate decision.
+# The main CLI lane measures and enforces whole-source line and branch
+# coverage. The narrower session-extract lane already had this contract; the
+# estate baseline now requires the broad CLI surface to carry it as well.
 #
 # snapshot_selection = "repository-minus-unsafe-symlinks": this assay.toml
 # lives in the same vbpub monorepo as ciu/assay.toml, whose repository-wide
@@ -38,8 +36,8 @@ schema_version = 2
 scope = "S1"
 rigor = ["R0", "R1"]
 enforcement = "gate"
-argv = ["/opt/tester-venv/bin/python", "-m", "pytest", "tests", "-n", "auto", "-q", "--cov=src/nyxloom", "--cov-report=json:coverage.json"]
-env = { PYTHONPATH = "src", PYTHONDONTWRITEBYTECODE = "1" }
+argv = ["/opt/tester-venv/bin/python", "-m", "pytest", "tests", "-n", "auto", "-q", "--cov=src/nyxloom", "--cov-branch", "--cov-report=json:coverage.json"]
+env = { PYTHONPATH = "src:../libraries/cli-extended/src", PYTHONDONTWRITEBYTECODE = "1" }
 # PATH: xdist worker spawn (subprocess). HOME: config/cache dirs some tests
 # touch. TERM/LANG: parity with ciu's lane. No CGROUP_PARENT_DEV_BACKGROUND
 # passthrough -- nyxloom's suite (unlike ciu's cgroup-governance tests) never
@@ -85,7 +83,7 @@ language = "python"
 source_roots = ["src"]
 fail_under = 100.0
 allow_excluded = false
-require_branch = false
+require_branch = true
 base = "main"
 
 [lanes.tester-unified.judge.coverage]
@@ -93,29 +91,24 @@ format = "coverage-py-json"
 artifact = "coverage.json"
 
 # session-extract: narrow package lane (2026-09-10), added alongside
-# tester-unified rather than modifying it. Scope: src/nyxloom/session_extract
-# and the extract-related slice of src/nyxloom/cli.py (--ledger/extract-debug
-# wiring), plus the exact CLI selector regression tests named below. The argv
-# stays restricted to this package's tests and those two CLI nodes so an
-# unrelated, pre-existing failure elsewhere in the tree (e.g. mattermost
-# provisioning tests, dstdns snapshot-fault tests) cannot block this lane.
+# tester-unified rather than modifying it. Its judged source scope is only
+# src/nyxloom/session_extract. The selected CLI tests below exercise the
+# installed harness routes; parser/registry source coverage belongs to the
+# broader tester-unified lane, whose R1 suite covers the complete CLI surface.
 #
 # require_branch = true: unlike tester-unified, this lane's argv passes
 # --cov-branch and this judge.mode is the ONLY thing gating the new
 # session_extract code, so there is no reason to leave branch coverage
 # unmeasured here the way tester-unified's D-064-L2 migration had to.
 #
-# base = "3d27c67e": the reviewed boundary for this narrow follow-up lane.
-# The full branch fork point at this HEAD is main's merge-base
-# 364945ddaaa528e4ca105bbe3af371d4d0360b04, which the tester-unified lane
-# already owns through base = "main". Do not move this narrow lane back to
-# that fork point: it would make changed-line R1/R2 judge the entire earlier
-# CLI-wide project-id/help wave as well as this feature, defeating the lane's
-# reviewed package scope. The earlier edc55648 pin had the same overreach.
+# base = "126ccc39e151e33cc7bbcaa18bf765f9c9cd7dd1": the selected
+# current-main boundary for this integration. source_roots still limits the
+# judged diff and mutation targets to the session-extract implementation
+# package; the broader tester-unified lane covers the CLI registry changes.
 #
-# rigor: R0+R1 land first (assay's own "add rigor in order" guidance);
-# R2 (native python mutation) is added in a follow-up edit once R1 is
-# confirmed green, not declared here on day one.
+# R0/R1/R2/R3 are all declared. A prior run exposed that the source root and
+# candidate cap had drifted from this lane's intended package scope; see the
+# P112 follow-up log for the failed invocation and corrected contract.
 
 [lanes.session-extract]
 scope = "S1"
@@ -126,8 +119,11 @@ argv = ["/opt/tester-venv/bin/python", "-m", "pytest",
   "tests/test_session_extract_reasonix.py",
   "tests/test_session_extract_classifier.py",
   "tests/test_session_extract_claude_code.py",
+  "tests/test_session_extract_cli_acceptance.py",
   "tests/test_session_extract_codex.py",
+  "tests/test_session_extract_config_validation.py",
   "tests/test_session_extract_debug_diff.py",
+  "tests/test_session_extract_edge_contracts.py",
   "tests/test_session_extract_init.py",
   "tests/test_session_extract_ledger.py",
   "tests/test_session_extract_mangle.py",
@@ -146,13 +142,14 @@ argv = ["/opt/tester-venv/bin/python", "-m", "pytest",
   "tests/test_cli_help.py",
   "tests/test_cli.py::test_tick",
   "tests/test_cli.py::test_tick_project_id_passes_the_selector_to_daemon",
-  "-n", "auto", "-q", "--cov=src/nyxloom", "--cov-branch", "--cov-report=json:coverage-session-extract.json"]
-env = { PYTHONPATH = "src", PYTHONDONTWRITEBYTECODE = "1" }
+  "-n", "4", "--maxfail=1", "-q", "--cov=src/nyxloom", "--cov-branch", "--cov-report=json:coverage-session-extract.json"]
+env = { PYTHONPATH = "src:../libraries/cli-extended/src", PYTHONDONTWRITEBYTECODE = "1" }
 env_passthrough = ["HOME", "PATH", "TERM", "LANG"]
-# The changed-line campaign currently has 413 candidates. 30m only reaches a
-# small prefix; keep the mutation jobs serial and give the complete campaign
-# enough wall time to finish on the shared production host.
-budget = "8h"
+# The final current-main diff has 43 eligible candidates, within the approved
+# 45-candidate cap. The source-backed plan estimates a 43m wall bound with two
+# mutation jobs and the declared 120s per-candidate failsafe; allow 2h for
+# baseline, scheduling, and verdict overhead.
+budget = "2h"
 allow_argv_append = false
 
 [lanes.session-extract.isolation]
@@ -165,28 +162,23 @@ unsafe_symlink_omissions = [
 
 [lanes.session-extract.judge]
 language = "python"
-source_roots = ["src"]
+source_roots = ["src/nyxloom/session_extract"]
 fail_under = 100.0
 allow_excluded = false
 require_branch = true
-base = "3d27c67e"
+base = "126ccc39e151e33cc7bbcaa18bf765f9c9cd7dd1"
 
 # R2: native python mutation, changed-lines-only -- resolve_mutation_targets
-# reuses R1's SAME base=3d27c67e diff, so this mutates exactly the lines
-# this session touched, not the whole package. jobs=1 (serial), NOT higher:
-# the argv already runs pytest -n auto (up to 8 xdist workers on this
-# host), so N concurrent mutation jobs would mean up to N*8 worker
-# processes on an 8-core host shared with a production game server
-# (host-shared-with-production-load-rule: load hit 85 doing exactly this
-# kind of unthrottled concurrency on 2026-09-02) -- serial mutants keep
-# concurrency bounded to the single already-accounted-for xdist fan-out.
-# The authoritative source-backed Assay discovery found 413 candidates after
-# the final source shape; 413 is the exact finite cap without turning this
-# into an open-ended campaign.
+# reuses R1's SAME current-main diff, so this mutates exactly the changed lines
+# under the session-extract source root, not the whole package. jobs=2 with
+# pytest -n 4 bounds total xdist fan-out to eight workers on this shared
+# 8-core host. The authoritative source-backed Assay plan at this selected
+# boundary found 43 candidates under the cap of 45; this finite cap prevents an
+# unbounded campaign.
 # budget_per_candidate remains 120s.
 [lanes.session-extract.judge.mutation]
-jobs = 1
-max_mutants = 413
+jobs = 2
+max_mutants = 45
 operators = ["python:compare-swap", "python:boolop-swap", "python:bool-const-flip", "python:falsy-swap"]
 budget_per_candidate = "120s"
 

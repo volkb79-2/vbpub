@@ -32,7 +32,7 @@ for collateral damage while it runs:
 
 ```bash
 ./cgprofile run \
-  --target  slice:dev-background.slice@follow \
+  --target  slice:dev-gates.slice@follow \
   --observe container:b87c0a5b-2387-4a1c-8863-ff23e6800a1d \
   -- ../../shared-ramdisk-depot-manager/tools/gate.sh
 ```
@@ -50,13 +50,15 @@ Where the gates on this host actually live:
 
 | repo | gate | lands in |
 |---|---|---|
-| `shared-ramdisk-depot-manager` | `tools/gate.sh` | `$CGROUP_PARENT_DEV_BACKGROUND` |
-| `cmru` | `src/cmru/tester_gate.py` | `CMRU_TESTER_CGROUP_PARENT` → same |
+| `shared-ramdisk-depot-manager` | `tools/gate.sh` | `$CGROUP_PARENT_DEV_GATES` |
+| `cmru` | `src/cmru/tester_gate.py` | `CMRU_TESTER_CGROUP_PARENT` → gates tier |
 | `ciu` | `src/ciu/governance.py` | `[<root>.governance].cgroup_parent` → same |
 
-All three resolve to `dev-background.slice` unless overridden, so
-`--target slice:dev-background.slice@follow` covers them without knowing which
-one you are about to run.
+SRDM and CMRU gate launchers resolve to `dev-gates.slice`, so
+`--target slice:dev-gates.slice@follow` covers that gate workload. CIU's
+governance value remains the background tier for long-running application
+stacks. A stack started deliberately by a gate should be profiled separately
+under `dev-background.slice` when needed.
 
 ---
 
@@ -64,7 +66,7 @@ one you are about to run.
 
 ```bash
 ./cgprofile attach --target container:my-service -d 300
-./cgprofile attach --target slice:dev-background.slice@follow --until-file /tmp/gate.done
+./cgprofile attach --target slice:dev-gates.slice@follow --until-file /tmp/gate.done
 ```
 
 `--until-file` is the clean way to bound a run whose length you do not know:
@@ -110,7 +112,7 @@ directory bind-mounted and the profiler's own path visible:
 
 ```bash
 docker run --rm \
-  --cgroup-parent="$CGROUP_PARENT_DEV_BACKGROUND" \
+  --cgroup-parent="$CGROUP_PARENT_DEV_GATES" \
   -v "$CGPROFILE_RUN_DIR:$CGPROFILE_RUN_DIR" \
   -e CGPROFILE_RUN_DIR \
   -v /workspaces/vbpub/scripts/cgroup-profiler:/cgprofile:ro \
@@ -176,10 +178,10 @@ every exit path, but do not point it at production cgroups casually.
 
 ## 6. DAMON
 
-`--damon` adds working-set hot/warm/cold breakdown alongside the counters,
-reusing `scripts/damon-analysis`. It takes the host's single DAMON facility for
-the duration of the run and always releases it, so do not run two DAMON
-consumers at once.
+In the short-lived `run`/`attach` collector, `--damon` adds working-set
+hot/warm/cold breakdown alongside the counters, reusing
+`scripts/damon-analysis`. That collector claims and releases a DAMON slot for
+its run. The daemon in §8 has a shared pool that supports concurrent sessions.
 
 ---
 
@@ -205,3 +207,54 @@ its own footprint is part of the design:
 - Analysis and rendering happen **after** the run, never during it.
 - Nothing is installed, downloaded, or built at run time. If `setup.sh` has not
   been run, collection still works and only the report step complains.
+
+---
+
+## 8. Profiling a run-gate lane
+
+This is the OTHER mode RG-55 added: a long-lived, privileged daemon
+(`cgprofile-host-daemon`, see the README's "Running the daemon") that
+run-gate talks to over a Unix socket, per lane invocation, instead of
+spawning a collector each time. `RG55-INTERFACE-CONTRACT.md` is the full
+wire contract; this section is the short version of how a lane gets found.
+
+**By container id + token (the normal case).** Before starting a lane
+container/exec, run-gate generates `token = secrets.token_hex(16)` and
+exports it as `RUN_GATE_PROFILE_SESSION=<token>` into the lane process,
+then resolves the container id with `docker inspect --format '{{.Id}}'`
+and calls:
+
+```bash
+docker exec cgprofile-host-daemon cgprofile ctl start \
+  --target "containerid:$CONTAINER_ID" \
+  --scope container \
+  --token "$TOKEN" \
+  --damon on \
+  --meta '{"lane":"gate","project":"...","worktree":"...","commit":null,"run_gate_revision":0,"kind":"command","expected":null}' \
+  --json
+```
+
+`--scope container-shared` is the exec-mode twin for a long-lived container.
+The token identifies a PID subtree (walked from `/proc/<pid>/environ`,
+re-discovered every 2 s) for target counts and DAMON. Memory and CPU still
+come from the shared cgroup; their deltas can include unrelated concurrent
+work. `memory.current` is baseline-subtracted because `memory.peak` there is
+lifetime, not per-lane. `start` is idempotent by
+`(container id, token)`: a retried/duplicate call returns the same live
+session (`"reused": true`) rather than starting a second one.
+
+**By session id.** The `start` response's `"session"` field
+(`s-<timestamp>-<4 hex>`) is what every later call names —
+`ctl status <session>`, `ctl stop <session>` (run in the same `finally` as
+container teardown, before `docker rm -f`), `ctl report <session>` for a
+human afterwards. `stop` is idempotent too: a second call on an
+already-finished session returns the same stored summary with
+`"already_stopped": true`, never an error.
+
+**When the daemon is unavailable.** Any nonzero exit, timeout, or
+unparsable stdout from `ctl` means "profiling unavailable for this call" —
+run-gate's own basic fallback (`method: "basic"`, sampling the lane
+container's own cgroup directly, no daemon involved) takes over silently;
+see the contract §4.3. This guide's `--target`/`--observe` collector mode
+(sections 1–7 above) is unaffected either way — it never talks to the
+daemon at all.

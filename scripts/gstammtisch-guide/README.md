@@ -14,7 +14,7 @@ the same host are owned elsewhere, and nothing here should duplicate them:
 | Concern | Owner |
 |---|---|
 | Per-server game slices (`wings-<uuid>.slice`, memory floors, CPU/IO weight) | Wings itself — patch stack in [`../../wings-cgroups/`](../../wings-cgroups/). Rollout on this node: [WINGS-CGROUPS-ROLLOUT.md](WINGS-CGROUPS-ROLLOUT.md) |
-| Dev tiers: `dev-interactive.slice` (devcontainers) + `dev-background.slice` (test/build/gate stacks), their measured IO caps, the fio baseline, BFQ setup, **and `/etc/docker/daemon.json`** | [`../../modern-debian-tools-python-debug/host-setup/`](../../modern-debian-tools-python-debug/host-setup/) — `sudo host-setup/install.sh --with-baseline` |
+| Dev tiers: `dev-interactive.slice` (devcontainers), `dev-background.slice` (long-running/build stacks), and `dev-gates.slice` (disposable test/gate lanes), their measured IO caps, the fio baseline, BFQ setup, **and `/etc/docker/daemon.json`** | [`../../modern-debian-tools-python-debug/host-setup/`](../../modern-debian-tools-python-debug/host-setup/) — `sudo host-setup/install.sh --with-baseline` |
 
 `setup-cgroups.sh` here is therefore **game-side only** — and RETIRED as of
 the host dev-tier cgroup governance rollout: patched Wings now places and

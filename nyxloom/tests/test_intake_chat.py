@@ -10,6 +10,8 @@ is ever invoked.
 
 from __future__ import annotations
 
+from nyxloom.cli_ctl import main as ctl_main
+
 import logging
 import textwrap
 
@@ -417,7 +419,7 @@ def test_cli_intake_verb_starts_then_resumes(sample_project, tmp_state, tmp_path
     monkeypatch.setattr(adapters, "build_resume", fake_build_resume)
 
     _set_emit("Hello, tell me more.", "sess-cli", "1")
-    exit_code = cli.main(["intake", "demo", "INTAKE-6", "I need a new report page"])
+    exit_code = ctl_main(["intake", "demo", "INTAKE-6", "I need a new report page"])
     assert exit_code == 0
     out = capsys.readouterr().out
     assert "Hello, tell me more." in out
@@ -428,7 +430,7 @@ def test_cli_intake_verb_starts_then_resumes(sample_project, tmp_state, tmp_path
     assert len(chat.transcript) == 2
 
     _set_emit("Got it, thanks.", "sess-cli", "2")
-    exit_code2 = cli.main(["intake", "demo", "INTAKE-6", "more detail here"])
+    exit_code2 = ctl_main(["intake", "demo", "INTAKE-6", "more detail here"])
     assert exit_code2 == 0
     out2 = capsys.readouterr().out
     assert "Got it, thanks." in out2

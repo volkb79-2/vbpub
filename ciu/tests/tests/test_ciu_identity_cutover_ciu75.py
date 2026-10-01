@@ -53,6 +53,19 @@ FACTS = INSTANCE_GENERATED_FACTS
 TEST_REPO = Path(__file__).resolve().parents[2] / "test-repo"
 
 
+def _complete_facts(tmp_path: Path, **overrides: str) -> dict[str, str]:
+    facts = {
+        "repo_name": "repo",
+        "instance_id": "abc123",
+        "network": "repo-abc123-network",
+        "physical_repo_root": "/host/repo",
+        "repo_root": str(tmp_path),
+        "public_fqdn": "",
+    }
+    facts.update(overrides)
+    return facts
+
+
 # ---------------------------------------------------------------------------
 # helpers
 # ---------------------------------------------------------------------------
@@ -179,16 +192,19 @@ class TestGeneratedFactsReader:
         # Written by hand: the shipped writer emits exactly
         # GENERATED_FACTS_KEYS, so only a hand-edit (or a future CIU) can put
         # an unknown key here — which is precisely the case under test.
+        facts = _complete_facts(tmp_path)
+        workspace_env.write_generated_facts(tmp_path, facts)
+        text = (tmp_path / FACTS).read_text(encoding="utf-8")
         (tmp_path / FACTS).write_text(
-            "[ciu.instance.generated]\n"
-            'instance_id = "abc123"\n'
-            'extra = "x"\n',
+            text.replace(
+                "[ciu.instance.generated]\n",
+                '[ciu.instance.generated]\nextra = "x"\n',
+                1,
+            ),
             encoding="utf-8",
         )
-        facts = workspace_env.read_generated_facts(tmp_path)
-        assert facts["extra"] == "x"
-        assert "extra" not in workspace_env.read_instance_identity_env(tmp_path)
-        assert "EXTRA" not in workspace_env.read_instance_identity_env(tmp_path)
+        with pytest.raises(workspace_env.WorkspaceEnvError, match="unknown generated-facts keys"):
+            workspace_env.read_generated_facts(tmp_path)
 
     def test_non_utf8_record_is_indeterminate_not_empty(self, tmp_path):
         """CIU-62's byte-level half, at the new source. `UnicodeDecodeError`
@@ -221,8 +237,12 @@ class TestGeneratedFactsReader:
         """Every generated fact is a string by construction; a number here
         would flow into a compose project name or a docker label as
         ``str(int)`` and be silently wrong instead of loudly refused."""
+        facts = _complete_facts(tmp_path)
+        workspace_env.write_generated_facts(tmp_path, facts)
+        text = (tmp_path / FACTS).read_text(encoding="utf-8")
         (tmp_path / FACTS).write_text(
-            "[ciu.instance.generated]\ninstance_id = 7\n", encoding="utf-8"
+            text.replace('instance_id = "abc123"', "instance_id = 7"),
+            encoding="utf-8",
         )
         with pytest.raises(
             workspace_env.WorkspaceEnvError, match=r"instance_id is int, not a string"
@@ -238,15 +258,12 @@ class TestGeneratedFactsReader:
         pinned here so the mechanism change did not quietly widen what counts
         as an identity fact.
         """
-        (tmp_path / FACTS).write_text(
-            "[ciu.instance.generated]\n"
-            'instance_id = "mine"\n'
-            "\n"
-            "[ciu.instance]\n"
-            'instance_id = "theirs"\n',
-            encoding="utf-8",
+        workspace_env.write_generated_facts(tmp_path, _complete_facts(tmp_path, instance_id="mine"))
+        with (tmp_path / FACTS).open("a", encoding="utf-8") as handle:
+            handle.write("\n[ciu.instance]\ninstance_id = \"theirs\"\n")
+        assert workspace_env.read_generated_facts(tmp_path) == _complete_facts(
+            tmp_path, instance_id="mine"
         )
-        assert workspace_env.read_generated_facts(tmp_path) == {"instance_id": "mine"}
 
     def test_a_non_table_at_the_facts_path_refuses(self, tmp_path):
         """Indeterminacy, not emptiness: the name is taken, by a non-table.
@@ -687,13 +704,12 @@ def test_a_stale_sibling_identity_cannot_reach_a_real_verbs_render(
     assert os.environ["PHYSICAL_REPO_ROOT"] == facts["physical_repo_root"]
 
 
-def test_machine_facts_still_come_from_the_ambient_environment(verb_repo, monkeypatch):
+def test_machine_facts_are_authoritative_from_the_generated_record(verb_repo, monkeypatch):
     """The other half of the boundary, or the fix would be a bigger hammer.
 
-    S3.1c clause 7: `ciu.env` also carries MACHINE facts — properties of the
-    host, not of the instance. Those stay ambient-first, because a value read
-    live from this process is fresher than one recorded at the last generate
-    (a rebuilt devcontainer changes `DOCKER_GID`; the record does not know).
+    S3.1c clause 7: machine facts are recorded in the generated document and
+    override inherited shell state just like identity facts. Otherwise a
+    sibling checkout's exported Docker group could still alter this run.
     """
     _repo, stack, _facts = verb_repo
     monkeypatch.setenv("DOCKER_GID", "4242")
@@ -703,7 +719,7 @@ def test_machine_facts_still_come_from_the_ambient_environment(verb_repo, monkey
     assert seen["exit"] == 0
     import os
 
-    assert os.environ["DOCKER_GID"] == "4242"
+    assert os.environ["DOCKER_GID"] != "4242"
 
 
 def test_a_corrupt_legacy_export_no_longer_crashes_step_1(
@@ -725,8 +741,7 @@ def test_a_corrupt_legacy_export_no_longer_crashes_step_1(
     assert seen["exit"] == 0
     assert seen["rendered"]["deploy"]["network_name"] == facts["network"]
     captured = capsys.readouterr()
-    assert "could not read" in captured.err
-    assert "ciu env generate" in captured.err
+    assert "could not read" not in captured.err
     assert "Traceback" not in captured.err
 
 
@@ -735,23 +750,17 @@ def test_the_regenerated_legacy_export_cannot_change_identity(
 ):
     """The review's Repro C, answered honestly rather than defended.
 
-    Deleting `ciu.env` and finding CIU still works proves little on its own,
-    because STEP 1 REGENERATES the file it calls write-only. What matters is
-    that the regeneration cannot move identity: the facts before and after are
-    identical, and the render still names the recorded network. (The absent
-    case is genuinely covered by
-    `test_cutover_leaves_the_generated_record_as_the_only_load_bearing_one`,
-    which removes the record CIU actually reads.)
+    Deleting `ciu.env` must not affect a read-only verb: the generated facts
+    record remains the sole load-bearing source and no legacy export is
+    regenerated as a side effect.
     """
     repo, stack, facts = verb_repo
     (repo / "ciu.env").unlink()
 
-    seen = _run_secrets_list(stack, monkeypatch)
-
-    assert seen["exit"] == 0
-    assert (repo / "ciu.env").is_file(), "STEP 1 regenerates the legacy export"
+    with pytest.raises(workspace_env.WorkspaceEnvError, match="is missing"):
+        _run_secrets_list(stack, monkeypatch)
+    assert not (repo / "ciu.env").exists()
     assert workspace_env.read_generated_facts(repo) == facts
-    assert seen["rendered"]["deploy"]["network_name"] == facts["network"]
 
 
 def test_step_1_regeneration_keeps_stdout_clean_for_json_consumers(
@@ -771,11 +780,11 @@ def test_step_1_regeneration_keeps_stdout_clean_for_json_consumers(
     repo, stack, _facts = verb_repo
     (repo / "ciu.env").unlink()
 
-    _run_secrets_list(stack, monkeypatch)
+    with pytest.raises(workspace_env.WorkspaceEnvError, match="is missing"):
+        _run_secrets_list(stack, monkeypatch)
 
     captured = capsys.readouterr()
-    assert "LEGACY WRITE-ONLY export" in captured.err
-    assert "LEGACY WRITE-ONLY export" not in captured.out
+    assert "LEGACY WRITE-ONLY export" not in captured.err
     assert "[S3.1c]" not in captured.out
 
 
@@ -801,15 +810,9 @@ def test_a_checkout_with_no_generated_table_is_repaired_not_refused(
     (repo / OVERLAY).write_text("# operator's own file, no CIU table\n", encoding="utf-8")
     assert workspace_env.read_generated_facts(repo) == {}
 
-    seen = _run_secrets_list(stack, monkeypatch)
-
-    assert seen["exit"] == 0
-    repaired = workspace_env.read_generated_facts(repo)
-    assert repaired == facts, "a repair re-derives the SAME identity, not a new one"
-    assert seen["rendered"]["deploy"]["network_name"] == facts["network"]
-    err = capsys.readouterr().err
-    assert "carries no [ciu.instance.generated] table" in err
-    # The operator's file is byte-for-byte untouched: CIU has no writer for it.
+    with pytest.raises(workspace_env.WorkspaceEnvError, match="ciu env generate"):
+        _run_secrets_list(stack, monkeypatch)
+    assert workspace_env.read_generated_facts(repo) == {}
     assert (repo / OVERLAY).read_text(encoding="utf-8") == (
         "# operator's own file, no CIU table\n"
     )

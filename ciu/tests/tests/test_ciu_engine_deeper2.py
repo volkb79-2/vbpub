@@ -28,15 +28,15 @@ def _early_pipeline(monkeypatch: pytest.MonkeyPatch, global_config: dict) -> Non
     monkeypatch.setattr(engine, "configure_logging", lambda *_: None)
 
 
-def test_define_root_must_match_bootstrapped_repository(tmp_path, monkeypatch):
-    """S1.2: an explicit root cannot quietly operate against another ciu.env."""
-    _early_pipeline(monkeypatch, {})
-    (tmp_path / "stack").mkdir()
+def test_define_root_wins_over_bootstrapped_repository(tmp_path, monkeypatch):
+    """S1.1: explicit root intent is not second-guessed by ambient state."""
+    (tmp_path / "ciu.global.defaults.toml.j2").write_text("", encoding="utf-8")
     other_root = tmp_path / "other"
     monkeypatch.setenv("REPO_ROOT", str(other_root))
 
-    with pytest.raises(ValueError, match="does not match REPO_ROOT"):
-        engine.main_execution(tmp_path / "stack", define_root=tmp_path)
+    from ciu.workspace_env import resolve_env_root
+
+    assert resolve_env_root(tmp_path, tmp_path, "ciu.global.defaults.toml.j2") == tmp_path
 
 
 def test_render_toml_stops_before_network_merge_and_stack_execution(tmp_path, monkeypatch, capsys):
@@ -57,6 +57,40 @@ def test_render_toml_stops_before_network_merge_and_stack_execution(tmp_path, mo
 
     assert result == {"status": "success", "dry_run": False}
     assert "Rendered CIU TOML files" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    ("flags",),
+    [
+        ({"dry_run": True, "print_context": False, "render_toml": False},),
+        ({"dry_run": False, "print_context": True, "render_toml": False},),
+    ],
+)
+def test_identity_repair_requires_all_three_runtime_mode_guards(
+    tmp_path, monkeypatch, flags
+):
+    """Each ``and`` in the runtime repair guard must remain an AND.
+
+    The two cases isolate the first and second conjunction respectively:
+    changing either one to OR would incorrectly enable repair for a
+    read-only invocation.
+    """
+    _early_pipeline(monkeypatch, {"ciu": {}})
+    stack = tmp_path / "stack"
+    stack.mkdir()
+    captured = {}
+
+    class StopAfterBootstrap(Exception):
+        pass
+
+    def capture(**kwargs):
+        captured.update(kwargs)
+        raise StopAfterBootstrap
+
+    monkeypatch.setattr(engine, "bootstrap_workspace_env", capture)
+    with pytest.raises(StopAfterBootstrap):
+        engine.main_execution(working_dir=stack, define_root=tmp_path, **flags)
+    assert captured["allow_identity_repair"] is False
 
 
 def test_required_fqdn_rejects_empty_public_name_before_secret_or_compose_work(tmp_path, monkeypatch):

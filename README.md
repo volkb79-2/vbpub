@@ -10,24 +10,78 @@ one config and one installed CLI.
 |---|---|---|---|
 | **cmru** | [`cmru/`](cmru/) | Python wheel | cmru (dogfood) — `cmru-v*` |
 | **ciu** | [`ciu/`](ciu/) | Python wheel | cmru — `ciu-v*` |
+| **assay** | [`assay/`](assay/) | Python wheel + zipapp | cmru — `assay-v*` |
+| **topos** | [`topos/`](topos/) | Python wheel | cmru — `topos-v*` |
 | **modern-debian-tools-python-debug** | [`modern-debian-tools-python-debug/`](modern-debian-tools-python-debug/) | OCI images | cmru — `modern-debian-tools-python-debug-v*` |
 | **pwmcp** (Playwright-MCP service) | [`pwmcp/`](pwmcp/) | OCI image + stack bundle | cmru — `pwmcp-v<playwright>-r<N>` |
-| **nyxloom** | [`nyxloom/`](nyxloom/) | Deterministic multi-project agent workflow control plane (offline/redesign; excluded from builds and releases) | — |
+| **nyxloom** | [`nyxloom/`](nyxloom/) | Deterministic multi-project agent workflow control plane | cmru — `nyxloom-v*` |
 | **tls-edge** | [`tls-edge/`](tls-edge/) | tarball | cmru — `tls-edge-v*` |
+| **run-gate** | [`run-gate-project/`](run-gate-project/) | Python wheel | cmru — `run-gate-v*` |
+| **cli-extended** | [`libraries/cli-extended/`](libraries/cli-extended/) | Shared Python CLI library | independently packageable; not yet in the cmru release set |
 | **empyrion-translation** | [`game_stuff/empyrion/`](game_stuff/empyrion/) | tarball | *(delegated, on-demand)* — date-tagged |
 | plesk-mailbox-create | [`plesk-mailbox-create/`](plesk-mailbox-create/) | script tool | n/a |
-| vsc-devcontainer | [`vsc-devcontainer/`](vsc-devcontainer/) | devcontainer image | n/a |
+| devcontainer templates | [`modern-debian-tools-python-debug/templates/`](modern-debian-tools-python-debug/templates/) | devcontainer template | n/a |
 | **debian-install v2** | [`scripts/debian-install-v2/`](scripts/debian-install-v2/) | root-only Python installer | n/a |
 
 Each product has its own README with product-specific detail.
 
+First-party operator entrypoints with a declared authoritative product version
+accept a top-level `--version`. They print their entrypoint name and version
+(or run-gate revision) on stdout and exit 0 without diagnostics on stderr.
+The probe is exactly one identity line. At every parser depth, help, usage,
+missing-argument, unknown-argument, and other configuration diagnostics begin
+with the tool headline as line 1, before argparse usage text. Normal command
+output is unchanged.
+Product READMEs document the supported entrypoints; helper scripts, vendored
+commands, and tools without a declared version source are outside this
+compatibility surface. In particular, `scripts/damon-analysis/damon_cli.py`
+is a documented operator CLI but remains excluded because the project has no
+release or version metadata of its own; the DAMON kernel and `damo` versions
+recorded in its guide are host dependencies, not this CLI's version.
+The DAMON decision and its operator-facing scope are recorded in
+[`scripts/damon-analysis/SCRIPTS.md`](scripts/damon-analysis/SCRIPTS.md).
+
 Testing is uniform across the projects that adopted the gate entrypoint:
 `cd <project> && ./run-gate.py --list` discovers that project's declared
 lanes (see [`run-gate-project/CONSUMERS.md`](run-gate-project/CONSUMERS.md)).
+The canonical estate-wide testing matrix, evidence rules, methodology review
+checklist, and Assay adoption policy are in
+[`TESTING-ESTATE-CHECKLIST.md`](TESTING-ESTATE-CHECKLIST.md).
+
+The current execution sequence for finishing CMRU, reviewing the outstanding
+CLI work, strengthening the major lanes, and performing the estate release is
+[`docs/plan-post-cmru-estate-release.md`](docs/plan-post-cmru-estate-release.md).
 
 For Debian hosts, `debian-install v2` applies a known fresh-install swap shape
 from one JSON file. See [`docs/CONSUMERS.md`](docs/CONSUMERS.md) for adoption;
 the legacy shell bootstrap remains under `scripts/debian-install/`.
+
+For Netcup SCP API provisioning, use the guided tools under
+[`scripts/netcup/`](scripts/netcup/): `scp-api.py login` creates the OAuth refresh token,
+`configure` optionally resolves account/image defaults into a local recipe, and the
+installer can select an existing account SSH key (or explicitly register a
+new one), preview, or monitor a Debian-install-v2 run. The companion explorer
+enumerates server-scoped inventory account-wide by default, provides
+`scp-api.py status` for a compact live table with hostname, state, resources,
+an SSH key-authentication result, and a multiline IP/reverse-DNS column (using
+only the server detail address fields; SSH probes default to two seconds),
+diagnostics such as `scp-api.py metrics SERVER_ID cpu --hours 24`,
+and filters such as `scp-api.py imageflavours --filter debian`. It also exposes
+confirmed ISO attachment, firewall assignment, and grouped power actions
+(`scp-api.py power on|off|cycle|reset SERVER_ID`); validated firewall policy
+create/PUT and account user-ISO upload (`scp-api.py user-iso upload FILE`) are
+also available through the CLI. Debian-install-v2 progress can use Telegram,
+the public nyxloom Mattermost incoming webhook, or no notifications; the
+webhook URL is kept as a local secret and is never committed. See the
+[`Netcup tools README`](scripts/netcup/README.md).
+After login, the wizard can also add `v<digits>` SCP server names to a local
+protected-server denylist; guarded mutating commands refuse those servers.
+
+User-facing Python CLIs can share the estate-wide parser, diagnostics,
+verbosity, colour, progress, and cancellation contract through
+[`libraries/cli-extended/`](libraries/cli-extended/). Its rationale and
+adoption examples are linked from that library's README; the normative
+contract is [`libraries/cli-extended/SPEC.md`](libraries/cli-extended/SPEC.md).
 
 ## Repository setup and initial CMRU build
 
@@ -53,26 +107,28 @@ bootstrap process. After installation, the `cmru` console script is the canonica
 interface for this repository and for each individual project.
 
 Before running a release gate, ensure the dedicated gate image is built from
-[`tester-unified/Dockerfile`](tester-unified/Dockerfile), and keep Docker work under the
-configured `$CGROUP_PARENT_DEV_BACKGROUND` slice.
+[`tester-unified/Dockerfile`](tester-unified/Dockerfile), and keep gate
+containers under the configured `$CGROUP_PARENT_DEV_GATES` slice. A gate that
+starts a long-running application stack receives `$CGROUP_PARENT_DEV_BACKGROUND`
+separately for that nested stack.
 
 ## Releasing (cmru)
 
-Use the installed `cmru` command for all verbs. The repository keeps one optional
-convenience wrapper for the common full release:
+Use the installed `cmru` command for all verbs. The native release command is
+the common full-release entry point:
 
 ```bash
 cmru status                             # preview what would be released (read-only)
-./cmru.release.sh                      # one-shot: detect changed → tag → push → build → publish
-./cmru.release.sh --dry-run            # preview tags only, no writes
-cmru changelog --project assay --backfill-tag assay-v0.1.0  # migrate a missed history entry
-cmru build --project <name>            # retained isolated gate + build; no publish
-cmru publish --project <name>          # run the project's declared publish step
+cmru release                            # one-shot: detect changed → tag → push → build → publish
+cmru release --dry-run                  # preview tags only, no writes
+cmru changelog assay --backfill-tag assay-v0.1.0  # migrate a missed history entry
+cmru build <name>                       # retained isolated gate + build; no publish
+cmru publish <name>                     # run the project's declared publish step
 cmru cleanup --remove-assets 30d       # prune old releases / GHCR versions
 cmru --help                            # all verbs
 ```
 
-`./cmru.release.sh` creates a line-flushed full `cmru.release.log` by default while the
+Native `cmru release` creates a line-flushed full `cmru.release.log` by default while the
 console shows concise orchestration summaries. Add `--show-run-details` to stream raw
 Docker/test output too; add `--log-append` to retain prior transcripts with a divider.
 
@@ -85,10 +141,12 @@ Docker/test output too; add `--log-append` to retain prior transcripts with a di
 - **Release history:** CMRU creates each managed product's `CHANGES.md` before its
   isolated gate. No per-project opt-in is needed; see [`cmru/README.md`](cmru/README.md).
 - **Auto-released set** (`orchestration.project_order` in `cmru.orchestration.toml`): ciu, cmru,
-  assay, topos, modern-debian-tools-python-debug, pwmcp, tls-edge. Nyxloom is
-  intentionally offline and excluded from the build/release set.
+  assay, topos, nyxloom, modern-debian-tools-python-debug, pwmcp, tls-edge, and
+  run-gate-project. Each entry is governed by its project-local `cmru.toml`;
+  an artifact may still be deliberately omitted from a project's artifact list.
   Empyrion translation remains an on-demand, delegated date-tagged asset.
 - **Contract & rationale:** [`cmru/docs/SPEC.md`](cmru/docs/SPEC.md) — start at *"S-CLI — CLI at a glance"*.
+  Design rationale: [`cmru/docs/DESIGN-GUIDE.md`](cmru/docs/DESIGN-GUIDE.md).
   Tooling overview: [`docs/RELEASE-TOOLING.md`](docs/RELEASE-TOOLING.md).
 
 ## Repo layout
@@ -99,7 +157,7 @@ ciu/ pwmcp/ tls-edge/ modern-debian-tools-python-debug/ game_stuff/   products
 nyxloom/      project-neutral workflow control-plane design/pilot
 scripts/         shared ops scripts (netcup, debian-install, …; needs requirements.txt)
 docs/            release tooling, versioning, plans
-cmru.orchestration.toml  cmru.release.sh  cmru/build-initial-standalone.sh
+cmru.orchestration.toml  cmru/build-initial-standalone.sh
                          estate release-toolchain configuration and bootstrap
 ```
 
