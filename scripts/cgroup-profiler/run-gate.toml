@@ -104,4 +104,6 @@ argv = [
     "cd {worktree}/scripts/cgroup-profiler && ./run-gate.py --worktree {worktree} r0-r1 && ./run-gate.py --worktree {worktree} r2 && ./run-gate.py --worktree {worktree} r3",
 ]
 clean_tree = false
-budget = "90m"
+# The full sequence includes the enforced 24h assay R2 window. This outer
+# command-lane budget is advisory; assay.toml owns the actual R2 deadline.
+budget = "25h"
