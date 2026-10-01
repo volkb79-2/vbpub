@@ -69,6 +69,7 @@ def test_askpass_reads_token_at_prompt_time_without_embedding_it(tmp_path, monke
         source = helper.read_text(encoding="utf-8")
         assert token not in source
         assert helper.stat().st_mode & 0o777 == 0o700
+        compile(source, str(helper), "exec")
 
         child_environment = os.environ.copy()
         child_environment.update(environment)

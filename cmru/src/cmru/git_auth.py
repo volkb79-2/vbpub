@@ -32,11 +32,11 @@ import sys
 from urllib.parse import urlsplit
 
 prompt = " ".join(sys.argv[1:]).lower()
-match = re.search(r"https://[^\\s'\"<>]+", prompt)
+match = re.search(r"https://\\S+", prompt)
 if match is None:
     raise SystemExit(1)
 try:
-    prompted_host = urlsplit(match.group(0).rstrip(":")).hostname
+    prompted_host = urlsplit(match.group(0).rstrip("':>")).hostname
 except ValueError:
     raise SystemExit(1)
 if (prompted_host or "").casefold() != "github.com":
