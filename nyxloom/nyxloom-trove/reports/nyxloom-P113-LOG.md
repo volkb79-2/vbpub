@@ -292,3 +292,25 @@ contract directly: malformed JSON rows return `None`. Added
 local pytest invocation passed. The implementation source did not change, so
 the source-backed inventory remains 43. Final run-gate coverage, review, and
 R2 remain pending; do not treat the 42/43 result as complete.
+
+## Final coverage, review, and R2 closeout — 2026-10-01
+
+Added test_rejected_qa_question_decoder_returns_none_for_invalid_json to
+assert the decoder's direct str-or-None contract. Its focused pytest
+invocation passed. This test-only change is commit
+8df26ed143925c882e65a1fe673d1447055bd754.
+
+The final registered session-extract lane ran on that exact commit from
+/workspaces/vbpub/.worktrees/nyxloom-r2-decoder-fix. It resolved base
+126ccc39e151e33cc7bbcaa18bf765f9c9cd7dd1 by merge-base, selected the
+source-backed 43-candidate inventory under the approved cap of 45, and used
+jobs = 2. R0 PASS; R1 PASS at 117/117 changed lines and 60/60 branches;
+R2 PASS at 43/43 killed with no survivors, equivalents, crashes, hangs, or
+budget overruns; R3 PASS. The run lasted 771.803 seconds.
+
+The verdict, progress stream, and run-gate history are preserved under
+evidence/nyxloom-integration-20261001/. The final review after coverage
+examined the Claude parsing boundaries, malformed-input handling, direct
+decoder assertion, and integrated diff; it found no remaining issue.
+nyxloom-P113-REPORT.md records the final evidence and the earlier failed and
+scope-limited attempts. P113 is complete.
