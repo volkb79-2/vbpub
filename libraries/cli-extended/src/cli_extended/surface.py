@@ -69,7 +69,7 @@ _ARGPARSE_ACTION_TYPES = {
 def _argparse_checks_optional_const_choices(const: Any) -> bool:
     """Probe omitted-const choices behavior for one exact built-in type."""
 
-    parser = argparse.ArgumentParser(add_help=False)
+    parser = argparse.ArgumentParser()
     action = parser.add_argument(
         "--probe", nargs="?", const=const, choices=()
     )
@@ -82,7 +82,8 @@ def _argparse_checks_optional_const_choices(const: Any) -> bool:
 
 _ARGPARSE_OPTIONAL_CONST_PROBE_VALUES = (
     None,
-    True,
+    # The truth value is immaterial; this probe records only the exact type.
+    bool(1),
     1.5,
     1,
     "not-a-choice",
@@ -191,9 +192,11 @@ def _normalize_action_type(value: Any, *, path: str, opaque: list[str]) -> Any:
     for converter, label in _BUILTIN_TYPE_LABELS.items():
         if value is converter:
             return {"callable": label}
-    if callable(value) and _callable_label(value) in _BUILTIN_TYPE_LABELS.values():
-        opaque.append(path)
-        return {"opaque": "built-in-converter-label-collision"}
+    if callable(value):
+        label = _callable_label(value)
+        if label in _BUILTIN_TYPE_LABELS.values():
+            opaque.append(path)
+            return {"opaque": "built-in-converter-label-collision"}
     return _normalize(value, path=path, opaque=opaque)
 
 
@@ -215,14 +218,15 @@ def _normalize_parser_kwarg(
 ) -> Any:
     if key == "type":
         return _normalize_action_type(value, path=path, opaque=opaque)
-    if key == "action" and callable(value):
-        label = _callable_label(value)
-        stock_action = _ARGPARSE_CHOICE_ACTION_LABELS.get(label)
-        if stock_action is not None:
-            if value is not stock_action:
-                opaque.append(path)
-                return {"opaque": "action-label-collision"}
-            return {"callable": label}
+    if key == "action":
+        if callable(value):
+            label = _callable_label(value)
+            stock_action = _ARGPARSE_CHOICE_ACTION_LABELS.get(label)
+            if stock_action is not None:
+                if value is not stock_action:
+                    opaque.append(path)
+                    return {"opaque": "action-label-collision"}
+                return {"callable": label}
     return _normalize(value, path=path, opaque=opaque)
 
 

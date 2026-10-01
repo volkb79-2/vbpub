@@ -95,7 +95,7 @@ handling; see
 
 ## CLI-EXT-04 — export a stable CLI surface and semantic-review checklist
 
-**Status:** Correctness follow-up in progress; clean registered R0/R1 and R3 passed on `9f7099ef` on 2026-10-01. The fresh R2 mutation verdict remains pending; the earlier `f49fdc13` R2 run returned `BUDGET_EXCEEDED`.
+**Status:** Correctness follow-up in progress. On 2026-10-01, registered R0/R1 and R3 passed on `4d303f7b`; its registered R2 campaign failed with 1,005 killed and 11 surviving mutants out of 1,016. The exact verdict and progress artifacts are preserved under `libraries/cli-extended/.assay/archive/r2-4d303f7b-before-survivor-fixes-20261001/`. After the survivor follow-up, registered R0/R1 passed again with 100% statement and branch coverage (3,378 statements and 1,640 branches); a fresh R2 campaign and R3 run against the follow-up source remain required.
 
 Self-review found false certifications in typed-choice checking and choice
 surface export. The correction models exact built-in conversions, marks
@@ -107,10 +107,12 @@ choices behavior for representative `None`, `bool`, `float`, `int`, and
 `str` constants and records the matching result in the generated surface and
 signatures. It keeps positional omission on the
 separate default-value path. The checker reports failures from modeled
-built-in conversions even when choices are absent. The baseline R2 run ended
-with 909 killed, 48 survived, and one budget-exceeded candidate; those results
-are for `f49fdc13`, not the current WIP. The current worktree's R0/R1 and R3
-gates passed; a fresh R2 verdict remains required.
+built-in conversions even when choices are absent. An earlier R2 run on
+`f49fdc13` ended with 909 killed, 48 survived, and one budget-exceeded
+candidate; those results are not for the current source. The current source's
+most recent complete campaign on `4d303f7b` killed 1,005 mutants and left 11
+survivors. Their follow-up changes are described in
+`docs/CLI-SURFACE-IMPLEMENTATION-PLAN.md`; they still need a fresh R2 campaign.
 The same review found that a string-only `const` probe could not safely model
 numeric or `None` constants on runtimes that treat those values differently.
 The surface now probes each supported built-in const type, and Markdown
@@ -119,13 +121,15 @@ rendering refuses missing route invocation flags instead of defaulting them to
 first converted token, and it converts `argparse.REMAINDER` values without
 claiming ignored `choices` are enforced; remainder choices mark the surface
 incomplete.
-The corrections are in the CIU-managed integration worktree. Clean R0/R1
-passed on `9f7099ef` at 05:06 UTC with 100% statement and branch coverage
-(3,371 statements and 1,634 branches). R3 passed at 05:06 UTC with its expected
-canary rejection. An earlier committed R0/R1 attempt revealed a parser-case
-test that selected the wrong argument; it now selects the target argument by
-ID. CLI-EXT-04 is not complete or merge-ready until a fresh R2 verdict is
-triaged and all final-source gates pass.
+The corrections are in the CIU-managed integration worktree. Before the
+survivor follow-up, clean R0/R1 passed on `4d303f7b` at 05:08 UTC with 100%
+statement and branch coverage (3,371 statements and 1,634 branches). R3 passed
+on that revision with its expected canary rejection. An earlier committed
+R0/R1 attempt revealed a parser-case test that selected the wrong argument; it
+now selects the target argument by ID. The survivor follow-up source passed
+registered R0/R1 with 100% statement and branch coverage (3,378 statements and
+1,640 branches). CLI-EXT-04 remains incomplete until fresh R2 and R3 gates
+pass against the committed follow-up source.
 
 **Type:** Feature
 

@@ -1,6 +1,6 @@
 # CLI surface and semantic review tooling plan
 
-**Status:** Correctness follow-up in progress; clean registered R0/R1 and R3 passed on `9f7099ef` on 2026-10-01. The fresh R2 mutation verdict remains pending; the earlier `f49fdc13` R2 run returned `BUDGET_EXCEEDED`.
+**Status:** Correctness follow-up in progress. Registered R0/R1 and R3 passed on `4d303f7b` on 2026-10-01. Its R2 campaign failed with 1,005 killed and 11 survivors out of 1,016; the artifacts are archived and survivor follow-up changes are in the worktree. After the follow-up, registered R0/R1 passed with 100% statement and branch coverage (3,378 statements and 1,640 branches); fresh R2 and R3 gates remain required.
 
 **Scope:** CLI-EXT-01, CLI-EXT-03 disposition, and CLI-EXT-04
 **Decision owner:** cli-extended maintainers and adopting product owners
@@ -160,8 +160,8 @@ valid for `f49fdc13`, but the R2 outcome is not a pass and predates the current
 correctness changes. An initial committed-tree R0/R1 run found that one new
 parser case selected a root-level positional candidate instead of the tested
 `values` argument; candidate selection now matches by argument ID. Clean
-R0/R1 and R3 subsequently passed on `9f7099ef`; the fresh final-source R2
-verdict remains pending.
+R0/R1 and R3 subsequently passed on `9f7099ef`; the later `4d303f7b` R2
+campaign and its survivor follow-up are recorded below.
 One R2 survivor changes the interaction occurrence check from `or` to `and`.
 A focused regression now supplies every named conflicting option while
 repeating one member, so a count mismatch remains visible even when the set of
@@ -175,9 +175,9 @@ that the option token's index is in range, then passes `index + 1` to the value
 boundary helper. A value-taking option at the end of argv therefore reaches
 the `position == len(argv)` guard in `review.py`. The earlier claim that the
 caller checks the same bound is incorrect. The optional-const behavior test
-places `nargs="?"` at the end of argv and exercises this guard; it now passes
-in the current-worktree R0/R1 gate. The fresh registered R2 run must classify
-the earlier timeout against current source.
+places `nargs="?"` at the end of argv and exercises this guard; it passed in
+the current-worktree R0/R1 gate. The later registered R2 campaign completed
+without timing out; its survivors and the follow-up changes are recorded below.
 
 The prior `f49fdc13` R2 artifact is schema v13, native, unsharded, and has a
 complete 958-candidate inventory. Inspection found that its 909 killed records
@@ -271,9 +271,35 @@ and surface-completeness corrections are now in the CIU-managed integration
 worktree. Current-worktree R0/R1 passed with 100% statement and branch
 coverage (3,371 statements and 1,634 branches) at 05:06 UTC. R3 passed on the
 same clean revision at 05:06 UTC; the canary reported the expected rejection
-after disabling the JSON redaction guard. The baseline R2 result above remains
-evidence for the earlier source only; the fresh current-source R2 campaign
-remains to be completed.
+after disabling the JSON redaction guard. The later `4d303f7b` R2 outcome and
+the follow-up validation status are recorded below.
+
+## R2 follow-up: first complete campaign and survivor remediation
+
+The registered R2 campaign on commit `4d303f7b9654435bfdabd3c71af73b1e8169b5bb`
+ran from 2026-10-01 05:08:43 UTC to 06:05:08 UTC and failed with
+`MUTANTS_SURVIVED`: 1,005 killed, 11 survived, and zero crashed, timed out, or
+were classified equivalent out of 1,016 candidates. The exact verdict,
+progress stream, run-gate history, and mutation state were copied before
+follow-up work to
+`libraries/cli-extended/.assay/archive/r2-4d303f7b-before-survivor-fixes-20261001/`.
+The surviving mutations were reviewed and grouped as follows:
+
+| Survivor group | Review finding | Follow-up in the worktree |
+| --- | --- | --- |
+| `review.py:1069` | The explicit `end < len(argv)` check duplicated the EOF behavior of `is_option_boundary(end)`, so removing it preserved behavior. | Removed the redundant bound check; added end-of-argv cases for `nargs="*"` and `nargs="+"`. |
+| `review.py:1488,1492` (four candidates) | Count and shortage diagnostics repeated overlapping predicates after parser positioning had already constrained the values. | Added `_value_count_problem()` to classify shortage, wrong count, or valid count once; tests assert each classification and the existing invocation diagnostics retain shortage-specific messages. |
+| `review.py:1602` | The unknown-required-option check had a negative test but no valid required-option reference, so an inverted kind comparison survived. | Made the fixture option required and added a positive known-required-option case beside unknown references. |
+| `surface.py:72` | `add_help=False` on a disposable parser was irrelevant to `_get_values()`. | Removed the no-op setting. |
+| `surface.py:85` | The probe's `True` literal was only inspected by exact type, and either boolean value was rejected by the empty choice set. | Expressed the representative boolean probe as `bool(1)` and documented that only exact type matters. |
+| `surface.py:194,218` (two candidates) | Combined short-circuit predicates obscured the two distinct normalization paths. | Split callable checks from label/action lookup and added coverage for callable values outside the `action` kwarg. |
+| `surface.py:1257` | The fallback surface test checked global incompleteness but not that every route was incomplete without retained registrations. | Asserted incompleteness for every fallback route. |
+| `surface.py` non-callable type path | No test showed that a non-callable type reference is preserved while refusing to certify syntax. | Added coverage for a numeric type reference; it remains visible in the surface and marks syntax incomplete. |
+
+The follow-up source passed registered R0/R1 with 100% statement and branch
+coverage (3,378 statements and 1,640 branches). Fresh R2 and R3 gates must run
+against the committed follow-up source before CLI-EXT-04 is called complete.
+Do not treat the earlier R2 result as a pass.
 
 The generator deliberately does not enumerate every optional value count or
 repeat count. Consumers declare separate named interactions for token shapes
@@ -540,13 +566,14 @@ items, and consumer docs show the annotations to add.
    the public colour API and current parser-constraint limits. Keep this plan
    as the review/implementation record and link to the stable design-guide
    section.
-7. **Run the library's registered gates.** This package has no root
-   `run-gate.py`, so launch each `run-gate.toml` lane command through
-   `cmru tester-gate` with `--cwd libraries/cli-extended`, the lane's declared
-   image/resources, and the orchestration-provided gates cgroup. Use the
-   source-backed Assay path and preserve its resume/progress files under
-   `.assay/`. Do not use the sibling `run-gate-project` runner for this
-   package or treat a local venv result as gate evidence.
+7. **Run the library's registered gates.** From `libraries/cli-extended`, use
+   `./run-gate.py gate`; its committed symlink invokes the shared
+   `run-gate-project` runner and its declared `gate` lane serially runs
+   `r0-r1`, `r2`, and `r3`. Keep all test, mutation, and canary work in
+   `tester-unified`. The runner reads the lane resources and the
+   orchestration-provided gates cgroup; the R2 command installs Assay from the
+   selected worktree and stores resume/progress files under `.assay/`. Do not
+   run a cockpit pytest command as gate evidence.
 
 ## Required behavioral oracles
 

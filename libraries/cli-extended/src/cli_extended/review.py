@@ -197,16 +197,26 @@ def _minimum_action_values(action: Mapping[str, Any]) -> int:
     return int(minimum)
 
 
-def _value_count_accepts(action: Mapping[str, Any], values: Sequence[str]) -> bool:
+def _value_count_problem(
+    action: Mapping[str, Any], values: Sequence[str]
+) -> str | None:
+    """Classify a value-count failure once for validation and diagnostics."""
+
     nargs = action.get("nargs")
     minimum = _minimum_action_values(action)
     if len(values) < minimum:
-        return False
+        return "too-few"
     if nargs is None and len(values) != 1:
-        return False
+        return "wrong-count"
     if isinstance(nargs, int) and len(values) != nargs:
-        return False
-    return nargs != "?" or len(values) <= 1
+        return "wrong-count"
+    if nargs == "?" and len(values) > 1:
+        return "wrong-count"
+    return None
+
+
+def _value_count_accepts(action: Mapping[str, Any], values: Sequence[str]) -> bool:
+    return _value_count_problem(action, values) is None
 
 
 def _value_shape_accepts(
@@ -1066,7 +1076,7 @@ def _review_findings(
             if inline:
                 return index + 1
             end = index + 1
-            while end < len(argv) and not is_option_boundary(end):
+            while not is_option_boundary(end):
                 end += 1
             return end
         return index + 1
@@ -1483,16 +1493,17 @@ def _review_findings(
                 values = positional_occurrences.get(argument_id, ())
                 if not values:
                     continue
-                minimum = _minimum_action_values(action)
-                if not _value_count_accepts(action, values):
-                    if len(values) < minimum and action.get("required"):
-                        findings.append(
-                            f"invocation for {case_id} omits required positional argument {argument_id}"
-                        )
-                    if len(values) < minimum and not action.get("required"):
-                        findings.append(
-                            f"invocation for {case_id} omits a value for positional argument {argument_id}"
-                        )
+                count_problem = _value_count_problem(action, values)
+                if count_problem is not None:
+                    if count_problem == "too-few":
+                        if action.get("required"):
+                            findings.append(
+                                f"invocation for {case_id} omits required positional argument {argument_id}"
+                            )
+                        else:
+                            findings.append(
+                                f"invocation for {case_id} omits a value for positional argument {argument_id}"
+                            )
                     findings.append(
                         f"invocation for {case_id} has an invalid positional value shape"
                     )

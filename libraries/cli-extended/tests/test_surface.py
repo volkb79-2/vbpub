@@ -79,6 +79,17 @@ def test_normalize_parser_kwarg_keeps_exact_stock_action_by_identity():
     assert opaque == []
 
 
+def test_normalize_non_action_callable_stock_value_remains_opaque():
+    opaque = []
+
+    normalized = _normalize_parser_kwarg(
+        "default", argparse._StoreAction, path="default", opaque=opaque
+    )
+
+    assert normalized == {"callable": "argparse._StoreAction"}
+    assert opaque == ["default"]
+
+
 def test_normalize_parser_kwarg_marks_unregistered_callable_action_opaque():
     def custom_action(*_args, **_kwargs):
         return None
@@ -2873,3 +2884,37 @@ def test_surface_without_retained_registry_declarations_is_incomplete():
 
     assert surface["syntax_complete"] is False
     assert any("registry declarations were not retained" in item for item in surface["incomplete"])
+    assert all(not route["syntax_complete"] for route in surface["routes"])
+
+
+def test_noncallable_type_reference_is_incomplete_and_preserved_in_surface():
+    def install_noncallable_type(parser):
+        action = next(
+            action
+            for action in parser._actions
+            if "--value" in action.option_strings
+        )
+        action.type = 42
+
+    registry = CliRegistry(IDENTITY, prog="surface-demo", description="Invalid type.")
+    registry.register(
+        VerbSpec(
+            "inspect",
+            description="inspect",
+            options=(OptionSpec(("--value",), "value", parser_kwargs={"type": int}),),
+            configure=install_noncallable_type,
+            handler=lambda *_: 0,
+        )
+    )
+
+    surface = export_cli_surface(registry.build())
+    action = next(
+        action
+        for route in surface["routes"]
+        for action in route["actions"]
+        if action.get("flags") == ["--value"]
+    )
+
+    assert action["type"] == 42
+    assert surface["syntax_complete"] is False
+    assert any("non-callable type reference" in issue for issue in surface["incomplete"])

@@ -40,6 +40,7 @@ from cli_extended.review import (
     _statically_skipped,
     _validate_distinct_surface_paths,
     _values_satisfy_action,
+    _value_count_problem,
     _value_shape_accepts,
 )
 
@@ -2496,6 +2497,16 @@ def test_value_shape_validation_rejects_inconsistent_arity_metadata():
     )
 
 
+def test_value_count_problem_distinguishes_shortage_from_wrong_count():
+    fixed = {"nargs": 2, "minimum_values": 2}
+    assert _value_count_problem(fixed, ("one",)) == "too-few"
+    assert _value_count_problem(fixed, ("one", "two")) is None
+    assert _value_count_problem(fixed, ("one", "two", "three")) == "wrong-count"
+    assert _value_count_problem(
+        {"nargs": "?", "minimum_values": 0}, ("one", "two")
+    ) == "wrong-count"
+
+
 def test_option_occurrences_require_presence_and_reject_invalid_flag_values():
     flag = {"kind": "option", "nargs": 0}
     assert not _option_occurrences_accept(flag, ())
@@ -3626,7 +3637,9 @@ def test_review_invocation_lexer_handles_option_arities_and_delimiters():
         ("fixed", "--fixed", 2, 2, ["--fixed=first", "second"]),
         ("maybe", "--maybe", "?", 0, ["--maybe", "--zero"]),
         ("many", "--many", "*", 0, ["--many", "a", "b", "--zero"]),
+        ("many-end", "--many-end", "*", 0, ["--many-end", "a", "b"]),
         ("some", "--some", "+", 1, ["--some", "a", "b", "--zero"]),
+        ("some-end", "--some-end", "+", 1, ["--some-end", "a", "b"]),
         ("rest", "--rest", argparse.REMAINDER, 0, ["--rest", "tail", "--zero"]),
         ("parser", "--parser", argparse.PARSER, 1, ["--parser", "child"]),
         ("odd", "--odd", "odd", 0, ["--odd"]),
@@ -4547,6 +4560,20 @@ def test_review_minimum_checks_the_exact_number_of_required_argument_values():
     assert _findings_for_invocation(candidate, route, ["inspect", "one", "two"]) == []
     findings = _findings_for_invocation(candidate, route, ["inspect", "one"])
     assert any("omits required positional argument" in item for item in findings)
+    inconsistent_route = {
+        **route,
+        "actions": [{**route["actions"][0], "minimum_values": 0}],
+    }
+    inconsistent_findings = _findings_for_invocation(
+        candidate, inconsistent_route, ["inspect", "one"]
+    )
+    assert any(
+        "invalid positional value shape" in item for item in inconsistent_findings
+    )
+    assert not any(
+        "omits required positional argument" in item
+        for item in inconsistent_findings
+    )
 
 
 def test_review_minimum_reports_unknown_required_options_without_false_certification():
@@ -4562,7 +4589,7 @@ def test_review_minimum_reports_unknown_required_options_without_false_certifica
                 "kind": "option",
                 "flags": ["--present"],
                 "nargs": 0,
-                "required": False,
+                "required": True,
                 "parser_path": ["inspect"],
             }
         ],
@@ -4585,6 +4612,19 @@ def test_review_minimum_reports_unknown_required_options_without_false_certifica
     assert any(
         "references unknown required argument argument:missing" in item
         for item in findings
+    )
+    known_required = {
+        **candidate,
+        "shape": {
+            "required_arguments": [],
+            "required_options": ["option:present"],
+        },
+    }
+    known_findings = _findings_for_invocation(
+        known_required, route, ["inspect", "--present"]
+    )
+    assert not any(
+        "references unknown required option" in item for item in known_findings
     )
 
 
