@@ -5652,3 +5652,28 @@ invalidates exact-commit receipts. Repeat the three checks on the current
 checkpoint, then dispatch round 5 with `REVIEW_TARGET=P1`, the latest P1
 handoff, and the exact gate-history and doctor evidence. Main's operator-owned
 dirty files are outside this candidate and remain untouched.
+
+### RW-406 — 2026-10-01 03:52:53Z — P1 review session ended without disposition
+
+The Sol review process reached its account usage limit after committing
+round 5 at `c2716520`. Round 5 is `BLOCKED`, not ACCEPT: it verifies fixes for
+the failed-start DAMON leak, session-ID collisions, and the probabilistic
+run-ID oracle, but its exact-tip final gates and reviewer-owned live daemon
+probes were not completed. The round-5 artifact names the missing real
+ephemeral/shared/concurrent-DAMON/report/helper probes and notes that the
+available image predates the candidate. No merge or release follows from the
+interrupted session. Treat the reviewer as gone; the final P1 pass must be a
+fresh Sol review seeded with rounds 1–5 after exact-tree gates and live probes.
+
+At 03:46Z the review-owned container `cgprofile-r5-daemon-20261001` was still
+up; preserve it until its ownership/lifecycle is explicitly resolved. At
+03:48:30Z a separate `tester-unified` process was running in
+`.worktrees/assay-b136-b141/assay`, container
+`run-gate-assay-selfhosted-333635-16826-1790826375`, log
+`/tmp/assay-b136-b141-tester-unified-retry-8.log`; it is outside RG-55 and
+must be left untouched. At 03:49:43Z memory PSI was
+`full avg10=30.03`. RW-403's explicit authorization permits gate execution
+regardless of PSI, so this reading is not a verdict input or an absolute
+launch prohibition. Given the independent active gate and the reported
+transient Docker-stats outage, do not overlap another Docker-backed gate until
+that slot is free; continue non-container source/reconciliation work meanwhile.
