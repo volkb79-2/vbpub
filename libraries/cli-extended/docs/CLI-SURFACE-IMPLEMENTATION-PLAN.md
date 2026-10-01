@@ -160,15 +160,18 @@ minutes overall, with roughly 85 minutes remaining against the 150-minute
 budget. There is no verdict yet; the campaign began before these status-only
 documentation updates.
 
-At the next permitted check, 169 of 958 candidates had completed after about
-29 minutes (roughly 5.8 candidates per minute), projecting about 166 minutes
-for the full campaign. That exceeds the 150-minute Assay budget. If this
-invocation ends `BUDGET_EXCEEDED`, resume the remaining candidates against the
-same `f49fdc13` commit, in this same worktree and with the same command, so the
-whole-tree judge identity accepts its completed-candidate records. Preserve
-the later documentation commits separately while restoring that exact tree
-for the retry; a retry from the documentation-updated tip would reject the
-records because Assay hashes the complete judged tree.
+At the 54-minute checkpoint, 460 of 958 candidates had completed, all killed.
+The overall rate was 8.5 candidates per minute, and the latest interval ran
+at about 11.5 per minute, projecting roughly 98 minutes total and completion
+around 03:42 UTC. This supersedes the slower 44-minute estimate; the current
+run is forecast to finish before its 150-minute Assay budget. Keep the judged
+source frozen and check again after 25 minutes, then sooner if the remaining
+ETA indicates completion. If it nevertheless ends `BUDGET_EXCEEDED`, resume
+against the same `f49fdc13` commit, in this same worktree and with the same
+command, so the whole-tree judge identity accepts its completed-candidate
+records. Preserve later documentation commits separately while restoring
+that exact tree for the retry; a retry from the documentation-updated tip
+would reject the records because Assay hashes the complete judged tree.
 
 The implementation review found three additional completeness
 gaps, now closed. Inherited delegate globals are compared by their built action
