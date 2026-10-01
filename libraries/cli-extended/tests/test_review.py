@@ -2999,17 +2999,12 @@ def test_review_treats_missing_optional_const_probe_as_opaque():
         "action": "argparse._StoreAction",
         "nargs": "?",
         "type": None,
-        "const": "custom-constant-normalized-as-text",
-        "choices": ["custom-constant-normalized-as-text"],
+        "const": "outside-the-list",
+        "choices": ["ready"],
     }
 
     assert _values_satisfy_action(action, ()) is True
-    assert (
-        _choice_values_accept(
-            action, (), "custom-constant-normalized-as-text"
-        )
-        is True
-    )
+    assert _choice_values_accept(action, (), "another-value") is True
 
 
 def test_review_treats_non_scalar_optional_const_as_opaque():
@@ -3331,21 +3326,6 @@ def test_review_leaves_custom_optional_option_const_to_behavior_test():
     }
 
     assert _values_satisfy_action(action, ())
-
-
-def test_review_treats_missing_optional_const_probe_as_opaque():
-    action = {
-        "id": "option:mode",
-        "kind": "option",
-        "action": "argparse._StoreAction",
-        "nargs": "?",
-        "type": None,
-        "const": "outside-the-list",
-        "choices": ["ready"],
-    }
-
-    assert _values_satisfy_action(action, ())
-    assert _choice_values_accept(action, (), "another-value")
 
 
 def test_review_choice_matching_handles_optional_consts_and_parser_arity():
