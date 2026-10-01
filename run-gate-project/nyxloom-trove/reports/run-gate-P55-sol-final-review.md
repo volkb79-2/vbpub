@@ -342,11 +342,13 @@ remain isolated and must not be merged as part of this final review.
 
 ## Review and repair procedure
 
-1. Verify the actual Sol xhigh runtime, worktree path, branch, HEAD, status,
-   merge base, and current processes/containers. Save the initial status and
-   diff before editing. If the selected P1/P6 mutation job is alive, stop at
-   inspection of evidence and wait for its mechanical completion marker; do
-   not minute-poll or change its tree.
+1. Treat the caller-provided Sol xhigh invocation/session metadata as the
+   route evidence; do not self-verify or attest the route. Verify the selected
+   target worktree path, branch, HEAD, status, merge base, and current
+   processes/containers. Save the initial status and diff before editing. If
+   the selected P1/P6 mutation job is alive, stop at inspection of evidence
+   and wait for its mechanical completion marker; do not minute-poll or change
+   its tree.
 2. Read the named contract and settled decisions blind. Build a requirement →
    code path → observable → negative case → gate table. Enumerate every status
    the code can report and the real-world conditions that collapse into it.
@@ -427,7 +429,8 @@ BLOCKED
 
 The artifact must include:
 
-- actual Sol runtime identity, target, base, final HEAD, worktree status, and
+- the controller-provided Sol/xhigh invocation evidence reference (not a
+  reviewer self-attestation), target, base, final HEAD, worktree status, and
   whether the initial diff was captured before edits;
 - a requirement-to-oracle traceability table and pairwise/combined-axis attack
   fixtures;
