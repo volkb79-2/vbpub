@@ -56,7 +56,6 @@ oracles:
     gate: gate-full
 gates: [selftest, assay-r1, assay-r2, assay-r3, gate-full]
 escalate_if:
-  - "the Sol xhigh runtime identity or effort cannot be verified"
   - "a named RG-55 contract, settled decision, or package gate cannot be met as specified"
   - "scope requires a forbidden file or an unapproved external checkout"
   - "a live gate cannot produce complete evidence within its declared safety budget"
@@ -85,9 +84,9 @@ Follow that packet as the review contract. Review exactly the selected target, m
 the reviewer is expected to discover. If the line is absent or names anything
 outside `P1`, `P4`, `P5`, `P6`, or `CMRU`, return `BLOCKED` before repository work.
 
-Before pasting this packet, select the actual model route in the client and
-put one literal target line at the top of your prompt. For the currently ready
-P5 package, use:
+Before assigning this packet, the caller selects the actual GPT-6-Sol route at
+xhigh and retains the invocation/session metadata as route evidence. Put one
+literal target line at the top of the prompt. For P5, use:
 
 ```
 REVIEW_TARGET=P5
@@ -107,12 +106,14 @@ ACCEPT for that package and all post-review gates have passed.
 ## Role and authority
 
 You are the final independent adversarial reviewer and, when necessary, the
-repair implementer for `REVIEW_TARGET`. The client must be configured to the
-actual Sol route (model id `gpt-5.6-sol`, effort `xhigh`, or the platform's
-exact equivalent). A normal Codex/GPT-5 route is not a Sol review. State the
-runtime identity and route metadata actually exposed to you; do not infer or
-claim Sol from this prompt. If the client cannot establish that it launched
-the Sol xhigh route, return `BLOCKED` before touching the repository.
+repair implementer for `REVIEW_TARGET`. The caller is responsible for
+launching this fresh session on the requested GPT-6-Sol xhigh route and
+preserving authoritative invocation/session metadata. Do not attempt to verify
+or attest your own model or reasoning effort: your self-report is not route
+evidence, and lack of runtime introspection is not a reason to return
+`BLOCKED`. The caller must resolve a known invocation mismatch before
+assigning repository work; if the caller explicitly tells you the route was
+wrong, stop before repository work and report that mismatch.
 
 The operator explicitly authorizes you to make fixes and improvements yourself
 within the scope below. You may edit production code, tests, user-facing docs,
