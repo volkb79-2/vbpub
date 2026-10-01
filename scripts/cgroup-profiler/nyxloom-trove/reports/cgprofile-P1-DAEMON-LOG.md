@@ -1444,3 +1444,47 @@ this removes four duplicate trees without changing rank semantics. This
 commit has not yet been tested. The 205-pass focused result belongs to
 `2e130da3`, before this optimization and before latest-main reconciliation.
 No registered gate result applies to `c81b2837` or the current records tree.
+
+### 34. Host-unit read-only evidence and focused test on `db044d4d` (2026-10-01)
+
+At 00:55:53Z the operator supplied a direct-host read-only result for
+`systemctl show dev-interactive.slice dev-gates.slice --property=LoadState,ControlGroup,Delegate,CPUQuotaPerSecUSec,MemoryMax --no-pager`:
+
+* `dev-interactive.slice`: loaded, `/dev.slice/dev-interactive.slice`,
+  `Delegate=no`, `CPUQuotaPerSecUSec=5s`, `MemoryMax=8589934592`.
+* `dev-gates.slice`: loaded, `/dev.slice/dev-gates.slice`, `Delegate=no`,
+  `CPUQuotaPerSecUSec=5s`, `MemoryMax=1610612736`.
+
+This closes the current-unit-state part of round-4 B2 without a host
+namespace, host-escape, or cockpit system-bus mount. It does not itself prove
+the P1 daemon's live behavior or replace the reviewer-required live probes.
+The direct-host result was supplied by the operator; the fresh reviewer must
+read this record and use it as controller-provided preflight evidence.
+
+On exact tree `db044d4d37f017162976c78f624885ee5f595923`, serial focused
+`test_summary.py` + `test_serve.py` passed: 205 passed, 1 skipped in 15.70 s.
+This exercises the shared single-tree DAMON p50/p90 implementation after
+`c81b2837`; it is not a registered gate receipt. Registered R0/R1, R3,
+doctor, reviewer live probes, current-tree R2 and full gate remain open.
+P6 also needs a separate current `cgprofile.slice` unit read; it was requested
+but is not part of the result above.
+
+### 35. Current host-unit preflight, including `cgprofile.slice` (2026-10-01)
+
+At 01:00:34Z the operator supplied the result of running this read-only
+command directly on the host, not through `host-escape`:
+`systemctl show dev-interactive.slice dev-gates.slice cgprofile.slice --property=LoadState,ControlGroup,Delegate,CPUQuotaPerSecUSec,MemoryMax --no-pager`.
+The result confirms:
+
+* `dev-interactive.slice`: loaded, `/dev.slice/dev-interactive.slice`,
+  `Delegate=no`, `CPUQuotaPerSecUSec=5s`, `MemoryMax=8589934592`.
+* `dev-gates.slice`: loaded, `/dev.slice/dev-gates.slice`, `Delegate=no`,
+  `CPUQuotaPerSecUSec=5s`, `MemoryMax=1610612736`.
+* `cgprofile.slice`: loaded, `/cgprofile.slice`, `Delegate=no`,
+  `CPUQuotaPerSecUSec=infinity`, `MemoryMax=1073741824`.
+
+This closes P1 round-4 B2's missing current-unit-state observable and gives
+P6 its requested current `cgprofile.slice` fact. These parent-unit values do
+not prove P6's delegated transient-scope/owned-leaf lifecycle, nor do they
+substitute for P1's reviewer-owned daemon/placement/restoration probes. No
+host namespace, host-escape, cockpit bus mount, or host mutation was used.

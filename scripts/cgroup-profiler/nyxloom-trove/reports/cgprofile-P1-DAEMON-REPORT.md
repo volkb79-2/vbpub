@@ -1865,3 +1865,33 @@ R3 and doctor on the final committed tree. A fresh Sol round-5 review is
 required after these steps, with rounds 1–4 supplied. Current-tree R2/full
 gate and the other live daemon probes remain separate mandatory release
 holds under RW-381.
+
+## Controller addendum — current host-unit preflight and focused retest (2026-10-01)
+
+The operator directly ran the read-only host command
+`systemctl show dev-interactive.slice dev-gates.slice --property=LoadState,ControlGroup,Delegate,CPUQuotaPerSecUSec,MemoryMax --no-pager`.
+Both authored units are currently loaded with `Delegate=no`, at
+`/dev.slice/dev-interactive.slice` and `/dev.slice/dev-gates.slice`; each has
+`CPUQuotaPerSecUSec=5s`. The interactive unit has an 8 GiB `MemoryMax`; the
+gates unit has a 1.5 GiB `MemoryMax`. This supplies round-4 B2's missing
+current unit-state observable without host namespace access. It does not
+substitute for the reviewer-owned live probes.
+
+After commit `c81b2837` and latest-main reconciliation, focused serial
+`test_summary.py` + `test_serve.py` passed on exact tree
+`db044d4d37f017162976c78f624885ee5f595923` (205 passed, 1 skipped in 15.70
+s). This is local evidence only; registered R0/R1, R3, doctor, Sol review,
+current-tree R2 and full gate remain pending. Current `cgprofile.slice`
+state is separately needed for P6.
+
+### Controller addendum — current `cgprofile.slice` preflight (2026-10-01)
+
+The operator subsequently supplied the output of the same direct-host,
+read-only `systemctl show` query with `cgprofile.slice` included. It is
+loaded at `/cgprofile.slice`, `Delegate=no`, has an unlimited CPU quota, and
+`MemoryMax=1073741824`. The query reconfirmed both `dev-interactive.slice`
+and `dev-gates.slice` as loaded, `Delegate=no`, with five-CPU quotas and
+their authored `/dev.slice/...` paths. This current unit-state evidence
+closes the specific round-4 B2 observable; reviewer-owned live daemon and
+placement/restoration probes remain required. Full values and provenance
+are recorded in controller ruling RW-390 and P1 LOG §35.

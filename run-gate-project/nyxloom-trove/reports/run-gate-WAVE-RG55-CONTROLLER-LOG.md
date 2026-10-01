@@ -5510,3 +5510,42 @@ this does not authorize `host-escape` or any namespace join. At the last
 resource observation (`00:41:21Z`) memory PSI full avg10 was 8.67; no gate or
 bus-query container has been started since. The new candidate is not yet
 reviewed, provisionally merged, released, or activated.
+
+### RW-389 — 2026-10-01 00:55:53Z — record direct-host slice evidence and P1 focused test
+
+The operator supplied output from this read-only command run directly on the
+host (not through `host-escape`):
+`systemctl show dev-interactive.slice dev-gates.slice --property=LoadState,ControlGroup,Delegate,CPUQuotaPerSecUSec,MemoryMax --no-pager`.
+Both units report `LoadState=loaded`, `Delegate=no`, and a five-CPU quota
+(`CPUQuotaPerSecUSec=5s`). `dev-interactive.slice` is at
+`/dev.slice/dev-interactive.slice`, `MemoryMax=8589934592`; `dev-gates.slice`
+is at `/dev.slice/dev-gates.slice`, `MemoryMax=1610612736`. This closes P1
+round-4 B2's specific current-unit-state gap; preserve the values and source
+in the P1 records. It does not replace the reviewer-owned daemon, placement,
+or restoration probes. P6 additionally needs current `cgprofile.slice`
+state, which was requested separately and is not yet in this output.
+
+On exact P1 tree `db044d4d37f017162976c78f624885ee5f595923`, after the DAMON
+rank-tree deduplication commit `c81b2837` and latest-main reconciliation,
+serial focused tests passed: `test_summary.py` + `test_serve.py`, 205 passed,
+1 skipped in 15.70 s. This is local focused evidence, not a registered gate.
+R0/R1, R3, doctor, and fresh Sol round-5 review remain pending on the final
+quiet candidate. Do not infer their outcomes from these local tests.
+
+### RW-390 — 2026-10-01 01:00:34Z — record current `cgprofile.slice` preflight
+
+The operator supplied the requested direct-host, read-only output for
+`systemctl show dev-interactive.slice dev-gates.slice cgprofile.slice --property=LoadState,ControlGroup,Delegate,CPUQuotaPerSecUSec,MemoryMax --no-pager`.
+In addition to the two units recorded in RW-389, `cgprofile.slice` is
+`LoadState=loaded`, `ControlGroup=/cgprofile.slice`, `Delegate=no`,
+`CPUQuotaPerSecUSec=infinity`, and `MemoryMax=1073741824`. This is current
+unit-state evidence for P6 as well as the already-closed P1 B2 observable;
+it does not establish delegated-scope behavior or replace live start/stop
+restoration probes. The supplied values are recorded as received at this
+checkpoint; no host change, namespace join, or host-escape was performed.
+
+The same query reconfirmed `dev-interactive.slice` loaded at
+`/dev.slice/dev-interactive.slice`, `Delegate=no`, `CPUQuotaPerSecUSec=5s`,
+`MemoryMax=8589934592`, and `dev-gates.slice` loaded at
+`/dev.slice/dev-gates.slice`, `Delegate=no`, `CPUQuotaPerSecUSec=5s`,
+`MemoryMax=1610612736`.

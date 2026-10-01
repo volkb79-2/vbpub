@@ -20,14 +20,21 @@ reducers and exact order-statistic trees, committed as `2e130da3`. The
 focused local `test_summary.py` + `test_serve.py` suite passed on that commit
 (205 passed, 1 skipped), but that receipt predates the DAMON rank-tree
 optimization committed as `c81b2837`. Main was then reconciled at `56c617d8`;
-the optimization has not yet been tested and no registered short gate has
-run on the current tree. B2 remains open: no current, host-namespace-free proof of both
-authored host-unit states has been established. B3 remains open because the
-old short-gate receipts predate the repair. Once the follow-up is tested and
-committed, the controller must run registered R0/R1, R3 and doctor, then
-dispatch a fresh round-5 reviewer seeded with rounds 1–4. Do not claim
-acceptance or merge until B2 and the required live probes are resolved. The
-current-tree R2 and full gate remain release holds.
+the single-tree optimization was then tested on exact tree
+`db044d4d37f017162976c78f624885ee5f595923`: 205 passed, 1 skipped in 15.70
+s. The operator also supplied direct-host, read-only evidence that
+`dev-interactive.slice` and `dev-gates.slice` are loaded at their authored
+`/dev.slice/...` paths, both with `Delegate=no` and five-CPU quotas. The same
+query also confirms `cgprofile.slice` loaded at `/cgprofile.slice`,
+`Delegate=no`, unlimited CPU quota, and a 1 GiB memory limit. Exact values and
+provenance are in controller rulings RW-389/RW-390 and P1 LOG/REPORT. This
+closes the missing unit-state observable in B2, pending reviewer confirmation
+and the required reviewer-owned live probes. B3 remains open because old
+short-gate receipts predate the repair. The controller must run registered
+R0/R1, R3 and doctor on the final documentation checkpoint, then dispatch a
+fresh round-5 reviewer seeded with rounds 1–4. Do not claim acceptance or
+merge until the reviewer verifies the preflight and live probes. Current-tree
+R2 and full gate remain release holds.
 
 Branch `rg55-p1-release-review-20260930`, worktree
 `/workspaces/vbpub/.worktrees/rg55-p1-release-review-20260930`, project dir
@@ -51,7 +58,7 @@ Read, in this order: the plan of record
 `fixtures/rg55/README.md`, the controller log's Rulings section
 (`run-gate-project/nyxloom-trove/reports/run-gate-WAVE-RG55-CONTROLLER-LOG.md`
 — RW-3, RW-7, RW-9, RW-11, RW-13..RW-16, RW-19, RW-21, RW-23,
-  RW-47, RW-48, RW-318..RW-328, RW-381..RW-388 bind this package), the
+  RW-47, RW-48, RW-318..RW-328, RW-381..RW-390 bind this package), the
 implementer handoff (`cgprofile-P1-DAEMON-HANDOFF.md`, what was asked), then
 the diff itself — `lib/summary.py`, `lib/subtree.py`, `lib/damon.py`,
 `lib/serve.py`, `lib/store.py` changes, `cgprofile.py`, the shim, the
