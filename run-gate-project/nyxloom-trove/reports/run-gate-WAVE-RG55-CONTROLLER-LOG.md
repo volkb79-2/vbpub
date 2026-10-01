@@ -5705,3 +5705,21 @@ that other worktree's gate; resume one RG-55 gate at a time after it frees the
 reported Docker slot. This sequencing is due to observed Docker API
 availability risk, not a PSI-based veto; RW-403's explicit gate authorization
 remains in force.
+
+### RW-408 — 2026-10-01 04:05:25Z — reconcile P1 with current main and freeze release coordinates
+
+Merged current local `main` (`ab62f101`) into the P1 candidate as
+`ce1459ad3` with `--no-ff`. The merge brings the current Nyxloom integration
+evidence and reports into the candidate; no P1 source conflict occurred.
+The root main checkout's operator-owned dirty `.vscode/settings.json` and
+untracked mdt sysctl file remain untouched. P1's current candidate is clean
+at the merge tip; no old gate receipt applies to it.
+
+Read-only CMRU status against this P1 checkout reports no prior cgprofile tag
+and first release `cgprofile-v1.0.0`. Current main's run-gate package has
+`run-gate-v23.9.1`; the next version is `run-gate-v23.10.0`. The RG-55 P5
+release target is therefore updated from its stale 23.9.0/rev-43 handoff to
+23.10.0/current-main revision 46 plus one revision bump after integration.
+No release or publication is attempted yet; exact package gates, mutation
+evidence, independent review, and the main/origin publication boundary still
+apply.
