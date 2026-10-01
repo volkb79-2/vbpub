@@ -22,7 +22,6 @@ are all about what is written WHERE:
 
 from __future__ import annotations
 
-import errno
 import json
 import math
 import os
@@ -1478,28 +1477,26 @@ class TestDelegatedScopeMigration:
         )
         assert [value for _, value in writes[before:]] == ["102", "103"]
 
-    def test_non_esrch_write_failure_is_not_sent_to_systemd(self, tmp_path):
+    def test_pid_migration_uses_systemd_not_direct_cgroup_procs_writes(self, tmp_path):
         root = _fake_cgroup_root(tmp_path)
         attached: List[Any] = []
 
-        class _PrivateNamespace(placement.LanePlacement):
+        class _NoDirectProcsWrite(placement.LanePlacement):
             def _write(self, abs_target: str, value: str) -> None:
                 if abs_target.endswith("/cgroup.procs"):
-                    raise OSError(errno.EPERM, "write refused", abs_target)
+                    pytest.fail("PID migration must use the verified systemd scope API")
                 super()._write(abs_target, value)
 
         plc = _placement(
             root,
-            _placement_cls=_PrivateNamespace,
-            systemd_attach=lambda unit, subcgroup, pid: attached.append(
-                (unit, subcgroup, pid)
-            ) or True,
+            _placement_cls=_NoDirectProcsWrite,
+            attach_calls=attached,
             pid_exists=lambda _pid: True,
         )
         plc.apply([101])
 
-        assert attached == []
-        assert plc.block()["pids_moved"] == 0
+        assert plc.error is None and plc.placed
+        assert attached == [(SCOPE_UNIT, LEAF_NAME, 101)]
 
     def test_vanished_descendant_is_skipped_without_a_systemd_move(self, tmp_path):
         root = _fake_cgroup_root(tmp_path)
