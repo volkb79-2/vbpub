@@ -1114,6 +1114,10 @@ def test_malformed_rejected_question_envelopes_preserve_raw_text(text, questions
     assert claude_code._format_qa_pairs(text, questions) == text
 
 
+def test_rejected_qa_question_decoder_returns_none_for_invalid_json():
+    assert claude_code._rejected_qa_question_text('- "Pick?') is None
+
+
 def test_format_qa_pairs_falls_back_to_raw_text_when_marker_not_found():
     # A harness rendering this adapter has never seen -- must not raise or
     # silently drop content, just hand back the raw string unmodified.

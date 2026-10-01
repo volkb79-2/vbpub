@@ -268,3 +268,27 @@ cap. My immediate repeat of the plan while `assay.toml` was modified refused
 `NO_MEASUREMENT/DIRTY_TREE`; that refusal executed no lane. Re-run the plan
 after this commit, then require the final verdict itself to record the
 configured base and all 43 selected candidates before accepting the campaign.
+
+## Full current-main R2 attempt and final oracle — 2026-10-01
+
+The full registered `session-extract` lane ran on commit
+`6617c44e117ee1ceab222ce4c51ff82f30f3d0d0`. Its verdict correctly resolved
+base `126ccc39e151e33cc7bbcaa18bf765f9c9cd7dd1` by `merge-base` and selected
+all 43 source-backed candidates under the approved 45 cap. R0 PASS; R1 PASS at
+117/117 changed executable lines and 60/60 branches; R3 PASS. R2 killed 42 of
+43, with no equivalent, crash, hang, or budget-overrun outcomes. The sole
+survivor was `2ec785fcd6ae80da2fa323f17e13e8555f4b4088ce2f342c0d65d309d0895e64`
+(`python:falsy-swap`, `None->[]`, `claude_code.py:233`). The outer run-gate log
+is `/tmp/run-gate/run-gate-vbpub-session-extract-132188-1790820064.log`; the
+machine verdict and per-candidate progress are in `.assay/` in the judged
+worktree.
+
+Output-level malformed-envelope tests correctly preserve the raw text with
+both return values: the decoder's `None` and the mutant's `[]` are both treated
+as a non-question row by its only consumer. The helper itself is annotated
+`str | None`, so a focused assertion now checks the meaningful decoder
+contract directly: malformed JSON rows return `None`. Added
+`test_rejected_qa_question_decoder_returns_none_for_invalid_json`; its focused
+local pytest invocation passed. The implementation source did not change, so
+the source-backed inventory remains 43. Final run-gate coverage, review, and
+R2 remain pending; do not treat the 42/43 result as complete.
