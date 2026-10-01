@@ -101,7 +101,7 @@ artifact = "coverage.json"
 # session_extract code, so there is no reason to leave branch coverage
 # unmeasured here the way tester-unified's D-064-L2 migration had to.
 #
-# base = "8730098d0a8205bb398e60028e799b4ef7b18835": the selected
+# base = "126ccc39e151e33cc7bbcaa18bf765f9c9cd7dd1": the selected
 # current-main boundary for this integration. source_roots still limits the
 # judged diff and mutation targets to the session-extract implementation
 # package; the broader tester-unified lane covers the CLI registry changes.
@@ -166,7 +166,7 @@ source_roots = ["src/nyxloom/session_extract"]
 fail_under = 100.0
 allow_excluded = false
 require_branch = true
-base = "8730098d0a8205bb398e60028e799b4ef7b18835"
+base = "126ccc39e151e33cc7bbcaa18bf765f9c9cd7dd1"
 
 # R2: native python mutation, changed-lines-only -- resolve_mutation_targets
 # reuses R1's SAME current-main diff, so this mutates exactly the changed lines
