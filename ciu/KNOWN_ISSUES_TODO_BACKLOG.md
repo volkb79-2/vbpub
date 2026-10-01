@@ -4390,3 +4390,38 @@ proceed with this integration.
 ## CIU-112
 
 `worktree lacks ciu instance identity so ciu won't clean them` - if people now start using `ciu worktree` to create a worktree: does it work when there is no riu root in the repo? and does the tear down/removal work? both should be possible. removal might give a warning, i do not see a reason to refuse?
+
+## CIU-113 — Add a consumer onboarding recipe for a project-owned inspection stack
+
+**Status: OPEN — documentation candidate.**
+
+A consumer project needed a disposable CIU stack to inspect a legacy database
+without adding runtime packages to the devcontainer. The useful workflow was
+spread across CIU behavior and project-specific Docker commands, so the
+consumer had to discover several steps: initialize the project CIU root,
+generate and export its environment with `eval "$(ciu env print)"`, start a
+stack under a non-root directory with `ciu up --dir`, mount source data
+read-only and generated output separately, and run a one-shot command inside
+the CIU-managed service. The devcontainer also needed to join the project's
+network so it could inspect the generated output or later reach an internal
+service.
+
+Add a copy-pasteable `docs/CONSUMERS.md` example for this non-worktree project
+workflow. It should name which directory is the CIU root and which is the
+stack root; show the minimum config and `ciu init`/`ciu up` sequence; use the
+generated environment export; demonstrate read-only input and writable output
+mounts; and explain how to find and run a command in the selected service.
+Clarify the boundary between a normal project bridge with no published ports
+and Docker's stricter `--internal` network mode. If ordinary stacks need a
+supported stack-scoped one-shot `exec` command, record that as a separate
+product/API decision rather than making consumers depend on Docker labels.
+
+The gap surfaced while preparing an MDB inspection stack in
+`mh-access-to-web`; the workflow succeeded using CIU 7.15.0 and a small
+project wrapper, but the consumer guide's practical examples focus on managed
+worktrees and did not cover this first-project adoption path.
+
+`ciu init --wizard` could enter questionaire for setup. 
+
+## CIU-114 adopt `cli-extended` 
+for CLI grammer, usage(), wizard, ... 
