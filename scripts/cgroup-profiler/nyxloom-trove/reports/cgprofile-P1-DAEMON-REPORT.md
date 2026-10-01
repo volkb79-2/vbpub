@@ -1820,6 +1820,23 @@ gate then run asynchronously on an attached CIU worktree whose branch remains
 pinned to the judged commit. No release or daemon activation until both pass
 and any repairs are backported and rejudged.
 
+## Controller addendum — latest-main reconciliation (2026-10-01)
+
+Main advanced to `126ccc39e151e33cc7bbcaa18bf765f9c9cd7dd1`; its only change
+since the prior P1 base is two backlog lines. The P1 candidate contains that
+tip through merge commit `56c617d8c7762f6fb6d7a1a2b326285f7592941c`. The
+candidate's new full-diff base is therefore `126ccc39`, not the historical
+`8730098d` used for the round-4 report. No implementation code changed in
+this reconciliation.
+
+The follow-up simplifies DAMON percentile state to one exact
+order-statistic multiset per class, used for both p50 and p90, committed as
+`c81b2837`; the earlier focused test result predates this optimization and is
+not claimed for it. The
+latest observed memory PSI (`full avg10=8.67` at 00:41:21Z) prevented starting
+more containers or registered gates. No current-tree registered gate or
+round-5 review is claimed.
+
 ## Controller addendum — round-4 summary correction (2026-10-01)
 
 Round 4 rejected tree `148481e4af504fc416679ed2fd8dffe380709de6`. Its B1
@@ -1834,8 +1851,10 @@ sketch.
 
 The 3,601-sample regression mutates all input objects immediately after each
 `add_sample()` and verifies the final output. Focused `test_summary.py` and
-`test_serve.py` currently pass: 205 passed, 1 skipped in 19.24 s. These are
-local results on the uncommitted repair, not registered gate receipts.
+`test_serve.py` passed on the initial repair commit `2e130da3`: 205 passed,
+1 skipped in 19.24 s. This predates the single-tree DAMON optimization and
+main reconciliation; it is not a registered gate receipt for the current
+candidate.
 
 Round-4 B2 is still unresolved: the current loaded host state for both
 authored cgroup parents has not yet been read through a permitted

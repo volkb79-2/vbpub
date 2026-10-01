@@ -15,25 +15,30 @@ start/stop the main daemon. Records:
 ### Controller status after round 4
 
 Round 4 rejected tree `148481e4af504fc416679ed2fd8dffe380709de6`; preserve
-its report. B1's stop-time rescan has been repaired in the current worktree
-using ingestion-time summary reducers and exact order-statistic trees. The
-focused local `test_summary.py` + `test_serve.py` suite is green (205 passed,
-1 skipped), but the repair and evidence updates are not yet committed and no
-registered short gate has run on them. B2 remains open: no current,
-host-namespace-free proof of both authored host-unit states has been
-established. B3 remains open because the old short-gate receipts predate the
-repair. The controller must commit the final candidate, run registered
-R0/R1, R3 and doctor, then dispatch a fresh round-5 reviewer seeded with
-rounds 1–4. Do not claim acceptance or merge until B2 and the required live
-probes are resolved. The current-tree R2 and full gate remain release holds.
+its report. B1's stop-time rescan was replaced by ingestion-time summary
+reducers and exact order-statistic trees, committed as `2e130da3`. The
+focused local `test_summary.py` + `test_serve.py` suite passed on that commit
+(205 passed, 1 skipped), but that receipt predates the DAMON rank-tree
+optimization committed as `c81b2837`. Main was then reconciled at `56c617d8`;
+the optimization has not yet been tested and no registered short gate has
+run on the current tree. B2 remains open: no current, host-namespace-free proof of both
+authored host-unit states has been established. B3 remains open because the
+old short-gate receipts predate the repair. Once the follow-up is tested and
+committed, the controller must run registered R0/R1, R3 and doctor, then
+dispatch a fresh round-5 reviewer seeded with rounds 1–4. Do not claim
+acceptance or merge until B2 and the required live probes are resolved. The
+current-tree R2 and full gate remain release holds.
 
 Branch `rg55-p1-release-review-20260930`, worktree
 `/workspaces/vbpub/.worktrees/rg55-p1-release-review-20260930`, project dir
-`scripts/cgroup-profiler/`. The candidate was based on main
-`8730098d0a8205bb398e60028e799b4ef7b18835`; the controller supplies the exact
-review tip after the handoff/evidence commit and final short gates. Verify the
-worktree is clean and HEAD is that exact tip before reviewing. Review the FULL
-diff `8730098d0a8205bb398e60028e799b4ef7b18835...<tip>` — every file, every
+`scripts/cgroup-profiler/`. The candidate originally used main
+`8730098d0a8205bb398e60028e799b4ef7b18835`; it has since been reconciled
+with current main `126ccc39e151e33cc7bbcaa18bf765f9c9cd7dd1` in merge commit
+`56c617d8c7762f6fb6d7a1a2b326285f7592941c`. The controller supplies the
+exact review tip after the final implementation/evidence commit and short
+gates. Verify the worktree is clean and HEAD is that exact tip before
+reviewing. Review the FULL diff
+`126ccc39e151e33cc7bbcaa18bf765f9c9cd7dd1...<tip>` — every file, every
 type. If main advances before dispatch, the controller must first reconcile
 the candidate and rerun the short gates.
 
@@ -46,7 +51,7 @@ Read, in this order: the plan of record
 `fixtures/rg55/README.md`, the controller log's Rulings section
 (`run-gate-project/nyxloom-trove/reports/run-gate-WAVE-RG55-CONTROLLER-LOG.md`
 — RW-3, RW-7, RW-9, RW-11, RW-13..RW-16, RW-19, RW-21, RW-23,
-  RW-47, RW-48, RW-318..RW-328, RW-381..RW-385 bind this package), the
+  RW-47, RW-48, RW-318..RW-328, RW-381..RW-388 bind this package), the
 implementer handoff (`cgprofile-P1-DAEMON-HANDOFF.md`, what was asked), then
 the diff itself — `lib/summary.py`, `lib/subtree.py`, `lib/damon.py`,
 `lib/serve.py`, `lib/store.py` changes, `cgprofile.py`, the shim, the

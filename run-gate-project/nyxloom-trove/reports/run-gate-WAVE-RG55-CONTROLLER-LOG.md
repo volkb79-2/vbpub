@@ -5473,3 +5473,40 @@ R2 was active, so no additional bus-query container or RG-55 gate was
 launched. B3 also remains open: short-gate receipts predate the B1 repair and
 must be refreshed on the final committed P1 tip. The P1 edits are still
 uncommitted at this checkpoint; do not merge, release, or activate the daemon.
+
+### RW-387 — 2026-10-01 00:44:45Z — reconcile P1 with latest main; honor PSI gate
+
+Main advanced to `126ccc39e151e33cc7bbcaa18bf765f9c9cd7dd1` after the P1
+checkpoint at `8730098d0a8205bb398e60028e799b4ef7b18835`. The only intervening
+tracked change is two lines in `run-gate-project/KNOWN_ISSUES_TODO_BACKLOG.md`.
+P1 was reconciled with `git merge --no-ff main`; merge commit
+`56c617d8c7762f6fb6d7a1a2b326285f7592941c` has current main as its merge
+base. The B1 implementation commit `2e130da3` is retained.
+
+At `2026-10-01 00:41:21Z`, memory PSI was `full avg10=8.67` and load average
+was 12.21; another project's R2 and a tester container were active. No new
+container, bus query, or RG-55 gate was launched under that pressure. The P1
+source has a small follow-up optimization in progress: each DAMON class will
+share one exact order-statistic tree for p50 and p90 rather than retain two
+identical trees. It is not yet tested or committed. The earlier 205-pass
+focused suite preceded this optimization and the main reconciliation; no
+registered short gate certifies the current tree. Re-run the focused tests,
+registered R0/R1, R3, and doctor on the eventual final committed tree before
+fresh round-5 Sol review. Current-tree R2/full gate and B2 remain open.
+
+### RW-388 — 2026-10-01 00:50:29Z — checkpoint exact P1 summary candidate
+
+The P1 follow-up deduplicating DAMON percentile state is committed as
+`c81b28372c16c065e0290355b576cd2d3e85d32f`: each class now uses one exact
+order-statistic multiset for both p50 and p90. The candidate's code tree is
+therefore `c81b2837` on top of reconciliation merge `56c617d8`. This change
+has not yet been tested; the 205-pass local result was on its parent code
+tree. Run focused tests, registered R0/R1, R3 and doctor on the final
+committed candidate after evidence updates and when memory PSI permits.
+
+P1 B2 remains open. The operator has been asked for direct-host, read-only
+`systemctl show` output for `dev-interactive.slice` and `dev-gates.slice`;
+this does not authorize `host-escape` or any namespace join. At the last
+resource observation (`00:41:21Z`) memory PSI full avg10 was 8.67; no gate or
+bus-query container has been started since. The new candidate is not yet
+reviewed, provisionally merged, released, or activated.

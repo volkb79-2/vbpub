@@ -1403,9 +1403,11 @@ The new deterministic long-stream test feeds 3,601 samples, mutates each
 source object immediately after ingestion, then asserts exact summary fields
 and percentiles. AVL tests cover empty/singleton, ascending/descending,
 double rotations, duplicates, nulls, nearest ranks and invalid internal
-states. Current local focused result on the uncommitted repair:
-`test_summary.py` + `test_serve.py`: 205 passed, 1 skipped in 19.24 s. No
-registered short gate has yet been rerun on this tree.
+states. At this checkpoint the repair was uncommitted; it was committed as
+`2e130da3`. The focused local result on that code was
+`test_summary.py` + `test_serve.py`: 205 passed, 1 skipped in 19.24 s. That
+result predates the later single-tree DAMON optimization and main merge; no
+registered short gate has yet been rerun on the current candidate.
 
 Round-4 B2 remains open: the reviewer cannot prove current loaded host
 `dev-interactive.slice`/`dev-gates.slice` state from the cockpit without a
@@ -1417,3 +1419,28 @@ short-gate receipts do not cover the repair. The next review must be round 5
 from a fresh Sol session after commit and final registered short gates; seed
 it with review rounds 1–4, preserve the round-4 report, and do not claim P1
 accepted until B2 and all remaining live-evidence requirements are resolved.
+
+### 32. Reconcile P1 with main `126ccc39` (2026-10-01)
+
+Main advanced from `8730098d0a8205bb398e60028e799b4ef7b18835` to
+`126ccc39e151e33cc7bbcaa18bf765f9c9cd7dd1`. The only tracked difference is
+two new backlog lines in `run-gate-project/KNOWN_ISSUES_TODO_BACKLOG.md`.
+The P1 candidate was reconciled with `git merge --no-ff main`, producing
+`56c617d8c7762f6fb6d7a1a2b326285f7592941c`. This is now the required diff
+base for the next reviewer. No code changed in that merge. The follow-up
+optimization to share each DAMON class's p50/p90 order-statistic tree is an
+uncommitted source change and has not yet been tested. The focused result in
+section 31 predates it and the merge; no gate result is claimed for the
+current tree. At 00:41:21Z memory PSI full avg10 was 8.67, so no gate or
+additional diagnostic container was launched. Re-run tests and registered
+short lanes when the launch gate is clear.
+
+### 33. Exact summary candidate `c81b2837` (2026-10-01)
+
+The DAMON percentile-memory optimization described in section 32 is now
+committed as `c81b28372c16c065e0290355b576cd2d3e85d32f`. Each of the four
+classes stores one exact order-statistic tree, queried for both p50 and p90;
+this removes four duplicate trees without changing rank semantics. This
+commit has not yet been tested. The 205-pass focused result belongs to
+`2e130da3`, before this optimization and before latest-main reconciliation.
+No registered gate result applies to `c81b2837` or the current records tree.
