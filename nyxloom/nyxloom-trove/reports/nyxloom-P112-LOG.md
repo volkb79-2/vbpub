@@ -308,3 +308,45 @@ The second run used commit `025b6366abe51aa2b1511fe6bc7a2a743af2a0ad` with the p
 - R3: INCONCLUSIVE because R1 did not pass.
 
 The selected test argv omitted two existing focused files: `tests/test_session_extract_config_validation.py` and `tests/test_session_extract_edge_contracts.py`. Added both to the lane before the next attempt. Separately, a source-backed plan with a temporary cap of 1000 enumerated all 599 package candidates; the final committed lane uses that exact cap and the 22-hour budget derived from its 19h58m serial upper bound. No coverage threshold or mutation setting was weakened.
+
+## Requested R2 campaign and follow-up triage — 2026-09-29
+
+The final campaign used the corrected package-only roots, full focused-test
+argv, and 599-candidate cap. It judged exact commit
+`d3d5a5d024af2586bb257be87d4af23257f354e5`:
+
+```text
+command: ./run-gate.py --worktree /workspaces/vbpub/.worktrees/nyxloom-cli-adoption session-extract
+start: 2026-09-28T21:04:47Z
+end: 2026-09-29T00:19:45Z
+container: run-gate-vbpub-session-extract-3351574-1790629480
+run-gate: FAIL/UNCOVERED_LINES, exit 1
+R1: FAIL — 2,510/2,511 lines and 921/922 branches; missing line 416 and branch at line 415 in src/nyxloom/session_extract/follow.py
+R2: 599 candidates; 522 killed, 77 survived, 0 equivalent, 0 crashed
+R3: INCONCLUSIVE/CANARY_INCONCLUSIVE because R1 did not pass
+```
+
+The wrapper returned `RUN_GATE_EXIT=1`. Its log is
+`/tmp/nyxloom-session-extract-r2-final-20260928.log`; the raw gate log is
+`/tmp/run-gate/run-gate-vbpub-session-extract-3351574-1790629480.log`; the
+assay verdict is `.assay/verdict-session-extract.json`. The test container was
+removed after the campaign.
+
+Added two focused tests in this worktree: the Codex follow test now appends a
+non-conversation `session_meta` record after the initial cursor, covering the
+missing incremental-filter path; the Claude test asserts that a sidechain-only
+AskUserQuestion and its answer render as `INTERVIEW` plus `OPERATOR` prose.
+`git diff --check` and both focused tests passed with the devcontainer venv.
+No container was started for those local diagnostics.
+
+The Claude survivor at `claude_code.py:786` is `And->Or`, candidate
+`b089d16650fba3f2539d24fcc27b2635b1c55abbe94195b51d841a15677807fb`. An exact
+mutation probe ran the new sidechain test with the mutant installed; the test
+passed, so it is not a killing test. Code inspection found that the full
+`parse()` loop subsequently calls `parse_record()` on every unsliced record,
+and `parse_record()` registers each question before its later answer. That
+makes the pre-pass duplicate for normally ordered transcripts. Since a
+malformed out-of-order result could still behave differently and assay did not
+adjudicate equivalence, this remains a survivor, not a claimed equivalent.
+The disposable probe worktree was removed. No production-code fix was
+identified by this triage.

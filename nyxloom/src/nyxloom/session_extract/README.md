@@ -332,24 +332,17 @@ constrained the interface or turned up a real bug:
   mechanism. Exact assistant-prose copies of UI prompts are deduplicated.
 - **Claude Code** (`adapters/claude_code.py`) — flat JSONL, one record
   per line, `type` discriminates `user`/`assistant`/`system`/housekeeping.
-  `AskUserQuestion` batches are pre-rendered by the harness into a single
-  flattened `"The user answered: \"Q1\"=\"A1\", \"Q2\"=\"A2\", ..."`
-  tool_result string covering every question in the batch, with a trailing
-  boilerplate sentence observed in at least two different wordings
-  (`"Read the answers carefully..."` vs `"You can now continue with these
-  answers in mind."`). `_split_qa_pairs`/`_format_qa_pairs` re-split that
-  string back into per-question `(question, answer)` pairs — anchored on
-  each question's own verbatim text from `tool_use.input.questions`, not
-  the varying boilerplate — and render each as an `INTERVIEW: <question
-  text>` line, every declared option as a bullet list, a blank line, then
-  `OPERATOR: <answer>`, one block per question with a blank line between
-  blocks (operator-reported finding, 2026-09-10: the raw flattened string,
-  including its "OPERATOR: The user answered: ..." framing, used to be
-  passed straight through as the rendered operator turn; `INTERVIEW: `
-  question prefix added 2026-09-11, operator direction, so a question
-  reads as a labeled question at a glance). Falls back to
-  the unmodified raw string the moment an expected marker isn't found — a
-  harness rendering change this adapter hasn't seen yet.
+  `AskUserQuestion` tool calls render each question at its source position,
+  including the displayed header, option labels and descriptions, and
+  multi-select behavior. This preserves unanswered questions and prompts with
+  no assistant prose copy. A recognized result repeats the question with an
+  `OPERATOR:` answer so a saved extract remains readable when it starts after
+  the prompt. The usual flattened `"The user answered: \"Q1\"=\"A1\", ..."`
+  result is matched against `tool_use.input.questions`; rejected batches with
+  a `Questions asked:` section are also parsed, including explicit
+  `(No answer provided)` rows. Answers can be selected choices or free text.
+  An unrecognized result stays as raw source text rather than being partially
+  decoded or attached to the wrong prompt.
   Real schema quirks found only by running against live files, not
   documentation, several caught only by a later adversarial review's own
   reproductions rather than the initial design pass: the first line of a

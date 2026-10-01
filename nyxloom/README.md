@@ -98,9 +98,9 @@ pasteable workflows are in [CONSUMERS.md](docs/CONSUMERS.md).
 | Command | Scope |
 |---|---|
 | `nyxloom` | Project-local authoring: `init`, `onboard`, local `lint`, and managed `backlog` files. It works from an unregistered project checkout and does not need the daemon. |
-| `nyxloom-harness` | Session discovery and extraction from supported AI harnesses. It reads harness files/stores and does not initialize Nyxloom host state. |
+| `nyxloom-harness` | Session search, discovery, and extraction from supported AI harnesses. It reads harness files/stores and does not initialize Nyxloom host state. |
 | `nyxloomctl` | Local host control, administration, and developer diagnostics, including the project registry, workflow state, routes, models, auth, host-wide lint, and `daemon`. These commands operate locally; remote administration is future work. |
-| `nyxloomd` | Service-manager entrypoint for the daemon container. It is installed with the same wheel and is not a human command interface. |
+| `nyxloomd` | Service-manager entrypoint for the daemon container. Bare `nyxloomd` starts the foreground service; `--help` and `--version` exit without starting it. |
 
 The dashboard remains the daemon's HTTP/SSE client. The wheel does not add a
 remote `nyxloomctl` API client. Project-local authoring and harness extraction
@@ -123,7 +123,7 @@ how these choices stay in sync with their owning schemas and registries.
 | --- | --- | --- |
 | `nyxloom lint` | Frontmatter schema + carve-quality rules (SPEC §6); gates the carve commit. Also validates the managed per-entry backlog: entry frontmatter (BLG2) and the generated `backlog/INDEX.md` freshness (BLG3), when a project adopts `[backlog_entries]` | No |
 | `nyxloom backlog` | Managed per-entry issue tracker (`nyxloom-trove/backlog/`, one file per entry): `new`/`promote`/`note`/`set-status`/`list`/`show`/`index`; merge auto-ticks linked entries to `merged`. Design authority: [docs/backlog-entries-spec.md](docs/backlog-entries-spec.md); adoption: [docs/CONSUMERS.md](docs/CONSUMERS.md) | No |
-| `nyxloom-harness extract` family | Mechanical extraction from Claude Code, Codex, OpenCode, and Reasonix session logs: resumable briefs, lossless dumps, session discovery/reporting, bare session-ID lookup, rendered or syntax-highlighted markdown, and incremental `--follow` streams with optional attention delivery. User guide: [`session_extract/README.md`](src/nyxloom/session_extract/README.md) | No |
+| `nyxloom-harness` session tools | Search session words and return ranked session IDs; mechanically extract from Claude Code, Codex, OpenCode, and Reasonix logs; discover/report sessions; resolve bare IDs; render or highlight Markdown; and follow live streams with optional attention delivery. User guide: [`session_extract/README.md`](src/nyxloom/session_extract/README.md); search rationale: [design guide](docs/DESIGN-GUIDE.md#local-session-search). | No |
 | `nyxloomctl tick` | One operator reconcile pass: scan → dispatch/detect/collect → events → render → notify → exit | No |
 | Attempt wrapper | Runs one CLI leg detached; tees log; writes typed receipt with exit code; holds/releases flock leases | Only the launched agent |
 | Route adapters | Per-CLI dispatch/resume/probe/usage-extraction templates, table-driven from `routes.toml` | No |
@@ -143,7 +143,12 @@ the two places they buy quality: carve and review.
 opencode session logs without an LLM call. `extract` produces a compact
 resumable brief; `extract-lossless` preserves the adapter's prose and available
 thinking blocks. `extract-sessions` discovers Claude Code, Codex, and opencode
-families; `extract-report` reports cost/timeline data for those formats. The
+families; `extract-report` reports cost/timeline data for those formats.
+`search` ranks locally stored Claude Code, Codex, and OpenCode sessions by
+query words and prints session IDs plus matching metadata, never transcript
+text. `extract --help` groups its controls by source, selection, content,
+output, redaction/task, and live-follow use; see the
+[help rationale](docs/DESIGN-GUIDE.md#cli-identity-help-and-bootstrap). The
 `SESSION_LOG` argument accepts either a full path or a session ID when nyxloom
 can resolve exactly one matching file/store. Codex
 rollout lookup follows `CODEX_HOME` (default `~/.codex`) and checks local
@@ -168,11 +173,15 @@ safe to compact. Use `--epochs N|A:B|all`, `--max-compactions N`, or
 `--max-time-minutes N` to shape a bounded review. See the
 [selection and rendering rationale](docs/DESIGN-GUIDE.md#session-extraction-selection-and-boundaries)
 and [worked operator examples](docs/CONSUMERS.md#extract-a-session-log).
-Every Codex interactive question is rendered with an `INTERVIEW:` marker and
-its offered choices, including prompts that have no assistant-prose copy.
-Structured replies use `OPERATOR:` and retain both selected choices and
-free-text answers, even when the user replies after later session activity.
-See the [Q&A design](docs/DESIGN-GUIDE.md#codex-question-replies).
+Claude Code `AskUserQuestion` prompts and every Codex interactive question
+are rendered with an `INTERVIEW:` marker and their offered choices, including
+unanswered prompts and prompts without assistant-prose copies. Claude headers,
+option descriptions, and multi-select behavior are preserved. Recognized
+structured replies use `OPERATOR:` and retain selected choices and free-text
+answers; a rejected Claude question batch also labels explicit
+`(No answer provided)` rows.
+See the [Claude Code](docs/DESIGN-GUIDE.md#claude-code-question-replies) and
+[Codex](docs/DESIGN-GUIDE.md#codex-question-replies) Q&A designs.
 Saved extracts carry source cursors for `--since-file`; Codex prompts in
 ordinal-less rollouts use a `response_item-<position>` cursor while legacy
 event cursors keep their numeric form. See the
