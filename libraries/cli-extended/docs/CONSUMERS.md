@@ -354,9 +354,44 @@ command's required arguments, options, and exclusive selections. For a
 value-taking foreign option, it consumes values according to the owner's
 declared arity while treating option-like target tokens as boundaries. Those
 tokens do not satisfy target positionals in the structural check. It validates
-fixed/minimum arity and enumerable choices, but it does not run converters or
-prove the outcome; the linked test invokes the real CLI and checks the expected
-status and effects. For this `show --poll` example, record
+fixed/minimum arity and enumerable choices. For registered `type=str`,
+`type=int`, `type=float`, or `type=bool`, it applies that exact built-in
+conversion; invalid conversions are findings even when no choices are declared.
+When choices exist, it compares the converted values to the declared choices.
+For example, `type=int, choices=(1, 2)` accepts `--count 1`, while
+`choices=(1, 2)` without a converter does not: argparse receives the raw string
+`"1"` in that case. A custom converter remains opaque; its acceptance and
+failure behavior belongs in the linked test, which invokes the real CLI and
+checks status and effects. Built-in converters are recognized by exact
+runtime object identity; a custom callable with a matching label stays opaque.
+Static choice checks likewise require the exact argparse action class;
+custom actions with a matching label stay opaque and need linked behavior
+tests. Choice containers must be exact built-in lists,
+tuples, sets, or frozensets with plain string, integer, finite-float, or
+boolean members. Custom containers and other choice objects make the surface
+incomplete because their runtime membership or equality cannot safely be
+represented by the exported JSON values.
+For an option with `nargs="?"`, invoking the option without a value selects
+`const`. Argparse converts string constants. Whether it checks the converted
+constant against `choices` depends on the stock argparse runtime. The exporter
+probes that behavior with a disposable parser, records it in the surface and
+generated spec, and signs it into candidates. The structural check follows
+the recorded result without executing consumer code. An omitted optional
+positional uses its default, not `const`, and does not use this option rule.
+That option constant must be an exact built-in string, integer, finite float,
+or boolean; custom scalar objects make the surface incomplete.
+Argparse does not check `choices` for a flag-only action such as
+`action="store_true"`; remove that unused declaration or use an action whose
+invocation carries a value. The surface reports it as incomplete.
+Any non-default parser type-registry registration makes the surface
+incomplete. Argparse resolves registered converters by dictionary equality,
+so even a distinct registry key that compares equal to an action's type can
+change its value conversion.
+Value-taking actions must use a callable converter or `None`. A non-callable
+type reference with no registered converter is not valid argparse syntax, so
+the surface marks it incomplete. Custom type registries are also incomplete.
+The structural check does not prove product outcomes. For this `show --poll`
+example, record
 `decision = "refuse"` and a non-zero `expected_exit_status` because `show`
 rejects the watch-only option. Check mode preserves the catalog's decision; it
 does not infer the outcome from route ownership. The only unrecognized options
@@ -378,11 +413,11 @@ separate named combinations and write their exact argv in the semantic rows.
 Every generated candidate carries the route's required positional, required
 option, and required-exclusive-group baseline in its signature. Check mode
 requires that baseline for every candidate kind and validates the declared
-arity and choices on every option occurrence; a valid first occurrence cannot
-hide a malformed repeat. The structural checker confirms the route, named
-option presence, declared value counts, enumerable choices, and required
-baseline syntax; behavior tests assert converter behavior and exact value and
-repetition rules. Any bare token left after assigning declared positional
+arity, modeled built-in conversion, and choices on every option occurrence; a
+valid first occurrence cannot hide a malformed repeat. The structural checker confirms the route, named
+option presence, declared value counts, enumerable choices it can model, and
+required baseline syntax; behavior tests assert custom converter behavior and
+exact value and repetition rules. Any bare token left after assigning declared positional
 arguments is reported, so an unrelated extra value cannot be mistaken for a
 valid option case. Those
 distinctions belong in the consumer's canonical CLI spec and

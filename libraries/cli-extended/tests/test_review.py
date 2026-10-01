@@ -30,12 +30,15 @@ from cli_extended.review import (
     SURFACE_START_MARKER,
     SurfaceReport,
     _case_status,
+    _converted_action_values,
     _markdown_cell,
     _option_occurrences_accept,
     _parse_interaction_groups,
     _replace_generated_region,
     _review_findings,
     _statically_skipped,
+    _validate_distinct_surface_paths,
+    _values_satisfy_action,
     _value_shape_accepts,
 )
 
@@ -820,7 +823,7 @@ def test_cross_route_interaction_requires_the_foreign_option_and_valid_target_ar
         )
     )
     assert any(
-        "outside the choices for required argument" in finding
+        "invalid value for required argument" in finding
         for finding in findings(
             (
                 "show", "OTHER-TASK", "--poll", "5", "--dry-run",
@@ -1127,7 +1130,7 @@ def test_interaction_invocation_must_satisfy_target_route_requirements():
         )
     )
     assert any(
-        "outside the choices for required group" in finding
+        "invalid value for required group" in finding
         for finding in findings(
             (
                 "show", "TASK-UUID", "--config", "file", "--from-file", "OTHER",
@@ -1145,7 +1148,7 @@ def test_interaction_invocation_must_satisfy_target_route_requirements():
         )
     )
     assert any(
-        "outside the choices for required option" in finding
+        "invalid value for required option" in finding
         for finding in findings(
             (
                 "show", "TASK-UUID", "--config", "other", "--from-file", "PATH",
@@ -1618,7 +1621,7 @@ def test_surface_markdown_lists_delegated_group_children():
     group_id = "route:entrypoint:audit-tool/plugins"
     child_id = f"{group_id}/inspect"
     surface = {
-        "schema_version": 5,
+        "schema_version": 6,
         "entrypoint": {
             "command": "audit-tool",
             "prog": "audit-tool",
@@ -1909,7 +1912,7 @@ def test_render_route_invocation_modes_describe_the_parser_receiving_argv():
         },
     ]
     surface = {
-        "schema_version": 5,
+        "schema_version": 6,
         "entrypoint": {
             "command": "audit-tool",
             "prog": "audit-tool",
@@ -2413,7 +2416,7 @@ def test_argument_shape_case_reports_values_outside_positional_choices():
 
     findings = _findings_for_invocation(candidate, route, ["inspect", "other"])
 
-    assert any("supplies a positional value outside its choices" in item for item in findings)
+    assert any("supplies an invalid positional value" in item for item in findings)
 
 
 def test_argument_shape_case_rejects_unknown_arguments_and_short_fixed_arity():
@@ -2615,6 +2618,16 @@ def test_required_group_exemptions_only_apply_to_declared_interactions():
         for item in interaction_findings
     )
 
+    repeated_interaction_findings = _findings_for_invocation(
+        interaction,
+        route,
+        ["inspect", "--from-file", "--from-file", "--from-inline"],
+    )
+    assert any(
+        "must supply each conflicting option once and no other group option" in item
+        for item in repeated_interaction_findings
+    )
+
 
 def test_review_checks_required_baseline_for_non_minimum_candidates():
     registry = CliRegistry(IDENTITY, prog="audit-tool", description="required baseline")
@@ -2778,8 +2791,305 @@ def test_review_rejects_bad_choice_in_a_repeated_option_occurrence():
         ["inspect", "--mode", "safe", "--mode", "unsupported"],
     )
 
-    assert any("outside the choices for option" in finding for finding in findings)
+    assert any("invalid value for option" in finding for finding in findings)
     assert not any("invalid value shape for option" in finding for finding in findings)
+
+
+@pytest.mark.parametrize(
+    "parser_kwargs, value, accepted",
+    (
+        pytest.param(
+            {"choices": (1, 2)}, "1", False, id="raw-string-vs-integer-choice"
+        ),
+        pytest.param(
+            {"type": int, "choices": (1, 2)}, "1", True, id="integer-converter"
+        ),
+        pytest.param(
+            {"type": int, "choices": (1, 2)},
+            "not-an-integer",
+            False,
+            id="invalid-integer-conversion",
+        ),
+        pytest.param(
+            {"type": int}, "not-an-integer", False,
+            id="invalid-conversion-without-choices",
+        ),
+        pytest.param(
+            {"type": str, "choices": (1,)}, "1", False, id="string-converter"
+        ),
+        pytest.param(
+            {"type": int, "choices": ("1",)}, "1", False, id="mismatched-choice-type"
+        ),
+        pytest.param(
+            {"type": float, "choices": (1.0,)}, "1", True, id="float-equivalent"
+        ),
+        pytest.param(
+            {"type": bool, "choices": (False,)}, "", True, id="false-boolean-choice"
+        ),
+    ),
+)
+def test_review_choice_validation_matches_argparse_builtin_converters(
+    parser_kwargs, value, accepted
+):
+    registry = CliRegistry(IDENTITY, prog="audit-tool", description="typed choices")
+    registry.register(
+        VerbSpec(
+            "inspect",
+            description="inspect one resource",
+            options=(
+                OptionSpec(
+                    ("--mode",),
+                    "select a mode",
+                    parser_kwargs=parser_kwargs,
+                ),
+            ),
+            handler=lambda *_: 0,
+        )
+    )
+    app = registry.build()
+    surface = export_cli_surface(app)
+    candidate_kind = (
+        "option-choice"
+        if parser_kwargs.get("choices") is not None
+        else "option-spelling"
+    )
+    candidate = next(
+        case
+        for case in surface["candidates"]
+        if case["kind"] == candidate_kind
+    )
+    route = next(
+        route for route in surface["routes"] if route["id"] == candidate["route_id"]
+    )
+    invocation = ["inspect", "--mode", value]
+
+    findings = _findings_for_invocation(candidate, route, invocation)
+    actual_status = app.run(
+        argv=invocation, stdout=io.StringIO(), stderr=io.StringIO()
+    )
+
+    assert actual_status == (0 if accepted else 2)
+    if accepted:
+        assert findings == []
+    else:
+        assert any("invalid value for option" in item for item in findings)
+
+
+def test_review_positional_choice_uses_the_built_in_converter_value():
+    registry = CliRegistry(IDENTITY, prog="audit-tool", description="typed positional")
+    registry.register(
+        VerbSpec(
+            "inspect",
+            description="inspect one numeric resource",
+            arguments=(
+                ArgumentSpec(
+                    "number",
+                    "numeric resource identifier",
+                    parser_kwargs={"type": float, "choices": (1.0,)},
+                ),
+            ),
+            handler=lambda *_: 0,
+        )
+    )
+    app = registry.build()
+    surface = export_cli_surface(app)
+    candidate = next(
+        case
+        for case in surface["candidates"]
+        if case["kind"] == "argument-choice"
+    )
+    route = next(
+        route for route in surface["routes"] if route["id"] == candidate["route_id"]
+    )
+    invocation = ["inspect", "1"]
+
+    assert app.run(
+        argv=invocation, stdout=io.StringIO(), stderr=io.StringIO()
+    ) == 0
+    assert _findings_for_invocation(candidate, route, invocation) == []
+
+
+@pytest.mark.parametrize(
+    "const, converter, choices",
+    (
+        pytest.param("ready", None, ("ready",), id="choice-member-const"),
+        pytest.param(
+            "unknown", None, ("ready",), id="runtime-const-choice-rule"
+        ),
+        pytest.param("1", int, (1,), id="const-is-converted"),
+        pytest.param("invalid", int, (1,), id="invalid-const-conversion"),
+        pytest.param(
+            "invalid", int, None, id="invalid-const-conversion-without-choices"
+        ),
+    ),
+)
+def test_review_models_argparse_optional_option_const(const, converter, choices):
+    registry = CliRegistry(IDENTITY, prog="audit-tool", description="const choices")
+    registry.register(
+        VerbSpec(
+            "inspect",
+            description="inspect one resource",
+            options=(
+                OptionSpec(
+                    ("--mode",),
+                    "select a mode",
+                    parser_kwargs={
+                        "nargs": "?",
+                        "const": const,
+                        "choices": choices,
+                        "type": converter,
+                    },
+                ),
+            ),
+            handler=lambda *_: 0,
+        )
+    )
+    app = registry.build()
+    surface = export_cli_surface(app)
+    candidate = next(
+        case
+        for case in surface["candidates"]
+        if case["kind"] == "option-spelling"
+    )
+    route = next(
+        route for route in surface["routes"] if route["id"] == candidate["route_id"]
+    )
+    action = next(
+        action
+        for action in route["actions"]
+        if action.get("flags") == ["--mode"]
+    )
+    invocation = ["inspect", "--mode"]
+
+    actual_status = app.run(
+        argv=invocation, stdout=io.StringIO(), stderr=io.StringIO()
+    )
+    findings = _findings_for_invocation(candidate, route, invocation)
+
+    assert "const_choice_check_on_omission" in action
+    markdown = render_cli_surface_markdown(
+        surface, ReviewCatalog("audit-tool", 8, (), ())
+    )
+    assert (
+        '"const_choice_check_on_omission": '
+        f'{str(action["const_choice_check_on_omission"]).lower()}'
+    ) in markdown
+    assert (findings == []) is (actual_status == 0)
+
+
+def test_review_does_not_apply_optional_option_const_to_a_positional():
+    positional = {
+        "kind": "argument",
+        "nargs": "?",
+        "const": "not-a-choice",
+        "choices": ["ready"],
+        "type": None,
+        "const_choice_check_on_omission": True,
+    }
+
+    assert _values_satisfy_action(positional, ())
+
+
+def test_review_does_not_execute_custom_choice_converters():
+    calls = []
+
+    def custom_converter(value):
+        calls.append(value)
+        return int(value)
+
+    registry = CliRegistry(IDENTITY, prog="audit-tool", description="custom choices")
+    registry.register(
+        VerbSpec(
+            "inspect",
+            description="inspect a numeric resource",
+            options=(
+                OptionSpec(
+                    ("--mode",),
+                    "select a mode",
+                    parser_kwargs={"type": custom_converter, "choices": (1,)},
+                ),
+            ),
+            handler=lambda *_: 0,
+        )
+    )
+    app = registry.build()
+    surface = export_cli_surface(app)
+    candidate = next(
+        case
+        for case in surface["candidates"]
+        if case["kind"] == "option-choice"
+    )
+    route = next(
+        route for route in surface["routes"] if route["id"] == candidate["route_id"]
+    )
+
+    findings = _findings_for_invocation(
+        candidate, route, ["inspect", "--mode", "anything"]
+    )
+
+    assert findings == []
+    assert calls == []
+    assert _converted_action_values({"type": {"callable": []}}, ("1",)) == ("opaque", ())
+    assert _converted_action_values(
+        {"action": [], "type": {"callable": "builtins.int"}}, ("1",)
+    ) == ("opaque", ())
+    assert _converted_action_values(
+        {
+            "action": "consumer.CustomAction",
+            "type": {"callable": "builtins.int"},
+        },
+        ("1",),
+    ) == ("opaque", ())
+
+
+def test_review_does_not_trust_a_custom_converter_with_a_builtin_label():
+    calls = []
+
+    def custom_converter(_value):
+        calls.append("called")
+        return 1
+
+    custom_converter.__module__ = "builtins"
+    custom_converter.__qualname__ = "int"
+    registry = CliRegistry(IDENTITY, prog="audit-tool", description="spoofed type")
+    registry.register(
+        VerbSpec(
+            "inspect",
+            description="inspect one resource",
+            options=(
+                OptionSpec(
+                    ("--mode",),
+                    "select a mode",
+                    parser_kwargs={"type": custom_converter, "choices": (1,)},
+                ),
+            ),
+            handler=lambda *_: 0,
+        )
+    )
+    app = registry.build()
+    surface = export_cli_surface(app)
+    candidate = next(
+        case
+        for case in surface["candidates"]
+        if case["kind"] == "option-choice"
+    )
+    route = next(
+        route for route in surface["routes"] if route["id"] == candidate["route_id"]
+    )
+    action = next(
+        action
+        for action in route["actions"]
+        if action.get("flags") == ["--mode"]
+    )
+
+    assert action["type"] == {"opaque": "built-in-converter-label-collision"}
+    assert action["parser_kwargs"]["type"] == {
+        "opaque": "built-in-converter-label-collision"
+    }
+    assert _findings_for_invocation(
+        candidate, route, ["inspect", "--mode", "not-an-integer"]
+    ) == []
+    assert calls == []
 
 
 def test_review_allows_repeated_occurrences_of_one_required_group_option():
@@ -3814,6 +4124,41 @@ def test_review_route_lexer_stops_at_fixed_and_option_boundaries():
     ) == []
 
 
+@pytest.mark.parametrize(("nargs", "minimum_values"), (("*", 0), ("+", 1)))
+def test_review_variadic_option_terminates_at_end_of_argv(nargs, minimum_values):
+    route_id = "route:entrypoint:audit-tool"
+    route = {
+        "id": route_id,
+        "path": [],
+        "aliases": [],
+        "kind": "invocation",
+        "single_command": True,
+        "no_args_action": True,
+        "actions": [
+            {
+                "id": "option:values",
+                "kind": "option",
+                "flags": ["--values"],
+                "nargs": nargs,
+                "minimum_values": minimum_values,
+                "required": False,
+                "choices": ["one"],
+                "parser_path": [],
+            }
+        ],
+    }
+    candidate = {
+        "id": f"case:variadic-{nargs}",
+        "route_id": route_id,
+        "signature": f"sha256:variadic-{nargs}",
+        "kind": "other",
+        "members": [],
+        "shape": {},
+    }
+
+    assert _findings_for_invocation(candidate, route, ["--values", "one"]) == []
+
+
 def test_review_minimum_checks_the_exact_number_of_required_argument_values():
     route_id = "route:entrypoint:audit-tool/inspect"
     route = {
@@ -4397,7 +4742,7 @@ def test_sync_is_idempotent_preserves_outside_bytes_and_never_rewrites_catalog(t
     assert synced.endswith(suffix)
     assert b"\r\nAfter\r\n" in synced
     assert review.read_bytes() == original_review
-    assert json.loads(manifest.read_text(encoding="utf-8"))["schema_version"] == 5
+    assert json.loads(manifest.read_text(encoding="utf-8"))["schema_version"] == 6
     assert SURFACE_START_MARKER.encode() in synced
     assert SURFACE_END_MARKER.encode() in synced
 
@@ -4896,3 +5241,521 @@ def test_surface_report_renders_findings_and_success_as_plain_text():
     report = SurfaceReport(("missing case", "stale manifest"))
     assert report.passed is False
     assert report.render() == "missing case\nstale manifest"
+
+
+def test_review_keeps_unknown_dash_options_out_of_missing_option_values():
+    route = {
+        "id": "route:entrypoint:audit-tool",
+        "path": [],
+        "aliases": [],
+        "kind": "invocation",
+        "single_command": True,
+        "no_args_action": True,
+        "actions": [
+            {
+                "id": "option:count",
+                "kind": "option",
+                "flags": ["--count"],
+                "nargs": None,
+                "minimum_values": 1,
+                "required": False,
+                "parser_path": [],
+            }
+        ],
+        "parser_settings": [
+            {
+                **_argparse_negative_number_settings()[1],
+                "negative_number_matcher": None,
+                "negative_number_matcher_custom": False,
+            }
+        ],
+    }
+    candidate = {
+        "id": "case:count",
+        "route_id": route["id"],
+        "signature": "sha256:count",
+        "kind": "option-spelling",
+        "members": ["option:count"],
+        "shape": {"spelling": "--count"},
+    }
+
+    findings = _findings_for_invocation(candidate, route, ["--count", "--unknown"])
+
+    assert any("omits a value for --count" in item for item in findings)
+
+
+@pytest.mark.parametrize("nargs, should_report_missing", (("*", False), ("+", True)))
+def test_review_star_and_plus_options_finish_at_empty_argv_tail(
+    nargs, should_report_missing
+):
+    route = {
+        "id": "route:entrypoint:audit-tool",
+        "path": [],
+        "aliases": [],
+        "kind": "invocation",
+        "single_command": True,
+        "no_args_action": True,
+        "actions": [
+            {
+                "id": "option:many",
+                "kind": "option",
+                "flags": ["--many"],
+                "nargs": nargs,
+                "minimum_values": 0 if nargs == "*" else 1,
+                "required": False,
+                "parser_path": [],
+            }
+        ],
+    }
+    candidate = {
+        "id": f"case:many-{nargs}",
+        "route_id": route["id"],
+        "signature": "sha256:many",
+        "kind": "option-spelling",
+        "members": ["option:many"],
+        "shape": {"spelling": "--many"},
+    }
+
+    findings = _findings_for_invocation(candidate, route, ["--many"])
+
+    assert any("omits a value for --many" in item for item in findings) is should_report_missing
+
+
+def test_review_abbreviation_lookup_ignores_non_option_actions():
+    route = {
+        "id": "route:entrypoint:audit-tool",
+        "path": [],
+        "aliases": [],
+        "kind": "invocation",
+        "single_command": True,
+        "no_args_action": True,
+        "parser_settings": [{"parser_path": [], "allow_abbrev": True}],
+        "actions": [
+            {
+                "id": "argument:synthetic",
+                "kind": "argument",
+                "name": "synthetic",
+                "flags": ["--count"],
+                "parser_path": [],
+            }
+        ],
+    }
+    candidate = {
+        "id": "case:unknown-abbreviation",
+        "route_id": route["id"],
+        "signature": "sha256:unknown-abbreviation",
+        "kind": "other",
+        "members": [],
+        "shape": {},
+    }
+
+    findings = _findings_for_invocation(
+        candidate, route, ["--cou", "value"], allow_abbrev=True
+    )
+
+    assert any("undeclared unknown option '--cou'" in item for item in findings)
+
+
+def test_review_parent_positional_can_consume_lone_dash_before_nested_verb():
+    prefix = {
+        "id": "route:entrypoint:audit-tool/inspect",
+        "path": ["inspect"],
+        "aliases": [],
+        "kind": "route-prefix",
+        "actions": [],
+    }
+    parent = {
+        "id": "argument:parent-label",
+        "kind": "argument",
+        "name": "label",
+        "nargs": "?",
+        "minimum_values": 0,
+        "required": False,
+        "parser_path": ["inspect"],
+        "before_nested_subcommand": True,
+    }
+    route = {
+        "id": "route:entrypoint:audit-tool/inspect/apply",
+        "path": ["inspect", "apply"],
+        "aliases": [],
+        "kind": "invocation",
+        "actions": [parent],
+    }
+    candidate = {
+        "id": "case:nested-route",
+        "route_id": route["id"],
+        "signature": "sha256:nested-route",
+        "kind": "other",
+        "members": [],
+        "shape": {},
+    }
+
+    findings = _findings_for_invocation(
+        candidate,
+        route,
+        ["inspect", "-", "apply"],
+        route_prefixes=(prefix,),
+    )
+
+    assert not any("omits its command path" in item for item in findings)
+
+
+def test_review_exact_minimum_values_do_not_report_missing_values():
+    route = {
+        "id": "route:entrypoint:audit-tool",
+        "path": [],
+        "aliases": [],
+        "kind": "invocation",
+        "single_command": True,
+        "no_args_action": True,
+        "actions": [
+            {
+                "id": "argument:required-pair",
+                "kind": "argument",
+                "name": "required-pair",
+                "nargs": 2,
+                "minimum_values": 2,
+                "required": True,
+                "choices": ["left", "right"],
+                "parser_path": [],
+            },
+            {
+                "id": "argument:optional-many",
+                "kind": "argument",
+                "name": "optional-many",
+                "nargs": "+",
+                "minimum_values": 1,
+                "required": False,
+                "choices": ["up", "down"],
+                "parser_path": [],
+            },
+            {
+                "id": "option:required-pair",
+                "kind": "option",
+                "flags": ["--required-pair"],
+                "nargs": 2,
+                "minimum_values": 2,
+                "required": True,
+                "choices": ["one", "two"],
+                "parser_path": [],
+            },
+            {
+                "id": "option:optional-many",
+                "kind": "option",
+                "flags": ["--optional-many"],
+                "nargs": "+",
+                "minimum_values": 1,
+                "required": False,
+                "choices": ["alpha", "beta"],
+                "parser_path": [],
+            },
+        ],
+    }
+    candidate = {
+        "id": "case:exact-minimum",
+        "route_id": route["id"],
+        "signature": "sha256:exact-minimum",
+        "kind": "other",
+        "members": [],
+        "shape": {},
+    }
+    invocation = [
+        "bad-left",
+        "bad-right",
+        "bad-optional",
+        "--required-pair",
+        "bad-one",
+        "bad-two",
+        "--optional-many",
+        "bad-optional",
+    ]
+
+    findings = _findings_for_invocation(candidate, route, invocation)
+
+    assert any("invalid value for required argument" in item for item in findings)
+    assert any("invalid positional value" in item for item in findings)
+    assert any("invalid value for required option" in item for item in findings)
+    assert any("invalid value for option:optional-many" in item for item in findings)
+    assert not any("omits required positional argument" in item for item in findings)
+    assert not any("omits a value for positional argument" in item for item in findings)
+    assert not any("omits a value for --" in item for item in findings)
+
+
+def test_review_interaction_exemption_keeps_required_group_diagnostic():
+    route = {
+        "id": "route:entrypoint:audit-tool",
+        "path": [],
+        "aliases": [],
+        "kind": "invocation",
+        "single_command": True,
+        "no_args_action": True,
+        "actions": [
+            {
+                "id": "option:file",
+                "kind": "option",
+                "flags": ["--file"],
+                "nargs": 0,
+                "required": False,
+                "exclusive_group": "source",
+                "exclusive_required": True,
+                "parser_path": [],
+            },
+            {
+                "id": "option:inline",
+                "kind": "option",
+                "flags": ["--inline"],
+                "nargs": 0,
+                "required": False,
+                "exclusive_group": "source",
+                "exclusive_required": True,
+                "parser_path": [],
+            },
+            {
+                "id": "option:extra",
+                "kind": "option",
+                "flags": ["--extra"],
+                "nargs": 0,
+                "required": False,
+                "exclusive_group": None,
+                "exclusive_required": False,
+                "parser_path": [],
+            },
+        ],
+    }
+    candidate = {
+        "id": "case:one-required-member-interaction",
+        "route_id": route["id"],
+        "signature": "sha256:group-interaction",
+        "kind": "interaction",
+        "members": ["option:file", "option:extra"],
+        "shape": {
+            "option_ids": ["option:file", "option:extra"],
+            "required_arguments": [],
+            "required_options": [],
+            "required_exclusive_groups": {},
+            "external_options": [],
+        },
+    }
+
+    findings = _findings_for_invocation(candidate, route, ["--extra"])
+
+    assert any(
+        "does not supply participating option option:file" in item
+        for item in findings
+    )
+    assert any(
+        "must supply exactly one option from required group source" in item
+        for item in findings
+    )
+
+
+def test_review_required_minimum_references_must_have_the_matching_kind_and_id():
+    route = {
+        "id": "route:entrypoint:audit-tool",
+        "path": [],
+        "aliases": [],
+        "kind": "invocation",
+        "single_command": True,
+        "no_args_action": True,
+        "actions": [
+            {
+                "id": "shared-id",
+                "kind": "option",
+                "flags": ["--shared"],
+                "nargs": 0,
+                "required": False,
+            },
+            {
+                "id": "option:other",
+                "kind": "option",
+                "flags": ["--other"],
+                "nargs": 0,
+                "required": False,
+            },
+        ],
+    }
+    candidate = {
+        "id": "case:bad-required-references",
+        "route_id": route["id"],
+        "signature": "sha256:bad-required-references",
+        "kind": "minimum",
+        "members": [],
+        "shape": {
+            "required_arguments": ["shared-id"],
+            "required_options": ["option:missing"],
+        },
+    }
+
+    findings = _findings_for_invocation(
+        candidate, route, ["--shared", "--other"]
+    )
+
+    assert any("unknown required argument shared-id" in item for item in findings)
+    assert any("unknown required option option:missing" in item for item in findings)
+
+
+def test_review_conflict_validation_is_scoped_to_its_own_group():
+    route = {
+        "id": "route:entrypoint:audit-tool",
+        "path": [],
+        "aliases": [],
+        "kind": "invocation",
+        "single_command": True,
+        "no_args_action": True,
+        "actions": [
+            {
+                "id": "option:file",
+                "kind": "option",
+                "flags": ["--file"],
+                "nargs": 0,
+                "required": False,
+                "exclusive_group": "source",
+                "exclusive_required": True,
+            },
+            {
+                "id": "option:inline",
+                "kind": "option",
+                "flags": ["--inline"],
+                "nargs": 0,
+                "required": False,
+                "exclusive_group": "source",
+                "exclusive_required": True,
+            },
+            {
+                "id": "option:json",
+                "kind": "option",
+                "flags": ["--json"],
+                "nargs": 0,
+                "required": False,
+                "exclusive_group": "format",
+                "exclusive_required": False,
+            },
+            {
+                "id": "option:text",
+                "kind": "option",
+                "flags": ["--text"],
+                "nargs": 0,
+                "required": False,
+                "exclusive_group": "format",
+                "exclusive_required": False,
+            },
+        ],
+    }
+    candidate = {
+        "id": "case:source-conflict",
+        "route_id": route["id"],
+        "signature": "sha256:source-conflict",
+        "kind": "exclusive-conflict",
+        "members": ["option:file", "option:inline"],
+        "shape": {
+            "group_id": "source",
+            "options": ["option:file", "option:inline"],
+        },
+    }
+
+    findings = _findings_for_invocation(
+        candidate, route, ["--file", "--inline", "--json"]
+    )
+
+    assert not any("conflicting option once" in item for item in findings)
+
+
+def test_review_conflict_validation_requires_each_expected_member_once():
+    route = {
+        "id": "route:entrypoint:audit-tool",
+        "path": [],
+        "aliases": [],
+        "kind": "invocation",
+        "single_command": True,
+        "no_args_action": True,
+        "actions": [
+            {
+                "id": "option:file",
+                "kind": "option",
+                "flags": ["--file"],
+                "nargs": 0,
+                "required": False,
+                "exclusive_group": "source",
+                "exclusive_required": True,
+            },
+            {
+                "id": "option:inline",
+                "kind": "option",
+                "flags": ["--inline"],
+                "nargs": 0,
+                "required": False,
+                "exclusive_group": "source",
+                "exclusive_required": True,
+            },
+        ],
+    }
+    candidate = {
+        "id": "case:source-conflict",
+        "route_id": route["id"],
+        "signature": "sha256:source-conflict",
+        "kind": "exclusive-conflict",
+        "members": ["option:file", "option:inline"],
+        "shape": {
+            "group_id": "source",
+            "options": ["option:file", "option:inline"],
+        },
+    }
+
+    findings = _findings_for_invocation(candidate, route, ["--file", "--file"])
+
+    assert any("supply each conflicting option once" in item for item in findings)
+
+
+def test_distinct_surface_path_validation_refuses_a_missing_parent(tmp_path):
+    missing_parent = tmp_path / "missing"
+    with pytest.raises(SurfaceSpecError, match="cannot resolve manifest path"):
+        _validate_distinct_surface_paths(
+            tmp_path / "review.toml",
+            missing_parent / "surface.json",
+            tmp_path / "SPEC.md",
+        )
+
+
+def test_markdown_marks_positional_actions_as_outside_exclusive_groups():
+    surface = {
+        "schema_version": 5,
+        "entrypoint": {
+            "command": "audit-tool",
+            "prog": "audit-tool",
+            "single_command": False,
+            "no_args_action": False,
+            "builtins": [],
+        },
+        "routes": [
+            {
+                "id": "route:entrypoint:audit-tool",
+                "path": [],
+                "kind": "invocation",
+                "single_command": False,
+                "no_args_action": False,
+                "confirmation": False,
+                "parser_configured_by_callback": False,
+                "actions": [
+                    {
+                        "id": "argument:target",
+                        "kind": "argument",
+                        "name": "target",
+                        "description": "target to inspect",
+                        "required": True,
+                        "hidden": False,
+                    }
+                ],
+            }
+        ],
+        "candidates": [],
+        "syntax_complete": True,
+    }
+
+    markdown = render_cli_surface_markdown(
+        surface, ReviewCatalog("audit-tool", 8, (), ())
+    )
+    argument_row = next(
+        line for line in markdown.splitlines() if line.startswith("| argument:target |")
+    )
+
+    assert '"exclusive_required": false' in argument_row

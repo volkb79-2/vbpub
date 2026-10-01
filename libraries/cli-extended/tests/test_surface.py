@@ -21,17 +21,21 @@ from cli_extended import (
     render_cli_surface_json,
 )
 from cli_extended.surface import (
+    _action_contract_for_baseline,
     _canonical_flag,
     _callable_label,
+    _delegated_option_shape,
     _describe_parser,
     _effective_default,
     _generate_candidates,
     _minimum_values,
     _mutex_groups,
     _normalize,
+    _normalize_parser_kwarg,
     _ParserActionContext,
     _parser_syntax_issues,
     _route_id,
+    _route_required_baseline,
     _safe_choice_values,
     _scope,
     _signature,
@@ -715,6 +719,93 @@ def test_surface_marks_callbacks_that_replace_parser_behavior_incomplete():
     )
 
 
+@pytest.mark.parametrize(
+    "override, expected_finding",
+    (
+        pytest.param(
+            "registry",
+            "type registry overrides the converter",
+            id="registered-type-override",
+        ),
+        pytest.param(
+            "equal-registry-key",
+            "type registry has custom registrations",
+            id="equal-but-not-identical-type-key",
+        ),
+        pytest.param(
+            "lookup",
+            "overrides argparse syntax method _registry_get",
+            id="registry-lookup-override",
+        ),
+        pytest.param(
+            "container",
+            "parser type registry cannot be inspected",
+            id="uninspectable-registry-container",
+        ),
+        pytest.param(
+            "type-map",
+            "parser type registry cannot be inspected",
+            id="uninspectable-type-registry",
+        ),
+    ),
+)
+def test_surface_marks_type_registry_changes_incomplete(override, expected_finding):
+    registry = CliRegistry(IDENTITY, prog="surface-demo", description="Type registry.")
+
+    def configure(parser):
+        if override == "registry":
+            parser.register("type", int, lambda _value: 1)
+        elif override == "equal-registry-key":
+            registered_name = "".join(("cus", "tom"))
+            action_name = "".join(("cus", "tom"))
+            assert registered_name == action_name
+            assert registered_name is not action_name
+            parser.register("type", registered_name, lambda _value: 1)
+        elif override == "lookup":
+            parser._registry_get = (  # type: ignore[method-assign]
+                lambda _name, _key, default=None: default
+            )
+        elif override == "container":
+            parser._registries = None
+        else:
+            parser._registries["type"] = None
+
+    registry.register(
+        VerbSpec(
+            "inspect",
+            description="inspect one integer",
+            options=(
+                OptionSpec(
+                    ("--count",),
+                    "count",
+                    parser_kwargs={
+                        "type": (
+                            "".join(("cus", "tom"))
+                            if override == "equal-registry-key"
+                            else int
+                        ),
+                        "choices": (1, 2),
+                    },
+                ),
+            ),
+            configure=configure,
+            handler=lambda *_: 0,
+        )
+    )
+
+    app = registry.build()
+    surface = export_cli_surface(app)
+
+    assert surface["syntax_complete"] is False
+    assert any(expected_finding in issue for issue in surface["incomplete"])
+    if override in {"registry", "equal-registry-key"}:
+        assert app.run(
+            argv=["inspect", "--count", "not-an-integer"],
+            stdout=io.StringIO(),
+            stderr=io.StringIO(),
+        ) == 0
+
+
 def test_surface_marks_inconsistent_option_lookup_maps_incomplete():
     registry = CliRegistry(IDENTITY, prog="surface-demo", description="Inspect.")
 
@@ -878,6 +969,7 @@ def test_surface_marks_inherited_uninspectable_negative_number_matcher_incomplet
         verb_specs=(),
         global_options=(),
         single_command=False,
+        no_args_action=False,
         incomplete=incomplete,
         inherited_parser_settings=(
             {
@@ -907,14 +999,14 @@ def test_surface_signatures_are_canonical_for_unicode_payloads():
     reversed_payload = {"a": "café", "z": "last"}
     expected = "sha256:" + hashlib.sha256(
         json.dumps(
-            {"schema_version": 5, "payload": payload},
+            {"schema_version": 6, "payload": payload},
             sort_keys=True,
             separators=(",", ":"),
             ensure_ascii=False,
         ).encode("utf-8")
     ).hexdigest()
-    assert _signature(5, payload) == expected
-    assert _signature(5, payload) == _signature(5, reversed_payload)
+    assert _signature(6, payload) == expected
+    assert _signature(6, payload) == _signature(6, reversed_payload)
 
 
 def test_candidate_choice_ids_hash_unicode_values_without_ascii_escaping():
@@ -975,6 +1067,9 @@ def test_parser_action_context_is_frozen():
         argument_specs=(),
         group_titles={},
         mutex_groups={},
+        negative_number_matcher=None,
+        has_negative_number_optionals=False,
+        negative_number_matcher_custom=False,
     )
     assert parser is not None
     with pytest.raises(FrozenInstanceError):
@@ -1013,6 +1108,194 @@ def test_surface_normalization_handles_supported_and_opaque_values_deterministic
     assert opaque == ["x", "x", "x", "x"]
 
 
+def test_non_scalar_choice_objects_make_the_surface_incomplete():
+    class State(Enum):
+        READY = "ready"
+
+    registry = CliRegistry(IDENTITY, prog="surface-demo", description="State choices.")
+    registry.register(
+        VerbSpec(
+            "show",
+            description="show one state",
+            options=(
+                OptionSpec(
+                    ("--state",),
+                    "select a state",
+                    parser_kwargs={"choices": (State.READY,)},
+                ),
+            ),
+            handler=lambda *_: 0,
+        )
+    )
+
+    surface = export_cli_surface(registry.build())
+    route = next(route for route in surface["routes"] if route["path"] == ["show"])
+    state_action = next(
+        action for action in route["actions"] if action.get("flags") == ["--state"]
+    )
+
+    assert state_action["choices"] == {"opaque": "choice-value"}
+    assert route["syntax_complete"] is False
+    assert any(
+        "cannot enumerate parser field" in issue
+        for issue in surface["incomplete"]
+    )
+
+
+def test_custom_choice_container_membership_makes_the_surface_incomplete():
+    class RejectingChoices(list):
+        def __contains__(self, value):
+            return False
+
+    choices = RejectingChoices(("ready",))
+    registry = CliRegistry(IDENTITY, prog="surface-demo", description="Custom choices.")
+    registry.register(
+        VerbSpec(
+            "show",
+            description="show one state",
+            options=(
+                OptionSpec(
+                    ("--state",),
+                    "select a state",
+                    parser_kwargs={"choices": choices},
+                ),
+            ),
+            handler=lambda *_: 0,
+        )
+    )
+    app = registry.build()
+    surface = export_cli_surface(app)
+    route = next(route for route in surface["routes"] if route["path"] == ["show"])
+    state_action = next(
+        action for action in route["actions"] if action.get("flags") == ["--state"]
+    )
+
+    assert app.run(
+        argv=["show", "--state", "ready"],
+        stdout=io.StringIO(),
+        stderr=io.StringIO(),
+    ) == 2
+    assert state_action["choices"] == {"opaque": "builtins.list"}
+    assert surface["syntax_complete"] is False
+
+
+def test_surface_marks_unregistered_string_type_reference_incomplete():
+    registry = CliRegistry(IDENTITY, prog="surface-demo", description="Type reference.")
+    registry.register(
+        VerbSpec(
+            "show",
+            description="show one state",
+            options=(
+                OptionSpec(
+                    ("--state",),
+                    "select a state",
+                    parser_kwargs={"type": "unregistered-type", "choices": ("ready",)},
+                ),
+            ),
+            handler=lambda *_: 0,
+        )
+    )
+
+    surface = export_cli_surface(registry.build())
+
+    assert surface["syntax_complete"] is False
+    assert any(
+        "non-callable type reference" in issue for issue in surface["incomplete"]
+    )
+
+
+def test_surface_marks_non_scalar_optional_value_const_incomplete():
+    class ConstValue(str):
+        pass
+
+    registry = CliRegistry(IDENTITY, prog="surface-demo", description="Optional const.")
+    registry.register(
+        VerbSpec(
+            "show",
+            description="show one state",
+            options=(
+                OptionSpec(
+                    ("--state",),
+                    "select a state",
+                    parser_kwargs={
+                        "nargs": "?",
+                        "const": ConstValue("ready"),
+                        "choices": ("ready",),
+                    },
+                ),
+            ),
+            handler=lambda *_: 0,
+        )
+    )
+
+    surface = export_cli_surface(registry.build())
+
+    assert surface["syntax_complete"] is False
+    assert any(
+        "optional-value const" in issue for issue in surface["incomplete"]
+    )
+
+
+def test_surface_does_not_apply_optional_option_const_rule_to_positional():
+    registry = CliRegistry(
+        IDENTITY, prog="surface-demo", description="Optional positional."
+    )
+    registry.register(
+        VerbSpec(
+            "show",
+            description="show one state",
+            arguments=(
+                ArgumentSpec(
+                    "state",
+                    "select a state",
+                    parser_kwargs={"nargs": "?", "const": ("unused",)},
+                ),
+            ),
+            handler=lambda *_: 0,
+        )
+    )
+
+    surface = export_cli_surface(registry.build())
+
+    assert surface["syntax_complete"] is True
+    action = next(
+        action
+        for route in surface["routes"]
+        for action in route["actions"]
+        if action.get("kind") == "argument" and action.get("name") == "state"
+    )
+    assert "const_choice_check_on_omission" not in action
+
+
+def test_surface_marks_choices_on_flag_only_options_incomplete():
+    registry = CliRegistry(IDENTITY, prog="surface-demo", description="Flag choices.")
+    registry.register(
+        VerbSpec(
+            "show",
+            description="show current state",
+            options=(
+                OptionSpec(
+                    ("--enabled",),
+                    "enable the feature",
+                    parser_kwargs={"action": "store_true", "choices": (True,)},
+                ),
+            ),
+            handler=lambda *_: 0,
+        )
+    )
+    app = registry.build()
+    surface = export_cli_surface(app)
+
+    assert app.run(
+        argv=["show", "--enabled"], stdout=io.StringIO(), stderr=io.StringIO()
+    ) == 0
+    assert surface["syntax_complete"] is False
+    assert any(
+        "declares choices that argparse does not check" in issue
+        for issue in surface["incomplete"]
+    )
+
+
 def test_surface_minimum_value_and_choice_helpers_cover_nargs_shapes():
     assert _minimum_values(None) == 1
     assert _minimum_values(2) == 2
@@ -1030,6 +1313,9 @@ def test_surface_minimum_value_and_choice_helpers_cover_nargs_shapes():
     assert _safe_choice_values(("a", "b"), path="x.choices", opaque=opaque) == ["a", "b"]
     assert _safe_choice_values({"b", "a"}, path="x.choices", opaque=opaque) == ["a", "b"]
     assert _safe_choice_values({"é", "zz"}, path="x.choices", opaque=opaque) == ["zz", "é"]
+    assert _safe_choice_values((float("inf"),), path="x.choices", opaque=opaque) == {
+        "opaque": "choice-value"
+    }
     assert _safe_choice_values(range(2), path="x.choices", opaque=opaque) == {
         "opaque": "builtins.range"
     }
@@ -1154,6 +1440,30 @@ def test_library_help_actions_are_not_reported_as_opaque_custom_actions():
     )
     assert any(field.endswith(".action") for field in opaque)
 
+    def store_like(self, _parser, namespace, values, _option_string=None):
+        setattr(namespace, self.dest, values)
+
+    spoofed_store = type(
+        "_StoreAction",
+        (argparse.Action,),
+        {
+            "__module__": "argparse",
+            "__qualname__": "_StoreAction",
+            "__call__": store_like,
+        },
+    )
+    spoofed_store_parser = argparse.ArgumentParser(add_help=False)
+    spoofed_store_action = spoofed_store_parser.add_argument(
+        "--spoofed-store", action=spoofed_store, choices=(1,)
+    )
+    spoofed_store_surface = describe(spoofed_store_action)
+    assert spoofed_store_surface["action"] == "opaque:argparse._StoreAction"
+    assert any(field.endswith(".action") for field in opaque)
+    spoofed_action_kwarg = _normalize_parser_kwarg(
+        "action", spoofed_store, path="action", opaque=opaque
+    )
+    assert spoofed_action_kwarg == {"opaque": "action-label-collision"}
+
 
 def test_nested_routes_keep_their_own_ids_and_parser_descriptions():
     def configure(parser):
@@ -1177,6 +1487,7 @@ def test_nested_routes_keep_their_own_ids_and_parser_descriptions():
     nested = route_by_path[("inspect", "detail")]
     assert nested["id"] == "route:entrypoint:surface-demo/inspect/detail"
     assert nested["description"] == "Detailed operation."
+    assert nested["summary"] == "Detailed operation."
 
 
 def test_surface_exclusive_group_ids_and_conflicting_declarations():
@@ -1214,6 +1525,8 @@ def test_candidate_dimensions_keep_non_library_common_options_and_reject_empty_i
         "id": "route:test/run",
         "path": ["run"],
         "kind": "invocation",
+        "single_command": False,
+        "no_args_action": False,
         "confirmation": False,
         "actions": [
             {
@@ -1862,6 +2175,7 @@ def test_surface_marks_ambiguous_nested_parser_groups_and_unportable_choices_inc
         verb_specs=(),
         global_options=(),
         single_command=False,
+        no_args_action=False,
         incomplete=incomplete,
     )
     assert records[0]["syntax_complete"] is False
@@ -2208,3 +2522,247 @@ def test_tolerant_export_keeps_grammar_and_reports_broken_interaction_references
             interaction_groups=(),
             _tolerate_invalid_interactions="yes",
         )
+
+
+def test_action_contract_derives_minimum_when_export_is_unspecified():
+    contract = _action_contract_for_baseline(
+        {
+            "id": "argument:pair",
+            "kind": "argument",
+            "nargs": 2,
+            "minimum_values": None,
+        }
+    )
+
+    assert contract["minimum_values"] == 2
+
+
+def test_required_baseline_keeps_group_members_and_requiredness_precise():
+    route = {
+        "actions": [
+            {
+                "id": "option:source-file",
+                "kind": "option",
+                "required": False,
+                "exclusive_group": "source",
+                "exclusive_required": True,
+            },
+            {
+                "id": "option:source-inline",
+                "kind": "option",
+                "required": False,
+                "exclusive_group": "source",
+                "exclusive_required": True,
+            },
+            {
+                "id": "option:optional-group",
+                "kind": "option",
+                "required": False,
+                "exclusive_group": "format",
+                "exclusive_required": False,
+            },
+            {
+                "id": "option:ungrouped",
+                "kind": "option",
+                "required": False,
+                "exclusive_group": None,
+                "exclusive_required": True,
+            },
+            {
+                "id": "argument:malformed-group",
+                "kind": "argument",
+                "required": False,
+                "exclusive_group": "source",
+                "exclusive_required": True,
+            },
+        ]
+    }
+
+    baseline = _route_required_baseline(route)
+
+    assert set(baseline["exclusive_groups"]) == {"source"}
+    source = baseline["exclusive_groups"]["source"]
+    assert source["required"] is True
+    assert {action["id"] for action in source["options"]} == {
+        "option:source-file",
+        "option:source-inline",
+    }
+
+
+def test_interaction_candidate_contains_only_required_positionals():
+    route_id = "route:test/run"
+    route = {
+        "id": route_id,
+        "path": ["run"],
+        "aliases": [],
+        "kind": "invocation",
+        "single_command": False,
+        "no_args_action": False,
+        "confirmation": False,
+        "actions": [
+            {
+                "id": "argument:required",
+                "kind": "argument",
+                "name": "required",
+                "required": True,
+                "minimum_values": 2,
+                "nargs": 2,
+                "choices": None,
+                "flags": [],
+                "exclusive_group": None,
+                "exclusive_required": False,
+                "scope": "positional",
+                "default": None,
+            },
+            {
+                "id": "argument:optional",
+                "kind": "argument",
+                "name": "optional",
+                "required": False,
+                "minimum_values": 0,
+                "nargs": "*",
+                "choices": None,
+                "flags": [],
+                "exclusive_group": None,
+                "exclusive_required": False,
+                "scope": "positional",
+                "default": None,
+            },
+            {
+                "id": "option:trigger",
+                "kind": "option",
+                "flags": ["--trigger"],
+                "required": False,
+                "minimum_values": 0,
+                "nargs": 0,
+                "choices": None,
+                "exclusive_group": None,
+                "exclusive_required": False,
+                "scope": "verb-local",
+                "default": None,
+                "default_present": False,
+                "effective_default": None,
+                "hidden": False,
+            },
+            {
+                "id": "option:required",
+                "kind": "option",
+                "flags": ["--required"],
+                "required": True,
+                "minimum_values": 0,
+                "nargs": 0,
+                "choices": None,
+                "exclusive_group": None,
+                "exclusive_required": False,
+                "scope": "verb-local",
+                "default": None,
+                "default_present": False,
+                "effective_default": None,
+                "hidden": False,
+            },
+        ],
+    }
+
+    candidates = _generate_candidates(
+        [route],
+        ({"id": "one", "route_id": route_id, "option_ids": ["option:trigger"]},),
+        max_candidates=20,
+    )
+    interaction = next(candidate for candidate in candidates if candidate["kind"] == "interaction")
+
+    assert interaction["shape"]["required_arguments"] == ["argument:required"]
+    assert interaction["shape"]["required_argument_values"] == {
+        "argument:required": 2
+    }
+
+
+def test_interaction_option_ids_must_be_strings():
+    route = {
+        "id": "route:test/run",
+        "path": ["run"],
+        "kind": "invocation",
+        "actions": [],
+    }
+
+    with pytest.raises(SurfaceError, match="non-empty string list"):
+        _generate_candidates(
+            [route],
+            ({"id": "bad-id", "route_id": route["id"], "option_ids": [1]},),
+            max_candidates=10,
+        )
+
+
+def test_delegated_mutex_members_keep_positional_destinations():
+    parser = argparse.ArgumentParser(add_help=False)
+    group = parser.add_mutually_exclusive_group()
+    inherited = group.add_argument("--inherited", action="store_true")
+    positional = argparse.Action(option_strings=[], dest="target", nargs="?")
+    group._group_actions.append(positional)
+
+    contract = _delegated_option_shape(inherited, parser=parser)
+
+    assert contract["exclusive_groups"] == [
+        {"required": False, "members": [["--inherited"], ["target"]]}
+    ]
+
+
+@pytest.mark.parametrize("delegate_kind", ("single", "group"))
+@pytest.mark.parametrize("wrapper_field", ("options", "arguments", "configure"))
+def test_delegated_wrapper_parser_declarations_make_surface_incomplete(
+    delegate_kind, wrapper_field
+):
+    child_identity = CliIdentity("CHILD", "1.0", "Child", command="child-tool")
+    if delegate_kind == "single":
+        child = CliRegistry(
+            child_identity,
+            prog="child-tool",
+            description="Child operation.",
+            single_command=True,
+        )
+        child.register(VerbSpec("run", description="run", handler=lambda *_: 0))
+    else:
+        child = CliRegistry(
+            child_identity, prog="child-tool", description="Child commands."
+        )
+        child.register(VerbSpec("alpha", description="alpha", handler=lambda *_: 0))
+        child.register(VerbSpec("beta", description="beta", handler=lambda *_: 0))
+
+    wrapper = {
+        "options": (OptionSpec(("--wrapper-option",), "wrapper option"),),
+        "arguments": (ArgumentSpec("wrapper-argument", "wrapper argument"),),
+        "configure": lambda parser: parser.add_argument("--callback-option"),
+    }[wrapper_field]
+    parent = CliRegistry(
+        IDENTITY, prog="surface-demo", description="Delegated commands."
+    )
+    parent.register(
+        VerbSpec(
+            "adapter",
+            description="delegate to child",
+            delegate=child.build(),
+            **{wrapper_field: wrapper},
+        )
+    )
+
+    surface = export_cli_surface(parent.build())
+    if delegate_kind == "single":
+        delegated = next(route for route in surface["routes"] if route["path"] == ["adapter"])
+    else:
+        delegated = next(
+            route for route in surface["routes"] if route["path"] == ["adapter"]
+        )
+
+    assert delegated["syntax_complete"] is False
+    assert any("delegated wrapper parser syntax" in issue for issue in surface["incomplete"])
+
+
+def test_surface_without_retained_registry_declarations_is_incomplete():
+    registry = CliRegistry(IDENTITY, prog="surface-demo", description="Inspect.")
+    registry.register(VerbSpec("inspect", description="inspect", handler=lambda *_: 0))
+    app = registry.build()
+    app.registered_verbs = ()
+
+    surface = export_cli_surface(app)
+
+    assert surface["syntax_complete"] is False
+    assert any("registry declarations were not retained" in item for item in surface["incomplete"])

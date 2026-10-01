@@ -164,7 +164,7 @@ def test_markdown_rows_preserve_optional_fields_shapes_and_review_dispositions()
     )
     stale = _review_case("case:removed-active", state="active", decision="accept")
     surface = {
-        "schema_version": 5,
+        "schema_version": 6,
         "entrypoint": {
             "command": "audit-tool",
             "prog": "audit-tool",
@@ -507,6 +507,8 @@ def test_candidate_builder_keeps_common_option_exclusions_scoped_and_groups_real
         "path": ["deploy"],
         "aliases": [],
         "kind": "invocation",
+        "single_command": False,
+        "no_args_action": False,
         "confirmation": False,
         "actions": [
             {

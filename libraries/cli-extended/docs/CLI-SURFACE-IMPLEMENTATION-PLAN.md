@@ -1,6 +1,6 @@
 # CLI surface and semantic review tooling plan
 
-**Status:** R0/R1 and R3 pass on `f49fdc13`; R2 corrections in progress
+**Status:** Correctness follow-up in progress; R0/R1/R3 pass on `f49fdc13`; the 2026-10-01 R2 run on that snapshot returned `BUDGET_EXCEEDED`; the current WIP needs final gates
 
 **Scope:** CLI-EXT-01, CLI-EXT-03 disposition, and CLI-EXT-04
 **Decision owner:** cli-extended maintainers and adopting product owners
@@ -149,48 +149,40 @@ a mutation verdict for the corrected source. At the observed rate, the full
 campaign needs about 113 minutes before overhead, so the hard Assay and
 run-gate budgets are 150 minutes and the combined gate budget is 180 minutes.
 
-The corrected implementation passes registered R0/R1 on `f49fdc13` with
+The pre-follow-up implementation passed registered R0/R1 on `f49fdc13` with
 100% statement and branch coverage (3,236 statements and 1,548 branches). The
-registered R3 canary also passes on that revision; its expected message is
+registered R3 canary also passed on that revision; its expected message is
 `canary rejected: JSON redaction test fails when its guard is disabled`.
-The first final-source registered R2 campaign completed all 958 mutants on
-`f49fdc13` in about 101 minutes, then returned exit 4 with
-`BUDGET_EXCEEDED/LANE_TIMEOUT`: 909 killed, 48 survived, and one mutant reached
-its per-mutant budget. The 150-minute overall lane budget did not expire. The
-campaign artifacts remain in
-`libraries/cli-extended/.assay/{verdict-r2.json,progress-r2.jsonl,mutation-state-r2/}`.
-The 48 survivors include missing assertions and equivalent or unreachable
-fallback conditions; each must be classified before the gate is considered.
-The timed-out mutant is at `review.py:923`, where the end-of-argv guard appears
-unreachable because its caller checks the same bound first. R0/R1 and R3 pass
-on the same implementation snapshot, but CLI-EXT-04 is not complete until the
-mutation findings are resolved and R2 passes on the corrected tree.
+The first registered R2 run against that snapshot ended at 2026-10-01 03:45 UTC with
+`BUDGET_EXCEEDED` (`LANE_TIMEOUT`, Assay exit 4): 909 killed, 48 survived, and
+one budget-exceeded candidate out of 958. Its verified R0/R1 results remain
+valid for `f49fdc13`, but the R2 outcome is not a pass and predates the current
+correctness changes. Review its survivors and budget-exceeded candidate, then
+run the final-source gates with a fresh state directory; no final-source gate
+has run yet.
+One R2 survivor changes the interaction occurrence check from `or` to `and`.
+A focused regression now supplies every named conflicting option while
+repeating one member, so a count mismatch remains visible even when the set of
+present IDs is correct. This case has not run yet. The remaining survivors and
+the budget-exceeded candidate still need review against the final source.
 
-Assay's v13 `--reuse-from` can validate prior killed-test witnesses against a
-changed judging tree while fully rerunning survivors and uncertain outcomes.
-Before using it for a correction campaign, confirm that the completed artifact
-is accepted as a complete unsharded native source and keep the invocation
-inside the registered tester-unified lane.
+Correction to the timeout analysis: source inspection shows the caller checks
+that the option token's index is in range, then passes `index + 1` to the value
+boundary helper. A value-taking option at the end of argv therefore reaches
+the `position == len(argv)` guard in `review.py`. The earlier claim that the
+caller checks the same bound is incorrect. The current WIP's optional-const
+behavior test places `nargs="?"` at the end of argv and exercises this guard;
+the final registered R2 run must classify the earlier timeout against current
+source.
 
-At the 54-minute checkpoint, 460 of 958 candidates had completed, all killed.
-The overall rate was 8.5 candidates per minute, and the latest interval ran
-at about 11.5 per minute, projecting roughly 98 minutes total and completion
-around 03:42 UTC. This supersedes the slower 44-minute estimate; the current
-run is forecast to finish before its 150-minute Assay budget. Keep the judged
-source frozen and check again after 25 minutes, then sooner if the remaining
-ETA indicates completion. If it nevertheless ends `BUDGET_EXCEEDED`, resume
-against the same `f49fdc13` commit, in this same worktree and with the same
-command, so the whole-tree judge identity accepts its completed-candidate
-records. Preserve later documentation commits separately while restoring
-that exact tree for the retry; a retry from the documentation-updated tip
-would reject the records because Assay hashes the complete judged tree.
-
-At the 80-minute checkpoint, progress had 704 of 958 candidate events: 684
-killed, 19 survived, and one `budget_exceeded`. The latest interval ran at
-about 9.6 candidates per minute, projecting roughly 27 minutes to finish,
-around 03:50 UTC. These are in-flight counts, not a verdict; inspect the final
-R2 artifact before deciding which survivors need behavioral tests or which
-budget-exceeded candidate needs a rejudge.
+The old R2 artifact is schema v13, native, unsharded, and has a complete
+958-candidate inventory. For the current registered R2 run, Assay can accept
+it through `--reuse-from`: it rechecks the current baseline and candidate
+inventory, replays only prior killed witnesses that still match, and runs
+survivors, the timed-out candidate, and new candidates against the current
+tree. This reuses test locations as work-saving hints; it does not carry any
+old outcome into the current verdict. The current R2 lane has a 180-minute
+budget, and the combined gate has a 210-minute budget.
 
 The implementation review found three additional completeness
 gaps, now closed. Inherited delegate globals are compared by their built action
@@ -207,25 +199,62 @@ while replaced token-parsing methods,
 uncaptured parser-level defaults, or inconsistent option-action maps mark the surface
 incomplete. Incompleteness stays within the affected delegate subtree. These
 interaction fields change the exported surface contract, so the JSON surface
-schema is version `5`; the TOML decision catalog remains schema version `1`.
+schema is version `6`; the TOML decision catalog remains schema version `1`.
 
 The implementation review found further false-certification cases beyond the
 original plan review. Non-minimum candidates could omit required positional or
 option syntax; a valid first occurrence could hide a malformed repeated value;
 and delegated globals with identical flags but different mutex-group policy
-were treated as equivalent. The generated v5 candidates now sign and check
+were treated as equivalent. The generated v6 candidates now sign and check
 their route's required baseline, validate arity and choices on every option
 occurrence, and compare inherited exclusive-group membership and requiredness.
 Custom converter/action objects are compared by runtime identity because equal
 labels do not prove equal behavior.
+
+A final review found that omitted optional-option `const` choice handling
+cannot be inferred reliably from the Python minor version: available CPython
+source and the installed interpreter did not agree. The exporter now probes a
+disposable stock parser, records the result only on `nargs="?"` option actions,
+and includes it in generated Markdown and candidate signatures. Positional
+`nargs="?"` omission uses its default, not the option's `const`, so those
+actions do not inherit the option-only check or incompleteness rule.
 
 The review also found that a deleted route/option referenced by an interaction
 made sync abort before it could regenerate the grammar or show the old semantic
 row. Direct export remains strict; sync records the broken reference, emits the
 current grammar, and keeps the catalog case visible for repair or explicit
 retirement. It never rewrites the TOML catalog. Regression coverage was added
-for these cases; registered R0/R1 and R3 evidence for the corrected source is
-recorded above, with the final-source R2 campaign still running.
+for these cases.
+
+A later self-review found a typed-choice false certification: stringifying
+choice values could accept `--mode 1` when argparse receives a string but the
+registered choices are integers. It also found that option and positional
+choice candidates compared their reviewed choice as display text, which could
+reject valid built-in conversions. The correction models only exact built-in
+`str`, `int`, `float`, and `bool` conversions, leaves consumer converters to
+linked behavior tests, recognizes built-ins by exact runtime identity rather
+than import label, recognizes stock choice actions by exact class identity,
+and marks non-scalar choice objects incomplete rather
+than flattening their equality semantics. The same review found that parser
+type-registry overrides and custom action classes can change choice handling
+while leaving action metadata unchanged. Any non-default type-registry
+registration makes the surface incomplete because argparse uses dictionary
+equality to resolve a type name, not object identity. Custom choice containers
+remain opaque because their membership behavior may differ from their items.
+Non-callable type references on value-taking actions also make the surface
+incomplete because argparse cannot resolve them without a custom registry.
+Custom actions remain opaque to static choice checks, and flag-only `choices`
+declarations are incomplete because argparse ignores them.
+For `nargs="?"`, an omitted option value resolves to `const`. Argparse converts
+it only when it is a string. The stock runtime's choice check for that string
+is probed and signed into the surface. The review checker also applies modeled
+built-in converters to values when no choices are declared, so known type
+conversion failures are not certified as valid invocations. An omitted
+optional positional uses its default, not `const`.
+Regression cases compare review findings with the real CLI. The typed-choice
+and surface-completeness corrections are now in the CIU-managed integration
+worktree. The baseline R2 result above remains evidence for the earlier source
+only; final-source R0/R1, R2, and R3 gates have not run on the current WIP.
 
 The generator deliberately does not enumerate every optional value count or
 repeat count. Consumers declare separate named interactions for token shapes

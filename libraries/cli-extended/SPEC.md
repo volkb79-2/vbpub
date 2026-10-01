@@ -705,7 +705,7 @@ delegated paths, positional and option IDs/shapes, option aliases, defaults,
 choices, requiredness, scope/placement, exclusive groups, synopsis, behavior
 and confirmation policy, parser-scoped `allow_abbrev`, argparse's
 negative-number matcher and whether that parser registers negative-number-like
-options, and actions added by parser callbacks. The JSON surface schema version is `5`; each route records
+options, and actions added by parser callbacks. The JSON surface schema version is `6`; each route records
 `single_command` and `no_args_action`, and those values participate in
 candidate signatures so a change to empty-invocation behavior requires review.
 Each route also records
@@ -733,6 +733,16 @@ remain present in the semantic surface, labelled hidden; hiding an option
 removes it from operator help, not from the audit. Callable converters and
 custom actions MUST be visible by stable import label in the generated table
 and manifest.
+The exporter may enumerate choices only when the runtime container is an exact
+built-in list, tuple, set, or frozenset and every member is an exact built-in
+string, integer, finite float, or boolean. A custom container or container
+subclass MUST be marked opaque because its membership behavior can differ
+from its items. An `Enum` member, custom scalar subclass, or other non-scalar
+choice MUST also be marked opaque and make that parser surface incomplete;
+serializing its display text or `.value` could change the runtime equality
+rule used by argparse.
+An option with `nargs=0` and non-`None` `choices` MUST also make the surface
+incomplete because argparse does not check choices for flag-only actions.
 
 Nested parser routes carry forward every action from their parent parser that
 is accepted before the nested command word. Each action records its parser
@@ -782,12 +792,34 @@ required positionals, required options, and required-exclusive selections so
 the case isolates the intended interaction. A value-taking foreign option
 MUST be tokenized using the owner's action arity while using option-like target
 tokens as value boundaries; its value tokens MUST NOT be assigned to a target
-positional. Check mode MUST enforce the declared arity and enumerable choices
-for every occurrence of each participating option; a valid first occurrence
-MUST NOT hide a malformed repeat. A flag-only foreign option MUST reject an
-inline value. It MUST NOT run
-converters or handlers. If an option ID is ambiguous across routes and does not
-resolve uniquely on the target route, surface generation MUST refuse it.
+positional. Check mode MUST enforce the declared arity, modeled conversions,
+and enumerable choices for every occurrence of each participating option; a
+valid first occurrence MUST NOT hide a malformed repeat. For any exact
+built-in converter recorded in the surface, check mode MUST report a failed
+conversion even when the action has no choices. For choices, check mode MUST apply the exact
+`builtins.str`, `builtins.int`, `builtins.float`, or `builtins.bool` conversion
+recorded in the surface before checking membership and whether an invocation
+supplies its reviewed choice. With no converter, it MUST compare the raw argv
+string to the serialized choice value. For an option with `nargs="?"`, an
+occurrence with no value MUST apply the declared converter only when `const`
+is a string, matching argparse. The action record MUST include
+`const_choice_check_on_omission`, determined by probing the stock runtime with
+a disposable parser and an out-of-choices string constant. The generated
+Markdown MUST display this field. Candidate signatures MUST include it so a
+runtime change that alters omitted-const behavior requires semantic review.
+The structural checker MUST apply `choices` to the converted constant exactly
+when this recorded field is true. It MUST NOT apply the action's `choices`
+check when the field is false. The probe and checker MUST NOT invoke consumer
+parsers, consumer converters, custom actions, or handlers. An omitted
+optional positional uses its default and MUST NOT use this option-const rule.
+Static choice checks apply only to
+`argparse._StoreAction`, `argparse._AppendAction`, and
+`argparse._ExtendAction`; custom actions remain opaque and require a linked
+behavior test. It MUST NOT execute consumer-defined converters, custom
+actions, or handlers; those remain behavior-test oracles.
+A flag-only foreign option MUST reject an inline value. If an option ID is
+ambiguous across routes and does not resolve uniquely on the target route,
+surface generation MUST refuse it.
 The catalog owns the expected decision and status, including for cross-route
 interactions; check mode MUST NOT infer product semantics from route ownership.
 For the `show --poll` example above, the consumer records a refusal because
@@ -812,6 +844,18 @@ syntax incomplete; product cases and tests still own its accepted values and
 failure boundary. An unenumerable parser field or missing parser route MUST
 make the surface incomplete and fail check. The exporter MUST never discard a
 field or serialize an unstable object representation to imply completeness.
+The exporter MUST identify built-in `str`, `int`, `float`, and `bool`
+converters by exact runtime object identity. A custom callable with a colliding
+import label MUST remain opaque. Static choice checks MUST also identify stock
+`_StoreAction`, `_AppendAction`, and `_ExtendAction` classes by exact runtime
+class identity; a custom action with a colliding label remains opaque.
+Any non-`None`, non-callable type reference on a value-taking action MUST make
+the surface incomplete. Custom parser type-registry registrations MUST also
+make the surface incomplete because a registry key can change the converter
+resolved for an action.
+For `nargs="?"`, a non-`None` `const` that is not an exact built-in string,
+integer, finite float, or boolean MUST make the surface incomplete because its
+value and conversion behavior cannot be represented safely.
 Ordinary parser callbacks that add inspectable argparse actions are supported.
 A callback or parser subclass that replaces an argparse token-parsing method,
 sets uncaptured parser-level defaults, or leaves `_option_string_actions`
@@ -845,7 +889,8 @@ resolve long-option abbreviations using the
 `allow_abbrev` setting of the parser at that depth. A non-default `prefix_chars`
 or enabled `fromfile_prefix_chars` MUST make the surface incomplete until the
 checker can represent those token rules. A callback that replaces an argparse
-token-parsing method, sets uncaptured parser-level defaults, or leaves the
+token-parsing method or `_registry_get`, adds any non-default type-registry
+registration, sets uncaptured parser-level defaults, or leaves the
 parser's option-action lookup inconsistent MUST also make the surface
 incomplete. Ordinary callbacks that add inspectable argparse actions remain
 supported. In every generated candidate, a

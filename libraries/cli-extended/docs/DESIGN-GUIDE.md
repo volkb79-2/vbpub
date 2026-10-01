@@ -239,9 +239,50 @@ mutation and confirmation policy, parser settings, delegated command metadata,
 callback inventory and opaque fields;
 for each argument and option, its description, token shape, argparse action,
 converter, const, choices, defaults, exclusive-group rule, placement, and
-hidden status. This keeps the canonical spec useful to an operator reviewing
+hidden status. Optional-value options also record whether this stock argparse
+runtime checks a string `const` against `choices` when the value is omitted.
+That fact is probed on a disposable parser and included in the generated spec
+and candidate signature, so a runtime change is visible for review. This keeps
+the canonical spec useful to an operator reviewing
 the whole call surface while the JSON manifest remains the stable input for
 diffs and tools.
+
+Argparse converts a token before comparing it with an action's choices. The
+review checker models only the exact built-in `str`, `int`, `float`, and
+`bool` converters recorded in the surface; it reports known conversion
+failures even when no choices are declared and never executes consumer-defined
+converter code. This keeps ordinary typed choices mechanically checkable
+without running arbitrary product code during a static review. Built-in
+converters are recognized by runtime object identity rather than import label,
+since a custom callable can expose a colliding label. Custom
+converters and custom actions remain opaque and their accepted values must be
+proven by linked tests that call the real CLI. Stock choice-checking actions
+are recognized by exact class identity so a custom class cannot borrow a
+built-in label. Any non-default parser
+type-registry mapping makes the surface incomplete because argparse resolves
+registered types by dictionary equality. Checking only key identity could
+miss a distinct key that compares equal to an action's type and changes its
+converter. Choice enumeration supports only exact built-in list, tuple, set,
+and frozenset containers with exact built-in scalar members. Container
+subclasses and custom collections may override membership, so they are marked
+incomplete along with non-scalar choice objects whose `.value` or display text
+could change argparse's equality result. Argparse does not check choices for a
+flag-only action, so the surface marks that registration incomplete. Consumers
+can expose the actual command-line scalar choices when their handler maps
+those strings to richer internal types.
+
+A non-callable `type` reference on a value-taking action is also incomplete.
+Argparse accepts a string type name only when the parser's type registry
+resolves it; the exporter marks any non-default registry incomplete because
+its converter behavior cannot be safely inferred from the action alone.
+An omitted value for an option with `nargs="?"` selects `const`. Argparse
+converts it only when it is a string. Whether the runtime then checks
+`choices` is probed and recorded rather than assumed from a Python version.
+The checker follows that result without running consumer code. An omitted
+optional positional uses its default rather than the option's `const`; the
+checker does not apply option-const rules to positional arguments. A
+non-scalar option constant makes the surface incomplete because its value
+cannot be represented safely.
 
 Whether the top-level executable shows help before parsing or passes empty
 argv to the single-command parser is part of the call contract. Parsing may
@@ -280,10 +321,11 @@ requires the foreign option to remain unknown on the target parser. It checks
 declared value counts and enumerable choices on every occurrence; a valid first
 `--tag` cannot hide a malformed second occurrence. For a foreign option,
 option-like tokens mark value boundaries, and a flag-only option cannot carry
-an inline value. It does not call converters or handlers. The consumer's behavior test
-remains responsible for proving the declared outcome and exact value or
-repetition rules. The consumer owns that outcome; the checker does not infer it
-from route ownership. For example, `show --poll` should be recorded as a
+an inline value. Choice checks model exact built-in conversions; custom
+converters and handlers remain the consumer behavior test's responsibility.
+That test proves the declared outcome and exact value or repetition rules.
+The consumer owns the outcome; the checker does not infer it from route
+ownership. For example, `show --poll` should be recorded as a
 refusal when the product's `show` route rejects the watch-only option. The
 checker also refuses undeclared unknown options so a typo cannot be folded into
 the same reviewed case.
