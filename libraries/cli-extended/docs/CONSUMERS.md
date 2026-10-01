@@ -394,6 +394,7 @@ invocation carries a value. The surface reports it as incomplete.
 For positional `nargs=argparse.PARSER`, choices apply to the first converted
 value only. `nargs=argparse.REMAINDER` converts tokens without checking
 choices, so a remainder action with declared choices is marked incomplete.
+Custom action classes remain opaque.
 Any non-default parser type-registry registration makes the surface
 incomplete. Argparse resolves registered converters by dictionary equality,
 so even a distinct registry key that compares equal to an action's type can

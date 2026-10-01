@@ -3099,8 +3099,17 @@ def test_review_positional_choice_validation_matches_argparse_nargs(
     )
     app = registry.build()
     surface = export_cli_surface(app)
+    argument_id = next(
+        action["id"]
+        for route in surface["routes"]
+        for action in route["actions"]
+        if action.get("name") == "values"
+    )
     candidate = next(
-        case for case in surface["candidates"] if case["kind"] == "argument-shape"
+        case
+        for case in surface["candidates"]
+        if case["kind"] == "argument-shape"
+        and case["shape"].get("argument_id") == argument_id
     )
     route = next(
         route for route in surface["routes"] if route["id"] == candidate["route_id"]

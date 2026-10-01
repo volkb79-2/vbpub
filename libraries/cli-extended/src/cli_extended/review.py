@@ -135,6 +135,8 @@ def _choice_values_accept(
         and action["kind"] == "option"
         and action["nargs"] == "?"
     ):
+        if type(action.get("const_choice_check_on_omission")) is not bool:
+            return True
         const = action["const"]
         if type(const) not in (type(None), str, int, float, bool):
             return True
@@ -166,6 +168,8 @@ def _values_satisfy_action(
         and action["kind"] == "option"
         and action["nargs"] == "?"
     ):
+        if type(action.get("const_choice_check_on_omission")) is not bool:
+            return True
         const = action["const"]
         if type(const) not in (type(None), str, int, float, bool):
             return True

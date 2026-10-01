@@ -258,10 +258,15 @@ numeric or `None` constant on runtimes that treat those values differently.
 The surface now probes each supported built-in const type separately and uses
 the probe for the action's actual type. Rendering also refuses missing route
 invocation flags instead of inferring `false` from absent data.
+The checker now follows argparse's special choice rules for `PARSER` (first
+converted value only) and `REMAINDER` (no choice check); declared remainder
+choices make the surface incomplete. Regression cases compare these results
+with the built CLI and ensure unsupported or missing const-probe metadata is
+treated as opaque.
 Regression cases compare review findings with the real CLI. The typed-choice
 and surface-completeness corrections are now in the CIU-managed integration
 worktree. Current-worktree R0/R1 passed with 100% statement and branch
-coverage (3,367 statements and 1,630 branches). R3 also passed; the canary
+coverage (3,371 statements and 1,634 branches). R3 also passed; the canary
 reported the expected rejection after disabling the JSON redaction guard. The
 baseline R2 result above remains evidence for the earlier source only; the
 fresh current-worktree R2 campaign remains to be completed.

@@ -115,7 +115,10 @@ The same review found that a string-only `const` probe could not safely model
 numeric or `None` constants on runtimes that treat those values differently.
 The surface now probes each supported built-in const type, and Markdown
 rendering refuses missing route invocation flags instead of defaulting them to
-`false`.
+`false`. The checker also models `argparse.PARSER` choice validation on its
+first converted token, and it converts `argparse.REMAINDER` values without
+claiming ignored `choices` are enforced; remainder choices mark the surface
+incomplete.
 The corrections are in the CIU-managed integration worktree. R0/R1 passed with
 100% statement and branch coverage, and R3 passed with its expected canary
 rejection. CLI-EXT-04 is not complete or merge-ready until the fresh R2
