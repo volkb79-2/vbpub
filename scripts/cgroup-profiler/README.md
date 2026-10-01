@@ -136,6 +136,10 @@ checks do not contain a compromised daemon; see the
 [trust boundary](docs/DESIGN-GUIDE.md#daemon-safety-and-placement). It is
 `scripts/cgroup-profiler/`'s own **standalone ciu root** —
 `RG55-INTERFACE-CONTRACT.md` is the full wire contract.
+The default stack uses the local development image; to deploy a versioned GHCR
+release, pin the complete image coordinate in `ciu.toml.j2` and verify the
+daemon identity as shown in the
+[consumer guide](docs/CONSUMERS.md#deploy-a-published-daemon-image-with-ciu).
 
 ```bash
 python3 build-push.py --build      # -> local-only cgprofile:local (needs buildx)

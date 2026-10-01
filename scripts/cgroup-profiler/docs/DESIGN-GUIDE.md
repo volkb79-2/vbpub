@@ -151,6 +151,14 @@ type a second version. Untagged local images are marked `0.0.0-dev`; publish
 without an exact tag or explicit manual version refuses. No version lookup
 depends on network access at runtime.
 
+The local `cgprofile:local` alias is not a release coordinate: because it has
+no registry hostname, Docker resolves it to Docker Hub when used as a publish
+output. The Bake file therefore separates a local-only target from the
+versioned GHCR release target, and CMRU's push step selects only the latter.
+This keeps developer convenience from widening the release's external writes.
+The pasteable CIU pin and verification command live in
+[`CONSUMERS.md`](CONSUMERS.md#deploy-a-published-daemon-image-with-ciu).
+
 ## Decisions intentionally left outside this repair
 
 This repair does not invent policy for the S1–S5 follow-up surfaces. Those

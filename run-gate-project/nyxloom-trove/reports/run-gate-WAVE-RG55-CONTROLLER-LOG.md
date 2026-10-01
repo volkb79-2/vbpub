@@ -5677,3 +5677,31 @@ regardless of PSI, so this reading is not a verdict input or an absolute
 launch prohibition. Given the independent active gate and the reported
 transient Docker-stats outage, do not overlap another Docker-backed gate until
 that slot is free; continue non-container source/reconciliation work meanwhile.
+
+### RW-407 — 2026-10-01 04:02:00Z — make the OCI release boundary explicit
+
+Backported the CP-14 publication fix to the P1 candidate as
+`5d3c108e6`. Its local Bake alias and versioned GHCR image are separate
+targets; CMRU's push path selects only `cgprofile-release`. The cherry-pick
+keeps P1's backlog state and CP-14 row, while leaving P6-only log/report
+updates for P6's eventual integration. Regenerated the backlog index with
+`nyxloom backlog index` from the cgroup-profiler project root.
+
+The user-facing README, DESIGN-GUIDE, CONSUMERS guide, and sparse CIU override
+template now distinguish local development from an exact GHCR image pin and
+show the complete `ghcr.io/volkb79-2/cgprofile:1.0.0` adoption coordinates.
+The production singleton is still to use the later `1.1.0` pin after P6; the
+template remains local by default until that release exists. These edits
+change the P1 candidate after all prior receipts, so exact-tree R0/R1, R3,
+doctor, R2, final review, and full gate evidence remain outstanding.
+
+After confirming the Sol process had exited, stopped only its exact private
+container `cgprofile-r5-daemon-20261001`; Docker reported exit 0. The stopped
+container is retained (not removed) for evidence and ownership history.
+
+No new Docker-backed gate was started while the unrelated assay
+`tester-unified` run was observed active at 03:48Z. Do not inspect or stop
+that other worktree's gate; resume one RG-55 gate at a time after it frees the
+reported Docker slot. This sequencing is due to observed Docker API
+availability risk, not a PSI-based veto; RW-403's explicit gate authorization
+remains in force.

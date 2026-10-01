@@ -37,6 +37,35 @@ The local `cgprofile:local` tag is a build-only alias. CMRU's publish step
 selects the separate `cgprofile-release` Bake target, which contains only the
 versioned `ghcr.io/volkb79-2/cgprofile:<version>` tag; it does not publish the
 unqualified local alias to Docker Hub.
+
+## Deploy a published daemon image with CIU
+
+The default CIU image coordinates intentionally select the local development
+image. To deploy the first published daemon release instead, put this complete
+override in the tracked sparse `ciu.toml.j2` at the cgprofile CIU root:
+
+```toml
+[cgprofile.image]
+registry = "ghcr.io"
+namespace = "volkb79-2"
+name = "cgprofile"
+tag = "1.0.0"
+```
+
+The complete coordinates resolve to `ghcr.io/volkb79-2/cgprofile:1.0.0`;
+changing only `tag` while leaving the default empty registry and namespace
+would still select a local image. Use the normal CIU bring-up and verify the
+runtime identity before attaching consumers:
+
+```bash
+ciu up --dir .
+docker exec cgprofile-host-daemon cgprofile ctl version --json
+```
+
+The version in the response must match the pinned image. For local development,
+leave the sparse override empty and use `python3 build-push.py --build`; that
+path loads only `cgprofile:local` and does not publish it.
+
 ## Daemon adoption
 
 This is the adoption guide: commands here are intended to be copied by an
