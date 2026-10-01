@@ -77,6 +77,13 @@ threshold (load average 13.91). Active unrelated run-gate containers were
 launched. Do not inspect their progress before 01:53:37Z unless an earlier
 completion/error signal arrives, and do not alter or remove them.
 
+The reviewer may commit the round-5 artifact in this worktree. If that adds
+a commit after review, it changes the exact merge tip: rerun the required
+short gates on the resulting tip before provisional integration. Any code
+repair must be fix-verified by this same reviewer session while it is alive;
+only after accepted fix verification and fresh exact-tip gates may the
+controller provisionally merge.
+
 ## Phase 1 — BLIND (before any LOG/REPORT/BRIEF)
 
 Read, in this order: the plan of record
