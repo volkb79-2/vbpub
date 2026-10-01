@@ -47,6 +47,32 @@ def test_cleanup_delete_build_output_and_discard_worktree_dispatch_exact_targets
     assert "Would discard retained build worktree" in capsys.readouterr().out
 
 
+def test_cleanup_discard_revalidates_the_previewed_worktree(monkeypatch, tmp_path):
+    project = cli.ProjectConfig("demo", {}, {}, project_root=tmp_path / "demo")
+    monkeypatch.setattr(cli, "_resolve_config", lambda _: tmp_path / "cmru.toml")
+    monkeypatch.setattr(cli, "load_config", lambda _: _config(tmp_path, project))
+    workspace = transaction.ReleaseWorkspace(
+        tmp_path, tmp_path / ".worktrees" / "cmru-build-x", "cmru/build/x", "a" * 40,
+    )
+    calls = []
+
+    def discard(root, path, *, dry_run, expected_workspace=None):
+        calls.append((root, path, dry_run, expected_workspace))
+        return workspace
+
+    monkeypatch.setattr(transaction, "discard_build_workspace", discard)
+
+    result = cli.main([
+        "cleanup", "--discard-build-worktree", str(workspace.path), "--yes",
+    ])
+
+    assert result == 0
+    assert calls == [
+        (tmp_path, workspace.path, True, None),
+        (tmp_path, workspace.path, False, workspace),
+    ]
+
+
 def test_release_dry_run_reports_no_changed_projects_without_transaction_side_effect(monkeypatch, tmp_path, capsys):
     project = cli.ProjectConfig("demo", {}, {}, prefix="demo-v", github_token="token")
     monkeypatch.setattr(cli, "_resolve_config", lambda _: tmp_path / "cmru.toml")

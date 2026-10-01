@@ -1362,3 +1362,78 @@ empty-index worktree (`20260917_043157-all-d5847937`), where a raw-git removal i
 hazardous.
 3. Decide whether a successful release should remove its own worktree at the end, and if a
    worktree is intentionally kept, why the release keeps it.
+
+### KI-36 — CMRU's resolved secret did not authenticate its Git transport — *fixed in source, pending release*
+
+**Reported:** 2026-10-01, during the `cmru release cmru` bootstrap.
+
+**Observed.** CMRU resolved the root `[github].token` for GitHub API publishing, but its own
+fetch, candidate-branch push, tag push, promotion, and cleanup still invoked Git without that
+credential. An HTTPS remote therefore fell through to an unrelated interactive Git helper even
+when `cmru.secret.toml` was present.
+
+**Wanted.** CMRU-owned Git operations should use the repository-root token only for the exact
+configured GitHub HTTPS origin, without putting it in a URL, argv, or persistent config. SSH and
+other-host remotes must retain their own authentication; project-local publisher overrides must
+not become repository-wide Git credentials.
+
+**Resolution.** CMRU now supplies the resolved repository credential through a temporary askpass
+helper, refuses prompts for other hosts, and disables local Git hooks for credential-bearing
+calls so the token cannot be inherited by a hook. Behavioral coverage is in
+`tests/test_git_auth.py`; README, DESIGN-GUIDE, CONSUMERS, and SPEC document the transport
+boundary. Included in the pending CMRU release.
+
+### KI-37 — Cleanup could widen beyond the confirmed target list — *fixed in source, pending release*
+
+**Reported:** 2026-10-01, Sol xhigh review of the unreleased CMRU changes.
+
+**Observed.** `cmru cleanup` previewed remote assets, asked for confirmation, then repeated the
+discovery pass before deletion. An asset appearing or becoming age-eligible while the prompt was
+open could be deleted without appearing in the confirmed preview.
+
+**Resolution.** Cleanup now captures an action plan before confirmation and applies those exact
+release IDs, package version IDs, tags, build records, and worktree identities. Age selection is
+computed once. Build-worktree discard rechecks the previewed branch, commit, and managed identity
+before removal. Regression coverage is in `tests/test_cleanup_deep_adversarial.py` and
+`tests/test_cli_extended_semantics.py`; the confirmation contract is in README, DESIGN-GUIDE,
+CONSUMERS, and SPEC. Included in the pending CMRU release.
+
+### KI-38 — `cmru abandon` could not load external multi-project policy — *fixed in source, pending release*
+
+**Reported:** 2026-10-01, Sol xhigh review of the unreleased CMRU changes.
+
+**Observed.** Abandonment reloaded only the config discovered from the current directory. When a
+retained transaction's scope came from an external orchestration file, valid projects were
+treated as unknown and CMRU refused the otherwise safe abandonment.
+
+**Resolution.** `cmru abandon --config PATH` now validates the recorded scope against the same
+external policy, while an empty candidate set returns without loading policy. Coverage is in
+`tests/test_cli_abandon.py`, and README, DESIGN-GUIDE, CONSUMERS, and SPEC document the option.
+Included in the pending CMRU release.
+
+### KI-39 — CMRU's Assay R1 baseline lagged its latest release — *fixed in source, pending release*
+
+**Reported:** 2026-10-01, Sol xhigh review of the unreleased CMRU changes.
+
+**Observed.** R1 used `cmru-v5.4.1` while the latest ancestor release tag was `cmru-v5.5.0`, so
+the changed-line gate included already-released source. The test checked only that the pin looked
+like a CMRU tag and matched the docs.
+
+**Resolution.** The baseline is now `cmru-v5.5.0`; the config test derives the latest prior tag
+from Git and requires the pin to match. DESIGN-GUIDE and SPEC document the current baseline.
+Included in the pending CMRU release.
+
+### KI-40 — Cleanup could commit caller edits with generated files — *fixed in source, pending release*
+
+**Reported:** 2026-10-01, Sol xhigh follow-up review of the unreleased CMRU changes.
+
+**Observed.** After a confirmed `steps.clean`, `cleanup_commit_deletions` staged the entire caller
+checkout. An unrelated file edited before confirmation could therefore be included in CMRU's
+cleanup commit. The same helper also skipped the clean-step commit when no release tags were
+selected, despite the confirmed plan promising generated-file cleanup.
+
+**Resolution.** CMRU snapshots dirty paths immediately before the clean step, stages only new
+literal pathspecs, and commits only those paths. Existing dirty paths remain outside the cleanup
+commit, and generated paths are committed even when no release tags were selected. Adversarial
+coverage and README, DESIGN-GUIDE, CONSUMERS, and SPEC updates accompany the fix. Included in the
+pending CMRU release.

@@ -24,11 +24,11 @@ def test_build_warns_when_local_main_is_behind_but_uses_fetched_origin(monkeypat
     monkeypatch.setattr(cli, "apply_release_env", lambda *_: None)
     monkeypatch.setattr(cli.transaction, "release_lock", lambda _: nullcontext())
     monkeypatch.setattr(cli, "_uncommitted_release_paths", lambda *args: {})
-    monkeypatch.setattr(cli.transaction, "fetch_origin_main", lambda *_: "b" * 40)
-    monkeypatch.setattr(cli.transaction, "assert_local_main_not_ahead", lambda *_: 2)
+    monkeypatch.setattr(cli.transaction, "fetch_origin_main", lambda *_, **__: "b" * 40)
+    monkeypatch.setattr(cli.transaction, "assert_local_main_not_ahead", lambda *_, **__: 2)
     workspace_args = {}
     monkeypatch.setattr(cli.transaction, "create_workspace", lambda *args, **kwargs: workspace_args.update(kwargs) or workspace)
-    monkeypatch.setattr(cli.transaction, "copy_secret_overlays", lambda *args: None)
+    monkeypatch.setattr(cli.transaction, "copy_secret_overlays", lambda *args, **kwargs: None)
     child = []
     monkeypatch.setattr(cli.transaction, "run_child", lambda *args, **kwargs: child.append(args) or 0)
     monkeypatch.setattr(cli.transaction, "retain_successful_build_outputs", lambda *args: retained)

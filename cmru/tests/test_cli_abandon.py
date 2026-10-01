@@ -44,6 +44,15 @@ def _read_only_git(monkeypatch, *, heads="", tags=""):
     monkeypatch.setattr(cli.subprocess, "run", run)
 
 
+def _loaded_config(root, configs):
+    return (
+        root, configs, list(configs), list(configs), [], "project-first", {},
+        cli.CleanupConfig([], [], [], []),
+        cli.GitHubConfig("owner", "repo", "", "user"),
+        cli.ReleaseEnvConfig({}, None),
+    )
+
+
 def _install_candidate_facts(monkeypatch, root, candidates):
     monkeypatch.setattr(cli, "_current_git_root", lambda: root)
     monkeypatch.setattr(transaction, "list_cmru_workspaces", lambda _root: candidates)
@@ -61,14 +70,14 @@ def _install_candidate_facts(monkeypatch, root, candidates):
     }
     configs = {name: SimpleNamespace(git_tag=True) for name in project_names}
     monkeypatch.setattr(cli, "_resolve_config", lambda _path: root / "cmru.toml")
-    monkeypatch.setattr(cli, "load_config", lambda _path: (root, configs, list(configs)))
+    monkeypatch.setattr(cli, "load_config", lambda _path: _loaded_config(root, configs))
 
 
 def _invoke_abandon(candidate, *, branch=None, dry_run=True, yes=False, runtime=None):
     from types import SimpleNamespace
 
     return cli._abandon(
-        SimpleNamespace(branch=branch, dry_run=dry_run, yes=yes),
+        SimpleNamespace(branch=branch, dry_run=dry_run, yes=yes, config=None),
         runtime or _Runtime(),
     )
 
@@ -81,7 +90,7 @@ def test_abandon_dry_run_is_read_only_and_selects_the_exact_branch(monkeypatch, 
     monkeypatch.setattr(
         transaction,
         "abandon_workspace",
-        lambda *_args: pytest.fail("dry-run called abandon_workspace"),
+        lambda *_args, **_kwargs: pytest.fail("dry-run called abandon_workspace"),
     )
     for mutator in (
         "remove_workspace", "remove_backup_branch", "forget_release_scope",
@@ -102,17 +111,58 @@ def test_abandon_dry_run_is_read_only_and_selects_the_exact_branch(monkeypatch, 
     assert "No branch, worktree, metadata, or remote state was changed" in output
 
 
+def test_abandon_uses_explicit_external_orchestration_config_for_full_scope(
+    monkeypatch, tmp_path, capsys,
+):
+    alpha = _workspace(tmp_path, "cmru-release-20260924_120000-alpha-ab12cd")
+    beta = _workspace(tmp_path, "cmru-release-20260924_120001-beta-bc23de")
+    _install_candidate_facts(monkeypatch, tmp_path, [alpha, beta])
+    monkeypatch.setattr(transaction, "read_release_scope", lambda _root, _ws: ["alpha", "beta"])
+    _read_only_git(monkeypatch)
+    external_config = tmp_path.parent / "central" / "cmru.orchestration.toml"
+    resolved = []
+    monkeypatch.setattr(
+        cli, "_resolve_config",
+        lambda value: resolved.append(value) or (Path(value) if value else tmp_path / "cmru.toml"),
+    )
+
+    result = cli.main([
+        "abandon", alpha.branch, "--dry-run", "--config", str(external_config),
+    ])
+
+    assert result == 0
+    assert resolved == [str(external_config)]
+    assert "transaction scope: alpha, beta" in capsys.readouterr().out
+
+
+def test_abandon_without_candidates_does_not_require_config(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(cli, "_current_git_root", lambda: tmp_path)
+    monkeypatch.setattr(transaction, "list_cmru_workspaces", lambda _root: [])
+    monkeypatch.setattr(
+        cli, "_resolve_config",
+        lambda _path: pytest.fail("empty abandon result should not load policy"),
+    )
+
+    result = cli._abandon(
+        SimpleNamespace(branch=None, dry_run=True, yes=False, config=None),
+        _Runtime(),
+    )
+
+    assert result == 0
+    assert "No retained release transactions" in capsys.readouterr().out
+
+
 def test_abandon_yes_skips_prompt_for_the_complete_candidate_set(monkeypatch, tmp_path, capsys):
     first = _workspace(tmp_path, "cmru-release-20260924_120000-alpha-ab12cd")
     second = _workspace(tmp_path, "cmru-release-20260924_120001-beta-bc23de")
     _install_candidate_facts(monkeypatch, tmp_path, [first, second])
     _read_only_git(monkeypatch)
     removed = []
-    monkeypatch.setattr(transaction, "abandon_workspace", lambda root, ws: removed.append(ws.branch))
+    monkeypatch.setattr(transaction, "abandon_workspace", lambda root, ws, **kwargs: removed.append(ws.branch))
     from cli_extended import CliRuntime
     monkeypatch.setattr(
         CliRuntime, "confirm",
-        lambda *_args: pytest.fail("--yes asked for interactive confirmation"),
+        lambda *_args, **_kwargs: pytest.fail("--yes asked for interactive confirmation"),
     )
 
     result = cli.main(["abandon", "--yes"])
@@ -130,7 +180,7 @@ def test_abandon_default_confirmation_can_decline_without_mutation(monkeypatch, 
     _read_only_git(monkeypatch)
     monkeypatch.setattr(
         transaction, "abandon_workspace",
-        lambda *_args: pytest.fail("declining confirmation abandoned a release"),
+        lambda *_args, **_kwargs: pytest.fail("declining confirmation abandoned a release"),
     )
     runtime = _Runtime(confirm=False)
 
@@ -150,7 +200,7 @@ def test_abandon_refuses_any_candidate_with_published_result_evidence(monkeypatc
     monkeypatch.setattr(
         transaction,
         "abandon_workspace",
-        lambda *_args: pytest.fail("published candidate was abandoned"),
+        lambda *_args, **_kwargs: pytest.fail("published candidate was abandoned"),
     )
 
     with pytest.raises(CliFailure, match="nothing was abandoned"):
@@ -237,8 +287,13 @@ def test_abandon_preview_exposes_blockers_and_returns_two_without_mutation(
     _install_candidate_facts(monkeypatch, tmp_path, [candidate])
     _read_only_git(monkeypatch)
     monkeypatch.setattr(transaction, "read_release_scope", lambda *_: ["alpha", "external"])
-    monkeypatch.setattr(cli, "load_config", lambda _path: (tmp_path, {"alpha": SimpleNamespace(git_tag=True)}, ["alpha"]))
-    monkeypatch.setattr(transaction, "abandon_workspace", lambda *_: pytest.fail("blocked preview mutated"))
+    monkeypatch.setattr(
+        cli, "load_config",
+        lambda _path: _loaded_config(
+            tmp_path, {"alpha": SimpleNamespace(git_tag=True)},
+        ),
+    )
+    monkeypatch.setattr(transaction, "abandon_workspace", lambda *_, **__: pytest.fail("blocked preview mutated"))
 
     assert _invoke_abandon(candidate) == 2
     output = capsys.readouterr().out
@@ -252,7 +307,7 @@ def test_abandon_accepts_interactive_confirmation_for_verified_plan(monkeypatch,
     _install_candidate_facts(monkeypatch, tmp_path, [candidate])
     _read_only_git(monkeypatch)
     removed = []
-    monkeypatch.setattr(transaction, "abandon_workspace", lambda _root, workspace: removed.append(workspace))
+    monkeypatch.setattr(transaction, "abandon_workspace", lambda _root, workspace, **_kwargs: removed.append(workspace))
     runtime = _Runtime(confirm=True)
 
     assert _invoke_abandon(candidate, branch=candidate.branch, dry_run=False, runtime=runtime) == 0
@@ -304,7 +359,12 @@ def test_abandon_requires_remote_candidate_to_be_known_ancestor(
     candidate = _workspace(tmp_path, "cmru-release-20260924_120000-alpha-ab12cd")
     _install_candidate_facts(monkeypatch, tmp_path, [candidate])
     monkeypatch.setattr(transaction, "backup_was_pushed", lambda *_: True)
-    monkeypatch.setattr(cli, "load_config", lambda _path: (tmp_path, {"alpha": SimpleNamespace(git_tag=True)}, ["alpha"]))
+    monkeypatch.setattr(
+        cli, "load_config",
+        lambda _path: _loaded_config(
+            tmp_path, {"alpha": SimpleNamespace(git_tag=True)},
+        ),
+    )
     def run(argv, **kwargs):
         if argv[:3] == ["git", "ls-remote", "--heads"]:
             return subprocess.CompletedProcess(argv, 0, "a" * 40 + "\trefs/heads/" + candidate.branch + "\n", "")
@@ -351,9 +411,17 @@ def test_abandon_parses_only_valid_remote_refs_and_accepts_unpromoted_candidate(
     calls = []
 
     def run(argv, **kwargs):
+        assert set(kwargs) == {"cwd", "capture_output", "text", "check", "env"}
         assert kwargs == {
-            "cwd": tmp_path, "capture_output": True, "text": True, "check": False,
+            "cwd": tmp_path,
+            "capture_output": True,
+            "text": True,
+            "check": False,
+            "env": kwargs["env"],
         }
+        assert isinstance(kwargs["env"], dict)
+        assert "GITHUB_PUSH_PAT" not in kwargs["env"]
+        assert "GITHUB_TOKEN" not in kwargs["env"]
         calls.append(argv)
         code, stdout = next(responses)
         return subprocess.CompletedProcess(argv, code, stdout, "")
@@ -369,7 +437,12 @@ def test_abandon_refuses_promoted_or_indeterminate_remote_main(monkeypatch, tmp_
     object.__setattr__(candidate.context, "base_commit", "b" * 40)
     _install_candidate_facts(monkeypatch, tmp_path, [candidate])
     monkeypatch.setattr(transaction, "read_release_progress", lambda *_: "c" * 40)
-    monkeypatch.setattr(cli, "load_config", lambda _path: (tmp_path, {"alpha": SimpleNamespace(git_tag=True)}, ["alpha"]))
+    monkeypatch.setattr(
+        cli, "load_config",
+        lambda _path: _loaded_config(
+            tmp_path, {"alpha": SimpleNamespace(git_tag=True)},
+        ),
+    )
 
     for merge_result, message in ((0, "origin/main contains"), (2, "could not determine whether release progress")):
         calls = {"merge": 0}
@@ -428,7 +501,12 @@ def test_abandon_checks_remote_tag_metadata_and_detects_release_coordinates(
             return subprocess.CompletedProcess(argv, 0, "", "")
         raise AssertionError(argv)
     monkeypatch.setattr(cli.subprocess, "run", run_tag)
-    monkeypatch.setattr(cli, "load_config", lambda _path: (tmp_path, {"alpha": SimpleNamespace(git_tag=True)}, ["alpha"]))
+    monkeypatch.setattr(
+        cli, "load_config",
+        lambda _path: _loaded_config(
+            tmp_path, {"alpha": SimpleNamespace(git_tag=True)},
+        ),
+    )
     with pytest.raises(CliFailure, match="nothing was abandoned"):
         _invoke_abandon(candidate, branch=candidate.branch, dry_run=False)
     output = capsys.readouterr().out
@@ -442,9 +520,12 @@ def test_abandon_distinguishes_remote_tag_graph_results(
 ):
     candidate = _workspace(tmp_path, "cmru-release-20260924_120000-alpha-ab12cd", base="a" * 40)
     _install_candidate_facts(monkeypatch, tmp_path, [candidate])
-    monkeypatch.setattr(cli, "load_config", lambda _path: (
-        tmp_path, {"alpha": SimpleNamespace(git_tag=True)}, ["alpha"],
-    ))
+    monkeypatch.setattr(
+        cli, "load_config",
+        lambda _path: _loaded_config(
+            tmp_path, {"alpha": SimpleNamespace(git_tag=True)},
+        ),
+    )
     tag_output = "d" * 40 + "\trefs/tags/alpha-v9\n"
     merge_calls = 0
 
@@ -507,6 +588,11 @@ def test_abandon_reports_indeterminate_local_evidence_without_abandoning(
             lambda *_: (_ for _ in ()).throw(OSError(expected)),
         )
 
-    with pytest.raises(CliFailure, match="nothing was abandoned"):
-        _invoke_abandon(candidate, branch=candidate.branch, dry_run=False)
-    assert expected in capsys.readouterr().out
+    if failure == "config":
+        with pytest.raises(CliFailure, match="cannot load project release policy") as exc:
+            _invoke_abandon(candidate, branch=candidate.branch, dry_run=False)
+        assert expected in str(exc.value)
+    else:
+        with pytest.raises(CliFailure, match="nothing was abandoned"):
+            _invoke_abandon(candidate, branch=candidate.branch, dry_run=False)
+        assert expected in capsys.readouterr().out

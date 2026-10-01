@@ -315,16 +315,16 @@ def test_release_proceeds_when_uncommitted_changes_are_explicitly_allowed(monkey
         monkeypatch.setattr(cli, "load_config", lambda _path: loaded)
         monkeypatch.setattr(cli, "apply_release_env", lambda *_args: None)
         monkeypatch.setattr(transaction, "release_lock", lambda _root: nullcontext())
-        monkeypatch.setattr(transaction, "fetch_origin_main", lambda _root: "a" * 40)
+        monkeypatch.setattr(transaction, "fetch_origin_main", lambda _root, **_kwargs: "a" * 40)
         monkeypatch.setattr(transaction, "assert_local_main_not_ahead", lambda _root, **_kw: 0)
         monkeypatch.setattr(transaction, "create_workspace", lambda _root, *, base, **_kw: workspace)
-        monkeypatch.setattr(transaction, "copy_secret_overlays", lambda *_args: None)
+        monkeypatch.setattr(transaction, "copy_secret_overlays", lambda *_args, **_kwargs: None)
         monkeypatch.setattr(transaction, "run_child", lambda _workspace, args, **kwargs: calls.append("ran-child") or 0)
         monkeypatch.setattr(transaction, "remove_workspace", lambda _w: None)
-        monkeypatch.setattr(transaction, "remove_backup_branch", lambda _w: None)
+        monkeypatch.setattr(transaction, "remove_backup_branch", lambda _w, **_kwargs: None)
         monkeypatch.setattr(
             transaction, "_sync_local_main_result",
-            lambda _root: transaction._SyncLocalMainResult(True),
+            lambda _root, **_kwargs: transaction._SyncLocalMainResult(True),
         )
 
         exc = cli.main(["release", "--config", str(config), "alpha", "--allow-uncommitted"])
@@ -352,16 +352,16 @@ def test_dry_run_is_not_blocked_by_uncommitted_release_path_changes(monkeypatch)
         monkeypatch.setattr(cli, "load_config", lambda _path: loaded)
         monkeypatch.setattr(cli, "apply_release_env", lambda *_args: None)
         monkeypatch.setattr(transaction, "release_lock", lambda _root: nullcontext())
-        monkeypatch.setattr(transaction, "fetch_origin_main", lambda _root: "a" * 40)
+        monkeypatch.setattr(transaction, "fetch_origin_main", lambda _root, **_kwargs: "a" * 40)
         monkeypatch.setattr(transaction, "assert_local_main_not_ahead", lambda _root, **_kw: 0)
         monkeypatch.setattr(transaction, "create_workspace", lambda _root, *, base, **_kw: workspace)
-        monkeypatch.setattr(transaction, "copy_secret_overlays", lambda *_args: None)
+        monkeypatch.setattr(transaction, "copy_secret_overlays", lambda *_args, **_kwargs: None)
         monkeypatch.setattr(transaction, "run_child", lambda _workspace, args, **kwargs: calls.append("ran-child") or 0)
         monkeypatch.setattr(transaction, "remove_workspace", lambda _w: None)
-        monkeypatch.setattr(transaction, "remove_backup_branch", lambda _w: None)
+        monkeypatch.setattr(transaction, "remove_backup_branch", lambda _w, **_kwargs: None)
         monkeypatch.setattr(
             transaction, "_sync_local_main_result",
-            lambda _root: transaction._SyncLocalMainResult(True),
+            lambda _root, **_kwargs: transaction._SyncLocalMainResult(True),
         )
 
         exc = cli.main(["release", "--config", str(config), "alpha", "--dry-run"])
@@ -398,17 +398,17 @@ cwd = "alpha"
     monkeypatch.setattr(cli, "apply_release_env", lambda *_args: None)
     monkeypatch.setattr(cli, "_uncommitted_release_paths", lambda *_args, **_kwargs: {})
     monkeypatch.setattr(transaction, "release_lock", lambda _root: nullcontext())
-    monkeypatch.setattr(transaction, "fetch_origin_main", lambda _root: "a" * 40)
+    monkeypatch.setattr(transaction, "fetch_origin_main", lambda _root, **_kwargs: "a" * 40)
     monkeypatch.setattr(transaction, "assert_local_main_not_ahead", lambda _root, **_kw: 0)
     monkeypatch.setattr(transaction, "create_workspace", lambda _root, *, base, **_kw: workspace)
-    monkeypatch.setattr(transaction, "copy_secret_overlays", lambda *_args: calls.append("secret"))
+    monkeypatch.setattr(transaction, "copy_secret_overlays", lambda *_args, **_kwargs: calls.append("secret"))
     monkeypatch.setattr(transaction, "run_child", lambda _workspace, args, **kwargs: calls.append(list(args)) or 0)
     monkeypatch.setattr(transaction, "remove_workspace", lambda _workspace: calls.append("removed"))
-    monkeypatch.setattr(transaction, "remove_backup_branch", lambda _workspace: calls.append("backup-removed"))
+    monkeypatch.setattr(transaction, "remove_backup_branch", lambda _workspace, **_kwargs: calls.append("backup-removed"))
     monkeypatch.setattr(transaction, "forget_release_scope", lambda _root, _w: None)
     monkeypatch.setattr(
         transaction, "_sync_local_main_result",
-        lambda _root: calls.append("synced") or transaction._SyncLocalMainResult(True),
+        lambda _root, **_kwargs: calls.append("synced") or transaction._SyncLocalMainResult(True),
     )
 
     exc = cli.main([
@@ -455,10 +455,10 @@ cwd = "alpha"
     monkeypatch.setattr(cli, "apply_release_env", lambda *_args: None)
     monkeypatch.setattr(cli, "_uncommitted_release_paths", lambda *_args, **_kwargs: {})
     monkeypatch.setattr(transaction, "release_lock", lambda _root: nullcontext())
-    monkeypatch.setattr(transaction, "fetch_origin_main", lambda _root: "a" * 40)
+    monkeypatch.setattr(transaction, "fetch_origin_main", lambda _root, **_kwargs: "a" * 40)
     monkeypatch.setattr(transaction, "assert_local_main_not_ahead", lambda _root, **_kw: 0)
     monkeypatch.setattr(transaction, "create_workspace", lambda _root, *, base, **_kw: workspace)
-    monkeypatch.setattr(transaction, "copy_secret_overlays", lambda *_args: calls.append("secret"))
+    monkeypatch.setattr(transaction, "copy_secret_overlays", lambda *_args, **_kwargs: calls.append("secret"))
     # Child fails after the candidate cycle started; the new parent must never
     # infer that source history needs a compensating revert.
     monkeypatch.setattr(transaction, "run_child", lambda _workspace, args, **kwargs: calls.append(list(args)) or 1)
@@ -469,14 +469,14 @@ cwd = "alpha"
     )
     monkeypatch.setattr(
         transaction, "_sync_local_main_result",
-        lambda _root: calls.append("synced") or transaction._SyncLocalMainResult(
+        lambda _root, **_kwargs: calls.append("synced") or transaction._SyncLocalMainResult(
             False,
             "Could not sync local main automatically: caller checkout is dirty; local main was left untouched.",
         ),
     )
     remove_calls: list[object] = []
     monkeypatch.setattr(transaction, "remove_workspace", lambda _w: remove_calls.append("removed"))
-    monkeypatch.setattr(transaction, "remove_backup_branch", lambda _w: remove_calls.append("backup-removed"))
+    monkeypatch.setattr(transaction, "remove_backup_branch", lambda _w, **_kwargs: remove_calls.append("backup-removed"))
 
     exc = cli.main(["release", "--config", str(config), "alpha"])
 
@@ -518,10 +518,10 @@ cwd = "alpha"
     monkeypatch.setattr(cli, "apply_release_env", lambda *_args: None)
     monkeypatch.setattr(cli, "_uncommitted_release_paths", lambda *_args, **_kwargs: {})
     monkeypatch.setattr(transaction, "release_lock", lambda _root: nullcontext())
-    monkeypatch.setattr(transaction, "fetch_origin_main", lambda _root: "a" * 40)
+    monkeypatch.setattr(transaction, "fetch_origin_main", lambda _root, **_kwargs: "a" * 40)
     monkeypatch.setattr(transaction, "assert_local_main_not_ahead", lambda _root, **_kw: 0)
     monkeypatch.setattr(transaction, "create_workspace", lambda _root, *, base, **_kw: workspace)
-    monkeypatch.setattr(transaction, "copy_secret_overlays", lambda *_args: None)
+    monkeypatch.setattr(transaction, "copy_secret_overlays", lambda *_args, **_kwargs: None)
     # Child fails before ever reaching promote_workspace (e.g. gates failed).
     monkeypatch.setattr(transaction, "run_child", lambda _workspace, args, **kwargs: 1)
     monkeypatch.setattr(transaction, "plan_was_refused", lambda _root, _w: False)
@@ -532,7 +532,7 @@ cwd = "alpha"
     )
     monkeypatch.setattr(
         transaction, "_sync_local_main_result",
-        lambda _root: calls.append("synced") or transaction._SyncLocalMainResult(True),
+        lambda _root, **_kwargs: calls.append("synced") or transaction._SyncLocalMainResult(True),
     )
 
     exc = cli.main(["release", "--config", str(config), "alpha"])
@@ -2371,8 +2371,47 @@ def test_discard_build_workspace_requires_exact_managed_build_worktree():
         assert preview.branch == "cmru/build/debug"
         assert path.is_dir()
 
-        transaction.discard_build_workspace(h.repo_root, path, dry_run=False)
+        stale_preview = transaction.ReleaseWorkspace(
+            repo_root=h.repo_root, path=path, branch=preview.branch, base="b" * 40,
+        )
+        with pytest.raises(RuntimeError, match="identity changed after cleanup preview"):
+            transaction.discard_build_workspace(
+                h.repo_root, path, dry_run=False, expected_workspace=stale_preview,
+            )
+        assert path.is_dir()
+
+        transaction.discard_build_workspace(
+            h.repo_root, path, dry_run=False, expected_workspace=preview,
+        )
         assert not path.exists()
+
+
+def test_discard_build_workspace_refuses_when_managed_record_disappears(monkeypatch):
+    with _OriginAndClone() as h:
+        parent = h.repo_root / ".worktrees"
+        parent.mkdir()
+        path = parent / "cmru-build-managed"
+        _git("worktree", "add", "-q", "-b", "cmru/build/managed", str(path), "main", cwd=h.repo_root)
+        shared = transaction._shared_worktree()
+        workspace_id = shared.workspace_id_for_path(path)
+        record = SimpleNamespace(purpose="cmru-build")
+        context = SimpleNamespace(workspace_id=workspace_id)
+        current_record = [record]
+        monkeypatch.setattr(
+            transaction, "_shared_workspace_record", lambda *_args: current_record[0],
+        )
+        monkeypatch.setattr(shared, "ensure_workspace", lambda _record: context)
+
+        preview = transaction.discard_build_workspace(h.repo_root, path, dry_run=True)
+        assert preview.context is context
+
+        current_record[0] = None
+        with pytest.raises(RuntimeError, match="identity changed after cleanup preview"):
+            transaction.discard_build_workspace(
+                h.repo_root, path, dry_run=False, expected_workspace=preview,
+            )
+        assert path.is_dir()
+        _git("worktree", "remove", "--force", str(path), cwd=h.repo_root)
 
 
 def test_parent_build_retains_successful_outputs_then_removes_worktree(tmp_path, monkeypatch):
@@ -2392,7 +2431,7 @@ def test_parent_build_retains_successful_outputs_then_removes_worktree(tmp_path,
     monkeypatch.setattr(cli, "apply_release_env", lambda *_args: None)
     monkeypatch.setattr(cli, "_uncommitted_release_paths", lambda *_args: {})
     monkeypatch.setattr(transaction, "release_lock", lambda _root: nullcontext())
-    monkeypatch.setattr(transaction, "fetch_origin_main", lambda _root: "a" * 40)
+    monkeypatch.setattr(transaction, "fetch_origin_main", lambda _root, **_kwargs: "a" * 40)
     monkeypatch.setattr(transaction, "assert_local_main_not_ahead", lambda _root, **_kw: 0)
     monkeypatch.setattr(
         transaction, "create_workspace", lambda _root, *, base, purpose, **_kw: workspace,
@@ -2429,7 +2468,7 @@ def test_parent_build_failure_keeps_worktree_and_does_not_retain_outputs(tmp_pat
     monkeypatch.setattr(cli, "apply_release_env", lambda *_args: None)
     monkeypatch.setattr(cli, "_uncommitted_release_paths", lambda *_args: {})
     monkeypatch.setattr(transaction, "release_lock", lambda _root: nullcontext())
-    monkeypatch.setattr(transaction, "fetch_origin_main", lambda _root: "a" * 40)
+    monkeypatch.setattr(transaction, "fetch_origin_main", lambda _root, **_kwargs: "a" * 40)
     monkeypatch.setattr(transaction, "assert_local_main_not_ahead", lambda _root, **_kw: 0)
     monkeypatch.setattr(
         transaction, "create_workspace", lambda _root, *, base, purpose, **_kw: workspace,

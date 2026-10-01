@@ -162,7 +162,10 @@ publishing. Its dry-run resolves the same target, steps, and configured order,
 prints the declared commands and file cleanup, and starts no project command.
 Remote cleanup lives only under `cmru cleanup`: it prints the pending action
 set and asks before changing anything unless `--yes` was supplied. A cleanup
-dry-run stops after that preview. The canonical semantic table records each
+dry-run stops after that preview. The confirmed action set is captured before
+the prompt and applied as-is; rescanning would widen the deletion to targets
+the operator never saw, including an age-based asset that crossed its cutoff
+while confirmation was open. The canonical semantic table records each
 verb's scope, combinations, defaults, writes, network effects, and dry-run
 boundary.
 
@@ -240,7 +243,18 @@ published, promoted, untagged-publisher, or otherwise ambiguous transactions.
 `--dry-run` only inspects state and renders candidates; no mutation helper is
 called. The separate verbs keep local recovery from silently deleting public
 assets and keep remote asset pruning from appearing to clean a retained source
-transaction.
+transaction. Abandonment accepts `--config` because the release's external
+orchestration document may be the only policy that names every project in a
+multi-project transaction; guessing from the current directory can turn valid
+scope members into apparent untagged publishers and falsely refuse recovery.
+
+Cleanup freezes remote IDs and local build-record/worktree identities before
+confirmation. For a declared `steps.clean`, CMRU snapshots dirty paths
+immediately before running the step and commits only paths that become dirty
+during it. This keeps edits made in the caller checkout before confirmation out
+of the generated cleanup commit; a path already dirty before the step stays
+outside it. A generated-file commit still happens when the clean step changes
+files but the policy selected no release tags for deletion.
 
 ## Context comes from the nearest CMRU root
 
@@ -314,6 +328,29 @@ standalone bootstrap path.
 Repository secrets are resolved separately: the environment wins for an invocation, then the
 CMRU root secret, then a project-local overlay. No credential is copied into a project config.
 
+## Git transport authentication
+
+The repository-root credential also covers CMRU's own GitHub HTTPS reads and writes. A release
+uses Git for its source fetch, candidate branch, release tags, promotion, and cleanup; relying on
+an unrelated interactive Git helper made `cmru.secret.toml` incomplete for the workflow that
+already resolved that token. CMRU supplies it through a temporary askpass helper only when
+`origin` is HTTPS on `github.com` and its path matches the configured `[github].owner` and
+`repo`. The token stays out of the remote URL, process arguments, and persistent Git config; the
+transport helper adds it only to that CMRU-owned Git process. Project publisher credentials
+continue to follow the existing project runner contract. SSH remotes and other hosts retain their
+own authentication; CMRU never forwards its GitHub token to them. For a credential-bearing Git
+operation, CMRU points `core.hooksPath` at its private temporary directory. Git hooks inherit the
+Git process environment and could otherwise reuse the token for a second remote; the registered
+release gates are the checks for the release candidate. The askpass helper also refuses prompts
+that do not identify `github.com`. When no repository token resolves, Git's configured helpers
+and SSH authentication remain in effect.
+
+Repository operations use the CMRU-root credential because candidate refs and `main` belong to
+the repository as a whole. A project-local secret override remains scoped to that project's
+publisher. When CMRU releases itself, the installed entry point imports the release candidate's
+source tree for the child transaction, so the CMRU implementation being shipped performs that
+release's Git operations too.
+
 ## One target grammar for project-aware verbs
 
 Every project-aware verb accepts an omitted target, `all`, one registered name, or a
@@ -355,7 +392,7 @@ also removes it from CMRU's mutation and coverage input lists.
 The release candidate is a snapshot of `origin/main`. Assay resolves a named
 base against the tested commit; once a branch is merged, `main` can resolve to
 the tested commit and leave R1 with no changed lines. CMRU therefore pins R1 to
-the latest ancestor release tag (`cmru-v5.4.1` in the current config), which
+the latest previously published ancestor release tag (`cmru-v5.5.0` in the current config), which
 keeps changed-line coverage meaningful after merge. Advance this pinned base
 with each CMRU release. R2 is a separate concern: the release candidate is
 already at `origin/main`, so using `main` as its mutation base would leave no
