@@ -2914,6 +2914,19 @@ def test_review_positional_choice_uses_the_built_in_converter_value():
     assert _findings_for_invocation(candidate, route, invocation) == []
 
 
+def test_review_parser_nargs_choice_case_uses_only_the_first_value():
+    action = {
+        "id": "argument:command",
+        "kind": "argument",
+        "action": "argparse._StoreAction",
+        "nargs": argparse.PARSER,
+        "type": None,
+    }
+
+    assert _choice_values_accept(action, ("inspect", "trailing"), "inspect") is True
+    assert _choice_values_accept(action, ("inspect", "trailing"), "trailing") is False
+
+
 def test_review_optional_option_const_can_satisfy_its_choice_case():
     registry = CliRegistry(IDENTITY, prog="audit-tool", description="const choice")
     registry.register(
@@ -3127,6 +3140,90 @@ def test_review_positional_choice_validation_matches_argparse_nargs(
     ) is (not accepted)
 
 
+def test_review_parser_action_converts_every_supplied_value():
+    registry = CliRegistry(
+        IDENTITY, prog="audit-tool", description="parser positional conversion"
+    )
+    registry.register(
+        VerbSpec(
+            "inspect",
+            description="inspect forwarded values",
+            arguments=(
+                ArgumentSpec(
+                    "values",
+                    "values to inspect",
+                    parser_kwargs={
+                        "nargs": argparse.PARSER,
+                        "type": int,
+                        "choices": (1,),
+                    },
+                ),
+            ),
+            handler=lambda *_: 0,
+        )
+    )
+    app = registry.build()
+    surface = export_cli_surface(app)
+    candidate = next(
+        case
+        for case in surface["candidates"]
+        if case["kind"] == "argument-choice"
+        and case["shape"].get("argument_id") == "argument:values"
+    )
+    route = next(
+        route for route in surface["routes"] if route["id"] == candidate["route_id"]
+    )
+    invocation = ["inspect", "1", "not-an-int"]
+
+    assert app.run(
+        argv=invocation, stdout=io.StringIO(), stderr=io.StringIO()
+    ) == 2
+    assert any(
+        "omits its positional choice" in finding
+        for finding in _findings_for_invocation(candidate, route, invocation)
+    )
+
+
+def test_review_remainder_still_applies_builtin_conversion():
+    registry = CliRegistry(
+        IDENTITY, prog="audit-tool", description="remainder positional conversion"
+    )
+    registry.register(
+        VerbSpec(
+            "inspect",
+            description="inspect forwarded values",
+            arguments=(
+                ArgumentSpec(
+                    "values",
+                    "values to inspect",
+                    parser_kwargs={"nargs": argparse.REMAINDER, "type": int},
+                ),
+            ),
+            handler=lambda *_: 0,
+        )
+    )
+    app = registry.build()
+    surface = export_cli_surface(app)
+    candidate = next(
+        case
+        for case in surface["candidates"]
+        if case["kind"] == "argument-shape"
+        and case["shape"].get("argument_id") == "argument:values"
+    )
+    route = next(
+        route for route in surface["routes"] if route["id"] == candidate["route_id"]
+    )
+    invocation = ["inspect", "not-an-int"]
+
+    assert app.run(
+        argv=invocation, stdout=io.StringIO(), stderr=io.StringIO()
+    ) == 2
+    assert any(
+        "invalid positional value" in finding
+        for finding in _findings_for_invocation(candidate, route, invocation)
+    )
+
+
 @pytest.mark.parametrize(
     "const, converter, choices",
     (
@@ -3234,6 +3331,21 @@ def test_review_leaves_custom_optional_option_const_to_behavior_test():
     }
 
     assert _values_satisfy_action(action, ())
+
+
+def test_review_treats_missing_optional_const_probe_as_opaque():
+    action = {
+        "id": "option:mode",
+        "kind": "option",
+        "action": "argparse._StoreAction",
+        "nargs": "?",
+        "type": None,
+        "const": "outside-the-list",
+        "choices": ["ready"],
+    }
+
+    assert _values_satisfy_action(action, ())
+    assert _choice_values_accept(action, (), "another-value")
 
 
 def test_review_choice_matching_handles_optional_consts_and_parser_arity():
