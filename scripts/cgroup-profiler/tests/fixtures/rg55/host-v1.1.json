@@ -1,0 +1,199 @@
+{
+  "contract": 1,
+  "host": {
+    "at": "2026-09-12T10:15:04Z",
+    "daemon_slice": {
+      "cgroup": "/cgprofile.slice",
+      "memory_high_bytes": 805306368,
+      "memory_min_bytes": 134217728
+    },
+    "gates_slice": {
+      "cgroup": "/dev.slice/dev-gates.slice",
+      "leaves": [
+        "rg-04d8e2aa",
+        "rg-b7f3a1c9"
+      ],
+      "memory_current_bytes": 2147483648,
+      "memory_high_bytes": 4294967296,
+      "memory_max_bytes": 6442450944,
+      "memory_swap_current_bytes": 0,
+      "name": "dev-gates.slice",
+      "present": true,
+      "pressure": {
+        "memory": {
+          "full_avg10": 0.0,
+          "full_avg300": 0.0,
+          "full_avg60": 0.0,
+          "full_total_seconds": 0.0,
+          "some_avg10": 0.0,
+          "some_avg300": 0.0,
+          "some_avg60": 0.0,
+          "some_total_seconds": 0.0
+        }
+      },
+      "sessions_live": 2
+    },
+    "loadavg": [
+      3.4,
+      3.05,
+      2.62
+    ],
+    "meminfo": {
+      "available_bytes": 6144000000,
+      "swap_free_bytes": 8192000000,
+      "swap_total_bytes": 8589934592,
+      "total_bytes": 17179869184
+    },
+    "pressure": {
+      "cpu": {
+        "full_avg10": 0.0,
+        "full_avg300": 0.0,
+        "full_avg60": 0.0,
+        "full_total_seconds": 0.0,
+        "some_avg10": 0.95,
+        "some_avg300": 0.71,
+        "some_avg60": 0.82,
+        "some_total_seconds": 24.0
+      },
+      "io": {
+        "full_avg10": 0.02,
+        "full_avg300": 0.01,
+        "full_avg60": 0.02,
+        "full_total_seconds": 0.3,
+        "some_avg10": 0.06,
+        "some_avg300": 0.04,
+        "some_avg60": 0.05,
+        "some_total_seconds": 0.9
+      },
+      "memory": {
+        "full_avg10": 0.15,
+        "full_avg300": 0.14,
+        "full_avg60": 0.16,
+        "full_total_seconds": 11.8,
+        "some_avg10": 0.6,
+        "some_avg300": 0.59,
+        "some_avg60": 0.65,
+        "some_total_seconds": 53.0
+      }
+    },
+    "slices": {
+      "dev-background.slice": {
+        "cgroup": "/dev.slice/dev-background.slice",
+        "memory_current_bytes": 2254438400,
+        "memory_high_bytes": null,
+        "memory_max_bytes": null,
+        "memory_swap_current_bytes": null,
+        "pressure": {
+          "cpu": {
+            "full_avg10": 0.0,
+            "full_avg300": 0.0,
+            "full_avg60": 0.0,
+            "full_total_seconds": 0.0,
+            "some_avg10": 0.4,
+            "some_avg300": 0.3,
+            "some_avg60": 0.35,
+            "some_total_seconds": 5.8
+          },
+          "memory": {
+            "full_avg10": 0.2,
+            "full_avg300": 0.1,
+            "full_avg60": 0.15,
+            "full_total_seconds": 2.7,
+            "some_avg10": 0.5,
+            "some_avg300": 0.4,
+            "some_avg60": 0.45,
+            "some_total_seconds": 4.2
+          }
+        }
+      },
+      "dev-gates.slice": {
+        "cgroup": "/dev.slice/dev-gates.slice",
+        "memory_current_bytes": 2147483648,
+        "memory_high_bytes": 4294967296,
+        "memory_max_bytes": 6442450944,
+        "memory_swap_current_bytes": 0,
+        "pressure": {
+          "cpu": {
+            "full_avg10": 0.0,
+            "full_avg300": 0.0,
+            "full_avg60": 0.0,
+            "full_total_seconds": 0.0,
+            "some_avg10": 0.0,
+            "some_avg300": 0.0,
+            "some_avg60": 0.0,
+            "some_total_seconds": 0.0
+          },
+          "memory": {
+            "full_avg10": 0.0,
+            "full_avg300": 0.0,
+            "full_avg60": 0.0,
+            "full_total_seconds": 0.0,
+            "some_avg10": 0.0,
+            "some_avg300": 0.0,
+            "some_avg60": 0.0,
+            "some_total_seconds": 0.0
+          }
+        }
+      },
+      "dev-interactive.slice": {
+        "cgroup": "/dev.slice/dev-interactive.slice",
+        "memory_current_bytes": 838860800,
+        "memory_high_bytes": null,
+        "memory_max_bytes": null,
+        "memory_swap_current_bytes": null,
+        "pressure": {
+          "cpu": {
+            "full_avg10": 0.0,
+            "full_avg300": 0.0,
+            "full_avg60": 0.0,
+            "full_total_seconds": 0.0,
+            "some_avg10": 0.1,
+            "some_avg300": 0.06,
+            "some_avg60": 0.08,
+            "some_total_seconds": 0.52
+          },
+          "memory": {
+            "full_avg10": 0.0,
+            "full_avg300": 0.0,
+            "full_avg60": 0.0,
+            "full_total_seconds": 0.0,
+            "some_avg10": 0.05,
+            "some_avg300": 0.03,
+            "some_avg60": 0.04,
+            "some_total_seconds": 0.28
+          }
+        }
+      },
+      "dev.slice": {
+        "cgroup": "/dev.slice",
+        "memory_current_bytes": 3355443200,
+        "memory_high_bytes": null,
+        "memory_max_bytes": null,
+        "memory_swap_current_bytes": null,
+        "pressure": {
+          "cpu": {
+            "full_avg10": 0.0,
+            "full_avg300": 0.0,
+            "full_avg60": 0.0,
+            "full_total_seconds": 0.0,
+            "some_avg10": 0.6,
+            "some_avg300": 0.5,
+            "some_avg60": 0.55,
+            "some_total_seconds": 9.0
+          },
+          "memory": {
+            "full_avg10": 0.12,
+            "full_avg300": 0.09,
+            "full_avg60": 0.1,
+            "full_total_seconds": 2.1,
+            "some_avg10": 0.55,
+            "some_avg300": 0.45,
+            "some_avg60": 0.5,
+            "some_total_seconds": 4.8
+          }
+        }
+      }
+    }
+  },
+  "ok": true
+}

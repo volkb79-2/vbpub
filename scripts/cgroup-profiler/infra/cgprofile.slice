@@ -1,0 +1,61 @@
+# cgprofile.slice — the RG-55 profiling daemon's OWN host-deployment
+# containment (design doc DESIGN-2026-09-12-liveness-placement-admission.md
+# A1, D-29; RG55-INTERFACE-CONTRACT.md §8.5's `daemon_slice`).
+#
+# TOP-LEVEL on purpose — a sibling of `dev.slice`, never nested under it.
+# `dev.slice` (mdt host-setup) contains DEV LOAD (devcontainers, gates,
+# background stacks); the daemon is a HOST DEPLOYMENT, not dev load, so it
+# gets its own top-level containment, precedent `srdm.slice`
+# (shared-ramdisk-depot-manager/systemd/srdm.slice) and
+# `nyxloom-daemon.slice` (nyxloom/infra/slices/nyxloom-daemon.slice). The
+# single unhyphenated token keeps it at cgroup root for the same reason
+# srdm.slice's own header documents: systemd reads "-" as the slice
+# hierarchy separator, so a hyphenated name would nest under an
+# auto-created parent carrying `MemoryMin=0`, silently zeroing this floor.
+#
+# Install (operator, needs root; see infra/README.md for the fuller
+# checklist including verification):
+#   sudo cp infra/cgprofile.slice /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   systemd-analyze verify /etc/systemd/system/cgprofile.slice
+#
+# The compose template (ciu.compose.yml.j2) AUTHORS `cgroup_parent:
+# cgprofile.slice` outright — no environment variable, no fallback (D-29).
+# If this unit is NOT installed, systemd still auto-vivifies the slice
+# implicitly (any container naming it as `cgroup_parent` forces that
+# creation) — just unbounded: `MemoryMin`/`MemoryHigh` read back as the
+# cgroup v2 defaults, `ctl host`'s `daemon_slice` block reports exactly
+# that, and `doctor`/`ctl host` read it as "cgprofile.slice has no unit: no
+# memory floor". The daemon keeps running either way — this unit only
+# improves its resilience against host-wide memory pressure, it is never a
+# hard prerequisite for `serve` to start.
+
+[Unit]
+Description=cgprofile — RG-55 host-deployment containment for the cgroup-profiling daemon (D-29); protects the watcher itself from the memory pressure it exists to observe
+Before=slices.target
+
+[Slice]
+# MemoryMin is a PROTECTED RESERVATION (reclaim will not take it even under
+# sibling pressure) — see nyxloom-daemon.slice's header for the asymmetry
+# argument (too low is harmless, too high sterilises memory permanently);
+# 128M sits at or below this daemon's realistic resident set (stdlib
+# collector loop + session bookkeeping; the report tier's pandas/plotly venv
+# only runs per-`ctl report` as a short-lived subprocess, not resident).
+MemoryMin=128M
+
+# MemoryHigh is a soft throttle point, MemoryMax the hard ceiling — the
+# daemon samples memory across every concurrently profiled session and must
+# never itself be the thing that gets OOM-killed mid-run (same rationale
+# ciu.defaults.toml.j2's own `[cgprofile.hardening]` comment gives for the
+# container-level `mem_limit`/`memswap_limit`, restated here at the host
+# slice layer).
+MemoryHigh=768M
+MemoryMax=1G
+
+# No ManagedOOM directive here on purpose (contrast mdt's `dev-gates.slice`,
+# P8, which DOES carry a pressure kill for the lanes it contains) — this
+# slice's whole job is protecting the singleton watcher from being killed,
+# so an oomd policy that could kill it would contradict D-29 outright.
+
+CPUWeight=100
+IOWeight=50

@@ -8,6 +8,8 @@ type: "bugfix"
 severity: "low"
 provenance: "RG-55 wave, cgprofile-P1-DAEMON C4, 2026-09-12"
 filed_date: "2026-09-12"
+closed_date: "2026-09-12"
+closed_reason: "new_run_id suffix widened 4->8 hex, 376bb9cb"
 ---
 
 ## Observed mechanism and reproduction

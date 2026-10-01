@@ -40,10 +40,14 @@ def mkproc(
     """
     pdir = root / str(pid)
     pdir.mkdir(parents=True, exist_ok=True)
-    # proc(5): fields after the last ')' are state, ppid, pgrp, session, ...
-    # Padding to a handful of zero fields is enough — _parse_ppid only reads
-    # index 1 (ppid).
-    (pdir / "stat").write_text(f"{pid} (proc{pid}) S {ppid} 0 0 0 0 0 0\n")
+    # proc(5): field 22 (starttime) distinguishes a live token owner from a
+    # later process that reused its PID. Populate through that field; the old
+    # short fixture was enough for _parse_ppid but made every owner look
+    # identity-indeterminate after the reuse guard was added.
+    stat_fields = ["S", str(ppid)] + ["0"] * 17 + [str(pid)]
+    (pdir / "stat").write_text(
+        f"{pid} (proc{pid}) " + " ".join(stat_fields) + "\n"
+    )
     if cgroup is not None:
         (pdir / "cgroup").write_text(cgroup)
     if environ is not None:
@@ -173,6 +177,23 @@ class TestTokenOwnership:
 
         r = resolver(cgroup, proc)
         assert r.refresh() == set()  # no exception raised
+
+    def test_token_owner_without_a_reusable_start_identity_is_not_attributed(
+        self, tmp_path: Path,
+    ):
+        proc = tmp_path / "proc"
+        owner = mkproc(proc, 31, environ=[NEEDLE], task_children={31: []})
+        # The token alone is insufficient: without stat field 22 the daemon
+        # cannot protect retained ownership from PID reuse.
+        (owner / "stat").write_text(
+            f"31 (owner) " + " ".join(["S", "1"] + ["0"] * 17 + ["unknown"]) + "\n"
+        )
+        cgroup = mkcgroup(tmp_path, "cgroup/lane", [31])
+
+        r = resolver(cgroup, proc)
+
+        assert r.refresh() == set()
+        assert r.targets_seen == 0
 
     def test_vanished_cgroup_returns_empty_set(self, tmp_path: Path):
         r = resolver(str(tmp_path / "cgroup" / "gone"), tmp_path / "proc")
@@ -344,11 +365,57 @@ class TestRunningUnion:
         assert r.targets_seen == 0
 
 
+class TestPlacedLeafOwners:
+    def test_owned_leaf_pids_remain_attributed_without_the_token_root(
+        self, tmp_path: Path,
+    ):
+        proc = tmp_path / "proc"
+        root = mkproc(proc, 1100, environ=[NEEDLE], task_children={1100: []})
+        mkproc(proc, 1101, task_children={1101: []})
+        selected = mkcgroup(tmp_path, "cgroup/lane", [1100])
+        leaf = mkcgroup(tmp_path, "cgroup/gates/profile.scope/rg-token", [1101])
+        r = resolver(selected, proc)
+        leaf_cgroup = "/" + Path(leaf).relative_to(tmp_path).as_posix()
+        r.owned_cgroup = lambda: leaf_cgroup
+
+        assert r.refresh() == {1100, 1101}
+
+        # The original root exits and leaves the selected cgroup; the verified
+        # private leaf remains the authoritative source for its moved worker.
+        (root / "environ").unlink()
+        (root / "stat").unlink()
+        (Path(selected) / "cgroup.procs").write_text("\n")
+        assert r.refresh() == {1101}
+
+
 # ── direct unit coverage of small internals (same convention test_targets.py
 # uses for _split_spec/_parse_options/_looks_like_slice: a `_`-prefixed helper
 # with an edge case awkward to reach end-to-end gets one direct test) ────────
 
 class TestInternals:
+    def test_start_time_ticks_rejects_a_missing_proc_entry(self, tmp_path: Path):
+        assert subtree._start_time_ticks(42, str(tmp_path / "proc")) is None
+
+    def test_start_time_ticks_rejects_stat_without_a_closing_paren(
+        self, tmp_path: Path,
+    ):
+        stat = tmp_path / "proc" / "42" / "stat"
+        stat.parent.mkdir(parents=True)
+        stat.write_text("42 no-closing-paren S 1 0 0\n")
+
+        assert subtree._start_time_ticks(42, str(tmp_path / "proc")) is None
+
+    def test_start_time_ticks_rejects_a_non_numeric_start_field(
+        self, tmp_path: Path,
+    ):
+        stat = tmp_path / "proc" / "42" / "stat"
+        stat.parent.mkdir(parents=True)
+        stat.write_text(
+            "42 (comm) " + " ".join(["S", "1"] + ["0"] * 17 + ["not-a-tick"]) + "\n"
+        )
+
+        assert subtree._start_time_ticks(42, str(tmp_path / "proc")) is None
+
     def test_parse_ppid_missing_file(self, tmp_path: Path):
         assert subtree._parse_ppid(str(tmp_path / "nope" / "stat")) is None
 

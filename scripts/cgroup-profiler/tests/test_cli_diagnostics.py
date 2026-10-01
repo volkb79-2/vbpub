@@ -36,13 +36,13 @@ def test_shell_entrypoint_version_probe_is_clean(monkeypatch):
 
 
 def test_shell_entrypoint_uses_embedded_release_version():
-    env = dict(os.environ, CGPROFILE_VERSION="1.0.0")
+    env = dict(os.environ, CGPROFILE_VERSION="1.1.0")
     proc = subprocess.run(
         [str(Path(cg.HERE) / "cgprofile"), "--version"],
         capture_output=True, text=True, check=False, env=env,
     )
     assert proc.returncode == 0
-    assert proc.stdout == "cgprofile 1.0.0\n"
+    assert proc.stdout == "cgprofile 1.1.0\n"
     assert proc.stderr == ""
 
 

@@ -47,7 +47,7 @@ mid-walk (``OSError``) simply contributes no children, it is not an error.
 from __future__ import annotations
 
 import os
-from typing import Dict, List, Optional, Set
+from typing import Callable, Dict, List, Optional, Set
 
 from . import targets as targets_mod, util
 
@@ -94,6 +94,20 @@ def _parse_ppid(stat_path: str) -> Optional[int]:
         return int(fields[1])
     except ValueError:
         return None
+
+
+def _start_time_ticks(pid: int, proc_root: str) -> Optional[str]:
+    """Reuse-resistant process identity from stat field 22."""
+    text = util.read_text(os.path.join(proc_root, str(pid), "stat"))
+    if not text:
+        return None
+    close = text.rfind(")")
+    if close < 0:
+        return None
+    fields = text[close + 1 :].split()
+    if len(fields) <= 19 or not fields[19].isdigit():
+        return None
+    return fields[19]
 
 
 def _direct_children_via_task(pid: int, proc_root: str) -> Optional[List[int]]:
@@ -167,6 +181,12 @@ class SubtreeResolver:
         self.proc_root = proc_root
         self._current: Set[int] = set()
         self._seen: Set[int] = set()
+        self._owner_identities: Dict[int, str] = {}
+        # The session server sets this to its verified private leaf only
+        # after placement succeeds. Membership there is exclusive lane
+        # evidence and also keeps discovery working if a token root exits
+        # between samples and its children are reparented.
+        self.owned_cgroup: Optional[Callable[[], Optional[str]]] = None
 
     def refresh(self) -> Set[int]:
         """Re-resolve the subtree now. Returns (and records into
@@ -207,7 +227,25 @@ class SubtreeResolver:
         pids = targets_mod.pids_in_cgroup(
             self.cgroup, self.cgroup_root, self.proc_root,
         )
-        return {pid for pid in pids if _environ_has(pid, self.proc_root, needle)}
+        current: Dict[int, str] = {}
+        for pid in pids:
+            if not _environ_has(pid, self.proc_root, needle):
+                continue
+            start = _start_time_ticks(pid, self.proc_root)
+            if start is not None:
+                current[pid] = start
+        retained = {
+            pid: start for pid, start in self._owner_identities.items()
+            if _start_time_ticks(pid, self.proc_root) == start
+        }
+        self._owner_identities = {**retained, **current}
+        owners = set(self._owner_identities)
+        owned_cgroup = self.owned_cgroup() if self.owned_cgroup is not None else None
+        if owned_cgroup is not None:
+            owners.update(targets_mod.pids_in_cgroup(
+                owned_cgroup, self.cgroup_root, self.proc_root,
+            ))
+        return owners
 
     def _descendants(self, owners: Set[int]) -> Set[int]:
         if not owners:

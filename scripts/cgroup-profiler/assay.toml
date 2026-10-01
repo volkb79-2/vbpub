@@ -15,14 +15,16 @@ enforcement = "gate"
 # (run-gate.toml's [lanes.r2], always inside a tester-unified container);
 # see scripts/debian-install-v2/assay.toml, where this exact pattern was
 # worked out and verified live first.
-argv = ["/opt/tester-venv/bin/python3", "-m", "pytest", "tests", "-q"]
+argv = ["/opt/tester-venv/bin/python3", "-m", "pytest", "tests", "-q", "-x"]
 env = { PYTHONDONTWRITEBYTECODE = "1" }
 env_passthrough = ["PATH"]
-# Controller ruling RW-19 (2026-09-12): 45m does not hold. Measured live,
-# this commit, jobs=2: 217 candidates at ~84s each -> ~2.5h wall clock: a
-# 90m budget would not hold either. Raised to 4h; run-gate.toml's own
-# [lanes.r2] budget raised to match.
-budget = "4h"
+# Controller ruling RW-438 (2026-10-01): the prior P6 tree planned 1,040
+# candidates; its exact-tree 4h campaign completed 306 and left 734 explicitly
+# budget_exceeded. This current tree plans 973 candidates; 24h gives headroom
+# over the roughly 12.7h extrapolation from the measured prior-tree rate (not
+# a guarantee). If it still expires, resume the same exact tree; time and host
+# pressure remain incomplete-run conditions, never mutant outcomes.
+budget = "24h"
 allow_argv_append = false
 
 # This is a monorepo lane: assay's snapshot walks the whole resolved commit,

@@ -5,7 +5,7 @@ project: run-gate
 component: release-review
 title: "RG-55 final adversarial review and repair packet"
 tier: frontier-review
-input_revision: "8823dca820cf6ffc6520da57663f8b7424f1ce35"
+input_revision: "477a8e7a8cf71370a3c89ca37189a4e838b69f1e"
 depends_on: []
 session: fresh
 source:
@@ -340,16 +340,23 @@ required final adversarial review.
 ### `P6`: cgprofile 1.1.0 follow-ups
 
 Worktree: `.worktrees/rg55-followups-cgprofile-final`, branch
-`rg55-followups-cgprofile-final`; see `cgprofile-P6-FOLLOWUPS-BRIEF-12.md`
-for the exact candidate, stale merge base, and continuation order. The
-candidate includes the P1 daemon and P6 follow-ups, including private-PID
-placement and stop-time survivor restoration. A fresh Sol review series
-starts at round 5 only after current-tip registered `r0-r1`/`r3`, 100%
-changed-line and branch coverage, and the handoff's live probes. Its ACCEPT
-permits provisional integration only. The current-tree R2 and registered
-full gate may run asynchronously after provisional merge; release, tag,
-install, and `ciu up` remain blocked until they pass and all wave close-out
-conditions are met.
+`rg55-followups-cgprofile-final`. The candidate includes the P1 daemon and P6
+follow-ups, including private-PID placement and stop-time survivor
+restoration. Round 5 rejected blockers B1–B6; repairs are recorded from
+`da066287`, and `f4872603` passed registered `r0-r1`/`r3` with 100% line and
+branch coverage. This packet and the P6 review handoff are being reconciled to
+RW-379..RW-381, so rerun both short lanes on the final corrected packet tip
+before dispatch. The required live probes must also pass. The next review is
+round 6; round 7 is the series cap. Read the P6 LOG/REPORT, BRIEF-13, review
+rounds 1–5, and the P6 review handoff. The old R2 at exact tree
+`6540f87761a66ff933c8bb45f81d8ac9117f407b` ended
+`BUDGET_EXCEEDED/CANDIDATE_HUNG`; it is not evidence for the updated tree.
+
+Under RW-381, ACCEPT permits provisional integration only. Run replacement
+R2 and the registered full gate asynchronously in a separate quiet CIU
+worktree at the merged candidate; release, tag, install, and `ciu up` remain
+blocked until both pass and all wave close-out conditions are met. Caller
+selects and verifies the Sol xhigh route; never ask the reviewer to self-attest.
 
 The latest prior P6 R2 is exact tree
 `6540f87761a66ff933c8bb45f81d8ac9117f407b`, terminal

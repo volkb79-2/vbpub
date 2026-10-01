@@ -24,7 +24,7 @@ while observing a victim is a first-class mode, not a workaround.
 `./cgprofile --version` is the documented operator identity probe. In a source
 checkout it uses the `pyproject.toml` version; a built image embeds the exact
 CMRU release version as `CGPROFILE_VERSION`, so the CLI and daemon identify
-the same release (for example, `1.0.0`). An untagged local image is explicitly
+the same release (for example, `1.1.0`). An untagged local image is explicitly
 identified as `0.0.0-dev`. Help, usage, missing-argument, unknown-argument,
 and configuration diagnostics at every subcommand depth begin with the
 matching `CGPROFILE <version> — cgroup resource profiler` headline. Normal
@@ -129,11 +129,20 @@ profiling — that would add exactly the load the tool exists to measure.
 
 RG-55 added a second, always-on mode: a host daemon that run-gate (or anyone
 else) talks to over a Unix socket instead of spawning a collector per lane.
-It keeps PID/cgroup namespaces private and receives explicit read-only host
-`/proc` and cgroup-v2 mounts. Its code writes session storage and DAMON sysfs
-during normal operation. The service is privileged, so these mounts and code
-checks do not contain a compromised daemon; see the
-[trust boundary](docs/DESIGN-GUIDE.md#daemon-safety-and-placement). It is
+It keeps PID/cgroup namespaces private and receives a read-only host `/proc`
+view plus an explicitly writable host cgroup-v2 view for opt-in P6 placement.
+The v1.1 daemon also mounts the host system-bus socket read-only; that mount
+does not make systemd RPCs read-only. It uses the manager's
+`AttachProcessesToUnit` operation for identity-checked placement and survivor
+restoration because host PIDs cannot be written directly from its private PID
+namespace. `CgroupWriteGuard` limits intended cgroupfs writes to the placement
+whitelist, and each move is verified through `/hostproc`. If survivors cannot
+be enumerated or restored, the daemon reports the exact cgroup path and leaves
+the lane leaf in place rather than hiding stranded processes. The one-shot
+helper keeps its cgroup view read-only. The daemon also writes session storage
+and DAMON sysfs during normal operation. These application checks and private
+namespaces do not contain arbitrary code execution in this privileged daemon;
+see the [trust boundary](docs/DESIGN-GUIDE.md#daemon-safety-and-placement). It is
 `scripts/cgroup-profiler/`'s own **standalone ciu root** —
 `RG55-INTERFACE-CONTRACT.md` is the full wire contract.
 The default stack uses the local development image; to deploy a versioned GHCR
@@ -155,7 +164,7 @@ The daemon's version response is contract major 1:
 {
   "ok": true,
   "contract": 1,
-  "cgprofile": "1.0.0",
+  "cgprofile": "1.1.0",
   "daemon": {
     "name": "cgprofile-host-daemon",
     "started_at": "2026-09-12T10:15:00Z",
@@ -166,6 +175,12 @@ The daemon's version response is contract major 1:
   }
 }
 ```
+
+In this response, `damon: "available"` is a capability probe: the DAMON
+analysis library loaded and its admin sysfs interface is visible. It does not
+mean the kernel accepted a configured monitoring context. Check each session's
+`start` result and persisted series; details are in the
+[design guide](docs/DESIGN-GUIDE.md#damon-availability-is-not-session-readiness).
 
 - **One daemon per host, deliberately.** `deploy.environment_tag = "host"`
   (not `$INSTANCE_ID` like every other ciu stack in this estate) — the
@@ -179,6 +194,49 @@ The daemon's version response is contract major 1:
   cgprofile-host-daemon cgprofile ctl <verb> --json` from anywhere with
   docker access to that container. `ctl`'s own client-side timeout is 25 s;
   see the contract §1.3/§1.5 for run-gate's own per-verb timeouts.
+- **Two carriers, one protocol** (contract §8.1, design D-30). That same
+  socket is also bind-mounted to the host at `/run/cgprofile`, so a
+  consumer that cannot (or should not) use the docker socket speaks the
+  protocol directly:
+
+  ```bash
+  # the exec carrier (default, unchanged, always available)
+  docker exec cgprofile-host-daemon cgprofile ctl version --json
+  # the socket carrier: one request line, one response line
+  printf '{"verb": "version", "args": {}, "contract": 1}\n' \
+    | socat - UNIX-CONNECT:/run/cgprofile/ctl.sock
+  ```
+
+  Every verb, response, error code and the `contract` field are identical
+  on both — `docs/PROTOCOL.md` documents each verb's `args` names, and
+  `tests/fixtures/rg55/socket/` freezes a request/response pair per verb.
+  On `start`, omitting `--damon` uses the daemon's configured default; a
+  socket request must omit `damon` too, because explicit `damon: null` is
+  invalid.
+  A complete request line including its newline is limited to 1 MiB and
+  must arrive within 25 seconds; trickle bytes do not extend the deadline.
+  Oversized lines receive `bad-argument`, and an incomplete line is closed
+  without dispatch. `watch` has no timeout after its initial request line.
+  - **Host prerequisite:** the directory `/run/cgprofile` on the host is
+    created by mdt host-setup's tmpfiles.d entry `mdt-cgprofile.conf`
+    (`d /run/cgprofile 0770 root docker -`). **That entry decides who may
+    use the socket carrier: members of the `docker` group** — the same
+    principals who can already `docker exec` into the daemon, which is why
+    the two carriers have the same trust boundary. The daemon re-asserts
+    `0770` on the directory and `root:<the directory's own gid>` `0660` on
+    the socket at every start; it never picks the group itself.
+  - **Without host-setup** the directory is `root:root`, the socket ends up
+    root-only, and the daemon logs one INFO line saying so (`docker logs
+    cgprofile-host-daemon`). Nothing breaks: the exec carrier is unaffected
+    and stays the default.
+  - **`CGPROFILE_ALLOW_UIDS`** (optional, compose env, comma-separated
+    uids) narrows the socket carrier further: `SO_PEERCRED` on every
+    connection, uid 0 always allowed (that is how the exec carrier
+    arrives), everyone else refused with `{"ok": false, …, "error":
+    {"code": "peer-refused", …}}`. Unset = no uid restriction beyond the
+    socket's group mode. A malformed value refuses to start the daemon
+    rather than silently widening access.
+
 - **Target lookup reports what was established.** A complete cgroup-tree
   search with no matching container returns `target-not-found` (ctl exit 2).
   If the host cgroup bind cannot be searched, `ctl` exits 3 as a daemon
@@ -202,11 +260,96 @@ The daemon's version response is contract major 1:
   CLI flags) — the newest N finished sessions are kept, older ones dropped
   on every `stop`, or on demand via `ctl gc --json`. A live session is
   never pruned.
-- The daemon keeps PID and cgroup namespaces private. Its host observation
-  comes from explicit read-only `/proc` and cgroup-v2 binds; normal DAMON
-  operation uses its separately mounted sysfs write surface. `ciu up` is the managed
-  lifecycle and must preserve those settings—there is no host-namespace
-  fallback launcher.
+- **`cgprofile.slice` (D-29) — the daemon's own containment.** An OPERATOR
+  step, once per host, **before** the first `ciu up` on that host: see
+  `infra/README.md` (`sudo cp infra/cgprofile.slice
+  /etc/systemd/system/ && sudo systemctl daemon-reload`). Not installed →
+  the daemon still starts, under an implicitly-created, unbounded slice;
+  `ctl host` reports the actual `daemon_slice.memory_min_bytes` and
+  `memory_high_bytes` (a zero or null floor means no memory reservation).
+  This is a
+  DIFFERENT slice from the gates slice below — one bounds the daemon
+  itself, the other is where placed lanes live.
+- **Liveness/watch policy (D-27, contract §8.2/§8.4) — `start` options.**
+  `--progress-stream <regular file path as the lane sees it>` (read through
+  `/proc/<pid>/root/<path>`; FIFOs, devices, and unfinished lines are
+  ignored),
+  `--idle-bound auto|<seconds>` (`auto` =
+  `max(300, 3 x cadence hint)`), `--ceiling auto|<seconds>` (`auto` = `3 x
+  meta.expected.duration_s`, else none), `--on-stall kill|report` (default
+  `report`). An unparsable value is `bad-policy` — the session is not
+  started. `kill` uses only an exact cgroup boundary: `scope=container` may
+  kill the target container cgroup when its ID is proven by the runtime leaf
+  name beneath the verified gates slice and `cgroup.events` confirms it is
+  populated; `scope=container-shared` requires a
+  token and an explicit, successfully verified `--place` leaf. The daemon
+  never signals numeric PIDs or falls back to them. If the requested boundary
+  cannot be established, `start` returns `bad-policy`; an empty or unreadable
+  target or a runtime kill refusal is recorded as `reported`, never `killed`.
+  `docker exec cgprofile-host-daemon cgprofile ctl watch
+  <session> --json` streams `reading`/`verdict`/`end` lines on either
+  carrier (the one verb where more than one response crosses the wire per
+  connection — `docs/PROTOCOL.md` §1's documented exception) until the
+  session ends; `--watch-interval` (default 30 s, clamped [5, 300])
+  controls the `reading` cadence. A disconnected watch without its terminal
+  `end` exits 3. `ctl status`/`ctl stop` also carry the
+  current `liveness`/`watch` blocks for a session that was never watched
+  with `ctl watch` directly.
+- **Placement (D-20/D-25/D-31, contract §8.3) — `start --place`.** Creates a
+  systemd-owned transient `rg-profile-<token>.scope` directly beneath the
+  verified gates slice, then a cgprofile-owned `rg-<token>` leaf below that
+  scope. The default gates slice is `dev-gates.slice` under `dev.slice`;
+  mdt host-setup supplies its authored unit, and `serve --gates-slice <name>`
+  selects another one. systemd retains ownership of the slice and scope
+  boundary; cgprofile owns only the per-lane leaf. The daemon permits placement
+  only when systemd verifies the expected loaded, non-transient slice and the
+  slice has finite positive memory and CPU ceilings; a directory alone is not
+  proof. It moves the token's processes into the leaf, restores identity-checked
+  survivors to their recorded original units on `stop`, removes the leaf, and
+  retires the empty transient scope. A failed or ambiguous restore preserves
+  the leaf and recovery record. `--memory-high <bytes>`, `--memory-max
+  <bytes>` (refused as `place-refused:over-slice` above the gates slice's own
+  ceiling), and `--cpu-weight <1-10000>` set leaf controls; applied values are
+  always READ BACK from the kernel, never echoed. Host refusals leave profiling
+  available but the lane unplaced. A scope-name collision is refused, never
+  adopted or cleaned up. This normally leaves profiling available; if the same
+  request requires shared-scope `--on-stall kill`, the daemon rejects it before
+  creating a session because there is no verified kill boundary. Run-gate
+  requests that policy only when its existing resource plan already requested
+  placement; otherwise its local watchdog remains verdict authority. A
+  malformed cap value is `bad-argument` (exit 2, no session) — the client
+  typed it wrong, not the host.
+- **Placement memory is charge-based, not total RSS.** After successful
+  placement, cgroup memory counters and the leaf's `memory.high`/`memory.max`
+  describe charges attributed to that cgroup. Moving an already-running
+  process does not transfer charges for pages it faulted earlier, so these
+  numbers are not total process RSS and the leaf limit is not a hard cap on all
+  memory already resident in the lane. See the detailed accounting notes in
+  [`docs/CONSUMERS.md`](docs/CONSUMERS.md#resource-accounting-with-placement).
+- **Private namespaces, explicit host views.** The daemon and its helper
+  keep PID and cgroup namespaces private. Host `/proc` is explicitly bound
+  read-only; the daemon receives a writable host cgroup-v2 bind because
+  opt-in placement creates `rg-*` leaves and moves lane pids. D-25's whitelist
+  is an application-level guard on normal code paths, not an OS-enforced
+  boundary against arbitrary code execution in the privileged daemon. A private-PID
+  fallback asks host systemd over the daemon-only mounted system bus to create
+  the delegated scope with its initial PIDs, then attach verified PIDs to the
+  leaf and return survivors to their recorded original units; the daemon never
+  joins a host namespace. Both directions require the host-proc view, verify
+  identity and membership afterward, and record successful moves. Unresolvable
+  or unrestored survivors keep the leaf and recovery record. The daemon's D-25
+  write guard limits intended cgroup writes to the documented whitelist; DAMON retains
+  its separately mounted sysfs write surface. The consumer-facing socket does
+  not expose systemd D-Bus to the cockpit. `ciu up` is the managed lifecycle;
+  there is no host-namespace fallback launcher. This raw manager bridge is an
+  operational authority path, not a sandbox against daemon compromise; the
+  rationale and deferred broker option are in the
+  [RG-55 placement design](../../run-gate-project/nyxloom-trove/DESIGN-2026-09-12-liveness-placement-admission.md#a3-placement-ownership-correction-delegated-scope-below-dev-gatesslice-2026-09-30).
+  Version 1.0.0 was the read-only observer release; v1.1.0 adds the writable
+  cgroup view and system-bus manager bridge needed for opt-in placement. These
+  are operational authority paths, not kernel-enforced containment. The
+  daemon and helper keep private PID/cgroup namespaces, and `ciu up` remains
+  the managed lifecycle with no host-namespace fallback.
 
 ## Relationship to the neighbours
 

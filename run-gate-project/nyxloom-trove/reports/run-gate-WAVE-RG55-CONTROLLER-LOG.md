@@ -960,12 +960,26 @@ through assay; relaunch rule for the successor
   disclosure in the REPORT and CHANGES, and proceed to release 23.7.0.
   Either way P4's branch (RW-46a) removes the defect for 23.8.0.
 
+### RW-381 — 2026-09-29 05:11:05Z — provisional merge after short gates and review
+
+For RG-55 packages whose only remaining evidence is a long mutation or full
+gate, the controller may merge provisionally with `--no-ff` after exact-tip
+100% line and branch coverage, all required short lanes, required live safety
+probes, and a fresh independent Sol xhigh review are green/ACCEPT. This
+unblocks dependent package work; it does not authorize release, installation,
+or a DONE claim. Run the outstanding long mutation and full gate in a separate
+CIU worktree at the merged candidate, keep that judged tree quiet, and retain
+Assay's per-tree resume identity. If either campaign finds a repair, implement
+and backport it outside the judged tree, then judge the repaired candidate as a
+new exact tree. Host load or contention must not change lane verdicts or be
+used to excuse an otherwise failing candidate.
+
 ## Dispatch
 
 | package | worktree | branch | implementer | reviewer | status |
 |---|---|---|---|---|---|
 | P1 — cgroup-profiler daemon | `.worktrees/rg55-profiler-daemon` | `rg55-profiler-daemon` | fresh Sonnet (checkpoint clause on) | fresh Opus xhigh (never a fork) | sessions 1–5 → C0–C9 + live acceptance (`8cdd09e6`, RW-19 `71c6f607`); orphaned r2 container exited 15:49Z (208 candidates, 195 killed, 13 survived on the OLD tree `7ec4f9e8`); `budget_per_candidate` key misplaced in `16f3a29f` → fixed `5ce232d1`; r2 re-judge under run-gate ownership 15:58Z–19:33Z re-ran all 208 (per-tree identity, RW-41) and hit the lane budget at ~201/208 → relaunch detached at `5ce232d1` (container destroyed by the controller 19:47Z, RW-47; relaunched 19:48Z, 207 records resumed) → still `BUDGET_EXCEEDED` 20:00Z = the hung mutant (RW-48) → RW-48 root fix + second survivor pass (8 killed, 4 justified) `637b8c09`, proven by hand (mutant → 1 failure, no hang, 122 s); FULL fresh r2 launched 20:20Z (container `run-gate-vbpub-r2-3677631-…`, ~23:30Z); then r0-r1/r3 → reviewer |
-| P6 — cgroup-profiler follow-ups (CP-2 socket, CP-4..CP-7, cgprofile.slice, CP-8 watch, CP-9 placement) | `.worktrees/rg55-followups-cgprofile` | `rg55-followups-cgprofile` | fresh Sonnet (checkpoint clause on, HARD) | fresh Opus xhigh (never a fork) | dispatched 2026-09-12 ~15:25Z from the P1 tip (RW-35); session 1 → C1 CP-4 `376bb9cb`, C2 CP-5 `16b01c1c`, BRIEF-2 `614dcd9f`; session 2 → C3 CP-7 `907ddd50`, C4 CP-6 `e053276b`, BRIEF-3 `36859c77`; session 3 → C5 `39d43934`, BRIEF-4 `c60644ac`; session 4 (Opus) → C6 socket carrier `bb575fd4` (35 tests, parity harness, PROTOCOL.md), BRIEF-5 `b865556b`; session 5 (Opus) → C7 watch role `4fa725dc` (104 tests, real kill, streaming on both carriers), r0/r1 lane GREEN 100%/100% project-wide, BRIEF-6 `7c34dcc2`; session 6 (Opus) → C8 placement `a654bd5d` (72 tests, guard whitelist, read-back proof), BRIEF-7 `e4be5111`; session 7 → CP-10 root cause `b50163e9` (host-PSI seam), C9 `478f1443`/`e17cdf9a` (docs, CHANGES, 1.1.0 sweep, rows FIXED), r0/r1 + r3 GREEN, BRIEF-8 `241122b6`; session 9 held (RW-48); session 10 dispatched ~20:30Z: merge `rg55-profiler-daemon`@`637b8c09`, r2 when P2's slot frees (~21:00Z), triage, r0-r1/r3; session 8 → live probes (a)–(f) against a real build: both carriers parity, peer-refused, `place-refused:no-gates-slice` (host has no dev-gates.slice yet), watch kill; REAL BUG CP-12 (kill never finalized the session — `watch` streamed forever) fixed `8067cc03` and re-probed; r0/r1 GREEN 1336 tests 100%/100%; tip `42784c17`; r2 pending a mutation slot (BRIEF-9); review handoff written; session 10 merged P1@`637b8c09` → tip `d4f51bbc`, r0/r1 100%/100%, r3 green; r2 launched 21:01Z (pid `4136306`, container `run-gate-vbpub-r2-4136306-…`, RW-52); then triage, r0-r1/r3, fresh Opus reviewer, release cgprofile 1.1.0 |
+| P6 — cgroup-profiler follow-ups (CP-2 socket, CP-4..CP-7, cgprofile.slice, CP-8 watch, CP-9 placement) | `.worktrees/rg55-followups-cgprofile-final` | `rg55-followups-cgprofile-final` | controller-owned continuation | fresh GPT-6-Sol xhigh (never a fork) | Round-5 fixes `da066287` reconciled with main `038644c0` at `9a472dec`. Exact tree `f4872603` passes r0-r1 (1,799 tests, 100% line/branch coverage) and r3 (7/7 canaries rejected); the P6 review handoff is now being reconciled to RW-379..381, so rerun both on the resulting clean tip. Required live safety probes and fresh Sol round 6 remain. Under RW-381, provisional `--no-ff` merge follows final green short lanes, live probes, and Sol ACCEPT; run replacement R2 and full gate in a separate quiet CIU worktree at the merged candidate. No release until both pass. |
 | P7 — assay B091 (progress-judged candidates) | `.worktrees/assay-liveness` | `assay-liveness` | fresh Sonnet (checkpoint clause on) | fresh Opus xhigh (never a fork) | dispatched 2026-09-12 ~13:55Z from `main` (RW-29); session 1 → A1 (`de32bb91`), BRIEF-1 `723c431d`; session 2 → spike + plugin + v1 runner (`f4fa1788`), BRIEF-2 `ef5088f6`; session 3 → RW-36 gating `e27b107b` + verify.py fix, BRIEF-3 `d2b7c76d` (A3 mechanism decided: `LivenessHungExpired` + `ReasonCode.CANDIDATE_HUNG`); session 4 → A3 active runner + `hung` bucket `44dd12ca` (a real `judge_mutation` precedence bug fixed; 252 calls — clause violated, flagged), BRIEF-4 `4ace234f`; session 5 → A3 complete: e2e CLI tests `99463ae5`, boundary tests + mutant table `d1540eda` (real bug: plugin wrote `repr` not JSON — fixed), BRIEF-5 `72baf838`; session 6 → A4 `5baf2670`, A5 `c15f6040` (275 calls — clause violated again), BRIEF-6 `1eaf5683`; session 7 → A6 docs/backlog/B092 `afda58fd`, sweep 2077 green `8bf77745`, W7 schema re-sync `b3f31506`, tip `edb995f4`; registered gate (`tester-unified`, wheel-in-container) RED 18:30Z: 5 failed / 4681 passed (pyflakes, 3 real-R2-through-the-wheel standalone tests, RecursionError sweep) → session 8: 5 root causes fixed `95d02f50`/`ee24ced6` (dead imports, RecursionError on the side-file parser, stale wheel-R2 expected documents), tip `8f972def`; gate re-run 2 voided by a records commit moving HEAD mid-run (assay `NO_MEASUREMENT/HEAD_CHANGED`, 4686 passed); controller relaunched from the clean tip → GREEN `exit 0` 19:44Z; review round 1 REJECT B1–B5 (~20:20Z, RW-49) → session 9: B1 `802f0855`, BRIEF-9 `2c967cae`; session 10 (Opus — B2 calibration carries design judgment) dispatched ~20:35Z for B2–B5 + gate → B2 `07e121d9`, B3 `5c1b9ef8`, B4+B5 `4ef3985f`, S-items `ef247935`, tip `6f3aefad` (10 planted mutants caught, `liveness.py` 100%/100%; S1/S3/S5/S6 deferred; ~104 calls, disclosed); gate NOT run at the container cap → controller launched `tester-unified` on `6f3aefad` 21:08Z (RW-53) → GREEN `exit 0` (1691.6 s); reviewer round 2 (21:10Z–21:42Z) REJECT on B6 only — false `hung` under xdist multi-process events files (B1–B5 verified) → RW-57 rulings; repair + round 3 deferred to the next session (wind-down) |
 | P8 — mdt host-setup `dev-gates.slice` (dev-infra withdrawn, RW-30) | `.worktrees/mdt-dev-slices` | `mdt-dev-slices` | fresh Sonnet (checkpoint clause on) | fresh Opus xhigh (never a fork) | dispatched 2026-09-12 ~13:55Z from `main` (RW-29); tip `7bd2f03c` review round 1 ACCEPT-conditional B1–B6 (~14:50Z) → repair set + M5 landed `ae38d55a` (~15:30Z, gate green); round 2 ACCEPT-conditional (B7/B8 new, B1–B6 + M5 PASS, RW-37) → repairs `e326cc9b` (gate green, ~16:00Z); round 3 ACCEPT (~16:10Z) → MERGED `a71c46b0` (RW-38); operator installs on the host BEFORE any devcontainer rebuild |
 | P4 — run-gate follow-ups (RG-57..61) | `.worktrees/rg55-followups-run-gate` | `rg55-followups-run-gate` | fresh Sonnet (checkpoint clause on) | fresh Opus xhigh (never a fork) | dispatched 2026-09-12 ~13:00Z from `186461de` (RW-27); C1–C4 committed (`a6716422`, `b5e4a9c6`, `e698835f`, `c37b6e94`); session 2 → merged `rg55-run-gate-client`@`647a2cc6` (`0c782601`), C5 `5b80c024` (RG-61 sweep except item 5, budget 900s, rev 42), BRIEF-2 `b695db00` (304 calls — clause violated); session 3 → selftest PASS (1008/1008 lines, 376/376 branches; 13 tests added `e0e02dce`), r1 PASS, r3 PASS (canary re-anchored `7539a44e`), `run-gate.footprint.json` + CONSUMERS transcript `02707e30`, BRIEF-3 `0bb3bbeb`; r2 pending a slot (RW-42); review round 1 ACCEPT-conditional B1–B4 (~17:40Z, RW-43) → session 4 repairs `a1cebacf`/`8c5af489`/`05193f44`/`9489bb6d`/`50684f2c`, tip `00a79de4` (507 calls — clause ignored), selftest/r1 RED on the shared-lock hazard → session 5 (RW-46): lock-dir isolation + root cause, floor_bytes, S1–S5, footprint regenerated, selftest PASS 1143/100%, r1 PASS, r3 PASS, tip `4fa46b03` (357 calls — clause ignored; RG-62 used for two pre-existing flaky tests → P5's row becomes RG-63); review round 2 ACCEPT-conditional (B5 only, ~20:45Z, RW-51) → session 6 dispatched for B5 + non-blocking + transcript → tip `1f8d9ca3` (B5 + S6–S11, selftest/r1/r3 GREEN); its 21:14Z r2 terminated (RW-54/55); parked until 23.7.0 is released → merge `main`, selftest/r1/r3, r2 on the merge tip; round 3 = r2 survivor table + B5 |
@@ -3921,7 +3935,62 @@ tag, so P1's first release must keep the settled explicit `--set-version
 version/build/CLI tests pass (`26 passed`); registered P6 `r0-r1` is running
 on the clean `dfef6bad` tree, and `r3`, P6 R2, independent review, and release
 remain outstanding.
+### RW-314 — 2026-09-24 06:41:22Z — make P6 placement's host cgroup write view explicit
 
+RW-308's prohibition on host namespaces remains absolute. Its read-only host
+cgroup bind is superseded for the P6 daemon because D-25/RW-35(a) already
+requires opt-in placement to create a leaf, delegate controllers, move lane
+PIDs, and restore survivors to their origin cgroup. The daemon therefore gets
+an explicit writable host cgroup-v2 bind; `CgroupWriteGuard` is the
+program-level allowlist and every admitted write is recorded. Host `/proc`
+remains read-only, `--network none` remains set, and namespaces stay private.
+The one-shot helper keeps read-only host `/proc` and cgroup mounts. Compose,
+user docs, both byte-identical contract copies, review handoff, and a
+deployment-structure test now encode this distinction. This implements the
+settled placement contract without reopening the namespace ruling.
+
+### RW-315 — 2026-09-24 06:41:55Z — disposition of the first P6 reconciled-tree gate
+
+P6's registered `r0-r1` run on `dfef6bad8b0cb8cc97d87c27b399e4a101ed2d8b`
+started at 06:12:01Z, ended at 06:14:16Z, and failed with exit 1 after
+1,494 passed and one failed. The failure was
+`TestPeerCredentials.test_a_real_socket_peer_is_this_process_uid`, which
+raised `BrokenPipeError` on its second socket request. The gate also logged a
+best-effort socket `chown` permission warning; causality is not established.
+I did not rerun that old tree. Its `tools/gate.sh` placement probe used
+`docker run --rm --cgroupns=host`, violating RW-308; that exact container
+auto-removed, and the reconciled script no longer contains a host-namespace
+flag. After P1/P6 source reconciliation and test corrections, the socket test
+file passed (40 tests) and the targeted deployment/version/build/CLI/access
+set passed (178 tests) locally under the PSI gate. Those are diagnostic
+results only; registered `r0-r1` and `r3` must pass on a quiet committed tree.
+
+### RW-316 — 2026-09-24 07:00:46Z — disposition of the reconciled P6 R0/R1 run
+
+The registered `r0-r1` run on `dce2b91a061c4d0cbb2f1d102ac87582cc7c9122`
+started at 06:48:35Z and ended at 06:50:44Z (129.062 s), exit 1. It reported
+1,589 passed and three failed. Two CLI serve tests had stale test seams after
+private-host-proc preflight was added: they stubbed the host-cgroup check but
+not `have_host_proc_view`. The placed-start live-document test now supplies a
+token-bearing fake `/proc/101/environ`; its actual `pids_moved: 1` correctly
+differs from the old golden's `pids_moved: 0`. The test harness repairs are
+uncommitted at this ruling; the golden will be updated to the demonstrated
+behavior. This is a test-oracle/harness correction, not a production-code
+change. Focused verification and fresh registered gates remain required.
+
+### RW-317 — 2026-09-24 07:05:25Z — close the P6 gate-harness mismatch with behavioral proof
+
+The token-owning fake process made the placed-start oracle exercise the
+intended behavior: `pids_at_start` and `pids_moved` both report one. The
+`start-placed-v1.1.json` golden is now updated from zero to one, and the two
+CLI tests stub the newly required host-proc preflight. The corrected focused
+set (`tests/test_serve.py`, `tests/test_serve_placement.py`,
+`tests/test_deployment_contract.py`) passed 247 tests with 6 skipped in
+25.39 s; the individual golden/deployment subset passed 3 tests. README,
+DESIGN-GUIDE, the P6 Sol handoff, and this global review packet were reconciled
+to the private-namespace / writable-guarded-daemon-cgroup design. These edits
+are still uncommitted and do not validate the registered gate; run fresh
+`r0-r1` and `r3` on the exact committed tree.
 ### RW-318 — 2026-09-24 07:26:57Z — disqualify the legacy P1 gate receipt
 
 The nested `r0-r1` invocation on stale candidate
@@ -4254,6 +4323,26 @@ P6 integration), not the stale repository remote-tracking ref at `e5e9b95c`;
 record the resolved base from the run verdict. The P3 DAMON live-series and
 overhead measurement remains open from RW-330.
 
+### RW-333 — 2026-09-25 17:41:46Z — P6 review permits provisional integration, not release
+
+P6's current candidate is on branch `rg55-followups-cgprofile-final`,
+worktree `.worktrees/rg55-followups-cgprofile-final`, reconciled through main
+`4d32bcfe`. The older P6 R2 at `aae66356` remains
+`BUDGET_EXCEEDED/LANE_TIMEOUT` and is not evidence for the current tree. Its
+R0/R1 and R3 receipts at `41c6fba6` are also preliminary; final exact-tip
+registered R0/R1 and R3 are required, and R3's exact container must be
+live-inspected for `NanoCpus=3000000000` under loaded `dev-gates.slice`.
+
+Per RW-296, after those exact-tip short gates, 100% changed-line and branch
+coverage, the P6 handoff's required live probes, and a fresh independent
+GPT-6-Sol xhigh ACCEPT, merge P6 with `--no-ff` provisionally so RG-55 work
+can continue. A pending exact-tree R2/full gate alone is not grounds for Sol
+to reject code review. This is not a release decision: cgprofile 1.1.0,
+installation, and `ciu up` remain blocked until a complete acceptable current-
+tree R2 with survivor disposition and the registered full gate pass, along
+with all other wave close-out requirements. BRIEF-11 and both P6 review
+packets encode this boundary; their commit changes the candidate tree, so the
+short gates must run after that commit and the tree must stay quiet throughout.
 ### RW-335 — 2026-09-25 21:11:56Z — install and verify the authored D-29 daemon slice
 
 The host check for P6's required daemon containment reported
@@ -4928,11 +5017,17 @@ rechecking host PSI and the loaded gate slice, the registered
 assay/run-gate.py tester-unified gate was relaunched at 23:36:14Z from
 isolated CIU worktree
 .worktrees/rg55-b107-ciu-anchor-20260928/.worktrees/rg55-b107-full-gate-20260928,
-exact tree 3a8bbe54068d46f34652b2ed52d19a7cddb53dd6. At the 23:38:31Z
-progress check (2m17s after kickoff), container
-run-gate-assay-selfhosted-3634378-21136-1790638575 was up; readback confirmed
-NanoCpus=3000000000 and CgroupParent=dev-gates.slice. Other agents' mutation
-and session-extract containers remained untouched.
+exact tree 3a8bbe54068d46f34652b2ed52d19a7cddb53dd6.
+
+At the 23:38:31Z progress check (2m17s after kickoff), its container
+run-gate-assay-selfhosted-3634378-21136-1790638575 was up; exact readback
+confirmed NanoCpus=3000000000 and CgroupParent=dev-gates.slice.
+Wheel installation and successive Assay verdict-schema validation phases
+were progressing. Comparable gate duration is about 19–21 minutes, so the
+expected completion window is 23:55–23:57Z. Do not make routine progress
+observations before that window; then read its verdict and wrapper exit marker
+separately. Other agents' mutation/session-extract containers remain
+untouched.
 
 ### RW-364 — 2026-09-29 00:12:06Z — remove B107 test assertions tied to wall deadlines
 
@@ -5253,6 +5348,32 @@ through RW-377 was reconciled into P6 at `4af3d3c0`. R0/R1 must be rerun on
 the resulting quiet tip, followed by R3, fresh Sol round 5, live probes,
 replacement P6 R2, and the full gate. No P6 code has been merged to main.
 
+### P6 short-gate evidence — 2026-09-29 02:08:07Z (package receipt)
+
+P6 tree `d7603b5292779a227fe9177254668eb50049f147` now passes both registered
+short lanes. `r0-r1` ran 02:01:27–02:03:50Z (143.567s; exit 0): all **1,705
+tests passed**, with **6,167/6,167 statements and 2,148/2,148 branches**.
+Run-gate history independently records `outcome=pass`, `dirty=false`, and
+the exact commit. The new `lib/placement.py` diagnostic path is covered; this
+closes RW-378's coverage miss. Its exact gate container was
+`cgprofile-gate-3848809-1790647289`, capped at 3 CPUs in `dev-gates.slice`.
+
+`r3` ran 02:04:36–02:04:51Z (14.549s; exit 0): **7/7 canaries rejected**
+(`counter-reset-negative`, `absent-reads-as-zero`, `limits-ignore-ancestors`,
+`slice-hierarchy-flattened`, `follow-children-disabled`,
+`manifest-renamed-to-jsonl`, `log-timestamp-uses-arrival-time`). Its history
+record matches the same exact commit; container
+`run-gate-vbpub-r3-3855123-1790647476` was capped at 3 CPUs in
+`dev-gates.slice`.
+
+The daemon was down for both lanes. R0/R1 used coarse rusage; R3 used basic
+container sampling, not DAMON. R3 still passed while host loadavg was 5.68 at
+start and 6.04 at finish, with host CPU `some` pressure around 11%: no resource
+measurement participates in the canary verdict. These results do not replace
+the required live daemon/carrier/placement probes or measured DAMON series.
+The receipts are on `d7603b5`; after recording them in the package report, rerun
+the short lanes on the final documentation tip before Sol round 5.
+
 ### RW-379 — 2026-09-29 03:42:02Z — stall-kill requires a kernel-contained lane
 
 Binding B1 ruling, preserving the private PID/cgroup/network namespace design
@@ -5301,7 +5422,7 @@ non-blocking and preserve the lane-local verdict path. Scope `container`
 continues to use the exact target-container `cgroup.kill` under the guards
 from RW-379.
 
-### RW-381 — 2026-09-30 03:31:40Z — resume checkpoint: P1 rejudge and closeout
+### RW-411 — 2026-09-30 03:31:40Z — resume checkpoint: P1 rejudge and closeout
 
 RG-45 and RG-54 are now closed in the run-gate backlog by commit `6e1d6984`.
 The entries retain their cross-project provenance and state the remaining
@@ -5346,13 +5467,13 @@ DAMON authority as well as cgroup/systemd operations.
 
 ### RW-383 — 2026-09-30 16:55:49Z — refresh RG-55 release status after P1 R2 termination
 
-The P1 R2 campaign described as running in RW-381 is terminal. The separate
+The P1 R2 campaign described as running in RW-411 is terminal. The separate
 Assay receipt on exact tree
 `4e5ff2d2a28d153195995df4c1e5a03a813af802` records R0 PASS and R2 PASS:
 125/125 candidates killed, zero survivors, budget-exceeded, crashed, or
 equivalent; it ran 2026-09-30 03:01:13Z–04:40:02Z. This is useful evidence
 for that exact tree, not automatically for later source changes. The fresh
-P1 review follow-up `d5076b81` recorded in RW-381 is not present in this
+P1 review follow-up `d5076b81` recorded in RW-411 is not present in this
 checkout's Git object database; its code/evidence must be reconciled into the
 authoritative P1 candidate. If those fixes are included, the exact resulting
 tree still needs the required short gates, R2, final review disposition, and
@@ -5407,6 +5528,167 @@ daemon authority documented honestly. P1's current-main candidate is
 `b88d4f07` (five Sol follow-up commits replayed); exact-tree gates, a fresh
 Sol review, complete R2, and the registered full gate are outstanding.
 
+### RW-385 — 2026-09-30 17:41:09Z — sample the verified lane leaf and recover placements by identity
+
+Source inspection found that the P6 daemon moved lane PIDs into a placement
+leaf but continued sampling the original container cgroup. Once migrated,
+that cgroup no longer contains the lane processes; reporting its counters as
+lane usage would be false attribution. On successful placement, metric reads
+must use the leaf's actual path returned by systemd and validated beneath the
+delegated scope. Keep the original target cgroup as the session's logical
+identity and sample-map key so existing report consumers remain compatible;
+the `placement.leaf` value identifies the physical measured cgroup. If
+placement is refused, keep sampling the original target and disclose the
+refusal; profiling failure cannot affect the test verdict (R-36h).
+
+Restart recovery is also part of the placement safety contract, not optional
+cleanup: persist write-ahead ownership state before moving processes, including
+the exact scope unit/path, each PID's start-time identity and original
+cgroup/unit, plus transition state. On recovery, restore only a still-matching
+PID proven to remain under that exact scope; never infer ownership from a
+token-named path or stop a nonempty/unverified scope. Failed verification or
+restoration preserves the leaf and evidence. The mirrored v1.1 contract and
+P6 implementation/tests must encode these rules before its R2/review.
+
+### RW-386 — 2026-09-30 18:01:52Z — implement D-31; state memory-charge limits honestly
+
+P6 placement follows the settled D-31 design: create a transient delegated
+scope beneath the verified `dev-gates.slice`, take its actual `ControlGroup`
+from systemd, and create the profiler-owned `rg-<token>` leaf only beneath
+that scope. Never write controllers or create lane directories directly in
+the systemd-owned slice. Start, stop, rollback, and restart recovery must use
+the exact scope identity and prove restoration before removing it.
+
+The host kernel's cgroup-v2 memory accounting does not transfer pre-existing
+page charges when a process migrates. Keep the leaf's kernel-native counters
+and pressure as the memory evidence, but label them as charges attributed to
+the leaf (not process RSS or total lane memory); a leaf `memory.max` constrains
+charges in that leaf and must not be described as a hard cap on all memory
+already resident in the migrated processes. CPU, I/O, PID, and pressure
+sampling must use the verified leaf after successful placement. This is an
+explicit limitation in the design, contract, README, and consumer guide; a
+later design can add pre-placement admission or a separately named
+process-memory estimate without disguising the distinction.
+
+### RW-387 — 2026-09-30 19:45:18Z — keep leaf accounting; disclose its charge semantics
+
+The operator selects kernel-native cgroup-leaf memory accounting with an
+explicit limitation, not a new approximate per-process RSS metric and not a
+deferral of shared-lane placement. Describe `memory.current`, `memory.peak`,
+and leaf `memory.high`/`memory.max` as applying to charges attributed to the
+leaf; pre-existing page charges do not migrate with a process. Do not call
+these values total RSS or claim that the leaf limit caps all resident memory.
+The README, consumer guide, protocol contract, and design must agree.
+
+The CP-11 startup-recovery repair also covers a crash before `manifest.json`
+is written and a finished/aborted manifest whose placement journal is still
+incomplete. Never replay a completed journal for an already-finished session;
+never guess, kill, or delete on uncertain identity. Preserve the exact scope,
+leaf, and journal and publish an operator-visible failure until verified
+restoration succeeds. Focused server-placement tests pass (20); the complete
+placement file passes (188). These are local test results, not registered
+exact-tree gate or live-host acceptance evidence.
+
+### RW-388 — 2026-09-30 20:03:48Z — preserve truthful coverage assertion; file schema gap upstream
+
+Nyxloom 0.8.1.dev519 rejects cgroup-profiler's `coverage-floor` assertion even
+though the registered coverage lane enforces a whole-project 100% line AND
+branch floor. Do not rename this to `changed-line-coverage`, which would make
+a false statement about the measured scope. NL-25 is filed and merged to main
+as 5e040b43 (lint on that isolated Nyxloom worktree passed). Until the
+vocabulary is extended, `nyxloom lint` in this package has this one known CFG1
+failure; it does not replace or weaken the registered coverage gate. Keep the
+limitation visible in review and final reporting.
+
+### RW-389 — 2026-09-30 20:20:55Z — repair exact-tree R0/R1 regressions found by D-31
+
+Registered `r0-r1` on exact tree `831a789e` ran 149.423 s and failed (exit 1)
+in `cgprofile-gate-3454297-1790798830`, with `NanoCpus=3000000000` under
+loaded `dev-gates.slice`. The separately read history record matches the
+tree and exit; the gate suite had 1,795 passes and 16 failures. Failures were
+fixture/document drift caused by D-31: the subtree `/proc/stat` fake stopped
+at `ppid` after production began requiring field-22 start-time identity; the
+host snapshot fake still put leaves directly under the slice; the watch
+stream test asked a fake `/proc` tree to prove a real host placement; and two
+docs assertions exposed a stale safety sentence wrap and an obsolete A3 link
+slug. The implementation was not weakened: updated the identity fixture,
+modeled scope→leaf in the host oracle, isolated the stream contract with an
+explicit placed-session test double (real transaction remains covered by the
+placement suite), and corrected the prose links. The affected-file suite now
+passes 441 tests with 6 skipped in 72.84 s. This is local evidence only; the
+exact commit changed and fresh registered R0/R1 plus R3 remain required.
+
+### RW-390 — 2026-09-30 21:01:39Z — close the placement coverage oracle gap before gates
+
+The D-31 transaction and recovery code had only 66% local line/branch coverage
+when measured against `tests/test_serve_placement.py`. Added behavioral tests
+for systemd reply parsing and scope retirement, PID identity races, each
+ownership-journal boundary, migration/refusal outcomes, recovery records, and
+cleanup preservation. A placement-focused run passed 424 tests in 80.00 s; the
+final post-restore-exit race test passed separately. Combined diagnostic
+coverage for `lib/placement.py` is 100.0%: 1,149 statements and 498 branch
+arcs, with no missing statements or partial branches. This is local evidence,
+not the registered exact-tree gate. Also removed a duplicate leaf-path refusal
+whose rejection condition is implied by the journal and verified-scope checks
+above it; no accepted placement or recovery path changes. Fresh `r0-r1`, `r3`,
+and adversarial review on the resulting committed tree remain required.
+
+### RW-391 — 2026-09-30 21:18:49Z — repair restart-recovery coverage gaps from the exact-tree gate
+
+Registered `r0-r1` on clean exact tree
+`1e0d5a2cb94fa001eb1080018bbc6983401bb7a4` completed in 135.021 s and
+exited 2. Its independent `.run-gate/history.json` receipt confirms that
+commit, `dirty: false`, lane `r0-r1`, and exit 2. All 2,048 tests passed;
+whole-project coverage was 99%, below the mandatory 100% line-and-branch
+floor. `lib/placement.py` was fully covered; the remaining misses were in
+`lib/serve.py`'s startup placement-journal recovery/final-summary branches and
+`lib/subtree.py`'s malformed process identity and owned-leaf accounting paths.
+The daemon was absent, so the lane used coarse rusage profiling; profiling did
+not alter the gate verdict.
+
+Added behavioral tests for non-object manifests with durable placement
+journals, corrupt journals on finished sessions, live-orphan restoration or
+refusal summaries, malformed `/proc/<pid>/stat` identities, and continued
+attribution from the verified placed leaf after the original token root exits.
+The affected files now pass locally: 525 passed, 6 skipped in 40.52 s; this
+is not registered exact-tree evidence. Fresh `r0-r1` and `r3` on the committed
+tree are still required before the Sol final review.
+
+### RW-392 — 2026-09-30 22:28:14Z — disposition P6 round-7 blockers; retain charge-based memory semantics
+
+P6 round 7 (`scripts/cgroup-profiler/nyxloom-trove/reports/cgprofile-P6-FOLLOWUPS-REVIEW-round7.md`)
+is REJECT and is the review-series cap. Do not start a round 8. B1–B3 are
+implementation defects, not unsettled product questions; repair them and ask
+the same Sol reviewer session for fix verification.
+
+B1: a missing `/proc/cgroup.procs` result is not proof that a systemd scope is
+gone. Add a tri-state exact-unit verifier: only systemd's explicit
+`NoSuchUnit` response for the requested unit proves absence; manager/query
+failures remain indeterminate. Accept systemd auto-retirement only after the
+scope and leaf paths are absent and every journaled process identity is
+verified at its recorded origin or proven exited/reused; otherwise preserve
+recovery state. Apply the same exact-unit and path checks to restart recovery.
+B2: fail placement if any requested cap readback is missing/invalid, and
+verify exact leaf membership against same-start journaled processes before
+reporting placement success. B3: EOF before a newline is an incomplete
+JSON-lines request; close it without dispatch or response, then continue
+serving subsequent valid connections.
+
+The operator's RW-387 choice remains binding: keep cgroup-native memory
+accounting, describe it as charges attributed to the leaf since placement,
+and do not call it total RSS or a hard cap on pre-existing resident pages.
+
+P1 implementation was reconciled into the P6 worktree by merge commit
+`80e6d8d2b823fa5cb546883b9ba3256ba2198b70` (parents P6 review evidence tip
+`d1b2963e` and P1 repair tip `e8221c6b`). This is not a merge to `main`.
+The P6 fix and reconciliation tree still needs registered clean-tip gates,
+same-session Sol fix verification, and the required live cleanup acceptance
+probe before integration. Local focused evidence: placement/systemd and
+socket regression set 443 passed; serve/summary/docs 220 passed, 6 skipped;
+proc-stat/PID target tests 44 passed. `test_cgprofile.py` could not be
+collected in the cockpit interpreter because optional `numpy` is absent; the
+registered gate environment must supply the full report dependencies. None
+of this is registered exact-tree evidence.
 ### RW-393 — 2026-09-30 23:26:54Z — keep CIU judging checkouts attached; resume P1/P6 closeout
 
 The active P1 release-review candidate is branch
@@ -5743,3 +6025,73 @@ in parallel, then run P1's required exact-tree R2/full-gate evidence and P6
 integration in isolated, attached CIU worktrees. The provisional merge is
 not a release: cgprofile 1.0.0/1.1.0 still require their specified evidence,
 and run-gate 23.10.0 must be packaged from an eligible release source.
+
+### RW-410 — 2026-10-01 05:45:47Z — disambiguate the repeated P1 checkpoint number
+
+The reconciled controller log contained two distinct rulings labeled RW-381:
+the 2026-09-29 provisional-integration policy and the 2026-09-30 P1 resume
+checkpoint. Preserve RW-381 for the policy because package reports and review
+handoffs cite that binding rule; relabel the P1 checkpoint RW-411 and update
+its in-log references. The separate 2026-09-16 takeover label RW-59 was
+already dispositioned by RW-273 and remains preserved as that historical
+alias; no policy or evidence changes here.
+
+### RW-412 — 2026-10-01 12:30:49Z — deterministic P6 integration tests; prior container absent
+
+P6's reconciliation with local `main` `a63d8cc7` exposed five stop-test
+request envelopes that did not use contract §8.1's `args` object. They now
+use the shared `_wire` constructor. A sixth failure exposed a scheduler race
+in the carrier fixture: its sampler barrier could run before the new session
+was entered in the registry and fall through, making sample counts depend on
+thread scheduling. The test now fences that initial sleep until the start
+response has returned and the registry is published. The daemon sampler was
+not changed. The combined focused set then passed **912 tests, 6 skipped, in
+56.61 s**; this is not registered gate evidence. Contract mirrors are
+byte-identical and `git diff --check` passes.
+
+The unrelated R2 container observed in RW-409 was absent from both `docker
+ps` and the process table at 12:30Z. Per RW-409, its campaign files and
+verdict were not inspected; only the exact container and wrapper PID's
+absence was checked. Memory PSI `full avg10=0.00` at 12:30Z. No RG-55
+container-backed gate has started yet; finish and commit the P6 integration
+tree, then run its exact-tree short gates and live probes before review and
+provisional integration. P1 R2/full-gate evidence and package publication
+remain separate release holds.
+
+### RW-413 — 2026-10-01 12:48:54Z — add a real-socket oracle for P6 B3
+
+Before exact P6 gates, I checked round 7's B3 verification requirement
+against the current tests. The EOF branch in `lib/serve.py` was fixed, but
+the regressions covered only fake connections/incomplete prefixes; the
+required real AF_UNIX test for a complete newline-less state-changing request
+was absent. Added and committed the test as
+`9651d915234f426b4ef368b41615295ff87699ba`: it half-closes a full `stop`
+request, proves no handler dispatch or response, then sends a valid `version`
+request successfully. The focused real-socket test passed 1/1, and the full
+socket-carrier module passed 58/58 in 3.09 s. These are local tests, not
+registered gate receipts. The CIU-managed exact-tree checkout is attached,
+clean, and at `9651d915`; no RG-55 container gate has started. The unrelated
+assay `tester-unified` container seen at 12:35Z is outside RG-55 and was left
+untouched; no later progress poll has been made.
+
+### RW-414 — 2026-10-01 13:02:51Z — P6 R0/R1 exposed an obsolete numeric-PID oracle
+
+P6's first registered `r0-r1` run was on exact clean candidate
+`95fcbe9d0759b6c97ac92c4d1a25702745ab1b2f`. Run-gate history was read
+separately: `fail`, exit 1, duration 156.446 s, 2,144 passed and one failed.
+The exact coverage container `cgprofile-gate-713722-1790859427` read back
+`NanoCpus=3000000000` and `CgroupParent=dev-gates.slice`; the one-second
+placement probe also read back its 3-CPU cap and verified the loaded slice.
+Both exact gate containers were gone after the wrapper's own cleanup. R-36h
+used its declared coarse `rusage-maxrss` fallback because the daemon was
+down; this did not affect the functional test verdict.
+
+The sole failing assertion called removed `SessionServer._pid_addressable`
+from the old numeric-PID kill design. Under settled D-31, enforcement uses
+only `cgroup.kill` at the exact verified boundary; tests already prove the
+unplaced shared-scope refusal, the placed-leaf target, and no numeric PID
+signal. Removed the stale test in
+`de7245aa24a7bf180aa23ea51412fe1709e27989`; the remaining watch module
+passed 51/51 locally. This was a test-only correction, not a registered
+green gate. Exact R0/R1, R3, doctor, live P6 scope/restore probes, and Sol
+round-7 fix-verification remain pending on the resulting candidate.

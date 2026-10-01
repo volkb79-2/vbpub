@@ -87,6 +87,12 @@ class CgprofileArgumentParser(argparse.ArgumentParser):
 # `pyproject.toml`'s own header comment already uses for its lock file).
 DEFAULT_CTL_SOCKET = "/run/cgprofile/ctl.sock"
 DEFAULT_CGPROFILE_SESSIONS = "/var/lib/cgprofile/sessions"
+# The contract major this client speaks, on the wire of every request
+# (RG55-INTERFACE-CONTRACT.md §8.1). Same drift-guard shape as the socket
+# path above: `lib/serve.py`'s `CONTRACT_VERSION` is the daemon-side copy
+# and a test asserts the two never diverge (importing lib.serve here would
+# drag the whole daemon module into every collector-tier invocation).
+CONTRACT_VERSION = 1
 
 
 # ── small helpers ───────────────────────────────────────────────────────────
@@ -983,6 +989,15 @@ def cmd_serve(args: argparse.Namespace) -> int:
     observe_slices = tuple(
         name for name in (s.strip() for s in args.observe_slices.split(",")) if name
     ) if args.observe_slices else ()
+    # §8.1's socket-carrier uid allowlist. Deliberately environment-only
+    # (the compose template passes it through): it is a DEPLOYMENT trust
+    # decision, not a per-invocation one, and an operator who narrows access
+    # must not have it silently ignored — a malformed value refuses to start
+    # rather than falling back to "everyone the socket mode allows".
+    try:
+        allow_uids = serve_mod.parse_allow_uids(os.environ.get(serve_mod.ALLOW_UIDS_ENV))
+    except ValueError as exc:
+        _err(str(exc))
     server = serve_mod.SessionServer(
         sessions_dir=args.sessions,
         socket_path=args.socket,
@@ -992,18 +1007,37 @@ def cmd_serve(args: argparse.Namespace) -> int:
         keep_days=args.keep_days,
         observe_slices=observe_slices,
         max_sessions=args.max_sessions,
+        gates_slice_name=args.gates_slice,
+        allow_uids=allow_uids,
     )
     server.serve_forever()
     return 0
 
 
+def _ctl_wire(verb: str, **wire_args: Any) -> Dict[str, Any]:
+    """The one request shape both carriers use: RG55-INTERFACE-CONTRACT.md
+    §8.1's `{"verb": …, "args": {…}, "contract": 1}`. Keys inside `args` are
+    the long-option names with the dashes stripped (`--memory-high` →
+    `memory_high`), `--meta` as a JSON OBJECT rather than the string the CLI
+    takes. `docs/PROTOCOL.md` documents them per verb and is generated from
+    nothing — it is checked against these goldens
+    (`tests/fixtures/rg55/socket/<verb>-request.json`) by the test suite.
+    """
+    return {"verb": verb, "args": dict(wire_args), "contract": CONTRACT_VERSION}
+
+
 def _ctl_request(args: argparse.Namespace) -> Dict[str, Any]:
-    """Build the wire request for `args.verb` — RG55-INTERFACE-CONTRACT.md
-    §2's own field names, kept close enough to the CLI flag names that no
-    translation table is needed to audit one against the other. A malformed
-    `--meta` is a client-side argument error (never reaches the socket),
-    handled the same way every other bad argument in this file is:
-    `_err()`, stderr + exit 2.
+    """Build the §8.1 wire request for `args.verb`.
+
+    This function IS the contract's "reference translator" (§8.1 rule 2):
+    a socket-carrier consumer that cannot run `ctl` reproduces exactly what
+    this builds. A malformed `--meta` is a client-side argument error (never
+    reaches the socket), handled the same way every other bad argument in
+    this file is: `_err()`, stderr + exit 2. Optional options normally travel
+    as explicit `null`s when the wire contract assigns null a default meaning.
+    `damon` is deliberately omitted when the caller did not supply it: absence
+    selects the daemon's configured default, while a present `null` is an
+    invalid value and must be refused.
     """
     if args.verb == "start":
         try:
@@ -1012,27 +1046,40 @@ def _ctl_request(args: argparse.Namespace) -> Dict[str, Any]:
             _err(f"--meta must be valid JSON: {exc}")
         if not isinstance(meta, dict):
             _err("--meta must be a JSON object")
-        req = {
-            "verb": "start", "target": args.target, "scope": args.scope,
-            "meta": meta,
+        wire_args = {
+            "target": args.target,
+            "scope": args.scope,
+            "token": args.token,
         }
-        # These options are absent when argparse leaves them at None. In
-        # particular, an omitted --damon must not become JSON null: the
-        # server correctly refuses a *present* null instead of overriding
-        # its configured default with an invented value.
-        for key in ("token", "damon", "interval"):
-            value = getattr(args, key)
-            if value is not None:
-                req[key] = value
-        return req
-    if args.verb == "status":
-        return {"verb": "status", "session": args.session}
-    if args.verb == "stop":
-        return {"verb": "stop", "session": args.session}
-    if args.verb == "report":
-        return {"verb": "report", "session": args.session}
+        if args.damon is not None:
+            wire_args["damon"] = args.damon
+        wire_args.update({
+            "interval": args.interval,
+            "meta": meta,
+            # §8.4's policy options travel VERBATIM: `--idle-bound`/
+            # `--ceiling` take `auto` or a number, so the client cannot type
+            # them without deciding what is parsable — and that decision is
+            # the daemon's, so both carriers get the identical `bad-policy`
+            # refusal (see `lib.liveness._parse_bound`).
+            "progress_stream": args.progress_stream,
+            "idle_bound": args.idle_bound,
+            "ceiling": args.ceiling,
+            "on_stall": args.on_stall,
+            # §8.3: `place` is a BOOLEAN on the wire (the CLI's own
+            # `store_true`), not the presence of a key. A socket consumer
+            # sends `false` when placement was not requested.
+            "place": args.place,
+            "memory_high": args.memory_high,
+            "memory_max": args.memory_max,
+            "cpu_weight": args.cpu_weight,
+        })
+        return _ctl_wire("start", **wire_args)
+    if args.verb == "watch":
+        return _ctl_wire("watch", session=args.session, watch_interval=args.watch_interval)
+    if args.verb in ("status", "stop", "report"):
+        return _ctl_wire(args.verb, session=args.session)
     # "version", "host", "gc" — every other verb takes no arguments at all.
-    return {"verb": args.verb}
+    return _ctl_wire(args.verb)
 
 
 def _ctl_roundtrip(socket_path: str, req: Dict[str, Any], timeout: float = 25.0) -> Any:
@@ -1061,6 +1108,53 @@ def _ctl_roundtrip(socket_path: str, req: Dict[str, Any], timeout: float = 25.0)
         raise ValueError(f"malformed response: {exc}") from exc
 
 
+def _ctl_stream(socket_path: str, req: Dict[str, Any]) -> int:
+    """The §8.2 streaming carrier over exec: hold the connection open and
+    forward every line the daemon writes, flushing each one.
+
+    The flush is the whole point — run-gate reads this process's stdout line
+    by line with its own idle timeout (`3 x watch-interval`, §8.2), so a
+    buffered `reading` is indistinguishable from a dead daemon. No socket
+    timeout either: silence for a whole watch interval is the NORMAL case.
+
+    Exit code: 0 after the stream ends (contract §8.2 "then exits 0"), 2
+    when the daemon refused the request (one `{"ok": false}` line, e.g.
+    `unknown-session`), 3 for a transport failure — the same three codes
+    `cmd_ctl` uses for the non-streaming verbs.
+    """
+    rc = 0
+    end_count = 0
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+        client.settimeout(None)
+        client.connect(socket_path)
+        client.sendall((json.dumps(req) + "\n").encode("utf-8"))
+        buffer = b""
+        while True:
+            chunk = client.recv(65536)
+            if not chunk:
+                break
+            buffer += chunk
+            while b"\n" in buffer:
+                raw, buffer = buffer.split(b"\n", 1)
+                if not raw.strip():
+                    continue
+                line = raw.decode("utf-8", errors="replace")
+                print(line, flush=True)
+                try:
+                    doc = json.loads(line)
+                except json.JSONDecodeError:  # pragma: no cover - daemon fault
+                    rc = 3
+                    continue
+                if isinstance(doc, dict) and doc.get("ok") is False:
+                    rc = 2
+                if isinstance(doc, dict) and doc.get("event") == "end":
+                    end_count += 1
+    # EOF alone is not a session end. A daemon crash or broken connection
+    # before its one terminal `end` must be a transport fault, even if every
+    # preceding `reading` was valid and the socket closed cleanly.
+    if (rc == 0 and end_count != 1) or buffer.strip():
+        return 3
+    return rc
 def _validate_ctl_response(verb: str, resp: Any) -> None:
     """Validate the complete response shape before the CLI accepts it.
 
@@ -1212,6 +1306,12 @@ def cmd_ctl(args: argparse.Namespace) -> int:
     and never a traceback.
     """
     req = _ctl_request(args)
+    if args.verb == "watch":
+        try:
+            return _ctl_stream(args.socket, req)
+        except OSError as exc:
+            _note(f"ctl watch could not reach the daemon at {args.socket}: {exc}")
+            return 3
     try:
         resp = _ctl_roundtrip(args.socket, req)
     except (OSError, ValueError) as exc:
@@ -1377,6 +1477,10 @@ def build_parser() -> argparse.ArgumentParser:
     serve_parser.add_argument("--observe-slices", default="",
                               help="comma-separated extra *.slice names for `ctl host`")
     serve_parser.add_argument("--max-sessions", type=int, default=16)
+    serve_parser.add_argument("--gates-slice", default="dev-gates.slice",
+                              help="mdt's admission-capacity slice C8 places leaves under "
+                                   "(RG55-INTERFACE-CONTRACT.md §8.3/§8.5; default "
+                                   "dev-gates.slice)")
     serve_parser.set_defaults(func=cmd_serve)
 
     # RG55-INTERFACE-CONTRACT.md's own examples always place `--json` AFTER
@@ -1421,6 +1525,39 @@ def build_parser() -> argparse.ArgumentParser:
     ctl_start.add_argument("--damon", choices=("on", "off"), default=None)
     ctl_start.add_argument("--interval", type=float, default=None)
     ctl_start.add_argument("--meta", required=True, help="JSON object, RG55 contract §2.2")
+    # §8.4 stall policy. All four are forwarded verbatim (see `_ctl_request`)
+    # — `auto` is a legal value for two of them, so they cannot be typed
+    # `float` here, and the daemon owns the `bad-policy` refusal.
+    ctl_start.add_argument("--progress-stream", default=None,
+                           help="the lane's own progress NDJSON path AS THE LANE SEES IT")
+    ctl_start.add_argument("--idle-bound", default=None,
+                           help="auto|<seconds>; auto = max(300, 3 x the stream's cadence hint)")
+    ctl_start.add_argument("--ceiling", default=None,
+                           help="auto|<seconds>; auto = 3 x meta.expected.duration_s when known")
+    ctl_start.add_argument("--on-stall", choices=("kill", "report"), default=None,
+                           help="what to do when the watch verdict is actionable (default report)")
+    # §8.3 placement. The three caps are BYTES/weight as integers (the
+    # contract's own units) and are ignored without `--place`; the daemon
+    # owns every refusal, so nothing here validates a host condition.
+    ctl_start.add_argument("--place", action="store_true",
+                           help="create a delegated scope under the gates slice and a "
+                                "per-token leaf for placement (requires --token)")
+    ctl_start.add_argument("--memory-high", type=int, default=None,
+                           help="memory.high on the leaf, in bytes (the throttle point)")
+    ctl_start.add_argument("--memory-max", type=int, default=None,
+                           help="memory.max on the leaf, in bytes (the hard ceiling)")
+    ctl_start.add_argument("--cpu-weight", type=int, default=None,
+                           help="cpu.weight on the leaf, 1..10000")
+
+    ctl_watch = ctl_sub.add_parser(
+        "watch", help="stream liveness readings and verdicts until the session ends",
+        parents=[_ctl_common],
+    )
+    ctl_watch.add_argument("session")
+    # Default 30 (an INT, which is what the frozen §8.2 request golden
+    # carries); an explicit value is a float and the daemon clamps it to
+    # [5, 300].
+    ctl_watch.add_argument("--watch-interval", type=float, default=30)
 
     ctl_status = ctl_sub.add_parser(
         "status", help="registry + host snapshot", parents=[_ctl_common]

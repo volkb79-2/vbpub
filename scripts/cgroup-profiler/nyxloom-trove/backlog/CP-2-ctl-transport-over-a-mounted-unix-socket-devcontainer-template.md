@@ -3,11 +3,13 @@ kind: backlog-entry
 schema_version: 1
 id: CP-2
 title: "ctl transport over a mounted Unix socket (devcontainer template mount) as an alternative to docker exec"
-status: open
+status: fixed
 type: "feature"
 severity: "low"
 provenance: "RG-55 wave plan sec5 P0, D-2, 2026-09-12"
 filed_date: "2026-09-12"
+closed_date: "2026-09-12"
+closed_reason: "socket carrier landed, bb575fd4"
 ---
 
 ## Observed mechanism and reproduction

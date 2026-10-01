@@ -60,7 +60,7 @@ def _new_accumulator(scope: str, *, damon_enabled: bool = True, token=None) -> s
     return summary.SummaryAccumulator(
         session="s-20260912T101500Z-9f01",
         daemon_name="cgprofile-host-daemon",
-        daemon_version="1.0.0",
+        daemon_version="1.1.0",
         scope=scope,
         started_at="2026-09-12T10:15:00Z",
         interval_seconds=1.0,
@@ -396,6 +396,22 @@ class TestAbsentInputsStayNull:
         # across the pairs we could compare", never an absence).
         assert result["events"]["limit_drift"] == 0
 
+    def test_a_one_sided_unreadable_limit_pair_is_skipped_independently(self):
+        acc = _new_accumulator("container-shared", damon_enabled=False)
+        target, slice_dir, proc = _frame_paths(FRAMES_DIR, 0)
+        base_cgroup = summary.sample_target_cgroup(str(target))
+        host = metrics.sample_host(proc_root=str(proc))
+        acc.add_sample(
+            cgroup=dict(base_cgroup, mem_max=1000, mem_high=500),
+            slice_cgroup=summary.sample_slice_cgroup(str(slice_dir)), host=host,
+        )
+        acc.add_sample(
+            cgroup=dict(base_cgroup, mem_max=None, mem_high=500),
+            slice_cgroup=summary.sample_slice_cgroup(str(slice_dir)), host=host,
+        )
+        result = acc.finalize(ended_at="2026-09-12T10:15:01Z")
+        assert result["events"]["limit_drift"] == 0
+
     def test_limit_drift_ignores_pair_with_only_memory_high_missing(self):
         # All four readings in a consecutive pair must be present before the
         # pair can count as drift.  In particular, the final guard term
@@ -448,6 +464,43 @@ class TestAbsentInputsStayNull:
                         damon=_damon_frame(FRAMES_DIR, 0))
         result = acc.finalize(ended_at="2026-09-12T10:15:00Z")
         assert result["damon"] is None
+
+    def test_memory_peak_and_baseline_delta_follow_scope_contract(self):
+        # `container` reads the cgroup's exact memory.peak, while
+        # `container-shared` uses sampled memory.current and computes the
+        # delta from its first sample. Keeping both observations in one test
+        # prevents either scope branch from becoming an untested default.
+        container = _new_accumulator("container", damon_enabled=False)
+        container.add_sample(
+            cgroup={"mem": {"current": 10, "peak": 90}}, host={})
+        container_result = container.finalize(ended_at="2026-09-12T10:15:00Z")
+        assert container_result["memory"]["peak_bytes"] == 90
+        assert container_result["memory"]["source"] == "memory.peak"
+        assert container_result["memory"]["peak_over_baseline_bytes"] is None
+
+        shared = _new_accumulator("container-shared", damon_enabled=False)
+        shared.add_sample(cgroup={"mem": {"current": 10}}, host={})
+        shared.add_sample(cgroup={"mem": {"current": 30}}, host={})
+        shared_result = shared.finalize(ended_at="2026-09-12T10:15:01Z")
+        assert shared_result["memory"]["peak_bytes"] == 30
+        assert shared_result["memory"]["source"] == "sampled-max"
+        assert shared_result["memory"]["peak_over_baseline_bytes"] == 20
+
+    def test_pressure_delta_reports_a_readable_counter_pair(self):
+        acc = _new_accumulator("container-shared", damon_enabled=False)
+        acc.add_sample(
+            cgroup={"psi_mem": {"some_total": 1_000_000,
+                                  "full_total": 500_000}},
+            host={},
+        )
+        acc.add_sample(
+            cgroup={"psi_mem": {"some_total": 3_000_000,
+                                  "full_total": 1_500_000}},
+            host={},
+        )
+        result = acc.finalize(ended_at="2026-09-12T10:15:01Z")
+        assert result["pressure"]["memory_some_stall_seconds"] == 2.0
+        assert result["pressure"]["memory_full_stall_seconds"] == 1.0
 
     def test_peak_over_baseline_is_always_null_in_container_scope(self):
         # RW-21 / contract §3's nullability note: in scope "container" the
