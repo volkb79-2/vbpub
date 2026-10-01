@@ -166,6 +166,15 @@ repeating one member, so a count mismatch remains visible even when the set of
 present IDs is correct. This case has not run yet. The remaining survivors and
 the budget-exceeded candidate still need review against the final source.
 
+Correction to the timeout analysis: source inspection shows the caller checks
+that the option token's index is in range, then passes `index + 1` to the value
+boundary helper. A value-taking option at the end of argv therefore reaches
+the `position == len(argv)` guard in `review.py`. The earlier claim that the
+caller checks the same bound is incorrect. The current WIP's optional-const
+behavior test places `nargs="?"` at the end of argv and exercises this guard;
+the final registered R2 run must classify the earlier timeout against current
+source.
+
 The implementation review found three additional completeness
 gaps, now closed. Inherited delegate globals are compared by their built action
 shape, not just spelling, because the wrapper splits leading tokens before the
