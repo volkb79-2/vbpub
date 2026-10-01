@@ -164,8 +164,14 @@ def test_markdown_rows_preserve_optional_fields_shapes_and_review_dispositions()
     )
     stale = _review_case("case:removed-active", state="active", decision="accept")
     surface = {
-        "schema_version": 1,
-        "entrypoint": {"command": "audit-tool"},
+        "schema_version": 5,
+        "entrypoint": {
+            "command": "audit-tool",
+            "prog": "audit-tool",
+            "builtins": [],
+            "single_command": False,
+            "no_args_action": False,
+        },
         "routes": [
             {
                 "id": "route:entrypoint:audit-tool",
@@ -266,8 +272,28 @@ def test_markdown_rows_preserve_optional_fields_shapes_and_review_dispositions()
         surface,
         ReviewCatalog("audit-tool", 8, (), (retired, stale)),
     )
+    single_help_surface = {
+        **surface,
+        "entrypoint": {
+            **surface["entrypoint"],
+            "single_command": True,
+            "no_args_action": False,
+        },
+        "routes": [
+            {
+                **surface["routes"][0],
+                "single_command": True,
+                "no_args_action": False,
+            }
+        ],
+    }
+    single_help_text = render_cli_surface_markdown(
+        single_help_surface,
+        ReviewCatalog("audit-tool", 8, (), (retired, stale)),
+    )
 
     assert "audit-tool (aliases: at)" in text
+    assert "single-command; empty remainder shows help before parsing" in single_help_text
     assert "commands: none" in text
     assert "root help text" in text
     assert "TOOLS" in text

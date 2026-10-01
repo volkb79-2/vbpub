@@ -31,6 +31,7 @@ from cli_extended.review import (
     SurfaceReport,
     _case_status,
     _markdown_cell,
+    _option_occurrences_accept,
     _parse_interaction_groups,
     _replace_generated_region,
     _review_findings,
@@ -1933,6 +1934,28 @@ def test_render_route_invocation_modes_describe_the_parser_receiving_argv():
     assert "single-command; empty remainder shows help before parsing" in markdown
     assert "delegated group; child CLI parses remaining tokens" in markdown
     assert "route prefix; selects a nested command" in markdown
+
+    empty_single_command = {
+        **surface,
+        "entrypoint": {
+            **surface["entrypoint"],
+            "no_args_action": False,
+        },
+        "routes": [
+            {
+                **routes[0],
+                "no_args_action": False,
+            }
+        ],
+    }
+    empty_single_markdown = render_cli_surface_markdown(
+        empty_single_command, ReviewCatalog("audit-tool", 8, (), ())
+    )
+    assert (
+        "entrypoint; see empty-argv behavior above; "
+        "single-command; empty remainder shows help before parsing"
+        in empty_single_markdown
+    )
     assert "command route; parser handles remaining tokens" in markdown
     assert "multi-command; empty argv shows help" not in markdown
 
@@ -2401,7 +2424,9 @@ def test_argument_shape_case_rejects_unknown_arguments_and_short_fixed_arity():
             description="inspect a pair",
             arguments=(
                 ArgumentSpec(
-                    "pair", "two values", parser_kwargs={"nargs": 2}
+                    "pair",
+                    "two values",
+                    parser_kwargs={"nargs": 2, "choices": ("one", "two")},
                 ),
             ),
             handler=lambda *_: 0,
@@ -2415,6 +2440,17 @@ def test_argument_shape_case_rejects_unknown_arguments_and_short_fixed_arity():
 
     short = _findings_for_invocation(candidate, route, ["inspect", "one"])
     assert any("invalid positional value shape" in item for item in short)
+
+    choice_candidate = next(
+        case
+        for case in surface["candidates"]
+        if case["kind"] == "argument-choice"
+        and case["shape"].get("choice") == "one"
+    )
+    choice_findings = _findings_for_invocation(
+        choice_candidate, route, ["inspect", "one"]
+    )
+    assert any("invalid positional value shape" in item for item in choice_findings)
 
     unknown = {
         **candidate,
@@ -2454,6 +2490,56 @@ def test_value_shape_validation_rejects_inconsistent_arity_metadata():
     assert not _value_shape_accepts(
         {"nargs": "?", "minimum_values": 0}, ["one", "two"]
     )
+
+
+def test_option_occurrences_require_presence_and_reject_invalid_flag_values():
+    flag = {"nargs": 0}
+    assert not _option_occurrences_accept(flag, ())
+    assert _option_occurrences_accept(flag, [("--yes", (), False)])
+    assert not _option_occurrences_accept(flag, [("--yes", (), True)])
+    assert _option_occurrences_accept(
+        {"nargs": None}, [("--source", ("input.toml",), False)]
+    )
+    assert not _option_occurrences_accept(
+        {"nargs": None}, [("--source", (), False)]
+    )
+
+
+def test_review_reports_inconsistent_optional_arity_and_unknown_action_kind():
+    route = {
+        "id": ROUTE_ID,
+        "path": ["inspect"],
+        "aliases": [],
+        "kind": "invocation",
+        "actions": [
+            {
+                "id": "argument:optional-pair",
+                "kind": "argument",
+                "name": "pair",
+                "nargs": 2,
+                "minimum_values": 2,
+                "required": False,
+                "parser_path": ["inspect"],
+            },
+            {"id": "opaque:action", "kind": "opaque"},
+        ],
+    }
+    candidate = {
+        "id": "case:malformed-action-surface",
+        "route_id": ROUTE_ID,
+        "signature": "sha256:malformed-action-surface",
+        "kind": "other",
+        "members": [],
+        "shape": {},
+    }
+
+    findings = _findings_for_invocation(candidate, route, ["inspect", "one"])
+
+    assert any(
+        "omits a value for positional argument argument:optional-pair" in item
+        for item in findings
+    )
+    assert any("unsupported surface action kind 'opaque'" in item for item in findings)
 
 
 def test_required_group_exemptions_only_apply_to_declared_interactions():

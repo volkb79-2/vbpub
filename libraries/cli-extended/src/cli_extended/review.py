@@ -19,6 +19,7 @@ from .surface import (
     DEFAULT_MAX_CANDIDATES,
     SurfaceError,
     _minimum_values,
+    _route_required_baseline,
     export_cli_surface,
     render_cli_surface_json,
 )
@@ -89,20 +90,43 @@ def _choices_accept(action: Mapping[str, Any], values: Sequence[str]) -> bool:
     return all(value in allowed for value in values)
 
 
-def _value_shape_accepts(
-    action: Mapping[str, Any], values: Sequence[str]
-) -> bool:
+def _minimum_action_values(action: Mapping[str, Any]) -> int:
+    minimum = action.get("minimum_values")
+    if minimum is None:
+        return _minimum_values(action.get("nargs"))
+    return int(minimum)
+
+
+def _value_count_accepts(action: Mapping[str, Any], values: Sequence[str]) -> bool:
     nargs = action.get("nargs")
-    minimum = int(action.get("minimum_values", _minimum_values(nargs)))
+    minimum = _minimum_action_values(action)
     if len(values) < minimum:
         return False
     if nargs is None and len(values) != 1:
         return False
     if isinstance(nargs, int) and len(values) != nargs:
         return False
-    if nargs == "?" and len(values) > 1:
+    return nargs != "?" or len(values) <= 1
+
+
+def _value_shape_accepts(
+    action: Mapping[str, Any], values: Sequence[str]
+) -> bool:
+    return _value_count_accepts(action, values) and _choices_accept(action, values)
+
+
+def _option_occurrences_accept(
+    action: Mapping[str, Any],
+    occurrences: Sequence[tuple[str, tuple[str, ...], bool]],
+) -> bool:
+    if not occurrences:
         return False
-    return _choices_accept(action, values)
+    if action.get("nargs") == 0:
+        return all(not inline and not values for _spelling, values, inline in occurrences)
+    return all(
+        _value_shape_accepts(action, values)
+        for _spelling, values, _inline in occurrences
+    )
 
 
 def _nonempty_string(value: Any, *, location: str) -> str:
@@ -1065,9 +1089,7 @@ def _review_findings(
             cursor = 0
             for action_index, action in enumerate(actions):
                 nargs = action.get("nargs")
-                minimum = int(
-                    action.get("minimum_values", _minimum_values(nargs))
-                )
+                minimum = _minimum_action_values(action)
                 if nargs is None:
                     maximum: int | None = 1
                 elif isinstance(nargs, int):
@@ -1080,7 +1102,7 @@ def _review_findings(
                     maximum = minimum
 
                 following_minimum = sum(
-                    int(later.get("minimum_values", _minimum_values(later.get("nargs"))))
+                    _minimum_action_values(later)
                     for later in actions[action_index + 1 :]
                 )
                 available = max(0, len(tokens) - cursor)
@@ -1121,7 +1143,7 @@ def _review_findings(
             depth: [
                 {
                     "action": action,
-                    "remaining": int(action.get("minimum_values", 1)),
+                    "remaining": _minimum_action_values(action),
                 }
                 for action in route.get("actions", ())
                 if action.get("kind") == "argument"
@@ -1296,138 +1318,134 @@ def _review_findings(
                 )
             )
 
-        def option_occurrences_accept(
-            action: Mapping[str, Any],
-            occurrences: Sequence[tuple[str, tuple[str, ...], bool]],
-        ) -> bool:
-            if not occurrences:
-                return False
-            if action.get("nargs") == 0:
-                return all(not inline and not values for _spelling, values, inline in occurrences)
-            return all(
-                _value_shape_accepts(action, values)
-                for _spelling, values, _inline in occurrences
-            )
-
         def add_option_value_findings(
             action: Mapping[str, Any],
             occurrences: Sequence[tuple[str, tuple[str, ...], bool]],
             *,
             case_id: str,
             option_id: str,
+            context: str | None = None,
         ) -> None:
             """Explain malformed values on every occurrence, including repeats."""
 
-            nargs = action.get("nargs")
-            minimum = int(action.get("minimum_values", _minimum_values(nargs)))
+            context = context or f"option {option_id}"
+            minimum = _minimum_action_values(action)
             display = str((action.get("flags") or (option_id,))[0])
             if any(len(values) < minimum for _spelling, values, _inline in occurrences):
-                findings.append(
-                    f"invocation for {case_id} omits a value for {display}"
-                )
-            if isinstance(nargs, int) and any(
-                len(values) != nargs
+                if context.startswith("required group "):
+                    findings.append(
+                        f"invocation for {case_id} omits a value for {context}"
+                    )
+                elif context.startswith("required option "):
+                    findings.append(
+                        f"invocation for {case_id} omits a value for {context}"
+                    )
+                else:
+                    findings.append(
+                        f"invocation for {case_id} omits a value for {display}"
+                    )
+            if any(
+                not _value_count_accepts(action, values)
                 for _spelling, values, _inline in occurrences
             ):
-                findings.append(
-                    f"invocation for {case_id} has an invalid value shape for option {option_id}"
+                shape_message = (
+                    f"invocation for {case_id} has an invalid value shape in {context}"
+                    if context.startswith("required group ")
+                    else f"invocation for {case_id} has an invalid value shape for {context}"
                 )
+                findings.append(shape_message)
             if any(
                 not _choices_accept(action, values)
                 for _spelling, values, _inline in occurrences
             ):
                 findings.append(
-                    f"invocation for {case_id} supplies a value outside the choices for option {option_id}"
+                    f"invocation for {case_id} supplies a value outside the choices for {context}"
                 )
 
         route_actions = list(route.get("actions", ()))
-        required_arguments = [
-            action
-            for action in route_actions
-            if action.get("kind") == "argument" and action.get("required")
-        ]
-        required_options = [
-            action
-            for action in route_actions
-            if action.get("kind") == "option" and action.get("required")
-        ]
-        grouped_options: dict[str, list[Mapping[str, Any]]] = {}
-        for action in route_actions:
-            group_id = action.get("exclusive_group")
-            if action.get("kind") == "option" and group_id is not None:
-                grouped_options.setdefault(str(group_id), []).append(action)
-        required_baseline = {
-            "arguments": required_arguments,
-            "options": required_options,
-            "exclusive_groups": {
-                group_id: {
-                    "required": True,
-                    "options": members,
-                }
-                for group_id, members in grouped_options.items()
-                if members[0].get("exclusive_required")
-            },
+        required_baseline = _route_required_baseline(route)
+        required_group_by_option = {
+            str(action.get("id", "")): str(group_id)
+            for group_id, group in required_baseline.get(
+                "exclusive_groups", {}
+            ).items()
+            for action in group.get("options", ())
         }
+        for action in route_actions:
+            if action.get("kind") == "argument":
+                argument_id = str(action.get("id", ""))
+                values = positional_occurrences.get(argument_id, ())
+                if not values:
+                    continue
+                minimum = _minimum_action_values(action)
+                if not _value_count_accepts(action, values):
+                    if len(values) < minimum and action.get("required"):
+                        findings.append(
+                            f"invocation for {case_id} omits required positional argument {argument_id}"
+                        )
+                    if len(values) < minimum and not action.get("required"):
+                        findings.append(
+                            f"invocation for {case_id} omits a value for positional argument {argument_id}"
+                        )
+                    findings.append(
+                        f"invocation for {case_id} has an invalid positional value shape"
+                    )
+                if not _choices_accept(action, values):
+                    if action.get("required"):
+                        findings.append(
+                            f"invocation for {case_id} supplies a value outside the choices for required argument {argument_id}"
+                        )
+                    else:
+                        findings.append(
+                            f"invocation for {case_id} supplies a positional value outside its choices"
+                        )
+            elif action.get("kind") == "option":
+                option_id = str(action.get("id", ""))
+                occurrences = option_occurrences.get(option_id, ())
+                if not occurrences:
+                    continue
+                required_group_id = required_group_by_option.get(option_id)
+                if has_invalid_flag_value(action):
+                    if required_group_id is not None:
+                        findings.append(
+                            f"invocation for {case_id} supplies an inline value to a flag-only option in required exclusive group {required_group_id}"
+                        )
+                    else:
+                        findings.append(
+                            f"invocation for {case_id} supplies an inline value to flag-only option {option_id}"
+                        )
+                elif not _option_occurrences_accept(action, occurrences):
+                    if required_group_id is not None:
+                        context = f"required group {required_group_id}"
+                    elif action.get("required"):
+                        context = f"required option {option_id}"
+                    else:
+                        context = f"option {option_id}"
+                    add_option_value_findings(
+                        action,
+                        occurrences,
+                        case_id=case_id,
+                        option_id=option_id,
+                        context=context,
+                    )
+            else:
+                findings.append(
+                    f"invocation for {case_id} contains unsupported surface action kind {action.get('kind')!r}"
+                )
         for argument in required_baseline.get("arguments", ()):
             argument_id = str(argument.get("id", ""))
             values = positional_occurrences.get(argument_id, ())
-            if not _value_shape_accepts(argument, values):
-                minimum = int(
-                    argument.get(
-                        "minimum_values",
-                        _minimum_values(argument.get("nargs")),
-                    )
+            if not values:
+                findings.append(
+                    f"invocation for {case_id} omits required positional argument {argument_id}"
                 )
-                if len(values) < minimum:
-                    findings.append(
-                        f"invocation for {case_id} omits required positional argument {argument_id}"
-                    )
-                if not _choices_accept(argument, values):
-                    findings.append(
-                        f"invocation for {case_id} supplies a value outside the choices for required argument {argument_id}"
-                    )
-                nargs = argument.get("nargs")
-                if isinstance(nargs, int) and len(values) != nargs:
-                    findings.append(
-                        f"invocation for {case_id} has an invalid value shape for required positional argument {argument_id}"
-                    )
         for action in required_baseline.get("options", ()):
             option_id = str(action.get("id", ""))
             occurrences = option_occurrences.get(option_id, ())
-            if not option_occurrences_accept(action, occurrences):
-                if not occurrences:
-                    findings.append(
-                        f"invocation for {case_id} omits required option {option_id}"
-                    )
-                elif has_invalid_flag_value(action):
-                    findings.append(
-                        f"invocation for {case_id} supplies an inline value to flag-only option {option_id}"
-                    )
-                nargs = action.get("nargs")
-                minimum = int(
-                    action.get("minimum_values", _minimum_values(nargs))
+            if not occurrences:
+                findings.append(
+                    f"invocation for {case_id} omits required option {option_id}"
                 )
-                if any(
-                    len(values) < minimum
-                    for _spelling, values, _inline in occurrences
-                ):
-                    findings.append(
-                        f"invocation for {case_id} omits a value for required option {option_id}"
-                    )
-                if any(
-                    not _choices_accept(action, values)
-                    for _spelling, values, _inline in occurrences
-                ):
-                    findings.append(
-                        f"invocation for {case_id} supplies a value outside the choices for required option {option_id}"
-                    )
-                if isinstance(nargs, int) and any(
-                    len(values) != nargs
-                    for _spelling, values, _inline in occurrences
-                ):
-                    findings.append(
-                        f"invocation for {case_id} has an invalid value shape for required option {option_id}"
-                    )
 
         exempt_groups: set[str] = set()
         if candidate_kind == "exclusive-conflict":
@@ -1463,45 +1481,6 @@ def _review_findings(
                 findings.append(
                     f"invocation for {case_id} must supply exactly one option from required group {group_id}"
                 )
-                continue
-            selected_action = selected_group_actions[0]
-            selected_occurrences = option_occurrences.get(
-                str(selected_action.get("id", "")), ()
-            )
-            if has_invalid_flag_value(selected_action):
-                findings.append(
-                    f"invocation for {case_id} supplies an inline value to a flag-only option in required exclusive group {group_id}"
-                )
-            elif not option_occurrences_accept(
-                selected_action, selected_occurrences
-            ):
-                nargs = selected_action.get("nargs")
-                minimum = int(
-                    selected_action.get(
-                        "minimum_values", _minimum_values(nargs)
-                    )
-                )
-                if any(
-                    len(values) < minimum
-                    for _spelling, values, _inline in selected_occurrences
-                ):
-                    findings.append(
-                        f"invocation for {case_id} omits a value for required group {group_id}"
-                    )
-                if any(
-                    not _choices_accept(selected_action, values)
-                    for _spelling, values, _inline in selected_occurrences
-                ):
-                    findings.append(
-                        f"invocation for {case_id} supplies a value outside the choices for required group {group_id}"
-                    )
-                if isinstance(nargs, int) and any(
-                    len(values) != nargs
-                    for _spelling, values, _inline in selected_occurrences
-                ):
-                    findings.append(
-                        f"invocation for {case_id} has an invalid value shape in required group {group_id}"
-                    )
 
         if candidate_kind == "minimum":
             for argument_id in candidate_shape.get("required_arguments", ()):
@@ -1581,7 +1560,7 @@ def _review_findings(
                     continue
                 if action.get("nargs") == 0:
                     continue
-                if not option_occurrences_accept(action, occurrences):
+                if not _option_occurrences_accept(action, occurrences):
                     findings.append(
                         f"interaction invocation for {case_id} does not provide a "
                         f"valid value shape for participating option {option_id}"
@@ -1639,7 +1618,7 @@ def _review_findings(
                     for _position, spelling, _depth, values, inline
                     in scoped_occurrences
                 ]
-                if not option_occurrences_accept(
+                if not _option_occurrences_accept(
                     external_action, external_value_occurrences
                 ):
                     findings.append(
@@ -1788,7 +1767,7 @@ def _review_findings(
                         for _spelling, values, _inline in matching_occurrences
                         for value in values
                     )
-                    if not option_occurrences_accept(
+                    if not _option_occurrences_accept(
                         matched_action, option_occurrences.get(member, ())
                     ):
                         add_option_value_findings(

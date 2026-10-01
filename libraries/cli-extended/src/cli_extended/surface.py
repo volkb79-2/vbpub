@@ -1240,6 +1240,81 @@ def _candidate_id(route_id: str, kind: str, *parts: str) -> str:
     return "case:" + "/".join((route_id, kind, *parts))
 
 
+def _action_contract_for_baseline(
+    action: Mapping[str, Any],
+) -> dict[str, Any]:
+    contract = {
+        key: action.get(key)
+        for key in (
+            "id",
+            "kind",
+            "flags",
+            "action",
+            "type",
+            "nargs",
+            "minimum_values",
+            "required",
+            "choices",
+            "default",
+            "default_present",
+            "effective_default",
+            "const",
+            "metavar",
+            "exclusive_group",
+            "exclusive_required",
+            "placement",
+            "parser_path",
+            "before_nested_subcommand",
+        )
+    }
+    if contract["minimum_values"] is None:
+        contract["minimum_values"] = _minimum_values(contract["nargs"])
+    return contract
+
+
+def _route_required_baseline(route: Mapping[str, Any]) -> dict[str, Any]:
+    """Return the parser's required syntax shared by candidates and review."""
+
+    actions = list(route.get("actions", ()))
+    required_arguments = sorted(
+        (
+            _action_contract_for_baseline(action)
+            for action in actions
+            if action.get("kind") == "argument" and action.get("required")
+        ),
+        key=lambda action: str(action.get("id", "")),
+    )
+    required_options = sorted(
+        (
+            _action_contract_for_baseline(action)
+            for action in actions
+            if action.get("kind") == "option" and action.get("required")
+        ),
+        key=lambda action: str(action.get("id", "")),
+    )
+    grouped: dict[str, list[Mapping[str, Any]]] = {}
+    for action in actions:
+        group_id = action.get("exclusive_group")
+        if action.get("kind") == "option" and group_id is not None:
+            grouped.setdefault(str(group_id), []).append(action)
+    required_groups = {
+        group_id: {
+            "required": True,
+            "options": sorted(
+                (_action_contract_for_baseline(action) for action in members),
+                key=lambda action: str(action.get("id", "")),
+            ),
+        }
+        for group_id, members in sorted(grouped.items())
+        if members[0].get("exclusive_required")
+    }
+    return {
+        "arguments": required_arguments,
+        "options": required_options,
+        "exclusive_groups": required_groups,
+    }
+
+
 def _generate_candidates(
     routes: Sequence[Mapping[str, Any]],
     interactions: Sequence[Mapping[str, Any]],
@@ -1274,74 +1349,8 @@ def _generate_candidates(
             raise SurfaceError(message)
         interaction_issues.append(message)
 
-    def action_contract(action: Mapping[str, Any]) -> dict[str, Any]:
-        return {
-            key: action.get(key)
-            for key in (
-                "id",
-                "kind",
-                "flags",
-                "action",
-                "type",
-                "nargs",
-                "minimum_values",
-                "required",
-                "choices",
-                "default",
-                "default_present",
-                "effective_default",
-                "const",
-                "metavar",
-                "exclusive_group",
-                "exclusive_required",
-                "placement",
-                "parser_path",
-                "before_nested_subcommand",
-            )
-        }
-
-    def required_baseline(route: Mapping[str, Any]) -> dict[str, Any]:
-        actions = list(route.get("actions", ()))
-        required_arguments = sorted(
-            (
-                action_contract(action)
-                for action in actions
-                if action.get("kind") == "argument" and action.get("required")
-            ),
-            key=lambda action: str(action.get("id", "")),
-        )
-        required_options = sorted(
-            (
-                action_contract(action)
-                for action in actions
-                if action.get("kind") == "option" and action.get("required")
-            ),
-            key=lambda action: str(action.get("id", "")),
-        )
-        required_groups: dict[str, dict[str, Any]] = {}
-        grouped: dict[str, list[Mapping[str, Any]]] = {}
-        for action in actions:
-            group_id = action.get("exclusive_group")
-            if action.get("kind") == "option" and group_id is not None:
-                grouped.setdefault(str(group_id), []).append(action)
-        for group_id, members in sorted(grouped.items()):
-            if not members[0].get("exclusive_required"):
-                continue
-            required_groups[group_id] = {
-                "required": True,
-                "options": sorted(
-                    (action_contract(action) for action in members),
-                    key=lambda action: str(action.get("id", "")),
-                ),
-            }
-        return {
-            "arguments": required_arguments,
-            "options": required_options,
-            "exclusive_groups": required_groups,
-        }
-
     required_baselines_by_route = {
-        str(route["id"]): required_baseline(route) for route in routes
+        str(route["id"]): _route_required_baseline(route) for route in routes
     }
 
     def add_for_route(
