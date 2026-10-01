@@ -725,6 +725,19 @@ def test_surface_marks_uncaptured_parser_level_defaults_incomplete():
     )
 
 
+def test_parser_syntax_issues_skip_suppressed_dests_and_reject_opaque_defaults():
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("--hidden", dest=argparse.SUPPRESS)
+    parser.set_defaults(unrepresented=object())
+
+    issues = _parser_syntax_issues(parser, route_id="route:test")
+
+    assert any(
+        "uncaptured parser-level defaults: unrepresented" in issue
+        for issue in issues
+    )
+
+
 def test_surface_captures_parser_defaults_applied_to_declared_actions():
     registry = CliRegistry(IDENTITY, prog="surface-demo", description="Inspect.")
     registry.register(
@@ -748,6 +761,18 @@ def test_surface_captures_parser_defaults_applied_to_declared_actions():
     )
     assert mode["effective_default"] == "fast"
     assert not any("uncaptured parser-level defaults" in item for item in surface["incomplete"])
+
+
+def test_surface_marks_opaque_parser_defaults_incomplete_and_ignores_suppressed_dest():
+    parser = argparse.ArgumentParser(add_help=False)
+    opaque_default = object()
+    parser.add_argument("--mode", default=opaque_default)
+    parser.add_subparsers(dest=argparse.SUPPRESS)
+    parser.set_defaults(mode=opaque_default)
+
+    issues = _parser_syntax_issues(parser, route_id="route:surface-demo")
+
+    assert any("uncaptured parser-level defaults: mode" in issue for issue in issues)
 
 
 def test_surface_checks_the_multi_command_entrypoint_parser(monkeypatch):
@@ -1697,6 +1722,157 @@ def test_surface_rejects_malformed_and_duplicate_interaction_dimensions():
                     "id": "foreign-option",
                     "route_id": "route:entrypoint:surface-demo/show",
                     "option_ids": ["shared-poll"],
+                },
+            ),
+        )
+
+
+def test_surface_rejects_cross_route_option_spelling_collisions():
+    target_collision = CliRegistry(
+        IDENTITY, prog="surface-demo", description="Target collision."
+    )
+    target_collision.register(
+        VerbSpec(
+            "show",
+            description="show",
+            options=(OptionSpec(("--shared",), "target option"),),
+            handler=lambda *_: 0,
+        )
+    )
+    target_collision.register(
+        VerbSpec(
+            "watch",
+            description="watch",
+            options=(OptionSpec(("--shared",), "foreign option"),),
+            handler=lambda *_: 0,
+        )
+    )
+    target_app = target_collision.build()
+    target_surface = export_cli_surface(target_app)
+    target_routes = {tuple(route["path"]): route for route in target_surface["routes"]}
+    foreign_shared = next(
+        action
+        for action in target_routes[("watch",)]["actions"]
+        if action.get("flags") == ["--shared"]
+    )
+    with pytest.raises(SurfaceError, match="also registered on the target route"):
+        export_cli_surface(
+            target_app,
+            interaction_groups=(
+                {
+                    "id": "shared-spelling",
+                    "route_id": target_routes[("show",)]["id"],
+                    "option_ids": [foreign_shared["id"]],
+                },
+            ),
+        )
+
+    duplicate_foreign = CliRegistry(
+        IDENTITY, prog="surface-demo", description="Duplicate foreign spellings."
+    )
+    duplicate_foreign.register(VerbSpec("show", description="show", handler=lambda *_: 0))
+    duplicate_foreign.register(
+        VerbSpec(
+            "watch-one",
+            description="watch one",
+            options=(OptionSpec(("--foreign",), "first foreign option"),),
+            handler=lambda *_: 0,
+        )
+    )
+    duplicate_foreign.register(
+        VerbSpec(
+            "watch-two",
+            description="watch two",
+            options=(OptionSpec(("--foreign",), "second foreign option"),),
+            handler=lambda *_: 0,
+        )
+    )
+    duplicate_app = duplicate_foreign.build()
+    duplicate_surface = export_cli_surface(duplicate_app)
+    duplicate_routes = {
+        tuple(route["path"]): route for route in duplicate_surface["routes"]
+    }
+    foreign_ids = [
+        next(
+            action["id"]
+            for action in duplicate_routes[path]["actions"]
+            if action.get("flags") == ["--foreign"]
+        )
+        for path in (("watch-one",), ("watch-two",))
+    ]
+    with pytest.raises(SurfaceError, match="same spelling '--foreign'"):
+        export_cli_surface(
+            duplicate_app,
+            interaction_groups=(
+                {
+                    "id": "duplicate-foreign-spelling",
+                    "route_id": duplicate_routes[("show",)]["id"],
+                    "option_ids": foreign_ids,
+                },
+            ),
+        )
+
+    target_collision = CliRegistry(
+        IDENTITY, prog="surface-demo", description="Target spelling collision."
+    )
+    target_collision.register(
+        VerbSpec(
+            "show",
+            description="show",
+            options=(OptionSpec(("--shared",), "target", surface_id="target-shared"),),
+            handler=lambda *_: 0,
+        )
+    )
+    target_collision.register(
+        VerbSpec(
+            "watch",
+            description="watch",
+            options=(OptionSpec(("--shared",), "foreign", surface_id="foreign-shared"),),
+            handler=lambda *_: 0,
+        )
+    )
+    with pytest.raises(SurfaceError, match="also registered on the target route"):
+        export_cli_surface(
+            target_collision.build(),
+            interaction_groups=(
+                {
+                    "id": "target-collision",
+                    "route_id": "route:entrypoint:surface-demo/show",
+                    "option_ids": ["foreign-shared"],
+                },
+            ),
+        )
+
+    duplicate_spelling = CliRegistry(
+        IDENTITY, prog="surface-demo", description="Foreign spelling collision."
+    )
+    duplicate_spelling.register(
+        VerbSpec("show", description="show", handler=lambda *_: 0)
+    )
+    duplicate_spelling.register(
+        VerbSpec(
+            "watch-one",
+            description="watch one",
+            options=(OptionSpec(("--shared",), "first", surface_id="first-shared"),),
+            handler=lambda *_: 0,
+        )
+    )
+    duplicate_spelling.register(
+        VerbSpec(
+            "watch-two",
+            description="watch two",
+            options=(OptionSpec(("--shared",), "second", surface_id="second-shared"),),
+            handler=lambda *_: 0,
+        )
+    )
+    with pytest.raises(SurfaceError, match="with the same spelling '--shared'"):
+        export_cli_surface(
+            duplicate_spelling.build(),
+            interaction_groups=(
+                {
+                    "id": "duplicate-foreign-spelling",
+                    "route_id": "route:entrypoint:surface-demo/show",
+                    "option_ids": ["first-shared", "second-shared"],
                 },
             ),
         )

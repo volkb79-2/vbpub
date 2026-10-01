@@ -333,15 +333,22 @@ test must still run the real invocation and assert its behavior and effects;
 the marker proves test collection and linkage only. Catalog interactions may
 refer to an option owned by another route, so a consumer can record a misuse
 such as `show --poll` and link the real refusal test. The structural check
-requires the target route's required arguments and options and confirms the
-foreign spelling appears as an unrecognized option at the target route's
-parser depth. It consumes a value-taking foreign option using its owner action's
-arity and the target parser's option boundaries, so that value cannot satisfy a
-required target positional. It checks minimum/fixed arity and enumerable
-choices; flag-only options cannot carry an inline value.
+requires every named local option and the target route's required arguments,
+options, and exclusive selections. It confirms the foreign spelling appears as
+an unrecognized option at the target route's parser depth. It consumes a
+value-taking foreign option using its owner action's arity and target option
+boundaries, so those tokens cannot satisfy required target positionals in the
+checklist. It
+checks minimum/fixed arity and enumerable choices; flag-only options cannot
+carry an inline value. The consumer catalog owns the expected decision and
+status; check mode does not infer semantics from the option's route. A command
+that intentionally forwards such tokens can record acceptance when its
+behavior test proves that contract. Any other unrecognized option must be
+declared in the interaction or check mode rejects the invocation. The check
+does not call converters or handlers.
 Parser callbacks that add ordinary argparse actions are inventoried; callbacks
-that replace argparse parsing methods, set uncaptured parser-level defaults, or leave
-the option lookup table inconsistent make the surface incomplete. For
+that replace argparse parsing methods, set uncaptured parser-level defaults,
+or leave the option lookup table inconsistent make the surface incomplete. For
 optional-arity, variadic, or repeatable options with distinct behavior, declare
 separate named interactions for each reviewed invocation shape; the generator
 does not guess every repetition or value count. See the

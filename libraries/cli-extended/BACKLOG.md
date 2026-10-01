@@ -95,7 +95,7 @@ handling; see
 
 ## CLI-EXT-04 — export a stable CLI surface and semantic-review checklist
 
-**Status:** In implementation — registered gate pending
+**Status:** Implemented — final-source R2/R3 evidence pending
 
 **Type:** Feature
 
@@ -127,17 +127,17 @@ empty. Required syntax may still reject the parse.
 Argparse's runtime negative-number matcher and negative-number-like options are
 exported per parser and used to distinguish signed values from options; the
 review lexer tests compare this boundary with argparse on the running Python
-version.
-custom or uninspectable matchers make the inventory incomplete. Unsupported
-custom `prefix_chars` and `fromfile_prefix_chars` do too.
+version. Custom or uninspectable matchers make the inventory incomplete.
+Unsupported custom `prefix_chars` and `fromfile_prefix_chars` do too.
 
 The generated checklist includes minimum valid syntax, positional shapes and
 enumerable values, option spellings and choices, exclusive alternatives and
 conflicts, nested aliases, and each explicitly declared option interaction,
 including options registered on another route. Cross-route signatures include
-the foreign route and action shape, and the invocation check requires both that
-foreign option with its minimum value count and valid required syntax for the
-target route. It is symbolic:
+the foreign route and action shape, and the invocation check requires the
+foreign option with its declared value shape and valid required syntax for the
+target route. Local options named by a combination must also be present. It is
+symbolic:
 adopters supply real invocation argv, outcomes, effects,
 rationale, and test node IDs. Generation never rewrites the TOML catalog or
 deletes stale decisions. Sync owns only a marked region in the canonical CLI

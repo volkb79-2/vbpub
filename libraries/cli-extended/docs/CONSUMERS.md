@@ -350,11 +350,21 @@ as an unrecognized option at the target route's parser depth, and the target
 command's required arguments, options, and exclusive selections. For a
 value-taking foreign option, it consumes values according to the owner's
 declared arity while treating option-like target tokens as boundaries. Those
-value tokens cannot satisfy a target positional. The structural check validates
+tokens do not satisfy target positionals in the structural check. It validates
 fixed/minimum arity and enumerable choices, but it does not run converters or
-prove the refusal; the linked test invokes the real CLI and checks the expected
-status and effects. Reused option IDs on multiple foreign routes are ambiguous
-and cause generation to refuse the catalog.
+prove the outcome; the linked test invokes the real CLI and checks the expected
+status and effects. For this `show --poll` example, record
+`decision = "refuse"` and a non-zero `expected_exit_status` because `show`
+rejects the watch-only option. Check mode preserves the catalog's decision; it
+does not infer the outcome from route ownership. The only unrecognized options
+allowed are the foreign options named by the interaction. Reused option IDs on
+multiple foreign routes are ambiguous and cause generation to refuse the
+catalog.
+
+If another command intentionally forwards foreign-looking options, record an
+accepted decision only when its linked behavior test proves where those tokens
+go. For example, a command with an `argparse.REMAINDER` tail can document
+`exec PROGRAM --poll 5` as an accepted pass-through contract.
 
 The generator bounds option interactions by the named groups in the catalog;
 it does not infer which combinations have product meaning. It also does not

@@ -1195,12 +1195,23 @@ def _review_findings(
             if candidate_kind == "interaction"
             else ()
         )
+        external_flags = {
+            str(flag)
+            for external_option in external_options
+            for flag in external_option.get("flags", ())
+        }
         non_command_positions, option_occurrences, unknown_options = invocation_parts(
             case.invocation,
             route,
             command_positions or (),
             external_options,
         )
+        for _position, spelling, depth, _values, _inline in unknown_options:
+            if spelling not in external_flags:
+                findings.append(
+                    f"invocation for {case_id} contains undeclared unknown option "
+                    f"{spelling!r} at parser depth {depth}"
+                )
         positional_occurrences = positional_values_by_action(
             route, non_command_positions
         )
@@ -1444,12 +1455,9 @@ def _review_findings(
                     continue
                 minimum_values = _minimum_values(external_action.get("nargs"))
                 has_value = False
-                nargs = external_action.get("nargs")
                 choices = external_action.get("choices")
                 for _position, _spelling, _depth, values, _inline in scoped_occurrences:
                     if len(values) >= minimum_values:
-                        if isinstance(nargs, int) and len(values) != nargs:
-                            continue
                         if choices is not None and any(
                             value not in {str(choice) for choice in choices}
                             for value in values

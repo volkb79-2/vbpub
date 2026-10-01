@@ -265,21 +265,27 @@ owner explicitly retires them with a reason.
 An interaction may name an option owned by a different route. This lets the
 consumer record both the target command and the foreign option shape in one
 stable case, such as passing watch-only `--poll` to `show`. The checker requires
-that option to remain unknown on the target parser and checks the target's
-required baseline syntax. It also checks required value tokens for a
-value-taking foreign option, using options on the target parser as token
-boundaries, and refuses inline values for a flag-only option. It still does not
-invoke argparse or a handler. The consumer's behavior test remains responsible
-for proving the actual refusal.
+each named target option and the target's required baseline syntax, and it
+requires the foreign option to remain unknown on the target parser. It checks
+declared value counts and enumerable choices; for a foreign option, option-like
+tokens mark value boundaries, and a flag-only option cannot carry an inline
+value. It does not call converters or handlers. The consumer's behavior test
+remains responsible for proving the declared outcome and exact value or
+repetition rules. The consumer owns that outcome; the checker does not infer it
+from route ownership. For example, `show --poll` should be recorded as a
+refusal when the product's `show` route rejects the watch-only option. The
+checker also refuses undeclared unknown options so a typo cannot be folded into
+the same reviewed case.
 
 The generator does not guess whether a product cares about an optional value
 being present or about an option being repeated. Consumers declare separate
 named interactions for distinct forms such as `--color` versus
 `--color VALUE`, or one `--tag` versus two `--tag` occurrences. The catalog and
 generated spec retain those exact argv examples and test links; check mode
-validates route and option presence, while the behavior test asserts the
-specific value-count rule. This keeps generic enumeration bounded and makes
-the product's reason for testing each form explicit.
+validates route, option presence, declared value counts, and enumerable choices,
+while the behavior test asserts converter behavior and exact values and
+repetition rules. This keeps generic enumeration bounded and makes the product's
+reason for testing each form explicit.
 
 The shared sync/check/template command means adopters do not implement parser
 walkers, a candidate enumerator, a Markdown table renderer, or merge logic.

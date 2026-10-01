@@ -775,6 +775,12 @@ positional. Check mode MUST enforce minimum/fixed value counts and enumerable
 choices; a flag-only foreign option MUST reject an inline value. It MUST NOT run
 converters or handlers. If an option ID is ambiguous across routes and does not
 resolve uniquely on the target route, surface generation MUST refuse it.
+The catalog owns the expected decision and status, including for cross-route
+interactions; check mode MUST NOT infer product semantics from route ownership.
+For the `show --poll` example above, the consumer records a refusal because
+that product's `show` command rejects the watch-only option. Any unknown
+option not named by the interaction MUST be reported as a finding, so an
+unrelated typo cannot be treated as part of the reviewed case.
 The generator does not automatically enumerate every value count or repeated
 occurrence for optional-arity, variadic, or repeatable options; consumers MUST
 declare distinct named interactions when those invocation shapes carry

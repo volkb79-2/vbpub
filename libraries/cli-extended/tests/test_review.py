@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import io
 import json
 from pathlib import Path
 
@@ -224,6 +225,8 @@ def _case_for_candidate(
     invocation,
     *,
     state="active",
+    decision=None,
+    expected_exit_status=None,
     signature=None,
     invocation_declared=True,
     effects_declared=True,
@@ -233,12 +236,20 @@ def _case_for_candidate(
     return ReviewCase(
         case_id=candidate["id"],
         state=state,
-        decision="accept" if state == "active" else None,
+        decision=(
+            ("accept" if state == "active" else None)
+            if decision is None
+            else decision
+        ),
         reviewed_signature=signature or candidate.get("signature"),
         rationale="reviewed" if state == "active" else "",
         invocation=tuple(invocation),
         invocation_declared=invocation_declared,
-        expected_exit_status=0 if state == "active" else None,
+        expected_exit_status=(
+            (0 if state == "active" else None)
+            if expected_exit_status is None
+            else expected_exit_status
+        ),
         expected_stdout_contains="",
         expected_stderr_contains="",
         effects=(),
@@ -560,7 +571,13 @@ def test_cross_route_interaction_requires_the_foreign_option_and_valid_target_ar
         VerbSpec(
             "show",
             description="fetch one task snapshot",
-            arguments=(ArgumentSpec("task_uuid", "task UUID"),),
+            arguments=(
+                ArgumentSpec(
+                    "task_uuid",
+                    "task UUID",
+                    parser_kwargs={"choices": ("TASK-UUID",)},
+                ),
+            ),
             handler=lambda *_: 0,
         )
     )
@@ -570,7 +587,16 @@ def test_cross_route_interaction_requires_the_foreign_option_and_valid_target_ar
             description="poll until the task is terminal",
             arguments=(ArgumentSpec("task_uuid", "task UUID"),),
             options=(
-                OptionSpec(("--poll",), "poll interval", parser_kwargs={"type": int}),
+                OptionSpec(
+                    ("--poll",),
+                    "poll interval",
+                    parser_kwargs={"type": int, "choices": (5, 10)},
+                ),
+                OptionSpec(
+                    ("--pair",),
+                    "two-part window",
+                    parser_kwargs={"nargs": 2, "choices": ("from", "to")},
+                ),
                 OptionSpec(
                     ("--dry-run",),
                     "preview only",
@@ -593,10 +619,13 @@ def test_cross_route_interaction_requires_the_foreign_option_and_valid_target_ar
         for action in watch_route["actions"]
         if action.get("flags") == ["--dry-run"]
     )
+    pair_option = next(
+        action for action in watch_route["actions"] if action.get("flags") == ["--pair"]
+    )
     interaction = {
         "id": "watch-option-on-show",
         "route_id": show_route["id"],
-        "option_ids": (poll_option["id"], dry_run_option["id"]),
+        "option_ids": (poll_option["id"], dry_run_option["id"], pair_option["id"]),
     }
     surface = export_cli_surface(app, interaction_groups=(interaction,))
     candidate = next(
@@ -616,19 +645,34 @@ def test_cross_route_interaction_requires_the_foreign_option_and_valid_target_ar
             "action": dry_run_option["action"],
         },
         {
+            "id": pair_option["id"],
+            "route_id": watch_route["id"],
+            "path": ["watch"],
+            "flags": ["--pair"],
+            "nargs": 2,
+            "minimum_values": 2,
+            "choices": ["from", "to"],
+            "action": pair_option["action"],
+        },
+        {
             "id": poll_option["id"],
             "route_id": watch_route["id"],
             "path": ["watch"],
             "flags": ["--poll"],
             "nargs": None,
             "minimum_values": 1,
-            "choices": None,
+            "choices": [5, 10],
             "action": poll_option["action"],
         },
     ]
 
-    def findings(invocation):
-        case = _case_for_candidate(candidate, invocation)
+    def findings(invocation, *, decision="refuse", expected_exit_status=2):
+        case = _case_for_candidate(
+            candidate,
+            invocation,
+            decision=decision,
+            expected_exit_status=expected_exit_status,
+        )
         return _review_findings(
             {
                 **surface,
@@ -637,9 +681,21 @@ def test_cross_route_interaction_requires_the_foreign_option_and_valid_target_ar
             ReviewCatalog("monitor-task", 8, (), (case,)),
         )
 
-    assert findings(
-        ("show", "TASK-UUID", "--poll", "5", "--dry-run")
-    ) == []
+    valid_foreign = (
+        "show", "TASK-UUID", "--poll", "5", "--dry-run",
+        "--pair", "from", "to",
+    )
+    assert findings(valid_foreign) == []
+    assert app.run(
+        argv=list(valid_foreign),
+        stderr=io.StringIO(),
+    ) == 2
+    assert any(
+        "undeclared unknown option '--unexpected'" in item
+        for item in findings(
+            (*valid_foreign, "--unexpected")
+        )
+    )
     assert any(
         "does not supply the out-of-route option" in finding
         for finding in findings(("show", "TASK-UUID"))
@@ -656,7 +712,45 @@ def test_cross_route_interaction_requires_the_foreign_option_and_valid_target_ar
     )
     assert any(
         "omits required positional argument" in finding
-        for finding in findings(("show", "--poll", "5"))
+        for finding in findings(
+            ("show", "--poll", "5", "--dry-run", "--pair", "from", "to")
+        )
+    )
+    assert any(
+        "outside the choices for required argument" in finding
+        for finding in findings(
+            (
+                "show", "OTHER-TASK", "--poll", "5", "--dry-run",
+                "--pair", "from", "to",
+            )
+        )
+    )
+    assert any(
+        "valid value shape for out-of-route option" in finding
+        for finding in findings(
+            (
+                "show", "TASK-UUID", "--poll", "7", "--dry-run",
+                "--pair", "from", "to",
+            )
+        )
+    )
+    assert any(
+        "valid value shape for out-of-route option" in finding
+        for finding in findings(
+            (
+                "show", "TASK-UUID", "--poll", "5", "--dry-run",
+                "--pair", "from",
+            )
+        )
+    )
+    assert any(
+        "valid value shape for out-of-route option" in finding
+        for finding in findings(
+            (
+                "show", "TASK-UUID", "--poll", "5", "--dry-run",
+                "--pair", "bad", "to",
+            )
+        )
     )
     assert any(
         "does not provide a valid value shape for out-of-route option" in finding
@@ -677,7 +771,10 @@ def test_cross_route_interaction_requires_the_foreign_option_and_valid_target_ar
         "shape": {**candidate["shape"], "required_options": ["missing-option"]},
     }
     unknown_case = _case_for_candidate(
-        unknown_required, ("show", "TASK-UUID", "--poll=5")
+        unknown_required,
+        ("show", "TASK-UUID", "--poll=5"),
+        decision="refuse",
+        expected_exit_status=2,
     )
     unknown_findings = _review_findings(
         {**surface, "candidates": [unknown_required]},
@@ -687,6 +784,124 @@ def test_cross_route_interaction_requires_the_foreign_option_and_valid_target_ar
         "references unknown required option missing-option" in item
         for item in unknown_findings
     )
+    unknown_local = {
+        **candidate,
+        "shape": {
+            **candidate["shape"],
+            "option_ids": [*candidate["shape"]["option_ids"], "missing-option"],
+        },
+    }
+    unknown_local_case = _case_for_candidate(
+        unknown_local,
+        valid_foreign,
+        decision="refuse",
+        expected_exit_status=2,
+    )
+    unknown_local_findings = _review_findings(
+        {**surface, "candidates": [unknown_local]},
+        ReviewCatalog("monitor-task", 8, (), (unknown_local_case,)),
+    )
+    assert any(
+        "references unknown option missing-option" in item
+        for item in unknown_local_findings
+    )
+
+    unknown_external = {
+        **candidate,
+        "shape": {
+            **candidate["shape"],
+            "option_ids": [
+                "missing-poll" if option_id == poll_option["id"] else option_id
+                for option_id in candidate["shape"]["option_ids"]
+            ],
+            "external_options": [
+                {
+                    **option,
+                    **(
+                        {"id": "missing-poll"}
+                        if option["id"] == poll_option["id"]
+                        else {}
+                    ),
+                }
+                for option in candidate["shape"]["external_options"]
+            ],
+        },
+    }
+    unknown_external_case = _case_for_candidate(
+        unknown_external,
+        valid_foreign,
+        decision="refuse",
+        expected_exit_status=2,
+    )
+    unknown_external_findings = _review_findings(
+        {**surface, "candidates": [unknown_external]},
+        ReviewCatalog("monitor-task", 8, (), (unknown_external_case,)),
+    )
+    assert any(
+        "references unknown out-of-route option missing-poll" in item
+        for item in unknown_external_findings
+    )
+
+
+def test_cross_route_interaction_can_document_a_valid_passthrough():
+    identity = CliIdentity("MONITOR", "1.0", "Task Monitor", command="monitor-task")
+    registry = CliRegistry(identity, prog="monitor-task", description="Monitor tasks.")
+    registry.register(
+        VerbSpec(
+            "exec",
+            description="run a program with forwarded arguments",
+            arguments=(
+                ArgumentSpec("program", "program to run"),
+                ArgumentSpec(
+                    "arguments",
+                    "arguments passed through",
+                    parser_kwargs={"nargs": argparse.REMAINDER},
+                ),
+            ),
+            handler=lambda *_: 0,
+        )
+    )
+    registry.register(
+        VerbSpec(
+            "watch",
+            description="poll until the task is terminal",
+            options=(OptionSpec(("--poll",), "poll interval"),),
+            handler=lambda *_: 0,
+        )
+    )
+    app = registry.build()
+    routes = {
+        tuple(route["path"]): route for route in export_cli_surface(app)["routes"]
+    }
+    exec_route = routes[("exec",)]
+    watch_route = routes[("watch",)]
+    poll_option = next(
+        action for action in watch_route["actions"] if action.get("flags") == ["--poll"]
+    )
+    interaction = {
+        "id": "exec-forwards-watch-like-option",
+        "route_id": exec_route["id"],
+        "option_ids": (poll_option["id"],),
+    }
+    surface = export_cli_surface(app, interaction_groups=(interaction,))
+    candidate = next(
+        candidate
+        for candidate in surface["candidates"]
+        if candidate["kind"] == "interaction"
+    )
+    invocation = ("exec", "tool-name", "--poll", "5")
+    case = _case_for_candidate(
+        candidate,
+        invocation,
+        decision="accept",
+        expected_exit_status=0,
+    )
+
+    assert _review_findings(
+        {**surface, "candidates": [candidate]},
+        ReviewCatalog("monitor-task", 8, (), (case,)),
+    ) == []
+    assert app.run(argv=list(invocation), stderr=io.StringIO()) == 0
 
 
 def test_interaction_invocation_must_satisfy_target_route_requirements():
@@ -711,6 +926,7 @@ def test_interaction_invocation_must_satisfy_target_route_requirements():
                     "read config from file",
                     mutually_exclusive_group="source",
                     mutually_exclusive_required=True,
+                    parser_kwargs={"choices": ("PATH",)},
                 ),
                 OptionSpec(
                     ("--from-inline",),
@@ -751,16 +967,21 @@ def test_interaction_invocation_must_satisfy_target_route_requirements():
     )
 
     def findings(invocation):
-        case = _case_for_candidate(candidate, invocation)
+        case = _case_for_candidate(
+            candidate,
+            invocation,
+            decision="refuse",
+            expected_exit_status=2,
+        )
         return _review_findings(
             {**surface, "candidates": [candidate]},
             ReviewCatalog("monitor-task", 8, (), (case,)),
         )
 
-    valid = (
+    structurally_complete_refusal = (
         "show", "TASK-UUID", "--config", "file", "--from-file", "PATH", "--poll=5"
     )
-    assert findings(valid) == []
+    assert findings(structurally_complete_refusal) == []
     assert any(
         "omits required option" in finding
         for finding in findings(
@@ -792,6 +1013,15 @@ def test_interaction_invocation_must_satisfy_target_route_requirements():
         "omits a value for required group" in finding
         for finding in findings(
             ("show", "TASK-UUID", "--config", "file", "--from-file", "--poll=5")
+        )
+    )
+    assert any(
+        "outside the choices for required group" in finding
+        for finding in findings(
+            (
+                "show", "TASK-UUID", "--config", "file", "--from-file", "OTHER",
+                "--poll=5",
+            )
         )
     )
     assert any(

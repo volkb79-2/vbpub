@@ -1,6 +1,6 @@
 # CLI surface and semantic review tooling plan
 
-**Status:** Implemented; final registered R0/R1/R2/R3 gate evidence pending
+**Status:** Implemented; registered R0/R1 passes; final-source R2/R3 evidence pending
 
 **Scope:** CLI-EXT-01, CLI-EXT-03 disposition, and CLI-EXT-04  
 **Decision owner:** cli-extended maintainers and adopting product owners
@@ -147,10 +147,13 @@ gaps, now closed. Inherited delegate globals are compared by their built action
 shape, not just spelling, because the wrapper splits leading tokens before the
 child parses them. Catalog interactions can now reference an option on another
 route; the foreign route and action shape participate in the signature, and
-the checker requires both the foreign unknown option and the target route's
-required baseline syntax. It checks the foreign action's minimum value count
-using the target parser's options as token boundaries. Parser callbacks remain supported when they add
-inspectable argparse actions, while replaced token-parsing methods,
+the checker requires every named local option, the foreign unknown option, and
+the target route's required baseline syntax. The consumer catalog owns the
+expected decision and status; the checker does not infer semantics from route
+ownership. Undeclared unknown options fail check mode. It checks declared value
+counts and choices for selected options.
+Parser callbacks remain supported when they add inspectable argparse actions,
+while replaced token-parsing methods,
 uncaptured parser-level defaults, or inconsistent option-action maps mark the surface
 incomplete. Incompleteness stays within the affected delegate subtree. These
 interaction fields change the exported surface contract, so the JSON surface
