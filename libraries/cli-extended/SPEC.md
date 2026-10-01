@@ -705,7 +705,7 @@ delegated paths, positional and option IDs/shapes, option aliases, defaults,
 choices, requiredness, scope/placement, exclusive groups, synopsis, behavior
 and confirmation policy, parser-scoped `allow_abbrev`, argparse's
 negative-number matcher and whether that parser registers negative-number-like
-options, and actions added by parser callbacks. The JSON surface schema version is `5`; each route records
+options, and actions added by parser callbacks. The JSON surface schema version is `6`; each route records
 `single_command` and `no_args_action`, and those values participate in
 candidate signatures so a change to empty-invocation behavior requires review.
 Each route also records
@@ -792,15 +792,27 @@ required positionals, required options, and required-exclusive selections so
 the case isolates the intended interaction. A value-taking foreign option
 MUST be tokenized using the owner's action arity while using option-like target
 tokens as value boundaries; its value tokens MUST NOT be assigned to a target
-positional. Check mode MUST enforce the declared arity and enumerable choices
-for every occurrence of each participating option; a valid first occurrence
-MUST NOT hide a malformed repeat. For choices, check mode MUST apply the exact
+positional. Check mode MUST enforce the declared arity, modeled conversions,
+and enumerable choices for every occurrence of each participating option; a
+valid first occurrence MUST NOT hide a malformed repeat. For any exact
+built-in converter recorded in the surface, check mode MUST report a failed
+conversion even when the action has no choices. For choices, check mode MUST apply the exact
 `builtins.str`, `builtins.int`, `builtins.float`, or `builtins.bool` conversion
 recorded in the surface before checking membership and whether an invocation
 supplies its reviewed choice. With no converter, it MUST compare the raw argv
 string to the serialized choice value. For an option with `nargs="?"`, an
-occurrence with no value MUST check the declared `const` against choices using
-the same converter rule. Static choice checks apply only to
+occurrence with no value MUST apply the declared converter only when `const`
+is a string, matching argparse. The action record MUST include
+`const_choice_check_on_omission`, determined by probing the stock runtime with
+a disposable parser and an out-of-choices string constant. The generated
+Markdown MUST display this field. Candidate signatures MUST include it so a
+runtime change that alters omitted-const behavior requires semantic review.
+The structural checker MUST apply `choices` to the converted constant exactly
+when this recorded field is true. It MUST NOT apply the action's `choices`
+check when the field is false. The probe and checker MUST NOT invoke consumer
+parsers, consumer converters, custom actions, or handlers. An omitted
+optional positional uses its default and MUST NOT use this option-const rule.
+Static choice checks apply only to
 `argparse._StoreAction`, `argparse._AppendAction`, and
 `argparse._ExtendAction`; custom actions remain opaque and require a linked
 behavior test. It MUST NOT execute consumer-defined converters, custom
@@ -843,7 +855,7 @@ make the surface incomplete because a registry key can change the converter
 resolved for an action.
 For `nargs="?"`, a non-`None` `const` that is not an exact built-in string,
 integer, finite float, or boolean MUST make the surface incomplete because its
-choice equality cannot be represented safely.
+value and conversion behavior cannot be represented safely.
 Ordinary parser callbacks that add inspectable argparse actions are supported.
 A callback or parser subclass that replaces an argparse token-parsing method,
 sets uncaptured parser-level defaults, or leaves `_option_string_actions`

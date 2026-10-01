@@ -19,6 +19,7 @@ from .surface import (
     DEFAULT_MAX_CANDIDATES,
     SurfaceError,
     _ARGPARSE_CHOICE_ACTION_LABELS,
+    _ARGPARSE_OPTIONAL_CONST_CHECKS_CHOICES,
     _BUILTIN_TYPE_LABELS,
     _minimum_values,
     _route_required_baseline,
@@ -33,10 +34,10 @@ _REVIEW_DECISIONS = ("accept", "refuse")
 SURFACE_START_MARKER = "<!-- cli-extended-surface:start -->"
 SURFACE_END_MARKER = "<!-- cli-extended-surface:end -->"
 
-_BUILTIN_CHOICE_CONVERTERS = {
+_BUILTIN_VALUE_CONVERTERS = {
     label: converter for converter, label in _BUILTIN_TYPE_LABELS.items()
 }
-_ARGPARSE_CHOICE_ACTIONS = frozenset(_ARGPARSE_CHOICE_ACTION_LABELS)
+_ARGPARSE_STATIC_VALUE_ACTIONS = frozenset(_ARGPARSE_CHOICE_ACTION_LABELS)
 
 
 class ReviewCatalogError(ValueError):
@@ -89,10 +90,10 @@ class SurfaceReport:
         return "\n".join(self.findings)
 
 
-def _choice_values(
+def _converted_action_values(
     action: Mapping[str, Any], values: Sequence[Any]
 ) -> tuple[str, tuple[Any, ...]]:
-    """Model only argparse's exact, safe built-in conversions for choices.
+    """Model only argparse's exact, safe built-in conversions for values.
 
     Consumer converters and nonstandard argparse actions are deliberately
     opaque here. Their behavior belongs in the linked real-CLI test.
@@ -102,7 +103,7 @@ def _choice_values(
     if action_label is not None:
         if not isinstance(action_label, str):
             return "opaque", ()
-        if action_label not in _ARGPARSE_CHOICE_ACTIONS:
+        if action_label not in _ARGPARSE_STATIC_VALUE_ACTIONS:
             return "opaque", ()
     type_spec = action.get("type")
     if type_spec is None:
@@ -112,7 +113,7 @@ def _choice_values(
     )
     if not isinstance(converter_label, str):
         return "opaque", ()
-    converter = _BUILTIN_CHOICE_CONVERTERS.get(converter_label)
+    converter = _BUILTIN_VALUE_CONVERTERS.get(converter_label)
     if converter is None:
         return "opaque", ()
     try:
@@ -130,28 +131,42 @@ def _choice_values_accept(
     linked behavior tests are the acceptance oracle.
     """
 
-    status, converted = _choice_values(action, values)
+    status, converted = _converted_action_values(action, values)
     if status == "opaque":
         return True
     return status == "modeled" and any(value == choice for value in converted)
 
 
-def _choices_accept(action: Mapping[str, Any], values: Sequence[str]) -> bool:
+def _values_satisfy_action(
+    action: Mapping[str, Any], values: Sequence[str]
+) -> bool:
+    """Check safely modeled conversion and choice constraints for argv values."""
+
     choices = action.get("choices")
-    if not isinstance(choices, list):
-        return True
     checked_values: Sequence[Any] = values
-    if not values and action.get("nargs") == "?" and action.get("const") is not None:
+    check_choices = isinstance(choices, list)
+    if (
+        action.get("kind") == "option"
+        and not values
+        and action.get("nargs") == "?"
+        and action.get("const") is not None
+    ):
         const = action["const"]
         if type(const) not in (str, int, float, bool):
             return True
+        if type(const) is not str:
+            return True
         checked_values = (const,)
-    status, converted = _choice_values(action, checked_values)
+        check_choices = check_choices and action.get(
+            "const_choice_check_on_omission",
+            _ARGPARSE_OPTIONAL_CONST_CHECKS_CHOICES,
+        )
+    status, converted = _converted_action_values(action, checked_values)
     if status == "opaque":
         return True
     if status == "invalid":
         return False
-    return all(value in choices for value in converted)
+    return not check_choices or all(value in choices for value in converted)
 
 
 def _minimum_action_values(action: Mapping[str, Any]) -> int:
@@ -176,7 +191,9 @@ def _value_count_accepts(action: Mapping[str, Any], values: Sequence[str]) -> bo
 def _value_shape_accepts(
     action: Mapping[str, Any], values: Sequence[str]
 ) -> bool:
-    return _value_count_accepts(action, values) and _choices_accept(action, values)
+    return _value_count_accepts(action, values) and _values_satisfy_action(
+        action, values
+    )
 
 
 def _option_occurrences_accept(
@@ -602,6 +619,10 @@ def render_cli_surface_markdown(
                     "type": action.get("type"),
                     "const": action.get("const"),
                 }
+                if "const_choice_check_on_omission" in action:
+                    action_details["const_choice_check_on_omission"] = action[
+                        "const_choice_check_on_omission"
+                    ]
             else:
                 raise SurfaceSpecError(
                     f"unsupported surface action kind {action['kind']!r}"
@@ -1415,11 +1436,11 @@ def _review_findings(
                 )
                 findings.append(shape_message)
             if any(
-                not _choices_accept(action, values)
+                not _values_satisfy_action(action, values)
                 for _spelling, values, _inline in occurrences
             ):
                 findings.append(
-                    f"invocation for {case_id} supplies a value outside the choices for {context}"
+                    f"invocation for {case_id} supplies an invalid value for {context}"
                 )
 
         route_actions = list(route.get("actions", ()))
@@ -1450,14 +1471,14 @@ def _review_findings(
                     findings.append(
                         f"invocation for {case_id} has an invalid positional value shape"
                     )
-                if not _choices_accept(action, values):
+                if not _values_satisfy_action(action, values):
                     if action.get("required"):
                         findings.append(
-                            f"invocation for {case_id} supplies a value outside the choices for required argument {argument_id}"
+                            f"invocation for {case_id} supplies an invalid value for required argument {argument_id}"
                         )
                     else:
                         findings.append(
-                            f"invocation for {case_id} supplies a positional value outside its choices"
+                            f"invocation for {case_id} supplies an invalid positional value for {argument_id}"
                         )
             elif action.get("kind") == "option":
                 option_id = str(action.get("id", ""))
@@ -1741,9 +1762,9 @@ def _review_findings(
                 )
             elif not supplied_values:
                 findings.append(f"invocation for {case_id} omits its positional value")
-            elif not _choices_accept(argument, supplied_values):
+            elif not _values_satisfy_action(argument, supplied_values):
                 findings.append(
-                    f"invocation for {case_id} supplies a positional value outside its choices"
+                    f"invocation for {case_id} supplies an invalid positional value for {argument_id}"
                 )
             elif not _value_shape_accepts(argument, supplied_values):
                 findings.append(

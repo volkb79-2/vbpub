@@ -332,10 +332,11 @@ exclusive-group baseline in its signature and must supply that baseline. The
 baseline requires one selected member per required exclusive group; repeating
 that same member remains valid when the built parser accepts it. Consumers use
 explicit interaction cases to review any meaning attached to repetition. The
-checker verifies each option occurrence's declared arity and enumerable
-choices, so a valid first occurrence cannot hide a malformed repeat. For
-choices, it models argparse's exact `str`, `int`, `float`, and `bool` built-in
-conversions before checking membership. Consumer-defined converters remain
+checker verifies each option occurrence's declared arity and modeled value
+conversion, so a valid first occurrence cannot hide a malformed repeat. It
+reports failures from exact built-in `str`, `int`, `float`, and `bool`
+conversions even when no choices are declared, and checks membership when
+enumerable choices exist. Consumer-defined converters remain
 opaque and are never invoked by the checker. Custom argparse actions also
 remain opaque; only exact stock store, append, and extend action classes are
 checked statically. A non-callable type reference on a value-taking action makes
@@ -353,9 +354,14 @@ global options must also keep their mutually
 exclusive group membership and requiredness in sync with the parent parser.
 Argparse does not check `choices` on a flag-only action, so the exporter marks
 that registration incomplete instead of presenting its choices as enforced.
-For `nargs="?"`, omitting the value selects `const`; review checks that value
-against choices using the declared built-in converter too. A non-scalar
-constant makes the surface incomplete rather than guessing at its equality.
+For `nargs="?"`, omitting the value selects `const`. Argparse converts a
+string constant, and some argparse runtimes also check it against `choices`.
+The exporter probes this behavior on a disposable stock parser, records the
+result in the surface and generated spec, and signs it into candidates. The
+review checker follows the recorded runtime behavior without invoking consumer
+code. This rule applies to optional options; an omitted optional positional
+uses its default rather than `const`. A non-scalar option constant makes the
+surface incomplete rather than flattening its runtime value.
 The linked test must still run the real invocation and assert its behavior and
 effects; the marker proves test collection and linkage only. Catalog interactions may
 refer to an option owned by another route, so a consumer can record a misuse

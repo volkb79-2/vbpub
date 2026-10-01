@@ -95,14 +95,21 @@ handling; see
 
 ## CLI-EXT-04 — export a stable CLI surface and semantic-review checklist
 
-**Status:** WIP correctness follow-up; baseline R0/R1 and R3 pass on `f49fdc13`; baseline R2 is active; final-source gates pending
+**Status:** WIP correctness follow-up; baseline R0/R1 and R3 pass on `f49fdc13`; baseline R2 returned `BUDGET_EXCEEDED`; final-source gates pending
 
 Self-review found false certifications in typed-choice checking and choice
 surface export. The correction models exact built-in conversions, marks
 non-default type registries and non-callable type references incomplete, and
 refuses to flatten custom choice containers, scalar subclasses, custom
-actions, flag-only choices, and non-scalar optional-value constants. It checks
-omitted `nargs="?"` constants against choices. These changes remain on an
+actions, flag-only choices, and non-scalar optional-value constants. For
+omitted `nargs="?"` option values, it probes the stock argparse runtime's
+string-`const` choices behavior on a disposable parser and records that result
+in the generated surface and signatures. It keeps positional omission on the
+separate default-value path. The checker reports failures from modeled
+built-in conversions even when choices are absent. The baseline R2 run ended
+with 909 killed, 48 survived, and one budget-exceeded candidate; those results
+are for `f49fdc13`, not the current WIP, and final-source gates remain pending.
+These changes remain on an
 isolated WIP branch; they have not passed the final registered gate and are
 not merge-ready yet.
 

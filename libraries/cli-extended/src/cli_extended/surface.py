@@ -26,7 +26,7 @@ from .parser import (
     _common_option_specs,
 )
 
-SURFACE_SCHEMA_VERSION = 5
+SURFACE_SCHEMA_VERSION = 6
 DEFAULT_MAX_CANDIDATES = 512
 _LIBRARY_OWNED_COMMON_OPTIONS = {
     "--help", "--version", "--log-level", "--quiet", "--debug", "--verbose",
@@ -60,6 +60,23 @@ _ARGPARSE_ACTION_TYPES = {
     argparse._SubParsersAction,
     argparse._VersionAction,
 }
+
+
+def _argparse_checks_optional_const_choices() -> bool:
+    """Probe the stock runtime's nargs='?' const-choice behavior safely."""
+
+    parser = argparse.ArgumentParser(add_help=False)
+    action = parser.add_argument(
+        "--probe", nargs="?", const="not-a-choice", choices=()
+    )
+    try:
+        parser._get_values(action, [])
+    except argparse.ArgumentError:
+        return True
+    return False
+
+
+_ARGPARSE_OPTIONAL_CONST_CHECKS_CHOICES = _argparse_checks_optional_const_choices()
 _PARSER_SYNTAX_METHODS = (
     "parse_args",
     "parse_known_args",
@@ -486,6 +503,15 @@ def _surface_action(
                     )
                  for key, value in sorted(selected_spec.parser_kwargs.items())}
                 if selected_spec is not None
+                else {}
+            ),
+            **(
+                {
+                    "const_choice_check_on_omission": (
+                        _ARGPARSE_OPTIONAL_CONST_CHECKS_CHOICES
+                    )
+                }
+                if action.nargs == argparse.OPTIONAL
                 else {}
             ),
         }
@@ -931,7 +957,8 @@ def _describe_parser(
     for action_context in contexts:
         for action in action_context.actions:
             if (
-                action.nargs == "?"
+                action.option_strings
+                and action.nargs == "?"
                 and action.const is not None
                 and type(action.const) not in (str, int, float, bool)
             ):
@@ -1540,13 +1567,36 @@ def _generate_candidates(
             action_shape = {
                 key: action.get(key)
                 for key in (
-                    "id", "kind", "flags", "canonical", "name", "dest",
-                    "action", "type", "nargs", "minimum_values", "required", "choices",
-                    "default", "default_present", "effective_default", "const", "metavar",
-                    "exclusive_group", "exclusive_required", "scope", "placement",
-                    "parser_path", "before_nested_subcommand", "hidden",
+                    "id",
+                    "kind",
+                    "flags",
+                    "canonical",
+                    "name",
+                    "dest",
+                    "action",
+                    "type",
+                    "nargs",
+                    "minimum_values",
+                    "required",
+                    "choices",
+                    "default",
+                    "default_present",
+                    "effective_default",
+                    "const",
+                    "metavar",
+                    "exclusive_group",
+                    "exclusive_required",
+                    "scope",
+                    "placement",
+                    "parser_path",
+                    "before_nested_subcommand",
+                    "hidden",
                 )
             }
+            if "const_choice_check_on_omission" in action:
+                action_shape["const_choice_check_on_omission"] = action[
+                    "const_choice_check_on_omission"
+                ]
             member_shapes.append(
                 {
                     "owner_route_id": owner_route["id"],

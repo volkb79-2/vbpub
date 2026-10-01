@@ -30,13 +30,14 @@ from cli_extended.review import (
     SURFACE_START_MARKER,
     SurfaceReport,
     _case_status,
-    _choice_values,
+    _converted_action_values,
     _markdown_cell,
     _option_occurrences_accept,
     _parse_interaction_groups,
     _replace_generated_region,
     _review_findings,
     _statically_skipped,
+    _values_satisfy_action,
     _value_shape_accepts,
 )
 
@@ -821,7 +822,7 @@ def test_cross_route_interaction_requires_the_foreign_option_and_valid_target_ar
         )
     )
     assert any(
-        "outside the choices for required argument" in finding
+        "invalid value for required argument" in finding
         for finding in findings(
             (
                 "show", "OTHER-TASK", "--poll", "5", "--dry-run",
@@ -1128,7 +1129,7 @@ def test_interaction_invocation_must_satisfy_target_route_requirements():
         )
     )
     assert any(
-        "outside the choices for required group" in finding
+        "invalid value for required group" in finding
         for finding in findings(
             (
                 "show", "TASK-UUID", "--config", "file", "--from-file", "OTHER",
@@ -1146,7 +1147,7 @@ def test_interaction_invocation_must_satisfy_target_route_requirements():
         )
     )
     assert any(
-        "outside the choices for required option" in finding
+        "invalid value for required option" in finding
         for finding in findings(
             (
                 "show", "TASK-UUID", "--config", "other", "--from-file", "PATH",
@@ -1619,7 +1620,7 @@ def test_surface_markdown_lists_delegated_group_children():
     group_id = "route:entrypoint:audit-tool/plugins"
     child_id = f"{group_id}/inspect"
     surface = {
-        "schema_version": 5,
+        "schema_version": 6,
         "entrypoint": {
             "command": "audit-tool",
             "prog": "audit-tool",
@@ -1910,7 +1911,7 @@ def test_render_route_invocation_modes_describe_the_parser_receiving_argv():
         },
     ]
     surface = {
-        "schema_version": 5,
+        "schema_version": 6,
         "entrypoint": {
             "command": "audit-tool",
             "prog": "audit-tool",
@@ -2414,7 +2415,7 @@ def test_argument_shape_case_reports_values_outside_positional_choices():
 
     findings = _findings_for_invocation(candidate, route, ["inspect", "other"])
 
-    assert any("supplies a positional value outside its choices" in item for item in findings)
+    assert any("supplies an invalid positional value" in item for item in findings)
 
 
 def test_argument_shape_case_rejects_unknown_arguments_and_short_fixed_arity():
@@ -2616,6 +2617,16 @@ def test_required_group_exemptions_only_apply_to_declared_interactions():
         for item in interaction_findings
     )
 
+    repeated_interaction_findings = _findings_for_invocation(
+        interaction,
+        route,
+        ["inspect", "--from-file", "--from-file", "--from-inline"],
+    )
+    assert any(
+        "must supply each conflicting option once and no other group option" in item
+        for item in repeated_interaction_findings
+    )
+
 
 def test_review_checks_required_baseline_for_non_minimum_candidates():
     registry = CliRegistry(IDENTITY, prog="audit-tool", description="required baseline")
@@ -2779,7 +2790,7 @@ def test_review_rejects_bad_choice_in_a_repeated_option_occurrence():
         ["inspect", "--mode", "safe", "--mode", "unsupported"],
     )
 
-    assert any("outside the choices for option" in finding for finding in findings)
+    assert any("invalid value for option" in finding for finding in findings)
     assert not any("invalid value shape for option" in finding for finding in findings)
 
 
@@ -2797,6 +2808,10 @@ def test_review_rejects_bad_choice_in_a_repeated_option_occurrence():
             "not-an-integer",
             False,
             id="invalid-integer-conversion",
+        ),
+        pytest.param(
+            {"type": int}, "not-an-integer", False,
+            id="invalid-conversion-without-choices",
         ),
         pytest.param(
             {"type": str, "choices": (1,)}, "1", False, id="string-converter"
@@ -2832,10 +2847,15 @@ def test_review_choice_validation_matches_argparse_builtin_converters(
     )
     app = registry.build()
     surface = export_cli_surface(app)
+    candidate_kind = (
+        "option-choice"
+        if parser_kwargs.get("choices") is not None
+        else "option-spelling"
+    )
     candidate = next(
         case
         for case in surface["candidates"]
-        if case["kind"] == "option-choice"
+        if case["kind"] == candidate_kind
     )
     route = next(
         route for route in surface["routes"] if route["id"] == candidate["route_id"]
@@ -2851,7 +2871,7 @@ def test_review_choice_validation_matches_argparse_builtin_converters(
     if accepted:
         assert findings == []
     else:
-        assert any("outside the choices for option" in item for item in findings)
+        assert any("invalid value for option" in item for item in findings)
 
 
 def test_review_positional_choice_uses_the_built_in_converter_value():
@@ -2889,13 +2909,20 @@ def test_review_positional_choice_uses_the_built_in_converter_value():
 
 
 @pytest.mark.parametrize(
-    "const, accepted",
+    "const, converter, choices",
     (
-        pytest.param("ready", True, id="valid-const"),
-        pytest.param("unknown", False, id="invalid-const"),
+        pytest.param("ready", None, ("ready",), id="choice-member-const"),
+        pytest.param(
+            "unknown", None, ("ready",), id="runtime-const-choice-rule"
+        ),
+        pytest.param("1", int, (1,), id="const-is-converted"),
+        pytest.param("invalid", int, (1,), id="invalid-const-conversion"),
+        pytest.param(
+            "invalid", int, None, id="invalid-const-conversion-without-choices"
+        ),
     ),
 )
-def test_review_checks_optional_option_const_against_choices(const, accepted):
+def test_review_models_argparse_optional_option_const(const, converter, choices):
     registry = CliRegistry(IDENTITY, prog="audit-tool", description="const choices")
     registry.register(
         VerbSpec(
@@ -2908,7 +2935,8 @@ def test_review_checks_optional_option_const_against_choices(const, accepted):
                     parser_kwargs={
                         "nargs": "?",
                         "const": const,
-                        "choices": ("ready",),
+                        "choices": choices,
+                        "type": converter,
                     },
                 ),
             ),
@@ -2925,6 +2953,11 @@ def test_review_checks_optional_option_const_against_choices(const, accepted):
     route = next(
         route for route in surface["routes"] if route["id"] == candidate["route_id"]
     )
+    action = next(
+        action
+        for action in route["actions"]
+        if action.get("flags") == ["--mode"]
+    )
     invocation = ["inspect", "--mode"]
 
     actual_status = app.run(
@@ -2932,8 +2965,28 @@ def test_review_checks_optional_option_const_against_choices(const, accepted):
     )
     findings = _findings_for_invocation(candidate, route, invocation)
 
-    assert actual_status == (0 if accepted else 2)
-    assert (findings == []) is accepted
+    assert "const_choice_check_on_omission" in action
+    markdown = render_cli_surface_markdown(
+        surface, ReviewCatalog("audit-tool", 8, (), ())
+    )
+    assert (
+        '"const_choice_check_on_omission": '
+        f'{str(action["const_choice_check_on_omission"]).lower()}'
+    ) in markdown
+    assert (findings == []) is (actual_status == 0)
+
+
+def test_review_does_not_apply_optional_option_const_to_a_positional():
+    positional = {
+        "kind": "argument",
+        "nargs": "?",
+        "const": "not-a-choice",
+        "choices": ["ready"],
+        "type": None,
+        "const_choice_check_on_omission": True,
+    }
+
+    assert _values_satisfy_action(positional, ())
 
 
 def test_review_does_not_execute_custom_choice_converters():
@@ -2975,11 +3028,11 @@ def test_review_does_not_execute_custom_choice_converters():
 
     assert findings == []
     assert calls == []
-    assert _choice_values({"type": {"callable": []}}, ("1",)) == ("opaque", ())
-    assert _choice_values(
+    assert _converted_action_values({"type": {"callable": []}}, ("1",)) == ("opaque", ())
+    assert _converted_action_values(
         {"action": [], "type": {"callable": "builtins.int"}}, ("1",)
     ) == ("opaque", ())
-    assert _choice_values(
+    assert _converted_action_values(
         {
             "action": "consumer.CustomAction",
             "type": {"callable": "builtins.int"},
@@ -4653,7 +4706,7 @@ def test_sync_is_idempotent_preserves_outside_bytes_and_never_rewrites_catalog(t
     assert synced.endswith(suffix)
     assert b"\r\nAfter\r\n" in synced
     assert review.read_bytes() == original_review
-    assert json.loads(manifest.read_text(encoding="utf-8"))["schema_version"] == 5
+    assert json.loads(manifest.read_text(encoding="utf-8"))["schema_version"] == 6
     assert SURFACE_START_MARKER.encode() in synced
     assert SURFACE_END_MARKER.encode() in synced
 

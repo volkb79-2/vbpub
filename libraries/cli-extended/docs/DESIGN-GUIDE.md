@@ -239,13 +239,18 @@ mutation and confirmation policy, parser settings, delegated command metadata,
 callback inventory and opaque fields;
 for each argument and option, its description, token shape, argparse action,
 converter, const, choices, defaults, exclusive-group rule, placement, and
-hidden status. This keeps the canonical spec useful to an operator reviewing
+hidden status. Optional-value options also record whether this stock argparse
+runtime checks a string `const` against `choices` when the value is omitted.
+That fact is probed on a disposable parser and included in the generated spec
+and candidate signature, so a runtime change is visible for review. This keeps
+the canonical spec useful to an operator reviewing
 the whole call surface while the JSON manifest remains the stable input for
 diffs and tools.
 
 Argparse converts a token before comparing it with an action's choices. The
 review checker models only the exact built-in `str`, `int`, `float`, and
-`bool` converters recorded in the surface; it never executes consumer-defined
+`bool` converters recorded in the surface; it reports known conversion
+failures even when no choices are declared and never executes consumer-defined
 converter code. This keeps ordinary typed choices mechanically checkable
 without running arbitrary product code during a static review. Built-in
 converters are recognized by runtime object identity rather than import label,
@@ -270,10 +275,14 @@ A non-callable `type` reference on a value-taking action is also incomplete.
 Argparse accepts a string type name only when the parser's type registry
 resolves it; the exporter marks any non-default registry incomplete because
 its converter behavior cannot be safely inferred from the action alone.
-An omitted value for an option with `nargs="?"` is still a parsed value when
-`const` is set, so the checker applies the same converter and choice rules to
-that constant. A non-scalar constant makes the surface incomplete because its
-equality behavior cannot be represented safely.
+An omitted value for an option with `nargs="?"` selects `const`. Argparse
+converts it only when it is a string. Whether the runtime then checks
+`choices` is probed and recorded rather than assumed from a Python version.
+The checker follows that result without running consumer code. An omitted
+optional positional uses its default rather than the option's `const`; the
+checker does not apply option-const rules to positional arguments. A
+non-scalar option constant makes the surface incomplete because its value
+cannot be represented safely.
 
 Whether the top-level executable shows help before parsing or passes empty
 argv to the single-command parser is part of the call contract. Parsing may

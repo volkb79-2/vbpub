@@ -1,6 +1,6 @@
 # CLI surface and semantic review tooling plan
 
-**Status:** WIP correctness follow-up; baseline R0/R1 and R3 pass on `f49fdc13`; baseline R2 active; final-source gates pending
+**Status:** WIP correctness follow-up; baseline R0/R1 and R3 pass on `f49fdc13`; baseline R2 returned `BUDGET_EXCEEDED`; final-source gates pending
 
 **Scope:** CLI-EXT-01, CLI-EXT-03 disposition, and CLI-EXT-04
 **Decision owner:** cli-extended maintainers and adopting product owners
@@ -149,17 +149,22 @@ a mutation verdict for the corrected source. At the observed rate, the full
 campaign needs about 113 minutes before overhead, so the hard Assay and
 run-gate budgets are 150 minutes and the combined gate budget is 180 minutes.
 
-The pre-follow-up implementation passes registered R0/R1 on `f49fdc13` with
+The pre-follow-up implementation passed registered R0/R1 on `f49fdc13` with
 100% statement and branch coverage (3,236 statements and 1,548 branches). The
-registered R3 canary also passes on that revision; its expected message is
+registered R3 canary also passed on that revision; its expected message is
 `canary rejected: JSON redaction test fails when its guard is disabled`.
-The R2 campaign is running against `f49fdc13`, with a fresh state store,
-`--resume`, and a progress log. At the 2026-10-01 02:35 UTC check it had killed
-193 of 958 candidates after about 31 minutes, with no verdict yet. The observed
-rate projects about 154 minutes overall, close to the campaign's 150-minute
-budget. This run predates the correctness follow-up below and is not final
-source evidence. The prepared final-source lane uses a separate Assay state
-directory with a 180-minute campaign budget and a 210-minute outer gate budget.
+The R2 run against that same snapshot ended at 2026-10-01 03:45 UTC with
+`BUDGET_EXCEEDED` (`LANE_TIMEOUT`, Assay exit 4): 909 killed, 48 survived, and
+one budget-exceeded candidate out of 958. Its verified R0/R1 results remain
+valid for `f49fdc13`, but the R2 outcome is not a pass and predates the current
+correctness changes. Review its survivors and budget-exceeded candidate, then
+run the final-source gates with a fresh state directory; no final-source gate
+has run yet.
+One R2 survivor changes the interaction occurrence check from `or` to `and`.
+A focused regression now supplies every named conflicting option while
+repeating one member, so a count mismatch remains visible even when the set of
+present IDs is correct. This case has not run yet. The remaining survivors and
+the budget-exceeded candidate still need review against the final source.
 
 The implementation review found three additional completeness
 gaps, now closed. Inherited delegate globals are compared by their built action
@@ -176,17 +181,25 @@ while replaced token-parsing methods,
 uncaptured parser-level defaults, or inconsistent option-action maps mark the surface
 incomplete. Incompleteness stays within the affected delegate subtree. These
 interaction fields change the exported surface contract, so the JSON surface
-schema is version `5`; the TOML decision catalog remains schema version `1`.
+schema is version `6`; the TOML decision catalog remains schema version `1`.
 
 The implementation review found further false-certification cases beyond the
 original plan review. Non-minimum candidates could omit required positional or
 option syntax; a valid first occurrence could hide a malformed repeated value;
 and delegated globals with identical flags but different mutex-group policy
-were treated as equivalent. The generated v5 candidates now sign and check
+were treated as equivalent. The generated v6 candidates now sign and check
 their route's required baseline, validate arity and choices on every option
 occurrence, and compare inherited exclusive-group membership and requiredness.
 Custom converter/action objects are compared by runtime identity because equal
 labels do not prove equal behavior.
+
+A final review found that omitted optional-option `const` choice handling
+cannot be inferred reliably from the Python minor version: available CPython
+source and the installed interpreter did not agree. The exporter now probes a
+disposable stock parser, records the result only on `nargs="?"` option actions,
+and includes it in generated Markdown and candidate signatures. Positional
+`nargs="?"` omission uses its default, not the option's `const`, so those
+actions do not inherit the option-only check or incompleteness rule.
 
 The review also found that a deleted route/option referenced by an interaction
 made sync abort before it could regenerate the grammar or show the old semantic
@@ -214,13 +227,16 @@ Non-callable type references on value-taking actions also make the surface
 incomplete because argparse cannot resolve them without a custom registry.
 Custom actions remain opaque to static choice checks, and flag-only `choices`
 declarations are incomplete because argparse ignores them.
-For `nargs="?"`, an omitted value resolves to `const`, which is checked by the
-same choice rules as an explicit value. Non-scalar constants remain incomplete
-because their equality may differ from the serialized value.
+For `nargs="?"`, an omitted option value resolves to `const`. Argparse converts
+it only when it is a string. The stock runtime's choice check for that string
+is probed and signed into the surface. The review checker also applies modeled
+built-in converters to values when no choices are declared, so known type
+conversion failures are not certified as valid invocations. An omitted
+optional positional uses its default, not `const`.
 Regression cases compare review findings with the real CLI. The typed-choice
-and surface-completeness corrections are committed on an isolated worktree;
-their final R0/R1, R2, and R3 gates have not run. The current R2 campaign
-remains evidence for the earlier source only.
+and surface-completeness corrections are on an isolated worktree. The baseline
+R2 result above remains evidence for the earlier source only; final-source
+R0/R1, R2, and R3 gates have not run.
 
 The generator deliberately does not enumerate every optional value count or
 repeat count. Consumers declare separate named interactions for token shapes

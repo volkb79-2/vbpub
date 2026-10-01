@@ -164,7 +164,7 @@ def test_markdown_rows_preserve_optional_fields_shapes_and_review_dispositions()
     )
     stale = _review_case("case:removed-active", state="active", decision="accept")
     surface = {
-        "schema_version": 5,
+        "schema_version": 6,
         "entrypoint": {
             "command": "audit-tool",
             "prog": "audit-tool",

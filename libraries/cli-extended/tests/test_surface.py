@@ -995,14 +995,14 @@ def test_surface_signatures_are_canonical_for_unicode_payloads():
     reversed_payload = {"a": "café", "z": "last"}
     expected = "sha256:" + hashlib.sha256(
         json.dumps(
-            {"schema_version": 5, "payload": payload},
+            {"schema_version": 6, "payload": payload},
             sort_keys=True,
             separators=(",", ":"),
             ensure_ascii=False,
         ).encode("utf-8")
     ).hexdigest()
-    assert _signature(5, payload) == expected
-    assert _signature(5, payload) == _signature(5, reversed_payload)
+    assert _signature(6, payload) == expected
+    assert _signature(6, payload) == _signature(6, reversed_payload)
 
 
 def test_candidate_choice_ids_hash_unicode_values_without_ascii_escaping():
@@ -1227,6 +1227,37 @@ def test_surface_marks_non_scalar_optional_value_const_incomplete():
     assert any(
         "optional-value const" in issue for issue in surface["incomplete"]
     )
+
+
+def test_surface_does_not_apply_optional_option_const_rule_to_positional():
+    registry = CliRegistry(
+        IDENTITY, prog="surface-demo", description="Optional positional."
+    )
+    registry.register(
+        VerbSpec(
+            "show",
+            description="show one state",
+            arguments=(
+                ArgumentSpec(
+                    "state",
+                    "select a state",
+                    parser_kwargs={"nargs": "?", "const": ("unused",)},
+                ),
+            ),
+            handler=lambda *_: 0,
+        )
+    )
+
+    surface = export_cli_surface(registry.build())
+
+    assert surface["syntax_complete"] is True
+    action = next(
+        action
+        for route in surface["routes"]
+        for action in route["actions"]
+        if action.get("kind") == "argument" and action.get("name") == "state"
+    )
+    assert "const_choice_check_on_omission" not in action
 
 
 def test_surface_marks_choices_on_flag_only_options_incomplete():
