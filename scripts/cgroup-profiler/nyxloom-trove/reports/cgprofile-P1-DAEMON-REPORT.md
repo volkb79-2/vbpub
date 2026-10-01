@@ -1924,18 +1924,18 @@ not been declared equivalent.
 
 ### Current integration and gate status (2026-10-01)
 
-Main advanced to `2ba90c10f00c67f7786ed0f63747c284867ba0be`; 21 intervening
-commits touch only `nyxloom/`. The P1 branch was reconciled in merge
-`e76657b69b39a7462988edfcdf797639f6ceb2a2`. This changes the current review
-base from `126ccc39...` to `2ba90c10...` without changing P1 product files.
-The P1 candidate still has no exact-tip registered R0/R1, R3, or doctor
-receipt, no current-tree R2/full gate, and no final Sol acceptance.
+Main advanced from `2ba90c10f00c67f7786ed0f63747c284867ba0be` to
+`6ee297a4cb6412b1c66250367a1eb2ecf39e9446`; the two intervening commits
+modify only Nyxloom's Claude Code session adapter and tests. The P1 branch
+was reconciled without conflict in merge
+`55d0812299e84083143613a7de1585bd2f8f7fcc`.
 
-At 01:28:37Z, host memory PSI `full avg10=5.03` exceeded the launch threshold
-of 5.0 (load average 13.91); unrelated session-extract and R2 run-gate
-containers were active. No additional P1 gate or pytest was started, and
-neither active container was modified. Recheck only after the 25-minute
-interval, or earlier on an explicit completion/error signal. The round-five
-review handoff has the current main base and exact host-unit preflight; it
-must receive the final clean tip only after exact-tip short gates and
-reviewer-owned live probes are complete.
+On that exact clean pre-checkpoint commit, registered R0/R1 passed with
+1,421 tests, 5,140/5,140 statements, 1,780/1,780 branch arcs, exit 0 in
+107.163 seconds. The exact test container was capped at three CPUs under
+`dev-gates.slice`. The daemon was down; coarse `rusage-maxrss` was used under
+R-36h without changing the functional verdict. Because this report and the
+review handoff are being refreshed, this receipt is diagnostic rather than
+final evidence: rerun R0/R1, R3, and doctor on the resulting clean commit.
+The current-tree R2/full gate and required reviewer-owned live probes remain
+open; no review acceptance, merge, release, or daemon activation is claimed.

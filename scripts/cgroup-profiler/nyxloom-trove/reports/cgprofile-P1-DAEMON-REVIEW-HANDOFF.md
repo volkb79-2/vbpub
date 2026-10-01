@@ -24,9 +24,13 @@ single-tree DAMON percentile optimization is committed as `c81b2837`; focused
 s). The old isolated R2 on `450fe53d` failed with 12 genuine proc-identity
 oracle gaps. Direct parser/helper tests are now present in commit `01912a91`
 and passed 167 focused target/helper tests. The separate isolated PASS on
-`1080ac2f` is not transferable to this release candidate. Main was reconciled
-at `56c617d8`; current product/evidence tip before this handoff refresh is
-`902a6f5f6e1201eed4ab2e7f1cf831ecc6c96d17`. The operator also supplied
+`1080ac2f` is not transferable to this release candidate. Main is now
+`6ee297a4cb6412b1c66250367a1eb2ecf39e9446`; P1 reconciled it in merge
+`55d0812299e84083143613a7de1585bd2f8f7fcc`. Registered R0/R1 passed on that
+exact pre-checkpoint commit: 1,421 tests, 5,140/5,140 statements, and
+1,780/1,780 branches, exit 0 in 107.163 s. The report/handoff checkpoint
+refresh changes the commit, so rerun R0/R1, R3, and doctor on the final tip.
+The operator also supplied
 direct-host, read-only evidence that
 `dev-interactive.slice` and `dev-gates.slice` are loaded at their authored
 `/dev.slice/...` paths, both with `Delegate=no` and five-CPU quotas. The same
@@ -34,48 +38,39 @@ query also confirms `cgprofile.slice` loaded at `/cgprofile.slice`,
 `Delegate=no`, unlimited CPU quota, and a 1 GiB memory limit. Exact values and
 provenance are in controller rulings RW-397/RW-398 and P1 LOG/REPORT. This
 closes the missing unit-state observable in B2, pending reviewer confirmation
-and the required reviewer-owned live probes. B3 remains open because old
-short-gate receipts predate the repair. The controller must run registered
-R0/R1, R3 and doctor on the final clean candidate, complete the required
-reviewer-owned live probes, then dispatch round 5 seeded with rounds 1–4. Do
-not claim acceptance or merge until the reviewer verifies the preflight and
-live probes. Current-tree R2 and full gate remain release holds and may run
-asynchronously in a separate attached CIU worktree after provisional merge,
-under RW-381; no release or daemon activation before both are green and the
-survivors are dispositioned.
+and the required reviewer-owned live probes. Final exact-tip R0/R1, R3, and
+doctor remain pending after the checkpoint refresh. The reviewer must
+complete the required reviewer-owned live probes and round 5 seeded with
+rounds 1–4. Do not claim acceptance or merge until the reviewer verifies the
+preflight and live probes. Current-tree R2 and full gate remain release holds
+and may run asynchronously in a separate attached CIU worktree after
+provisional merge, under RW-381; no release or daemon activation before both
+are green and the survivors are dispositioned.
 
 Branch `rg55-p1-release-review-20260930`, worktree
 `/workspaces/vbpub/.worktrees/rg55-p1-release-review-20260930`, project dir
-`scripts/cgroup-profiler/`. The candidate has been reconciled with current
-main `2ba90c10f00c67f7786ed0f63747c284867ba0be` in merge commit
-`e76657b69b39a7462988edfcdf797639f6ceb2a2`; this brings in 21 main commits
-that modify only `nyxloom/`, with no overlap in the P1 product files. This
-reconciliation changes the integration base, not the P1 implementation. The
-controller supplies the exact review tip after final evidence updates and
-short gates. Verify the worktree is clean and HEAD is that exact tip before
-reviewing. Review the FULL P1 diff
-`2ba90c10f00c67f7786ed0f63747c284867ba0be...<tip>` — every changed P1
-file, every type. If main advances before dispatch, the controller must
-first reconcile the candidate and rerun the short gates.
+`scripts/cgroup-profiler/`. The candidate is reconciled with current main
+`6ee297a4cb6412b1c66250367a1eb2ecf39e9446` in merge commit
+`55d0812299e84083143613a7de1585bd2f8f7fcc`; the two intervening main commits
+modify only Nyxloom's Claude Code session adapter and tests, with no overlap
+in P1 product files. The controller supplies the exact final review tip after
+evidence updates and fresh short gates. Verify clean status and HEAD before
+review. Review the FULL P1 diff
+`6ee297a4cb6412b1c66250367a1eb2ecf39e9446...<tip>` — every changed P1
+file, every type. If main advances before dispatch, reconcile first and rerun
+all required short gates.
 
 ### Current checkpoint (2026-10-01; supersedes older base references below)
 
-Main advanced from `126ccc39e151e33cc7bbcaa18bf765f9c9cd7dd1` to
-`2ba90c10f00c67f7786ed0f63747c284867ba0be`. The 21 intervening main
-commits modify only `nyxloom/`, with no overlap in the P1 product files. The
-candidate was reconciled with that main in merge commit
-`e76657b69b39a7462988edfcdf797639f6ceb2a2`. The current full-review base is
-therefore `2ba90c10...`, not the older `126ccc39...` cited in historical
-sections below. Evidence/handoff commits and the short gates will move HEAD;
-the controller must supply the exact final reviewed tree and confirm clean
-status before dispatch.
-
-At 01:28:37Z, memory PSI `full avg10=5.03` exceeded the 5.0 launch
-threshold (load average 13.91). Active unrelated run-gate containers were
-`run-gate-vbpub-session-extract-51644-1790817645` and
-`run-gate-vbpub-r2-4124646-1790814775`. No RG-55 gate or bare pytest was
-launched. Do not inspect their progress before 01:53:37Z unless an earlier
-completion/error signal arrives, and do not alter or remove them.
+Main is `6ee297a4...`, reconciled in `55d081229...`; the full-review base is
+therefore `6ee297a4...`, superseding `2ba90c10...` and older references in
+historical sections. The 1,421-test R0/R1 PASS on `55d081229...` predates
+this handoff/report checkpoint and is not the final receipt. After committing
+this checkpoint, run R0/R1, R3, and doctor on the resulting exact candidate;
+preserve the tree until review is complete. The operator has explicitly
+authorized required gate runs regardless of memory PSI, so PSI is not a gate
+launch veto or a functional verdict input. Keep exact cgroup placement, CPU
+caps, the mutation-slot limit, and unrelated-container protections below.
 
 The reviewer may commit the round-5 artifact in this worktree. If that adds
 a commit after review, it changes the exact merge tip: rerun the required
@@ -93,7 +88,7 @@ Read, in this order: the plan of record
 `fixtures/rg55/README.md`, the controller log's Rulings section
 (`run-gate-project/nyxloom-trove/reports/run-gate-WAVE-RG55-CONTROLLER-LOG.md`
 — RW-3, RW-7, RW-9, RW-11, RW-13..RW-16, RW-19, RW-21, RW-23,
-  RW-47, RW-48, RW-318..RW-328, RW-381..RW-392 and RW-393..RW-402 bind this
+  RW-47, RW-48, RW-318..RW-328, RW-381..RW-392 and RW-393..RW-403 bind this
   package), the
 implementer handoff (`cgprofile-P1-DAEMON-HANDOFF.md`, what was asked), then
 the diff itself — `lib/summary.py`, `lib/subtree.py`, `lib/damon.py`,
@@ -314,12 +309,13 @@ Write the round file, then return the verdict line first in your message.
 
 8 cores shared with a production game server; host contention is an allowed
 condition and must not alter a functional verdict or mutation classification.
-The host `dev-gates.slice` is loaded and capped at 5 CPUs; at most 2 mutation
-lanes may run estate-wide until RW-194's admission evidence changes that
-limit, each with its own unique exact container name and
-immediate verified `docker update --cpus=3`. Check memory PSI before launch
-and do not launch while `full avg10 > 5`. pytest is serial and load-niced;
-the scheduler is not to be tuned to make a test pass. No container may use
+The operator has authorized gate execution regardless of memory PSI; do not
+use PSI or scheduler delay as a verdict input. The host `dev-gates.slice` is
+loaded and capped at 5 CPUs; at most 2 mutation lanes may run estate-wide
+until RW-194's admission evidence changes that limit, each with its own
+unique exact container name and immediate verified `docker update --cpus=3`.
+pytest is serial and load-niced; do not tune the scheduler to make a test pass.
+No container may use
 host PID/cgroup/network namespace modes. Read-only access to
 `run-gate-project/` is required for contract/ruling context; do not edit it
 as reviewer. Never touch `ciu/src/` or `/workspaces/dstdns`. Remove only

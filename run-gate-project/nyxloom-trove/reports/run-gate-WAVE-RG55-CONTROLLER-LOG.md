@@ -5600,3 +5600,25 @@ active tester container `run-gate-vbpub-session-extract-51644-1790817645`
 and R2 container `run-gate-vbpub-r2-4124646-1790814775`. No RG-55 gate or
 bare pytest was launched. Preserve both exact containers; do not read their
 progress before 01:53:37Z unless an earlier completion/error signal arrives.
+
+### RW-403 — 2026-10-01 02:00:00Z — reconcile latest main and refresh P1 gate evidence
+
+Main advanced from `2ba90c10f00c67f7786ed0f63747c284867ba0be` to
+`6ee297a4cb6412b1c66250367a1eb2ecf39e9446`; the two intervening commits
+modify only Nyxloom's Claude Code session adapter and its tests. The clean P1
+candidate was reconciled without conflict in merge
+`55d0812299e84083143613a7de1585bd2f8f7fcc`.
+
+Registered P1 R0/R1 passed on that exact candidate: 1,421 tests,
+5,140/5,140 statements, 1,780/1,780 branch arcs, exit 0 in 107.163 seconds.
+Its exact test container was capped at three CPUs under `dev-gates.slice`;
+the daemon was down, so profiler data used the documented coarse rusage path
+under R-36h and did not change the result. The first detached launcher
+vanished without creating a process/container or producing output; the
+successful run used a persistent job handle. This gate result predates the
+report/handoff refresh in this ruling and must be repeated on the resulting
+exact candidate. The operator has explicitly authorized gate execution
+regardless of memory PSI; PSI is not a gate-launch veto or verdict input.
+Keep the two-mutation-lane limit, exact cgroup placement/caps, and unrelated
+container protections. R3, doctor, reviewer-owned live probes, exact-tree R2,
+and the registered full gate remain open.

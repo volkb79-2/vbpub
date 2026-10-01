@@ -1528,3 +1528,24 @@ launched; no existing container was modified. The next progress observation
 is no earlier than 01:53:37Z unless an earlier completion/error signal
 arrives. Exact-tip R0/R1, R3 and doctor remain outstanding; do not reuse
 older receipts as evidence for the current candidate.
+
+### Session 34 — 2026-10-01 02:00:00Z — current-main reconcile; R0/R1 pre-checkpoint PASS
+
+Main advanced from `2ba90c10f00c67f7786ed0f63747c284867ba0be` to
+`6ee297a4cb6412b1c66250367a1eb2ecf39e9446`, with two commits changing only
+Nyxloom's Claude Code session adapter and tests. The clean P1 branch was
+reconciled without conflict in merge commit
+`55d0812299e84083143613a7de1585bd2f8f7fcc`; no P1 product path overlapped.
+
+Registered `r0-r1` ran from this project's `run-gate.py` on that exact clean
+commit and passed: 1,421 tests, 5,140/5,140 statements, 1,780/1,780 branch
+arcs, four `os.fork()` deprecation warnings, exit 0, duration 107.163 s. The
+test container `cgprofile-gate-123229-1790819789` read back
+`NanoCpus=3000000000` and `CgroupParent=dev-gates.slice`. The daemon was not
+running; R-36h therefore used coarse `rusage-maxrss` profiling and did not
+change the functional verdict. The initial detached invocation produced no
+process, container, or output and was not counted; the successful run used a
+persistent job handle. This result predates the handoff/report checkpoint
+commit, so the final candidate must rerun R0/R1, R3, and doctor before review.
+R2 and the registered full gate remain pending; the unrelated assay mutation
+campaign was left untouched.
