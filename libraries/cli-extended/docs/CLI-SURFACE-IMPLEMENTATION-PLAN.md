@@ -201,7 +201,9 @@ registered choices are integers. It also found that option and positional
 choice candidates compared their reviewed choice as display text, which could
 reject valid built-in conversions. The correction models only exact built-in
 `str`, `int`, `float`, and `bool` conversions, leaves consumer converters to
-linked behavior tests, and marks non-scalar choice objects incomplete rather
+linked behavior tests, recognizes built-ins by exact runtime identity rather
+than import label, recognizes stock choice actions by exact class identity,
+and marks non-scalar choice objects incomplete rather
 than flattening their equality semantics. The same review found that parser
 type-registry overrides and custom action classes can change choice handling
 while leaving action metadata unchanged. Any non-default type-registry
@@ -212,10 +214,13 @@ Non-callable type references on value-taking actions also make the surface
 incomplete because argparse cannot resolve them without a custom registry.
 Custom actions remain opaque to static choice checks, and flag-only `choices`
 declarations are incomplete because argparse ignores them.
-Regression cases compare review findings with the real CLI. The correction is
-committed as `40922255` in an isolated worktree; its R0/R1, R3, and fresh R2
-gates have not run. The current R2 campaign remains evidence for the earlier
-source only.
+For `nargs="?"`, an omitted value resolves to `const`, which is checked by the
+same choice rules as an explicit value. Non-scalar constants remain incomplete
+because their equality may differ from the serialized value.
+Regression cases compare review findings with the real CLI. The typed-choice
+and surface-completeness corrections are committed on an isolated worktree;
+their final R0/R1, R2, and R3 gates have not run. The current R2 campaign
+remains evidence for the earlier source only.
 
 The generator deliberately does not enumerate every optional value count or
 repeat count. Consumers declare separate named interactions for token shapes

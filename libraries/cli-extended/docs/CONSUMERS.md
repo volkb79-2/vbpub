@@ -361,12 +361,21 @@ For example, `type=int, choices=(1, 2)` accepts `--count 1`, while
 `choices=(1, 2)` without a converter does not: argparse receives the raw string
 `"1"` in that case. A custom converter remains opaque; its acceptance and
 failure behavior belongs in the linked test, which invokes the real CLI and
-checks status and effects. Custom argparse actions receive the same opaque
+checks status and effects. Built-in converters are recognized by exact
+runtime object identity; a custom callable with a matching label stays opaque.
+Static choice checks likewise require the exact argparse action class;
+custom actions with a matching label stay opaque. Custom argparse actions
+receive the same opaque
 behavior-test treatment. Choice containers must be exact built-in lists,
 tuples, sets, or frozensets with plain string, integer, finite-float, or
 boolean members. Custom containers and other choice objects make the surface
 incomplete because their runtime membership or equality cannot safely be
 represented by the exported JSON values.
+For an option with `nargs="?"`, invoking the option without a value selects
+`const`; the structural check applies the same choice and built-in conversion
+rules to that constant.
+That constant must be an exact built-in string, integer, finite float, or
+boolean; custom scalar objects make the surface incomplete.
 Argparse does not check `choices` for a flag-only action such as
 `action="store_true"`; remove that unused declaration or use an action whose
 invocation carries a value. The surface reports it as incomplete.

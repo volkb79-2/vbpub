@@ -29,6 +29,7 @@ from cli_extended.surface import (
     _minimum_values,
     _mutex_groups,
     _normalize,
+    _normalize_parser_kwarg,
     _ParserActionContext,
     _parser_syntax_issues,
     _route_id,
@@ -756,7 +757,7 @@ def test_surface_marks_type_registry_changes_incomplete(override, expected_findi
             action_name = "".join(("cus", "tom"))
             assert registered_name == action_name
             assert registered_name is not action_name
-            parser.register("type", registered_name, lambda _value: _value)
+            parser.register("type", registered_name, lambda _value: 1)
         elif override == "lookup":
             parser._registry_get = (  # type: ignore[method-assign]
                 lambda _name, _key, default=None: default
@@ -789,10 +790,17 @@ def test_surface_marks_type_registry_changes_incomplete(override, expected_findi
         )
     )
 
-    surface = export_cli_surface(registry.build())
+    app = registry.build()
+    surface = export_cli_surface(app)
 
     assert surface["syntax_complete"] is False
     assert any(expected_finding in issue for issue in surface["incomplete"])
+    if override in {"registry", "equal-registry-key"}:
+        assert app.run(
+            argv=["inspect", "--count", "not-an-integer"],
+            stdout=io.StringIO(),
+            stderr=io.StringIO(),
+        ) == 0
 
 
 def test_surface_marks_inconsistent_option_lookup_maps_incomplete():
@@ -1189,6 +1197,38 @@ def test_surface_marks_unregistered_string_type_reference_incomplete():
     )
 
 
+def test_surface_marks_non_scalar_optional_value_const_incomplete():
+    class ConstValue(str):
+        pass
+
+    registry = CliRegistry(IDENTITY, prog="surface-demo", description="Optional const.")
+    registry.register(
+        VerbSpec(
+            "show",
+            description="show one state",
+            options=(
+                OptionSpec(
+                    ("--state",),
+                    "select a state",
+                    parser_kwargs={
+                        "nargs": "?",
+                        "const": ConstValue("ready"),
+                        "choices": ("ready",),
+                    },
+                ),
+            ),
+            handler=lambda *_: 0,
+        )
+    )
+
+    surface = export_cli_surface(registry.build())
+
+    assert surface["syntax_complete"] is False
+    assert any(
+        "optional-value const" in issue for issue in surface["incomplete"]
+    )
+
+
 def test_surface_marks_choices_on_flag_only_options_incomplete():
     registry = CliRegistry(IDENTITY, prog="surface-demo", description="Flag choices.")
     registry.register(
@@ -1361,6 +1401,30 @@ def test_library_help_actions_are_not_reported_as_opaque_custom_actions():
         opaque=opaque,
     )
     assert any(field.endswith(".action") for field in opaque)
+
+    def store_like(self, _parser, namespace, values, _option_string=None):
+        setattr(namespace, self.dest, values)
+
+    spoofed_store = type(
+        "_StoreAction",
+        (argparse.Action,),
+        {
+            "__module__": "argparse",
+            "__qualname__": "_StoreAction",
+            "__call__": store_like,
+        },
+    )
+    spoofed_store_parser = argparse.ArgumentParser(add_help=False)
+    spoofed_store_action = spoofed_store_parser.add_argument(
+        "--spoofed-store", action=spoofed_store, choices=(1,)
+    )
+    spoofed_store_surface = describe(spoofed_store_action)
+    assert spoofed_store_surface["action"] == "opaque:argparse._StoreAction"
+    assert any(field.endswith(".action") for field in opaque)
+    spoofed_action_kwarg = _normalize_parser_kwarg(
+        "action", spoofed_store, path="action", opaque=opaque
+    )
+    assert spoofed_action_kwarg == {"opaque": "action-label-collision"}
 
 
 def test_nested_routes_keep_their_own_ids_and_parser_descriptions():

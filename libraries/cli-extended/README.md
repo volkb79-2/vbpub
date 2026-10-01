@@ -337,11 +337,14 @@ choices, so a valid first occurrence cannot hide a malformed repeat. For
 choices, it models argparse's exact `str`, `int`, `float`, and `bool` built-in
 conversions before checking membership. Consumer-defined converters remain
 opaque and are never invoked by the checker. Custom argparse actions also
-remain opaque. A non-callable type reference on a value-taking action makes
+remain opaque; only exact stock store, append, and extend action classes are
+checked statically. A non-callable type reference on a value-taking action makes
 the surface incomplete. Any non-default parser type-registry registration
 also makes it incomplete: argparse resolves registry keys by dictionary
 equality, so a key equal to an action's type can change its converter even
-when the key is not the same object. Choice containers must be exact built-in lists,
+when the key is not the same object. Built-in converter behavior is modeled
+only when the converter is the exact built-in object; a matching label is not
+proof. Choice containers must be exact built-in lists,
 tuples, sets, or frozensets, and their members must be plain strings, integers,
 finite floats, or booleans. Custom containers or other choice objects make
 the surface incomplete rather than being flattened into different membership
@@ -350,6 +353,9 @@ global options must also keep their mutually
 exclusive group membership and requiredness in sync with the parent parser.
 Argparse does not check `choices` on a flag-only action, so the exporter marks
 that registration incomplete instead of presenting its choices as enforced.
+For `nargs="?"`, omitting the value selects `const`; review checks that value
+against choices using the declared built-in converter too. A non-scalar
+constant makes the surface incomplete rather than guessing at its equality.
 The linked test must still run the real invocation and assert its behavior and
 effects; the marker proves test collection and linkage only. Catalog interactions may
 refer to an option owned by another route, so a consumer can record a misuse

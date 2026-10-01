@@ -2888,6 +2888,54 @@ def test_review_positional_choice_uses_the_built_in_converter_value():
     assert _findings_for_invocation(candidate, route, invocation) == []
 
 
+@pytest.mark.parametrize(
+    "const, accepted",
+    (
+        pytest.param("ready", True, id="valid-const"),
+        pytest.param("unknown", False, id="invalid-const"),
+    ),
+)
+def test_review_checks_optional_option_const_against_choices(const, accepted):
+    registry = CliRegistry(IDENTITY, prog="audit-tool", description="const choices")
+    registry.register(
+        VerbSpec(
+            "inspect",
+            description="inspect one resource",
+            options=(
+                OptionSpec(
+                    ("--mode",),
+                    "select a mode",
+                    parser_kwargs={
+                        "nargs": "?",
+                        "const": const,
+                        "choices": ("ready",),
+                    },
+                ),
+            ),
+            handler=lambda *_: 0,
+        )
+    )
+    app = registry.build()
+    surface = export_cli_surface(app)
+    candidate = next(
+        case
+        for case in surface["candidates"]
+        if case["kind"] == "option-spelling"
+    )
+    route = next(
+        route for route in surface["routes"] if route["id"] == candidate["route_id"]
+    )
+    invocation = ["inspect", "--mode"]
+
+    actual_status = app.run(
+        argv=invocation, stdout=io.StringIO(), stderr=io.StringIO()
+    )
+    findings = _findings_for_invocation(candidate, route, invocation)
+
+    assert actual_status == (0 if accepted else 2)
+    assert (findings == []) is accepted
+
+
 def test_review_does_not_execute_custom_choice_converters():
     calls = []
 
@@ -2938,6 +2986,56 @@ def test_review_does_not_execute_custom_choice_converters():
         },
         ("1",),
     ) == ("opaque", ())
+
+
+def test_review_does_not_trust_a_custom_converter_with_a_builtin_label():
+    calls = []
+
+    def custom_converter(_value):
+        calls.append("called")
+        return 1
+
+    custom_converter.__module__ = "builtins"
+    custom_converter.__qualname__ = "int"
+    registry = CliRegistry(IDENTITY, prog="audit-tool", description="spoofed type")
+    registry.register(
+        VerbSpec(
+            "inspect",
+            description="inspect one resource",
+            options=(
+                OptionSpec(
+                    ("--mode",),
+                    "select a mode",
+                    parser_kwargs={"type": custom_converter, "choices": (1,)},
+                ),
+            ),
+            handler=lambda *_: 0,
+        )
+    )
+    app = registry.build()
+    surface = export_cli_surface(app)
+    candidate = next(
+        case
+        for case in surface["candidates"]
+        if case["kind"] == "option-choice"
+    )
+    route = next(
+        route for route in surface["routes"] if route["id"] == candidate["route_id"]
+    )
+    action = next(
+        action
+        for action in route["actions"]
+        if action.get("flags") == ["--mode"]
+    )
+
+    assert action["type"] == {"opaque": "built-in-converter-label-collision"}
+    assert action["parser_kwargs"]["type"] == {
+        "opaque": "built-in-converter-label-collision"
+    }
+    assert _findings_for_invocation(
+        candidate, route, ["inspect", "--mode", "not-an-integer"]
+    ) == []
+    assert calls == []
 
 
 def test_review_allows_repeated_occurrences_of_one_required_group_option():

@@ -247,9 +247,13 @@ Argparse converts a token before comparing it with an action's choices. The
 review checker models only the exact built-in `str`, `int`, `float`, and
 `bool` converters recorded in the surface; it never executes consumer-defined
 converter code. This keeps ordinary typed choices mechanically checkable
-without running arbitrary product code during a static review. Custom
+without running arbitrary product code during a static review. Built-in
+converters are recognized by runtime object identity rather than import label,
+since a custom callable can expose a colliding label. Custom
 converters and custom actions remain opaque and their accepted values must be
-proven by linked tests that call the real CLI. Any non-default parser
+proven by linked tests that call the real CLI. Stock choice-checking actions
+are recognized by exact class identity so a custom class cannot borrow a
+built-in label. Any non-default parser
 type-registry mapping makes the surface incomplete because argparse resolves
 registered types by dictionary equality. Checking only key identity could
 miss a distinct key that compares equal to an action's type and changes its
@@ -266,6 +270,10 @@ A non-callable `type` reference on a value-taking action is also incomplete.
 Argparse accepts a string type name only when the parser's type registry
 resolves it; the exporter marks any non-default registry incomplete because
 its converter behavior cannot be safely inferred from the action alone.
+An omitted value for an option with `nargs="?"` is still a parsed value when
+`const` is set, so the checker applies the same converter and choice rules to
+that constant. A non-scalar constant makes the surface incomplete because its
+equality behavior cannot be represented safely.
 
 Whether the top-level executable shows help before parsing or passes empty
 argv to the single-command parser is part of the call contract. Parsing may

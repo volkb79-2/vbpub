@@ -101,8 +101,10 @@ Self-review found false certifications in typed-choice checking and choice
 surface export. The correction models exact built-in conversions, marks
 non-default type registries and non-callable type references incomplete, and
 refuses to flatten custom choice containers, scalar subclasses, custom
-actions, or flag-only choices. These changes are on an isolated WIP branch;
-they have not passed the final registered gate and are not merge-ready yet.
+actions, flag-only choices, and non-scalar optional-value constants. It checks
+omitted `nargs="?"` constants against choices. These changes remain on an
+isolated WIP branch; they have not passed the final registered gate and are
+not merge-ready yet.
 
 **Type:** Feature
 

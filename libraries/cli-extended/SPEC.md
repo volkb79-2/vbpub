@@ -798,7 +798,9 @@ MUST NOT hide a malformed repeat. For choices, check mode MUST apply the exact
 `builtins.str`, `builtins.int`, `builtins.float`, or `builtins.bool` conversion
 recorded in the surface before checking membership and whether an invocation
 supplies its reviewed choice. With no converter, it MUST compare the raw argv
-string to the serialized choice value. Static choice checks apply only to
+string to the serialized choice value. For an option with `nargs="?"`, an
+occurrence with no value MUST check the declared `const` against choices using
+the same converter rule. Static choice checks apply only to
 `argparse._StoreAction`, `argparse._AppendAction`, and
 `argparse._ExtendAction`; custom actions remain opaque and require a linked
 behavior test. It MUST NOT execute consumer-defined converters, custom
@@ -830,10 +832,18 @@ syntax incomplete; product cases and tests still own its accepted values and
 failure boundary. An unenumerable parser field or missing parser route MUST
 make the surface incomplete and fail check. The exporter MUST never discard a
 field or serialize an unstable object representation to imply completeness.
+The exporter MUST identify built-in `str`, `int`, `float`, and `bool`
+converters by exact runtime object identity. A custom callable with a colliding
+import label MUST remain opaque. Static choice checks MUST also identify stock
+`_StoreAction`, `_AppendAction`, and `_ExtendAction` classes by exact runtime
+class identity; a custom action with a colliding label remains opaque.
 Any non-`None`, non-callable type reference on a value-taking action MUST make
 the surface incomplete. Custom parser type-registry registrations MUST also
 make the surface incomplete because a registry key can change the converter
 resolved for an action.
+For `nargs="?"`, a non-`None` `const` that is not an exact built-in string,
+integer, finite float, or boolean MUST make the surface incomplete because its
+choice equality cannot be represented safely.
 Ordinary parser callbacks that add inspectable argparse actions are supported.
 A callback or parser subclass that replaces an argparse token-parsing method,
 sets uncaptured parser-level defaults, or leaves `_option_string_actions`

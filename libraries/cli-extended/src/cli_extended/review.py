@@ -18,6 +18,8 @@ from typing import Any
 from .surface import (
     DEFAULT_MAX_CANDIDATES,
     SurfaceError,
+    _ARGPARSE_CHOICE_ACTION_LABELS,
+    _BUILTIN_TYPE_LABELS,
     _minimum_values,
     _route_required_baseline,
     export_cli_surface,
@@ -32,16 +34,9 @@ SURFACE_START_MARKER = "<!-- cli-extended-surface:start -->"
 SURFACE_END_MARKER = "<!-- cli-extended-surface:end -->"
 
 _BUILTIN_CHOICE_CONVERTERS = {
-    "builtins.bool": bool,
-    "builtins.float": float,
-    "builtins.int": int,
-    "builtins.str": str,
+    label: converter for converter, label in _BUILTIN_TYPE_LABELS.items()
 }
-_ARGPARSE_CHOICE_ACTIONS = {
-    "argparse._AppendAction",
-    "argparse._ExtendAction",
-    "argparse._StoreAction",
-}
+_ARGPARSE_CHOICE_ACTIONS = frozenset(_ARGPARSE_CHOICE_ACTION_LABELS)
 
 
 class ReviewCatalogError(ValueError):
@@ -95,7 +90,7 @@ class SurfaceReport:
 
 
 def _choice_values(
-    action: Mapping[str, Any], values: Sequence[str]
+    action: Mapping[str, Any], values: Sequence[Any]
 ) -> tuple[str, tuple[Any, ...]]:
     """Model only argparse's exact, safe built-in conversions for choices.
 
@@ -145,7 +140,13 @@ def _choices_accept(action: Mapping[str, Any], values: Sequence[str]) -> bool:
     choices = action.get("choices")
     if not isinstance(choices, list):
         return True
-    status, converted = _choice_values(action, values)
+    checked_values: Sequence[Any] = values
+    if not values and action.get("nargs") == "?" and action.get("const") is not None:
+        const = action["const"]
+        if type(const) not in (str, int, float, bool):
+            return True
+        checked_values = (const,)
+    status, converted = _choice_values(action, checked_values)
     if status == "opaque":
         return True
     if status == "invalid":

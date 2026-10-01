@@ -23,8 +23,6 @@ from .parser import (
     OptionSpec,
     RegisteredCli,
     VerbSpec,
-    _HelpAction,
-    _VersionAction,
     _common_option_specs,
 )
 
@@ -37,6 +35,31 @@ _LIBRARY_OWNED_COMMON_OPTIONS = {
 _DEFAULT_ARGPARSE_PARSER = argparse.ArgumentParser(add_help=False)
 _DEFAULT_NEGATIVE_NUMBER_MATCHER = _DEFAULT_ARGPARSE_PARSER._negative_number_matcher
 _DEFAULT_TYPE_CONVERTER = _DEFAULT_ARGPARSE_PARSER._registries["type"][None]
+_BUILTIN_TYPE_LABELS = {
+    bool: "builtins.bool",
+    float: "builtins.float",
+    int: "builtins.int",
+    str: "builtins.str",
+}
+_ARGPARSE_CHOICE_ACTION_LABELS = {
+    "argparse._AppendAction": argparse._AppendAction,
+    "argparse._ExtendAction": argparse._ExtendAction,
+    "argparse._StoreAction": argparse._StoreAction,
+}
+_ARGPARSE_ACTION_TYPES = {
+    argparse.BooleanOptionalAction,
+    argparse._AppendAction,
+    argparse._AppendConstAction,
+    argparse._CountAction,
+    argparse._ExtendAction,
+    argparse._HelpAction,
+    argparse._StoreAction,
+    argparse._StoreConstAction,
+    argparse._StoreFalseAction,
+    argparse._StoreTrueAction,
+    argparse._SubParsersAction,
+    argparse._VersionAction,
+}
 _PARSER_SYNTAX_METHODS = (
     "parse_args",
     "parse_known_args",
@@ -127,6 +150,47 @@ def _normalize(value: Any, *, path: str, opaque: list[str]) -> Any:
         return {"callable": label}
     opaque.append(path)
     return {"opaque": _callable_label(value)}
+
+
+def _normalize_action_type(value: Any, *, path: str, opaque: list[str]) -> Any:
+    """Export built-in converters by identity, never by a colliding label."""
+
+    if value is None:
+        return None
+    for converter, label in _BUILTIN_TYPE_LABELS.items():
+        if value is converter:
+            return {"callable": label}
+    if callable(value) and _callable_label(value) in _BUILTIN_TYPE_LABELS.values():
+        opaque.append(path)
+        return {"opaque": "built-in-converter-label-collision"}
+    return _normalize(value, path=path, opaque=opaque)
+
+
+def _action_label(
+    action: argparse.Action, *, surface_id: str, opaque: list[str]
+) -> str:
+    action_type = type(action)
+    label = f"{action_type.__module__}.{action_type.__qualname__}"
+    if action_type in _ARGPARSE_ACTION_TYPES:
+        return label
+    opaque.append(f"{surface_id}.action")
+    if label in _ARGPARSE_CHOICE_ACTION_LABELS:
+        return f"opaque:{label}"
+    return label
+
+
+def _normalize_parser_kwarg(
+    key: str, value: Any, *, path: str, opaque: list[str]
+) -> Any:
+    if key == "type":
+        return _normalize_action_type(value, path=path, opaque=opaque)
+    if key == "action" and callable(value):
+        label = _callable_label(value)
+        stock_action = _ARGPARSE_CHOICE_ACTION_LABELS.get(label)
+        if stock_action is not None and value is not stock_action:
+            opaque.append(path)
+            return {"opaque": "action-label-collision"}
+    return _normalize(value, path=path, opaque=opaque)
 
 
 def _canonical_flag(flags: Sequence[str]) -> str:
@@ -347,7 +411,9 @@ def _surface_action(
         group_id, group_required = mutex_groups.get(id(action), (None, False))
         value_type = getattr(action, "type", None)
         type_data = (
-            _normalize(value_type, path=f"{surface_id}.type", opaque=opaque)
+            _normalize_action_type(
+                value_type, path=f"{surface_id}.type", opaque=opaque
+            )
             if value_type is not None
             else None
         )
@@ -372,10 +438,7 @@ def _surface_action(
             path=f"{surface_id}.effective_default",
             opaque=opaque,
         )
-        action_label = f"{type(action).__module__}.{type(action).__qualname__}"
-        library_builtin_action = type(action) in {_HelpAction, _VersionAction}
-        if type(action).__module__ != "argparse" and not library_builtin_action:
-            opaque.append(f"{surface_id}.action")
+        action_label = _action_label(action, surface_id=surface_id, opaque=opaque)
         description = (
             selected_spec.description
             if selected_spec
@@ -417,7 +480,10 @@ def _surface_action(
             "hidden": action.help == argparse.SUPPRESS,
             "description": description,
             "parser_kwargs": (
-                {key: _normalize(value, path=f"{surface_id}.{key}", opaque=opaque)
+                {
+                    key: _normalize_parser_kwarg(
+                        key, value, path=f"{surface_id}.{key}", opaque=opaque
+                    )
                  for key, value in sorted(selected_spec.parser_kwargs.items())}
                 if selected_spec is not None
                 else {}
@@ -442,14 +508,13 @@ def _surface_action(
     )
     value_type = getattr(action, "type", None)
     type_data = (
-        _normalize(value_type, path=f"{surface_id}.type", opaque=opaque)
+        _normalize_action_type(
+            value_type, path=f"{surface_id}.type", opaque=opaque
+        )
         if value_type is not None
         else None
     )
-    action_label = f"{type(action).__module__}.{type(action).__qualname__}"
-    library_builtin_action = type(action) in {_HelpAction, _VersionAction}
-    if type(action).__module__ != "argparse" and not library_builtin_action:
-        opaque.append(f"{surface_id}.action")
+    action_label = _action_label(action, surface_id=surface_id, opaque=opaque)
     const = _normalize(action.const, path=f"{surface_id}.const", opaque=opaque)
     nargs = action.nargs
     minimum_values = _minimum_values(nargs)
@@ -683,7 +748,7 @@ def _delegated_option_shape(
             "converter": id(action.type) if callable(action.type) else None,
         },
         "nargs": _normalize(action.nargs, path="delegated.nargs", opaque=opaque),
-        "type": _normalize(
+        "type": _normalize_action_type(
             action.type, path="delegated.type", opaque=opaque
         ),
         "choices": _safe_choice_values(
@@ -865,6 +930,15 @@ def _describe_parser(
             )
     for action_context in contexts:
         for action in action_context.actions:
+            if (
+                action.nargs == "?"
+                and action.const is not None
+                and type(action.const) not in (str, int, float, bool)
+            ):
+                local_incomplete.append(
+                    f"{route_id}: optional-value const for {action.dest!r} "
+                    "cannot be represented exactly"
+                )
             if (
                 action.nargs != 0
                 and action.type is not None
