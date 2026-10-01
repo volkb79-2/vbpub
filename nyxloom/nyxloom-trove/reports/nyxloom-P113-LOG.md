@@ -214,3 +214,41 @@ shared host still had active mutation lanes, so this run was deferred under
 the serialized-gate rule. The exact-cap plan remains 642 candidates, with a
 24-hour lane budget and a 21h24m serial upper bound. Start the R2 only after
 the shared mutation slot is clear; triage its result before the final report.
+
+## Controller R2 triage and base-scope correction — 2026-10-01
+
+The first current-main `session-extract` campaign judged merge commit
+`2ba90c10f00c67f7786ed0f63747c284867ba0be`, resolved base
+`126ccc39e151e33cc7bbcaa18bf765f9c9cd7dd1` (`first-parent`), and selected the
+intended 45 candidates. It finished in about 13 minutes: 37 killed, 8 survived,
+with no equivalents, crashes, hangs, or budget overruns. Seven survivors
+identified missing behavior assertions in Claude's rejected-question parsing,
+prompt formatting, and malformed tool-input handling. The eighth was the
+question/answer boundary comparison: a second guard immediately below it made
+the `>=` to `>` mutation observationally redundant.
+
+Fix commit `cc818af1dea16b3d8bc52e01cbcdd1b6df453d32` added raw-text fallback
+cases for malformed, empty, and out-of-order rejected-question rows; formatting
+cases for empty headers and invalid option labels; and non-object input cases
+for whole-file parsing, stream priming, and pending-question tracking. The
+non-object case first exposed an actual `.get()` failure in the whole-file
+prepass; the affected prepasses now treat non-object inputs as having no
+question list. The two question/answer boundary guards were consolidated into
+one check that requires both rows, with the existing missing-answer behavior
+retained. The full Claude adapter test file passed locally. The declared
+`tester-unified` gate passed on `cc818af1`: R0 PASS and R1 PASS at 15/15 changed
+lines and 2/2 branches. Post-coverage review found no issue.
+
+A later gate attempt on main merge `6ee297a4cb6412b1c66250367a1eb2ecf39e9446`
+reported PASS across R0-R3, but its R2 verdict selected only 1 candidate. The
+verdict records resolved base `2ba90c10f00c67f7786ed0f63747c284867ba0be`
+(`first-parent`), not the configured current-main boundary. This is the
+expected Assay behavior for a merge commit: it measures that merge's own
+payload. Treat that 1/1 PASS as a narrow fix check, not as completion of the
+approved 45-candidate campaign.
+
+This log update is a single-parent commit on top of `6ee297a4`; the next
+session-extract run must confirm the verdict resolves to
+`126ccc39e151e33cc7bbcaa18bf765f9c9cd7dd1` via `merge-base` and selects 45
+candidates before its result is accepted as final. The updated worktree remains
+subject to the full run-gate result and final review; P113 is not closed yet.
