@@ -336,12 +336,20 @@ checker verifies each option occurrence's declared arity and enumerable
 choices, so a valid first occurrence cannot hide a malformed repeat. For
 choices, it models argparse's exact `str`, `int`, `float`, and `bool` built-in
 conversions before checking membership. Consumer-defined converters remain
-opaque and are never invoked by the checker. Choice values must be plain
-strings, integers, finite floats, or booleans; other choice objects make the
-surface incomplete rather than being flattened into a possibly different
-equality value. A flag-only option cannot use `--flag=value`. Delegated global
-options must also keep their mutually exclusive group membership and
-requiredness in sync with the parent parser.
+opaque and are never invoked by the checker. Custom argparse actions also
+remain opaque. A non-callable type reference on a value-taking action makes
+the surface incomplete. Any non-default parser type-registry registration
+also makes it incomplete: argparse resolves registry keys by dictionary
+equality, so a key equal to an action's type can change its converter even
+when the key is not the same object. Choice containers must be exact built-in lists,
+tuples, sets, or frozensets, and their members must be plain strings, integers,
+finite floats, or booleans. Custom containers or other choice objects make
+the surface incomplete rather than being flattened into different membership
+or equality behavior. A flag-only option cannot use `--flag=value`. Delegated
+global options must also keep their mutually
+exclusive group membership and requiredness in sync with the parent parser.
+Argparse does not check `choices` on a flag-only action, so the exporter marks
+that registration incomplete instead of presenting its choices as enforced.
 The linked test must still run the real invocation and assert its behavior and
 effects; the marker proves test collection and linkage only. Catalog interactions may
 refer to an option owned by another route, so a consumer can record a misuse

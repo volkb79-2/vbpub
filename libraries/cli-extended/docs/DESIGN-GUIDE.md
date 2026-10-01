@@ -248,12 +248,24 @@ review checker models only the exact built-in `str`, `int`, `float`, and
 `bool` converters recorded in the surface; it never executes consumer-defined
 converter code. This keeps ordinary typed choices mechanically checkable
 without running arbitrary product code during a static review. Custom
-converters remain opaque and their accepted values must be proven by linked
-tests that call the real CLI. The exporter also marks non-scalar choice
-objects incomplete instead of replacing them with their `.value` or display
-text, because that flattening can change argparse's equality result. Consumers
+converters and custom actions remain opaque and their accepted values must be
+proven by linked tests that call the real CLI. Any non-default parser
+type-registry mapping makes the surface incomplete because argparse resolves
+registered types by dictionary equality. Checking only key identity could
+miss a distinct key that compares equal to an action's type and changes its
+converter. Choice enumeration supports only exact built-in list, tuple, set,
+and frozenset containers with exact built-in scalar members. Container
+subclasses and custom collections may override membership, so they are marked
+incomplete along with non-scalar choice objects whose `.value` or display text
+could change argparse's equality result. Argparse does not check choices for a
+flag-only action, so the surface marks that registration incomplete. Consumers
 can expose the actual command-line scalar choices when their handler maps
 those strings to richer internal types.
+
+A non-callable `type` reference on a value-taking action is also incomplete.
+Argparse accepts a string type name only when the parser's type registry
+resolves it; the exporter marks any non-default registry incomplete because
+its converter behavior cannot be safely inferred from the action alone.
 
 Whether the top-level executable shows help before parsing or passes empty
 argv to the single-command parser is part of the call contract. Parsing may

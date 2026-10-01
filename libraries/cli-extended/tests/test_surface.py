@@ -715,6 +715,86 @@ def test_surface_marks_callbacks_that_replace_parser_behavior_incomplete():
     )
 
 
+@pytest.mark.parametrize(
+    "override, expected_finding",
+    (
+        pytest.param(
+            "registry",
+            "type registry overrides the converter",
+            id="registered-type-override",
+        ),
+        pytest.param(
+            "equal-registry-key",
+            "type registry has custom registrations",
+            id="equal-but-not-identical-type-key",
+        ),
+        pytest.param(
+            "lookup",
+            "overrides argparse syntax method _registry_get",
+            id="registry-lookup-override",
+        ),
+        pytest.param(
+            "container",
+            "parser type registry cannot be inspected",
+            id="uninspectable-registry-container",
+        ),
+        pytest.param(
+            "type-map",
+            "parser type registry cannot be inspected",
+            id="uninspectable-type-registry",
+        ),
+    ),
+)
+def test_surface_marks_type_registry_changes_incomplete(override, expected_finding):
+    registry = CliRegistry(IDENTITY, prog="surface-demo", description="Type registry.")
+
+    def configure(parser):
+        if override == "registry":
+            parser.register("type", int, lambda _value: 1)
+        elif override == "equal-registry-key":
+            registered_name = "".join(("cus", "tom"))
+            action_name = "".join(("cus", "tom"))
+            assert registered_name == action_name
+            assert registered_name is not action_name
+            parser.register("type", registered_name, lambda _value: _value)
+        elif override == "lookup":
+            parser._registry_get = (  # type: ignore[method-assign]
+                lambda _name, _key, default=None: default
+            )
+        elif override == "container":
+            parser._registries = None
+        else:
+            parser._registries["type"] = None
+
+    registry.register(
+        VerbSpec(
+            "inspect",
+            description="inspect one integer",
+            options=(
+                OptionSpec(
+                    ("--count",),
+                    "count",
+                    parser_kwargs={
+                        "type": (
+                            "".join(("cus", "tom"))
+                            if override == "equal-registry-key"
+                            else int
+                        ),
+                        "choices": (1, 2),
+                    },
+                ),
+            ),
+            configure=configure,
+            handler=lambda *_: 0,
+        )
+    )
+
+    surface = export_cli_surface(registry.build())
+
+    assert surface["syntax_complete"] is False
+    assert any(expected_finding in issue for issue in surface["incomplete"])
+
+
 def test_surface_marks_inconsistent_option_lookup_maps_incomplete():
     registry = CliRegistry(IDENTITY, prog="surface-demo", description="Inspect.")
 
@@ -1043,6 +1123,97 @@ def test_non_scalar_choice_objects_make_the_surface_incomplete():
     assert route["syntax_complete"] is False
     assert any(
         "cannot enumerate parser field" in issue
+        for issue in surface["incomplete"]
+    )
+
+
+def test_custom_choice_container_membership_makes_the_surface_incomplete():
+    class RejectingChoices(list):
+        def __contains__(self, value):
+            return False
+
+    choices = RejectingChoices(("ready",))
+    registry = CliRegistry(IDENTITY, prog="surface-demo", description="Custom choices.")
+    registry.register(
+        VerbSpec(
+            "show",
+            description="show one state",
+            options=(
+                OptionSpec(
+                    ("--state",),
+                    "select a state",
+                    parser_kwargs={"choices": choices},
+                ),
+            ),
+            handler=lambda *_: 0,
+        )
+    )
+    app = registry.build()
+    surface = export_cli_surface(app)
+    route = next(route for route in surface["routes"] if route["path"] == ["show"])
+    state_action = next(
+        action for action in route["actions"] if action.get("flags") == ["--state"]
+    )
+
+    assert app.run(
+        argv=["show", "--state", "ready"],
+        stdout=io.StringIO(),
+        stderr=io.StringIO(),
+    ) == 2
+    assert state_action["choices"] == {"opaque": "builtins.list"}
+    assert surface["syntax_complete"] is False
+
+
+def test_surface_marks_unregistered_string_type_reference_incomplete():
+    registry = CliRegistry(IDENTITY, prog="surface-demo", description="Type reference.")
+    registry.register(
+        VerbSpec(
+            "show",
+            description="show one state",
+            options=(
+                OptionSpec(
+                    ("--state",),
+                    "select a state",
+                    parser_kwargs={"type": "unregistered-type", "choices": ("ready",)},
+                ),
+            ),
+            handler=lambda *_: 0,
+        )
+    )
+
+    surface = export_cli_surface(registry.build())
+
+    assert surface["syntax_complete"] is False
+    assert any(
+        "non-callable type reference" in issue for issue in surface["incomplete"]
+    )
+
+
+def test_surface_marks_choices_on_flag_only_options_incomplete():
+    registry = CliRegistry(IDENTITY, prog="surface-demo", description="Flag choices.")
+    registry.register(
+        VerbSpec(
+            "show",
+            description="show current state",
+            options=(
+                OptionSpec(
+                    ("--enabled",),
+                    "enable the feature",
+                    parser_kwargs={"action": "store_true", "choices": (True,)},
+                ),
+            ),
+            handler=lambda *_: 0,
+        )
+    )
+    app = registry.build()
+    surface = export_cli_surface(app)
+
+    assert app.run(
+        argv=["show", "--enabled"], stdout=io.StringIO(), stderr=io.StringIO()
+    ) == 0
+    assert surface["syntax_complete"] is False
+    assert any(
+        "declares choices that argparse does not check" in issue
         for issue in surface["incomplete"]
     )
 

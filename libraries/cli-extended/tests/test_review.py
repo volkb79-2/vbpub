@@ -2928,6 +2928,16 @@ def test_review_does_not_execute_custom_choice_converters():
     assert findings == []
     assert calls == []
     assert _choice_values({"type": {"callable": []}}, ("1",)) == ("opaque", ())
+    assert _choice_values(
+        {"action": [], "type": {"callable": "builtins.int"}}, ("1",)
+    ) == ("opaque", ())
+    assert _choice_values(
+        {
+            "action": "consumer.CustomAction",
+            "type": {"callable": "builtins.int"},
+        },
+        ("1",),
+    ) == ("opaque", ())
 
 
 def test_review_allows_repeated_occurrences_of_one_required_group_option():

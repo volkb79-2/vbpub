@@ -97,6 +97,13 @@ handling; see
 
 **Status:** WIP correctness follow-up; baseline R0/R1 and R3 pass on `f49fdc13`; baseline R2 is active; final-source gates pending
 
+Self-review found false certifications in typed-choice checking and choice
+surface export. The correction models exact built-in conversions, marks
+non-default type registries and non-callable type references incomplete, and
+refuses to flatten custom choice containers, scalar subclasses, custom
+actions, or flag-only choices. These changes are on an isolated WIP branch;
+they have not passed the final registered gate and are not merge-ready yet.
+
 **Type:** Feature
 
 **Area:** Registry introspection and consumer contract testing

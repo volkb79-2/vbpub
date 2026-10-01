@@ -361,9 +361,22 @@ For example, `type=int, choices=(1, 2)` accepts `--count 1`, while
 `choices=(1, 2)` without a converter does not: argparse receives the raw string
 `"1"` in that case. A custom converter remains opaque; its acceptance and
 failure behavior belongs in the linked test, which invokes the real CLI and
-checks status and effects. Choice members must be plain strings, integers,
-finite floats, or booleans. Other choice objects make the surface incomplete
-because their runtime equality cannot safely be represented as JSON scalars.
+checks status and effects. Custom argparse actions receive the same opaque
+behavior-test treatment. Choice containers must be exact built-in lists,
+tuples, sets, or frozensets with plain string, integer, finite-float, or
+boolean members. Custom containers and other choice objects make the surface
+incomplete because their runtime membership or equality cannot safely be
+represented by the exported JSON values.
+Argparse does not check `choices` for a flag-only action such as
+`action="store_true"`; remove that unused declaration or use an action whose
+invocation carries a value. The surface reports it as incomplete.
+Any non-default parser type-registry registration makes the surface
+incomplete. Argparse resolves registered converters by dictionary equality,
+so even a distinct registry key that compares equal to an action's type can
+change its value conversion.
+Value-taking actions must use a callable converter or `None`. A non-callable
+type reference with no registered converter is not valid argparse syntax, so
+the surface marks it incomplete. Custom type registries are also incomplete.
 The structural check does not prove product outcomes. For this `show --poll`
 example, record
 `decision = "refuse"` and a non-zero `expected_exit_status` because `show`

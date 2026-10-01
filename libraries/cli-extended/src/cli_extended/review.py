@@ -37,6 +37,11 @@ _BUILTIN_CHOICE_CONVERTERS = {
     "builtins.int": int,
     "builtins.str": str,
 }
+_ARGPARSE_CHOICE_ACTIONS = {
+    "argparse._AppendAction",
+    "argparse._ExtendAction",
+    "argparse._StoreAction",
+}
 
 
 class ReviewCatalogError(ValueError):
@@ -94,10 +99,16 @@ def _choice_values(
 ) -> tuple[str, tuple[Any, ...]]:
     """Model only argparse's exact, safe built-in conversions for choices.
 
-    Consumer converters are deliberately opaque here. Their behavior belongs
-    in the linked test that invokes the real CLI.
+    Consumer converters and nonstandard argparse actions are deliberately
+    opaque here. Their behavior belongs in the linked real-CLI test.
     """
 
+    action_label = action.get("action")
+    if action_label is not None:
+        if not isinstance(action_label, str):
+            return "opaque", ()
+        if action_label not in _ARGPARSE_CHOICE_ACTIONS:
+            return "opaque", ()
     type_spec = action.get("type")
     if type_spec is None:
         return "modeled", tuple(values)

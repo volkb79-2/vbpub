@@ -733,11 +733,16 @@ remain present in the semantic surface, labelled hidden; hiding an option
 removes it from operator help, not from the audit. Callable converters and
 custom actions MUST be visible by stable import label in the generated table
 and manifest.
-The exporter may enumerate a choice only when its runtime member is an exact
-built-in string, integer, finite float, or boolean. An `Enum` member, custom
-scalar subclass, or other non-scalar choice MUST be marked opaque and make
-that parser surface incomplete; serializing its display text or `.value`
-could change the runtime equality rule used by argparse.
+The exporter may enumerate choices only when the runtime container is an exact
+built-in list, tuple, set, or frozenset and every member is an exact built-in
+string, integer, finite float, or boolean. A custom container or container
+subclass MUST be marked opaque because its membership behavior can differ
+from its items. An `Enum` member, custom scalar subclass, or other non-scalar
+choice MUST also be marked opaque and make that parser surface incomplete;
+serializing its display text or `.value` could change the runtime equality
+rule used by argparse.
+An option with `nargs=0` and non-`None` `choices` MUST also make the surface
+incomplete because argparse does not check choices for flag-only actions.
 
 Nested parser routes carry forward every action from their parent parser that
 is accepted before the nested command word. Each action records its parser
@@ -793,8 +798,11 @@ MUST NOT hide a malformed repeat. For choices, check mode MUST apply the exact
 `builtins.str`, `builtins.int`, `builtins.float`, or `builtins.bool` conversion
 recorded in the surface before checking membership and whether an invocation
 supplies its reviewed choice. With no converter, it MUST compare the raw argv
-string to the serialized choice value. It MUST NOT execute consumer-defined
-converters, custom actions, or handlers; those remain behavior-test oracles.
+string to the serialized choice value. Static choice checks apply only to
+`argparse._StoreAction`, `argparse._AppendAction`, and
+`argparse._ExtendAction`; custom actions remain opaque and require a linked
+behavior test. It MUST NOT execute consumer-defined converters, custom
+actions, or handlers; those remain behavior-test oracles.
 A flag-only foreign option MUST reject an inline value. If an option ID is
 ambiguous across routes and does not resolve uniquely on the target route,
 surface generation MUST refuse it.
@@ -822,6 +830,10 @@ syntax incomplete; product cases and tests still own its accepted values and
 failure boundary. An unenumerable parser field or missing parser route MUST
 make the surface incomplete and fail check. The exporter MUST never discard a
 field or serialize an unstable object representation to imply completeness.
+Any non-`None`, non-callable type reference on a value-taking action MUST make
+the surface incomplete. Custom parser type-registry registrations MUST also
+make the surface incomplete because a registry key can change the converter
+resolved for an action.
 Ordinary parser callbacks that add inspectable argparse actions are supported.
 A callback or parser subclass that replaces an argparse token-parsing method,
 sets uncaptured parser-level defaults, or leaves `_option_string_actions`
@@ -855,7 +867,8 @@ resolve long-option abbreviations using the
 `allow_abbrev` setting of the parser at that depth. A non-default `prefix_chars`
 or enabled `fromfile_prefix_chars` MUST make the surface incomplete until the
 checker can represent those token rules. A callback that replaces an argparse
-token-parsing method, sets uncaptured parser-level defaults, or leaves the
+token-parsing method or `_registry_get`, adds any non-default type-registry
+registration, sets uncaptured parser-level defaults, or leaves the
 parser's option-action lookup inconsistent MUST also make the surface
 incomplete. Ordinary callbacks that add inspectable argparse actions remain
 supported. In every generated candidate, a

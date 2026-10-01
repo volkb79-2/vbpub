@@ -34,7 +34,9 @@ _LIBRARY_OWNED_COMMON_OPTIONS = {
     "--help", "--version", "--log-level", "--quiet", "--debug", "--verbose",
     "--color", "--no-color", "--progress",
 }
-_DEFAULT_NEGATIVE_NUMBER_MATCHER = argparse.ArgumentParser(add_help=False)._negative_number_matcher
+_DEFAULT_ARGPARSE_PARSER = argparse.ArgumentParser(add_help=False)
+_DEFAULT_NEGATIVE_NUMBER_MATCHER = _DEFAULT_ARGPARSE_PARSER._negative_number_matcher
+_DEFAULT_TYPE_CONVERTER = _DEFAULT_ARGPARSE_PARSER._registries["type"][None]
 _PARSER_SYNTAX_METHODS = (
     "parse_args",
     "parse_known_args",
@@ -45,6 +47,7 @@ _PARSER_SYNTAX_METHODS = (
     "_match_arguments_partial",
     "_read_args_from_files",
     "convert_arg_line_to_args",
+    "_registry_get",
     "_get_values",
     "_get_value",
     "_check_value",
@@ -281,9 +284,9 @@ def _safe_choice_values(
 
     if value is None:
         return None
-    if isinstance(value, (tuple, list)):
+    if type(value) in (tuple, list):
         values = value
-    elif isinstance(value, (set, frozenset)):
+    elif type(value) in (set, frozenset):
         values = tuple(value)
     else:
         opaque.append(path)
@@ -558,6 +561,43 @@ def _parser_syntax_issues(
                 f"{route_id}: parser overrides argparse syntax method {name}"
             )
 
+    registries = parser.__dict__.get("_registries")
+    if type(registries) is not dict:
+        issues.append(f"{route_id}: parser type registry cannot be inspected")
+    else:
+        type_registry = registries.get("type")
+        if type(type_registry) is not dict:
+            issues.append(f"{route_id}: parser type registry cannot be inspected")
+        else:
+            type_registry_entries = tuple(type_registry.items())
+            default_type_registry = (
+                len(type_registry_entries) == 1
+                and type_registry_entries[0][0] is None
+                and type_registry_entries[0][1] is _DEFAULT_TYPE_CONVERTER
+            )
+            if not default_type_registry:
+                issues.append(
+                    f"{route_id}: parser type registry has custom registrations "
+                    "that may affect converter resolution"
+                )
+            for action in parser._actions:
+                default_converter = (
+                    _DEFAULT_TYPE_CONVERTER if action.type is None else action.type
+                )
+                converter_override = next(
+                    (
+                        registered_type
+                        for registered_key, registered_type in type_registry_entries
+                        if registered_key is action.type
+                    ),
+                    default_converter,
+                )
+                if converter_override is not default_converter:
+                    issues.append(
+                        f"{route_id}: parser type registry overrides the "
+                        f"converter for action {action.dest!r}"
+                    )
+
     parser_defaults = getattr(parser, "_defaults", {})
     if parser_defaults:
         actions_by_dest: dict[str, list[argparse.Action]] = {}
@@ -825,6 +865,24 @@ def _describe_parser(
             )
     for action_context in contexts:
         for action in action_context.actions:
+            if (
+                action.nargs != 0
+                and action.type is not None
+                and not callable(action.type)
+            ):
+                local_incomplete.append(
+                    f"{route_id}: value-taking action {action.dest!r} has a "
+                    "non-callable type reference"
+                )
+            if (
+                action.option_strings
+                and action.nargs == 0
+                and action.choices is not None
+            ):
+                local_incomplete.append(
+                    f"{route_id}: flag-only option {action.dest!r} declares choices "
+                    "that argparse does not check"
+                )
             actions.append(
                 _surface_action(
                     action,
