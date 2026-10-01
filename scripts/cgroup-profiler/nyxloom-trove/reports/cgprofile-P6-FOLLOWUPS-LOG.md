@@ -1798,3 +1798,22 @@ CIU-managed attached checkout `rg55-p6-final-20261001` was fast-forwarded to
 this exact commit and verified clean. Exact R0/R1, R3, doctor, current-tree
 R2, full gate, live delegated-scope restoration probes, and Sol round-7
 fix-verification remain outstanding.
+
+## Session 41 — 2026-10-01 13:02:51Z — remove a pre-D-31 kill-oracle remnant
+
+Registered `r0-r1` ran on clean exact tree `95fcbe9d0759b6c97ac92c4d1a25702745ab1b2f`
+from 12:57:05Z to 12:59:41Z (156.446 s). The separately read
+`.run-gate/history.json` record is `fail`, exit 1, `dirty=false`,
+`history_eligible=true`; the coverage container had `NanoCpus=3000000000`
+and parent `dev-gates.slice`. Pytest reported **2,144 passed, 1 failed**.
+The sole failure, `TestKillTargets.test_unreadable_pid_identity_is_not_addressable`, called
+`SessionServer._pid_addressable`, which no longer exists. That assertion
+belonged to the earlier numeric-PID kill design: D-31 now enforces through
+the exact verified cgroup's `cgroup.kill`, and the live kill path never
+signals the PID list. Current tests already assert that enforcement does not
+call `os.kill`, refuses unplaced shared sessions, and targets only the exact
+verified container/placement leaf. Removed the obsolete, non-executable
+oracle in commit `de7245aa24a7bf180aa23ea51412fe1709e27989`; no production
+code changed. The updated `test_serve_watch.py` passed locally: 51 passed in
+23.26 s. This is not a registered gate receipt. The new exact tree must rerun
+R0/R1, R3, and doctor before review.

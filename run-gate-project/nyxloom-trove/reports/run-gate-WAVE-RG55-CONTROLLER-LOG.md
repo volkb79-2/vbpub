@@ -6073,3 +6073,25 @@ registered gate receipts. The CIU-managed exact-tree checkout is attached,
 clean, and at `9651d915`; no RG-55 container gate has started. The unrelated
 assay `tester-unified` container seen at 12:35Z is outside RG-55 and was left
 untouched; no later progress poll has been made.
+
+### RW-414 — 2026-10-01 13:02:51Z — P6 R0/R1 exposed an obsolete numeric-PID oracle
+
+P6's first registered `r0-r1` run was on exact clean candidate
+`95fcbe9d0759b6c97ac92c4d1a25702745ab1b2f`. Run-gate history was read
+separately: `fail`, exit 1, duration 156.446 s, 2,144 passed and one failed.
+The exact coverage container `cgprofile-gate-713722-1790859427` read back
+`NanoCpus=3000000000` and `CgroupParent=dev-gates.slice`; the one-second
+placement probe also read back its 3-CPU cap and verified the loaded slice.
+Both exact gate containers were gone after the wrapper's own cleanup. R-36h
+used its declared coarse `rusage-maxrss` fallback because the daemon was
+down; this did not affect the functional test verdict.
+
+The sole failing assertion called removed `SessionServer._pid_addressable`
+from the old numeric-PID kill design. Under settled D-31, enforcement uses
+only `cgroup.kill` at the exact verified boundary; tests already prove the
+unplaced shared-scope refusal, the placed-leaf target, and no numeric PID
+signal. Removed the stale test in
+`de7245aa24a7bf180aa23ea51412fe1709e27989`; the remaining watch module
+passed 51/51 locally. This was a test-only correction, not a registered
+green gate. Exact R0/R1, R3, doctor, live P6 scope/restore probes, and Sol
+round-7 fix-verification remain pending on the resulting candidate.
