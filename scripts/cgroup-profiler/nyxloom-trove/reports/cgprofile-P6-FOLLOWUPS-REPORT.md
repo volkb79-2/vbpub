@@ -1917,3 +1917,14 @@ On exact worktree tip `298e4157e9a5cb96fefea6d976dbf50691fb008d`,
 33.16 s**. This is local targeted evidence for the B1–B3 repairs, not the
 registered package gate. Exact-tip R0/R1, R3, doctor, live delegated-scope
 restoration probe, and round-7 fix verification remain outstanding.
+
+### Focused rerun on current P6 tip (2026-10-01)
+
+On exact committed tip `28345cecb440fa8e6dc566ec98f0f44ad8e091bc`,
+`nice -n 19 ionice -c 3 python3 -m pytest tests/test_serve_placement.py
+tests/test_serve_socket_carrier.py -q` passed serially: **406 passed in
+32.29 s**. This is targeted local regression evidence only. It does not
+replace exact-tip registered R0/R1, R3, doctor, the delegated-scope
+start/stop restoration probes, or R2/full gate. The current checkout must
+first reconcile the accepted P1/main tree and then receive fresh final
+evidence.

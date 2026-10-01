@@ -1675,3 +1675,13 @@ request fix. This is targeted cockpit evidence only; it does not replace the
 registered exact-tip `r0-r1`, `r3`, doctor, or required live scope/restore
 probe. Those gates remain pending, so no review fix-verification or merge is
 claimed.
+
+## Session 34 — 2026-10-01 02:49:33Z — rerun focused P6 blocker regressions
+
+On exact committed tip `28345cecb440fa8e6dc566ec98f0f44ad8e091bc`,
+`nice -n 19 ionice -c 3 python3 -m pytest tests/test_serve_placement.py
+tests/test_serve_socket_carrier.py -q` passed serially: **406 passed in
+32.29 s**. This confirms the focused B1–B3 regressions on the current P6
+checkout, but not the registered package gates or reviewer-owned live
+delegated-scope restoration probe. R0/R1, R3, doctor, exact-tree mutation,
+and full-gate evidence remain outstanding.
