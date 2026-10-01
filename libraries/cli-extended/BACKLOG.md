@@ -95,7 +95,7 @@ handling; see
 
 ## CLI-EXT-04 — export a stable CLI surface and semantic-review checklist
 
-**Status:** Implementation complete; R0/R1 and R3 pass on `f49fdc13`; final-source R2 running
+**Status:** Corrections in progress — first final-source R2 found 48 survivors and one per-mutant timeout
 
 **Type:** Feature
 

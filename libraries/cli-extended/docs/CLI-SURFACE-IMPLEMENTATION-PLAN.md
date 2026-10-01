@@ -1,6 +1,6 @@
 # CLI surface and semantic review tooling plan
 
-**Status:** Implementation complete; R0/R1 and R3 pass on `f49fdc13`; final-source R2 running
+**Status:** R0/R1 and R3 pass on `f49fdc13`; R2 corrections in progress
 
 **Scope:** CLI-EXT-01, CLI-EXT-03 disposition, and CLI-EXT-04
 **Decision owner:** cli-extended maintainers and adopting product owners
@@ -153,14 +153,24 @@ The corrected implementation passes registered R0/R1 on `f49fdc13` with
 100% statement and branch coverage (3,236 statements and 1,548 branches). The
 registered R3 canary also passes on that revision; its expected message is
 `canary rejected: JSON redaction test fails when its guard is disabled`.
-The final-source R2 campaign is running against `f49fdc13`, with a fresh state
-store, `--resume`, and a progress log. At the 74-minute progress check, 634 of
-958 mutants had completed: 622 killed, 11 survived, and one reached its
-configured per-mutant budget. The observed rate projects about 112 minutes
-overall, with roughly 38 minutes remaining against the 150-minute budget.
-There is no verdict yet; the campaign began before these status-only
-documentation updates. The survivor and per-mutant-budget records need review
-before CLI-EXT-04 can be marked complete.
+The first final-source registered R2 campaign completed all 958 mutants on
+`f49fdc13` in about 101 minutes, then returned exit 4 with
+`BUDGET_EXCEEDED/LANE_TIMEOUT`: 909 killed, 48 survived, and one mutant reached
+its per-mutant budget. The 150-minute overall lane budget did not expire. The
+campaign artifacts remain in
+`libraries/cli-extended/.assay/{verdict-r2.json,progress-r2.jsonl,mutation-state-r2/}`.
+The 48 survivors include missing assertions and equivalent or unreachable
+fallback conditions; each must be classified before the gate is considered.
+The timed-out mutant is at `review.py:923`, where the end-of-argv guard appears
+unreachable because its caller checks the same bound first. R0/R1 and R3 pass
+on the same implementation snapshot, but CLI-EXT-04 is not complete until the
+mutation findings are resolved and R2 passes on the corrected tree.
+
+Assay's v13 `--reuse-from` can validate prior killed-test witnesses against a
+changed judging tree while fully rerunning survivors and uncertain outcomes.
+Before using it for a correction campaign, confirm that the completed artifact
+is accepted as a complete unsharded native source and keep the invocation
+inside the registered tester-unified lane.
 
 At the 54-minute checkpoint, 460 of 958 candidates had completed, all killed.
 The overall rate was 8.5 candidates per minute, and the latest interval ran
