@@ -10,6 +10,13 @@ rates, and exact order-statistic trees as each tick arrives. ``finalize``
 assembles a fixed-size document from that state; its percentile lookups are
 O(log n), and it never scans or retains the session's raw sample series.
 
+The exact percentile state is not constant-memory: each order-statistic tree
+keeps one node per distinct observed value, so storage grows with the number
+of unique values in that stream. This trades per-sample object retention and
+stop-time rescanning for exact online rank queries; callers must not infer a
+duration-independent memory bound from the fact that raw sample objects are
+discarded.
+
 **Sample shapes.** A cgroup sample is :func:`sample_target_cgroup`'s (or
 :func:`sample_slice_cgroup`'s) output — a thin wrapper around
 :mod:`lib.metrics`'s ``sample_cgroup`` that also reads ``memory.max`` /
