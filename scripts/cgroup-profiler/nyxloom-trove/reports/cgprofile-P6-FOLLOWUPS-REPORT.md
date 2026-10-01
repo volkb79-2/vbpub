@@ -1893,3 +1893,18 @@ Still required on the committed final report/evidence tip: registered
 covering transient-scope auto-retirement, then the current-tree R2 and full
 gate. P6 is not ready to merge or release. The charge-based memory decision
 and total-RSS/total-resident-cap disclosure are unchanged from RW-387.
+
+### Current host-unit preflight (2026-10-01)
+
+The operator supplied a direct-host, read-only `systemctl show` result for
+`dev-interactive.slice`, `dev-gates.slice`, and `cgprofile.slice`. All three
+are loaded. The first two have `Delegate=no`, are children of `/dev.slice`,
+and each has a five-CPU quota; `cgprofile.slice` is `/cgprofile.slice`, also
+`Delegate=no`, with no CPU quota and a 1 GiB memory limit. Exact values and
+provenance are in controller ruling RW-390 and P6 LOG §32.
+
+This parent-unit readback does not demonstrate D-31's transient delegated
+scope below the non-delegated `dev-gates.slice`: the live probe must create
+the scope with `Delegate=yes`, read back its actual `Slice` and `ControlGroup`,
+exercise owned leaf placement, restore each process, and verify safe scope
+retirement. No host mutation or namespace join was used for this preflight.

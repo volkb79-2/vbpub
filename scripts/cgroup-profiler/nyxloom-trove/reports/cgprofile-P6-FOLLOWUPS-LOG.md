@@ -1644,3 +1644,23 @@ On clean `e48d1d3f`, registered `r0-r1` exited 0: 1,812 tests,
 commit and clean state. Both gates used the normal R-36h fallback because
 the main daemon is down. The artifact update following these receipts
 changes HEAD, so repeat both short lanes on its exact final tip.
+
+## Session 32 — 2026-10-01 01:03:50Z — current host-unit preflight supplied by operator
+
+The operator supplied the result of this read-only query run directly on the
+host: `systemctl show dev-interactive.slice dev-gates.slice cgprofile.slice --property=LoadState,ControlGroup,Delegate,CPUQuotaPerSecUSec,MemoryMax --no-pager`.
+The current values are:
+
+* `dev-interactive.slice`: loaded at `/dev.slice/dev-interactive.slice`,
+  `Delegate=no`, `CPUQuotaPerSecUSec=5s`, `MemoryMax=8589934592`.
+* `dev-gates.slice`: loaded at `/dev.slice/dev-gates.slice`, `Delegate=no`,
+  `CPUQuotaPerSecUSec=5s`, `MemoryMax=1610612736`.
+* `cgprofile.slice`: loaded at `/cgprofile.slice`, `Delegate=no`,
+  `CPUQuotaPerSecUSec=infinity`, `MemoryMax=1073741824`.
+
+This is useful current parent-unit evidence, but does not prove the D-31
+transient delegated scope can be created beneath `dev-gates.slice`, that its
+`Delegate=yes` and exact parent are read back, or that stop restores every
+process before systemd retires it. Those remain reviewer-owned live probes.
+No host mutation, `host-escape`, or namespace join was performed. The same
+values are recorded in controller ruling RW-390.

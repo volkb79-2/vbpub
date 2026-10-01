@@ -5,15 +5,24 @@ implementer or the controller. The caller configures and verifies the route;
 the reviewer is not required to self-identify or attest model/effort metadata.
 Proceed with the technical review if that metadata is not exposed. **Your job
 is to BREAK this before provisional integration.** The previous review series
-is preserved in rounds 1–6; round 5 rejected blockers B1–B6. Round 6 was
+is preserved in rounds 1–7; round 5 rejected blockers B1–B6, round 6 was
 BLOCKED because direct placement below non-delegated `dev-gates.slice` is not
-supported by systemd. D-31/A3 changes the physical design to a systemd-owned
-delegated scope below the slice, with cgprofile-owned lane leaves beneath the
-scope. Round 7 is the final review round (rounds 5–7); start a fresh Sol xhigh
-reviewer seeded with this handoff and rounds 1–6. The caller configures and
-verifies the route; never ask the reviewer to attest its own metadata.
-Record each verdict at
-`scripts/cgroup-profiler/nyxloom-trove/reports/cgprofile-P6-FOLLOWUPS-REVIEW-round<n>.md`.
+supported by systemd, and round 7 rejected B1–B3 on the candidate recorded in
+`cgprofile-P6-FOLLOWUPS-REVIEW-round7.md`. D-31/A3 changes the physical design
+to a systemd-owned delegated scope below the slice, with cgprofile-owned lane
+leaves beneath the scope. The controller has committed B1–B3 repairs after
+that rejection (`80e6d8d2` and later P6 test/evidence commits; see P6 LOG
+§31). Do **not** create round 8: complete round-7 fix verification. Resume the
+same live Sol reviewer if it is still available; if not, the caller may start
+a fresh Sol xhigh session seeded with this handoff and rounds 1–7. Record the
+result as a fix-verification addendum to round 7, not as a new review round.
+The caller configures and verifies the route; never ask the reviewer to
+attest its own metadata. Dispatch only after the exact reconciled candidate
+has fresh registered short-gate and required live-probe evidence.
+The original round verdicts are at
+`scripts/cgroup-profiler/nyxloom-trove/reports/cgprofile-P6-FOLLOWUPS-REVIEW-round<n>.md`;
+write post-repair verification only to a separate `round7-fix-verification`
+addendum and preserve the original round-7 report unchanged.
 You may make and commit scoped fixes in the isolated P6 worktree, but may not
 merge, tag, publish, install, or start/stop the main daemon.
 
@@ -73,7 +82,7 @@ narratives. Run your OWN sweeps.
 
 Read `cgprofile-P6-FOLLOWUPS-LOG.md` (incl. every "Decision asks" block),
 `-REPORT.md`, every existing P6 brief through `-BRIEF-13.md`, and prior review
-rounds 1–6; check each claim; list what you could not verify. Multiple
+rounds 1–7; check each claim; list what you could not verify. Multiple
 sessions built this — hunt the seams between sessions.
 
 ## Attack surface (minimum; add your own)
@@ -134,6 +143,13 @@ sessions built this — hunt the seams between sessions.
    the accept loop still serves other verbs while streaming; over exec
    `ctl watch` flushes per line and exits 0.
 4. **Placement (D-20/D-25/D-31, §8.3).** Before moving anything, persist the
+   Controller-provided direct-host preflight (RW-390) reports
+   `dev-gates.slice` loaded at `/dev.slice/dev-gates.slice`, `Delegate=no`,
+   CPU quota 5 CPUs, memory max 1.5 GiB; `cgprofile.slice` is loaded at
+   `/cgprofile.slice`, `Delegate=no`, unlimited CPU, memory max 1 GiB. These
+   parent-unit facts are not proof that transient delegated scopes work; the
+   live probe must create/read back the exact nested scope and restore it.
+   Before moving anything, persist the
    stable PID/start identities, exact origins, and intended token scope.
    `StartTransientUnit` must create a uniquely token-derived delegated scope
    beneath the verified gates slice with only the needed controllers and
@@ -254,9 +270,12 @@ cleanup. Never let Docker auto-create a missing host bind source.
 each with file:line evidence and a concrete prescription; non-blocking
 findings (S1..) separately; product calls named as decision asks for the
 controller, never improvised. Claims you could not verify listed as such.
-Write `cgprofile-P6-FOLLOWUPS-REVIEW-round7.md`, then return the verdict line
-first in your message. Round 7 is the series cap; if it rejects, stop review
-rounds and return the concrete blockers for controller disposition.
+Do not overwrite the original `cgprofile-P6-FOLLOWUPS-REVIEW-round7.md`.
+After the controller's B1–B3 repair commits and the required exact-tip gates
+and live probes, record only fix verification in a clearly named addendum to
+round 7, with each original blocker marked verified or still open and the
+supporting evidence. This is not round 8 and does not restart the review
+series. Return the disposition line first.
 
 **BLOCKED rule:** If a required live probe is refused because a named host
 prerequisite is absent, record the exact command/output and continue every
