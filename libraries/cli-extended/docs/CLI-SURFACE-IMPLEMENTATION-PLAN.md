@@ -191,8 +191,8 @@ made sync abort before it could regenerate the grammar or show the old semantic
 row. Direct export remains strict; sync records the broken reference, emits the
 current grammar, and keeps the catalog case visible for repair or explicit
 retirement. It never rewrites the TOML catalog. Regression coverage was added
-for these cases; registered gate evidence is still pending on this corrected
-source.
+for these cases; registered R0/R1 and R3 evidence for the corrected source is
+recorded above, with the final-source R2 campaign still running.
 
 The generator deliberately does not enumerate every optional value count or
 repeat count. Consumers declare separate named interactions for token shapes
