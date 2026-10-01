@@ -519,6 +519,17 @@ def _start_named_helper(
             return child
         time.sleep(0.05)
     if child.poll() is None:
+        # A tiny `targets` helper can finish and be auto-removed before the
+        # update call reaches Docker, while the outer docker client is still
+        # flushing its output. The create request already applied --cpus=3.
+        # Give that completed client a bounded chance to return its real exit
+        # status; only an actually persistent unconfirmed helper is unsafe.
+        try:
+            child.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            pass
+        else:
+            return child
         # The exact name was printed before launch and is unique to this run.
         # Remove only that helper if the create-time cap could not be
         # confirmed; never leave a partially launched observer behind.
@@ -1001,11 +1012,19 @@ def _ctl_request(args: argparse.Namespace) -> Dict[str, Any]:
             _err(f"--meta must be valid JSON: {exc}")
         if not isinstance(meta, dict):
             _err("--meta must be a JSON object")
-        return {
+        req = {
             "verb": "start", "target": args.target, "scope": args.scope,
-            "token": args.token, "damon": args.damon, "interval": args.interval,
             "meta": meta,
         }
+        # These options are absent when argparse leaves them at None. In
+        # particular, an omitted --damon must not become JSON null: the
+        # server correctly refuses a *present* null instead of overriding
+        # its configured default with an invented value.
+        for key in ("token", "damon", "interval"):
+            value = getattr(args, key)
+            if value is not None:
+                req[key] = value
+        return req
     if args.verb == "status":
         return {"verb": "status", "session": args.session}
     if args.verb == "stop":

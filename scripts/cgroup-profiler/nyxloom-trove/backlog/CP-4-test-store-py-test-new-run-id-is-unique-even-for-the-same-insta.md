@@ -3,7 +3,7 @@ kind: backlog-entry
 schema_version: 1
 id: CP-4
 title: "test_store.py::test_new_run_id_is_unique_even_for_the_same_instant is a pre-existing probabilistic flake (birthday-paradox collision on a 4-hex-char random suffix)"
-status: open
+status: fixed
 type: "bugfix"
 severity: "low"
 provenance: "RG-55 wave, cgprofile-P1-DAEMON C4, 2026-09-12"
@@ -37,24 +37,27 @@ package. No other vbpub tool or consumer has any input into this function.
 
 ## Proposed contract
 
-Not designed here — this entry tracks the flake, not the fix. Two
-directions worth considering when someone picks this up: (a) widen the
-random suffix (`os.urandom(3)` or more) to shrink the collision
-probability to effectively zero for any realistic draw count a real test
-would use, or (b) treat a rare within-tolerance collision as expected and
-assert `len(ids) >= 49` (or similar) with a comment explaining the
-birthday-paradox math instead of asserting exact uniqueness across 50
-draws from a 65536-value space. Do not pick one without checking whether
-anything downstream actually relies on the *current* 4-hex-char width
-(directory names on disk, existing recorded run ids, etc.).
+The four-hex suffix is part of the documented run-directory shape. It is
+random, so a caller cannot demand collision-free draws. The test now injects
+two different entropy byte strings and checks that each is encoded into a
+different suffix under the same timestamp. That is the actual behavior this
+function guarantees. The daemon separately refuses an existing session ID
+before writing any series; it does not rely on random uniqueness for safety.
 
 ## Oracles
 
-A fix should be verified by running the test at least, say, 200 times in a
-loop (or computing the exact probability analytically for whatever new
-width/assertion is chosen) and confirming the flake rate drops to
-effectively zero — not by a single passing run, which is exactly how this
-one has looked "fine" for the entire life of the project until now.
+The injected-entropy test must pass for the two controlled byte sequences
+and fail if the generator drops or changes their suffix. Its result is
+independent of random draws, test order, and host speed. Registered R0/R1
+must pass on the repaired exact tree.
+
+## Resolution (P1 review round 5, 2026-10-01)
+
+The registered gate on `aa4d1173` failed with exactly this 49/50 collision
+while 1,426 other tests passed. The probabilistic assertion was replaced by
+the deterministic byte-encoding oracle. The related daemon session-ID
+collision now fails closed before any series write. The final exact-tree
+gate receipt is recorded in the round-5 review artifact.
 
 ## SPEC ownership
 

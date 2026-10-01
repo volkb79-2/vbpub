@@ -6,12 +6,22 @@ feature list is in [`README.md`](../README.md); worked adoption belongs in
 
 ## Daemon safety and placement
 
-The daemon is a host-view observer. D-15 deliberately excludes host mutation:
-`serve` has no capability-changing option, does not import `TempCaps`, has no
-Docker socket, and writes only its session volume plus the DAMON admin sysfs
-state required to observe DAMON. A consumer that needs a cap change must use a
+The daemon is a host-view observer. D-15 excludes cap mutation from its normal
+code paths: `serve` has no capability-changing option, does not import
+`TempCaps`, has no Docker socket, and writes its session volume plus the DAMON
+admin sysfs state required to observe DAMON. A consumer that needs a cap change must use a
 separate, explicitly authorized tool; adding a hidden fallback here would make
 the observer change the workload it is measuring.
+
+These are code and deployment choices, not kernel-enforced containment of a
+compromised privileged daemon. An operator with unrestricted Docker access
+already has host-administrator authority. The P1 stack does not mount the host
+system bus or writable host cgroup tree; the later v1.1 placement bridge adds
+those daemon-side authorities. D-32 keeps that bridge direct, without a
+broker. A compromised daemon with those mounts can use their authority beyond
+the Python request checks, including system-bus, cgroupfs, and DAMON writes.
+The read-only host views and private namespaces do not make this a
+least-privilege service.
 
 Host visibility does not require joining host namespaces. Both daemon and
 one-shot helper keep private PID/cgroup namespaces and bind the host cgroup
@@ -80,6 +90,19 @@ sample timestamps are retained; `cores_max` uses each positive adjacent
 timestamp delta and becomes null when a needed timestamp or delta is not
 usable.
 
+The daemon updates the summary as each tick arrives: cumulative-counter
+references, extrema, limit-drift count, host/slice endpoints, PID union, and
+CPU rate validity are maintained directly. Exact nearest-rank percentiles use
+AVL order-statistic multisets, so insertion and final rank selection are
+O(log n); normal `ctl stop` never scans the raw series or recomputes summary
+blocks from it. The full sample, host, and DAMON series are persisted separately
+for reports and crash recovery. The exact percentile state still grows with
+the number of distinct observed values; it is smaller than retaining every
+raw sample object, but it is not a constant-memory sketch. If the daemon
+restarts, orphan recovery deliberately replays the durable series because the
+in-memory accumulator was lost. That recovery path is distinct from normal
+stop-time finalization.
+
 ## Contract boundary
 
 The wire contract is major version 1 and summary documents use schema 1. A
@@ -87,6 +110,14 @@ reachable Unix socket is not enough: `ctl` validates that the response is an
 object with a boolean `ok`, contract major 1, and the shape for the requested
 verb before printing it. Valid daemon errors remain exit 2; malformed or
 incompatible peer responses are daemon faults (exit 3).
+
+Container IDs are resolved against the mounted host cgroup tree, which is
+the identity source. A complete search with no matching scope proves
+`target-not-found`; an unreadable root or branch does not. The walker
+therefore propagates search errors instead of converting them to an empty
+result. The server closes only that request's socket, leaving other sessions
+alive; `ctl` reports a daemon fault at exit 3. Using Docker metadata as a
+fallback would let a name claim a cgroup that the observer could not verify.
 
 ```json
 {
@@ -119,6 +150,14 @@ metadata and live probes on one release fact rather than asking operators to
 type a second version. Untagged local images are marked `0.0.0-dev`; publish
 without an exact tag or explicit manual version refuses. No version lookup
 depends on network access at runtime.
+
+The local `cgprofile:local` alias is not a release coordinate: because it has
+no registry hostname, Docker resolves it to Docker Hub when used as a publish
+output. The Bake file therefore separates a local-only target from the
+versioned GHCR release target, and CMRU's push step selects only the latter.
+This keeps developer convenience from widening the release's external writes.
+The pasteable CIU pin and verification command live in
+[`CONSUMERS.md`](CONSUMERS.md#deploy-a-published-daemon-image-with-ciu).
 
 ## Decisions intentionally left outside this repair
 

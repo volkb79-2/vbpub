@@ -130,12 +130,19 @@ profiling — that would add exactly the load the tool exists to measure.
 RG-55 added a second, always-on mode: a host daemon that run-gate (or anyone
 else) talks to over a Unix socket instead of spawning a collector per lane.
 It keeps PID/cgroup namespaces private and receives explicit read-only host
-`/proc` and cgroup-v2 mounts; only its DAMON interface and session storage are
-writable. It is `scripts/cgroup-profiler/`'s own **standalone ciu root** —
+`/proc` and cgroup-v2 mounts. Its code writes session storage and DAMON sysfs
+during normal operation. The service is privileged, so these mounts and code
+checks do not contain a compromised daemon; see the
+[trust boundary](docs/DESIGN-GUIDE.md#daemon-safety-and-placement). It is
+`scripts/cgroup-profiler/`'s own **standalone ciu root** —
 `RG55-INTERFACE-CONTRACT.md` is the full wire contract.
+The default stack uses the local development image; to deploy a versioned GHCR
+release, pin the complete image coordinate in `ciu.toml.j2` and verify the
+daemon identity as shown in the
+[consumer guide](docs/CONSUMERS.md#deploy-a-published-daemon-image-with-ciu).
 
 ```bash
-python3 build-push.py --build      # -> cgprofile:local (needs docker buildx)
+python3 build-push.py --build      # -> local-only cgprofile:local (needs buildx)
 ciu up --dir .                     # starts cgprofile-host-daemon
 docker exec cgprofile-host-daemon cgprofile ctl version --json
 docker exec cgprofile-host-daemon cgprofile ctl status --json
@@ -172,6 +179,12 @@ The daemon's version response is contract major 1:
   cgprofile-host-daemon cgprofile ctl <verb> --json` from anywhere with
   docker access to that container. `ctl`'s own client-side timeout is 25 s;
   see the contract §1.3/§1.5 for run-gate's own per-verb timeouts.
+- **Target lookup reports what was established.** A complete cgroup-tree
+  search with no matching container returns `target-not-found` (ctl exit 2).
+  If the host cgroup bind cannot be searched, `ctl` exits 3 as a daemon
+  fault; that result does not establish that the container is absent. See
+  [the contract boundary](docs/DESIGN-GUIDE.md#contract-boundary) for why
+  the daemon uses the host tree as its identity source.
 - **Sessions live in the named volume** `cgprofile-sessions`, mounted at
   `/var/lib/cgprofile/sessions` — `ctl stop <session>`'s response names the
   exact `session_dir` and the series files inside it (`samples.jsonl.gz`,
@@ -190,8 +203,8 @@ The daemon's version response is contract major 1:
   on every `stop`, or on demand via `ctl gc --json`. A live session is
   never pruned.
 - The daemon keeps PID and cgroup namespaces private. Its host observation
-  comes from explicit read-only `/proc` and cgroup-v2 binds; DAMON retains
-  only its separately mounted sysfs write surface. `ciu up` is the managed
+  comes from explicit read-only `/proc` and cgroup-v2 binds; normal DAMON
+  operation uses its separately mounted sysfs write surface. `ciu up` is the managed
   lifecycle and must preserve those settings—there is no host-namespace
   fallback launcher.
 
