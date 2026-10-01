@@ -19,7 +19,6 @@ from .surface import (
     DEFAULT_MAX_CANDIDATES,
     SurfaceError,
     _ARGPARSE_CHOICE_ACTION_LABELS,
-    _ARGPARSE_OPTIONAL_CONST_CHECKS_CHOICES,
     _BUILTIN_TYPE_LABELS,
     _minimum_values,
     _route_required_baseline,
@@ -45,7 +44,7 @@ class ReviewCatalogError(ValueError):
 
 
 class SurfaceSpecError(ValueError):
-    """A consumer specification has no safe, unique generated region."""
+    """A consumer specification or surface manifest cannot be rendered safely."""
 
 
 @dataclass(frozen=True)
@@ -131,9 +130,26 @@ def _choice_values_accept(
     linked behavior tests are the acceptance oracle.
     """
 
-    status, converted = _converted_action_values(action, values)
+    if (
+        not values
+        and action["kind"] == "option"
+        and action["nargs"] == "?"
+    ):
+        const = action["const"]
+        if type(const) not in (type(None), str, int, float, bool):
+            return True
+        if type(const) is str:
+            status, converted = _converted_action_values(action, (const,))
+        else:
+            # argparse applies ``type`` to an optional const only when it is
+            # a string.
+            status, converted = "modeled", (const,)
+    else:
+        status, converted = _converted_action_values(action, values)
     if status == "opaque":
         return True
+    if action.get("nargs") == argparse.PARSER:
+        converted = converted[:1]
     return status == "modeled" and any(value == choice for value in converted)
 
 
@@ -146,26 +162,27 @@ def _values_satisfy_action(
     checked_values: Sequence[Any] = values
     check_choices = isinstance(choices, list)
     if (
-        action.get("kind") == "option"
-        and not values
-        and action.get("nargs") == "?"
-        and action.get("const") is not None
+        not values
+        and action["kind"] == "option"
+        and action["nargs"] == "?"
     ):
         const = action["const"]
-        if type(const) not in (str, int, float, bool):
+        if type(const) not in (type(None), str, int, float, bool):
             return True
+        check_const = action["const_choice_check_on_omission"]
         if type(const) is not str:
-            return True
+            return not check_choices or not check_const or const in choices
         checked_values = (const,)
-        check_choices = check_choices and action.get(
-            "const_choice_check_on_omission",
-            _ARGPARSE_OPTIONAL_CONST_CHECKS_CHOICES,
-        )
+        check_choices = check_choices and check_const
     status, converted = _converted_action_values(action, checked_values)
     if status == "opaque":
         return True
     if status == "invalid":
         return False
+    if action["nargs"] == argparse.REMAINDER:
+        return True
+    if action["nargs"] == argparse.PARSER:
+        converted = converted[:1]
     return not check_choices or all(value in choices for value in converted)
 
 
@@ -478,6 +495,13 @@ def render_cli_surface_markdown(
 ) -> str:
     """Render the generated part of a consumer-owned CLI specification."""
 
+    for route in surface["routes"]:
+        for field in ("single_command", "no_args_action"):
+            if type(route.get(field)) is not bool:
+                raise SurfaceSpecError(
+                    f"route {route.get('id', '<unknown>')!r} is missing "
+                    f"required boolean field {field!r}"
+                )
     entrypoint = surface["entrypoint"]
     lines = [
         "## Generated CLI surface and semantic review",

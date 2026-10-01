@@ -240,10 +240,13 @@ callback inventory and opaque fields;
 for each argument and option, its description, token shape, argparse action,
 converter, const, choices, defaults, exclusive-group rule, placement, and
 hidden status. Optional-value options also record whether this stock argparse
-runtime checks a string `const` against `choices` when the value is omitted.
-That fact is probed on a disposable parser and included in the generated spec
-and candidate signature, so a runtime change is visible for review. This keeps
-the canonical spec useful to an operator reviewing
+runtime checks an omitted `const` against `choices`. The exporter probes
+separate representative constants for `None`, `bool`, `float`, `int`, and
+`str`, then records the result for the action's exact built-in const type in the
+generated spec and candidate signature. A runtime change is visible for
+review. Route invocation-mode flags are required manifest facts: rendering
+refuses missing flags instead of silently claiming the route uses the false
+case. This keeps the canonical spec useful to an operator reviewing
 the whole call surface while the JSON manifest remains the stable input for
 diffs and tools.
 
@@ -283,6 +286,10 @@ optional positional uses its default rather than the option's `const`; the
 checker does not apply option-const rules to positional arguments. A
 non-scalar option constant makes the surface incomplete because its value
 cannot be represented safely.
+Argparse checks choices only for the first converted value of
+`nargs=argparse.PARSER` and skips choice membership for `nargs=argparse.REMAINDER`.
+The surface marks choices declared on a remainder action incomplete so they
+cannot look like a parser-enforced restriction.
 
 Whether the top-level executable shows help before parsing or passes empty
 argv to the single-command parser is part of the call contract. Parsing may

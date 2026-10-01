@@ -23,6 +23,8 @@ from .parser import (
     OptionSpec,
     RegisteredCli,
     VerbSpec,
+    _HelpAction,
+    _VersionAction,
     _common_option_specs,
 )
 
@@ -59,15 +61,17 @@ _ARGPARSE_ACTION_TYPES = {
     argparse._StoreTrueAction,
     argparse._SubParsersAction,
     argparse._VersionAction,
+    _HelpAction,
+    _VersionAction,
 }
 
 
-def _argparse_checks_optional_const_choices() -> bool:
-    """Probe the stock runtime's nargs='?' const-choice behavior safely."""
+def _argparse_checks_optional_const_choices(const: Any) -> bool:
+    """Probe omitted-const choices behavior for one exact built-in type."""
 
     parser = argparse.ArgumentParser(add_help=False)
     action = parser.add_argument(
-        "--probe", nargs="?", const="not-a-choice", choices=()
+        "--probe", nargs="?", const=const, choices=()
     )
     try:
         parser._get_values(action, [])
@@ -76,7 +80,17 @@ def _argparse_checks_optional_const_choices() -> bool:
     return False
 
 
-_ARGPARSE_OPTIONAL_CONST_CHECKS_CHOICES = _argparse_checks_optional_const_choices()
+_ARGPARSE_OPTIONAL_CONST_PROBE_VALUES = (
+    None,
+    True,
+    1.5,
+    1,
+    "not-a-choice",
+)
+_ARGPARSE_OPTIONAL_CONST_CHECKS_CHOICES = {
+    type(value): _argparse_checks_optional_const_choices(value)
+    for value in _ARGPARSE_OPTIONAL_CONST_PROBE_VALUES
+}
 _PARSER_SYNTAX_METHODS = (
     "parse_args",
     "parse_known_args",
@@ -204,9 +218,11 @@ def _normalize_parser_kwarg(
     if key == "action" and callable(value):
         label = _callable_label(value)
         stock_action = _ARGPARSE_CHOICE_ACTION_LABELS.get(label)
-        if stock_action is not None and value is not stock_action:
-            opaque.append(path)
-            return {"opaque": "action-label-collision"}
+        if stock_action is not None:
+            if value is not stock_action:
+                opaque.append(path)
+                return {"opaque": "action-label-collision"}
+            return {"callable": label}
     return _normalize(value, path=path, opaque=opaque)
 
 
@@ -504,10 +520,14 @@ def _surface_action(
             **(
                 {
                     "const_choice_check_on_omission": (
-                        _ARGPARSE_OPTIONAL_CONST_CHECKS_CHOICES
+                        _ARGPARSE_OPTIONAL_CONST_CHECKS_CHOICES[
+                            type(action.const)
+                        ]
                     )
                 }
                 if action.nargs == argparse.OPTIONAL
+                and type(action.const)
+                in _ARGPARSE_OPTIONAL_CONST_CHECKS_CHOICES
                 else {}
             ),
         }
@@ -697,7 +717,8 @@ def _parser_syntax_issues(
             normalized = _normalize(value, path="parser_default", opaque=opaque)
             if opaque:
                 return None
-            return json.dumps(normalized, sort_keys=True, separators=(",", ":"))
+            # _normalize canonicalizes mapping keys before this serialization.
+            return json.dumps(normalized, separators=(",", ":"))
 
         uncaptured: list[str] = []
         for destination, default in parser_defaults.items():
@@ -976,6 +997,11 @@ def _describe_parser(
             ):
                 local_incomplete.append(
                     f"{route_id}: flag-only option {action.dest!r} declares choices "
+                    "that argparse does not check"
+                )
+            if action.nargs == argparse.REMAINDER and action.choices is not None:
+                local_incomplete.append(
+                    f"{route_id}: remainder action {action.dest!r} declares choices "
                     "that argparse does not check"
                 )
             actions.append(

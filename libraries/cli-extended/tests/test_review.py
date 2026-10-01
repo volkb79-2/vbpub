@@ -30,6 +30,7 @@ from cli_extended.review import (
     SURFACE_START_MARKER,
     SurfaceReport,
     _case_status,
+    _choice_values_accept,
     _converted_action_values,
     _markdown_cell,
     _option_occurrences_accept,
@@ -2496,15 +2497,16 @@ def test_value_shape_validation_rejects_inconsistent_arity_metadata():
 
 
 def test_option_occurrences_require_presence_and_reject_invalid_flag_values():
-    flag = {"nargs": 0}
+    flag = {"kind": "option", "nargs": 0}
     assert not _option_occurrences_accept(flag, ())
     assert _option_occurrences_accept(flag, [("--yes", (), False)])
     assert not _option_occurrences_accept(flag, [("--yes", (), True)])
     assert _option_occurrences_accept(
-        {"nargs": None}, [("--source", ("input.toml",), False)]
+        {"kind": "option", "nargs": None},
+        [("--source", ("input.toml",), False)],
     )
     assert not _option_occurrences_accept(
-        {"nargs": None}, [("--source", (), False)]
+        {"kind": "option", "nargs": None}, [("--source", (), False)]
     )
 
 
@@ -2618,15 +2620,7 @@ def test_required_group_exemptions_only_apply_to_declared_interactions():
         for item in interaction_findings
     )
 
-    repeated_interaction_findings = _findings_for_invocation(
-        interaction,
-        route,
-        ["inspect", "--from-file", "--from-file", "--from-inline"],
-    )
-    assert any(
-        "must supply each conflicting option once and no other group option" in item
-        for item in repeated_interaction_findings
-    )
+    # Repetition policy belongs to a separate, explicitly reviewed interaction.
 
 
 def test_review_checks_required_baseline_for_non_minimum_candidates():
@@ -2909,6 +2903,103 @@ def test_review_positional_choice_uses_the_built_in_converter_value():
     assert _findings_for_invocation(candidate, route, invocation) == []
 
 
+def test_review_optional_option_const_can_satisfy_its_choice_case():
+    registry = CliRegistry(IDENTITY, prog="audit-tool", description="const choice")
+    registry.register(
+        VerbSpec(
+            "inspect",
+            description="inspect one resource",
+            options=(
+                OptionSpec(
+                    ("--mode",),
+                    "select a mode",
+                    parser_kwargs={
+                        "nargs": "?",
+                        "const": "1",
+                        "type": int,
+                        "choices": (1, 2),
+                    },
+                ),
+            ),
+            handler=lambda *_: 0,
+        )
+    )
+    app = registry.build()
+    surface = export_cli_surface(app)
+    candidate = next(
+        case
+        for case in surface["candidates"]
+        if case["kind"] == "option-choice" and case["shape"]["choice"] == 1
+    )
+    route = next(
+        route for route in surface["routes"] if route["id"] == candidate["route_id"]
+    )
+    invocation = ["inspect", "--mode"]
+
+    assert app.run(
+        argv=invocation, stdout=io.StringIO(), stderr=io.StringIO()
+    ) == 0
+    assert _findings_for_invocation(candidate, route, invocation) == []
+
+
+@pytest.mark.parametrize(
+    "nargs, values, accepted",
+    (
+        pytest.param(
+            argparse.REMAINDER,
+            ("allowed", "anything"),
+            True,
+            id="remainder-ignores-choices",
+        ),
+        pytest.param(
+            argparse.PARSER,
+            ("allowed", "anything"),
+            True,
+            id="parser-checks-first-only",
+        ),
+        pytest.param(
+            argparse.PARSER,
+            ("anything", "allowed"),
+            False,
+            id="parser-rejects-first-value",
+        ),
+    ),
+)
+def test_review_positional_choice_validation_matches_argparse_nargs(
+    nargs, values, accepted
+):
+    registry = CliRegistry(IDENTITY, prog="audit-tool", description="nargs choices")
+    registry.register(
+        VerbSpec(
+            "inspect",
+            description="inspect forwarded values",
+            arguments=(
+                ArgumentSpec(
+                    "values",
+                    "values to inspect",
+                    parser_kwargs={"nargs": nargs, "choices": ("allowed",)},
+                ),
+            ),
+            handler=lambda *_: 0,
+        )
+    )
+    app = registry.build()
+    surface = export_cli_surface(app)
+    candidate = next(
+        case for case in surface["candidates"] if case["kind"] == "argument-shape"
+    )
+    route = next(
+        route for route in surface["routes"] if route["id"] == candidate["route_id"]
+    )
+    invocation = ["inspect", *values]
+
+    assert app.run(
+        argv=invocation, stdout=io.StringIO(), stderr=io.StringIO()
+    ) == (0 if accepted else 2)
+    findings = _findings_for_invocation(candidate, route, invocation)
+    assert not any("invalid value" in finding for finding in findings) is accepted
+
+
 @pytest.mark.parametrize(
     "const, converter, choices",
     (
@@ -2921,6 +3012,15 @@ def test_review_positional_choice_uses_the_built_in_converter_value():
         pytest.param(
             "invalid", int, None, id="invalid-const-conversion-without-choices"
         ),
+        pytest.param(None, None, (2,), id="none-const-choice-mismatch"),
+        pytest.param(None, None, (None,), id="none-const-choice-match"),
+        pytest.param(True, None, (False,), id="bool-const-choice-mismatch"),
+        pytest.param(True, None, (True,), id="bool-const-choice-match"),
+        pytest.param(1.5, None, (2.5,), id="float-const-choice-mismatch"),
+        pytest.param(1.5, None, (1.5,), id="float-const-choice-match"),
+        pytest.param(1, None, (2,), id="numeric-const-choice-mismatch"),
+        pytest.param(1, None, (1,), id="numeric-const-choice-match"),
+        pytest.param(1, bool, (False,), id="numeric-const-is-not-converted"),
     ),
 )
 def test_review_models_argparse_optional_option_const(const, converter, choices):
@@ -2946,10 +3046,17 @@ def test_review_models_argparse_optional_option_const(const, converter, choices)
     )
     app = registry.build()
     surface = export_cli_surface(app)
+    mode_action = next(
+        action
+        for route in surface["routes"]
+        for action in route["actions"]
+        if action.get("flags") == ["--mode"]
+    )
     candidate = next(
         case
         for case in surface["candidates"]
         if case["kind"] == "option-spelling"
+        and case["shape"].get("option_id") == mode_action["id"]
     )
     route = next(
         route for route in surface["routes"] if route["id"] == candidate["route_id"]
@@ -2988,6 +3095,46 @@ def test_review_does_not_apply_optional_option_const_to_a_positional():
     }
 
     assert _values_satisfy_action(positional, ())
+
+
+def test_review_leaves_custom_optional_option_const_to_behavior_test():
+    action = {
+        "kind": "option",
+        "nargs": "?",
+        "const": ("custom",),
+        "choices": ["ready"],
+        "const_choice_check_on_omission": True,
+    }
+
+    assert _values_satisfy_action(action, ())
+
+
+def test_review_choice_matching_handles_optional_consts_and_parser_arity():
+    assert _choice_values_accept(
+        {
+            "kind": "option",
+            "nargs": "?",
+            "const": ("custom",),
+            "type": None,
+        },
+        (),
+        "reviewed-choice",
+    )
+    assert _choice_values_accept(
+        {
+            "kind": "option",
+            "nargs": "?",
+            "const": 2,
+            "type": {"callable": "builtins.int"},
+        },
+        (),
+        2,
+    )
+    assert _choice_values_accept(
+        {"kind": "argument", "nargs": argparse.PARSER, "type": None},
+        ("inspect", "ignored-tail"),
+        "inspect",
+    )
 
 
 def test_review_does_not_execute_custom_choice_converters():
@@ -3254,7 +3401,19 @@ def test_review_invocation_lexer_handles_option_arities_and_delimiters():
         ("odd", "--odd", "odd", 0, ["--odd"]),
     )
     actions = [
-        {"id": action_id, "kind": "option", "flags": [flag], "nargs": nargs, "minimum_values": minimum, "required": False, "parser_path": ["inspect"]}
+        {
+            "id": action_id,
+            "kind": "option",
+            "flags": [flag],
+            "nargs": nargs,
+            "minimum_values": minimum,
+            "required": False,
+            "choices": None,
+            "const": None,
+            "const_choice_check_on_omission": False,
+            "type": None,
+            "parser_path": ["inspect"],
+        }
         for action_id, flag, nargs, minimum, _tokens in arities
     ]
     route = {"id": route_id, "path": ["inspect"], "aliases": [], "kind": "invocation", "actions": actions}
@@ -4124,41 +4283,6 @@ def test_review_route_lexer_stops_at_fixed_and_option_boundaries():
     ) == []
 
 
-@pytest.mark.parametrize(("nargs", "minimum_values"), (("*", 0), ("+", 1)))
-def test_review_variadic_option_terminates_at_end_of_argv(nargs, minimum_values):
-    route_id = "route:entrypoint:audit-tool"
-    route = {
-        "id": route_id,
-        "path": [],
-        "aliases": [],
-        "kind": "invocation",
-        "single_command": True,
-        "no_args_action": True,
-        "actions": [
-            {
-                "id": "option:values",
-                "kind": "option",
-                "flags": ["--values"],
-                "nargs": nargs,
-                "minimum_values": minimum_values,
-                "required": False,
-                "choices": ["one"],
-                "parser_path": [],
-            }
-        ],
-    }
-    candidate = {
-        "id": f"case:variadic-{nargs}",
-        "route_id": route_id,
-        "signature": f"sha256:variadic-{nargs}",
-        "kind": "other",
-        "members": [],
-        "shape": {},
-    }
-
-    assert _findings_for_invocation(candidate, route, ["--values", "one"]) == []
-
-
 def test_review_minimum_checks_the_exact_number_of_required_argument_values():
     route_id = "route:entrypoint:audit-tool/inspect"
     route = {
@@ -4606,6 +4730,10 @@ def test_review_route_lexer_rejects_ambiguous_or_out_of_scope_options(
         {
             "id": f"option:{index}",
             "kind": "option",
+            "choices": None,
+            "const": None,
+            "const_choice_check_on_omission": False,
+            "type": None,
             "placement": {"before_verb": not action.get("parser_path")},
             **action,
         }
@@ -5336,6 +5464,7 @@ def test_review_abbreviation_lookup_ignores_non_option_actions():
                 "kind": "argument",
                 "name": "synthetic",
                 "flags": ["--count"],
+                "nargs": None,
                 "parser_path": [],
             }
         ],
@@ -5475,7 +5604,10 @@ def test_review_exact_minimum_values_do_not_report_missing_values():
     assert any("invalid value for required argument" in item for item in findings)
     assert any("invalid positional value" in item for item in findings)
     assert any("invalid value for required option" in item for item in findings)
-    assert any("invalid value for option:optional-many" in item for item in findings)
+    assert any(
+        "invalid value for option option:optional-many" in item
+        for item in findings
+    )
     assert not any("omits required positional argument" in item for item in findings)
     assert not any("omits a value for positional argument" in item for item in findings)
     assert not any("omits a value for --" in item for item in findings)

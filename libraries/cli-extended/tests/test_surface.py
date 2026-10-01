@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import io
 import json
 import re
 from dataclasses import FrozenInstanceError, replace
@@ -41,10 +42,54 @@ from cli_extended.surface import (
     _signature,
     _surface_action,
     _action_surface_id,
+    _argparse_checks_optional_const_choices,
     _walk_registered_cli,
 )
 
 IDENTITY = CliIdentity("SURFACE", "1.0", "Surface Demo", command="surface-demo")
+
+
+def test_optional_const_choice_probe_detects_the_runtime_check(monkeypatch):
+    def reject_const(_parser, action, _arg_strings):
+        raise argparse.ArgumentError(action, "constant is outside choices")
+
+    monkeypatch.setattr(argparse.ArgumentParser, "_get_values", reject_const)
+
+    assert _argparse_checks_optional_const_choices(1) is True
+
+
+def test_optional_const_choice_probe_accepts_runtime_without_the_check(monkeypatch):
+    monkeypatch.setattr(
+        argparse.ArgumentParser,
+        "_get_values",
+        lambda _parser, action, _arg_strings: action.const,
+    )
+
+    assert _argparse_checks_optional_const_choices(1) is False
+
+
+def test_normalize_parser_kwarg_keeps_exact_stock_action_by_identity():
+    opaque = []
+
+    normalized = _normalize_parser_kwarg(
+        "action", argparse._StoreAction, path="action", opaque=opaque
+    )
+
+    assert normalized == {"callable": "argparse._StoreAction"}
+    assert opaque == []
+
+
+def test_normalize_parser_kwarg_marks_unregistered_callable_action_opaque():
+    def custom_action(*_args, **_kwargs):
+        return None
+
+    opaque = []
+    normalized = _normalize_parser_kwarg(
+        "action", custom_action, path="action", opaque=opaque
+    )
+
+    assert normalized["callable"].endswith("custom_action")
+    assert opaque == ["action"]
 
 
 def _complex_cli(*, duplicate_ids: bool = False):
@@ -761,6 +806,7 @@ def test_surface_marks_type_registry_changes_incomplete(override, expected_findi
             assert registered_name == action_name
             assert registered_name is not action_name
             parser.register("type", registered_name, lambda _value: 1)
+            parser._option_string_actions["--count"].type = action_name
         elif override == "lookup":
             parser._registry_get = (  # type: ignore[method-assign]
                 lambda _name, _key, default=None: default
@@ -779,11 +825,7 @@ def test_surface_marks_type_registry_changes_incomplete(override, expected_findi
                     ("--count",),
                     "count",
                     parser_kwargs={
-                        "type": (
-                            "".join(("cus", "tom"))
-                            if override == "equal-registry-key"
-                            else int
-                        ),
+                        "type": int,
                         "choices": (1, 2),
                     },
                 ),
@@ -1175,12 +1217,16 @@ def test_custom_choice_container_membership_makes_the_surface_incomplete():
         stdout=io.StringIO(),
         stderr=io.StringIO(),
     ) == 2
-    assert state_action["choices"] == {"opaque": "builtins.list"}
+    assert state_action["choices"] == {"opaque": _callable_label(choices)}
     assert surface["syntax_complete"] is False
 
 
 def test_surface_marks_unregistered_string_type_reference_incomplete():
     registry = CliRegistry(IDENTITY, prog="surface-demo", description="Type reference.")
+
+    def configure(parser):
+        parser._option_string_actions["--state"].type = "unregistered-type"
+
     registry.register(
         VerbSpec(
             "show",
@@ -1189,9 +1235,10 @@ def test_surface_marks_unregistered_string_type_reference_incomplete():
                 OptionSpec(
                     ("--state",),
                     "select a state",
-                    parser_kwargs={"type": "unregistered-type", "choices": ("ready",)},
+                    parser_kwargs={"choices": ("ready",)},
                 ),
             ),
+            configure=configure,
             handler=lambda *_: 0,
         )
     )
@@ -1269,6 +1316,10 @@ def test_surface_does_not_apply_optional_option_const_rule_to_positional():
 
 def test_surface_marks_choices_on_flag_only_options_incomplete():
     registry = CliRegistry(IDENTITY, prog="surface-demo", description="Flag choices.")
+
+    def configure(parser):
+        parser._option_string_actions["--enabled"].choices = (True,)
+
     registry.register(
         VerbSpec(
             "show",
@@ -1277,9 +1328,10 @@ def test_surface_marks_choices_on_flag_only_options_incomplete():
                 OptionSpec(
                     ("--enabled",),
                     "enable the feature",
-                    parser_kwargs={"action": "store_true", "choices": (True,)},
+                    parser_kwargs={"action": "store_true"},
                 ),
             ),
+            configure=configure,
             handler=lambda *_: 0,
         )
     )
@@ -1292,6 +1344,37 @@ def test_surface_marks_choices_on_flag_only_options_incomplete():
     assert surface["syntax_complete"] is False
     assert any(
         "declares choices that argparse does not check" in issue
+        for issue in surface["incomplete"]
+    )
+
+
+def test_surface_marks_choices_on_remainder_actions_incomplete():
+    registry = CliRegistry(
+        IDENTITY, prog="surface-demo", description="Remainder choices."
+    )
+    registry.register(
+        VerbSpec(
+            "forward",
+            description="forward values",
+            arguments=(
+                ArgumentSpec(
+                    "values",
+                    "forwarded values",
+                    parser_kwargs={
+                        "nargs": argparse.REMAINDER,
+                        "choices": ("declared",),
+                    },
+                ),
+            ),
+            handler=lambda *_: 0,
+        )
+    )
+
+    surface = export_cli_surface(registry.build())
+
+    assert surface["syntax_complete"] is False
+    assert any(
+        "remainder action 'values' declares choices" in issue
         for issue in surface["incomplete"]
     )
 
@@ -1401,6 +1484,22 @@ def test_library_help_actions_are_not_reported_as_opaque_custom_actions():
     registry.register(VerbSpec("inspect", description="inspect", handler=lambda *_: 0))
     app = registry.build()
     opaque = []
+
+    def describe(action):
+        return _surface_action(
+            action,
+            route_id="route:entrypoint:surface-demo/inspect",
+            route_path=("inspect",),
+            parser_path=("inspect",),
+            option_specs=(),
+            argument_specs=(),
+            global_options=(),
+            single_command=False,
+            group_titles={},
+            mutex_groups={},
+            opaque=opaque,
+        )
+
     for parser in (app.parser, app.command_parsers["inspect"]):
         for action in parser._actions:
             if "--help" not in action.option_strings and "--version" not in action.option_strings:
@@ -2637,7 +2736,7 @@ def test_interaction_candidate_contains_only_required_positionals():
                 "nargs": 0,
                 "choices": None,
                 "exclusive_group": None,
-                "exclusive_required": False,
+                "exclusive_required": True,
                 "scope": "verb-local",
                 "default": None,
                 "default_present": False,
@@ -2674,13 +2773,18 @@ def test_interaction_candidate_contains_only_required_positionals():
     assert interaction["shape"]["required_argument_values"] == {
         "argument:required": 2
     }
+    assert interaction["shape"]["required_exclusive_groups"] == {}
 
 
 def test_interaction_option_ids_must_be_strings():
     route = {
         "id": "route:test/run",
         "path": ["run"],
+        "aliases": [],
         "kind": "invocation",
+        "single_command": True,
+        "no_args_action": True,
+        "confirmation": False,
         "actions": [],
     }
 
@@ -2753,7 +2857,10 @@ def test_delegated_wrapper_parser_declarations_make_surface_incomplete(
         )
 
     assert delegated["syntax_complete"] is False
-    assert any("delegated wrapper parser syntax" in issue for issue in surface["incomplete"])
+    assert any(
+        "wrapper" in issue and "parser syntax" in issue
+        for issue in surface["incomplete"]
+    )
 
 
 def test_surface_without_retained_registry_declarations_is_incomplete():

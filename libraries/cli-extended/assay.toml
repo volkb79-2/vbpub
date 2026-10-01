@@ -7,6 +7,7 @@ rigor = ["R0", "R1", "R2"]
 enforcement = "gate"
 argv = [
   "/opt/tester-venv/bin/python3", "-m", "pytest", "tests", "-q",
+  "--maxfail=1",
   "--cov=cli_extended", "--cov-branch", "--cov-report=json:coverage.json",
 ]
 env = { PYTHONPATH = "src", PYTHONDONTWRITEBYTECODE = "1" }

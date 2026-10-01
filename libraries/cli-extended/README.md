@@ -312,6 +312,9 @@ parser settings (including how negative-number tokens are parsed) and callbacks,
 delegated metadata, and opaque fields. Its argument and option rows include descriptions,
 grammar shape, argparse action and converter, choices, defaults, const values,
 exclusive-group requirements, scope, placement, visibility, and help group.
+Each route's `single_command` and `no_args_action` flags are required manifest
+facts; rendering refuses a route record that omits either instead of assuming
+`false`.
 Single-command entrypoints list only the built-in help forms they actually
 accept. `cli-extended` also loads a product-owned
 TOML decision catalog, updates a marked Markdown section in the product's
@@ -354,14 +357,20 @@ global options must also keep their mutually
 exclusive group membership and requiredness in sync with the parent parser.
 Argparse does not check `choices` on a flag-only action, so the exporter marks
 that registration incomplete instead of presenting its choices as enforced.
-For `nargs="?"`, omitting the value selects `const`. Argparse converts a
-string constant, and some argparse runtimes also check it against `choices`.
-The exporter probes this behavior on a disposable stock parser, records the
-result in the surface and generated spec, and signs it into candidates. The
-review checker follows the recorded runtime behavior without invoking consumer
-code. This rule applies to optional options; an omitted optional positional
-uses its default rather than `const`. A non-scalar option constant makes the
-surface incomplete rather than flattening its runtime value.
+For `nargs=argparse.PARSER`, argparse checks the first converted value against
+choices. For `nargs=argparse.REMAINDER`, it converts values but skips the
+choices check; a remainder action that declares choices is marked incomplete
+so the declaration is not mistaken for an enforced restriction.
+For `nargs="?"`, omitting the value selects `const`. Argparse applies the
+action's converter only when the constant is a string. Whether the stock
+runtime checks an omitted constant against `choices` can depend on the constant
+type, so the exporter probes each supported built-in constant type on a
+disposable parser, records the result in the surface and generated spec, and
+signs it into candidates. The review checker follows the recorded behavior
+without invoking consumer code. This rule applies to optional options; an
+omitted optional positional uses its default rather than `const`. A non-scalar
+option constant makes the surface incomplete rather than flattening its
+runtime value.
 The linked test must still run the real invocation and assert its behavior and
 effects; the marker proves test collection and linkage only. Catalog interactions may
 refer to an option owned by another route, so a consumer can record a misuse

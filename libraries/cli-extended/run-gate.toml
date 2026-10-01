@@ -21,7 +21,7 @@ kind = "command"
 environment = "tester-unified"
 argv = [
   "bash", "-c",
-  "export PYTHONPATH={worktree}/assay/src && cd {worktree}/libraries/cli-extended && mkdir -p .assay && exec /opt/tester-venv/bin/python3 -m assay.cli run cli-extended --resume --state-dir .assay/mutation-state-r2-choice-semantics --progress .assay/progress-r2-choice-semantics.jsonl --verdict-json .assay/verdict-r2-choice-semantics.json",
+  "export PYTHONPATH={worktree}/assay/src && cd {worktree}/libraries/cli-extended && mkdir -p .assay && exec /opt/tester-venv/bin/python3 -m assay.cli run cli-extended --resume --reuse-from .assay/verdict-r2.json --state-dir .assay/mutation-state-r2-choice-semantics --progress .assay/progress-r2-choice-semantics.jsonl --verdict-json .assay/verdict-r2-choice-semantics.json",
 ]
 clean_tree = false
 budget = "180m"

@@ -276,6 +276,10 @@ their remaining tokens, route prefixes select nested commands, and delegated
 groups pass remaining tokens to the child CLI. The table avoids claiming that
 every multi-command route shows help when called without a remainder, since its
 parser may dispatch or reject according to required syntax.
+Route records must include boolean `single_command` and `no_args_action`
+values. If a generated manifest is missing either fact, Markdown rendering
+refuses it; correct the exporter or manifest source rather than filling in a
+default.
 It also records argparse's negative-number matcher and whether each parser has
 negative-number-like options, so the checker classifies signed numeric values
 using the built parser's rules; custom or uninspectable matchers make the
@@ -372,17 +376,24 @@ boolean members. Custom containers and other choice objects make the surface
 incomplete because their runtime membership or equality cannot safely be
 represented by the exported JSON values.
 For an option with `nargs="?"`, invoking the option without a value selects
-`const`. Argparse converts string constants. Whether it checks the converted
-constant against `choices` depends on the stock argparse runtime. The exporter
-probes that behavior with a disposable parser, records it in the surface and
-generated spec, and signs it into candidates. The structural check follows
-the recorded result without executing consumer code. An omitted optional
-positional uses its default, not `const`, and does not use this option rule.
-That option constant must be an exact built-in string, integer, finite float,
-or boolean; custom scalar objects make the surface incomplete.
+`const`. Argparse applies the declared converter only to string constants.
+Whether the runtime checks an omitted constant against `choices` depends on
+the stock runtime's behavior for that exact built-in type. The exporter probes
+`None`, `bool`, `float`, `int`, and `str` constants with disposable parsers and
+records the matching result in the surface and generated spec. It signs this
+field into candidates. The structural check follows it without executing
+consumer code. An omitted
+optional positional uses its default, not `const`, and does not use this option
+rule.
+Any non-`None` option constant must be an exact built-in string, integer,
+finite float, or boolean; `None` is probed as its own built-in case. Custom
+scalar objects make the surface incomplete.
 Argparse does not check `choices` for a flag-only action such as
 `action="store_true"`; remove that unused declaration or use an action whose
 invocation carries a value. The surface reports it as incomplete.
+For positional `nargs=argparse.PARSER`, choices apply to the first converted
+value only. `nargs=argparse.REMAINDER` converts tokens without checking
+choices, so a remainder action with declared choices is marked incomplete.
 Any non-default parser type-registry registration makes the surface
 incomplete. Argparse resolves registered converters by dictionary equality,
 so even a distinct registry key that compares equal to an action's type can

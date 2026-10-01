@@ -110,6 +110,9 @@ def _route(route_id="route:entrypoint:audit-tool/deploy", path=("deploy",), acti
         "path": list(path),
         "aliases": [],
         "kind": "invocation",
+        "single_command": True,
+        "no_args_action": True,
+        "confirmation": False,
         "actions": list(actions),
     }
 
@@ -128,6 +131,9 @@ def test_review_model_objects_are_immutable_and_registered_cli_defaults_are_fals
         argument_specs=(),
         group_titles={},
         mutex_groups={},
+        negative_number_matcher=None,
+        has_negative_number_optionals=False,
+        negative_number_matcher_custom=False,
     )
 
     for value, attribute, replacement in (

@@ -708,6 +708,9 @@ negative-number matcher and whether that parser registers negative-number-like
 options, and actions added by parser callbacks. The JSON surface schema version is `6`; each route records
 `single_command` and `no_args_action`, and those values participate in
 candidate signatures so a change to empty-invocation behavior requires review.
+Both route fields MUST be booleans. Markdown rendering MUST refuse a route
+record missing either field; it MUST NOT treat missing parser facts as
+`false`.
 Each route also records
 `parser_settings` along its path. Each setting contains `parser_path`,
 `allow_abbrev`, `prefix_chars`, `fromfile_prefix_chars`, the
@@ -802,16 +805,24 @@ recorded in the surface before checking membership and whether an invocation
 supplies its reviewed choice. With no converter, it MUST compare the raw argv
 string to the serialized choice value. For an option with `nargs="?"`, an
 occurrence with no value MUST apply the declared converter only when `const`
-is a string, matching argparse. The action record MUST include
+is a string, matching argparse. An option action whose `const` has a supported
+exact built-in type MUST include
 `const_choice_check_on_omission`, determined by probing the stock runtime with
-a disposable parser and an out-of-choices string constant. The generated
+a disposable parser and an out-of-choices constant of the action's exact
+built-in type (`None`, `bool`, `float`, `int`, or `str`). The generated
 Markdown MUST display this field. Candidate signatures MUST include it so a
 runtime change that alters omitted-const behavior requires semantic review.
-The structural checker MUST apply `choices` to the converted constant exactly
-when this recorded field is true. It MUST NOT apply the action's `choices`
+The structural checker MUST apply `choices` exactly when this recorded field
+is true: it checks a converted constant for a string `const` and the original
+constant for other supported types. It MUST NOT apply the action's `choices`
 check when the field is false. The probe and checker MUST NOT invoke consumer
 parsers, consumer converters, custom actions, or handlers. An omitted
 optional positional uses its default and MUST NOT use this option-const rule.
+For `nargs=argparse.PARSER`, the checker MUST convert all supplied values but
+apply `choices` only to the first, matching argparse. For
+`nargs=argparse.REMAINDER`, it MUST convert supplied values but MUST NOT apply
+`choices`, which argparse ignores; a remainder action that declares choices
+MUST make the surface incomplete.
 Static choice checks apply only to
 `argparse._StoreAction`, `argparse._AppendAction`, and
 `argparse._ExtendAction`; custom actions remain opaque and require a linked

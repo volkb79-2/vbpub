@@ -95,7 +95,7 @@ handling; see
 
 ## CLI-EXT-04 — export a stable CLI surface and semantic-review checklist
 
-**Status:** Correctness follow-up in progress; R0/R1/R3 pass on `f49fdc13`; the 2026-10-01 R2 run on that snapshot returned `BUDGET_EXCEEDED`; current WIP gates pending
+**Status:** Correctness follow-up in progress; current-worktree R0/R1 and R3 passed on 2026-10-01; final R2 mutation verdict remains pending. The earlier `f49fdc13` R2 run returned `BUDGET_EXCEEDED`.
 
 Self-review found false certifications in typed-choice checking and choice
 surface export. The correction models exact built-in conversions, marks
@@ -103,14 +103,23 @@ non-default type registries and non-callable type references incomplete, and
 refuses to flatten custom choice containers, scalar subclasses, custom
 actions, flag-only choices, and non-scalar optional-value constants. For
 omitted `nargs="?"` option values, it probes the stock argparse runtime's
-string-`const` choices behavior on a disposable parser and records that result
-in the generated surface and signatures. It keeps positional omission on the
+choices behavior for representative `None`, `bool`, `float`, `int`, and
+`str` constants and records the matching result in the generated surface and
+signatures. It keeps positional omission on the
 separate default-value path. The checker reports failures from modeled
 built-in conversions even when choices are absent. The baseline R2 run ended
 with 909 killed, 48 survived, and one budget-exceeded candidate; those results
-are for `f49fdc13`, not the current WIP, and final-source gates remain pending.
-The corrections are in the CIU-managed integration worktree. Final-source
-registered gates have not run; CLI-EXT-04 is not complete or merge-ready.
+are for `f49fdc13`, not the current WIP. The current worktree's R0/R1 and R3
+gates passed; a fresh R2 verdict remains required.
+The same review found that a string-only `const` probe could not safely model
+numeric or `None` constants on runtimes that treat those values differently.
+The surface now probes each supported built-in const type, and Markdown
+rendering refuses missing route invocation flags instead of defaulting them to
+`false`.
+The corrections are in the CIU-managed integration worktree. R0/R1 passed with
+100% statement and branch coverage, and R3 passed with its expected canary
+rejection. CLI-EXT-04 is not complete or merge-ready until the fresh R2
+campaign returns a verdict and any survivors are resolved.
 
 **Type:** Feature
 
