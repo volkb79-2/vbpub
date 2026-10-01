@@ -241,7 +241,7 @@ def test_codex_discovery_scans_each_existing_root_once_and_requires_metadata(tmp
 def test_store_sessions_dispatches_to_successful_codex_discovery(tmp_path, monkeypatch):
     root = tmp_path / "codex-sessions"
     path = _write_jsonl(
-        root / "rollout.jsonl",
+        root / "rollout-session.jsonl",
         {"type": "session_meta", "payload": {
             "id": "session-id", "session_id": "thread-id", "cli_version": "1",
         }},
@@ -419,6 +419,17 @@ def test_opencode_connect_error_is_wrapped_before_a_connection_exists(tmp_path, 
 
     monkeypatch.setattr(search.sqlite3, "connect", fail_connect)
     with pytest.raises(search.SearchError, match="forced connect failure"):
+        search._opencode_term_counts(database)
+
+
+def test_opencode_interruption_before_connect_skips_connection_cleanup(tmp_path, monkeypatch):
+    database = _opencode_db(tmp_path / "interrupted.db")
+
+    def interrupt_connect(*_args, **_kwargs):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(search.sqlite3, "connect", interrupt_connect)
+    with pytest.raises(KeyboardInterrupt):
         search._opencode_term_counts(database)
 
 
