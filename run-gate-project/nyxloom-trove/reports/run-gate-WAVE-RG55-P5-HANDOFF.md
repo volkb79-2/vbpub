@@ -190,11 +190,19 @@ every probe container in a `finally`.
 ## Gates (verdict in a SEPARATE step, never a pipe tail)
 
 Targeted files while iterating (`nice -n 19 ionice -c 3 python3 -m pytest
-tests/<file> -q`, SERIAL). Final tip, each once, in order: `./run-gate.py
-selftest` (RG-53: 100% line AND branch on every changed line vs `--base
-<base>`), `assay-r1`, `assay-r3`, LAST `assay-r2` (`budget_per_candidate =
-"900s"` is set; keep it), `gate-full` if present. Survivors: a killing test
-or a written equivalent-mutant justification (RW-20/RW-22). One resume.
+tests/<file> -q`, SERIAL). On the final pre-merge tip, run `./run-gate.py
+selftest` (RG-53: 100% line AND branch on every changed line),
+`./run-gate.py --base <base> assay-r1`, `./run-gate.py assay-r3`, and
+`./run-gate.py doctor`, plus the live probes above. This worktree has no
+upstream, and assay-r1/assay-r2 delegate their comparison base, so pass the
+exact base named in the dispatch (currently `main`) explicitly or run-gate
+refuses before starting the lane. After fresh Sol ACCEPT and provisional
+merge, the controller runs `./run-gate.py --base <base> assay-r2` and
+`./run-gate.py --base <base> gate-full` asynchronously in attached CIU
+worktrees; both remain release blockers. Keep the R2 tree quiet, resume only
+on the same judged tree, and retain `budget_per_candidate = "900s"`. Survivors
+must be killed by a behavioral oracle or justified as equivalent
+(RW-20/RW-22).
 
 ## Records
 
