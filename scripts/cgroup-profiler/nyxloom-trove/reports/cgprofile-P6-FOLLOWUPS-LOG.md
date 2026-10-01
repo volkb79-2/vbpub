@@ -1778,3 +1778,23 @@ focused evidence only, not a registered exact-tree lane. The contract copies
 remain byte-identical and `git diff --check` is clean. Exact R0/R1, R3,
 doctor, R2, full gate, live delegated-scope probes, and same-session Sol
 fix-verification remain outstanding.
+
+## Session 40 — 2026-10-01 12:48:54Z — exercise newline-less EOF on a real socket
+
+Round 7's B3 repair correctly returns on EOF before a newline, but its
+regression coverage only exercised a fake connection and an incomplete JSON
+prefix. The reviewer required a real AF_UNIX acceptance test for a complete,
+state-changing request without its newline. Added one that sends a complete
+`stop` request, half-closes the client write side, asserts the connection
+closes with no response and the handler is never dispatched, then proves a
+subsequent valid `version` request still succeeds on the server. No production
+code changed.
+
+On the quiet P6 branch, commit `9651d915234f426b4ef368b41615295ff87699ba`
+passed the focused real-socket test (**1 passed**) and the complete
+`test_serve_socket_carrier.py` module (**58 passed in 3.09 s**) with serial,
+load-niced local pytest. This is local evidence, not a registered gate. The
+CIU-managed attached checkout `rg55-p6-final-20261001` was fast-forwarded to
+this exact commit and verified clean. Exact R0/R1, R3, doctor, current-tree
+R2, full gate, live delegated-scope restoration probes, and Sol round-7
+fix-verification remain outstanding.

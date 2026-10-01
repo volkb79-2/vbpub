@@ -6057,3 +6057,19 @@ container-backed gate has started yet; finish and commit the P6 integration
 tree, then run its exact-tree short gates and live probes before review and
 provisional integration. P1 R2/full-gate evidence and package publication
 remain separate release holds.
+
+### RW-413 — 2026-10-01 12:48:54Z — add a real-socket oracle for P6 B3
+
+Before exact P6 gates, I checked round 7's B3 verification requirement
+against the current tests. The EOF branch in `lib/serve.py` was fixed, but
+the regressions covered only fake connections/incomplete prefixes; the
+required real AF_UNIX test for a complete newline-less state-changing request
+was absent. Added and committed the test as
+`9651d915234f426b4ef368b41615295ff87699ba`: it half-closes a full `stop`
+request, proves no handler dispatch or response, then sends a valid `version`
+request successfully. The focused real-socket test passed 1/1, and the full
+socket-carrier module passed 58/58 in 3.09 s. These are local tests, not
+registered gate receipts. The CIU-managed exact-tree checkout is attached,
+clean, and at `9651d915`; no RG-55 container gate has started. The unrelated
+assay `tester-unified` container seen at 12:35Z is outside RG-55 and was left
+untouched; no later progress poll has been made.
