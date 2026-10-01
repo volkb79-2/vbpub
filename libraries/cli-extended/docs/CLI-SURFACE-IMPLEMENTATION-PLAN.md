@@ -2,7 +2,7 @@
 
 **Status:** Implementation complete; R0/R1 and R3 pass on `f49fdc13`; final-source R2 pending
 
-**Scope:** CLI-EXT-01, CLI-EXT-03 disposition, and CLI-EXT-04  
+**Scope:** CLI-EXT-01, CLI-EXT-03 disposition, and CLI-EXT-04
 **Decision owner:** cli-extended maintainers and adopting product owners
 
 ## Objective
