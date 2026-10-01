@@ -1,6 +1,6 @@
 # CLI surface and semantic review tooling plan
 
-**Status:** Implementation complete; R0/R1 and R3 pass on `f49fdc13`; final-source R2 pending
+**Status:** Implementation complete; R0/R1 and R3 pass on `f49fdc13`; final-source R2 running
 
 **Scope:** CLI-EXT-01, CLI-EXT-03 disposition, and CLI-EXT-04
 **Decision owner:** cli-extended maintainers and adopting product owners
@@ -141,22 +141,23 @@ version's pattern. The checker ignores a custom matcher rather than executing
 consumer-supplied regex syntax; that surface remains incomplete and cannot pass
 check mode.
 
-R2 is still pending. The registered run against committed `9c14091c` reached
+The prior registered run against committed `9c14091c` reached
 490 of 919 candidate records before Assay's 60-minute hard budget expired; its
 `BUDGET_EXCEEDED` artifacts are preserved under
 `libraries/cli-extended/.assay/archive/r2-stale-9c14091c-20261001/` and are not
 a mutation verdict for the corrected source. At the observed rate, the full
 campaign needs about 113 minutes before overhead, so the hard Assay and
-run-gate budgets are raised to 150 minutes and the combined gate budget to
-180 minutes. Final-source evidence still requires a fresh campaign after the
-corrected tree is committed.
+run-gate budgets are 150 minutes and the combined gate budget is 180 minutes.
 
 The corrected implementation passes registered R0/R1 on `f49fdc13` with
 100% statement and branch coverage (3,236 statements and 1,548 branches). The
 registered R3 canary also passes on that revision; its expected message is
 `canary rejected: JSON redaction test fails when its guard is disabled`.
-Final-source R2 will run after this status update is committed, using the new
-150-minute budget and a fresh state store.
+The final-source R2 campaign is running against `f49fdc13`, with a fresh state
+store, `--resume`, and a progress log. Its startup report showed 13 of 958
+mutants completed; the early rate projects about 101 minutes overall. That
+projection is only an estimate, and the campaign began before this status-only
+documentation update.
 
 The implementation review found three additional completeness
 gaps, now closed. Inherited delegate globals are compared by their built action
