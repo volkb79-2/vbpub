@@ -1894,4 +1894,4 @@ and `dev-gates.slice` as loaded, `Delegate=no`, with five-CPU quotas and
 their authored `/dev.slice/...` paths. This current unit-state evidence
 closes the specific round-4 B2 observable; reviewer-owned live daemon and
 placement/restoration probes remain required. Full values and provenance
-are recorded in controller ruling RW-390 and P1 LOG §35.
+are recorded in controller ruling RW-398 and P1 LOG §35.

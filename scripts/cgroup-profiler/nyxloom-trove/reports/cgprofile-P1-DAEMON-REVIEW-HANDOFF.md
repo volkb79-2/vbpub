@@ -27,7 +27,7 @@ s. The operator also supplied direct-host, read-only evidence that
 `/dev.slice/...` paths, both with `Delegate=no` and five-CPU quotas. The same
 query also confirms `cgprofile.slice` loaded at `/cgprofile.slice`,
 `Delegate=no`, unlimited CPU quota, and a 1 GiB memory limit. Exact values and
-provenance are in controller rulings RW-389/RW-390 and P1 LOG/REPORT. This
+provenance are in controller rulings RW-397/RW-398 and P1 LOG/REPORT. This
 closes the missing unit-state observable in B2, pending reviewer confirmation
 and the required reviewer-owned live probes. B3 remains open because old
 short-gate receipts predate the repair. The controller must run registered
@@ -58,7 +58,8 @@ Read, in this order: the plan of record
 `fixtures/rg55/README.md`, the controller log's Rulings section
 (`run-gate-project/nyxloom-trove/reports/run-gate-WAVE-RG55-CONTROLLER-LOG.md`
 — RW-3, RW-7, RW-9, RW-11, RW-13..RW-16, RW-19, RW-21, RW-23,
-  RW-47, RW-48, RW-318..RW-328, RW-381..RW-390 bind this package), the
+  RW-47, RW-48, RW-318..RW-328, RW-381..RW-392 and RW-393..RW-398 bind this
+  package), the
 implementer handoff (`cgprofile-P1-DAEMON-HANDOFF.md`, what was asked), then
 the diff itself — `lib/summary.py`, `lib/subtree.py`, `lib/damon.py`,
 `lib/serve.py`, `lib/store.py` changes, `cgprofile.py`, the shim, the

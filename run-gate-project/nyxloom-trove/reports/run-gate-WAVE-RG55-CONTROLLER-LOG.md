@@ -5407,7 +5407,7 @@ daemon authority documented honestly. P1's current-main candidate is
 `b88d4f07` (five Sol follow-up commits replayed); exact-tree gates, a fresh
 Sol review, complete R2, and the registered full gate are outstanding.
 
-### RW-385 — 2026-09-30 23:26:54Z — keep CIU judging checkouts attached; resume P1/P6 closeout
+### RW-393 — 2026-09-30 23:26:54Z — keep CIU judging checkouts attached; resume P1/P6 closeout
 
 The active P1 release-review candidate is branch
 `rg55-p1-release-review-20260930`, based on main
@@ -5442,14 +5442,14 @@ CIU did not detach the managed P6 mutation checkout. Its Git reflog records a
 plain checkout to `aae66356` on 2026-09-24; the checkout is currently clean and
 detached while the registered branch is at `4392bece`. Read-only checks found
 no active matching run-gate/Assay process or P6 mutation container, and the
-CIU source contains no worktree-detach operation. RW-385 rules that
+CIU source contains no worktree-detach operation. RW-393 rules that
 CIU-managed judging worktrees stay attached to their recorded branch. Pin the
 branch at the judged commit and keep it quiet throughout run/resume; put fixes
 in a separate worktree. For this stale record, restore the checkout to its
 recorded branch before another CIU lifecycle operation; never edit the CIU
 identity record or auto-repair this state.
 
-### RW-386 — 2026-10-01 00:37:41Z — repair P1 round-4 summary finding
+### RW-394 — 2026-10-01 00:37:41Z — repair P1 round-4 summary finding
 
 P1 round 4 (`cgprofile-P1-DAEMON-REVIEW-round4.md`) rejected tree
 `148481e4af504fc416679ed2fd8dffe380709de6`. B1 is merge-blocking: normal
@@ -5474,7 +5474,7 @@ launched. B3 also remains open: short-gate receipts predate the B1 repair and
 must be refreshed on the final committed P1 tip. The P1 edits are still
 uncommitted at this checkpoint; do not merge, release, or activate the daemon.
 
-### RW-387 — 2026-10-01 00:44:45Z — reconcile P1 with latest main; honor PSI gate
+### RW-395 — 2026-10-01 00:44:45Z — reconcile P1 with latest main; honor PSI gate
 
 Main advanced to `126ccc39e151e33cc7bbcaa18bf765f9c9cd7dd1` after the P1
 checkpoint at `8730098d0a8205bb398e60028e799b4ef7b18835`. The only intervening
@@ -5494,7 +5494,7 @@ registered short gate certifies the current tree. Re-run the focused tests,
 registered R0/R1, R3, and doctor on the eventual final committed tree before
 fresh round-5 Sol review. Current-tree R2/full gate and B2 remain open.
 
-### RW-388 — 2026-10-01 00:50:29Z — checkpoint exact P1 summary candidate
+### RW-396 — 2026-10-01 00:50:29Z — checkpoint exact P1 summary candidate
 
 The P1 follow-up deduplicating DAMON percentile state is committed as
 `c81b28372c16c065e0290355b576cd2d3e85d32f`: each class now uses one exact
@@ -5511,7 +5511,7 @@ resource observation (`00:41:21Z`) memory PSI full avg10 was 8.67; no gate or
 bus-query container has been started since. The new candidate is not yet
 reviewed, provisionally merged, released, or activated.
 
-### RW-389 — 2026-10-01 00:55:53Z — record direct-host slice evidence and P1 focused test
+### RW-397 — 2026-10-01 00:55:53Z — record direct-host slice evidence and P1 focused test
 
 The operator supplied output from this read-only command run directly on the
 host (not through `host-escape`):
@@ -5532,11 +5532,11 @@ serial focused tests passed: `test_summary.py` + `test_serve.py`, 205 passed,
 R0/R1, R3, doctor, and fresh Sol round-5 review remain pending on the final
 quiet candidate. Do not infer their outcomes from these local tests.
 
-### RW-390 — 2026-10-01 01:00:34Z — record current `cgprofile.slice` preflight
+### RW-398 — 2026-10-01 01:00:34Z — record current `cgprofile.slice` preflight
 
 The operator supplied the requested direct-host, read-only output for
 `systemctl show dev-interactive.slice dev-gates.slice cgprofile.slice --property=LoadState,ControlGroup,Delegate,CPUQuotaPerSecUSec,MemoryMax --no-pager`.
-In addition to the two units recorded in RW-389, `cgprofile.slice` is
+In addition to the two units recorded in RW-397, `cgprofile.slice` is
 `LoadState=loaded`, `ControlGroup=/cgprofile.slice`, `Delegate=no`,
 `CPUQuotaPerSecUSec=infinity`, and `MemoryMax=1073741824`. This is current
 unit-state evidence for P6 as well as the already-closed P1 B2 observable;
@@ -5549,3 +5549,14 @@ The same query reconfirmed `dev-interactive.slice` loaded at
 `MemoryMax=8589934592`, and `dev-gates.slice` loaded at
 `/dev.slice/dev-gates.slice`, `Delegate=no`, `CPUQuotaPerSecUSec=5s`,
 `MemoryMax=1610612736`.
+
+### RW-399 — 2026-10-01 01:09:52Z — reconcile concurrent ruling-number allocations
+
+The P1 and P6 worktrees both independently appended controller rulings after
+RW-384. The P6 controller log already owns RW-385 through RW-392 (dated
+2026-09-30); the P1 worktree had independently reused RW-385 through RW-390
+for later checkpoints. To keep identifiers globally unique when the branch
+records are integrated, preserve the P6 assignments and renumber the six P1
+entries without changing their timestamps or substance: old P1 RW-385..RW-390
+are now RW-393..RW-398. Cross-references in the P1 and P6 reports/handoffs
+were updated. No product decision or code behavior changes.
