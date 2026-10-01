@@ -353,7 +353,10 @@ schema_version = 2
 scope = "S1"
 rigor = ["R0", "R1"]
 enforcement = "gate"
-argv = ["pytest", "tests/dns/test_zone.py", "-q", "--cov-report=json:coverage.json"]
+argv = [
+  "pytest", "tests/dns/test_zone.py", "-q",
+  "--cov=packages/dns/src", "--cov-report=json:coverage.json",
+]
 env = {}
 env_passthrough = ["PATH"]
 budget = "5m"
@@ -2402,12 +2405,12 @@ The plan JSON also carries `lane`, `commit` and `tree` (the full object ids of
 the source it was made at), and `assay plan` prints a one-line hint on stderr
 (stdout stays one JSON document) naming the measured projection. To project
 the campaign from a measured baseline, save the plan and give it a progress
-file that holds a completed baseline (a preflight or an R0/R1 run at the same
-lane and commit):
+file from a completed baseline at that same lane and commit, such as a
+preflight or an R0/R1 run:
 
 ```bash
 assay plan worker_lane --file assay.toml > plan.json
-assay analyze plan-estimate --plan-json plan.json --progress .assay/progress-self-qualification-preflight.jsonl --workers 3
+assay analyze plan-estimate --plan-json plan.json --progress .assay/progress-worker_lane.jsonl --workers 3
 ```
 
 It prints one JSON object (`schema_version`, `lane`, `commit`, `tree`, `candidates`, `baseline_s`,
