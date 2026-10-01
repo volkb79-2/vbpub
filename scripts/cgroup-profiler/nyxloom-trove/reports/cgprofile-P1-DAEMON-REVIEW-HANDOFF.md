@@ -46,16 +46,36 @@ survivors are dispositioned.
 
 Branch `rg55-p1-release-review-20260930`, worktree
 `/workspaces/vbpub/.worktrees/rg55-p1-release-review-20260930`, project dir
-`scripts/cgroup-profiler/`. The candidate originally used main
-`8730098d0a8205bb398e60028e799b4ef7b18835`; it has since been reconciled
-with current main `126ccc39e151e33cc7bbcaa18bf765f9c9cd7dd1` in merge commit
-`56c617d8c7762f6fb6d7a1a2b326285f7592941c`. The controller supplies the
-exact review tip after the final implementation/evidence commit and short
-gates. Verify the worktree is clean and HEAD is that exact tip before
-reviewing. Review the FULL diff
-`126ccc39e151e33cc7bbcaa18bf765f9c9cd7dd1...<tip>` — every file, every
-type. If main advances before dispatch, the controller must first reconcile
-the candidate and rerun the short gates.
+`scripts/cgroup-profiler/`. The candidate has been reconciled with current
+main `2ba90c10f00c67f7786ed0f63747c284867ba0be` in merge commit
+`e76657b69b39a7462988edfcdf797639f6ceb2a2`; this brings in 21 main commits
+that modify only `nyxloom/`, with no overlap in the P1 product files. This
+reconciliation changes the integration base, not the P1 implementation. The
+controller supplies the exact review tip after final evidence updates and
+short gates. Verify the worktree is clean and HEAD is that exact tip before
+reviewing. Review the FULL P1 diff
+`2ba90c10f00c67f7786ed0f63747c284867ba0be...<tip>` — every changed P1
+file, every type. If main advances before dispatch, the controller must
+first reconcile the candidate and rerun the short gates.
+
+### Current checkpoint (2026-10-01; supersedes older base references below)
+
+Main advanced from `126ccc39e151e33cc7bbcaa18bf765f9c9cd7dd1` to
+`2ba90c10f00c67f7786ed0f63747c284867ba0be`. The 21 intervening main
+commits modify only `nyxloom/`, with no overlap in the P1 product files. The
+candidate was reconciled with that main in merge commit
+`e76657b69b39a7462988edfcdf797639f6ceb2a2`. The current full-review base is
+therefore `2ba90c10...`, not the older `126ccc39...` cited in historical
+sections below. Evidence/handoff commits and the short gates will move HEAD;
+the controller must supply the exact final reviewed tree and confirm clean
+status before dispatch.
+
+At 01:28:37Z, memory PSI `full avg10=5.03` exceeded the 5.0 launch
+threshold (load average 13.91). Active unrelated run-gate containers were
+`run-gate-vbpub-session-extract-51644-1790817645` and
+`run-gate-vbpub-r2-4124646-1790814775`. No RG-55 gate or bare pytest was
+launched. Do not inspect their progress before 01:53:37Z unless an earlier
+completion/error signal arrives, and do not alter or remove them.
 
 ## Phase 1 — BLIND (before any LOG/REPORT/BRIEF)
 
@@ -66,7 +86,7 @@ Read, in this order: the plan of record
 `fixtures/rg55/README.md`, the controller log's Rulings section
 (`run-gate-project/nyxloom-trove/reports/run-gate-WAVE-RG55-CONTROLLER-LOG.md`
 — RW-3, RW-7, RW-9, RW-11, RW-13..RW-16, RW-19, RW-21, RW-23,
-  RW-47, RW-48, RW-318..RW-328, RW-381..RW-392 and RW-393..RW-398 bind this
+  RW-47, RW-48, RW-318..RW-328, RW-381..RW-392 and RW-393..RW-402 bind this
   package), the
 implementer handoff (`cgprofile-P1-DAEMON-HANDOFF.md`, what was asked), then
 the diff itself — `lib/summary.py`, `lib/subtree.py`, `lib/damon.py`,

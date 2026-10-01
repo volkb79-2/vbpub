@@ -1510,3 +1510,21 @@ stat record is malformed. On content committed as
 `test_targets.py` + `test_helper_pid_target.py` passed: **167 passed in 6.50
 s**. This is focused evidence only; new exact-tip R0/R1, R3, R2, full gate,
 and final Sol review are still required.
+
+### 37. Reconcile with current main; resource-gated test window (2026-10-01)
+
+Main advanced from `126ccc39e151e33cc7bbcaa18bf765f9c9cd7dd1` to
+`2ba90c10f00c67f7786ed0f63747c284867ba0be`. The 21 intervening commits
+touch only `nyxloom/`, so they do not overlap the P1 product files. The clean
+P1 branch was reconciled with current main in merge commit
+`e76657b69b39a7462988edfcdf797639f6ceb2a2`. This is now the base for the
+fresh P1 review; the prior `126ccc39...` base is superseded.
+
+At 01:28:37Z, memory PSI `full avg10=5.03` exceeded the 5.0 launch threshold
+and host load average was 13.91. The read-only check found unrelated active
+containers `run-gate-vbpub-session-extract-51644-1790817645` and
+`run-gate-vbpub-r2-4124646-1790814775`. No P1 gate or local pytest was
+launched; no existing container was modified. The next progress observation
+is no earlier than 01:53:37Z unless an earlier completion/error signal
+arrives. Exact-tip R0/R1, R3 and doctor remain outstanding; do not reuse
+older receipts as evidence for the current candidate.

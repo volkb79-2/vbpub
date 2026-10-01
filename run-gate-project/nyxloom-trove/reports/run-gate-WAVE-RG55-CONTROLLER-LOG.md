@@ -5580,3 +5580,23 @@ Focused `tests/test_targets.py` plus `tests/test_helper_pid_target.py` passed
 This closes the known oracle gaps locally but is not replacement R2 evidence.
 Fresh exact-tip registered gates, review, and a new R2/full-gate campaign
 remain required; do not transfer either isolated receipt to the release tip.
+
+### RW-401 — 2026-10-01 01:28:58Z — reconcile P1 with current main
+
+Main advanced from `126ccc39e151e33cc7bbcaa18bf765f9c9cd7dd1` to
+`2ba90c10f00c67f7786ed0f63747c284867ba0be` (21 commits, all touching only
+`nyxloom/`). I merged current main into the clean P1 review branch
+`rg55-p1-release-review-20260930`; merge commit
+`e76657b69b39a7462988edfcdf797639f6ceb2a2` contains no P1 product-file
+overlap. The reviewer’s current base is `2ba90c10...`; the previous base
+`126ccc39...` is superseded. P1 gates and round 5 must judge the exact final
+candidate after these evidence changes.
+
+### RW-402 — 2026-10-01 01:28:58Z — defer new test work under memory PSI
+
+At 01:28:37Z, memory PSI was `full avg10=5.03`, above the launch limit of
+5.0; load average was 13.91. The read-only observation found the unrelated
+active tester container `run-gate-vbpub-session-extract-51644-1790817645`
+and R2 container `run-gate-vbpub-r2-4124646-1790814775`. No RG-55 gate or
+bare pytest was launched. Preserve both exact containers; do not read their
+progress before 01:53:37Z unless an earlier completion/error signal arrives.
