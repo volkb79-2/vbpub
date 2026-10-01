@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import subprocess
 import shutil
+import sys
 
 import pytest
 
@@ -36,6 +37,19 @@ def test_unit_path_accepts_only_a_successful_object_path_reply(
 
     monkeypatch.setattr(placement.subprocess, "run", run)
     assert placement._systemd_unit_path("rg-profile-test.scope") == expected
+
+
+def test_unit_path_parses_stdout_from_a_real_successful_command(monkeypatch, tmp_path):
+    fake_busctl = tmp_path / "busctl"
+    fake_busctl.write_text(
+        f"#!{sys.executable}\n"
+        "print('o \"/unit/path\"')\n",
+        encoding="utf-8",
+    )
+    fake_busctl.chmod(0o755)
+    monkeypatch.setenv("CGPROFILE_BUSCTL", str(fake_busctl))
+
+    assert placement._systemd_unit_path("rg-profile-test.scope") == "/unit/path"
 
 
 @pytest.mark.parametrize(
