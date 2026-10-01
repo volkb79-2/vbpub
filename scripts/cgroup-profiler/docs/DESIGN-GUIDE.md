@@ -214,6 +214,24 @@ index is the first slot beyond the observed count before it configures or turns
 the kdamond on. This keeps a pre-existing monitor on even when a new session
 fails part-way through setup.
 
+### DAMON availability is not session readiness
+
+The `damon` field in `ctl version` answers a narrow capability question:
+cgprofile loaded its DAMON analysis library and can see the admin sysfs
+interface. It does not create a kdamond, configure an operation, or prove that
+the kernel accepts a monitoring context. The sysfs `state=commit` operation
+re-reads and validates the configured context, so a visible interface can
+still reject a real session (for example, with `EINVAL`). See the
+[kernel DAMON usage documentation](https://docs.kernel.org/6.19/admin-guide/mm/damon/usage.html)
+for the interface and commit semantics.
+
+Starting DAMON is best-effort for profiling: inspect the session's `start`
+response for `damon: "on"` versus `unavailable:<reason>`, and treat a
+persisted `damon.jsonl` series as the evidence that samples were collected.
+Neither `ctl version` reporting `available` nor a request with `--damon on`
+proves that DAMON ran. In particular, do not report a DAMON overhead
+measurement unless the compared run actually produced DAMON samples.
+
 ## Session identity and start semantics
 
 The non-null token is the opt-in idempotency key `(container_id, token)` used by

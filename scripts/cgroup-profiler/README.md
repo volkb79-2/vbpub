@@ -176,6 +176,12 @@ The daemon's version response is contract major 1:
 }
 ```
 
+In this response, `damon: "available"` is a capability probe: the DAMON
+analysis library loaded and its admin sysfs interface is visible. It does not
+mean the kernel accepted a configured monitoring context. Check each session's
+`start` result and persisted series; details are in the
+[design guide](docs/DESIGN-GUIDE.md#damon-availability-is-not-session-readiness).
+
 - **One daemon per host, deliberately.** `deploy.environment_tag = "host"`
   (not `$INSTANCE_ID` like every other ciu stack in this estate) — the
   container name is the fixed literal `cgprofile-host-daemon`. A second
