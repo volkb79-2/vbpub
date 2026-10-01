@@ -154,10 +154,10 @@ The corrected implementation passes registered R0/R1 on `f49fdc13` with
 registered R3 canary also passes on that revision; its expected message is
 `canary rejected: JSON redaction test fails when its guard is disabled`.
 The final-source R2 campaign is running against `f49fdc13`, with a fresh state
-store, `--resume`, and a progress log. Its startup report showed 13 of 958
-mutants completed; the early rate projects about 101 minutes overall. That
-projection is only an estimate, and the campaign began before this status-only
-documentation update.
+store, `--resume`, and a progress log. Its first progress check showed 22 of
+958 candidates after 225 seconds, projecting about 142 minutes overall at the
+observed rate. That early estimate is close to the 150-minute hard budget; the
+campaign began before this status-only documentation update.
 
 The implementation review found three additional completeness
 gaps, now closed. Inherited delegate globals are compared by their built action
@@ -208,8 +208,8 @@ semantic case explicit in the consumer's catalog and canonical spec.
 
 | Candidate | Expected result | Current evidence |
 | --- | --- | --- |
-| `--dry-run` without `--refresh` | Refuse before configuration/network work | `test_tool_deps_dry_run_requires_refresh_and_renders_usage` |
-| `--dry-run --refresh PROVIDER` | Accept and preview the planned pin refresh without writes | Tool-dependency dry-run behavior tests |
+| `--dry-run` without `--refresh` | Refuse before configuration/network work | The refusal assertion in `test_tool_dependency_refresh_dry_run_does_not_write_pin_files` |
+| `--dry-run --refresh PROVIDER` | Accept and preview the planned pin refresh without writes | That test covers the refresh function directly; a parser-level `cli.main` case for this exact invocation still needs to be added when CMRU adopts the semantic catalog |
 | `--refresh PROVIDER --json` | Refuse; refresh is not a report mode | `test_tool_deps_refresh_rejects_output_and_freshness_flags` |
 | `--refresh PROVIDER --allow-stale-tool-deps` | Refuse; the freshness override applies to verification, not refresh | `test_tool_deps_refresh_rejects_output_and_freshness_flags` |
 
