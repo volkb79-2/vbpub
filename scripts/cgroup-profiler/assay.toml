@@ -18,11 +18,13 @@ enforcement = "gate"
 argv = ["/opt/tester-venv/bin/python3", "-m", "pytest", "tests", "-q", "-x"]
 env = { PYTHONDONTWRITEBYTECODE = "1" }
 env_passthrough = ["PATH"]
-# Controller ruling RW-19 (2026-09-12): 45m does not hold. Measured live,
-# this commit, jobs=2: 217 candidates at ~84s each -> ~2.5h wall clock: a
-# 90m budget would not hold either. Raised to 4h; run-gate.toml's own
-# [lanes.r2] budget raised to match.
-budget = "4h"
+# Controller ruling RW-438 (2026-10-01): P6 now inventories 1,040 candidates.
+# A prior exact-tree campaign reached its 4h lane deadline after 306 results;
+# the remaining 734 were explicitly budget_exceeded, not classified as
+# killed/survived/hung. A 24h window is based on observed campaign throughput
+# with headroom. If it still expires, resume the same exact tree; time and
+# host pressure remain incomplete-run conditions, never mutant outcomes.
+budget = "24h"
 allow_argv_append = false
 
 # This is a monorepo lane: assay's snapshot walks the whole resolved commit,
