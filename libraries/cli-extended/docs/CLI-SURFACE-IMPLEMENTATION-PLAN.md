@@ -1,6 +1,6 @@
 # CLI surface and semantic review tooling plan
 
-**Status:** Implementation corrections in progress; final registered R0/R1/R2/R3 evidence pending
+**Status:** Implementation complete; R0/R1 and R3 pass on `f49fdc13`; final-source R2 pending
 
 **Scope:** CLI-EXT-01, CLI-EXT-03 disposition, and CLI-EXT-04  
 **Decision owner:** cli-extended maintainers and adopting product owners
@@ -150,6 +150,13 @@ campaign needs about 113 minutes before overhead, so the hard Assay and
 run-gate budgets are raised to 150 minutes and the combined gate budget to
 180 minutes. Final-source evidence still requires a fresh campaign after the
 corrected tree is committed.
+
+The corrected implementation passes registered R0/R1 on `f49fdc13` with
+100% statement and branch coverage (3,236 statements and 1,548 branches). The
+registered R3 canary also passes on that revision; its expected message is
+`canary rejected: JSON redaction test fails when its guard is disabled`.
+Final-source R2 will run after this status update is committed, using the new
+150-minute budget and a fresh state store.
 
 The implementation review found three additional completeness
 gaps, now closed. Inherited delegate globals are compared by their built action
