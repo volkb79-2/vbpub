@@ -1908,3 +1908,12 @@ scope below the non-delegated `dev-gates.slice`: the live probe must create
 the scope with `Delegate=yes`, read back its actual `Slice` and `ControlGroup`,
 exercise owned leaf placement, restore each process, and verify safe scope
 retirement. No host mutation or namespace join was used for this preflight.
+
+### Focused post-repair regressions (2026-10-01)
+
+On exact worktree tip `298e4157e9a5cb96fefea6d976dbf50691fb008d`,
+`tests/test_serve_placement.py` and
+`tests/test_serve_socket_carrier.py` passed serially: **406 passed in
+33.16 s**. This is local targeted evidence for the B1–B3 repairs, not the
+registered package gate. Exact-tip R0/R1, R3, doctor, live delegated-scope
+restoration probe, and round-7 fix verification remain outstanding.

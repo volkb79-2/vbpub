@@ -1664,3 +1664,14 @@ transient delegated scope can be created beneath `dev-gates.slice`, that its
 process before systemd retires it. Those remain reviewer-owned live probes.
 No host mutation, `host-escape`, or namespace join was performed. The same
 values are recorded in controller ruling RW-398.
+
+## Session 33 — 2026-10-01 01:12:45Z — focused P6 placement and socket regressions
+
+At exact worktree tip `298e4157e9a5cb96fefea6d976dbf50691fb008d`, the serial,
+load-niced local command `pytest -q tests/test_serve_placement.py
+tests/test_serve_socket_carrier.py` passed: **406 passed in 33.16 s**. It
+covers the round-7 scope-retirement/cap-readback fixes and unterminated socket
+request fix. This is targeted cockpit evidence only; it does not replace the
+registered exact-tip `r0-r1`, `r3`, doctor, or required live scope/restore
+probe. Those gates remain pending, so no review fix-verification or merge is
+claimed.
