@@ -1332,11 +1332,7 @@ def _review_findings(
             minimum = _minimum_action_values(action)
             display = str((action.get("flags") or (option_id,))[0])
             if any(len(values) < minimum for _spelling, values, _inline in occurrences):
-                if context.startswith("required group "):
-                    findings.append(
-                        f"invocation for {case_id} omits a value for {context}"
-                    )
-                elif context.startswith("required option "):
+                if context.startswith(("required group ", "required option ")):
                     findings.append(
                         f"invocation for {case_id} omits a value for {context}"
                     )
