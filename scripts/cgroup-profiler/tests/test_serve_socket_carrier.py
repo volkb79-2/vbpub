@@ -536,6 +536,43 @@ class TestWireShape:
             server.request_shutdown()
             thread.join(timeout=5.0)
 
+    def test_complete_unterminated_stop_is_not_dispatched_and_server_survives(
+        self, tmp_path
+    ):
+        socket_path = str(tmp_path / "run" / "ctl.sock")
+        server = serve.SessionServer(
+            sessions_dir=str(tmp_path / "sessions"), socket_path=socket_path,
+            accept_timeout=0.05,
+        )
+        dispatched = []
+
+        def record_stop(args):
+            dispatched.append(args)
+            return {"ok": True, "stopped": True}
+
+        server.handle_stop = record_stop
+        thread = threading.Thread(target=server._accept_loop, daemon=True)
+        thread.start()
+        _wait_for_socket(socket_path)
+        try:
+            client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            client.settimeout(2.0)
+            with client:
+                client.connect(socket_path)
+                client.sendall(json.dumps({
+                    "verb": "stop",
+                    "args": {"session": SESSION_ID},
+                    "contract": 1,
+                }).encode("utf-8"))
+                client.shutdown(socket.SHUT_WR)
+                assert client.recv(65536) == b""
+
+            assert dispatched == []
+            assert _raw_socket_request(socket_path, _wire("version"))["ok"] is True
+        finally:
+            server.request_shutdown()
+            thread.join(timeout=5.0)
+
     def test_trickle_line_has_wall_deadline_and_does_not_block_stop(
         self, tmp_path
     ):
