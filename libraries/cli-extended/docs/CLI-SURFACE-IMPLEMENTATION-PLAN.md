@@ -175,6 +175,13 @@ records. Preserve later documentation commits separately while restoring
 that exact tree for the retry; a retry from the documentation-updated tip
 would reject the records because Assay hashes the complete judged tree.
 
+At the 80-minute checkpoint, progress had 704 of 958 candidate events: 684
+killed, 19 survived, and one `budget_exceeded`. The latest interval ran at
+about 9.6 candidates per minute, projecting roughly 27 minutes to finish,
+around 03:50 UTC. These are in-flight counts, not a verdict; inspect the final
+R2 artifact before deciding which survivors need behavioral tests or which
+budget-exceeded candidate needs a rejudge.
+
 The implementation review found three additional completeness
 gaps, now closed. Inherited delegate globals are compared by their built action
 shape, not just spelling, because the wrapper splits leading tokens before the
