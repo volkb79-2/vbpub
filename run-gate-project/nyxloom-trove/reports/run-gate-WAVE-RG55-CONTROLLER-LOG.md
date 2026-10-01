@@ -5637,3 +5637,18 @@ zero failures and two warnings. Those receipts do not apply to the new merge
 tip. The P1 candidate must rerun R0/R1, R3, and doctor after its checkpoint
 refresh before round-5 Sol review. Main's dirty operator files remain outside
 the P1 worktree and untouched.
+
+### RW-405 — 2026-10-01 02:19:55Z — reconcile latest main before P1 review
+
+Main advanced from `6617c44e117ee1ceab222ce4c51ff82f30f3d0d0` to
+`8df26ed143925c882e65a1fe673d1447055bd754`; the intervening commit changes
+only Nyxloom's P113 report and Claude Code adapter test. P1 merged it without
+conflict in `0485d82e475930fcbf74040a0138268b437b30b6`; no P1 product paths
+overlap.
+
+P1 R0/R1, R3, and doctor passed on the previous candidate
+`bd915d7f98929ef584deb8d65c0d00a8480e4193`, but the later main merge
+invalidates exact-commit receipts. Repeat the three checks on the current
+checkpoint, then dispatch round 5 with `REVIEW_TARGET=P1`, the latest P1
+handoff, and the exact gate-history and doctor evidence. Main's operator-owned
+dirty files are outside this candidate and remain untouched.

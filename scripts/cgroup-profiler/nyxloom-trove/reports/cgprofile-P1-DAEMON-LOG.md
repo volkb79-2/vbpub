@@ -1561,3 +1561,13 @@ overlaps P1 product files. On the immediately preceding candidate
 passed with full line/branch coverage and 7/7 canaries rejected, and doctor
 reported zero failures. These receipts do not transfer across the latest-main
 merge. The final candidate must rerun R0/R1, R3, and doctor before review.
+
+### Session 36 — 2026-10-01 02:19:55Z — latest-main reconciliation supersedes short-gate receipts
+
+Main advanced from `6617c44e117ee1ceab222ce4c51ff82f30f3d0d0` to
+`8df26ed143925c882e65a1fe673d1447055bd754`; the single new commit changes
+only Nyxloom's P113 report and Claude Code adapter test. P1 reconciled main
+without conflict in merge `0485d82e475930fcbf74040a0138268b437b30b6`.
+Registered R0/R1, R3, and doctor had passed on `bd915d7f` immediately before
+this merge, but those exact-tree receipts do not transfer. Repeat all three
+on the current post-checkpoint candidate before review.

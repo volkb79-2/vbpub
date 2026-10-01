@@ -1924,18 +1924,18 @@ not been declared equivalent.
 
 ### Current integration and gate status (2026-10-01)
 
-Main advanced from `6ee297a4cb6412b1c66250367a1eb2ecf39e9446` to
-`6617c44e117ee1ceab222ce4c51ff82f30f3d0d0`; the two intervening commits
-modify only Nyxloom's assay configuration and P113 report. The P1 branch
+Main advanced from `6617c44e117ee1ceab222ce4c51ff82f30f3d0d0` to
+`8df26ed143925c882e65a1fe673d1447055bd754`; the intervening commit modifies
+only Nyxloom's P113 report and Claude Code adapter test. The P1 branch
 reconciled without conflict in merge
-`7194c9be7012759e2627cc80cb251485c9fa6248`.
+`0485d82e475930fcbf74040a0138268b437b30b6`.
 
-On the prior clean candidate `a617f87632bd35ea56595156979d041dc33a6213`,
+On the immediately preceding candidate `bd915d7f98929ef584deb8d65c0d00a8480e4193`,
 registered R0/R1 passed with 1,421 tests, 5,140/5,140 statements, and
 1,780/1,780 branch arcs; R3 rejected 7/7 canaries; doctor reported zero
 failures and two warnings. These receipts predate the latest-main merge and
-are not exact-tip evidence. The daemon was down during those runs; coarse
-`rusage-maxrss` and basic in-lane sampling were used under R-36h without
-changing verdicts. Rerun R0/R1, R3, and doctor on the exact post-checkpoint
-candidate. Current-tree R2/full gate and reviewer-owned live probes remain
-open; no review acceptance, merge, release, or daemon activation is claimed.
+are not exact-tip evidence. The daemon was down; coarse `rusage-maxrss` and
+basic in-lane sampling were used under R-36h without changing verdicts. Rerun
+R0/R1, R3, and doctor on the exact post-checkpoint candidate. Current-tree
+R2/full gate and reviewer-owned live probes remain open; no review acceptance,
+merge, release, or daemon activation is claimed.
