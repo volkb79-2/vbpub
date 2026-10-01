@@ -29,6 +29,19 @@ state transitions. The lower-confidence content-merge channel requires both
 --apply and --apply-content-merges. Project-level resume separately dry-runs
 resync and refuses unresolved drift unless --force is supplied.
 
+## Daemon service entrypoint
+
+The service manager starts the foreground daemon with no arguments. Inspect the
+installed entrypoint safely with `--help` or `--version`; both exit before the
+registry or daemon starts. Unknown arguments are rejected.
+
+```sh
+nyxloomd --help
+nyxloomd --version
+# The service manager invokes this form:
+nyxloomd
+```
+
 ## Closed command choices
 
 These are the exact values consumers may need to type. `nyxloom --help`,
@@ -53,6 +66,8 @@ catalog for the installed version.
 | `nyxloom-harness extract* --extract-metadata` | `pre`, `post`, `both` |
 | `nyxloom-harness extract-report --type` | `report-sheet`, `report-detailed`, `csv` |
 | `nyxloom-harness extract-sessions --recurse` | `true`, `false` |
+| `nyxloom-harness search --sort-by` | `best`, `date` |
+| `nyxloom-harness search --client` | `codex`, `claude`, `opencode` |
 | `nyxloomctl intake-bridge poll --transport` | `mmctl`, `rest` |
 | `nyxloomctl finding record/list --kind` | `generic`, `model_near_equivalent`, `cost_crossover` |
 | `nyxloomctl finding record --severity` | `info`, `note`, `important` |
@@ -135,6 +150,30 @@ verbs are separate from nyxloom's registered-project commands:
 project ID. These commands do not require project registration or daemon
 availability.
 
+Run `nyxloom-harness extract --help` to see the controls grouped by source,
+window selection, included content, output, redaction/task context, and live
+following.
+
+## Search local session history
+
+Search across discovered Claude Code, Codex, and OpenCode stores. The command
+matches any query word, ranks sessions by the number and rarity of their
+matches, and prints session IDs with client, activity date, score, matched
+words, and source path. It never prints transcript text:
+
+```bash
+nyxloom-harness search 'cli-extended gate backlog'
+nyxloom-harness search 'cli-extended gate backlog' --sort-by date
+nyxloom-harness search 'cli-extended gate backlog' --client codex
+```
+
+`--sort-by best` is the default and puts sessions matching more distinct
+query words first; `date` puts the newest recorded activity first.
+`--client` limits the search to one local harness store. Search words are
+case-insensitive and punctuation-delimited, so a hyphenated term contributes
+each of its component words. Pass a result's session ID to `nyxloom-harness
+extract`; use the printed source path if same-ID results need disambiguation.
+
 Start with a normal compact brief:
 
 ```bash
@@ -189,6 +228,36 @@ structured answer is linked using that record's question ID; free text is not
 rejected for failing to match an option. An ordinary chat response remains
 operator prose without an inferred question link. See the
 [design rationale](DESIGN-GUIDE.md#codex-question-replies).
+
+Claude Code `AskUserQuestion` prompts use the same visible markers. The
+question appears at the assistant tool-call record, even while it is still
+unanswered. When a result has a recognized shape, its record repeats the
+question for context and labels the user's answer. Rejected question batches
+that state `(No answer provided)` keep that status explicit:
+
+```text
+INTERVIEW: Which prompt label should be used?
+Header: Prompt
+- Labeled prose: Mark the displayed question.
+- Plain prose: Keep the bare question.
+
+INTERVIEW: Which prompt label should be used?
+Header: Prompt
+- Labeled prose: Mark the displayed question.
+- Plain prose: Keep the bare question.
+
+OPERATOR: Something else
+
+INTERVIEW: Should an unanswered row be explicit?
+Header: Missing answer
+- Yes: Show that the operator did not answer.
+- No: Leave the answer area blank.
+Multiple selections are allowed.
+
+OPERATOR: (No answer provided)
+```
+
+See the [Claude Code Q&A rationale](DESIGN-GUIDE.md#claude-code-question-replies).
 
 For a specific span, `--epochs` selects a `/clear` epoch or inclusive range;
 `--max-compactions` and `--max-time-minutes` add backward-walk stops. A

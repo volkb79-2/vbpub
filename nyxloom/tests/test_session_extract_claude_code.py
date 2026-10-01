@@ -104,7 +104,10 @@ def test_parse_shapes(tmp_path):
     # own flattened '"Q"="A"' string verbatim (operator-reported, 2026-09-10)
     qa = next(e for e in events if e.marker == "u4")
     assert qa.kind is EventKind.QA_PAIR
-    assert qa.text == "INTERVIEW: Which host?\n- A\n\nOPERATOR: A"
+    assert qa.text == "INTERVIEW: Which host?\nHeader: Host\n- A: d\n\nOPERATOR: A"
+    prompt = next(e for e in events if e.marker == "a3")
+    assert prompt.kind is EventKind.QA_PAIR
+    assert prompt.text == "INTERVIEW: Which host?\nHeader: Host\n- A: d"
     # /compact is promoted to a lifecycle marker, not plain operator text
     compact_ev = next(e for e in events if e.marker == "u6")
     assert compact_ev.kind is EventKind.LIFECYCLE_MARKER
@@ -403,6 +406,36 @@ def test_sidechain_records_still_dropped_as_noise_alongside_a_primary_thread(tmp
     assert not any("fan-out noise" in e.text for e in events)
 
 
+def test_sidechain_askuserquestion_reply_keeps_its_question_metadata(tmp_path):
+    records = [
+        _rec(type="assistant", uuid="side-a1", isSidechain=True,
+             timestamp="2026-01-01T00:00:00Z",
+             message={"role": "assistant", "content": [{
+                 "type": "tool_use", "id": "side-qa", "name": "AskUserQuestion",
+                 "input": {"questions": [{
+                     "question": "Which sidechain label?",
+                     "options": [{"label": "Yes"}, {"label": "No"}],
+                 }]},
+             }]}),
+        _rec(type="user", uuid="side-u1", isSidechain=True,
+             timestamp="2026-01-01T00:00:01Z",
+             message={"role": "user", "content": [{
+                 "type": "tool_result", "tool_use_id": "side-qa",
+                 "content": 'The user answered: "Which sidechain label?"="Yes"',
+             }]}),
+    ]
+    fp = tmp_path / "agent-sidechain.jsonl"
+    fp.write_text("\n".join(json.dumps(record) for record in records) + "\n",
+                  encoding="utf-8")
+
+    events = claude_code.parse(fp, str(fp), ExtractConfig())
+    qa = next(event for event in events if event.marker == "side-u1")
+    assert qa.kind is EventKind.QA_PAIR
+    assert qa.text == (
+        "INTERVIEW: Which sidechain label?\n- Yes\n- No\n\nOPERATOR: Yes"
+    )
+
+
 def test_is_compact_summary_flag_is_a_lifecycle_marker(tmp_path):
     records = [
         _rec(type="user", uuid="u1", timestamp="2026-01-01T00:00:00Z", isCompactSummary=True,
@@ -462,7 +495,7 @@ def test_askuserquestion_answer_with_non_string_content_is_json_dumped(tmp_path)
     fp = tmp_path / "session.jsonl"
     fp.write_text("\n".join(json.dumps(r) for r in records) + "\n", encoding="utf-8")
     events = claude_code.parse(fp, str(fp), ExtractConfig())
-    qa = next(e for e in events if e.kind is EventKind.QA_PAIR)
+    qa = next(e for e in events if e.kind is EventKind.QA_PAIR and e.marker == "u1")
     assert json.loads(qa.text) == {"answer": "A"}
 
 
@@ -877,7 +910,7 @@ def test_api_error_message_with_no_text_content_still_gets_a_tagged_event(tmp_pa
 # ---------------------------------------------------------------------------
 
 def _q(question, *labels):
-    return {"question": question, "header": "h", "multiSelect": False,
+    return {"question": question, "multiSelect": False,
             "options": [{"label": lbl, "description": ""} for lbl in labels]}
 
 
@@ -905,6 +938,150 @@ def test_format_qa_pairs_multi_question_batch_gets_one_block_each():
         "\n\n"
         "INTERVIEW: Second?\n- x\n- y\n\nOPERATOR: custom free text here"
     )
+
+
+def test_format_qa_pairs_rejected_question_envelope_labels_free_text_and_missing_answer():
+    text = (
+        "The user doesn't want to proceed with this tool use. The tool use was rejected.\n"
+        "The user wants to clarify these questions.\n\n"
+        "Questions asked:\n"
+        '- "Which prompt label should be used?"\n'
+        "  Answer: Something else\n"
+        '- "Should an unanswered row be explicit?"\n'
+        "  (No answer provided)"
+    )
+    out = claude_code._format_qa_pairs(
+        text,
+        [
+            _q("Which prompt label should be used?", "Labeled prose", "Plain prose"),
+            _q("Should an unanswered row be explicit?", "Yes", "No"),
+        ],
+    )
+    assert out == (
+        "INTERVIEW: Which prompt label should be used?\n"
+        "- Labeled prose\n- Plain prose\n\nOPERATOR: Something else\n\n"
+        "INTERVIEW: Should an unanswered row be explicit?\n"
+        "- Yes\n- No\n\nOPERATOR: (No answer provided)"
+    )
+
+
+def test_askuserquestion_prose_preserves_header_option_descriptions_and_multiselect():
+    question = {
+        "question": "Which prompt label should be used?",
+        "header": "Prompt",
+        "multiSelect": True,
+        "options": [
+            {"label": "Labeled prose", "description": "Mark the displayed question."},
+            {"label": "Plain prose", "description": "Plain prose"},
+        ],
+    }
+    expected = (
+        "INTERVIEW: Which prompt label should be used?\n"
+        "Header: Prompt\n"
+        "- Labeled prose: Mark the displayed question.\n"
+        "- Plain prose\n"
+        "Multiple selections are allowed."
+    )
+    assert claude_code._format_askuserquestion_prompt(question) == expected
+    assert claude_code._format_qa_pairs(
+        'The user answered: "Which prompt label should be used?"="Labeled prose".',
+        [question],
+    ) == expected + "\n\nOPERATOR: Labeled prose"
+
+
+@pytest.mark.parametrize("question", [None, "not a question object", {}, {"question": ""}, {"question": 7}])
+def test_askuserquestion_prompt_formatter_omits_malformed_questions(question):
+    assert claude_code._format_askuserquestion_prompt(question) is None
+
+
+def test_malformed_askuserquestion_tool_inputs_do_not_emit_empty_prompts(tmp_path):
+    records = [
+        _rec(type="assistant", uuid="bad-string", timestamp="2026-01-01T00:00:00Z",
+             message={"role": "assistant", "content": [{
+                 "type": "tool_use", "id": "bad-string", "name": "AskUserQuestion",
+                 "input": {"questions": "not a list"},
+             }]}),
+        _rec(type="assistant", uuid="bad-question", timestamp="2026-01-01T00:00:01Z",
+             message={"role": "assistant", "content": [{
+                 "type": "tool_use", "id": "bad-question", "name": "AskUserQuestion",
+                 "input": {"questions": [{"question": ""}]},
+             }]}),
+    ]
+    fp = tmp_path / "session.jsonl"
+    fp.write_text("\n".join(json.dumps(record) for record in records) + "\n", encoding="utf-8")
+
+    events = claude_code.parse(fp, str(fp), ExtractConfig())
+    assert events == []
+
+
+def test_format_qa_pairs_rejected_envelope_with_unknown_question_falls_back():
+    text = 'Questions asked:\n- "Changed prompt?"\n  Answer: yes'
+    assert claude_code._format_qa_pairs(text, [_q("Original prompt?", "yes")]) == text
+
+
+def test_format_qa_pairs_rejected_envelope_with_extra_question_falls_back():
+    text = (
+        'Questions asked:\n- "Known prompt?"\n  Answer: yes\n'
+        '- "Unexpected prompt?"\n  Answer: keep this too'
+    )
+    assert claude_code._format_qa_pairs(text, [_q("Known prompt?", "yes")]) == text
+
+
+def test_format_qa_pairs_rejected_envelope_matches_json_escaped_unicode_question():
+    question = "Which caf\u00e9 should we use?"
+    text = 'Questions asked:\n- "Which caf\\u00e9 should we use?"\n  Answer: North'
+    assert claude_code._format_qa_pairs(text, [_q(question, "North", "South")]) == (
+        "INTERVIEW: Which caf\u00e9 should we use?\n- North\n- South\n\nOPERATOR: North"
+    )
+
+
+def test_format_qa_pairs_rejected_envelope_with_unrecognized_bullet_falls_back():
+    text = 'Questions asked:\n- "Known prompt?"\n  Answer: yes\n- unexpected extra row'
+    assert claude_code._format_qa_pairs(text, [_q("Known prompt?", "yes")]) == text
+
+
+def test_format_qa_pairs_rejected_envelope_preserves_multiline_free_text_answers():
+    text = (
+        'Questions asked:\n- "First?"\n  Answer: First paragraph.\n'
+        "Second line.\n\nThird paragraph.\n"
+        '- "Second?"\n  Answer: Final answer.\nLast line.'
+    )
+    assert claude_code._format_qa_pairs(
+        text, [_q("First?", "yes"), _q("Second?", "no")],
+    ) == (
+        "INTERVIEW: First?\n- yes\n\n"
+        "OPERATOR: First paragraph.\nSecond line.\n\nThird paragraph.\n\n"
+        "INTERVIEW: Second?\n- no\n\n"
+        "OPERATOR: Final answer.\nLast line."
+    )
+
+
+def test_format_qa_pairs_rejected_envelope_falls_back_on_ambiguous_answer_bullet():
+    text = 'Questions asked:\n- "Pick?"\n  Answer: First line\n- a user bullet'
+    assert claude_code._format_qa_pairs(text, [_q("Pick?", "yes")]) == text
+
+
+def test_format_qa_pairs_rejected_envelope_falls_back_on_extra_answer_row():
+    text = (
+        'Questions asked:\n- "Pick?"\n  Answer: yes\n'
+        "  Answer: unexpected extra row"
+    )
+    assert claude_code._format_qa_pairs(text, [_q("Pick?", "yes")]) == text
+
+
+@pytest.mark.parametrize(
+    ("text", "questions"),
+    [
+        ("Questions asked:\nNo question row", [_q("Pick?", "A")]),
+        ('Questions asked:\n- "Pick?"', [_q("Pick?", "A")]),
+        ('Questions asked:\n- "Pick?"\n  Unlabeled answer', [_q("Pick?", "A")]),
+        ('Questions asked:\n- "Pick?"\n  Answer:', [_q("Pick?", "A")]),
+        ('Questions asked:\n- "Pick?"\n  Answer: yes', [None]),
+        ('Questions asked:\n- "Pick?"\n  Answer: yes', [{"question": ""}]),
+    ],
+)
+def test_malformed_rejected_question_envelopes_preserve_raw_text(text, questions):
+    assert claude_code._format_qa_pairs(text, questions) == text
 
 
 def test_format_qa_pairs_falls_back_to_raw_text_when_marker_not_found():
@@ -974,7 +1151,7 @@ def test_format_qa_pairs_skips_a_question_whose_options_is_not_a_list():
     text = 'The user answered: "Pick one?"="A".'
     malformed = {"question": "Pick one?", "header": "h", "multiSelect": False, "options": None}
     out = claude_code._format_qa_pairs(text, [malformed])
-    assert out == "INTERVIEW: Pick one?\n\nOPERATOR: A"
+    assert out == "INTERVIEW: Pick one?\nHeader: h\n\nOPERATOR: A"
 
 
 def test_format_qa_pairs_skips_an_option_with_no_label():
@@ -982,7 +1159,7 @@ def test_format_qa_pairs_skips_an_option_with_no_label():
     q = {"question": "Pick one?", "header": "h", "multiSelect": False,
          "options": [{"description": "no label here"}, {"label": "A", "description": "d"}]}
     out = claude_code._format_qa_pairs(text, [q])
-    assert out == "INTERVIEW: Pick one?\n- A\n\nOPERATOR: A"
+    assert out == "INTERVIEW: Pick one?\nHeader: h\n- A: d\n\nOPERATOR: A"
 
 
 def test_format_qa_pairs_no_questions_returns_text_unchanged():
@@ -1029,7 +1206,10 @@ def test_parse_record_registers_an_askuserquestion_before_its_answer_arrives():
     assert claude_code.parse_record(answer, 0, "line0", config, cold) == []
 
     state = claude_code.StreamState()
-    assert claude_code.parse_record(question, 0, "line0", config, state) == []
+    prompt_events = claude_code.parse_record(question, 0, "line0", config, state)
+    assert len(prompt_events) == 1
+    assert prompt_events[0].kind is EventKind.QA_PAIR
+    assert prompt_events[0].text == "INTERVIEW: Ship it?\n- yes"
     assert "tu1" in state.askuserquestion_inputs
     events = claude_code.parse_record(answer, 1, "line1", config, state)
     assert [e.kind for e in events] == [EventKind.QA_PAIR]
@@ -1037,7 +1217,7 @@ def test_parse_record_registers_an_askuserquestion_before_its_answer_arrives():
     assert "OPERATOR: yes" in events[0].text
 
 
-def test_parse_record_ignores_an_askuserquestion_tool_without_an_id():
+def test_parse_record_surfaces_an_askuserquestion_tool_without_an_id():
     record = _rec(
         type="assistant",
         uuid="no-id",
@@ -1047,12 +1227,15 @@ def test_parse_record_ignores_an_askuserquestion_tool_without_an_id():
             "input": {"questions": [{"question": "Unnamed?"}]},
         }]},
     )
-    assert claude_code.parse_record(
+    events = claude_code.parse_record(
         record, 0, "line0", ExtractConfig(), claude_code.StreamState()
-    ) == []
+    )
+    assert [(event.kind, event.text, event.marker) for event in events] == [
+        (EventKind.QA_PAIR, "INTERVIEW: Unnamed?", "no-id"),
+    ]
 
 
-def test_parse_ignores_an_askuserquestion_tool_without_an_id_in_whole_file_state(
+def test_parse_surfaces_an_askuserquestion_tool_without_an_id_in_whole_file_state(
     tmp_path,
 ):
     fp = tmp_path / "session.jsonl"
@@ -1065,7 +1248,10 @@ def test_parse_ignores_an_askuserquestion_tool_without_an_id_in_whole_file_state
             "input": {"questions": [{"question": "Unnamed?"}]},
         }]},
     )) + "\n", encoding="utf-8")
-    assert claude_code.parse(fp, str(fp), ExtractConfig()) == []
+    events = claude_code.parse(fp, str(fp), ExtractConfig())
+    assert [(event.kind, event.text, event.marker) for event in events] == [
+        (EventKind.QA_PAIR, "INTERVIEW: Unnamed?", "no-id"),
+    ]
 
 
 def test_parse_record_uses_the_fallback_marker_only_when_a_record_has_no_uuid():

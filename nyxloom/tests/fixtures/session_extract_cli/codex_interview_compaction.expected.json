@@ -1,0 +1,70 @@
+{
+  "format": "codex",
+  "stop_reason": null,
+  "events": [
+    {
+      "timestamp": "2026-09-28T10:00:01Z",
+      "kind": "qa_pair",
+      "checkpoint": false,
+      "marker": "1",
+      "text": "INTERVIEW: Which output should the CLI test compare?\n- JSON: Compare the normalized event stream.\n- Markdown: Compare rendered text.",
+      "gap_after": 1,
+      "epoch": 1
+    },
+    {
+      "timestamp": "2026-09-28T10:00:03Z",
+      "kind": "assistant_text",
+      "checkpoint": false,
+      "marker": "3",
+      "text": "I will inspect the tradeoffs before reading the answer.",
+      "gap_after": 0,
+      "epoch": 1
+    },
+    {
+      "timestamp": "2026-09-28T10:00:04Z",
+      "kind": "tool_call",
+      "checkpoint": false,
+      "marker": "4",
+      "text": "[tool call: exec_command] Inspect the fixture without exposing its command payload",
+      "gap_after": 0,
+      "epoch": 1
+    },
+    {
+      "timestamp": "2026-09-28T10:00:05Z",
+      "kind": "qa_pair",
+      "checkpoint": false,
+      "marker": "5",
+      "text": "INTERVIEW: What should a custom answer preserve?\n- Short answer\n- Complete wording",
+      "gap_after": 1,
+      "epoch": 1
+    },
+    {
+      "timestamp": "2026-09-28T10:00:07Z",
+      "kind": "lifecycle_marker",
+      "checkpoint": false,
+      "marker": "7",
+      "text": "The operator deliberately compacted the session; preserve the pending question links.",
+      "gap_after": 0,
+      "epoch": 1
+    },
+    {
+      "timestamp": "2026-09-28T10:00:08Z",
+      "kind": "qa_pair",
+      "checkpoint": false,
+      "marker": "8",
+      "text": "INTERVIEW: Which output should the CLI test compare?\n- JSON: Compare the normalized event stream.\n- Markdown: Compare rendered text.\n\nOPERATOR: JSON\n\nINTERVIEW: What should a custom answer preserve?\n- Short answer\n- Complete wording\n\nOPERATOR: Keep the complete wording exactly as entered.",
+      "gap_after": 0,
+      "epoch": 1
+    },
+    {
+      "timestamp": "2026-09-28T10:00:09Z",
+      "kind": "qa_pair",
+      "checkpoint": false,
+      "marker": "9",
+      "text": "INTERVIEW: Should the suite mention skipped formats?\n- Yes\n- No",
+      "gap_after": 0,
+      "epoch": 1
+    }
+  ],
+  "last_marker": "9"
+}

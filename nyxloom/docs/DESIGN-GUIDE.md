@@ -34,6 +34,11 @@ usable from a project checkout without creating unrelated host state.
 `error`, `warn`, `info`, or `debug`; `NYXLOOM_LOG_LEVEL` supplies the default.
 `--traceback` controls unexpected-exception tracebacks separately.
 
+The large `nyxloom-harness extract` option set is grouped by the operator's
+task: session source, window selection, included content, output, redaction
+and task context, and live following. This uses cli-extended's native option
+groups, so parsing and grouped help still come from the same declaration.
+
 ## CLI grammar and closed values
 
 Parser declarations derive closed values from their owning sources: backlog
@@ -59,6 +64,9 @@ The three user CLIs follow who is working and which files the command targets:
   It is not a remote API client. The dashboard remains the HTTP/SSE client.
 - `nyxloomd` is a service-manager executable that starts the existing daemon
   lifecycle in the current container; it is not another interactive CLI.
+  Its only arguments are side-effect-free `--help` and `--version`; unknown
+  options fail before registry or daemon initialization, so a diagnostic typo
+  cannot accidentally start service work.
 
 The split keeps common skill entrypoints dependable when the daemon is down,
 while making host-wide actions visibly distinct from project-local authoring.
@@ -152,6 +160,26 @@ being partially decoded. If the user answers through ordinary chat instead,
 that text remains operator prose; nyxloom does not infer a question link where
 the source record has no question ID.
 
+### Claude Code question replies
+
+Claude Code records each `AskUserQuestion` UI request as an assistant
+`tool_use`. Nyxloom emits every question and its offered choices at that
+source position as `INTERVIEW:` prose, including its header, option
+descriptions, and multi-select behavior, whether or not the request has a
+matching answer record or tool-use ID. When a recognized result arrives, its
+position carries a second marked question/answer block so the operator's choice
+or free text remains attached to the question it answers. This keeps a pending
+prompt visible in an extract and keeps an answer understandable when an extract
+starts after the prompt.
+
+The usual tool result flattens rows as `"question"="answer"`. A rejected
+question batch can instead contain a `Questions asked:` section with per-row
+`Answer:` or `(No answer provided)` entries. Nyxloom uses the original tool
+request to match those rows and renders both answered and explicitly
+unanswered rows with `INTERVIEW:` and `OPERATOR:` labels. If the rows do not
+match the original prompt batch, the source text stays intact; partial parsing
+could otherwise drop an answer or attach it to the wrong question.
+
 Profiles carry use-case policy for selection and gap reporting. Explicit
 selection or gap flags override the corresponding profile values. Timestamp
 placement, metadata placement, tool-call visibility, Markdown rendering,
@@ -184,3 +212,19 @@ Report output types make the audience explicit. `report-sheet` is the compact
 operator overview, `report-detailed` is a readable row per API call, and `csv`
 is the stable-column form for spreadsheets or scripts. The legacy
 `--detailed` flag remains an alias for CSV.
+
+## Local session search
+
+`nyxloom-harness search` answers “which local session should I inspect?” by
+searching the text-bearing records in the existing Claude Code, Codex, and
+OpenCode stores. It stays local and prints identifiers, source paths, matched
+query words, dates, and scores; it does not print transcript excerpts or send
+session content to a service. Matching is case-insensitive and punctuation
+splits words, so `cli-extended` searches for both `cli` and `extended`.
+
+The default `best` order favors sessions matching more distinct query words,
+then weights rare terms more heavily and modestly rewards repeats. `date` puts
+newer recorded activity first. Results include the exact source path so a
+same-ID collision across local clients remains distinguishable. The
+[consumer recipe](CONSUMERS.md#search-local-session-history) shows the
+copyable command and output fields.
