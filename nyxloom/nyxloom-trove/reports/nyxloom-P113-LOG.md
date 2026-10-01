@@ -214,3 +214,57 @@ shared host still had active mutation lanes, so this run was deferred under
 the serialized-gate rule. The exact-cap plan remains 642 candidates, with a
 24-hour lane budget and a 21h24m serial upper bound. Start the R2 only after
 the shared mutation slot is clear; triage its result before the final report.
+
+## Controller R2 triage and base-scope correction — 2026-10-01
+
+The first current-main `session-extract` campaign judged merge commit
+`2ba90c10f00c67f7786ed0f63747c284867ba0be`, resolved base
+`126ccc39e151e33cc7bbcaa18bf765f9c9cd7dd1` (`first-parent`), and selected the
+intended 45 candidates. It finished in about 13 minutes: 37 killed, 8 survived,
+with no equivalents, crashes, hangs, or budget overruns. Seven survivors
+identified missing behavior assertions in Claude's rejected-question parsing,
+prompt formatting, and malformed tool-input handling. The eighth was the
+question/answer boundary comparison: a second guard immediately below it made
+the `>=` to `>` mutation observationally redundant.
+
+Fix commit `cc818af1dea16b3d8bc52e01cbcdd1b6df453d32` added raw-text fallback
+cases for malformed, empty, and out-of-order rejected-question rows; formatting
+cases for empty headers and invalid option labels; and non-object input cases
+for whole-file parsing, stream priming, and pending-question tracking. The
+non-object case first exposed an actual `.get()` failure in the whole-file
+prepass; the affected prepasses now treat non-object inputs as having no
+question list. The two question/answer boundary guards were consolidated into
+one check that requires both rows, with the existing missing-answer behavior
+retained. The full Claude adapter test file passed locally. The declared
+`tester-unified` gate passed on `cc818af1`: R0 PASS and R1 PASS at 15/15 changed
+lines and 2/2 branches. Post-coverage review found no issue.
+
+A later gate attempt on main merge `6ee297a4cb6412b1c66250367a1eb2ecf39e9446`
+reported PASS across R0-R3, but its R2 verdict selected only 1 candidate. The
+verdict records resolved base `2ba90c10f00c67f7786ed0f63747c284867ba0be`
+(`first-parent`), not the configured current-main boundary. This is the
+expected Assay behavior for a merge commit: it measures that merge's own
+payload. Treat that 1/1 PASS as a narrow fix check, not as completion of the
+approved 45-candidate campaign.
+
+This log update is a single-parent commit on top of `6ee297a4`; the next
+session-extract run must confirm the verdict resolves to
+`126ccc39e151e33cc7bbcaa18bf765f9c9cd7dd1` via `merge-base` and selects the
+full current 43-candidate inventory (within the approved 45-candidate cap)
+before its result is accepted as final. The updated worktree remains subject
+to the full run-gate result and final review; P113 is not closed yet.
+
+## Final source-backed inventory — 2026-10-01
+
+On single-parent commit `5e8b7f8137fc9d23ce8c3a69e1556eab1af6afdd`,
+`assay plan session-extract --file assay.toml` found 43 candidates in
+`claude_code.py` under the configured current-main boundary. The operator
+counts were 1 boolean-constant, 13 boolean-operator, 17 comparison, and 12
+falsy-swap candidates. With `jobs = 2` and a 120-second per-candidate budget,
+the plan estimated 5,160 serial seconds / 2,580 wall seconds (43 minutes).
+This is within the approved cap of 45; no tests or mutants ran during planning.
+The stale lane comments have been corrected to say 43 candidates under the 45
+cap. My immediate repeat of the plan while `assay.toml` was modified refused
+`NO_MEASUREMENT/DIRTY_TREE`; that refusal executed no lane. Re-run the plan
+after this commit, then require the final verdict itself to record the
+configured base and all 43 selected candidates before accepting the campaign.
