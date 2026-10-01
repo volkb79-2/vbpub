@@ -2979,6 +2979,42 @@ def test_review_optional_const_choice_rule_uses_the_recorded_probe(
     assert _values_satisfy_action(action, ()) is expected
 
 
+def test_review_treats_missing_optional_const_probe_as_opaque():
+    action = {
+        "id": "option:mode",
+        "kind": "option",
+        "action": "argparse._StoreAction",
+        "nargs": "?",
+        "type": None,
+        "const": "custom-constant-normalized-as-text",
+        "choices": ["custom-constant-normalized-as-text"],
+    }
+
+    assert _values_satisfy_action(action, ()) is True
+    assert (
+        _choice_values_accept(
+            action, (), "custom-constant-normalized-as-text"
+        )
+        is True
+    )
+
+
+def test_review_treats_non_scalar_optional_const_as_opaque():
+    action = {
+        "id": "option:mode",
+        "kind": "option",
+        "action": "argparse._StoreAction",
+        "nargs": "?",
+        "type": None,
+        "const": {"opaque": "custom-constant"},
+        "const_choice_check_on_omission": True,
+        "choices": [],
+    }
+
+    assert _values_satisfy_action(action, ()) is True
+    assert _choice_values_accept(action, (), "ready") is True
+
+
 def test_review_non_string_optional_const_choice_candidate_uses_original_value():
     registry = CliRegistry(
         IDENTITY, prog="audit-tool", description="numeric const choice"
@@ -3076,7 +3112,7 @@ def test_review_positional_choice_validation_matches_argparse_nargs(
     ) == (0 if accepted else 2)
     findings = _findings_for_invocation(candidate, route, invocation)
     assert any(
-        "invalid positional value shape" in finding
+        "invalid positional value" in finding
         or "omits its positional choice" in finding
         for finding in findings
     ) is (not accepted)
