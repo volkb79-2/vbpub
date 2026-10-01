@@ -51,3 +51,17 @@ The run used Assay 7.1.1.dev189+g29d5cf6e. Help/version and invalid-argument
 tests are included in this evidence; the gate's changed-line coverage is
 recorded in the machine verdict. The session-extract R2 and final P114 report
 remain pending.
+
+## Final integration closeout — 2026-10-01
+
+The integrated Nyxloom product tree passed tester-unified at commit
+c1d0fbe2d69061efff339251cdda13304aa0b35b: R0 PASS and R1 PASS at 655/655
+changed executable lines and 166/166 branches. The Nyxloom source, tests, and
+user documentation at c1d0fbe2 are identical to the tree merged at
+2ba90c10f00c67f7786ed0f63747c284867ba0be. The machine verdict is preserved
+at evidence/nyxloom-integration-20261001/tester-unified-c1d0fbe2.json.
+
+Post-coverage review found no remaining P114 issue. Side-effect-free help and
+version, invalid-argument handling, and the normal foreground startup path
+are covered by the entrypoint tests. The session-extract R2 and report
+closeout are complete; see nyxloom-P114-REPORT.md.

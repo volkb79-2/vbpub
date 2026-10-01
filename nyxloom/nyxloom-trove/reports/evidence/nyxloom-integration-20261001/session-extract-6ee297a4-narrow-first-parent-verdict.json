@@ -1,0 +1,254 @@
+{
+  "argv_appended": [
+    "-p",
+    "assay_liveness_plugin"
+  ],
+  "argv_declared": [
+    "/opt/tester-venv/bin/python",
+    "-m",
+    "pytest",
+    "tests/test_session_extract_adapters_registry.py",
+    "tests/test_session_extract_reasonix.py",
+    "tests/test_session_extract_classifier.py",
+    "tests/test_session_extract_claude_code.py",
+    "tests/test_session_extract_cli_acceptance.py",
+    "tests/test_session_extract_codex.py",
+    "tests/test_session_extract_config_validation.py",
+    "tests/test_session_extract_debug_diff.py",
+    "tests/test_session_extract_edge_contracts.py",
+    "tests/test_session_extract_init.py",
+    "tests/test_session_extract_ledger.py",
+    "tests/test_session_extract_mangle.py",
+    "tests/test_session_extract_lossless_codex.py",
+    "tests/test_session_extract_lossless_opencode.py",
+    "tests/test_session_extract_lossless.py",
+    "tests/test_session_extract_opencode.py",
+    "tests/test_session_extract_render.py",
+    "tests/test_session_extract_select.py",
+    "tests/test_session_extract_stats_codex.py",
+    "tests/test_session_extract_stats_opencode.py",
+    "tests/test_session_extract_stats.py",
+    "tests/test_cli_extract.py",
+    "tests/test_session_extract_follow.py",
+    "tests/test_session_extract_locate.py",
+    "tests/test_cli_help.py",
+    "tests/test_cli.py::test_tick",
+    "tests/test_cli.py::test_tick_project_id_passes_the_selector_to_daemon",
+    "-n",
+    "4",
+    "--maxfail=1",
+    "-q",
+    "--cov=src/nyxloom",
+    "--cov-branch",
+    "--cov-report=json:coverage-session-extract.json"
+  ],
+  "argv_effective": [
+    "/opt/tester-venv/bin/python",
+    "-m",
+    "pytest",
+    "tests/test_session_extract_adapters_registry.py",
+    "tests/test_session_extract_reasonix.py",
+    "tests/test_session_extract_classifier.py",
+    "tests/test_session_extract_claude_code.py",
+    "tests/test_session_extract_cli_acceptance.py",
+    "tests/test_session_extract_codex.py",
+    "tests/test_session_extract_config_validation.py",
+    "tests/test_session_extract_debug_diff.py",
+    "tests/test_session_extract_edge_contracts.py",
+    "tests/test_session_extract_init.py",
+    "tests/test_session_extract_ledger.py",
+    "tests/test_session_extract_mangle.py",
+    "tests/test_session_extract_lossless_codex.py",
+    "tests/test_session_extract_lossless_opencode.py",
+    "tests/test_session_extract_lossless.py",
+    "tests/test_session_extract_opencode.py",
+    "tests/test_session_extract_render.py",
+    "tests/test_session_extract_select.py",
+    "tests/test_session_extract_stats_codex.py",
+    "tests/test_session_extract_stats_opencode.py",
+    "tests/test_session_extract_stats.py",
+    "tests/test_cli_extract.py",
+    "tests/test_session_extract_follow.py",
+    "tests/test_session_extract_locate.py",
+    "tests/test_cli_help.py",
+    "tests/test_cli.py::test_tick",
+    "tests/test_cli.py::test_tick_project_id_passes_the_selector_to_daemon",
+    "-n",
+    "4",
+    "--maxfail=1",
+    "-q",
+    "--cov=src/nyxloom",
+    "--cov-branch",
+    "--cov-report=json:coverage-session-extract.json",
+    "-p",
+    "assay_liveness_plugin"
+  ],
+  "argv_modified": true,
+  "assay_version": "7.2.1.dev56+g6ee297a4c",
+  "claims": [
+    {
+      "rigor": "R0",
+      "source": "computed",
+      "status": "PASS",
+      "verified_by_assay": true
+    },
+    {
+      "coverage": {
+        "branch_capability": "reported",
+        "branches_covered": 2,
+        "branches_total": 2,
+        "considered": 1,
+        "covered": 15,
+        "excluded_lines": {},
+        "exclusion_capability": "reported",
+        "executable": 15,
+        "files_missing_coverage": [],
+        "files_with_excluded_lines": [],
+        "files_with_missing_branch_lines": [],
+        "files_with_unclassified_lines": [],
+        "missing_branch_lines": {},
+        "missing_lines": {},
+        "pct": 100.0,
+        "unclassified_lines": {}
+      },
+      "rigor": "R1",
+      "source": "computed",
+      "status": "PASS",
+      "verified_by_assay": true
+    },
+    {
+      "mutation": {
+        "budget_exceeded": [],
+        "candidate_count": 1,
+        "candidate_ids": [
+          "80c05dbd40df1da97e7a9c8b815c891047a27be68b5ef8b8e46cd70c30718cb9"
+        ],
+        "crashed": [],
+        "equivalent": [],
+        "hung": [],
+        "killed": [
+          {
+            "candidate_id": "80c05dbd40df1da97e7a9c8b815c891047a27be68b5ef8b8e46cd70c30718cb9",
+            "description": "GtE->Gt",
+            "end_byte": 15009,
+            "execution": {
+              "mode": "full"
+            },
+            "lineno": 271,
+            "mutated_file_sha256": "7a4cfa7e5f74afca290e58adae036042372f4a15fe7fae255bb202d46206c599",
+            "operator": "python:compare-swap",
+            "path": "nyxloom/src/nyxloom/session_extract/adapters/claude_code.py",
+            "replacement_sha256": "62b67e1f685b7fef51102005dddd27774be3fee38c42965c53aab035d0b6b221",
+            "source_sha256": "857a2779fd5dced2a7452ef2a99fccbe026ec474f16d6b3337b3e7ba60f5420c",
+            "start_byte": 15007
+          }
+        ],
+        "survived": [],
+        "total": 1
+      },
+      "rigor": "R2",
+      "source": "computed",
+      "status": "PASS",
+      "verified_by_assay": true
+    },
+    {
+      "canary": {
+        "attempts": [
+          {
+            "control_outcome": "PASS",
+            "description": "appended never-called `def _assay_canary_unreached` (2 uncovered lines) at end of file",
+            "disposition": "attempted",
+            "expected_reason_code": "UNCOVERED_LINES",
+            "observed_reason_code": "UNCOVERED_LINES",
+            "target": "src/nyxloom/session_extract/classifier.py",
+            "transformed_outcome": "FAIL"
+          }
+        ],
+        "mechanism": "uncovered-line"
+      },
+      "rigor": "R3",
+      "source": "computed",
+      "status": "PASS",
+      "verified_by_assay": true
+    }
+  ],
+  "commit": "6ee297a4cb6412b1c66250367a1eb2ecf39e9446",
+  "declared_evidence": [],
+  "declared_rigor": [
+    "R0",
+    "R1",
+    "R2",
+    "R3"
+  ],
+  "ended": "2026-10-01T01:48:34.859438+00:00",
+  "enforcement": "gate",
+  "env_declared": {
+    "PYTHONDONTWRITEBYTECODE": "1",
+    "PYTHONPATH": "src:../libraries/cli-extended/src"
+  },
+  "env_effective": {
+    "ASSAY_LIVENESS_EVENTS": "/tmp/assay-liveness-a1ral6gm/baseline.ndjson",
+    "HOME": "/home/tester",
+    "LANG": "en_US.UTF-8",
+    "PATH": "/home/vscode/.venv/bin:/home/vscode/.local/bin:/usr/local/python/current/bin:/usr/local/py-utils/bin:/usr/local/jupyter:/usr/local/share/nvm/current/bin:/usr/local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+    "PYTHONDONTWRITEBYTECODE": "1",
+    "PYTHONPATH": "/tmp/assay-liveness-a1ral6gm:src:../libraries/cli-extended/src"
+  },
+  "evidence": [],
+  "exit_code": 0,
+  "judgment": {
+    "r1": {
+      "allow_excluded": false,
+      "coverage_artifact": "coverage-session-extract.json",
+      "coverage_format": "coverage-py-json",
+      "fail_under": 100.0,
+      "mode": "changed_lines",
+      "require_branch": true
+    },
+    "r2": {
+      "jobs": 2,
+      "kill_attribution": "unattributed",
+      "liveness": {
+        "active": true,
+        "plugin": "/tmp/assay-liveness-a1ral6gm/assay_liveness_plugin.py",
+        "reason": "auto-pytest-argv"
+      },
+      "max_mutants": 45,
+      "mode": "changed_lines",
+      "operators": [
+        "python:compare-swap",
+        "python:boolop-swap",
+        "python:bool-const-flip",
+        "python:falsy-swap"
+      ],
+      "producer": "native"
+    },
+    "r3": {
+      "mechanism": "uncovered-line",
+      "targets": [
+        "src/nyxloom/session_extract/classifier.py"
+      ]
+    },
+    "resolved": {
+      "base": "2ba90c10f00c67f7786ed0f63747c284867ba0be",
+      "base_resolution": "first-parent",
+      "language": "python",
+      "source_roots": [
+        "src/nyxloom/session_extract"
+      ]
+    }
+  },
+  "lane": "session-extract",
+  "outcome": "PASS",
+  "schema_version": 13,
+  "scope": "S1",
+  "snapshot_policy": {
+    "selection": "repository-minus-unsafe-symlinks",
+    "unsafe_symlink_omissions": [
+      "topos/tests/fixtures/inspect_files/_danger/passwd_link",
+      "topos/tests/fixtures/inspect_files/cgroup_escape/system.slice/ssh.service/dangerous_link/passwd_escape",
+      "topos/tests/fixtures/inspect_files/cgroup_nonreg/system.slice/ssh.service/memory.current"
+    ]
+  },
+  "started": "2026-10-01T01:47:23.393686+00:00"
+}
