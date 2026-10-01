@@ -1383,3 +1383,37 @@ container was found. Its reflog records a direct checkout to the SHA on
 2026-09-24, but cannot identify the invoking session. CIU's source contains no
 detach operation. Restore the recorded branch before the next CIU lifecycle
 command; do not edit the identity record.
+
+### 31. Round-4 B1 repair checkpoint (2026-10-01)
+
+Round 4 rejected candidate `148481e4af504fc416679ed2fd8dffe380709de6`.
+The merge-blocking B1 finding was that `SummaryAccumulator` retained raw
+sample dictionaries and synchronously rescanned them during `finalize()`.
+The controller's repair replaces those retained series with ingestion-time
+scalar projections, endpoint/reference state, extrema, drift/PID/host/slice
+reducers, adjacent CPU-rate state, and exact AVL order-statistic multisets for
+nearest-rank memory and DAMON percentiles. `finalize()` now assembles the
+fixed-shape response without scanning the session series. Exact percentile
+state grows with distinct values; the design guide explicitly does not claim
+constant memory. Durable raw samples remain separate for reports and
+restart-orphan recovery; replay after daemon restart is not the normal stop
+path.
+
+The new deterministic long-stream test feeds 3,601 samples, mutates each
+source object immediately after ingestion, then asserts exact summary fields
+and percentiles. AVL tests cover empty/singleton, ascending/descending,
+double rotations, duplicates, nulls, nearest ranks and invalid internal
+states. Current local focused result on the uncommitted repair:
+`test_summary.py` + `test_serve.py`: 205 passed, 1 skipped in 19.24 s. No
+registered short gate has yet been rerun on this tree.
+
+Round-4 B2 remains open: the reviewer cannot prove current loaded host
+`dev-interactive.slice`/`dev-gates.slice` state from the cockpit without a
+permitted host-unit view. Prior read-only `systemctl` attempts from private
+containers could not connect to the host manager; no host namespace or
+host-escape was used. A newer attempt was deferred while host load average was
+above 8 and an unrelated R2 was active. B3 is also open because the former
+short-gate receipts do not cover the repair. The next review must be round 5
+from a fresh Sol session after commit and final registered short gates; seed
+it with review rounds 1–4, preserve the round-4 report, and do not claim P1
+accepted until B2 and all remaining live-evidence requirements are resolved.

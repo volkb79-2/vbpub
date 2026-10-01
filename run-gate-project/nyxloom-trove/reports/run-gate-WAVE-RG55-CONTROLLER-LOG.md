@@ -5448,3 +5448,28 @@ branch at the judged commit and keep it quiet throughout run/resume; put fixes
 in a separate worktree. For this stale record, restore the checkout to its
 recorded branch before another CIU lifecycle operation; never edit the CIU
 identity record or auto-repair this state.
+
+### RW-386 — 2026-10-01 00:37:41Z — repair P1 round-4 summary finding
+
+P1 round 4 (`cgprofile-P1-DAEMON-REVIEW-round4.md`) rejected tree
+`148481e4af504fc416679ed2fd8dffe380709de6`. B1 is merge-blocking: normal
+`ctl stop` recomputed exact percentiles and other summary metrics by retaining
+and rescanning raw sample objects, contrary to contract §1.5. The P1
+controller has implemented an online reducer in the isolated P1 worktree:
+scalar endpoints/references, extrema, drift count, host/slice summaries, PID
+union and CPU rates update at ingestion; exact nearest-rank percentiles use
+order-statistic AVL multisets. `finalize()` assembles from this state and
+does not retain or scan raw series. Exact rank state grows with observed
+distinct values; this is not a constant-memory sketch. The 3,601-sample
+mutation oracle and focused `test_summary.py` + `test_serve.py` run pass (205
+passed, 1 skipped, 19.24 s). This is local focused evidence only, not a
+registered gate or review acceptance.
+
+B2 remains an evidence blocker: current host `LoadState`/`ControlGroup` for
+the authored interactive and gates slices has not been established from the
+cockpit through a permitted read-only path. No host namespace or host-escape
+was used. The latest observed load average exceeded 8 while another project's
+R2 was active, so no additional bus-query container or RG-55 gate was
+launched. B3 also remains open: short-gate receipts predate the B1 repair and
+must be refreshed on the final committed P1 tip. The P1 edits are still
+uncommitted at this checkpoint; do not merge, release, or activate the daemon.

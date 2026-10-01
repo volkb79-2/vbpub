@@ -5,11 +5,10 @@ daemon's session server samples the target cgroup, and produces the exact
 Summary document ``ctl stop`` returns (``finalize``). It is "incremental" in
 the sense the contract requires (§1.5: the daemon must answer ``stop`` within
 30 s for a session of *any* length) — it never re-reads the on-disk series to
-compute the answer; every number in the output is derived from state kept
-across ``add_sample`` calls plus the first and last tick, so ``finalize`` is
-O(1) in wall time regardless of session length (percentiles are the one
-O(samples) piece, and that cost is paid incrementally, one append per tick,
-never re-scanned).
+compute the answer. ``add_sample`` updates counters, extrema, adjacent-pair
+rates, and exact order-statistic trees as each tick arrives. ``finalize``
+assembles a fixed-size document from that state; its percentile lookups are
+O(log n), and it never scans or retains the session's raw sample series.
 
 **Sample shapes.** A cgroup sample is :func:`sample_target_cgroup`'s (or
 :func:`sample_slice_cgroup`'s) output — a thin wrapper around
@@ -28,9 +27,9 @@ adapted by the caller); this module never talks to DAMON sysfs itself.
 **Null discipline (contract §1.7 / §7).** Every computed field follows one
 rule: a delta or percentile whose *inputs* were ever unreadable is ``null``,
 never computed against a substituted zero. This module never invents a 0 —
-:mod:`lib.util`'s readers already refuse to, and every helper here
-(``_delta``, ``_nearest_rank``, ``_max_over``, ``_last_present``) preserves
-that by propagating ``None`` rather than treating it as 0.
+:mod:`lib.util`'s readers already refuse to, and the streaming reducers
+ignore unreadable values for extrema/percentiles while preserving null for
+deltas whose endpoints are unreadable.
 
 **Decision ask (recorded in the P1 REPORT, not re-litigated here):** the
 contract does not say whether "the last read of memory.peak / pids.peak"
@@ -50,16 +49,13 @@ cumulative counters (``cpu.stat usage_usec``/``throttled_usec``/
 counters, ``memory.events.local`` oom_kill/high) already measure the lane
 alone from its first instruction — reading them as a delta from ``s_0``
 drops everything the lane did between cgroup creation and the first sample
-(measured live: a 3.3x CPU understatement on a real probe). ``_rw21_reference``
-is the one helper every affected block routes through: scope ``container``
-takes the last successful read (the same "skip back over unreadable ticks"
-rule as ``memory.peak_bytes``/``pids.peak`` above); scope ``container-shared``
-is unaffected, keeping the original delta-from-``s_0`` rule (that cgroup is
-shared, so a delta against session start is still the only lane-attributable
-number). ``memory.peak_over_baseline_bytes`` is always ``null`` in scope
-``container`` (not computed at all — see ``_memory_block``); ``limit_drift``,
-``cores_max`` and ``host.*`` are explicitly unaffected (none of them were
-ever a cumulative-counter delta to begin with).
+(measured live: a 3.3x CPU understatement on a real probe). For each such
+counter the accumulator keeps the last successful reading in scope
+``container`` and the first/current endpoint in scope ``container-shared``
+(that cgroup is shared, so a delta against session start is still the only
+lane-attributable number). ``memory.peak_over_baseline_bytes`` is always
+``null`` in scope ``container``; ``limit_drift``, ``cores_max`` and
+``host.*`` are not cumulative-counter deltas.
 """
 
 from __future__ import annotations
@@ -68,7 +64,7 @@ import os
 from datetime import datetime, timezone
 from math import ceil
 from math import isfinite
-from typing import Any, Dict, Iterable, List, Optional, Sequence
+from typing import Any, Dict, Iterable, List, Optional, cast
 
 from . import metrics, util
 
@@ -147,32 +143,6 @@ def _round(value: Optional[float], places: int = 3) -> Optional[float]:
     return None if value is None else round(value, places)
 
 
-def _max_over(values: Iterable[Optional[float]]) -> Optional[float]:
-    present = [v for v in values if v is not None]
-    return max(present) if present else None
-
-
-def _last_present(values: Sequence[Optional[Any]]) -> Optional[Any]:
-    """The last non-``None`` entry, or ``None`` if every entry was."""
-    for value in reversed(values):
-        if value is not None:
-            return value
-    return None
-
-
-def _nearest_rank(values: Iterable[Optional[float]], pct: float) -> Optional[int]:
-    """Nearest-rank percentile (contract §7): sort ascending, rank =
-    ``ceil(pct/100 * N)`` (1-based), take that element. No interpolation, so
-    two independent stdlib implementations always agree byte-for-byte."""
-    present = sorted(v for v in values if v is not None)
-    n = len(present)
-    if n == 0:
-        return None
-    rank = ceil(pct / 100.0 * n)
-    rank = max(1, min(n, rank))
-    return present[rank - 1]
-
-
 def _parse_iso(text: Optional[str]) -> Optional[datetime]:
     if not text:
         return None
@@ -203,49 +173,151 @@ def _host_pressure_block(host: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     }
 
 
-def _count_limit_drift(samples: Sequence[Dict[str, Any]]) -> Optional[int]:
-    """Number of consecutive sample-pairs where ``memory.max`` or
-    ``memory.high`` changed (contract §7). A pair where either side of the
-    comparison is unreadable is skipped (not counted as a change and not
-    counted as "unchanged") rather than guessed at; the field is ``null``
-    only when *no* sample ever carried a reading (fully unreadable), per
-    contract §1.7 ("absent is never zero", but a real reading of "unchanged"
-    is a real 0, not an absence)."""
-    pairs = [(s.get("mem_max"), s.get("mem_high")) for s in samples]
-    if all(p == (None, None) for p in pairs):
-        return None
-    drift = 0
-    for prev, cur in zip(pairs, pairs[1:]):
-        if prev[0] is None or cur[0] is None or prev[1] is None or cur[1] is None:
-            continue
-        if prev != cur:
-            drift += 1
-    return drift
+_SUMMARY_FIELD_PATHS = {
+    "mem_current": ("mem", "current"),
+    "mem_peak": ("mem", "peak"),
+    "swap_current": ("mem", "swap_current"),
+    "anon": ("memstat", "anon"),
+    "file": ("memstat", "file"),
+    "cpu_usage_usec": ("cpu", "usage_usec"),
+    "cpu_throttled_usec": ("cpu", "throttled_usec"),
+    "cpu_nr_throttled": ("cpu", "nr_throttled"),
+    "psi_mem_some_total": ("psi_mem", "some_total"),
+    "psi_mem_full_total": ("psi_mem", "full_total"),
+    "psi_cpu_some_total": ("psi_cpu", "some_total"),
+    "psi_io_some_total": ("psi_io", "some_total"),
+    "psi_io_full_total": ("psi_io", "full_total"),
+    "pgmajfault": ("memstat", "pgmajfault"),
+    "workingset_refault_anon": ("memstat", "workingset_refault_anon"),
+    "workingset_refault_file": ("memstat", "workingset_refault_file"),
+    "oom_kill": ("memev", "oom_kill"),
+    "memory_high_breach": ("memev", "high"),
+    "mem_max": ("mem_max",),
+    "mem_high": ("mem_high",),
+    "pids_peak": ("pids", "peak"),
+}
+
+_RW21_FIELDS = (
+    "cpu_usage_usec", "cpu_throttled_usec", "cpu_nr_throttled",
+    "psi_mem_some_total", "psi_mem_full_total", "psi_cpu_some_total",
+    "psi_io_some_total", "psi_io_full_total", "pgmajfault",
+    "workingset_refault_anon", "workingset_refault_file", "oom_kill",
+    "memory_high_breach",
+)
+_DAMON_CLASSES = ("hot", "warm", "cold", "idle")
 
 
-def _rw21_reference(
-    scope: str, samples: List[Dict[str, Any]], *keys: str,
-) -> Optional[float]:
-    """RW-21 (contract §7 "Scope `container`: absolute counters"): the one
-    raw number that section redefines. In scope ``container`` the cgroup was
-    created for the lane itself, so its cumulative counters already measure
-    the lane alone from its first instruction — reading them as a delta from
-    ``s_0`` drops everything the lane did between cgroup creation and the
-    first sample (measured live: a 3.3x CPU understatement). So scope
-    ``container`` takes the LAST SUCCESSFUL read (RW-7's "last read" =
-    skip back over unreadable trailing ticks, the same rule
-    ``memory.peak_bytes``/``pids.peak`` already use) instead of a delta.
-    Scope ``container-shared`` is unaffected — it keeps the original
-    delta-from-``s_0`` rule (that cgroup is shared, so its cumulative
-    counters were never lane-scoped to begin with; a delta against the
-    session's own start is still the only lane-attributable number).
-    Every caller below divides by 1e6 or leaves the raw int as-is per its
-    own field; this helper only decides which raw value — a last-read or a
-    delta — feeds that math."""
-    if scope == "container":
-        return _last_present([_dig(s, *keys) for s in samples])
-    first, last = samples[0], samples[-1]
-    return _delta(_dig(first, *keys), _dig(last, *keys))
+def _summary_fields(cgroup: Dict[str, Any]) -> Dict[str, Any]:
+    """Project one input sample to the scalar fields used by the summary."""
+    return {
+        name: _dig(cgroup, *path)
+        for name, path in _SUMMARY_FIELD_PATHS.items()
+    }
+
+
+class _OrderNode:
+    """AVL node with duplicate counts and subtree sizes for exact rank reads."""
+
+    __slots__ = ("count", "height", "left", "right", "size", "value")
+
+    def __init__(self, value: Any) -> None:
+        self.value = value
+        self.count = 1
+        self.size = 1
+        self.height = 1
+        self.left = None
+        self.right = None
+
+
+def _tree_size(node: Optional[_OrderNode]) -> int:
+    return 0 if node is None else node.size
+
+
+def _tree_height(node: Optional[_OrderNode]) -> int:
+    return 0 if node is None else node.height
+
+
+def _tree_refresh(node: _OrderNode) -> _OrderNode:
+    node.size = node.count + _tree_size(node.left) + _tree_size(node.right)
+    node.height = 1 + max(_tree_height(node.left), _tree_height(node.right))
+    return node
+
+
+def _tree_rotate_left(node: _OrderNode) -> _OrderNode:
+    pivot = node.right
+    if pivot is None:
+        raise AssertionError("left rotation without a right child")
+    node.right = pivot.left
+    pivot.left = _tree_refresh(node)
+    return _tree_refresh(pivot)
+
+
+def _tree_rotate_right(node: _OrderNode) -> _OrderNode:
+    pivot = node.left
+    if pivot is None:
+        raise AssertionError("right rotation without a left child")
+    node.left = pivot.right
+    pivot.right = _tree_refresh(node)
+    return _tree_refresh(pivot)
+
+
+def _tree_balance(node: _OrderNode) -> _OrderNode:
+    _tree_refresh(node)
+    balance = _tree_height(node.left) - _tree_height(node.right)
+    if balance > 1:
+        left = cast(_OrderNode, node.left)
+        if _tree_height(left.left) < _tree_height(left.right):
+            node.left = _tree_rotate_left(left)
+        return _tree_rotate_right(node)
+    if balance < -1:
+        right = cast(_OrderNode, node.right)
+        if _tree_height(right.right) < _tree_height(right.left):
+            node.right = _tree_rotate_right(right)
+        return _tree_rotate_left(node)
+    return node
+
+
+def _tree_insert(node: Optional[_OrderNode], value: Any) -> _OrderNode:
+    if node is None:
+        return _OrderNode(value)
+    if value < node.value:
+        node.left = _tree_insert(node.left, value)
+    elif value > node.value:
+        node.right = _tree_insert(node.right, value)
+    else:
+        node.count += 1
+        return _tree_refresh(node)
+    return _tree_balance(node)
+
+
+def _tree_select(node: Optional[_OrderNode], rank: int) -> Any:
+    if node is None:
+        raise AssertionError("rank selection escaped the order-statistic tree")
+    left_size = _tree_size(node.left)
+    if rank < left_size:
+        return _tree_select(node.left, rank)
+    if rank < left_size + node.count:
+        return node.value
+    return _tree_select(node.right, rank - left_size - node.count)
+
+
+class _OrderStatisticMultiset:
+    """Exact nearest-rank statistics with O(log n) insert and selection."""
+
+    def __init__(self) -> None:
+        self._root: Optional[_OrderNode] = None
+
+    def add(self, value: Any) -> None:
+        if value is not None:
+            self._root = _tree_insert(self._root, value)
+
+    def nearest_rank(self, percentile: float) -> Any:
+        count = _tree_size(self._root)
+        if count == 0:
+            return None
+        rank = ceil(percentile / 100.0 * count)
+        rank = max(1, min(count, rank))
+        return _tree_select(self._root, rank - 1)
 
 
 class SummaryAccumulator:
@@ -288,11 +360,41 @@ class SummaryAccumulator:
         self._damon_thresholds = damon_thresholds or {}
         self._damon_unavailable_reason: Optional[str] = None
 
-        self._samples: List[Dict[str, Any]] = []
-        self._slice_samples: List[Dict[str, Any]] = []
-        self._host_samples: List[Dict[str, Any]] = []
-        self._damon_samples: List[Dict[str, int]] = []
-        self._sample_monos: List[Optional[float]] = []
+        self._sample_count = 0
+        self._first_fields: Dict[str, Any] = {}
+        self._last_fields: Dict[str, Any] = {}
+        self._last_successful: Dict[str, Any] = {}
+        self._memory_current_ranks = _OrderStatisticMultiset()
+        self._damon_ranks = {
+            name: {
+                "p90": _OrderStatisticMultiset(),
+                "median": _OrderStatisticMultiset(),
+            }
+            for name in _DAMON_CLASSES
+        }
+        self._damon_count = 0
+        self._damon_peaks = {name: None for name in _DAMON_CLASSES}
+        self._maxima = {
+            "memory_peak": None,
+            "swap_peak": None,
+            "anon_peak": None,
+            "file_peak": None,
+            "slice_memory_peak": None,
+        }
+        self._baseline_memory = None
+        self._previous_limits: Optional[tuple] = None
+        self._limit_drift_count = 0
+        self._limit_read_seen = False
+        self._previous_mono: Optional[float] = None
+        self._cores_max: Optional[float] = None
+        self._cores_max_invalid = False
+        self._host_start: Optional[Dict[str, Any]] = None
+        self._host_end: Optional[Dict[str, Any]] = None
+        self._host_first_totals: Dict[str, Any] = {}
+        self._host_last_totals: Dict[str, Any] = {}
+        self._slice_seen = False
+        self._slice_first_full_total = None
+        self._slice_last_full_total = None
         self._pids_seen: set = set()
 
     def add_sample(
@@ -311,17 +413,91 @@ class SummaryAccumulator:
         available); ``pids`` is every pid attributed to the target at this
         tick (the whole cgroup with no token, the resolved subtree with
         one) — unioned into ``target.targets_seen``."""
-        self._samples.append(cgroup)
-        self._host_samples.append(host)
-        if slice_cgroup is not None:
-            self._slice_samples.append(slice_cgroup)
-        if damon is not None:
-            self._damon_samples.append(damon)
-        if isinstance(mono, (int, float)) and not isinstance(mono, bool) and isfinite(mono):
-            self._sample_monos.append(float(mono))
+        fields = _summary_fields(cgroup)
+        current_mono = (
+            float(mono)
+            if isinstance(mono, (int, float)) and not isinstance(mono, bool) and isfinite(mono)
+            else None
+        )
+        if self._sample_count == 0:
+            self._first_fields = fields.copy()
+            self._baseline_memory = fields["mem_current"]
         else:
-            self._sample_monos.append(None)
+            step = _delta(self._last_fields["cpu_usage_usec"], fields["cpu_usage_usec"])
+            if step is None or self._previous_mono is None or current_mono is None:
+                self._cores_max_invalid = True
+            else:
+                delta_mono = current_mono - self._previous_mono
+                if delta_mono <= 0:
+                    self._cores_max_invalid = True
+                else:
+                    rate = (step / 1e6) / delta_mono
+                    self._cores_max = rate if self._cores_max is None else max(self._cores_max, rate)
+
+            limits = (fields["mem_max"], fields["mem_high"])
+            previous_limits = self._previous_limits
+            if (
+                previous_limits is not None
+                and all(value is not None for value in previous_limits + limits)
+                and previous_limits != limits
+            ):
+                self._limit_drift_count += 1
+
+        for name in (*_RW21_FIELDS, "mem_peak", "pids_peak"):
+            value = fields[name]
+            if value is not None:
+                self._last_successful[name] = value
+        self._memory_current_ranks.add(fields["mem_current"])
+        if self.scope != "container":
+            self._update_max("memory_peak", fields["mem_current"])
+        self._update_max("swap_peak", fields["swap_current"])
+        self._update_max("anon_peak", fields["anon"])
+        self._update_max("file_peak", fields["file"])
+
+        limits = (fields["mem_max"], fields["mem_high"])
+        if limits != (None, None):
+            self._limit_read_seen = True
+        self._previous_limits = limits
+
+        host_block = _host_pressure_block(host)
+        host_totals = {
+            "some": _dig(host, "psi", "memory", "some_total"),
+            "full": _dig(host, "psi", "memory", "full_total"),
+        }
+        if self._sample_count == 0:
+            self._host_start = host_block
+            self._host_first_totals = host_totals
+        self._host_end = host_block
+        self._host_last_totals = host_totals
+
+        if slice_cgroup is not None:
+            slice_full_total = _dig(slice_cgroup, "psi_mem", "full_total")
+            if not self._slice_seen:
+                self._slice_first_full_total = slice_full_total
+            self._slice_seen = True
+            self._slice_last_full_total = slice_full_total
+            self._update_max("slice_memory_peak", _dig(slice_cgroup, "mem", "current"))
+
+        if damon is not None:
+            self._damon_count += 1
+            for name in _DAMON_CLASSES:
+                value = damon.get(name)
+                if value is not None:
+                    current_peak = self._damon_peaks[name]
+                    if current_peak is None or value > current_peak:
+                        self._damon_peaks[name] = value
+                self._damon_ranks[name]["p90"].add(value)
+                self._damon_ranks[name]["median"].add(value)
+
+        self._last_fields = fields
+        self._previous_mono = current_mono
+        self._sample_count += 1
         self._pids_seen.update(pids)
+
+    def _update_max(self, name: str, value: Any) -> None:
+        current = self._maxima[name]
+        if value is not None and (current is None or value > current):
+            self._maxima[name] = value
 
     def mark_damon_unavailable(self, reason: str) -> None:
         """DAMON was requested but sysfs is absent or read-only (contract
@@ -334,7 +510,7 @@ class SummaryAccumulator:
         """How many ticks have been recorded so far — sample zero is present
         before a live session is published, so a stop always has at least one
         recorded tick to finalize."""
-        return len(self._samples)
+        return self._sample_count
 
     @property
     def targets_seen(self) -> int:
@@ -347,9 +523,8 @@ class SummaryAccumulator:
     # ── finalize ─────────────────────────────────────────────────────────
 
     def finalize(self, *, ended_at: str) -> Dict[str, Any]:
-        if not self._samples:
+        if self._sample_count == 0:
             raise ValueError("finalize() called with no samples recorded")
-        first, last = self._samples[0], self._samples[-1]
         start_dt, end_dt = _parse_iso(self.started_at), _parse_iso(ended_at)
         duration = (
             (end_dt - start_dt).total_seconds() if start_dt and end_dt else None
@@ -365,37 +540,36 @@ class SummaryAccumulator:
             "ended_at": ended_at,
             "duration_seconds": _round(duration),
             "interval_seconds": self.interval_seconds,
-            "samples": len(self._samples),
+            "samples": self._sample_count,
             "target": {
                 "container_id": self.container_id,
                 "cgroup": self.cgroup,
                 "token": self.token,
                 "targets_seen": len(self._pids_seen),
             },
-            "memory": self._memory_block(first, last),
-            "cpu": self._cpu_block(first, last, duration),
-            "pressure": self._pressure_block(first, last),
-            "faults": self._faults_block(first, last),
-            "pids": {"peak": _last_present([_dig(s, "pids", "peak") for s in self._samples])},
+            "memory": self._memory_block(),
+            "cpu": self._cpu_block(duration),
+            "pressure": self._pressure_block(),
+            "faults": self._faults_block(),
+            "pids": {"peak": self._last_successful.get("pids_peak")},
             "damon": self._damon_block(),
             "host": self._host_block(),
-            "events": self._events_block(first, last),
+            "events": self._events_block(),
         }
 
-    def _memory_block(self, first: Dict, last: Dict) -> Dict[str, Any]:
-        currents = [_dig(s, "mem", "current") for s in self._samples]
-        baseline = _dig(first, "mem", "current")
+    def _reference(self, name: str) -> Any:
         if self.scope == "container":
-            peak = _last_present([_dig(s, "mem", "peak") for s in self._samples])
+            return self._last_successful.get(name)
+        return _delta(self._first_fields[name], self._last_fields[name])
+
+    def _memory_block(self) -> Dict[str, Any]:
+        baseline = self._baseline_memory
+        if self.scope == "container":
+            peak = self._last_successful.get("mem_peak")
             source = "memory.peak"
         else:
-            peak = _max_over(currents)
+            peak = self._maxima["memory_peak"]
             source = "sampled-max"
-        # RW-21 / contract §3's nullability note: in scope "container" the
-        # profiled cgroup IS the lane, so "peak over what it started at" is
-        # not a meaningful number (baseline is kept, informational only) —
-        # always null here, never computed, regardless of whether peak/
-        # baseline themselves are present.
         if self.scope == "container":
             over_baseline = None
         else:
@@ -405,73 +579,48 @@ class SummaryAccumulator:
             "source": source,
             "baseline_bytes": baseline,
             "peak_over_baseline_bytes": over_baseline,
-            "p90_bytes": _nearest_rank(currents, 90),
-            "median_bytes": _nearest_rank(currents, 50),
-            "swap_peak_bytes": _max_over(_dig(s, "mem", "swap_current") for s in self._samples),
-            "anon_peak_bytes": _max_over(_dig(s, "memstat", "anon") for s in self._samples),
-            "file_peak_bytes": _max_over(_dig(s, "memstat", "file") for s in self._samples),
+            "p90_bytes": self._memory_current_ranks.nearest_rank(90),
+            "median_bytes": self._memory_current_ranks.nearest_rank(50),
+            "swap_peak_bytes": self._maxima["swap_peak"],
+            "anon_peak_bytes": self._maxima["anon_peak"],
+            "file_peak_bytes": self._maxima["file_peak"],
         }
 
-    def _cpu_block(self, first: Dict, last: Dict, duration: Optional[float]) -> Dict[str, Any]:
-        # RW-21: usage_usec/throttled_usec/nr_throttled are cumulative
-        # counters — scope "container" reads the last successful value,
-        # scope "container-shared" keeps the delta-from-s0 rule (see
-        # `_rw21_reference`'s own docstring). `cores_max` is a per-interval
-        # RATE, never itself a delta-from-s0 quantity, so it is unaffected
-        # in either scope.
-        usage_ref = _rw21_reference(self.scope, self._samples, "cpu", "usage_usec")
+    def _cpu_block(self, duration: Optional[float]) -> Dict[str, Any]:
+        usage_ref = self._reference("cpu_usage_usec")
         seconds = None if usage_ref is None else usage_ref / 1e6
         cores_avg = None
         if seconds is not None and duration is not None and duration > 0:
             cores_avg = seconds / duration
-        cores_max = None
-        for index, (prev, cur) in enumerate(zip(self._samples, self._samples[1:])):
-            step = _delta(_dig(prev, "cpu", "usage_usec"), _dig(cur, "cpu", "usage_usec"))
-            prev_mono = self._sample_monos[index]
-            cur_mono = self._sample_monos[index + 1]
-            if step is None or prev_mono is None or cur_mono is None:
-                cores_max = None
-                break
-            delta_mono = cur_mono - prev_mono
-            if delta_mono <= 0:
-                cores_max = None
-                break
-            rate = (step / 1e6) / delta_mono
-            cores_max = rate if cores_max is None else max(cores_max, rate)
-        throttled_ref = _rw21_reference(self.scope, self._samples, "cpu", "throttled_usec")
-        nr_throttled = _rw21_reference(self.scope, self._samples, "cpu", "nr_throttled")
         return {
             "seconds": _round(seconds),
             "cores_avg": _round(cores_avg),
-            "cores_max": _round(cores_max),
-            "throttled_seconds": _round(None if throttled_ref is None else throttled_ref / 1e6),
-            "nr_throttled": nr_throttled,
+            "cores_max": _round(None if self._cores_max_invalid else self._cores_max),
+            "throttled_seconds": _round(
+                None if self._reference("cpu_throttled_usec") is None
+                else self._reference("cpu_throttled_usec") / 1e6
+            ),
+            "nr_throttled": self._reference("cpu_nr_throttled"),
         }
 
-    def _pressure_block(self, first: Dict, last: Dict) -> Dict[str, Any]:
-        def stall(group: str, kind: str) -> Optional[float]:
-            # RW-21: the container's own PSI totals are cumulative counters
-            # too — same last-read-vs-delta branch as `_cpu_block`.
-            ref = _rw21_reference(self.scope, self._samples, group, f"{kind}_total")
+    def _pressure_block(self) -> Dict[str, Any]:
+        def stall(name: str) -> Optional[float]:
+            ref = self._reference(name)
             return _round(None if ref is None else ref / 1e6)
 
         return {
-            "memory_some_stall_seconds": stall("psi_mem", "some"),
-            "memory_full_stall_seconds": stall("psi_mem", "full"),
-            "cpu_some_stall_seconds": stall("psi_cpu", "some"),
-            "io_some_stall_seconds": stall("psi_io", "some"),
-            "io_full_stall_seconds": stall("psi_io", "full"),
+            "memory_some_stall_seconds": stall("psi_mem_some_total"),
+            "memory_full_stall_seconds": stall("psi_mem_full_total"),
+            "cpu_some_stall_seconds": stall("psi_cpu_some_total"),
+            "io_some_stall_seconds": stall("psi_io_some_total"),
+            "io_full_stall_seconds": stall("psi_io_full_total"),
         }
 
-    def _faults_block(self, first: Dict, last: Dict) -> Dict[str, Any]:
-        # RW-21: memory.stat's fault counters are cumulative too.
-        def value(key: str) -> Optional[int]:
-            return _rw21_reference(self.scope, self._samples, "memstat", key)
-
+    def _faults_block(self) -> Dict[str, Any]:
         return {
-            "pgmajfault": value("pgmajfault"),
-            "workingset_refault_anon": value("workingset_refault_anon"),
-            "workingset_refault_file": value("workingset_refault_file"),
+            "pgmajfault": self._reference("pgmajfault"),
+            "workingset_refault_anon": self._reference("workingset_refault_anon"),
+            "workingset_refault_file": self._reference("workingset_refault_file"),
         }
 
     def _damon_block(self) -> Optional[Dict[str, Any]]:
@@ -483,13 +632,12 @@ class SummaryAccumulator:
             status, reason, kdamond = "on", None, self._damon_kdamond
 
         def class_stats(name: str) -> Optional[Dict[str, Optional[int]]]:
-            values = [s.get(name) for s in self._damon_samples]
-            if not self._damon_samples:
+            if self._damon_count == 0:
                 return None
             return {
-                "peak": _max_over(values),
-                "p90": _nearest_rank(values, 90),
-                "median": _nearest_rank(values, 50),
+                "peak": self._damon_peaks[name],
+                "p90": self._damon_ranks[name]["p90"].nearest_rank(90),
+                "median": self._damon_ranks[name]["median"].nearest_rank(50),
             }
 
         return {
@@ -497,7 +645,7 @@ class SummaryAccumulator:
             "reason": reason,
             "kdamond": kdamond,
             "targets_seen": len(self._pids_seen),
-            "samples": len(self._damon_samples),
+            "samples": self._damon_count,
             "hot_bytes": class_stats("hot"),
             "warm_bytes": class_stats("warm"),
             "cold_bytes": class_stats("cold"),
@@ -506,48 +654,41 @@ class SummaryAccumulator:
         }
 
     def _host_block(self) -> Dict[str, Any]:
-        host_first = self._host_samples[0] if self._host_samples else None
-        host_last = self._host_samples[-1] if self._host_samples else None
+        if self._host_start is None or self._host_end is None:
+            raise AssertionError("host endpoints missing after a recorded sample")
 
         def host_stall(kind: str) -> Optional[float]:
-            delta = _delta(
-                _dig(host_first, "psi", "memory", f"{kind}_total"),
-                _dig(host_last, "psi", "memory", f"{kind}_total"),
-            )
+            delta = _delta(self._host_first_totals[kind], self._host_last_totals[kind])
             return _round(None if delta is None else delta / 1e6)
 
         slice_block = None
-        if self._slice_samples:
-            slice_first, slice_last = self._slice_samples[0], self._slice_samples[-1]
-            slice_delta = _delta(
-                _dig(slice_first, "psi_mem", "full_total"),
-                _dig(slice_last, "psi_mem", "full_total"),
-            )
+        if self._slice_seen:
+            slice_delta = _delta(self._slice_first_full_total, self._slice_last_full_total)
             slice_block = {
                 "name": self.slice_name,
                 "memory_full_stall_seconds": _round(None if slice_delta is None else slice_delta / 1e6),
-                "memory_peak_bytes": _max_over(_dig(s, "mem", "current") for s in self._slice_samples),
+                "memory_peak_bytes": self._maxima["slice_memory_peak"],
             }
 
         return {
-            "start": _host_pressure_block(host_first),
-            "end": _host_pressure_block(host_last),
+            "start": {
+                "memory_pressure": dict(self._host_start["memory_pressure"]),
+                "cpu_pressure": dict(self._host_start["cpu_pressure"]),
+                "loadavg1": self._host_start["loadavg1"],
+            },
+            "end": {
+                "memory_pressure": dict(self._host_end["memory_pressure"]),
+                "cpu_pressure": dict(self._host_end["cpu_pressure"]),
+                "loadavg1": self._host_end["loadavg1"],
+            },
             "memory_full_stall_seconds": host_stall("full"),
             "memory_some_stall_seconds": host_stall("some"),
             "slice": slice_block,
         }
 
-    def _events_block(self, first: Dict, last: Dict) -> Dict[str, Any]:
-        # RW-21: memory.events.local's oom_kill/high are cumulative counters
-        # too. `limit_drift` is UNAFFECTED (contract §7's own note) — it was
-        # never itself a cumulative counter read as a delta, just a count of
-        # sample-pairs where memory.max/memory.high changed, so it stays
-        # `_count_limit_drift`'s own logic in both scopes.
-        def value(key: str) -> Optional[int]:
-            return _rw21_reference(self.scope, self._samples, "memev", key)
-
+    def _events_block(self) -> Dict[str, Any]:
         return {
-            "oom_kill": value("oom_kill"),
-            "limit_drift": _count_limit_drift(self._samples),
-            "memory_high_breach": value("high"),
+            "oom_kill": self._reference("oom_kill"),
+            "limit_drift": self._limit_drift_count if self._limit_read_seen else None,
+            "memory_high_breach": self._reference("memory_high_breach"),
         }

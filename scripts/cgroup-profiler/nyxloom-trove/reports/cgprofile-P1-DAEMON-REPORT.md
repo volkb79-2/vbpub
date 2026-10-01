@@ -1819,3 +1819,30 @@ are accepted, provisional merge may precede those long gates; R2 and the full
 gate then run asynchronously on an attached CIU worktree whose branch remains
 pinned to the judged commit. No release or daemon activation until both pass
 and any repairs are backported and rejudged.
+
+## Controller addendum — round-4 summary correction (2026-10-01)
+
+Round 4 rejected tree `148481e4af504fc416679ed2fd8dffe380709de6`. Its B1
+finding showed that the original accumulator retained raw samples and
+recomputed summary metrics during `finalize()`, violating interface-contract
+§1.5. The controller has replaced this with ingestion-time scalar reducers
+and exact AVL order-statistic multisets for nearest-rank percentiles. Normal
+stop no longer holds or scans raw sample objects; the raw series remains the
+separate durable input for reports and restart-orphan recovery. Percentile
+state is exact but grows with distinct observed values, not a constant-memory
+sketch.
+
+The 3,601-sample regression mutates all input objects immediately after each
+`add_sample()` and verifies the final output. Focused `test_summary.py` and
+`test_serve.py` currently pass: 205 passed, 1 skipped in 19.24 s. These are
+local results on the uncommitted repair, not registered gate receipts.
+
+Round-4 B2 is still unresolved: the current loaded host state for both
+authored cgroup parents has not yet been read through a permitted
+host-namespace-free path. The cockpit has no host system-bus socket mounted;
+previous private-container `systemctl` attempts did not connect. No host
+namespace or host-escape was used. B3 is also open; rerun registered R0/R1,
+R3 and doctor on the final committed tree. A fresh Sol round-5 review is
+required after these steps, with rounds 1–4 supplied. Current-tree R2/full
+gate and the other live daemon probes remain separate mandatory release
+holds under RW-381.

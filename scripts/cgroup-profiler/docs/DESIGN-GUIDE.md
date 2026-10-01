@@ -90,6 +90,19 @@ sample timestamps are retained; `cores_max` uses each positive adjacent
 timestamp delta and becomes null when a needed timestamp or delta is not
 usable.
 
+The daemon updates the summary as each tick arrives: cumulative-counter
+references, extrema, limit-drift count, host/slice endpoints, PID union, and
+CPU rate validity are maintained directly. Exact nearest-rank percentiles use
+AVL order-statistic multisets, so insertion and final rank selection are
+O(log n); normal `ctl stop` never scans the raw series or recomputes summary
+blocks from it. The full sample, host, and DAMON series are persisted separately
+for reports and crash recovery. The exact percentile state still grows with
+the number of distinct observed values; it is smaller than retaining every
+raw sample object, but it is not a constant-memory sketch. If the daemon
+restarts, orphan recovery deliberately replays the durable series because the
+in-memory accumulator was lost. That recovery path is distinct from normal
+stop-time finalization.
+
 ## Contract boundary
 
 The wire contract is major version 1 and summary documents use schema 1. A

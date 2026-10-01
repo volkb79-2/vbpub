@@ -11,8 +11,9 @@ land every ``interval_seconds`` with no gaps, which a caller reading
 cgroup, its slice, and the host, and feeds :class:`lib.summary.SummaryAccumulator`
 and :class:`lib.store.RunDir` so that ``ctl stop`` can answer within the
 contract's 30 s budget without ever recomputing from the on-disk series
-(§1.5 — the accumulator is already incremental; ``finalize()`` is O(1) in
-wall time).
+(§1.5 — each sample updates the accumulator; ``finalize()`` builds the
+fixed-size response and performs only a fixed number of O(log n) percentile
+lookups).
 
 **Two safety properties this module owns, both restated from the handoff:**
 

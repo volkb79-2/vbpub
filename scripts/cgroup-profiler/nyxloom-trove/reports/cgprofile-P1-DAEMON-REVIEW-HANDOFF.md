@@ -12,6 +12,21 @@ isolated branch. You may not merge, release, tag, publish, install, or
 start/stop the main daemon. Records:
 `scripts/cgroup-profiler/nyxloom-trove/reports/cgprofile-P1-DAEMON-REVIEW-round<n>.md`.
 
+### Controller status after round 4
+
+Round 4 rejected tree `148481e4af504fc416679ed2fd8dffe380709de6`; preserve
+its report. B1's stop-time rescan has been repaired in the current worktree
+using ingestion-time summary reducers and exact order-statistic trees. The
+focused local `test_summary.py` + `test_serve.py` suite is green (205 passed,
+1 skipped), but the repair and evidence updates are not yet committed and no
+registered short gate has run on them. B2 remains open: no current,
+host-namespace-free proof of both authored host-unit states has been
+established. B3 remains open because the old short-gate receipts predate the
+repair. The controller must commit the final candidate, run registered
+R0/R1, R3 and doctor, then dispatch a fresh round-5 reviewer seeded with
+rounds 1–4. Do not claim acceptance or merge until B2 and the required live
+probes are resolved. The current-tree R2 and full gate remain release holds.
+
 Branch `rg55-p1-release-review-20260930`, worktree
 `/workspaces/vbpub/.worktrees/rg55-p1-release-review-20260930`, project dir
 `scripts/cgroup-profiler/`. The candidate was based on main
