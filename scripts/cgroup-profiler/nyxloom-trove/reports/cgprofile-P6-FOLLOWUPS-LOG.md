@@ -1663,4 +1663,4 @@ transient delegated scope can be created beneath `dev-gates.slice`, that its
 `Delegate=yes` and exact parent are read back, or that stop restores every
 process before systemd retires it. Those remain reviewer-owned live probes.
 No host mutation, `host-escape`, or namespace join was performed. The same
-values are recorded in controller ruling RW-390.
+values are recorded in controller ruling RW-398.

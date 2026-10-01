@@ -143,7 +143,7 @@ sessions built this — hunt the seams between sessions.
    the accept loop still serves other verbs while streaming; over exec
    `ctl watch` flushes per line and exits 0.
 4. **Placement (D-20/D-25/D-31, §8.3).** Before moving anything, persist the
-   Controller-provided direct-host preflight (RW-390) reports
+   Controller-provided direct-host preflight (RW-398) reports
    `dev-gates.slice` loaded at `/dev.slice/dev-gates.slice`, `Delegate=no`,
    CPU quota 5 CPUs, memory max 1.5 GiB; `cgprofile.slice` is loaded at
    `/cgprofile.slice`, `Delegate=no`, unlimited CPU, memory max 1 GiB. These

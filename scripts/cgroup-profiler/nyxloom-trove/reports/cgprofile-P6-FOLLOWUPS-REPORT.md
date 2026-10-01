@@ -1901,7 +1901,7 @@ The operator supplied a direct-host, read-only `systemctl show` result for
 are loaded. The first two have `Delegate=no`, are children of `/dev.slice`,
 and each has a five-CPU quota; `cgprofile.slice` is `/cgprofile.slice`, also
 `Delegate=no`, with no CPU quota and a 1 GiB memory limit. Exact values and
-provenance are in controller ruling RW-390 and P6 LOG §32.
+provenance are in controller ruling RW-398 and P6 LOG §32.
 
 This parent-unit readback does not demonstrate D-31's transient delegated
 scope below the non-delegated `dev-gates.slice`: the live probe must create
