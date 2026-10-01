@@ -2429,6 +2429,64 @@ class TestPlacementCleanupEdges:
         assert any(path.endswith("/cgroup.procs") and value == "101"
                    for path, value in writes)
 
+    def test_restore_accepts_scope_retirement_at_final_membership_check(self, tmp_path):
+        root, lane = self._ready_lane(tmp_path)
+        lane._unit_absence_verifier = lambda unit: (
+            unit == SCOPE_UNIT and not (root / SCOPE_UNIT_CGROUP).exists()
+        )
+        read_members = lane._owned_cgroup_pids
+        scope_retired = False
+
+        def retire_after_scope_membership_read(cgroup):
+            nonlocal scope_retired
+            members = read_members(cgroup)
+            if cgroup == lane.scope_cgroup and not scope_retired:
+                # Model systemd retiring the now-empty scope after its source
+                # snapshot but before the independent final membership check.
+                shutil.rmtree(root / SCOPE_UNIT_CGROUP)
+                scope_retired = True
+            return members
+
+        lane._owned_cgroup_pids = retire_after_scope_membership_read
+
+        assert lane._restore_owned_processes() is True
+
+        assert lane.pid_records[101]["state"] == "restored"
+        assert lane._journal["state"] == "restoring"
+        assert not (root / SCOPE_UNIT_CGROUP).exists()
+
+    def test_auto_retirement_refuses_when_restore_proof_cannot_be_persisted(self, tmp_path):
+        root, lane = self._ready_lane(tmp_path)
+        lane._unit_absence_verifier = lambda unit: (
+            unit == SCOPE_UNIT and not (root / SCOPE_UNIT_CGROUP).exists()
+        )
+        attach = lane._systemd_attach
+
+        def restore_and_retire(unit, subgroup, pid):
+            accepted = attach(unit, subgroup, pid)
+            if accepted and unit != SCOPE_UNIT:
+                shutil.rmtree(root / SCOPE_UNIT_CGROUP)
+            return accepted
+
+        lane._systemd_attach = restore_and_retire
+        restoring_writes = 0
+
+        def fail_auto_retirement_persist(journal):
+            nonlocal restoring_writes
+            if journal["state"] == "restoring":
+                restoring_writes += 1
+                if restoring_writes == 4:
+                    raise OSError("disk full while recording auto-retirement proof")
+
+        lane._state_write = fail_auto_retirement_persist
+
+        lane.release()
+
+        assert restoring_writes == 4
+        assert not lane.released
+        assert lane.error == placement.REFUSED_STATE_UNAVAILABLE
+        assert lane._journal["state"] == "recovery-required"
+
     def test_retirement_during_restore_refuses_unknown_unit_state(self, tmp_path):
         root = _fake_cgroup_root(tmp_path)
         lane = _placement(root, unit_absence_verifier=lambda _unit: None)
