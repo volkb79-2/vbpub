@@ -34,6 +34,11 @@ usable from a project checkout without creating unrelated host state.
 `error`, `warn`, `info`, or `debug`; `NYXLOOM_LOG_LEVEL` supplies the default.
 `--traceback` controls unexpected-exception tracebacks separately.
 
+The large `nyxloom-harness extract` option set is grouped by the operator's
+task: session source, window selection, included content, output, redaction
+and task context, and live following. This uses cli-extended's native option
+groups, so parsing and grouped help still come from the same declaration.
+
 ## CLI grammar and closed values
 
 Parser declarations derive closed values from their owning sources: backlog
@@ -184,3 +189,19 @@ Report output types make the audience explicit. `report-sheet` is the compact
 operator overview, `report-detailed` is a readable row per API call, and `csv`
 is the stable-column form for spreadsheets or scripts. The legacy
 `--detailed` flag remains an alias for CSV.
+
+## Local session search
+
+`nyxloom-harness search` answers “which local session should I inspect?” by
+searching the text-bearing records in the existing Claude Code, Codex, and
+OpenCode stores. It stays local and prints identifiers, source paths, matched
+query words, dates, and scores; it does not print transcript excerpts or send
+session content to a service. Matching is case-insensitive and punctuation
+splits words, so `cli-extended` searches for both `cli` and `extended`.
+
+The default `best` order favors sessions matching more distinct query words,
+then weights rare terms more heavily and modestly rewards repeats. `date` puts
+newer recorded activity first. Results include the exact source path so a
+same-ID collision across local clients remains distinguishable. The
+[consumer recipe](CONSUMERS.md#search-local-session-history) shows the
+copyable command and output fields.
