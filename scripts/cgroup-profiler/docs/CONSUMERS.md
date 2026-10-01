@@ -182,8 +182,9 @@ The version response has the current wire shape:
 The version response's `daemon.damon: "available"` only means the library
 and admin sysfs interface are visible; it does not prove that the kernel will
 accept a configured context. Check the `damon` field in each `ctl start`
-response (`on` or `unavailable:<reason>`), then check the stop summary for an
-actual `damon.jsonl` series before claiming DAMON samples or overhead. See the
+response (`on` or `unavailable:<reason>`), then check the stop response's
+top-level `series.damon` field for `damon.jsonl` before claiming DAMON samples
+or overhead. See the
 [design rationale](DESIGN-GUIDE.md#damon-availability-is-not-session-readiness).
 
 ## Attach a run-gate lane
