@@ -345,15 +345,16 @@ option_ids = ["option:route:entrypoint:monitor-task/watch/--poll"]
 ```
 
 The generated case signature includes the foreign option's owner route and
-action shape. Check mode requires the foreign spelling to appear as an
-unrecognized option on the target route and requires the target command's
-required arguments, options, and exclusive selections. For a value-taking
-foreign option, it checks the owner's minimum value count while treating the
-target parser's own options as token boundaries; a flag-only foreign option
-cannot carry an inline value. It still does not call the parser or prove the
-refusal; the linked test invokes the real CLI and checks the expected status
-and effects. Reused option IDs on multiple foreign routes are ambiguous and
-cause generation to refuse the catalog.
+action shape. Check mode requires each named local option, the foreign spelling
+as an unrecognized option at the target route's parser depth, and the target
+command's required arguments, options, and exclusive selections. For a
+value-taking foreign option, it consumes values according to the owner's
+declared arity while treating option-like target tokens as boundaries. Those
+value tokens cannot satisfy a target positional. The structural check validates
+fixed/minimum arity and enumerable choices, but it does not run converters or
+prove the refusal; the linked test invokes the real CLI and checks the expected
+status and effects. Reused option IDs on multiple foreign routes are ambiguous
+and cause generation to refuse the catalog.
 
 The generator bounds option interactions by the named groups in the catalog;
 it does not infer which combinations have product meaning. It also does not
@@ -361,9 +362,10 @@ automatically enumerate every token count for optional-arity, variadic, or
 repeatable options. If `--color` without a value and `--color VALUE`, or one
 `--tag` and repeated `--tag` occurrences, have different meaning, declare
 separate named combinations and write their exact argv in the semantic rows.
-The structural checker confirms the route, option presence, and required
-baseline syntax; the behavior tests assert the exact value and repetition
-rules. Those distinctions belong in the consumer's canonical CLI spec and
+The structural checker confirms the route, named option presence, declared
+value counts, enumerable choices, and required baseline syntax; the behavior
+tests assert converter behavior and exact value and repetition rules. Those
+distinctions belong in the consumer's canonical CLI spec and
 should be re-reviewed whenever their signatures change.
 
 An active `[[cases]]` record must contain a stable generated `id`,

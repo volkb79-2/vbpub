@@ -765,13 +765,15 @@ spelling and choice, exclusive alternatives/conflicting pairs, parser route
 aliases, and catalog-declared option interactions, including a target route
 combined with an option registered only on another route. Such a case's
 signature MUST include the foreign option's owning route and action shape.
-Check mode MUST require the foreign spelling as an unrecognized option token
-on the target route, and MUST require that route's required positionals,
-required options, and required-exclusive selections so the case isolates the
-intended interaction. For a value-taking foreign option, it MUST check the
-owner action's minimum value count while treating options recognized by the
-target route as value boundaries; a flag-only foreign option MUST reject an
-inline value. If an option ID is ambiguous across routes and does not
+Check mode MUST require each named local option, the foreign spelling as an
+unrecognized option token at the target route's parser depth, and that route's
+required positionals, required options, and required-exclusive selections so
+the case isolates the intended interaction. A value-taking foreign option
+MUST be tokenized using the owner's action arity while using option-like target
+tokens as value boundaries; its value tokens MUST NOT be assigned to a target
+positional. Check mode MUST enforce minimum/fixed value counts and enumerable
+choices; a flag-only foreign option MUST reject an inline value. It MUST NOT run
+converters or handlers. If an option ID is ambiguous across routes and does not
 resolve uniquely on the target route, surface generation MUST refuse it.
 The generator does not automatically enumerate every value count or repeated
 occurrence for optional-arity, variadic, or repeatable options; consumers MUST
