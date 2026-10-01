@@ -28,6 +28,8 @@ from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any, Iterator, Mapping, NamedTuple, Sequence
 
+from cmru.git_auth import GitHubGitAuth, run_remote_git
+
 
 CHILD_ENV = "CMRU_RELEASE_TRANSACTION_CHILD"
 BRANCH_ENV = "CMRU_RELEASE_BRANCH"
@@ -267,9 +269,13 @@ def release_lock(repo_root: Path) -> Iterator[None]:
             fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
-def fetch_origin_main(repo_root: Path) -> str:
+def fetch_origin_main(
+    repo_root: Path, *, git_auth: GitHubGitAuth | None = None,
+) -> str:
     """Fetch and return the exact remote commit authoritative for a new release."""
-    subprocess.run(["git", "fetch", "--prune", "origin", "main"], cwd=repo_root, check=True)
+    run_remote_git(
+        repo_root, "fetch", "--prune", "origin", "main", auth=git_auth, check=True,
+    )
     return _git(repo_root, "rev-parse", "origin/main")
 
 
@@ -412,7 +418,7 @@ def _worktree_dirname(branch: str) -> str:
 
 def create_workspace(
     repo_root: Path, *, base: str | None = None, purpose: str = "release", scope: str | None = None,
-    source_git_root: Path | None = None,
+    source_git_root: Path | None = None, git_auth: GitHubGitAuth | None = None,
 ) -> ReleaseWorkspace:
     """Create a worktree at one already-fetched authoritative remote commit.
 
@@ -433,7 +439,7 @@ def create_workspace(
         raise ValueError(f"unknown CMRU workspace purpose: {purpose}")
     source_root = (source_git_root or repo_root).resolve()
     if base is None:
-        base = fetch_origin_main(source_root)
+        base = fetch_origin_main(source_root, git_auth=git_auth)
     shared = _shared_worktree()
     parent = source_root / ".worktrees"
     parent.mkdir(exist_ok=True)
@@ -500,7 +506,9 @@ def create_workspace(
         raise RuntimeError(str(exc)) from exc
 
 
-def resume_workspace(repo_root: Path, path: Path) -> ReleaseWorkspace:
+def resume_workspace(
+    repo_root: Path, path: Path, *, git_auth: GitHubGitAuth | None = None,
+) -> ReleaseWorkspace:
     """Validate and reopen a retained release worktree (flat ``cmru-release-*``
     or legacy nested ``cmru/release/*``)."""
     path = path.resolve()
@@ -541,7 +549,9 @@ def resume_workspace(repo_root: Path, path: Path) -> ReleaseWorkspace:
     branch = _git(path, "branch", "--show-current")
     if not _is_release_branch(branch):
         raise RuntimeError(f"{path} is not a retained cmru release branch (got {branch!r})")
-    subprocess.run(["git", "fetch", "--prune", "origin", "main"], cwd=path_top, check=True)
+    run_remote_git(
+        path_top, "fetch", "--prune", "origin", "main", auth=git_auth, check=True,
+    )
     return ReleaseWorkspace(repo_root=repo_root.resolve(), path=path, branch=branch, base=_git(path, "rev-parse", "HEAD"))
 
 
@@ -1309,7 +1319,13 @@ def delete_retained_build_output(
     return targets
 
 
-def discard_build_workspace(repo_root: Path, path: Path, *, dry_run: bool) -> ReleaseWorkspace:
+def discard_build_workspace(
+    repo_root: Path,
+    path: Path,
+    *,
+    dry_run: bool,
+    expected_workspace: ReleaseWorkspace | None = None,
+) -> ReleaseWorkspace:
     """Discard one inspected failed build worktree (flat ``cmru-build-*`` or
     legacy nested ``cmru/build/*``) by exact path."""
     path = path.resolve()
@@ -1338,6 +1354,24 @@ def discard_build_workspace(repo_root: Path, path: Path, *, dry_run: bool) -> Re
         base=_git(path, "rev-parse", "HEAD"),
         context=context,
     )
+    if expected_workspace is not None:
+        same_git_identity = (
+            workspace.path.resolve() == expected_workspace.path.resolve()
+            and workspace.branch == expected_workspace.branch
+            and workspace.base == expected_workspace.base
+        )
+        if expected_workspace.context is None:
+            same_recorded_identity = workspace.context is None
+        else:
+            same_recorded_identity = (
+                workspace.context is not None
+                and workspace.workspace_id == expected_workspace.workspace_id
+            )
+        if not same_git_identity or not same_recorded_identity:
+            raise RuntimeError(
+                "retained build worktree identity changed after cleanup preview; "
+                "inspect it and request a new preview"
+            )
     if not dry_run:
         remove_workspace(workspace)
     return workspace
@@ -1674,7 +1708,10 @@ def list_retained_workspaces(repo_root: Path) -> list[ReleaseWorkspace]:
     ]
 
 
-def abandon_workspace(repo_root: Path, workspace: ReleaseWorkspace) -> None:
+def abandon_workspace(
+    repo_root: Path, workspace: ReleaseWorkspace, *,
+    git_auth: GitHubGitAuth | None = None,
+) -> None:
     """Fully discard a retained release attempt and its origin candidate branch.
 
     Unlike ``remove_workspace`` (the success path), this never touches
@@ -1682,9 +1719,9 @@ def abandon_workspace(repo_root: Path, workspace: ReleaseWorkspace) -> None:
     main, so deleting the candidate is the only source cleanup required here.
     """
     ref = "refs/heads/" + workspace.branch
-    remote = subprocess.run(
-        ["git", "ls-remote", "--heads", "origin", ref],
-        cwd=repo_root, capture_output=True, text=True, check=False,
+    remote = run_remote_git(
+        repo_root, "ls-remote", "--heads", "origin", ref,
+        auth=git_auth, capture_output=True, text=True, check=False,
     )
     if remote.returncode != 0:
         raise RuntimeError("cannot determine origin candidate state; retained transaction was not removed")
@@ -1696,18 +1733,18 @@ def abandon_workspace(repo_root: Path, workspace: ReleaseWorkspace) -> None:
     if (not pushed or removed) and present:
         raise RuntimeError("origin candidate ref exists without matching active transaction state")
     if pushed and not removed:
-        result = subprocess.run(
-            ["git", "push", "origin", "--delete", workspace.branch],
-            cwd=repo_root, capture_output=True, text=True, check=False,
+        result = run_remote_git(
+            repo_root, "push", "origin", "--delete", workspace.branch,
+            auth=git_auth, capture_output=True, text=True, check=False,
         )
         if result.returncode != 0:
             raise RuntimeError(
                 f"could not delete origin candidate ref {ref}; local worktree and transaction metadata were retained\n"
                 f"{result.stderr.strip()}"
             )
-        verify = subprocess.run(
-            ["git", "ls-remote", "--heads", "origin", ref],
-            cwd=repo_root, capture_output=True, text=True, check=False,
+        verify = run_remote_git(
+            repo_root, "ls-remote", "--heads", "origin", ref,
+            auth=git_auth, capture_output=True, text=True, check=False,
         )
         if verify.returncode != 0 or any(
             line.split("\t", 1)[-1] == ref
@@ -1719,7 +1756,9 @@ def abandon_workspace(repo_root: Path, workspace: ReleaseWorkspace) -> None:
     forget_release_scope(repo_root, workspace)
 
 
-def promote_workspace(workspace: ReleaseWorkspace) -> None:
+def promote_workspace(
+    workspace: ReleaseWorkspace, *, git_auth: GitHubGitAuth | None = None,
+) -> None:
     """Fast-forward ``origin/main`` from the exact release candidate tip.
 
     The candidate is built and published before this function is called. It is
@@ -1730,9 +1769,9 @@ def promote_workspace(workspace: ReleaseWorkspace) -> None:
     freshly fetched main without pretending that the already-published artifact
     came from a different commit.
     """
-    result = subprocess.run(
-        ["git", "push", "origin", "HEAD:refs/heads/main"],
-        cwd=workspace.path, capture_output=True, text=True,
+    result = run_remote_git(
+        workspace.path, "push", "origin", "HEAD:refs/heads/main",
+        auth=git_auth, capture_output=True, text=True,
     )
     if result.returncode == 0:
         return
@@ -1745,7 +1784,9 @@ def promote_workspace(workspace: ReleaseWorkspace) -> None:
     )
 
 
-def push_backup_branch(workspace: ReleaseWorkspace) -> None:
+def push_backup_branch(
+    workspace: ReleaseWorkspace, *, git_auth: GitHubGitAuth | None = None,
+) -> None:
     """Push the current release candidate to its durable origin branch.
 
     This is called initially, after each prepare/tag commit, and before each
@@ -1761,14 +1802,16 @@ def push_backup_branch(workspace: ReleaseWorkspace) -> None:
     (:func:`mark_backup_pushed`, KI-15) — the state :func:`remove_backup_branch`
     later checks before attempting any cleanup delete.
     """
-    subprocess.run(
-        ["git", "push", "--force", "origin", f"HEAD:refs/heads/{workspace.branch}"],
-        cwd=workspace.path, check=True,
+    run_remote_git(
+        workspace.path, "push", "--force", "origin", f"HEAD:refs/heads/{workspace.branch}",
+        auth=git_auth, check=True,
     )
     mark_backup_pushed(workspace.repo_root, workspace)
 
 
-def remove_backup_branch(workspace: ReleaseWorkspace) -> None:
+def remove_backup_branch(
+    workspace: ReleaseWorkspace, *, git_auth: GitHubGitAuth | None = None,
+) -> None:
     """Delete the durability backup branch from origin after a fully successful release.
 
     Only attempted when THIS transaction actually pushed one
@@ -1791,20 +1834,25 @@ def remove_backup_branch(workspace: ReleaseWorkspace) -> None:
     """
     if not backup_was_pushed(workspace.repo_root, workspace):
         return
-    subprocess.run(
-        ["git", "push", "origin", "--delete", workspace.branch],
-        cwd=workspace.path, check=False, capture_output=True, text=True,
+    run_remote_git(
+        workspace.path, "push", "origin", "--delete", workspace.branch,
+        auth=git_auth, check=False, capture_output=True, text=True,
     )
 
 
-def promotion_landed(repo_root: Path, workspace: ReleaseWorkspace) -> bool:
+def promotion_landed(
+    repo_root: Path, workspace: ReleaseWorkspace, *,
+    git_auth: GitHubGitAuth | None = None,
+) -> bool:
     """Legacy inspector for transactions created by the pre-candidate-order flow.
 
     The current release path promotes only after publication and does not call
     this function. It remains available to inspect an older retained attempt
     without making that historical state part of the normal failure path.
     """
-    subprocess.run(["git", "fetch", "--prune", "origin", "main"], cwd=repo_root, check=True)
+    run_remote_git(
+        repo_root, "fetch", "--prune", "origin", "main", auth=git_auth, check=True,
+    )
     origin_main = _git(repo_root, "rev-parse", "origin/main")
     branch_tip = _git(workspace.path, "rev-parse", workspace.branch)
     return origin_main == branch_tip
@@ -1816,7 +1864,10 @@ class RevertResult:
     reverted: bool    # True ⇒ a revert commit was actually pushed; False ⇒ nothing needed it
 
 
-def revert_promotion(workspace: ReleaseWorkspace, *, from_sha: str | None = None) -> RevertResult:
+def revert_promotion(
+    workspace: ReleaseWorkspace, *, from_sha: str | None = None,
+    git_auth: GitHubGitAuth | None = None,
+) -> RevertResult:
     """Legacy recovery helper for a transaction created by the old release order.
 
     The current release path never calls this function: failed candidates are
@@ -1858,7 +1909,9 @@ def revert_promotion(workspace: ReleaseWorkspace, *, from_sha: str | None = None
         ["git", "commit", "-m", f"revert: undo failed release {workspace.branch}"],
         cwd=workspace.path, check=True,
     )
-    push = subprocess.run(["git", "push", "origin", "HEAD:refs/heads/main"], cwd=workspace.path)
+    push = run_remote_git(
+        workspace.path, "push", "origin", "HEAD:refs/heads/main", auth=git_auth,
+    )
     return RevertResult(ok=push.returncode == 0, reverted=push.returncode == 0)
 
 
@@ -1897,9 +1950,13 @@ def _rebase_in_progress(repo_root: Path) -> bool | None:
     return merge or apply
 
 
-def _sync_local_main_result(repo_root: Path) -> _SyncLocalMainResult:
+def _sync_local_main_result(
+    repo_root: Path, *, git_auth: GitHubGitAuth | None = None,
+) -> _SyncLocalMainResult:
     """Perform caller-main synchronization and retain its exact per-call outcome."""
-    subprocess.run(["git", "fetch", "--prune", "origin", "main"], cwd=repo_root, check=True)
+    run_remote_git(
+        repo_root, "fetch", "--prune", "origin", "main", auth=git_auth, check=True,
+    )
     current = _git(repo_root, "branch", "--show-current", check=False)
     if current == "main":
         # ``git rebase`` refuses a dirty checkout itself, but calling it first
@@ -2015,14 +2072,16 @@ def _sync_local_main_result(repo_root: Path) -> _SyncLocalMainResult:
     )
 
 
-def sync_local_main(repo_root: Path) -> bool:
+def sync_local_main(
+    repo_root: Path, *, git_auth: GitHubGitAuth | None = None,
+) -> bool:
     """Bring the caller's local ``main`` up to date with ``origin/main``.
 
     The historical public API remains a boolean. The CLI uses the private
     per-call result helper so a false result is reported from the operation
     that produced it, rather than classified by a later checkout inspection.
     """
-    return _sync_local_main_result(repo_root).ok
+    return _sync_local_main_result(repo_root, git_auth=git_auth).ok
 
 
 def run_child(
@@ -2031,9 +2090,9 @@ def run_child(
 ) -> int:
     """Run a CMRU verb from the snapshot, preserving terminal output.
 
-    Release children use the installed ``cmru`` executable. The root checkout no
-    longer carries a Python shim, so a release must be launched after CMRU has
-    been bootstrapped and placed on PATH.
+    Release children use the installed ``cmru`` executable. For CMRU's own
+    release, prepend the candidate's source roots so that the code being shipped
+    also owns its transaction, including Git transport authentication.
     """
     env = os.environ.copy()
     env[CHILD_ENV] = "1"
@@ -2045,6 +2104,18 @@ def run_child(
     env["CMRU_SOURCE_GIT_ROOT"] = str(workspace.repo_root)
     if project_names is not None:
         env["CMRU_TRANSACTION_PROJECTS"] = ",".join(project_names)
+        candidate_cmru = workspace.path / "cmru" / "src"
+        if "cmru" in project_names and (candidate_cmru / "cmru" / "cli.py").is_file():
+            source_roots = [
+                candidate_cmru,
+                workspace.path / "libraries" / "worktree" / "src",
+                workspace.path / "libraries" / "cli-extended" / "src",
+            ]
+            source_paths = [str(path) for path in source_roots if path.is_dir()]
+            inherited = env.get("PYTHONPATH", "")
+            if inherited:
+                source_paths.extend(inherited.split(os.pathsep))
+            env["PYTHONPATH"] = os.pathsep.join(source_paths)
     launcher = [os.environ.get("CMRU_BIN") or shutil.which("cmru") or "cmru"]
     command = [*launcher, verb, *child_args]
     return subprocess.run(command, cwd=workspace.path, env=env).returncode

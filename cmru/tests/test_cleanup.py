@@ -158,7 +158,7 @@ class TestCleanupProjectReleasesAndTags:
         def fake_list_releases(owner, repo, token):
             return releases
 
-        def fake_list_remote(repo_root, pattern):
+        def fake_list_remote(repo_root, pattern, **_kwargs):
             # Return only tags matching the pattern prefix.
             pfx = pattern.rstrip("*")
             return [t for t in remote_tags if t.startswith(pfx)]
@@ -166,7 +166,7 @@ class TestCleanupProjectReleasesAndTags:
         def fake_delete_release(owner, repo, token, release_id, dry_run):
             deleted_release_args.append(release_id)
 
-        def fake_delete_remote(repo_root, tag, dry_run):
+        def fake_delete_remote(repo_root, tag, dry_run, **_kwargs):
             pass  # just track calls via mock below
 
         def fake_delete_local(repo_root, tag, dry_run):
@@ -317,7 +317,7 @@ class TestRunCleanupVerb:
         def fake_list_releases(owner, repo, token):
             return releases
 
-        def fake_list_remote(repo_root, pattern):
+        def fake_list_remote(repo_root, pattern, **_kwargs):
             pfx = pattern.rstrip("*")
             return [t for t in remote_tags if t.startswith(pfx)]
 
@@ -325,7 +325,7 @@ class TestRunCleanupVerb:
             # Only called when dry_run=False (the caller guards it).
             calls_record["release_deletes"].append(release_id)
 
-        def fake_delete_remote(repo_root, tag, dry_run=False):
+        def fake_delete_remote(repo_root, tag, dry_run=False, **_kwargs):
             # Called regardless of dry_run; records the tag identified for deletion.
             calls_record["remote_tag_deletes"].append(tag)
 
@@ -339,7 +339,7 @@ class TestRunCleanupVerb:
             calls_record["clean_steps"].append(project.name)
             return True
 
-        def fake_cleanup_commit(repo_root, name, deleted_tags, dry_run=False):
+        def fake_cleanup_commit(repo_root, name, deleted_tags, dry_run=False, **_kwargs):
             calls_record["commits"].append(name)
 
         def fake_resolve_versions(*args, **kwargs):
@@ -359,6 +359,7 @@ class TestRunCleanupVerb:
             patch.object(cli, "cleanup_commit_deletions", side_effect=fake_cleanup_commit),
             patch.object(cli, "resolve_versions_from_git", side_effect=fake_resolve_versions),
             patch.object(cli, "apply_release_env", side_effect=fake_apply_env),
+            patch.object(cli, "_cleanup_worktree_paths", return_value=set()),
         ):
             cli.run_cleanup_verb(
                 repo_root=Path("/fake"),
@@ -447,15 +448,16 @@ class TestRunCleanupVerb:
             with_clean_step=True,
         )
         assert "ciu" in rec["clean_steps"]
+        assert "ciu" in rec["commits"]
 
-    def test_commit_called_after_cleanup(self):
-        """A commit is attempted after deletions (non-dry-run)."""
+    def test_cleanup_without_clean_step_does_not_commit_caller_changes(self):
+        """Deleting remote release coordinates cannot stage the caller's worktree."""
         releases = [_release("ciu-v1.0.0", 50)]
         rec = self._run_verb(
             ["ciu"], {"ciu": "ciu-v"},
             releases, [], keep_tags=[],
         )
-        assert "ciu" in rec["commits"]
+        assert rec["commits"] == []
 
     def test_unknown_project_filter_raises(self):
         """An unknown positional project name raises ValueError."""
@@ -560,20 +562,29 @@ class TestCleanupCommitDeletions:
     def test_no_commit_when_dry_run(self, tmp_path):
         """dry_run=True must not run git commit."""
         with patch("subprocess.run") as mock_run:
-            cli.cleanup_commit_deletions(tmp_path, "ciu", ["ciu-v1.0.0"], dry_run=True)
+            cli.cleanup_commit_deletions(
+                tmp_path, "ciu", ["ciu-v1.0.0"], dry_run=True, before_paths=set(),
+            )
             mock_run.assert_not_called()
 
-    def test_no_commit_when_no_deleted_tags(self, tmp_path):
-        """Nothing deleted → nothing to commit."""
-        with patch("subprocess.run") as mock_run:
-            cli.cleanup_commit_deletions(tmp_path, "ciu", [], dry_run=False)
+    def test_no_commit_when_no_deleted_tags_or_clean_paths(self, tmp_path):
+        """No deleted tags or newly dirty paths → nothing to commit."""
+        with (
+            patch.object(cli, "_cleanup_worktree_paths", return_value=set()),
+            patch("subprocess.run") as mock_run,
+        ):
+            cli.cleanup_commit_deletions(
+                tmp_path, "ciu", [], dry_run=False, before_paths=set(),
+            )
             mock_run.assert_not_called()
 
     def test_no_empty_commit_when_tree_clean(self, tmp_path):
         """If the working tree is clean after cleanup, no commit is made."""
         with (
-            patch.object(cli, "_git", return_value=None),  # no dirty files
+            patch.object(cli, "_cleanup_worktree_paths", return_value=set()),
             patch("subprocess.run") as mock_run,
         ):
-            cli.cleanup_commit_deletions(tmp_path, "ciu", ["ciu-v1.0.0"], dry_run=False)
+            cli.cleanup_commit_deletions(
+                tmp_path, "ciu", ["ciu-v1.0.0"], dry_run=False, before_paths=set(),
+            )
             mock_run.assert_not_called()

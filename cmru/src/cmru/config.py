@@ -644,9 +644,13 @@ def _read_secret_document(secret_path: Path) -> dict:
         _error(f"{secret_path}: invalid TOML ({exc})")
     if not isinstance(raw, dict):
         _error(f"{secret_path}: TOML document must be a table")
-    _reject_unknown(raw, {"github"}, str(secret_path))
-    if set(raw) != {"github"}:
-        _error(f"{secret_path}: expected exactly [github]")
+    _reject_unknown(raw, {"github", "schema_version"}, str(secret_path))
+    if "schema_version" in raw and (
+        type(raw["schema_version"]) is not int or raw["schema_version"] != 1
+    ):
+        _error(f"{secret_path}: schema_version must be integer 1")
+    if "github" not in raw:
+        _error(f"{secret_path}: expected [github]")
     _secret_token(raw["github"], f"{secret_path}: github")
     return raw
 

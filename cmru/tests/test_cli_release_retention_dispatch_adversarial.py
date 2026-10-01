@@ -30,19 +30,19 @@ def _dispatch_fixture(monkeypatch, tmp_path, retained, *, evidence_paths=()):
     monkeypatch.setattr(cli, "apply_release_env", lambda *_: None)
     monkeypatch.setattr(cli.transaction, "release_lock", lambda _: nullcontext())
     monkeypatch.setattr(cli, "_uncommitted_release_paths", lambda *args: {})
-    monkeypatch.setattr(cli.transaction, "resume_workspace", lambda *args: workspace)
+    monkeypatch.setattr(cli.transaction, "resume_workspace", lambda *args, **kwargs: workspace)
     monkeypatch.setattr(cli.transaction, "assert_resume_workspace_committed", lambda _path: None)
-    monkeypatch.setattr(cli.transaction, "copy_secret_overlays", lambda *args: None)
+    monkeypatch.setattr(cli.transaction, "copy_secret_overlays", lambda *args, **kwargs: None)
     monkeypatch.setattr(cli.transaction, "run_child", lambda *args, **kwargs: 0)
-    monkeypatch.setattr(cli.transaction, "read_release_results", lambda *args: {"demo": "demo-v1"})
+    monkeypatch.setattr(cli.transaction, "read_release_results", lambda *args, **kwargs: {"demo": "demo-v1"})
     seen = []
     monkeypatch.setattr(cli.transaction, "retain_success_outputs", lambda *args, **kwargs: seen.append((args, kwargs)) or retained)
-    monkeypatch.setattr(cli.transaction, "remove_backup_branch", lambda *args: None)
-    monkeypatch.setattr(cli.transaction, "remove_workspace", lambda *args: None)
-    monkeypatch.setattr(cli.transaction, "forget_release_scope", lambda *args: None)
+    monkeypatch.setattr(cli.transaction, "remove_backup_branch", lambda *args, **kwargs: None)
+    monkeypatch.setattr(cli.transaction, "remove_workspace", lambda *args, **kwargs: None)
+    monkeypatch.setattr(cli.transaction, "forget_release_scope", lambda *args, **kwargs: None)
     monkeypatch.setattr(
         cli.transaction, "_sync_local_main_result",
-        lambda *args: transaction._SyncLocalMainResult(True),
+        lambda *args, **kwargs: transaction._SyncLocalMainResult(True),
     )
     return workspace, seen
 

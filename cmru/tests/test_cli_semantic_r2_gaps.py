@@ -149,9 +149,11 @@ def test_abandon_captures_remote_command_output_as_text(monkeypatch, tmp_path):
 
     assert len(calls) == 3
     for _argv, kwargs in calls:
-        assert kwargs == {
-            "cwd": tmp_path,
-            "capture_output": True,
-            "text": True,
-            "check": False,
-        }
+        assert set(kwargs) == {"cwd", "capture_output", "text", "check", "env"}
+        assert kwargs["cwd"] == tmp_path
+        assert kwargs["capture_output"] is True
+        assert kwargs["text"] is True
+        assert kwargs["check"] is False
+        assert isinstance(kwargs["env"], dict)
+        assert "GITHUB_PUSH_PAT" not in kwargs["env"]
+        assert "GITHUB_TOKEN" not in kwargs["env"]

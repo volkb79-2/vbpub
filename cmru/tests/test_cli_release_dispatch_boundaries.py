@@ -40,17 +40,31 @@ def test_cleanup_project_step_dry_run_and_execution_pass_version_and_environment
 
 def test_cleanup_commit_deletions_refuses_empty_staging_and_reports_commit_failure(monkeypatch, tmp_path, capsys):
     calls = []
-    monkeypatch.setattr(cli, "_git", lambda *args: "dirty" if args[-1] == "--porcelain" else "")
+    monkeypatch.setattr(cli, "_cleanup_worktree_paths", lambda _root: {"generated.py"})
+    cached_outputs = iter([""])
+    monkeypatch.setattr(cli, "_git", lambda *args: next(cached_outputs))
     monkeypatch.setattr(cli.subprocess, "run", lambda argv, **kwargs: calls.append(argv) or SimpleNamespace(returncode=0))
-    cli.cleanup_commit_deletions(tmp_path, "demo", ["v1", "v2"], False)
-    assert calls == [["git", "-C", str(tmp_path), "add", "-A"]]
+    cli.cleanup_commit_deletions(
+        tmp_path, "demo", ["v1", "v2"], False, before_paths=set(),
+    )
+    assert calls == [[
+        "git", "-C", str(tmp_path), "add", "-A", "--", ":(literal)generated.py",
+    ]]
     assert "nothing staged" in capsys.readouterr().out
 
     calls.clear()
-    monkeypatch.setattr(cli, "_git", lambda *args: "dirty" if args[-1] == "--porcelain" else "file.py")
-    monkeypatch.setattr(cli.subprocess, "run", lambda argv, **kwargs: calls.append(argv) or SimpleNamespace(returncode=1))
-    cli.cleanup_commit_deletions(tmp_path, "demo", ["v1", "v2", "v3", "v4", "v5", "v6"], False)
-    assert calls[-1][-1] == "chore(demo): cleanup deleted v1, v2, v3, v4, v5 (+1 more)"
+    monkeypatch.setattr(cli, "_git", lambda *args: "generated.py\n")
+    monkeypatch.setattr(
+        cli.subprocess, "run",
+        lambda argv, **kwargs: calls.append(argv) or SimpleNamespace(
+            returncode=1 if "commit" in argv else 0, stderr="", stdout="",
+        ),
+    )
+    cli.cleanup_commit_deletions(
+        tmp_path, "demo", ["v1", "v2", "v3", "v4", "v5", "v6"], False,
+        before_paths=set(),
+    )
+    assert calls[-1][6] == "chore(demo): cleanup deleted v1, v2, v3, v4, v5 (+1 more)"
     assert "commit failed" in capsys.readouterr().out
 
 

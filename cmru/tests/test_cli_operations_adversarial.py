@@ -77,7 +77,9 @@ def test_cleanup_commit_deletions_commits_only_real_changes(tmp_path):
     subprocess.run(["git", "add", "."], cwd=tmp_path, check=True)
     subprocess.run(["git", "commit", "-qm", "initial"], cwd=tmp_path, check=True)
     file.unlink()
-    cli.cleanup_commit_deletions(tmp_path, "demo", ["demo-v1"], False)
+    cli.cleanup_commit_deletions(
+        tmp_path, "demo", ["demo-v1"], False, before_paths=set(),
+    )
     assert "cleanup deleted demo-v1" in subprocess.check_output(["git", "log", "-1", "--format=%s"], cwd=tmp_path, text=True)
 
 

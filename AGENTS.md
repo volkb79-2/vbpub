@@ -236,6 +236,21 @@ Merge serially onto the task's integration branch (normally `main`) with
 non-overlapping to parallelize. Each worktree has its own index, so
 `git add`/`commit` there is private and safe.
 
+## Use supported project workflows
+When a project CLI owns a workflow such as release, cleanup, publication,
+worktree lifecycle, or gate execution, read its consumer guide and use its
+supported verb end to end. Do not replace a missing product capability with a
+hand-built shell, API, Docker, or credential shim. If a required product-owned
+step is not supported, treat that as a product gap: extend and review the
+workflow, then use its supported verb. Source control remains Git's job under
+the worktree protocol above: create and review commits, merge the reviewed
+branch, and push the integration branch as needed. For CMRU-owned lifecycle
+actions, use `cmru release`, `cmru publish`, `cmru cleanup`, and `cmru abandon`;
+do not reproduce those actions with direct GitHub API calls or manual remote
+tag/branch mutations. Manual commands also remain appropriate for bounded
+read-only inspection and live acceptance probes the registered workflow cannot
+express.
+
 ## Committing from the shared `main` checkout
 The main checkout (`/workspaces/vbpub`) is shared: another agent's serial merge
 may `git add`/commit at any moment, so its index is not yours to trust. A plain
