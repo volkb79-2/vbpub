@@ -5723,3 +5723,23 @@ release target is therefore updated from its stale 23.9.0/rev-43 handoff to
 No release or publication is attempted yet; exact package gates, mutation
 evidence, independent review, and the main/origin publication boundary still
 apply.
+
+### RW-409 — 2026-10-01 05:11:04Z — controller resumed after P1 provisional merge
+
+The controller resumed with local `main` at `52e4fd2584ea0266f98ab106ddf191a86df7d708`,
+the `--no-ff` provisional P1 merge. The P1 reviewed branch is its first parent
+tree (`415ce74a`); the merge introduces no tree delta. Root worktree changes
+remain limited to operator-owned `.vscode/settings.json` and the untracked
+`modern-debian-tools-python-debug/host-setup/etc/sysctl.d/` path.
+
+At takeover, one unrelated R2 campaign was active in
+`.worktrees/cli-extended-lessons` (PID 407900,
+`run-gate-vbpub-r2-407900-1790831318`). It is outside RG-55 and will not be
+inspected, stopped, or otherwise mutated. Memory PSI at 05:10Z was
+`full avg10=4.46`; this is recorded as an observation, not a verdict input.
+No new RG-55 Docker-backed job is started until slot availability and the
+prior Docker-stats incident are assessed. Continue safe non-container work
+in parallel, then run P1's required exact-tree R2/full-gate evidence and P6
+integration in isolated, attached CIU worktrees. The provisional merge is
+not a release: cgprofile 1.0.0/1.1.0 still require their specified evidence,
+and run-gate 23.10.0 must be packaged from an eligible release source.
