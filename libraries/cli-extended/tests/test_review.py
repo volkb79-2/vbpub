@@ -2620,7 +2620,14 @@ def test_required_group_exemptions_only_apply_to_declared_interactions():
         for item in interaction_findings
     )
 
-    # Repetition policy belongs to a separate, explicitly reviewed interaction.
+    repeated_interaction_findings = _findings_for_invocation(
+        interaction,
+        route,
+        ["inspect", "--from-file", "--from-file", "--from-inline"],
+    )
+    # The declared argv is structurally valid; its linked behavior test owns
+    # whether the product accepts or refuses repeated occurrences.
+    assert repeated_interaction_findings == []
 
 
 def test_review_checks_required_baseline_for_non_minimum_candidates():
@@ -2997,7 +3004,7 @@ def test_review_positional_choice_validation_matches_argparse_nargs(
         argv=invocation, stdout=io.StringIO(), stderr=io.StringIO()
     ) == (0 if accepted else 2)
     findings = _findings_for_invocation(candidate, route, invocation)
-    assert not any("invalid value" in finding for finding in findings) is accepted
+    assert any("invalid value" in finding for finding in findings) is (not accepted)
 
 
 @pytest.mark.parametrize(
