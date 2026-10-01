@@ -25,11 +25,14 @@ s). The old isolated R2 on `450fe53d` failed with 12 genuine proc-identity
 oracle gaps. Direct parser/helper tests are now present in commit `01912a91`
 and passed 167 focused target/helper tests. The separate isolated PASS on
 `1080ac2f` is not transferable to this release candidate. Main is now
-`6ee297a4cb6412b1c66250367a1eb2ecf39e9446`; P1 reconciled it in merge
-`55d0812299e84083143613a7de1585bd2f8f7fcc`. Registered R0/R1 passed on that
-exact pre-checkpoint commit: 1,421 tests, 5,140/5,140 statements, and
-1,780/1,780 branches, exit 0 in 107.163 s. The report/handoff checkpoint
-refresh changes the commit, so rerun R0/R1, R3, and doctor on the final tip.
+`6617c44e117ee1ceab222ce4c51ff82f30f3d0d0`; P1 reconciled it in merge
+`7194c9be7012759e2627cc80cb251485c9fa6248`. The two new main commits touch
+only Nyxloom's assay configuration and P113 report. R0/R1, R3, and doctor
+passed on the prior candidate `a617f87632bd35ea56595156979d041dc33a6213`
+(1,421 tests, 5,140/5,140 statements, 1,780/1,780 branches; 7/7 canaries
+rejected; doctor 0 failures, 2 warnings), but those receipts predate this
+latest-main merge and are not exact-tip evidence. Rerun all three after the
+current checkpoint commit.
 The operator also supplied
 direct-host, read-only evidence that
 `dev-interactive.slice` and `dev-gates.slice` are loaded at their authored
@@ -50,24 +53,24 @@ are green and the survivors are dispositioned.
 Branch `rg55-p1-release-review-20260930`, worktree
 `/workspaces/vbpub/.worktrees/rg55-p1-release-review-20260930`, project dir
 `scripts/cgroup-profiler/`. The candidate is reconciled with current main
-`6ee297a4cb6412b1c66250367a1eb2ecf39e9446` in merge commit
-`55d0812299e84083143613a7de1585bd2f8f7fcc`; the two intervening main commits
-modify only Nyxloom's Claude Code session adapter and tests, with no overlap
+`6617c44e117ee1ceab222ce4c51ff82f30f3d0d0` in merge commit
+`7194c9be7012759e2627cc80cb251485c9fa6248`; the two intervening main commits
+modify only Nyxloom's assay configuration and P113 report, with no overlap
 in P1 product files. The controller supplies the exact final review tip after
 evidence updates and fresh short gates. Verify clean status and HEAD before
 review. Review the FULL P1 diff
-`6ee297a4cb6412b1c66250367a1eb2ecf39e9446...<tip>` — every changed P1
+`6617c44e117ee1ceab222ce4c51ff82f30f3d0d0...<tip>` — every changed P1
 file, every type. If main advances before dispatch, reconcile first and rerun
 all required short gates.
 
 ### Current checkpoint (2026-10-01; supersedes older base references below)
 
-Main is `6ee297a4...`, reconciled in `55d081229...`; the full-review base is
-therefore `6ee297a4...`, superseding `2ba90c10...` and older references in
-historical sections. The 1,421-test R0/R1 PASS on `55d081229...` predates
-this handoff/report checkpoint and is not the final receipt. After committing
-this checkpoint, run R0/R1, R3, and doctor on the resulting exact candidate;
-preserve the tree until review is complete. The operator has explicitly
+Main is `6617c44e...`, reconciled in `7194c9be...`; the full-review base is
+therefore `6617c44e...`, superseding `6ee297a4...`, `2ba90c10...`, and older
+references in historical sections. R0/R1, R3, and doctor passed on
+`a617f876...`, but that commit predates this latest-main merge and is not the
+final receipt. After committing this checkpoint, run all three on the
+resulting exact candidate; preserve the tree until review is complete. The operator has explicitly
 authorized required gate runs regardless of memory PSI, so PSI is not a gate
 launch veto or a functional verdict input. Keep exact cgroup placement, CPU
 caps, the mutation-slot limit, and unrelated-container protections below.
@@ -88,7 +91,7 @@ Read, in this order: the plan of record
 `fixtures/rg55/README.md`, the controller log's Rulings section
 (`run-gate-project/nyxloom-trove/reports/run-gate-WAVE-RG55-CONTROLLER-LOG.md`
 — RW-3, RW-7, RW-9, RW-11, RW-13..RW-16, RW-19, RW-21, RW-23,
-  RW-47, RW-48, RW-318..RW-328, RW-381..RW-392 and RW-393..RW-403 bind this
+  RW-47, RW-48, RW-318..RW-328, RW-381..RW-392 and RW-393..RW-404 bind this
   package), the
 implementer handoff (`cgprofile-P1-DAEMON-HANDOFF.md`, what was asked), then
 the diff itself — `lib/summary.py`, `lib/subtree.py`, `lib/damon.py`,

@@ -5622,3 +5622,18 @@ regardless of memory PSI; PSI is not a gate-launch veto or verdict input.
 Keep the two-mutation-lane limit, exact cgroup placement/caps, and unrelated
 container protections. R3, doctor, reviewer-owned live probes, exact-tree R2,
 and the registered full gate remain open.
+
+### RW-404 — 2026-10-01 02:12:39Z — reconcile latest main before P1 review
+
+Main advanced from `6ee297a4cb6412b1c66250367a1eb2ecf39e9446` to
+`6617c44e117ee1ceab222ce4c51ff82f30f3d0d0` in two Nyxloom-only commits
+(assay config and P113 report). P1 merged it without conflict in
+`7194c9be7012759e2627cc80cb251485c9fa6248`; no product paths overlap.
+
+The exact candidate immediately before this reconciliation,
+`a617f87632bd35ea56595156979d041dc33a6213`, passed registered R0/R1 and R3
+with 100% line/branch coverage and 7/7 canaries rejected; doctor reported
+zero failures and two warnings. Those receipts do not apply to the new merge
+tip. The P1 candidate must rerun R0/R1, R3, and doctor after its checkpoint
+refresh before round-5 Sol review. Main's dirty operator files remain outside
+the P1 worktree and untouched.

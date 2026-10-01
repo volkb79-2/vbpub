@@ -1549,3 +1549,15 @@ persistent job handle. This result predates the handoff/report checkpoint
 commit, so the final candidate must rerun R0/R1, R3, and doctor before review.
 R2 and the registered full gate remain pending; the unrelated assay mutation
 campaign was left untouched.
+
+### Session 35 — 2026-10-01 02:12:39Z — latest-main reconciliation
+
+Main advanced from `6ee297a4cb6412b1c66250367a1eb2ecf39e9446` to
+`6617c44e117ee1ceab222ce4c51ff82f30f3d0d0` in two Nyxloom-only commits
+(assay config and P113 report). The clean P1 candidate merged current main
+without conflict as `7194c9be7012759e2627cc80cb251485c9fa6248`; neither path
+overlaps P1 product files. On the immediately preceding candidate
+`a617f87632bd35ea56595156979d041dc33a6213`, registered R0/R1 and R3 both
+passed with full line/branch coverage and 7/7 canaries rejected, and doctor
+reported zero failures. These receipts do not transfer across the latest-main
+merge. The final candidate must rerun R0/R1, R3, and doctor before review.
