@@ -2017,3 +2017,46 @@ focused evidence only: it does not replace a registered exact-tree R0/R1,
 R3, doctor, R2, full gate, reviewer-owned live delegated-scope start/stop
 and restoration probes, or Sol fix-verification. No final review or merge is
 claimed here.
+
+## Controller continuation — 2026-10-01T16:49:18Z
+
+The P6 round-7 review's B1–B3 disposition is recorded in
+`cgprofile-P6-FOLLOWUPS-REVIEW-round7-fix-verification.md` as
+ACCEPT-conditional. The same Sol reviewer separately ACCEPTed two test-only
+oracles for mutation candidates 185 and 236; the fix-verification record is
+`cgprofile-P6-FOLLOWUPS-REVIEW-round7-survivor-oracles-fix-verification.md`.
+They are integrated in commits `df4dd1fc5` and `58eeac96c`; the review
+addendum is `faed6fe25088ca30abd323604de45ceb21d136f7`. The combined
+`test_placement_systemd_helpers.py` suite passed 121 tests. The reviewer
+reviewed the oracle source and controller-provided red/green evidence but
+did not rerun the mutant commands.
+
+On clean candidate `faed6fe25088ca30abd323604de45ceb21d136f7`, the
+registered R0/R1 gate passed at 16:37:03Z: 2,155 passed, 7,361/7,361
+statements, 2,698/2,698 branches, exit 0, history-eligible. Its exact
+tester-unified container was `cgprofile-gate-1015156-1790872437`, capped at
+3 CPUs under `dev-gates.slice`; the daemon was stopped, so profiling used
+coarse `rusage-maxrss`. R3 passed at 16:38:22Z: 7/7 canaries rejected, 0
+survived, exit 0, history-eligible, container
+`run-gate-vbpub-r3-1021035-1790872675` at 3 CPUs under `dev-gates.slice`.
+`./run-gate.py doctor` reported 0 failures, 9 OK, 2 expected warnings
+(linked-worktree host-lane visibility and stopped daemon), and 2 info.
+Independent receipts and host-load samples are in controller rulings RW-430
+and RW-431.
+
+The reviewer-owned live evidence in the round-7 fix-verification record
+covers delegated-scope placement and stop-time restoration, cap readback,
+AF_UNIX EOF refusal and peer credentials, exec/socket carrier responses,
+and placed-kill/unplaced-report watch paths. Production code is unchanged by
+the later accepted oracle commits and report records. The reviewer did not
+independently close live unreadable-cap or forced mapping-refusal cases; the
+review record classifies those as non-blocking under RW-381.
+
+The available active mutation campaign is still on old tree
+`175ed5d84274637fba2679b452e0704422ff58bc`, not this candidate; it must not
+be reported as final R2 evidence. Current-tree R2 and the registered full
+gate remain required post-provisional-merge release blockers. Do not amend
+this report from the judged worktree after that exact-tree R2 starts; the
+central RG-55 close-out report/controller log will carry its terminal
+receipts. This report update changes the candidate commit, so the controller
+must refresh exact-tip R0/R1, R3, and doctor before provisional integration.
