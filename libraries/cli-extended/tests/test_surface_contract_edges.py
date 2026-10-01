@@ -155,7 +155,7 @@ def test_catalog_accepts_the_exact_positive_candidate_limit(tmp_path):
     assert load_cli_review_catalog(path).max_candidates == 1
 
 
-def test_markdown_rows_preserve_empty_fallbacks_shapes_and_review_dispositions():
+def test_markdown_rows_preserve_optional_fields_shapes_and_review_dispositions():
     retired = _review_case(
         "case:removed-retired",
         state="retired",
@@ -171,6 +171,10 @@ def test_markdown_rows_preserve_empty_fallbacks_shapes_and_review_dispositions()
                 "id": "route:entrypoint:audit-tool",
                 "path": [],
                 "kind": "invocation",
+                "single_command": False,
+                "no_args_action": False,
+                "confirmation": False,
+                "parser_configured_by_callback": False,
                 "aliases": ["at"],
                 "subcommand_groups": [
                     {"destination": "commands", "required": False, "subcommands": []}
@@ -199,11 +203,13 @@ def test_markdown_rows_preserve_empty_fallbacks_shapes_and_review_dispositions()
                         "choices": None,
                         "effective_default": None,
                         "exclusive_group": None,
+                        "exclusive_required": False,
                         "scope": "custom",
                         "placement": {"before_verb": True, "after_verb": False},
                         "parser_path": [],
                         "before_nested_subcommand": False,
                         "help_group": "OPTIONS",
+                        "hidden": False,
                     },
                     {
                         "id": "option:root/--pair",
@@ -216,11 +222,13 @@ def test_markdown_rows_preserve_empty_fallbacks_shapes_and_review_dispositions()
                         "choices": None,
                         "effective_default": None,
                         "exclusive_group": None,
+                        "exclusive_required": False,
                         "scope": "custom",
                         "placement": {"before_verb": False, "after_verb": True},
                         "parser_path": ["run"],
                         "before_nested_subcommand": False,
                         "help_group": "OPTIONS",
+                        "hidden": False,
                     },
                     {
                         "id": "argument:root/resource",
@@ -235,6 +243,7 @@ def test_markdown_rows_preserve_empty_fallbacks_shapes_and_review_dispositions()
                         "scope": "positional",
                         "parser_path": ["run"],
                         "before_nested_subcommand": False,
+                        "hidden": False,
                     },
                 ],
             }

@@ -293,8 +293,11 @@ wrapper-local parser declarations and inherited global options missing from
 the delegated parser make the surface incomplete. A delegated parser must
 preserve each inherited global's flags, destination, action type, `nargs`,
 converter, choices, constant, default, requiredness, and metavar. A mismatch
-marks its routes incomplete because the wrapper and child can split or interpret
-leading tokens differently. The checker uses the policy
+also includes mutually-exclusive group membership and group requiredness, and
+requires custom converter/action objects to be the same runtime objects in both
+parsers. Matching import labels alone do not prove equivalent behavior. A
+mismatch marks its routes incomplete because the wrapper and child can split
+or interpret leading tokens differently. The checker uses the policy
 for the parser that owns each option, including when a callback
 configures a nested parser. Custom `prefix_chars` and argparse argument-file
 expansion (`fromfile_prefix_chars`) make the surface incomplete because the
@@ -372,11 +375,25 @@ automatically enumerate every token count for optional-arity, variadic, or
 repeatable options. If `--color` without a value and `--color VALUE`, or one
 `--tag` and repeated `--tag` occurrences, have different meaning, declare
 separate named combinations and write their exact argv in the semantic rows.
-The structural checker confirms the route, named option presence, declared
-value counts, enumerable choices, and required baseline syntax; the behavior
-tests assert converter behavior and exact value and repetition rules. Those
+Every generated candidate carries the route's required positional, required
+option, and required-exclusive-group baseline in its signature. Check mode
+requires that baseline for every candidate kind and validates the declared
+arity and choices on every option occurrence; a valid first occurrence cannot
+hide a malformed repeat. The structural checker confirms the route, named
+option presence, declared value counts, enumerable choices, and required
+baseline syntax; behavior tests assert converter behavior and exact value and
+repetition rules. Any bare token left after assigning declared positional
+arguments is reported, so an unrelated extra value cannot be mistaken for a
+valid option case. Those
 distinctions belong in the consumer's canonical CLI spec and
 should be re-reviewed whenever their signatures change.
+
+If a route or option named by `interaction_groups` is removed or renamed, run
+`sync` to regenerate the live grammar and keep the old semantic row visible in
+the stale-case section. Sync records the unresolved reference and leaves the
+TOML catalog byte-for-byte unchanged. Update the interaction and its reviewed
+case or explicitly retire the case; check mode remains red until the reference
+is resolved.
 
 An active `[[cases]]` record must contain a stable generated `id`,
 `decision = "accept"` or `"refuse"`, the current `reviewed_signature`, a
@@ -397,7 +414,9 @@ assigned to the registered argument ID at that parser depth, so a choice value
 in a sibling position does not satisfy the case. A flag-only option with an
 inline value is rejected by the structural check. A generated minimum case
 must provide values for required options and choose one option from each
-required exclusive group. The checker does not execute `parse_args`, custom
+required exclusive group. Repeating the selected member remains valid when
+the built parser accepts it; add an explicit interaction when repetition has
+separate product meaning. The checker does not execute `parse_args`, custom
 converters/actions, or the handler. Route recognition is not proof that the
 whole invocation is accepted. The linked behavior test must run the real CLI
 invocation and prove the expected status, output, validation boundary, and

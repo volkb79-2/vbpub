@@ -326,8 +326,17 @@ manifest records each parser's `allow_abbrev` setting. Custom `prefix_chars`
 and argparse argument-file expansion are marked incomplete until the checker
 can model them. Positional values must reach the registered
 argument being reviewed; a matching token in a sibling position is not enough.
-Minimum cases must supply required option values and exactly one alternative
-from each required exclusive group. A flag-only option cannot use `--flag=value`.
+Bare tokens must map to declared positionals; leftover tokens are findings.
+Every generated case includes the route's required positional, option, and
+exclusive-group baseline in its signature and must supply that baseline. The
+baseline requires one selected member per required exclusive group; repeating
+that same member remains valid when the built parser accepts it. Consumers use
+explicit interaction cases to review any meaning attached to repetition. The
+checker verifies each option occurrence's declared arity and enumerable
+choices, so a valid first occurrence cannot hide a malformed repeat. A
+flag-only option cannot use `--flag=value`. Delegated global options must also
+keep their mutually exclusive group membership and requiredness in sync with
+the parent parser.
 The checker does not invoke parser converters or command handlers. The linked
 test must still run the real invocation and assert its behavior and effects;
 the marker proves test collection and linkage only. Catalog interactions may
@@ -353,7 +362,9 @@ optional-arity, variadic, or repeatable options with distinct behavior, declare
 separate named interactions for each reviewed invocation shape; the generator
 does not guess every repetition or value count. See the
 [consumer workflow](docs/CONSUMERS.md#review-cross-route-and-arity-interactions)
-for examples and limits.
+for examples and limits. If an interaction's route or option ID becomes stale,
+sync still regenerates the current grammar and keeps its semantic case visible
+as stale; it reports the broken catalog reference without editing the TOML.
 
 Expose an import-safe function such as `example.cli:build_cli` that returns the
 consumer's `RegisteredCli`, then run:

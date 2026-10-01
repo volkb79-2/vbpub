@@ -95,7 +95,7 @@ handling; see
 
 ## CLI-EXT-04 — export a stable CLI surface and semantic-review checklist
 
-**Status:** Implemented — final-source R0/R1/R3 pass; R2 pending
+**Status:** In implementation — correctness review fixes landed; final-source registered gates pending
 
 **Type:** Feature
 
@@ -109,8 +109,8 @@ It includes delegated registries and callback-added argparse actions. Nested
 routes carry parent-parser actions forward and identify parser-depth placement;
 required-subcommand prefixes do not produce false executable candidates.
 Inherited globals on delegated CLIs are compared by built action shape,
-including arity and value rules, so matching spelling cannot hide a wrapper and
-child parser mismatch. A delegated mismatch marks that subtree incomplete
+including arity, value rules, and mutex-group policy, so matching spelling
+cannot hide a wrapper and child parser mismatch. A delegated mismatch marks that subtree incomplete
 without making unrelated sibling routes incomplete. Ordinary callback-added
 argparse actions are inventoried; parser-method overrides, uncaptured
 parser-level defaults, or inconsistent option lookup maps make the surface
@@ -151,6 +151,10 @@ source.
 Optional-value counts and option repetition are not automatically enumerated.
 Consumers declare separate named interactions for such forms when they have
 distinct meaning, and their behavioral tests assert exact values and counts.
+Check mode validates every declared occurrence's arity and choices and requires
+the route's required syntax baseline for every candidate. When an interaction
+reference becomes stale, sync still regenerates the grammar and displays the
+old semantic row for repair or retirement without editing the decision catalog.
 This keeps the candidate list bounded and the product decision visible.
 
 No second grammar DSL or conditional-option runtime API was added. CLI-EXT-02

@@ -208,8 +208,10 @@ callback or parser subclass that replaces token-parsing methods, changes
 parser-level defaults that are not represented by built actions, or corrupts the option to
 action lookup makes the surface incomplete because an action listing alone
 would no longer describe what the parser accepts. Delegated global options are
-checked against the parent action's parsing and value shape; a spelling match
-alone cannot establish that two parser layers handle the token the same way.
+checked against the parent action's parsing and value shape, including
+mutually-exclusive group membership and requiredness. Custom converter and
+action objects must be identical at runtime; import labels can collide and do
+not prove that two parser layers handle a token the same way.
 
 Syntax alone does not say whether `--dry-run` without a selector is meaningful,
 what a command will read or change, or whether an output mode is valid during a
@@ -260,16 +262,25 @@ explicit product interaction groups. It does not fabricate resource names,
 predict acceptance, or try every subset of every option. Option names and help
 copy are not evidence for behavior. Relevant syntax changes alter candidate
 signatures and request a new decision; removed records stay stale until an
-owner explicitly retires them with a reason.
+owner explicitly retires them with a reason. Every candidate signature also
+includes the route's required positional, option, and exclusive-group
+baseline. That makes a change to an action needed to reach the reviewed
+dimension trigger re-review, and the checker requires the baseline on every
+candidate kind. A required group needs one selected member; repeats of that
+member remain valid when the parser accepts them, with product-specific repeat
+semantics recorded as explicit interactions. It also reports bare positional tokens that do not map to a
+declared action, so unrelated extra values cannot hide an invocation that
+would fail before reaching the reviewed option.
 
 An interaction may name an option owned by a different route. This lets the
 consumer record both the target command and the foreign option shape in one
 stable case, such as passing watch-only `--poll` to `show`. The checker requires
 each named target option and the target's required baseline syntax, and it
 requires the foreign option to remain unknown on the target parser. It checks
-declared value counts and enumerable choices; for a foreign option, option-like
-tokens mark value boundaries, and a flag-only option cannot carry an inline
-value. It does not call converters or handlers. The consumer's behavior test
+declared value counts and enumerable choices on every occurrence; a valid first
+`--tag` cannot hide a malformed second occurrence. For a foreign option,
+option-like tokens mark value boundaries, and a flag-only option cannot carry
+an inline value. It does not call converters or handlers. The consumer's behavior test
 remains responsible for proving the declared outcome and exact value or
 repetition rules. The consumer owns that outcome; the checker does not infer it
 from route ownership. For example, `show --poll` should be recorded as a
@@ -286,6 +297,14 @@ validates route, option presence, declared value counts, and enumerable choices,
 while the behavior test asserts converter behavior and exact values and
 repetition rules. This keeps generic enumeration bounded and makes the product's
 reason for testing each form explicit.
+
+When a route or option named by an interaction is removed, sync must still let
+the adopter review the new grammar. It omits only that unresolved generated
+candidate, lists the stale catalog reference, and keeps the previous semantic
+row visible as stale; it does not rewrite the TOML. The owner can update the
+interaction and case or explicitly retire that case. This makes regeneration
+useful during a breaking CLI change without converting lost references into
+lost product decisions.
 
 The shared sync/check/template command means adopters do not implement parser
 walkers, a candidate enumerator, a Markdown table renderer, or merge logic.
@@ -328,6 +347,13 @@ through `run-gate.py`; it does not pin a stale zipapp. All three lanes execute
 inside `tester-unified`. The project gate is reproducible from the same source
 and environment used for adoption, while remaining outside the interactive
 development cockpit.
+
+Assay's hard mutation budget is 150 minutes. A registered 60-minute campaign
+on the earlier committed revision recorded 490 of 919 candidates before the
+hard cap and archived its partial state; it did not produce a mutation verdict.
+The longer budget is based on that measured throughput and preserves enough
+headroom to finish the full campaign. The combined gate budget is 180 minutes
+to include lane startup and the R0/R1 and R3 steps.
 
 ## Make long operations automation-safe
 

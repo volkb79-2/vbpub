@@ -28,7 +28,7 @@ from .parser import (
     _common_option_specs,
 )
 
-SURFACE_SCHEMA_VERSION = 4
+SURFACE_SCHEMA_VERSION = 5
 DEFAULT_MAX_CANDIDATES = 512
 _LIBRARY_OWNED_COMMON_OPTIONS = {
     "--help", "--version", "--log-level", "--quiet", "--debug", "--verbose",
@@ -600,14 +600,44 @@ def _parser_syntax_issues(
     return issues
 
 
-def _delegated_option_shape(action: argparse.Action) -> dict[str, Any]:
+def _delegated_option_shape(
+    action: argparse.Action, *, parser: argparse.ArgumentParser
+) -> dict[str, Any]:
     """Return the syntax and value contract that a delegated parser must inherit."""
 
     opaque: list[str] = []
+    exclusive_groups = []
+    for group in parser._mutually_exclusive_groups:
+        if action not in group._group_actions:
+            continue
+        members = sorted(
+            sorted(member.option_strings) or [str(member.dest)]
+            for member in group._group_actions
+        )
+        exclusive_groups.append(
+            {
+                "required": bool(group.required),
+                "members": sorted(members),
+            }
+        )
+    exclusive_groups.sort(
+        key=lambda group: (
+            bool(group["required"]),
+            tuple(tuple(flags) for flags in group["members"]),
+        )
+    )
     return {
         "flags": sorted(action.option_strings),
         "dest": action.dest,
         "action": f"{type(action).__module__}.{type(action).__qualname__}",
+        # Labels alone can collide for dynamically-created converter/action
+        # classes. Delegated contracts are compared within one process, so
+        # object identity is the conservative proof that both parsers use the
+        # same implementation.
+        "runtime_identity": {
+            "action_type": id(type(action)),
+            "converter": id(action.type) if callable(action.type) else None,
+        },
         "nargs": _normalize(action.nargs, path="delegated.nargs", opaque=opaque),
         "type": _normalize(
             action.type, path="delegated.type", opaque=opaque
@@ -623,6 +653,7 @@ def _delegated_option_shape(action: argparse.Action) -> dict[str, Any]:
         "metavar": _normalize(
             action.metavar, path="delegated.metavar", opaque=opaque
         ),
+        "exclusive_groups": exclusive_groups,
     }
 
 
@@ -644,7 +675,7 @@ def _registered_global_shapes(
         )
         if action is None:
             continue
-        shape = _delegated_option_shape(action)
+        shape = _delegated_option_shape(action, parser=parser)
         for flag in option.flags:
             shapes[flag] = shape
     return shapes
@@ -949,9 +980,9 @@ def _walk_registered_cli(
                     missing_inherited.append(flag)
                     continue
                 expected_shape = inherited_global_shapes.get(flag)
-                if expected_shape is None or _delegated_option_shape(action) != dict(
-                    expected_shape
-                ):
+                if expected_shape is None or _delegated_option_shape(
+                    action, parser=app.parser
+                ) != dict(expected_shape):
                     mismatched_inherited.append(flag)
         if missing_inherited:
             reason = (
@@ -1214,8 +1245,12 @@ def _generate_candidates(
     interactions: Sequence[Mapping[str, Any]],
     *,
     max_candidates: int,
+    tolerate_invalid_interactions: bool = False,
+    interaction_issues: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     candidates: list[dict[str, Any]] = []
+    if interaction_issues is None:
+        interaction_issues = []
 
     def add(candidate: dict[str, Any]) -> None:
         candidates.append(candidate)
@@ -1233,6 +1268,81 @@ def _generate_candidates(
                 option_index.setdefault(str(action["id"]), []).append(
                     (owner_route, action)
                 )
+
+    def reject_interaction(message: str) -> None:
+        if not tolerate_invalid_interactions:
+            raise SurfaceError(message)
+        interaction_issues.append(message)
+
+    def action_contract(action: Mapping[str, Any]) -> dict[str, Any]:
+        return {
+            key: action.get(key)
+            for key in (
+                "id",
+                "kind",
+                "flags",
+                "action",
+                "type",
+                "nargs",
+                "minimum_values",
+                "required",
+                "choices",
+                "default",
+                "default_present",
+                "effective_default",
+                "const",
+                "metavar",
+                "exclusive_group",
+                "exclusive_required",
+                "placement",
+                "parser_path",
+                "before_nested_subcommand",
+            )
+        }
+
+    def required_baseline(route: Mapping[str, Any]) -> dict[str, Any]:
+        actions = list(route.get("actions", ()))
+        required_arguments = sorted(
+            (
+                action_contract(action)
+                for action in actions
+                if action.get("kind") == "argument" and action.get("required")
+            ),
+            key=lambda action: str(action.get("id", "")),
+        )
+        required_options = sorted(
+            (
+                action_contract(action)
+                for action in actions
+                if action.get("kind") == "option" and action.get("required")
+            ),
+            key=lambda action: str(action.get("id", "")),
+        )
+        required_groups: dict[str, dict[str, Any]] = {}
+        grouped: dict[str, list[Mapping[str, Any]]] = {}
+        for action in actions:
+            group_id = action.get("exclusive_group")
+            if action.get("kind") == "option" and group_id is not None:
+                grouped.setdefault(str(group_id), []).append(action)
+        for group_id, members in sorted(grouped.items()):
+            if not members[0].get("exclusive_required"):
+                continue
+            required_groups[group_id] = {
+                "required": True,
+                "options": sorted(
+                    (action_contract(action) for action in members),
+                    key=lambda action: str(action.get("id", "")),
+                ),
+            }
+        return {
+            "arguments": required_arguments,
+            "options": required_options,
+            "exclusive_groups": required_groups,
+        }
+
+    required_baselines_by_route = {
+        str(route["id"]): required_baseline(route) for route in routes
+    }
 
     def add_for_route(
         route: Mapping[str, Any],
@@ -1260,6 +1370,7 @@ def _generate_candidates(
             "confirmation": route["confirmation"],
             "group": route.get("group"),
             "parser_settings": route.get("parser_settings", []),
+            "required_baseline": required_baselines_by_route[str(route["id"])],
             "delegated_contract": [
                 {
                     key: metadata.get(key)
@@ -1456,26 +1567,33 @@ def _generate_candidates(
         route_id = interaction.get("route_id")
         option_ids = interaction.get("option_ids", ())
         if not isinstance(interaction_id, str) or not interaction_id:
-            raise SurfaceError("interaction groups need a non-empty id")
+            reject_interaction("interaction groups need a non-empty id")
+            continue
         if not isinstance(route_id, str) or route_id not in route_index:
-            raise SurfaceError(f"interaction group {interaction_id!r} names an unknown route")
+            reject_interaction(
+                f"interaction group {interaction_id!r} names an unknown route"
+            )
+            continue
         route = route_index[route_id]
         if route.get("kind") != "invocation":
-            raise SurfaceError(
+            reject_interaction(
                 f"interaction group {interaction_id!r} names a non-invocable route"
             )
+            continue
         if (
             not isinstance(option_ids, (list, tuple))
             or not option_ids
             or any(not isinstance(option_id, str) or not option_id for option_id in option_ids)
         ):
-            raise SurfaceError(
+            reject_interaction(
                 f"interaction group {interaction_id!r} option_ids must be a non-empty string list"
             )
+            continue
         if len(option_ids) != len(set(option_ids)):
-            raise SurfaceError(
+            reject_interaction(
                 f"interaction group {interaction_id!r} repeats an option ID"
             )
+            continue
         normalized_ids = tuple(sorted(option_ids))
         missing = [
             option_id
@@ -1483,10 +1601,11 @@ def _generate_candidates(
             if option_id not in option_index
         ]
         if missing:
-            raise SurfaceError(
+            reject_interaction(
                 f"interaction group {interaction_id!r} names unknown options: "
                 + ", ".join(missing)
             )
+            continue
         selected_option_locations: dict[
             str, tuple[Mapping[str, Any], Mapping[str, Any]]
         ] = {}
@@ -1505,10 +1624,11 @@ def _generate_candidates(
             else:
                 ambiguous.append(option_id)
         if ambiguous:
-            raise SurfaceError(
+            reject_interaction(
                 f"interaction group {interaction_id!r} names ambiguous option IDs: "
                 + ", ".join(ambiguous)
             )
+            continue
         external_options = [
             {
                 "id": option_id,
@@ -1533,22 +1653,30 @@ def _generate_candidates(
             for flag in action.get("flags", ())
         }
         external_flag_owners: dict[str, str] = {}
+        invalid_interaction: str | None = None
         for external_option in external_options:
             for flag in external_option["flags"]:
                 if flag in target_flags:
-                    raise SurfaceError(
+                    invalid_interaction = (
                         f"interaction group {interaction_id!r} selects out-of-route "
                         f"option {external_option['id']!r}, but {flag!r} is also "
                         "registered on the target route"
                     )
+                    break
                 previous_owner = external_flag_owners.get(str(flag))
                 if previous_owner is not None and previous_owner != external_option["id"]:
-                    raise SurfaceError(
+                    invalid_interaction = (
                         f"interaction group {interaction_id!r} selects out-of-route "
                         f"options {previous_owner!r} and {external_option['id']!r} "
                         f"with the same spelling {flag!r}"
                     )
+                    break
                 external_flag_owners[str(flag)] = str(external_option["id"])
+            if invalid_interaction is not None:
+                break
+        if invalid_interaction is not None:
+            reject_interaction(invalid_interaction)
+            continue
         external_members = {
             option_id: selected_option_locations[option_id]
             for option_id in normalized_ids
@@ -1602,6 +1730,7 @@ def _generate_candidates(
     candidate_ids = [str(candidate["id"]) for candidate in candidates]
     if len(candidate_ids) != len(set(candidate_ids)):
         raise SurfaceError("CLI review candidates contain duplicate IDs")
+    interaction_issues[:] = sorted(set(interaction_issues))
     return candidates
 
 
@@ -1610,6 +1739,7 @@ def export_cli_surface(
     *,
     interaction_groups: Sequence[Mapping[str, Any]] = (),
     max_candidates: int = DEFAULT_MAX_CANDIDATES,
+    _tolerate_invalid_interactions: bool = False,
 ) -> dict[str, Any]:
     """Return a deterministic machine-readable grammar and review checklist."""
 
@@ -1619,6 +1749,8 @@ def export_cli_surface(
         raise TypeError("max_candidates must be an integer")
     if max_candidates < 1:
         raise ValueError("max_candidates must be positive")
+    if not isinstance(_tolerate_invalid_interactions, bool):
+        raise TypeError("_tolerate_invalid_interactions must be a boolean")
     if not isinstance(interaction_groups, Sequence) or isinstance(
         interaction_groups, (str, bytes)
     ):
@@ -1646,10 +1778,13 @@ def export_cli_surface(
             raise SurfaceError(
                 f"CLI route {route['id']!r} contains duplicate argument or option IDs"
             )
+    interaction_issues: list[str] = []
     candidates = _generate_candidates(
         routes,
         interaction_groups,
         max_candidates=max_candidates,
+        tolerate_invalid_interactions=_tolerate_invalid_interactions,
+        interaction_issues=interaction_issues,
     )
     builtins = ["help"]
     if not app.single_command:
@@ -1672,6 +1807,7 @@ def export_cli_surface(
         },
         "routes": routes,
         "candidates": candidates,
+        "interaction_issues": interaction_issues,
         "incomplete": sorted(set(incomplete)),
         "syntax_complete": not incomplete
         and all(bool(route.get("syntax_complete")) for route in routes),

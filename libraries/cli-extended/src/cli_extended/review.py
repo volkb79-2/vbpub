@@ -81,6 +81,30 @@ class SurfaceReport:
         return "\n".join(self.findings)
 
 
+def _choices_accept(action: Mapping[str, Any], values: Sequence[str]) -> bool:
+    choices = action.get("choices")
+    if not isinstance(choices, list):
+        return True
+    allowed = {str(choice) for choice in choices}
+    return all(value in allowed for value in values)
+
+
+def _value_shape_accepts(
+    action: Mapping[str, Any], values: Sequence[str]
+) -> bool:
+    nargs = action.get("nargs")
+    minimum = int(action.get("minimum_values", _minimum_values(nargs)))
+    if len(values) < minimum:
+        return False
+    if nargs is None and len(values) != 1:
+        return False
+    if isinstance(nargs, int) and len(values) != nargs:
+        return False
+    if nargs == "?" and len(values) > 1:
+        return False
+    return _choices_accept(action, values)
+
+
 def _nonempty_string(value: Any, *, location: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ReviewCatalogError(f"{location} must be a non-empty string")
@@ -349,15 +373,16 @@ def render_cli_surface_markdown(
 ) -> str:
     """Render the generated part of a consumer-owned CLI specification."""
 
+    entrypoint = surface["entrypoint"]
     lines = [
         "## Generated CLI surface and semantic review",
         "",
         (
-            f"Executable: `{surface['entrypoint']['command']}` via "
-            f"`{surface['entrypoint'].get('prog', surface['entrypoint']['command'])}`; built-ins: "
+            f"Executable: `{entrypoint['command']}` via "
+            f"`{entrypoint['prog']}`; built-ins: "
             + (
                 ", ".join(
-                    f"`{item}`" for item in surface["entrypoint"].get("builtins", ())
+                    f"`{item}`" for item in entrypoint["builtins"]
                 )
                 or "none"
             )
@@ -365,8 +390,8 @@ def render_cli_surface_markdown(
             + (
                 "is parsed by the single-command parser; "
                 "required syntax may still reject it."
-                if surface["entrypoint"].get("single_command")
-                and surface["entrypoint"].get("no_args_action")
+                if entrypoint["single_command"]
+                and entrypoint["no_args_action"]
                 else "shows help."
             )
         ),
@@ -381,7 +406,7 @@ def render_cli_surface_markdown(
         "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
     for route in surface["routes"]:
-        path = " ".join(route["path"]) or surface["entrypoint"]["command"]
+        path = " ".join(route["path"]) or entrypoint["command"]
         if route.get("aliases"):
             path += " (aliases: " + ", ".join(route["aliases"]) + ")"
         nested_commands = []
@@ -409,13 +434,21 @@ def render_cli_surface_markdown(
         route_path = tuple(route.get("path", ()))
         if not route_path:
             invocation_mode = "entrypoint; see empty-argv behavior above"
-        elif route.get("kind") == "delegate-group":
+            if route.get("single_command", False) and route.get(
+                "no_args_action", False
+            ):
+                invocation_mode += "; single-command; empty remainder is parsed"
+            elif route.get("single_command", False):
+                invocation_mode += (
+                    "; single-command; empty remainder shows help before parsing"
+                )
+        elif route["kind"] == "delegate-group":
             invocation_mode = "delegated group; child CLI parses remaining tokens"
-        elif route.get("kind") == "route-prefix":
+        elif route["kind"] == "route-prefix":
             invocation_mode = "route prefix; selects a nested command"
-        elif route.get("single_command") and route.get("no_args_action"):
+        elif route["single_command"] and route["no_args_action"]:
             invocation_mode = "single-command; empty remainder is parsed"
-        elif route.get("single_command"):
+        elif route["single_command"]:
             invocation_mode = (
                 "single-command; empty remainder shows help before parsing"
             )
@@ -434,7 +467,7 @@ def render_cli_surface_markdown(
                 _markdown_cell(value)
                 for value in (
                     route["id"],
-                    route.get("kind", "invocation"),
+                    route["kind"],
                     path,
                     invocation_mode,
                     "; ".join(nested_commands),
@@ -442,11 +475,11 @@ def render_cli_surface_markdown(
                     route.get("description") or "",
                     route.get("group") or "",
                     ", ".join(route.get("behavior", [])),
-                    route.get("confirmation", False),
+                    route["confirmation"],
                     overrides,
                     route.get("delegated_metadata", []),
                     parser_settings,
-                    route.get("parser_configured_by_callback", False),
+                    route["parser_configured_by_callback"],
                     route.get("opaque_fields", []),
                     "complete" if route.get("syntax_complete") else "incomplete",
                 )
@@ -485,12 +518,17 @@ def render_cli_surface_markdown(
                 raise SurfaceSpecError(
                     f"unsupported surface action kind {action['kind']!r}"
                 )
+            exclusive_required = (
+                action["exclusive_required"]
+                if action["kind"] == "option"
+                else False
+            )
             details = {
                 "choices": action.get("choices"),
                 "declared_default": action.get("default"),
                 "default": action.get("effective_default", action.get("default")),
                 "exclusive_group": action.get("exclusive_group"),
-                "exclusive_required": action.get("exclusive_required", False),
+                "exclusive_required": exclusive_required,
             }
             scope: dict[str, Any] = {"scope": action.get("scope", "positional")}
             if action.get("placement"):
@@ -501,7 +539,7 @@ def render_cli_surface_markdown(
             if action.get("before_nested_subcommand"):
                 scope["before_nested_subcommand"] = True
             visibility = {
-                "hidden": action.get("hidden", False),
+                "hidden": action["hidden"],
                 "help_group": action.get("help_group", ""),
             }
             lines.append(
@@ -612,6 +650,20 @@ def render_cli_surface_markdown(
                     )
                 ) + " |"
             )
+    interaction_issues = surface.get("interaction_issues", ())
+    if interaction_issues:
+        lines.extend(
+            (
+                "",
+                "### Interaction references to repair",
+                "",
+                "These catalog references no longer resolve against the current CLI. The semantic rows remain visible above as stale until they are updated or explicitly retired.",
+                "",
+            )
+        )
+        lines.extend(
+            f"- `{_markdown_cell(issue)}`" for issue in interaction_issues
+        )
     if not surface.get("syntax_complete", False):
         lines.extend(("", "**Surface inventory is incomplete:**", ""))
         lines.extend(f"- `{_markdown_cell(reason)}`" for reason in surface.get("incomplete", []))
@@ -733,6 +785,7 @@ def _prepare(
         app,
         interaction_groups=catalog.interaction_groups,
         max_candidates=limit,
+        _tolerate_invalid_interactions=True,
     )
     manifest_text = render_cli_surface_json(surface)
     markdown = render_cli_surface_markdown(surface, catalog)
@@ -989,8 +1042,8 @@ def _review_findings(
 
     def positional_values_by_action(
         route: Mapping[str, Any], positionals: Sequence[tuple[int, str]]
-    ) -> dict[str, tuple[str, ...]]:
-        """Assign positional tokens to their declared parser-level actions."""
+    ) -> tuple[dict[str, tuple[str, ...]], list[tuple[int, str]]]:
+        """Assign positional tokens and retain any tokens with no declared action."""
 
         path = tuple(route.get("path", ()))
         positions_by_depth: dict[int, list[str]] = {}
@@ -998,6 +1051,7 @@ def _review_findings(
             positions_by_depth.setdefault(depth, []).append(token)
 
         values_by_action: dict[str, tuple[str, ...]] = {}
+        unassigned: list[tuple[int, str]] = []
         for depth in range(len(path) + 1):
             parser_path = path[:depth]
             actions = [
@@ -1042,7 +1096,8 @@ def _review_findings(
                     tokens[cursor:end]
                 )
                 cursor += consumed
-        return values_by_action
+            unassigned.extend((depth, token) for token in tokens[cursor:])
+        return values_by_action, unassigned
 
     def route_positions(
         argv: Sequence[str], route: Mapping[str, Any], all_routes: Sequence[Mapping[str, Any]]
@@ -1153,7 +1208,10 @@ def _review_findings(
             return tuple(positions)
         return None
 
-    findings: list[str] = []
+    findings: list[str] = [
+        "stale interaction catalog reference: " + str(issue)
+        for issue in surface.get("interaction_issues", ())
+    ]
     candidates = {str(case["id"]): case for case in surface["candidates"]}
     cases = catalog.cases_by_id
     routes_by_id = {str(route["id"]): route for route in surface["routes"]}
@@ -1212,9 +1270,14 @@ def _review_findings(
                     f"invocation for {case_id} contains undeclared unknown option "
                     f"{spelling!r} at parser depth {depth}"
                 )
-        positional_occurrences = positional_values_by_action(
+        positional_occurrences, unassigned_positionals = positional_values_by_action(
             route, non_command_positions
         )
+        for depth, token in unassigned_positionals:
+            findings.append(
+                f"invocation for {case_id} contains unassigned positional token "
+                f"{token!r} at parser depth {depth}"
+            )
 
         def active_option_occurrences(
             action: Mapping[str, Any],
@@ -1233,126 +1296,252 @@ def _review_findings(
                 )
             )
 
-        def choices_accept(action: Mapping[str, Any], values: Sequence[str]) -> bool:
-            choices = action.get("choices")
-            if not isinstance(choices, list):
-                return True
-            allowed = {str(choice) for choice in choices}
-            return all(value in allowed for value in values)
+        def option_occurrences_accept(
+            action: Mapping[str, Any],
+            occurrences: Sequence[tuple[str, tuple[str, ...], bool]],
+        ) -> bool:
+            if not occurrences:
+                return False
+            if action.get("nargs") == 0:
+                return all(not inline and not values for _spelling, values, inline in occurrences)
+            return all(
+                _value_shape_accepts(action, values)
+                for _spelling, values, _inline in occurrences
+            )
+
+        def add_option_value_findings(
+            action: Mapping[str, Any],
+            occurrences: Sequence[tuple[str, tuple[str, ...], bool]],
+            *,
+            case_id: str,
+            option_id: str,
+        ) -> None:
+            """Explain malformed values on every occurrence, including repeats."""
+
+            nargs = action.get("nargs")
+            minimum = int(action.get("minimum_values", _minimum_values(nargs)))
+            display = str((action.get("flags") or (option_id,))[0])
+            if any(len(values) < minimum for _spelling, values, _inline in occurrences):
+                findings.append(
+                    f"invocation for {case_id} omits a value for {display}"
+                )
+            if isinstance(nargs, int) and any(
+                len(values) != nargs
+                for _spelling, values, _inline in occurrences
+            ):
+                findings.append(
+                    f"invocation for {case_id} has an invalid value shape for option {option_id}"
+                )
+            if any(
+                not _choices_accept(action, values)
+                for _spelling, values, _inline in occurrences
+            ):
+                findings.append(
+                    f"invocation for {case_id} supplies a value outside the choices for option {option_id}"
+                )
+
+        route_actions = list(route.get("actions", ()))
+        required_arguments = [
+            action
+            for action in route_actions
+            if action.get("kind") == "argument" and action.get("required")
+        ]
+        required_options = [
+            action
+            for action in route_actions
+            if action.get("kind") == "option" and action.get("required")
+        ]
+        grouped_options: dict[str, list[Mapping[str, Any]]] = {}
+        for action in route_actions:
+            group_id = action.get("exclusive_group")
+            if action.get("kind") == "option" and group_id is not None:
+                grouped_options.setdefault(str(group_id), []).append(action)
+        required_baseline = {
+            "arguments": required_arguments,
+            "options": required_options,
+            "exclusive_groups": {
+                group_id: {
+                    "required": True,
+                    "options": members,
+                }
+                for group_id, members in grouped_options.items()
+                if members[0].get("exclusive_required")
+            },
+        }
+        for argument in required_baseline.get("arguments", ()):
+            argument_id = str(argument.get("id", ""))
+            values = positional_occurrences.get(argument_id, ())
+            if not _value_shape_accepts(argument, values):
+                minimum = int(
+                    argument.get(
+                        "minimum_values",
+                        _minimum_values(argument.get("nargs")),
+                    )
+                )
+                if len(values) < minimum:
+                    findings.append(
+                        f"invocation for {case_id} omits required positional argument {argument_id}"
+                    )
+                if not _choices_accept(argument, values):
+                    findings.append(
+                        f"invocation for {case_id} supplies a value outside the choices for required argument {argument_id}"
+                    )
+                nargs = argument.get("nargs")
+                if isinstance(nargs, int) and len(values) != nargs:
+                    findings.append(
+                        f"invocation for {case_id} has an invalid value shape for required positional argument {argument_id}"
+                    )
+        for action in required_baseline.get("options", ()):
+            option_id = str(action.get("id", ""))
+            occurrences = option_occurrences.get(option_id, ())
+            if not option_occurrences_accept(action, occurrences):
+                if not occurrences:
+                    findings.append(
+                        f"invocation for {case_id} omits required option {option_id}"
+                    )
+                elif has_invalid_flag_value(action):
+                    findings.append(
+                        f"invocation for {case_id} supplies an inline value to flag-only option {option_id}"
+                    )
+                nargs = action.get("nargs")
+                minimum = int(
+                    action.get("minimum_values", _minimum_values(nargs))
+                )
+                if any(
+                    len(values) < minimum
+                    for _spelling, values, _inline in occurrences
+                ):
+                    findings.append(
+                        f"invocation for {case_id} omits a value for required option {option_id}"
+                    )
+                if any(
+                    not _choices_accept(action, values)
+                    for _spelling, values, _inline in occurrences
+                ):
+                    findings.append(
+                        f"invocation for {case_id} supplies a value outside the choices for required option {option_id}"
+                    )
+                if isinstance(nargs, int) and any(
+                    len(values) != nargs
+                    for _spelling, values, _inline in occurrences
+                ):
+                    findings.append(
+                        f"invocation for {case_id} has an invalid value shape for required option {option_id}"
+                    )
+
+        exempt_groups: set[str] = set()
+        if candidate_kind == "exclusive-conflict":
+            group_id = candidate_shape.get("group_id")
+            if isinstance(group_id, str):
+                exempt_groups.add(group_id)
+        elif candidate_kind == "interaction":
+            selected_ids = {
+                str(option_id)
+                for option_id in candidate_shape.get("option_ids", ())
+            }
+            for group_id, group in required_baseline.get(
+                "exclusive_groups", {}
+            ).items():
+                members = {
+                    str(action.get("id", ""))
+                    for action in group.get("options", ())
+                }
+                if len(selected_ids & members) > 1:
+                    exempt_groups.add(str(group_id))
+
+        for group_id, group in required_baseline.get(
+            "exclusive_groups", {}
+        ).items():
+            if str(group_id) in exempt_groups:
+                continue
+            selected_group_actions = [
+                action
+                for action in group.get("options", ())
+                if option_occurrences.get(str(action.get("id", "")), ())
+            ]
+            if len(selected_group_actions) != 1:
+                findings.append(
+                    f"invocation for {case_id} must supply exactly one option from required group {group_id}"
+                )
+                continue
+            selected_action = selected_group_actions[0]
+            selected_occurrences = option_occurrences.get(
+                str(selected_action.get("id", "")), ()
+            )
+            if has_invalid_flag_value(selected_action):
+                findings.append(
+                    f"invocation for {case_id} supplies an inline value to a flag-only option in required exclusive group {group_id}"
+                )
+            elif not option_occurrences_accept(
+                selected_action, selected_occurrences
+            ):
+                nargs = selected_action.get("nargs")
+                minimum = int(
+                    selected_action.get(
+                        "minimum_values", _minimum_values(nargs)
+                    )
+                )
+                if any(
+                    len(values) < minimum
+                    for _spelling, values, _inline in selected_occurrences
+                ):
+                    findings.append(
+                        f"invocation for {case_id} omits a value for required group {group_id}"
+                    )
+                if any(
+                    not _choices_accept(selected_action, values)
+                    for _spelling, values, _inline in selected_occurrences
+                ):
+                    findings.append(
+                        f"invocation for {case_id} supplies a value outside the choices for required group {group_id}"
+                    )
+                if isinstance(nargs, int) and any(
+                    len(values) != nargs
+                    for _spelling, values, _inline in selected_occurrences
+                ):
+                    findings.append(
+                        f"invocation for {case_id} has an invalid value shape in required group {group_id}"
+                    )
+
+        if candidate_kind == "minimum":
+            for argument_id in candidate_shape.get("required_arguments", ()):
+                if not any(
+                    action.get("kind") == "argument"
+                    and action.get("id") == argument_id
+                    for action in route_actions
+                ):
+                    findings.append(
+                        f"semantic review candidate {case_id} references unknown required argument {argument_id}"
+                    )
+            for option_id in candidate_shape.get("required_options", ()):
+                if not any(
+                    action.get("kind") == "option"
+                    and action.get("id") == option_id
+                    for action in route_actions
+                ):
+                    findings.append(
+                        f"semantic review candidate {case_id} references unknown required option {option_id}"
+                    )
 
         if candidate_kind == "interaction":
             shape = candidate_shape
             for argument_id in shape.get("required_arguments", ()):
-                required_values = int(
-                    shape.get("required_argument_values", {}).get(argument_id, 1)
-                )
-                supplied_values = positional_occurrences.get(str(argument_id), ())
-                if len(supplied_values) < required_values:
-                    findings.append(
-                        f"interaction invocation for {case_id} omits required "
-                        f"positional argument {argument_id}"
-                    )
-                    continue
-                argument = next(
-                    (
-                        item
-                        for item in route.get("actions", ())
-                        if item.get("id") == argument_id
-                        and item.get("kind") == "argument"
-                    ),
-                    None,
-                )
-                if argument is not None and not choices_accept(
-                    argument, supplied_values
+                if not any(
+                    action.get("kind") == "argument"
+                    and action.get("id") == argument_id
+                    for action in route.get("actions", ())
                 ):
                     findings.append(
-                        f"interaction invocation for {case_id} supplies a value "
-                        f"outside the choices for required argument {argument_id}"
+                        f"interaction candidate {case_id} references unknown required argument {argument_id}"
                     )
             for option_id in shape.get("required_options", ()):
-                action = next(
-                    (
-                        item
-                        for item in route.get("actions", ())
-                        if item.get("id") == option_id
-                        and item.get("kind") == "option"
-                    ),
-                    None,
-                )
-                if action is None:
-                    findings.append(
-                        f"interaction candidate {case_id} references unknown "
-                        f"required option {option_id}"
-                    )
-                    continue
-                present = active_option_occurrences(action)
-                if not present:
-                    findings.append(
-                        f"interaction invocation for {case_id} omits required "
-                        f"option {option_id}"
-                    )
-                elif not any(
-                    len(values) >= _minimum_values(action.get("nargs"))
-                    for _spelling, values, _inline in present
-                ):
-                    findings.append(
-                        f"interaction invocation for {case_id} omits a value for "
-                        f"required option {option_id}"
-                    )
-                elif not choices_accept(
-                    action,
-                    tuple(
-                        value
-                        for _spelling, values, _inline in present
-                        for value in values
-                    ),
-                ):
-                    findings.append(
-                        f"interaction invocation for {case_id} supplies a value "
-                        f"outside the choices for required option {option_id}"
-                    )
-            for group_id, option_ids in shape.get(
-                "required_exclusive_groups", {}
-            ).items():
-                group_actions = [
-                    action
+                if not any(
+                    action.get("kind") == "option"
+                    and action.get("id") == option_id
                     for action in route.get("actions", ())
-                    if action.get("id") in option_ids
-                    and action.get("kind") == "option"
-                ]
-                present_group_actions = [
-                    action
-                    for action in group_actions
-                    if active_option_occurrences(action)
-                ]
-                if len(present_group_actions) != 1:
-                    findings.append(
-                        f"interaction invocation for {case_id} must supply exactly "
-                        f"one option from required group {group_id}"
-                    )
-                elif not any(
-                    len(values) >= _minimum_values(present_group_actions[0].get("nargs"))
-                    for _spelling, values, _inline in active_option_occurrences(
-                        present_group_actions[0]
-                    )
                 ):
                     findings.append(
-                        f"interaction invocation for {case_id} omits a value for "
-                        f"required group {group_id}"
-                    )
-                elif not choices_accept(
-                    present_group_actions[0],
-                    tuple(
-                        value
-                        for _spelling, values, _inline in active_option_occurrences(
-                            present_group_actions[0]
-                        )
-                        for value in values
-                    ),
-                ):
-                    findings.append(
-                        f"interaction invocation for {case_id} supplies a value "
-                        f"outside the choices for required group {group_id}"
+                        f"interaction candidate {case_id} references unknown required option {option_id}"
                     )
             external_ids = {
                 str(option.get("id"))
@@ -1392,15 +1581,7 @@ def _review_findings(
                     continue
                 if action.get("nargs") == 0:
                     continue
-                nargs = action.get("nargs")
-                minimum_values = _minimum_values(nargs)
-                has_valid_values = any(
-                    len(values) >= minimum_values
-                    and (not isinstance(nargs, int) or len(values) == nargs)
-                    and choices_accept(action, values)
-                    for _spelling, values, _inline in occurrences
-                )
-                if not has_valid_values:
+                if not option_occurrences_accept(action, occurrences):
                     findings.append(
                         f"interaction invocation for {case_id} does not provide a "
                         f"valid value shape for participating option {option_id}"
@@ -1453,19 +1634,14 @@ def _review_findings(
                             f"{external_option.get('id')}"
                         )
                     continue
-                minimum_values = _minimum_values(external_action.get("nargs"))
-                has_value = False
-                choices = external_action.get("choices")
-                for _position, _spelling, _depth, values, _inline in scoped_occurrences:
-                    if len(values) >= minimum_values:
-                        if choices is not None and any(
-                            value not in {str(choice) for choice in choices}
-                            for value in values
-                        ):
-                            continue
-                        has_value = True
-                        break
-                if not has_value:
+                external_value_occurrences = [
+                    (spelling, values, inline)
+                    for _position, spelling, _depth, values, inline
+                    in scoped_occurrences
+                ]
+                if not option_occurrences_accept(
+                    external_action, external_value_occurrences
+                ):
                     findings.append(
                         f"interaction invocation for {case_id} does not provide a "
                         f"valid value shape for out-of-route option "
@@ -1479,111 +1655,109 @@ def _review_findings(
                 or case.invocation[command_positions[-1]] != alias
             ):
                 findings.append(f"invocation for {case_id} omits its command alias")
-        if candidate_kind == "minimum":
-            required_arguments = candidate.get("shape", {}).get(
-                "required_arguments", ()
-            )
-            minimum_required_values = candidate.get("shape", {}).get(
-                "required_argument_values", {}
-            )
-            for argument_id in required_arguments:
-                supplied_values = positional_occurrences.get(str(argument_id))
-                required_values = int(
-                    minimum_required_values.get(str(argument_id), 1)
-                )
-                if supplied_values is None or len(supplied_values) < required_values:
-                    findings.append(
-                        f"minimum invocation for {case_id} omits required positional argument(s)"
-                    )
-            for option_id in candidate.get("shape", {}).get("required_options", ()):
-                action = next(
-                    (
-                        item for item in route.get("actions", ())
-                        if item.get("id") == option_id and item.get("kind") == "option"
-                    ),
-                    None,
-                )
-                if action is None:
-                    findings.append(
-                        f"semantic review candidate {case_id} references unknown "
-                        f"required option {option_id}"
-                    )
-                    continue
-                if has_invalid_flag_value(action):
-                    findings.append(
-                        f"minimum invocation for {case_id} supplies an inline value to flag-only option {option_id}"
-                    )
-                active_occurrences = active_option_occurrences(action)
-                if not active_occurrences:
-                    findings.append(
-                        f"minimum invocation for {case_id} omits required option {option_id}"
-                    )
-                elif any(
-                    len(values) < _minimum_values(action.get("nargs"))
-                    for _spelling, values, _inline in active_occurrences
-                ):
-                    findings.append(
-                        f"minimum invocation for {case_id} omits a value for required "
-                        f"option {option_id}"
-                    )
-            for group_id, option_ids in candidate.get("shape", {}).get(
-                "required_exclusive_groups", {}
-            ).items():
-                group_actions = [
-                    action
-                    for action in route.get("actions", ())
-                    if action.get("id") in option_ids and action.get("kind") == "option"
-                ]
-                if any(has_invalid_flag_value(action) for action in group_actions):
-                    findings.append(
-                        f"minimum invocation for {case_id} supplies an inline value to a flag-only option in required exclusive group {group_id}"
-                    )
-                present_group_actions = [
-                    action
-                    for action in group_actions
-                    if active_option_occurrences(action)
-                ]
-                if not present_group_actions:
-                    findings.append(
-                        f"minimum invocation for {case_id} omits required exclusive "
-                        f"group {group_id}"
-                    )
-                elif len(present_group_actions) > 1:
-                    findings.append(
-                        f"minimum invocation for {case_id} supplies multiple options "
-                        f"for required exclusive group {group_id}"
-                    )
-                elif any(
-                    len(values)
-                    < _minimum_values(present_group_actions[0].get("nargs"))
-                    for _spelling, values, _inline in active_option_occurrences(
-                        present_group_actions[0]
-                    )
-                ):
-                    findings.append(
-                        f"minimum invocation for {case_id} omits a value for its "
-                        f"required exclusive group {group_id}"
-                    )
         if candidate_kind == "argument-choice":
             choice = candidate.get("shape", {}).get("choice")
             argument_id = candidate.get("shape", {}).get("argument_id")
             if argument_id is None and candidate.get("members"):
                 argument_id = candidate["members"][0]
             supplied_values = positional_occurrences.get(str(argument_id), ())
+            argument = next(
+                (
+                    item
+                    for item in route.get("actions", ())
+                    if item.get("id") == argument_id
+                    and item.get("kind") == "argument"
+                    ),
+                    None,
+                )
+            if argument is None:
+                findings.append(
+                    f"semantic review candidate {case_id} references unknown positional argument {argument_id}"
+                )
+            elif not _value_shape_accepts(argument, supplied_values):
+                findings.append(
+                    f"invocation for {case_id} has an invalid positional value shape"
+                )
             if str(choice) not in supplied_values:
                 findings.append(f"invocation for {case_id} omits its positional choice")
         if candidate_kind == "argument-shape":
             argument_id = candidate.get("shape", {}).get("argument_id")
             if argument_id is None and candidate.get("members"):
                 argument_id = candidate["members"][0]
-            if not positional_occurrences.get(str(argument_id), ()):
+            supplied_values = positional_occurrences.get(str(argument_id), ())
+            argument = next(
+                (
+                    item
+                    for item in route.get("actions", ())
+                    if item.get("id") == argument_id
+                    and item.get("kind") == "argument"
+                    ),
+                    None,
+                )
+            if argument is None:
+                findings.append(
+                    f"semantic review candidate {case_id} references unknown positional argument {argument_id}"
+                )
+            elif not supplied_values:
                 findings.append(f"invocation for {case_id} omits its positional value")
+            elif not _choices_accept(argument, supplied_values):
+                findings.append(
+                    f"invocation for {case_id} supplies a positional value outside its choices"
+                )
+            elif not _value_shape_accepts(argument, supplied_values):
+                findings.append(
+                    f"invocation for {case_id} has an invalid positional value shape"
+                )
+        if candidate_kind in {"exclusive-member", "exclusive-conflict"}:
+            group_id = str(candidate_shape.get("group_id", ""))
+            group_actions = [
+                action
+                for action in route.get("actions", ())
+                if action.get("kind") == "option"
+                and str(action.get("exclusive_group")) == group_id
+            ]
+            group_occurrences = {
+                str(action.get("id", "")): option_occurrences.get(
+                    str(action.get("id", "")), ()
+                )
+                for action in group_actions
+            }
+            if candidate_kind == "exclusive-member":
+                selected = str(candidate_shape.get("selected_option", ""))
+                present = [
+                    option_id
+                    for option_id, occurrences in group_occurrences.items()
+                    if occurrences
+                ]
+                if present != [selected]:
+                    findings.append(
+                        f"invocation for {case_id} must supply only its selected exclusive option"
+                    )
+            else:
+                expected_ids = {str(value) for value in candidate_shape.get("options", ())}
+                present = {
+                    option_id
+                    for option_id, occurrences in group_occurrences.items()
+                    if occurrences
+                }
+                total_occurrences = sum(
+                    len(occurrences) for occurrences in group_occurrences.values()
+                )
+                if present != expected_ids or total_occurrences != len(expected_ids):
+                    findings.append(
+                        f"invocation for {case_id} must supply each conflicting option once and no other group option"
+                    )
         for member in candidate["members"]:
             matched_action = next(
                 (action for action in route.get("actions", []) if action["id"] == member),
                 None,
             )
             if matched_action is None:
+                continue
+            if candidate_kind == "interaction":
+                # Local interaction options were checked in the interaction
+                # branch above, where foreign and local option records are
+                # handled through the same value-shape contract.
                 continue
             if matched_action["kind"] == "option":
                 if candidate_kind == "minimum" and not matched_action.get("required"):
@@ -1599,35 +1773,36 @@ def _review_findings(
                         f"invocation for {case_id} supplies an inline value to flag-only option {matched_action['id']}"
                     )
                 active_occurrences = active_option_occurrences(matched_action)
-                occurrence = next(
-                    (
-                        (spelling, values)
-                        for spelling, values, _inline in active_occurrences
-                        if spelling in expected_spellings
-                    ),
-                    None,
-                )
-                if occurrence is None:
+                matching_occurrences = [
+                    occurrence
+                    for occurrence in active_occurrences
+                    if occurrence[0] in expected_spellings
+                ]
+                if not matching_occurrences:
                     findings.append(
                         f"invocation for {case_id} omits its reviewed option spelling"
                     )
-                    supplied_values: tuple[str, ...] = ()
                 else:
-                    _spelling, supplied_values = occurrence
+                    supplied_values = tuple(
+                        value
+                        for _spelling, values, _inline in matching_occurrences
+                        for value in values
+                    )
+                    if not option_occurrences_accept(
+                        matched_action, option_occurrences.get(member, ())
+                    ):
+                        add_option_value_findings(
+                            matched_action,
+                            option_occurrences.get(member, ()),
+                            case_id=case_id,
+                            option_id=member,
+                        )
                 if candidate_kind == "option-choice":
                     choice = candidate.get("shape", {}).get("choice")
                     if str(choice) not in supplied_values:
                         findings.append(
                             f"invocation for {case_id} does not supply its reviewed option choice"
                         )
-                elif active_occurrences and not any(
-                    len(values) >= _minimum_values(matched_action.get("nargs"))
-                    for _spelling, values, _inline in active_occurrences
-                    if _spelling in expected_spellings
-                ):
-                    findings.append(
-                        f"invocation for {case_id} omits a value for {expected_spellings[0]}"
-                    )
     for case_id, case in cases.items():
         if case_id not in candidates and case.state != "retired":
             findings.append(f"stale semantic case needs explicit retirement: {case_id}")

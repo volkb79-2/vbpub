@@ -1,6 +1,6 @@
 # CLI surface and semantic review tooling plan
 
-**Status:** Implemented; registered R0/R1 and R3 pass; final-source R2 evidence pending
+**Status:** Implementation corrections in progress; final registered R0/R1/R2/R3 evidence pending
 
 **Scope:** CLI-EXT-01, CLI-EXT-03 disposition, and CLI-EXT-04  
 **Decision owner:** cli-extended maintainers and adopting product owners
@@ -107,8 +107,7 @@ or refuse an abbreviated option incorrectly. The surface now exports parser
 settings at each route depth, includes them in case signatures, and resolves
 abbreviations using the owning parser. Since the checker does not model custom
 `prefix_chars` or `fromfile_prefix_chars`, those settings make the surface
-incomplete and fail check mode. The initial mutation run was stopped at
-138/807 candidates; only the final-source R2 run can provide gate evidence.
+incomplete and fail check mode.
 
 Reviewing the generated human-readable table against the canonical-spec
 contract exposed fields that existed only in JSON: confirmation policy,
@@ -142,7 +141,17 @@ version's pattern. The checker ignores a custom matcher rather than executing
 consumer-supplied regex syntax; that surface remains incomplete and cannot pass
 check mode.
 
-The independent implementation review found three additional completeness
+R2 is still pending. The registered run against committed `9c14091c` reached
+490 of 919 candidate records before Assay's 60-minute hard budget expired; its
+`BUDGET_EXCEEDED` artifacts are preserved under
+`libraries/cli-extended/.assay/archive/r2-stale-9c14091c-20261001/` and are not
+a mutation verdict for the corrected source. At the observed rate, the full
+campaign needs about 113 minutes before overhead, so the hard Assay and
+run-gate budgets are raised to 150 minutes and the combined gate budget to
+180 minutes. Final-source evidence still requires a fresh campaign after the
+corrected tree is committed.
+
+The implementation review found three additional completeness
 gaps, now closed. Inherited delegate globals are compared by their built action
 shape, not just spelling, because the wrapper splits leading tokens before the
 child parses them. Catalog interactions can now reference an option on another
@@ -157,7 +166,25 @@ while replaced token-parsing methods,
 uncaptured parser-level defaults, or inconsistent option-action maps mark the surface
 incomplete. Incompleteness stays within the affected delegate subtree. These
 interaction fields change the exported surface contract, so the JSON surface
-schema is version `4`; the TOML decision catalog remains schema version `1`.
+schema is version `5`; the TOML decision catalog remains schema version `1`.
+
+The implementation review found further false-certification cases beyond the
+original plan review. Non-minimum candidates could omit required positional or
+option syntax; a valid first occurrence could hide a malformed repeated value;
+and delegated globals with identical flags but different mutex-group policy
+were treated as equivalent. The generated v5 candidates now sign and check
+their route's required baseline, validate arity and choices on every option
+occurrence, and compare inherited exclusive-group membership and requiredness.
+Custom converter/action objects are compared by runtime identity because equal
+labels do not prove equal behavior.
+
+The review also found that a deleted route/option referenced by an interaction
+made sync abort before it could regenerate the grammar or show the old semantic
+row. Direct export remains strict; sync records the broken reference, emits the
+current grammar, and keeps the catalog case visible for repair or explicit
+retirement. It never rewrites the TOML catalog. Regression coverage was added
+for these cases; registered gate evidence is still pending on this corrected
+source.
 
 The generator deliberately does not enumerate every optional value count or
 repeat count. Consumers declare separate named interactions for token shapes

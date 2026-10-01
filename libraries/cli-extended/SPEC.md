@@ -705,7 +705,7 @@ delegated paths, positional and option IDs/shapes, option aliases, defaults,
 choices, requiredness, scope/placement, exclusive groups, synopsis, behavior
 and confirmation policy, parser-scoped `allow_abbrev`, argparse's
 negative-number matcher and whether that parser registers negative-number-like
-options, and actions added by parser callbacks. The JSON surface schema version is `4`; each route records
+options, and actions added by parser callbacks. The JSON surface schema version is `5`; each route records
 `single_command` and `no_args_action`, and those values participate in
 candidate signatures so a change to empty-invocation behavior requires review.
 Each route also records
@@ -752,10 +752,13 @@ signatures. Wrapper-local arguments/options/callback syntax that
 the delegate runtime does not apply, and inherited global options absent from
 the delegated parser, MUST mark the surface incomplete. A delegated parser's
 inherited global actions MUST preserve the parent action's flags, destination,
-action type, `nargs`, converter, choices, constant, default, requiredness, and
-metavar; a mismatch makes every route under that delegate incomplete because
+action type, `nargs`, converter, choices, constant, default, requiredness,
+metavar, and mutually-exclusive group membership and requiredness; a mismatch
+makes every route under that delegate incomplete because
 the wrapper and child can split or interpret the same leading tokens
-differently.
+differently. Custom converters and action classes must resolve to the same
+runtime objects in both parsers; matching import labels alone are not proof of
+identical behavior.
 
 The generated checklist is a bounded set of review dimensions, not a set of
 invented executable examples or inferred outcomes. It covers minimum valid
@@ -765,14 +768,24 @@ spelling and choice, exclusive alternatives/conflicting pairs, parser route
 aliases, and catalog-declared option interactions, including a target route
 combined with an option registered only on another route. Such a case's
 signature MUST include the foreign option's owning route and action shape.
+Every generated candidate MUST also include the target route's required
+positional, required option, and required-exclusive-group contracts in its
+signature. Check mode MUST require that baseline for every candidate kind so an
+option or alias case cannot be certified with syntax that fails before that
+dimension is reached. An `exclusive-conflict` candidate may violate the group
+under test; an interaction may do so only when it explicitly names multiple
+members of that same group. All other required baseline actions remain
+mandatory.
 Check mode MUST require each named local option, the foreign spelling as an
 unrecognized option token at the target route's parser depth, and that route's
 required positionals, required options, and required-exclusive selections so
 the case isolates the intended interaction. A value-taking foreign option
 MUST be tokenized using the owner's action arity while using option-like target
 tokens as value boundaries; its value tokens MUST NOT be assigned to a target
-positional. Check mode MUST enforce minimum/fixed value counts and enumerable
-choices; a flag-only foreign option MUST reject an inline value. It MUST NOT run
+positional. Check mode MUST enforce the declared arity and enumerable choices
+for every occurrence of each participating option; a valid first occurrence
+MUST NOT hide a malformed repeat. A flag-only foreign option MUST reject an
+inline value. It MUST NOT run
 converters or handlers. If an option ID is ambiguous across routes and does not
 resolve uniquely on the target route, surface generation MUST refuse it.
 The catalog owns the expected decision and status, including for cross-route
@@ -826,23 +839,35 @@ positional yielding to a registered nested command. For `argument-shape` and
 `argument-choice` candidates, it MUST assign tokens to the named positional
 action at its parser depth; finding the same text in a sibling positional does
 not satisfy the candidate. A flag-only option with an inline value is not a
-valid occurrence. It MUST resolve long-option abbreviations using the
+valid occurrence. Every positional token MUST map to a declared positional at
+that parser depth; unassigned tokens MUST be reported as findings. It MUST
+resolve long-option abbreviations using the
 `allow_abbrev` setting of the parser at that depth. A non-default `prefix_chars`
 or enabled `fromfile_prefix_chars` MUST make the surface incomplete until the
 checker can represent those token rules. A callback that replaces an argparse
 token-parsing method, sets uncaptured parser-level defaults, or leaves the
 parser's option-action lookup inconsistent MUST also make the surface
 incomplete. Ordinary callbacks that add inspectable argparse actions remain
-supported. In a generated minimum or interaction case, a
+supported. In every generated candidate, a
 required option counts only
 when it is an active option token, its declared minimum values are supplied,
-and exactly one alternative is present for each required exclusive group. It
+and exactly one alternative is present for each required exclusive group.
+Repeated occurrences of that same member remain valid when argparse accepts
+them; consumers declare an interaction when repetition has separate product
+semantics. It
 MUST NOT call `RegisteredCli.run()`,
 `ArgumentParser.parse_args()`, custom converters, custom argparse actions, or
 command handlers. This check is not a full parser acceptance oracle: the
 referenced product test MUST run the real invocation and assert its outcome
 and effects. A marker proves only that the named test is collected and linked
 to the semantic case.
+
+If an interaction group references a route or option that no longer exists,
+direct surface export MUST refuse the invalid reference. Sync MUST still
+generate the current grammar, preserve the catalog bytes, list the interaction
+reference as needing repair, and retain its semantic case in the stale-case
+section. Check MUST report the same reference and fail until the owner repairs
+or retires that case; sync MUST NOT edit the TOML catalog.
 For a single-command entrypoint, the empty route path denotes its one parser;
 the check MUST still recognize that parser's declared options.
 

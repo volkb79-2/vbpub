@@ -416,6 +416,50 @@ def test_surface_signature_ignores_help_copy_but_tracks_option_shape():
     assert original_cases[force_case] != changed_cases[changed_force_id]
 
 
+def test_surface_signatures_include_required_invocation_baseline():
+    def build(*, required_extra: bool):
+        registry = CliRegistry(
+            IDENTITY, prog="surface-demo", description="Required baseline."
+        )
+        options = [OptionSpec(("--force",), "force", parser_kwargs={"action": "store_true"})]
+        if required_extra:
+            options.append(
+                OptionSpec(
+                    ("--config",),
+                    "configuration path",
+                    parser_kwargs={"required": True},
+                )
+            )
+        registry.register(
+            VerbSpec("inspect", description="inspect", options=tuple(options), handler=lambda *_: 0)
+        )
+        return export_cli_surface(registry.build())
+
+    without_extra = build(required_extra=False)
+    with_extra = build(required_extra=True)
+    before = next(
+        candidate
+        for candidate in without_extra["candidates"]
+        if candidate["kind"] == "option-spelling"
+        and candidate["shape"].get("spelling") == "--force"
+    )
+    after = next(
+        candidate
+        for candidate in with_extra["candidates"]
+        if candidate["kind"] == "option-spelling"
+        and candidate["shape"].get("spelling") == "--force"
+    )
+
+    assert before["signature"] != after["signature"]
+    after_route = next(
+        route for route in with_extra["routes"] if route["id"] == after["route_id"]
+    )
+    assert any(
+        action.get("flags") == ["--config"] and action.get("required")
+        for action in after_route["actions"]
+    )
+
+
 def test_surface_marks_custom_validator_opaque_but_unenumerable_choices_incomplete():
     def configure(parser):
         parser.add_subparsers(dest="subcommand").add_parser("child")
@@ -863,14 +907,14 @@ def test_surface_signatures_are_canonical_for_unicode_payloads():
     reversed_payload = {"a": "café", "z": "last"}
     expected = "sha256:" + hashlib.sha256(
         json.dumps(
-            {"schema_version": 4, "payload": payload},
+            {"schema_version": 5, "payload": payload},
             sort_keys=True,
             separators=(",", ":"),
             ensure_ascii=False,
         ).encode("utf-8")
     ).hexdigest()
-    assert _signature(4, payload) == expected
-    assert _signature(4, payload) == _signature(4, reversed_payload)
+    assert _signature(5, payload) == expected
+    assert _signature(5, payload) == _signature(5, reversed_payload)
 
 
 def test_candidate_choice_ids_hash_unicode_values_without_ascii_escaping():
@@ -1445,6 +1489,163 @@ def test_surface_ids_delegates_missing_registry_metadata_and_parser_routes():
     )
     assert export_cli_surface(parent_with_global.build())["syntax_complete"] is True
 
+    child_with_different_group_requiredness = CliRegistry(
+        child_identity,
+        prog="child-tool",
+        description="Inherited options with a changed exclusive group.",
+        single_command=True,
+        global_options=(
+            OptionSpec(
+                ("--fast",),
+                "fast mode",
+                mutually_exclusive_group="mode",
+                mutually_exclusive_required=False,
+            ),
+            OptionSpec(
+                ("--safe",),
+                "safe mode",
+                mutually_exclusive_group="mode",
+                mutually_exclusive_required=False,
+            ),
+        ),
+    )
+    child_with_different_group_requiredness.register(
+        VerbSpec("run", description="run", handler=lambda *_: 0)
+    )
+    parent_with_required_group = CliRegistry(
+        IDENTITY,
+        prog="surface-demo",
+        description="Required inherited exclusive group.",
+        global_options=(
+            OptionSpec(
+                ("--fast",),
+                "fast mode",
+                mutually_exclusive_group="mode",
+                mutually_exclusive_required=True,
+            ),
+            OptionSpec(
+                ("--safe",),
+                "safe mode",
+                mutually_exclusive_group="mode",
+                mutually_exclusive_required=True,
+            ),
+        ),
+    )
+    parent_with_required_group.register(
+        VerbSpec(
+            "adapter",
+            description="run adapter",
+            delegate=child_with_different_group_requiredness.build(),
+        )
+    )
+    group_mismatch = export_cli_surface(parent_with_required_group.build())
+    assert group_mismatch["syntax_complete"] is False
+    assert any(
+        "changes inherited global option semantics: --fast, --safe" in reason
+        for reason in group_mismatch["incomplete"]
+    )
+
+    child_with_reordered_group = CliRegistry(
+        child_identity,
+        prog="child-tool",
+        description="Inherited exclusive group with reversed registration order.",
+        single_command=True,
+        global_options=(
+            OptionSpec(
+                ("--safe",),
+                "safe mode",
+                mutually_exclusive_group="mode",
+                mutually_exclusive_required=False,
+            ),
+            OptionSpec(
+                ("--fast",),
+                "fast mode",
+                mutually_exclusive_group="mode",
+                mutually_exclusive_required=False,
+            ),
+        ),
+    )
+    child_with_reordered_group.register(
+        VerbSpec("run", description="run", handler=lambda *_: 0)
+    )
+    parent_with_same_group = CliRegistry(
+        IDENTITY,
+        prog="surface-demo",
+        description="Equivalent inherited exclusive group.",
+        global_options=(
+            OptionSpec(
+                ("--fast",),
+                "fast mode",
+                mutually_exclusive_group="mode",
+                mutually_exclusive_required=False,
+            ),
+            OptionSpec(
+                ("--safe",),
+                "safe mode",
+                mutually_exclusive_group="mode",
+                mutually_exclusive_required=False,
+            ),
+        ),
+    )
+    parent_with_same_group.register(
+        VerbSpec(
+            "adapter",
+            description="run adapter",
+            delegate=child_with_reordered_group.build(),
+        )
+    )
+    assert export_cli_surface(parent_with_same_group.build())["syntax_complete"] is True
+
+    def converter_factory(offset):
+        def parse(value):
+            return int(value) + offset
+
+        return parse
+
+    parent_converter = converter_factory(1)
+    child_converter = converter_factory(2)
+    child_with_same_label_converter = CliRegistry(
+        child_identity,
+        prog="child-tool",
+        description="Inherited converter with colliding label.",
+        single_command=True,
+        global_options=(
+            OptionSpec(
+                ("--number",),
+                "number",
+                parser_kwargs={"type": child_converter},
+            ),
+        ),
+    )
+    child_with_same_label_converter.register(
+        VerbSpec("run", description="run", handler=lambda *_: 0)
+    )
+    parent_with_different_converter = CliRegistry(
+        IDENTITY,
+        prog="surface-demo",
+        description="Parent converter.",
+        global_options=(
+            OptionSpec(
+                ("--number",),
+                "number",
+                parser_kwargs={"type": parent_converter},
+            ),
+        ),
+    )
+    parent_with_different_converter.register(
+        VerbSpec(
+            "adapter",
+            description="run adapter",
+            delegate=child_with_same_label_converter.build(),
+        )
+    )
+    converter_mismatch = export_cli_surface(parent_with_different_converter.build())
+    assert converter_mismatch["syntax_complete"] is False
+    assert any(
+        "changes inherited global option semantics: --number" in reason
+        for reason in converter_mismatch["incomplete"]
+    )
+
     child_with_mismatched_global = CliRegistry(
         child_identity,
         prog="child-tool",
@@ -1886,3 +2087,124 @@ def test_registry_surface_ids_must_be_nonempty_whitespace_free_tokens(surface_id
         ArgumentSpec("argument", "argument", surface_id=surface_id)
     with pytest.raises(ValueError, match="surface_id"):
         VerbSpec("verb", description="verb", surface_id=surface_id)
+
+
+def test_tolerant_export_keeps_grammar_and_reports_broken_interaction_references():
+    registry = CliRegistry(IDENTITY, prog="surface-demo", description="Inspect.")
+
+    def configure_required_nested(parser):
+        nested = parser.add_subparsers(dest="detail", required=True)
+        nested.add_parser("child")
+
+    registry.register(
+        VerbSpec(
+            "root",
+            description="a required nested command",
+            configure=configure_required_nested,
+            handler=lambda *_: 0,
+        )
+    )
+    registry.register(
+        VerbSpec(
+            "target",
+            description="the interaction target",
+            options=(
+                OptionSpec(("--clash",), "target option", surface_id="target-clash"),
+            ),
+            handler=lambda *_: 0,
+        )
+    )
+    registry.register(
+        VerbSpec(
+            "foreign",
+            description="a foreign option owner",
+            options=(
+                OptionSpec(("--clash",), "foreign option", surface_id="foreign-clash"),
+            ),
+            handler=lambda *_: 0,
+        )
+    )
+    registry.register(
+        VerbSpec(
+            "overlap-one",
+            description="first owner of a shared spelling",
+            options=(
+                OptionSpec(
+                    ("--shared-foreign",),
+                    "first shared spelling",
+                    surface_id="overlap-one-option",
+                ),
+            ),
+            handler=lambda *_: 0,
+        )
+    )
+    registry.register(
+        VerbSpec(
+            "overlap-two",
+            description="second owner of a shared spelling",
+            options=(
+                OptionSpec(
+                    ("--shared-foreign",),
+                    "second shared spelling",
+                    surface_id="overlap-two-option",
+                ),
+            ),
+            handler=lambda *_: 0,
+        )
+    )
+    for verb, flag in (("first", "--first"), ("second", "--second")):
+        registry.register(
+            VerbSpec(
+                verb,
+                description=f"{verb} option owner",
+                options=(
+                    OptionSpec((flag,), f"{verb} option", surface_id="shared-option"),
+                ),
+                handler=lambda *_: 0,
+            )
+        )
+
+    app = registry.build()
+    baseline = export_cli_surface(app)
+    routes = {tuple(route["path"]): route for route in baseline["routes"]}
+    target_route = routes[("target",)]
+    root_route = routes[("root",)]
+    interactions = (
+        {"id": "", "route_id": target_route["id"], "option_ids": ["target-clash"]},
+        {"id": "unknown-route", "route_id": "missing", "option_ids": ["target-clash"]},
+        {"id": "prefix", "route_id": root_route["id"], "option_ids": ["target-clash"]},
+        {"id": "bad-option-list", "route_id": target_route["id"], "option_ids": None},
+        {"id": "repeated-option", "route_id": target_route["id"], "option_ids": ["target-clash", "target-clash"]},
+        {"id": "missing-option", "route_id": target_route["id"], "option_ids": ["missing"]},
+        {"id": "ambiguous-option", "route_id": target_route["id"], "option_ids": ["shared-option"]},
+        {"id": "flag-overlap", "route_id": target_route["id"], "option_ids": ["foreign-clash"]},
+        {
+            "id": "foreign-flag-overlap",
+            "route_id": target_route["id"],
+            "option_ids": ["overlap-one-option", "overlap-two-option"],
+        },
+    )
+
+    surface = export_cli_surface(
+        app,
+        interaction_groups=interactions,
+        _tolerate_invalid_interactions=True,
+    )
+
+    assert len(surface["interaction_issues"]) == len(interactions)
+    assert any("names an unknown route" in issue for issue in surface["interaction_issues"])
+    assert any("non-invocable route" in issue for issue in surface["interaction_issues"])
+    assert any("ambiguous option IDs" in issue for issue in surface["interaction_issues"])
+    assert any("also registered on the target route" in issue for issue in surface["interaction_issues"])
+    assert any("same spelling '--shared-foreign'" in issue for issue in surface["interaction_issues"])
+    assert any(route["id"] == target_route["id"] for route in surface["routes"])
+    assert any(candidate["route_id"] == target_route["id"] for candidate in surface["candidates"])
+
+    with pytest.raises(SurfaceError, match="non-empty id"):
+        export_cli_surface(app, interaction_groups=interactions)
+    with pytest.raises(TypeError, match="_tolerate_invalid_interactions"):
+        export_cli_surface(
+            app,
+            interaction_groups=(),
+            _tolerate_invalid_interactions="yes",
+        )
