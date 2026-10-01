@@ -91,7 +91,14 @@ each claim against what you found; list claims you could not verify.
    the goldens; exit codes 0/2/3; `contract: 1` on every response incl.
    errors; ONE JSON document on stdout (plant a stray print and watch the
    test catch it); `stop` within 30 s after a LONG session (inject a clock:
-   1 h of 1 s samples — is the summary incremental or recomputed?);
+   1 h of 1 s samples — is the summary incremental or recomputed?). Inspect
+   the exact percentile state separately: the current order-statistic trees
+   retain one node per distinct observed value (O(unique values), not bounded
+   constant memory). Do not call this bounded merely because raw sample
+   objects are discarded. Evaluate realistic intervals and configured
+   concurrency against the daemon's 1 GiB memory limit; report the actual
+   growth/claim boundary and whether it violates any contract or safety claim.
+   idempotent `start` by (container id, token) → `reused: true`; idempotent
    idempotent `start` by (container id, token) → `reused: true`; idempotent
    `stop` → `already_stopped: true`; `too-many-sessions`; `target-not-found`.
 3. **§7 arithmetic.** Nearest-rank (N=5 gotcha), `source` per scope

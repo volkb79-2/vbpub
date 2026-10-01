@@ -1895,3 +1895,17 @@ their authored `/dev.slice/...` paths. This current unit-state evidence
 closes the specific round-4 B2 observable; reviewer-owned live daemon and
 placement/restoration probes remain required. Full values and provenance
 are recorded in controller ruling RW-398 and P1 LOG §35.
+
+### Exact percentile-state growth to scrutinize (2026-10-01)
+
+The online exact-rank implementation retains one AVL node per distinct
+observed value (and a multiplicity count for repeats) in the `memory.current`
+stream and each DAMON class. Inserts and rank selection are logarithmic in
+the number of distinct values, and `finalize()` no longer scans the on-disk
+series; the retained percentile state is nevertheless O(unique values), not
+constant-memory. The service has a 1 GiB memory limit and allows up to 16 live
+sessions, while the contract sets no maximum session duration. No memory
+growth measurement or bounded-memory claim is made here. The fresh adversarial
+review must assess whether this representation has sufficient headroom for
+the supported workload and state the evidence/limitation; do not equate
+discarding raw sample objects with bounded memory.
