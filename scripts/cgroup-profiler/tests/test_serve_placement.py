@@ -22,6 +22,7 @@ are all about what is written WHERE:
 
 from __future__ import annotations
 
+import errno
 import json
 import math
 import os
@@ -1476,6 +1477,29 @@ class TestDelegatedScopeMigration:
             for pid in (102, 103)
         )
         assert [value for _, value in writes[before:]] == ["102", "103"]
+
+    def test_non_esrch_write_failure_is_not_sent_to_systemd(self, tmp_path):
+        root = _fake_cgroup_root(tmp_path)
+        attached: List[Any] = []
+
+        class _PrivateNamespace(placement.LanePlacement):
+            def _write(self, abs_target: str, value: str) -> None:
+                if abs_target.endswith("/cgroup.procs"):
+                    raise OSError(errno.EPERM, "write refused", abs_target)
+                super()._write(abs_target, value)
+
+        plc = _placement(
+            root,
+            _placement_cls=_PrivateNamespace,
+            systemd_attach=lambda unit, subcgroup, pid: attached.append(
+                (unit, subcgroup, pid)
+            ) or True,
+            pid_exists=lambda _pid: True,
+        )
+        plc.apply([101])
+
+        assert attached == []
+        assert plc.block()["pids_moved"] == 0
 
     def test_vanished_descendant_is_skipped_without_a_systemd_move(self, tmp_path):
         root = _fake_cgroup_root(tmp_path)

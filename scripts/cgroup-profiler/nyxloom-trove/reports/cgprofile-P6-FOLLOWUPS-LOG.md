@@ -1716,3 +1716,20 @@ global backlog already tracks this as `nyxloom/nyxloom-trove/backlog/NL-25`
 line-and-branch gate, so no local approximation was made. The one lint finding
 is recorded as an existing cross-tool limitation, separate from CP-14; no
 nyxloom source or backlog files were changed here.
+
+## Session 37 — 2026-10-01 04:35:27Z — restore P6 mutation-oracle regressions
+
+Reviewing the P6 campaign history against the current `8723f3064` checkout
+showed that the two regression tests committed in `6540f8776` are absent from
+the current test files: the non-ESRCH write-failure/systemd-bridge oracle and
+the unreadable-PID-identity refusal oracle. Restored both in this checkpoint.
+This is a test-only repair; no product behavior changed. The focused tests have
+not yet been run on this checkpoint, and no current-tree R2 result is claimed.
+
+The `6540f8776` R2 campaign reported in Session 18 is
+`BUDGET_EXCEEDED/CANDIDATE_HUNG` (312 candidates accounted for, 301 killed,
+10 survived, 1 hung); it is not a passing result and is stale for this tree.
+The earlier `b3df5602` survivor table in Session 17 is diagnostic only. Run
+focused tests after the serialized P1 review probes finish, then run all
+required P6 gates and a fresh R2 on one quiet exact tree. Do not reuse either
+historical receipt.

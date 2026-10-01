@@ -1952,3 +1952,16 @@ backlog already records this design gap as NL-25. I did not relabel this
 whole-project 100% line-and-branch check as `changed-line-coverage`, which
 would claim a different comparison; no nyxloom files were changed as part of
 RG-55.
+
+### Mutation-oracle regression restoration (2026-10-01)
+
+The current P6 tree was missing two P6 regression tests that had been added
+after the 312-candidate survivor triage: the non-ESRCH placement-write failure
+must not invoke systemd's PID-migration bridge, and an unreadable process
+identity must fail closed. Both tests are restored in the current checkout.
+This checkpoint has not yet run those tests; it is not gate or mutation
+evidence. The replacement campaign recorded for `6540f8776` ended
+`BUDGET_EXCEEDED/CANDIDATE_HUNG`, so it does not qualify P6. After focused
+verification, reconcile the latest accepted P1 tree, freeze the final P6
+candidate, and collect fresh exact-tree R0/R1, R3, R2, full-gate, and live
+delegated-scope restoration evidence before release.
