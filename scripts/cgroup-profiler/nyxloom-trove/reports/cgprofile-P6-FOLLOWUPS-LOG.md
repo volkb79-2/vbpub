@@ -1685,3 +1685,34 @@ tests/test_serve_socket_carrier.py -q` passed serially: **406 passed in
 checkout, but not the registered package gates or reviewer-owned live
 delegated-scope restoration probe. R0/R1, R3, doctor, exact-tree mutation,
 and full-gate evidence remain outstanding.
+
+## Session 35 — 2026-10-01 03:10:51Z — isolate the registry-push target (CP-14)
+
+A release-path audit found that `docker-bake.hcl` put the local
+`cgprofile:local` alias and the versioned GHCR image on one target, while
+`build-push.py --push` selected the `all` group with `--push`. A read-only
+`docker buildx bake --print all` confirmed both references were emitted;
+Docker's unqualified-name rules resolve the local alias to Docker Hub. Filed
+CP-14 before the repair. The Bake definition now has separate
+`cgprofile-local` and `cgprofile-release` targets: the normal `all` group is
+local-only, and publication selects only the versioned GHCR target. CP-14 is
+marked fixed.
+
+Oracles on this worktree: `docker buildx bake --print cgprofile-release`
+resolved exactly `ghcr.io/volkb79-2/cgprofile:1.0.0`; `docker buildx bake
+--print all` resolved exactly `cgprofile:local`; focused
+`tests/test_build_push.py` passed **3 tests** in 0.27 s. This does not replace
+the registered R0/R1, R3, reviewer live probes, exact-tree R2, or full gate;
+the current tree remains unjudged by those lanes.
+
+## Session 36 — 2026-10-01 03:13:31Z — record existing nyxloom assert-vocabulary block
+
+`nyxloom lint` on this project exits 1 because
+`nyxloom-trove/nyxloom.toml:[gates.coverage].asserts` declares
+`coverage-floor`, which the current nyxloom schema does not yet accept. The
+global backlog already tracks this as `nyxloom/nyxloom-trove/backlog/NL-25`
+(truthful whole-project coverage-floor vocabulary). Replacing it with
+`changed-line-coverage` would misstate this package's whole-project 100%
+line-and-branch gate, so no local approximation was made. The one lint finding
+is recorded as an existing cross-tool limitation, separate from CP-14; no
+nyxloom source or backlog files were changed here.

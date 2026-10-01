@@ -30,6 +30,8 @@ variable "GIT_REVISION" {
   default = "unknown"
 }
 
+// Shared build definition: concrete output names live only in the two
+// leaf targets below so a release push cannot publish the local alias.
 target "cgprofile" {
   context    = "."
   dockerfile = "Dockerfile"
@@ -47,17 +49,18 @@ target "cgprofile" {
   contexts = {
     damon_analysis = "../damon-analysis"
   }
-  // `--build` (--load) tags BOTH locally — a dev build never needs a
-  // separate re-tag step to test against the ghcr coordinate a release
-  // will actually use. `--push` pushes the same two tags (never `latest`
-  // here — nothing runs `cgprofile:latest` unpinned; the ciu stack's
-  // defaults table names an exact version, per C7).
-  tags = [
-    "cgprofile:local",
-    "${REGISTRY}/${NAMESPACE}/cgprofile:${CGPROFILE_VERSION}",
-  ]
+}
+
+target "cgprofile-local" {
+  inherits = ["cgprofile"]
+  tags = ["cgprofile:local"]
+}
+
+target "cgprofile-release" {
+  inherits = ["cgprofile"]
+  tags = ["${REGISTRY}/${NAMESPACE}/cgprofile:${CGPROFILE_VERSION}"]
 }
 
 group "all" {
-  targets = ["cgprofile"]
+  targets = ["cgprofile-local"]
 }

@@ -144,7 +144,7 @@ The one-shot helper keeps its cgroup view read-only. It is
 `RG55-INTERFACE-CONTRACT.md` is the full wire contract.
 
 ```bash
-python3 build-push.py --build      # -> cgprofile:local (needs docker buildx)
+python3 build-push.py --build      # -> local-only cgprofile:local (needs buildx)
 ciu up --dir .                     # starts cgprofile-host-daemon
 docker exec cgprofile-host-daemon cgprofile ctl version --json
 docker exec cgprofile-host-daemon cgprofile ctl status --json

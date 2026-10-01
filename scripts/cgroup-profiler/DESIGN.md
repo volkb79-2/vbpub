@@ -122,7 +122,7 @@ scripts/cgroup-profiler/
                           | serve | ctl  (RG-55)
   Dockerfile              RG-55: the cgprofile-host-daemon image (2-stage build)
   build-push.py           RG-55: docker buildx bake --build/--push
-  docker-bake.hcl         RG-55: bake targets (cgprofile:local + ghcr.io/…)
+  docker-bake.hcl         RG-55: separate local-only and versioned GHCR targets
   .dockerignore           RG-55
   cmru.toml               RG-55: release contract (scm versioning, oci-image)
   ciu.global.defaults.toml.j2  RG-55: standalone ciu root, host-singleton identity

@@ -55,7 +55,10 @@ def test_push_passes_resolved_version_to_login_and_bake(monkeypatch):
 
     assert captured["login"] == ["docker", "login", "ghcr.io", "-u", "release-user", "--password-stdin"]
     assert captured["login_options"]["input"] == b"test-token"
-    assert captured["bake"] == ["docker", "buildx", "bake", *build_push._FS_ALLOW, "all", "--push"]
+    assert captured["bake"] == [
+        "docker", "buildx", "bake", *build_push._FS_ALLOW,
+        "cgprofile-release", "--push",
+    ]
     assert captured["env"]["CGPROFILE_VERSION"] == "1.1.0"
     assert captured["env"]["GIT_REVISION"] == "deadbeef"
 

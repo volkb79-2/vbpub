@@ -33,6 +33,11 @@ tag/label and embedded runtime version, so CMRU releases need no manual
 `CGPROFILE_VERSION` export. An untagged local `--build` uses `0.0.0-dev`; a
 manual `--push` needs an exact release tag or a validated `CGPROFILE_VERSION`
 override.
+
+The local `cgprofile:local` tag is a build-only alias. CMRU's publish step
+selects the separate `cgprofile-release` Bake target, which contains only the
+versioned `ghcr.io/volkb79-2/cgprofile:<version>` tag; it does not publish the
+unqualified local alias to Docker Hub.
 ## Daemon adoption
 
 This is the adoption guide: commands here are intended to be copied by an

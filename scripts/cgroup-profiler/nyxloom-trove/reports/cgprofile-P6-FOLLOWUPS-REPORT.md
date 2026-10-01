@@ -1928,3 +1928,27 @@ replace exact-tip registered R0/R1, R3, doctor, the delegated-scope
 start/stop restoration probes, or R2/full gate. The current checkout must
 first reconcile the accepted P1/main tree and then receive fresh final
 evidence.
+
+### Release-output correction: CP-14 (2026-10-01)
+
+The original Bake `all` target exposed both `cgprofile:local` and the
+versioned GHCR tag to `--push`. Since an unqualified Docker image name
+defaults to Docker Hub, so the CMRU publish step would also have attempted an
+unintended `docker.io/library/cgprofile:local` publication. The wrapper now
+uses a local-only target for `--build` and selects `cgprofile-release` for
+`--push`; the latter's resolved output is exactly the versioned GHCR image.
+The independent `docker buildx bake --print` checks showed the two targets
+emit only their intended single tags, and the focused wrapper tests passed
+3/3. CP-14 is fixed and indexed. This packaging repair is local focused
+evidence only; all registered gates and release checks remain outstanding on
+the resulting exact tree.
+
+### Existing nyxloom config-lint limitation (2026-10-01)
+
+`nyxloom lint` currently exits 1 on this package's pre-existing
+`coverage-floor` gate assertion because the accepted vocabulary does not yet
+include a truthful whole-project coverage assertion. The upstream nyxloom
+backlog already records this design gap as NL-25. I did not relabel this
+whole-project 100% line-and-branch check as `changed-line-coverage`, which
+would claim a different comparison; no nyxloom files were changed as part of
+RG-55.
