@@ -150,6 +150,7 @@ def test_boolean_property_treats_transport_failure_as_unknown(monkeypatch, raise
     [
         ("as 2 memory cpu", 0, ["memory", "cpu"]),
         ("as 0", 0, []),
+        ("", 0, None),
         ("s memory", 0, None),
         ("as 2 memory", 0, None),
         ("as nope memory", 0, None),
