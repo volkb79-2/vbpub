@@ -1965,3 +1965,22 @@ evidence. The replacement campaign recorded for `6540f8776` ended
 verification, reconcile the latest accepted P1 tree, freeze the final P6
 candidate, and collect fresh exact-tree R0/R1, R3, R2, full-gate, and live
 delegated-scope restoration evidence before release.
+
+### Controller correction — focused oracle semantics (2026-10-01)
+
+The first focused run after that checkpoint reported 522 passed and one
+failure in the restored non-ESRCH test. The test had been copied from an older
+direct-`cgroup.procs` movement design; current D-31 placement instead uses the
+verified systemd scope API for PID migration, so the test's expected refusal
+was not a valid oracle for the current contract. It was replaced with a
+behavioral test that rejects any direct membership-file write and asserts
+successful systemd-mediated placement. The separate unreadable-process-
+identity refusal oracle was retained.
+
+At exact P6 commit `67f45c28b614923f3a4e4a883c3284308c5ef410`, the serial,
+load-niced placement/systemd/socket regression set passed **523 tests in
+31.02 s**. This is targeted local evidence only. The old
+`6540f8776` mutation result remains `BUDGET_EXCEEDED/CANDIDATE_HUNG`; it is
+not current-tree evidence. Current-main reconciliation, exact registered
+gates, a live delegated-scope start/stop restoration probe, fix-verification
+review, and a fresh R2/full gate remain open.

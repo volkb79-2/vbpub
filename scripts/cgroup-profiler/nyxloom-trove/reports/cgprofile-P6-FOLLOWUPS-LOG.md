@@ -1733,3 +1733,23 @@ The earlier `b3df5602` survivor table in Session 17 is diagnostic only. Run
 focused tests after the serialized P1 review probes finish, then run all
 required P6 gates and a fresh R2 on one quiet exact tree. Do not reuse either
 historical receipt.
+
+## Session 38 — 2026-10-01 05:24:56Z — focused oracle correction
+
+On branch `rg55-followups-cgprofile-final`, the focused placement/systemd/socket
+suite first returned 522 passed and one failure in the newly added
+`test_non_esrch_write_failure_is_not_sent_to_systemd`. Inspection showed this
+test encoded a superseded direct-`cgroup.procs` write/fallback path: under the
+current delegated-scope design, PID migration is performed through the
+verified systemd scope API, and there is no direct process-membership write to
+fall back from. This was a stale test oracle, not evidence of a product defect.
+
+Replaced it with an observable contract test that makes any direct
+`cgroup.procs` write fail and verifies the PID is placed via the systemd API.
+The unreadable-identity refusal oracle remains. After committing as
+`67f45c28b614923f3a4e4a883c3284308c5ef410`, the exact committed tree passed
+`nice -n 19 ionice -c 3 python3 -m pytest
+tests/test_placement_systemd_helpers.py tests/test_serve_placement.py
+tests/test_serve_socket_carrier.py -q`: **523 passed in 31.02 s**. This is
+targeted local evidence only; no registered gate, current-tree R2, live
+scope-restoration probe, or fix-verification review is claimed.
