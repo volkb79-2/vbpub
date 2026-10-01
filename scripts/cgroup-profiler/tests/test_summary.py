@@ -11,10 +11,10 @@ reproduce ``summary-v1.json`` (scope ``container-shared``) and
 implementation detail, so these tests only ever go through
 ``add_sample``/``finalize``, never a `_`-prefixed helper.
 
-**Hand mutants.** ``test_hand_mutants.py`` (sibling file) runs the ten
-required mutation probes against this same golden path — kept separate so a
-reviewer can see the golden test and the mutant list without one screen of
-noise drowning the other.
+**Hand mutants.** The P1 REPORT and review records list the temporary
+mutation probes run against this same golden path. They stay outside the
+committed suite; this file holds the behavioral oracles the probes must
+make fail.
 """
 
 from __future__ import annotations
