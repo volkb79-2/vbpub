@@ -366,11 +366,7 @@ class SummaryAccumulator:
         self._last_successful: Dict[str, Any] = {}
         self._memory_current_ranks = _OrderStatisticMultiset()
         self._damon_ranks = {
-            name: {
-                "p90": _OrderStatisticMultiset(),
-                "median": _OrderStatisticMultiset(),
-            }
-            for name in _DAMON_CLASSES
+            name: _OrderStatisticMultiset() for name in _DAMON_CLASSES
         }
         self._damon_count = 0
         self._damon_peaks = {name: None for name in _DAMON_CLASSES}
@@ -486,8 +482,7 @@ class SummaryAccumulator:
                     current_peak = self._damon_peaks[name]
                     if current_peak is None or value > current_peak:
                         self._damon_peaks[name] = value
-                self._damon_ranks[name]["p90"].add(value)
-                self._damon_ranks[name]["median"].add(value)
+                self._damon_ranks[name].add(value)
 
         self._last_fields = fields
         self._previous_mono = current_mono
@@ -636,8 +631,8 @@ class SummaryAccumulator:
                 return None
             return {
                 "peak": self._damon_peaks[name],
-                "p90": self._damon_ranks[name]["p90"].nearest_rank(90),
-                "median": self._damon_ranks[name]["median"].nearest_rank(50),
+                "p90": self._damon_ranks[name].nearest_rank(90),
+                "median": self._damon_ranks[name].nearest_rank(50),
             }
 
         return {
