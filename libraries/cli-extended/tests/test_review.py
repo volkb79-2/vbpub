@@ -3637,12 +3637,16 @@ def test_review_invocation_lexer_handles_option_arities_and_delimiters():
     arities = (
         ("zero", "--zero", 0, 0, ["--zero"]),
         ("one", "--one", None, 1, ["--one", "v"]),
+        ("one-end", "--one-end", None, 1, ["--one-end"]),
         ("fixed", "--fixed", 2, 2, ["--fixed=first", "second"]),
+        ("fixed-short", "--fixed-short", 2, 2, ["--fixed-short", "first"]),
         ("maybe", "--maybe", "?", 0, ["--maybe", "--zero"]),
+        ("maybe-end", "--maybe-end", "?", 0, ["--maybe-end"]),
         ("many", "--many", "*", 0, ["--many", "a", "b", "--zero"]),
         ("many-end", "--many-end", "*", 0, ["--many-end", "a", "b"]),
         ("many-delimiter", "--many-delimiter", "*", 0, ["--many-delimiter", "a", "--", "--zero"]),
         ("some", "--some", "+", 1, ["--some", "a", "b", "--zero"]),
+        ("some-empty", "--some-empty", "+", 1, ["--some-empty"]),
         ("some-end", "--some-end", "+", 1, ["--some-end", "a", "b"]),
         ("rest", "--rest", argparse.REMAINDER, 0, ["--rest", "tail", "--zero"]),
         ("parser", "--parser", argparse.PARSER, 1, ["--parser", "child"]),
@@ -3697,6 +3701,12 @@ def test_review_invocation_lexer_handles_option_arities_and_delimiters():
         and "unassigned positional token '--zero'" in item
         for item in findings
     )
+    for case_id in ("one-end", "fixed-short", "some-empty"):
+        assert any(
+            f"invocation for case:{case_id} omits a value for --" in item
+            for item in findings
+        )
+    assert not any("case:maybe-end" in item for item in findings)
 
 
 def test_review_argument_shape_and_choice_are_checked_at_their_registered_position():

@@ -1039,8 +1039,6 @@ def _review_findings(
         depth: int,
     ) -> int:
         def is_option_boundary(position: int) -> bool:
-            if position >= len(argv):
-                return True
             token = argv[position]
             option = token.partition("=")[0]
             if not token.startswith("-") or token == "-":
@@ -1057,11 +1055,17 @@ def _review_findings(
         if nargs is None:
             if inline:
                 return index + 1
-            return index + 2 if not is_option_boundary(index + 1) else index + 1
+            value_position = index + 1
+            if value_position >= len(argv):
+                return len(argv)
+            if is_option_boundary(value_position):
+                return value_position
+            return value_position + 1
         if isinstance(nargs, int):
             additional = max(nargs - 1, 0) if inline else nargs
             end = index + 1
-            while end < index + 1 + additional:
+            value_limit = min(index + 1 + additional, len(argv))
+            while end < value_limit:
                 if is_option_boundary(end):
                     break
                 end += 1
@@ -1069,9 +1073,10 @@ def _review_findings(
         if nargs == "?":
             if inline:
                 return index + 1
-            if not is_option_boundary(index + 1):
-                return index + 2
-            return index + 1
+            value_position = index + 1
+            if value_position >= len(argv) or is_option_boundary(value_position):
+                return value_position
+            return value_position + 1
         if nargs in {"*", "+"}:
             if inline:
                 return index + 1

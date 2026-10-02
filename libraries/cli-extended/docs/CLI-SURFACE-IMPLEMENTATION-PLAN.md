@@ -1,6 +1,6 @@
 # CLI surface and semantic review tooling plan
 
-**Status:** Netcup consumer pilot and correctness follow-up in progress. In the CIU worktree `cli-extended-review`, commit `77d13912` passed Netcup's registered suite (228 tests) and the generated Netcup CLI surface check. Its resumed R2 campaign completed all 1,013 candidates on 2026-10-02 and failed with two survivors; R3 passed with the expected canary rejection. Follow-up commit `c88b7fd3` resolves both findings and passed registered R0/R1 with 100% statement and branch coverage (3,403 statements; 1,652 branches). The old R2 state was verified and archived under `.assay/archive/r2-77d13912-before-survivor-fixes-20261002/`; fresh R2 and R3 are required for the corrected source.
+**Status:** Netcup consumer pilot and correctness follow-up in progress. In the CIU worktree `cli-extended-review`, commit `77d13912` passed Netcup's registered suite (228 tests) and the generated Netcup CLI surface check. Follow-up commit `c88b7fd3` passed registered R0/R1 with 100% statement and branch coverage (3,403 statements; 1,652 branches). Fresh R2 on commit `e0ec2c9e` completed all 1,014 candidates on 2026-10-02 and failed with one EOF-boundary survivor; its dependent R3 passed with the expected canary rejection. The current follow-up bounds argv reads and cursor movement at EOF; fresh R0/R1, R2, and R3 evidence is required.
 
 **Scope:** CLI-EXT-01, CLI-EXT-03 disposition, and CLI-EXT-04
 **Decision owner:** cli-extended maintainers and adopting product owners
@@ -357,6 +357,35 @@ R2 state, progress, verdict, and R2/R3 logs were verified and archived under
 `.assay/archive/r2-77d13912-before-survivor-fixes-20261002/`. The archived
 state is no longer at the live resume path. A fresh R2 campaign and its
 dependent R3 canary remain required.
+
+### R2 campaign on `e0ec2c9e` and explicit EOF bounds
+
+The fresh registered R2 campaign on commit `e0ec2c9e9ade7a3527631bcc62952dce2b0730ca`
+completed on 2026-10-02 in 71 minutes 31 seconds: 1,013 of 1,014 candidates
+were killed and one survived; zero crashed, timed out, or exceeded budget. R3
+then passed with the expected rejection after disabling the JSON redaction
+guard. The R2 verdict, progress stream, and run-gate log were verified and
+archived under
+`libraries/cli-extended/.assay/archive/r2-e0ec2c9e-before-eof-bounds-20261002/`;
+the combined R2/R3 wrapper log is
+`/tmp/cli-extended-review-r2-fresh-e0ec2c9e.log`.
+
+The sole survivor was `True->False` at `review.py:1043` (candidate
+`71a357e620e30ac8ad3e5f85ea1d2b2769c1d5a224b7e64c2ecd708e3c3aed15`). It
+changed the EOF branch in `is_option_boundary()`. That helper was asked to
+classify `argv[len(argv)]`; returning true made some callers advance to
+`len(argv) + 1`, while false stopped at `len(argv)`. Both are equivalent for
+the current consumers, which only slice argv or use the result as a scan
+cursor. Adding an assertion for the Boolean would test an implementation detail
+rather than a grammar rule.
+
+The follow-up instead ensures `is_option_boundary()` only receives an in-range
+position. Single-value and optional-value options return `len(argv)` when no
+token remains; fixed-arity scans cap their endpoint at `len(argv)`. Greedy
+scans already stop before EOF. Regression cases cover missing single and fixed
+values, absent optional values, and missing `+` values. The completed
+`e0ec2c9e` state is verified and archived; do not count its survivor as a
+pass.
 
 ## Consumer workflows this should support
 
