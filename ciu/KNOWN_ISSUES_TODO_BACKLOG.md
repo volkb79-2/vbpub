@@ -4469,14 +4469,22 @@ combined with `vbpub@d1eb98770`'s base36 id scheme (identity changed `98535c`→
 regenerate), the upgrade is a silent breaking change for any checkout with live worktrees.
 
 **Why ciu owns it.** The file is CIU-owned, "rewritten in full by every `ciu env generate`; hand
-edits are silently overwritten" — no consumer can author or migrate it. A fail-closed read is right
-for DEPLOYING with uncertain identity; it is wrong for (a) tearing that instance down and (b)
-budget-counting a sibling.
+edits are silently overwritten" — no consumer can author or migrate it.
+
+**Operator ruling (2026-10-02): leaving a stale record alone is itself the bug.**
+`_seed_identity_or_repair` (`workspace_env.py:1495`) deliberately repairs only an ABSENT record and
+treats a PRESENT-but-outdated one as "loud rather than overwritten" (S3.1c clause 4). A pre-schema-2
+record is not ambiguous user data: it is CIU's own artifact in an older format, and the identity it
+encodes is DERIVABLE (a hash of the physical path). Refusing to rewrite it only converts a ciu
+upgrade into a manual chore in every checkout and worktree. Scope of the ruling: an OUTDATED-FORMAT
+record (missing/older `schema_version`) is regenerated in place; a record that is CORRUPT at the
+current schema (unparseable TOML, wrong types) may still refuse — that one could hide a real fault.
 
 **Proposed contract.**
-- `ciu worktree rm`/`clean` on a pre-schema-2 identity: either regenerate in place (identity is
-  deterministic from the path, so the regenerated facts are the facts) or degrade to path-derived
-  identity for teardown, with a WARN naming the file. Never refuse to delete.
+- EVERY verb that reads the record (runtime-start, read-only, teardown) regenerates an
+  outdated-format record in place with a WARN naming the file and the old/new `instance_id` (the
+  id can change when the derivation changed, e.g. vbpub@d1eb98770's base36 scheme), then proceeds.
+- `ciu worktree rm`/`clean` never refuses to delete on an outdated record.
 - S16.3 sibling scan: a stale sibling is counted (conservative) with a WARN, not a refusal of the
   current instance. Never fold "unreadable" into "absent" (cf. CIU-62's S6.4a rule) — count it.
 - CHANGES.md gains the missing consumer-action note for 20236e437 + d1eb98770 (instance ids change;
@@ -4486,4 +4494,7 @@ budget-counting a sibling.
 `ciu worktree rm -y` with rc=0 and no network left behind; (2) with one such sibling present,
 `ciu up` on another instance proceeds and the S16.3 count includes the sibling; (3) controlled
 wrong implementation: treating the stale sibling as absent fails oracle (2)'s count assertion;
-(4) `ciu up` (deploy) on a pre-schema-2 file STILL refuses — the fail-closed deploy read is kept.
+(4) `ciu up` on a pre-schema-2 file regenerates it, WARNs with old→new instance_id, and deploys;
+(5) a current-schema file with a corrupt value still refuses (the repair is format migration, not a
+blanket overwrite) — controlled wrong implementation: an unconditional overwrite passes (4) but
+fails (5).
