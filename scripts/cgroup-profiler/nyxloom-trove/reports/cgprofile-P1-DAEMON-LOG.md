@@ -1593,3 +1593,22 @@ the release-candidate branch. Load-niced focused `test_summary.py` and
 `git diff --check` passed. This is local focused evidence only. Exact-tree
 R2, registered short/full gates, fresh final review, and release remain
 pending; no gate container was launched in this session.
+
+### Session 38 — 2026-10-02 01:03:22Z — reconcile P1 oracle candidate with current main
+
+The P1 worktree was attached to its recorded branch and clean at
+`38e383499a016b5bf9e7efacc2af682ee9a08c4a`. Current main had advanced to
+`665246456ef2f503949b9d4449747e5f90b62f42`; it was merged into the P1
+branch without conflict as `e0ce67dc0ab360ed083dd479d7c49da85f678018`.
+This brings the candidate through the intervening P6 and workspace changes;
+the old R2 judged tree and its evidence were left untouched.
+
+The reconciled branch is clean. Its effective tree delta from current main is
+limited to the P1 survivor report/log and the `test_summary.py` and
+`test_targets.py` oracle additions; no daemon implementation, deployment,
+contract, or configuration delta remains. The focused and registered short
+gates reported on `38e38349` predate this reconciliation and are not exact-tip
+evidence. Run fresh short gates and doctor after the supplemental review
+artifact is committed. The 10a344e2 R2 remains a historical failure, not a
+result for the reconciled tree. No gate, review, merge to main, or release was
+started after the reconciliation.

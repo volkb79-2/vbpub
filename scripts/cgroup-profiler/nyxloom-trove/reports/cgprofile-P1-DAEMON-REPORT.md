@@ -1974,3 +1974,21 @@ test changes alter the Git tree, so the 10a344e2 verdict is historical for
 the final candidate. The exact judged worktree and its `.assay` evidence were
 left untouched. No registered P1 gate, merge, review, or release is claimed
 by this addendum.
+
+## Controller addendum — P1 oracle candidate reconciled with current main (2026-10-02)
+
+The attached P1 candidate branch was behind current main by 108 commits. To
+avoid integrating its old pre-P6 daemon tree, current main
+`665246456ef2f503949b9d4449747e5f90b62f42` was merged into the P1 branch as
+`e0ce67dc0ab360ed083dd479d7c49da85f678018`. The merge was clean. The
+reconciled worktree is clean, and the effective delta from current main is
+limited to this P1 report/log addendum and the survivor-oracle regressions in
+`tests/test_summary.py` and `tests/test_targets.py`; no daemon implementation,
+deployment, contract, or configuration change is pending in this branch.
+
+The prior `38e38349` short-gate and doctor results predate this reconciliation
+and do not certify the new tip. The R2 failure on `10a344e2` also remains
+specific to its old tree; the reconciled candidate still requires a fresh
+exact-tree R2 and registered full gate. A fresh supplemental review of the
+survivor dispositions and test oracles is pending. No gate or release is
+claimed for `e0ce67dc`.

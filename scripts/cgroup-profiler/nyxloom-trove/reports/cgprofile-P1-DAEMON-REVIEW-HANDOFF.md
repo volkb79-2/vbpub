@@ -1,5 +1,22 @@
 # cgprofile-P1-DAEMON — adversarial review handoff (RG-55 wave, package P1)
 
+## Controller supersession — 2026-10-02
+
+The numbered P1 review series is complete: round 6 ACCEPTed the P1 daemon
+candidate at `080936f18722ba8ac0915a107537205895ffcebc`, and that series has
+no round 7. The instructions below describe that completed review cycle and
+must not be reused to open another numbered round. After the later P1 R2
+campaign on `10a344e2` exposed 11 survivors, seven behavioral-oracle gaps were
+closed with tests and four survivors were triaged as equivalent. The current
+supplemental candidate is `e0ce67dc0ab360ed083dd479d7c49da85f678018`,
+reconciled with current main `665246456ef2f503949b9d4449747e5f90b62f42`.
+Its effective delta from main is limited to the P1 report/log and the two
+summary/target test files. A fresh Sol review must assess that supplemental
+test/evidence delta only; it must not claim a new full daemon review or release
+clearance. See `cgprofile-P1-DAEMON-REPORT.md`'s 2026-10-02 addenda for the
+survivor table and exact-tree gate status. The old R2 and short-gate receipts
+do not apply to the reconciled candidate.
+
 **Reviewer:** a genuinely fresh Sol xhigh session, not a fork of the
 implementer or controller. The caller selects and verifies the route from the
 invocation/session metadata; do not ask the reviewer to attest its own route.
