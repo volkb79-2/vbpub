@@ -1,6 +1,6 @@
 # CLI surface and semantic review tooling plan
 
-**Status:** Netcup consumer pilot and correctness follow-up in progress. In the CIU worktree `cli-extended-review`, commit `77d13912` passed Netcup's registered suite (228 tests) and the generated Netcup CLI surface check. Follow-up commit `c88b7fd3` passed registered R0/R1 with 100% statement and branch coverage (3,403 statements; 1,652 branches). Fresh R2 on commit `e0ec2c9e` completed all 1,014 candidates on 2026-10-02 and failed with one EOF-boundary survivor; its dependent R3 passed with the expected canary rejection. The current follow-up bounds argv reads and cursor movement at EOF; fresh R0/R1, R2, and R3 evidence is required.
+**Status:** Netcup consumer pilot and correctness follow-up in progress. In the CIU worktree `cli-extended-review`, commit `77d13912` passed Netcup's registered suite (228 tests) and the generated Netcup CLI surface check. The EOF-scan follow-up in `827f67d7` passed registered R0/R1 with 100% statement and branch coverage (3,408 statements; 1,654 branches). Fresh R2 on `e0ec2c9e` completed 1,014 candidates and failed with one equivalent EOF-boundary survivor; its dependent R3 passed with the expected canary rejection. The current follow-up bounds argv reads and cursor movement at EOF; fresh R2 and R3 evidence remains required.
 
 **Scope:** CLI-EXT-01, CLI-EXT-03 disposition, and CLI-EXT-04
 **Decision owner:** cli-extended maintainers and adopting product owners
@@ -386,6 +386,13 @@ scans already stop before EOF. Regression cases cover missing single and fixed
 values, absent optional values, and missing `+` values. The completed
 `e0ec2c9e` state is verified and archived; do not count its survivor as a
 pass.
+
+Follow-up commit `827f67d7` keeps every call to `is_option_boundary()` inside
+the argv range, returns the sequence end for missing single/optional values,
+and caps fixed-arity scanning at `len(argv)`. The regression matrix covers
+missing single and fixed values, omitted optional values, and missing `+`
+values. Registered R0/R1 passed with 100% statement and branch coverage
+(3,408 statements; 1,654 branches). Fresh R2 and R3 remain required.
 
 ## Consumer workflows this should support
 
