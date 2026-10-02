@@ -5117,3 +5117,28 @@ reproduction of the SAME underlying defect goes here, not a new entry).
 **Oracles:** `run-gate schema --worktree <wt> -- tests/schema/test_x.py::test_y` runs only that node and still provisions and disposes the throwaway DB; the same flag on a non-opted lane refuses by name; history marks the run selective; a controlled wrong implementation that lets a selective run satisfy the gate lane's freshness check must fail.
 
 **Spec owner:** SPEC (lane argv construction).
+
+## RG-72 — a failed `kind = "assay"` lane leaves no failing-test evidence in the gate log, and the next run overwrites its verdict
+
+**Provenance:** found in dstdns 2026-10-02 (package P231). run-gate rev 46, assay 7.2.0. dstdns@10f9df30, branch `p231-doc-truth`.
+
+**Observed:**
+- A composite `run-gate gate` failed its `assay` member. The log shows only `mock: FAIL/COMMAND_FAILED (exit 1)` and `lane 'assay' exit 1`. It carries no failing node ids, no error kind and no pytest summary line.
+- The implementer read the detail (5 errors in `tests/config/test_fault_boundary_completeness.py`) from `.assay/verdict-mock.json` before re-running.
+- The green re-run then rewrote `.assay/verdict-mock.json` and `.assay/progress-mock.jsonl` at the same fixed paths. Nothing kept the failing run's evidence.
+- The failure looked like a load-induced flake: the same run's test-runner member peaked at 3598 MiB and stalled 35.8 s on memory with two gates sharing one container. Without the verdict, the flake can no longer be characterised. Was it an error kind, a timeout or an OOM-kill?
+
+**Why it matters:**
+- A flake is a defect to diagnose (dstdns withdrew its flake-retry allowances). The canonical retry destroys the only evidence.
+- Agents that keep a log of each run still lose the detail, because the log never had it.
+
+**Proposed fix direction (either; both preferred):**
+- (a) On a non-PASS assay verdict, run-gate prints a bounded failure digest into the lane log: the verdict status, the first N failing or erroring node ids with their exception class, and the pytest summary line.
+- (b) run-gate copies a non-PASS verdict, and its progress file, to a run-keyed path, e.g. `.assay/failed/<lane>-<run-id>.json` or under the run-gate history store, before the next run of that lane can overwrite it. The run record names that path.
+
+**Oracles:**
+- A lane forced to fail (one asserting-false test) prints that node id and `AssertionError` in the gate log.
+- After a subsequent green run of the same lane, the failed run's verdict is still readable at the path the failed run's record names.
+- A PASS run writes no digest and no archived copy.
+
+**Spec owner:** SPEC (assay-kind lane result handling) and the run-history store.
