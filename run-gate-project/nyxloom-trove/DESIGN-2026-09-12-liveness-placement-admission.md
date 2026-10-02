@@ -418,7 +418,7 @@ run-gate / ciu in cockpit
                                                    │ creates/owns unit
                                                    ▼
 dev.slice/dev-gates.slice                         │
-  └── rg-profile-<token>.scope  (systemd owns unit boundary; Delegate=cpu,memory)
+  └── rg-profile-<token>.scope  (systemd owns unit boundary; Delegate=cpu,memory,pids)
         └── rg-<token>/         (cgprofile owns leaf, limits, sampling, kill)
                                   │
                                   └── cpu/memory/IO/liveness samples
@@ -467,25 +467,25 @@ it does **not** make a non-delegated destination valid.
    availability as preconditions.
 2. Ask systemd over the host bus to create a transient scope beneath
    `dev-gates.slice`, with `Delegate=` limited to controllers the leaf needs
-   (initially `cpu` and `memory`). Register the existing workload PIDs with
-   the scope through the scope's `PIDs` property as part of transient-unit
-   creation; then use `AttachProcessesToUnit` with that exact unit and child
-   name to move them into the profiler leaf. Query the resulting unit's
-   `Delegate` and `ControlGroup` properties. Do not derive the cgroup path
-   from the unit name: require the returned path to be a strict descendant
-   of the gates-slice path read from systemd, on the expected cgroup2 mount,
-   and refuse any mismatch.
+   (`cpu`, `memory`, and `pids` for the existing PID counter contract).
+   Register the initial workload PIDs with the scope through the scope's
+   `PIDs` property as part of transient-unit creation. Query the resulting
+   unit's `Delegate` and `ControlGroup` properties. Do not derive the cgroup
+   path from the unit name: require the returned path to be a strict direct
+   child of the gates-slice path read from systemd, on the expected cgroup2
+   mount, and refuse any mismatch.
 3. Create the token leaf only below that verified delegated root. systemd
    delegates ownership of descendants but keeps ownership of the scope
-   itself. Attach target PIDs into the exact child using the manager API;
-   verify the delegated scope root is then empty before enabling controllers
-   there (cgroup v2's no-internal-process rule). systemd makes delegated
-   controllers available but does not enable them on cgprofile's behalf.
-   Apply leaf limits, read every requested value back, and verify each
-   process's host-visible cgroup path before reporting `applied`. During this
-   staging transition, the inherited `dev-gates.slice` ceiling remains the
-   containment bound; the daemon must not claim per-leaf limits before
-   read-back succeeds.
+   itself. First attach each validated target PID from the scope root into the
+   exact leaf through `AttachProcessesToUnit`; verify each host-visible PID
+   path and verify the scope root is empty. Only then enable the required
+   controllers in the scope root's `cgroup.subtree_control` (cgroup v2's
+   no-internal-process rule). systemd makes delegated controllers available
+   but does not enable them on cgprofile's behalf. Apply leaf limits, read
+   every requested value back, and verify membership again before reporting
+   `applied`. During this staging transition, the inherited
+   `dev-gates.slice` ceiling remains the containment bound; the daemon must
+   not claim per-leaf limits before read-back succeeds.
 4. As the resolver discovers descendants, validate their process identity
    and attach them to the same token leaf. Reject a process that escaped the
    recorded target tree or belongs to another lane. Each placement, limit,
@@ -508,6 +508,47 @@ scope disappearance/reconciliation, and partial-failure rollback. In
 particular, do not mark placement `applied` until the real live probe confirms
 the process is inside the intended leaf and the limit files read back as
 requested.
+
+### Resource attribution when placement succeeds
+
+The selected target cgroup remains the **logical identity** of the session:
+`target.cgroup`, `manifest.targets[].cgroup`, the limits lookup, and the sample
+record key continue to name the cgroup selected from the container/token. The
+**measured resource source** is different: after placement is verified, the
+daemon reads CPU, I/O, pressure, PID, and cgroup-memory-charge metrics from the
+actual profiler-owned leaf returned under the verified delegated scope.
+Reading the original container/shared cgroup would undercount CPU/I/O/PID
+counters (often to zero), while reading its parent would reintroduce unrelated
+container work. The placement block's
+`leaf` is the physical measurement path; when placement is refused or not
+requested, measurements retain the existing logical target source and the
+refusal remains explicit. The sampled `cg` map keeps the logical key so
+existing summary/report consumers continue to resolve the session target.
+
+**Memory counters are cgroup charges, not total process RSS.** On cgroup v2,
+migrating a process does not transfer memory charges for pages faulted before
+the move. Therefore the leaf's `memory.current`, `memory.peak`, `memory.stat`,
+memory events, and memory pressure describe charges attributed to the leaf,
+not the total resident memory of every process moved into it. Leaf
+`memory.high`/`memory.max` likewise apply to charges attributed to that leaf;
+they do not prove that pre-existing pages were transferred or that total lane
+RSS is below the requested value. Keep these native readings because they are
+directly verifiable and useful, but label their charge-based semantics in the
+contract and adopter-facing docs. Never call them RSS, total process memory,
+or a complete lane-memory cap. A future design may arrange for a workload to
+enter the leaf before allocating memory or add a separately named RSS/PSS
+estimate; those mechanisms have different costs and semantics and must not be
+silently substituted for cgroup counters.
+
+At restart, the durable placement record is recovery input, not proof. It must
+be validated against the manager's current unit properties, the exact
+delegated-scope path, each recorded PID's start-time identity, and its current
+cgroup before any restoration. No recovery path may infer ownership from a
+token-shaped directory alone. A process already gone or re-used is never
+moved; a surviving matching process still inside the exact owned scope is
+restored to its recorded per-process origin. Unknown descendants, a mismatched
+identity, or an unverified path preserve the scope and leaf for operator
+inspection rather than stopping or deleting them.
 
 ### Alternatives considered and rejected
 

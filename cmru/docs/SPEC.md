@@ -44,7 +44,7 @@ cmru cleanup --remove-assets 30d --dry-run
                                   # preview the configured age-based remote cleanup
 cmru cleanup --remove-assets 30d --yes
                                   # 3. prune old releases/images after confirmation
-cmru abandon [BRANCH] [--dry-run] [--yes]
+cmru abandon [BRANCH] [--dry-run] [--yes] [--config PATH]
                                   # inspect and discard retained local release transactions
 cmru cleanup P --delete-unmanaged-release-tag TAG --yes
                                   # delete one old GitHub Release only, never its Git tag
@@ -101,7 +101,10 @@ catalog and exits successfully; unknown verbs and malformed arguments fail with 
 propagating it as the process exit status.
 
 **S-CLI.8 — Release abandonment is exact and dry-run safe (KI-29).**
-`cmru abandon [BRANCH]` MUST inspect retained release transactions only. With no branch,
+`cmru abandon [BRANCH] [--config PATH]` MUST inspect retained release transactions only.
+`--config` MUST select the same project policy used to validate the recorded scope; when
+omitted, CMRU uses normal config discovery. This is required for transactions whose
+multi-project scope came from an external orchestration file. With no branch,
 it MUST display the complete retained release-candidate set; with a branch, it MUST match
 one exact managed release branch and MUST NOT widen or prefix-match the selection. Before
 confirmation it MUST show the branch, worktree, recorded project scope, and every known
@@ -393,7 +396,7 @@ compares these rows with the registered parser objects, not a second parser.
 | cmru release | MIXED OPERATIONS | target? | --allow-stale-tool-deps; --allow-tag-ahead-of-head; --allow-uncommitted; --config; --discard-artifacts-on-release; --discard-evidence-on-release; --discard-logs-on-release; --dry-run; --log-append; --major; --minor; --no-build; --ref; --resume; --set-version; --show-run-details |
 | cmru status | EXPLORATION | target? | --config; --log-append; --major; --minor; --ref; --set-version; --show-run-details |
 | cmru cleanup | MAINTENANCE | target? | --config; --delete-build-output; --delete-unmanaged-release-tag; --discard-build-worktree; --dry-run; --remove-assets; --yes |
-| cmru abandon | MAINTENANCE | branch? | --dry-run; --yes |
+| cmru abandon | MAINTENANCE | branch? | --config; --dry-run; --yes |
 | cmru init | MODIFICATION | — | --dry-run; --layout; --owner; --owner-type; --repo; --root |
 | cmru versions init | MODIFICATION | target? | --config; --dry-run |
 | cmru versions resolve | MODIFICATION | target? | --config; --dry-run |
@@ -495,8 +498,8 @@ registered implementation named beside them.
 | cmru changelog | Optional target selects projects; required repeatable `--backfill-tag TAG` provides one already-published tag per selected project; `--config` selects the source contract. `--dry-run` prints the exact changelog diff and creates or writes no file. | ACCEPTED; the verb is a post-release migration and refuses ambiguous tag/project matches. |
 | cmru release | Optional target selects projects. `--minor`, `--major`, and `--set-version VER` are mutually exclusive and are rejected for external-version or no-tag projects. `--dry-run` executes the declared external-version preparation only inside a disposable managed candidate so it can derive the plan; it does not gate, tag, build, publish, or promote. `--no-build` intentionally stops after tag/push. `--resume WORKTREE` resumes a retained pre-tag candidate; corrections must be committed there, then prepare and required gates rerun so the corrected commit is tagged and shipped. It is not post-tag publication recovery (KI-06). `--allow-uncommitted` permits caller edits to be omitted from the origin/main snapshot. `--allow-tag-ahead-of-head` allows only the strictly-ahead baseline case. `--allow-stale-tool-deps` relaxes freshness only; `--ref REF` changes comparison ref. `--discard-logs-on-release`, `--discard-artifacts-on-release`, and `--discard-evidence-on-release` change successful retention. `--config`, `--show-run-details`, and `--log-append` select config and diagnostics. | ACCEPTED; the removed `--allow-tag-at-head` spelling has no compatibility window. Dry-run preparation is confined to the managed candidate; if that preparation fails, the retained candidate remains inspectable. KI-06 now supports corrected pre-tag resume; durable post-tag retry remains open. |
 | cmru status | Optional target and `--config` choose the release view. `--minor`, `--major`, and `--set-version VER` are mutually exclusive preview selectors and are rejected for external-version/no-tag projects. `--ref REF` selects the comparison ref. `--show-run-details` and `--log-append` configure diagnostics, though status itself runs no project command. | ACCEPTED; read-only status has no `--dry-run`, and it no longer accepts a hidden transaction switch. |
-| cmru cleanup | Optional target selects projects; omission applies configured policy to its resolved scope. Exactly one explicit mode may be selected: `--remove-assets AGE` prunes configured age-based remote Releases/tags/GHCR versions; `--delete-unmanaged-release-tag TAG` deletes one exact unmanaged GitHub Release but never its Git tag; `--delete-build-output ID` deletes the exact validated local retained record; `--discard-build-worktree PATH` removes one exact failed build worktree and forbids a project target. `--config` selects policy. Every mutating mode first displays the pending actions and asks for confirmation; `--yes` accepts that displayed plan. `--dry-run` displays the plan and performs no deletion. | ACCEPTED; explicit cleanup modes are mutually exclusive, and age cleanup has the same confirmation boundary as exact-delete and default-policy cleanup. |
-| cmru abandon | Optional `branch` must exactly match a managed release branch; omission selects the complete retained release set. `--dry-run` reports exact local and known remote candidates without changing them. `--yes` confirms the complete displayed set; otherwise interactive confirmation is required. | ACCEPTED; KI-29 exact selection, publication-evidence refusal, and no-widening semantics remain canonical in S-CLI.8. |
+| cmru cleanup | Optional target selects projects; omission applies configured policy to its resolved scope. Exactly one explicit mode may be selected: `--remove-assets AGE` prunes configured age-based remote Releases/tags/GHCR versions; `--delete-unmanaged-release-tag TAG` deletes one exact unmanaged GitHub Release but never its Git tag; `--delete-build-output ID` deletes the exact validated local retained record; `--discard-build-worktree PATH` removes one exact failed build worktree and forbids a project target. `--config` selects policy. Every mutating mode displays a captured target plan and asks for confirmation; `--yes` accepts that plan without rediscovery. `--dry-run` displays the plan and performs no deletion. | ACCEPTED; explicit cleanup modes are mutually exclusive, and age cleanup applies only the targets shown before confirmation (S2.5a). |
+| cmru abandon | Optional `branch` must exactly match a managed release branch; omission selects the complete retained release set. `--config` selects the project policy used to validate each recorded scope, including externally configured multi-project releases. `--dry-run` reports exact local and known remote candidates without changing them. `--yes` confirms the complete displayed set; otherwise interactive confirmation is required. | ACCEPTED; KI-29 exact selection, publication-evidence refusal, and no-widening semantics remain canonical in S-CLI.8. |
 | cmru init | `--root PATH` selects the adoption directory; `--layout` is exactly `single` or `monorepo`; `--owner`, `--repo`, and `--owner-type user or org` supply facts otherwise read from the Git origin or interactive prompts. `--dry-run` renders and validates generated files without prompting to write or changing the filesystem. | ACCEPTED; numeric `1`/`2` layout spellings were removed rather than carried as compatibility aliases. |
 | cmru versions init | Optional target and `--config` select manifests from which version targets are derived. `--dry-run` reports the prospective target changes without writing. | ACCEPTED; init remains the explicit target-creation operation. |
 | cmru versions resolve | Optional target and `--config` select version resolution; normal execution writes the declared version record/native artifacts. `--dry-run` performs the read/derivation path and suppresses every declared file write. | ACCEPTED; no implicit resolution was added to build or release. |
@@ -915,20 +918,43 @@ containing that project's `cmru.toml`. The secret grammar is strict:
 
 ```toml
 # <repository-root>/cmru.secret.toml
+schema_version = 1
+
 [github]
 token = "…"                         # repository-wide credential
+```
 
+```toml
 # <project>/cmru.secret.toml (optional explicit override)
+schema_version = 1
+
 [github]
 token = "…"
 ```
 
-`[github].token` in a committed `cmru.toml` is rejected. There is no fallback
-credential source. `tester-gate` likewise has no built-in inputs: it requires `--image`
+For compatibility, `schema_version` may be omitted from an existing secret file; when present,
+it must be the integer `1`.
+
+`[github].token` in a committed `cmru.toml` is rejected. Outside the environment and
+`cmru.secret.toml` resolution above, CMRU has no fallback GitHub API credential source.
+`tester-gate` likewise has no built-in inputs: it requires `--image`
 or `CMRU_TESTER_UNIFIED_IMAGE`, plus explicit memory, combined memory/swap, CPU, and
 host-systemd probe-image values (CLI options or the effective `[env]`). `--enable-docker` additionally
 requires a nested-Docker image. `wheel-build` requires `CMRU_WHEEL_BUILDER_IMAGE`; CMRU
 does not fall back to the cockpit's Python environment.
+
+CMRU-owned GitHub transport operations (release/build source fetches, candidate and tag
+pushes, promotion, and CMRU cleanup/abandon checks) use the invocation token or repository-root
+`[github].token` only when `origin` is an HTTPS URL for the configured GitHub owner/repository.
+The transport credential is supplied to the individual Git process through a temporary askpass
+helper that refuses prompts not identifying `github.com`; it is not written to the URL, command
+arguments, or persistent Git config. Credential-bearing CMRU Git calls MUST disable local hooks
+because Git hooks inherit the transport process environment and could reuse the repository token
+for another remote. The release gates remain the release checks. When no repository token
+resolves, Git's configured authentication remains in effect. SSH and non-matching origins keep
+their configured Git authentication; CMRU strips its API token environment variables from these
+Git processes. The selected project's secret overlay remains scoped to that project's publisher
+and does not replace the repository-level credential for CMRU's Git operations.
 
 ### S2.6a — tester-gate environment preflight (KI-17)
 
@@ -964,6 +990,21 @@ If none is found and a write verb is invoked, cmru MUST exit 3 (V10).
 empty `cleanup.release_tag_prefixes` or `cleanup.ghcr_packages` list selects
 nothing. Only an explicit `"*"` selects every release or package. CMRU MUST
 never reinterpret an empty destructive selector as a wildcard.
+
+**S2.5a — Cleanup confirmation applies the previewed target set.** Every
+mutating `cmru cleanup` invocation MUST enumerate and render its target set
+before confirmation. It MUST apply that captured set after confirmation, not
+rediscover targets and widen the action. Age-based cleanup MUST compute its
+cutoff once for the plan; an object that appears or crosses the cutoff while a
+prompt is open is not part of the confirmed set. CMRU MUST use stable release
+and package-version IDs where available, and revalidate exact local build
+records/worktree identities before deleting them. For a declared `steps.clean`,
+CMRU MUST snapshot dirty paths immediately before the step and stage and commit
+only literal paths that become dirty during it; paths already dirty at that
+point MUST remain outside the cleanup commit. It MUST commit such paths even
+when the cleanup policy selected no release tags for deletion. `--dry-run`
+renders the same plan and performs no mutation; `--yes` confirms that same
+captured plan.
 
 **S2.6 — Tool dependencies** (`[[project.tool_dependencies]]`, S15). A project
 declares a first-party artifact its OWN tests/tooling consume (not a released
@@ -1898,7 +1939,7 @@ action, reviewed like any other source change before it is committed.
 
 CMRU's internal `assay.toml` declares the `cmru` lane at R0/R1/R3. R0 runs
 the full CMRU test suite. R1 judges the `coverage.json` artifact against
-the latest ancestor CMRU release tag (currently `cmru-v5.4.1`), requires 100%
+the latest previously published ancestor CMRU release tag (currently `cmru-v5.5.0`), requires 100%
 line and branch coverage, and forbids excluded source. Advance this pinned R1
 base to the new release tag during each CMRU release. `main` is not a stable
 post-merge baseline: Assay's merge-base can resolve it to the tested commit,

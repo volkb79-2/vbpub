@@ -297,6 +297,16 @@ cmru cleanup example-wheel --delete-build-output <commit-date>_<commit> --dry-ru
 cmru cleanup example-wheel --delete-build-output <commit-date>_<commit> --yes
 ```
 
+The preview freezes the action list. After confirmation CMRU applies the captured release IDs,
+package IDs, tags, and local record/worktree identities; it does not discover new targets. For
+age-based cleanup, the cutoff is computed once, so an asset that becomes old while the prompt is
+open remains for a later preview.
+
+If configured cleanup runs `steps.clean`, CMRU commits only paths that become dirty during that
+step. Files already dirty when the confirmed plan starts are left out of that commit so cleanup
+does not sweep caller edits into its generated commit. It commits generated files even when the
+cleanup policy selected no release tags for deletion.
+
 The project example also declares a Go module target. Its project needs a module file such as:
 
 ```go
@@ -532,6 +542,29 @@ cmru release <name>     # one source-first transaction: gate → tag → build �
 cmru release                      # changed projects, one transaction per Git family (S-CLI.5a)
 ```
 
+For an HTTPS GitHub `origin`, keep the repository credential in the ignored CMRU-root secret
+file:
+
+```toml
+# <cmru-root>/cmru.secret.toml
+schema_version = 1
+
+[github]
+token = "replace-with-your-GitHub-token"
+```
+
+When `origin` matches the configured `[github] owner/repo`, CMRU uses the resolved repository
+token (this root value unless an invocation environment variable overrides it) for its own Git
+fetches and pushes. Publisher API calls use the resolved project token, which falls back to this
+root token unless that project has an override. CMRU does not put the token in the URL,
+arguments, or persistent Git config. Project-local publisher overrides are not passed to CMRU's
+Git operations. For credential-bearing Git calls, CMRU disables local Git hooks because they
+inherit the token-bearing process environment; the registered release gates remain the release
+checks. SSH and other-host remotes keep their configured Git authentication. If no repository
+token resolves, Git's configured helpers and SSH authentication remain in effect. Secret files
+written before `schema_version` was introduced remain readable. See the [transport
+rationale](DESIGN-GUIDE.md#git-transport-authentication).
+
 CMRU resolves the selected project's release config from the transaction's
 isolated source snapshot. A central orchestration file inside that snapshot
 already points to snapshot paths; an external central file maps its registered
@@ -562,6 +595,8 @@ cmru cleanup --discard-build-worktree <PATH> --yes
 cmru abandon --dry-run                           # show all retained release candidates, no writes
 cmru abandon cmru-release-20260924_120000-example-a1b2c3 --dry-run
 cmru abandon cmru-release-20260924_120000-example-a1b2c3 --yes
+cmru abandon cmru-release-20260924_120000-example-a1b2c3 \
+  --config /path/to/cmru.orchestration.toml
 ```
 
 For a script, use `cmru worktrees --json`. `prunable: true` reports Git's
@@ -580,7 +615,9 @@ abandon if release results, a released tag, origin promotion, an untagged publis
 missing/stale metadata makes publication state uncertain. A refusal lists known refs and
 release coordinates when present. Abandonment removes the candidate checkout (including its
 in-worktree logs and artifacts), candidate branch, and transaction sidecars. The main source
-history and `origin/main` are not rewritten.
+history and `origin/main` are not rewritten. If an external orchestration file selected a
+multi-project release, pass that same file with `--config` so CMRU can evaluate every project
+in the recorded scope.
 
 `cmru cleanup` is separate. It applies remote cleanup policy to GitHub Release records and
 their assets, matching Git tags, and GHCR package versions. It does not abandon a local

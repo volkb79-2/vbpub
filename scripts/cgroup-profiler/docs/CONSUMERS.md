@@ -9,7 +9,7 @@ The supported operator front door is the repository shell shim:
 
 The probe prints one identity line and exits 0. In a source checkout it uses
 `pyproject.toml`; a built image reports the CMRU release version embedded as
-`CGPROFILE_VERSION` (for example, `1.0.0`). The shim routes `--version`
+`CGPROFILE_VERSION` (for example, `1.1.0`). The shim routes `--version`
 directly to `cgprofile.py`, so this check does not require the analysis/reporting
 venv. Help, usage, and configuration diagnostics at every subcommand depth
 begin with the matching CGPROFILE headline as line 1; normal profiling output
@@ -18,15 +18,16 @@ is unchanged. Use
 
 ## Build or publish the daemon image
 
-From the repository root, preview and release the registered project:
+After the required cgprofile 1.0.0 release, preview and release this 1.1.0
+follow-up from the repository root:
 
 ```bash
-cmru status cgroup-profiler --config cmru.orchestration.toml --set-version 1.0.0
-cmru release cgroup-profiler --config cmru.orchestration.toml --set-version 1.0.0
+cmru status cgroup-profiler --config cmru.orchestration.toml --set-version 1.1.0
+cmru release cgroup-profiler --config cmru.orchestration.toml --set-version 1.1.0
 ```
 
-Use the explicit `1.0.0` override for the first release; later releases can
-omit it and follow CMRU's normal tag-based bump. CMRU creates the release tag
+The first 1.0.0 release used an explicit override because there was no prior
+cgprofile tag. CMRU creates the release tag
 before image build. `build-push.py` reads that exact tag to set the OCI
 tag/label and embedded runtime version, so CMRU releases need no manual
 `CGPROFILE_VERSION` export. An untagged local `--build` uses `0.0.0-dev`; a
@@ -41,7 +42,7 @@ unqualified local alias to Docker Hub.
 ## Deploy a published daemon image with CIU
 
 The default CIU image coordinates intentionally select the local development
-image. To deploy the first published daemon release instead, put this complete
+image. To deploy the RG-55 v1.1.0 daemon release, put this complete
 override in the tracked sparse `ciu.toml.j2` at the cgprofile CIU root:
 
 ```toml
@@ -49,10 +50,10 @@ override in the tracked sparse `ciu.toml.j2` at the cgprofile CIU root:
 registry = "ghcr.io"
 namespace = "volkb79-2"
 name = "cgprofile"
-tag = "1.0.0"
+tag = "1.1.0"
 ```
 
-The complete coordinates resolve to `ghcr.io/volkb79-2/cgprofile:1.0.0`;
+The complete coordinates resolve to `ghcr.io/volkb79-2/cgprofile:1.1.0`;
 changing only `tag` while leaving the default empty registry and namespace
 would still select a local image. Use the normal CIU bring-up and verify the
 runtime identity before attaching consumers:
@@ -85,9 +86,25 @@ docker exec cgprofile-host-daemon cgprofile ctl version --json
 
 The shipped stack supplies host observation with private PID/cgroup
 namespaces: host `/proc` is bind-mounted read-only at `/hostproc`, host
-cgroup v2 is bind-mounted read-only at `/sys/fs/cgroup`, and
-`CGPROFILE_PROC_ROOT=/hostproc` selects the host proc view. Do not set host
-namespace modes. On startup `serve` verifies that PID 1 in that proc view
+cgroup v2 is mounted read-write at `/sys/fs/cgroup` for observation and
+opt-in placement, and `CGPROFILE_PROC_ROOT=/hostproc` selects the host proc
+view. The privileged daemon also mounts the host system bus at
+`/run/dbus/system_bus_socket`; a read-only bind of that socket would not make
+its RPCs read-only. The cgroup mount is writable at the mount boundary so the
+daemon can perform placement, while D-25's whitelist is an application-level
+guard for ordinary code paths, not containment against arbitrary code
+execution in the daemon. It asks systemd to create a transient delegated
+scope under the verified gates slice, registering the initial PIDs with that
+scope, then uses `AttachProcessesToUnit` to move them into the cgprofile-owned
+leaf. The scope path is read back from systemd rather than inferred from the
+unit name. At stop the daemon restores only identity-verified survivors to
+their recorded original units, removes the leaf, and stops the empty scope.
+Both directions require the verified host-proc view and confirm resulting
+membership. Successful moves are written to the session's `events.jsonl`; an
+unresolvable or unrestored survivor leaves the scope, leaf, and recovery
+record intact and appears as `placement.error` in the stop summary.
+Do not set host namespace modes. On startup `serve` verifies that PID 1 in
+that proc view
 belongs to a PID namespace distinct from the daemon's and refuses if either
 view is missing. Container targets arrive as full Docker IDs; token-scoped
 sessions resolve direct PIDs in that target cgroup, match the exact token in
@@ -99,6 +116,20 @@ trusted with host-administrator Docker access. The privileged container's
 mounts and Python checks do not confine a compromised daemon; see the
 [trust boundary](DESIGN-GUIDE.md#daemon-safety-and-placement). Keep any v1.1
 host system-bus mount daemon-side, never in the cockpit.
+
+Before relying on `host.gates_slice` or requesting `start --place`, install
+the host's authored `dev-gates.slice` unit. The daemon verifies the loaded,
+non-transient unit and finite positive memory and CPU ceilings; an existing
+cgroup directory without that evidence is reported as `present:false`, and
+placement is refused while profiling continues.
+
+For the socket carrier, send one complete newline-terminated JSON request no
+larger than 1 MiB within 25 seconds of connecting. The deadline is absolute:
+periodic trickle bytes do not reset it. The daemon closes an incomplete line
+at the deadline or EOF without dispatch, and returns `bad-argument` for an
+oversized line. On `start`, omit `args.damon` to use the daemon's configured
+default; a present `args.damon: null` is invalid. After a
+`watch` request is accepted, its streaming connection has no server timeout.
 
 When running the one-shot helper from a cockpit, placement is checked before
 the collector starts. The default verifier is the local `tester-unified:local`
@@ -136,7 +167,7 @@ The version response has the current wire shape:
 {
   "ok": true,
   "contract": 1,
-  "cgprofile": "1.0.0",
+  "cgprofile": "1.1.0",
   "daemon": {
     "name": "cgprofile-host-daemon",
     "started_at": "2026-09-12T10:15:00Z",
@@ -147,6 +178,14 @@ The version response has the current wire shape:
   }
 }
 ```
+
+The version response's `daemon.damon: "available"` only means the library
+and admin sysfs interface are visible; it does not prove that the kernel will
+accept a configured context. Check the `damon` field in each `ctl start`
+response (`on` or `unavailable:<reason>`), then check the stop response's
+top-level `series.damon` field for `damon.jsonl` before claiming DAMON samples
+or overhead. See the
+[design rationale](DESIGN-GUIDE.md#damon-availability-is-not-session-readiness).
 
 ## Attach a run-gate lane
 
@@ -161,12 +200,12 @@ command, and metadata values for the consuming project:
 
 ```bash
 set -euo pipefail
-: "${CGROUP_PARENT_DEV_BACKGROUND:?set the real host dev-background slice}"
+: "${CGROUP_PARENT_DEV_GATES:?set the real host dev-gates slice}"
 
 PROFILE_TOKEN="$(python3 -c 'import secrets; print(secrets.token_hex(16))')"
 LANE_NAME="rg55-example-lane"
 docker run -d --name "$LANE_NAME" \
-  --cgroup-parent="$CGROUP_PARENT_DEV_BACKGROUND" \
+  --cgroup-parent="$CGROUP_PARENT_DEV_GATES" \
   -e RUN_GATE_PROFILE_SESSION="$PROFILE_TOKEN" \
   example-lane-image:local sleep 3600
 
@@ -179,6 +218,7 @@ META="$(python3 -c 'import json; print(json.dumps({
 START_JSON="$(docker exec cgprofile-host-daemon cgprofile ctl start \
   --target "containerid:${CONTAINER_ID}" \
   --scope container --token "$PROFILE_TOKEN" --damon on --interval 1.0 \
+  --idle-bound 30 --on-stall kill \
   --meta "$META" --json)"
 SESSION_ID="$(python3 -c 'import json,sys; print(json.loads(sys.stdin.read())["session"])' <<<"$START_JSON")"
 
@@ -207,6 +247,48 @@ Use `--scope container-shared` when the target cgroup is shared with unrelated
 work and the summary must report sampled-max memory plus deltas. Use
 `--scope container` for a lane-owned cgroup; its `memory.peak` and absolute
 counters have the schema-1 semantics documented in the contract.
+
+### Resource accounting with placement
+
+For a successfully placed shared lane, `target.cgroup` remains the logical
+target identity, but sampled CPU, I/O, PID, pressure, and memory counters come
+from the profiler-owned leaf under its delegated scope. Memory values are
+cgroup charges, not total RSS: cgroup v2 does not transfer charges for pages
+that were faulted before a process moved into the leaf. Therefore
+`memory.current`, `memory.peak`, `memory.high`, and `memory.max` do not describe
+all resident pages of every process in the lane, and the requested leaf
+`memory.max` is not a hard cap on that pre-existing resident memory. Treat the
+values as useful, directly measured charge accounting. If the requirement is
+a whole-container limit and accounting boundary, run the lane in its own
+container cgroup (`--scope container`) with its resource limits set before the
+workload starts; do not reinterpret a shared-lane leaf counter as RSS.
+
+Placement creates `rg-profile-<token>.scope` beneath the verified gates slice
+and `rg-<token>` beneath that scope. The scope is systemd-owned; cgprofile owns
+only the child leaf. The daemon preserves its recovery journal and leaves the
+scope intact rather than killing or deleting processes it cannot safely
+restore. The host system bus is mounted only into the daemon, not into the
+cockpit. The complete ownership and security rationale, including the
+deferred broker option, is in the
+  [`RG-55 placement design`](../../../run-gate-project/nyxloom-trove/DESIGN-2026-09-12-liveness-placement-admission.md#a3-placement-ownership-correction-delegated-scope-below-dev-gatesslice-2026-09-30).
+For `--progress-stream`, provide a regular NDJSON file path inside the lane;
+the daemon ignores a FIFO, device, or unfinished line. A placement request with an existing
+`rg-<token>` leaf ordinarily starts unplaced with `placement.error` set. Use a fresh
+token for each new lane attempt; a retry of a live session is reused by the
+server's `(container_id, token)` lookup.
+`--on-stall kill` for this `scope=container` example is limited to that exact
+container's `cgroup.kill`, and is accepted only because the lane container is
+launched beneath the verified gates slice. It does not change Docker's caps.
+For `scope=container-shared`, `kill` additionally requires an explicit
+successful `--place` leaf. Do not request placement solely to enable that
+policy; when the lane's existing resource plan does not place it, request
+`--on-stall report` (or omit the option) and keep the lane-local watchdog as
+verdict authority. No path signals host PIDs. A `bad-policy` start refusal
+means the requested enforcement boundary was not established; a runtime
+`reported` verdict means a requested cgroup kill could not be confirmed.
+When consuming `ctl watch`, require its terminal `end` line. The exec carrier
+exits 3 if the socket closes before that line; treat it as profiling
+unavailable and reconcile the session through `ctl status`/`stop`.
 
 ## Closed values and response evidence
 

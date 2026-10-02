@@ -45,7 +45,7 @@ source_roots = ["src"]
 fail_under = 100.0
 allow_excluded = false
 require_branch = true
-base = "cmru-v5.4.1"
+base = "cmru-v5.5.0"
 
 [lanes.cmru.judge.coverage]
 format = "coverage-py-json"

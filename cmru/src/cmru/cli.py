@@ -10,10 +10,10 @@ import shutil
 import subprocess
 import sys
 import tempfile
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import List, Mapping, Optional
+from typing import Callable, List, Mapping, Optional, Sequence
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
@@ -22,6 +22,7 @@ import tomllib
 from cmru.runner import StepConfig, execute_step, parse_step as _runner_parse_step
 from cmru import transaction
 from cmru import exit_codes
+from cmru.git_auth import GitHubGitAuth, run_remote_git
 from cmru.config import load_forge_config
 from cmru.config import InvocationContext, resolve_invocation_context
 from cmru.config_names import ORCHESTRATION_CONFIG_FILENAME, PROJECT_CONFIG_FILENAME
@@ -90,12 +91,32 @@ class CleanupConfig:
     ghcr_delete_packages: List[str]
 
 
+@dataclass
+class CleanupPlan:
+    """Exact cleanup actions collected for display before confirmation."""
+
+    actions: list[tuple[str, Callable[[], None]]] = field(default_factory=list)
+
+    def add(self, description: str, action: Callable[[], None]) -> None:
+        self.actions.append((description, action))
+
+    def apply(self) -> None:
+        for description, action in self.actions:
+            log_info(f"Applying confirmed cleanup action: {description}")
+            action()
+
+
 @dataclass(frozen=True)
 class GitHubConfig:
     owner: str
     repo: str
     token: str
     owner_type: str  # required: "user" | "org"  (V03; replaces the modern-debian-tools probe)
+
+
+def _git_auth_for_repository(github: GitHubConfig) -> GitHubGitAuth:
+    """Bind CMRU Git transport to the root-resolved repository credential."""
+    return GitHubGitAuth(owner=github.owner, repo=github.repo, token=github.token)
 
 
 @dataclass(frozen=True)
@@ -116,9 +137,11 @@ def log_error(message: str) -> None:
     print(f"[ERROR] {message}", file=sys.stderr, flush=True)
 
 
-def _sync_local_main_and_report(repo_root: Path) -> bool:
+def _sync_local_main_and_report(
+    repo_root: Path, *, git_auth: GitHubGitAuth | None = None,
+) -> bool:
     """Attempt caller-main cleanup and expose every false result accurately."""
-    result = transaction._sync_local_main_result(repo_root)
+    result = transaction._sync_local_main_result(repo_root, git_auth=git_auth)
     if result.ok:
         return True
     log_warn(result.reason)
@@ -816,6 +839,7 @@ def delete_unmanaged_release_tag(
     tag: str,
     *,
     dry_run: bool,
+    plan: CleanupPlan | None = None,
 ) -> bool:
     """Delete exactly one named old GitHub Release, never its Git tag.
 
@@ -842,6 +866,12 @@ def delete_unmanaged_release_tag(
             f"[DRY RUN] Would delete unmanaged GitHub Release {tag} "
             f"(id={release_id}); its Git tag is untouched."
         )
+        if plan is not None:
+            plan.add(
+                f"unmanaged GitHub Release {tag} (id={release_id})",
+                lambda owner=owner, repo=repo, token=token, release_id=release_id:
+                    delete_release(owner, repo, token, release_id, dry_run=False),
+            )
         return True
     log_info(
         f"Cleanup: deleting unmanaged GitHub Release {tag} (id={release_id}); "
@@ -858,6 +888,8 @@ def cleanup_releases(
     cutoff: datetime,
     dry_run: bool,
     cleanup: CleanupConfig,
+    *,
+    plan: CleanupPlan | None = None,
 ) -> None:
     releases = list_releases(owner, repo, token)
     # Cleanup is destructive. An empty declared selector means "select nothing",
@@ -879,7 +911,15 @@ def cleanup_releases(
         if not release_id:
             continue
         log_info(f"Deleting release tag {tag} (published {published_at})")
-        delete_release(owner, repo, token, int(release_id), dry_run)
+        release_id = int(release_id)
+        if dry_run and plan is not None:
+            plan.add(
+                f"GitHub Release {tag} (id={release_id})",
+                lambda owner=owner, repo=repo, token=token, release_id=release_id:
+                    delete_release(owner, repo, token, release_id, dry_run=False),
+            )
+        else:
+            delete_release(owner, repo, token, release_id, dry_run)
 
 
 def list_package_versions(owner: str, package: str, token: str, owner_type: str) -> list[dict]:
@@ -974,7 +1014,10 @@ def delete_package(owner: str, package: str, token: str, owner_type: str, dry_ru
         raise RuntimeError(f"Failed to delete {package} package: {body}")
 
 
-def cleanup_ghcr(owner: str, token: str, owner_type: str, cutoff: datetime, dry_run: bool, cleanup: CleanupConfig) -> None:
+def cleanup_ghcr(
+    owner: str, token: str, owner_type: str, cutoff: datetime, dry_run: bool,
+    cleanup: CleanupConfig, *, plan: CleanupPlan | None = None,
+) -> None:
 
     # Only an explicit "*" is an all-packages selector.
     wildcard_packages = "*" in cleanup.ghcr_packages
@@ -982,7 +1025,14 @@ def cleanup_ghcr(owner: str, token: str, owner_type: str, cutoff: datetime, dry_
     for package in packages:
         if package in cleanup.ghcr_delete_packages:
             log_info(f"Deleting GHCR package {package} (explicit cleanup list)")
-            delete_package(owner, package, token, owner_type, dry_run)
+            if dry_run and plan is not None:
+                plan.add(
+                    f"GHCR package {package}",
+                    lambda owner=owner, package=package, token=token, owner_type=owner_type:
+                        delete_package(owner, package, token, owner_type, dry_run=False),
+                )
+            else:
+                delete_package(owner, package, token, owner_type, dry_run)
             continue
         versions = list_package_versions(owner, package, token, owner_type)
         for version in versions:
@@ -994,7 +1044,16 @@ def cleanup_ghcr(owner: str, token: str, owner_type: str, cutoff: datetime, dry_
             if updated_dt >= cutoff:
                 continue
             log_info(f"Deleting GHCR {package} version {version_id} (updated {updated_at})")
-            delete_package_version(owner, package, token, int(version_id), owner_type, dry_run)
+            version_id = int(version_id)
+            if dry_run and plan is not None:
+                plan.add(
+                    f"GHCR {package} version {version_id}",
+                    lambda owner=owner, package=package, token=token, version_id=version_id,
+                    owner_type=owner_type:
+                        delete_package_version(owner, package, token, version_id, owner_type, dry_run=False),
+                )
+            else:
+                delete_package_version(owner, package, token, version_id, owner_type, dry_run)
 
 
 def remove_assets(
@@ -1003,7 +1062,9 @@ def remove_assets(
     cleanup: CleanupConfig,
     github: GitHubConfig,
     env_config: ReleaseEnvConfig,
-) -> None:
+    *,
+    plan: CleanupPlan | None = None,
+) -> CleanupPlan | None:
     duration = parse_duration(age)
     cutoff = datetime.now(timezone.utc) - duration
 
@@ -1015,17 +1076,21 @@ def remove_assets(
         raise RuntimeError("github.token is required for cleanup")
 
     log_info(f"Removing assets older than {age} (cutoff {cutoff.isoformat()})")
-    cleanup_releases(owner, repo, token, cutoff, dry_run, cleanup)
-    cleanup_ghcr(owner, token, github.owner_type, cutoff, dry_run, cleanup)
+    cleanup_releases(owner, repo, token, cutoff, dry_run, cleanup, plan=plan)
+    cleanup_ghcr(owner, token, github.owner_type, cutoff, dry_run, cleanup, plan=plan)
+    return plan
 
 
-def delete_git_tag_remote(repo_root: Path, tag: str, dry_run: bool) -> None:
+def delete_git_tag_remote(
+    repo_root: Path, tag: str, dry_run: bool, *,
+    git_auth: GitHubGitAuth | None = None,
+) -> None:
     """Delete *tag* on origin; skip gracefully if it does not exist (idempotent)."""
     if dry_run:
         log_info(f"[DRY RUN] Would delete remote tag {tag}")
         return
-    rc = subprocess.run(
-        ["git", "-C", str(repo_root), "push", "origin", f":refs/tags/{tag}"],
+    rc = run_remote_git(
+        repo_root, "push", "origin", f":refs/tags/{tag}", auth=git_auth,
         capture_output=True, text=True,
     ).returncode
     if rc == 0:
@@ -1049,11 +1114,13 @@ def delete_git_tag_local(repo_root: Path, tag: str, dry_run: bool) -> None:
         log_info(f"  Local tag {tag} not found — skipping")
 
 
-def list_remote_tags_matching(repo_root: Path, pattern: str) -> list[str]:
+def list_remote_tags_matching(
+    repo_root: Path, pattern: str, *, git_auth: GitHubGitAuth | None = None,
+) -> list[str]:
     """List remote tags matching *pattern* (git ls-remote --tags)."""
-    result = subprocess.run(
-        ["git", "-C", str(repo_root), "ls-remote", "--tags", "origin", f"refs/tags/{pattern}"],
-        capture_output=True, text=True, check=False,
+    result = run_remote_git(
+        repo_root, "ls-remote", "--tags", "origin", f"refs/tags/{pattern}",
+        auth=git_auth, capture_output=True, text=True, check=False,
     )
     tags = []
     for line in result.stdout.splitlines():
@@ -1077,6 +1144,9 @@ def cleanup_project_releases_and_tags(
     prefix: str,
     keep_tags: list[str],
     dry_run: bool,
+    *,
+    git_auth: GitHubGitAuth | None = None,
+    plan: CleanupPlan | None = None,
 ) -> list[str]:
     """Delete all GitHub Releases (and their git tags) for *prefix*-v* except kept ones.
 
@@ -1110,7 +1180,9 @@ def cleanup_project_releases_and_tags(
             to_delete_releases.append((tag, int(release_id)))
 
     # Remote tags to delete (covers tags without a matching Release).
-    remote_versioned = list_remote_tags_matching(repo_root, f"{prefix}-v*")
+    remote_versioned = list_remote_tags_matching(
+        repo_root, f"{prefix}-v*", git_auth=git_auth,
+    )
     to_delete_tags: list[str] = []
     for tag in remote_versioned:
         if tag in keep_set:
@@ -1127,12 +1199,28 @@ def cleanup_project_releases_and_tags(
             delete_release(owner, repo, token, release_id, dry_run=False)
         else:
             log_info(f"[DRY RUN] Would delete GitHub Release {tag} (id={release_id})")
+            if plan is not None:
+                plan.add(
+                    f"GitHub Release {tag} (id={release_id})",
+                    lambda owner=owner, repo=repo, token=token, release_id=release_id:
+                        delete_release(owner, repo, token, release_id, dry_run=False),
+                )
         deleted.append(tag)
 
     for tag in sorted(all_to_delete_tags):
         log_info(f"Cleanup: deleting git tag {tag}")
-        delete_git_tag_remote(repo_root, tag, dry_run)
-        delete_git_tag_local(repo_root, tag, dry_run)
+        if dry_run and plan is not None:
+            plan.add(
+                f"remote and local Git tag {tag}",
+                lambda repo_root=repo_root, tag=tag, git_auth=git_auth: (
+                    delete_git_tag_remote(repo_root, tag, False, git_auth=git_auth),
+                    delete_git_tag_local(repo_root, tag, False),
+                ),
+            )
+            log_info(f"[DRY RUN] Would delete remote and local git tag {tag}")
+        else:
+            delete_git_tag_remote(repo_root, tag, dry_run, git_auth=git_auth)
+            delete_git_tag_local(repo_root, tag, dry_run)
         if tag not in [t for t, _ in to_delete_releases]:
             deleted.append(tag)
 
@@ -1147,7 +1235,7 @@ def cleanup_project_step(
 ) -> bool:
     """Invoke ``[steps.clean]`` for the project if defined, passing ``CMRU_VERSION`` in env.
 
-    Returns True if the step ran (caller may then commit any resulting file deletions).
+    Returns True if the step ran (caller may then commit its generated paths).
     """
     if "clean" not in project.steps:
         return False
@@ -1164,33 +1252,83 @@ def cleanup_project_step(
     return True
 
 
+def _cleanup_worktree_paths(repo_root: Path) -> set[str]:
+    """Return dirty tracked and untracked paths without newline ambiguity."""
+    result = subprocess.run(
+        [
+            "git", "-C", str(repo_root), "status", "--porcelain=v1", "-z",
+            "--untracked-files=all", "--no-renames",
+        ],
+        capture_output=True,
+        check=True,
+    )
+    output = result.stdout
+    if isinstance(output, str):
+        output = os.fsencode(output)
+    return {
+        os.fsdecode(record[3:])
+        for record in output.split(b"\0")
+        if record
+    }
+
+
 def cleanup_commit_deletions(
     repo_root: Path,
     project_name: str,
     deleted_tags: list[str],
     dry_run: bool,
+    *,
+    before_paths: set[str],
 ) -> None:
-    """Commit any file deletions produced by the project's clean step.
+    """Commit only paths made dirty by the project's clean step.
 
     Only commits if there are actually staged changes (no empty commits).
     """
-    if dry_run or not deleted_tags:
+    if dry_run:
         return
-    dirty = _git(repo_root, "status", "--porcelain")
-    if not dirty:
-        log_info(f"{project_name}: no file changes to commit after cleanup")
+    after_paths = _cleanup_worktree_paths(repo_root)
+    preexisting_dirty = sorted(after_paths & before_paths)
+    if preexisting_dirty:
+        log_warn(
+            f"{project_name}: paths already dirty before steps.clean are excluded "
+            "from the cleanup commit"
+        )
+    generated_paths = sorted(after_paths - before_paths)
+    if not generated_paths:
+        log_info(f"{project_name}: no new clean-step paths to commit after cleanup")
         return
-    subprocess.run(["git", "-C", str(repo_root), "add", "-A"], check=False)
-    cached = _git(repo_root, "diff", "--cached", "--name-only")
+    literal_pathspecs = [f":(literal){path}" for path in generated_paths]
+    staged = subprocess.run(
+        ["git", "-C", str(repo_root), "add", "-A", "--", *literal_pathspecs],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if staged.returncode:
+        detail = staged.stderr.strip() or staged.stdout.strip() or "git add failed"
+        raise RuntimeError(
+            f"{project_name}: failed to stage cleanup-generated paths "
+            f"({staged.returncode}): {detail}"
+        )
+    cached = _git(
+        repo_root, "diff", "--cached", "--name-only", "--", *literal_pathspecs,
+    )
     if not cached:
         log_info(f"{project_name}: nothing staged — skipping cleanup commit")
         return
-    tags_summary = ", ".join(deleted_tags[:5])
-    if len(deleted_tags) > 5:
-        tags_summary += f" (+{len(deleted_tags) - 5} more)"
+    if deleted_tags:
+        tags_summary = ", ".join(deleted_tags[:5])
+        if len(deleted_tags) > 5:
+            tags_summary += f" (+{len(deleted_tags) - 5} more)"
+        subject = f"chore({project_name}): cleanup deleted {tags_summary}"
+    else:
+        subject = f"chore({project_name}): commit cleanup-generated files"
     rc = subprocess.run(
-        ["git", "-C", str(repo_root), "commit", "-m",
-         f"chore({project_name}): cleanup deleted {tags_summary}"],
+        [
+            "git", "-C", str(repo_root), "commit", "--only", "-m",
+            subject,
+            "--", *literal_pathspecs,
+        ],
     ).returncode
     if rc == 0:
         log_info(f"{project_name}: committed cleanup changes")
@@ -1198,7 +1336,26 @@ def cleanup_commit_deletions(
         log_warn(f"{project_name}: cleanup commit failed — check working tree")
 
 
-def _latest_version_for_prefix(owner: str, repo: str, token: str, bare: str) -> str:
+def _run_cleanup_step_and_commit(
+    repo_root: Path,
+    project_name: str,
+    project: ProjectConfig,
+    version: str,
+    deleted_tags: list[str],
+) -> None:
+    """Run the confirmed clean step and commit only its newly dirty paths."""
+    before_paths = _cleanup_worktree_paths(repo_root)
+    step_ran = cleanup_project_step(repo_root, project, version, False)
+    if step_ran:
+        cleanup_commit_deletions(
+            repo_root, project_name, deleted_tags, False,
+            before_paths=before_paths,
+        )
+
+
+def _latest_version_for_prefix(
+    owner: str, repo: str, token: str, bare: str, *, exclude_tags: Sequence[str] = (),
+) -> str:
     """Highest-semver surviving ``<bare>-v*`` release version, or ``""`` if none.
 
     Used to pass ``CMRU_VERSION`` to a project's optional ``[steps.clean]``. Reuses the
@@ -1208,10 +1365,12 @@ def _latest_version_for_prefix(owner: str, repo: str, token: str, bare: str) -> 
     """
     from cmru.release import _semver_key
     marker = f"{bare}-v"
+    excluded = set(exclude_tags)
     versions = [
         (rel.get("tag_name") or "")[len(marker):]
         for rel in list_releases(owner, repo, token)
         if (rel.get("tag_name") or "").startswith(marker)
+        and (rel.get("tag_name") or "") not in excluded
         and not rel.get("draft") and not rel.get("prerelease")
     ]
     if not versions:
@@ -1228,6 +1387,8 @@ def run_cleanup_verb(
     env_config: "ReleaseEnvConfig",
     project_filter: Optional[str | list[str]],
     dry_run: bool,
+    *,
+    plan: CleanupPlan | None = None,
 ) -> None:
     """Generic ``cmru cleanup``: per project, delete old Releases, prune ghcr, delete
     stale tags, optionally invoke ``[steps.clean]``, and commit the result.
@@ -1276,6 +1437,8 @@ def run_cleanup_verb(
         deleted = cleanup_project_releases_and_tags(
             repo_root, owner, repo, token,
             bare, keep_tags, dry_run,
+            git_auth=_git_auth_for_repository(github_config),
+            plan=plan,
         )
         any_deleted.extend(deleted)
 
@@ -1283,12 +1446,33 @@ def run_cleanup_verb(
         #    CMRU_VERSION = highest-semver surviving <prefix>-v* release (post-cleanup),
         #    or "" when none survive. (In --dry-run nothing was deleted, so this is the
         #    current latest.)
-        version = _latest_version_for_prefix(owner, repo, token, bare)
-        step_ran = cleanup_project_step(repo_root, project, version, dry_run)
-
-        # 3. Commit any file deletions the clean step produced.
-        if step_ran or deleted:
-            cleanup_commit_deletions(repo_root, name, deleted, dry_run)
+        version = _latest_version_for_prefix(
+            owner, repo, token, bare, exclude_tags=deleted,
+        )
+        clean_planned = dry_run and plan is not None and "clean" in project.steps
+        if clean_planned:
+            log_info(
+                f"[DRY RUN] Would run {name} steps.clean and commit only paths it makes dirty"
+            )
+            cleanup_project_step(repo_root, project, version, True)
+            plan.add(
+                f"{name} steps.clean with CMRU_VERSION={version} and its generated paths",
+                lambda repo_root=repo_root, name=name, project=project, version=version,
+                deleted=deleted:
+                    _run_cleanup_step_and_commit(
+                        repo_root, name, project, version, deleted,
+                    ),
+            )
+        elif not dry_run:
+            before_paths = _cleanup_worktree_paths(repo_root) if "clean" in project.steps else set()
+            step_ran = cleanup_project_step(repo_root, project, version, False)
+            if step_ran:
+                cleanup_commit_deletions(
+                    repo_root, name, deleted, False,
+                    before_paths=before_paths,
+                )
+        else:
+            cleanup_project_step(repo_root, project, version, True)
 
     # 4. Prune old ghcr package versions (whole-repo, not per-project).
     # ghcr pruning is age-based; use ``cmru cleanup --remove-assets AGE`` for that path.
@@ -1306,6 +1490,15 @@ def run_cleanup_verb(
             log_info(
                 f"[DRY RUN] Would delete GHCR packages: {', '.join(cleanup.ghcr_delete_packages)}"
             )
+            if plan is not None:
+                for pkg in cleanup.ghcr_delete_packages:
+                    plan.add(
+                        f"GHCR package {pkg}",
+                        lambda pkg=pkg: delete_package(
+                            github_config.owner, pkg, github_config.token,
+                            github_config.owner_type, dry_run=False,
+                        ),
+                    )
         else:
             for pkg in cleanup.ghcr_delete_packages:
                 log_info(f"Cleanup: deleting GHCR package {pkg} (ghcr_delete_packages list)")
@@ -1318,7 +1511,8 @@ def run_cleanup_verb(
                 )
 
     if any_deleted:
-        log_info(f"Cleanup complete. Deleted: {', '.join(any_deleted)}")
+        label = "Would delete" if dry_run else "Deleted"
+        log_info(f"Cleanup complete. {label}: {', '.join(any_deleted)}")
     else:
         log_info("Cleanup complete. Nothing deleted.")
 
@@ -1579,13 +1773,15 @@ def _ordered_configs(
     return {name: configs[name] for name in project_order if name in configs}
 
 
-def _push_tags(repo_root: Path, tags: List[str]) -> None:
+def _push_tags(
+    repo_root: Path, tags: List[str], *, git_auth: GitHubGitAuth | None = None,
+) -> None:
     """Push annotated release tags to origin. A failure is non-fatal: the GitHub
     Release API recreates the tag at publish time, so we warn rather than abort."""
     if not tags:
         return
     log_info(f"Pushing tags to origin: {', '.join(tags)}")
-    rc = subprocess.run(["git", "-C", str(repo_root), "push", "origin", *tags]).returncode
+    rc = run_remote_git(repo_root, "push", "origin", *tags, auth=git_auth).returncode
     if rc != 0:
         log_warn("git push of tags failed — continuing; publish will create the tag via the API.")
 
@@ -1736,6 +1932,7 @@ def _release_projects_sequentially(
     *,
     github_config: GitHubConfig,
     env_config: ReleaseEnvConfig,
+    git_auth: GitHubGitAuth | None = None,
     no_build: bool = False,
     minor: bool = False,
     major: bool = False,
@@ -1778,7 +1975,7 @@ def _release_projects_sequentially(
         )
         # Keep the remote candidate branch current before the gate too. A gate
         # failure must leave the generated candidate available for inspection.
-        transaction.push_backup_branch(workspace)
+        transaction.push_backup_branch(workspace, git_auth=git_auth)
         _run_release_gates(repo_root, configs, [name])
         gated_sha = _git(repo_root, "rev-parse", "HEAD")
 
@@ -1798,13 +1995,13 @@ def _release_projects_sequentially(
                 )
             else:
                 log_info(f"{name}: --no-build — skipped build/push")
-            transaction.promote_workspace(workspace)
+            transaction.promote_workspace(workspace, git_auth=git_auth)
             log_info(f"{name}: promoted release candidate to origin/main")
         else:
             release_cmd(repo_root, {name: project}, minor=minor, major=major, set_version=set_version)
             # A file:-strategy tag commits a version bump here. Refresh the
             # durable candidate before tags or public publication are touched.
-            transaction.push_backup_branch(workspace)
+            transaction.push_backup_branch(workspace, git_auth=git_auth)
             candidate_sha = _git(repo_root, "rev-parse", "HEAD")
             if candidate_sha != gated_sha:
                 # The file strategy adds a mechanical version commit after the
@@ -1815,7 +2012,7 @@ def _release_projects_sequentially(
                 _run_release_gates(repo_root, configs, [name])
             tag = _tag_on_head(repo_root, project.prefix or f"{name}-v")
             if tag:
-                _push_tags(repo_root, [tag])
+                _push_tags(repo_root, [tag], git_auth=git_auth)
                 if not no_build:
                     log_info(f"Building + publishing {name} ({tag})")
                     candidate_sha = _git(repo_root, "rev-parse", "HEAD")
@@ -1830,7 +2027,7 @@ def _release_projects_sequentially(
                 else:
                     log_info(f"{name}: --no-build — tagged {tag}, skipped build/publish")
                     transaction.write_release_result(repo_root, workspace, name, tag)
-                transaction.promote_workspace(workspace)
+                transaction.promote_workspace(workspace, git_auth=git_auth)
                 log_info(f"{name}: promoted release candidate to origin/main")
             elif not no_build:
                 raise RuntimeError(
@@ -1839,7 +2036,7 @@ def _release_projects_sequentially(
                     "build/publish) — this should not happen; investigate before retrying"
                 )
             else:
-                transaction.promote_workspace(workspace)
+                transaction.promote_workspace(workspace, git_auth=git_auth)
                 log_info(f"{name}: promoted release candidate to origin/main")
 
         # This project's whole cycle succeeded — checkpoint it so a LATER
@@ -2339,6 +2536,7 @@ def _dispatch(args, runtime):
         cfg_path = _resolve_config(vargs.config)
         (repo_root, configs, project_order, *_rest) = load_config(cfg_path)
         github_config, env_config = _rest[-2], _rest[-1]
+        git_auth = _git_auth_for_repository(github_config)
         apply_release_env(github_config, env_config)
         ordered = _ordered_configs(configs, project_order)
         names = _select_projects(cfg_path, vargs.target, configs, project_order)
@@ -2428,7 +2626,7 @@ def _dispatch(args, runtime):
                             "cmru build snapshots origin/main; commit and push the selected project "
                             "changes first so the isolated build cannot silently omit them."
                         )
-                    base = transaction.fetch_origin_main(transaction_root)
+                    base = transaction.fetch_origin_main(transaction_root, git_auth=git_auth)
                     behind = transaction.assert_local_main_not_ahead(transaction_root)
                     if behind:
                         log_warn(
@@ -2617,6 +2815,7 @@ def _dispatch(args, runtime):
         cfg_path = _resolve_config(vargs.config)
         (repo_root, configs, project_order, *_rest) = load_config(cfg_path)
         github_config, env_config = _rest[-2], _rest[-1]
+        git_auth = _git_auth_for_repository(github_config)
         transaction_child = transaction.is_transaction_child(repo_root)
         if not transaction_child:
             _configure_native_release_logging(repo_root, append=vargs.log_append)
@@ -2711,10 +2910,12 @@ def _dispatch(args, runtime):
                             _sys.exit(2)
 
                     if getattr(vargs, "resume", None):
-                        workspace = transaction.resume_workspace(transaction_root, Path(vargs.resume))
+                        workspace = transaction.resume_workspace(
+                            transaction_root, Path(vargs.resume), git_auth=git_auth,
+                        )
                         transaction.assert_resume_workspace_committed(workspace.path)
                     else:
-                        base = transaction.fetch_origin_main(transaction_root)
+                        base = transaction.fetch_origin_main(transaction_root, git_auth=git_auth)
                         behind = transaction.assert_local_main_not_ahead(transaction_root, ref=vargs.ref or "main")
                         if behind:
                             log_warn(
@@ -2760,10 +2961,10 @@ def _dispatch(args, runtime):
                             )
                         for path in retained:
                             log_info(f"Retained release output: {path}")
-                        transaction.remove_backup_branch(workspace)
+                        transaction.remove_backup_branch(workspace, git_auth=git_auth)
                         transaction.remove_workspace(workspace)
                         transaction.forget_release_scope(transaction_root, workspace)
-                        if _sync_local_main_and_report(transaction_root):
+                        if _sync_local_main_and_report(transaction_root, git_auth=git_auth):
                             log_info("Local main synced with origin/main.")
                         log_info("Release transaction complete; isolated worktree removed.")
                     elif transaction.plan_was_refused(transaction_root, workspace):
@@ -2775,7 +2976,7 @@ def _dispatch(args, runtime):
                         # (the detailed refusal was already printed by the child above).
                         transaction.remove_workspace(workspace)
                         transaction.forget_release_scope(transaction_root, workspace)
-                        _sync_local_main_and_report(transaction_root)
+                        _sync_local_main_and_report(transaction_root, git_auth=git_auth)
                         log_error(
                             "Release plan refused before any project started; no changes "
                             "were made (see the error above). Worktree discarded."
@@ -2792,7 +2993,7 @@ def _dispatch(args, runtime):
                             "at the last fully completed project. The durable candidate "
                             f"branch {workspace.branch} was retained for inspection."
                         )
-                        _sync_local_main_and_report(transaction_root)
+                        _sync_local_main_and_report(transaction_root, git_auth=git_auth)
                         log_error(
                             f"Release transaction failed; retained {workspace.path} "
                             f"on branch {workspace.branch} for inspection/resume."
@@ -2836,6 +3037,7 @@ def _dispatch(args, runtime):
                 require_pushed_baseline=True,
                 check_tag_at_head=True,
                 allow_tag_ahead_of_head=vargs.allow_tag_ahead_of_head,
+                git_auth=git_auth,
             )
         except ReleasePlanRefused as exc:
             log_error(str(exc))
@@ -2904,12 +3106,13 @@ def _dispatch(args, runtime):
         # transaction branch and already-published projects before it are left alone.
         workspace = _transaction_workspace_from_env(repo_root)
         transaction.write_release_scope(repo_root, workspace, release_names)
-        transaction.push_backup_branch(workspace)
+        transaction.push_backup_branch(workspace, git_auth=git_auth)
         log_info(f"Pushed release candidate {workspace.branch} to origin (durability).")
 
         released = _release_projects_sequentially(
             repo_root, configs, workspace, release_names,
             github_config=github_config, env_config=env_config,
+            git_auth=git_auth,
             no_build=vargs.no_build, minor=vargs.minor, major=vargs.major,
             set_version=vargs.set_version,
         )
@@ -2929,6 +3132,7 @@ def _dispatch(args, runtime):
         (repo_root, configs, project_order, _default_projects, _default_steps,
          _execution_mode, _step_project_order, cleanup, github_config, env_config) = load_config(cfg_path)
         selected_names = _select_projects(cfg_path, vargs.target, configs, project_order)
+        plan = CleanupPlan()
 
         if vargs.delete_unmanaged_release_tag:
             if len(selected_names) != 1:
@@ -2954,7 +3158,7 @@ def _dispatch(args, runtime):
                 _usage_error("an explicit CMRU publish credential is required to delete a GitHub Release")
             action = lambda dry_run: delete_unmanaged_release_tag(
                 project_github.owner, project_github.repo, project_github.token, tag,
-                dry_run=dry_run,
+                dry_run=dry_run, plan=plan,
             )
         elif vargs.delete_build_output:
             if len(selected_names) != 1:
@@ -2971,6 +3175,16 @@ def _dispatch(args, runtime):
                 label = "Would delete" if dry_run else "Deleted"
                 for target in targets:
                     log_info(f"{label} retained local build output: {target}")
+                if dry_run and targets:
+                    plan.add(
+                        f"retained local build output {vargs.delete_build_output}",
+                        lambda target_project=project, target_name=selected_name,
+                        target_id=vargs.delete_build_output:
+                            transaction.delete_retained_build_output(
+                                repo_root, target_project, target_name, target_id,
+                                dry_run=False,
+                            ),
+                    )
         elif vargs.discard_build_worktree:
             if vargs.target:
                 _usage_error("--discard-build-worktree is already exactly scoped; do not pass a project target")
@@ -2980,10 +3194,21 @@ def _dispatch(args, runtime):
                 )
                 label = "Would discard" if dry_run else "Discarded"
                 log_info(f"{label} retained build worktree: {workspace.path} ({workspace.branch})")
+                if dry_run:
+                    path = Path(vargs.discard_build_worktree)
+                    plan.add(
+                        f"retained build worktree {workspace.branch}",
+                        lambda path=path, workspace=workspace:
+                            transaction.discard_build_workspace(
+                                repo_root, path, dry_run=False,
+                                expected_workspace=workspace,
+                            ),
+                    )
         elif vargs.remove_assets:
             # Explicit age-based cleanup mode.
             action = lambda dry_run: remove_assets(
                 vargs.remove_assets, dry_run, cleanup, github_config, env_config,
+                plan=plan,
             )
         else:
             action = lambda dry_run: run_cleanup_verb(
@@ -2991,10 +3216,12 @@ def _dispatch(args, runtime):
                 github_config, env_config,
                 project_filter=selected_names,
                 dry_run=dry_run,
+                plan=plan,
             )
 
-        # Every cleanup mode uses the same two-phase contract: enumerate and
-        # display exact targets first, then confirm, then revalidate and act.
+        # Enumerate and show an immutable action set before confirmation. Applying
+        # that captured plan cannot widen to assets that appeared while the prompt
+        # was open or crossed an age cutoff after the preview.
         action(True)
         if vargs.dry_run:
             return
@@ -3002,7 +3229,7 @@ def _dispatch(args, runtime):
             "Apply the cleanup actions listed above?"
         )):
             return
-        action(False)
+        plan.apply()
 
     else:
         write_config_diagnostic(f"Unknown verb '{verb}'. Run 'cmru --help' for usage.")
@@ -3041,6 +3268,19 @@ def _abandon(args, runtime) -> int:
         log_info("No retained release transactions to abandon.")
         return 0
 
+    try:
+        (
+            _loaded_root, scoped_configs, _loaded_order, _default_projects,
+            _default_steps, _execution_mode, _step_project_order, _cleanup,
+            github_config, _env_config,
+        ) = load_config(_resolve_config(getattr(args, "config", None)))
+        git_auth = _git_auth_for_repository(github_config)
+    except Exception as exc:
+        raise CliFailure(
+            f"cannot load project release policy to inspect retained transactions: {exc}",
+            exit_code=2,
+        ) from exc
+
     blockers: list[tuple[transaction.ReleaseWorkspace, str, list[str], list[str]]] = []
     plans: list[tuple[transaction.ReleaseWorkspace, list[str], list[str]]] = []
     for workspace in selected:
@@ -3066,10 +3306,10 @@ def _abandon(args, runtime) -> int:
             base_commit = getattr(workspace.context, "base_commit", None)
             if not base_commit or not re.fullmatch(r"[0-9a-f]{40}", str(base_commit)):
                 raise RuntimeError("original snapshot commit is unavailable; promotion state is ambiguous")
-            remote = subprocess.run(
-                ["git", "ls-remote", "--heads", "origin", "refs/heads/" + workspace.branch,
-                 "refs/heads/main"],
-                cwd=repo_root, capture_output=True, text=True, check=False,
+            remote = run_remote_git(
+                repo_root, "ls-remote", "--heads", "origin",
+                "refs/heads/" + workspace.branch, "refs/heads/main",
+                auth=git_auth, capture_output=True, text=True, check=False,
             )
             if remote.returncode != 0:
                 raise RuntimeError("could not determine origin branch state: " + (remote.stderr.strip() or "git ls-remote failed"))
@@ -3107,9 +3347,9 @@ def _abandon(args, runtime) -> int:
                     raise RuntimeError("could not determine whether release progress reached origin/main")
             # Any newly-created remote tag reachable only from this candidate indicates
             # a public release coordinate even if a crash occurred before result metadata.
-            tags = subprocess.run(
-                ["git", "ls-remote", "--tags", "origin"],
-                cwd=repo_root, capture_output=True, text=True, check=False,
+            tags = run_remote_git(
+                repo_root, "ls-remote", "--tags", "origin",
+                auth=git_auth, capture_output=True, text=True, check=False,
             )
             if tags.returncode != 0:
                 raise RuntimeError("could not inspect origin release tags")
@@ -3148,13 +3388,6 @@ def _abandon(args, runtime) -> int:
                     for tag in new_tags
                 )
                 raise RuntimeError("origin contains release tag(s) reachable from this candidate: " + ", ".join(sorted(new_tags)))
-            try:
-                _cfg_root, scoped_configs, *_ = load_config(_resolve_config(None))
-            except Exception as exc:
-                raise RuntimeError(
-                    "cannot load project release policy to rule out untagged publication: "
-                    + str(exc)
-                ) from exc
             untagged = [name for name in scope if name not in scoped_configs or not scoped_configs[name].git_tag]
             if untagged:
                 remote_assets.extend(f"external publication state unknown for {name}" for name in untagged)
@@ -3218,7 +3451,7 @@ def _abandon(args, runtime) -> int:
     if not getattr(args, "yes", False) and not runtime.confirm(prompt):
         return 0
     for workspace, _scope, _assets in plans:
-        transaction.abandon_workspace(repo_root, workspace)
+        transaction.abandon_workspace(repo_root, workspace, git_auth=git_auth)
         log_info(f"Abandoned release transaction {workspace.branch}")
     return 0
 
@@ -3336,7 +3569,10 @@ def _build_cli():
         description=("Inspect and discard retained local release transactions. Removes the exact CMRU backup branch, worktree, in-worktree logs/artifacts, and transaction sidecars; it refuses transactions with publication or promotion evidence."),
         group=VerbGroup.MAINTENANCE.value,
         arguments=(ArgumentSpec("branch", "exact managed release branch; omit to select all retained releases", metavar="BRANCH", parser_kwargs={"nargs": "?", "default": None}),),
-        options=(OptionSpec(("--dry-run",), "show exact candidates and remote refs without changing any state", parser_kwargs={"action": "store_true", "default": False}),),
+        options=(
+            OptionSpec(("--dry-run",), "show exact candidates and remote refs without changing any state", parser_kwargs={"action": "store_true", "default": False}),
+            config_opt,
+        ),
         mutating=True,
         include_json=False,
         include_progress=False,

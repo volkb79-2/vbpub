@@ -3,11 +3,13 @@ kind: backlog-entry
 schema_version: 1
 id: CP-5
 title: "daemon sessions never populate events.jsonl with real detected events (limit drift, memory.high breaches, OOM kills, refault bursts) -- only the contract's own events counters are computed"
-status: open
+status: fixed
 type: "bugfix"
 severity: "low"
 provenance: "RG-55 wave, cgprofile-P1-DAEMON C4/C5, 2026-09-12"
 filed_date: "2026-09-12"
+closed_date: "2026-09-12"
+closed_reason: "events.jsonl real rows via lib.events.Detector, 16b01c1c"
 ---
 
 ## Observed mechanism and reproduction

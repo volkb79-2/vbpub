@@ -31,18 +31,24 @@ CONTAINER_UID = "$CONTAINER_UID"
 CONTAINER_GID = "$DOCKER_GID"
 DOCKER_GID = "$DOCKER_GID"
 
-# Resource governance (ciu S15.10). `cgroup_parent` here is the SAME
-# `$CGROUP_PARENT_DEV_INTERACTIVE` the daemon service itself authors
-# directly (see ciu.compose.yml.j2) — a single source of truth, not two
-# tiers that could drift. This table's OWN value is never actually
-# INJECTED into the daemon service (S15.3: an author-set key is left
-# untouched), but `governance.build_injections()` resolves it unconditionally
-# up front regardless of whether any service ends up needing it, so it must
-# still be a valid, render-time-refusing expression — no hardcoded slice
-# fallback here either, same AGENTS.md rule the service-level value follows.
+# Resource governance (ciu S15.10). `cgroup_parent` here mirrors the SAME
+# literal the daemon service itself authors directly (see
+# ciu.compose.yml.j2) — a single source of truth, not two tiers that could
+# drift. This table's OWN value is never actually INJECTED into the daemon
+# service (S15.3: an author-set key is left untouched), but
+# `governance.build_injections()` resolves it unconditionally up front
+# regardless of whether any service ends up needing it, so it must still be
+# a valid expression.
+#
+# RG-55 C5 (D-29): this is now the hardcoded literal `"cgprofile.slice"`,
+# not `{{ env.CGROUP_PARENT_DEV_INTERACTIVE }}` — the daemon ships its OWN
+# top-level slice with its deployment rather than living in any `dev-*`
+# tier, and D-29 is explicit there is no environment variable and no
+# fallback for this one value (see ciu.compose.yml.j2's fuller comment on
+# the service-level key this mirrors).
 [governance]
 enabled = true
-cgroup_parent = "{{ env.CGROUP_PARENT_DEV_INTERACTIVE }}"
+cgroup_parent = "cgprofile.slice"
 mem_limit = "1g"
 
 [ciu]

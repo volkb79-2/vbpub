@@ -27,19 +27,19 @@ def test_release_uses_fetched_origin_when_local_main_is_behind(monkeypatch, tmp_
     monkeypatch.setattr(cli, "apply_release_env", lambda *_: None)
     monkeypatch.setattr(cli.transaction, "release_lock", lambda _: nullcontext())
     monkeypatch.setattr(cli, "_uncommitted_release_paths", lambda *args: {})
-    monkeypatch.setattr(cli.transaction, "fetch_origin_main", lambda *_: "b" * 40)
+    monkeypatch.setattr(cli.transaction, "fetch_origin_main", lambda *_, **__: "b" * 40)
     monkeypatch.setattr(cli.transaction, "assert_local_main_not_ahead", lambda *_, **__: 1)
     workspace_args = {}
     overlays = []
     monkeypatch.setattr(cli.transaction, "create_workspace", lambda *args, **kwargs: workspace_args.update(kwargs) or workspace)
     monkeypatch.setattr(cli.transaction, "copy_secret_overlays", lambda *args: overlays.append(args[-1]))
     monkeypatch.setattr(cli.transaction, "run_child", lambda *args, **kwargs: 0)
-    monkeypatch.setattr(cli.transaction, "remove_backup_branch", lambda *args: None)
-    monkeypatch.setattr(cli.transaction, "remove_workspace", lambda *args: None)
-    monkeypatch.setattr(cli.transaction, "forget_release_scope", lambda *args: None)
+    monkeypatch.setattr(cli.transaction, "remove_backup_branch", lambda *args, **kwargs: None)
+    monkeypatch.setattr(cli.transaction, "remove_workspace", lambda *args, **kwargs: None)
+    monkeypatch.setattr(cli.transaction, "forget_release_scope", lambda *args, **kwargs: None)
     monkeypatch.setattr(
         cli.transaction, "_sync_local_main_result",
-        lambda *args: transaction._SyncLocalMainResult(True),
+        lambda *args, **kwargs: transaction._SyncLocalMainResult(True),
     )
     exc = cli.main([
             "release", "demo", "--config", str(tmp_path / "cmru.toml"),
@@ -69,7 +69,7 @@ def test_release_ref_flag_overrides_the_ahead_of_origin_comparison_ref(monkeypat
     monkeypatch.setattr(cli, "apply_release_env", lambda *_: None)
     monkeypatch.setattr(cli.transaction, "release_lock", lambda _: nullcontext())
     monkeypatch.setattr(cli, "_uncommitted_release_paths", lambda *args: {})
-    monkeypatch.setattr(cli.transaction, "fetch_origin_main", lambda *_: "b" * 40)
+    monkeypatch.setattr(cli.transaction, "fetch_origin_main", lambda *_, **__: "b" * 40)
     seen_refs = []
     monkeypatch.setattr(
         cli.transaction, "assert_local_main_not_ahead",
@@ -78,12 +78,12 @@ def test_release_ref_flag_overrides_the_ahead_of_origin_comparison_ref(monkeypat
     monkeypatch.setattr(cli.transaction, "create_workspace", lambda *args, **kwargs: workspace)
     monkeypatch.setattr(cli.transaction, "copy_secret_overlays", lambda *args: None)
     monkeypatch.setattr(cli.transaction, "run_child", lambda *args, **kwargs: 0)
-    monkeypatch.setattr(cli.transaction, "remove_backup_branch", lambda *args: None)
-    monkeypatch.setattr(cli.transaction, "remove_workspace", lambda *args: None)
-    monkeypatch.setattr(cli.transaction, "forget_release_scope", lambda *args: None)
+    monkeypatch.setattr(cli.transaction, "remove_backup_branch", lambda *args, **kwargs: None)
+    monkeypatch.setattr(cli.transaction, "remove_workspace", lambda *args, **kwargs: None)
+    monkeypatch.setattr(cli.transaction, "forget_release_scope", lambda *args, **kwargs: None)
     monkeypatch.setattr(
         cli.transaction, "_sync_local_main_result",
-        lambda *args: transaction._SyncLocalMainResult(True),
+        lambda *args, **kwargs: transaction._SyncLocalMainResult(True),
     )
     exc = cli.main([
             "release", "demo", "--config", str(tmp_path / "cmru.toml"),
@@ -107,7 +107,7 @@ def test_release_ref_flag_defaults_to_main_when_omitted(monkeypatch, tmp_path):
     monkeypatch.setattr(cli, "apply_release_env", lambda *_: None)
     monkeypatch.setattr(cli.transaction, "release_lock", lambda _: nullcontext())
     monkeypatch.setattr(cli, "_uncommitted_release_paths", lambda *args: {})
-    monkeypatch.setattr(cli.transaction, "fetch_origin_main", lambda *_: "b" * 40)
+    monkeypatch.setattr(cli.transaction, "fetch_origin_main", lambda *_, **__: "b" * 40)
     seen_refs = []
     monkeypatch.setattr(
         cli.transaction, "assert_local_main_not_ahead",
@@ -116,12 +116,12 @@ def test_release_ref_flag_defaults_to_main_when_omitted(monkeypatch, tmp_path):
     monkeypatch.setattr(cli.transaction, "create_workspace", lambda *args, **kwargs: workspace)
     monkeypatch.setattr(cli.transaction, "copy_secret_overlays", lambda *args: None)
     monkeypatch.setattr(cli.transaction, "run_child", lambda *args, **kwargs: 0)
-    monkeypatch.setattr(cli.transaction, "remove_backup_branch", lambda *args: None)
-    monkeypatch.setattr(cli.transaction, "remove_workspace", lambda *args: None)
-    monkeypatch.setattr(cli.transaction, "forget_release_scope", lambda *args: None)
+    monkeypatch.setattr(cli.transaction, "remove_backup_branch", lambda *args, **kwargs: None)
+    monkeypatch.setattr(cli.transaction, "remove_workspace", lambda *args, **kwargs: None)
+    monkeypatch.setattr(cli.transaction, "forget_release_scope", lambda *args, **kwargs: None)
     monkeypatch.setattr(
         cli.transaction, "_sync_local_main_result",
-        lambda *args: transaction._SyncLocalMainResult(True),
+        lambda *args, **kwargs: transaction._SyncLocalMainResult(True),
     )
     exc = cli.main([
             "release", "demo", "--config", str(tmp_path / "cmru.toml"),

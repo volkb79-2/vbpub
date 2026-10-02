@@ -89,6 +89,7 @@ cmru build   <name>               # isolated local build; retains logs/artifacts
 cmru worktrees                    # list retained failed build/release worktrees
 cmru abandon --dry-run            # inspect exact retained release candidates, no writes
 cmru abandon <branch> --yes       # abandon exactly the named verified candidate
+cmru abandon <branch> --config /path/to/cmru.orchestration.toml
 cmru dependencies                 # show + preflight the project dependency graph
 cmru dependencies --write         # refresh its generated root-TOML comment block
 cmru run ciu --dry-run            # preview selected/default steps and commands
@@ -121,12 +122,21 @@ in the [canonical CLI spec](docs/SPEC.md#s-cli9-canonical-cli-grammar-and-semant
 `cleanup` applies the configured remote asset policy: GitHub Release records and their
 assets, release tags covered by that policy, and GHCR package versions. Every mutating cleanup
 mode first displays pending actions and asks for confirmation; `--yes` accepts that displayed
-set, and `--dry-run` stops after the preview. Cleanup does not remove a retained local release
-transaction or its `cmru-release-*` candidate branch. `abandon` is
+set, and `--dry-run` stops after the preview. CMRU applies the captured target IDs and names
+after confirmation instead of rediscovering targets, so an asset that appears or ages into the
+policy while the prompt is open is not added without a new preview. A declared `steps.clean`
+and its generated-file commit are included in the same plan. If the step changes files, CMRU
+commits them even when no release tag was deleted, staging only paths that became dirty during
+the step; paths already dirty when the confirmed plan starts remain outside it. Cleanup does not
+remove a retained local release transaction or its `cmru-release-*` candidate
+branch. `abandon` is
 that separate lifecycle operation: it shows the exact scope, worktree, and remote candidate
 ref before confirmation, rejects evidence of publication or promotion, and keeps its refusal
 closed when the transaction metadata or origin state is unclear. `--dry-run` performs no
 branch, worktree, sidecar, or remote mutation.
+If the release used an external orchestration file to define a multi-project scope,
+pass that same file with `cmru abandon --config PATH` so CMRU can inspect the complete
+release policy before deciding whether abandonment is safe.
 
 `cmru worktrees` includes retained paths recorded by Git even when they are not
 reachable through the current bind mount. Its `prunable` field reports Git's
@@ -432,7 +442,7 @@ for the full contract.
 |---|---|---|
 | `<project>/cmru.toml` | yes | complete portable project contract — **no secrets** |
 | `cmru.orchestration.toml` | yes | nearest CMRU root: central facts, ordering/dependencies/cleanup |
-| `cmru.secret.toml` | no (gitignored) | repository credential document: `[github] token = "…"` |
+| `cmru.secret.toml` | no (gitignored) | repository credential document (`schema_version = 1`, `[github].token`) |
 | `<project>/cmru.secret.toml` | no (gitignored) | optional same-shaped project override, deep-merged over the root secret |
 | `cmru.vars` | no (gitignored) | `KEY=VALUE` build vars a step emits for later steps |
 
@@ -440,6 +450,19 @@ for the full contract.
 selected CMRU-root `cmru.secret.toml` with the selected project's optional
 `cmru.secret.toml` (the project `[github].token` wins). A committed `cmru.toml` token
 is rejected. Never commit a token.
+
+The resolved repository token also authenticates CMRU-owned GitHub HTTPS operations
+(`cmru build`, `cmru release`, `cmru cleanup`, and `cmru abandon`) when `origin`
+matches the configured `[github] owner` and `repo`. CMRU scopes it to the Git
+process; it is not embedded in the remote URL, command arguments, or Git config.
+SSH and other-host remotes keep their configured authentication, and a project
+secret override remains specific to that project's publisher. CMRU disables local Git hooks
+for credential-bearing Git calls because hooks inherit the Git process environment and could
+reuse the repository token against another remote; the registered release gates remain the
+release checks. If no repository token resolves, Git's configured helpers and SSH authentication
+remain in effect. See the [pasteable
+secret file example](docs/CONSUMERS.md#3-the-release-flow-and-what-an-isolated-transaction-is)
+and [Git transport design](docs/DESIGN-GUIDE.md#git-transport-authentication).
 
 **Why `cmru.vars` is gitignored (and not a missing "starting point"):** it is a *generated scratchpad* — a build step writes computed values (e.g. pwmcp's playwright-driven version) for a *later* step in the **same** run to read. The committed starting point is git tags + `VERSION` files + `cmru.toml`; `cmru status`/`release` read those and never read `cmru.vars`. A fresh clone regenerates it on the next build. Committing it would turn a derived cache into an authoritative-looking input that drifts from the tags — the opposite of reproducible.
 

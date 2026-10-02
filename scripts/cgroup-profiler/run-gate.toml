@@ -63,12 +63,13 @@ argv = [
     "export PYTHONPATH={worktree}/assay/src && cd {worktree}/scripts/cgroup-profiler && mkdir -p .assay && exec $TESTER_VENV/bin/python3 -m assay.cli run r2 --resume --progress .assay/r2-progress.jsonl --verdict-json .assay/verdict-r2.json",
 ]
 clean_tree = false
-# Controller ruling RW-19 (2026-09-12): 45m does not hold. Measured live,
-# jobs=2: 217 candidates at ~84s each -> ~2.5h wall clock; a 90m budget
-# would not hold either. Raised to 4h to match assay.toml's own
-# [lanes.r2] budget (this is the advisory run-gate-level budget; the real
-# enforcement is assay's own budget_s, read from assay.toml).
-budget = "4h"
+# Controller ruling RW-438 (2026-10-01): the prior P6 tree planned 1,040
+# candidates; its 4h run completed 306 and left 734 budget_exceeded
+# placeholders. This current tree plans 973 candidates. A 24h window gives
+# headroom over the roughly 12.7h extrapolation from the observed prior-tree
+# rate; this estimate is advisory, not a guarantee. Expiry remains incomplete,
+# never a mutant verdict. run-gate's budget is advisory; assay enforces it.
+budget = "24h"
 artifacts = [".assay/verdict-r2.json", ".assay/r2-progress.jsonl"]
 [lanes.r2.resources]
 # Apply the ceiling before any mutation candidate can execute; it remains
@@ -103,4 +104,6 @@ argv = [
     "cd {worktree}/scripts/cgroup-profiler && ./run-gate.py --worktree {worktree} r0-r1 && ./run-gate.py --worktree {worktree} r2 && ./run-gate.py --worktree {worktree} r3",
 ]
 clean_tree = false
-budget = "90m"
+# The full sequence includes the enforced 24h assay R2 window. This outer
+# command-lane budget is advisory; assay.toml owns the actual R2 deadline.
+budget = "25h"

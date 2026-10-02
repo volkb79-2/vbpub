@@ -28,17 +28,17 @@ def test_release_resume_cleans_workspace_and_reports_sync_failure(monkeypatch, t
     monkeypatch.setattr(cli, "apply_release_env", lambda *_: None)
     monkeypatch.setattr(cli.transaction, "release_lock", lambda _: nullcontext())
     monkeypatch.setattr(cli, "_uncommitted_release_paths", lambda *args: {})
-    monkeypatch.setattr(cli.transaction, "resume_workspace", lambda *args: workspace)
+    monkeypatch.setattr(cli.transaction, "resume_workspace", lambda *args, **kwargs: workspace)
     monkeypatch.setattr(cli.transaction, "assert_resume_workspace_committed", lambda _path: None)
     calls = []
-    monkeypatch.setattr(cli.transaction, "copy_secret_overlays", lambda *args: calls.append("copy"))
+    monkeypatch.setattr(cli.transaction, "copy_secret_overlays", lambda *args, **kwargs: calls.append("copy"))
     monkeypatch.setattr(cli.transaction, "run_child", lambda *args, **kwargs: calls.append(("child", args[1], kwargs)) or 0)
-    monkeypatch.setattr(cli.transaction, "remove_backup_branch", lambda w: calls.append("backup"))
-    monkeypatch.setattr(cli.transaction, "remove_workspace", lambda w: calls.append("workspace"))
-    monkeypatch.setattr(cli.transaction, "forget_release_scope", lambda *args: calls.append("forget"))
+    monkeypatch.setattr(cli.transaction, "remove_backup_branch", lambda w, **kwargs: calls.append("backup"))
+    monkeypatch.setattr(cli.transaction, "remove_workspace", lambda w, **kwargs: calls.append("workspace"))
+    monkeypatch.setattr(cli.transaction, "forget_release_scope", lambda *args, **kwargs: calls.append("forget"))
     monkeypatch.setattr(
         cli.transaction, "_sync_local_main_result",
-        lambda *args: transaction._SyncLocalMainResult(
+        lambda *args, **kwargs: transaction._SyncLocalMainResult(
             False,
             "Could not sync local main automatically: caller checkout is dirty; local main was left untouched.",
         ),

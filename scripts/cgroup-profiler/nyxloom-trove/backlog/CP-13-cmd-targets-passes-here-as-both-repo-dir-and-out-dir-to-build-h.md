@@ -1,12 +1,12 @@
 ---
 kind: backlog-entry
 schema_version: 1
-id: CP-12
+id: CP-13
 title: "cmd_targets passes HERE as both repo_dir and out_dir to build_helper_spec, causing Docker to refuse a duplicate mount point"
 status: open
 type: "bugfix"
 severity: "medium"
-provenance: "dstdns controller session, 2026-09-22"
+provenance: "dstdns controller session, 2026-09-22; renumbered during RG-55 P6 integration because RG-55 CP-12 is reserved"
 filed_date: "2026-09-22"
 ---
 

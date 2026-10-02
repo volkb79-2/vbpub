@@ -29,10 +29,10 @@ def test_cleanup_prefixed_project_with_no_deletions_skips_commit(monkeypatch, tm
     monkeypatch.setattr(cli, "resolve_versions_from_git", lambda *_: None)
     monkeypatch.setattr(cli, "github_for_project", lambda *args: github)
     monkeypatch.setattr(cli, "apply_project_release_env", lambda *args: None)
-    monkeypatch.setattr(cli, "cleanup_project_releases_and_tags", lambda *args: [])
-    monkeypatch.setattr(cli, "_latest_version_for_prefix", lambda *args: "1.0.0")
+    monkeypatch.setattr(cli, "cleanup_project_releases_and_tags", lambda *args, **_kwargs: [])
+    monkeypatch.setattr(cli, "_latest_version_for_prefix", lambda *args, **_kwargs: "1.0.0")
     monkeypatch.setattr(cli, "cleanup_project_step", lambda *args: False)
-    monkeypatch.setattr(cli, "cleanup_commit_deletions", lambda *args: (_ for _ in ()).throw(AssertionError("commit")))
+    monkeypatch.setattr(cli, "cleanup_commit_deletions", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("commit")))
     cli.run_cleanup_verb(tmp_path, {"demo": project}, ["demo"], cli.CleanupConfig([], [], [], []), github, cli.ReleaseEnvConfig({}, None), None, False)
 
 
@@ -52,10 +52,10 @@ def test_sequential_no_tag_no_build_skips_build_and_checkpoints(monkeypatch, tmp
     monkeypatch.setattr(cli, "apply_project_release_env", lambda *args: None)
     monkeypatch.setattr(cli, "_prepare_release_projects", lambda *args, **kwargs: None)
     monkeypatch.setattr(cli, "_run_release_gates", lambda *args: None)
-    monkeypatch.setattr(transaction, "promote_workspace", lambda *args: None)
-    monkeypatch.setattr(transaction, "push_backup_branch", lambda *args: None)
+    monkeypatch.setattr(transaction, "promote_workspace", lambda *args, **kwargs: None)
+    monkeypatch.setattr(transaction, "push_backup_branch", lambda *args, **kwargs: None)
     monkeypatch.setattr(version, "release_cmd", lambda *args, **kwargs: None)
-    monkeypatch.setattr(cli, "_tag_on_head", lambda *args: None)
+    monkeypatch.setattr(cli, "_tag_on_head", lambda *args, **kwargs: None)
     monkeypatch.setattr(cli, "_run_project_steps", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("build")))
     monkeypatch.setattr(cli, "_git", lambda *args, **kwargs: "b" * 40)
     assert cli._release_projects_sequentially(tmp_path, {"demo": project}, workspace, ["demo"], github_config=cli.GitHubConfig("o", "r", "t", "user"), env_config=cli.ReleaseEnvConfig({}, None), no_build=True) == []

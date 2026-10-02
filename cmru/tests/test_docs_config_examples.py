@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 import re
+import subprocess
 import tomllib
 from pathlib import Path
 
+from cmru import config
 from cmru.config import load_forge_config
 from cmru.version_config import SOURCE_FIELDS
 
@@ -19,19 +21,26 @@ def _slug(heading: str) -> str:
     return value.replace(" ", "-")
 
 
-def test_every_documented_toml_example_is_current_toml_and_versioned():
+def test_every_documented_toml_example_is_current_toml_and_versioned(tmp_path):
     block_counts = {}
     for document in DOCS:
         text = document.read_text(encoding="utf-8")
         blocks = re.findall(r"```toml\n(.*?)```", text, flags=re.DOTALL)
         block_counts[document.name] = len(blocks)
-        for block in blocks:
+        for index, block in enumerate(blocks):
             parsed = tomllib.loads(block)
             assert parsed.get("schema_version") == 1, document
+            if (
+                set(parsed) == {"schema_version", "github"}
+                and set(parsed["github"]) == {"token"}
+            ):
+                secret_path = tmp_path / f"{document.stem}-{index}.secret.toml"
+                secret_path.write_text(block, encoding="utf-8")
+                assert config._read_secret_document(secret_path) == parsed
     # The consumer document owns the only complete config pair. README and the
-    # design guide link to it rather than publishing partial TOML fragments
-    # that cannot pass the installed reader.
-    assert block_counts == {"README.md": 0, "DESIGN-GUIDE.md": 0, "CONSUMERS.md": 2}
+    # secret-file example; README and the design guide link to those rather than
+    # publishing partial TOML fragments that cannot pass the installed reader.
+    assert block_counts == {"README.md": 0, "DESIGN-GUIDE.md": 0, "CONSUMERS.md": 3}
 
 
 def test_runtime_vocabulary_and_workspace_contract_are_documented():
@@ -72,7 +81,7 @@ def test_assay_and_release_gate_split_rigor_without_empty_release_mutation():
     assert "--maxfail=1" in lane["argv"]
     assert lane["isolation"]["snapshot_selection"] == "repository-minus-unsafe-symlinks"
     assert lane["judge"]["coverage"]["artifact"] == "coverage.json"
-    assert lane["judge"]["base"].startswith("cmru-v")
+    assert lane["judge"]["base"] == _latest_previous_cmru_release_tag()
     assert lane["env_passthrough"] == ["PATH"]
     assert "mutation" not in lane["judge"]
     assert lane["judge"]["canary"]["mechanism"] == "import-break"
@@ -106,6 +115,26 @@ def test_assay_and_release_gate_split_rigor_without_empty_release_mutation():
         assert "progress" in text.lower()
         assert "nearest ancestor" in normalized
         assert "cmru-v*" in text
+
+
+def _latest_previous_cmru_release_tag() -> str:
+    """Return the latest prior release tag for the tree under test.
+
+    A release gate runs before it creates the tag for HEAD. A test rerun on the
+    released commit sees that exact tag at HEAD, so compare against its parent
+    tag in that one case; later commits must advance the declared R1 baseline.
+    """
+    def git(*args: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            ["git", "-C", str(ROOT), *args],
+            capture_output=True, text=True, check=False,
+        )
+
+    exact = git("describe", "--exact-match", "--tags", "--match", "cmru-v*", "HEAD")
+    target = "HEAD^" if exact.returncode == 0 else "HEAD"
+    result = git("describe", "--abbrev=0", "--tags", "--match", "cmru-v*", target)
+    assert result.returncode == 0, result.stderr
+    return result.stdout.strip()
 
 
 def test_cross_document_links_resolve():

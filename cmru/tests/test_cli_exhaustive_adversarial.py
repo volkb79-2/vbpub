@@ -84,8 +84,8 @@ def test_main_release_child_dry_run_has_no_promotion_or_workspace_mutation(monke
     monkeypatch.setattr("cmru.version.release_cmd", lambda *args, **kwargs: calls.append((args, kwargs)))
     monkeypatch.setattr(cli, "_transaction_workspace_from_env", lambda _root: transaction.ReleaseWorkspace(tmp_path, tmp_path, "cmru/release/x", "a" * 40))
     monkeypatch.setattr(transaction, "write_release_scope", lambda *args: calls.append("scope"))
-    monkeypatch.setattr(transaction, "push_backup_branch", lambda *args: calls.append("backup"))
-    monkeypatch.setattr(cli.transaction, "is_transaction_child", lambda _root: True)
+    monkeypatch.setattr(transaction, "push_backup_branch", lambda *args, **kwargs: calls.append("backup"))
+    monkeypatch.setattr(cli.transaction, "is_transaction_child", lambda _root, **_kwargs: True)
     cli.main(["release", "--dry-run", "--config", "x"])
     assert calls[0][1]["dry_run"] is True
     assert "DRY RUN" in capsys.readouterr().out

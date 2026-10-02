@@ -12,9 +12,9 @@ def test_successful_release_and_package_deletes_complete_without_error(monkeypat
 
 def test_cleanup_release_without_numeric_id_is_ignored_without_matching_remote_tag(monkeypatch, tmp_path):
     monkeypatch.setattr(cli, "list_releases", lambda *args: [{"tag_name": "demo-v1"}])
-    monkeypatch.setattr(cli, "list_remote_tags_matching", lambda *args: [])
+    monkeypatch.setattr(cli, "list_remote_tags_matching", lambda *args, **kwargs: [])
     deleted = []
-    monkeypatch.setattr(cli, "delete_git_tag_remote", lambda *args: deleted.append(("remote", args[1])))
+    monkeypatch.setattr(cli, "delete_git_tag_remote", lambda *args, **kwargs: deleted.append(("remote", args[1])))
     monkeypatch.setattr(cli, "delete_git_tag_local", lambda *args: deleted.append(("local", args[1])))
     assert cli.cleanup_project_releases_and_tags(tmp_path, "o", "r", "t", "demo", [], False) == []
     assert deleted == []
