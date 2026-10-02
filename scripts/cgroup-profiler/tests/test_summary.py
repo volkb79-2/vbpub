@@ -645,7 +645,7 @@ class TestStreamingSummaryState:
         assert tree._root.right is None
         assert tree.nearest_rank(50) == 7
 
-    def test_monotone_insertions_preserve_avl_balance_and_cached_sizes(self):
+    def test_monotone_and_zigzag_insertions_preserve_avl_balance_and_cached_sizes(self):
         def assert_valid(node):
             if node is None:
                 return 0, 0
@@ -658,7 +658,13 @@ class TestStreamingSummaryState:
             assert node.size == expected_size
             return expected_height, expected_size
 
-        for values in (range(128), range(127, -1, -1)):
+        # Monotone inputs exercise deep growth. These mirrored zigzags also
+        # expose premature rotations at balance +1 and -1: either one can
+        # leave a descendant two levels out of balance while ranks still work.
+        zigzag = (25, 21, 2, 1, 0, 28, 4, 6, 9, 12, 20, 11, 3, 7, 10,
+                  19, 23, 17, 8, 24, 22, 18, 14, 5, 27, 26, 16, 13, 15)
+        for values in (range(128), range(127, -1, -1), zigzag,
+                       tuple(28 - value for value in zigzag)):
             tree = summary._OrderStatisticMultiset()
             expected_size = 0
             for value in values:
