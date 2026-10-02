@@ -4421,6 +4421,23 @@ The gap surfaced while preparing an MDB inspection stack in
 project wrapper, but the consumer guide's practical examples focus on managed
 worktrees and did not cover this first-project adoption path.
 
+Additional finding while splitting that consumer into independent CIU roots
+(2026-10-02): this Docker daemon's default address pools are exhausted, so
+`ciu env generate` cannot create the newly generated project network even
+though the root and stack configuration are valid. CIU has no consumer-facing
+way to request a free explicit subnet for that identity network. The onboarding
+recipe should explain how to diagnose this without pruning networks owned by
+other projects, and CIU should consider a supported per-root subnet/IPAM setting
+whose network remains identity-scoped and cleanable by CIU. This is a separate
+provisioning concern from Docker's `--internal` egress-isolation flag.
+
+The consumer wrapper also initially tried to pre-build with a bare `docker
+compose -f <stack-compose> build`; the stack's root-relative `build.context =
+"."` then resolved against the compose-file directory and failed. `ciu up`
+already builds and starts the declared service with the right project root, so
+the wrapper now lets CIU perform that work. Include this in the recipe's
+"ordinary CIU build vs direct Compose" guidance.
+
 `ciu init --wizard` could enter questionaire for setup. 
 
 ## CIU-114 adopt `cli-extended` 
