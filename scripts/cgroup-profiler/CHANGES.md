@@ -8,6 +8,11 @@ the release gate runs. Normative daemon behavior lives in `DESIGN.md` and
 
 ## [Unreleased]
 
+### Changed
+- refactor(cgprofile): express insertion-only AVL rotation choices at
+  reachable child-balance boundaries and reduce peak values with `max`;
+  public summary values and schema are unchanged (RG-55 P1 survivor disposition)
+
 ### Fixed
 - fix(cgprofile): D-31 placement ownership — create a systemd-delegated transient scope under the verified gates slice, keep the leaf below it, journal PID identity/origins for safe stop and restart recovery, and document that leaf memory limits/counters are cgroup charges rather than total RSS
 - fix(cgprofile): CP-11 — retry identity-checked placement recovery for journal-only startup crashes and finished manifests with incomplete cleanup; retain unknown scopes/leaves for operator attention

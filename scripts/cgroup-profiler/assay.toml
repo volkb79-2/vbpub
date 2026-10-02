@@ -18,12 +18,10 @@ enforcement = "gate"
 argv = ["/opt/tester-venv/bin/python3", "-m", "pytest", "tests", "-q", "-x"]
 env = { PYTHONDONTWRITEBYTECODE = "1" }
 env_passthrough = ["PATH"]
-# Controller ruling RW-438 (2026-10-01): the prior P6 tree planned 1,040
-# candidates; its exact-tree 4h campaign completed 306 and left 734 explicitly
-# budget_exceeded. This current tree plans 973 candidates; 24h gives headroom
-# over the roughly 12.7h extrapolation from the measured prior-tree rate (not
-# a guarantee). If it still expires, resume the same exact tree; time and host
-# pressure remain incomplete-run conditions, never mutant outcomes.
+# Controller ruling RW-438's P6 counts/rate are historical and do not size
+# this P1 request-base campaign. Inspect and record the exact plan for the
+# supplied base before launch, then set a safety window with measured headroom.
+# Expiry is incomplete, never a mutant verdict; resume the same exact tree.
 budget = "24h"
 allow_argv_append = false
 
@@ -44,7 +42,12 @@ unsafe_symlink_omissions = [
 [lanes.r2.judge]
 language = "python"
 source_roots = ["lib"]
-base = "origin/main"
+# The comparison scope is caller-selected. After the provisional P1 merge,
+# origin/main contains the daemon changes and would yield a truthful but empty
+# changed-lines campaign. The controller supplies the recorded pre-wave base
+# with `./run-gate.py r2 --base REF`; omission must fail rather than certify 0
+# eligible mutants as a green P1 result.
+base_source = "request"
 
 [lanes.r2.judge.mutation]
 jobs = 2
