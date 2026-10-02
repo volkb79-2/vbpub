@@ -4,6 +4,19 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 <!-- cmru: release history -->
 
+## [source-998a43552c36] - 2026-10-02
+<!-- cmru: generated -->
+<!-- cmru: source-end=998a43552c36a51bc4a87932bd40098f227fd93d -->
+
+### Fixed
+- fix(mdt): make host resource policies explicit (df874d003)
+
+### Changed
+- mdt: set fs.inotify.max_user_watches = 524288 (10a344e2f)
+
+### Documentation
+- docs(mdt): clarify shared Codex session storage (82176d26a)
+
 ## [source-ec95f86b1edd] - 2026-09-30
 <!-- cmru: generated -->
 <!-- cmru: source-end=ec95f86b1edd51315be821b5b3f966423b96452d -->
