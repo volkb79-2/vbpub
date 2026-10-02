@@ -4442,3 +4442,48 @@ the wrapper now lets CIU perform that work. Include this in the recipe's
 
 ## CIU-114 adopt `cli-extended` 
 for CLI grammer, usage(), wizard, ... 
+
+## CIU-115 a pre-schema-2 `ciu.instance.generated.toml` (CIU's OWN regenerable artifact) fail-closes teardown and unrelated stacks' `ciu up`
+
+Severity: Medium. Type: bugfix. Spec owner: S3.1c, S16, S16.3. Filed 2026-10-02 from dstdns
+(controller session, devcontainer rebuild picked up ciu 7.15.1).
+
+**Observed (live, ciu 7.15.1).** `vbpub@20236e437` (2026-09-22) made `schema_version = 2`
+mandatory on read (`workspace_env.py:1356` `_require_generated_schema_version`). Every checkout
+whose file was written by an older ciu now carries `schema_version=None`, and:
+1. `ciu up --dir <stack>` in the MAIN checkout refuses at STEP 1 (`[S3.1c] ... has
+   schema_version=None; expected 2`) — expected, and `ciu env generate` repairs it.
+2. **`ciu up --dir infra/schema-gate-pg` in the main checkout, AFTER main was regenerated,
+   still refused at STEP 16** (`[S16.3] could not read/parse
+   .worktrees/p214-b3-env-impl/ciu.instance.generated.toml: ... schema_version=None`) — the
+   S16.3 sibling budget scan turns one stale SIBLING into a refusal of an unrelated instance.
+3. **`ciu worktree rm <name> -y` refuses** (`[S16] could not read <wt>: [S3.1c] ...`, rc=2) for
+   every such worktree (10 of 15 in dstdns). Teardown — the operation an operator reaches for to
+   get RID of a stale checkout — is blocked by the stale checkout's own CIU-written file.
+   Workaround used: `ciu env generate --root-folder <wt>` then `ciu worktree rm` (rc=0 ×10).
+   That workaround has a side effect: generate CREATES a docker network for an instance about
+   to be deleted.
+
+No CHANGES.md entry for 20236e437 tells consumers to regenerate every worktree's identity file;
+combined with `vbpub@d1eb98770`'s base36 id scheme (identity changed `98535c`→`hox0ju` on
+regenerate), the upgrade is a silent breaking change for any checkout with live worktrees.
+
+**Why ciu owns it.** The file is CIU-owned, "rewritten in full by every `ciu env generate`; hand
+edits are silently overwritten" — no consumer can author or migrate it. A fail-closed read is right
+for DEPLOYING with uncertain identity; it is wrong for (a) tearing that instance down and (b)
+budget-counting a sibling.
+
+**Proposed contract.**
+- `ciu worktree rm`/`clean` on a pre-schema-2 identity: either regenerate in place (identity is
+  deterministic from the path, so the regenerated facts are the facts) or degrade to path-derived
+  identity for teardown, with a WARN naming the file. Never refuse to delete.
+- S16.3 sibling scan: a stale sibling is counted (conservative) with a WARN, not a refusal of the
+  current instance. Never fold "unreadable" into "absent" (cf. CIU-62's S6.4a rule) — count it.
+- CHANGES.md gains the missing consumer-action note for 20236e437 + d1eb98770 (instance ids change;
+  regenerate every worktree; anything literal on the old id goes stale).
+
+**Oracles.** (1) a worktree whose generated file lacks `schema_version` is removed by
+`ciu worktree rm -y` with rc=0 and no network left behind; (2) with one such sibling present,
+`ciu up` on another instance proceeds and the S16.3 count includes the sibling; (3) controlled
+wrong implementation: treating the stale sibling as absent fails oracle (2)'s count assertion;
+(4) `ciu up` (deploy) on a pre-schema-2 file STILL refuses — the fail-closed deploy read is kept.
