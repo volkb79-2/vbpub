@@ -95,7 +95,7 @@ handling; see
 
 ## CLI-EXT-04 — export a stable CLI surface and semantic-review checklist
 
-**Status:** Consumer pilot and correctness follow-up in progress. Commit `77d13912` passed Netcup's registered suite (228 tests) and the generated Netcup CLI surface check. Fresh R2 on `e0ec2c9e` completed 1,014 candidates and failed with one `True->False` EOF-boundary survivor; R3 passed with the expected canary rejection. The survivor was equivalent for the current callers because they only slice argv or advance a cursor. Follow-up commit `827f67d7` keeps boundary checks inside argv and passes registered R0/R1 with 100% statement and branch coverage (3,408 statements; 1,654 branches). Fresh R2/R3 evidence remains required before closure. Details are in [`CLI-SURFACE-IMPLEMENTATION-PLAN.md`](docs/CLI-SURFACE-IMPLEMENTATION-PLAN.md#r2-campaign-on-e0ec2c9e-and-explicit-eof-bounds).
+**Status:** Library implementation and Netcup pilot validated; broader consumer adoption remains follow-up work. Commit `827f67d7` passed registered R0/R1 with 100% statement and branch coverage (3,408 statements; 1,654 branches). Commit `75c007e3` passed R2 with all 1,015 mutations killed and no survivors, crashes, hangs, or budget overruns; R3 passed with its expected canary rejection. The Netcup registered suite passed all 228 tests, and the generated `monitor-task` surface check passed. The CMRU migration is not part of this library pilot and remains a separate adoption task. The R2 survivor analysis is in [`CLI-SURFACE-IMPLEMENTATION-PLAN.md`](docs/CLI-SURFACE-IMPLEMENTATION-PLAN.md#r2-campaign-on-e0ec2c9e-and-explicit-eof-bounds).
 
 Self-review found false certifications in typed-choice checking and choice
 surface export. The correction models exact built-in conversions, marks
@@ -132,9 +132,8 @@ now selects the target argument by ID. The first survivor follow-up passed
 registered R0/R1 with 100% statement and branch coverage (3,378 statements and
 1,640 branches), and R3 passed. The bounded-scan follow-up passed registered
 R0/R1 with 100% statement and branch coverage (3,378 statements and 1,642
-branches). That gate evidence is historical and does not cover the current
-consumer-pilot changes. Fresh gates for the current review worktree are still
-required.
+branches). That gate evidence was historical and did not cover the current
+consumer-pilot changes; the final gates for this worktree are recorded below.
 
 **Type:** Feature
 
@@ -237,11 +236,12 @@ pilot. Decide a published-wheel and version-pinning contract only if CLI-EXT-04
 is intended for consumers outside this monorepo; current first-party adoption
 uses the source-backed same-repository boundary.
 
-Current pilot gate evidence in `cli-extended-review` (2026-10-01): registered
-library R0/R1 passes with 100% statement and branch coverage (3,404 statements,
-1,650 branches); the Netcup registered `suite` lane passes all 228 tests; and
-`surface_cli check` reports no drift for the generated manifest or canonical
-spec. A fresh R2 campaign is running against this follow-up with resume state
-and progress artifacts under `.assay/`; R3 is pending its final verdict.
+Final pilot gate evidence in `cli-extended-review` (2026-10-02): registered
+library R0/R1 passed with 100% statement and branch coverage (3,408 statements,
+1,654 branches); R2 killed all 1,015 candidates without survivors or budget
+failures; R3 passed with the expected canary rejection; the Netcup registered
+`suite` lane passed all 228 tests; and `surface_cli check` reported no drift in
+the generated manifest or canonical spec. CMRU and other consumer migrations
+remain outside this library pilot.
 
 **Related:** CLI-EXT-02 — declarative conditional option constraints.

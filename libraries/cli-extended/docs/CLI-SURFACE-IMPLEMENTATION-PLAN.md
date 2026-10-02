@@ -1,6 +1,6 @@
 # CLI surface and semantic review tooling plan
 
-**Status:** Netcup consumer pilot and correctness follow-up in progress. In the CIU worktree `cli-extended-review`, commit `77d13912` passed Netcup's registered suite (228 tests) and the generated Netcup CLI surface check. The EOF-scan follow-up in `827f67d7` passed registered R0/R1 with 100% statement and branch coverage (3,408 statements; 1,654 branches). Fresh R2 on `e0ec2c9e` completed 1,014 candidates and failed with one equivalent EOF-boundary survivor; its dependent R3 passed with the expected canary rejection. The current follow-up bounds argv reads and cursor movement at EOF; fresh R2 and R3 evidence remains required.
+**Status:** Library implementation and Netcup pilot complete in the CIU worktree `cli-extended-review`. Commit `827f67d7` passed registered R0/R1 with 100% statement and branch coverage (3,408 statements; 1,654 branches). Commit `75c007e3` passed R2 (1,015/1,015 mutations killed; no survivors, crashes, hangs, or budget overruns), R3, Netcup's registered suite (228 tests), and the generated Netcup CLI surface check. CMRU's broader catalog adoption remains separate consumer work.
 
 **Scope:** CLI-EXT-01, CLI-EXT-03 disposition, and CLI-EXT-04
 **Decision owner:** cli-extended maintainers and adopting product owners
@@ -323,8 +323,8 @@ and scans `nargs="*"`/`nargs="+"` with a finite `range` ending at `len(argv)`.
 The delimiter lexer case also covers `--` inside a greedy option scan. These
 changes prevent a false boundary result from making the checker run forever.
 The bounded-scan source passed fresh registered R0/R1 with 100% statement and
-branch coverage (3,378 statements and 1,642 branches). Fresh R2 and R3 gates
-must pass before CLI-EXT-04 is complete.
+branch coverage (3,378 statements and 1,642 branches). Fresh R2 and R3 were
+still required at that stage; their final passing results are recorded below.
 
 The generator deliberately does not enumerate every optional value count or
 repeat count. Consumers declare separate named interactions for token shapes
@@ -356,7 +356,7 @@ branch coverage (3,403 statements; 1,652 branches). The completed `77d13912`
 R2 state, progress, verdict, and R2/R3 logs were verified and archived under
 `.assay/archive/r2-77d13912-before-survivor-fixes-20261002/`. The archived
 state is no longer at the live resume path. A fresh R2 campaign and its
-dependent R3 canary remain required.
+dependent R3 canary were then required; their final results are recorded below.
 
 ### R2 campaign on `e0ec2c9e` and explicit EOF bounds
 
@@ -392,7 +392,27 @@ the argv range, returns the sequence end for missing single/optional values,
 and caps fixed-arity scanning at `len(argv)`. The regression matrix covers
 missing single and fixed values, omitted optional values, and missing `+`
 values. Registered R0/R1 passed with 100% statement and branch coverage
-(3,408 statements; 1,654 branches). Fresh R2 and R3 remain required.
+(3,408 statements; 1,654 branches).
+
+### Final gate and Netcup pilot evidence
+
+On commit `75c007e3a383ded1c23c51ad053f6ffb34f8962a`, the registered R2 lane
+passed all 1,015 candidates: 1,015 killed, zero survived, crashed, hung, or
+exceeded budget. The campaign ended at 2026-10-02 03:03:48 UTC after about 62
+minutes 19 seconds. The exact verdict is
+`libraries/cli-extended/.assay/verdict-r2-choice-semantics.json`; the combined
+R2/R3 wrapper log is `/tmp/cli-extended-review-r2-fresh-75c007e3.log`. R3
+passed with the expected canary rejection after disabling the JSON redaction
+guard.
+
+The same worktree passed the registered Netcup `suite` lane (228 tests in
+26.84 seconds) and the read-only `surface_cli check` for `monitor-task.py`,
+`cli-review.toml`, `cli-surface.json`, and `CLI-SPEC.md`. Registered R0/R1
+passed on source commit `827f67d7` with 100% statement and branch coverage.
+The later `75c007e3` change only records the R2 triage in documentation; no
+product or test source changed after the R0/R1 pass. This completes the
+library implementation and Netcup pilot validation. Adoption by CMRU and other
+consumers remains separate follow-up work.
 
 ## Consumer workflows this should support
 
