@@ -1,6 +1,6 @@
 # CLI surface and semantic review tooling plan
 
-**Status:** Netcup consumer pilot and correctness follow-up in progress. In the CIU worktree `cli-extended-review`, commit `77d13912` passed R0/R1 with 100% statement and branch coverage (3,404 statements; 1,650 branches), Netcup's registered suite (228 tests), and the generated Netcup CLI surface check. Its resumed R2 campaign completed all 1,013 candidates on 2026-10-02 and failed with two survivors; R3 passed with the expected canary rejection. The survivors and current remediation are recorded below. Fresh R0/R1, R2, and R3 evidence is required for the corrected source.
+**Status:** Netcup consumer pilot and correctness follow-up in progress. In the CIU worktree `cli-extended-review`, commit `77d13912` passed Netcup's registered suite (228 tests) and the generated Netcup CLI surface check. Its resumed R2 campaign completed all 1,013 candidates on 2026-10-02 and failed with two survivors; R3 passed with the expected canary rejection. Follow-up commit `c88b7fd3` resolves both findings and passed registered R0/R1 with 100% statement and branch coverage (3,403 statements; 1,652 branches). The old R2 state was verified and archived under `.assay/archive/r2-77d13912-before-survivor-fixes-20261002/`; fresh R2 and R3 are required for the corrected source.
 
 **Scope:** CLI-EXT-01, CLI-EXT-03 disposition, and CLI-EXT-04
 **Decision owner:** cli-extended maintainers and adopting product owners
@@ -349,9 +349,14 @@ logs are `/tmp/cli-extended-review-r2-resumed.log` and
 | `review.py:1045`, `True->False` | At EOF, both the original and mutated boundary check made the caller's cursor land beyond `len(argv)`, so the final findings did not change. The prior `try/except IndexError` obscured that the check is a sequence-length boundary. | Compare `position` with `len(argv)` before indexing; the existing missing-value case exercises EOF and now protects against an out-of-range access. |
 | `surface_cli.py:36`, `strict=True->False` | No test distinguished a missing script from an existing directory. Strict resolution intentionally gives a missing path its `FileNotFoundError`; an existing directory instead reaches the explicit “is not a file” validation. | Add a focused missing-script regression test to preserve the distinct, accurate filesystem error. |
 
-The remediation is in progress. Do not treat the `77d13912` R2 result as a
-pass; archive its completed state before starting a fresh R2 run for the
-corrected commit.
+Follow-up commit `c88b7fd3` replaces exception-driven EOF detection with an
+explicit sequence-length boundary and adds the missing-script error regression
+test. The corrected source passes registered R0/R1 with full statement and
+branch coverage (3,403 statements; 1,652 branches). The completed `77d13912`
+R2 state, progress, verdict, and R2/R3 logs were verified and archived under
+`.assay/archive/r2-77d13912-before-survivor-fixes-20261002/`. The archived
+state is no longer at the live resume path. A fresh R2 campaign and its
+dependent R3 canary remain required.
 
 ## Consumer workflows this should support
 
