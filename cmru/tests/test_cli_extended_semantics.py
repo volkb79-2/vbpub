@@ -350,6 +350,26 @@ def test_project_handler_dry_run_uses_registered_cli_and_skips_handler(
     assert "path is disabled" in capsys.readouterr().err
 
 
+@pytest.mark.parametrize(
+    ("handler_name", "argv"),
+    [
+        ("cmd_wheel_validate", ["wheel-validate", "--prefix", "demo"]),
+        ("cmd_tarball_validate", ["tarball-validate", "--prefix", "demo"]),
+    ],
+)
+def test_read_only_handlers_do_not_require_dry_run_argument(
+    monkeypatch, handler_name, argv,
+):
+    called = []
+    monkeypatch.setattr(
+        handlers, handler_name,
+        lambda args: called.append((args.prefix, getattr(args, "dry_run", None))) or 0,
+    )
+
+    assert handlers.main(argv) == 0
+    assert called == [("demo", None)]
+
+
 def test_init_dry_run_validates_generated_contract_without_writing(
     monkeypatch, tmp_path, capsys,
 ):
@@ -665,7 +685,7 @@ def _minimal_transaction_context(monkeypatch, tmp_path, *, record=None, common=N
     if record is None:
         record = SimpleNamespace(
             purpose="cmru-legacy", branch="cmru-release-child", worktree_path=child,
-            source_git_root=source, workspace_id="workspace-1",
+            source_git_root=source, workspace_id="workspace-1", base_commit="a" * 40,
         )
 
     class Shared:
@@ -685,6 +705,7 @@ def _minimal_transaction_context(monkeypatch, tmp_path, *, record=None, common=N
     monkeypatch.setenv("CMRU_WORKSPACE_PATH", str(child))
     monkeypatch.setenv("CMRU_SOURCE_GIT_ROOT", str(source))
     monkeypatch.setenv(transaction.BRANCH_ENV, "cmru-release-child")
+    monkeypatch.setenv(transaction.BASE_ENV, "a" * 40)
     monkeypatch.setenv("CMRU_WORKSPACE_ID", "workspace-1")
     return source, child
 
@@ -701,6 +722,7 @@ def test_transaction_child_accepts_legacy_record_and_rejects_source_root_mismatc
         monkeypatch, tmp_path, record=SimpleNamespace(
             purpose="cmru-legacy", branch="cmru-release-child",
             worktree_path=child, source_git_root=wrong, workspace_id="workspace-1",
+            base_commit="a" * 40,
         ),
     )
     with pytest.raises(RuntimeError, match="shared transaction record has a different source root"):

@@ -1438,3 +1438,96 @@ literal pathspecs, and commits only those paths. Existing dirty paths remain out
 commit, and generated paths are committed even when no release tags were selected. Adversarial
 coverage and README, DESIGN-GUIDE, CONSUMERS, and SPEC updates accompany the fix. Included in the
 pending CMRU release.
+
+### KI-41 — Resuming a retained release could widen to the default project set — *fixed in source, pending release*
+
+**Reported:** 2026-10-01, while resuming the retained `cmru` release candidate.
+
+**Observed.** The failed candidate recorded scope `cmru`, but `cmru worktrees` printed a
+targetless `cmru release --resume PATH` command. A targetless release selects the configured
+default project set, so that command planned nine projects after unrelated mainline changes.
+The first selected project's gate then failed before CMRU could rewrite the transaction scope.
+
+**Resolution.** Resume now reads the exact scope from the candidate's shared sidecar before
+project-family selection, uses it when no target is given, and refuses an explicit target that
+widens or narrows the saved scope. It rechecks the metadata after acquiring the release lock.
+`cmru worktrees` shows the recorded scope and prints a matching command only when the scope is
+readable; JSON exposes that scope with `project_scope_state` (`recorded`, `missing`, or
+`unreadable`) so automation can make the same decision. Legacy candidates without metadata
+require an explicit target. Regression coverage and README, DESIGN-GUIDE, CONSUMERS, and SPEC
+updates accompany the fix.
+
+### KI-42 — `tester-gate` combined mutually exclusive Docker CPU controls — *fixed in source, pending release*
+
+**Reported:** 2026-10-01, when the CMRU resume gate launched CIU's required `tester-gate` step.
+
+**Observed.** The generated Docker argv included both `--cpus` and `--cpu-period`. Docker maps
+`--cpus` to `NanoCPUs` and rejects a HostConfig that also sets `CpuPeriod`, so the gate exited
+125 before starting its test container.
+
+**Resolution.** `tester-gate` now applies the validated CPU ceiling with `--cpus` alone. The
+minimum supported value remains `0.00001`; docs explain why CMRU does not send `--cpu-period`.
+The argv regression test asserts the accepted command shape. A live tester-gate acceptance
+probe is required before the release is considered complete.
+
+### KI-43 — Read-only handler validation crashed without `--dry-run` — *fixed in source, pending release*
+
+**Reported:** 2026-10-01, Sol xhigh follow-up review of the unreleased CMRU changes.
+
+**Observed.** `wheel-validate` and `tarball-validate` correctly omit the mutation-only
+`--dry-run` option, but their shared dispatcher read `args.dry_run` unconditionally. Both verbs
+raised `AttributeError` before reaching their read-only validation handler.
+
+**Resolution.** The dispatcher now treats an absent `dry_run` field as false. Regression coverage
+invokes both registered validation verbs without adding a meaningless dry-run option.
+
+### KI-44 — Plan status crashed because the read-only parser has no `dry_run` field — *fixed in source, pending release*
+
+**Reported:** 2026-10-01, Sol xhigh follow-up review of the unreleased CMRU changes.
+
+**Observed.** `cmru-controller status --plan PATH` is read-only and intentionally has no
+`--dry-run`, but `_build_engine` accessed `args.dry_run` directly. The parsed status command
+therefore crashed before querying the plan.
+
+**Resolution.** Engine construction now defaults an absent `dry_run` field to false. A parser-level
+regression test runs plan status with the actual read-only argument shape.
+
+### KI-45 — Local Git hooks could inherit publisher credentials — *fixed in source, pending release*
+
+**Reported:** 2026-10-01, Sol xhigh follow-up review of the unreleased CMRU changes.
+
+**Observed.** Release environment setup exports the project publisher credential. Raw local
+`git commit`, `git rebase`, and `git revert` processes inherited that environment, and any local
+hook they invoked received the same publisher credential.
+
+**Resolution.** CMRU routes hook-capable local Git operations through a helper that removes
+`GITHUB_PUSH_PAT`, `GITHUB_TOKEN`, and `CMRU_GIT_AUTH_TOKEN` from the child environment while
+preserving other environment values. Credential-bearing remote Git calls continue to disable
+hooks. The helper has direct environment regression coverage; README, DESIGN-GUIDE, CONSUMERS,
+and SPEC describe the distinction.
+
+### KI-46 — Worktree scope listing depended on path visibility and omitted JSON scope — *fixed in source, pending release*
+
+**Reported:** 2026-10-01, Sol xhigh follow-up review of the unreleased CMRU changes.
+
+**Observed.** `cmru worktrees` read release scope by statting each inventory path. A Git-reported
+worktree outside the current bind-mount namespace could therefore lose its readable scope. JSON
+records also omitted scope entirely, leaving automation unable to construct a safe resume.
+
+**Resolution.** Scope lookup now derives the sidecar from the shared Git directory and inventory
+branch without touching the listed path. Release JSON rows include `project_scope` and the closed
+`project_scope_state` values `recorded`, `missing`, and `unreadable`; non-recorded scopes are null.
+Text and JSON tests cover recorded, missing, unreadable, and invisible-path cases. README,
+DESIGN-GUIDE, CONSUMERS, and SPEC document the interface.
+
+### KI-47 — Legacy resume guidance omitted the original external config — *fixed in source, pending release*
+
+**Reported:** 2026-10-01, Sol xhigh follow-up review of the unreleased CMRU changes.
+
+**Observed.** When a retained candidate had no scope sidecar, `cmru worktrees` required an
+explicit target but did not tell the operator to repeat the external `--config PATH` used for the
+original release. The command could consequently load a different policy file.
+
+**Resolution.** Missing-scope guidance now requires candidate inspection, the explicit target,
+and the same original external config when one was used. The transaction does not claim to
+remember that path. README, DESIGN-GUIDE, CONSUMERS, and SPEC carry the same recovery rule.

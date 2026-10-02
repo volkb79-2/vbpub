@@ -22,7 +22,7 @@ import tomllib
 from cmru.runner import StepConfig, execute_step, parse_step as _runner_parse_step
 from cmru import transaction
 from cmru import exit_codes
-from cmru.git_auth import GitHubGitAuth, run_remote_git
+from cmru.git_auth import GitHubGitAuth, run_local_git, run_remote_git
 from cmru.config import load_forge_config
 from cmru.config import InvocationContext, resolve_invocation_context
 from cmru.config_names import ORCHESTRATION_CONFIG_FILENAME, PROJECT_CONFIG_FILENAME
@@ -312,6 +312,12 @@ def run_project_step(
                 },
                 **dict(protected_env or {}),
             }
+            resolved_token = (getattr(project, "github_token", None) or "").strip()
+            if resolved_token:
+                # This is applied after project/step env and env commands by
+                # runner.execute_step. Keep the publisher credential bound to
+                # the token that config resolution selected for this project.
+                internal_env["GITHUB_PUSH_PAT"] = resolved_token
             execute_step(
                 step,
                 project_root,
@@ -670,21 +676,23 @@ def load_config(
 
 
 def apply_release_env(github: GitHubConfig, env_config: ReleaseEnvConfig) -> None:
+    reserved_credentials = {"GITHUB_PUSH_PAT", "GITHUB_TOKEN", "CMRU_GIT_AUTH_TOKEN"}
+    configured_credentials = sorted(reserved_credentials.intersection(env_config.env))
+    if configured_credentials:
+        raise RuntimeError(
+            "release environment key(s) are reserved for resolved publisher credentials: "
+            + ", ".join(configured_credentials)
+        )
     if github.owner:
         os.environ["GITHUB_USERNAME"] = github.owner
     if github.repo:
         os.environ["GITHUB_REPO"] = github.repo
-    # Each project operation receives exactly its already-resolved credential.
-    # This process can run several selected projects sequentially; merely
-    # skipping the assignment for a project with no credential leaves the
-    # previous project's token in the child environment.  Clear both accepted
-    # input spellings first, then export the one canonical handler spelling.
+    # Clear inherited credentials before applying ordinary declared settings.
     # Config loading has already captured an explicitly supplied environment
     # credential, so this cannot discard a source of truth before resolution.
     os.environ.pop("GITHUB_PUSH_PAT", None)
     os.environ.pop("GITHUB_TOKEN", None)
-    if github.token:
-        os.environ["GITHUB_PUSH_PAT"] = github.token
+    os.environ.pop("CMRU_GIT_AUTH_TOKEN", None)
     os.environ["GITHUB_OWNER_TYPE"] = github.owner_type
     if env_config.registry_url:
         os.environ["REGISTRY"] = env_config.registry_url
@@ -696,6 +704,12 @@ def apply_release_env(github: GitHubConfig, env_config: ReleaseEnvConfig) -> Non
         # would silently turn a declared project environment into ambient
         # fallback state.
         os.environ[key] = str(value)
+
+    # Each project operation receives exactly its already-resolved credential.
+    # Apply it after declared values so an environment table cannot replace the
+    # selected token. The strict config reader rejects credential keys there too.
+    if github.token:
+        os.environ["GITHUB_PUSH_PAT"] = github.token
 
 
 def github_for_project(github: GitHubConfig, project: ProjectConfig) -> GitHubConfig:
@@ -1084,45 +1098,131 @@ def remove_assets(
 def delete_git_tag_remote(
     repo_root: Path, tag: str, dry_run: bool, *,
     git_auth: GitHubGitAuth | None = None,
+    expected_present: bool | None = None,
+    expected_oid: str | None = None,
 ) -> None:
     """Delete *tag* on origin; skip gracefully if it does not exist (idempotent)."""
     if dry_run:
         log_info(f"[DRY RUN] Would delete remote tag {tag}")
         return
-    rc = run_remote_git(
-        repo_root, "push", "origin", f":refs/tags/{tag}", auth=git_auth,
-        capture_output=True, text=True,
-    ).returncode
-    if rc == 0:
+    if expected_present is False:
+        log_info(f"  Remote tag {tag} was absent from the confirmed cleanup preview — skipping")
+        return
+    if expected_oid is not None and not re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", expected_oid):
+        raise RuntimeError(f"Confirmed remote tag {tag} has an invalid captured object ID")
+    remote_oid = list_remote_tag_refs_matching(repo_root, tag, git_auth=git_auth).get(tag)
+    if expected_present is True and expected_oid is None:
+        raise RuntimeError(f"Confirmed remote tag {tag} has no captured object ID")
+    target_oid = expected_oid if expected_oid is not None else remote_oid
+    if remote_oid is None:
+        log_info(f"  Remote tag {tag} not found — skipping")
+        return
+    if remote_oid != target_oid:
+        log_info(f"  Remote tag {tag} changed after the confirmed cleanup preview — skipping")
+        return
+    result = run_remote_git(
+        repo_root, "push", f"--force-with-lease=refs/tags/{tag}:{target_oid}",
+        "origin", f":refs/tags/{tag}", auth=git_auth,
+        capture_output=True, text=True, check=False,
+    )
+    if result.returncode == 0:
         log_info(f"  Deleted remote tag {tag}")
-    else:
-        log_info(f"  Remote tag {tag} not found or already deleted — skipping")
+        return
+    remaining_oid = list_remote_tag_refs_matching(repo_root, tag, git_auth=git_auth).get(tag)
+    if remaining_oid != target_oid:
+        log_info(f"  Remote tag {tag} disappeared or changed during deletion — skipping")
+        return
+    detail = result.stderr.strip() or result.stdout.strip() or "no diagnostic output"
+    raise RuntimeError(
+        f"Failed to delete remote tag {tag} ({result.returncode}): {detail}"
+    )
 
 
-def delete_git_tag_local(repo_root: Path, tag: str, dry_run: bool) -> None:
+def local_git_tag_exists(repo_root: Path, tag: str, *, action: str = "inspect") -> bool:
+    """Check one local tag ref, distinguishing absence from Git failure."""
+    return local_git_tag_oid(repo_root, tag, action=action) is not None
+
+
+def local_git_tag_oid(
+    repo_root: Path, tag: str, *, action: str = "inspect",
+) -> str | None:
+    """Return a local tag's exact ref object ID, or None when the ref is absent."""
+    result = run_local_git(
+        repo_root, "show-ref", "--hash", "--verify", f"refs/tags/{tag}",
+        capture_output=True, text=True, check=False,
+    )
+    if result.returncode == 1:
+        return None
+    if result.returncode != 0:
+        detail = result.stderr.strip() or result.stdout.strip() or "no diagnostic output"
+        suffix = "" if action == "inspect" else " after deletion failed"
+        verb = "inspect" if action == "inspect" else "recheck"
+        raise RuntimeError(
+            f"Failed to {verb} local tag {tag}{suffix} "
+            f"({result.returncode}): {detail}"
+        )
+    oid = result.stdout.strip()
+    if not re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", oid):
+        raise RuntimeError(f"Git returned an invalid object ID while inspecting local tag {tag}")
+    return oid
+
+
+def delete_git_tag_local(
+    repo_root: Path, tag: str, dry_run: bool, *,
+    expected_present: bool | None = None,
+    expected_oid: str | None = None,
+) -> None:
     """Delete *tag* locally; skip gracefully if it does not exist (idempotent)."""
     if dry_run:
         log_info(f"[DRY RUN] Would delete local tag {tag}")
         return
-    rc = subprocess.run(
-        ["git", "-C", str(repo_root), "tag", "-d", tag],
-        capture_output=True, text=True,
-    ).returncode
-    if rc == 0:
-        log_info(f"  Deleted local tag {tag}")
-    else:
+    if expected_present is False:
+        log_info(f"  Local tag {tag} was absent from the confirmed cleanup preview — skipping")
+        return
+    if expected_oid is not None and not re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", expected_oid):
+        raise RuntimeError(f"Confirmed local tag {tag} has an invalid captured object ID")
+    local_oid = local_git_tag_oid(repo_root, tag)
+    if expected_present is True and expected_oid is None:
+        raise RuntimeError(f"Confirmed local tag {tag} has no captured object ID")
+    target_oid = expected_oid if expected_oid is not None else local_oid
+    if local_oid is None:
         log_info(f"  Local tag {tag} not found — skipping")
+        return
+    if local_oid != target_oid:
+        log_info(f"  Local tag {tag} changed after the confirmed cleanup preview — skipping")
+        return
+    result = run_local_git(
+        repo_root, "update-ref", "-d", f"refs/tags/{tag}", target_oid,
+        capture_output=True, text=True, check=False,
+    )
+    if result.returncode == 0:
+        log_info(f"  Deleted local tag {tag}")
+        return
+    remaining_oid = local_git_tag_oid(repo_root, tag, action="recheck")
+    if remaining_oid != target_oid:
+        log_info(f"  Local tag {tag} disappeared or changed during deletion — skipping")
+        return
+    detail = result.stderr.strip() or result.stdout.strip() or "no diagnostic output"
+    raise RuntimeError(
+        f"Failed to delete local tag {tag} ({result.returncode}): {detail}"
+    )
 
 
-def list_remote_tags_matching(
+def list_remote_tag_refs_matching(
     repo_root: Path, pattern: str, *, git_auth: GitHubGitAuth | None = None,
-) -> list[str]:
-    """List remote tags matching *pattern* (git ls-remote --tags)."""
+) -> dict[str, str]:
+    """Map remote tag names to exact ref object IDs for *pattern*."""
     result = run_remote_git(
         repo_root, "ls-remote", "--tags", "origin", f"refs/tags/{pattern}",
         auth=git_auth, capture_output=True, text=True, check=False,
     )
-    tags = []
+    if result.returncode != 0:
+        detail = result.stderr.strip() or result.stdout.strip() or "no diagnostic output"
+        raise RuntimeError(
+            f"Failed to list remote tags matching {pattern!r} "
+            f"({result.returncode}): {detail}"
+        )
+    tags: dict[str, str] = {}
     for line in result.stdout.splitlines():
         line = line.strip()
         if not line or "^{}" in line:
@@ -1130,10 +1230,17 @@ def list_remote_tags_matching(
         # format: "<sha>\trefs/tags/<name>"
         parts = line.split("\t", 1)
         if len(parts) == 2:
-            ref = parts[1].strip()
-            if ref.startswith("refs/tags/"):
-                tags.append(ref[len("refs/tags/"):])
+            oid, ref = parts[0].strip(), parts[1].strip()
+            if ref.startswith("refs/tags/") and re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", oid):
+                tags[ref[len("refs/tags/"):]] = oid
     return tags
+
+
+def list_remote_tags_matching(
+    repo_root: Path, pattern: str, *, git_auth: GitHubGitAuth | None = None,
+) -> list[str]:
+    """List remote tags matching *pattern* (git ls-remote --tags)."""
+    return list(list_remote_tag_refs_matching(repo_root, pattern, git_auth=git_auth))
 
 
 def cleanup_project_releases_and_tags(
@@ -1180,9 +1287,10 @@ def cleanup_project_releases_and_tags(
             to_delete_releases.append((tag, int(release_id)))
 
     # Remote tags to delete (covers tags without a matching Release).
-    remote_versioned = list_remote_tags_matching(
+    remote_versioned_refs = list_remote_tag_refs_matching(
         repo_root, f"{prefix}-v*", git_auth=git_auth,
     )
+    remote_versioned = list(remote_versioned_refs)
     to_delete_tags: list[str] = []
     for tag in remote_versioned:
         if tag in keep_set:
@@ -1210,14 +1318,39 @@ def cleanup_project_releases_and_tags(
     for tag in sorted(all_to_delete_tags):
         log_info(f"Cleanup: deleting git tag {tag}")
         if dry_run and plan is not None:
-            plan.add(
-                f"remote and local Git tag {tag}",
-                lambda repo_root=repo_root, tag=tag, git_auth=git_auth: (
-                    delete_git_tag_remote(repo_root, tag, False, git_auth=git_auth),
-                    delete_git_tag_local(repo_root, tag, False),
-                ),
-            )
-            log_info(f"[DRY RUN] Would delete remote and local git tag {tag}")
+            remote_oid = remote_versioned_refs.get(tag)
+            local_oid = local_git_tag_oid(repo_root, tag)
+            remote_present = remote_oid is not None
+            local_present = local_oid is not None
+            selected_refs = [
+                name for name, present in (
+                    ("remote", remote_present), ("local", local_present),
+                ) if present
+            ]
+            if selected_refs:
+                selected_label = " and ".join(selected_refs)
+                plan.add(
+                    f"{selected_label} Git tag {tag}",
+                    lambda repo_root=repo_root, tag=tag, git_auth=git_auth,
+                    remote_present=remote_present, local_present=local_present,
+                    remote_oid=remote_oid, local_oid=local_oid: (
+                        delete_git_tag_remote(
+                            repo_root, tag, False, git_auth=git_auth,
+                            expected_present=remote_present,
+                            expected_oid=remote_oid,
+                        ),
+                        delete_git_tag_local(
+                            repo_root, tag, False, expected_present=local_present,
+                            expected_oid=local_oid,
+                        ),
+                    ),
+                )
+                log_info(f"[DRY RUN] Would delete {selected_label} Git tag {tag}")
+            else:
+                log_info(
+                    f"[DRY RUN] No remote or local Git tag {tag} was present; "
+                    "a later tag with this name is outside the confirmed cleanup plan"
+                )
         else:
             delete_git_tag_remote(repo_root, tag, dry_run, git_auth=git_auth)
             delete_git_tag_local(repo_root, tag, dry_run)
@@ -1232,6 +1365,8 @@ def cleanup_project_step(
     project: "ProjectConfig",
     version: str,
     dry_run: bool,
+    *,
+    publisher_token: str | None = None,
 ) -> bool:
     """Invoke ``[steps.clean]`` for the project if defined, passing ``CMRU_VERSION`` in env.
 
@@ -1246,9 +1381,17 @@ def cleanup_project_step(
     log_dir = repo_root / "logs"
     step_env = dict(project.env) if project.env else {}
     step_env["CMRU_VERSION"] = version
+    if publisher_token is not None:
+        # A captured dry-run plan can execute after later projects and GHCR
+        # cleanup have changed the ambient token. The selected project's
+        # resolved credential is the authority for this clean step.
+        step_env["GITHUB_PUSH_PAT"] = publisher_token
     step = _build_step_config("clean", project.steps["clean"])
     from cmru.runner import execute_step
-    execute_step(step, repo_root, log_dir, extra_env=step_env)
+    protected_env = {"GITHUB_PUSH_PAT": publisher_token} if publisher_token else None
+    execute_step(
+        step, repo_root, log_dir, extra_env=step_env, protected_env=protected_env,
+    )
     return True
 
 
@@ -1323,12 +1466,8 @@ def cleanup_commit_deletions(
         subject = f"chore({project_name}): cleanup deleted {tags_summary}"
     else:
         subject = f"chore({project_name}): commit cleanup-generated files"
-    rc = subprocess.run(
-        [
-            "git", "-C", str(repo_root), "commit", "--only", "-m",
-            subject,
-            "--", *literal_pathspecs,
-        ],
+    rc = run_local_git(
+        repo_root, "commit", "--only", "-m", subject, "--", *literal_pathspecs,
     ).returncode
     if rc == 0:
         log_info(f"{project_name}: committed cleanup changes")
@@ -1342,10 +1481,13 @@ def _run_cleanup_step_and_commit(
     project: ProjectConfig,
     version: str,
     deleted_tags: list[str],
+    publisher_token: str,
 ) -> None:
     """Run the confirmed clean step and commit only its newly dirty paths."""
     before_paths = _cleanup_worktree_paths(repo_root)
-    step_ran = cleanup_project_step(repo_root, project, version, False)
+    step_ran = cleanup_project_step(
+        repo_root, project, version, False, publisher_token=publisher_token,
+    )
     if step_ran:
         cleanup_commit_deletions(
             repo_root, project_name, deleted_tags, False,
@@ -1454,25 +1596,31 @@ def run_cleanup_verb(
             log_info(
                 f"[DRY RUN] Would run {name} steps.clean and commit only paths it makes dirty"
             )
-            cleanup_project_step(repo_root, project, version, True)
+            cleanup_project_step(
+                repo_root, project, version, True, publisher_token=token,
+            )
             plan.add(
                 f"{name} steps.clean with CMRU_VERSION={version} and its generated paths",
                 lambda repo_root=repo_root, name=name, project=project, version=version,
-                deleted=deleted:
+                deleted=deleted, publisher_token=token:
                     _run_cleanup_step_and_commit(
-                        repo_root, name, project, version, deleted,
+                        repo_root, name, project, version, deleted, publisher_token,
                     ),
             )
         elif not dry_run:
             before_paths = _cleanup_worktree_paths(repo_root) if "clean" in project.steps else set()
-            step_ran = cleanup_project_step(repo_root, project, version, False)
+            step_ran = cleanup_project_step(
+                repo_root, project, version, False, publisher_token=token,
+            )
             if step_ran:
                 cleanup_commit_deletions(
                     repo_root, name, deleted, False,
                     before_paths=before_paths,
                 )
         else:
-            cleanup_project_step(repo_root, project, version, True)
+            cleanup_project_step(
+                repo_root, project, version, True, publisher_token=token,
+            )
 
     # 4. Prune old ghcr package versions (whole-repo, not per-project).
     # ghcr pruning is age-based; use ``cmru cleanup --remove-assets AGE`` for that path.
@@ -1725,6 +1873,53 @@ def _select_projects(
 
         write_config_diagnostic(str(exc))
         raise SystemExit(exit_codes.CONFIG_ERROR)
+
+
+def _release_resume_target(
+    config_path: Path,
+    raw_target: str | None,
+    recorded_scope: list[str] | None,
+    configs: Mapping[str, "ProjectConfig"],
+    project_order: List[str],
+) -> str:
+    """Keep a resumed transaction on its recorded project scope.
+
+    A targetless release normally means every configured project. A retained
+    candidate already has a narrower, authoritative scope, so resume derives
+    that scope from its sidecar. An explicit target is accepted only when it
+    names the same projects. Legacy candidates without scope metadata need an
+    explicit target.
+    """
+    if recorded_scope is None:
+        if raw_target is None:
+            raise RuntimeError(
+                "retained release has no recorded project scope; inspect the candidate "
+                "and pass its explicit project target to `cmru release TARGET --resume`"
+            )
+        return raw_target
+    if (
+        not isinstance(recorded_scope, list)
+        or not recorded_scope
+        or any(not isinstance(name, str) or not name for name in recorded_scope)
+        or len(recorded_scope) != len(set(recorded_scope))
+    ):
+        raise RuntimeError("retained release has malformed project-scope metadata")
+    unknown = [name for name in recorded_scope if name not in configs]
+    if unknown:
+        raise RuntimeError(
+            "retained release scope contains project(s) absent from the selected config: "
+            + ", ".join(unknown)
+        )
+    ordered_scope = [name for name in project_order if name in set(recorded_scope)]
+    if raw_target is not None:
+        requested = _select_projects(config_path, raw_target, configs, project_order)
+        if set(requested) != set(ordered_scope):
+            raise RuntimeError(
+                "release resume target does not match the retained transaction scope; "
+                f"saved scope is {','.join(ordered_scope)!r}, requested scope is "
+                f"{','.join(requested)!r}"
+            )
+    return ",".join(ordered_scope)
 
 
 def _configure_native_release_logging(repo_root: Path, *, append: bool) -> None:
@@ -2364,9 +2559,9 @@ def _commit_prepared_generated(repo_root: Path, project: "ProjectConfig") -> boo
             "declare mechanical outputs in project.<name>.release.commit_generated"
         )
     subprocess.run(["git", "add", "-A", "--", *changed], cwd=repo_root, check=True)
-    subprocess.run(
-        ["git", "commit", "-m", f"chore({project.name}): prepare release inputs"],
-        cwd=repo_root, check=True,
+    run_local_git(
+        repo_root, "commit", "-m", f"chore({project.name}): prepare release inputs",
+        check=True,
     )
     log_info(f"{project.name}: committed prepared release inputs")
     return True
@@ -2466,17 +2661,34 @@ def _dispatch(args, runtime):
                 f"you want to inspect: {exc}"
             )
         workspaces = transaction.list_cmru_workspaces(repo_root)
+        release_scopes = {}
+        for workspace in workspaces:
+            if transaction.workspace_purpose(workspace.branch) != "release":
+                continue
+            try:
+                scope = transaction.read_release_scope_for_workspace(repo_root, workspace)
+            except RuntimeError:
+                release_scopes[workspace.branch] = (None, "unreadable")
+            else:
+                release_scopes[workspace.branch] = (
+                    scope, "recorded" if scope is not None else "missing",
+                )
         if vargs.json:
-            print(json.dumps([
-                {
+            records = []
+            for workspace in workspaces:
+                record = {
                     "purpose": transaction.workspace_purpose(workspace.branch),
                     "branch": workspace.branch,
                     "path": str(workspace.path),
                     "source_commit": workspace.base or None,
                     "prunable": workspace.is_prunable,
                 }
-                for workspace in workspaces
-            ], indent=2, sort_keys=True))
+                if record["purpose"] == "release":
+                    scope, state = release_scopes[workspace.branch]
+                    record["project_scope"] = scope
+                    record["project_scope_state"] = state
+                records.append(record)
+            print(json.dumps(records, indent=2, sort_keys=True))
         elif not workspaces:
             log_info("No retained CMRU build or release worktrees.")
         else:
@@ -2485,8 +2697,34 @@ def _dispatch(args, runtime):
                 purpose = transaction.workspace_purpose(workspace.branch)
                 source = workspace.base[:12] if workspace.base else "unknown"
                 print(f"{purpose}: {workspace.branch}\n  path: {workspace.path}\n  source: {source}")
-                if purpose == "release" and not workspace.is_prunable:
-                    print(f"  resume: cmru release{config_hint} --resume {shlex.quote(str(workspace.path))}")
+                if purpose == "release":
+                    scope, state = release_scopes[workspace.branch]
+                    if state == "recorded":
+                        print(f"  project scope: {', '.join(scope)}")
+                    else:
+                        print(f"  project scope: {state}")
+                    if workspace.is_prunable:
+                        print(
+                            "  action: withheld; Git marks this worktree registration prunable. "
+                            "Inspect the checkout and its Git metadata before acting."
+                        )
+                    elif state == "recorded":
+                        scope_arg = shlex.quote(",".join(scope))
+                        print(
+                            f"  resume: cmru release {scope_arg} --resume "
+                            f"{shlex.quote(str(workspace.path))}"
+                        )
+                        print(
+                            "  config: repeat the same --config PATH used by the original "
+                            "release if it used an external config; its path is not recorded"
+                        )
+                    elif state == "missing":
+                        print(
+                            "  resume: inspect the candidate and pass its explicit target; "
+                            "repeat the original external --config PATH if one was used"
+                        )
+                    else:
+                        print("  resume: withheld; cannot verify recorded project scope")
                 elif purpose == "build" and not workspace.is_prunable:
                     print(
                         "  discard: cmru cleanup"
@@ -2823,7 +3061,18 @@ def _dispatch(args, runtime):
         # Restrict versioning verbs to the orchestrated set so un-migrated projects
         # with their own pipelines (tls-edge, empyrion) are never auto-tagged.
         ordered = _ordered_configs(configs, project_order)
-        selected_names = _select_projects(cfg_path, vargs.target, ordered, project_order)
+        selection_target = vargs.target
+        resume_scope = None
+        if verb == "release" and vargs.resume:
+            resume_scope = transaction.read_release_scope_for_path(
+                Path(vargs.resume).expanduser()
+            )
+            selection_target = _release_resume_target(
+                cfg_path, selection_target, resume_scope, ordered, project_order,
+            )
+            if vargs.target is None:
+                log_info(f"Resuming recorded project scope: {selection_target}")
+        selected_names = _select_projects(cfg_path, selection_target, ordered, project_order)
         selected_ordered = {name: ordered[name] for name in selected_names}
 
         if vargs.minor or vargs.major or vargs.set_version:
@@ -2913,6 +3162,16 @@ def _dispatch(args, runtime):
                         workspace = transaction.resume_workspace(
                             transaction_root, Path(vargs.resume), git_auth=git_auth,
                         )
+                        current_scope = transaction.read_release_scope_for_path(workspace.path)
+                        if current_scope != resume_scope:
+                            raise RuntimeError(
+                                "retained release scope changed while acquiring its lock; "
+                                "inspect the candidate and retry"
+                            )
+                        if current_scope is not None and set(current_scope) != set(release_scope):
+                            raise RuntimeError(
+                                "release resume target no longer matches the retained transaction scope"
+                            )
                         transaction.assert_resume_workspace_committed(workspace.path)
                     else:
                         base = transaction.fetch_origin_main(transaction_root, git_auth=git_auth)
@@ -3243,11 +3502,32 @@ def _usage_error(message: str) -> None:
 
 
 def _abandon(args, runtime) -> int:
-    """Inspect and, after exact confirmation, discard retained release candidates."""
+    """Serialize abandonment with releases, then inspect and discard candidates."""
     from cli_extended import CliFailure
 
     try:
         repo_root = _current_git_root()
+    except Exception as exc:
+        raise CliFailure(f"cannot inspect CMRU release worktrees: {exc}", exit_code=2) from exc
+    try:
+        # Keep the same lock from the initial state inspection through the
+        # confirmation and cleanup. A local release cannot resume this candidate
+        # while the operator is deciding whether to abandon it.
+        with transaction.release_lock(repo_root):
+            return _abandon_locked(args, runtime, repo_root)
+    except CliFailure:
+        raise
+    except RuntimeError as exc:
+        if "Another cmru release transaction is already running." in str(exc):
+            raise CliFailure(str(exc), exit_code=2) from exc
+        raise
+
+
+def _abandon_locked(args, runtime, repo_root: Path) -> int:
+    """Inspect and, after exact confirmation, discard candidates under release lock."""
+    from cli_extended import CliFailure
+
+    try:
         all_workspaces = transaction.list_cmru_workspaces(repo_root)
     except Exception as exc:
         raise CliFailure(f"cannot inspect CMRU release worktrees: {exc}", exit_code=2) from exc
@@ -3314,12 +3594,25 @@ def _abandon(args, runtime) -> int:
             if remote.returncode != 0:
                 raise RuntimeError("could not determine origin branch state: " + (remote.stderr.strip() or "git ls-remote failed"))
             remote_refs = {}
+            requested_refs = {
+                "refs/heads/" + workspace.branch,
+                "refs/heads/main",
+            }
             for line in remote.stdout.splitlines():
                 fields = line.split("\t", 1)
-                if len(fields) == 2:
-                    remote_refs[fields[1]] = fields[0]
+                if len(fields) != 2 or fields[1] not in requested_refs:
+                    continue
+                if not re.fullmatch(r"[0-9a-f]{40}", fields[0]):
+                    raise RuntimeError(
+                        f"origin branch lookup returned a malformed object ID for {fields[1]}"
+                    )
+                remote_refs[fields[1]] = fields[0]
             remote_candidate = remote_refs.get("refs/heads/" + workspace.branch)
             remote_main = remote_refs.get("refs/heads/main")
+            if remote_main is None:
+                raise RuntimeError(
+                    "origin/main ref is missing; cannot determine whether release progress was promoted"
+                )
             if remote_candidate is not None:
                 remote_assets.append("origin/refs/heads/" + workspace.branch)
             pushed = transaction.backup_was_pushed(repo_root, workspace)
@@ -3335,16 +3628,15 @@ def _abandon(args, runtime) -> int:
                 )
                 if candidate.returncode != 0:
                     raise RuntimeError("origin candidate ref is not a known ancestor of the retained worktree")
-            if remote_main is not None:
-                promoted = subprocess.run(
-                    ["git", "merge-base", "--is-ancestor", progress, remote_main],
-                    cwd=repo_root, capture_output=True, text=True, check=False,
-                )
-                if progress != base_commit and promoted.returncode == 0:
-                    remote_assets.append("origin/refs/heads/main")
-                    raise RuntimeError("origin/main contains the recorded release progress; transaction was promoted")
-                if promoted.returncode not in (0, 1):
-                    raise RuntimeError("could not determine whether release progress reached origin/main")
+            promoted = subprocess.run(
+                ["git", "merge-base", "--is-ancestor", progress, remote_main],
+                cwd=repo_root, capture_output=True, text=True, check=False,
+            )
+            if progress != base_commit and promoted.returncode == 0:
+                remote_assets.append("origin/refs/heads/main")
+                raise RuntimeError("origin/main contains the recorded release progress; transaction was promoted")
+            if promoted.returncode not in (0, 1):
+                raise RuntimeError("could not determine whether release progress reached origin/main")
             # Any newly-created remote tag reachable only from this candidate indicates
             # a public release coordinate even if a crash occurred before result metadata.
             tags = run_remote_git(

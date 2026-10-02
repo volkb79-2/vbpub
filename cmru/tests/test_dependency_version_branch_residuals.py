@@ -5,6 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from cmru import dependencies, version
+import pytest
 
 
 def test_dependencies_accepts_ordered_declaration_and_deduplicates_repeated_wheels(tmp_path):
@@ -43,3 +44,42 @@ def test_version_git_log_without_paths_preserves_unscoped_git_command(monkeypatc
     monkeypatch.setattr(version.subprocess, "run", run)
     assert version._git_log(tmp_path, "HEAD~1") == ["subject"]
     assert "--" not in captured["command"]
+
+
+@pytest.mark.parametrize(
+    ("stdout", "stderr", "detail"),
+    [("", "fatal: bad revision", "fatal: bad revision"),
+     ("git diagnostic", "", "git diagnostic"),
+     ("", "", "no diagnostic output")],
+)
+def test_version_git_log_refuses_failed_history_queries(
+    monkeypatch, tmp_path, stdout, stderr, detail,
+):
+    monkeypatch.setattr(
+        version.subprocess, "run",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            stdout=stdout, stderr=stderr, returncode=128,
+        ),
+    )
+
+    with pytest.raises(version.ReleasePlanRefused, match=detail):
+        version._git_log(tmp_path, "missing-ref", "project/path")
+
+
+def test_version_git_log_preserves_a_successful_empty_history(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        version.subprocess, "run",
+        lambda *_args, **_kwargs: SimpleNamespace(stdout="", stderr="", returncode=0),
+    )
+
+    assert version._git_log(tmp_path, "HEAD~1", "project/path") == []
+
+
+def test_version_git_log_refuses_when_git_cannot_start(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        version.subprocess, "run",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(FileNotFoundError("git")),
+    )
+
+    with pytest.raises(version.ReleasePlanRefused, match="git log could not start: git"):
+        version._git_log(tmp_path, "HEAD~1", "project/path")

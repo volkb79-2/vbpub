@@ -140,8 +140,7 @@ _CPUS_ENV = "CMRU_TESTER_CPUS"
 _DIND_IMAGE_ENV = "CMRU_TESTER_DIND_IMAGE"
 _CGROUP_PARENT_ENV = "CMRU_TESTER_CGROUP_PARENT"
 _CPU_LIMIT_PATTERN = re.compile(r"\+?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?\Z")
-_CPU_PERIOD_MICROSECONDS = 100_000
-_MIN_CPU_LIMIT = Decimal(1) / Decimal(_CPU_PERIOD_MICROSECONDS)
+_MIN_CPU_LIMIT = Decimal("0.00001")
 _CPU_LIMIT_ERROR = (
     "CPU limit must be a finite decimal Docker can enforce "
     "(minimum 0.00001 CPUs)"
@@ -583,7 +582,6 @@ def build_docker_command(
         "--memory", memory,
         "--memory-swap", memory_swap,
         "--cpus", cpus,
-        "--cpu-period", str(_CPU_PERIOD_MICROSECONDS),
     )
     common_dir = _git_common_dir(repo_root)
     if common_dir is not None:

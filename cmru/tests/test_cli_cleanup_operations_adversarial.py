@@ -1,5 +1,6 @@
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -94,19 +95,35 @@ def test_cleanup_ghcr_applies_cutoff_and_explicit_package_delete(monkeypatch):
 
 
 def test_tag_helpers_are_idempotent_and_parse_annotated_refs(monkeypatch, tmp_path, capsys):
-    calls = []
-    class Result:
-        returncode = 1
-        stdout = "abc\trefs/tags/v1\ndef\trefs/tags/v1^{}\n"
-    monkeypatch.setattr(cli.subprocess, "run", lambda argv, **kwargs: calls.append(argv) or Result())
+    remote_calls = []
+    local_calls = []
+
+    def remote(_root, *args, **kwargs):
+        remote_calls.append(args)
+        if args[0] == "ls-remote":
+            return SimpleNamespace(
+                returncode=0,
+                stdout="a" * 40 + "\trefs/tags/v1\n" + "b" * 40 + "\trefs/tags/v1^{}\n",
+                stderr="",
+            )
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    def local(_root, *args, **kwargs):
+        local_calls.append(args)
+        stdout = "c" * 40 if args[:2] == ("show-ref", "--hash") else ""
+        return SimpleNamespace(returncode=0, stdout=stdout, stderr="")
+
+    monkeypatch.setattr(cli, "run_remote_git", remote)
+    monkeypatch.setattr(cli, "run_local_git", local)
     cli.delete_git_tag_remote(tmp_path, "v1", True)
     cli.delete_git_tag_local(tmp_path, "v1", True)
-    assert calls == []
+    assert remote_calls == [] and local_calls == []
     assert cli.list_remote_tags_matching(tmp_path, "v*") == ["v1"]
     cli.delete_git_tag_remote(tmp_path, "v1", False)
     cli.delete_git_tag_local(tmp_path, "v1", False)
-    assert len(calls) == 3
-    assert "skipping" in capsys.readouterr().out.lower()
+    assert [call[0] for call in remote_calls] == ["ls-remote", "ls-remote", "push"]
+    assert [call[0] for call in local_calls] == ["show-ref", "update-ref"]
+    assert "deleted remote tag" in capsys.readouterr().out.lower()
 
 
 def test_unmanaged_release_is_idempotent_and_rejects_ambiguous_records(monkeypatch):

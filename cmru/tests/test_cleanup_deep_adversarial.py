@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+import os
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -212,25 +213,65 @@ def test_remove_assets_applies_only_targets_captured_before_confirmation(monkeyp
 
 def test_project_cleanup_plan_keeps_previewed_release_and_tag_targets(monkeypatch, tmp_path):
     releases = [_release("demo-v1.0.0", 1)]
-    tags = ["demo-v1.0.0"]
+    tags = {"demo-v1.0.0": "a" * 40}
     deleted_releases = []
     deleted_tags = []
     monkeypatch.setattr(cli, "list_releases", lambda *_: releases)
-    monkeypatch.setattr(cli, "list_remote_tags_matching", lambda *_args, **_kwargs: tags)
+    monkeypatch.setattr(cli, "list_remote_tag_refs_matching", lambda *_args, **_kwargs: tags)
+    monkeypatch.setattr(cli, "local_git_tag_oid", lambda *_args, **_kwargs: "b" * 40)
     monkeypatch.setattr(cli, "delete_release", lambda _o, _r, _t, ident, **_kw: deleted_releases.append(ident))
-    monkeypatch.setattr(cli, "delete_git_tag_remote", lambda _root, tag, *_a, **_kw: deleted_tags.append(("remote", tag)))
-    monkeypatch.setattr(cli, "delete_git_tag_local", lambda _root, tag, *_a, **_kw: deleted_tags.append(("local", tag)))
+    monkeypatch.setattr(cli, "delete_git_tag_remote", lambda _root, tag, *_a, **kw: deleted_tags.append(("remote", tag, kw["expected_present"], kw["expected_oid"])))
+    monkeypatch.setattr(cli, "delete_git_tag_local", lambda _root, tag, *_a, **kw: deleted_tags.append(("local", tag, kw["expected_present"], kw["expected_oid"])))
     plan = cli.CleanupPlan()
 
     cli.cleanup_project_releases_and_tags(
         tmp_path, "o", "r", "t", "demo", [], True, plan=plan,
     )
     releases[:] = [_release("demo-v2.0.0", 2)]
-    tags[:] = ["demo-v2.0.0"]
+    tags.clear()
+    tags["demo-v2.0.0"] = "c" * 40
     plan.apply()
 
     assert deleted_releases == [1]
-    assert deleted_tags == [("remote", "demo-v1.0.0"), ("local", "demo-v1.0.0")]
+    assert deleted_tags == [
+        ("remote", "demo-v1.0.0", True, "a" * 40),
+        ("local", "demo-v1.0.0", True, "b" * 40),
+    ]
+
+
+def test_project_cleanup_plan_does_not_delete_tags_added_after_preview(monkeypatch, tmp_path):
+    releases = [_release("demo-v1.0.0", 1)]
+    remote_tags = {}
+    deleted_releases = []
+    deleted_local_tags = []
+    monkeypatch.setattr(cli, "list_releases", lambda *_: releases)
+    monkeypatch.setattr(cli, "list_remote_tag_refs_matching", lambda *_args, **_kwargs: remote_tags)
+    monkeypatch.setattr(
+        cli, "delete_release", lambda _o, _r, _t, ident, **_kw: deleted_releases.append(ident),
+    )
+    monkeypatch.setattr(
+        cli, "run_remote_git", lambda *_a, **_k: pytest.fail("unconfirmed remote tag was queried"),
+    )
+    def local_git(_root, *args, **_kwargs):
+        deleted_local_tags.append(args)
+        if args[:2] == ("show-ref", "--hash"):
+            return SimpleNamespace(returncode=0, stdout="b" * 40, stderr="")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+    monkeypatch.setattr(cli, "run_local_git", local_git)
+    plan = cli.CleanupPlan()
+
+    cli.cleanup_project_releases_and_tags(
+        tmp_path, "o", "r", "t", "demo", [], True, plan=plan,
+    )
+    deleted_local_tags.clear()
+    remote_tags["demo-v1.0.0"] = "a" * 40
+    plan.apply()
+
+    assert deleted_releases == [1]
+    assert deleted_local_tags == [
+        ("show-ref", "--hash", "--verify", "refs/tags/demo-v1.0.0"),
+        ("update-ref", "-d", "refs/tags/demo-v1.0.0", "b" * 40),
+    ]
 
 
 def test_run_cleanup_plan_captures_declared_clean_step_and_generated_commit(monkeypatch, tmp_path):
@@ -250,8 +291,8 @@ def test_run_cleanup_plan_captures_declared_clean_step_and_generated_commit(monk
     monkeypatch.setattr(cli, "_latest_version_for_prefix", lambda *_args, **_kwargs: "2.0.0")
     events = []
 
-    def clean_step(_root, project, version, dry_run):
-        events.append(("clean", project.name, version, dry_run))
+    def clean_step(_root, project, version, dry_run, *, publisher_token=None):
+        events.append(("clean", project.name, version, dry_run, publisher_token))
         return not dry_run
 
     def commit(_root, name, tags, dry_run, *, before_paths):
@@ -274,27 +315,272 @@ def test_run_cleanup_plan_captures_declared_clean_step_and_generated_commit(monk
     plan.apply()
 
     assert events == [
-        ("clean", "demo", "2.0.0", True),
-        ("clean", "demo", "2.0.0", False),
+        ("clean", "demo", "2.0.0", True, "tok"),
+        ("clean", "demo", "2.0.0", False, "tok"),
         ("commit", "demo", ("demo-v1.0.0",), False, {"caller-edit.txt"}),
         ("package", "demo-container", False),
     ]
 
 
 def test_remote_tag_listing_filters_dereferenced_and_malformed_lines(monkeypatch, tmp_path):
-    monkeypatch.setattr(cli.subprocess, "run", lambda *args, **kwargs: SimpleNamespace(
-        stdout="abc\trefs/tags/demo-v1\nabc^{}\trefs/tags/demo-v1\nmalformed\n\n",
+    oid = "a" * 40
+    monkeypatch.setattr(cli, "run_remote_git", lambda *args, **kwargs: SimpleNamespace(
+        stdout=f"{oid}\trefs/tags/demo-v1\n{oid}^{{}}\trefs/tags/demo-v1\nmalformed\n\n",
         returncode=0,
     ))
     assert cli.list_remote_tags_matching(tmp_path, "demo-v*") == ["demo-v1"]
+    assert cli.list_remote_tag_refs_matching(tmp_path, "demo-v*") == {"demo-v1": oid}
+
+
+def test_remote_tag_listing_refuses_to_report_absence_when_origin_lookup_fails(
+    monkeypatch, tmp_path,
+):
+    monkeypatch.setattr(cli, "run_remote_git", lambda *args, **kwargs: SimpleNamespace(
+        returncode=128, stdout="", stderr="fatal: authentication failed",
+    ))
+    with pytest.raises(RuntimeError, match="Failed to list remote tags.*authentication failed"):
+        cli.list_remote_tags_matching(tmp_path, "demo-v*")
+
+
+@pytest.mark.parametrize(
+    ("stdout", "stderr", "detail"),
+    [("", "denied", "denied"), ("remote diagnostic", "", "remote diagnostic"),
+     ("", "", "no diagnostic output")],
+)
+def test_remote_tag_listing_error_uses_available_diagnostic(
+    monkeypatch, tmp_path, stdout, stderr, detail,
+):
+    monkeypatch.setattr(cli, "run_remote_git", lambda *args, **kwargs: SimpleNamespace(
+        returncode=128, stdout=stdout, stderr=stderr,
+    ))
+    with pytest.raises(RuntimeError, match=f"{detail}"):
+        cli.list_remote_tags_matching(tmp_path, "demo-v*")
 
 
 def test_tag_deletion_is_idempotent_for_missing_local_and_remote(monkeypatch, tmp_path, capsys):
-    monkeypatch.setattr(cli.subprocess, "run", lambda *args, **kwargs: SimpleNamespace(returncode=1, stdout="", stderr="missing"))
+    monkeypatch.setattr(cli, "run_remote_git", lambda *args, **kwargs: SimpleNamespace(
+        returncode=0, stdout="", stderr="",
+    ))
+    monkeypatch.setattr(cli, "run_local_git", lambda *args, **kwargs: SimpleNamespace(
+        returncode=1, stdout="", stderr="",
+    ))
     cli.delete_git_tag_remote(tmp_path, "demo-v1", False)
     cli.delete_git_tag_local(tmp_path, "demo-v1", False)
     output = capsys.readouterr().out
-    assert "already deleted" in output and "not found" in output
+    assert "remote tag demo-v1 not found" in output
+    assert "local tag demo-v1 not found" in output
+
+
+def test_remote_tag_delete_fails_if_push_fails_and_tag_still_exists(monkeypatch, tmp_path):
+    oid = "a" * 40
+    results = iter([
+        SimpleNamespace(returncode=0, stdout=f"{oid}\trefs/tags/demo-v1\n", stderr=""),
+        SimpleNamespace(returncode=1, stdout="", stderr="permission denied"),
+        SimpleNamespace(returncode=0, stdout=f"{oid}\trefs/tags/demo-v1\n", stderr=""),
+    ])
+    monkeypatch.setattr(cli, "run_remote_git", lambda *args, **kwargs: next(results))
+    with pytest.raises(RuntimeError, match="Failed to delete remote tag demo-v1.*permission denied"):
+        cli.delete_git_tag_remote(tmp_path, "demo-v1", False)
+
+
+def test_remote_tag_delete_treats_confirmed_concurrent_removal_as_idempotent(
+    monkeypatch, tmp_path, capsys,
+):
+    oid = "a" * 40
+    results = iter([
+        SimpleNamespace(returncode=0, stdout=f"{oid}\trefs/tags/demo-v1\n", stderr=""),
+        SimpleNamespace(returncode=1, stdout="", stderr="already gone"),
+        SimpleNamespace(returncode=0, stdout="", stderr=""),
+    ])
+    monkeypatch.setattr(cli, "run_remote_git", lambda *args, **kwargs: next(results))
+    cli.delete_git_tag_remote(tmp_path, "demo-v1", False)
+    assert "disappeared or changed during deletion" in capsys.readouterr().out
+
+
+def test_remote_tag_delete_skips_a_tag_retargeted_after_preview(monkeypatch, tmp_path, capsys):
+    preview_oid = "a" * 40
+    current_oid = "b" * 40
+    calls = []
+
+    def remote(_root, *args, **kwargs):
+        calls.append(args)
+        return SimpleNamespace(
+            returncode=0,
+            stdout=f"{current_oid}\trefs/tags/demo-v1\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr(cli, "run_remote_git", remote)
+    cli.delete_git_tag_remote(
+        tmp_path, "demo-v1", False, expected_present=True, expected_oid=preview_oid,
+    )
+
+    assert len(calls) == 1
+    assert "changed after the confirmed cleanup preview" in capsys.readouterr().out
+
+
+def test_remote_tag_delete_uses_a_lease_for_the_previewed_object(monkeypatch, tmp_path):
+    oid = "a" * 40
+    calls = []
+
+    def remote(_root, *args, **kwargs):
+        calls.append(args)
+        return SimpleNamespace(
+            returncode=0,
+            stdout=f"{oid}\trefs/tags/demo-v1\n" if args[0] == "ls-remote" else "",
+            stderr="",
+        )
+
+    monkeypatch.setattr(cli, "run_remote_git", remote)
+    cli.delete_git_tag_remote(
+        tmp_path, "demo-v1", False, expected_present=True, expected_oid=oid,
+    )
+
+    assert calls[-1] == (
+        "push", f"--force-with-lease=refs/tags/demo-v1:{oid}",
+        "origin", ":refs/tags/demo-v1",
+    )
+
+
+@pytest.mark.parametrize(
+    ("stdout", "stderr", "detail"),
+    [("", "permission denied", "permission denied"),
+     ("push diagnostic", "", "push diagnostic"),
+     ("", "", "no diagnostic output")],
+)
+def test_remote_tag_delete_error_uses_available_diagnostic(
+    monkeypatch, tmp_path, stdout, stderr, detail,
+):
+    oid = "a" * 40
+    results = iter([
+        SimpleNamespace(returncode=0, stdout=f"{oid}\trefs/tags/demo-v1\n", stderr=""),
+        SimpleNamespace(returncode=1, stdout=stdout, stderr=stderr),
+        SimpleNamespace(returncode=0, stdout=f"{oid}\trefs/tags/demo-v1\n", stderr=""),
+    ])
+    monkeypatch.setattr(cli, "run_remote_git", lambda *args, **kwargs: next(results))
+    with pytest.raises(RuntimeError, match=f"Failed to delete remote tag demo-v1.*{detail}"):
+        cli.delete_git_tag_remote(tmp_path, "demo-v1", False)
+
+
+def test_local_tag_delete_fails_if_tag_remains_after_git_error(monkeypatch, tmp_path):
+    results = iter([
+        SimpleNamespace(returncode=0, stdout="a" * 40, stderr=""),
+        SimpleNamespace(returncode=1, stdout="", stderr="hook refused"),
+        SimpleNamespace(returncode=0, stdout="a" * 40, stderr=""),
+    ])
+    monkeypatch.setattr(cli, "run_local_git", lambda *args, **kwargs: next(results))
+    with pytest.raises(RuntimeError, match="Failed to delete local tag demo-v1.*hook refused"):
+        cli.delete_git_tag_local(tmp_path, "demo-v1", False)
+
+
+def test_local_tag_delete_skips_a_tag_retargeted_after_preview(monkeypatch, tmp_path, capsys):
+    current_oid = "b" * 40
+    calls = []
+
+    def local(_root, *args, **kwargs):
+        calls.append(args)
+        return SimpleNamespace(returncode=0, stdout=current_oid, stderr="")
+
+    monkeypatch.setattr(cli, "run_local_git", local)
+    cli.delete_git_tag_local(
+        tmp_path, "demo-v1", False, expected_present=True, expected_oid="a" * 40,
+    )
+
+    assert calls == [("show-ref", "--hash", "--verify", "refs/tags/demo-v1")]
+    assert "changed after the confirmed cleanup preview" in capsys.readouterr().out
+
+
+def test_local_tag_delete_uses_expected_old_object_update(monkeypatch, tmp_path):
+    oid = "a" * 40
+    calls = []
+
+    def local(_root, *args, **kwargs):
+        calls.append(args)
+        return SimpleNamespace(returncode=0, stdout=oid, stderr="")
+
+    monkeypatch.setattr(cli, "run_local_git", local)
+    cli.delete_git_tag_local(
+        tmp_path, "demo-v1", False, expected_present=True, expected_oid=oid,
+    )
+
+    assert calls == [
+        ("show-ref", "--hash", "--verify", "refs/tags/demo-v1"),
+        ("update-ref", "-d", "refs/tags/demo-v1", oid),
+    ]
+
+
+def test_local_tag_delete_treats_confirmed_concurrent_removal_as_idempotent(
+    monkeypatch, tmp_path, capsys,
+):
+    results = iter([
+        SimpleNamespace(returncode=0, stdout="a" * 40, stderr=""),
+        SimpleNamespace(returncode=1, stdout="", stderr="already gone"),
+        SimpleNamespace(returncode=1, stdout="", stderr=""),
+    ])
+    monkeypatch.setattr(cli, "run_local_git", lambda *args, **kwargs: next(results))
+    cli.delete_git_tag_local(tmp_path, "demo-v1", False)
+    assert "disappeared or changed during deletion" in capsys.readouterr().out
+
+
+def test_local_tag_delete_fails_on_lookup_or_recheck_errors(monkeypatch, tmp_path):
+    monkeypatch.setattr(cli, "run_local_git", lambda *args, **kwargs: SimpleNamespace(
+        returncode=128, stdout="", stderr="bad repository",
+    ))
+    with pytest.raises(RuntimeError, match="Failed to inspect local tag.*bad repository"):
+        cli.delete_git_tag_local(tmp_path, "demo-v1", False)
+
+    results = iter([
+        SimpleNamespace(returncode=0, stdout="a" * 40, stderr=""),
+        SimpleNamespace(returncode=1, stdout="", stderr="delete failed"),
+        SimpleNamespace(returncode=128, stdout="", stderr="bad repository"),
+    ])
+    monkeypatch.setattr(cli, "run_local_git", lambda *args, **kwargs: next(results))
+    with pytest.raises(RuntimeError, match="Failed to recheck local tag.*bad repository"):
+        cli.delete_git_tag_local(tmp_path, "demo-v1", False)
+
+
+def test_captured_clean_steps_keep_each_project_token_after_root_ghcr_selection(
+    monkeypatch, tmp_path,
+):
+    alpha = cli.ProjectConfig(
+        name="alpha", env={}, steps={"clean": []}, prefix="alpha-v",
+        github_token="alpha-token",
+    )
+    beta = cli.ProjectConfig(
+        name="beta", env={}, steps={"clean": []}, prefix="beta-v",
+        github_token="beta-token",
+    )
+    github = cli.GitHubConfig("owner", "repo", "root-token", "org")
+    env_config = cli.ReleaseEnvConfig({}, None)
+    monkeypatch.setattr(cli, "resolve_versions_from_git", lambda *_: None)
+    monkeypatch.setattr(cli, "cleanup_project_releases_and_tags", lambda *_a, **_k: [])
+    monkeypatch.setattr(cli, "_latest_version_for_prefix", lambda *_a, **_k: "1.0.0")
+    monkeypatch.setattr(cli, "_cleanup_worktree_paths", lambda *_: set())
+    monkeypatch.setattr(cli, "cleanup_commit_deletions", lambda *_a, **_k: None)
+    monkeypatch.setattr(cli, "delete_package", lambda *_a, **_k: None)
+
+    observed = []
+
+    def execute(_step, _root, _logs, *, extra_env, protected_env=None):
+        observed.append((
+            extra_env["GITHUB_PUSH_PAT"], os.environ["GITHUB_PUSH_PAT"],
+            protected_env["GITHUB_PUSH_PAT"],
+        ))
+
+    monkeypatch.setattr("cmru.runner.execute_step", execute)
+    plan = cli.CleanupPlan()
+    cli.run_cleanup_verb(
+        tmp_path, {"alpha": alpha, "beta": beta}, ["alpha", "beta"],
+        _cleanup(ghcr_delete_packages=["repo-package"]), github, env_config,
+        None, True, plan=plan,
+    )
+
+    assert os.environ["GITHUB_PUSH_PAT"] == "root-token"
+    plan.apply()
+    assert observed == [
+        ("alpha-token", "root-token", "alpha-token"),
+        ("beta-token", "root-token", "beta-token"),
+    ]
 
 
 def test_cleanup_commit_deletions_stages_only_paths_new_since_clean_step(monkeypatch, tmp_path, capsys):
@@ -305,6 +591,11 @@ def test_cleanup_commit_deletions_stages_only_paths_new_since_clean_step(monkeyp
     monkeypatch.setattr(cli, "_git", lambda *args, **kwargs: "generated file.txt\n")
     calls = []
     monkeypatch.setattr(cli.subprocess, "run", lambda argv, **kwargs: calls.append(argv) or SimpleNamespace(returncode=0))
+    monkeypatch.setattr(
+        cli, "run_local_git",
+        lambda root, *args, **kwargs: calls.append(["git", *args])
+        or SimpleNamespace(returncode=0),
+    )
     cli.cleanup_commit_deletions(
         tmp_path, "demo", ["a", "b", "c", "d", "e", "f"], False,
         before_paths={"caller-edit.txt"},
@@ -312,7 +603,7 @@ def test_cleanup_commit_deletions_stages_only_paths_new_since_clean_step(monkeyp
     assert calls[0] == [
         "git", "-C", str(tmp_path), "add", "-A", "--", ":(literal)generated file.txt",
     ]
-    assert calls[1][0:5] == ["git", "-C", str(tmp_path), "commit", "--only"]
+    assert calls[1][0:4] == ["git", "commit", "--only", "-m"]
     assert calls[1][-2:] == ["--", ":(literal)generated file.txt"]
     assert any("(+1 more)" in item for item in calls[1])
 
@@ -328,6 +619,11 @@ def test_cleanup_commit_does_not_commit_a_path_already_dirty_before_clean_step(
     monkeypatch.setattr(
         cli.subprocess, "run",
         lambda argv, **kwargs: calls.append(argv) or SimpleNamespace(returncode=0),
+    )
+    monkeypatch.setattr(
+        cli, "run_local_git",
+        lambda root, *args, **kwargs: calls.append(["git", *args])
+        or SimpleNamespace(returncode=0),
     )
 
     cli.cleanup_commit_deletions(
@@ -351,12 +647,17 @@ def test_cleanup_commit_can_commit_clean_step_paths_without_deleted_tags(
         cli.subprocess, "run",
         lambda argv, **kwargs: calls.append(argv) or SimpleNamespace(returncode=0),
     )
+    monkeypatch.setattr(
+        cli, "run_local_git",
+        lambda root, *args, **kwargs: calls.append(["git", *args])
+        or SimpleNamespace(returncode=1, stderr="hook failed", stdout=""),
+    )
 
     cli.cleanup_commit_deletions(
         tmp_path, "demo", [], False, before_paths=set(),
     )
 
-    assert calls[-1][6] == "chore(demo): commit cleanup-generated files"
+    assert calls[-1][4] == "chore(demo): commit cleanup-generated files"
 
 
 def test_cleanup_commit_fails_loudly_when_git_cannot_stage_generated_paths(

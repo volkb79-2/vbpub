@@ -31,6 +31,7 @@ def _dispatch_fixture(monkeypatch, tmp_path, retained, *, evidence_paths=()):
     monkeypatch.setattr(cli.transaction, "release_lock", lambda _: nullcontext())
     monkeypatch.setattr(cli, "_uncommitted_release_paths", lambda *args: {})
     monkeypatch.setattr(cli.transaction, "resume_workspace", lambda *args, **kwargs: workspace)
+    monkeypatch.setattr(cli.transaction, "read_release_scope_for_path", lambda _path: ["demo"])
     monkeypatch.setattr(cli.transaction, "assert_resume_workspace_committed", lambda _path: None)
     monkeypatch.setattr(cli.transaction, "copy_secret_overlays", lambda *args, **kwargs: None)
     monkeypatch.setattr(cli.transaction, "run_child", lambda *args, **kwargs: 0)

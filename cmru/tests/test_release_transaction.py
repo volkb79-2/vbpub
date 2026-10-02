@@ -594,7 +594,7 @@ def test_tester_gate_uses_explicit_container_workdir_and_no_shell(monkeypatch, t
         "docker", "run", "--cgroup-parent=dev-gates.slice", "--rm",
         "--mount", "type=bind,src=/host/repo,dst=/worktree",
         "--workdir", "/worktree/cmru", "--memory", "3g", "--memory-swap", "16g",
-        "--cpus", "1.5", "--cpu-period", "100000",
+        "--cpus", "1.5",
         "tester-unified:test",
         "/opt/tester-venv/bin/python", "-m", "pytest", "tests", "-q",
     ]
@@ -1199,6 +1199,58 @@ def test_resume_rejects_worktree_from_another_repository(tmp_path, monkeypatch):
 
     with pytest.raises(RuntimeError, match="not a worktree"):
         transaction.resume_workspace(tmp_path, retained)
+
+
+def test_resume_adopts_only_a_validated_legacy_release_worktree():
+    with _OriginAndClone() as h:
+        branch = "cmru-release-20260928_120000-alpha-ab12cd"
+        retained = h.add_worktree(branch, path_name="legacy-release")
+        initial = _git("rev-parse", "HEAD", cwd=retained)
+        legacy = transaction.ReleaseWorkspace(
+            repo_root=h.repo_root, path=retained, branch=branch, base=initial,
+        )
+        transaction.write_release_progress(h.repo_root, legacy, initial)
+
+        resumed = transaction.resume_workspace(h.repo_root, retained)
+
+        assert resumed.context is not None
+        assert resumed.context.purpose == "cmru-legacy"
+        assert resumed.context.namespace.labels["cmru.purpose"] == "release"
+        assert resumed.workspace_id == resumed.context.workspace_id
+        assert resumed.base == initial
+
+
+def test_resume_refuses_recordless_legacy_release_without_valid_progress():
+    with _OriginAndClone() as h:
+        branch = "cmru-release-20260928_120001-alpha-ab12cd"
+        retained = h.add_worktree(branch, path_name="legacy-release")
+
+        with pytest.raises(RuntimeError, match="no valid CMRU release progress record"):
+            transaction.resume_workspace(h.repo_root, retained)
+
+        _top, common, _branch, _head = transaction._shared_worktree().discover_git_context(retained)
+        assert transaction._shared_worktree().find_workspace(common, retained) is None
+
+
+def test_resume_refuses_legacy_progress_outside_the_candidate_history():
+    with _OriginAndClone() as h:
+        branch = "cmru-release-20260928_120002-alpha-ab12cd"
+        retained = h.add_worktree(branch, path_name="legacy-release")
+        _git("checkout", "-q", "-b", "unrelated", cwd=h.repo_root)
+        (h.repo_root / "README.md").write_text("unrelated commit\n")
+        _git("add", "README.md", cwd=h.repo_root)
+        _git("commit", "-q", "-m", "unrelated work", cwd=h.repo_root)
+        unrelated = _git("rev-parse", "HEAD", cwd=h.repo_root)
+        legacy = transaction.ReleaseWorkspace(
+            repo_root=h.repo_root, path=retained, branch=branch, base=unrelated,
+        )
+        transaction.write_release_progress(h.repo_root, legacy, unrelated)
+
+        with pytest.raises(RuntimeError, match="not an ancestor of the retained candidate"):
+            transaction.resume_workspace(h.repo_root, retained)
+
+        _top, common, _branch, _head = transaction._shared_worktree().discover_git_context(retained)
+        assert transaction._shared_worktree().find_workspace(common, retained) is None
 
 
 def test_push_backup_branch_force_pushes_under_its_own_name_and_records_it(tmp_path, monkeypatch):
@@ -1933,6 +1985,88 @@ def test_write_and_read_release_scope_round_trips():
         transaction.write_release_scope(h.repo_root, workspace, ["ciu", "cmru"])
 
         assert transaction.read_release_scope(h.repo_root, workspace) == ["ciu", "cmru"]
+
+
+def test_read_release_scope_for_path_uses_the_candidate_git_family():
+    with _OriginAndClone() as h:
+        branch = "cmru-release-20260930_120000-demo-abcdef"
+        workspace_path = h.add_worktree(branch)
+        base = _git("rev-parse", "HEAD", cwd=workspace_path)
+        workspace = transaction.ReleaseWorkspace(h.repo_root, workspace_path, branch, base)
+
+        assert transaction.read_release_scope_for_path(workspace_path) is None
+        transaction.write_release_scope(h.repo_root, workspace, ["demo"])
+        assert transaction.read_release_scope_for_path(workspace_path) == ["demo"]
+
+
+def test_read_release_scope_for_workspace_never_needs_the_listed_path():
+    with _OriginAndClone() as h:
+        workspace = transaction.ReleaseWorkspace(
+            h.repo_root,
+            h.tmp / "host-namespace" / "not-mounted-here",
+            "cmru-release-20261001_120000-demo-abcdef",
+            "a" * 40,
+        )
+        transaction.write_release_scope(h.repo_root, workspace, ["demo"])
+
+        assert transaction.read_release_scope_for_workspace(h.repo_root, workspace) == ["demo"]
+
+
+def test_read_release_scope_for_workspace_rejects_corrupt_sidecar():
+    with _OriginAndClone() as h:
+        workspace = transaction.ReleaseWorkspace(
+            h.repo_root,
+            h.tmp / "host-namespace" / "not-mounted-here",
+            "cmru-release-20261001_120000-demo-abcdef",
+            "a" * 40,
+        )
+        scope_path = transaction._scope_dir(h.repo_root) / f"{transaction._release_token(workspace)}.json"
+        scope_path.parent.mkdir(parents=True, exist_ok=True)
+        scope_path.write_text("not-json", encoding="utf-8")
+
+        with pytest.raises(RuntimeError, match="cannot read recorded release scope"):
+            transaction.read_release_scope_for_workspace(h.repo_root, workspace)
+
+
+def test_read_release_scope_for_workspace_rejects_nonrelease_branch():
+    workspace = transaction.ReleaseWorkspace(Path("."), Path("missing"), "main", "a" * 40)
+    with pytest.raises(RuntimeError, match="not a retained CMRU release branch"):
+        transaction.read_release_scope_for_workspace(Path("."), workspace)
+
+
+def test_read_release_scope_for_workspace_refuses_scope_stat_errors(monkeypatch):
+    with _OriginAndClone() as h:
+        workspace = transaction.ReleaseWorkspace(
+            h.repo_root, h.tmp / "foreign" / "missing",
+            "cmru-release-20261001_120000-demo-abcdef", "a" * 40,
+        )
+        metadata = transaction._scope_dir(h.repo_root) / f"{transaction._release_token(workspace)}.json"
+        original_lstat = Path.lstat
+
+        def fail_scope_stat(path):
+            if path == metadata:
+                raise PermissionError("permission denied")
+            return original_lstat(path)
+
+        monkeypatch.setattr(Path, "lstat", fail_scope_stat)
+        with pytest.raises(RuntimeError, match="cannot inspect recorded release scope.*permission denied"):
+            transaction.read_release_scope_for_workspace(h.repo_root, workspace)
+
+
+@pytest.mark.parametrize(
+    "payload", [[], 7, ["demo", "demo"], [" demo"], [""], [1]],
+)
+def test_read_release_scope_for_workspace_rejects_malformed_scope_shapes(payload):
+    with _OriginAndClone() as h:
+        workspace = transaction.ReleaseWorkspace(
+            h.repo_root, h.tmp / "foreign" / "missing",
+            "cmru-release-20261001_120000-demo-abcdef", "a" * 40,
+        )
+        metadata = transaction._scope_dir(h.repo_root) / f"{transaction._release_token(workspace)}.json"
+        metadata.parent.mkdir(parents=True, exist_ok=True)
+        metadata.write_text(json.dumps(payload), encoding="utf-8")
+        with pytest.raises(RuntimeError, match="recorded release scope is malformed"):
+            transaction.read_release_scope_for_workspace(h.repo_root, workspace)
 
 
 def test_write_and_read_release_progress_round_trips():

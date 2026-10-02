@@ -148,6 +148,11 @@ tar -C "$STAGE" \
     --file "$TARBALL" \
     "$TAG"
 
+# Retained CMRU build outputs include dist/ only. Keep the publisher's exact
+# version input beside the tarball so artifact-only publication never reads a
+# mutable source-tree file after the build worktree has been removed.
+cp -p "$VERSION_FILE" "$DIST_DIR/VERSION"
+
 ok "Artifact ready: $TARBALL"
 echo "  Size: $(du -sh "$TARBALL" | cut -f1)"
 echo "  Next: cmru release --config ../cmru.toml --project tls-edge"

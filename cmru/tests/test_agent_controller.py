@@ -1085,7 +1085,8 @@ class TestSelfUpdate:
     def test_render_service_unit_contains_venv_python(self):
         from cmru.agent.selfupdate import render_service_unit
         unit = render_service_unit(venv_python="/opt/dstdns/venv-1.0.0/bin/python")
-        assert "/opt/dstdns/venv-1.0.0/bin/python" in unit
+        assert "ExecStart=/opt/dstdns/venv-1.0.0/bin/cmru-agent run --scope system" in unit
+        assert "cmru.agent.cli" not in unit
         assert "Restart=always" in unit
 
     def test_running_interpreter_not_in_venv_dir(self, tmp_path):
