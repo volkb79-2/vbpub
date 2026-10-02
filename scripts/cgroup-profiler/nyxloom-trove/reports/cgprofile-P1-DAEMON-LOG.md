@@ -1612,3 +1612,14 @@ evidence. Run fresh short gates and doctor after the supplemental review
 artifact is committed. The 10a344e2 R2 remains a historical failure, not a
 result for the reconciled tree. No gate, review, merge to main, or release was
 started after the reconciliation.
+
+### Session 39 — 2026-10-02 01:06:31Z — supersede stale numbered-review handoff
+
+Updated the P1 review handoff to mark the numbered series complete at round 6
+ACCEPT and explicitly scope the next independent review to the supplemental
+R2 survivor-test/evidence delta; it is not a new round 7 or a full daemon
+review. The note refers to the reconciliation merge `e0ce67dc` and the
+documentation checkpoint `d97ecae4`, while the exact current review HEAD will
+be recorded by the controller at dispatch. This documentation-only update
+does not change daemon code or make prior gate results transferable. No gate
+or review has run on the resulting tip.
