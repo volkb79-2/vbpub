@@ -1571,3 +1571,25 @@ without conflict in merge `0485d82e475930fcbf74040a0138268b437b30b6`.
 Registered R0/R1, R3, and doctor had passed on `bd915d7f` immediately before
 this merge, but those exact-tree receipts do not transfer. Repeat all three
 on the current post-checkpoint candidate before review.
+
+### Session 37 — 2026-10-02 00:37:27Z — current-tree R2 result and survivor oracles
+
+The isolated current-tree R2 on `10a344e2f4685ac033f586fcb846b99e5fc2c8d5`
+ended at `2026-10-02T00:24:29.142187Z`. Its separately read verdict is
+`FAIL/MUTANTS_SURVIVED`: 193/193 accounted, 182 killed, 11 survived, and no
+equivalent, budget-exceeded, crash, or hang bucket. The exact container and
+PID were gone at the scheduled 00:28Z check; the progress stream's terminal
+event and verdict file prove completion. The exact tree is
+`9c084d1f29783c6a61b24d186befdb132813f7fa`, identical to the pre-repair P1
+candidate tree, and remains preserved in its isolated worktree.
+
+The survivor-by-survivor disposition and evidence are in the P1 REPORT's
+current-tree addendum. Four are contract-equivalent alternate equal-height
+rotations or equal-value assignments. Seven exposed missing oracles: two
+AVL-balance threshold cases, duplicate-count compression, two later-invalid
+CPU-delta cases, and empty `/proc` comm parsing. Added those regressions on
+the release-candidate branch. Load-niced focused `test_summary.py` and
+`test_targets.py` passed 176 tests at memory full PSI avg10 0.45%;
+`git diff --check` passed. This is local focused evidence only. Exact-tree
+R2, registered short/full gates, fresh final review, and release remain
+pending; no gate container was launched in this session.
