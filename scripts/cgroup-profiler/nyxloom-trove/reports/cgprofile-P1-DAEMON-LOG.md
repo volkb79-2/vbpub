@@ -1623,3 +1623,15 @@ documentation checkpoint `d97ecae4`, while the exact current review HEAD will
 be recorded by the controller at dispatch. This documentation-only update
 does not change daemon code or make prior gate results transferable. No gate
 or review has run on the resulting tip.
+
+### Session 40 — 2026-10-02 01:15:00Z — write scoped Sol review packet
+
+Added `cgprofile-P1-R2-SURVIVOR-SUPPLEMENTAL-REVIEW-HANDOFF.md` as the
+authoritative, narrow review packet and linked it from the historical P1
+review handoff. It names the exact files/sections, survivor oracles, Assay
+equivalence-policy check, live-evidence boundary, no-touch paths, and
+mechanical BLOCKED condition. The packet distinguishes prior exact-tree
+evidence from the current candidate and directs the reviewer not to open
+numbered round 7. It does not authorize a merge, release, install, or long
+gate; those remain controller actions after review. No review or gate has yet
+run on this packet's candidate.

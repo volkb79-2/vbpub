@@ -15,9 +15,12 @@ review dispatch; do not treat either checkpoint SHA as a later review receipt.
 The effective delta from main is limited to the P1 report/log and review-handoff
 records plus the two summary/target test files. A fresh Sol review must assess that supplemental
 test/evidence delta only; it must not claim a new full daemon review or release
-clearance. See `cgprofile-P1-DAEMON-REPORT.md`'s 2026-10-02 addenda for the
-survivor table and exact-tree gate status. The old R2 and short-gate receipts
-do not apply to the reconciled candidate.
+clearance. Use the scoped packet
+`cgprofile-P1-R2-SURVIVOR-SUPPLEMENTAL-REVIEW-HANDOFF.md`; it defines the
+current context, test oracles, scope, and stop rule. The remaining instructions
+below describe historical full-daemon review rounds; do not reuse their round
+numbering. The old R2 and short-gate receipts do not apply to the reconciled
+candidate.
 
 **Reviewer:** a genuinely fresh Sol xhigh session, not a fork of the
 implementer or controller. The caller selects and verifies the route from the
