@@ -5659,6 +5659,13 @@ def test_surface_cli_factory_loader_rejects_a_directory_path(tmp_path):
         _load_factory(f"{tmp_path}:build_cli")
 
 
+def test_surface_cli_factory_loader_preserves_missing_path_error(tmp_path):
+    missing_script = tmp_path / "missing-factory.py"
+
+    with pytest.raises(FileNotFoundError):
+        _load_factory(f"{missing_script}:build_cli")
+
+
 @pytest.mark.parametrize(
     "invalid_spec",
     (None, pytest.param(types.SimpleNamespace(loader=None), id="no-loader")),

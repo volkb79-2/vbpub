@@ -1039,10 +1039,9 @@ def _review_findings(
         depth: int,
     ) -> int:
         def is_option_boundary(position: int) -> bool:
-            try:
-                token = argv[position]
-            except IndexError:
+            if position >= len(argv):
                 return True
+            token = argv[position]
             option = token.partition("=")[0]
             if not token.startswith("-") or token == "-":
                 return False

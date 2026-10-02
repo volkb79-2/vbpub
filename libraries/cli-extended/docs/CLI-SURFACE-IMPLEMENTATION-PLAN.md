@@ -1,6 +1,6 @@
 # CLI surface and semantic review tooling plan
 
-**Status:** Netcup consumer pilot and correctness follow-up in progress. In the CIU worktree `cli-extended-review`, the current R0/R1 gate passes with 100% statement and branch coverage (3,404 statements; 1,650 branches), Netcup's registered suite passes all 228 tests, and the generated Netcup CLI surface check passes. A fresh R2 mutation campaign started at 2026-10-01 17:42 UTC; R3 will run after its final result. The source loader, library, pilot, and consumer documentation changes are in this worktree and remain uncommitted.
+**Status:** Netcup consumer pilot and correctness follow-up in progress. In the CIU worktree `cli-extended-review`, commit `77d13912` passed R0/R1 with 100% statement and branch coverage (3,404 statements; 1,650 branches), Netcup's registered suite (228 tests), and the generated Netcup CLI surface check. Its resumed R2 campaign completed all 1,013 candidates on 2026-10-02 and failed with two survivors; R3 passed with the expected canary rejection. The survivors and current remediation are recorded below. Fresh R0/R1, R2, and R3 evidence is required for the corrected source.
 
 **Scope:** CLI-EXT-01, CLI-EXT-03 disposition, and CLI-EXT-04
 **Decision owner:** cli-extended maintainers and adopting product owners
@@ -331,6 +331,27 @@ repeat count. Consumers declare separate named interactions for token shapes
 that have distinct product meaning, and their behavior tests assert exact
 cardinality. This keeps candidate generation bounded and makes each added
 semantic case explicit in the consumer's catalog and canonical spec.
+
+### R2 campaign on `77d13912` and survivor triage
+
+The resumed registered R2 campaign on commit `77d139123f31e3bbdcd4b3ade27f065a4d7fa927`
+completed on 2026-10-02 with `MUTANTS_SURVIVED`: 1,011 killed, two survived,
+and zero crashed, timed out, or exceeded budget out of 1,013 candidates. The
+R3 canary then passed with the expected rejection after disabling the JSON
+redaction guard. The verdict and progress stream are
+`libraries/cli-extended/.assay/verdict-r2-choice-semantics.json` and
+`libraries/cli-extended/.assay/progress-r2-choice-semantics.jsonl`; wrapper
+logs are `/tmp/cli-extended-review-r2-resumed.log` and
+`/tmp/cli-extended-review-r3-after-resumed-r2.log`.
+
+| Survivor | Review finding | Follow-up |
+| --- | --- | --- |
+| `review.py:1045`, `True->False` | At EOF, both the original and mutated boundary check made the caller's cursor land beyond `len(argv)`, so the final findings did not change. The prior `try/except IndexError` obscured that the check is a sequence-length boundary. | Compare `position` with `len(argv)` before indexing; the existing missing-value case exercises EOF and now protects against an out-of-range access. |
+| `surface_cli.py:36`, `strict=True->False` | No test distinguished a missing script from an existing directory. Strict resolution intentionally gives a missing path its `FileNotFoundError`; an existing directory instead reaches the explicit “is not a file” validation. | Add a focused missing-script regression test to preserve the distinct, accurate filesystem error. |
+
+The remediation is in progress. Do not treat the `77d13912` R2 result as a
+pass; archive its completed state before starting a fresh R2 run for the
+corrected commit.
 
 ## Consumer workflows this should support
 
