@@ -28,12 +28,19 @@ from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any, Iterator, Mapping, NamedTuple, Sequence
 
-from cmru.git_auth import GitHubGitAuth, run_remote_git
+from cmru.git_auth import (
+    GitHubGitAuth,
+    run_local_git,
+    run_remote_git,
+    without_publisher_tokens,
+)
 
 
 CHILD_ENV = "CMRU_RELEASE_TRANSACTION_CHILD"
 BRANCH_ENV = "CMRU_RELEASE_BRANCH"
 BASE_ENV = "CMRU_RELEASE_BASE"
+_LEGACY_RESUME_METADATA_KEY = "transaction_scope"
+_LEGACY_RESUME_METADATA_VALUE = "legacy-release-resume"
 
 
 def is_transaction_child(repo_root: Path) -> bool:
@@ -42,7 +49,7 @@ def is_transaction_child(repo_root: Path) -> bool:
     The environment carries routing facts from :func:`run_child`, but it is not
     ownership evidence by itself: callers can set environment variables. Verify
     the Git worktree, same-family source root, transaction branch, and shared
-    CMRU ownership record (or a registered legacy transaction worktree) before
+    CMRU ownership record (or a validated legacy release adoption) before
     allowing the in-place path. A parser switch is not part of the public grammar.
     """
     if os.environ.get(CHILD_ENV) != "1":
@@ -50,7 +57,10 @@ def is_transaction_child(repo_root: Path) -> bool:
     expected_path = os.environ.get("CMRU_WORKSPACE_PATH", "").strip()
     expected_source_root = os.environ.get("CMRU_SOURCE_GIT_ROOT", "").strip()
     expected_branch = os.environ.get(BRANCH_ENV, "").strip()
-    if not expected_path or not expected_source_root or not expected_branch:
+    expected_base = os.environ.get(BASE_ENV, "").strip()
+    expected_workspace_id = os.environ.get("CMRU_WORKSPACE_ID", "").strip()
+    if not all((expected_path, expected_source_root, expected_branch,
+                expected_base, expected_workspace_id)):
         raise RuntimeError("incomplete CMRU transaction child context")
     expected_path_obj = Path(expected_path).expanduser().resolve()
     source_root_obj = Path(expected_source_root).expanduser().resolve()
@@ -61,7 +71,7 @@ def is_transaction_child(repo_root: Path) -> bool:
 
     shared = _shared_worktree()
     try:
-        child_top, child_common, actual_branch, _head = shared.discover_git_context(
+        child_top, child_common, actual_branch, child_head = shared.discover_git_context(
             expected_path_obj
         )
         source_top, source_common, _source_branch, _source_head = shared.discover_git_context(
@@ -100,15 +110,31 @@ def is_transaction_child(repo_root: Path) -> bool:
     if len(matches) != 1 or matches[0].is_primary or matches[0].branch != actual_branch:
         raise RuntimeError("CMRU transaction child is not a registered secondary worktree")
 
-    if record is not None:
-        _require_cmru_record_purpose(record, purpose, child_top)
-        if record.branch != actual_branch or Path(record.worktree_path).resolve() != child_top:
-            raise RuntimeError("CMRU shared transaction record does not match its worktree")
-        if Path(record.source_git_root).resolve() != source_root_obj:
-            raise RuntimeError("CMRU shared transaction record has a different source root")
-        recorded_id = os.environ.get("CMRU_WORKSPACE_ID", "").strip()
-        if recorded_id and record.workspace_id != recorded_id:
-            raise RuntimeError("CMRU transaction child workspace ID does not match its record")
+    if record is None:
+        raise RuntimeError("CMRU transaction child has no shared ownership record")
+    _require_cmru_record_purpose(record, purpose, child_top)
+    if record.purpose == "cmru-legacy" and purpose != "release":
+        raise RuntimeError("recordless legacy compatibility is release-resume only")
+    if record.branch != actual_branch or Path(record.worktree_path).resolve() != child_top:
+        raise RuntimeError("CMRU shared transaction record does not match its worktree")
+    if Path(record.source_git_root).resolve() != source_root_obj:
+        raise RuntimeError("CMRU shared transaction record has a different source root")
+    if record.workspace_id != expected_workspace_id:
+        raise RuntimeError("CMRU transaction child workspace ID does not match its record")
+    if record.base_commit != expected_base:
+        raise RuntimeError("CMRU transaction child base does not match its record")
+    if record.purpose == "cmru-legacy":
+        metadata = getattr(record, "metadata", None)
+        if (
+            not isinstance(metadata, Mapping)
+            or metadata.get(_LEGACY_RESUME_METADATA_KEY) != _LEGACY_RESUME_METADATA_VALUE
+        ):
+            raise RuntimeError(
+                "legacy CMRU release child has no validated resume metadata"
+            )
+        _validate_legacy_release_progress(
+            source_root_obj, child_top, actual_branch, child_head,
+        )
 
     return True
 
@@ -137,9 +163,10 @@ def _shared_workspace_record(shared: Any, common: Path, path: Path) -> Any | Non
 def _require_cmru_record_purpose(record: Any, purpose: str, path: Path) -> None:
     """Refuse to treat another product's shared checkout as a CMRU transaction.
 
-    ``cmru-legacy`` is the one intermediate record purpose written by the
-    compatibility removal bridge; its branch still has to match the requested
-    CMRU operation before that record can be resumed or discarded.
+    ``cmru-legacy`` records either the compatibility removal bridge or a
+    validated adoption of an older release candidate; its branch still has to
+    match the requested CMRU operation before that record can be resumed or
+    discarded.
     """
     expected = f"cmru-{purpose}"
     if record.purpose not in {expected, "cmru-legacy"}:
@@ -166,6 +193,40 @@ class ReleaseWorkspace:
         if value:
             return str(value)
         return _shared_worktree().workspace_id_for_path(self.path)
+
+
+def _validate_legacy_release_progress(
+    repo_root: Path, path: Path, branch: str, head: str,
+) -> str:
+    """Require a valid, committed legacy-release checkpoint at or before HEAD."""
+    if not _is_release_branch(branch):
+        raise RuntimeError(f"{path} is not a retained cmru release branch (got {branch!r})")
+    if not re.fullmatch(r"[0-9a-f]{40}", head):
+        raise RuntimeError(f"{path} has an invalid Git HEAD; refusing legacy resume")
+    progress_workspace = ReleaseWorkspace(
+        repo_root=repo_root.resolve(), path=path.resolve(), branch=branch, base=head,
+    )
+    progress = read_release_progress(repo_root, progress_workspace)
+    if progress is None or not re.fullmatch(r"[0-9a-f]{40}", progress):
+        raise RuntimeError(
+            f"{path} has no valid CMRU release progress record; refusing legacy resume"
+        )
+    progress_check = run_local_git(
+        path, "merge-base", "--is-ancestor", progress, head,
+        capture_output=True, text=True, check=False,
+    )
+    if progress_check.returncode == 1:
+        raise RuntimeError(
+            f"{path} release progress is not an ancestor of the retained candidate; "
+            "refusing legacy resume"
+        )
+    if progress_check.returncode != 0:
+        detail = progress_check.stderr.strip() or progress_check.stdout.strip() or "no diagnostic output"
+        raise RuntimeError(
+            f"cannot validate legacy release progress for {path} "
+            f"({progress_check.returncode}): {detail}"
+        )
+    return progress
 
 
 def _shared_worktree():
@@ -466,33 +527,34 @@ def create_workspace(
             f"worktree path already exists: {path}; refusing to reuse an occupied transaction name"
         )
     try:
-        context = shared.create_workspace(
-            source_root,
-            # The workspace allocator must operate on the selected Git
-            # family, never on an orchestration directory above it.
-            path,
-            branch=branch,
-            base=base,
-            purpose=f"cmru-{purpose}",
+        with without_publisher_tokens():
+            context = shared.create_workspace(
+                source_root,
+                # The workspace allocator must operate on the selected Git
+                # family, never on an orchestration directory above it.
+                path,
+                branch=branch,
+                base=base,
+                purpose=f"cmru-{purpose}",
                 labels={"cmru.purpose": purpose, "cmru.scope": _sanitize_scope(scope)},
                 metadata={"transaction_scope": _sanitize_scope(scope)},
                 identity_path=parent / seed_branch,
-        )
+            )
         # The neutral allocator deliberately admits a checkout with no
         # files so CIU can write its adapter record before its own reset.
         # CMRU has no such staged allocation phase: its child must see the
         # committed project documents before it starts, so materialize the
         # exact requested snapshot before returning the workspace.
-        checkout = subprocess.run(
-            ["git", "reset", "--hard", base],
-            cwd=path,
+        checkout = run_local_git(
+            path, "reset", "--hard", base,
             text=True,
             capture_output=True,
             check=False,
         )
         if checkout.returncode:
             try:
-                shared.remove_workspace(context, force=True)
+                with without_publisher_tokens():
+                    shared.remove_workspace(context, force=True)
             except Exception:
                 pass
             raise RuntimeError(
@@ -525,8 +587,9 @@ def resume_workspace(
         expected_common = None
     if expected_common is not None and path_common != expected_common:
         raise RuntimeError(f"{path} is not a worktree of {repo_root}")
-    # New transactions are resumed from the shared record. Legacy retained
-    # worktrees have no record and use the compatibility reader below.
+    # New transactions resume directly from their CMRU record. Legacy
+    # candidates, including a removal-bridge record, pass the progress check
+    # before they can be promoted to validated legacy-resume ownership.
     try:
         _top, common, _branch, _head = shared.discover_git_context(path)
         record = _shared_workspace_record(shared, common, path)
@@ -537,6 +600,26 @@ def resume_workspace(
                 raise RuntimeError(
                     f"{path} is not a retained cmru release branch (got {context.branch!r})"
                 )
+            if record.purpose == "cmru-legacy":
+                metadata = getattr(record, "metadata", None)
+                if not isinstance(metadata, Mapping):
+                    raise RuntimeError(
+                        f"{path} has invalid legacy CMRU workspace metadata; refusing resume"
+                    )
+                scope = metadata.get(_LEGACY_RESUME_METADATA_KEY)
+                if scope not in (None, _LEGACY_RESUME_METADATA_VALUE):
+                    raise RuntimeError(
+                        f"{path} has an unrecognized legacy CMRU transaction scope; "
+                        "refusing resume"
+                    )
+                _top, _common, retained_branch, retained_head = shared.discover_git_context(path)
+                _validate_legacy_release_progress(
+                    repo_root, path, retained_branch, retained_head,
+                )
+                if scope is None:
+                    metadata = dict(metadata)
+                    metadata[_LEGACY_RESUME_METADATA_KEY] = _LEGACY_RESUME_METADATA_VALUE
+                    context = shared.ensure_workspace(record, metadata=metadata)
             return ReleaseWorkspace(
                 repo_root=repo_root.resolve(),
                 path=path,
@@ -549,10 +632,39 @@ def resume_workspace(
     branch = _git(path, "branch", "--show-current")
     if not _is_release_branch(branch):
         raise RuntimeError(f"{path} is not a retained cmru release branch (got {branch!r})")
+    if expected_common is None:
+        raise RuntimeError(
+            f"cannot validate legacy release worktree {path}: source Git family is unknown"
+        )
+    head = _git(path, "rev-parse", "HEAD")
+    _validate_legacy_release_progress(repo_root, path, branch, head)
+    try:
+        source_top, source_common, _source_branch, _source_head = shared.discover_git_context(
+            repo_root
+        )
+        if (
+            source_common != path_common
+            or Path(source_top).resolve() != repo_root.resolve()
+            or Path(path_top).resolve() != path
+        ):
+            raise RuntimeError("legacy release worktree and source root do not share the exact Git family")
+        context = shared.adopt_workspace(
+            source_top,
+            path,
+            purpose="cmru-legacy",
+            labels={"cmru.purpose": "release"},
+            metadata={_LEGACY_RESUME_METADATA_KEY: _LEGACY_RESUME_METADATA_VALUE},
+            identity_path=path,
+        )
+    except Exception as exc:
+        raise RuntimeError(f"cannot adopt validated legacy release worktree {path}: {exc}") from exc
     run_remote_git(
         path_top, "fetch", "--prune", "origin", "main", auth=git_auth, check=True,
     )
-    return ReleaseWorkspace(repo_root=repo_root.resolve(), path=path, branch=branch, base=_git(path, "rev-parse", "HEAD"))
+    return ReleaseWorkspace(
+        repo_root=repo_root.resolve(), path=path, branch=branch,
+        base=context.base_commit, context=context,
+    )
 
 
 def assert_resume_workspace_committed(path: Path) -> None:
@@ -610,18 +722,20 @@ def remove_workspace(workspace: ReleaseWorkspace) -> None:
     """Remove a successful ephemeral worktree and its private branch."""
     if workspace.context is not None:
         try:
-            _shared_worktree().remove_workspace(workspace.context)
+            with without_publisher_tokens():
+                _shared_worktree().remove_workspace(workspace.context)
             return
         except Exception as exc:
             raise RuntimeError(str(exc)) from exc
     try:
-        _shared_worktree().remove_unrecorded_workspace(
-            workspace.repo_root,
-            workspace.path,
-            expected_branch=workspace.branch,
-            purpose="cmru-legacy",
-            force=True,
-        )
+        with without_publisher_tokens():
+            _shared_worktree().remove_unrecorded_workspace(
+                workspace.repo_root,
+                workspace.path,
+                expected_branch=workspace.branch,
+                purpose="cmru-legacy",
+                force=True,
+            )
     except Exception as exc:
         raise RuntimeError(str(exc)) from exc
 
@@ -671,6 +785,68 @@ def read_release_scope(repo_root: Path, workspace: ReleaseWorkspace) -> list[str
         return json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
+
+
+def read_release_scope_for_workspace(
+    repo_root: Path, workspace: ReleaseWorkspace,
+) -> list[str] | None:
+    """Read release scope using Git-family metadata, without inspecting the path.
+
+    ``list_cmru_workspaces`` may return a literal path from another filesystem
+    namespace. The scope sidecar lives under the shared Git directory, so its
+    contents can be read from ``repo_root`` without statting that worktree path.
+    Missing legacy metadata returns ``None``; malformed or unreadable metadata
+    raises so callers cannot mistake uncertainty for absence.
+    """
+    if not _is_release_branch(workspace.branch):
+        raise RuntimeError(
+            f"{workspace.branch!r} is not a retained CMRU release branch"
+        )
+    metadata = _scope_dir(repo_root) / f"{_release_token(workspace)}.json"
+    try:
+        metadata.lstat()
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise RuntimeError(f"cannot inspect recorded release scope {metadata}: {exc}") from exc
+    try:
+        scope = json.loads(metadata.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, ValueError) as exc:
+        raise RuntimeError(f"cannot read recorded release scope {metadata}: {exc}") from exc
+    if (
+        not isinstance(scope, list)
+        or not scope
+        or any(not isinstance(name, str) or not name or name.strip() != name for name in scope)
+        or len(scope) != len(set(scope))
+    ):
+        raise RuntimeError(f"recorded release scope is malformed: {metadata}")
+    return scope
+
+
+def read_release_scope_for_path(path: Path) -> list[str] | None:
+    """Read the exact saved scope for a retained release worktree.
+
+    Unlike :func:`read_release_scope`, this resolves the owning Git family from
+    the candidate itself. It is used before project selection during resume,
+    when the project scope is the fact needed to choose that Git family.
+    Missing metadata is represented by ``None`` for legacy candidates; malformed
+    or unreadable metadata is an error so it can never be mistaken for absence.
+    """
+    path = Path(path).expanduser().resolve()
+    if not path.is_dir():
+        raise RuntimeError(f"release worktree does not exist: {path}")
+    shared = _shared_worktree()
+    try:
+        top, _common, branch, head = shared.discover_git_context(path)
+    except Exception as exc:
+        raise RuntimeError(f"{path} is not a readable Git worktree: {exc}") from exc
+    top = Path(top).resolve()
+    if top != path:
+        raise RuntimeError(f"release resume path must name the worktree root: {path}")
+    if not _is_release_branch(branch):
+        raise RuntimeError(f"{path} is not a retained CMRU release branch (got {branch!r})")
+    workspace = ReleaseWorkspace(repo_root=top, path=path, branch=branch, base=head)
+    return read_release_scope_for_workspace(top, workspace)
 
 
 def forget_release_scope(repo_root: Path, workspace: ReleaseWorkspace) -> None:
@@ -1898,16 +2074,15 @@ def revert_promotion(
     branch_tip = _git(workspace.path, "rev-parse", workspace.branch)
     if base == branch_tip:
         return RevertResult(ok=True, reverted=False)
-    result = subprocess.run(
-        ["git", "revert", "--no-edit", "--no-commit", f"{base}..{branch_tip}"],
-        cwd=workspace.path,
+    result = run_local_git(
+        workspace.path, "revert", "--no-edit", "--no-commit", f"{base}..{branch_tip}",
     )
     if result.returncode != 0:
-        subprocess.run(["git", "revert", "--abort"], cwd=workspace.path, check=False)
+        run_local_git(workspace.path, "revert", "--abort", check=False)
         return RevertResult(ok=False, reverted=False)
-    subprocess.run(
-        ["git", "commit", "-m", f"revert: undo failed release {workspace.branch}"],
-        cwd=workspace.path, check=True,
+    run_local_git(
+        workspace.path, "commit", "-m", f"revert: undo failed release {workspace.branch}",
+        check=True,
     )
     push = run_remote_git(
         workspace.path, "push", "origin", "HEAD:refs/heads/main", auth=git_auth,
@@ -1980,7 +2155,7 @@ def _sync_local_main_result(
                 "in the clean-looking caller checkout, so no new rebase or abort was "
                 "attempted. Finish or abort that existing rebase, then retry cleanup.",
             )
-        result = subprocess.run(["git", "rebase", "origin/main"], cwd=repo_root)
+        result = run_local_git(repo_root, "rebase", "origin/main")
         if result.returncode == 0:
             return _SyncLocalMainResult(True)
 
@@ -1996,9 +2171,7 @@ def _sync_local_main_result(
         rebase_active = _rebase_in_progress(repo_root)
         abort_result = None
         if rebase_active is True:
-            abort_result = subprocess.run(
-                ["git", "rebase", "--abort"], cwd=repo_root, check=False,
-            )
+            abort_result = run_local_git(repo_root, "rebase", "--abort", check=False)
 
         if conflict_known and unmerged:
             if abort_result is not None and abort_result.returncode == 0:
@@ -2062,7 +2235,7 @@ def _sync_local_main_result(
                 "and is not checked out, so it was not force-moved. Reconcile that ref "
                 "manually; no caller checkout synchronization is claimed.",
             )
-    result = subprocess.run(["git", "branch", "-f", "main", "origin/main"], cwd=repo_root)
+    result = run_local_git(repo_root, "branch", "-f", "main", "origin/main")
     if result.returncode == 0:
         return _SyncLocalMainResult(True)
     return _SyncLocalMainResult(

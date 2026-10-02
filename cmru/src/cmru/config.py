@@ -585,7 +585,14 @@ def _expand_env_reference(value: str, where: str, key: str) -> str:
     )
 
 
-def _scalar_env(raw: object, where: str) -> dict[str, str]:
+_RESERVED_CREDENTIAL_ENV = frozenset({
+    "GITHUB_PUSH_PAT", "GITHUB_TOKEN", "CMRU_GIT_AUTH_TOKEN",
+})
+
+
+def _scalar_env(
+    raw: object, where: str, *, reject_credentials: bool = False,
+) -> dict[str, str]:
     if raw is None:
         return {}
     if not isinstance(raw, dict):
@@ -594,6 +601,12 @@ def _scalar_env(raw: object, where: str) -> dict[str, str]:
     for key, value in raw.items():
         if not isinstance(key, str) or not key or not isinstance(value, (str, int, float, bool)):
             _error(f"{where} must contain string keys and scalar values")
+        if reject_credentials and key in _RESERVED_CREDENTIAL_ENV:
+            _error(
+                f"{where}.{key} is reserved for resolved publisher credentials; "
+                "supply tokens through GITHUB_PUSH_PAT/GITHUB_TOKEN in the invoking "
+                "environment or the ignored cmru.secret.toml file"
+            )
         result[key] = _expand_env_reference(str(value), where, key)
     return result
 
@@ -752,7 +765,7 @@ def _validate_runner_steps(raw_steps: object) -> dict[str, dict]:
                 _error(f"{where}.{key} must be a non-empty string")
         if not isinstance(step.get("quiet"), bool):
             _error(f"{where}.quiet must be explicitly true or false")
-        _scalar_env(step.get("env", {}), f"{where}.env")
+        _scalar_env(step.get("env", {}), f"{where}.env", reject_credentials=True)
         login = step.get("login")
         if login is not None:
             if not isinstance(login, dict):
@@ -797,7 +810,7 @@ def _parse_project_document(
             )
         github = None
         targets = None
-    env = _scalar_env(raw.get("env", {}), "env")
+    env = _scalar_env(raw.get("env", {}), "env", reject_credentials=True)
     metadata = _scalar_env(raw.get("build_metadata", {}), "build_metadata")
     versions = _parse_versions(
         raw.get("versions"), f"{PROJECT_CONFIG_FILENAME} [versions]",
@@ -1006,7 +1019,9 @@ def _load_orchestration_config(config_path: Path) -> ForgeConfig:
     if not isinstance(defaults_raw, dict):
         _error("orchestration.defaults must be a table")
     _reject_unknown(defaults_raw, {"env"}, "orchestration.defaults")
-    shared_env = _scalar_env(defaults_raw.get("env"), "orchestration.defaults.env")
+    shared_env = _scalar_env(
+        defaults_raw.get("env"), "orchestration.defaults.env", reject_credentials=True,
+    )
     for project_id, entry in entries.items():
         where = f"orchestration.project.{project_id}"
         if project_id == "all":

@@ -123,7 +123,10 @@ def test_cleanup_release_tag_union_keeps_latest_and_deletes_tag_only(monkeypatch
     monkeypatch.setattr(cli, "list_releases", lambda *args: [
         {"tag_name": "demo-v1.0.0", "id": 1}, {"tag_name": "demo-latest", "id": 2},
     ])
-    monkeypatch.setattr(cli, "list_remote_tags_matching", lambda *args, **kwargs: ["demo-v1.0.0", "demo-v2.0.0"])
+    monkeypatch.setattr(
+        cli, "list_remote_tag_refs_matching",
+        lambda *args, **kwargs: {"demo-v1.0.0": "a" * 40, "demo-v2.0.0": "b" * 40},
+    )
     monkeypatch.setattr(cli, "delete_release", lambda *args, **kwargs: deleted.append(("release", args[3])))
     monkeypatch.setattr(cli, "delete_git_tag_remote", lambda root, tag, dry_run, **kwargs: deleted.append(("remote", tag)))
     monkeypatch.setattr(cli, "delete_git_tag_local", lambda root, tag, dry_run: deleted.append(("local", tag)))

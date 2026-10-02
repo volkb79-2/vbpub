@@ -158,10 +158,10 @@ class TestCleanupProjectReleasesAndTags:
         def fake_list_releases(owner, repo, token):
             return releases
 
-        def fake_list_remote(repo_root, pattern, **_kwargs):
-            # Return only tags matching the pattern prefix.
+        def fake_list_remote_refs(repo_root, pattern, **_kwargs):
+            # Return only tags matching the pattern prefix, with stable ref IDs.
             pfx = pattern.rstrip("*")
-            return [t for t in remote_tags if t.startswith(pfx)]
+            return {t: "a" * 40 for t in remote_tags if t.startswith(pfx)}
 
         def fake_delete_release(owner, repo, token, release_id, dry_run):
             deleted_release_args.append(release_id)
@@ -174,7 +174,7 @@ class TestCleanupProjectReleasesAndTags:
 
         with (
             patch.object(cli, "list_releases", side_effect=fake_list_releases),
-            patch.object(cli, "list_remote_tags_matching", side_effect=fake_list_remote),
+            patch.object(cli, "list_remote_tag_refs_matching", side_effect=fake_list_remote_refs),
             patch.object(cli, "delete_release", side_effect=fake_delete_release),
             patch.object(cli, "delete_git_tag_remote", side_effect=fake_delete_remote),
             patch.object(cli, "delete_git_tag_local", side_effect=fake_delete_local),
@@ -317,9 +317,9 @@ class TestRunCleanupVerb:
         def fake_list_releases(owner, repo, token):
             return releases
 
-        def fake_list_remote(repo_root, pattern, **_kwargs):
+        def fake_list_remote_refs(repo_root, pattern, **_kwargs):
             pfx = pattern.rstrip("*")
-            return [t for t in remote_tags if t.startswith(pfx)]
+            return {t: "a" * 40 for t in remote_tags if t.startswith(pfx)}
 
         def fake_delete_release(owner, repo, token, release_id, dry_run=False):
             # Only called when dry_run=False (the caller guards it).
@@ -332,7 +332,9 @@ class TestRunCleanupVerb:
         def fake_delete_local(repo_root, tag, dry_run=False):
             calls_record["local_tag_deletes"].append(tag)
 
-        def fake_cleanup_project_step(repo_root, project, version, dry_run=False):
+        def fake_cleanup_project_step(
+            repo_root, project, version, dry_run=False, *, publisher_token=None,
+        ):
             # Mirror real behaviour: no step runs when dry-run or absent.
             if dry_run or "clean" not in project.steps:
                 return False
@@ -350,7 +352,7 @@ class TestRunCleanupVerb:
 
         with (
             patch.object(cli, "list_releases", side_effect=fake_list_releases),
-            patch.object(cli, "list_remote_tags_matching", side_effect=fake_list_remote),
+            patch.object(cli, "list_remote_tag_refs_matching", side_effect=fake_list_remote_refs),
             patch.object(cli, "delete_release", side_effect=fake_delete_release),
             patch.object(cli, "delete_git_tag_remote", side_effect=fake_delete_remote),
             patch.object(cli, "delete_git_tag_local", side_effect=fake_delete_local),
@@ -480,7 +482,7 @@ class TestRunCleanupVerb:
 
         with (
             patch.object(cli, "list_releases", return_value=[]),
-            patch.object(cli, "list_remote_tags_matching", return_value=[]),
+            patch.object(cli, "list_remote_tag_refs_matching", return_value={}),
             patch.object(cli, "delete_release"),
             patch.object(cli, "delete_package"),
             patch.object(cli, "resolve_versions_from_git"),

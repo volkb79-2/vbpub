@@ -132,6 +132,41 @@ def test_config_project_metadata_and_orchestration_resolution_errors(tmp_path, c
             config.load_forge_config(orch)
 
 
+@pytest.mark.parametrize(
+    "name", ["GITHUB_PUSH_PAT", "GITHUB_TOKEN", "CMRU_GIT_AUTH_TOKEN"],
+)
+@pytest.mark.parametrize("placement", ["project", "step", "orchestration"])
+def test_config_refuses_publisher_credentials_in_declared_env_tables(
+    tmp_path, name, placement, capsys,
+):
+    project_path = tmp_path / "cmru.toml"
+    if placement == "project":
+        document = project_doc().replace(
+            "[runtime]\n", f"[env]\n{name} = \"injected\"\n[runtime]\n",
+        )
+        project_path.write_text(document, encoding="utf-8")
+        selected = project_path
+    elif placement == "step":
+        document = project_doc() + f"\n[steps.push.env]\n{name} = \"injected\"\n"
+        project_path.write_text(document, encoding="utf-8")
+        selected = project_path
+    else:
+        project_dir = tmp_path / "demo"
+        project_dir.mkdir()
+        (project_dir / "cmru.toml").write_text(central_project_doc(), encoding="utf-8")
+        document = orch_doc().replace(
+            "[orchestration.project.demo]",
+            f"[orchestration.defaults.env]\n{name} = \"injected\"\n"
+            "[orchestration.project.demo]",
+        )
+        selected = tmp_path / "cmru.orchestration.toml"
+        selected.write_text(document, encoding="utf-8")
+
+    with pytest.raises(SystemExit):
+        config.load_forge_config(selected)
+    assert "reserved for resolved publisher credentials" in capsys.readouterr().err
+
+
 def _project(strategy="scm", git_tag=True, prefix="demo-v", cwd="demo"):
     return SimpleNamespace(strategy=strategy, git_tag=git_tag, prefix=prefix, cwd=cwd, version=SimpleNamespace(strategy=strategy, base_version="1.0.0"))
 

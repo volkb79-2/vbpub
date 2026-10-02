@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import subprocess
+from contextlib import contextmanager, nullcontext
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -9,6 +10,11 @@ import pytest
 
 from cli_extended import CliFailure
 from cmru import cli, transaction
+
+
+@pytest.fixture(autouse=True)
+def _skip_process_lock_unless_a_test_is_about_locking(monkeypatch):
+    monkeypatch.setattr(transaction, "release_lock", lambda _root: nullcontext())
 
 
 class _Runtime:
@@ -31,7 +37,9 @@ def _workspace(path: Path, branch: str, base: str = "a" * 40):
     )
 
 
-def _read_only_git(monkeypatch, *, heads="", tags=""):
+def _read_only_git(monkeypatch, *, heads=None, tags=""):
+    if heads is None:
+        heads = "a" * 40 + "\trefs/heads/main\n"
     def run(argv, **kwargs):
         if argv[:3] == ["git", "ls-remote", "--heads"]:
             return subprocess.CompletedProcess(argv, 0, heads, "")
@@ -315,6 +323,61 @@ def test_abandon_accepts_interactive_confirmation_for_verified_plan(monkeypatch,
     assert runtime.confirmed
 
 
+def test_abandon_holds_release_lock_across_inspection_confirmation_and_removal(
+    monkeypatch, tmp_path,
+):
+    candidate = _workspace(tmp_path, "cmru-release-20260924_120000-alpha-ab12cd")
+    _install_candidate_facts(monkeypatch, tmp_path, [candidate])
+    _read_only_git(monkeypatch)
+    events = []
+
+    @contextmanager
+    def release_lock(_root):
+        events.append("lock")
+        yield
+        events.append("unlock")
+
+    monkeypatch.setattr(transaction, "release_lock", release_lock)
+    monkeypatch.setattr(
+        transaction, "list_cmru_workspaces",
+        lambda _root: events.append("inspect") or [candidate],
+    )
+
+    class Runtime:
+        def confirm(self, _prompt):
+            events.append("confirm")
+            return True
+
+    def abandon(_root, workspace, **_kwargs):
+        assert workspace is candidate
+        assert "lock" in events and "unlock" not in events
+        events.append("abandon")
+
+    monkeypatch.setattr(transaction, "abandon_workspace", abandon)
+
+    assert _invoke_abandon(
+        candidate, branch=candidate.branch, dry_run=False, runtime=Runtime(),
+    ) == 0
+    assert events == ["lock", "inspect", "confirm", "abandon", "unlock"]
+
+
+def test_abandon_refuses_while_a_local_release_holds_the_lock(monkeypatch, tmp_path):
+    @contextmanager
+    def occupied_lock(_root):
+        raise RuntimeError("Another cmru release transaction is already running.")
+        yield
+
+    monkeypatch.setattr(transaction, "release_lock", occupied_lock)
+    monkeypatch.setattr(
+        transaction, "list_cmru_workspaces",
+        lambda _root: pytest.fail("candidate inspection ran without the release lock"),
+    )
+    monkeypatch.setattr(cli, "_current_git_root", lambda: tmp_path)
+
+    with pytest.raises(CliFailure, match="Another cmru release transaction is already running"):
+        _invoke_abandon(None, dry_run=False)
+
+
 @pytest.mark.parametrize(
     "remote_code, remote_present, pushed, removed, message",
     [
@@ -330,10 +393,11 @@ def test_abandon_refuses_remote_branch_state_that_disagrees_with_markers(
     _install_candidate_facts(monkeypatch, tmp_path, [candidate])
     monkeypatch.setattr(transaction, "backup_was_pushed", lambda *_: pushed)
     monkeypatch.setattr(transaction, "backup_was_removed", lambda *_: removed)
-    stdout = (
-        "a" * 40 + "\trefs/heads/" + candidate.branch + "\n"
-        if remote_present else ""
-    )
+    stdout = ""
+    if remote_code == 0:
+        if remote_present:
+            stdout += "a" * 40 + "\trefs/heads/" + candidate.branch + "\n"
+        stdout += "b" * 40 + "\trefs/heads/main\n"
     monkeypatch.setattr(
         cli.subprocess, "run",
         lambda argv, **_kw: subprocess.CompletedProcess(
@@ -344,6 +408,30 @@ def test_abandon_refuses_remote_branch_state_that_disagrees_with_markers(
     with pytest.raises(CliFailure, match="nothing was abandoned"):
         _invoke_abandon(candidate, branch=candidate.branch, dry_run=False)
     assert message in capsys.readouterr().out
+
+
+def test_abandon_refuses_successful_remote_lookup_without_origin_main(
+    monkeypatch, tmp_path, capsys,
+):
+    candidate = _workspace(tmp_path, "cmru-release-20260924_120000-alpha-ab12cd")
+    _install_candidate_facts(monkeypatch, tmp_path, [candidate])
+    _read_only_git(monkeypatch, heads="")
+
+    with pytest.raises(CliFailure, match="nothing was abandoned"):
+        _invoke_abandon(candidate, branch=candidate.branch, dry_run=False)
+
+    assert "origin/main ref is missing" in capsys.readouterr().out
+
+
+def test_abandon_refuses_malformed_origin_main_object_id(monkeypatch, tmp_path, capsys):
+    candidate = _workspace(tmp_path, "cmru-release-20260924_120000-alpha-ab12cd")
+    _install_candidate_facts(monkeypatch, tmp_path, [candidate])
+    _read_only_git(monkeypatch, heads="bad-object-id\trefs/heads/main\n")
+
+    with pytest.raises(CliFailure, match="nothing was abandoned"):
+        _invoke_abandon(candidate, branch=candidate.branch, dry_run=False)
+
+    assert "malformed object ID for refs/heads/main" in capsys.readouterr().out
 
 
 @pytest.mark.parametrize(
@@ -367,7 +455,11 @@ def test_abandon_requires_remote_candidate_to_be_known_ancestor(
     )
     def run(argv, **kwargs):
         if argv[:3] == ["git", "ls-remote", "--heads"]:
-            return subprocess.CompletedProcess(argv, 0, "a" * 40 + "\trefs/heads/" + candidate.branch + "\n", "")
+            heads = (
+                "a" * 40 + "\trefs/heads/" + candidate.branch + "\n"
+                + "b" * 40 + "\trefs/heads/main\n"
+            )
+            return subprocess.CompletedProcess(argv, 0, heads, "")
         if argv[:2] == ["git", "merge-base"]:
             return subprocess.CompletedProcess(argv, candidate_result, "", "")
         if argv[:3] == ["git", "ls-remote", "--tags"]:
@@ -387,7 +479,10 @@ def test_abandon_parses_only_valid_remote_refs_and_accepts_unpromoted_candidate(
     _install_candidate_facts(monkeypatch, tmp_path, [candidate])
 
     # A malformed ls-remote line is ignored, not treated as a remote branch.
-    _read_only_git(monkeypatch, heads="malformed remote-ref row\n")
+    _read_only_git(
+        monkeypatch,
+        heads="malformed remote-ref row\n" + "a" * 40 + "\trefs/heads/main\n",
+    )
     assert _invoke_abandon(candidate, branch=candidate.branch) == 0
     assert "Candidate:" in capsys.readouterr().out
 

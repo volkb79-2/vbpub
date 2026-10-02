@@ -98,6 +98,19 @@ def test_release_environment_clears_stale_credentials_and_merges_explicit_empty(
     assert os.environ["REGISTRY"] == "ghcr.io"
 
 
+@pytest.mark.parametrize(
+    "name", ["GITHUB_PUSH_PAT", "GITHUB_TOKEN", "CMRU_GIT_AUTH_TOKEN"],
+)
+def test_release_environment_rejects_configured_credential_override(monkeypatch, name):
+    monkeypatch.setenv("GITHUB_TOKEN", "stale")
+
+    with pytest.raises(RuntimeError, match="reserved for resolved publisher credentials"):
+        cli.apply_release_env(
+            cli.GitHubConfig("owner", "repo", "resolved", "org"),
+            cli.ReleaseEnvConfig({name: "configured"}, None),
+        )
+
+
 def test_project_environment_override_changes_token_and_process_values(monkeypatch):
     seen = []
     monkeypatch.setattr(cli, "apply_release_env", lambda github, env: seen.append((github, dict(env.env))))

@@ -31,7 +31,7 @@ def test_cleanup_prefixed_project_with_no_deletions_skips_commit(monkeypatch, tm
     monkeypatch.setattr(cli, "apply_project_release_env", lambda *args: None)
     monkeypatch.setattr(cli, "cleanup_project_releases_and_tags", lambda *args, **_kwargs: [])
     monkeypatch.setattr(cli, "_latest_version_for_prefix", lambda *args, **_kwargs: "1.0.0")
-    monkeypatch.setattr(cli, "cleanup_project_step", lambda *args: False)
+    monkeypatch.setattr(cli, "cleanup_project_step", lambda *args, **kwargs: False)
     monkeypatch.setattr(cli, "cleanup_commit_deletions", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("commit")))
     cli.run_cleanup_verb(tmp_path, {"demo": project}, ["demo"], cli.CleanupConfig([], [], [], []), github, cli.ReleaseEnvConfig({}, None), None, False)
 

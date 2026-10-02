@@ -299,8 +299,10 @@ cmru cleanup example-wheel --delete-build-output <commit-date>_<commit> --yes
 
 The preview freezes the action list. After confirmation CMRU applies the captured release IDs,
 package IDs, tags, and local record/worktree identities; it does not discover new targets. For
-age-based cleanup, the cutoff is computed once, so an asset that becomes old while the prompt is
-open remains for a later preview.
+each Git tag it also captures the exact local and remote object IDs. A tag created after the
+preview or moved to another object is left for a later preview. For age-based cleanup, the cutoff
+is computed once, so an asset that becomes old while the prompt is open remains for a later
+preview.
 
 If configured cleanup runs `steps.clean`, CMRU commits only paths that become dirty during that
 step. Files already dirty when the confirmed plan starts are left out of that commit so cleanup
@@ -471,10 +473,11 @@ together**, before any container spins up — and the message names
 `cmru.orchestration.toml`, not your project's `cmru.toml`. (In terse messages the estate writes
 this env block as "`[env]`" for short; the literal table in the orchestration file is
 `[orchestration.defaults.env]`.)
-The CPU setting must be a finite decimal of at least `0.00001`; CMRU pins Docker's CPU period
-at 100000 microseconds and checks the value before privileged host slice/IO probes. Smaller
-positive values, zero, non-finite values, and values Docker cannot represent are refused
-instead of being rounded to an absent CPU limit.
+The CPU setting must be a finite decimal of at least `0.00001`; CMRU passes it through Docker's
+`--cpus` option and checks the value before privileged host slice/IO probes. It does not also
+set `--cpu-period`, because Docker rejects those two CPU controls together. Smaller positive
+values, zero, non-finite values, and values Docker cannot represent are refused instead of
+being rounded to an absent CPU limit.
 `--memory`, `--memory-swap`, and `--cpus` bound the tester workload. With `--enable-docker`,
 the DinD sidecar is also placed under `CMRU_TESTER_CGROUP_PARENT`, but currently has no separate
 per-container CPU or memory cap; the policy decision is open in the canonical CLI audit.
@@ -553,6 +556,11 @@ schema_version = 1
 token = "replace-with-your-GitHub-token"
 ```
 
+Do not put `GITHUB_PUSH_PAT`, `GITHUB_TOKEN`, or `CMRU_GIT_AUTH_TOKEN` in project,
+orchestration, or step `[env]` tables. CMRU reserves these names so declared values cannot
+replace the credential selected for publication and Git transport. Set a token in the invoking
+environment or in the ignored secret file above.
+
 When `origin` matches the configured `[github] owner/repo`, CMRU uses the resolved repository
 token (this root value unless an invocation environment variable overrides it) for its own Git
 fetches and pushes. Publisher API calls use the resolved project token, which falls back to this
@@ -560,8 +568,10 @@ root token unless that project has an override. CMRU does not put the token in t
 arguments, or persistent Git config. Project-local publisher overrides are not passed to CMRU's
 Git operations. For credential-bearing Git calls, CMRU disables local Git hooks because they
 inherit the token-bearing process environment; the registered release gates remain the release
-checks. SSH and other-host remotes keep their configured Git authentication. If no repository
-token resolves, Git's configured helpers and SSH authentication remain in effect. Secret files
+checks. Local hook-capable operations such as commit, revert, and rebase still run configured
+hooks, with `GITHUB_PUSH_PAT`, `GITHUB_TOKEN`, and `CMRU_GIT_AUTH_TOKEN` removed from the Git
+child environment. SSH and other-host remotes keep their configured Git authentication. If no
+repository token resolves, Git's configured helpers and SSH authentication remain in effect. Secret files
 written before `schema_version` was introduced remain readable. See the [transport
 rationale](DESIGN-GUIDE.md#git-transport-authentication).
 
@@ -578,6 +588,10 @@ that exact remote commit, named (`S-CLI.5b`, KI-16, ciu-aligned):
 .worktrees/cmru-release-<YYYYMMDD_HHMMSS>-<scope>-<workspace-id>
        e.g. .worktrees/cmru-release-20260819_143022-assay-abc123
 ```
+
+Before selecting changed projects, CMRU must successfully read their Git history. If a tag,
+pathspec, or repository state makes `git log` fail, the release plan stops with Git's diagnostic
+instead of treating the project as unchanged.
 
 Flat, chronologically sortable, and **the branch name is byte-for-byte the directory name** —
 the same 1:1 scheme ciu uses. A successful release removes the worktree; a **failure retains
@@ -604,7 +618,50 @@ worktree-registration marker; it does not prove the checkout directory is
 absent or visible in the current filesystem namespace. The `source_commit`
 field preserves Git's reported HEAD even for prunable entries. CMRU withholds
 resume/discard commands for those entries; consumers should likewise validate
-the exact checkout before acting on it.
+the exact checkout before acting on it. Release records also include
+`project_scope_state` and `project_scope`; build records omit them. The state is
+one of `recorded`, `missing`, or `unreadable`. Use the exact project-name array
+only when the state is `recorded`; the scope is `null` for `missing` and
+`unreadable`, and automation must not construct a resume command for either
+state. These fields are read from the shared Git sidecar without probing the
+listed worktree path.
+
+### Resuming a retained release
+
+Run `cmru worktrees` to see the candidate's recorded project scope and
+scope-safe `resume:` command. If the failed release used an external config,
+pass that same `--config PATH` again; CMRU does not record its path. You can also
+run `cmru release --resume PATH`; CMRU reads the saved scope. If you provide a
+project target, it must match the saved scope exactly. A legacy candidate with
+no scope record requires you to inspect the candidate and pass its explicit
+target, with the same external config if one was used. If the legacy checkout has
+no shared CMRU ownership record, CMRU adopts it only when Git identifies it as a
+registered worktree in the source repository and its release-progress sidecar is
+valid, with its progress commit an ancestor of the candidate. Without that
+evidence CMRU refuses resume; inspect the retained checkout before starting a
+fresh release. A candidate whose scope cannot be read has no safe resume command
+until that metadata can be inspected.
+
+For JSON automation, a recorded release looks like this (the commit is a full
+Git object ID in actual output):
+
+```json
+{
+  "branch": "cmru-release-20261001_120000-cmru-abcdef",
+  "path": "/repo/.worktrees/cmru-release-20261001_120000-cmru-abcdef",
+  "prunable": false,
+  "project_scope": ["cmru"],
+  "project_scope_state": "recorded",
+  "purpose": "release",
+  "source_commit": "0123456789abcdef0123456789abcdef01234567"
+}
+```
+
+The closed `project_scope_state` values are `recorded`, `missing`, and
+`unreadable`. Treat only `recorded` with `prunable: false` as eligible to resume;
+for that state, pass every name from `project_scope` as the explicit target.
+Repeat the original external `--config PATH` when applicable. The field names
+and closed state values are part of the supported JSON interface.
 
 `cmru abandon` addresses retained **release** transactions. With no branch it displays the
 complete retained release set; an optional branch selects one exact managed branch name.
@@ -613,8 +670,10 @@ then asks once before changing anything. `--yes` confirms that complete displaye
 `--dry-run` does not remove a local or remote ref, worktree, or sidecar. CMRU refuses to
 abandon if release results, a released tag, origin promotion, an untagged publisher, or
 missing/stale metadata makes publication state uncertain. A refusal lists known refs and
-release coordinates when present. Abandonment removes the candidate checkout (including its
-in-worktree logs and artifacts), candidate branch, and transaction sidecars. The main source
+release coordinates when present. It also refuses if a successful origin branch lookup omits
+`origin/main` or returns an invalid object ID, because promotion status cannot then be determined.
+Abandonment removes the candidate checkout (including its in-worktree logs and
+artifacts), candidate branch, and transaction sidecars. The main source
 history and `origin/main` are not rewritten. If an external orchestration file selected a
 multi-project release, pass that same file with `--config` so CMRU can evaluate every project
 in the recorded scope.

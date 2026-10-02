@@ -29,7 +29,7 @@ After=network-online.target consul.service
 
 [Service]
 Type=simple
-ExecStart={venv_python} -m cmru.agent.cli run --scope {scope}
+ExecStart={agent_cli} run --scope {scope}
 Restart=always
 RestartSec=5
 
@@ -39,9 +39,10 @@ WantedBy=multi-user.target
 
 
 def render_service_unit(venv_python: str, scope: str = "system") -> str:
-    """Render the systemd unit template with the given venv python path."""
+    """Render the unit to use the installed cmru-agent script in the staged venv."""
+    agent_cli = Path(venv_python).with_name("cmru-agent")
     return CMRU_AGENT_SERVICE_TEMPLATE.format(
-        venv_python=venv_python,
+        agent_cli=agent_cli,
         scope=scope,
     )
 

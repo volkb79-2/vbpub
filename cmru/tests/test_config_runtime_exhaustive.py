@@ -44,6 +44,28 @@ def test_config_scalar_env_and_secret_documents_refuse_shape_errors(tmp_path):
         config._read_secret_document(secret)
 
 
+@pytest.mark.parametrize(
+    "name", ["GITHUB_PUSH_PAT", "GITHUB_TOKEN", "CMRU_GIT_AUTH_TOKEN"],
+)
+def test_declared_environment_rejects_publisher_credential_names(name, capsys):
+    with pytest.raises(SystemExit):
+        config._scalar_env({name: "injected-token"}, "env", reject_credentials=True)
+    assert "reserved for resolved publisher credentials" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    "name", ["GITHUB_PUSH_PAT", "GITHUB_TOKEN", "CMRU_GIT_AUTH_TOKEN"],
+)
+def test_runner_step_environment_rejects_publisher_credential_names(name, capsys):
+    with pytest.raises(SystemExit):
+        config._validate_runner_steps({"push": {
+            "quiet": True,
+            "commands": [{"label": "publish", "argv": ["true"], "cwd": "."}],
+            "env": {name: "injected-token"},
+        }})
+    assert "reserved for resolved publisher credentials" in capsys.readouterr().err
+
+
 def test_config_version_artifacts_installer_and_variants_reject_invalid_values():
     with pytest.raises(SystemExit):
         config._parse_version({"strategy": "unknown"}, "demo")

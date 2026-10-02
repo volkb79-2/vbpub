@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -114,6 +115,8 @@ def test_transaction_child_environment_needs_registered_isolated_worktree(
     monkeypatch.setenv("CMRU_WORKSPACE_PATH", str(source))
     monkeypatch.setenv("CMRU_SOURCE_GIT_ROOT", str(source))
     monkeypatch.setenv(transaction.BRANCH_ENV, "cmru-release-fake")
+    monkeypatch.setenv(transaction.BASE_ENV, "a" * 40)
+    monkeypatch.setenv("CMRU_WORKSPACE_ID", "workspace-1")
     with pytest.raises(RuntimeError, match="not a registered secondary worktree"):
         transaction.is_transaction_child(source)
 
@@ -141,6 +144,7 @@ def _transaction_child_context(monkeypatch, tmp_path, *, branch="cmru-release-ch
             worktree_path=child,
             source_git_root=source,
             workspace_id="workspace-1",
+            base_commit="a" * 40,
         )
 
     class Shared:
@@ -164,6 +168,7 @@ def _transaction_child_context(monkeypatch, tmp_path, *, branch="cmru-release-ch
     monkeypatch.setenv("CMRU_WORKSPACE_PATH", str(child))
     monkeypatch.setenv("CMRU_SOURCE_GIT_ROOT", str(source))
     monkeypatch.setenv(transaction.BRANCH_ENV, branch)
+    monkeypatch.setenv(transaction.BASE_ENV, "a" * 40)
     monkeypatch.setenv("CMRU_WORKSPACE_ID", "workspace-1")
     return source, child
 
@@ -172,7 +177,7 @@ def _transaction_child_context(monkeypatch, tmp_path, *, branch="cmru-release-ch
     "branch,record",
     [
         ("cmru-release-child", "matching"),
-        ("cmru-build-child", False),  # registered legacy worktree without a shared record
+        ("cmru-build-child", "matching"),
     ],
 )
 def test_transaction_child_accepts_registered_matching_release_and_build_worktrees(
@@ -180,9 +185,10 @@ def test_transaction_child_accepts_registered_matching_release_and_build_worktre
 ):
     if record == "matching":
         record = SimpleNamespace(
-            purpose="cmru-release", branch=branch,
+            purpose="cmru-release" if branch.startswith("cmru-release-") else "cmru-build",
+            branch=branch,
             worktree_path=tmp_path / "child", source_git_root=tmp_path / "source",
-            workspace_id="workspace-1",
+            workspace_id="workspace-1", base_commit="a" * 40,
         )
     source, child = _transaction_child_context(
         monkeypatch, tmp_path, branch=branch, record=record,
@@ -194,6 +200,8 @@ def test_transaction_child_accepts_registered_matching_release_and_build_worktre
     "changes, message",
     [
         ({"missing": "CMRU_WORKSPACE_PATH"}, "incomplete CMRU transaction child context"),
+        ({"missing": "CMRU_RELEASE_BASE"}, "incomplete CMRU transaction child context"),
+        ({"missing": "CMRU_WORKSPACE_ID"}, "incomplete CMRU transaction child context"),
         ({"expected_path": "wrong"}, "does not match the loaded repository root"),
         ({"discovery_error": OSError("not a worktree")}, "invalid CMRU transaction child worktree"),
         ({"child_top": "wrong"}, "do not resolve to Git worktree roots"),
@@ -206,6 +214,7 @@ def test_transaction_child_accepts_registered_matching_release_and_build_worktre
         ({"record_path": "wrong"}, "shared transaction record does not match"),
         ({"record_source": "wrong"}, "shared transaction record has a different source root"),
         ({"record_id": "other"}, "workspace ID does not match its record"),
+        ({"record_base": "other"}, "base does not match its record"),
     ],
 )
 def test_transaction_child_rejects_each_untrusted_routing_fact(
@@ -222,6 +231,7 @@ def test_transaction_child_rejects_each_untrusted_routing_fact(
         worktree_path=(tmp_path / changes["record_path"] if "record_path" in changes else child),
         source_git_root=(tmp_path / changes["record_source"] if "record_source" in changes else source),
         workspace_id="workspace-1",
+        base_commit=("b" * 40 if changes.get("record_base") == "other" else "a" * 40),
     )
     worktrees = (
         [SimpleNamespace(path=child, is_primary=True, branch=branch)]
@@ -245,6 +255,81 @@ def test_transaction_child_rejects_each_untrusted_routing_fact(
 
     with pytest.raises(RuntimeError, match=message):
         transaction.is_transaction_child(child)
+
+
+@pytest.mark.parametrize("branch", ["cmru-release-child", "cmru-build-child"])
+def test_transaction_child_rejects_recordless_secondary_worktrees(
+    monkeypatch, tmp_path, branch,
+):
+    source, child = _transaction_child_context(
+        monkeypatch, tmp_path, branch=branch, record=False,
+    )
+
+    with pytest.raises(RuntimeError, match="no shared ownership record"):
+        transaction.is_transaction_child(child)
+
+
+def test_transaction_child_rejects_legacy_removal_bridge_record_without_resume_validation(
+    monkeypatch, tmp_path,
+):
+    branch = "cmru-release-child"
+    record = SimpleNamespace(
+        purpose="cmru-legacy",
+        branch=branch,
+        worktree_path=tmp_path / "child",
+        source_git_root=tmp_path / "source",
+        workspace_id="workspace-1",
+        base_commit="a" * 40,
+        metadata={},
+    )
+    _source, child = _transaction_child_context(
+        monkeypatch, tmp_path, branch=branch, record=record,
+    )
+
+    with pytest.raises(RuntimeError, match="no validated resume metadata"):
+        transaction.is_transaction_child(child)
+
+
+@pytest.mark.parametrize(
+    "progress,returncode,expected",
+    [
+        ("a" * 40, 0, True),
+        ("c" * 40, 1, "not an ancestor"),
+    ],
+)
+def test_transaction_child_rechecks_progress_for_validated_legacy_record(
+    monkeypatch, tmp_path, progress, returncode, expected,
+):
+    branch = "cmru-release-child"
+    record = SimpleNamespace(
+        purpose="cmru-legacy",
+        branch=branch,
+        worktree_path=tmp_path / "child",
+        source_git_root=tmp_path / "source",
+        workspace_id="workspace-1",
+        base_commit="a" * 40,
+        metadata={
+            transaction._LEGACY_RESUME_METADATA_KEY:
+                transaction._LEGACY_RESUME_METADATA_VALUE,
+        },
+    )
+    _source, child = _transaction_child_context(
+        monkeypatch, tmp_path, branch=branch, record=record,
+    )
+    monkeypatch.setattr(transaction, "read_release_progress", lambda *_args: progress)
+    monkeypatch.setattr(
+        transaction,
+        "run_local_git",
+        lambda *args, **kwargs: subprocess.CompletedProcess(
+            args[0], returncode, stdout="", stderr="not an ancestor"
+        ),
+    )
+
+    if expected is True:
+        assert transaction.is_transaction_child(child) is True
+    else:
+        with pytest.raises(RuntimeError, match=expected):
+            transaction.is_transaction_child(child)
 
 
 def test_repack_is_rejected_before_external_side_effects(monkeypatch, tmp_path, capsys):

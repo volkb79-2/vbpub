@@ -56,6 +56,34 @@ def test_status_plan_success_and_engine_failure_are_observable(monkeypatch, tmp_
     assert "Status failed" in capsys.readouterr().err
 
 
+def test_status_plan_parser_builds_engine_without_dry_run_field(monkeypatch, tmp_path, capsys):
+    plan = tmp_path / "plan.toml"
+    plan.write_text("plan")
+    monkeypatch.setattr(
+        "cmru.controller.planner.load_plan",
+        lambda _path: SimpleNamespace(landscape="land"),
+    )
+    engines = []
+    backend = object()
+
+    class Engine:
+        def __init__(self, **kwargs):
+            engines.append(kwargs)
+
+        def status(self, _plan):
+            return {"nodes": []}
+
+    monkeypatch.setattr("cmru.controller.rollout.RolloutEngine", Engine)
+    monkeypatch.setattr(cli, "_build_backend", lambda _args: backend)
+
+    assert cli.main(["status", "--plan", str(plan)]) == 0
+    assert engines == [{
+        "backend": backend, "landscape": "land",
+        "generation_base": 1, "dry_run": False,
+    }]
+    assert json.loads(capsys.readouterr().out) == {"nodes": []}
+
+
 def test_status_catalog_success_and_backend_failure_without_plan(monkeypatch, capsys):
     backend = SimpleNamespace(_get=lambda path: (200, '[{"Node":"n1","ServiceTags":["blue"]}]', {}))
     monkeypatch.setattr(cli, "_build_backend", lambda args: backend)

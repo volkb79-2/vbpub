@@ -54,6 +54,25 @@ if not answer:
 sys.stdout.write(answer)
 """
 
+_PUBLISHER_ENV_KEYS = ("GITHUB_PUSH_PAT", "GITHUB_TOKEN", "CMRU_GIT_AUTH_TOKEN")
+
+
+@contextmanager
+def without_publisher_tokens() -> Iterator[None]:
+    """Temporarily withhold CMRU publisher tokens from inherited hook processes."""
+    missing = object()
+    saved = {key: os.environ.get(key, missing) for key in _PUBLISHER_ENV_KEYS}
+    try:
+        for key in _PUBLISHER_ENV_KEYS:
+            os.environ.pop(key, None)
+        yield
+    finally:
+        for key, value in saved.items():
+            if value is missing:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
 
 def github_https_origin_matches(origin_url: str, auth: GitHubGitAuth) -> bool:
     """Whether a remote URL is the HTTPS GitHub repository named by ``auth``."""
@@ -163,9 +182,8 @@ def run_remote_git(
         # apply_release_env (possibly a project-local override). Git authentication
         # for a different host remains available through Git's own configured
         # helpers/SSH agent, but CMRU's API token is never forwarded to that host.
-        child_env.pop("GITHUB_PUSH_PAT", None)
-        child_env.pop("GITHUB_TOKEN", None)
-        child_env.pop("CMRU_GIT_AUTH_TOKEN", None)
+        for key in _PUBLISHER_ENV_KEYS:
+            child_env.pop(key, None)
         kwargs["env"] = child_env
         if git_env is not None:
             # The resolved secret is authoritative for this exact repository;
@@ -181,3 +199,18 @@ def run_remote_git(
             child_env.update(git_env)
         command.extend(args)
         return subprocess.run(command, cwd=repo_root, **kwargs)
+
+
+def run_local_git(repo_root: Path, *args: str, **kwargs) -> subprocess.CompletedProcess:
+    """Run a local Git operation without CMRU's publisher credentials.
+
+    Local commands such as commit, revert, and rebase may invoke user Git hooks.
+    The hook child process inherits this environment, so publisher credentials
+    must be removed even though the Git operation itself needs no remote auth.
+    """
+    supplied_env = kwargs.get("env")
+    child_env = os.environ.copy() if supplied_env is None else dict(supplied_env)
+    for key in _PUBLISHER_ENV_KEYS:
+        child_env.pop(key, None)
+    kwargs["env"] = child_env
+    return subprocess.run(["git", *args], cwd=repo_root, **kwargs)
