@@ -256,6 +256,7 @@ def test_release_tag_reference_hook_runs_without_publisher_tokens(tmp_path, monk
     subprocess.run(["git", "init", "-q", str(repo)], check=True)
     subprocess.run(["git", "config", "user.name", "cmru test"], cwd=repo, check=True)
     subprocess.run(["git", "config", "user.email", "cmru@example.invalid"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "--allow-empty", "-m", "initial"], cwd=repo, check=True)
     hook_dir = repo / ".git" / "hooks"
     hook_dir.mkdir(exist_ok=True)
     observed = tmp_path / "reference-hook-env.txt"
