@@ -1220,7 +1220,11 @@ def test_resume_adopts_only_a_validated_legacy_release_worktree():
         resumed = transaction.resume_workspace(h.repo_root, retained)
 
         assert resumed.context is not None
-        assert resumed.context.purpose == "cmru-legacy"
+        record = transaction._shared_worktree().find_workspace(
+            resumed.context.git_common_dir, resumed.context.worktree_path,
+        )
+        assert record is not None
+        assert record.purpose == "cmru-legacy"
         assert resumed.context.namespace.labels["cmru.purpose"] == "release"
         assert resumed.workspace_id == resumed.context.workspace_id
         assert resumed.base == initial
