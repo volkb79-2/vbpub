@@ -3550,6 +3550,14 @@ this entry should be mirrored or moved to `ciu/KNOWN_ISSUES_TODO_BACKLOG.md`.
 
 ### Status — OPEN 2026-09-09
 
+**Recurrence 2026-10-03 (dstdns-P234, PRIORITY EVIDENCE — third independent hit).**
+Installed run-gate `23.9.2.dev1126+g998a43552` (latest vbpub main at the time). A Mode-B worktree
+instance (`p234-silo`, its own test-runner) failed the composite's `assay` lane with
+`mkdir /workspaces/dstdns/.run-gate: Permission denied`; the implementer worked around it by creating
+the directory as root inside that worktree's runner. This matters more now: dstdns is moving
+toward worktree-owned test environments as the default (dstdns D-646, run-gate RG-73), which makes
+Mode B the common path rather than the exception.
+
 ---
 
 ## RG-50 — `ProgressWatch._rate_per_min`'s B065 own-clock branch divides by an index of 0 (the first real candidate) and produces a nonsensical negative rate for assay's own `-1` baseline sentinel
