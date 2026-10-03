@@ -25,6 +25,7 @@ def test_release_resume_cleans_workspace_and_reports_sync_failure(monkeypatch, t
     monkeypatch.setattr(cli, "_resolve_config", lambda _: tmp_path / "cmru.toml")
     monkeypatch.setattr(cli, "load_config", lambda _: config)
     monkeypatch.setattr(cli.transaction, "project_git_family_groups", lambda root, projects: {root: list(projects)})
+    monkeypatch.setattr(cli.transaction, "read_release_scope_for_path", lambda _path: ["demo"])
     monkeypatch.setattr(cli, "apply_release_env", lambda *_: None)
     monkeypatch.setattr(cli.transaction, "release_lock", lambda _: nullcontext())
     monkeypatch.setattr(cli, "_uncommitted_release_paths", lambda *args: {})
