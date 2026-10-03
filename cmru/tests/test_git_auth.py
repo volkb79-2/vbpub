@@ -129,8 +129,11 @@ def test_run_remote_git_uses_secret_only_for_matching_origin(monkeypatch, tmp_pa
         lambda _root, *, for_push: ["https://github.com/acme/vbpub.git"],
     )
     calls = []
+    hook_states = []
 
     def fake_run(argv, **kwargs):
+        hooks_path = Path(argv[4].removeprefix("core.hooksPath="))
+        hook_states.append((hooks_path.is_dir(), not (hooks_path / "pre-push").exists()))
         calls.append((argv, kwargs))
         return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
 
@@ -145,8 +148,8 @@ def test_run_remote_git_uses_secret_only_for_matching_origin(monkeypatch, tmp_pa
     assert argv[:4] == ["git", "-c", "credential.helper=", "-c"]
     hooks_path = Path(argv[4].removeprefix("core.hooksPath="))
     assert argv[4].startswith("core.hooksPath=")
-    assert hooks_path.is_dir()
-    assert not (hooks_path / "pre-push").exists()
+    assert hook_states == [(True, True)]
+    assert not hooks_path.exists()
     assert argv[5:] == ["push", "origin", "HEAD:refs/heads/main"]
     assert kwargs["env"]["CMRU_GIT_AUTH_TOKEN"] == "secret"
     assert kwargs["env"]["GIT_TERMINAL_PROMPT"] == "0"
