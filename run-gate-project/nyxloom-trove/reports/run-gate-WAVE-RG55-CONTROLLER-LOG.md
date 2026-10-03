@@ -6249,3 +6249,31 @@ in placement, liveness, and their tests. The new check-semantics and journal
 tests were verified green before the additional edge-case edits; the latter
 have not yet been run because no fresh safe PSI check was taken. No merge,
 release, or P6 mutation campaign was started.
+
+### RW-420 — 2026-10-03 23:39:11Z — P1 R2 completed FAIL; new backlog work on main
+
+The exact P1 judged worktree remains clean at
+`bf7dc95fb47356ef527db08077788fe22a5a3b0b`. The previously tracked R2
+container is no longer present. Assay's verdict records R0 PASS and R2 FAIL;
+the independent run-gate history records R0/R1 PASS, R3 PASS, and the full
+`gate`/R2 run failing at 2026-10-03 22:45:43Z after 49,772 seconds. All 1,161
+mutation candidates were accounted for: 1,036 killed, 125 survived, with no
+equivalent, crashed, hung, or budget-exceeded candidates. Survivors group as
+10 in `access.py`, 5 in `liveness.py`, 86 in `placement.py`, 22 in `serve.py`,
+and 2 in `subtree.py`. This is a release blocker until each survivor is
+behaviorally triaged or proven equivalent and any needed oracle fixes are
+rejudged on a new exact tree. Do not reinterpret or mutate the completed
+judged tree.
+
+At this check, `docker ps` had no `run-gate-vbpub-*` containers and `pgrep`
+found no `run-gate.py` process. The separate `rg55-p1-survivor-fix` worktree
+still has uncommitted edits in placement and three test files; the latest
+edge-case additions remain untested. No new campaign was launched.
+
+Since RW-419, main advanced eight commits to `a8ee4510` (124 commits ahead of
+origin) and remains clean. New work is primarily CIU v8 D-666/D-667
+specification and decision updates. The run-gate backlog now includes RG-73
+through RG-80, notably RG-79 (refuse fallback to main's runner) and RG-80
+(daemon-wide concurrent-gate admission); RG-67(a) was withdrawn. cgprofile
+CP-15/CP-16 were also recorded. These are backlog/design changes, not P1
+implementation changes, and were not started as work in this check.
