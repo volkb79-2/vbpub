@@ -52,10 +52,12 @@
 >   O-3 in `CIU-V8-DECISION-COVERAGE-2026-10.md`.
 > - **v7 local state in the trace.** The swimlane below describes v7 and is kept as history: secrets
 >   materialize to `<stack>/.ciu/secrets/<name>` and Vault's init state goes to `infra/vault/ciu.toml
->   [state]`. In v8 the `.ciu/` directory is gone (V8-10): materialized files live under `ciu.rendered/`,
->   secrets in the one store `ciu.secrets.toml` under the state root (V8-9, SPEC-V8 S10.6, S2.6), and the
->   `[state]` table is replaced by the instance's state files. The waves and the D-210/D-212 lessons are
->   unaffected.
+>   [state]`. In v8 the `.ciu/` directory is gone (V8-10, SPEC-V8 S2.3.2): a service's secret copies are
+>   the per-service directories `ciu.secret-copy.<svc>/` (S10.7), every secret value (Vault's root token
+>   and unseal key included) lives in the one store `ciu.secrets.toml` in the state root (V8-9, S10.6,
+>   S2.6), reached by a hook through its `secrets` output, and a hook's non-secret state is
+>   `ciu.state.toml` (S6.10; a `[state]` table in a stack file is an error). The waves and the D-210/D-212
+>   lessons are unaffected.
 > - **Not touched.** The gate (Phase A on the v7 track, RG-78's exit table, `ciu gate`), cmru calling
 >   `ciu gate`, and the atomic per-repo cutover (D-652 Q3, Q13; D-654) concern the testing gate, which
 >   has no node in this graph.
