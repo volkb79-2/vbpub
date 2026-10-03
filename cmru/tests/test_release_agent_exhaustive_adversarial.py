@@ -196,10 +196,23 @@ def test_transaction_workspace_records_reject_corrupt_results_and_forget_markers
 def test_transaction_delete_retained_output_requires_exact_verified_coordinate(tmp_path):
     root = _repo(tmp_path)
     project_root = root / "demo"
-    project = SimpleNamespace(project_root=project_root)
+    class ProjectRootMustNotBeRead:
+        @property
+        def project_root(self):
+            raise AssertionError("invalid ID validation must precede project-root resolution")
+
+    invalid_coordinate_message = (
+        "--delete-build-output must be the exact <commit-date>_<40-hex-commit> "
+        "coordinate printed by cmru build"
+    )
     for output_id in ("bad", "20240101T000000Z_" + "a" * 39):
-        with pytest.raises(RuntimeError, match="exact"):
-            transaction.delete_retained_build_output(root, project, "demo", output_id, dry_run=False)
+        with pytest.raises(RuntimeError) as raised:
+            transaction.delete_retained_build_output(
+                root, ProjectRootMustNotBeRead(), "demo", output_id, dry_run=False,
+            )
+        assert str(raised.value) == invalid_coordinate_message
+
+    project = SimpleNamespace(project_root=project_root)
     output_id = "20240101T000000Z_" + "a" * 40
     target = project_root / "artifacts" / output_id
     target.mkdir(parents=True)

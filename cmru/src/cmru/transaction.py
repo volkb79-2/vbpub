@@ -1219,6 +1219,14 @@ def is_build_output_id(value: str) -> bool:
     return True
 
 
+def _require_build_output_id(output_id: str) -> None:
+    if not is_build_output_id(output_id):
+        raise RuntimeError(
+            "--delete-build-output must be the exact <commit-date>_<40-hex-commit> "
+            "coordinate printed by cmru build"
+        )
+
+
 def build_output_id(workspace: ReleaseWorkspace) -> tuple[str, str, str]:
     """Return the immutable local-output coordinate for the built source tree.
 
@@ -1507,6 +1515,7 @@ def _retained_build_output_parent_fds(
     repo_root: Path, project: object, project_name: str, output_id: str,
 ) -> Iterator[tuple[Path, int, int]]:
     """Hold no-follow descriptors for the project and both cleanup parents."""
+    _require_build_output_id(output_id)
     main_project_root, _child_project_root = _project_roots_for_retention(
         repo_root,
         ReleaseWorkspace(repo_root=repo_root, path=repo_root, branch="", base=""),
@@ -1618,11 +1627,7 @@ def _retained_build_output_cleanup_facts(
     artifact_parent_fd: int,
     logs_parent_fd: int,
 ) -> tuple[list[Path], RetainedBuildOutputIdentity]:
-    if not is_build_output_id(output_id):
-        raise RuntimeError(
-            "--delete-build-output must be the exact <commit-date>_<40-hex-commit> "
-            "coordinate printed by cmru build"
-        )
+    _require_build_output_id(output_id)
     artifact_root = main_project_root / "artifacts" / output_id
     logs_root = main_project_root / "logs" / output_id
     artifact_fd = logs_fd = None
@@ -1665,11 +1670,7 @@ def _retained_build_output_identity_from_fds(
     artifact_fd: int,
     logs_fd: int,
 ) -> RetainedBuildOutputIdentity:
-    if not is_build_output_id(output_id):
-        raise RuntimeError(
-            "--delete-build-output must be the exact <commit-date>_<40-hex-commit> "
-            "coordinate printed by cmru build"
-        )
+    _require_build_output_id(output_id)
     artifact_root = main_project_root / "artifacts" / output_id
     logs_root = main_project_root / "logs" / output_id
     manifest_path = artifact_root / "build.json"
