@@ -25,7 +25,7 @@
 > The five-wave dstdns trace, the two races (D-210, D-212) and their lessons are unchanged
 > and remain the acceptance narrative for V8-7 (the graph package).
 >
-> ## Reading this note against proposal rev 4.5 / SPEC-V8 draft.9 (2026-10-03, dstdns D-656, D-658)
+> ## Reading this note against proposal rev 4.6 / SPEC-V8 draft.9 (2026-10-03, dstdns D-656, D-658)
 >
 > The two prefaces compose: the table above maps the 2026-08-26 notation to the rev 3.0 notation, and
 > the rest of this preface maps what the 2026-10 reconciliation (D-647, D-651..D-655) changed around it.
@@ -44,13 +44,14 @@
 > - **Joins (D-651 Q9).** A worktree instance borrows only what a committed join preset names, and a
 >   service is shareable only when it declares a tenant namespace. This note's `external` and realness
 >   rows are unaffected; a `joined` realization is the one new kind (SPEC-V8 S9.5).
-> - **Admission (D-647 #4, D-653 Q4, D-655).** The waves above are ordering only. Whether a stack may
->   *start* is decided separately, by the sum of the warm working sets of the containers `ciu up` would
->   start, against the host-config capacity, through Docker-object reservations (SPEC-V8 S16.6): there
->   is no instance count and no admission lock. How a wave-by-wave bring-up interacts with that
->   reservation (one deploy-set reservation or one per wave) is **PENDING-OPERATOR (V8R-03)**: a later wave's
->   containers cannot exist before the earlier waves have run, so the question is not a detail. It is
->   rev 4.5 §4.9 question 1.
+> - **Admission (v8.1; D-647 #4, D-653 Q4, D-655, D-658).** The waves above are ordering only, and
+>   resource management and admission are **v8.1** (SPEC-V8 S21, behind `[ciu] admission`, default `off`):
+>   the 8.0 graph, waves and gates neither need nor mention it. With admission on, a stack start is one
+>   **placeholder ticket per `up`** carrying the sum of the warm charges of every container `ciu up` would
+>   start across all waves; each wave's containers group under it by label, so a later wave's containers
+>   need not exist before its wave runs (S21.4.4). The realization order, the checkpoint-B build order and
+>   the five-wave trace are unchanged by the 8.0/8.1 split; only the proposal's checkpoint D lost
+>   V8-30/V8-31 to the new checkpoint F (v8.1).
 > - **v7 local state in the trace.** The swimlane below describes v7 and is kept as history: secrets
 >   materialize to `<stack>/.ciu/secrets/<name>` and Vault's init state goes to `infra/vault/ciu.toml
 >   [state]`. In v8 the `.ciu/` directory is gone (V8-10, SPEC-V8 S2.3.2): a service's secret copies are
