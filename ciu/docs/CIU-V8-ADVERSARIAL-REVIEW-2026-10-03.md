@@ -993,3 +993,56 @@ A one-paragraph check of R5-01, R5-04 and R5-05 is enough after the repair.
    - (a) **Recommended:** withdraw (a) from Phase A. It has no consumer since D-666 and contradicts v8 S16.5.7. Keep (b), composite runner listing, only if a composite consumer remains.
    - (b) Keep it as a v7-only feature.
    - (c) Defer it indefinitely as OPEN without building it.
+
+---
+
+## 11 r6 (draft.12, proposal rev 4.10; vbpub `ab6d19e4c`, `8fe1cf98d`, `408cf818b`; dstdns D-667)
+
+### 11.1 R5-01..R5-09: all closed in the text
+
+- **R5-01:** the receipt now supplies facts only.
+  - S8.5.6: "It supplies a `joined` reference's facts and completions only … never decides that the reference is up", and a joiner refuses a receipt whose `container_id`s are not the reference's running containers.
+  - S9.5.3 restates health as the only test of "up".
+  - S14.1.3: `down` removes the receipt, and `clean` already did.
+- **R5-02:** S8.5.4 defines `no-manifest` for 8.0 as "no carrier for remote evidence".
+- **R5-03:** S4.1.1 and S14.2 state that each host derives its own id in 8.0; "identical on every host" is tagged v8.2.
+- **R5-04:** the label value grammar is fixed in S21.4.8 and the Appendix E `label_value_grammar` surface:
+  - the owner is compact, key-sorted JSON with exactly seven keys;
+  - the deadline is integer epoch seconds UTC;
+  - the admission owner has exactly four keys;
+  - an unparseable label is counted live and reported, never released.
+
+  RG-80 cites the grammar verbatim, and its oracle 8 checks cross-tool interop: each tool releases the other's abandoned ticket, never the other's live one, both parse under one fixture, and a malformed owner label counts as live. See the residue in §11.3.
+- **R5-05:** S21.4.6 and RG-80 (d) and oracle 3: a waiter **stops** the running members of an expired group, found by label, releases the ticket and **never collects**; collection stays with the owning lane.
+- **R5-06:** RG-80 (e): `ticket_image` is also the image of the admission object. RG-80 (g): RG-78 lands first, or RG-80 carries exit 3 for `no-headroom`.
+- **R5-07:** settled by the operator (D-667). Appendix A step 10: remote deployment and enrollment are unavailable between a repo's cutover and v8.2, there is no `ciu7` bridge, and `migrate --check` reports the v8.2-only host keys.
+- **R5-08:** the V8-38 row is clean (`set\|show`, no literal `\n`).
+- **R5-09:** the false claim in N22 is removed and replaced by the atomic-cutover reason.
+- **RG-67 (a):** withdrawn (Amendment 5), with (b) kept open.
+
+### 11.2 The new S14.1.6 against the 8.0 core and the closed sets
+
+**Coherent.**
+- `default_bundles` is in S14.6's closed key set and in the new `instances_keys` surface.
+- It is a `[ciu]` subtable, so it is never inherited (S3.1.5).
+- Stage 3 types it, and stage 4 refuses an undeclared bundle (`[S14.6]`).
+- It is written only into a **newly created** instance file, `--bundles` wins over it, and an existing file is never rewritten.
+- `instance init --up` runs `up` **after** init has released the instance lock, so the two are not nested, consistent with S14.4.3. A failing `up` keeps the instance and exits with `up`'s code, per S18.1.
+- The S18 row and the oracles (1)–(6) match.
+
+### 11.3 Residues (LOW, none blocking)
+
+1. **S14.1.6's scope.** `default_bundles` applies to *every* fresh instance, including a fresh clone's **primary**. With dstdns's intended `["test"]`, a newly cloned main would select only the test bundle unless `--bundles` is given.
+   - D-666 and D-667 frame the key as the *worktree's* own environment.
+   - Fix: apply it only when the checkout is a linked worktree, so the primary keeps the layout's selection. Or state the primary case explicitly.
+2. **The owner-label field forms.** The grammar fixes the JSON shape, but not the exact string form of `pid_ns`, `boot_id` and `host`. Examples: the bare inode `"4026531836"` versus `"pid:[4026531836]"`; a short hostname versus an FQDN.
+   - If run-gate and ciu8 write different forms, nothing is unsafe, because a mismatch reads as another namespace, which means alive. But the same-namespace instant free of S21.6.2(a) silently stops working **across** tools, leaving only the deadline path.
+   - Fix: `pid_ns` = the decimal inode of `/proc/self/ns/pid` as a string; `boot_id` = `/proc/sys/kernel/random/boot_id`, stripped; `host` = `gethostname()`, unqualified.
+   - Extend RG-80 oracle 8: a ticket of the other tool whose owner is dead **in the same namespace** is freed at the next recheck.
+3. **v8.2-only host keys in 8.0.** Appendix A step 10 has `migrate --check` "refuse to drop silently" the v8.2-only host keys (`bundle_dir`, `push_mode`, `[activate]`). It does not say what an 8.0 `ciu check` does when such a key is present. Say whether the key is accepted and inert (INFO) or must be removed. Appendix E's `_v82` "inert" wording suggests the former.
+
+### 11.4 r6 verdict: **READY for operator sign-off**
+
+The verdict covers the 8.0 core plus the v8.1 admission annex and the v8.2 remote annex as specified. The three LOW residues above can be folded at implementation.
+
+**Operator decisions still needed:** none.
