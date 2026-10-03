@@ -17,6 +17,7 @@
 | Ephemeral environment parity with a per-worktree runner (`image_from`, worktree mounted at the image's root) | run-gate **RG-73** | absorb | S16.4, S16.4.3 |
 | Trunk-merge first-parent base and sequence-lane base propagation | run-gate **RG-74** | absorb | S16.5.4, S16.5.5 |
 | Lane-scoped throwaway service (database) | run-gate **RG-75** | absorb | S16.4 (ephemeral `binds` / a lane-scoped Realization) |
+| Judge command/pin/lane list restated per lane (dstdns: 118 identical pin blocks) | run-gate **RG-76** | absorb | S16.3 judge, S16.5/S16.7 lane import from `assay lanes --json` |
 | Agent-concurrency cap has no config SSOT for manual controllers | nyxloom **NL-29** | n/a (references `[ciu.instances] max_concurrent`) | — |
 | The image does not ship run-gate | mdt `TODO.md` (2026-10-03 entry) | n/a | — |
 
