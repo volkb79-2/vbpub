@@ -139,7 +139,7 @@ D-661 is read from the scratchpad text the coordinator supplied (it lands in the
 | 69 | R2-12 → (2): a global count cap in 8.0 — the ticket protocol (tickets, tombstones, deadline/group reaping, the helper-image ticket) in count mode, at most `max_concurrent` live tickets per tier per Docker daemon, ordered by ticket number, behind the same switch, default off; bytes, capacity objects, charges, manifest, floors and PSI stay v8.1 | §4.1.10a, V8-38, X153–X156 | S21.1.1, S21.2.2, S21.3–S21.4, S21.6, S21.8, S21.9; Appendix E/F | yes, with the narrowings listed in §9 |
 | 70 | dstdns's `gate-slot.sh` can retire when its cutover reaches 8.0 with the cap on | V8-38 | Appendix A step 8; S16.5.8 | yes |
 
-**Counts including D-661** (70 rows): yes 68, partial 1 (row 20), n/a 1 (row 7). Row 69 is "yes" with the writer's narrowings of §9, which the operator can overturn.
+**Counts including D-661** (70 rows, final): **yes 68, partial 1 (row 20: the primary has no library record, O-24), n/a 1 (row 7).** Row 69's narrowings are settled by the r3 review §7.4 as derived, not forks.
 
 ## 2. Stale-residue sweep (proposal, rev 4.3 text)
 
@@ -286,7 +286,7 @@ R2-01..R2-16 are applied (SPEC-V8 Appendix D.12; proposal rev 4.7 §4.3.17 "4.7 
 
 ## 9. Round 4 (D-661 applied: SPEC-V8 draft.10, proposal rev 4.8) and a successor note
 
-The three questions round 3 left to the operator are applied (SPEC-V8 Appendix D.13; proposal §4.3.17 "4.8 amendments", X151–X156; enrollment proposal rev 4), and every `PENDING-OPERATOR` marker is gone. **Writer's calls recorded here** (decided without a fork, listed in proposal §4.9 so they can be overturned cheaply):
+The three questions round 3 left to the operator are applied (SPEC-V8 Appendix D.13; proposal §4.3.17 "4.8 amendments", X151–X156; enrollment proposal rev 4), and every `PENDING-OPERATOR` marker is gone. **Writer's calls recorded here**; calls 1–4 are **settled** by the r3 spot-check (review §7.4: derived from D-658 and D-661, not operator forks):
 
 1. **The count-only subset of the published object is 8.0.** D-661's text keeps "capacity objects" in v8.1; the task asked for the count's home to be reasoned through. A count each participant read from its own table would disagree between participants on one daemon (V8R-06), so it must be published the same way. The byte keys (`usable`, `psi_full_avg10_max`) stay v8.1 and extend the same object.
 2. **The 8.0 count applies to the `gates` tier only.** A stack count (a placeholder counted against `max_concurrent`) would reintroduce the instance count that D-647 #4 removed. In 8.0 `ciu up`, `ciu dev` and helpers take no ticket; `max_concurrent` on any other tier is an ERROR; in v8.1 a helper's fixed `memory_max` rides its caller's ticket (draft.9 gave a helper its own ticket, which would deadlock a one-slot count behind its own caller).
@@ -296,3 +296,11 @@ The three questions round 3 left to the operator are applied (SPEC-V8 Appendix D
 6. **Independence re-check (8.0 ⟂ v8.1).** The 8.0 count mode uses only 8.0 pieces: the helper image (S8.5.2b), the owner tuple (S16.9.7), the `run.json` deadline (S16.9.4), the closed exit table with `no-headroom` (S16.8, Appendix E), and the new verb and host table. No v8.1 rule is needed; an 8.0 and a v8.1 participant can share one daemon because v8.1 only adds labels and object keys that an 8.0 reader ignores, and a live ticket without a `bytes` label counts as 1 against the count.
 
 **Successor note:** nothing is left unfinished in this pass. The next step is the operator's confirmation of calls 1 and 2, then an r3 spot-check of S21 against Appendix E (the `admission_*` surfaces replace `capacity_*`, `ciu_keys_v81`, `admission_values_v81`, `not_run_reasons_v81`, `gate_flags_v81` and `lane_result_fields_v81`) and of the enrollment trust table's release-time generation (cmru KI-49).
+
+## 10. Round 5 (the r3 spot-check, R3-01..R3-07) and the release state
+
+The r3 spot-check verdict was READY-WITH-FIXES with no operator decision needed. Applied in SPEC-V8 draft.10 (Appendix D.14) and proposal rev 4.8 (§4.3.17 "4.8 amendments", X157–X159): **R3-01** a run marker with the true deadline, a short wait deadline, owner death provable in the reader's PID namespace, waiters running the janitor, and a stated liveness bound (S21.6); **R3-02** cleanup releases and never removes; **R3-03** the three mixed 8.0/v8.1 gaps; **R3-04** the participant `[admission]` table is always validated; **R3-05** the host row's effect needs `set --replace`; **R3-06** one generation at a time; **R3-07** no enrollment entry for unverified releases; plus the R2-06 lane-without-`budget` residue and the R2-03 "remove" wording.
+
+**Final counts.** Review findings: r1 V8R-01..V8R-34 and r2 R2-01..R2-16 are all closed in the text; r3 R3-01..R3-07 (1 HIGH, 3 MEDIUM, 3 LOW) are applied; the matrix of §1–§1d stands at **70 rows: yes 68, partial 1, n/a 1**. Open operator questions: **none**. `PENDING-OPERATOR` markers for T4-07, O-31 and R2-12: none remain.
+
+**Release state.** SPEC-V8 draft.10 and the proposal rev 4.8 are **ready for operator sign-off**. Successor note: after sign-off, V8-29, V8-38, V8-30 and V8-31 are the build rows for enrollment, the count mode, the byte budget and the profiler additions; cmru KI-49 must land before any v8 release carries an enrollment trust entry.
