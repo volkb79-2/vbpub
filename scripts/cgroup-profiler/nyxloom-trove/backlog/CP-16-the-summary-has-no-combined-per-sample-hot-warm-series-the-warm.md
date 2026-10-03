@@ -35,3 +35,5 @@ RG55-INTERFACE-CONTRACT (contract 1, the Summary's `damon` block, §3); cgprofil
 
 ## Updates
 Provenance: ciu v8 proposal rev 4.5 R.3 and SPEC-V8 draft.9 S16.9.5; the adversarial review V8R-33 found the series filed nowhere. CP-15 (the reservation mirror) is a separate, optional item and does not carry this series.
+
+**2026-10-03** — Scope (dstdns D-658, 2026-10-03): the consumer of this series, ciu's warm-set admission, is **v8.1** (SPEC-V8 S21, behind the switch [ciu] admission, default off), not 8.0. The series still improves the lane footprint manifest's warm_set_bytes in 8.0 (SPEC-V8 S16.9.5), where the approximation source damon-class-sum applies until it lands, so the entry is not blocked on v8.1.

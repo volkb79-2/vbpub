@@ -40,3 +40,5 @@ RG55-INTERFACE-CONTRACT (contract 1 → the next additive version); cgprofile SP
 ## Updates
 
 **2026-10-03** — Downgraded by dstdns D-655 (2026-10-03): v8 Q15 chose Docker-object reservations as the serialization medium, so ciu never registers reservations with the daemon. CP-15 is now optional, a read-only mirror of reservations for observability (ctl host totals). Not required for admission.
+
+**2026-10-03** — Scope (dstdns D-658, 2026-10-03): ciu's admission is **v8.1** (SPEC-V8 S21, one switch, default off). Reservations are name tickets on Docker containers (ciu-res-<tier>-<n>), ordered gap-free by Docker's atomic container-name conflict, and the daemon takes no part; this entry stays an OPTIONAL observability mirror, v8.1-scoped, and nothing in 8.0 or v8.1 requires it.
