@@ -435,24 +435,30 @@ also removes it from CMRU's mutation and coverage input lists.
 The release candidate is a snapshot of `origin/main`. Assay resolves a named
 base against the tested commit; once a branch is merged, `main` can resolve to
 the tested commit and leave R1 with no changed lines. CMRU therefore pins R1 to
-the latest previously published ancestor release tag (`cmru-v5.5.0` in the current config), which
+the highest-version previously published ancestor release tag (`cmru-v5.5.0` in the current config), which
 keeps changed-line coverage meaningful after merge. Advance this pinned base
 to the newly tagged release on the next release candidate; keep the current
 candidate pinned to the release before it. A rerun on the newly tagged HEAD
-then excludes every local CMRU release tag at HEAD and finds the preceding
-release tag in HEAD's full ancestry, preserving the same baseline. R2 is a
+then excludes every CMRU release tag at HEAD and finds the highest-version
+published release in the remaining ancestry, preserving the same baseline.
+This selection examines all merge parents and breaks equal-distance histories
+by the published release version, so `git describe`'s traversal tie cannot
+choose an older first-parent tag. R2 is a
 separate concern: the release
 candidate is already at `origin/main`, so using `main` as its mutation base
-would leave no mutation candidates. The dedicated mutation lane resolves the nearest
-ancestor `cmru-v*` tag dynamically and mutates CMRU source changed since that
-release. The registered `gate` lane queries origin on the host using CMRU's
-credential-scoped Git transport, then passes token-free tag and commit facts
-to the dedicated `cmru-mutation` tester environment through
+would leave no mutation candidates. The dedicated mutation lane resolves the
+highest-version published ancestor `cmru-v*` tag dynamically and mutates CMRU
+source changed since that release. The tag is the highest-version published
+release in the candidate's full ancestry. The registered `gate` lane queries all CMRU release tags on
+origin in one host-side call using CMRU's credential-scoped Git transport, then
+passes token-free facts for every published CMRU tag and its commit to the
+dedicated `cmru-mutation` tester environment through
 `CMRU_ASSAY_BASELINE_FACTS`. The mutation checker binds those facts to HEAD,
 requires the selected tag to match the configured Assay R1 base and verifies
 its origin commit. On an untagged candidate, that ancestor must also be the
-latest published CMRU release. On a tagged-HEAD rerun, the selected ancestor
-remains the previous baseline; the latest published tag may be one of the
+latest published CMRU release. On a tagged-HEAD rerun, every release tag at
+HEAD is excluded and the highest-version published ancestor remains the
+previous baseline; the latest published tag may be one of the
 verified tags at HEAD. It
 also verifies every local CMRU release tag at HEAD against its exact origin
 commit, including older tag names that point to the same commit. It
@@ -460,13 +466,16 @@ checks Assay's effective comparison commit too: if a merge's first parent is
 after the tag, CMRU source roots must be unchanged across that gap so the two
 lanes use the same source range. A missing tag or mismatch fails the gate. Run the
 registered `./run-gate.py gate` lane to generate fresh origin facts immediately
-before mutation. If that source diff is empty, the mutation lane writes explicit
+before mutation. The tester independently selects the highest-version
+published ancestor using Assay's sanitized ancestry API. If that source diff
+is empty, the mutation lane writes explicit
 skip evidence bound to the candidate HEAD. The serial campaign uses a
 120-second timeout per candidate, stops each failed candidate at its first
 failing test (`--maxfail=1`), and resumes from its progress stream. If a gate
 is rerun after HEAD itself received one or more release tags, the checker
-excludes every local CMRU release tag at HEAD and finds the preceding release
-tag in HEAD's full ancestry, keeping the pinned R1 base stable.
+excludes every local CMRU release tag at HEAD and finds the highest-version
+published tag in HEAD's remaining full ancestry, keeping the pinned R1 base
+stable.
 
 The mutation and coverage-canary controls use the same disposable CMRU test
 closure. It includes the Topos and nyxloom CMRU manifests read by the estate

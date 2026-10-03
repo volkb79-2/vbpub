@@ -560,15 +560,17 @@ before your first release — is covered step by step in **[`docs/CONSUMERS.md`]
 discovers the declared lanes; definitions live in `run-gate.toml`. The
 `assay` lane declares R0/R1/R3: the full suite, 100% line+branch coverage,
 and an import-break canary. The release `gate` adds R2 through a separate
-changed-source mutation campaign based on the nearest ancestor `cmru-v*` tag.
-The registered `gate` lane queries origin on the host through CMRU's
-credential-scoped Git transport, then forwards only token-free tag and commit
-facts to the `cmru-mutation` tester environment as
+changed-source mutation campaign based on the highest-version published
+`cmru-v*` tag in the candidate's full ancestry.
+The registered `gate` lane queries every CMRU release tag on origin through
+CMRU's credential-scoped Git transport, then forwards only token-free tag and
+commit facts to the `cmru-mutation` tester environment as
 `CMRU_ASSAY_BASELINE_FACTS`. The mutation lane checks those facts against its
 HEAD and requires the selected tag to match the configured Assay R1 base. On
 an untagged candidate, that ancestor must also be the latest published CMRU
-release. On a tagged-HEAD rerun, the selected ancestor remains the previous
-baseline; the latest published tag may be one of the verified tags at HEAD. It
+release. On a tagged-HEAD rerun, every release tag at HEAD is excluded and the
+selected ancestor is the highest-version published release in the remaining
+ancestry; the latest published tag may be one of the verified tags at HEAD. It
 also checks Assay's effective
 comparison commit: if Assay resolves a merge's first parent after the tag, the
 configured CMRU source roots must be unchanged across the gap. A missing tag or
@@ -584,7 +586,7 @@ for mutation, then restores the original secret files. If restoration fails,
 the gate reports and retains the private backup path for recovery. See the
 [gate credential design](docs/DESIGN-GUIDE.md#keeping-release-credentials-out-of-gate-containers).
 When rerunning on a release-tagged HEAD, the checker excludes every local CMRU
-release tag at HEAD and selects the nearest preceding release tag from its full
+release tag at HEAD and selects the highest-version published tag in its full
 ancestry. An empty source diff records a skip bound to the candidate HEAD. The
 selected worktree's Assay source is installed at lane time.
 Keep each candidate's R1 base on the latest release published before that

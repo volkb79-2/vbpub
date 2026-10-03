@@ -10,27 +10,21 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 _OID_RE = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})\Z")
+_TAG_REF_RE = re.compile(
+    r"refs/tags/(?P<tag>cmru-v[0-9][A-Za-z0-9.+-]*)(?P<peeled>\^\{\})?\Z"
+)
 
 
-def _previous_release_tag(assay_git, project_root: Path, tags_at_head: list[str]) -> str:
-    args = ["describe", "--abbrev=0", "--tags", "--match", "cmru-v*"]
-    for tag in tags_at_head:
-        args.extend(("--exclude", tag))
-    args.append("HEAD")
-    return assay_git.run(project_root, *args).strip()
-
-
-def _remote_tag_commit(repo_root: Path, tag: str, git_auth) -> str:
+def _remote_tag_commits(repo_root: Path, git_auth) -> dict[str, str]:
+    """Read every published CMRU tag and its commit in one authenticated query."""
     from cmru.git_auth import run_remote_git
 
     result = run_remote_git(
         repo_root,
         "ls-remote",
-        "--exit-code",
         "--tags",
         "origin",
-        f"refs/tags/{tag}",
-        f"refs/tags/{tag}^{{}}",
+        "refs/tags/cmru-v*",
         auth=git_auth,
         capture_output=True,
         text=True,
@@ -39,22 +33,37 @@ def _remote_tag_commit(repo_root: Path, tag: str, git_auth) -> str:
     if result.returncode != 0:
         detail = result.stderr.strip() or result.stdout.strip() or "no diagnostic output"
         raise RuntimeError(
-            f"cannot verify CMRU release tag {tag!r} on origin "
+            "cannot list CMRU release tags on origin "
             f"(git ls-remote exited {result.returncode}): {detail}"
         )
-    plain_commit = peeled_commit = None
+    plain: dict[str, str] = {}
+    peeled: dict[str, str] = {}
     for line in result.stdout.splitlines():
+        if not line:
+            raise RuntimeError("origin returned an empty CMRU release tag record")
         object_id, separator, ref = line.partition("\t")
-        if not separator or not _OID_RE.fullmatch(object_id):
-            continue
-        if ref == f"refs/tags/{tag}^{{}}":
-            peeled_commit = object_id
-        elif ref == f"refs/tags/{tag}":
-            plain_commit = object_id
-    remote_commit = peeled_commit or plain_commit
-    if not remote_commit:
-        raise RuntimeError(f"origin returned no usable object for CMRU release tag {tag!r}")
-    return remote_commit
+        if not separator:
+            raise RuntimeError("origin returned a malformed CMRU release tag record")
+        parsed_ref = _TAG_REF_RE.fullmatch(ref)
+        if parsed_ref is None:
+            raise RuntimeError(f"origin returned a malformed CMRU release tag ref {ref!r}")
+        if not _OID_RE.fullmatch(object_id):
+            raise RuntimeError(f"origin returned a malformed object id for ref {ref!r}")
+        tag = parsed_ref.group("tag")
+        if parsed_ref.group("peeled"):
+            previous = peeled.get(tag)
+            if previous is not None and previous != object_id:
+                raise RuntimeError(f"origin returned conflicting peeled refs for tag {tag!r}")
+            peeled[tag] = object_id
+        else:
+            tag = ref[len("refs/tags/"):]
+            previous = plain.get(tag)
+            if previous is not None and previous != object_id:
+                raise RuntimeError(f"origin returned conflicting refs for tag {tag!r}")
+            plain[tag] = object_id
+    if not set(peeled) <= plain.keys():
+        raise RuntimeError("origin returned a peeled CMRU tag without its tag ref")
+    return {tag: peeled.get(tag, object_id) for tag, object_id in plain.items()}
 
 
 def build_facts(
@@ -64,11 +73,13 @@ def build_facts(
     git_auth=None,
     assay_git=None,
 ) -> dict[str, object]:
-    """Resolve local ancestry and query only its relevant published tags."""
+    """Resolve the latest published ancestor and prepare token-free origin facts."""
     if assay_git is None:
         from assay import git as assay_git
-    from cmru.release import _semver_key
-    from cmru.version import _highest_remote_tag_for_prefix
+    from assay_baseline_tags import (
+        latest_ancestor_release_tag,
+        latest_published_release_tag,
+    )
 
     nearest = assay_git.run(
         project_root, "describe", "--abbrev=0", "--tags", "--match", "cmru-v*",
@@ -95,43 +106,44 @@ def build_facts(
         if tag
     ))
 
-    released_tag: str | None = None
-    if tag_commit == head_commit:
-        released_tag = nearest
-        nearest = _previous_release_tag(assay_git, project_root, head_release_tags)
-        if not nearest:
-            raise RuntimeError(
-                "tagged HEAD has no previous CMRU release tag in its full ancestry"
-            )
-        tag_commit = assay_git.run(
-            project_root,
-            "rev-parse",
-            "--verify",
-            "--end-of-options",
-            f"refs/tags/{nearest}^{{commit}}",
-        ).strip()
+    released_tag: str | None = nearest if tag_commit == head_commit else None
 
     if bool(head_release_tags) != (released_tag is not None):
         raise RuntimeError(
             "git describe and git tag disagree about CMRU release tags at HEAD"
         )
 
-    latest_tag = _highest_remote_tag_for_prefix(
-        repo_root,
-        "cmru-v",
-        lambda tag: _semver_key(tag[len("cmru-v"):]),
-        git_auth=git_auth,
+    remote_tags = _remote_tag_commits(repo_root, git_auth)
+    if not remote_tags:
+        raise RuntimeError("origin has no published CMRU release tags")
+    latest_tag = latest_published_release_tag(remote_tags)
+    if latest_tag is None:
+        raise RuntimeError("origin has no published CMRU release tags")
+    nearest = latest_ancestor_release_tag(
+        assay_git,
+        project_root,
+        head_commit,
+        remote_tags,
+        exclude_tags=set(head_release_tags),
     )
-    relevant_tags = {nearest}
-    if latest_tag is not None:
-        relevant_tags.add(latest_tag)
-    relevant_tags.update(head_release_tags)
-    remote_tags = {
-        tag: _remote_tag_commit(repo_root, tag, git_auth)
-        for tag in sorted(relevant_tags)
-    }
+    if nearest is None:
+        raise RuntimeError(
+            "candidate HEAD has no previous published CMRU release tag in its full ancestry"
+        )
+    tag_commit = assay_git.run(
+        project_root,
+        "rev-parse",
+        "--verify",
+        "--end-of-options",
+        f"refs/tags/{nearest}^{{commit}}",
+    ).strip()
+    if remote_tags[nearest] != tag_commit:
+        raise RuntimeError(
+            f"selected CMRU release tag {nearest!r} resolves locally to {tag_commit}, "
+            f"but origin publishes it at {remote_tags[nearest]}"
+        )
     return {
-        "schema_version": 2,
+        "schema_version": 3,
         "head": head_commit,
         "published_latest": latest_tag,
         "selected_tag": nearest,

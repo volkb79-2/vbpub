@@ -126,7 +126,7 @@ def test_assay_and_release_gate_split_rigor_without_empty_release_mutation():
     assert "assay_git.base_resolution_mode" in baseline_checker
     assert "assay_git.run(" in baseline_checker
     assert 'os.environ.get("CMRU_ASSAY_BASELINE_FACTS"' in baseline_checker
-    assert '"--exclude"' in baseline_checker
+    assert "latest_ancestor_release_tag" in baseline_checker
     assert '"head": head_commit' in baseline_checker
     assert 'source_roots = judge["source_roots"]' in baseline_checker
     assert "relative_to(repo_top)" in baseline_checker
@@ -136,11 +136,11 @@ def test_assay_and_release_gate_split_rigor_without_empty_release_mutation():
     assert "_remove_stale_skip_evidence" in baseline_checker
     baseline_preparer = (ROOT / "tools" / "prepare_assay_baseline.py").read_text(encoding="utf-8")
     assert "load_config(config_path, validate_dependencies=False)" in baseline_preparer
-    assert "_highest_remote_tag_for_prefix" in baseline_preparer
+    assert "_remote_tag_commits" in baseline_preparer
     assert "run_remote_git(" in baseline_preparer
     assert '"remote_tag_commits": remote_tags' in baseline_preparer
     assert '"head_release_tags": head_release_tags' in baseline_preparer
-    assert '"schema_version": 2' in baseline_preparer
+    assert '"schema_version": 3' in baseline_preparer
     assert "GITHUB_PUSH_PAT" not in baseline_preparer
     assert "remote_head_commit != head_commit" in baseline_checker
     assert "--require-candidates" in mutation_command
@@ -177,7 +177,7 @@ def test_assay_and_release_gate_split_rigor_without_empty_release_mutation():
         assert "--maxfail=1" in text
         assert "120 seconds" in text or "120-second" in text
         assert "progress" in text.lower()
-        assert "nearest ancestor" in normalized
+        assert "highest-version published" in normalized
         assert "cmru-v*" in text
         assert "selected tag" in normalized.lower()
         assert "Assay R1 base" in text

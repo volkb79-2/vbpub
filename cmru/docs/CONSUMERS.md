@@ -519,14 +519,17 @@ repository with the three declared Topos fixture omissions, and judges R0
 canary). It omits native Assay R2 because a post-merge release candidate is
 already at `origin/main`, so the configured `main` base would produce no
 mutation candidates. The `gate` lane supplies R2 through its separate
-changed-source mutation campaign, based on the nearest ancestor `cmru-v*` tag;
-the registered `gate` lane queries origin on the host through CMRU's
-credential-scoped Git transport, then passes token-free tag and commit facts
-to the `cmru-mutation` tester environment as `CMRU_ASSAY_BASELINE_FACTS`.
+changed-source mutation campaign, based on the highest-version published
+`cmru-v*` tag in the candidate's full ancestry;
+the registered `gate` lane queries every CMRU release tag on origin through
+CMRU's credential-scoped Git transport, then passes token-free tag and commit
+facts to the `cmru-mutation` tester environment as
+`CMRU_ASSAY_BASELINE_FACTS`.
 The mutation lane checks those facts against its HEAD and requires the selected
 tag to match the configured Assay R1 base. On an untagged candidate, that
 ancestor must also be the latest published CMRU release. On a tagged-HEAD
-rerun, the selected ancestor remains the previous baseline; the latest
+rerun, every release tag at HEAD is excluded and the selected ancestor remains
+the highest-version published release in the remaining ancestry; the latest
 published tag may be one of the verified tags at HEAD. It
 verifies every local CMRU release tag at HEAD against its exact origin commit,
 including older tag names that point to the same commit. It checks Assay's
@@ -537,8 +540,8 @@ that gap. A missing tag or mismatch fails the gate. Run the registered
 mutation. When that source diff is empty,
 it records a skipped result bound to the candidate HEAD instead of claiming
 mutants ran. If rerun at a release-tagged HEAD, the checker excludes every
-local CMRU release tag at HEAD and selects the preceding release tag from its
-full ancestry, matching the
+local CMRU release tag at HEAD and selects the highest-version published tag
+from its full ancestry, matching the
 pinned R1 baseline. The next release candidate advances its R1 pin to the
 newly tagged release. The just-tagged commit retains its preceding pin, so
 rerunning its gate uses the same baseline. The serial R2 campaign caps each
