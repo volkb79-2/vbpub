@@ -246,6 +246,9 @@ def test_resume_migrates_an_existing_legacy_record_without_a_scope_marker(
         root, path, purpose="cmru-legacy", labels={"cmru.purpose": "release"},
         metadata={}, identity_path=path,
     )
+    adoption_record = shared.find_workspace(adopted.git_common_dir, path)
+    expected_metadata = dict(adoption_record.metadata)
+    assert expected_metadata["workspace.identity_path"] == str(path)
     monkeypatch.setattr(
         transaction, "run_remote_git",
         lambda *_args, **_kwargs: SimpleNamespace(returncode=0, stdout="", stderr=""),
@@ -255,10 +258,10 @@ def test_resume_migrates_an_existing_legacy_record_without_a_scope_marker(
         record = shared.find_workspace(adopted.git_common_dir, path)
 
         assert resumed.workspace_id == adopted.workspace_id
-        assert record.metadata == {
-            transaction._LEGACY_RESUME_METADATA_KEY:
-                transaction._LEGACY_RESUME_METADATA_VALUE,
-        }
+        expected_metadata[transaction._LEGACY_RESUME_METADATA_KEY] = (
+            transaction._LEGACY_RESUME_METADATA_VALUE
+        )
+        assert record.metadata == expected_metadata
     finally:
         _remove_raw_release_worktree(root, path, branch)
 
