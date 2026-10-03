@@ -47,13 +47,21 @@ class TestVerifySystemdSlice:
 
         def run(argv, **kwargs):
             calls.append((argv, kwargs))
-            return self.bus_reply(argv, values)
+            result = self.bus_reply(argv, values)
+            if not kwargs["capture_output"]:
+                result.stdout = None
+                result.stderr = None
+            elif not kwargs["text"]:
+                result.stdout = result.stdout.encode()
+                result.stderr = result.stderr.encode()
+            return result
 
         assert access.verify_systemd_slice(
             "dev-gates.slice", "/dev.slice/dev-gates.slice", run=run
         ) is True
         assert len(calls) == 4
         assert all(kwargs["timeout"] == 5 and kwargs["check"] is False for _, kwargs in calls)
+        assert all(kwargs["capture_output"] and kwargs["text"] for _, kwargs in calls)
         assert all(argv[:2] == ["/usr/bin/busctl", "--system"] for argv, _ in calls)
         assert calls[0][0][-3:] == ["GetUnit", "s", "dev-gates.slice"]
         assert calls[-1][0][-2:] == ["org.freedesktop.systemd1.Slice", "ControlGroup"]
@@ -88,6 +96,26 @@ class TestVerifySystemdSlice:
         assert access.verify_systemd_slice(
             "dev-gates.slice", "/dev.slice/dev-gates.slice",
             run=lambda *_args, **_kwargs: fake_completed(returncode=1),
+        ) is False
+
+    def test_nonzero_bus_exit_is_not_overridden_by_well_formed_stdout(self, monkeypatch):
+        monkeypatch.setattr(access.shutil, "which", lambda _name: "/usr/bin/busctl")
+        values = {
+            "LoadState": "loaded",
+            "FragmentPath": "/etc/systemd/system/dev-gates.slice",
+            "ControlGroup": "/dev.slice/dev-gates.slice",
+        }
+
+        def run(argv, **_kwargs):
+            if "GetUnit" in argv:
+                return subprocess.CompletedProcess(
+                    argv, 1, 'o "/org/freedesktop/systemd1/unit/dev_2dgates_2eslice"\n',
+                    "systemd query failed",
+                )
+            return self.bus_reply(argv, values)
+
+        assert access.verify_systemd_slice(
+            "dev-gates.slice", "/dev.slice/dev-gates.slice", run=run,
         ) is False
 
     @pytest.mark.parametrize("failure", [
