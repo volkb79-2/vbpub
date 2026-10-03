@@ -6165,3 +6165,32 @@ merge-commit verdict remains preserved for diagnosis, but its five-candidate
 `.assay` records are not reused as resume evidence for this 1,161-candidate
 single-parent judgment. P3's DAMON overhead measurement and P6's own
 base-scoped R2 remain separate closeout work.
+
+### RW-417 — 2026-10-03 09:12:24Z — prepare P6's exact-base clone; serialize under the present memory ceiling
+
+Prepared an independent, non-shared full clone at
+`.worktrees/rg55-p6-r2-fullclone-20261003`, branch
+`rg55-p6-r2-20261003`, candidate `9e62ea661f2385bf8fa0807f3a9ab3c394a8b179`.
+The clone's `origin/main` is pinned locally to pre-P6 base
+`52e4fd2584ea0266f98ab106ddf191a86df7d708`; `merge-base(HEAD,
+origin/main)` equals that OID. The current `assay.toml` requires an explicit
+request base, so `assay plan r2 --request-base 52e4fd...` was run and
+returned 978 candidates across seven modules, two workers, and 600 seconds
+per candidate. Candidate project subtree
+`89e21e7c4230882734412e20ba1dc993070502e7` is byte-identical to the P1
+full-gate candidate's cgroup-profiler subtree. A prior P6 campaign on
+`6540f877` accounted for 312 candidates in 3h33m but ended
+`BUDGET_EXCEEDED/CANDIDATE_HUNG`; it is runtime data only, not verdict
+evidence. Linear extrapolation suggests about 11 hours for this inventory,
+with substantial uncertainty; the 24-hour lane window remains binding.
+
+No P6 gate has been launched. The present host `dev-gates.slice` readback is
+loaded with a 5-CPU quota, `MemoryHigh=1GiB`, and `MemoryMax=1.5GiB`. The
+active P1 campaign already has a 3-CPU container in this shared slice. Do
+not overlap P6 mutation under this memory ceiling: a shared-cgroup OOM or
+candidate kill would make the run incomplete, not a verdict, and would
+confound the load-independence objective. Keep the P6 clone attached and
+unchanged until the P1 composite gate finishes. The earlier CIU allocation
+refusal (`[S16] ready record lacks a closed runtime identity`) remains
+untouched; the standalone clone uses registered run-gate without editing
+that identity or changing any CIU network.
