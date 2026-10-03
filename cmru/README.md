@@ -128,8 +128,9 @@ policy while the prompt is open is not added without a new preview. For each Git
 captures the exact local and remote object IDs and deletes only refs that still point to those
 objects when confirmation is applied. A tag created after the preview or retargeted meanwhile
 is left for a later preview. CMRU refuses a successful remote tag listing that contains malformed
-records, so an incomplete listing cannot silently omit a tag from the cleanup plan. Inspect origin
-access and rerun the preview after correcting the Git response. Before deleting a GitHub Release
+records, invalid Git refs, or tags outside the requested prefix, so an incomplete listing cannot
+silently omit a tag from the cleanup plan. Inspect origin access and rerun the preview after
+correcting the Git response. Before deleting a GitHub Release
 record, CMRU re-fetches its
 captured Release ID and skips it if the tag, update time, asset inventory, or displayed eligibility
 changed. Before deleting a GHCR version, CMRU re-fetches its exact ID and skips it if its update
@@ -621,9 +622,11 @@ mismatch fails the gate. Run the registered `gate` lane so it prepares fresh
 origin facts immediately before mutation.
 The checker verifies every local CMRU release tag at HEAD against its exact
 origin commit, including older tag names that point to the same commit.
-The registered real-enrollment lane sets `CMRU_ENROLL_REQUIRED=1`; missing Docker, an unloaded or
-fragment-less gate slice, or a failed fixture-image build fail that lane instead of skipping O2/O3.
-Direct local test runs may still skip the container integration checks when Docker is unavailable.
+The registered real-enrollment lane sets `CMRU_ENROLL_REQUIRED=1`; missing Docker or host-probe
+configuration, an unloaded or fragment-less gate slice on the Docker host, or a failed fixture-image
+build fail that lane instead of skipping O2/O3. It checks the host through CMRU's privileged systemd
+probe. Direct local test runs may still skip the container integration checks when prerequisites
+are unavailable.
 Before tester-unified starts, the host gate points all visible root and selected
 project secret overlays at private host backups outside the repository mount
 and strips publisher-token and extra-mount variables from nested runner calls.

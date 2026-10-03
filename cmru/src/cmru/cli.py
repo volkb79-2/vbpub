@@ -2,6 +2,7 @@
 """Unified release orchestration for vbpub projects."""
 from __future__ import annotations
 
+import fnmatch
 import json
 import os
 import re
@@ -1518,6 +1519,21 @@ def list_remote_tag_refs_matching(
             raise RuntimeError(
                 f"Malformed remote tag listing for {pattern!r} at line {line_number}: "
                 "empty or invalid tag name"
+            )
+        tag_ref = f"refs/tags/{tag_name}"
+        if not fnmatch.fnmatchcase(tag_name, pattern):
+            raise RuntimeError(
+                f"Malformed remote tag listing for {pattern!r} at line {line_number}: "
+                f"tag ref {tag_ref!r} does not match the requested pattern"
+            )
+        ref_check = run_local_git(
+            repo_root, "check-ref-format", tag_ref,
+            capture_output=True, text=True, check=False,
+        )
+        if ref_check.returncode != 0:
+            raise RuntimeError(
+                f"Malformed remote tag listing for {pattern!r} at line {line_number}: "
+                f"invalid Git tag ref {tag_ref!r}"
             )
         if is_peeled:
             # Annotated tags have a second, peeled record. Validate its shape

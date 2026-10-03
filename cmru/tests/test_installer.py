@@ -41,6 +41,7 @@ from typing import Iterator, List, Optional, Tuple
 from unittest import mock
 
 import pytest
+from cmru import tester_gate
 
 # ─── helpers ─────────────────────────────────────────────────────────────────
 
@@ -2019,60 +2020,54 @@ def _docker_unavailable_reason() -> Optional[str]:
     if not slice_name:
         return "CGROUP_PARENT_DEV_GATES unset — refusing an unplaced container"
     try:
-        slice_probe = subprocess.run(
-            ["systemctl", "show", slice_name, "--property=LoadState",
-             "--property=FragmentPath", "--no-pager"],
-            capture_output=True, text=True, timeout=10,
-        )
-    except (OSError, subprocess.TimeoutExpired) as exc:
+        probe_image = tester_gate.resolve_cgroup_probe_image(None)
+    except SystemExit as exc:
         return f"could not verify CGROUP_PARENT_DEV_GATES unit: {exc}"
-    if slice_probe.returncode != 0:
-        detail = slice_probe.stderr.strip() or slice_probe.stdout.strip() or "no diagnostic output"
-        return f"could not verify CGROUP_PARENT_DEV_GATES unit: {detail[:200]}"
-    properties = dict(
-        line.split("=", 1) for line in slice_probe.stdout.splitlines() if "=" in line
-    )
-    if properties.get("LoadState") != "loaded" or not properties.get("FragmentPath", "").strip():
-        return (
-            f"CGROUP_PARENT_DEV_GATES={slice_name!r} is not a loaded slice with a fragment"
-        )
+    exists, note = tester_gate.check_slice_unit(slice_name, probe_image, slice_name)
+    if exists is not True:
+        return f"could not verify CGROUP_PARENT_DEV_GATES unit on the Docker host: {note}"
     return None
 
 
 @pytest.mark.parametrize(
-    ("systemctl_output", "expected"),
+    ("probe_result", "note"),
     [
-        ("LoadState=not-found\nFragmentPath=\n", "not a loaded slice"),
-        ("LoadState=loaded\nFragmentPath=\n", "not a loaded slice"),
+        (False, "LoadState=not-found"),
+        (False, "FragmentPath is empty"),
+        (None, "could not determine"),
     ],
 )
-def test_enroll_preflight_rejects_unloaded_or_fragmentless_gate_slice(
-    monkeypatch, systemctl_output, expected,
+def test_enroll_preflight_rejects_gate_slice_not_verified_on_docker_host(
+    monkeypatch, probe_result, note,
 ):
     monkeypatch.setenv("CGROUP_PARENT_DEV_GATES", "typo-or-transient.slice")
-    calls = iter([
-        subprocess.CompletedProcess(["docker", "info"], 0, "", ""),
-        subprocess.CompletedProcess(["systemctl"], 0, systemctl_output, ""),
-    ])
     monkeypatch.setattr(shutil, "which", lambda _name: "/usr/bin/docker")
-    monkeypatch.setattr(subprocess, "run", lambda *_args, **_kwargs: next(calls))
+    monkeypatch.setattr(
+        subprocess, "run", lambda *_args, **_kwargs:
+        subprocess.CompletedProcess(["docker", "info"], 0, "", ""),
+    )
+    monkeypatch.setattr(tester_gate, "resolve_cgroup_probe_image", lambda _image: "probe:image")
+    monkeypatch.setattr(tester_gate, "check_slice_unit", lambda *_args: (probe_result, note))
 
-    assert expected in _docker_unavailable_reason()
+    assert note in _docker_unavailable_reason()
 
 
 def test_enroll_preflight_accepts_loaded_gate_slice_with_fragment(monkeypatch):
     monkeypatch.setenv("CGROUP_PARENT_DEV_GATES", "dev-gates.slice")
-    calls = iter([
-        subprocess.CompletedProcess(["docker", "info"], 0, "", ""),
-        subprocess.CompletedProcess(
-            ["systemctl"], 0,
-            "LoadState=loaded\nFragmentPath=/etc/systemd/system/dev-gates.slice\n", "",
-        ),
-    ])
     monkeypatch.setattr(shutil, "which", lambda _name: "/usr/bin/docker")
-    monkeypatch.setattr(subprocess, "run", lambda *_args, **_kwargs: next(calls))
+    monkeypatch.setattr(
+        subprocess, "run", lambda *_args, **_kwargs:
+        subprocess.CompletedProcess(["docker", "info"], 0, "", ""),
+    )
+    monkeypatch.setattr(tester_gate, "resolve_cgroup_probe_image", lambda _image: "probe:image")
+    observed = []
+    monkeypatch.setattr(
+        tester_gate, "check_slice_unit",
+        lambda *args: (observed.append(args) or (True, "loaded with fragment")),
+    )
 
     assert _docker_unavailable_reason() is None
+    assert observed == [("dev-gates.slice", "probe:image", "dev-gates.slice")]
 
 
 def _skip_or_fail_enroll_preflight(reason: str) -> None:

@@ -559,9 +559,11 @@ baseline and mutant copy.
 real-enrollment evidence lanes. It starts with the KI-26 installed-wheel
 acceptance lane, which builds the wheel, installs it into a fresh isolated venv,
 and invokes `cmru get-py` outside the source checkout.
-The registered real-enrollment lane requires Docker, a loaded fragment-backed gates cgroup slice,
-and a successful fixture-image build; missing prerequisites or a failed build are lane failures,
-not skips. Standalone local test runs may skip that container oracle when Docker is unavailable.
+The registered real-enrollment lane requires Docker, the configured host-probe image, a loaded
+fragment-backed gates cgroup slice on the Docker host, and a successful fixture-image build; missing
+prerequisites or a failed build are lane failures, not skips. CMRU's privileged systemd probe
+checks the daemon host. Standalone local test runs may skip that container oracle when prerequisites
+are unavailable.
 
 The host `gate` lane keeps CMRU publisher credentials out of tester-unified:
 it points visible root/project `cmru.secret.toml` overlays at private host
@@ -775,8 +777,9 @@ CMRU skips the action and reports that it cannot verify cleanup; check that the 
 credential can read the package before treating it as absent. With `ghcr_packages = ["*"]`, the
 GitHub listing selects only packages visible to that credential. When a Release deletion is
 skipped, CMRU leaves its matching Git tag too. If CMRU reports malformed output while listing
-origin tags, check `git ls-remote --tags origin` for tab-separated object-ID/ref records, then run
-a fresh cleanup preview; CMRU stops before applying a plan from an incomplete listing. A confirmed
+origin tags, check `git ls-remote --tags origin` for tab-separated object-ID/ref records matching
+the configured prefix, then run a fresh cleanup preview; CMRU stops before applying a plan from an
+incomplete listing. A confirmed
 `steps.clean` runs after the planned deletions and receives the highest-semver
 Release that survived them; the preview's `CMRU_VERSION` is an estimate. Run a new preview to
 review changed records. See the [cleanup design](DESIGN-GUIDE.md#remote-cleanup-and-local-transaction-abandonment)

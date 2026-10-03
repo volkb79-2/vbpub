@@ -1064,8 +1064,9 @@ inventory, and displayed eligibility to match the preview. Before deleting a
 GHCR package version, it MUST re-fetch the captured version ID and require its
 update time and container-tag inventory to match the preview and still satisfy
 the age policy. A successful `git ls-remote --tags` response MUST consist only
-of well-formed object-ID/ref records; CMRU MUST reject the complete response if
-any row is malformed or duplicated. It MAY discard a peeled
+of well-formed object-ID/ref records whose tag names are valid Git refs and
+match the requested pattern; CMRU MUST reject the complete response if any row
+is malformed, duplicated, or outside the pattern. It MAY discard a peeled
 `refs/tags/<name>^{}` row only after validating its object ID and requiring the
 corresponding ordinary tag ref in the same response. A malformed or incomplete
 inventory MUST fail before cleanup applies deletions. A changed or indeterminate
@@ -2113,8 +2114,8 @@ when the mounted checkout contains no publisher secret overlays.
 
 **S16.5 — Required real enrollment.** The registered `enroll` lane MUST set
 `CMRU_ENROLL_REQUIRED=1`. In this mode, missing Docker or
-`CGROUP_PARENT_DEV_GATES`, a slice that is not loaded with a nonempty fragment,
-and failure to build the fixture image,
+the configured Docker-host probe image or `CGROUP_PARENT_DEV_GATES`, a Docker-host slice
+that is not loaded with a nonempty fragment, and failure to build the fixture image,
 MUST fail the lane rather than skip its real-system checks. A direct local test
 run without this marker MAY skip the enrollment container oracle when Docker
 is unavailable.

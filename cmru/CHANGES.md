@@ -39,8 +39,8 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 - Copy resume credentials through no-follow paths and atomic mode-0600 destination files.
 - Verify staged retained artifact bytes against the build manifest before remote publication.
 - Require the registered real-enrollment lane to fail when prerequisites or fixture-image construction fail.
-- Verify the gates slice is a loaded fragment-backed systemd unit before starting enrollment fixtures.
-- Reject malformed successful remote tag listings instead of silently omitting refs from cleanup plans.
+- Verify the gates slice on the Docker host before starting enrollment fixtures.
+- Reject malformed, invalid, or out-of-pattern remote tag records before cleanup planning.
 
 ### Testing
 - Add registry, age-policy, project/root ownership, output transaction, mutation-runner, and adopter-doc contract tests.
@@ -49,7 +49,7 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 - Cover package replacement during cleanup confirmation, scoped tag abandonment, exact local tag recovery, credential rotation, and mutation resume evidence.
 - Cover retained-release identity changes, GHCR 404 ambiguity, and credential rotation during overlay installation.
 - Cover symlinked credential destinations, altered retained upload staging, and required enrollment-lane prerequisites.
-- Cover invalid or transient gates slices and malformed or orphaned peeled remote tag records.
+- Cover Docker-host slice verification and malformed, invalid, duplicate, orphaned, or out-of-pattern remote tag records.
 
 <!-- cmru: release history -->
 
