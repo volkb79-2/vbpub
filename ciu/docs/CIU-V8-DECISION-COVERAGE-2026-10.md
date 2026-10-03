@@ -38,7 +38,7 @@ Verdict vocabulary: **yes** (carried faithfully), **partial** (carried, with a g
 | 28 | D-652 Q11 — present both CLI/exit contracts (was open) | §4.3.17 4.2 amendments (A/B/C table) | S16.8 | yes (decided by D-654) | — |
 | 29 | D-652 Q12 — one `[testing.judge]`: pinned artifact (`command` + `sha256`) or `source = <path>`, plus a version floor; lanes imported from `assay lanes --json` | §4.1.10 example; §4.5 A7; §4.7 K11 | S16.3 | yes | — |
 | 30 | D-652 Q13 — atomic per-repo cutover: one commit runs `ciu migrate --gate`, deletes the run-gate files, rewrites pointers; history restarts | §4.1.13 step 7; §4.1.10 | Appendix A; S18 | yes | — |
-| 31 | D-652 Q14 — each wheel ships its skills; shared `skills install\|list\|check\|uninstall` from cli-extended (CLI-EXT-02); per-tool adoption follows | §4.1.15; §4.4 V8-33 | S18 | yes | — |
+| 31 | D-652 Q14 — each wheel ships its skills; shared `skills install\|list\|check\|uninstall` from cli-extended (CLI-EXT-05 (filed as CLI-EXT-02)); per-tool adoption follows | §4.1.15; §4.4 V8-33 | S18 | yes | — |
 | 32 | D-653 Q7 — worktree mounted at its own path plus the git common dir; images bake no checkout path; `ciu check` validates the contract | §4.1.10 (linked worktrees); §4.3a D; §4.3.17 4.1 amendments | S16.4; S15 stage 12; S6.2/S17.6.1 | yes | — |
 | 33 | D-653 Q7 — side finding: test-runner's editable `ddcli` install is dead code (carve TEST-RUNNER-DDCLI-INSTALL) | §4.10 item 36 | — | yes (dstdns work, pointer only) | — |
 | 34 | D-653 Q4 — admission charges the WARM (hot + warm) working set, never total/logical memory incl. cold pages | §4.1.10a "Charge"; §4.7 X113 | S16.6; S16.9 (footprint manifest) | yes | — |
@@ -62,6 +62,31 @@ Verdict vocabulary: **yes** (carried faithfully), **partial** (carried, with a g
 
 **Counts (rev 4.3 as audited).** 51 rows: **yes 47, partial 2 (rows 36, 40), missing 0, contradicted 1 (row 44; row 13's residue is the same defect), n/a 1 (row 7).**
 After rev 4.4: yes 49, partial 1 (row 36, an unruled extension disclosed as open item O-2), missing 0, contradicted 0, n/a 1.
+
+### 1a. Review dispositions (dstdns D-658)
+
+The independent adversarial review (`CIU-V8-ADVERSARIAL-REVIEW-2026-10-03.md`, phase 2 §3.1) disputes 15 of the "yes" verdicts above, and the writer's own row 36 closes. The verdicts below are the honest ones after draft.9 / rev 4.5; the matrix above is the writer's original audit and is kept as the record of it.
+
+| row | writer | review | after draft.9 / rev 4.5 |
+|---|---|---|---|
+| 5 (D-647 #5, 7.15's derivation is final) | yes | contradicted (V8R-01: lexical vs physical path) | **yes** — S4.1.1 derives from the physical path as `workspace_env.py:1579-1581` does |
+| 9 (oracles become parity tests) | yes | partial (V8R-16) | **yes** — S16.12's per-oracle table; RG-67/73/75/76/78 amended (§6) |
+| 15 (D-651 Q8 hermetic) | yes | partial (V8R-17: `image_from` in a worktree) | **yes** — S16.11.6 resolution order |
+| 18 (tenant isolation) | yes | partial (V8R-07: a joiner reads the primary's credential) | **yes** — S10.1.7, S9.5.8–S9.5.10 |
+| 20 (D-651 Q10 path-derived id, shared records) | yes | contradicted/partial (V8R-01, V8R-02, V8R-23) | **partial** — id and lock fixed; the primary still has no library record (open item O-24, an upstream `libraries/worktree` question) |
+| 22 (deletion guarded by `ciu.checkout`) | yes | partial (V8R-18) | **yes** — S14.1.5, S4.1.1 |
+| 25 (D-652 Q6 host-scoped config) | yes | partial (V8R-06) | **partial** — `PENDING-OPERATOR (V8R-06)` |
+| 31 (skills, CLI-EXT-02) | yes | partial (V8R-30) | **yes** — cited as CLI-EXT-05 (filed as CLI-EXT-02), verified in `libraries/cli-extended/BACKLOG.md:34,248` |
+| 34 (warm, never peak) | yes | partial (V8R-19) | **yes** — a run without a warm figure is charged `memory_max` |
+| 36 (measured without DAMON) | partial | partial (V8R-19) | **yes** — O-2 closed from D-651 Q5 |
+| 42 (raw-code mapping) | yes | partial (V8R-14) | **yes** — S16.8.2 maps all six assay outcomes |
+| 43 (RG-78 as parity) | yes | partial (V8R-16) | **yes** — the token and the `--resume` oracle are reconciled in S16.12 and RG-78 is amended |
+| 45 (`compose create` set) | yes | faithful to the letter, unimplementable (V8R-03) | **pending operator** (V8R-03) |
+| 46 (ordered fit) | yes | faithful to the letter, racy (V8R-04) | **pending operator** (V8R-04) |
+| 47 (reap by owner tuple) | yes | partial (V8R-05) | **yes** — S16.6.12 |
+| 49 (correct across devcontainers and users) | yes | not met (V8R-04, V8R-05, V8R-06) | **pending operator** — V8R-05 fixed; V8R-04 and V8R-06 remain |
+
+**Counts after draft.9 / rev 4.5** (51 rows): **yes 45, partial 2 (rows 20, 25), pending-operator 3 (rows 45, 46, 49), missing 0, contradicted 0, n/a 1.** The five operator questions are rev 4.5 §4.9.
 
 ## 2. Stale-residue sweep (proposal, rev 4.3 text)
 
@@ -112,7 +137,7 @@ SPEC-V8 draft.8 applies **every** Appendix R row (R.1 has 46 rows; all 46 are ap
 
 **O-7. Authored `cgroup_parent` and the host singleton.** SPEC-V8 D.6 (5): "S4's instance-scoped naming convention needs a sanctioned exception class for ... host-level infrastructure ... and v8's governance must not re-place a service whose author has explicitly set `cgroup_parent`". D.7 (5) repeats it. Appendix R's D.6/D.7 row only says to close them "per the shipped daemon". Draft.8 closes D.6/D.7 and records that item (5) is not carried by any R row.
 
-**O-8. The path the instance id is derived from.** R S4.1.1: "`workspace_id_for_path`: base36, lexical path". Draft.7 S4.1.1: "SHA-256 over the checkout's **physical** absolute path (the host path, resolved through the container's mount table ...)"; S4.5.1: "`ciu.checkout` (the physical checkout path the id was derived from)". dstdns's id is derived for `/workspaces/dstdns`, the container path. Draft.8 derives from the lexical checkout path as ciu sees it, keeps `physical_repo_root` (S4.1.4's sentinel bind) for mounts only, and defines `ciu.checkout` as the path the id was derived from.
+**O-8. The path the instance id is derived from. — RETRACTED (V8R-01).** R S4.1.1 said "lexical path" and draft.8 inverted draft.7's "physical" on the premise that "dstdns's id is derived for `/workspaces/dstdns`, the container path". That premise is false: ciu 7.15.1 hashes the **physical** (daemon-visible) path of the git top level (`workspace_env.py:1579-1581`, `_detect_physical_repo_root`), and the id recorded in dstdns's own generated file is the hash of its recorded `physical_repo_root`, not of the container path. Draft.9 derives from the physical path (S4.1.1, S4.1.4); the cutover is identity-neutral again.
 
 **O-9. `--move` against repair in place.** R S4.1.2: "cold `--move`/`--fresh` without the token steps; repair-in-place of an outdated or mismatching generated file with a WARN naming old and new id". Draft.7 S4.1.2: "Without `--host`, re-running `init` on a checkout whose physical path changed is an ERROR ... unless `--move` is given". If a mismatching file is repaired without a flag, `--move`'s refusal (old-id resources live) is bypassed. Draft.8 S4.1.2: plain `init` repairs with a WARN; `--move` additionally asserts a move and keeps its cold refusal; the reviewer should say whether plain repair must also refuse while old-id resources are live.
 
@@ -144,4 +169,49 @@ SPEC-V8 draft.8 applies **every** Appendix R row (R.1 has 46 rows; all 46 are ap
 
 **O-23. Joins no preset produced.** R S9.5: "joins only through `[ciu.instances.join_presets.<p>]`". Draft.7 S9.5.5 said "a hand-written instance file is equivalent". Draft.8 S9.5.1 makes a joined Realization no preset produced a stage-12 ERROR.
 
+### 5a. Resolutions in draft.9 (dstdns D-658)
+
+The review's phase 2 (§3) classes each item. Resolved by the decisions and the shipped code, without the operator:
+
+| item | resolution | where |
+|---|---|---|
+| O-1 | keep `BUDGET_EXCEEDED`, and say in S16.8's neighbourhood that it is D-654's "BUDGET"; RG-78 amended | S16.1.3; RG-78 |
+| O-2 | closed: no warm figure means unmeasured, so `memory_max` (D-651 Q5); the peak is informational | S16.6.6 |
+| O-5 | the gate waits for its locks, bounded by `--admission-wait`, then NOT_RUN/`lock-busy` | S16.5.8, S16.8 |
+| O-6 | lane key `place` (bool, `exec`/`host` only), passed as `--place` | S16.5, S16.6.7 |
+| O-7 | the daemon's slice is its own stack's `[governance] cgroup_parent` (a per-stack override, S13.2); a consumer reaches the daemon through `[testing.profile] daemon` or the socket, so S4.2 needs no exception class | S13.2, S16.6.10 |
+| O-8 | retracted (above) | S4.1.1 |
+| O-9 | plain repair refuses while live resources carry the old id and their `ciu.checkout` is this path (`clean --identity` first) or a vanished path (`--move`); it proceeds for a copy | S4.1.2 |
+| O-10 | specified: a `tenant` hook phase, tenant paths and delivery, removal timing | S9.5.8–S9.5.10, S10.1.7 |
+| O-11 | agreed; the primary's missing library record is O-24 | S14.7.1 |
+| O-12 | agreed; its admission needs Docker (S16.6.1) | S16.6.1, S18.3 |
+| O-13 | the tie-break and visibility race are **PENDING-OPERATOR (V8R-04)**; counted states and `ciu dev` are fixed | S16.6.1 |
+| O-14 | (a)–(d), (f) as named; (e) the minimum window is now `[testing.footprint] min_window` | S16.2.4, S16.9.5 |
+| O-15 | agreed: `verdict`; RG-78 uses it too | S16.9 |
+| O-16 | 5.2.0 stays for `--state-dir`; the selective flags have per-flag floors (`--reuse-from` ≥ 7.1.0, `--rejudge`/`--rejudge-outcome` ≥ 5.2.0) | S16.7.2 |
+| O-17 | the scope question is **PENDING-OPERATOR (V8R-08)** | S7.2.4, S17.4 |
+| O-18 | the git-family state root is `<git-common-dir>` for a git checkout (S2.1/S2.6.2 corrected) | S2.1, S2.6.2 |
+| O-19 | one source per tier: `capacity.tiers.<t>.slice|slice_env`; `testing.cgroup_slice*`, the global `governance.cgroup_parent` and every hardwired variable removed | S2.7.2, S16.2.1, S13.2 |
+| O-20 | agreed | S16.3.3 |
+| O-21 | agreed, and the floor check now rides the reservation (`ciu.reservation.floor`), unevaluated without the daemon | S13.2.1 |
+| O-22 | agreed: names, not globs | S16.3 |
+| O-23 | agreed: a joined Realization no preset produced is an ERROR | S9.5.1 |
+
+Still **PENDING-OPERATOR**: O-3 and O-13's stack reservation unit and ordering (V8R-03, V8R-04), O-4's capacity location and the daemon-absent policy (V8R-06, V8R-09), and O-17 (V8R-08). **New open items:**
+- **O-24.** The primary checkout has no `libraries/worktree` lifecycle record (`workspace.py:166-169`), so `primary` is identified by `git worktree list` (S14.1.1). Giving it a record is a library change; `libraries/worktree` has no backlog file to file it in, so it is recorded here for the controller.
+- **O-25.** With no gates slice declared, an `ephemeral` lane runs with Docker's default cgroup parent and says so once (S16.2.1). The review says only that the slice is declared once; this fallback is the writer's reading (previously an ERROR).
+- **O-26.** RG-75's `init` and `env` service keys, its join of an exec target's network, and RG-76(c) are **retired** in v8 (S16.12), and the entries are amended to match; this is the writer's disposition of the review's "carry or retire".
+- **O-27.** `ciu gate exec` returns the command's own exit status, outside the closed table (S16.8.2a); the review offered that or a mapping, and this takes the first.
+
 **R.2 confirmation.** The stale-demo list exists in the proposal (Appendix R.2, 13 files) and is unchanged; `v8-dstdns-demo/` was not edited.
+
+## 6. Upstream backlog amendments (dstdns D-658)
+
+Run-gate's backlog is the legacy single file `run-gate-project/KNOWN_ISSUES_TODO_BACKLOG.md`; cgroup-profiler's is the managed `scripts/cgroup-profiler/nyxloom-trove/backlog/`. Status of RG-73/75/76/78 when checked: all four are OPEN (2026-10-03), no run-gate worktree or branch carries their implementation (`git log -- run-gate-project` shows only the backlog commits for them; the open run-gate worktrees are `rg55-followups-run-gate` and `rg56-admission*`), so the amendments land before the build.
+
+- **RG-78:** `BUDGET` versus the spec's `BUDGET_EXCEEDED`; the `--resume` oracle dropped; "missing base" is NOT_RUN/`no-base`; `lock-busy` and `judge-digest` named.
+- **RG-73:** the worktree is mounted at its own path plus the git common dir (D-653 Q7 → A); `mount_worktree_at` retired.
+- **RG-74:** the non-merge-trunk oracle's "exit 2" becomes NOT_RUN/`no-base`.
+- **RG-75:** `env`/`init` service keys and the exec-network join retired; lane services are `ephemeral`-only; charged in the lane's reservation.
+- **RG-76:** the `required_env` auto-forward oracle (c) retired (S16.4.5).
+- **cgprofile:** the combined `damon.warm_set_bytes` Summary series is filed as CP-16 (checked: CP-6 is the per-class series; CP-15 is the reservation mirror and now optional).
