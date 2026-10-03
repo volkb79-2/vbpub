@@ -71,6 +71,7 @@ SPEC §9.
 | RG-74 | post-merge trunk base (`HEAD^1`) and composite-member base propagation are consumer scripts (dstdns `gate-base.sh`), not run-gate derivations | Minor | OPEN 2026-10-03 |
 | RG-75 | no lane-scoped throwaway service (database): schema/mutation lanes hand-provision and tear down their own Postgres | Major | OPEN 2026-10-03 |
 | RG-76 | external-assay consumers restate judge command, pin and one lane block per assay lane (dstdns: 118 identical pin blocks); import lanes from `assay lanes --json` | Minor | OPEN 2026-10-03 |
+| RG-77 | the per-assay-lane `--state-dir` contract (RG-38) and its root-owned-parent repair (RG-49) are in no SPEC rule or skill, so consumers restate them in their own instruction files | Minor | OPEN 2026-10-03 |
 
 ---
 
@@ -5291,3 +5292,28 @@ reproduction of the SAME underlying defect goes here, not a new entry).
 **Spec owner:** SPEC R-06/R-08 (config schema), R-24 (required_env).
 
 **v8: absorb** (`[testing.judge]` already declares the judge once, S16.3; lane import from `assay lanes --json` belongs in S16.5/S16.7).
+
+## RG-77 — the assay-lane `--state-dir` contract (RG-38) and its repair (RG-49) are documented nowhere a consumer reads
+
+**Provenance:** dstdns P235 (agent-instructions restructure, D-648), 2026-10-03. run-gate rev 46.
+
+**Observed:**
+- SPEC `R-38` documents the unconditional `--resume --progress .assay/progress-<lane>.jsonl` (RG-33). But it never mentions `--state-dir <repo>/.run-gate/assay-state/<project-relative-path>/`, which RG-38 added to every assay-kind lane on all three runner kinds. `grep -c state-dir SPEC.md README.md CONSUMERS.md LANE-AUTHORING.md` gives 0 for each file. Only CHANGES.md and this backlog carry it.
+- RG-49's repair (prove containment, then `chown` a root-owned synthetic parent in a partial-bind-mount worktree container) is likewise only in CHANGES.md and backlog prose.
+- The `run-gate-cli` skill mentions none of resume, progress or state-dir.
+- dstdns therefore had to carry two paragraphs restating this in its own AGENTS.md §6.1, including "a fresh worktree keeps resume state" and "a permission error under `.run-gate/assay-state/` means check the run-gate version first". P235 cut them to a pointer (D-648 "cut now, file gaps"). That pointer currently lands on the skill and CHANGES.md, so a consumer can learn the behavior only from the changelog.
+
+**Why run-gate owns it:** run-gate constructs the argv, so the state-dir location, its keying (the checkout owning the shared `.git`, plus the project-relative path) and its durability across throwaway worktrees are run-gate's contract, not the consumer's.
+
+**Proposed contract:**
+- Extend SPEC `R-38` (or add a sibling rule) to state the `--state-dir` argument and its location derivation. It should also say why that location survives a deleted worktree, state the RG-49 containment-then-chown behavior, and name the exact refusal a failure produces.
+- Add a "Resume and progress" section to the `run-gate-cli` skill covering the three flags, where to tail progress, and the version floor.
+- Add a one-paragraph mention to CONSUMERS.md.
+
+**Oracles:**
+- A doc-drift test asserts that every flag appended unconditionally by the assay argv builder (`--resume`, `--progress`, `--state-dir`) is named in SPEC and in the skill.
+- A controlled wrong implementation, a new unconditional flag added to the builder without a SPEC mention, must fail that test.
+
+**Spec owner:** SPEC R-38.
+
+**v8: absorb** (the v8 gate inherits the argv builder, so the same drift test belongs there).
