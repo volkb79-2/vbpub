@@ -95,6 +95,12 @@ def _project(name: str, *, paths: list[str] | None = None, steps=None):
     )
 
 
+def _github_config():
+    return cli.GitHubConfig(
+        owner="octocat", repo="demo", token="test-credential", owner_type="user",
+    )
+
+
 @pytest.fixture(autouse=True)
 def mocked_invocation_context(monkeypatch):
     """Transaction tests replace the loader with a lightweight fake config."""
@@ -281,7 +287,7 @@ def test_release_aborts_before_creating_a_workspace_when_a_released_project_is_d
 
         project = _project("alpha")
         loaded = (h.repo_root, {"alpha": project}, ["alpha"], ["alpha"], [], "project-first", {},
-                  SimpleNamespace(), SimpleNamespace(), SimpleNamespace())
+                  SimpleNamespace(), _github_config(), SimpleNamespace())
         calls: list[object] = []
 
         monkeypatch.setattr(cli, "load_config", lambda _path: loaded)
@@ -308,7 +314,7 @@ def test_release_proceeds_when_uncommitted_changes_are_explicitly_allowed(monkey
 
         project = _project("alpha")
         loaded = (h.repo_root, {"alpha": project}, ["alpha"], ["alpha"], [], "project-first", {},
-                  SimpleNamespace(), SimpleNamespace(), SimpleNamespace())
+                  SimpleNamespace(), _github_config(), SimpleNamespace())
         workspace = transaction.ReleaseWorkspace(h.repo_root, h.repo_root / "release", "cmru/release/x", "a" * 40)
         calls: list[object] = []
 
@@ -345,7 +351,7 @@ def test_dry_run_is_not_blocked_by_uncommitted_release_path_changes(monkeypatch)
 
         project = _project("alpha")
         loaded = (h.repo_root, {"alpha": project}, ["alpha"], ["alpha"], [], "project-first", {},
-                  SimpleNamespace(), SimpleNamespace(), SimpleNamespace())
+                  SimpleNamespace(), _github_config(), SimpleNamespace())
         workspace = transaction.ReleaseWorkspace(h.repo_root, h.repo_root / "release", "cmru/release/x", "a" * 40)
         calls: list[object] = []
 
@@ -390,7 +396,7 @@ cwd = "alpha"
     )
     project = _project("alpha")
     loaded = (tmp_path, {"alpha": project}, ["alpha"], ["alpha"], [], "project-first", {},
-              SimpleNamespace(), SimpleNamespace(), SimpleNamespace())
+              SimpleNamespace(), _github_config(), SimpleNamespace())
     workspace = transaction.ReleaseWorkspace(tmp_path, tmp_path / "release", "cmru/release/x", "a" * 40)
     calls: list[object] = []
 
@@ -447,7 +453,7 @@ cwd = "alpha"
     )
     project = _project("alpha")
     loaded = (tmp_path, {"alpha": project}, ["alpha"], ["alpha"], [], "project-first", {},
-              SimpleNamespace(), SimpleNamespace(), SimpleNamespace())
+              SimpleNamespace(), _github_config(), SimpleNamespace())
     workspace = transaction.ReleaseWorkspace(tmp_path, tmp_path / "release", "cmru/release/x", "a" * 40)
     calls: list[object] = []
 
@@ -510,7 +516,7 @@ cwd = "alpha"
     )
     project = _project("alpha")
     loaded = (tmp_path, {"alpha": project}, ["alpha"], ["alpha"], [], "project-first", {},
-              SimpleNamespace(), SimpleNamespace(), SimpleNamespace())
+              SimpleNamespace(), _github_config(), SimpleNamespace())
     workspace = transaction.ReleaseWorkspace(tmp_path, tmp_path / "release", "cmru/release/x", "a" * 40)
     calls: list[object] = []
 
@@ -2557,7 +2563,7 @@ def test_parent_build_retains_successful_outputs_then_removes_worktree(tmp_path,
     )
     loaded = (
         tmp_path, {"alpha": project}, ["alpha"], ["alpha"], [], "project-first", {},
-        SimpleNamespace(), SimpleNamespace(), SimpleNamespace(),
+        SimpleNamespace(), _github_config(), SimpleNamespace(),
     )
     calls: list[str] = []
 
@@ -2594,7 +2600,7 @@ def test_parent_build_failure_keeps_worktree_and_does_not_retain_outputs(tmp_pat
     )
     loaded = (
         tmp_path, {"alpha": project}, ["alpha"], ["alpha"], [], "project-first", {},
-        SimpleNamespace(), SimpleNamespace(), SimpleNamespace(),
+        SimpleNamespace(), _github_config(), SimpleNamespace(),
     )
     calls: list[str] = []
 
