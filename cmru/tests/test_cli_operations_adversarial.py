@@ -85,9 +85,15 @@ def test_cleanup_commit_deletions_commits_only_real_changes(tmp_path):
 
 def test_push_tags_is_nonfatal_on_remote_failure_and_noop_for_empty(monkeypatch, tmp_path, capsys):
     calls = []
-    monkeypatch.setattr(cli.subprocess, "run", lambda argv, **kwargs: calls.append(argv) or SimpleNamespace(returncode=1))
+    monkeypatch.setattr(
+        cli.subprocess, "run",
+        lambda argv, **kwargs: calls.append((argv, kwargs))
+        or SimpleNamespace(returncode=1),
+    )
     cli._push_tags(tmp_path, [])
     assert calls == []
     cli._push_tags(tmp_path, ["demo-v1"])
-    assert calls == [["git", "-C", str(tmp_path), "push", "origin", "demo-v1"]]
+    assert len(calls) == 1
+    assert calls[0][0] == ["git", "push", "origin", "demo-v1"]
+    assert calls[0][1]["cwd"] == tmp_path
     assert "continuing" in capsys.readouterr().out
