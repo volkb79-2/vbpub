@@ -674,7 +674,9 @@ def test_cleanup_delete_unmanaged_release_previews_then_refuses_without_confirma
     cfg_path = _valid_config(tmp_path)
     monkeypatch.setattr(
         cli, "load_json",
-        lambda _url, _token: ([{"id": 42, "tag_name": "alpha-wheel-latest"}], {}),
+        lambda _url, _token: ([{
+            "id": 42, "tag_name": "alpha-wheel-latest", "assets": [],
+        }], {}),
     )
     assert cli.main([
         "cleanup", "alpha", "--config", str(cfg_path),
