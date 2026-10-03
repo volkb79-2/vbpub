@@ -572,7 +572,7 @@ def test_abandon_refuses_malformed_origin_main_object_id(monkeypatch, tmp_path, 
     with pytest.raises(CliFailure, match="nothing was abandoned"):
         _invoke_abandon(candidate, branch=candidate.branch, dry_run=False)
 
-    assert "malformed object ID for refs/heads/main" in capsys.readouterr().out
+    assert "origin branch lookup returned a malformed ref record" in capsys.readouterr().out
 
 
 @pytest.mark.parametrize(
