@@ -509,7 +509,7 @@ def test_assay_baseline_checker_refuses_merge_whose_assay_first_parent_is_not_ta
     assert check_assay_baseline.main([]) == 1
     error = capsys.readouterr().err
     assert "Assay's effective base" in error
-    assert "(first parent)" in error
+    assert "(first-parent)" in error
     assert "source paths differ" in error
     assert "cmru-v1.1.0" in error
 
