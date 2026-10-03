@@ -105,7 +105,7 @@ D-658 adds decision bullets; each is checked against proposal rev 4.6 and SPEC-V
 | 60 | V8R-06: host facts stay host-scoped config; `ciu host capacity set` publishes one labelled object per daemon; every run reads it | §4.1.10a, §4.5 D2, X133 | S21.2, S21.3 | yes (missing/differs/who-may-write specified) |
 | 61 | V8R-08: fold round 4 first; sign-off covers the 8.0 core plus the v8.1 annex | §4.3.17 4.6 amendments, X134–X140 | Appendix D.11 | yes, with T4-07 pending (below) |
 
-**Counts including D-658** (61 rows): **yes 55, partial 2 (rows 20, 25 — now row 25 is closed by S21.3, so rows 20 only), pending-operator 0, missing 0, contradicted 0, n/a 1.** Precisely: rows 1–51 as in §1a with rows 25, 45, 46 and 49 now **yes** (S21.2/S21.3, S21.4.4, S21.4.2 and S21.2–S21.6 respectively) and row 20 still **partial** (the primary has no library record, O-24); rows 52–61 yes. **yes 59, partial 1 (row 20), n/a 1.** The one open question is round-4's T4-07 (not a D-record row).
+**Counts including D-658** (61 rows): **yes 59, partial 1 (row 20: the primary has no library record, O-24), n/a 1 (row 7).** Rows 25, 45, 46 and 49 of §1a are now **yes** (S21.3, S21.4.4, S21.4.2 and S21.2–S21.6); rows 52–61 are yes. The one open question is round 4's T4-07, which is not a D-record row.
 
 ### 1c. Round-4 findings (D-658: fold first)
 
