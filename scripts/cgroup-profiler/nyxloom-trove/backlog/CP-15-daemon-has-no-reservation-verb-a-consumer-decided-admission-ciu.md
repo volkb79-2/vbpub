@@ -36,3 +36,7 @@ The daemon is the only host-wide vantage that sees slice usage across devcontain
 
 ## SPEC owner
 RG55-INTERFACE-CONTRACT (contract 1 → the next additive version); cgprofile SPEC daemon section.
+
+## Updates
+
+**2026-10-03** — Downgraded by dstdns D-655 (2026-10-03): v8 Q15 chose Docker-object reservations as the serialization medium, so ciu never registers reservations with the daemon. CP-15 is now optional, a read-only mirror of reservations for observability (ctl host totals). Not required for admission.
