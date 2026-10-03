@@ -1495,16 +1495,51 @@ def list_remote_tag_refs_matching(
             f"({result.returncode}): {detail}"
         )
     tags: dict[str, str] = {}
-    for line in result.stdout.splitlines():
-        line = line.strip()
-        if not line or "^{}" in line:
+    peeled_tags: set[str] = set()
+    oid_pattern = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})")
+    for line_number, line in enumerate(result.stdout.splitlines(), start=1):
+        parts = line.split("\t")
+        if len(parts) != 2:
+            raise RuntimeError(
+                f"Malformed remote tag listing for {pattern!r} at line {line_number}: "
+                "expected an object ID and one tag ref"
+            )
+        oid, ref = parts
+        if not oid_pattern.fullmatch(oid) or not ref.startswith("refs/tags/"):
+            raise RuntimeError(
+                f"Malformed remote tag listing for {pattern!r} at line {line_number}: "
+                "invalid object ID or tag ref"
+            )
+
+        suffix = ref[len("refs/tags/"):]
+        is_peeled = suffix.endswith("^{}")
+        tag_name = suffix[:-3] if is_peeled else suffix
+        if not tag_name or any(char.isspace() for char in tag_name):
+            raise RuntimeError(
+                f"Malformed remote tag listing for {pattern!r} at line {line_number}: "
+                "empty or invalid tag name"
+            )
+        if is_peeled:
+            # Annotated tags have a second, peeled record. Validate its shape
+            # before discarding it; malformed successful output must not
+            # silently shrink a destructive cleanup plan.
+            if tag_name in peeled_tags:
+                raise RuntimeError(
+                    f"Malformed remote tag listing for {pattern!r} at line {line_number}: "
+                    f"duplicate peeled tag ref {tag_name!r}"
+                )
+            peeled_tags.add(tag_name)
             continue
-        # format: "<sha>\trefs/tags/<name>"
-        parts = line.split("\t", 1)
-        if len(parts) == 2:
-            oid, ref = parts[0].strip(), parts[1].strip()
-            if ref.startswith("refs/tags/") and re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", oid):
-                tags[ref[len("refs/tags/"):]] = oid
+        if tag_name in tags:
+            raise RuntimeError(
+                f"Malformed remote tag listing for {pattern!r} at line {line_number}: "
+                f"duplicate tag ref {tag_name!r}"
+            )
+        tags[tag_name] = oid
+    if not peeled_tags.issubset(tags):
+        raise RuntimeError(
+            f"Malformed remote tag listing for {pattern!r}: peeled refs had no matching tag ref"
+        )
     return tags
 
 

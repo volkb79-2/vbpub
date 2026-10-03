@@ -634,14 +634,41 @@ def test_project_cleanup_keeps_changed_release_tag_and_recomputes_clean_version(
     assert "skipping its Git tag" in capsys.readouterr().out
 
 
-def test_remote_tag_listing_filters_dereferenced_and_malformed_lines(monkeypatch, tmp_path):
+def test_remote_tag_listing_filters_well_formed_peeled_refs(monkeypatch, tmp_path):
     oid = "a" * 40
     monkeypatch.setattr(cli, "run_remote_git", lambda *args, **kwargs: SimpleNamespace(
-        stdout=f"{oid}\trefs/tags/demo-v1\n{oid}^{{}}\trefs/tags/demo-v1\nmalformed\n\n",
+        stdout=f"{oid}\trefs/tags/demo-v1\n{oid}\trefs/tags/demo-v1^{{}}\n",
         returncode=0,
     ))
     assert cli.list_remote_tags_matching(tmp_path, "demo-v*") == ["demo-v1"]
     assert cli.list_remote_tag_refs_matching(tmp_path, "demo-v*") == {"demo-v1": oid}
+
+
+@pytest.mark.parametrize(
+    "stdout",
+    [
+        "malformed\n",
+        "\n",
+        f"{'a' * 40} refs/tags/demo-v1\n",
+        f"{'g' * 40}\trefs/tags/demo-v1\n",
+        f"{'a' * 40}\trefs/heads/main\n",
+        f"{'a' * 40}\trefs/tags/demo-v1\textra\n",
+        f"{'a' * 40}\trefs/tags/demo-v1\n{'b' * 40}\trefs/tags/demo-v1\n",
+        f"{'a' * 40}\trefs/tags/\n",
+        "a" * 40 + "\trefs/tags/demo-v1^{}\n",
+        "".join((
+            "a" * 40 + "\trefs/tags/demo-v1\n",
+            "b" * 40 + "\trefs/tags/demo-v1^{}\n",
+            "c" * 40 + "\trefs/tags/demo-v1^{}\n",
+        )),
+    ],
+)
+def test_remote_tag_listing_refuses_malformed_successful_output(monkeypatch, tmp_path, stdout):
+    monkeypatch.setattr(cli, "run_remote_git", lambda *args, **kwargs: SimpleNamespace(
+        stdout=stdout, returncode=0,
+    ))
+    with pytest.raises(RuntimeError, match="Malformed remote tag listing"):
+        cli.list_remote_tag_refs_matching(tmp_path, "demo-v*")
 
 
 def test_remote_tag_listing_refuses_to_report_absence_when_origin_lookup_fails(

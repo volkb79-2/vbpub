@@ -1991,9 +1991,9 @@ class TestEnrollHostProbes:
 # There is no prior "spin up a container, run the installer, assert on real
 # system state" pattern in this repo; this is it. The fixture image is built and
 # owned here (never a live host), every container is torn down in a finally, and
-# the whole group SKIPS — never fails — where docker or the estate's cgroup tier
-# is unavailable, which is exactly the case inside the gate's own tester-unified
-# container (no docker socket is mounted into it).
+# a direct local run skips if Docker or the estate's cgroup tier is unavailable.
+# The registered lane sets CMRU_ENROLL_REQUIRED=1 to turn those conditions into
+# failures so the O2/O3 oracle cannot disappear from release evidence.
 
 ENROLL_FIXTURE_IMAGE = "cmru-enroll-fixture:local"
 ENROLL_FIXTURE_DOCKERFILE = """\
@@ -2015,9 +2015,64 @@ def _docker_unavailable_reason() -> Optional[str]:
     # AGENTS.md "Host cgroup placement": no hardcoded fallback slice — a
     # gate fixture we cannot place on the host's dedicated gates tier is one
     # we do not start next to production.
-    if not os.environ.get("CGROUP_PARENT_DEV_GATES", "").strip():
+    slice_name = os.environ.get("CGROUP_PARENT_DEV_GATES", "").strip()
+    if not slice_name:
         return "CGROUP_PARENT_DEV_GATES unset — refusing an unplaced container"
+    try:
+        slice_probe = subprocess.run(
+            ["systemctl", "show", slice_name, "--property=LoadState",
+             "--property=FragmentPath", "--no-pager"],
+            capture_output=True, text=True, timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return f"could not verify CGROUP_PARENT_DEV_GATES unit: {exc}"
+    if slice_probe.returncode != 0:
+        detail = slice_probe.stderr.strip() or slice_probe.stdout.strip() or "no diagnostic output"
+        return f"could not verify CGROUP_PARENT_DEV_GATES unit: {detail[:200]}"
+    properties = dict(
+        line.split("=", 1) for line in slice_probe.stdout.splitlines() if "=" in line
+    )
+    if properties.get("LoadState") != "loaded" or not properties.get("FragmentPath", "").strip():
+        return (
+            f"CGROUP_PARENT_DEV_GATES={slice_name!r} is not a loaded slice with a fragment"
+        )
     return None
+
+
+@pytest.mark.parametrize(
+    ("systemctl_output", "expected"),
+    [
+        ("LoadState=not-found\nFragmentPath=\n", "not a loaded slice"),
+        ("LoadState=loaded\nFragmentPath=\n", "not a loaded slice"),
+    ],
+)
+def test_enroll_preflight_rejects_unloaded_or_fragmentless_gate_slice(
+    monkeypatch, systemctl_output, expected,
+):
+    monkeypatch.setenv("CGROUP_PARENT_DEV_GATES", "typo-or-transient.slice")
+    calls = iter([
+        subprocess.CompletedProcess(["docker", "info"], 0, "", ""),
+        subprocess.CompletedProcess(["systemctl"], 0, systemctl_output, ""),
+    ])
+    monkeypatch.setattr(shutil, "which", lambda _name: "/usr/bin/docker")
+    monkeypatch.setattr(subprocess, "run", lambda *_args, **_kwargs: next(calls))
+
+    assert expected in _docker_unavailable_reason()
+
+
+def test_enroll_preflight_accepts_loaded_gate_slice_with_fragment(monkeypatch):
+    monkeypatch.setenv("CGROUP_PARENT_DEV_GATES", "dev-gates.slice")
+    calls = iter([
+        subprocess.CompletedProcess(["docker", "info"], 0, "", ""),
+        subprocess.CompletedProcess(
+            ["systemctl"], 0,
+            "LoadState=loaded\nFragmentPath=/etc/systemd/system/dev-gates.slice\n", "",
+        ),
+    ])
+    monkeypatch.setattr(shutil, "which", lambda _name: "/usr/bin/docker")
+    monkeypatch.setattr(subprocess, "run", lambda *_args, **_kwargs: next(calls))
+
+    assert _docker_unavailable_reason() is None
 
 
 def _skip_or_fail_enroll_preflight(reason: str) -> None:

@@ -182,7 +182,10 @@ object IDs from that preview. Conditional local ref deletion and a remote
 lease ensure a newly created or retargeted ref is not removed by a confirmation
 that named the previous object. The canonical semantic table records each
 verb's scope, combinations, defaults, writes, network effects, and dry-run
-boundary.
+boundary. The remote tag inventory is parsed as a complete protocol response:
+malformed records or orphaned peeled-tag rows stop cleanup before a destructive
+plan can treat the omitted ref as absent. This keeps a parse failure from
+turning into a false completion report.
 
 `tester-gate --dry-run` does not run the host checks. Both the systemd slice check and
 the optional IO-controller check need a temporary privileged container; starting one would
@@ -192,6 +195,10 @@ the `--cgroup-parent` argument visible. Actual execution performs the checks bef
 starts the gate, and places every helper and workload container in the declared gates tier.
 This makes the boundary honest: dry-run proves command construction, while a real launch
 proves host acceptance.
+
+The real-enrollment fixture also checks that the configured gates slice is an actually loaded
+systemd unit with a fragment before Docker starts it. A nonempty name alone can refer to a typo
+or an unconfigured transient slice, which Docker may accept without the intended host placement.
 
 ### Tester-gate workload CPU ceiling
 
