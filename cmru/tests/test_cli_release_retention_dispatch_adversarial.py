@@ -75,18 +75,27 @@ def test_resumed_release_accepts_the_explicit_saved_scope(monkeypatch, tmp_path,
     assert "Resuming recorded project scope:" not in capsys.readouterr().out
 
 
-def test_resumed_release_refuses_scope_changed_while_waiting_for_lock(monkeypatch, tmp_path):
+def test_resumed_release_refuses_scope_changed_while_waiting_for_lock(
+    monkeypatch, tmp_path, capsys,
+):
     workspace, _seen = _dispatch_fixture(monkeypatch, tmp_path, [])
+    child_calls = []
+    monkeypatch.setattr(
+        cli.transaction, "run_child",
+        lambda *args, **kwargs: child_calls.append((args, kwargs)) or 0,
+    )
     scopes = iter([["demo"], ["other"]])
     monkeypatch.setattr(
         cli.transaction, "read_release_scope_for_path", lambda _path: next(scopes),
     )
 
-    with pytest.raises(RuntimeError, match="scope changed while acquiring its lock"):
-        cli.main([
-            "release", "--resume", str(workspace.path),
-            "--config", str(tmp_path / "cmru.toml"),
-        ])
+    result = cli.main([
+        "release", "--resume", str(workspace.path),
+        "--config", str(tmp_path / "cmru.toml"),
+    ])
+    assert result == 1
+    assert "retained release scope changed while acquiring its lock" in capsys.readouterr().err
+    assert child_calls == []
 
 
 def test_resumed_release_discard_artifacts_flag_keeps_logs_only(monkeypatch, tmp_path, capsys):
