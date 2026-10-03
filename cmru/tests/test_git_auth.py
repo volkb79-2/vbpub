@@ -438,6 +438,8 @@ def test_run_child_self_release_imports_candidate_cmru_source(monkeypatch, tmp_p
         path.parent.mkdir(parents=True, exist_ok=True)
         if path.suffix:
             path.write_text("# candidate source\n", encoding="utf-8")
+        else:
+            path.mkdir(parents=True, exist_ok=True)
 
     observed = {}
     monkeypatch.setenv("PYTHONPATH", "/inherited/python/path")
