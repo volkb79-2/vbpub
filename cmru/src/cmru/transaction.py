@@ -13,12 +13,16 @@ closed without rebasing the candidate.
 """
 from __future__ import annotations
 
+import ctypes
+import errno
 import fcntl
 import hashlib
 import json
 import os
 import re
+import secrets
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -1268,19 +1272,21 @@ def _declared_evidence_path(name: str, raw_path: object) -> Path:
     return relative
 
 
-def _assert_no_symlink_components(root: Path, path: Path, name: str) -> None:
+def _assert_no_symlink_components(
+    root: Path, path: Path, name: str, *, subject: str = "evidence",
+) -> None:
     """Refuse a path that reaches its source or destination through a symlink."""
     try:
         relative = path.relative_to(root)
     except ValueError as exc:
-        raise RuntimeError(f"{name}: evidence path escaped its project root: {path}") from exc
+        raise RuntimeError(f"{name}: {subject} path escaped its project root: {path}") from exc
     if root.is_symlink():
-        raise RuntimeError(f"{name}: evidence project root is a symlink: {root}")
+        raise RuntimeError(f"{name}: {subject} project root is a symlink: {root}")
     current = root
     for part in relative.parts:
         current /= part
         if current.is_symlink():
-            raise RuntimeError(f"{name}: evidence path is or crosses a symlink: {current}")
+            raise RuntimeError(f"{name}: {subject} path is or crosses a symlink: {current}")
 
 
 def _sha256_file(path: Path) -> str:
@@ -1448,20 +1454,59 @@ def retain_successful_build_outputs(
     return retained
 
 
-def delete_retained_build_output(
-    repo_root: Path,
-    project: object,
-    project_name: str,
-    output_id: str,
-    *,
-    dry_run: bool,
-) -> list[Path]:
-    """Delete one verified local build record, never a glob or age range."""
-    if not is_build_output_id(output_id):
-        raise RuntimeError(
-            "--delete-build-output must be the exact <commit-date>_<40-hex-commit> "
-            "coordinate printed by cmru build"
-        )
+@dataclass(frozen=True)
+class RetainedBuildOutputIdentity:
+    """Filesystem identity captured by a cleanup preview for one build output."""
+
+    project_name: str
+    output_id: str
+    artifact_root: Path
+    artifact_root_stat: tuple[int, int, int, int, int, int]
+    artifact_tree_stat: tuple[tuple[str, tuple[int, int, int, int, int, int]], ...]
+    manifest_stat: tuple[int, int, int, int, int, int]
+    manifest_sha256: str
+    logs_root: Path
+    logs_root_stat: tuple[int, int, int, int, int, int]
+    logs_tree_stat: tuple[tuple[str, tuple[int, int, int, int, int, int]], ...]
+
+
+def _filesystem_stat_identity(info: os.stat_result) -> tuple[int, int, int, int, int, int]:
+    return (
+        info.st_dev, info.st_ino, info.st_mode, info.st_size,
+        info.st_mtime_ns, info.st_ctime_ns,
+    )
+
+
+def _directory_open_flags() -> int:
+    required = ("O_DIRECTORY", "O_NOFOLLOW", "O_NONBLOCK")
+    if any(not hasattr(os, name) for name in required):
+        raise RuntimeError("safe descriptor-relative build-output cleanup is unavailable")
+    return os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+
+
+def _open_directory_path_nofollow(path: Path) -> int:
+    """Open an absolute directory one component at a time without following symlinks."""
+    path = Path(path)
+    if not path.is_absolute() or ".." in path.parts:
+        raise RuntimeError(f"cannot safely open non-canonical directory path: {path}")
+    flags = _directory_open_flags()
+    current_fd = os.open(path.anchor, flags)
+    try:
+        for part in path.parts[1:]:
+            next_fd = os.open(part, flags, dir_fd=current_fd)
+            os.close(current_fd)
+            current_fd = next_fd
+        return current_fd
+    except BaseException:
+        os.close(current_fd)
+        raise
+
+
+@contextmanager
+def _retained_build_output_parent_fds(
+    repo_root: Path, project: object, project_name: str, output_id: str,
+) -> Iterator[tuple[Path, int, int]]:
+    """Hold no-follow descriptors for the project and both cleanup parents."""
     main_project_root, _child_project_root = _project_roots_for_retention(
         repo_root,
         ReleaseWorkspace(repo_root=repo_root, path=repo_root, branch="", base=""),
@@ -1470,20 +1515,179 @@ def delete_retained_build_output(
     )
     artifact_root = main_project_root / "artifacts" / output_id
     logs_root = main_project_root / "logs" / output_id
-    manifest_path = artifact_root / "build.json"
-    if (
-        not artifact_root.is_dir() or artifact_root.is_symlink()
-        or not logs_root.is_dir() or logs_root.is_symlink()
-        or not manifest_path.is_file() or manifest_path.is_symlink()
-    ):
+    _assert_no_symlink_components(
+        main_project_root, artifact_root, project_name, subject="retained build output",
+    )
+    _assert_no_symlink_components(
+        main_project_root, logs_root, project_name, subject="retained build output",
+    )
+    root_fd = artifact_parent_fd = logs_parent_fd = None
+    try:
+        root_fd = _open_directory_path_nofollow(main_project_root)
+        flags = _directory_open_flags()
+        artifact_parent_fd = os.open("artifacts", flags, dir_fd=root_fd)
+        logs_parent_fd = os.open("logs", flags, dir_fd=root_fd)
+    except OSError as exc:
+        for descriptor in (logs_parent_fd, artifact_parent_fd, root_fd):
+            if descriptor is not None:
+                os.close(descriptor)
+        if exc.errno == errno.ELOOP:
+            raise RuntimeError(
+                f"{project_name}: retained build output path is or crosses a symlink"
+            ) from exc
         raise RuntimeError(
             f"{project_name}: retained build record is incomplete or unsafe for {output_id}; "
             "remove it manually after inspection"
-        )
+        ) from exc
+    except BaseException:
+        for descriptor in (logs_parent_fd, artifact_parent_fd, root_fd):
+            if descriptor is not None:
+                os.close(descriptor)
+        raise
+    assert artifact_parent_fd is not None and logs_parent_fd is not None
+    assert root_fd is not None
     try:
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    except (OSError, ValueError) as exc:
-        raise RuntimeError(f"{project_name}: invalid retained build manifest: {manifest_path}") from exc
+        yield main_project_root, artifact_parent_fd, logs_parent_fd
+    finally:
+        os.close(logs_parent_fd)
+        os.close(artifact_parent_fd)
+        os.close(root_fd)
+
+
+def _filesystem_tree_identity_fd(
+    root_fd: int,
+) -> tuple[tuple[str, tuple[int, int, int, int, int, int]], ...]:
+    """Snapshot a tree through directory descriptors without following symlinks."""
+    entries: list[tuple[str, tuple[int, int, int, int, int, int]]] = []
+    pending: list[tuple[str, tuple[int, int, int, int, int, int]]] = [
+        ("", _filesystem_stat_identity(os.fstat(root_fd))),
+    ]
+    flags = _directory_open_flags()
+    while pending:
+        prefix, expected_identity = pending.pop()
+        parent_fd = os.dup(root_fd)
+        try:
+            if prefix:
+                for part in Path(prefix).parts:
+                    child_fd = os.open(part, flags, dir_fd=parent_fd)
+                    os.close(parent_fd)
+                    parent_fd = child_fd
+            if _filesystem_stat_identity(os.fstat(parent_fd)) != expected_identity:
+                raise RuntimeError("retained build output changed during inspection")
+            for name in os.listdir(parent_fd):
+                info = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+                relative = f"{prefix}/{name}" if prefix else name
+                identity = _filesystem_stat_identity(info)
+                entries.append((relative, identity))
+                if stat.S_ISDIR(info.st_mode):
+                    pending.append((relative, identity))
+        finally:
+            os.close(parent_fd)
+    return tuple(sorted(entries))
+
+
+def _read_regular_file_at(
+    parent_fd: int, name: str, project_name: str, path: Path,
+) -> tuple[bytes, tuple[int, int, int, int, int, int]]:
+    flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
+    descriptor = os.open(name, flags, dir_fd=parent_fd)
+    try:
+        before = os.fstat(descriptor)
+        if not stat.S_ISREG(before.st_mode):
+            raise RuntimeError(
+                f"{project_name}: retained build record is incomplete or unsafe: {path}"
+            )
+        chunks = []
+        while True:
+            chunk = os.read(descriptor, 1024 * 1024)
+            if not chunk:
+                break
+            chunks.append(chunk)
+        after = os.fstat(descriptor)
+        if _filesystem_stat_identity(before) != _filesystem_stat_identity(after):
+            raise RuntimeError(f"{project_name}: retained build manifest changed during inspection")
+        return b"".join(chunks), _filesystem_stat_identity(after)
+    finally:
+        os.close(descriptor)
+
+
+def _retained_build_output_cleanup_facts(
+    project_name: str,
+    output_id: str,
+    main_project_root: Path,
+    artifact_parent_fd: int,
+    logs_parent_fd: int,
+) -> tuple[list[Path], RetainedBuildOutputIdentity]:
+    if not is_build_output_id(output_id):
+        raise RuntimeError(
+            "--delete-build-output must be the exact <commit-date>_<40-hex-commit> "
+            "coordinate printed by cmru build"
+        )
+    artifact_root = main_project_root / "artifacts" / output_id
+    logs_root = main_project_root / "logs" / output_id
+    artifact_fd = logs_fd = None
+    open_flags = _directory_open_flags()
+    try:
+        artifact_fd = os.open(output_id, open_flags, dir_fd=artifact_parent_fd)
+        logs_fd = os.open(output_id, open_flags, dir_fd=logs_parent_fd)
+    except OSError as exc:
+        for descriptor in (logs_fd, artifact_fd):
+            if descriptor is not None:
+                os.close(descriptor)
+        if exc.errno == errno.ELOOP:
+            raise RuntimeError(
+                f"{project_name}: retained build output path is or crosses a symlink"
+            ) from exc
+        raise RuntimeError(
+            f"{project_name}: retained build record is incomplete or unsafe for {output_id}; "
+            "remove it manually after inspection"
+        ) from exc
+    except BaseException:
+        for descriptor in (logs_fd, artifact_fd):
+            if descriptor is not None:
+                os.close(descriptor)
+        raise
+    assert artifact_fd is not None and logs_fd is not None
+    try:
+        identity = _retained_build_output_identity_from_fds(
+            project_name, output_id, main_project_root, artifact_fd, logs_fd,
+        )
+        return [logs_root, artifact_root], identity
+    finally:
+        os.close(logs_fd)
+        os.close(artifact_fd)
+
+
+def _retained_build_output_identity_from_fds(
+    project_name: str,
+    output_id: str,
+    main_project_root: Path,
+    artifact_fd: int,
+    logs_fd: int,
+) -> RetainedBuildOutputIdentity:
+    if not is_build_output_id(output_id):
+        raise RuntimeError(
+            "--delete-build-output must be the exact <commit-date>_<40-hex-commit> "
+            "coordinate printed by cmru build"
+        )
+    artifact_root = main_project_root / "artifacts" / output_id
+    logs_root = main_project_root / "logs" / output_id
+    manifest_path = artifact_root / "build.json"
+    try:
+        manifest_bytes, manifest_stat = _read_regular_file_at(
+            artifact_fd, "build.json", project_name, manifest_path,
+        )
+    except OSError as exc:
+        raise RuntimeError(
+            f"{project_name}: retained build record is incomplete or unsafe for {output_id}; "
+            "remove it manually after inspection"
+        ) from exc
+    try:
+        manifest = json.loads(manifest_bytes.decode("utf-8"))
+    except (UnicodeError, ValueError) as exc:
+        raise RuntimeError(
+            f"{project_name}: invalid retained build manifest: {manifest_path}"
+        ) from exc
     if not isinstance(manifest, dict) or (
         manifest.get("schema_version") != 1
         or manifest.get("kind") != "cmru-local-build"
@@ -1491,17 +1695,235 @@ def delete_retained_build_output(
         or manifest.get("project") != project_name
         or manifest.get("build_id") != output_id
     ):
-        raise RuntimeError(f"{project_name}: retained build manifest does not authorize cleanup: {manifest_path}")
+        raise RuntimeError(
+            f"{project_name}: retained build manifest does not authorize cleanup: {manifest_path}"
+        )
 
-    targets = [logs_root, artifact_root]
-    if dry_run:
-        return targets
-    # Both paths were derived from a validated project root and a strict output
-    # ID, then authenticated by build.json.  They are therefore safe exact
-    # deletion targets; no user-supplied directory tree is ever recursed.
-    for target in targets:
-        shutil.rmtree(target)
-    return targets
+    artifact_root_stat = _filesystem_stat_identity(os.fstat(artifact_fd))
+    logs_root_stat = _filesystem_stat_identity(os.fstat(logs_fd))
+    artifact_tree_stat = _filesystem_tree_identity_fd(artifact_fd)
+    logs_tree_stat = _filesystem_tree_identity_fd(logs_fd)
+    if (
+        _filesystem_stat_identity(os.fstat(artifact_fd)) != artifact_root_stat
+        or _filesystem_stat_identity(os.fstat(logs_fd)) != logs_root_stat
+    ):
+        raise RuntimeError("retained build output changed during inspection")
+    return RetainedBuildOutputIdentity(
+        project_name=project_name,
+        output_id=output_id,
+        artifact_root=artifact_root,
+        artifact_root_stat=artifact_root_stat,
+        artifact_tree_stat=artifact_tree_stat,
+        manifest_stat=manifest_stat,
+        manifest_sha256=hashlib.sha256(manifest_bytes).hexdigest(),
+        logs_root=logs_root,
+        logs_root_stat=logs_root_stat,
+        logs_tree_stat=logs_tree_stat,
+    )
+
+
+def retained_build_output_identity(
+    repo_root: Path, project: object, project_name: str, output_id: str,
+) -> RetainedBuildOutputIdentity:
+    """Validate and capture the exact local record selected for cleanup."""
+    with _retained_build_output_parent_fds(
+        repo_root, project, project_name, output_id,
+    ) as (main_project_root, artifact_parent_fd, logs_parent_fd):
+        return _retained_build_output_cleanup_facts(
+            project_name, output_id, main_project_root,
+            artifact_parent_fd, logs_parent_fd,
+        )[1]
+
+
+def _create_private_cleanup_stage(parent_fd: int, output_id: str) -> tuple[str, int]:
+    flags = _directory_open_flags()
+    for _attempt in range(8):
+        stage_name = f".cmru-cleanup-{output_id}-{secrets.token_hex(12)}"
+        try:
+            os.mkdir(stage_name, mode=0o700, dir_fd=parent_fd)
+        except FileExistsError:
+            continue
+        try:
+            return stage_name, os.open(stage_name, flags, dir_fd=parent_fd)
+        except BaseException:
+            os.rmdir(stage_name, dir_fd=parent_fd)
+            raise
+    raise RuntimeError("could not allocate a private build-output cleanup directory")
+
+
+def _restore_cleanup_stage_record(
+    parent_fd: int, stage_fd: int, output_id: str,
+) -> bool:
+    """Restore a staged record only when its original name remains vacant."""
+    try:
+        os.stat("record", dir_fd=stage_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        return True
+    try:
+        os.stat(output_id, dir_fd=parent_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        return _rename_noreplace_at(
+            "record", stage_fd, output_id, parent_fd,
+        )
+    return False
+
+
+def _rename_noreplace_at(
+    source: str, source_fd: int, destination: str, destination_fd: int,
+) -> bool:
+    """Use Linux renameat2(RENAME_NOREPLACE); refuse a racy fallback."""
+    try:
+        libc = ctypes.CDLL(None, use_errno=True)
+        renameat2 = libc.renameat2
+    except (AttributeError, OSError):
+        return False
+    renameat2.argtypes = [
+        ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint,
+    ]
+    renameat2.restype = ctypes.c_int
+    rename_noreplace = 1  # RENAME_NOREPLACE from <linux/fs.h>.
+    result = renameat2(
+        source_fd, os.fsencode(source), destination_fd, os.fsencode(destination),
+        rename_noreplace,
+    )
+    if result == 0:
+        return True
+    error_number = ctypes.get_errno()
+    if error_number in {errno.EEXIST, errno.ENOSYS, errno.EINVAL, errno.EOPNOTSUPP}:
+        return False
+    raise OSError(error_number, os.strerror(error_number), destination)
+
+
+def _staged_cleanup_identity_matches(
+    expected: RetainedBuildOutputIdentity,
+    staged: RetainedBuildOutputIdentity,
+) -> bool:
+    """Compare a moved record while allowing rename to update root timestamps."""
+    # Moving a directory into its private staging folder may update the root's
+    # timestamps. The pre-move identity was already checked; this comparison
+    # still binds the inode and every entry to that same reviewed record.
+    return (
+        expected.project_name == staged.project_name
+        and expected.output_id == staged.output_id
+        and expected.artifact_root == staged.artifact_root
+        and expected.artifact_root_stat[:4] == staged.artifact_root_stat[:4]
+        and expected.artifact_tree_stat == staged.artifact_tree_stat
+        and expected.manifest_stat == staged.manifest_stat
+        and expected.manifest_sha256 == staged.manifest_sha256
+        and expected.logs_root == staged.logs_root
+        and expected.logs_root_stat[:4] == staged.logs_root_stat[:4]
+        and expected.logs_tree_stat == staged.logs_tree_stat
+    )
+
+
+def delete_retained_build_output(
+    repo_root: Path,
+    project: object,
+    project_name: str,
+    output_id: str,
+    *,
+    dry_run: bool,
+    expected_identity: RetainedBuildOutputIdentity | None = None,
+) -> list[Path]:
+    """Delete one verified local build record, never a glob or age range."""
+    with _retained_build_output_parent_fds(
+        repo_root, project, project_name, output_id,
+    ) as (main_project_root, artifact_parent_fd, logs_parent_fd):
+        targets, current_identity = _retained_build_output_cleanup_facts(
+            project_name, output_id, main_project_root,
+            artifact_parent_fd, logs_parent_fd,
+        )
+        if expected_identity is not None and current_identity != expected_identity:
+            raise RuntimeError(
+                f"{project_name}: retained build record changed after cleanup preview for "
+                f"{output_id}; inspect it and retry"
+            )
+        if dry_run:
+            return targets
+        if not shutil.rmtree.avoids_symlink_attacks:
+            raise RuntimeError("safe descriptor-relative build-output cleanup is unavailable")
+
+        # Move both entries under private, descriptor-pinned names. Recheck the
+        # moved records before deleting so a last-moment replacement at the
+        # public ID cannot be mistaken for the previewed output.
+        stages: list[tuple[int, str, int]] = []
+        moved: list[tuple[int, str, int]] = []
+        try:
+            logs_stage_name, logs_stage_fd = _create_private_cleanup_stage(
+                logs_parent_fd, output_id,
+            )
+            stages.append((logs_parent_fd, logs_stage_name, logs_stage_fd))
+            artifacts_stage_name, artifacts_stage_fd = _create_private_cleanup_stage(
+                artifact_parent_fd, output_id,
+            )
+            stages.append((artifact_parent_fd, artifacts_stage_name, artifacts_stage_fd))
+
+            os.rename(
+                output_id, "record",
+                src_dir_fd=logs_parent_fd, dst_dir_fd=logs_stage_fd,
+            )
+            moved.append((logs_parent_fd, logs_stage_name, logs_stage_fd))
+            os.rename(
+                output_id, "record",
+                src_dir_fd=artifact_parent_fd, dst_dir_fd=artifacts_stage_fd,
+            )
+            moved.append((artifact_parent_fd, artifacts_stage_name, artifacts_stage_fd))
+
+            open_flags = _directory_open_flags()
+            staged_artifact_fd = os.open("record", open_flags, dir_fd=artifacts_stage_fd)
+            try:
+                staged_logs_fd = os.open("record", open_flags, dir_fd=logs_stage_fd)
+                try:
+                    staged_identity = _retained_build_output_identity_from_fds(
+                        project_name, output_id, main_project_root,
+                        staged_artifact_fd, staged_logs_fd,
+                    )
+                finally:
+                    os.close(staged_logs_fd)
+            finally:
+                os.close(staged_artifact_fd)
+            if not _staged_cleanup_identity_matches(current_identity, staged_identity):
+                raise RuntimeError(
+                    f"{project_name}: retained build record changed during cleanup for "
+                    f"{output_id}; inspect it and retry"
+                )
+
+            # These names are private to directories created with mode 0700,
+            # and the validated parent descriptors remain open until deletion.
+            shutil.rmtree("record", dir_fd=logs_stage_fd)
+            shutil.rmtree("record", dir_fd=artifacts_stage_fd)
+            for parent_fd, stage_name, _stage_fd in stages:
+                os.rmdir(stage_name, dir_fd=parent_fd)
+            return targets
+        except BaseException as exc:
+            restore_failures: list[Path] = []
+            for parent_fd, stage_name, stage_fd in reversed(moved):
+                try:
+                    restored = _restore_cleanup_stage_record(
+                        parent_fd, stage_fd, output_id,
+                    )
+                except OSError:
+                    restored = False
+                if not restored:
+                    restore_failures.append(
+                        main_project_root / (
+                            "logs" if parent_fd == logs_parent_fd else "artifacts"
+                        ) / stage_name / "record"
+                    )
+            if restore_failures:
+                raise RuntimeError(
+                    f"{project_name}: cleanup stopped and retained records need inspection at "
+                    + ", ".join(map(str, restore_failures))
+                ) from exc
+            for parent_fd, stage_name, _stage_fd in stages:
+                try:
+                    os.rmdir(stage_name, dir_fd=parent_fd)
+                except FileNotFoundError:
+                    pass
+            raise
+        finally:
+            for _parent_fd, _stage_name, stage_fd in reversed(stages):
+                os.close(stage_fd)
 
 
 def discard_build_workspace(

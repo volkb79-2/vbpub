@@ -145,6 +145,7 @@ def test_cleanup_dispatches_exact_local_build_deletion_and_requires_scope(monkey
     monkeypatch.setattr(cmru_cli, "_resolve_config", lambda value: cfg)
     monkeypatch.setattr(cmru_cli, "load_config", lambda path: loaded)
     calls = []
+    monkeypatch.setattr(cmru_cli.transaction, "retained_build_output_identity", lambda *_args: object())
     monkeypatch.setattr(cmru_cli.transaction, "delete_retained_build_output", lambda *args, **kwargs: calls.append((args, kwargs)) or [tmp_path / "artifact"])
     cmru_cli.main(["cleanup", "--config", str(cfg), "--delete-build-output", "20240101T000000Z_" + "a" * 40, "demo", "--dry-run"])
     assert calls and calls[0][1]["dry_run"] is True

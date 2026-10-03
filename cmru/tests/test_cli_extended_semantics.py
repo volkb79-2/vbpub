@@ -477,6 +477,7 @@ def test_cleanup_declined_confirmation_keeps_the_previewed_target_untouched(
     project = cli.ProjectConfig("demo", {}, {}, project_root=tmp_path / "demo")
     monkeypatch.setattr(cli, "_resolve_config", lambda _path: tmp_path / "cmru.toml")
     monkeypatch.setattr(cli, "load_config", lambda _path: _loaded(tmp_path, {"demo": project}))
+    monkeypatch.setattr(transaction, "retained_build_output_identity", lambda *_args: object())
     prompts = []
     monkeypatch.setattr(CliRuntime, "confirm", lambda _runtime, prompt: prompts.append(prompt) or False)
     calls = []
@@ -501,10 +502,12 @@ def test_cleanup_applies_the_captured_preview_action_without_rediscovery(
     project = cli.ProjectConfig("demo", {}, {}, project_root=tmp_path / "demo")
     monkeypatch.setattr(cli, "_resolve_config", lambda _path: tmp_path / "cmru.toml")
     monkeypatch.setattr(cli, "load_config", lambda _path: _loaded(tmp_path, {"demo": project}))
+    expected_identity = object()
+    monkeypatch.setattr(transaction, "retained_build_output_identity", lambda *_args: expected_identity)
     calls = []
 
-    def delete_retained(_root, _project, _name, ident, *, dry_run):
-        calls.append((ident, dry_run))
+    def delete_retained(_root, _project, _name, ident, *, dry_run, expected_identity):
+        calls.append((ident, dry_run, expected_identity))
         return [tmp_path / "artifact"]
 
     monkeypatch.setattr(transaction, "delete_retained_build_output", delete_retained)
@@ -516,8 +519,8 @@ def test_cleanup_applies_the_captured_preview_action_without_rediscovery(
 
     assert result == 0
     assert calls == [
-        ("20240101T000000Z_" + "b" * 40, True),
-        ("20240101T000000Z_" + "b" * 40, False),
+        ("20240101T000000Z_" + "b" * 40, True, expected_identity),
+        ("20240101T000000Z_" + "b" * 40, False, expected_identity),
     ]
     assert "Applying confirmed cleanup action" in capsys.readouterr().out
 

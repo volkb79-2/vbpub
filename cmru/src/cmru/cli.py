@@ -3168,10 +3168,6 @@ def _dispatch(args, runtime):
                                 "retained release scope changed while acquiring its lock; "
                                 "inspect the candidate and retry"
                             )
-                        if current_scope is not None and set(current_scope) != set(release_scope):
-                            raise RuntimeError(
-                                "release resume target no longer matches the retained transaction scope"
-                            )
                         transaction.assert_resume_workspace_committed(workspace.path)
                     else:
                         base = transaction.fetch_origin_main(transaction_root, git_auth=git_auth)
@@ -3427,23 +3423,26 @@ def _dispatch(args, runtime):
             if project is None:
                 _usage_error(f"unknown project: {selected_name}")
             def action(dry_run):
+                expected_identity = transaction.retained_build_output_identity(
+                    repo_root, project, selected_name, vargs.delete_build_output,
+                )
                 targets = transaction.delete_retained_build_output(
                     repo_root, project, selected_name, vargs.delete_build_output,
-                    dry_run=dry_run,
+                    dry_run=dry_run, expected_identity=expected_identity,
                 )
                 label = "Would delete" if dry_run else "Deleted"
                 for target in targets:
                     log_info(f"{label} retained local build output: {target}")
-                if dry_run and targets:
-                    plan.add(
-                        f"retained local build output {vargs.delete_build_output}",
-                        lambda target_project=project, target_name=selected_name,
-                        target_id=vargs.delete_build_output:
-                            transaction.delete_retained_build_output(
-                                repo_root, target_project, target_name, target_id,
-                                dry_run=False,
-                            ),
-                    )
+                plan.add(
+                    f"retained local build output {vargs.delete_build_output}",
+                    lambda target_project=project, target_name=selected_name,
+                    target_id=vargs.delete_build_output,
+                    expected_identity=expected_identity:
+                        transaction.delete_retained_build_output(
+                            repo_root, target_project, target_name, target_id,
+                            dry_run=False, expected_identity=expected_identity,
+                        ),
+                )
         elif vargs.discard_build_worktree:
             if vargs.target:
                 _usage_error("--discard-build-worktree is already exactly scoped; do not pass a project target")
@@ -3453,16 +3452,15 @@ def _dispatch(args, runtime):
                 )
                 label = "Would discard" if dry_run else "Discarded"
                 log_info(f"{label} retained build worktree: {workspace.path} ({workspace.branch})")
-                if dry_run:
-                    path = Path(vargs.discard_build_worktree)
-                    plan.add(
-                        f"retained build worktree {workspace.branch}",
-                        lambda path=path, workspace=workspace:
-                            transaction.discard_build_workspace(
-                                repo_root, path, dry_run=False,
-                                expected_workspace=workspace,
-                            ),
-                    )
+                path = Path(vargs.discard_build_worktree)
+                plan.add(
+                    f"retained build worktree {workspace.branch}",
+                    lambda path=path, workspace=workspace:
+                        transaction.discard_build_workspace(
+                            repo_root, path, dry_run=False,
+                            expected_workspace=workspace,
+                        ),
+                )
         elif vargs.remove_assets:
             # Explicit age-based cleanup mode.
             action = lambda dry_run: remove_assets(

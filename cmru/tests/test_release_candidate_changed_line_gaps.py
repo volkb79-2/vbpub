@@ -1,0 +1,684 @@
+"""Behavioral witnesses for remaining changed-line release coverage gaps."""
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+import sys
+from dataclasses import replace
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+from cmru import cli, transaction
+
+
+def test_local_tag_helpers_validate_git_object_ids_and_existence(monkeypatch, tmp_path):
+    oid = "a" * 40
+    monkeypatch.setattr(cli, "local_git_tag_oid", lambda *_args, **_kwargs: oid)
+    assert cli.local_git_tag_exists(tmp_path, "demo-v1") is True
+    monkeypatch.setattr(cli, "local_git_tag_oid", lambda *_args, **_kwargs: None)
+    assert cli.local_git_tag_exists(tmp_path, "demo-v1") is False
+
+    monkeypatch.setattr(cli, "run_local_git", lambda *_args, **_kwargs: SimpleNamespace(
+        returncode=0, stdout="not-an-object-id\n", stderr="",
+    ))
+    with pytest.raises(RuntimeError, match="invalid object ID while inspecting local tag"):
+        cli.local_git_tag_oid(tmp_path, "demo-v1")
+
+
+def test_tag_deletion_refuses_malformed_or_incomplete_preview_identity(monkeypatch, tmp_path):
+    tag = "demo-v1"
+    oid = "a" * 40
+    with pytest.raises(RuntimeError, match="invalid captured object ID"):
+        cli.delete_git_tag_remote(
+            tmp_path, tag, False, expected_present=True, expected_oid="bad",
+        )
+    monkeypatch.setattr(cli, "list_remote_tag_refs_matching", lambda *_a, **_k: {tag: oid})
+    with pytest.raises(RuntimeError, match="has no captured object ID"):
+        cli.delete_git_tag_remote(tmp_path, tag, False, expected_present=True)
+
+    with pytest.raises(RuntimeError, match="invalid captured object ID"):
+        cli.delete_git_tag_local(
+            tmp_path, tag, False, expected_present=True, expected_oid="bad",
+        )
+    monkeypatch.setattr(cli, "local_git_tag_oid", lambda *_a, **_k: oid)
+    with pytest.raises(RuntimeError, match="has no captured object ID"):
+        cli.delete_git_tag_local(tmp_path, tag, False, expected_present=True)
+
+
+def test_cleanup_preview_does_not_plan_deleting_an_absent_tag(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(cli, "list_releases", lambda *_: [
+        {"tag_name": "demo-v1.0.0", "id": 7},
+    ])
+    monkeypatch.setattr(cli, "list_remote_tag_refs_matching", lambda *_a, **_k: {})
+    monkeypatch.setattr(cli, "local_git_tag_oid", lambda *_a, **_k: None)
+    plan = cli.CleanupPlan()
+
+    cli.cleanup_project_releases_and_tags(
+        tmp_path, "owner", "repo", "token", "demo", [], True, plan=plan,
+    )
+
+    assert [description for description, _action in plan.actions] == [
+        "GitHub Release demo-v1.0.0 (id=7)",
+    ]
+    assert "No remote or local Git tag demo-v1.0.0 was present" in capsys.readouterr().out
+
+
+def test_cleanup_worktree_paths_accepts_text_status_output(monkeypatch, tmp_path):
+    monkeypatch.setattr(cli.subprocess, "run", lambda *_a, **_k: SimpleNamespace(
+        stdout="?? spaced name.txt\0 M tracked.txt\0",
+    ))
+
+    assert cli._cleanup_worktree_paths(tmp_path) == {"spaced name.txt", "tracked.txt"}
+
+
+def test_cleanup_step_commits_only_after_the_step_reports_success(monkeypatch, tmp_path):
+    events = []
+    monkeypatch.setattr(cli, "_cleanup_worktree_paths", lambda _root: {"preexisting.txt"})
+    monkeypatch.setattr(
+        cli, "cleanup_project_step",
+        lambda *args, **kwargs: events.append(("step", args, kwargs)) or True,
+    )
+    monkeypatch.setattr(
+        cli, "cleanup_commit_deletions",
+        lambda *args, **kwargs: events.append(("commit", args, kwargs)),
+    )
+    project = cli.ProjectConfig("demo", {}, {"clean": []})
+
+    cli._run_cleanup_step_and_commit(
+        tmp_path, "demo", project, "1.2.3", ["demo-v1.0.0"], "publisher-token",
+    )
+
+    assert [event[0] for event in events] == ["step", "commit"]
+    assert events[1][2]["before_paths"] == {"preexisting.txt"}
+
+    events.clear()
+    monkeypatch.setattr(cli, "cleanup_project_step", lambda *args, **kwargs: events.append(("step", args, kwargs)) or False)
+    cli._run_cleanup_step_and_commit(
+        tmp_path, "demo", project, "1.2.3", ["demo-v1.0.0"], "publisher-token",
+    )
+    assert [event[0] for event in events] == ["step"]
+
+    events.clear()
+
+    def fail_step(*args, **kwargs):
+        events.append(("step", args, kwargs))
+        raise RuntimeError("clean command failed")
+
+    monkeypatch.setattr(cli, "cleanup_project_step", fail_step)
+    with pytest.raises(RuntimeError, match="clean command failed"):
+        cli._run_cleanup_step_and_commit(
+            tmp_path, "demo", project, "1.2.3", ["demo-v1.0.0"], "publisher-token",
+        )
+    assert [event[0] for event in events] == ["step"]
+
+
+@pytest.mark.parametrize(
+    "scope",
+    ["alpha", [], ["alpha", "alpha"], ["", "alpha"], [17]],
+)
+def test_resume_target_refuses_malformed_saved_scope(tmp_path, scope):
+    with pytest.raises(RuntimeError, match="malformed project-scope metadata"):
+        cli._release_resume_target(
+            tmp_path / "cmru.toml", "alpha", scope,
+            {"alpha": object()}, ["alpha"],
+        )
+
+
+def test_resume_target_refuses_a_saved_project_removed_from_the_config(tmp_path):
+    with pytest.raises(RuntimeError, match="absent from the selected config: retired"):
+        cli._release_resume_target(
+            tmp_path / "cmru.toml", None, ["retired"], {}, [],
+        )
+
+
+def test_abandon_propagates_unrelated_release_lock_errors(monkeypatch, tmp_path):
+    monkeypatch.setattr(cli, "_current_git_root", lambda: tmp_path)
+    monkeypatch.setattr(
+        transaction, "release_lock",
+        lambda _root: (_ for _ in ()).throw(RuntimeError("lock metadata unavailable")),
+    )
+    monkeypatch.setattr(
+        transaction, "list_cmru_workspaces",
+        lambda _root: pytest.fail("inspection ran without a valid lock"),
+    )
+
+    with pytest.raises(RuntimeError, match="lock metadata unavailable"):
+        cli._abandon(SimpleNamespace(branch=None, dry_run=True), SimpleNamespace())
+
+
+def test_abandon_reports_workspace_enumeration_failure(monkeypatch, tmp_path):
+    from cli_extended import CliFailure
+
+    monkeypatch.setattr(cli, "_current_git_root", lambda: tmp_path)
+    monkeypatch.setattr(transaction, "release_lock", lambda _root: _NullContext())
+    monkeypatch.setattr(
+        transaction, "list_cmru_workspaces",
+        lambda _root: (_ for _ in ()).throw(OSError("Git worktree list is unreadable")),
+    )
+
+    with pytest.raises(CliFailure, match="cannot inspect CMRU release worktrees: Git worktree list is unreadable"):
+        cli._abandon(SimpleNamespace(branch=None, dry_run=True), SimpleNamespace())
+
+
+class _NullContext:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc):
+        return False
+
+
+def _git(cwd: Path, *args: str) -> str:
+    result = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True)
+    if result.returncode:
+        raise AssertionError(result.stderr)
+    return result.stdout.strip()
+
+
+def _repo(tmp_path: Path) -> Path:
+    root = tmp_path / "repo"
+    root.mkdir()
+    _git(root, "init", "-q", "-b", "main")
+    _git(root, "config", "user.email", "test@example.invalid")
+    _git(root, "config", "user.name", "test")
+    (root / "README.md").write_text("release fixture\n", encoding="utf-8")
+    _git(root, "add", ".")
+    _git(root, "commit", "-q", "-m", "feat: initial")
+    return root
+
+
+def _raw_release_worktree(tmp_path: Path, *, suffix: str = "candidate"):
+    root = _repo(tmp_path)
+    base = _git(root, "rev-parse", "HEAD")
+    branch = f"cmru/release/{suffix}"
+    path = tmp_path / "retained"
+    _git(root, "worktree", "add", "-q", "-b", branch, str(path), base)
+    workspace = transaction.ReleaseWorkspace(root, path, branch, base)
+    transaction.write_release_progress(root, workspace, base)
+    return root, path, branch, base
+
+
+def _remove_raw_release_worktree(root: Path, path: Path, branch: str) -> None:
+    _git(root, "worktree", "remove", "--force", str(path))
+    _git(root, "branch", "-D", branch)
+
+
+@pytest.mark.parametrize(
+    "branch,head,message",
+    [
+        ("main", "a" * 40, "not a retained cmru release branch"),
+        ("cmru/release/valid", "not-an-object-id", "invalid Git HEAD"),
+    ],
+)
+def test_legacy_progress_validation_rejects_bad_branch_or_head(
+    tmp_path, branch, head, message,
+):
+    with pytest.raises(RuntimeError, match=message):
+        transaction._validate_legacy_release_progress(tmp_path, tmp_path, branch, head)
+
+
+def test_legacy_progress_validation_preserves_non_ancestor_git_diagnostic(monkeypatch, tmp_path):
+    monkeypatch.setattr(transaction, "read_release_progress", lambda *_: "a" * 40)
+    monkeypatch.setattr(transaction, "run_local_git", lambda *args, **kwargs: SimpleNamespace(
+        returncode=128, stderr="", stdout="object database unavailable",
+    ))
+
+    with pytest.raises(
+        RuntimeError,
+        match=r"cannot validate legacy release progress.*\(128\): object database unavailable",
+    ):
+        transaction._validate_legacy_release_progress(
+            tmp_path, tmp_path, "cmru/release/candidate", "b" * 40,
+        )
+
+
+def test_resume_migrates_an_existing_legacy_record_without_a_scope_marker(
+    monkeypatch, tmp_path,
+):
+    root, path, branch, base = _raw_release_worktree(tmp_path, suffix="marker-migration")
+    shared = transaction._shared_worktree()
+    adopted = shared.adopt_workspace(
+        root, path, purpose="cmru-legacy", labels={"cmru.purpose": "release"},
+        metadata={}, identity_path=path,
+    )
+    monkeypatch.setattr(
+        transaction, "run_remote_git",
+        lambda *_args, **_kwargs: SimpleNamespace(returncode=0, stdout="", stderr=""),
+    )
+    try:
+        resumed = transaction.resume_workspace(root, path)
+        record = shared.find_workspace(adopted.git_common_dir, path)
+
+        assert resumed.workspace_id == adopted.workspace_id
+        assert record.metadata == {
+            transaction._LEGACY_RESUME_METADATA_KEY:
+                transaction._LEGACY_RESUME_METADATA_VALUE,
+        }
+    finally:
+        _remove_raw_release_worktree(root, path, branch)
+
+
+@pytest.mark.parametrize(
+    "metadata,message",
+    [
+        (None, "invalid legacy CMRU workspace metadata"),
+        ({transaction._LEGACY_RESUME_METADATA_KEY: "unknown"}, "unrecognized legacy CMRU transaction scope"),
+    ],
+)
+def test_resume_refuses_corrupt_existing_legacy_record_metadata(
+    monkeypatch, tmp_path, metadata, message,
+):
+    root, path, branch, base = _raw_release_worktree(tmp_path, suffix="bad-metadata")
+    real_shared = transaction._shared_worktree()
+    record = SimpleNamespace(purpose="cmru-legacy", metadata=metadata)
+    context = SimpleNamespace(branch=branch, base_commit=base)
+
+    class FakeShared:
+        def __getattr__(self, name):
+            return getattr(real_shared, name)
+
+        def find_workspace(self, *_args):
+            return record
+
+        def ensure_workspace(self, *_args, **_kwargs):
+            return context
+
+    monkeypatch.setattr(transaction, "_shared_worktree", lambda: FakeShared())
+    try:
+        with pytest.raises(RuntimeError, match=message):
+            transaction.resume_workspace(root, path)
+    finally:
+        _remove_raw_release_worktree(root, path, branch)
+
+
+def test_resume_refuses_legacy_candidate_when_source_git_family_cannot_be_known(
+    monkeypatch, tmp_path,
+):
+    root, path, branch, _base = _raw_release_worktree(tmp_path, suffix="unknown-family")
+    monkeypatch.setattr(
+        transaction, "_common_git_dir",
+        lambda _root: (_ for _ in ()).throw(RuntimeError("git family lookup failed")),
+    )
+    try:
+        with pytest.raises(RuntimeError, match="source Git family is unknown"):
+            transaction.resume_workspace(root, path)
+    finally:
+        _remove_raw_release_worktree(root, path, branch)
+
+
+def test_resume_rechecks_source_git_family_before_adopting_legacy_candidate(
+    monkeypatch, tmp_path,
+):
+    root, path, branch, _base = _raw_release_worktree(tmp_path, suffix="family-race")
+    real_shared = transaction._shared_worktree()
+    original_discover = real_shared.discover_git_context
+
+    class RacingShared:
+        def __getattr__(self, name):
+            return getattr(real_shared, name)
+
+        def discover_git_context(self, candidate):
+            result = original_discover(candidate)
+            if Path(candidate).resolve() == root.resolve():
+                top, common, branch_name, head = result
+                return top, common / "changed-during-validation", branch_name, head
+            return result
+
+    monkeypatch.setattr(transaction, "_shared_worktree", lambda: RacingShared())
+    try:
+        with pytest.raises(RuntimeError, match="do not share the exact Git family"):
+            transaction.resume_workspace(root, path)
+    finally:
+        _remove_raw_release_worktree(root, path, branch)
+
+
+def test_resume_reports_legacy_adoption_write_failure(monkeypatch, tmp_path):
+    root, path, branch, _base = _raw_release_worktree(tmp_path, suffix="adoption-failure")
+    real_shared = transaction._shared_worktree()
+
+    class FailingShared:
+        def __getattr__(self, name):
+            return getattr(real_shared, name)
+
+        def adopt_workspace(self, *_args, **_kwargs):
+            raise OSError("identity store is read-only")
+
+    monkeypatch.setattr(transaction, "_shared_worktree", lambda: FailingShared())
+    monkeypatch.setattr(
+        transaction, "run_remote_git",
+        lambda *_args, **_kwargs: SimpleNamespace(returncode=0, stdout="", stderr=""),
+    )
+    try:
+        with pytest.raises(RuntimeError, match="cannot adopt validated legacy release worktree.*identity store is read-only"):
+            transaction.resume_workspace(root, path)
+    finally:
+        _remove_raw_release_worktree(root, path, branch)
+
+
+@pytest.mark.parametrize("kind,message", [
+    ("missing", "release worktree does not exist"),
+    ("not-a-worktree", "not a readable Git worktree"),
+    ("nested-path", "must name the worktree root"),
+    ("wrong-branch", "not a retained CMRU release branch"),
+])
+def test_read_release_scope_for_path_reports_unverifiable_candidates(
+    monkeypatch, tmp_path, kind, message,
+):
+    path = tmp_path / "candidate"
+    path.mkdir()
+    nested = path / "nested"
+    nested.mkdir()
+
+    class FakeShared:
+        def discover_git_context(self, candidate):
+            if kind == "not-a-worktree":
+                raise OSError("gitfile cannot be read")
+            if kind == "nested-path":
+                return path, tmp_path / ".git", "cmru/release/candidate", "a" * 40
+            branch = "main" if kind == "wrong-branch" else "cmru/release/candidate"
+            return Path(candidate), tmp_path / ".git", branch, "a" * 40
+
+    monkeypatch.setattr(transaction, "_shared_worktree", lambda: FakeShared())
+    candidate = tmp_path / "absent" if kind == "missing" else nested if kind == "nested-path" else path
+
+    with pytest.raises(RuntimeError, match=message):
+        transaction.read_release_scope_for_path(candidate)
+
+
+def test_cleanup_build_output_refuses_a_valid_but_absent_record_before_apply(monkeypatch, tmp_path):
+    project = cli.ProjectConfig("demo", {}, {}, project_root=tmp_path / "demo")
+    project.project_root.mkdir()
+    monkeypatch.setattr(cli, "_resolve_config", lambda _arg: tmp_path / "cmru.toml")
+    monkeypatch.setattr(cli, "load_config", lambda _path: (
+        tmp_path, {"demo": project}, ["demo"], ["demo"], [], "project-first", {},
+        cli.CleanupConfig([], [], [], []), cli.GitHubConfig("owner", "repo", "token", "user"),
+        cli.ReleaseEnvConfig({}, None),
+    ))
+    monkeypatch.setattr(cli, "_select_projects", lambda *_args: ["demo"])
+    calls = []
+    monkeypatch.setattr(
+        transaction, "delete_retained_build_output",
+        lambda *_a, **kwargs: calls.append(kwargs) or [],
+    )
+
+    with pytest.raises(RuntimeError, match="retained build record is incomplete or unsafe"):
+        cli.main([
+            "cleanup", "demo", "--delete-build-output",
+            "20260101T000000Z_" + "a" * 40, "--yes",
+        ])
+    assert calls == []
+
+
+def _retained_build_output(tmp_path):
+    project_root = tmp_path / "demo"
+    output_id = "20260101T000000Z_" + "a" * 40
+    artifact_root = project_root / "artifacts" / output_id
+    logs_root = project_root / "logs" / output_id
+    artifact_root.mkdir(parents=True)
+    logs_root.mkdir(parents=True)
+    (artifact_root / "dist").mkdir()
+    (artifact_root / "dist" / "demo.whl").write_bytes(b"wheel")
+    (logs_root / "build.log").write_text("build completed\n", encoding="utf-8")
+    (artifact_root / "build.json").write_text(json.dumps({
+        "schema_version": 1,
+        "kind": "cmru-local-build",
+        "publication": "forbidden",
+        "project": "demo",
+        "build_id": output_id,
+    }), encoding="utf-8")
+    return SimpleNamespace(project_root=project_root), output_id, artifact_root, logs_root
+
+
+@pytest.mark.parametrize("mutation", ["replace-record", "add-nested-output"])
+def test_build_output_cleanup_rechecks_the_previewed_record_identity(tmp_path, mutation):
+    project, output_id, artifact_root, logs_root = _retained_build_output(tmp_path)
+    identity = transaction.retained_build_output_identity(
+        tmp_path, project, "demo", output_id,
+    )
+
+    assert transaction.delete_retained_build_output(
+        tmp_path, project, "demo", output_id,
+        dry_run=True, expected_identity=identity,
+    ) == [logs_root, artifact_root]
+
+    if mutation == "replace-record":
+        old_artifact_root = artifact_root.with_name(output_id + ".old")
+        artifact_root.rename(old_artifact_root)
+        artifact_root.mkdir()
+        (artifact_root / "build.json").write_text(json.dumps({
+            "schema_version": 1,
+            "kind": "cmru-local-build",
+            "publication": "forbidden",
+            "project": "demo",
+            "build_id": output_id,
+        }), encoding="utf-8")
+    else:
+        (artifact_root / "dist" / "new.whl").write_bytes(b"arrived after preview")
+
+    with pytest.raises(RuntimeError, match="changed after cleanup preview"):
+        transaction.delete_retained_build_output(
+            tmp_path, project, "demo", output_id,
+            dry_run=False, expected_identity=identity,
+        )
+    assert artifact_root.is_dir() and logs_root.is_dir()
+
+
+@pytest.mark.parametrize("parent_name", ["artifacts", "logs"])
+def test_build_output_cleanup_refuses_symlinked_output_parent(tmp_path, parent_name):
+    project, output_id, artifact_root, logs_root = _retained_build_output(tmp_path)
+    parent = project.project_root / parent_name
+    outside_parent = tmp_path / f"outside-{parent_name}"
+    parent.rename(outside_parent)
+    parent.symlink_to(outside_parent, target_is_directory=True)
+
+    with pytest.raises(RuntimeError, match="retained build output path is or crosses a symlink"):
+        transaction.retained_build_output_identity(
+            tmp_path, project, "demo", output_id,
+        )
+
+    assert (outside_parent / output_id).is_dir()
+    assert (artifact_root / "build.json").is_file()
+    assert (logs_root / "build.log").is_file()
+
+
+def test_build_output_cleanup_refuses_a_fifo_manifest_without_blocking(tmp_path):
+    project, output_id, artifact_root, _logs_root = _retained_build_output(tmp_path)
+    manifest_path = artifact_root / "build.json"
+    manifest_path.unlink()
+    os.mkfifo(manifest_path)
+
+    child_code = """
+import sys
+from pathlib import Path
+from types import SimpleNamespace
+from cmru import transaction
+
+root = Path(sys.argv[1])
+project = SimpleNamespace(project_root=root / "demo")
+try:
+    transaction.retained_build_output_identity(root, project, "demo", sys.argv[2])
+except RuntimeError as exc:
+    if "retained build record is incomplete or unsafe" in str(exc):
+        raise SystemExit(0)
+    raise
+raise SystemExit(1)
+"""
+    environment = os.environ.copy()
+    source_root = str(Path(transaction.__file__).resolve().parents[1])
+    environment["PYTHONPATH"] = os.pathsep.join(filter(
+        None, (source_root, environment.get("PYTHONPATH")),
+    ))
+    result = subprocess.run(
+        [sys.executable, "-c", child_code, str(tmp_path), output_id],
+        cwd=source_root,
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=5,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_build_output_cleanup_preserves_new_id_when_atomic_restore_is_unavailable(
+    monkeypatch, tmp_path,
+):
+    project, output_id, artifact_root, logs_root = _retained_build_output(tmp_path)
+    expected_manifest = (artifact_root / "build.json").read_bytes()
+    expected_wheel = (artifact_root / "dist" / "demo.whl").read_bytes()
+    expected_log = (logs_root / "build.log").read_bytes()
+    identity = transaction.retained_build_output_identity(
+        tmp_path, project, "demo", output_id,
+    )
+    original_identity = transaction._retained_build_output_identity_from_fds
+    original_id_calls = 0
+
+    def make_staged_identity_differ(*args):
+        nonlocal original_id_calls
+        original_id_calls += 1
+        staged_identity = original_identity(*args)
+        if original_id_calls == 2:
+            return replace(staged_identity, manifest_sha256="f" * 64)
+        return staged_identity
+
+    restore_calls = []
+    artifact_parent = project.project_root / "artifacts"
+    artifact_parent_stat = artifact_parent.stat()
+    competing_identity = None
+
+    def race_with_unavailable_atomic_restore(
+        source, source_fd, destination, destination_fd,
+    ):
+        nonlocal competing_identity
+        restore_calls.append((source, destination))
+        destination_stat = os.fstat(destination_fd)
+        if (destination_stat.st_dev, destination_stat.st_ino) == (
+            artifact_parent_stat.st_dev, artifact_parent_stat.st_ino,
+        ):
+            assert competing_identity is None
+            artifact_root.mkdir()
+            created = artifact_root.stat()
+            competing_identity = (created.st_dev, created.st_ino)
+        return False
+
+    monkeypatch.setattr(
+        transaction, "_retained_build_output_identity_from_fds",
+        make_staged_identity_differ,
+    )
+    monkeypatch.setattr(
+        transaction, "_rename_noreplace_at", race_with_unavailable_atomic_restore,
+    )
+    with pytest.raises(
+        RuntimeError, match="cleanup stopped and retained records need inspection at",
+    ) as raised:
+        transaction.delete_retained_build_output(
+            tmp_path, project, "demo", output_id,
+            dry_run=False, expected_identity=identity,
+        )
+
+    staged_artifacts = list((project.project_root / "artifacts").glob(".cmru-cleanup-*/record"))
+    staged_logs = list((project.project_root / "logs").glob(".cmru-cleanup-*/record"))
+    assert original_id_calls == 2 and len(restore_calls) == 2
+    assert competing_identity is not None
+    current_competing = artifact_root.stat()
+    assert (current_competing.st_dev, current_competing.st_ino) == competing_identity
+    assert artifact_root.is_dir() and list(artifact_root.iterdir()) == []
+    assert len(staged_artifacts) == len(staged_logs) == 1
+    assert (staged_artifacts[0] / "build.json").read_bytes() == expected_manifest
+    assert (staged_artifacts[0] / "dist" / "demo.whl").read_bytes() == expected_wheel
+    assert (staged_logs[0] / "build.log").read_bytes() == expected_log
+    assert str(staged_artifacts[0]) in str(raised.value)
+    assert str(staged_logs[0]) in str(raised.value)
+    assert not logs_root.exists()
+
+
+def test_build_output_cleanup_uses_the_previewed_parent_after_symlink_swap(monkeypatch, tmp_path):
+    project, output_id, artifact_root, logs_root = _retained_build_output(tmp_path)
+    identity = transaction.retained_build_output_identity(
+        tmp_path, project, "demo", output_id,
+    )
+    artifact_parent = project.project_root / "artifacts"
+    moved_parent = tmp_path / "moved-artifacts"
+    external_parent = tmp_path / "external-artifacts"
+    external_output = external_parent / output_id
+    external_output.mkdir(parents=True)
+    (external_output / "outside.txt").write_text("preserve me\n", encoding="utf-8")
+    original_rmtree = transaction.shutil.rmtree
+    swapped = False
+
+    def swap_parent_then_rmtree(path, *args, dir_fd=None, **kwargs):
+        nonlocal swapped
+        assert dir_fd is not None
+        if not swapped:
+            artifact_parent.rename(moved_parent)
+            artifact_parent.symlink_to(external_parent, target_is_directory=True)
+            swapped = True
+        return original_rmtree(path, *args, dir_fd=dir_fd, **kwargs)
+
+    swap_parent_then_rmtree.avoids_symlink_attacks = original_rmtree.avoids_symlink_attacks
+    monkeypatch.setattr(transaction.shutil, "rmtree", swap_parent_then_rmtree)
+
+    transaction.delete_retained_build_output(
+        tmp_path, project, "demo", output_id,
+        dry_run=False, expected_identity=identity,
+    )
+
+    assert swapped
+    assert (external_output / "outside.txt").is_file()
+    assert not (moved_parent / output_id).exists()
+    assert not logs_root.exists()
+    assert artifact_parent.is_symlink()
+
+
+def test_cleanup_cli_removes_a_confirmed_forbidden_build_output(monkeypatch, tmp_path):
+    preview_project, output_id, artifact_root, logs_root = _retained_build_output(tmp_path)
+    project = cli.ProjectConfig("demo", {}, {}, project_root=preview_project.project_root)
+    monkeypatch.setattr(cli, "_resolve_config", lambda _arg: tmp_path / "cmru.toml")
+    monkeypatch.setattr(cli, "load_config", lambda _path: (
+        tmp_path, {"demo": project}, ["demo"], ["demo"], [], "project-first", {},
+        cli.CleanupConfig([], [], [], []), cli.GitHubConfig("owner", "repo", "token", "user"),
+        cli.ReleaseEnvConfig({}, None),
+    ))
+    monkeypatch.setattr(cli, "_select_projects", lambda *_args: ["demo"])
+
+    assert cli.main([
+        "cleanup", "demo", "--delete-build-output", output_id, "--yes",
+    ]) == 0
+    assert not artifact_root.exists() and not logs_root.exists()
+
+
+def test_transaction_child_rejects_legacy_records_for_build_branches(monkeypatch, tmp_path):
+    source = tmp_path / "source"
+    child = tmp_path / "child"
+    source.mkdir()
+    child.mkdir()
+    branch = "cmru-build-child"
+    record = SimpleNamespace(
+        purpose="cmru-legacy", branch=branch, worktree_path=child,
+        source_git_root=source, workspace_id="workspace-1", base_commit="a" * 40,
+    )
+
+    class Shared:
+        def discover_git_context(self, candidate):
+            if Path(candidate).resolve() == child.resolve():
+                return child, tmp_path / ".git", branch, "a" * 40
+            return source, tmp_path / ".git", "main", "b" * 40
+
+        def list_git_worktrees(self, _source):
+            return [SimpleNamespace(path=child, is_primary=False, branch=branch)]
+
+        def find_workspace(self, *_args):
+            return record
+
+    monkeypatch.setattr(transaction, "_shared_worktree", lambda: Shared())
+    monkeypatch.setenv(transaction.CHILD_ENV, "1")
+    monkeypatch.setenv("CMRU_WORKSPACE_PATH", str(child))
+    monkeypatch.setenv("CMRU_SOURCE_GIT_ROOT", str(source))
+    monkeypatch.setenv(transaction.BRANCH_ENV, branch)
+    monkeypatch.setenv(transaction.BASE_ENV, "a" * 40)
+    monkeypatch.setenv("CMRU_WORKSPACE_ID", "workspace-1")
+
+    with pytest.raises(RuntimeError, match="recordless legacy compatibility is release-resume only"):
+        transaction.is_transaction_child(child)

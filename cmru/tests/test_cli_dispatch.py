@@ -720,12 +720,14 @@ def test_cleanup_delete_unmanaged_release_rejects_a_managed_tag(tmp_path):
 def test_cleanup_delete_build_output_is_project_scoped_and_dry_runnable(tmp_path, monkeypatch):
     cfg_path = _valid_config(tmp_path)
     expected_id = f"19700101T000000Z_{'a' * 40}"
+    identity = object()
     calls = []
+    monkeypatch.setattr(cli.transaction, "retained_build_output_identity", lambda *_args: identity)
     monkeypatch.setattr(
         cli.transaction,
         "delete_retained_build_output",
-        lambda root, project, name, output_id, *, dry_run: calls.append(
-            (root, project, name, output_id, dry_run)
+        lambda root, project, name, output_id, *, dry_run, expected_identity: calls.append(
+            (root, project, name, output_id, dry_run, expected_identity)
         ) or [tmp_path / "alpha" / "logs" / output_id, tmp_path / "alpha" / "artifacts" / output_id],
     )
 
@@ -736,7 +738,7 @@ def test_cleanup_delete_build_output_is_project_scoped_and_dry_runnable(tmp_path
 
     assert len(calls) == 1
     assert calls[0][0] == tmp_path
-    assert calls[0][2:] == ("alpha", expected_id, True)
+    assert calls[0][2:] == ("alpha", expected_id, True, identity)
 
 
 def test_invalid_config_missing_github_is_version_headed(tmp_path, capsys):

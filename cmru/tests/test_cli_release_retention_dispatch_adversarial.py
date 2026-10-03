@@ -65,6 +65,30 @@ def test_resumed_release_retains_by_default_with_no_flags(monkeypatch, tmp_path,
     assert f"Retained release output: {retained[1]}" in out
 
 
+def test_resumed_release_accepts_the_explicit_saved_scope(monkeypatch, tmp_path, capsys):
+    workspace, _seen = _dispatch_fixture(monkeypatch, tmp_path, [])
+
+    assert cli.main([
+        "release", "demo", "--resume", str(workspace.path),
+        "--config", str(tmp_path / "cmru.toml"),
+    ]) == 0
+    assert "Resuming recorded project scope:" not in capsys.readouterr().out
+
+
+def test_resumed_release_refuses_scope_changed_while_waiting_for_lock(monkeypatch, tmp_path):
+    workspace, _seen = _dispatch_fixture(monkeypatch, tmp_path, [])
+    scopes = iter([["demo"], ["other"]])
+    monkeypatch.setattr(
+        cli.transaction, "read_release_scope_for_path", lambda _path: next(scopes),
+    )
+
+    with pytest.raises(RuntimeError, match="scope changed while acquiring its lock"):
+        cli.main([
+            "release", "--resume", str(workspace.path),
+            "--config", str(tmp_path / "cmru.toml"),
+        ])
+
+
 def test_resumed_release_discard_artifacts_flag_keeps_logs_only(monkeypatch, tmp_path, capsys):
     retained = [tmp_path / "demo" / "logs" / "cmru-release" / "demo-v1"]
     workspace, seen = _dispatch_fixture(monkeypatch, tmp_path, retained)
