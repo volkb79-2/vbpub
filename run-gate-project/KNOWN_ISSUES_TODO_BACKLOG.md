@@ -72,6 +72,7 @@ SPEC §9.
 | RG-75 | no lane-scoped throwaway service (database): schema/mutation lanes hand-provision and tear down their own Postgres | Major | OPEN 2026-10-03 |
 | RG-76 | external-assay consumers restate judge command, pin and one lane block per assay lane (dstdns: 118 identical pin blocks); import lanes from `assay lanes --json` | Minor | OPEN 2026-10-03 |
 | RG-77 | the per-assay-lane `--state-dir` contract (RG-38) and its root-owned-parent repair (RG-49) are in no SPEC rule or skill, so consumers restate them in their own instruction files | Minor | OPEN 2026-10-03 |
+| RG-78 | adopt the ciu v8 closed exit table and explicit environment modes in run-gate now (backport, operator ruling D-654): lane exit passthrough overlaps the 2/3 refusal codes, and the built-in `host` environment is a container | Major | OPEN 2026-10-03 |
 
 ---
 
@@ -5317,3 +5318,42 @@ reproduction of the SAME underlying defect goes here, not a new entry).
 **Spec owner:** SPEC R-38.
 
 **v8: absorb** (the v8 gate inherits the argv builder, so the same drift test belongs there).
+
+## RG-78 — adopt v8's closed exit table and explicit environment modes now, not at the ciu8 cutover
+
+**Provenance:**
+- dstdns D-654: the operator chose v8 Q11 option A and directed a backport into run-gate, because ciu v8 is far away.
+- ciu v8 proposal rev 4.1 (vbpub@1602bbbac) §4.1.10 and Q11.
+- The analysis behind the choice is in dstdns `nyxloom-trove/decisions.md` D-654.
+
+**Observed:**
+- `run-gate <lane>` passes the lane's own exit code through. RG-11 reserved 2 (configuration/refusal) and 3 (infrastructure) for gate refusals, so a lane exiting 2 (pytest "interrupted"/usage error) or 3 cannot be told apart from a gate refusal, and pytest's 5 ("no tests collected") passes through as an unexplained non-zero.
+- This is the bug class behind dstdns `gate-slot.sh`'s exit-75 rerun (D-646): the wrapper's own code collided with a lane's.
+- Agents misread raw lane codes repeatedly: vitest exiting 1 with every test passing (RG-45), and "killed" statuses that mask a finished run.
+- The built-in `host` environment is a container, while `bare-host` is the subprocess. That is a standing naming trap.
+
+**Why run-gate owns it:** the gate is the only component that knows both the lane's raw result and its own refusal reasons. Every consumer (nyxloom gate pointers, cmru, CI, shell wrappers, agents) otherwise reconstructs the distinction from logs.
+
+**Proposed contract (v8 S16 Q11 option A, verbatim semantics):**
+- **Exit table, closed:**
+  - PASS 0;
+  - FAIL 1 (the lane ran and failed, including a mapped "collected nothing");
+  - ERROR 2 (the gate could not run the lane because of config or infrastructure; replaces RG-11's 2/3);
+  - NOT_RUN 3 (a precondition refused before execution: dirty tree, missing base, admission);
+  - BUDGET 4 (the budget was exceeded and the lane is resumable).
+  - No other code ever leaves run-gate.
+- **LaneResult:** the JSON result (`--json`) and a one-line human summary always carry `verdict`, the lane's raw `exit_code`, `reason` (for ERROR/NOT_RUN, naming the fix), and the log path.
+- **Raw-code mapping:** a documented table per lane kind. For example: pytest 5 → FAIL; a vitest non-zero with every test passing stays FAIL but `reason` names RG-45; a timeout or kill → BUDGET or ERROR as appropriate. The table is declared per lane where it differs from the default.
+- **Environment modes:** each environment declares `mode = "ephemeral" | "exec" | "host"`, and implicit built-in names go away. `host` means a bare subprocess.
+- **Cutover (D-652 Q13 style, atomic):** a `run-gate migrate` (or a documented one-shot) rewrites consumer `run-gate.toml` environments and lists wrapper scripts that branch on raw codes. Pin tests are reclassified. The CHANGES entry carries a consumer checklist: nyxloom `[gates.*]` pointers (0/non-0, unaffected), dstdns `gate-slot.sh` (deleted by RG-67) and `gate-base.sh`, CI workflows, cmru tester-gate.
+
+**Oracles:**
+- A lane exiting 2 yields FAIL with `exit_code: 2`, distinguishable from an ERROR refusal.
+- A pytest lane collecting nothing yields FAIL with a reason.
+- A dirty tree yields NOT_RUN.
+- A budget overrun yields BUDGET, and `--resume` then continues.
+- No code outside 0–4 can be produced (fuzz the lane's exit across 0–255).
+- An environment without `mode` refuses with ERROR, naming the key.
+- A controlled wrong implementation that passes the raw code through for FAIL must fail the first oracle.
+
+**Spec owner:** SPEC R-04 (exit codes), R-18 (verdict discipline), R-06 (environments). The ciu8 port inherits the same table (parity test).
