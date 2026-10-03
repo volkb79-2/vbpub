@@ -59,11 +59,12 @@ budget = "20m"
 kind = "command"
 environment = "tester-unified"
 # `assay.toml` delegates the changed-lines base to this request. Invoke with
-# `./run-gate.py --base <exact-ref> r2`; never let a moving origin/main silently
-# turn a post-merge acceptance campaign into zero eligible source mutants.
+# `./run-gate.py --base <exact-ref> r2`, and inspect the exact Assay plan before
+# the campaign. run-gate can derive a base if the flag is omitted, so the
+# acceptance command must supply the recorded ref explicitly.
 argv = [
     "bash", "-c",
-    "export PYTHONPATH={worktree}/assay/src && cd {worktree}/scripts/cgroup-profiler && mkdir -p .assay && exec $TESTER_VENV/bin/python3 -m assay.cli run r2 --resume --progress .assay/r2-progress.jsonl --verdict-json .assay/verdict-r2.json",
+    "export PYTHONPATH={worktree}/assay/src && cd {worktree}/scripts/cgroup-profiler && mkdir -p .assay && exec $TESTER_VENV/bin/python3 -m assay.cli run r2 --request-base {base} --resume --progress .assay/r2-progress.jsonl --verdict-json .assay/verdict-r2.json",
 ]
 clean_tree = false
 # The prior P6 counts/rate in RW-438 are historical, not an estimate for this
@@ -102,7 +103,7 @@ kind = "command"
 environment = "bare-host"
 argv = [
     "bash", "-c",
-    "cd {worktree}/scripts/cgroup-profiler && ./run-gate.py --worktree {worktree} r0-r1 && ./run-gate.py --worktree {worktree} r2 && ./run-gate.py --worktree {worktree} r3",
+    "cd {worktree}/scripts/cgroup-profiler && ./run-gate.py --worktree {worktree} r0-r1 && ./run-gate.py --worktree {worktree} --base {base} r2 && ./run-gate.py --worktree {worktree} r3",
 ]
 clean_tree = false
 # The full sequence includes the enforced 24h assay R2 window. This outer

@@ -42,6 +42,12 @@ expose the same top-level compatibility option.
 - **[`docs/CONSUMERS.md`](docs/CONSUMERS.md)** — pasteable daemon and run-gate
   adoption examples.
 
+P1's registered mutation lane takes its changed-lines base from the gate
+request. Supply the recorded comparison commit with `--base` for `r2` and the
+full `gate`, and inspect the Assay plan before a long run. See the
+[`design rationale`](docs/DESIGN-GUIDE.md#mutation-comparison-base) and
+[`exact commands`](docs/CONSUMERS.md#run-the-p1-review-gates).
+
 ## Verbs
 
 | verb | mode | what |

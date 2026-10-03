@@ -45,8 +45,9 @@ source_roots = ["lib"]
 # The comparison scope is caller-selected. After the provisional P1 merge,
 # origin/main contains the daemon changes and would yield a truthful but empty
 # changed-lines campaign. The controller supplies the recorded pre-wave base
-# with `./run-gate.py r2 --base REF`; omission must fail rather than certify 0
-# eligible mutants as a green P1 result.
+# with `./run-gate.py --base REF r2`. Assay refuses a missing request base,
+# while run-gate can derive one if its flag is omitted; the P1 acceptance
+# invocation must pass the recorded ref explicitly and inspect the exact plan.
 base_source = "request"
 
 [lanes.r2.judge.mutation]
