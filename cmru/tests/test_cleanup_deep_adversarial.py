@@ -209,7 +209,9 @@ def test_ghcr_cleanup_explicit_package_delete_skips_version_listing(monkeypatch)
         lambda _owner, package, *_: {"id": 17, "name": package, "package_type": "container"},
     )
     monkeypatch.setattr(cli, "list_package_versions", lambda *args: listed.append(args) or [])
-    monkeypatch.setattr(cli, "delete_package", lambda *args: deleted.append(args))
+    monkeypatch.setattr(
+        cli, "delete_package", lambda *args, **_kwargs: deleted.append(args),
+    )
     cli.cleanup_ghcr("o", "t", "org", datetime.now(timezone.utc), False,
                      _cleanup(ghcr_packages=["pkg"], ghcr_delete_packages=["pkg"]))
     assert deleted and not listed

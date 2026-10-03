@@ -91,7 +91,9 @@ def test_cleanup_ghcr_applies_cutoff_and_explicit_package_delete(monkeypatch):
         lambda _owner, package, *_: {"id": 17, "name": package, "package_type": "container"},
     )
     monkeypatch.setattr(cli, "delete_package_version", lambda *a: deleted_versions.append(a[3]))
-    monkeypatch.setattr(cli, "delete_package", lambda *a: deleted_packages.append(a[1]))
+    monkeypatch.setattr(
+        cli, "delete_package", lambda *a, **_kw: deleted_packages.append(a[1]),
+    )
     cli.cleanup_ghcr("o", "t", "user", datetime(2021, 1, 1, tzinfo=timezone.utc), False,
                      cleanup(ghcr_packages=["pkg", "whole"], ghcr_delete_packages=["whole"]))
     assert deleted_versions == [1]
