@@ -7,11 +7,12 @@ rigor = ["R0", "R1", "R2"]
 enforcement = "gate"
 argv = [
   "/opt/tester-venv/bin/python3", "-m", "pytest", "tests", "-q",
+  "--maxfail=1",
   "--cov=cli_extended", "--cov-branch", "--cov-report=json:coverage.json",
 ]
 env = { PYTHONPATH = "src", PYTHONDONTWRITEBYTECODE = "1" }
 env_passthrough = ["PATH"]
-budget = "60m"
+budget = "180m"
 allow_argv_append = false
 
 [lanes.cli-extended.isolation]
@@ -33,6 +34,9 @@ targets = [
   "src/cli_extended/parser.py",
   "src/cli_extended/progress.py",
   "src/cli_extended/prompts.py",
+  "src/cli_extended/review.py",
+  "src/cli_extended/surface.py",
+  "src/cli_extended/surface_cli.py",
   "src/cli_extended/testing.py",
 ]
 fail_under = 100.0

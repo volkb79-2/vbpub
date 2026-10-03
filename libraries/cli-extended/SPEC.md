@@ -436,6 +436,11 @@ are:
 | `2` | invocation, validation, configuration, or safety refusal |
 | `130` | operator cancelled with Ctrl-C |
 
+For a registered command, a handler may return `None` to indicate success;
+`RegisteredCli.run()` normalizes this to process status `0`. A handler may
+return an integer when the product contract defines another status. Consumers
+should not repeat `return 0` solely to restate the shared success default.
+
 Pipelines, wrappers, and background launchers must preserve and report the
 status of the operation being judged, not the status of a pager, logging pipe,
 or wrapper.
@@ -457,6 +462,14 @@ text. If both explicit colour controls are exposed, `--no-color` disables
 automatic colour and `--color` may explicitly override `NO_COLOR`; JSON,
 version output, and primary result data never use ANSI colour. Supplying both
 explicit controls is an invocation error rather than a last-option-wins rule.
+
+`CliOutput.color_enabled(stream)` is the public stream-specific query for a
+consumer-owned renderer. With no explicit switch it reports TTY plus
+`NO_COLOR`; `--color` forces true and `--no-color` forces false. The result
+does not override the plain-output requirement: a consumer that emits JSON or
+another machine-readable result must keep it free of ANSI, including when
+`--color` was supplied. Query the actual destination stream because stdout
+and stderr can have different terminal states.
 
 ### Progress
 
@@ -518,6 +531,15 @@ Tests should exercise the real entrypoint or module invocation, not only helper
 functions. A controlled bad input must demonstrate that each safety/error
 oracle actually goes red before the fix.
 
+Every adoption MUST keep two contracts distinct: the generated grammar
+inventory and the product's semantic command inventory. The product's
+canonical specification MUST account for every supported leaf verb and
+option, including shared/hidden options, accepted values, defaults and
+omission, selection scope, valid/refused combinations, effects, dry-run and
+confirmation boundaries, and output/status behavior. A registry/help
+synchronization test proves only that the declared syntax is current;
+behavioral tests must prove the declared effects and refusals.
+
 ## 10. Implementation guidance
 
 The standard does not require a particular CLI framework. Python's standard
@@ -578,17 +600,25 @@ repository-root import path would make a standalone CLI work only from this
 checkout.
 
 Existing project-local helpers (`ciu.cli_utils`, `cmru.cli_support`, and
-nyxloom's parser classes) remain useful migration evidence, but keeping three
+nyxloom's parser classes) remain useful migration evidence, but keeping
 independent implementations would recreate the drift this standard is
-intended to prevent. The Debian installer and the three Netcup entrypoints are
-the first adopted consumers; larger CLIs remain follow-on migrations with
-compatibility tests.
+intended to prevent. First-party adopters include the CMRU operator scripts
+and active handler adapter, the Debian installer, and the three Netcup
+entrypoints. Larger CLIs remain follow-on migrations with compatibility
+tests.
 
 ## 11. Further contract areas
 
 The following areas should be covered by the standard or explicitly marked
 tool-specific before a CLI is considered fully adopted:
 
+- **semantic command contract:** each leaf's purpose, selectors, accepted
+  values, defaults/omission, option interactions, effects, confirmation and
+  dry-run behavior, and output/status. Keep the full table in the product's
+  canonical specification; the shared registry cannot infer domain truth;
+- **distributed entrypoints:** installed scripts, active module CLIs,
+  project-step/bootstrap adapters, library APIs, and generated standalone
+  tools, including which ones are supported from the built wheel;
 - **stdin and prompts:** prompt defaults, EOF, non-TTY behavior, and whether
   `--yes` is required or merely optional for each mutation;
 - **configuration precedence:** the documented order among command-line
@@ -613,19 +643,327 @@ tool-specific before a CLI is considered fully adopted:
 
 ## 12. Adoption inventory
 
-This is an adoption plan, not a claim that all current tools already conform.
-The current scoped review covers the Debian installer and the Netcup tools;
-other rows remain future work and were not re-audited here.
+This is an adoption inventory, not a claim that all current tools conform.
+The current scoped reviews cover CMRU, the Debian installer, and the Netcup
+tools; other rows remain future work and were not re-audited here.
 
 | CLI | Main adoption work |
 |---|---|
 | `debian-install-v2.py` | adopted through `cli-extended` for registry, help/version, common options, output, and dispatch; `bootstrap-remote.py` is the documented stdlib-only bootstrap exception |
 | Netcup `scp-api.py`, `install-host.py`, `monitor-task.py` | adopted through `cli-extended` for generated verbs/help, identity/version, common diagnostics, and clean cancellation; Netcup retains API, confirmation, denylist, and install policy |
 | `ciu` | align `help` verb and remove `-h`; retain its strong grouped/help model |
-| `cmru` | scope options to the selected verb; align `help`, `--yes`, and exception behavior |
+| `cmru`, `cmru-agent`, `cmru-controller`, `python -m cmru.handlers` | use the registered grammar and generated help; the CMRU SPEC records the semantic review. The active handler module is a project-step/bootstrap CLI; bundle and runner remain libraries; standalone generated `get.py` intentionally retains argparse. |
 | `nyxloom` | make bare invocation exit `0`; remove flat parser list; align version output and `help` |
 | other `scripts/` CLIs | audit and adopt the same contract when they are user-facing |
 
 The Debian installer and Netcup tools are the current first-party consumers.
 The standard itself is repository-wide; this scoped migration does not claim
 or require that every repository CLI is converted at once.
+
+## 13. Generated CLI surface and semantic review
+
+The canonical product CLI specification MUST contain both the current grammar
+inventory and the product-owned semantic review for each supported verb and
+option. `cli-extended` provides helpers to export the built `RegisteredCli`,
+render a bounded review checklist, synchronize a generated Markdown region,
+and check generated files and semantic decisions. This process does not
+replace product review of the verbs, groupings, option meanings, or effects.
+
+The executable grammar source remains the Python `CliRegistry`. A TOML review
+catalog stores human decisions and option-interaction groups; it MUST NOT be
+treated as a second parser definition. A generated JSON manifest records the
+installed argparse tree after `configure(parser)` callbacks and delegated
+registries have been applied. The consumer's canonical CLI specification
+embeds generated Markdown between exactly one pair of these standalone lines:
+
+```markdown
+<!-- cli-extended-surface:start -->
+<!-- cli-extended-surface:end -->
+```
+
+The `surface_cli --factory` argument MUST accept either
+`python.module:callable` or `path/to/file.py:callable`. For a filesystem
+factory, the loader MUST resolve the file path, import the module through its
+loader, and make the containing directory available for sibling imports,
+matching direct script execution. It MUST register the module in
+`sys.modules` before executing its code so dataclasses and other runtime
+introspection can resolve the declared module. The generated module name MUST
+be stable across checkout roots; it MUST NOT include the resolved absolute
+path. Importing a factory MUST construct and return a `RegisteredCli` without
+calling `app.run()`.
+
+The generator MUST update only the manifest and the text between those
+markers. It MUST preserve all text and line endings outside the marked region,
+and MUST NOT write or reserialize the TOML catalog. Missing, duplicated,
+reversed, or nested markers are errors. Sync may write new generated files
+while reporting pending decisions so a grammar change is reviewable; check is
+read-only and exits unsuccessfully on manifest/spec drift, missing or pending
+cases, changed signatures, stale cases without explicit retirement, or
+uninspectable syntax.
+Each output file MUST be replaced atomically so interruption cannot leave a
+partially-written manifest or spec. The two replacements are independently
+atomic; check mode detects a stop that leaves the pair at different revisions.
+The review catalog, manifest, and canonical spec paths MUST resolve to three
+distinct files. Sync and check MUST refuse equal paths and symlink or hard-link
+aliases before writing, so a destination typo cannot overwrite the human-owned
+catalog.
+
+The machine surface includes entrypoint and route invocation mode, including
+whether an empty argument vector shows help before parsing or is passed to a
+single-command parser. Required syntax may still reject it. It also includes
+route paths and parser subcommand aliases,
+delegated paths, positional and option IDs/shapes, option aliases, defaults,
+choices, requiredness, scope/placement, exclusive groups, synopsis, behavior
+and confirmation policy, parser-scoped `allow_abbrev`, argparse's
+negative-number matcher and whether that parser registers negative-number-like
+options, and actions added by parser callbacks. The JSON surface schema version is `6`; each route records
+`single_command` and `no_args_action`, and those values participate in
+candidate signatures so a change to empty-invocation behavior requires review.
+Both route fields MUST be booleans. Markdown rendering MUST refuse a route
+record missing either field; it MUST NOT treat missing parser facts as
+`false`.
+Each route also records
+`parser_settings` along its path. Each setting contains `parser_path`,
+`allow_abbrev`, `prefix_chars`, `fromfile_prefix_chars`, the
+`negative_number_matcher` pattern and flags, and
+`has_negative_number_optionals`. These parser token rules participate in
+candidate signatures; a custom or uninspectable negative-number matcher makes
+the surface incomplete. Registered `surface_id` values
+preserve identity through a rename; otherwise default IDs are derived from the
+route and the declared verb/argument/option spelling. Route IDs are unique;
+action IDs are unique within their route. Single-command entrypoints MUST NOT
+claim the `help <verb>` builtin. Help wording is not identity.
+
+The generated Markdown route table MUST show the route's invocation mode and
+empty-argv result, help summary and description, mutation/behavior labels,
+confirmation availability, synopsis and usage overrides, delegated
+metadata, parser settings including negative-number token handling, whether a
+parser callback ran, opaque fields, and
+whether syntax is complete. Its argument and option table MUST show each
+description, token shape, argparse action and converter, const, requiredness,
+choices, declared and effective defaults, exclusive-group requiredness,
+scope and parser placement, and hidden/help-group status. `hidden` options
+remain present in the semantic surface, labelled hidden; hiding an option
+removes it from operator help, not from the audit. Callable converters and
+custom actions MUST be visible by stable import label in the generated table
+and manifest.
+The exporter may enumerate choices only when the runtime container is an exact
+built-in list, tuple, set, or frozenset and every member is an exact built-in
+string, integer, finite float, or boolean. A custom container or container
+subclass MUST be marked opaque because its membership behavior can differ
+from its items. An `Enum` member, custom scalar subclass, or other non-scalar
+choice MUST also be marked opaque and make that parser surface incomplete;
+serializing its display text or `.value` could change the runtime equality
+rule used by argparse.
+An option with `nargs=0` and non-`None` `choices` MUST also make the surface
+incomplete because argparse does not check choices for flag-only actions.
+
+Nested parser routes carry forward every action from their parent parser that
+is accepted before the nested command word. Each action records its parser
+path and whether it must appear before a nested subcommand; options belonging
+to the nested parser are recorded at that deeper path. A parser that requires
+a nested command is a route prefix, not a runnable invocation candidate. Its
+executable child routes contain the inherited parent arguments and options.
+Delegated command groups are also route prefixes: the generated checklist
+belongs to their child routes, not to the grouping word by itself. Their child
+paths MUST appear in the human-readable route table.
+Multiple nested subparser groups at one parser depth are marked incomplete
+until the exporter can represent their invocation order without ambiguity.
+Delegated single-command routes retain metadata for every wrapper in a nested
+delegation chain and for the final delegated command. The Markdown shows these
+contracts separately, and their behavior/confirmation fields affect candidate
+signatures. Wrapper-local arguments/options/callback syntax that
+the delegate runtime does not apply, and inherited global options absent from
+the delegated parser, MUST mark the surface incomplete. A delegated parser's
+inherited global actions MUST preserve the parent action's flags, destination,
+action type, `nargs`, converter, choices, constant, default, requiredness,
+metavar, and mutually-exclusive group membership and requiredness; a mismatch
+makes every route under that delegate incomplete because
+the wrapper and child can split or interpret the same leading tokens
+differently. Custom converters and action classes must resolve to the same
+runtime objects in both parsers; matching import labels alone are not proof of
+identical behavior.
+
+The generated checklist is a bounded set of review dimensions, not a set of
+invented executable examples or inferred outcomes. It covers minimum valid
+invocation syntax,
+each positional shape and enumerable choice, each product-owned option
+spelling and choice, exclusive alternatives/conflicting pairs, parser route
+aliases, and catalog-declared option interactions, including a target route
+combined with an option registered only on another route. Such a case's
+signature MUST include the foreign option's owning route and action shape.
+Every generated candidate MUST also include the target route's required
+positional, required option, and required-exclusive-group contracts in its
+signature. Check mode MUST require that baseline for every candidate kind so an
+option or alias case cannot be certified with syntax that fails before that
+dimension is reached. An `exclusive-conflict` candidate may violate the group
+under test; an interaction may do so only when it explicitly names multiple
+members of that same group. All other required baseline actions remain
+mandatory.
+Check mode MUST require each named local option, the foreign spelling as an
+unrecognized option token at the target route's parser depth, and that route's
+required positionals, required options, and required-exclusive selections so
+the case isolates the intended interaction. A value-taking foreign option
+MUST be tokenized using the owner's action arity while using option-like target
+tokens as value boundaries; its value tokens MUST NOT be assigned to a target
+positional. Check mode MUST enforce the declared arity, modeled conversions,
+and enumerable choices for every occurrence of each participating option; a
+valid first occurrence MUST NOT hide a malformed repeat. For any exact
+built-in converter recorded in the surface, check mode MUST report a failed
+conversion even when the action has no choices. For choices, check mode MUST apply the exact
+`builtins.str`, `builtins.int`, `builtins.float`, or `builtins.bool` conversion
+recorded in the surface before checking membership and whether an invocation
+supplies its reviewed choice. With no converter, it MUST compare the raw argv
+string to the serialized choice value. For an option with `nargs="?"`, an
+occurrence with no value MUST apply the declared converter only when `const`
+is a string, matching argparse. An option action whose `const` has a supported
+exact built-in type MUST include
+`const_choice_check_on_omission`, determined by probing the stock runtime with
+a disposable parser and an out-of-choices constant of the action's exact
+built-in type (`None`, `bool`, `float`, `int`, or `str`). The generated
+Markdown MUST display this field. Candidate signatures MUST include it so a
+runtime change that alters omitted-const behavior requires semantic review.
+The structural checker MUST apply `choices` exactly when this recorded field
+is true: it checks a converted constant for a string `const` and the original
+constant for other supported types. It MUST NOT apply the action's `choices`
+check when the field is false. The probe and checker MUST NOT invoke consumer
+parsers, consumer converters, custom actions, or handlers. An omitted
+optional positional uses its default and MUST NOT use this option-const rule.
+For `nargs=argparse.PARSER`, the checker MUST convert all supplied values but
+apply `choices` only to the first, matching argparse. For
+`nargs=argparse.REMAINDER`, it MUST convert supplied values but MUST NOT apply
+`choices`, which argparse ignores; a remainder action that declares choices
+MUST make the surface incomplete.
+Static choice checks apply only to
+`argparse._StoreAction`, `argparse._AppendAction`, and
+`argparse._ExtendAction`; custom actions remain opaque and require a linked
+behavior test. It MUST NOT execute consumer-defined converters, custom
+actions, or handlers; those remain behavior-test oracles.
+A flag-only foreign option MUST reject an inline value. If an option ID is
+ambiguous across routes and does not resolve uniquely on the target route,
+surface generation MUST refuse it.
+The catalog owns the expected decision and status, including for cross-route
+interactions; check mode MUST NOT infer product semantics from route ownership.
+For the `show --poll` example above, the consumer records a refusal because
+that product's `show` command rejects the watch-only option. Any unknown
+option not named by the interaction MUST be reported as a finding, so an
+unrelated typo cannot be treated as part of the reviewed case.
+The generator does not automatically enumerate every value count or repeated
+occurrence for optional-arity, variadic, or repeatable options; consumers MUST
+declare distinct named interactions when those invocation shapes carry
+different product meaning. It MUST NOT enumerate the
+full power set of switches. The default cap is 512 candidates; a product may
+raise the cap explicitly. The exporter MUST fail on overflow instead of
+truncating. The standard library owns its common controls such as verbosity,
+color, and progress behavior; their syntax remains in the manifest, while
+product-sensitive common options (`--json`, `--yes`, and `--debug-raw`) remain
+review candidates. A product-specific common-option interaction belongs in
+its TOML catalog.
+
+Callable converters and custom argparse actions are reported by stable import
+label and marked opaque. An opaque validator does not make otherwise visible
+syntax incomplete; product cases and tests still own its accepted values and
+failure boundary. An unenumerable parser field or missing parser route MUST
+make the surface incomplete and fail check. The exporter MUST never discard a
+field or serialize an unstable object representation to imply completeness.
+The exporter MUST identify built-in `str`, `int`, `float`, and `bool`
+converters by exact runtime object identity. A custom callable with a colliding
+import label MUST remain opaque. Static choice checks MUST also identify stock
+`_StoreAction`, `_AppendAction`, and `_ExtendAction` classes by exact runtime
+class identity; a custom action with a colliding label remains opaque.
+Any non-`None`, non-callable type reference on a value-taking action MUST make
+the surface incomplete. Custom parser type-registry registrations MUST also
+make the surface incomplete because a registry key can change the converter
+resolved for an action.
+For `nargs="?"`, a non-`None` `const` that is not an exact built-in string,
+integer, finite float, or boolean MUST make the surface incomplete because its
+value and conversion behavior cannot be represented safely.
+Ordinary parser callbacks that add inspectable argparse actions are supported.
+A callback or parser subclass that replaces an argparse token-parsing method,
+sets uncaptured parser-level defaults, or leaves `_option_string_actions`
+inconsistent with the parser's actions MUST make the surface incomplete; an
+action inventory alone cannot describe that parser's accepted syntax.
+
+The TOML catalog has `schema_version = 1`, `cli_id`, optional
+`max_candidates`, `interaction_groups`, and `[[cases]]` records. Each active
+case MUST contain a generated stable ID, `decision = "accept"` or `"refuse"`,
+the current `reviewed_signature`, a rationale, explicit invocation argv,
+expected process status, explicit effects (including `[]` when there are none),
+and one or more exact pytest node IDs. Invocation argv is passed to
+`RegisteredCli.run()` and excludes the executable name. It MUST contain real
+product-owned values; the generator does not guess selectors, UUIDs, paths, or
+provider names. An empty argv is valid only for a genuine no-token
+single-command case. A retired case MUST stay in the catalog with a human
+retirement reason; if that ID appears again, it requires explicit
+reactivation and review.
+
+Check mode structurally checks invocation argv against the declared route. It
+MUST account for recognized option arity, option scope, parser depth, and
+parser-depth `--` terminators when locating command words. It MUST account for
+required parent positionals before nested commands, including a remainder
+positional yielding to a registered nested command. For `argument-shape` and
+`argument-choice` candidates, it MUST assign tokens to the named positional
+action at its parser depth; finding the same text in a sibling positional does
+not satisfy the candidate. A flag-only option with an inline value is not a
+valid occurrence. Every positional token MUST map to a declared positional at
+that parser depth; unassigned tokens MUST be reported as findings. It MUST
+resolve long-option abbreviations using the
+`allow_abbrev` setting of the parser at that depth. A non-default `prefix_chars`
+or enabled `fromfile_prefix_chars` MUST make the surface incomplete until the
+checker can represent those token rules. A callback that replaces an argparse
+token-parsing method or `_registry_get`, adds any non-default type-registry
+registration, sets uncaptured parser-level defaults, or leaves the
+parser's option-action lookup inconsistent MUST also make the surface
+incomplete. Ordinary callbacks that add inspectable argparse actions remain
+supported. In every generated candidate, a
+required option counts only
+when it is an active option token, its declared minimum values are supplied,
+and exactly one alternative is present for each required exclusive group.
+Repeated occurrences of that same member remain valid when argparse accepts
+them; consumers declare an interaction when repetition has separate product
+semantics. It
+MUST NOT call `RegisteredCli.run()`,
+`ArgumentParser.parse_args()`, custom converters, custom argparse actions, or
+command handlers. This check is not a full parser acceptance oracle: the
+referenced product test MUST run the real invocation and assert its outcome
+and effects. A marker proves only that the named test is collected and linked
+to the semantic case.
+
+If an interaction group references a route or option that no longer exists,
+direct surface export MUST refuse the invalid reference. Sync MUST still
+generate the current grammar, preserve the catalog bytes, list the interaction
+reference as needing repair, and retain its semantic case in the stale-case
+section. Check MUST report the same reference and fail until the owner repairs
+or retires that case; sync MUST NOT edit the TOML catalog.
+For a single-command entrypoint, the empty route path denotes its one parser;
+the check MUST still recognize that parser's declared options.
+
+Candidate signatures cover the relevant route and parser shape, including
+aliases, defaults, choices, requiredness, action/nargs, scope/placement,
+exclusive relationships, behavior and confirmation policy, delegated command
+identity/group/behavior/confirmation metadata, and synopsis overrides.
+Descriptions and help wording are excluded so copy edits do not force semantic reapproval.
+Changed relevant shape requires a new decision. Removed decisions remain in
+the generated specification until a person retires them; the generator never
+deletes rationale, effects, or test references.
+
+The provided `python -m cli_extended.surface_cli` command accepts an
+import-safe `--factory module:callable` that returns the consumer's
+`RegisteredCli`. `sync`, `template`, and `check` are the supported operations;
+consumers do not write a parser walker, table renderer, or region merge.
+`assert_cli_case_tests(collected_items, catalog)` verifies that each active
+case's exact node IDs are collected and carry matching
+`pytest.mark.cli_case(case_id)` markers. It rejects unknown/non-active markers
+and statically skipped referenced items where their skip condition is
+literally true. This proves collection/linkage only: a test can still be weak
+or fail. The consumer's normal gate MUST execute the referenced behavior tests
+and assert the expected output, status, and side-effect boundary.
+
+When adding, removing, renaming, or changing a public command or option, the
+consumer MUST review both the generated grammar diff and the semantic table.
+That product review should ask whether the verb and grouping still match real
+operator workflows, whether any alias is legacy-only, what each omitted or
+defaulted value does, which options conflict or depend on one another, and
+which files, state, network, credentials, confirmation, and output each case
+can affect. The generic library reports surface facts; it does not decide
+whether a product supports the right use cases.

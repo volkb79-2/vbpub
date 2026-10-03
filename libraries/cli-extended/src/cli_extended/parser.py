@@ -108,6 +108,7 @@ class OptionSpec:
     mutually_exclusive_group: str | None = None
     mutually_exclusive_required: bool = False
     hidden: bool = False
+    surface_id: str | None = None
 
     def __post_init__(self) -> None:
         if not self.flags or any(not flag for flag in self.flags):
@@ -131,6 +132,12 @@ class OptionSpec:
             raise ValueError(
                 "mutually_exclusive_required needs a mutually_exclusive_group"
             )
+        if self.surface_id is not None and (
+            not isinstance(self.surface_id, str)
+            or not self.surface_id
+            or any(character.isspace() for character in self.surface_id)
+        ):
+            raise ValueError("surface_id must be a non-empty token without whitespace")
         if self.mutually_exclusive_group and self.parser_kwargs.get("required"):
             raise ValueError(
                 "required belongs on the mutually-exclusive group, not an option member"
@@ -230,6 +237,7 @@ class ArgumentSpec:
     description: str
     metavar: str | None = None
     parser_kwargs: Mapping[str, Any] = field(default_factory=dict)
+    surface_id: str | None = None
 
     def __post_init__(self) -> None:
         if not self.name or self.name.startswith("-"):
@@ -238,6 +246,12 @@ class ArgumentSpec:
             )
         if not self.description:
             raise ValueError("a positional argument must define a description")
+        if self.surface_id is not None and (
+            not isinstance(self.surface_id, str)
+            or not self.surface_id
+            or any(character.isspace() for character in self.surface_id)
+        ):
+            raise ValueError("surface_id must be a non-empty token without whitespace")
 
     @property
     def display(self) -> str:
@@ -306,6 +320,7 @@ class VerbSpec:
     delegate: RegisteredCli | None = None
     include_confirmation: bool | None = None
     confirmation_required: bool | None = None
+    surface_id: str | None = None
 
     def __post_init__(self) -> None:
         if not self.name or self.name.startswith("-"):
@@ -316,6 +331,12 @@ class VerbSpec:
             raise ValueError(f"verb {self.name!r} must define a semantic group")
         if self.summary_description is not None and not self.summary_description:
             raise ValueError(f"verb {self.name!r} has an empty summary description")
+        if self.surface_id is not None and (
+            not isinstance(self.surface_id, str)
+            or not self.surface_id
+            or any(character.isspace() for character in self.surface_id)
+        ):
+            raise ValueError("surface_id must be a non-empty token without whitespace")
         if self.delegate is not None and self.handler is not None:
             raise ValueError(
                 f"verb {self.name!r} cannot define both a handler and a delegated CLI"
@@ -1206,6 +1227,10 @@ class RegisteredCli:
     logging_logger: str | None = None
     no_args_action: bool = False
     delegates: Mapping[str, RegisteredCli] = field(default_factory=dict)
+    registered_verbs: tuple[VerbSpec, ...] = ()
+    global_options: tuple[OptionSpec, ...] = ()
+    single_command: bool = False
+    allow_abbrev: bool = False
 
     @property
     def catalog(self) -> HelpCatalog | None:
@@ -1473,6 +1498,10 @@ class CliRegistry:
             self.logging_logger,
             self.no_args_action,
             delegates,
+            tuple(self._verbs),
+            self.global_options,
+            self.single_command,
+            self.allow_abbrev,
         )
 
 
