@@ -150,7 +150,8 @@ def test_release_gate_retains_private_backups_when_secret_restoration_fails(
     private_root.mkdir(mode=0o700)
 
     def fail_restore(backups):
-        backups[0].path.unlink()
+        root_secret_backup = next(item for item in backups if item.path == root_secret)
+        root_secret_backup.path.unlink()
         raise OSError("simulated restore failure")
 
     monkeypatch.setattr(run_release_gate, "_restore", fail_restore)
@@ -174,8 +175,11 @@ def test_release_gate_retains_private_backups_when_secret_restoration_fails(
     assert calls == ["installed-wheel", "assay", "coverage", "mutation", "canary", "enroll"]
     assert backup_root.is_dir()
     assert stat.S_IMODE(backup_root.stat().st_mode) == 0o700
-    assert (backup_root / "overlay-0.bin").read_bytes() == b"root credential\n"
-    assert (backup_root / "overlay-1.bin").read_bytes() == b"project override\n"
+    backup_files = list(backup_root.glob("overlay-*.bin"))
+    assert len(backup_files) == 2
+    assert {path.read_bytes() for path in backup_files} == {
+        b"root credential\n", b"project override\n",
+    }
 
 
 def test_release_gate_refuses_symlink_secret_and_restores_any_prior_mask(
