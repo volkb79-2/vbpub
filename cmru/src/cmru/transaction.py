@@ -588,8 +588,8 @@ def resume_workspace(
     if expected_common is not None and path_common != expected_common:
         raise RuntimeError(f"{path} is not a worktree of {repo_root}")
     # New transactions resume directly from their CMRU record. Legacy
-    # candidates, including a removal-bridge record, pass the progress check
-    # before they can be promoted to validated legacy-resume ownership.
+    # candidates, including a removal-bridge record, must revalidate progress
+    # and refresh origin/main before returning or completing adoption.
     try:
         _top, common, _branch, _head = shared.discover_git_context(path)
         record = _shared_workspace_record(shared, common, path)
@@ -616,6 +616,10 @@ def resume_workspace(
                 _validate_legacy_release_progress(
                     repo_root, path, retained_branch, retained_head,
                 )
+                run_remote_git(
+                    path, "fetch", "--prune", "origin", "main",
+                    auth=git_auth, check=True,
+                )
                 if scope is None:
                     metadata = dict(metadata)
                     metadata[_LEGACY_RESUME_METADATA_KEY] = _LEGACY_RESUME_METADATA_VALUE
@@ -627,6 +631,8 @@ def resume_workspace(
                 base=context.base_commit,
                 context=context,
             )
+    except subprocess.CalledProcessError:
+        raise
     except Exception as exc:
         raise RuntimeError(str(exc)) from exc
     branch = _git(path, "branch", "--show-current")
@@ -648,6 +654,12 @@ def resume_workspace(
             or Path(path_top).resolve() != path
         ):
             raise RuntimeError("legacy release worktree and source root do not share the exact Git family")
+    except Exception as exc:
+        raise RuntimeError(f"cannot adopt validated legacy release worktree {path}: {exc}") from exc
+    run_remote_git(
+        path_top, "fetch", "--prune", "origin", "main", auth=git_auth, check=True,
+    )
+    try:
         context = shared.adopt_workspace(
             source_top,
             path,
@@ -658,9 +670,6 @@ def resume_workspace(
         )
     except Exception as exc:
         raise RuntimeError(f"cannot adopt validated legacy release worktree {path}: {exc}") from exc
-    run_remote_git(
-        path_top, "fetch", "--prune", "origin", "main", auth=git_auth, check=True,
-    )
     return ReleaseWorkspace(
         repo_root=repo_root.resolve(), path=path, branch=branch,
         base=context.base_commit, context=context,

@@ -238,10 +238,20 @@ def test_resume_revalidates_leftover_legacy_removal_bridge_record(monkeypatch, t
         "run_local_git",
         lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 0, stdout="", stderr=""),
     )
+    fetches = []
+    monkeypatch.setattr(
+        transaction,
+        "run_remote_git",
+        lambda repo_root, *args, **kwargs: fetches.append((repo_root, args, kwargs))
+        or subprocess.CompletedProcess(["git", *args], 0, stdout="", stderr=""),
+    )
 
     resumed = transaction.resume_workspace(root, path)
 
     assert resumed.context is record
+    assert fetches == [
+        (path, ("fetch", "--prune", "origin", "main"), {"auth": None, "check": True}),
+    ]
     assert record.metadata == {
         transaction._LEGACY_RESUME_METADATA_KEY: transaction._LEGACY_RESUME_METADATA_VALUE,
     }

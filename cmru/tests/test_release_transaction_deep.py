@@ -138,12 +138,56 @@ def test_resume_workspace_refuses_fetch_failure_before_reopening(tmp_path):
     base = _git(root, "rev-parse", "HEAD")
     retained = tmp_path / "legacy"
     _git(root, "worktree", "add", "-q", "-b", "cmru/release/legacy", str(retained), base)
+    legacy = transaction.ReleaseWorkspace(
+        repo_root=root, path=retained, branch="cmru/release/legacy", base=base,
+    )
+    transaction.write_release_progress(root, legacy, base)
+    shared = transaction._shared_worktree()
+    _top, common, _branch, _head = shared.discover_git_context(retained)
     try:
-        with pytest.raises(subprocess.CalledProcessError):
-            transaction.resume_workspace(root, retained)
+        for _ in range(2):
+            with pytest.raises(subprocess.CalledProcessError):
+                transaction.resume_workspace(root, retained)
+            assert shared.find_workspace(common, retained) is None
     finally:
         _git(root, "worktree", "remove", "--force", str(retained))
         _git(root, "branch", "-D", "cmru/release/legacy")
+
+
+def test_resume_retries_fetch_for_existing_legacy_record(tmp_path):
+    root = _repo(tmp_path)
+    base = _git(root, "rev-parse", "HEAD")
+    branch = "cmru/release/legacy-record"
+    retained = tmp_path / "legacy-record"
+    _git(root, "worktree", "add", "-q", "-b", branch, str(retained), base)
+    legacy = transaction.ReleaseWorkspace(
+        repo_root=root, path=retained, branch=branch, base=base,
+    )
+    transaction.write_release_progress(root, legacy, base)
+    shared = transaction._shared_worktree()
+    _top, common, _branch, _head = shared.discover_git_context(retained)
+    try:
+        # Model a legacy adoption record left by the previous fetch-after-adopt ordering.
+        adopted = shared.adopt_workspace(
+            root,
+            retained,
+            purpose="cmru-legacy",
+            labels={"cmru.purpose": "release"},
+            metadata={
+                transaction._LEGACY_RESUME_METADATA_KEY:
+                transaction._LEGACY_RESUME_METADATA_VALUE,
+            },
+            identity_path=retained,
+        )
+        for _ in range(2):
+            with pytest.raises(subprocess.CalledProcessError):
+                transaction.resume_workspace(root, retained)
+            record = shared.find_workspace(common, retained)
+            assert record is not None
+            assert record.workspace_id == adopted.workspace_id
+    finally:
+        _git(root, "worktree", "remove", "--force", str(retained))
+        _git(root, "branch", "-D", branch)
 
 
 def test_remove_legacy_workspace_forces_cleanup(monkeypatch, tmp_path):
