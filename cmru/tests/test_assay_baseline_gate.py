@@ -126,7 +126,7 @@ def test_assay_baseline_checker_matches_tag_and_rejects_mismatch(
     project = _repository(tmp_path, with_tag=True)
     _prepare_checker(monkeypatch, project)
 
-    assert check_assay_baseline.main() == 0
+    assert check_assay_baseline.main([]) == 0
     captured = capsys.readouterr()
     assert captured.out == "cmru-v1.1.0\n"
     assert "match nearest ancestor tag cmru-v1.1.0" in captured.err
@@ -135,7 +135,7 @@ def test_assay_baseline_checker_matches_tag_and_rejects_mismatch(
         '[lanes.cmru.judge]\nbase = "cmru-v1.0.0"\nsource_roots = ["src"]\n',
         encoding="utf-8",
     )
-    assert check_assay_baseline.main() == 1
+    assert check_assay_baseline.main([]) == 1
     assert (
         "does not match nearest ancestor CMRU release tag 'cmru-v1.1.0'"
         in capsys.readouterr().err
@@ -190,7 +190,7 @@ def test_assay_baseline_checker_uses_previous_tag_when_head_is_release_tagged(
     _git(tmp_path, "push", "--quiet", "origin", "refs/tags/cmru-v1.2.0")
     _prepare_checker(monkeypatch, project)
 
-    assert check_assay_baseline.main() == 0
+    assert check_assay_baseline.main([]) == 0
     captured = capsys.readouterr()
     assert captured.out == "cmru-v1.1.0\n"
     assert "match nearest ancestor tag cmru-v1.1.0" in captured.err
@@ -219,7 +219,7 @@ def test_assay_baseline_checker_uses_previous_tag_from_second_parent_on_tagged_m
     _git(tmp_path, "merge", "--quiet", "--no-ff", "--no-edit", "tagged-merge-incoming")
 
     _prepare_checker(monkeypatch, project)
-    assert check_assay_baseline.main() == 0
+    assert check_assay_baseline.main([]) == 0
     captured = capsys.readouterr()
     assert captured.out == "cmru-v1.1.0\n"
     assert "match nearest ancestor tag cmru-v1.1.0" in captured.err
@@ -227,7 +227,7 @@ def test_assay_baseline_checker_uses_previous_tag_from_second_parent_on_tagged_m
     _git(tmp_path, "tag", "cmru-v1.2.0")
     _git(tmp_path, "push", "--quiet", "origin", "refs/tags/cmru-v1.2.0")
     _prepare_checker(monkeypatch, project)
-    assert check_assay_baseline.main() == 0
+    assert check_assay_baseline.main([]) == 0
     captured = capsys.readouterr()
     assert captured.out == "cmru-v1.1.0\n"
     assert "match nearest ancestor tag cmru-v1.1.0" in captured.err
@@ -245,7 +245,7 @@ def test_assay_baseline_checker_refuses_a_moved_older_tag_ahead_of_published_bas
     )
     _prepare_checker(monkeypatch, project)
 
-    assert check_assay_baseline.main() == 1
+    assert check_assay_baseline.main([]) == 1
     error = capsys.readouterr().err
     assert "selected ancestor tag 'cmru-v1.0.0'" in error
     assert "verified published baseline 'cmru-v1.1.0'" in error
@@ -258,7 +258,7 @@ def test_assay_baseline_checker_refuses_when_origin_has_a_newer_unmerged_release
     _git(tmp_path, "push", "--quiet", "origin", "refs/tags/cmru-v9.0.0")
     _prepare_checker(monkeypatch, project)
 
-    assert check_assay_baseline.main() == 1
+    assert check_assay_baseline.main([]) == 1
     error = capsys.readouterr().err
     assert "selected ancestor tag 'cmru-v1.1.0'" in error
     assert "verified published baseline 'cmru-v9.0.0'" in error
@@ -272,7 +272,7 @@ def test_assay_baseline_checker_refuses_local_tag_commit_changed_from_origin(
     _git(tmp_path, "tag", "--force", "cmru-v1.1.0", docs_commit)
     _prepare_checker(monkeypatch, project)
 
-    assert check_assay_baseline.main() == 1
+    assert check_assay_baseline.main([]) == 1
     error = capsys.readouterr().err
     assert "selected tag 'cmru-v1.1.0' resolves locally" in error
     assert "origin publishes it at" in error
@@ -285,7 +285,7 @@ def test_assay_baseline_checker_refuses_older_tag_moved_to_head(
     _git(tmp_path, "tag", "--force", "cmru-v1.0.0", "HEAD")
     _prepare_checker(monkeypatch, project)
 
-    assert check_assay_baseline.main() == 1
+    assert check_assay_baseline.main([]) == 1
     error = capsys.readouterr().err
     assert "release tag at HEAD 'cmru-v1.0.0'" in error
     assert "origin publishes it at" in error
@@ -303,7 +303,7 @@ def test_assay_baseline_checker_checks_every_local_release_tag_at_head(
     assert facts["released_tag"] == "cmru-v1.2.0"
     assert facts["head_release_tags"] == ["cmru-v1.0.0", "cmru-v1.2.0"]
 
-    assert check_assay_baseline.main() == 1
+    assert check_assay_baseline.main([]) == 1
     error = capsys.readouterr().err
     assert "release tag at HEAD 'cmru-v1.0.0'" in error
     assert "origin publishes it at" in error
@@ -330,7 +330,7 @@ def test_assay_baseline_checker_skips_all_release_tags_at_head_for_previous_base
     assert facts["released_tag"] == "cmru-v1.2.0"
     assert facts["head_release_tags"] == ["cmru-v1.0.0", "cmru-v1.2.0"]
     assert facts["selected_tag"] == "cmru-v1.1.0"
-    assert check_assay_baseline.main() == 0
+    assert check_assay_baseline.main([]) == 0
     captured = capsys.readouterr()
     assert captured.out == "cmru-v1.1.0\n"
     assert "match nearest ancestor tag cmru-v1.1.0" in captured.err
@@ -357,7 +357,7 @@ def test_assay_baseline_checker_accepts_latest_lightweight_head_tag_when_describ
     assert facts["released_tag"] == "cmru-v1.2.0"
     assert facts["published_latest"] == "cmru-v1.3.0"
     assert facts["head_release_tags"] == ["cmru-v1.2.0", "cmru-v1.3.0"]
-    assert check_assay_baseline.main() == 0
+    assert check_assay_baseline.main([]) == 0
     captured = capsys.readouterr()
     assert captured.out == "cmru-v1.1.0\n"
     assert "match nearest ancestor tag cmru-v1.1.0" in captured.err
@@ -370,7 +370,7 @@ def test_assay_baseline_checker_refuses_release_tagged_root_without_previous_tag
     _git(tmp_path, "tag", "cmru-v1.0.0")
     monkeypatch.setattr(check_assay_baseline, "PROJECT_ROOT", project)
 
-    assert check_assay_baseline.main() == 1
+    assert check_assay_baseline.main([]) == 1
     error = capsys.readouterr().err
     assert "cannot resolve previous ancestor CMRU release tag" in error
 
@@ -382,7 +382,7 @@ def test_assay_baseline_checker_refuses_merge_whose_assay_first_parent_is_not_ta
     _merge_from(tmp_path, first_parent="main")
     _prepare_checker(monkeypatch, project)
 
-    assert check_assay_baseline.main() == 1
+    assert check_assay_baseline.main([]) == 1
     error = capsys.readouterr().err
     assert "Assay's effective base" in error
     assert "(first parent)" in error
@@ -397,7 +397,7 @@ def test_assay_baseline_checker_accepts_merge_whose_first_parent_is_tag(
     _merge_from(tmp_path, first_parent="cmru-v1.1.0")
     _prepare_checker(monkeypatch, project)
 
-    assert check_assay_baseline.main() == 0
+    assert check_assay_baseline.main([]) == 0
     captured = capsys.readouterr()
     assert captured.out == "cmru-v1.1.0\n"
     assert "first parent" not in captured.err
@@ -411,7 +411,7 @@ def test_assay_baseline_checker_accepts_merge_with_docs_only_first_parent_gap(
     _merge_from(tmp_path, first_parent=docs_parent)
     _prepare_checker(monkeypatch, project)
 
-    assert check_assay_baseline.main() == 0
+    assert check_assay_baseline.main([]) == 0
     captured = capsys.readouterr()
     assert captured.out == "cmru-v1.1.0\n"
     assert "source paths differ" not in captured.err
@@ -546,7 +546,7 @@ def test_assay_baseline_checker_refuses_shadowed_declared_tag_with_empty_stdout(
     assert resolved_declared != tag_commit
     _prepare_checker(monkeypatch, project)
 
-    assert check_assay_baseline.main() == 1
+    assert check_assay_baseline.main([]) == 1
     captured = capsys.readouterr()
     assert captured.out == ""
     assert "resolves to" in captured.err
@@ -559,7 +559,7 @@ def test_assay_baseline_checker_refuses_when_no_release_tag_exists(
     project = _repository(tmp_path, with_tag=False)
     monkeypatch.setattr(check_assay_baseline, "PROJECT_ROOT", project)
 
-    assert check_assay_baseline.main() == 1
+    assert check_assay_baseline.main([]) == 1
     error = capsys.readouterr().err
     assert "cannot resolve nearest ancestor CMRU release tag" in error
 
@@ -571,7 +571,7 @@ def test_assay_baseline_checker_refuses_missing_host_prepared_remote_facts(
     monkeypatch.setattr(check_assay_baseline, "PROJECT_ROOT", project)
     monkeypatch.delenv("CMRU_ASSAY_BASELINE_FACTS", raising=False)
 
-    assert check_assay_baseline.main() == 1
+    assert check_assay_baseline.main([]) == 1
     assert "host-prepared origin facts are missing" in capsys.readouterr().err
 
 
@@ -585,7 +585,7 @@ def test_assay_baseline_checker_refuses_remote_facts_from_another_head(
     _git(tmp_path, "add", "cmru/src/cmru/module.py")
     _git(tmp_path, "commit", "--quiet", "-m", "advance after baseline preparation")
 
-    assert check_assay_baseline.main() == 1
+    assert check_assay_baseline.main([]) == 1
     assert "facts refer to a different HEAD" in capsys.readouterr().err
 
 
