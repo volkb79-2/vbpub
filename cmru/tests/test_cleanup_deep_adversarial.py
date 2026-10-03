@@ -519,7 +519,9 @@ def test_project_cleanup_records_a_successfully_removed_tag_only_ref(monkeypatch
     assert outcomes["demo-v1.0.0"] is True
 
 
-def test_run_cleanup_plan_captures_declared_clean_step_and_generated_commit(monkeypatch, tmp_path):
+def test_run_cleanup_plan_captures_declared_clean_step_and_generated_commit(
+    monkeypatch, tmp_path, capsys,
+):
     project = cli.ProjectConfig(
         name="demo", env={}, steps={"clean": []}, prefix="demo-v",
         github_token="tok",
