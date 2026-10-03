@@ -70,6 +70,7 @@ SPEC §9.
 | RG-73 | an `ephemeral` environment cannot stand in for a per-worktree runner: literal `image`, and the judged worktree is not mounted at the image's canonical root | Major | OPEN 2026-10-03 |
 | RG-74 | post-merge trunk base (`HEAD^1`) and composite-member base propagation are consumer scripts (dstdns `gate-base.sh`), not run-gate derivations | Minor | OPEN 2026-10-03 |
 | RG-75 | no lane-scoped throwaway service (database): schema/mutation lanes hand-provision and tear down their own Postgres | Major | OPEN 2026-10-03 |
+| RG-76 | external-assay consumers restate judge command, pin and one lane block per assay lane (dstdns: 118 identical pin blocks); import lanes from `assay lanes --json` | Minor | OPEN 2026-10-03 |
 
 ---
 
@@ -5251,3 +5252,34 @@ reproduction of the SAME underlying defect goes here, not a new entry).
 **Spec owner:** SPEC §5 (execution contract), new subsection.
 
 **v8: absorb** (SPEC-V8 S16.4 ephemeral environments with `binds`; a lane-scoped Realization or `[testing.externals]`-style typed service is the natural home).
+
+## RG-76 — an external-assay consumer must restate the judge command, its pin and one lane block per assay lane: dstdns's `run-gate.toml` is ~70% boilerplate
+
+**Provenance:** dstdns tooling-boundary pass, 2026-10-03 (`dstdns/docs/proposals/TOOLING-BOUNDARY-2026-10.md` Q3). run-gate rev 46, assay 7.2.0.
+
+**Observed:**
+- dstdns's `run-gate.toml` has 2131 lines and 142 lanes. Of those, 118 are `kind = "assay"` lanes, and every one of them carries an identical `[lanes.X.pins.assay] version = "7.2.0", sha256 = "tools/assay/assay-7.2.0.pyz.sha256"` block.
+- 102 of them also carry `assay_command = ["python3", "tools/assay/assay-7.2.0.pyz"]`. The other 16 prefix that command with the same `env GIT_CONFIG_COUNT=1 ... safe.directory ...` triple.
+- The judge version string is repeated in more than 236 places, so a judge upgrade is a 236-site edit.
+- 69 lanes are mutation families (`<target>-r2-{compare,boolop,flips,falsy}`) that differ only in `assay_lane`, which already names a lane that `assay.toml` declares.
+- Per-package variables are listed twice: once in `required_env` and again in the environment's `forward_env` (`run-gate.toml:12-21`).
+- vbpub-internal projects avoid all of this through source mode (R-08: `assay_command` and `pins` omitted). External consumers cannot use source mode.
+
+**Why run-gate owns it:**
+- run-gate already reads `assay lanes --json` (RG-25/RG-26) to derive each lane's `base_source` and toolchain. The lane list itself is therefore derivable from the same document. A consumer restating it creates a second source of truth that drifts. dstdns keeps a meta-test, `tests/config/test_assay_pin_integrity.py`, just to hold the two in step.
+
+**Proposed contract:**
+- (a) A top-level `[assay]` table holding `command`, `pins` and `environment`, inherited by every `kind = "assay"` lane that does not override it.
+- (b) `[assay] import = "all" | [<glob>...]` auto-declares one `kind = "assay"` lane per lane that `assay lanes --json` reports. An explicit `[lanes.<n>]` may still override an imported lane by name. `--list` marks imported lanes as such.
+- (c) A lane's `required_env` is forwarded automatically in its environment; `forward_env` then becomes only the extra set.
+
+**Oracles:**
+- With (a) and (b), a fixture `assay.toml` with three lanes and a `run-gate.toml` holding only `[assay]` lists three runnable lanes, each verifying the single pin.
+- An explicit lane override wins.
+- A lane removed from `assay.toml` disappears from `--list` with no edit to `run-gate.toml`.
+- A `required_env` variable reaches the container without being listed in `forward_env`.
+- A controlled wrong implementation that imports lanes but skips pin verification for imported lanes must fail the first oracle (by tampering with the sha256 sidecar).
+
+**Spec owner:** SPEC R-06/R-08 (config schema), R-24 (required_env).
+
+**v8: absorb** (`[testing.judge]` already declares the judge once, S16.3; lane import from `assay lanes --json` belongs in S16.5/S16.7).
