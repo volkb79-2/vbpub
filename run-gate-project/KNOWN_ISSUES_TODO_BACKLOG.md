@@ -73,6 +73,7 @@ SPEC §9.
 | RG-76 | external-assay consumers restate judge command, pin and one lane block per assay lane (dstdns: 118 identical pin blocks); import lanes from `assay lanes --json` | Minor | OPEN 2026-10-03 |
 | RG-77 | the per-assay-lane `--state-dir` contract (RG-38) and its root-owned-parent repair (RG-49) are in no SPEC rule or skill, so consumers restate them in their own instruction files | Minor | OPEN 2026-10-03 |
 | RG-78 | adopt the ciu v8 closed exit table and explicit environment modes in run-gate now (backport, operator ruling D-654): lane exit passthrough overlaps the 2/3 refusal codes, and the built-in `host` environment is a container | Major | OPEN 2026-10-03 |
+| RG-79 | exec-mode container resolution treats the mere PRESENCE of a rendered `ciu.global.toml` in the judged worktree as "this worktree owns a runner": a stray render (`ciu render`, `ciu up --dry-run`) makes every exec lane refuse with exit 2 and a remedy that says to start a runner the project does not want | Major | OPEN 2026-10-03 |
 
 ---
 
@@ -5377,3 +5378,28 @@ reproduction of the SAME underlying defect goes here, not a new entry).
 **Amendment 2 (2026-10-03, dstdns D-658 rulings; SPEC-V8 draft.9 splits v8.0 from v8.1; still not built):** the closed exit table and the explicit modes stay **8.0** scope (the backport of D-654 is not delayed). Corrections to Amendment 1: a lock the gate cannot take is bounded by `--lock-wait D` (default 10 m), not `--admission-wait`, and expires as NOT_RUN/`lock-busy`; the NOT_RUN reason `no-headroom` and exit 4 as an admission refusal belong to **v8.1** (SPEC-V8 S21.4.6) and do not exist when admission is off; the closed reasons of 8.0 are `realness-mismatch`, `service-down`, `environment-down`, `environment-mismatch`, `env-missing`, `external-missing`, `external-down`, `dirty-tree`, `lock-busy`, `no-base`, `judge-floor`, `judge-digest`, `provenance-mismatch` (SPEC-V8 Appendix E). Oracles that exercise admission move to the v8.1 parity set.
 
 **Amendment 3 (2026-10-03, dstdns D-661; SPEC-V8 draft.10 S21; still not built):** Amendment 2 moved the NOT_RUN reason `no-headroom` to v8.1; with the count mode in 8.0 it is an **8.0** reason: a lane whose ticket waits past `--admission-wait` (default 10 m), or whose published limit is unreadable under `unreadable_policy = refuse`, is NOT_RUN/`no-headroom`, **exit 3** in the gate's closed table (the NOT_RUN class; 4 stays BUDGET_EXCEEDED). The closed reasons of 8.0 are therefore `realness-mismatch`, `service-down`, `environment-down`, `environment-mismatch`, `env-missing`, `external-missing`, `external-down`, `dirty-tree`, `no-headroom`, `lock-busy`, `no-base`, `judge-floor`, `judge-digest`, `provenance-mismatch` (SPEC-V8 Appendix E, `not_run_reasons`). Exit code 4 for `ciu up`/`ciu dev` as an admission refusal and the stack placeholder remain v8.1 (S21.4.4, S21.4.6). The flags `--admission-wait D` and `--override-admission` belong to `ciu gate` in 8.0 and are accepted and ignored with one notice while admission is disabled (S21.1.3), so a pointer or CI line that passes them never breaks.
+
+## RG-79 — exec-mode container resolution keys on the presence of a rendered `ciu.global.toml` in the judged worktree, so a stray render breaks every exec lane
+
+**Provenance:** dstdns P240 carve (SCHEMA-LANE-SELF-DERIVE), 2026-10-03; dstdns D-664 recorded the trap. run-gate rev 46, ciu 7.15.1. CHANGES.md checked: RG-24 introduced the rule, nothing since changes it.
+
+**Observed (source-grounded, `resolve_container_name`, `run-gate.py` ~7729):**
+- `worktree_toml = worktree / "ciu.global.toml"`; `if worktree_toml.is_file(): global_toml = worktree_toml`, else the repo's. The docstring says "a worktree that is not itself an adopted instance falls back", but the test applied is file presence, not adoption.
+- `ciu.global.toml` is a gitignored RENDERED file. `ciu render`, `ciu up --dir ... --dry-run` and a half-finished `ciu up` all write it into the worktree they run in. A worktree judged in the project's shared runner (dstdns Mode A, the default) then resolves `<project>-<tag>-test-runner` from the worktree's own render, names a container that was never started, and the lane refuses with exit 2.
+- The refusal's remedy (`ciu_remedy`: "'ciu render' if stale, then 'ciu up'") is wrong for that project: it prescribes starting a per-worktree stack that the project deliberately does not run (host capped at 2-3 stacks).
+- `ciu.worktree-instance.json` cannot be the discriminator: `ciu worktree create` writes it for every managed worktree, Mode A included.
+
+**Why run-gate owns it:** the which-config choice is run-gate's own rule (RG-24); a consumer cannot influence it except by deleting a file that a ciu verb is entitled to write.
+
+**Proposed contract:**
+- An environment key (name open, for example `runner_scope = "repo" | "worktree"`) states which tree owns the runner. Default stays today's behavior; dstdns declares `repo` until it adopts per-worktree runners (RG-73). Explicit declaration, not presence sniffing.
+- Whatever the scope, when the resolved container is not running and the config it was derived from sits in the judged worktree while another candidate exists (repo-scoped file present), the refusal NAMES the file and both remedies (start that runner, or delete the stray render / declare `repo` scope). It never prescribes only `ciu up`.
+
+**Oracles:**
+- A lane judged with `--worktree W`, where W holds a rendered `ciu.global.toml` and `runner_scope = "repo"`, execs into the repo-resolved container; `--dry-run` shows its name and the source line names the repo file.
+- Same W with the default scope and a non-running derived container refuses with exit 2, and the text contains the full path of W's `ciu.global.toml` and the word `delete` or `scope`.
+- A controlled wrong implementation that silently falls back to the repo config whenever the derived container is not running must fail a third oracle: W declares scope `worktree` and its runner is down, and the lane must still refuse.
+
+**Spec owner:** SPEC (exec-mode container resolution, RG-24 rule).
+
+**v8: absorb** (explicit environment modes, RG-78).
