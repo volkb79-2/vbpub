@@ -6095,3 +6095,38 @@ signal. Removed the stale test in
 passed 51/51 locally. This was a test-only correction, not a registered
 green gate. Exact R0/R1, R3, doctor, live P6 scope/restore probes, and Sol
 round-7 fix-verification remain pending on the resulting candidate.
+
+### RW-415 — 2026-10-03 08:18:12Z — P1 Sol fix-verification ACCEPT; checkpoint before provisional merge
+
+Fresh Sol xhigh post-round-6 fix-verification ACCEPTED the P1 candidate for
+provisional integration under RW-381 only; this is not numbered round 7 and
+does not authorize release, installation, publication, or singleton
+activation. The reviewed candidate remains `8e6b2475d0c4df5c9f15d0be6c29143ea21b7adb`
+(tree `20c12dbe3347d8910f77f28236667ff9437a84dc`). The original review report
+and separate ACCEPT addendum are preserved under
+`scripts/cgroup-profiler/nyxloom-trove/reports/` in that candidate.
+
+The addendum closes the earlier BLOCKED report's two evidence concerns:
+(1) the registered R2/full-gate argv passes request base
+`e5e9b95c5ac8be3452c93f1066f9436347f862fd`; Assay validates and uses that
+resolved OID for its source diff, and `git merge-base` agrees. The plan JSON
+omitting a base field is an Assay observability follow-up, not a P1 blocker;
+the reviewed plan found 1,161 candidates across the nine in-scope modules.
+(2) the reviewer built `cgprofile:local` from this exact candidate and
+confirmed its OCI revision, then obtained current-image `ctl version` and a
+real 27-sample summary. The isolated daemon ran under the authored
+`cgprofile.slice`; the measured workload was a separate 3-CPU container under
+`dev-gates.slice`. Both used private namespaces and the workload ran alone
+while measured. Exact commands, host readbacks, outputs, and the corrected
+CIU identity-record description are in the addendum. Only the two uniquely
+named reviewer containers were stopped and removed.
+
+The summary probe reported DAMON unavailable (`no pids to monitor yet`, zero
+DAMON samples). It is functional live-probe evidence, **not** DAMON overhead
+measurement; P3 remains open. The previously recorded exact-tip R0/R1 (2,160
+tests; 100% line and branch coverage), R3 (7/7 canaries rejected), and doctor
+results predate this review-record checkpoint. Commit the reports and this
+ruling, then rerun R0/R1, R3, and doctor on the resulting exact tip. If all
+remain green, P1 meets RW-381's provisional-merge bar; current-tree R2 and the
+registered full gate remain release holds to run from a separate quiet
+worktree, and P3 DAMON overhead remains a wave closeout requirement.
