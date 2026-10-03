@@ -486,6 +486,7 @@ def test_project_cleanup_plan_does_not_delete_tags_added_after_preview(monkeypat
     assert deleted_local_tags == [
         ("show-ref", "--hash", "--verify", "refs/tags/demo-v1.0.0"),
         ("update-ref", "-d", "refs/tags/demo-v1.0.0", "b" * 40),
+        ("show-ref", "--hash", "--verify", "refs/tags/demo-v1.0.0"),
     ]
     assert outcomes["demo-v1.0.0"] is False
 
