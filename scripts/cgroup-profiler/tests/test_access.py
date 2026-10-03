@@ -126,10 +126,15 @@ class TestVerifySystemdSlice:
         ) is False
 
     @pytest.mark.parametrize(("unit", "path"), [
+        (None, "/dev.slice/dev-gates.slice"),
+        (123, "/dev.slice/dev-gates.slice"),
+        ("dev-gates", "/dev.slice/dev-gates"),
         ("-bad.slice", "/dev.slice/-bad.slice"),
         ("bad\x00.slice", "/dev.slice/bad.slice"),
         ("bad slice.slice", "/dev.slice/bad.slice"),
         ("dev-gates.slice", "relative"),
+        ("dev-gates.slice", "/dev.slice/bad\x00.slice"),
+        ("dev-gates.slice", "/dev.slice/bad\n.slice"),
         ("dev-gates.slice", "/dev.slice//bad.slice"),
         ("dev-gates.slice", "/dev.slice/../bad.slice"),
         ("dev/child.slice", "/dev.slice/dev-child.slice"),
