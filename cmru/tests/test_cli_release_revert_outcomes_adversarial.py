@@ -6,12 +6,13 @@ from cmru import cli, transaction
 
 
 @pytest.fixture(autouse=True)
-def fake_git_family(monkeypatch):
+def fake_release_preflight(monkeypatch):
     monkeypatch.setattr(
         cli.transaction,
         "project_git_family_groups",
         lambda root, projects: {root: list(projects)},
     )
+    monkeypatch.setattr(cli, "_read_origin_tag_refs", lambda *_args, **_kwargs: {})
 
 
 def _loaded(tmp_path):

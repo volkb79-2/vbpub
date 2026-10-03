@@ -22,6 +22,11 @@ import pytest
 from cmru import cli, transaction, version
 
 
+@pytest.fixture(autouse=True)
+def empty_origin_tag_inventory(monkeypatch):
+    monkeypatch.setattr(cli, "_read_origin_tag_refs", lambda *_args, **_kwargs: {})
+
+
 def _config(tmp_path):
     alpha = cli.ProjectConfig("alpha", {}, {}, prefix="alpha-v", github_token="token")
     beta = cli.ProjectConfig("beta", {}, {}, prefix="beta-v", github_token="token")

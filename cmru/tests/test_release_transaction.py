@@ -116,6 +116,7 @@ def mocked_invocation_context(monkeypatch):
         "project_git_family_groups",
         lambda root, projects: {root: list(projects)},
     )
+    monkeypatch.setattr(cli, "_read_origin_tag_refs", lambda *_args, **_kwargs: {})
 
 
 def test_copy_secret_overlays_preserves_root_and_project_scoped_credentials(tmp_path):
