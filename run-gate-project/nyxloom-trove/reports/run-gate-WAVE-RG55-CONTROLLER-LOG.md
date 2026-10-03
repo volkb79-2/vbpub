@@ -6130,3 +6130,38 @@ ruling, then rerun R0/R1, R3, and doctor on the resulting exact tip. If all
 remain green, P1 meets RW-381's provisional-merge bar; current-tree R2 and the
 registered full gate remain release holds to run from a separate quiet
 worktree, and P3 DAMON overhead remains a wave closeout requirement.
+
+### RW-416 — 2026-10-03 08:59:26Z — reject the merge-topology P1 R2 receipt; judge the single-parent tree
+
+The registered R2 that ran at P1 merge commit
+`1832ea8669a22c84fc8425ce1d49aef5345c545c` is **not qualifying evidence**.
+Although the run-gate invocation supplied request base
+`e5e9b95c5ac8be3452c93f1066f9436347f862fd`, Assay resolved
+`d58b01ca7ccf864f45665e7f0bb0b97dc2d53107` as `first-parent`, so the plan
+contained only five candidates and all five were killed. The required
+request-base plan is 1,161 candidates across nine P1 modules. The cause is
+commit topology: this merge commit has two parents, and Assay's first-parent
+resolution takes precedence over the supplied request base. The short gates
+on the merge tree do not repair this scope mismatch; do not count this R2
+PASS toward release.
+
+The reviewed P1 content is unchanged in single-parent candidate
+`bf7dc95fb47356ef527db08077788fe22a5a3b0b` (tree
+`dbd217b855c0bcc67ad3558b61b71c44ff1acb69`, parent
+`8e6b2475d0c4df5c9f15d0be6c29143ea21b7adb`). A fresh plan from that exact
+tree with explicit request base `e5e9b95c5ac8be3452c93f1066f9436347f862fd`
+returned 1,161 candidates, two workers, and a 600-second per-candidate
+ceiling. The registered composite `gate` was launched there at 08:56:12Z;
+the first 90-second check found its R0/R1 container
+`cgprofile-gate-657880-1791017772` active under loaded `dev-gates.slice`,
+with `NanoCpus=3000000000`. Host memory PSI `full avg10` was 0.01. Historical
+P1 throughput suggests roughly 4–5 hours for the mutation portion; this is
+an estimate, not a deadline guarantee. The declared R2 window remains 24h;
+the per-mutant ceiling's theoretical aggregate exceeds that window, so an
+expiry must be reported as incomplete, never as a verdict.
+
+The tree and explicit base must remain fixed through this run. The earlier
+merge-commit verdict remains preserved for diagnosis, but its five-candidate
+`.assay` records are not reused as resume evidence for this 1,161-candidate
+single-parent judgment. P3's DAMON overhead measurement and P6's own
+base-scoped R2 remain separate closeout work.
