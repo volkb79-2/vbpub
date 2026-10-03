@@ -6222,3 +6222,30 @@ reported at `access.py:235` was killed by a manual local mutation of that
 expression against the current tests. Preserve the campaign record and
 resolve this test/snapshot discrepancy after the next scheduled progress read;
 do not reinterpret the live campaign or mutate its candidate tree.
+
+### RW-419 — 2026-10-03 22:35:31Z — P1 R2 near completion; main advanced during the run
+
+The exact judged worktree remains clean at
+`bf7dc95fb47356ef527db08077788fe22a5a3b0b`. At this check, its exact
+container `run-gate-vbpub-r2-659999-1791017899` was still running under
+`dev-gates.slice` at the required 3-CPU cap. The latest progress record was
+candidate 1,148/1,161 (killed); the preceding two were also killed. Thirteen
+candidates remained. At the observed ~48 seconds per candidate, estimated
+completion was around 22:45Z, subject to final-gate overhead. This was one
+progress check after the 16:00Z minimum interval; do not re-read before the
+estimated completion window unless an expected error justifies it. No final
+R2 verdict was available yet.
+
+Since RW-418, local `main` advanced from `565f3ba8` to
+`2c1c1f573366b908214b84be907f4513fd9203d9` (115 commits ahead of origin) and
+is clean. The intervening commits are chiefly dstdns CIU v8 D-658..D-661
+documents and backlog updates, including run-gate RG-67/78 amendments and
+cgprofile CP-15/16. The exact P1 judged worktree did not move. Reconcile
+these newer main commits when integrating P1; preserve their work.
+
+The separate survivor-fix worktree remains at
+`e2454ffa3ec206d093dd4648db50b289e266e400` with uncommitted oracle changes
+in placement, liveness, and their tests. The new check-semantics and journal
+tests were verified green before the additional edge-case edits; the latter
+have not yet been run because no fresh safe PSI check was taken. No merge,
+release, or P6 mutation campaign was started.
