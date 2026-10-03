@@ -573,7 +573,7 @@ def test_run_cleanup_plan_captures_declared_clean_step_and_generated_commit(
         ("package", "demo-container", False),
     ]
     output = capsys.readouterr().out
-    assert "CMRU_VERSION=1.0.0 is a preview estimate" in output
+    assert "CMRU_VERSION=2.0.0 is a preview estimate" in output
     assert "re-resolved from surviving Releases after confirmation" in output
 
 
