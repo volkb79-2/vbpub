@@ -54,7 +54,7 @@ def _fixture(tmp_path: Path, monkeypatch):
     git = _AssayGit(repo)
     calls = []
 
-    def load_components(_project_root):
+    def load_components():
         def build_facts(repo_root, project_root, *, git_auth, assay_git):
             assert repo_root == repo
             assert project_root == project
