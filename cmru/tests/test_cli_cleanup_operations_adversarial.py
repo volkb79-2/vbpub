@@ -69,7 +69,7 @@ def test_package_deletion_failures_are_safe_and_dry_run_has_no_http(monkeypatch,
 
     monkeypatch.setattr(cli, "http_request", lambda *args: (404, "gone", {}))
     cli.delete_package("o", "p", "t", "org", False)
-    assert "not found" in capsys.readouterr().out
+    assert "the package may be absent or inaccessible, so deletion was not confirmed" in capsys.readouterr().out
     monkeypatch.setattr(cli, "http_request", lambda *args: (500, "bad", {}))
     with pytest.raises(RuntimeError, match="Failed to delete p version 9"):
         cli.delete_package_version("o", "p", "t", 9, "org", False)
