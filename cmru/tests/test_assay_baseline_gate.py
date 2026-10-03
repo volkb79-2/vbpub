@@ -392,9 +392,9 @@ def test_assay_baseline_checker_refuses_local_tag_commit_changed_from_origin(
     monkeypatch, tmp_path, capsys,
 ):
     project = _repository(tmp_path, with_tag=True)
+    _prepare_checker(monkeypatch, project)
     docs_commit = _git(tmp_path, "rev-parse", "HEAD^").stdout.strip()
     _git(tmp_path, "tag", "--force", "cmru-v1.1.0", docs_commit)
-    _prepare_checker(monkeypatch, project)
 
     assert check_assay_baseline.main([]) == 1
     error = capsys.readouterr().err
