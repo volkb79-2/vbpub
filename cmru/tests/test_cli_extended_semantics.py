@@ -686,6 +686,10 @@ def _minimal_transaction_context(monkeypatch, tmp_path, *, record=None, common=N
         record = SimpleNamespace(
             purpose="cmru-legacy", branch="cmru-release-child", worktree_path=child,
             source_git_root=source, workspace_id="workspace-1", base_commit="a" * 40,
+            metadata={
+                transaction._LEGACY_RESUME_METADATA_KEY:
+                    transaction._LEGACY_RESUME_METADATA_VALUE,
+            },
         )
 
     class Shared:
@@ -710,10 +714,15 @@ def _minimal_transaction_context(monkeypatch, tmp_path, *, record=None, common=N
     return source, child
 
 
-def test_transaction_child_accepts_legacy_record_and_rejects_source_root_mismatch(
+def test_transaction_child_accepts_validated_legacy_record_and_rejects_source_root_mismatch(
     monkeypatch, tmp_path,
 ):
     source, child = _minimal_transaction_context(monkeypatch, tmp_path)
+    monkeypatch.setattr(transaction, "read_release_progress", lambda *_args: "a" * 40)
+    monkeypatch.setattr(
+        transaction, "run_local_git",
+        lambda *_args, **_kwargs: SimpleNamespace(returncode=0, stdout="", stderr=""),
+    )
     assert transaction.is_transaction_child(child) is True
 
     wrong = tmp_path / "other-source"
@@ -723,6 +732,10 @@ def test_transaction_child_accepts_legacy_record_and_rejects_source_root_mismatc
             purpose="cmru-legacy", branch="cmru-release-child",
             worktree_path=child, source_git_root=wrong, workspace_id="workspace-1",
             base_commit="a" * 40,
+            metadata={
+                transaction._LEGACY_RESUME_METADATA_KEY:
+                    transaction._LEGACY_RESUME_METADATA_VALUE,
+            },
         ),
     )
     with pytest.raises(RuntimeError, match="shared transaction record has a different source root"):
