@@ -1537,7 +1537,7 @@ remember that path. README, DESIGN-GUIDE, CONSUMERS, and SPEC carry the same rec
 **Reported:** 2026-10-03, v8 round-4 third-party review (T4-05, T4-07), filed by the v8 spec writer (dstdns D-658). **Severity:** High (security: a root-level trust path). **Related:** KI-24 (the feature), ciu CIU-93/CIU-122/CIU-123, SPEC-V8 draft.9 S7.2.4 and `ciu/docs/CIU-HOST-ENROLLMENT-PROPOSAL.md` rev 3 §11 (the v8 contract).
 
 **Observed (source, `src/cmru/templates/get.py.tmpl`).**
-- `curl … | sudo python3 -` gives the downloaded bytes root execution authority. The SHA-256 sidecar and the optional minisign check run **inside** those bytes and cover the later bundle, not the verifier itself (`download_and_verify`, `:498-525`).
+- `curl … | sudo python3 -` gives the downloaded bytes root execution authority. The SHA-256 sidecar and the optional minisign check run **inside** those bytes and cover the later bundle, not the verifier itself (`download_and_verify`, `:491-525`).
 - `--manifest-pubkey` absent → "skipping minisign verification" (`:522-524`): an unsigned install proceeds.
 - `--version` is optional; without it `resolve_latest_tag` runs (`:1195-1205`, `:1262`), so the printed version-pinned URL authenticates neither the selected wheel nor the installed result. `_install_wheels` installs into a private venv and the subcommand defines no stable launcher path.
 
