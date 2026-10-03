@@ -1997,6 +1997,128 @@ def test_write_and_read_release_scope_round_trips():
         assert transaction.read_release_scope(h.repo_root, workspace) == ["ciu", "cmru"]
 
 
+def test_release_tag_snapshot_round_trips_is_immutable_and_is_forgotten():
+    with _OriginAndClone() as h:
+        workspace_path = h.clone_workspace("cmru/release/tag-snapshot")
+        base = _git("rev-parse", "HEAD", cwd=workspace_path)
+        workspace = transaction.ReleaseWorkspace(
+            h.repo_root, workspace_path, "cmru/release/tag-snapshot", base,
+        )
+        snapshot = {
+            "refs/tags/demo-v1": "a" * 40,
+            "refs/tags/demo-v2^{}": "b" * 40,
+        }
+
+        assert transaction.read_release_tag_snapshot(h.repo_root, workspace) is None
+        transaction.write_release_tag_snapshot(h.repo_root, workspace, snapshot)
+        assert transaction.read_release_tag_snapshot(h.repo_root, workspace) == snapshot
+        with pytest.raises(RuntimeError, match="release tag snapshot already exists"):
+            transaction.write_release_tag_snapshot(h.repo_root, workspace, {})
+
+        attempts = {"refs/tags/demo-v3": "c" * 40}
+        transaction.write_release_tag_attempts(h.repo_root, workspace, attempts)
+        assert transaction.read_release_tag_attempts(h.repo_root, workspace) == attempts
+        transaction.write_release_tag_attempts(h.repo_root, workspace, attempts)
+        with pytest.raises(RuntimeError, match="changed after a prior push attempt"):
+            transaction.write_release_tag_attempts(
+                h.repo_root, workspace, {"refs/tags/demo-v3": "d" * 40},
+            )
+
+        transaction.forget_release_scope(h.repo_root, workspace)
+        assert transaction.read_release_tag_snapshot(h.repo_root, workspace) is None
+        assert transaction.read_release_tag_attempts(h.repo_root, workspace) is None
+
+
+@pytest.mark.parametrize(
+    "snapshot",
+    [
+        {"refs/heads/main": "a" * 40},
+        {"refs/tags/": "a" * 40},
+        {"refs/tags/demo tag": "a" * 40},
+        {"refs/tags/demo?name": "a" * 40},
+        {"refs/tags/demo-v1": "bad"},
+    ],
+)
+def test_write_release_tag_snapshot_rejects_invalid_ref_facts(snapshot):
+    with _OriginAndClone() as h:
+        workspace_path = h.clone_workspace("cmru/release/bad-tag-snapshot")
+        base = _git("rev-parse", "HEAD", cwd=workspace_path)
+        workspace = transaction.ReleaseWorkspace(
+            h.repo_root, workspace_path, "cmru/release/bad-tag-snapshot", base,
+        )
+        with pytest.raises(RuntimeError, match="origin tag snapshot contains a malformed ref record"):
+            transaction.write_release_tag_snapshot(h.repo_root, workspace, snapshot)
+
+
+@pytest.mark.parametrize(
+    "payload,message",
+    [
+        ("not-json", "cannot read release tag snapshot"),
+        ("[]", "release tag snapshot is malformed"),
+        ('{"refs/heads/main":"' + "a" * 40 + '"}', "release tag snapshot is malformed"),
+        ('{"refs/tags/demo-v1":"bad"}', "release tag snapshot is malformed"),
+        ('{"refs/tags/demo-v1":"' + "a" * 40 + '","refs/tags/demo-v1":"' + "b" * 40 + '"}', "cannot read release tag snapshot"),
+    ],
+)
+def test_read_release_tag_snapshot_refuses_corrupt_sidecars(payload, message):
+    with _OriginAndClone() as h:
+        workspace_path = h.clone_workspace("cmru/release/corrupt-tag-snapshot")
+        base = _git("rev-parse", "HEAD", cwd=workspace_path)
+        workspace = transaction.ReleaseWorkspace(
+            h.repo_root, workspace_path, "cmru/release/corrupt-tag-snapshot", base,
+        )
+        path = transaction._scope_dir(h.repo_root) / f"{transaction._release_token(workspace)}.tags.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(payload, encoding="utf-8")
+        with pytest.raises(RuntimeError, match=message):
+            transaction.read_release_tag_snapshot(h.repo_root, workspace)
+
+
+def test_read_release_tag_snapshot_refuses_nonregular_sidecar():
+    with _OriginAndClone() as h:
+        workspace_path = h.clone_workspace("cmru/release/nonregular-tag-snapshot")
+        base = _git("rev-parse", "HEAD", cwd=workspace_path)
+        workspace = transaction.ReleaseWorkspace(
+            h.repo_root, workspace_path, "cmru/release/nonregular-tag-snapshot", base,
+        )
+        path = transaction._scope_dir(h.repo_root) / f"{transaction._release_token(workspace)}.tags.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.mkdir()
+        with pytest.raises(RuntimeError, match="release tag snapshot is not a regular file"):
+            transaction.read_release_tag_snapshot(h.repo_root, workspace)
+
+
+def test_parse_ls_remote_refs_accepts_valid_rows_and_rejects_ambiguous_output():
+    assert transaction.parse_ls_remote_refs(
+        "\n" + "a" * 40 + "\trefs/tags/demo-v1\n"
+        + "b" * 40 + "\trefs/tags/demo-v2^{}\n",
+        namespace="refs/tags/", description="origin tag lookup",
+    ) == {
+        "refs/tags/demo-v1": "a" * 40,
+        "refs/tags/demo-v2^{}": "b" * 40,
+    }
+    assert transaction.parse_ls_remote_refs(
+        "c" * 40 + "\trefs/heads/main\n",
+        namespace="refs/heads/", description="origin branch lookup",
+    ) == {"refs/heads/main": "c" * 40}
+
+    for output, namespace in (
+        ("malformed row", "refs/heads/"),
+        ("bad\trefs/heads/main", "refs/heads/"),
+        ("a" * 40 + "\trefs/tags/demo-v1", "refs/heads/"),
+        ("a" * 40 + "\trefs/heads/main^{}", "refs/heads/"),
+        ("a" * 40 + "\trefs/tags/^{}", "refs/tags/"),
+        ("a" * 40 + "\trefs/tags/bad?name", "refs/tags/"),
+        ("a" * 40 + "\trefs/tags/name..part", "refs/tags/"),
+        ("a" * 40 + "\trefs/heads/main.lock", "refs/heads/"),
+        ("a" * 40 + "\trefs/tags/demo-v1\n" + "a" * 40 + "\trefs/tags/demo-v1", "refs/tags/"),
+    ):
+        with pytest.raises(RuntimeError, match="malformed ref record|duplicate ref record"):
+            transaction.parse_ls_remote_refs(
+                output, namespace=namespace, description="origin ref lookup",
+            )
+
+
 def test_read_release_scope_for_path_uses_the_candidate_git_family():
     with _OriginAndClone() as h:
         branch = "cmru-release-20260930_120000-demo-abcdef"
@@ -2284,6 +2406,56 @@ def test_release_projects_sequentially_lets_a_later_project_see_an_earlier_ones_
         )
         assert beta_file.returncode == 0
         assert "alpha-v0.1.0" in _git("tag", "--list", "alpha-v*", cwd=h.origin)
+
+
+def test_release_stops_before_publisher_when_release_tag_push_fails(monkeypatch):
+    with _OriginAndClone() as h:
+        branch = "cmru/release/tag-push-failure"
+        workspace_path = h.clone_workspace(branch)
+        (workspace_path / "alpha").mkdir()
+        (workspace_path / "alpha" / "feature.txt").write_text("candidate\n")
+        _git("add", "alpha/feature.txt", cwd=workspace_path)
+        _git("commit", "-q", "-m", "feat: alpha candidate", cwd=workspace_path)
+        base = _git("rev-parse", "HEAD", cwd=workspace_path)
+        workspace = transaction.ReleaseWorkspace(h.repo_root, workspace_path, branch, base)
+        project = _seq_project(
+            "alpha", prefix="alpha-v", strategy="scm",
+            steps={
+                "run-tests": [cli.Command(label="gate", argv=["true"], cwd=".")],
+                "build": [cli.Command(label="build", argv=["true"], cwd=".")],
+                "push": [cli.Command(label="push", argv=["true"], cwd=".")],
+            },
+        )
+        step_calls = []
+        monkeypatch.setattr(
+            cli, "run_project_step",
+            lambda project, step, _root, _logs: step_calls.append((project.name, step)),
+        )
+
+        real_remote_git = cli.run_remote_git
+
+        def fail_tag_push(root, *args, **kwargs):
+            if args[:2] == ("push", "origin"):
+                assert args == ("push", "origin", "alpha-v0.1.0")
+                return SimpleNamespace(returncode=1, stdout="", stderr="transport failed")
+            return real_remote_git(root, *args, **kwargs)
+
+        monkeypatch.setattr(cli, "run_remote_git", fail_tag_push)
+        with pytest.raises(RuntimeError, match="stopped before build or publish"):
+            cli._release_projects_sequentially(
+                workspace_path,
+                {"alpha": project},
+                workspace,
+                ["alpha"],
+                github_config=_github_config(),
+                env_config=cli.ReleaseEnvConfig({}, None),
+            )
+
+        assert step_calls == [("alpha", "run-tests")]
+        assert _git("tag", "--list", "alpha-v0.1.0", cwd=workspace_path) == ""
+        remote_tags = _git("ls-remote", "--tags", "origin", "refs/tags/alpha-v0.1.0", cwd=workspace_path)
+        assert remote_tags == ""
+        assert _git("rev-parse", "main", cwd=h.origin) == _git("rev-parse", "main", cwd=h.repo_root)
 
 
 def test_release_projects_sequentially_checkpoints_only_up_to_the_last_success():
@@ -2645,6 +2817,36 @@ def test_abandon_workspace_removes_worktree_branch_backup_and_scope():
         remote_branches = _git("ls-remote", "--heads", "origin", cwd=h.repo_root)
         assert "cmru/release/def" not in remote_branches
         assert transaction.read_release_scope(h.repo_root, workspace) is None
+
+
+def test_abandon_workspace_removes_only_recorded_local_release_tag_attempt():
+    with _OriginAndClone() as h:
+        workspace_path = h.add_worktree("cmru/release/local-tag-cleanup")
+        base = _git("rev-parse", "HEAD", cwd=workspace_path)
+        workspace = transaction.ReleaseWorkspace(
+            h.repo_root, workspace_path, "cmru/release/local-tag-cleanup", base,
+        )
+        tag_ref = "refs/tags/alpha-v9"
+        _git("tag", "alpha-v9", cwd=workspace_path)
+        tag_oid = _git("rev-parse", tag_ref, cwd=workspace_path)
+        transaction.write_release_scope(h.repo_root, workspace, ["alpha"])
+        transaction.write_release_tag_snapshot(h.repo_root, workspace, {})
+        transaction.write_release_tag_attempts(h.repo_root, workspace, {tag_ref: tag_oid})
+        transaction.push_backup_branch(workspace)
+
+        transaction.abandon_workspace(
+            h.repo_root,
+            workspace,
+            expected_remote_candidate_oid=_git("rev-parse", "HEAD", cwd=workspace_path),
+            expected_remote_tag_refs={},
+            release_tag_prefixes=("alpha-v",),
+            expected_local_tag_refs={tag_ref: tag_oid},
+            local_tags_to_remove={tag_ref: tag_oid},
+        )
+
+        assert _git("show-ref", "--verify", tag_ref, cwd=h.repo_root, check=False) == ""
+        assert not workspace_path.exists()
+        assert transaction.read_release_tag_attempts(h.repo_root, workspace) is None
 
 
 

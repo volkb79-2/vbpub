@@ -113,8 +113,7 @@ exec /opt/tester-venv/bin/python tools/mutation_campaign.py \
     --progress .assay/progress-mutation-cmru.jsonl \
     --require-candidates --resume -- \
     env PYTHONPATH=src:../libraries/cli-extended/src:../libraries/worktree/src PYTHONDONTWRITEBYTECODE=1 \
-    /opt/tester-venv/bin/python -m pytest tests -q --maxfail=1 \
-    --cov=src/cmru --cov-branch --cov-fail-under=100 --cov-report=json:coverage.json
+    /opt/tester-venv/bin/python -m pytest tests -q --maxfail=1
 ''',
 ]
 budget = "7h"

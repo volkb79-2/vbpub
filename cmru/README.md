@@ -127,8 +127,20 @@ after confirmation instead of rediscovering targets, so an asset that appears or
 policy while the prompt is open is not added without a new preview. For each Git tag, it also
 captures the exact local and remote object IDs and deletes only refs that still point to those
 objects when confirmation is applied. A tag created after the preview or retargeted meanwhile
-is left for a later preview. A declared `steps.clean`
-and its generated-file commit are included in the same plan. If the step changes files, CMRU
+is left for a later preview. Before deleting a GitHub Release record, CMRU re-fetches its
+captured Release ID and skips it if the tag, update time, asset inventory, or displayed eligibility
+changed. Before deleting a GHCR version, CMRU re-fetches its exact ID and skips it if its update
+time or container tag set changed, or it no longer qualifies. If CMRU skips a Release, it also
+keeps that Release's Git tag. Whole-package deletion is planned only for a package CMRU can read
+during the preview; CMRU re-fetches its ID before deletion and skips if that ID changed. A GitHub
+404 for a package or version means it may be absent or inaccessible, so CMRU reports that it
+cannot verify cleanup and does not certify absence. The `ghcr_packages = ["*"]` selector lists
+packages visible to the configured GitHub credential; it cannot include packages that credential
+cannot read. The GitHub whole-package delete endpoint is name-addressed, so this identity recheck
+is immediately before the request rather than an atomic compare-and-delete. A declared `steps.clean` and its
+generated-file commit are included in the same plan. The preview's `CMRU_VERSION` is an estimate;
+after confirmation, the clean step receives the highest-semver Release that actually survived
+the applied actions. If the step changes files, CMRU
 commits them even when no release tag was deleted, staging only paths that became dirty during
 the step; paths already dirty when the confirmed plan starts remain outside it. Cleanup does not
 remove a retained local release transaction or its `cmru-release-*` candidate
@@ -137,7 +149,21 @@ that separate lifecycle operation: it shows the exact scope, worktree, and remot
 ref before confirmation, rejects evidence of publication or promotion, and keeps its refusal
 closed when transaction metadata or origin state is unclear, including when a successful
 origin lookup omits `origin/main` or reports a malformed ref. `--dry-run` performs no
-branch, worktree, sidecar, or remote mutation.
+branch, worktree, sidecar, or remote mutation. New release transactions record the exact
+origin tag set before release work starts. Abandonment refuses selected-scope origin tag refs
+added, removed, or retargeted during the attempt, including refs whose tags point at the original
+snapshot commit. The check compares
+the full tag-ref inventory for release prefixes in the recorded project scope, so an added,
+removed, or retargeted scoped ref blocks abandonment even if it is not reachable from the candidate;
+other projects' prefixes do not. After
+confirmation, CMRU rechecks the inspected branch and tag refs and deletes the candidate with
+an exact `--force-with-lease`. The tag comparison covers only prefixes for projects in the
+recorded scope. CMRU removes a local release tag during abandonment only when its sidecar proves
+that the candidate attempted to push that exact object and the origin snapshot proves it is new.
+An unexplained local-only tag in a selected project's namespace blocks abandonment; inspect it
+and, if it is an unneeded local ref absent from origin, remove it with `git tag -d TAG` before
+retrying. An older retained candidate without a tag snapshot is withheld when a scoped remote tag
+reachable from it cannot be classified as pre-existing. See the [cleanup and abandonment design](docs/DESIGN-GUIDE.md#remote-cleanup-and-local-transaction-abandonment).
 If the release used an external orchestration file to define a multi-project scope,
 pass that same file with `cmru abandon --config PATH` so CMRU can inspect the complete
 release policy before deciding whether abandonment is safe.
@@ -203,6 +229,10 @@ unchanged. The compatibility rationale is in the
 `release` detects changed projects, runs their explicit prepare/gate/tag/build/push/promote
 contract in dependency order, and retains a failed transaction for diagnosis. It publishes
 from the exact gated candidate commit, then fast-forwards `origin/main` from that same commit.
+The exact release tag must be on `origin` before CMRU starts the build or publisher. After a
+failed push, CMRU checks origin: if the tag is absent, it removes that exact local tag and retains
+an untagged candidate that can be resumed; if origin confirms the exact candidate tag, it
+continues; when origin cannot be checked, it retains the tag and candidate for inspection.
 A concurrent remote update fails closed and leaves the candidate branch/worktree for diagnosis;
 CMRU never rebases a candidate after building its public artifact. See
 [KI-06](KNOWN_ISSUES_TODO_BACKLOG.md#ki-06--durable-post-tag-publication-resume--open-scoped-deliberately).
@@ -220,8 +250,14 @@ project's `.gitignore`, without hiding source paths. Ignore rules do not hide mo
 files.
 Built-in publishers require the existing versioned release/tag to identify the recorded source
 commit and require the existing `-latest` release/tag; they update release assets in place and
-create no Git refs or release records. Generated sidecars and `latest.json` use temporary copies,
-so the retained inventory remains reusable. This does not promote a source branch. `release`
+create no Git refs or release records. They capture each existing Release ID and tag commit, then
+recheck both before updating metadata and before each asset deletion or upload. GitHub offers no
+atomic compare-and-update endpoint, so a remote change after a successful recheck can still race
+the next API call. Generated sidecars and `latest.json` use temporary copies, so the retained
+inventory remains reusable. A retained stable build older than the highest current
+version can refresh its versioned assets, but CMRU leaves `-latest` on the newer release. CMRU
+checks again before writing the pointer in case a newer release appeared during the upload. This
+does not promote a source branch. `release`
 remains the source-first tag/build/publish/promote workflow. See the [KI-10 decision](KNOWN_ISSUES_TODO_BACKLOG.md#ki-10--publish-retained-build-output-by-id--shipped).
 After the transaction, CMRU reports whether caller `main` was synchronized. A dirty caller
 checkout—including ignored files or directories—is left untouched before any rebase attempt,
@@ -583,7 +619,9 @@ project secret overlays at private host backups outside the repository mount
 and strips publisher-token and extra-mount variables from nested runner calls.
 It uses CMRU's scoped Git auth on the host to prepare token-free origin facts
 for mutation, then restores the original secret files. If restoration fails,
-the gate reports and retains the private backup path for recovery. See the
+the gate reports and retains the private backup path for recovery. If a credential is atomically
+replaced while the gate masks or runs, CMRU preserves the replacement and fails the gate instead
+of replacing it with stale bytes. SIGTERM and SIGHUP also run the restoration path. See the
 [gate credential design](docs/DESIGN-GUIDE.md#keeping-release-credentials-out-of-gate-containers).
 When rerunning on a release-tagged HEAD, the checker excludes every local CMRU
 release tag at HEAD and selects the highest-version published tag in its full
@@ -595,7 +633,10 @@ candidate.
 See the [Assay baseline design](docs/DESIGN-GUIDE.md#why-cmru-pins-assay-r1-to-a-release-tag-and-splits-r2-out).
 Mutation runs stop each
 failing candidate at its first failed test (`--maxfail=1`), cap each candidate
-at 120 seconds, and resume from the mutation progress file. A successful
-full-suite run still executes all tests. `.assay/` verdict/progress artifacts
-are retained as gate evidence.
+at 120 seconds, and resume killed outcomes from `.assay/mutation-cmru.json` only
+while the test suite and copied fixture closure are unchanged. The append-only
+`.assay/progress-mutation-cmru.jsonl` stream reports progress; it is not the
+resumable result record. Any test or fixture change requires a new campaign. A
+successful full-suite run still executes all tests. `.assay/` verdict, result,
+and progress artifacts are retained as gate evidence.
 See [`../run-gate-project/CONSUMERS.md`](../run-gate-project/CONSUMERS.md).

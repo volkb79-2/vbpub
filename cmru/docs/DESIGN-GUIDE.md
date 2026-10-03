@@ -144,9 +144,19 @@ to use the caller checkout. CMRU does not infer the intended artifact from a
 `dist/` directory or silently couple every build to publication. Built-in
 publishers require existing versioned and `-latest` Release/tag targets; a
 stable version tag must identify the retained source commit. They update
-Release metadata and assets without creating or moving Git refs. Temporary
+Release metadata and assets without creating or moving Git refs. The publisher
+captures each existing Release ID and tag commit, then checks those exact
+coordinates before metadata changes and before every asset deletion or upload.
+GitHub does not offer an atomic conditional update, so a change after a check
+can still race the following request; retaining the ID and rechecking the tag
+target prevents a stale preflight from silently authorizing a later asset set.
+Temporary
 copies hold generated sidecars and `latest.json`, leaving the retained record
-unchanged. Custom push steps must consume the protected
+unchanged. When a stable retained build is older than the highest current
+release, CMRU can refresh that version's assets but does not rewrite `-latest`.
+It checks the highest version both before publishing and again before pointer
+upload, which protects against a newer release appearing during the upload.
+Custom push steps must consume the protected
 `CMRU_BUILD_OUTPUT_ROOT` input and must not create or move Git refs or promote a
 source branch. Publication refuses a retained record with any tracked or
 untracked source-tree changes: otherwise the artifact could contain edits that
@@ -254,6 +264,32 @@ scope members into apparent untagged publishers and falsely refuse recovery.
 Remote promotion status is determinate only when the successful branch lookup returns
 `origin/main` with a valid object ID. A successful but empty or malformed result does not mean
 the candidate is unpromoted, so abandonment withholds cleanup until that ref can be inspected.
+Tag ancestry alone cannot establish that a tag was published by the retained attempt: a new
+release tag can point at the original snapshot commit, especially when a project has no changelog
+commit. New transactions therefore store the complete origin tag-ref set before release work
+begins. Abandonment compares only release-tag prefixes for projects in the recorded scope against
+that immutable baseline; any added, removed, or retargeted ref in those namespaces blocks
+abandonment, even if the tag is not reachable from the candidate. A missing legacy snapshot is
+indeterminate when a scoped tag reachable from the candidate cannot be classified. An exact local
+tag is removed only when the transaction sidecar records the
+candidate's push attempt and the baseline proves that tag was new; unexplained local-only tags
+block recovery for operator inspection. After confirmation CMRU rechecks branch and tag inventories,
+then deletes the candidate branch with a lease against the inspected object ID before removing
+local evidence.
+
+Cleanup plans retain GitHub Release IDs and tag names, but an ID may later refer to a Release
+whose tag, update time, asset set, or age-policy status changed. Applying the plan looks up that
+ID again and deletes it only while those captured facts still match. Its Git tag stays in place if
+the Release is skipped, and a `steps.clean` action derives `CMRU_VERSION` after the confirmed
+actions complete; the version printed in a preview is an estimate and is re-resolved after those
+actions. GHCR version actions also re-fetch the exact package-version ID and compare its update
+time and container tags with the preview. Whole-package deletion is planned only for a package
+the credential can read, then re-fetches its package ID immediately before the name-addressed
+delete request. A changed package is skipped. A GitHub 404 is indeterminate because private
+package APIs can hide inaccessible objects; CMRU reports the ambiguity and skips deletion instead
+of calling the package absent. The wildcard package listing also contains only packages visible
+to the credential. GitHub's Release and package APIs do not provide a compare-and-delete operation,
+so a change after the final recheck remains outside the plan's control.
 
 ### Release resume keeps its recorded scope
 
@@ -470,8 +506,12 @@ before mutation. The tester independently selects the highest-version
 published ancestor using Assay's sanitized ancestry API. If that source diff
 is empty, the mutation lane writes explicit
 skip evidence bound to the candidate HEAD. The serial campaign uses a
-120-second timeout per candidate, stops each failed candidate at its first
-failing test (`--maxfail=1`), and resumes from its progress stream. If a gate
+120-second timeout per candidate and stops each failed candidate at its first
+failing test (`--maxfail=1`). Mutation outcomes live in
+`.assay/mutation-cmru.json`; `.assay/progress-mutation-cmru.jsonl` is only the
+append-only progress stream. Resume requires the exact test and copied-fixture
+fingerprints. An added test can change pytest collection or install an autouse
+fixture, so even an additive suite cannot reuse older kills. If a gate
 is rerun after HEAD itself received one or more release tags, the checker
 excludes every local CMRU release tag at HEAD and finds the highest-version
 published tag in HEAD's remaining full ancestry, keeping the pinned R1 base
@@ -506,9 +546,16 @@ filesystem, where the host backup directory is not mounted. Nested
 `run-gate.py` processes strip publisher-token and extra-mount variables
 (`RUN_GATE_EXTRA_MOUNTS`). The host uses the saved auth object to query origin
 immediately before mutation and forwards only token-free tag and commit facts.
+Masking moves the visible entry to a sibling, checks the inode actually moved,
+then installs the backup symlink with an exclusive link operation. If an atomic
+credential rotation lands at that boundary, CMRU keeps the moved entry or puts
+it back without replacing a newer path entry, and the gate fails before running
+the tester.
 A `finally` path restores the original overlay bytes and file metadata even
-when a registered lane fails. If restoration fails, the gate reports and keeps
+when a registered lane fails, SIGTERM arrives, or SIGHUP arrives. If restoration fails, the gate reports and keeps
 the private backup directory so the only saved secret copy is not deleted.
+If a credential path was atomically replaced while the gate was running, restoration preserves
+that replacement, fails the gate, and retains the original private backup for operator recovery.
 The aggregate `gate` lane owns this boundary. Direct component-lane runs use
 the mounted checkout as-is and require a secret-free checkout.
 
@@ -535,10 +582,13 @@ untouched. Ordinary projects and non-external prepare steps retain the existing
 dry-run behavior.
 
 An isolated release pushes its transaction branch to origin as a durable candidate. Each
-project is prepared and gated there, then its tag and public artifact are produced from that
-fixed commit. CMRU fast-forwards `origin/main` from the same candidate only after publication
-succeeds. This keeps a failed build or upload out of `main` and lets a later project consume an
-earlier project's completed release in the same run.
+project is prepared and gated there, then its exact tag must be on origin before CMRU starts the
+build or publisher. Consumers resolve release artifacts through the published source tag. After
+a failed push, CMRU verifies the remote tag: a matching tag permits publication to continue; a
+confirmed absent tag is removed locally and the pre-tag candidate remains resumable; an unknown
+remote state retains the tag and candidate for inspection. CMRU fast-forwards `origin/main` from the same candidate only after
+publication succeeds. This keeps a failed build or upload out of `main` and lets a later project
+consume an earlier project's completed release in the same run.
 
 The promotion is deliberately a single fast-forward push. CMRU does not rebase the candidate
 when another writer advances `origin/main`, because that would change the SHA that was gated and

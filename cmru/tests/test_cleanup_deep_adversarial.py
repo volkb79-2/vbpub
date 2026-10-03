@@ -18,7 +18,7 @@ def _cleanup(**overrides):
 
 
 def _release(tag, ident, when="2020-01-01T00:00:00Z", **extra):
-    return {"tag_name": tag, "id": ident, "published_at": when, **extra}
+    return {"tag_name": tag, "id": ident, "published_at": when, "assets": [], **extra}
 
 
 def test_list_releases_paginates_full_pages_and_stops_on_short_page(monkeypatch):
@@ -51,6 +51,43 @@ def test_release_cleanup_selector_cutoff_keep_and_missing_date_are_safe(monkeypa
     assert deleted == [1]
 
 
+@pytest.mark.parametrize(
+    "changed_release",
+    [
+        _release("other-v1", 10),
+        _release("demo-v-old", 10, "2030-01-01T00:00:00Z"),
+        _release("demo-v-kept", 10),
+        _release("demo-v-old", 10, updated_at="2030-01-01T00:00:00Z"),
+        _release("demo-v-old", 10, assets=[{
+            "id": 50, "name": "new.whl", "size": 7, "state": "uploaded",
+            "updated_at": "2024-01-01T00:00:00Z",
+        }]),
+    ],
+)
+def test_age_cleanup_rechecks_release_identity_and_policy_after_confirmation(
+    monkeypatch, capsys, changed_release,
+):
+    cutoff = datetime(2024, 1, 1, tzinfo=timezone.utc)
+    releases = [_release("demo-v-old", 10)]
+    deleted = []
+    monkeypatch.setattr(cli, "list_releases", lambda *_: releases)
+    monkeypatch.setattr(
+        cli, "delete_release",
+        lambda _owner, _repo, _token, ident, **_kwargs: deleted.append(ident),
+    )
+    plan = cli.CleanupPlan()
+
+    cli.cleanup_releases(
+        "o", "r", "t", cutoff, True,
+        _cleanup(keep_release_tags=["demo-v-kept"]), plan=plan,
+    )
+    releases[:] = [changed_release]
+    plan.apply()
+
+    assert deleted == []
+    assert "changed or no longer qualifies after preview" in capsys.readouterr().out
+
+
 def test_delete_release_dry_run_and_http_failure(monkeypatch, capsys):
     cli.delete_release("o", "r", "t", 4, True)
     assert "Would delete release 4" in capsys.readouterr().out
@@ -68,7 +105,7 @@ def test_unmanaged_release_duplicate_or_non_numeric_id_refuses(capsys, monkeypat
         cli.delete_unmanaged_release_tag("o", "r", "t", "demo-latest", dry_run=False)
 
 
-def test_unmanaged_release_plan_keeps_the_previewed_release_id(monkeypatch):
+def test_unmanaged_release_plan_skips_a_release_retagged_after_preview(monkeypatch, capsys):
     releases = [_release("demo-old", 10)]
     deleted = []
     monkeypatch.setattr(cli, "list_releases", lambda *_: releases)
@@ -76,10 +113,11 @@ def test_unmanaged_release_plan_keeps_the_previewed_release_id(monkeypatch):
     plan = cli.CleanupPlan()
 
     cli.delete_unmanaged_release_tag("o", "r", "t", "demo-old", dry_run=True, plan=plan)
-    releases[:] = [_release("demo-old", 11)]
+    releases[:] = [_release("demo-new", 10)]
     plan.apply()
 
-    assert deleted == [10]
+    assert deleted == []
+    assert "changed or no longer qualifies after preview" in capsys.readouterr().out
 
 
 @pytest.mark.parametrize("owner_type, needle", [("org", "/orgs/owner/packages/container/pkg/versions"), ("user", "/users/owner/packages/container/pkg/versions")])
@@ -91,6 +129,45 @@ def test_package_version_listing_uses_owner_route_and_pagination(monkeypatch, ow
     monkeypatch.setattr(cli, "load_json", fake_load)
     assert cli.list_package_versions("owner", "pkg", "token", owner_type) == [{"id": 1}]
     assert needle in urls[0]
+
+
+@pytest.mark.parametrize(
+    "owner_type, expected_url",
+    [
+        ("org", "https://api.github.com/orgs/owner/packages/container/pkg/versions/17"),
+        ("user", "https://api.github.com/users/owner/packages/container/pkg/versions/17"),
+    ],
+)
+def test_get_package_version_uses_exact_version_route(monkeypatch, owner_type, expected_url):
+    seen = []
+
+    def request(method, url, token):
+        seen.append((method, url, token))
+        return 200, '{"id": 17}', {}
+
+    monkeypatch.setattr(cli, "http_request", request)
+    assert cli.get_package_version("owner", "pkg", "token", 17, owner_type) == {"id": 17}
+    assert seen == [("GET", expected_url, "token")]
+
+
+def test_get_package_version_rejects_boolean_identifier(monkeypatch):
+    monkeypatch.setattr(cli, "http_request", lambda *_: (200, '{"id": true}', {}))
+    with pytest.raises(RuntimeError, match="malformed record"):
+        cli.get_package_version("owner", "pkg", "token", 1, "org")
+
+
+def test_get_container_package_rejects_boolean_identifier(monkeypatch):
+    monkeypatch.setattr(
+        cli,
+        "http_request",
+        lambda *_: (
+            200,
+            '{"package_type":"container","id":true,"name":"pkg"}',
+            {},
+        ),
+    )
+    with pytest.raises(RuntimeError, match="malformed record"):
+        cli.get_container_package("owner", "pkg", "token", "org")
 
 
 def test_package_listing_filters_empty_names_and_uses_user_route(monkeypatch):
@@ -119,12 +196,18 @@ def test_package_version_unknown_error_and_package_delete_404_are_distinct(monke
         cli.delete_package_version("o", "pkg", "t", 1, "user", False)
     monkeypatch.setattr(cli, "http_request", lambda *_: (404, "gone", {}))
     cli.delete_package("o", "pkg", "t", "user", False)
-    assert "not found" in capsys.readouterr().out
+    output = capsys.readouterr().out
+    assert "may be absent or inaccessible" in output
+    assert "deletion was not confirmed" in output
 
 
 def test_ghcr_cleanup_explicit_package_delete_skips_version_listing(monkeypatch):
     listed = []
     deleted = []
+    monkeypatch.setattr(
+        cli, "get_container_package",
+        lambda _owner, package, *_: {"id": 17, "name": package, "package_type": "container"},
+    )
     monkeypatch.setattr(cli, "list_package_versions", lambda *args: listed.append(args) or [])
     monkeypatch.setattr(cli, "delete_package", lambda *args: deleted.append(args))
     cli.cleanup_ghcr("o", "t", "org", datetime.now(timezone.utc), False,
@@ -146,9 +229,15 @@ def test_ghcr_cleanup_age_filter_skips_recent_and_incomplete_versions(monkeypatc
 
 
 def test_ghcr_cleanup_plan_does_not_rediscover_new_versions(monkeypatch):
-    versions = [{"id": 1, "updated_at": "2020-01-01T00:00:00Z"}]
+    first = {
+        "id": 1,
+        "updated_at": "2020-01-01T00:00:00Z",
+        "metadata": {"container": {"tags": []}},
+    }
+    versions = [first]
     deleted = []
     monkeypatch.setattr(cli, "list_package_versions", lambda *_: versions)
+    monkeypatch.setattr(cli, "get_package_version", lambda *_: first)
     monkeypatch.setattr(cli, "delete_package_version", lambda _o, _p, _t, ident, *_a, **_kw: deleted.append(ident))
     plan = cli.CleanupPlan()
 
@@ -162,8 +251,54 @@ def test_ghcr_cleanup_plan_does_not_rediscover_new_versions(monkeypatch):
     assert deleted == [1]
 
 
+@pytest.mark.parametrize(
+    "current",
+    [
+        {
+            "id": 1,
+            "updated_at": "2025-01-01T00:00:00Z",
+            "metadata": {"container": {"tags": []}},
+        },
+        {
+            "id": 1,
+            "updated_at": "2020-01-01T00:00:00Z",
+            "metadata": {"container": {"tags": ["current"]}},
+        },
+    ],
+)
+def test_ghcr_cleanup_plan_skips_a_version_updated_or_retagged_after_preview(
+    monkeypatch, capsys, current,
+):
+    initial = {
+        "id": 1,
+        "updated_at": "2020-01-01T00:00:00Z",
+        "metadata": {"container": {"tags": []}},
+    }
+    deleted = []
+    monkeypatch.setattr(cli, "list_package_versions", lambda *_: [initial])
+    monkeypatch.setattr(cli, "get_package_version", lambda *_: current)
+    monkeypatch.setattr(
+        cli, "delete_package_version",
+        lambda _o, _p, _t, ident, *_a, **_kw: deleted.append(ident),
+    )
+    plan = cli.CleanupPlan()
+
+    cli.cleanup_ghcr(
+        "o", "t", "user", datetime(2024, 1, 1, tzinfo=timezone.utc), True,
+        _cleanup(ghcr_packages=["pkg"]), plan=plan,
+    )
+    plan.apply()
+
+    assert deleted == []
+    assert "changed or no longer qualifies after preview" in capsys.readouterr().out
+
+
 def test_ghcr_cleanup_plan_captures_explicit_whole_package_delete(monkeypatch):
     deleted = []
+    monkeypatch.setattr(
+        cli, "get_container_package",
+        lambda _owner, package, *_: {"id": 17, "name": package, "package_type": "container"},
+    )
     monkeypatch.setattr(cli, "list_package_versions", lambda *_: pytest.fail("whole-package delete listed versions"))
     monkeypatch.setattr(cli, "delete_package", lambda _o, package, *_a, **_kw: deleted.append(package))
     plan = cli.CleanupPlan()
@@ -175,6 +310,86 @@ def test_ghcr_cleanup_plan_captures_explicit_whole_package_delete(monkeypatch):
     plan.apply()
 
     assert deleted == ["pkg"]
+
+
+def test_ghcr_cleanup_plan_treats_package_404_after_preview_as_ambiguous(monkeypatch, capsys):
+    current = [
+        {"id": 17, "name": "pkg", "package_type": "container"},
+        None,
+    ]
+    deleted = []
+    monkeypatch.setattr(cli, "get_container_package", lambda *_: current.pop(0))
+    monkeypatch.setattr(cli, "delete_package", lambda *_args, **_kwargs: deleted.append(True))
+    plan = cli.CleanupPlan()
+
+    cli.cleanup_ghcr(
+        "o", "t", "org", datetime(2024, 1, 1, tzinfo=timezone.utc), True,
+        _cleanup(ghcr_packages=["pkg"], ghcr_delete_packages=["pkg"]), plan=plan,
+    )
+    plan.apply()
+
+    assert deleted == []
+    output = capsys.readouterr().out
+    assert "may be absent or inaccessible" in output
+    assert "after preview" in output
+    assert "deletion is skipped" in output
+
+
+def test_ghcr_cleanup_404_at_package_preview_is_not_certified_as_absent(monkeypatch, capsys):
+    deleted = []
+    monkeypatch.setattr(cli, "get_container_package", lambda *_: None)
+    monkeypatch.setattr(cli, "delete_package", lambda *_args, **_kwargs: deleted.append(True))
+    plan = cli.CleanupPlan()
+
+    cli.cleanup_ghcr(
+        "o", "t", "org", datetime(2024, 1, 1, tzinfo=timezone.utc), True,
+        _cleanup(ghcr_packages=["pkg"], ghcr_delete_packages=["pkg"]), plan=plan,
+    )
+    plan.apply()
+
+    output = capsys.readouterr().out
+    assert deleted == []
+    assert "may be absent or inaccessible" in output
+    assert "package cleanup is skipped" in output
+
+
+def test_ghcr_cleanup_404_for_a_version_after_preview_skips_deletion(monkeypatch, capsys):
+    deleted = []
+    monkeypatch.setattr(cli, "get_package_version", lambda *_: None)
+    monkeypatch.setattr(
+        cli, "delete_package_version",
+        lambda *_args, **_kwargs: deleted.append(True),
+    )
+
+    cli._delete_package_version_if_unchanged(
+        "o", "pkg", "t", 17, "org", datetime(2024, 1, 1, tzinfo=timezone.utc),
+        "2020-01-01T00:00:00Z", (),
+    )
+
+    output = capsys.readouterr().out
+    assert deleted == []
+    assert "may be absent or inaccessible" in output
+    assert "deletion is skipped" in output
+
+
+def test_ghcr_cleanup_plan_skips_replacement_package_identity(monkeypatch, capsys):
+    current = [
+        {"id": 17, "name": "pkg", "package_type": "container"},
+        {"id": 18, "name": "pkg", "package_type": "container"},
+    ]
+    deleted = []
+    monkeypatch.setattr(cli, "get_container_package", lambda *_: current.pop(0))
+    monkeypatch.setattr(cli, "delete_package", lambda *_args, **_kwargs: deleted.append(True))
+    plan = cli.CleanupPlan()
+
+    cli.cleanup_ghcr(
+        "o", "t", "org", datetime(2024, 1, 1, tzinfo=timezone.utc), True,
+        _cleanup(ghcr_packages=["pkg"], ghcr_delete_packages=["pkg"]), plan=plan,
+    )
+    plan.apply()
+
+    assert deleted == []
+    assert "was replaced after preview" in capsys.readouterr().out
 
 
 def test_remove_assets_requires_resolved_credential_and_propagates_cutoff(monkeypatch):
@@ -211,7 +426,9 @@ def test_remove_assets_applies_only_targets_captured_before_confirmation(monkeyp
     assert deleted == [1]
 
 
-def test_project_cleanup_plan_keeps_previewed_release_and_tag_targets(monkeypatch, tmp_path):
+def test_project_cleanup_plan_skips_linked_tag_when_release_changes_after_preview(
+    monkeypatch, tmp_path,
+):
     releases = [_release("demo-v1.0.0", 1)]
     tags = {"demo-v1.0.0": "a" * 40}
     deleted_releases = []
@@ -227,16 +444,13 @@ def test_project_cleanup_plan_keeps_previewed_release_and_tag_targets(monkeypatc
     cli.cleanup_project_releases_and_tags(
         tmp_path, "o", "r", "t", "demo", [], True, plan=plan,
     )
-    releases[:] = [_release("demo-v2.0.0", 2)]
+    releases[:] = [_release("demo-v2.0.0", 1)]
     tags.clear()
     tags["demo-v2.0.0"] = "c" * 40
     plan.apply()
 
-    assert deleted_releases == [1]
-    assert deleted_tags == [
-        ("remote", "demo-v1.0.0", True, "a" * 40),
-        ("local", "demo-v1.0.0", True, "b" * 40),
-    ]
+    assert deleted_releases == []
+    assert deleted_tags == []
 
 
 def test_project_cleanup_plan_does_not_delete_tags_added_after_preview(monkeypatch, tmp_path):
@@ -246,12 +460,10 @@ def test_project_cleanup_plan_does_not_delete_tags_added_after_preview(monkeypat
     deleted_local_tags = []
     monkeypatch.setattr(cli, "list_releases", lambda *_: releases)
     monkeypatch.setattr(cli, "list_remote_tag_refs_matching", lambda *_args, **_kwargs: remote_tags)
-    monkeypatch.setattr(
-        cli, "delete_release", lambda _o, _r, _t, ident, **_kw: deleted_releases.append(ident),
-    )
-    monkeypatch.setattr(
-        cli, "run_remote_git", lambda *_a, **_k: pytest.fail("unconfirmed remote tag was queried"),
-    )
+    def delete_release(_o, _r, _t, ident, **_kw):
+        deleted_releases.append(ident)
+        releases.clear()
+    monkeypatch.setattr(cli, "delete_release", delete_release)
     def local_git(_root, *args, **_kwargs):
         deleted_local_tags.append(args)
         if args[:2] == ("show-ref", "--hash"):
@@ -259,9 +471,10 @@ def test_project_cleanup_plan_does_not_delete_tags_added_after_preview(monkeypat
         return SimpleNamespace(returncode=0, stdout="", stderr="")
     monkeypatch.setattr(cli, "run_local_git", local_git)
     plan = cli.CleanupPlan()
+    outcomes = {}
 
     cli.cleanup_project_releases_and_tags(
-        tmp_path, "o", "r", "t", "demo", [], True, plan=plan,
+        tmp_path, "o", "r", "t", "demo", [], True, plan=plan, outcomes=outcomes,
     )
     deleted_local_tags.clear()
     remote_tags["demo-v1.0.0"] = "a" * 40
@@ -272,6 +485,35 @@ def test_project_cleanup_plan_does_not_delete_tags_added_after_preview(monkeypat
         ("show-ref", "--hash", "--verify", "refs/tags/demo-v1.0.0"),
         ("update-ref", "-d", "refs/tags/demo-v1.0.0", "b" * 40),
     ]
+    assert outcomes["demo-v1.0.0"] is False
+
+
+def test_project_cleanup_records_a_successfully_removed_tag_only_ref(monkeypatch, tmp_path):
+    remote_tags = {"demo-v1.0.0": "a" * 40}
+    local_tag = ["b" * 40]
+    outcomes = {}
+    monkeypatch.setattr(cli, "list_releases", lambda *_: [])
+    monkeypatch.setattr(
+        cli, "list_remote_tag_refs_matching", lambda *_args, **_kwargs: remote_tags,
+    )
+    monkeypatch.setattr(cli, "local_git_tag_oid", lambda *_args, **_kwargs: local_tag[0])
+
+    def remove_remote(_root, tag, *_args, **_kwargs):
+        remote_tags.pop(tag, None)
+
+    def remove_local(_root, _tag, *_args, **_kwargs):
+        local_tag[0] = None
+
+    monkeypatch.setattr(cli, "delete_git_tag_remote", remove_remote)
+    monkeypatch.setattr(cli, "delete_git_tag_local", remove_local)
+    plan = cli.CleanupPlan()
+
+    cli.cleanup_project_releases_and_tags(
+        tmp_path, "o", "r", "t", "demo", [], True, plan=plan, outcomes=outcomes,
+    )
+    plan.apply()
+
+    assert outcomes["demo-v1.0.0"] is True
 
 
 def test_run_cleanup_plan_captures_declared_clean_step_and_generated_commit(monkeypatch, tmp_path):
@@ -284,10 +526,11 @@ def test_run_cleanup_plan_captures_declared_clean_step_and_generated_commit(monk
     monkeypatch.setattr(cli, "apply_release_env", lambda *_: None)
     github = cli.GitHubConfig("o", "r", "tok", "user")
     monkeypatch.setattr(cli, "github_for_project", lambda *_: github)
-    monkeypatch.setattr(
-        cli, "cleanup_project_releases_and_tags",
-        lambda *_args, **_kwargs: ["demo-v1.0.0"],
-    )
+    def preview_cleanup(*_args, outcomes=None, **_kwargs):
+        if outcomes is not None:
+            outcomes["demo-v1.0.0"] = True
+        return ["demo-v1.0.0"]
+    monkeypatch.setattr(cli, "cleanup_project_releases_and_tags", preview_cleanup)
     monkeypatch.setattr(cli, "_latest_version_for_prefix", lambda *_args, **_kwargs: "2.0.0")
     events = []
 
@@ -304,6 +547,10 @@ def test_run_cleanup_plan_captures_declared_clean_step_and_generated_commit(monk
     monkeypatch.setattr(cli, "cleanup_project_step", clean_step)
     monkeypatch.setattr(cli, "cleanup_commit_deletions", commit)
     monkeypatch.setattr(cli, "_cleanup_worktree_paths", lambda _root: {"caller-edit.txt"})
+    monkeypatch.setattr(
+        cli, "get_container_package",
+        lambda _owner, package, *_: {"id": 17, "name": package, "package_type": "container"},
+    )
     monkeypatch.setattr(cli, "delete_package", delete_package)
     plan = cli.CleanupPlan()
 
@@ -320,6 +567,71 @@ def test_run_cleanup_plan_captures_declared_clean_step_and_generated_commit(monk
         ("commit", "demo", ("demo-v1.0.0",), False, {"caller-edit.txt"}),
         ("package", "demo-container", False),
     ]
+    output = capsys.readouterr().out
+    assert "CMRU_VERSION=1.0.0 is a preview estimate" in output
+    assert "re-resolved from surviving Releases after confirmation" in output
+
+
+def test_project_cleanup_keeps_changed_release_tag_and_recomputes_clean_version(
+    monkeypatch, tmp_path, capsys,
+):
+    project = cli.ProjectConfig(
+        name="demo", env={}, steps={"clean": []}, prefix="demo-v",
+        github_token="tok",
+    )
+    github = cli.GitHubConfig("o", "r", "tok", "user")
+    env = cli.ReleaseEnvConfig({}, None)
+    releases = [_release("demo-v1.0.0", 1)]
+    remote_tags = {"demo-v1.0.0": "a" * 40}
+    deleted_releases = []
+    deleted_tags = []
+    clean_versions = []
+
+    monkeypatch.setattr(cli, "resolve_versions_from_git", lambda *_: None)
+    monkeypatch.setattr(cli, "apply_project_release_env", lambda *_: None)
+    monkeypatch.setattr(cli, "apply_release_env", lambda *_: None)
+    monkeypatch.setattr(cli, "github_for_project", lambda *_: github)
+    monkeypatch.setattr(cli, "list_releases", lambda *_: releases)
+    monkeypatch.setattr(cli, "list_remote_tag_refs_matching", lambda *_a, **_kw: remote_tags)
+    monkeypatch.setattr(cli, "local_git_tag_oid", lambda *_a, **_kw: "b" * 40)
+    monkeypatch.setattr(
+        cli, "delete_release",
+        lambda _o, _r, _t, ident, **_kw: deleted_releases.append(ident),
+    )
+    monkeypatch.setattr(
+        cli, "delete_git_tag_remote",
+        lambda *_a, **_kw: deleted_tags.append("remote"),
+    )
+    monkeypatch.setattr(
+        cli, "delete_git_tag_local",
+        lambda *_a, **_kw: deleted_tags.append("local"),
+    )
+
+    def clean_step(_root, _project, version, dry_run, *, publisher_token=None):
+        clean_versions.append((version, dry_run, publisher_token))
+        return not dry_run
+
+    monkeypatch.setattr(cli, "cleanup_project_step", clean_step)
+    monkeypatch.setattr(cli, "_cleanup_worktree_paths", lambda _root: set())
+    monkeypatch.setattr(cli, "cleanup_commit_deletions", lambda *_a, **_kw: None)
+    plan = cli.CleanupPlan()
+
+    cli.run_cleanup_verb(
+        tmp_path, {"demo": project}, ["demo"], _cleanup(), github, env,
+        None, True, plan=plan,
+    )
+    releases[:] = [_release(
+        "demo-v1.0.0", 1, updated_at="2026-10-03T19:00:00Z", assets=[{
+            "id": 5, "name": "new.whl", "size": 11, "state": "uploaded",
+            "updated_at": "2026-10-03T19:00:00Z",
+        }],
+    )]
+    plan.apply()
+
+    assert deleted_releases == []
+    assert deleted_tags == []
+    assert clean_versions == [("", True, "tok"), ("1.0.0", False, "tok")]
+    assert "skipping its Git tag" in capsys.readouterr().out
 
 
 def test_remote_tag_listing_filters_dereferenced_and_malformed_lines(monkeypatch, tmp_path):
@@ -558,6 +870,10 @@ def test_captured_clean_steps_keep_each_project_token_after_root_ghcr_selection(
     monkeypatch.setattr(cli, "_cleanup_worktree_paths", lambda *_: set())
     monkeypatch.setattr(cli, "cleanup_commit_deletions", lambda *_a, **_k: None)
     monkeypatch.setattr(cli, "delete_package", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        cli, "get_container_package",
+        lambda _owner, package, *_: {"id": 17, "name": package, "package_type": "container"},
+    )
 
     observed = []
 

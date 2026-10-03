@@ -721,6 +721,10 @@ def test_builtin_retained_publish_preserves_manifest_and_existing_tag_targets(
         def __init__(self):
             self.published = []
 
+        def resolve_latest(self, prefix):
+            assert prefix == "alpha"
+            return {"version": "1.2.3"}
+
         def get_tag_commit(self, tag):
             if tag == "alpha-v1.2.3":
                 return SOURCE_COMMIT
@@ -729,11 +733,13 @@ def test_builtin_retained_publish_preserves_manifest_and_existing_tag_targets(
             return None
 
         def get_release_by_tag(self, tag):
-            return {"id": 1} if tag in {"alpha-v1.2.3", "alpha-latest"} else None
+            return {"id": 1, "tag_name": tag} if tag in {"alpha-v1.2.3", "alpha-latest"} else None
 
         def publish(self, tag, _title, _notes, assets, *, recreate=False,
-                    target_commitish=None, require_existing_release=False):
+                    target_commitish=None, require_existing_release=False,
+                    expected_release_id=None, expected_tag_commit=None):
             self.published.append((tag, recreate, target_commitish, require_existing_release,
+                                   expected_release_id, expected_tag_commit,
                                    [(path.name, path.read_bytes()) for path in assets]))
 
         def asset_download_url(self, tag, name):
@@ -747,13 +753,18 @@ def test_builtin_retained_publish_preserves_manifest_and_existing_tag_targets(
     ))
 
     assert [call[0] for call in publisher.published] == ["alpha-v1.2.3", "alpha-latest"]
-    assert all(not call[1] and call[2] is None and call[3] for call in publisher.published)
-    assert publisher.published[0][4][:2] == [
+    assert all(
+        not call[1] and call[2] is None and call[3] and call[4] == 1
+        for call in publisher.published
+    )
+    assert publisher.published[0][5] == SOURCE_COMMIT
+    assert publisher.published[1][5] == "c" * 40
+    assert publisher.published[0][6][:2] == [
         ("alpha-1.2.3.whl", b"verified wheel"),
         ("alpha-1.2.3.whl.sha256", f"{digest}  alpha-1.2.3.whl\n".encode()),
     ]
-    assert publisher.published[0][4][2] == (companion.name, b"verified companion")
-    assert publisher.published[1][4][0][0] == "latest.json"
+    assert publisher.published[0][6][2] == (companion.name, b"verified companion")
+    assert publisher.published[1][6][0][0] == "latest.json"
     assert {path.relative_to(artifact_root): path.read_bytes() for path in artifact_root.rglob("*") if path.is_file()} == original_files
     transaction.validate_build_output_tree(artifact_root, "alpha", OUTPUT_ID)
     monkeypatch.setenv("CMRU_BUILD_SOURCE_COMMIT", "f" * 40)
@@ -778,11 +789,15 @@ def test_retained_publish_refuses_missing_or_mismatched_tags_before_upload(
             self.release_tags = set(release_tags or {"alpha-v1.2.3", "alpha-latest"})
             self.uploads = []
 
+        def resolve_latest(self, prefix):
+            assert prefix == "alpha"
+            return {"version": "1.2.3"}
+
         def get_tag_commit(self, tag):
             return self.refs.get(tag)
 
         def get_release_by_tag(self, tag):
-            return {"id": 1} if tag in self.release_tags else None
+            return {"id": 1, "tag_name": tag} if tag in self.release_tags else None
 
         def publish(self, *args, **kwargs):
             self.uploads.append((args, kwargs))
@@ -824,6 +839,64 @@ def test_retained_publish_refuses_missing_or_mismatched_tags_before_upload(
             )
 
 
+@pytest.mark.parametrize(
+    "latest_versions",
+    [
+        ["2.0.0"],
+        ["1.2.3", "2.0.0"],
+    ],
+)
+def test_retained_publish_does_not_move_latest_pointer_to_an_older_release(
+    tmp_path, latest_versions,
+):
+    asset = tmp_path / "alpha-1.2.3.whl"
+    asset.write_bytes(b"retained wheel")
+
+    class Publisher:
+        def __init__(self):
+            self.latest_checks = []
+            self.uploads = []
+
+        def resolve_latest(self, prefix):
+            assert prefix == "alpha"
+            version = latest_versions[min(len(self.latest_checks), len(latest_versions) - 1)]
+            self.latest_checks.append(version)
+            return {"version": version}
+
+        def get_release_by_tag(self, tag):
+            return {"id": 1, "tag_name": tag} if tag in {"alpha-v1.2.3", "alpha-latest"} else None
+
+        def get_tag_commit(self, tag):
+            if tag == "alpha-v1.2.3":
+                return SOURCE_COMMIT
+            if tag == "alpha-latest":
+                return "c" * 40
+            return None
+
+        def publish(self, tag, _title, _notes, assets, **kwargs):
+            self.uploads.append((tag, [path.name for path in assets], kwargs))
+            return {"id": 1}
+
+        def asset_download_url(self, tag, name):
+            return f"https://example.invalid/{tag}/{name}"
+
+    publisher = Publisher()
+    release.publish_versioned(
+        publisher,
+        prefix="alpha",
+        version="1.2.3",
+        asset_path=asset,
+        require_existing_targets=True,
+        latest_pointer_recreate=False,
+        expected_tag_commit=SOURCE_COMMIT,
+    )
+
+    assert [call[0] for call in publisher.uploads] == ["alpha-v1.2.3"]
+    assert publisher.uploads[0][1][:2] == [
+        "alpha-1.2.3.whl", "alpha-1.2.3.whl.sha256",
+    ]
+
+
 def test_build_output_dev_version_updates_only_preexisting_latest_targets(tmp_path):
     asset = tmp_path / "alpha-1.2.3.dev1.whl"
     asset.write_bytes(b"dev wheel")
@@ -833,7 +906,7 @@ def test_build_output_dev_version_updates_only_preexisting_latest_targets(tmp_pa
             self.uploads = []
 
         def get_release_by_tag(self, tag):
-            return {"id": 1} if tag == "alpha-latest" else None
+            return {"id": 1, "tag_name": tag} if tag == "alpha-latest" else None
 
         def get_tag_commit(self, tag):
             return "c" * 40 if tag == "alpha-latest" else None
@@ -851,6 +924,8 @@ def test_build_output_dev_version_updates_only_preexisting_latest_targets(tmp_pa
     assert publisher.uploads[0][0][0] == "alpha-latest"
     assert publisher.uploads[0][1]["recreate"] is False
     assert publisher.uploads[0][1]["require_existing_release"] is True
+    assert publisher.uploads[0][1]["expected_release_id"] == 1
+    assert publisher.uploads[0][1]["expected_tag_commit"] == "c" * 40
 
 
 def test_build_output_can_skip_latest_pointer_validation_when_disabled(tmp_path):
@@ -862,7 +937,7 @@ def test_build_output_can_skip_latest_pointer_validation_when_disabled(tmp_path)
             self.uploads = []
 
         def get_release_by_tag(self, tag):
-            return {"id": 1} if tag == "alpha-v1.2.3" else None
+            return {"id": 1, "tag_name": tag} if tag == "alpha-v1.2.3" else None
 
         def get_tag_commit(self, tag):
             return SOURCE_COMMIT if tag == "alpha-v1.2.3" else None
@@ -887,6 +962,8 @@ def test_build_output_can_skip_latest_pointer_validation_when_disabled(tmp_path)
     )
     assert result["release_tag"] == "alpha-v1.2.3"
     assert [call[0][0] for call in publisher.uploads] == ["alpha-v1.2.3"]
+    assert publisher.uploads[0][1]["expected_release_id"] == 1
+    assert publisher.uploads[0][1]["expected_tag_commit"] == SOURCE_COMMIT
 
 
 def test_github_tag_commit_lookup_resolves_tag_ref_and_handles_unverifiable_results(

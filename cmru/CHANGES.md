@@ -28,11 +28,21 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 - Scope registry authorization to its HTTPS origin while preserving safe redirects to signed registry storage URLs.
 - Query rolling OCI tags by exact manifest reference, and exclude explicitly marked Docker attestations from runnable-platform timestamp checks.
 - Time-box CMRU mutation candidates, preserve progress, and resume completed mutation evidence.
+- Keep a skipped cleanup Release's tag and derive the clean-step version from applied cleanup results.
+- Recheck whole-package GHCR identity before confirmed deletion and report the clean-step version as a preview estimate.
+- Scope abandonment tag checks to the recorded projects and remove only local tags proven to come from that candidate's push attempt.
+- Preserve credential rotation when restoring secret overlays after the gate.
+- Prevent publishing an older retained build from moving the `-latest` pointer backward.
+- Bind retained publication to the captured Release ID and tag commit, rechecking them before metadata and asset mutations.
+- Treat GHCR 404 responses as absent-or-inaccessible and skip cleanup without certifying absence.
+- Install gate secret overlays without replacing a credential rotated at the masking boundary.
 
 ### Testing
 - Add registry, age-policy, project/root ownership, output transaction, mutation-runner, and adopter-doc contract tests.
 - Cover inclusive rolling-OCI age cutoffs, rolling-result override metadata, and the no-warning return contract.
 - Cover discovery-scope choices, rolling-tag digest changes, Docker attestation indexes, and loadable `.go` consumer examples.
+- Cover package replacement during cleanup confirmation, scoped tag abandonment, exact local tag recovery, credential rotation, and mutation resume evidence.
+- Cover retained-release identity changes, GHCR 404 ambiguity, and credential rotation during overlay installation.
 
 <!-- cmru: release history -->
 
@@ -42,7 +52,7 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ### Added
 - feat(cmru): authenticate transactional Git operations (7c2d7a8be)
-- feat: resume mutations with additive test suites (2dca79d55)
+- feat: resume mutations with an unchanged test suite and fixture closure (2dca79d55)
 - feat: adopt cli-extended and resolve CMRU CLI decisions (f6b577f41)
 
 ### Fixed

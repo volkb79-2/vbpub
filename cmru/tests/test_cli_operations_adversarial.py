@@ -83,17 +83,103 @@ def test_cleanup_commit_deletions_commits_only_real_changes(tmp_path):
     assert "cleanup deleted demo-v1" in subprocess.check_output(["git", "log", "-1", "--format=%s"], cwd=tmp_path, text=True)
 
 
-def test_push_tags_is_nonfatal_on_remote_failure_and_noop_for_empty(monkeypatch, tmp_path, capsys):
+def test_push_tags_failure_is_fatal_and_empty_input_is_a_noop(monkeypatch, tmp_path):
     calls = []
+    current_local_oid = ["b" * 40]
     monkeypatch.setattr(
-        cli.subprocess, "run",
-        lambda argv, **kwargs: calls.append((argv, kwargs))
+        cli, "run_remote_git",
+        lambda *argv, **kwargs: calls.append((argv, kwargs))
         or SimpleNamespace(returncode=1),
     )
+    monkeypatch.setattr(
+        cli, "local_git_tag_oid",
+        lambda *_args, **_kwargs: current_local_oid[0],
+    )
+    monkeypatch.setattr(cli, "_release_tag_matches_origin", lambda *_args, **_kwargs: False)
+    deleted = []
+    def delete_local_tag(root, tag, dry_run, **kwargs):
+        deleted.append((root, tag, dry_run, kwargs))
+        current_local_oid[0] = None
+
+    monkeypatch.setattr(cli, "delete_git_tag_local", delete_local_tag)
     cli._push_tags(tmp_path, [])
     assert calls == []
-    cli._push_tags(tmp_path, ["demo-v1"])
+    with pytest.raises(RuntimeError, match="removed the unpushed local tag"):
+        cli._push_tags(tmp_path, ["demo-v1"])
     assert len(calls) == 1
-    assert calls[0][0] == ["git", "push", "origin", "demo-v1"]
-    assert calls[0][1]["cwd"] == tmp_path
-    assert "continuing" in capsys.readouterr().out
+    assert calls[0][0] == (tmp_path, "push", "origin", "demo-v1")
+    assert deleted == [(
+        tmp_path, "demo-v1", False,
+        {"expected_present": True, "expected_oid": "b" * 40},
+    )]
+
+
+def test_push_tags_continues_when_failed_transport_left_the_exact_tag_on_origin(
+    monkeypatch, tmp_path,
+):
+    monkeypatch.setattr(
+        cli, "run_remote_git", lambda *_args, **_kwargs: SimpleNamespace(returncode=1),
+    )
+    monkeypatch.setattr(cli, "local_git_tag_oid", lambda *_args, **_kwargs: "b" * 40)
+    monkeypatch.setattr(cli, "_release_tag_matches_origin", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(
+        cli, "delete_git_tag_local",
+        lambda *_args, **_kwargs: pytest.fail("a published candidate tag was deleted"),
+    )
+
+    cli._push_tags(tmp_path, ["demo-v1"])
+
+
+def test_push_tags_retains_local_tag_when_origin_state_is_indeterminate(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        cli, "run_remote_git", lambda *_args, **_kwargs: SimpleNamespace(returncode=1),
+    )
+    monkeypatch.setattr(cli, "local_git_tag_oid", lambda *_args, **_kwargs: "b" * 40)
+
+    def origin_is_unavailable(*_args, **_kwargs):
+        raise RuntimeError("offline")
+
+    monkeypatch.setattr(
+        cli, "_release_tag_matches_origin", origin_is_unavailable,
+    )
+    monkeypatch.setattr(
+        cli, "delete_git_tag_local",
+        lambda *_args, **_kwargs: pytest.fail("an unverified tag was deleted"),
+    )
+
+    with pytest.raises(RuntimeError, match="could not determine origin state"):
+        cli._push_tags(tmp_path, ["demo-v1"])
+
+
+def test_push_tags_records_exact_local_tag_attempt_before_network_call(monkeypatch, tmp_path):
+    workspace = cli.transaction.ReleaseWorkspace(
+        repo_root=tmp_path,
+        path=tmp_path,
+        branch="cmru-release-20261003_120000-demo-abcdef",
+        base="a" * 40,
+    )
+    events = []
+    local_oid = ["b" * 40]
+    monkeypatch.setattr(cli, "local_git_tag_oid", lambda *_args, **_kwargs: local_oid[0])
+    monkeypatch.setattr(
+        cli.transaction,
+        "write_release_tag_attempts",
+        lambda _root, _workspace, refs: events.append(("record", refs)),
+    )
+    monkeypatch.setattr(
+        cli, "run_remote_git",
+        lambda *_args, **_kwargs: events.append(("push", None))
+        or SimpleNamespace(returncode=1),
+    )
+    monkeypatch.setattr(cli, "_release_tag_matches_origin", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(
+        cli, "delete_git_tag_local", lambda *_args, **_kwargs: local_oid.__setitem__(0, None),
+    )
+
+    with pytest.raises(RuntimeError, match="removed the unpushed local tag"):
+        cli._push_tags(tmp_path, ["demo-v1"], workspace=workspace)
+
+    assert events == [
+        ("record", {"refs/tags/demo-v1": "b" * 40}),
+        ("push", None),
+    ]

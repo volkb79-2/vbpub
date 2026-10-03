@@ -119,6 +119,22 @@ def _git_auth_for_repository(github: GitHubConfig) -> GitHubGitAuth:
     return GitHubGitAuth(owner=github.owner, repo=github.repo, token=github.token)
 
 
+def _read_origin_tag_refs(
+    repo_root: Path, *, git_auth: GitHubGitAuth, context: str,
+) -> dict[str, str]:
+    result = run_remote_git(
+        repo_root, "ls-remote", "--tags", "origin",
+        auth=git_auth, capture_output=True, text=True, check=False,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"cannot {context}: " + (result.stderr.strip() or "git ls-remote failed")
+        )
+    return transaction.parse_ls_remote_refs(
+        result.stdout, namespace="refs/tags/", description=context,
+    )
+
+
 @dataclass(frozen=True)
 class ReleaseEnvConfig:
     env: Mapping[str, str]
@@ -846,6 +862,72 @@ def delete_release(owner: str, repo: str, token: str, release_id: int, dry_run: 
         raise RuntimeError(f"Failed to delete release {release_id}: {body}")
 
 
+def _release_asset_inventory(release: dict) -> tuple[tuple[object, ...], ...]:
+    """Return stable asset identity fields for a confirmed Release deletion."""
+    assets = release.get("assets")
+    if not isinstance(assets, list):
+        raise RuntimeError("GitHub Release response has no usable asset inventory")
+    inventory = []
+    for asset in assets:
+        if not isinstance(asset, dict):
+            raise RuntimeError("GitHub Release response has a malformed asset inventory")
+        asset_id = asset.get("id")
+        name = asset.get("name")
+        size = asset.get("size")
+        state = asset.get("state")
+        updated_at = asset.get("updated_at")
+        digest = asset.get("digest")
+        if (
+            type(asset_id) is not int or not isinstance(name, str)
+            or type(size) is not int or not isinstance(state, str)
+            or not isinstance(updated_at, str)
+            or (digest is not None and not isinstance(digest, str))
+        ):
+            raise RuntimeError("GitHub Release response has a malformed asset inventory")
+        inventory.append((asset_id, name, size, state, updated_at, digest))
+    if len({asset[0] for asset in inventory}) != len(inventory):
+        raise RuntimeError("GitHub Release response has duplicate asset IDs")
+    return tuple(sorted(inventory, key=lambda asset: asset[0]))
+
+
+def _delete_release_if_tag_still_matches(
+    owner: str,
+    repo: str,
+    token: str,
+    release_id: int,
+    expected_tag: str,
+    *,
+    expected_updated_at: object,
+    expected_asset_inventory: tuple[tuple[object, ...], ...],
+    eligible: Callable[[dict], bool],
+) -> bool:
+    """Apply a confirmed Release deletion only while its identity and assets match."""
+    matches = [
+        release for release in list_releases(owner, repo, token)
+        if release.get("id") == release_id
+    ]
+    if len(matches) != 1:
+        log_warn(
+            f"Cleanup: confirmed GitHub Release id={release_id} disappeared or became ambiguous; skipping."
+        )
+        return False
+    current_tag = matches[0].get("tag_name") or ""
+    if (
+        current_tag != expected_tag
+        or matches[0].get("updated_at") != expected_updated_at
+        or _release_asset_inventory(matches[0]) != expected_asset_inventory
+        or not eligible(matches[0])
+    ):
+        log_warn(
+            f"Cleanup: GitHub Release id={release_id} changed or no longer qualifies after preview "
+            "(tag, update time, or asset inventory changed); "
+            f"expected selected tag {expected_tag!r}, found {current_tag!r}; skipping."
+        )
+        return False
+    delete_release(owner, repo, token, release_id, dry_run=False)
+    return True
+
+
 def delete_unmanaged_release_tag(
     owner: str,
     repo: str,
@@ -876,6 +958,8 @@ def delete_unmanaged_release_tag(
     if not isinstance(release_id, int):
         raise RuntimeError(f"Cleanup: GitHub Release {tag!r} has no usable numeric ID.")
     if dry_run:
+        expected_updated_at = matches[0].get("updated_at")
+        expected_asset_inventory = _release_asset_inventory(matches[0])
         log_info(
             f"[DRY RUN] Would delete unmanaged GitHub Release {tag} "
             f"(id={release_id}); its Git tag is untouched."
@@ -883,8 +967,15 @@ def delete_unmanaged_release_tag(
         if plan is not None:
             plan.add(
                 f"unmanaged GitHub Release {tag} (id={release_id})",
-                lambda owner=owner, repo=repo, token=token, release_id=release_id:
-                    delete_release(owner, repo, token, release_id, dry_run=False),
+                lambda owner=owner, repo=repo, token=token, release_id=release_id,
+                expected_tag=tag, expected_updated_at=expected_updated_at,
+                expected_asset_inventory=expected_asset_inventory:
+                    _delete_release_if_tag_still_matches(
+                        owner, repo, token, release_id, expected_tag,
+                        expected_updated_at=expected_updated_at,
+                        expected_asset_inventory=expected_asset_inventory,
+                        eligible=lambda _release: True,
+                    ),
             )
         return True
     log_info(
@@ -908,18 +999,15 @@ def cleanup_releases(
     releases = list_releases(owner, repo, token)
     # Cleanup is destructive. An empty declared selector means "select nothing",
     # never "all releases"; an estate that means all must say "*" explicitly.
-    wildcard_prefixes = "*" in cleanup.release_tag_prefixes
+    selected_prefixes = tuple(cleanup.release_tag_prefixes)
+    selected_keep_tags = frozenset(cleanup.keep_release_tags)
     for release in releases:
         tag = release.get("tag_name") or ""
-        if tag in cleanup.keep_release_tags:
-            continue
-        if not wildcard_prefixes and not any(tag.startswith(prefix) for prefix in cleanup.release_tag_prefixes):
-            continue
         published_at = release.get("published_at") or release.get("created_at") or release.get("updated_at")
-        if not published_at:
-            continue
-        published_dt = datetime.fromisoformat(published_at.replace("Z", "+00:00"))
-        if published_dt >= cutoff:
+        if not _release_is_selected_for_age_cleanup(
+            release, cutoff=cutoff, prefixes=selected_prefixes,
+            keep_tags=selected_keep_tags,
+        ):
             continue
         release_id = release.get("id")
         if not release_id:
@@ -927,13 +1015,47 @@ def cleanup_releases(
         log_info(f"Deleting release tag {tag} (published {published_at})")
         release_id = int(release_id)
         if dry_run and plan is not None:
+            expected_updated_at = release.get("updated_at")
+            expected_asset_inventory = _release_asset_inventory(release)
             plan.add(
                 f"GitHub Release {tag} (id={release_id})",
-                lambda owner=owner, repo=repo, token=token, release_id=release_id:
-                    delete_release(owner, repo, token, release_id, dry_run=False),
+                lambda owner=owner, repo=repo, token=token, release_id=release_id,
+                expected_tag=tag, expected_updated_at=expected_updated_at,
+                expected_asset_inventory=expected_asset_inventory:
+                    _delete_release_if_tag_still_matches(
+                        owner, repo, token, release_id, expected_tag,
+                        expected_updated_at=expected_updated_at,
+                        expected_asset_inventory=expected_asset_inventory,
+                        eligible=lambda current, cutoff=cutoff,
+                        prefixes=selected_prefixes, keep_tags=selected_keep_tags:
+                            _release_is_selected_for_age_cleanup(
+                                current, cutoff=cutoff, prefixes=prefixes,
+                                keep_tags=keep_tags,
+                            ),
+                    ),
             )
         else:
             delete_release(owner, repo, token, release_id, dry_run)
+
+
+def _release_is_selected_for_age_cleanup(
+    release: dict,
+    *,
+    cutoff: datetime,
+    prefixes: Sequence[str],
+    keep_tags: frozenset[str],
+) -> bool:
+    """Re-evaluate the captured release policy against the current Release record."""
+    tag = release.get("tag_name") or ""
+    if tag in keep_tags:
+        return False
+    if "*" not in prefixes and not any(tag.startswith(prefix) for prefix in prefixes):
+        return False
+    published_at = release.get("published_at") or release.get("created_at") or release.get("updated_at")
+    if not published_at:
+        return False
+    published_dt = datetime.fromisoformat(published_at.replace("Z", "+00:00"))
+    return published_dt < cutoff
 
 
 def list_package_versions(owner: str, package: str, token: str, owner_type: str) -> list[dict]:
@@ -952,6 +1074,82 @@ def list_package_versions(owner: str, package: str, token: str, owner_type: str)
             break
         page += 1
     return versions
+
+
+def get_package_version(
+    owner: str, package: str, token: str, version_id: int, owner_type: str,
+) -> dict | None:
+    """Re-fetch a GHCR version; 404 can mean absent or inaccessible."""
+    if owner_type == "org":
+        url = f"https://api.github.com/orgs/{owner}/packages/container/{package}/versions/{version_id}"
+    else:
+        url = f"https://api.github.com/users/{owner}/packages/container/{package}/versions/{version_id}"
+    status, body, _ = http_request("GET", url, token)
+    if status == 404:
+        return None
+    if status >= 400:
+        raise RuntimeError(f"Failed to recheck {package} version {version_id}: {body}")
+    try:
+        version = json.loads(body)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(
+            f"GitHub returned invalid JSON while rechecking {package} version {version_id}"
+        ) from exc
+    if (
+        not isinstance(version, dict)
+        or type(version.get("id")) is not int
+        or version["id"] != version_id
+    ):
+        raise RuntimeError(
+            f"GitHub returned a malformed record while rechecking {package} version {version_id}"
+        )
+    return version
+
+
+def _container_version_tags(version: dict) -> tuple[str, ...]:
+    metadata = version.get("metadata")
+    container = metadata.get("container") if isinstance(metadata, dict) else None
+    tags = container.get("tags") if isinstance(container, dict) else None
+    if not isinstance(tags, list) or any(not isinstance(tag, str) for tag in tags):
+        raise RuntimeError("GitHub package version response has no usable container tag inventory")
+    return tuple(sorted(tags))
+
+
+def _package_version_timestamp(version: dict) -> str | None:
+    timestamp = version.get("updated_at") or version.get("created_at")
+    return timestamp if isinstance(timestamp, str) else None
+
+
+def _delete_package_version_if_unchanged(
+    owner: str,
+    package: str,
+    token: str,
+    version_id: int,
+    owner_type: str,
+    cutoff: datetime,
+    expected_timestamp: str,
+    expected_tags: tuple[str, ...],
+) -> None:
+    current = get_package_version(owner, package, token, version_id, owner_type)
+    if current is None:
+        log_warn(
+            f"Cleanup: GitHub returned 404 for GHCR {package} version {version_id} "
+            "after preview; it may be absent or inaccessible, so cleanup cannot be "
+            "verified and deletion is skipped."
+        )
+        return
+    current_timestamp = _package_version_timestamp(current)
+    if (
+        current_timestamp != expected_timestamp
+        or _container_version_tags(current) != expected_tags
+        or datetime.fromisoformat(current_timestamp.replace("Z", "+00:00")) >= cutoff
+    ):
+        log_warn(
+            f"Cleanup: GHCR {package} version {version_id} changed or no longer qualifies "
+            "after preview; skipping."
+        )
+        return
+    delete_package_version(owner, package, token, version_id, owner_type, dry_run=False)
 
 
 def list_container_packages(owner: str, token: str, owner_type: str) -> list[str]:
@@ -979,6 +1177,57 @@ def list_container_packages(owner: str, token: str, owner_type: str) -> list[str
             break
         page += 1
     return packages
+
+
+def get_container_package(
+    owner: str, package: str, token: str, owner_type: str,
+) -> dict | None:
+    """Return a package record; a 404 can mean absent or inaccessible."""
+    if owner_type == "org":
+        url = f"https://api.github.com/orgs/{owner}/packages/container/{package}"
+    else:
+        url = f"https://api.github.com/users/{owner}/packages/container/{package}"
+    status, body, _ = http_request("GET", url, token)
+    if status == 404:
+        return None
+    if status >= 400:
+        raise RuntimeError(f"Failed to inspect GHCR package {package}: {body}")
+    try:
+        record = json.loads(body)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"GitHub returned invalid JSON while inspecting GHCR package {package}") from exc
+    if (
+        not isinstance(record, dict)
+        or record.get("package_type") != "container"
+        or type(record.get("id")) is not int
+        or record["id"] <= 0
+        or not isinstance(record.get("name"), str)
+        or record["name"].casefold() != package.casefold()
+    ):
+        raise RuntimeError(f"GitHub returned a malformed record while inspecting GHCR package {package}")
+    return record
+
+
+def _delete_container_package_if_unchanged(
+    owner: str,
+    package: str,
+    token: str,
+    owner_type: str,
+    expected_id: int,
+) -> None:
+    """Delete a package only while its previewed identity still exists."""
+    current = get_container_package(owner, package, token, owner_type)
+    if current is None:
+        log_warn(
+            f"Cleanup: GitHub returned 404 for GHCR package {package} after preview; "
+            "it may be absent or inaccessible, so cleanup cannot be verified and "
+            "deletion is skipped."
+        )
+        return
+    if current["id"] != expected_id:
+        log_warn(f"Cleanup: GHCR package {package} was replaced after preview; skipping.")
+        return
+    delete_package(owner, package, token, owner_type, dry_run=False)
 
 
 def delete_package_version(owner: str, package: str, token: str, version_id: int, owner_type: str, dry_run: bool) -> None:
@@ -1023,7 +1272,10 @@ def delete_package(owner: str, package: str, token: str, owner_type: str, dry_ru
             )
             return
         if status == 404:
-            log_warn(f"Skipping GHCR package delete for {package}: not found")
+            log_warn(
+                f"Skipping GHCR package delete for {package}: GitHub returned 404; "
+                "the package may be absent or inaccessible, so deletion was not confirmed."
+            )
             return
         raise RuntimeError(f"Failed to delete {package} package: {body}")
 
@@ -1038,20 +1290,35 @@ def cleanup_ghcr(
     packages = list_container_packages(owner, token, owner_type) if wildcard_packages else cleanup.ghcr_packages
     for package in packages:
         if package in cleanup.ghcr_delete_packages:
-            log_info(f"Deleting GHCR package {package} (explicit cleanup list)")
+            preview = get_container_package(owner, package, token, owner_type)
+            if preview is None:
+                log_warn(
+                    f"GitHub returned 404 for GHCR package {package}; it may be absent "
+                    "or inaccessible, so package cleanup is skipped."
+                )
+                continue
+            package_id = preview["id"]
+            log_info(f"Deleting GHCR package {package} (id={package_id}; explicit cleanup list)")
             if dry_run and plan is not None:
                 plan.add(
-                    f"GHCR package {package}",
-                    lambda owner=owner, package=package, token=token, owner_type=owner_type:
-                        delete_package(owner, package, token, owner_type, dry_run=False),
+                    f"GHCR package {package} (id={package_id})",
+                    lambda owner=owner, package=package, token=token, owner_type=owner_type,
+                    package_id=package_id:
+                        _delete_container_package_if_unchanged(
+                            owner, package, token, owner_type, package_id,
+                        ),
                 )
+            elif dry_run:
+                log_info(f"[DRY RUN] Would delete GHCR package {package} (id={package_id})")
             else:
-                delete_package(owner, package, token, owner_type, dry_run)
+                _delete_container_package_if_unchanged(
+                    owner, package, token, owner_type, package_id,
+                )
             continue
         versions = list_package_versions(owner, package, token, owner_type)
         for version in versions:
             version_id = version.get("id")
-            updated_at = version.get("updated_at") or version.get("created_at")
+            updated_at = _package_version_timestamp(version)
             if not version_id or not updated_at:
                 continue
             updated_dt = datetime.fromisoformat(updated_at.replace("Z", "+00:00"))
@@ -1060,11 +1327,16 @@ def cleanup_ghcr(
             log_info(f"Deleting GHCR {package} version {version_id} (updated {updated_at})")
             version_id = int(version_id)
             if dry_run and plan is not None:
+                expected_tags = _container_version_tags(version)
                 plan.add(
                     f"GHCR {package} version {version_id}",
                     lambda owner=owner, package=package, token=token, version_id=version_id,
-                    owner_type=owner_type:
-                        delete_package_version(owner, package, token, version_id, owner_type, dry_run=False),
+                    owner_type=owner_type, cutoff=cutoff, updated_at=updated_at,
+                    expected_tags=expected_tags:
+                        _delete_package_version_if_unchanged(
+                            owner, package, token, version_id, owner_type, cutoff,
+                            updated_at, expected_tags,
+                        ),
                 )
             else:
                 delete_package_version(owner, package, token, version_id, owner_type, dry_run)
@@ -1254,6 +1526,7 @@ def cleanup_project_releases_and_tags(
     *,
     git_auth: GitHubGitAuth | None = None,
     plan: CleanupPlan | None = None,
+    outcomes: dict[str, bool] | None = None,
 ) -> list[str]:
     """Delete all GitHub Releases (and their git tags) for *prefix*-v* except kept ones.
 
@@ -1274,7 +1547,7 @@ def cleanup_project_releases_and_tags(
     keep_set = set(keep_tags) | {latest_tag}
 
     # GitHub Releases to delete.
-    to_delete_releases: list[tuple[str, int]] = []  # (tag_name, release_id)
+    to_delete_releases: list[tuple[str, int, dict]] = []  # (tag_name, release_id, preview record)
     for rel in all_releases:
         tag = rel.get("tag_name") or ""
         if not tag.startswith(version_marker) and tag != latest_tag:
@@ -1284,7 +1557,7 @@ def cleanup_project_releases_and_tags(
             continue
         release_id = rel.get("id")
         if release_id:
-            to_delete_releases.append((tag, int(release_id)))
+            to_delete_releases.append((tag, int(release_id), rel))
 
     # Remote tags to delete (covers tags without a matching Release).
     remote_versioned_refs = list_remote_tag_refs_matching(
@@ -1298,20 +1571,45 @@ def cleanup_project_releases_and_tags(
         to_delete_tags.append(tag)
 
     # Union: anything mentioned in either set.
-    all_to_delete_tags = set(t for t, _ in to_delete_releases) | set(to_delete_tags)
+    all_to_delete_tags = set(t for t, _, _ in to_delete_releases) | set(to_delete_tags)
     deleted: list[str] = []
+    release_tags = {tag for tag, _, _ in to_delete_releases}
+    cleanup_outcomes = outcomes if outcomes is not None else {}
+    release_deletion_results: dict[str, bool] = {}
 
-    for tag, release_id in to_delete_releases:
+    for tag, release_id, preview_release in to_delete_releases:
         log_info(f"Cleanup: deleting GitHub Release {tag}")
         if not dry_run:
             delete_release(owner, repo, token, release_id, dry_run=False)
         else:
             log_info(f"[DRY RUN] Would delete GitHub Release {tag} (id={release_id})")
             if plan is not None:
+                expected_updated_at = preview_release.get("updated_at")
+                expected_asset_inventory = _release_asset_inventory(preview_release)
                 plan.add(
                     f"GitHub Release {tag} (id={release_id})",
-                    lambda owner=owner, repo=repo, token=token, release_id=release_id:
-                        delete_release(owner, repo, token, release_id, dry_run=False),
+                    lambda owner=owner, repo=repo, token=token, release_id=release_id,
+                    expected_tag=tag, selected_prefix=version_marker,
+                    selected_keep_set=frozenset(keep_set),
+                    expected_updated_at=expected_updated_at,
+                    expected_asset_inventory=expected_asset_inventory,
+                    cleanup_outcomes=cleanup_outcomes,
+                    release_outcomes=release_deletion_results:
+                        _record_release_cleanup_result(
+                            expected_tag,
+                            _delete_release_if_tag_still_matches(
+                                owner, repo, token, release_id, expected_tag,
+                                expected_updated_at=expected_updated_at,
+                                expected_asset_inventory=expected_asset_inventory,
+                                eligible=lambda current, selected_prefix=selected_prefix,
+                                selected_keep_set=selected_keep_set: (
+                                    (current.get("tag_name") or "").startswith(selected_prefix)
+                                    and (current.get("tag_name") or "") not in selected_keep_set
+                                ),
+                            ),
+                            cleanup_outcomes=cleanup_outcomes,
+                            release_outcomes=release_outcomes,
+                        ),
                 )
         deleted.append(tag)
 
@@ -1333,17 +1631,22 @@ def cleanup_project_releases_and_tags(
                     f"{selected_label} Git tag {tag}",
                     lambda repo_root=repo_root, tag=tag, git_auth=git_auth,
                     remote_present=remote_present, local_present=local_present,
-                    remote_oid=remote_oid, local_oid=local_oid: (
-                        delete_git_tag_remote(
-                            repo_root, tag, False, git_auth=git_auth,
-                            expected_present=remote_present,
-                            expected_oid=remote_oid,
+                    remote_oid=remote_oid, local_oid=local_oid,
+                    release_tags=release_tags,
+                    release_outcomes=release_deletion_results,
+                    cleanup_outcomes=cleanup_outcomes,
+                    release_tag=tag, owner=owner, repo=repo, token=token:
+                        _delete_project_tag_after_release_check(
+                            repo_root, owner, repo, token, release_tag,
+                            expected_remote_present=remote_present,
+                            expected_local_present=local_present,
+                            expected_remote_oid=remote_oid,
+                            expected_local_oid=local_oid,
+                            git_auth=git_auth,
+                            release_was_planned=release_tag in release_tags,
+                            release_outcomes=release_outcomes,
+                            cleanup_outcomes=cleanup_outcomes,
                         ),
-                        delete_git_tag_local(
-                            repo_root, tag, False, expected_present=local_present,
-                            expected_oid=local_oid,
-                        ),
-                    ),
                 )
                 log_info(f"[DRY RUN] Would delete {selected_label} Git tag {tag}")
             else:
@@ -1354,10 +1657,74 @@ def cleanup_project_releases_and_tags(
         else:
             delete_git_tag_remote(repo_root, tag, dry_run, git_auth=git_auth)
             delete_git_tag_local(repo_root, tag, dry_run)
-        if tag not in [t for t, _ in to_delete_releases]:
+        if tag not in [t for t, _, _ in to_delete_releases]:
             deleted.append(tag)
 
     return deleted
+
+
+def _delete_project_tag_after_release_check(
+    repo_root: Path,
+    owner: str,
+    repo: str,
+    token: str,
+    tag: str,
+    *,
+    expected_remote_present: bool,
+    expected_local_present: bool,
+    expected_remote_oid: str | None,
+    expected_local_oid: str | None,
+    git_auth: GitHubGitAuth | None,
+    release_was_planned: bool,
+    release_outcomes: Mapping[str, bool],
+    cleanup_outcomes: dict[str, bool],
+) -> None:
+    """Delete a confirmed tag only after its associated Release was deleted."""
+    release_deleted = release_outcomes.get(tag) if release_was_planned else None
+    if release_was_planned and release_deleted is not True:
+        log_warn(
+            f"Cleanup: GitHub Release {tag} was not deleted after preview; "
+            "skipping its Git tag."
+        )
+        cleanup_outcomes[tag] = False
+        return
+    current_releases = list_releases(owner, repo, token)
+    if any((release.get("tag_name") or "") == tag for release in current_releases):
+        log_warn(
+            f"Cleanup: GitHub Release {tag} still exists after preview; skipping its Git tag."
+        )
+        cleanup_outcomes[tag] = False
+        return
+    # An absent ref is deliberately not rediscovered into this confirmed plan.
+    # The helpers preserve refs that appear after preview; the final reads below
+    # make the recorded outcome reflect both refs that actually remain.
+    delete_git_tag_remote(
+        repo_root, tag, False, git_auth=git_auth,
+        expected_present=expected_remote_present,
+        expected_oid=expected_remote_oid,
+    )
+    delete_git_tag_local(
+        repo_root, tag, False, expected_present=expected_local_present,
+        expected_oid=expected_local_oid,
+    )
+    remaining_remote = list_remote_tag_refs_matching(
+        repo_root, tag, git_auth=git_auth,
+    ).get(tag)
+    remaining_local = local_git_tag_oid(repo_root, tag, action="recheck")
+    cleanup_outcomes[tag] = (
+        remaining_remote is None and remaining_local is None
+    )
+
+
+def _record_release_cleanup_result(
+    tag: str,
+    deleted: bool,
+    *,
+    cleanup_outcomes: dict[str, bool],
+    release_outcomes: dict[str, bool],
+) -> None:
+    release_outcomes[tag] = deleted
+    cleanup_outcomes[tag] = deleted
 
 
 def cleanup_project_step(
@@ -1495,6 +1862,27 @@ def _run_cleanup_step_and_commit(
         )
 
 
+def _run_cleanup_step_after_plan(
+    repo_root: Path,
+    project_name: str,
+    project: ProjectConfig,
+    owner: str,
+    repo: str,
+    token: str,
+    bare: str,
+    preview_deleted_tags: list[str],
+    cleanup_outcomes: Mapping[str, bool],
+) -> None:
+    """Run clean against the remote state left by the confirmed actions."""
+    version = _latest_version_for_prefix(owner, repo, token, bare)
+    deleted_tags = [
+        tag for tag in preview_deleted_tags if cleanup_outcomes.get(tag) is True
+    ]
+    _run_cleanup_step_and_commit(
+        repo_root, project_name, project, version, deleted_tags, token,
+    )
+
+
 def _latest_version_for_prefix(
     owner: str, repo: str, token: str, bare: str, *, exclude_tags: Sequence[str] = (),
 ) -> str:
@@ -1576,11 +1964,13 @@ def run_cleanup_verb(
         log_info(f"Cleanup: {name} (prefix={prefix})")
 
         # 1. Delete old Releases + their git tags; keep -latest + keep_release_tags.
+        cleanup_outcomes: dict[str, bool] = {}
         deleted = cleanup_project_releases_and_tags(
             repo_root, owner, repo, token,
             bare, keep_tags, dry_run,
             git_auth=_git_auth_for_repository(github_config),
             plan=plan,
+            outcomes=cleanup_outcomes,
         )
         any_deleted.extend(deleted)
 
@@ -1594,17 +1984,22 @@ def run_cleanup_verb(
         clean_planned = dry_run and plan is not None and "clean" in project.steps
         if clean_planned:
             log_info(
-                f"[DRY RUN] Would run {name} steps.clean and commit only paths it makes dirty"
+                f"[DRY RUN] Would run {name} steps.clean and commit only paths it makes dirty; "
+                f"CMRU_VERSION={version} is a preview estimate and will be re-resolved "
+                "from Releases remaining after confirmation"
             )
             cleanup_project_step(
                 repo_root, project, version, True, publisher_token=token,
             )
             plan.add(
-                f"{name} steps.clean with CMRU_VERSION={version} and its generated paths",
-                lambda repo_root=repo_root, name=name, project=project, version=version,
-                deleted=deleted, publisher_token=token:
-                    _run_cleanup_step_and_commit(
-                        repo_root, name, project, version, deleted, publisher_token,
+                f"{name} steps.clean with preview CMRU_VERSION={version} (re-resolved from "
+                "surviving Releases after confirmation) and its generated paths",
+                lambda repo_root=repo_root, name=name, project=project,
+                deleted=deleted, publisher_token=token, owner=owner, repo=repo,
+                bare=bare, cleanup_outcomes=cleanup_outcomes:
+                    _run_cleanup_step_after_plan(
+                        repo_root, name, project, owner, repo, publisher_token,
+                        bare, deleted, cleanup_outcomes,
                     ),
             )
         elif not dry_run:
@@ -1640,22 +2035,44 @@ def run_cleanup_verb(
             )
             if plan is not None:
                 for pkg in cleanup.ghcr_delete_packages:
+                    preview = get_container_package(
+                        github_config.owner, pkg, github_config.token,
+                        github_config.owner_type,
+                    )
+                    if preview is None:
+                        log_warn(
+                            f"[DRY RUN] GitHub returned 404 for GHCR package {pkg}; it may "
+                            "be absent or inaccessible, so no deletion is planned."
+                        )
+                        continue
+                    package_id = preview["id"]
                     plan.add(
-                        f"GHCR package {pkg}",
-                        lambda pkg=pkg: delete_package(
-                            github_config.owner, pkg, github_config.token,
-                            github_config.owner_type, dry_run=False,
-                        ),
+                        f"GHCR package {pkg} (id={package_id})",
+                        lambda pkg=pkg, package_id=package_id:
+                            _delete_container_package_if_unchanged(
+                                github_config.owner, pkg, github_config.token,
+                                github_config.owner_type, package_id,
+                            ),
                     )
         else:
             for pkg in cleanup.ghcr_delete_packages:
-                log_info(f"Cleanup: deleting GHCR package {pkg} (ghcr_delete_packages list)")
-                delete_package(
-                    github_config.owner,
-                    pkg,
-                    github_config.token,
+                preview = get_container_package(
+                    github_config.owner, pkg, github_config.token,
                     github_config.owner_type,
-                    dry_run=False,
+                )
+                if preview is None:
+                    log_warn(
+                        f"Cleanup: GitHub returned 404 for GHCR package {pkg}; it may be "
+                        "absent or inaccessible, so package cleanup is skipped."
+                    )
+                    continue
+                log_info(
+                    f"Cleanup: deleting GHCR package {pkg} (id={preview['id']}; "
+                    "ghcr_delete_packages list)"
+                )
+                _delete_container_package_if_unchanged(
+                    github_config.owner, pkg, github_config.token,
+                    github_config.owner_type, preview["id"],
                 )
 
     if any_deleted:
@@ -1969,16 +2386,98 @@ def _ordered_configs(
 
 
 def _push_tags(
-    repo_root: Path, tags: List[str], *, git_auth: GitHubGitAuth | None = None,
+    repo_root: Path,
+    tags: List[str],
+    *,
+    git_auth: GitHubGitAuth | None = None,
+    workspace: transaction.ReleaseWorkspace | None = None,
 ) -> None:
-    """Push annotated release tags to origin. A failure is non-fatal: the GitHub
-    Release API recreates the tag at publish time, so we warn rather than abort."""
+    """Push release tags to origin before any external publisher can run."""
     if not tags:
         return
+    local_oids: dict[str, str] = {}
+    for tag in tags:
+        oid = local_git_tag_oid(repo_root, tag)
+        if oid is None:
+            raise RuntimeError(f"local release tag {tag!r} disappeared before it could be pushed")
+        local_oids[tag] = oid
+    if workspace is not None:
+        transaction.write_release_tag_attempts(
+            repo_root, workspace,
+            {f"refs/tags/{tag}": oid for tag, oid in local_oids.items()},
+        )
     log_info(f"Pushing tags to origin: {', '.join(tags)}")
     rc = run_remote_git(repo_root, "push", "origin", *tags, auth=git_auth).returncode
     if rc != 0:
-        log_warn("git push of tags failed — continuing; publish will create the tag via the API.")
+        try:
+            pushed = {
+                tag: _release_tag_matches_origin(repo_root, tag, git_auth=git_auth)
+                for tag in tags
+            }
+        except Exception as exc:
+            raise RuntimeError(
+                "release tag push failed and CMRU could not determine origin state; "
+                "the local tag and candidate were retained for inspection"
+            ) from exc
+        if all(pushed.values()):
+            log_warn(
+                "git push reported failure, but origin now has every exact release tag; "
+                "continuing with the verified candidate"
+            )
+            return
+        cleanup_errors = []
+        for tag, is_pushed in pushed.items():
+            if is_pushed:
+                continue
+            try:
+                delete_git_tag_local(
+                    repo_root, tag, False, expected_present=True,
+                    expected_oid=local_oids[tag],
+                )
+                remaining_oid = local_git_tag_oid(repo_root, tag, action="recheck")
+                if remaining_oid is not None:
+                    cleanup_errors.append(
+                        f"{tag}: local ref remains at {remaining_oid} after its guarded cleanup"
+                    )
+            except Exception as exc:
+                cleanup_errors.append(f"{tag}: {exc}")
+        if cleanup_errors:
+            raise RuntimeError(
+                "release tag push failed; could not remove every origin-absent local tag, "
+                "so the candidate was retained for inspection: " + "; ".join(cleanup_errors)
+            )
+        if any(pushed.values()):
+            raise RuntimeError(
+                "only some release tags were confirmed on origin after a failed push; "
+                "origin-absent local tags were removed and the candidate was retained "
+                "for inspection"
+            )
+        raise RuntimeError(
+            "could not push release tag(s) to origin; CMRU removed the unpushed local tag(s), "
+            "stopped before build or publish, and retained an untagged candidate that can be resumed"
+        )
+
+
+def _release_tag_matches_origin(
+    repo_root: Path, tag: str, *, git_auth: GitHubGitAuth | None,
+) -> bool:
+    """Determine whether origin has this tag name pointing at the local commit."""
+    ref = f"refs/tags/{tag}"
+    result = run_remote_git(
+        repo_root, "ls-remote", "--tags", "origin", ref, ref + "^{}",
+        auth=git_auth, capture_output=True, text=True, check=False,
+    )
+    if result.returncode != 0:
+        detail = result.stderr.strip() or result.stdout.strip() or "no diagnostic output"
+        raise RuntimeError(f"git ls-remote could not verify {tag!r}: {detail}")
+    refs = transaction.parse_ls_remote_refs(
+        result.stdout, namespace="refs/tags/", description=f"origin tag lookup for {tag!r}",
+    )
+    remote_commit = refs.get(ref + "^{}") or refs.get(ref)
+    if remote_commit is None:
+        return False
+    local_commit = _git(repo_root, "rev-parse", f"{tag}^{{commit}}")
+    return remote_commit == local_commit
 
 
 def _tag_on_head(repo_root: Path, prefix: str) -> Optional[str]:
@@ -2207,7 +2706,7 @@ def _release_projects_sequentially(
                 _run_release_gates(repo_root, configs, [name])
             tag = _tag_on_head(repo_root, project.prefix or f"{name}-v")
             if tag:
-                _push_tags(repo_root, [tag], git_auth=git_auth)
+                _push_tags(repo_root, [tag], git_auth=git_auth, workspace=workspace)
                 if not no_build:
                     log_info(f"Building + publishing {name} ({tag})")
                     candidate_sha = _git(repo_root, "rev-parse", "HEAD")
@@ -3171,6 +3670,13 @@ def _dispatch(args, runtime):
                         transaction.assert_resume_workspace_committed(workspace.path)
                     else:
                         base = transaction.fetch_origin_main(transaction_root, git_auth=git_auth)
+                        initial_tag_refs = None
+                        if not vargs.dry_run:
+                            initial_tag_refs = _read_origin_tag_refs(
+                                transaction_root,
+                                git_auth=git_auth,
+                                context="capture origin release tags before the transaction",
+                            )
                         behind = transaction.assert_local_main_not_ahead(transaction_root, ref=vargs.ref or "main")
                         if behind:
                             log_warn(
@@ -3181,6 +3687,10 @@ def _dispatch(args, runtime):
                             repo_root, base=base, scope=','.join(release_scope),
                             source_git_root=transaction_root,
                         )
+                        if initial_tag_refs is not None:
+                            transaction.write_release_tag_snapshot(
+                                transaction_root, workspace, initial_tag_refs,
+                            )
                     transaction.copy_secret_overlays(
                         repo_root,
                         workspace,
@@ -3521,6 +4031,39 @@ def _abandon(args, runtime) -> int:
         raise
 
 
+def _release_tag_prefixes_for_scope(
+    scope: Sequence[str], configs: Mapping[str, "ProjectConfig"],
+) -> tuple[str, ...]:
+    prefixes = {
+        getattr(configs[name], "prefix", None) or f"{name}-v"
+        for name in scope
+        if name in configs and getattr(configs[name], "git_tag", False)
+    }
+    return tuple(sorted(prefix for prefix in prefixes if isinstance(prefix, str) and prefix))
+
+
+def _tag_ref_name(tag_ref: str) -> str:
+    name = tag_ref.removeprefix("refs/tags/")
+    return name[:-3] if name.endswith("^{}") else name
+
+
+def _release_tag_ref_records(
+    tag_refs: Mapping[str, str], prefixes: Sequence[str],
+) -> dict[str, str]:
+    return {
+        ref: oid for ref, oid in tag_refs.items()
+        if any(_tag_ref_name(ref).startswith(prefix) for prefix in prefixes)
+    }
+
+
+def _tag_records_by_name(tag_refs: Mapping[str, str]) -> dict[str, dict[str, str]]:
+    records: dict[str, dict[str, str]] = {}
+    for ref, oid in tag_refs.items():
+        name = _tag_ref_name(ref)
+        records.setdefault(name, {})[ref] = oid
+    return records
+
+
 def _abandon_locked(args, runtime, repo_root: Path) -> int:
     """Inspect and, after exact confirmation, discard candidates under release lock."""
     from cli_extended import CliFailure
@@ -3560,7 +4103,17 @@ def _abandon_locked(args, runtime, repo_root: Path) -> int:
         ) from exc
 
     blockers: list[tuple[transaction.ReleaseWorkspace, str, list[str], list[str]]] = []
-    plans: list[tuple[transaction.ReleaseWorkspace, list[str], list[str]]] = []
+    plans: list[tuple[
+        transaction.ReleaseWorkspace,
+        list[str],
+        list[str],
+        str | None,
+        dict[str, str],
+        dict[str, str],
+        tuple[str, ...],
+        dict[str, str],
+        dict[str, str],
+    ]] = []
     for workspace in selected:
         scope: list[str] = []
         remote_assets: list[str] = []
@@ -3591,20 +4144,19 @@ def _abandon_locked(args, runtime, repo_root: Path) -> int:
             )
             if remote.returncode != 0:
                 raise RuntimeError("could not determine origin branch state: " + (remote.stderr.strip() or "git ls-remote failed"))
-            remote_refs = {}
             requested_refs = {
                 "refs/heads/" + workspace.branch,
                 "refs/heads/main",
             }
-            for line in remote.stdout.splitlines():
-                fields = line.split("\t", 1)
-                if len(fields) != 2 or fields[1] not in requested_refs:
-                    continue
-                if not re.fullmatch(r"[0-9a-f]{40}", fields[0]):
-                    raise RuntimeError(
-                        f"origin branch lookup returned a malformed object ID for {fields[1]}"
-                    )
-                remote_refs[fields[1]] = fields[0]
+            remote_refs = transaction.parse_ls_remote_refs(
+                remote.stdout, namespace="refs/heads/", description="origin branch lookup",
+            )
+            unexpected_refs = set(remote_refs) - requested_refs
+            if unexpected_refs:
+                raise RuntimeError(
+                    "origin branch lookup returned unexpected ref(s): "
+                    + ", ".join(sorted(unexpected_refs))
+                )
             remote_candidate = remote_refs.get("refs/heads/" + workspace.branch)
             remote_main = remote_refs.get("refs/heads/main")
             if remote_main is None:
@@ -3635,49 +4187,112 @@ def _abandon_locked(args, runtime, repo_root: Path) -> int:
                 raise RuntimeError("origin/main contains the recorded release progress; transaction was promoted")
             if promoted.returncode not in (0, 1):
                 raise RuntimeError("could not determine whether release progress reached origin/main")
-            # Any newly-created remote tag reachable only from this candidate indicates
-            # a public release coordinate even if a crash occurred before result metadata.
-            tags = run_remote_git(
-                repo_root, "ls-remote", "--tags", "origin",
-                auth=git_auth, capture_output=True, text=True, check=False,
+            # Only this transaction's projects can make a tag relevant to its
+            # release or abandonment. A new tag in a different project's
+            # namespace must not turn an ordinary retained candidate into a
+            # false publication refusal.
+            tag_ref_records = _read_origin_tag_refs(
+                repo_root, git_auth=git_auth, context="inspect origin release tags",
             )
-            if tags.returncode != 0:
-                raise RuntimeError("could not inspect origin release tags")
-            tag_refs: dict[str, str] = {}
-            for line in tags.stdout.splitlines():
-                fields = line.split("\t", 1)
-                if len(fields) != 2:
-                    continue
-                tag_ref = fields[1]
-                if tag_ref.endswith("^{}"):
-                    tag_refs[tag_ref[:-3]] = fields[0]
-                else:
-                    tag_refs.setdefault(tag_ref, fields[0])
-            new_tags = []
-            for tag_ref, tag_sha in tag_refs.items():
-                tag_on_candidate = run_local_git(
-                    repo_root, "merge-base", "--is-ancestor", tag_sha,
-                    "refs/heads/" + workspace.branch,
-                    capture_output=True, text=True, check=False,
+            tag_prefixes = _release_tag_prefixes_for_scope(scope, scoped_configs)
+            if not tag_prefixes:
+                raise RuntimeError("release scope has no usable Git tag prefix")
+            scoped_remote_tags = _release_tag_ref_records(tag_ref_records, tag_prefixes)
+            initial_tag_refs = transaction.read_release_tag_snapshot(repo_root, workspace)
+            new_tags: list[str] = []
+            if initial_tag_refs is None:
+                # Legacy candidates have no baseline. Keep their original
+                # conservative ancestry test, but restrict it to this scope.
+                for tag_name, tag_record in _tag_records_by_name(scoped_remote_tags).items():
+                    tag_sha = tag_record.get(f"refs/tags/{tag_name}^{}") or tag_record.get(
+                        f"refs/tags/{tag_name}"
+                    )
+                    if tag_sha is None:
+                        raise RuntimeError(f"origin tag {tag_name} has no usable object ID")
+                    tag_on_candidate = run_local_git(
+                        repo_root, "merge-base", "--is-ancestor", tag_sha,
+                        "refs/heads/" + workspace.branch,
+                        capture_output=True, text=True, check=False,
+                    )
+                    if tag_on_candidate.returncode == 0:
+                        new_tags.append(tag_name)
+                    elif tag_on_candidate.returncode != 1:
+                        raise RuntimeError(f"could not inspect remote tag {tag_name}")
+            else:
+                initial_scoped_tags = _release_tag_ref_records(initial_tag_refs, tag_prefixes)
+                current_records = _tag_records_by_name(scoped_remote_tags)
+                initial_records = _tag_records_by_name(initial_scoped_tags)
+                new_tags = sorted(
+                    tag_name
+                    for tag_name in set(current_records) | set(initial_records)
+                    if current_records.get(tag_name, {}) != initial_records.get(tag_name, {})
                 )
-                if tag_on_candidate.returncode not in (0, 1):
-                    raise RuntimeError(f"could not inspect remote tag {tag_ref}")
-                if tag_on_candidate.returncode == 1:
-                    continue
-                contains = run_local_git(
-                    repo_root, "merge-base", "--is-ancestor", str(base_commit), tag_sha,
-                    capture_output=True, text=True, check=False,
-                )
-                if contains.returncode == 0 and tag_sha != base_commit:
-                    new_tags.append(tag_ref.removeprefix("refs/tags/"))
-                elif contains.returncode not in (0, 1):
-                    raise RuntimeError(f"could not inspect remote tag {tag_ref}")
             if new_tags:
                 remote_assets.extend(
-                    "origin/refs/tags/" + tag.removeprefix("refs/tags/")
+                    "origin/refs/tags/" + tag
                     for tag in new_tags
                 )
-                raise RuntimeError("origin contains release tag(s) reachable from this candidate: " + ", ".join(sorted(new_tags)))
+                if initial_tag_refs is None:
+                    raise RuntimeError(
+                        "the transaction has no pre-attempt origin tag snapshot, so selected-scope "
+                        "release tag(s) cannot be classified safely: "
+                        + ", ".join(sorted(new_tags))
+                    )
+                raise RuntimeError(
+                    "origin contains selected-scope release tag refs that changed during this transaction: "
+                    + ", ".join(sorted(new_tags))
+                )
+            tag_attempts = transaction.read_release_tag_attempts(repo_root, workspace)
+            if tag_attempts is not None:
+                outside_scope = [
+                    ref for ref in tag_attempts
+                    if not any(_tag_ref_name(ref).startswith(prefix) for prefix in tag_prefixes)
+                ]
+                if outside_scope:
+                    raise RuntimeError(
+                        "release tag attempt metadata names refs outside the recorded project scope: "
+                        + ", ".join(sorted(outside_scope))
+                    )
+            current_local_tags = transaction.list_local_tag_refs(repo_root)
+            scoped_local_tags = _release_tag_ref_records(current_local_tags, tag_prefixes)
+            current_origin_names = {
+                _tag_ref_name(ref) for ref in tag_ref_records
+            }
+            local_tags_to_remove: dict[str, str] = {}
+            unclassified_local_tags: list[str] = []
+            for ref, oid in scoped_local_tags.items():
+                tag_name = _tag_ref_name(ref)
+                if tag_name.endswith("-latest") or tag_name in current_origin_names:
+                    continue
+                if tag_attempts is None or ref not in tag_attempts:
+                    unclassified_local_tags.append(tag_name)
+                    continue
+                if tag_attempts[ref] != oid:
+                    raise RuntimeError(
+                        f"local release tag {tag_name} changed after its CMRU push attempt"
+                    )
+                if initial_tag_refs is None:
+                    raise RuntimeError(
+                        f"local release tag {tag_name} has no origin tag baseline; "
+                        "inspect it before abandoning the candidate"
+                    )
+                if ref in initial_tag_refs:
+                    raise RuntimeError(
+                        f"local release tag {tag_name} existed in the origin baseline but is now "
+                        "absent remotely; inspect it before abandoning the candidate"
+                    )
+                local_tags_to_remove[ref] = oid
+            if unclassified_local_tags:
+                remote_assets.extend(
+                    "local/refs/tags/" + tag_name
+                    for tag_name in sorted(set(unclassified_local_tags))
+                )
+                raise RuntimeError(
+                    "local-only release tag(s) in the selected project scope have no recorded "
+                    "CMRU push attempt: " + ", ".join(sorted(set(unclassified_local_tags)))
+                    + ". Inspect each tag; if it is an unneeded local ref and is absent from origin, "
+                    "remove it with `git tag -d TAG` before abandoning this candidate."
+                )
             untagged = [name for name in scope if name not in scoped_configs or not scoped_configs[name].git_tag]
             if untagged:
                 remote_assets.extend(f"external publication state unknown for {name}" for name in untagged)
@@ -3686,7 +4301,10 @@ def _abandon_locked(args, runtime, repo_root: Path) -> int:
                     "and local result metadata cannot prove whether publication completed: "
                     + ", ".join(untagged)
                 )
-            plans.append((workspace, scope, remote_assets))
+            plans.append((
+                workspace, scope, remote_assets, remote_candidate, remote_refs,
+                scoped_remote_tags, tag_prefixes, scoped_local_tags, local_tags_to_remove,
+            ))
         except Exception as exc:
             try:
                 if not scope:
@@ -3712,21 +4330,26 @@ def _abandon_locked(args, runtime, repo_root: Path) -> int:
                 pass
             blockers.append((workspace, str(exc), scope, remote_assets))
 
-    for workspace, scope, assets in plans:
+    for (
+        workspace, scope, assets, _candidate_oid, _branch_refs, _remote_tags,
+        _tag_prefixes, _local_tags, local_tags_to_remove,
+    ) in plans:
         print(
             f"Candidate: {workspace.branch}\n"
             f"  worktree: {workspace.path}\n"
             f"  transaction scope: {', '.join(scope)}\n"
             f"  remote refs/assets removed: {', '.join(assets) if assets else 'none'}\n"
+            f"  local release tags removed: "
+            f"{', '.join(ref.removeprefix('refs/tags/') for ref in sorted(local_tags_to_remove)) if local_tags_to_remove else 'none'}\n"
             "  after abandonment: candidate worktree (including its logs/artifacts), branch, "
-            "and transaction sidecars are removed; origin/main is unchanged"
+            "local attempt tags, and transaction sidecars are removed; origin/main is unchanged"
         )
     for workspace, reason, scope, assets in blockers:
         print(
             f"Withheld: {workspace.branch}\n"
             f"  worktree: {workspace.path}\n"
             f"  transaction scope: {', '.join(scope) if scope else 'unavailable'}\n"
-            f"  remote refs/assets involved: {', '.join(assets) if assets else 'unknown'}\n"
+            f"  refs/assets involved: {', '.join(assets) if assets else 'unknown'}\n"
             f"  reason: {reason}"
         )
     if args.dry_run:
@@ -3736,12 +4359,62 @@ def _abandon_locked(args, runtime, repo_root: Path) -> int:
         raise CliFailure("one or more selected release transactions are ambiguous or published; nothing was abandoned", exit_code=2)
     prompt = (
         "Abandon exactly the listed retained release transaction(s), deleting their "
-        "CMRU backup refs and worktrees and their local scope/progress sidecars?"
+        "CMRU backup refs, listed local release tags, worktrees, and local scope/progress sidecars?"
     )
     if not getattr(args, "yes", False) and not runtime.confirm(prompt):
         return 0
-    for workspace, _scope, _assets in plans:
-        transaction.abandon_workspace(repo_root, workspace, git_auth=git_auth)
+
+    # Confirmation may take arbitrarily long. Recheck every captured remote
+    # fact before the first mutation so one stale candidate cannot make a
+    # multi-candidate confirmation partially apply.
+    for (
+        workspace, _scope, _assets, _candidate_oid, expected_refs, expected_tags,
+        tag_prefixes, expected_local_tags, _local_tags_to_remove,
+    ) in plans:
+        try:
+            remote = run_remote_git(
+                repo_root, "ls-remote", "--heads", "origin",
+                "refs/heads/" + workspace.branch, "refs/heads/main",
+                auth=git_auth, capture_output=True, text=True, check=False,
+            )
+            if remote.returncode != 0:
+                raise RuntimeError("could not recheck origin branch state")
+            current_refs = transaction.parse_ls_remote_refs(
+                remote.stdout, namespace="refs/heads/", description="origin branch recheck",
+            )
+            if current_refs != expected_refs:
+                raise RuntimeError("origin branch refs changed after confirmation")
+            current_remote_tags = _release_tag_ref_records(
+                _read_origin_tag_refs(
+                    repo_root, git_auth=git_auth, context="recheck origin release tags",
+                ),
+                tag_prefixes,
+            )
+            if current_remote_tags != expected_tags:
+                raise RuntimeError("origin release tags changed after confirmation")
+            if _release_tag_ref_records(
+                transaction.list_local_tag_refs(repo_root), tag_prefixes,
+            ) != expected_local_tags:
+                raise RuntimeError("local release tags changed after confirmation")
+        except Exception as exc:
+            raise CliFailure(
+                "origin state changed or could not be rechecked after confirmation; "
+                f"nothing was abandoned: {exc}",
+                exit_code=2,
+            ) from exc
+
+    for (
+        workspace, _scope, _assets, candidate_oid, branch_refs, tag_refs,
+        tag_prefixes, local_tag_refs, local_tags_to_remove,
+    ) in plans:
+        transaction.abandon_workspace(
+            repo_root, workspace, git_auth=git_auth,
+            expected_remote_candidate_oid=candidate_oid,
+            expected_remote_tag_refs=tag_refs,
+            release_tag_prefixes=tag_prefixes,
+            expected_local_tag_refs=local_tag_refs,
+            local_tags_to_remove=local_tags_to_remove,
+        )
         log_info(f"Abandoned release transaction {workspace.branch}")
     return 0
 

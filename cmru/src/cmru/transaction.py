@@ -787,6 +787,219 @@ def write_release_scope(repo_root: Path, workspace: ReleaseWorkspace, project_na
     )
 
 
+def write_release_tag_snapshot(
+    repo_root: Path, workspace: ReleaseWorkspace, tag_refs: Mapping[str, str],
+) -> None:
+    """Record origin's exact tag refs before this release attempt can create any.
+
+    The snapshot is a separate shared-Git sidecar so old project-scope records
+    remain readable. A resume must preserve the original snapshot rather than
+    replacing it with the post-failure remote state.
+    """
+    path = _ensure_scope_dir(repo_root) / f"{_release_token(workspace)}.tags.json"
+    for ref, oid in tag_refs.items():
+        if (
+            not isinstance(ref, str)
+            or not _valid_ls_remote_ref(ref, "refs/tags/")
+            or not isinstance(oid, str)
+            or not re.fullmatch(r"[0-9a-f]{40}", oid)
+        ):
+            raise RuntimeError("origin tag snapshot contains a malformed ref record")
+    try:
+        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError as exc:
+        raise RuntimeError(f"release tag snapshot already exists: {path}") from exc
+    with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+        stream.write(json.dumps(dict(sorted(tag_refs.items())), indent=2) + "\n")
+
+
+def read_release_tag_snapshot(
+    repo_root: Path, workspace: ReleaseWorkspace,
+) -> dict[str, str] | None:
+    """Return the immutable pre-attempt remote tag set, or None for legacy workspaces."""
+    path = _scope_dir(repo_root) / f"{_release_token(workspace)}.tags.json"
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise RuntimeError(f"cannot inspect release tag snapshot {path}: {exc}") from exc
+    if not stat.S_ISREG(info.st_mode):
+        raise RuntimeError(f"release tag snapshot is not a regular file: {path}")
+    try:
+        raw = json.loads(
+            path.read_text(encoding="utf-8"),
+            object_pairs_hook=_unique_json_object,
+        )
+    except (OSError, UnicodeError, ValueError) as exc:
+        raise RuntimeError(f"cannot read release tag snapshot {path}: {exc}") from exc
+    if not isinstance(raw, dict):
+        raise RuntimeError(f"release tag snapshot is malformed: {path}")
+    snapshot: dict[str, str] = {}
+    for ref, oid in raw.items():
+        if (
+            not isinstance(ref, str)
+            or not _valid_ls_remote_ref(ref, "refs/tags/")
+            or not isinstance(oid, str)
+            or not re.fullmatch(r"[0-9a-f]{40}", oid)
+        ):
+            raise RuntimeError(f"release tag snapshot is malformed: {path}")
+        snapshot[ref] = oid
+    return snapshot
+
+
+def list_local_tag_refs(repo_root: Path) -> dict[str, str]:
+    """Return local tag refs and their exact object IDs without folding errors into absence."""
+    result = run_local_git(
+        repo_root, "for-each-ref", "--format=%(refname)%09%(objectname)", "refs/tags/",
+        capture_output=True, text=True, check=False,
+    )
+    if result.returncode != 0:
+        detail = result.stderr.strip() or result.stdout.strip() or "no diagnostic output"
+        raise RuntimeError(f"cannot inspect local release tags ({result.returncode}): {detail}")
+    refs: dict[str, str] = {}
+    for line in result.stdout.splitlines():
+        fields = line.split("\t")
+        if (
+            len(fields) != 2
+            or not _valid_ls_remote_ref(fields[0], "refs/tags/")
+            or not re.fullmatch(r"[0-9a-f]{40}", fields[1])
+        ):
+            raise RuntimeError(f"local tag listing returned a malformed ref record: {line!r}")
+        ref, oid = fields
+        if ref in refs:
+            raise RuntimeError(f"local tag listing returned a duplicate ref record: {ref}")
+        refs[ref] = oid
+    return refs
+
+
+def write_release_tag_attempts(
+    repo_root: Path,
+    workspace: ReleaseWorkspace,
+    tag_refs: Mapping[str, str],
+) -> None:
+    """Record exact local release tags before CMRU attempts to push them."""
+    path = _ensure_scope_dir(repo_root) / f"{_release_token(workspace)}.tag-attempts.json"
+    incoming: dict[str, str] = {}
+    for ref, oid in tag_refs.items():
+        if (
+            not isinstance(ref, str)
+            or not _valid_ls_remote_ref(ref, "refs/tags/")
+            or not isinstance(oid, str)
+            or not re.fullmatch(r"[0-9a-f]{40}", oid)
+        ):
+            raise RuntimeError("local release tag attempt contains a malformed ref record")
+        incoming[ref] = oid
+    try:
+        existing = read_release_tag_attempts(repo_root, workspace) or {}
+    except RuntimeError:
+        raise
+    for ref, oid in incoming.items():
+        previous = existing.get(ref)
+        if previous is not None and previous != oid:
+            raise RuntimeError(f"release tag {ref} changed after a prior push attempt")
+        existing[ref] = oid
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{secrets.token_hex(12)}")
+    try:
+        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            stream.write(json.dumps(dict(sorted(existing.items())), indent=2) + "\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def read_release_tag_attempts(
+    repo_root: Path, workspace: ReleaseWorkspace,
+) -> dict[str, str] | None:
+    """Return exact local tags attempted by CMRU, or None for older transactions."""
+    path = _scope_dir(repo_root) / f"{_release_token(workspace)}.tag-attempts.json"
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise RuntimeError(f"cannot inspect release tag attempt record {path}: {exc}") from exc
+    if not stat.S_ISREG(info.st_mode):
+        raise RuntimeError(f"release tag attempt record is not a regular file: {path}")
+    try:
+        raw = json.loads(
+            path.read_text(encoding="utf-8"),
+            object_pairs_hook=_unique_json_object,
+        )
+    except (OSError, UnicodeError, ValueError) as exc:
+        raise RuntimeError(f"cannot read release tag attempt record {path}: {exc}") from exc
+    if not isinstance(raw, dict):
+        raise RuntimeError(f"release tag attempt record is malformed: {path}")
+    attempts: dict[str, str] = {}
+    for ref, oid in raw.items():
+        if (
+            not isinstance(ref, str)
+            or not _valid_ls_remote_ref(ref, "refs/tags/")
+            or not isinstance(oid, str)
+            or not re.fullmatch(r"[0-9a-f]{40}", oid)
+        ):
+            raise RuntimeError(f"release tag attempt record is malformed: {path}")
+        attempts[ref] = oid
+    return attempts
+
+
+def _unique_json_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    """Reject duplicate object keys instead of accepting the last sidecar value."""
+    value: dict[str, object] = {}
+    for key, item in pairs:
+        if key in value:
+            raise ValueError(f"duplicate JSON object key: {key}")
+        value[key] = item
+    return value
+
+
+def _valid_ls_remote_ref(ref: str, namespace: str) -> bool:
+    """Apply Git's ref-name restrictions to a remote advertisement row."""
+    if namespace == "refs/tags/" and ref.endswith("^{}"):
+        name = ref[:-3]
+    else:
+        name = ref
+    if not name.startswith(namespace) or name == namespace:
+        return False
+    if (
+        name.startswith("/") or name.endswith(("/", "."))
+        or "//" in name or ".." in name or "@{" in name
+        or "\\" in name
+        or any(ord(char) <= 32 or ord(char) == 127 or char in "~^:?*[" for char in name)
+    ):
+        return False
+    return all(
+        component and not component.startswith(".")
+        and not component.endswith(".lock")
+        for component in name.split("/")
+    )
+
+
+def parse_ls_remote_refs(
+    output: str, *, namespace: str, description: str,
+) -> dict[str, str]:
+    """Parse successful ``git ls-remote`` output without folding bad rows into absence."""
+    refs: dict[str, str] = {}
+    for line in output.splitlines():
+        if not line:
+            continue
+        fields = line.split("\t")
+        if len(fields) != 2:
+            raise RuntimeError(f"{description} returned a malformed ref record: {line!r}")
+        oid, ref = fields
+        valid_ref = _valid_ls_remote_ref(ref, namespace)
+        if not re.fullmatch(r"[0-9a-f]{40}", oid) or not valid_ref:
+            raise RuntimeError(f"{description} returned a malformed ref record: {line!r}")
+        if ref in refs:
+            raise RuntimeError(f"{description} returned a duplicate ref record: {ref}")
+        refs[ref] = oid
+    return refs
+
+
 def read_release_scope(repo_root: Path, workspace: ReleaseWorkspace) -> list[str] | None:
     """The recorded project scope for a retained worktree, or None if it predates
     this feature (an older retained worktree) — callers should treat None
@@ -867,6 +1080,8 @@ def forget_release_scope(repo_root: Path, workspace: ReleaseWorkspace) -> None:
     abandon_workspace() (a discarded attempt) and a successful release (its scope
     marker is otherwise never cleaned up — see remove_workspace())."""
     (_scope_dir(repo_root) / f"{_release_token(workspace)}.json").unlink(missing_ok=True)
+    (_scope_dir(repo_root) / f"{_release_token(workspace)}.tags.json").unlink(missing_ok=True)
+    (_scope_dir(repo_root) / f"{_release_token(workspace)}.tag-attempts.json").unlink(missing_ok=True)
     _forget_release_progress(repo_root, workspace)
     (_scope_dir(repo_root) / f"{_release_token(workspace)}.results.json").unlink(missing_ok=True)
     _forget_plan_refused(repo_root, workspace)
@@ -2319,6 +2534,11 @@ def list_retained_workspaces(repo_root: Path) -> list[ReleaseWorkspace]:
 def abandon_workspace(
     repo_root: Path, workspace: ReleaseWorkspace, *,
     git_auth: GitHubGitAuth | None = None,
+    expected_remote_candidate_oid: str | None = None,
+    expected_remote_tag_refs: Mapping[str, str] | None = None,
+    release_tag_prefixes: Sequence[str] = (),
+    expected_local_tag_refs: Mapping[str, str] | None = None,
+    local_tags_to_remove: Mapping[str, str] | None = None,
 ) -> None:
     """Fully discard a retained release attempt and its origin candidate branch.
 
@@ -2333,16 +2553,50 @@ def abandon_workspace(
     )
     if remote.returncode != 0:
         raise RuntimeError("cannot determine origin candidate state; retained transaction was not removed")
-    present = any(line.split("\t", 1)[-1] == ref for line in remote.stdout.splitlines() if "\t" in line)
+    remote_refs = parse_ls_remote_refs(
+        remote.stdout, namespace="refs/heads/", description="origin branch lookup",
+    )
+    if any(remote_ref != ref for remote_ref in remote_refs):
+        raise RuntimeError("origin branch lookup returned an unexpected ref; retained transaction was not removed")
+    remote_candidate_oid = remote_refs.get(ref)
+    if (
+        expected_remote_candidate_oid is not None
+        and remote_candidate_oid != expected_remote_candidate_oid
+    ):
+        raise RuntimeError("origin candidate ref changed after abandonment inspection; retained transaction was not removed")
+    present = remote_candidate_oid is not None
     pushed = backup_was_pushed(repo_root, workspace)
     removed = backup_was_removed(repo_root, workspace)
     if pushed and not removed and not present:
         raise RuntimeError("origin candidate ref is missing but its removal was not recorded; refusing stale transaction metadata")
     if (not pushed or removed) and present:
         raise RuntimeError("origin candidate ref exists without matching active transaction state")
+    if expected_remote_tag_refs is not None:
+        tags = run_remote_git(
+            repo_root, "ls-remote", "--tags", "origin",
+            auth=git_auth, capture_output=True, text=True, check=False,
+        )
+        if tags.returncode != 0:
+            raise RuntimeError("cannot recheck origin release tags; retained transaction was not removed")
+        current_tag_refs = parse_ls_remote_refs(
+            tags.stdout, namespace="refs/tags/", description="origin release tag lookup",
+        )
+        current_tag_refs = _tag_refs_for_prefixes(current_tag_refs, release_tag_prefixes)
+        if current_tag_refs != dict(expected_remote_tag_refs):
+            raise RuntimeError("origin release tags changed after abandonment inspection; retained transaction was not removed")
+    if expected_local_tag_refs is not None:
+        current_local_tag_refs = _tag_refs_for_prefixes(
+            list_local_tag_refs(repo_root), release_tag_prefixes,
+        )
+        if current_local_tag_refs != dict(expected_local_tag_refs):
+            raise RuntimeError("local release tags changed after abandonment inspection; retained transaction was not removed")
     if pushed and not removed:
+        if remote_candidate_oid is None or not re.fullmatch(r"[0-9a-f]{40}", remote_candidate_oid):
+            raise RuntimeError("origin candidate object ID is unavailable; retained transaction was not removed")
         result = run_remote_git(
-            repo_root, "push", "origin", "--delete", workspace.branch,
+            repo_root, "push",
+            f"--force-with-lease={ref}:{remote_candidate_oid}",
+            "origin", f":{ref}",
             auth=git_auth, capture_output=True, text=True, check=False,
         )
         if result.returncode != 0:
@@ -2354,14 +2608,62 @@ def abandon_workspace(
             repo_root, "ls-remote", "--heads", "origin", ref,
             auth=git_auth, capture_output=True, text=True, check=False,
         )
-        if verify.returncode != 0 or any(
-            line.split("\t", 1)[-1] == ref
-            for line in verify.stdout.splitlines() if "\t" in line
-        ):
+        if verify.returncode != 0:
+            raise RuntimeError(f"origin candidate ref {ref} still exists or could not be verified; local transaction was retained")
+        remaining_refs = parse_ls_remote_refs(
+            verify.stdout, namespace="refs/heads/", description="origin candidate deletion verification",
+        )
+        if remaining_refs:
             raise RuntimeError(f"origin candidate ref {ref} still exists or could not be verified; local transaction was retained")
         mark_backup_removed(repo_root, workspace)
+    for tag_ref, expected_oid in sorted((local_tags_to_remove or {}).items()):
+        if (
+            not _valid_ls_remote_ref(tag_ref, "refs/tags/")
+            or not re.fullmatch(r"[0-9a-f]{40}", expected_oid)
+        ):
+            raise RuntimeError("abandonment has a malformed local release-tag cleanup target")
+        current_oid = list_local_tag_refs(repo_root).get(tag_ref)
+        if current_oid is None:
+            continue
+        if current_oid != expected_oid:
+            raise RuntimeError(
+                f"local release tag {tag_ref} changed after abandonment inspection; "
+                "the retained worktree was not removed"
+            )
+        result = run_local_git(
+            repo_root, "update-ref", "-d", tag_ref, expected_oid,
+            capture_output=True, text=True, check=False,
+        )
+        remaining_oid = list_local_tag_refs(repo_root).get(tag_ref)
+        if remaining_oid is not None:
+            if remaining_oid != expected_oid:
+                raise RuntimeError(
+                    f"local release tag {tag_ref} changed during abandonment; "
+                    "the retained worktree was not removed"
+                )
+            detail = result.stderr.strip() or result.stdout.strip() or "no diagnostic output"
+            raise RuntimeError(
+                f"could not remove local release tag {tag_ref} ({result.returncode}); "
+                f"the retained worktree was not removed: {detail}"
+            )
     remove_workspace(workspace)
     forget_release_scope(repo_root, workspace)
+
+
+def _tag_refs_for_prefixes(
+    tag_refs: Mapping[str, str], prefixes: Sequence[str],
+) -> dict[str, str]:
+    """Select complete tag-ref records in the named project release namespaces."""
+    if not prefixes:
+        return dict(tag_refs)
+    selected: dict[str, str] = {}
+    for ref, oid in tag_refs.items():
+        name = ref.removeprefix("refs/tags/")
+        if name.endswith("^{}"):
+            name = name[:-3]
+        if any(name.startswith(prefix) for prefix in prefixes):
+            selected[ref] = oid
+    return selected
 
 
 def promote_workspace(

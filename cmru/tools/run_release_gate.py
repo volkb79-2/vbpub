@@ -8,6 +8,7 @@ import json
 import os
 import secrets
 import shutil
+import signal
 import stat
 import subprocess
 import sys
@@ -36,6 +37,8 @@ class _SecretBackup:
     gid: int
     atime_ns: int
     mtime_ns: int
+    overlay_device: int
+    overlay_inode: int
 
 
 def _load_components():
@@ -130,10 +133,44 @@ def _restore(backups: list[_SecretBackup]) -> None:
                 item.device, item.inode,
             ):
                 continue
-            # A lane may have created a path with this name. Remove that entry
-            # itself (including a symlink) before restoring the saved file.
             if current is not None:
-                item.path.unlink()
+                displaced = item.path.with_name(
+                    f".{item.path.name}.restore-{secrets.token_hex(16)}"
+                )
+                # Move the current directory entry atomically before deciding
+                # whether it is our overlay. A prior lstat followed by unlink
+                # could erase a credential atomically rotated into this path
+                # between those operations.
+                os.replace(item.path, displaced)
+                displaced_metadata = displaced.lstat()
+                displaced_identity = (displaced_metadata.st_dev, displaced_metadata.st_ino)
+                if displaced_identity == (item.device, item.inode):
+                    try:
+                        os.link(displaced, item.path, follow_symlinks=False)
+                    except OSError as exc:
+                        raise RuntimeError(
+                            f"the original publisher secret was moved during restoration; "
+                            f"it is preserved at {displaced}: {exc}"
+                        ) from exc
+                    displaced.unlink()
+                    continue
+                if displaced_identity != (item.overlay_device, item.overlay_inode):
+                    try:
+                        # link() is atomic and fails if a newer entry has
+                        # appeared, preserving both versions instead of
+                        # replacing either one.
+                        os.link(displaced, item.path, follow_symlinks=False)
+                    except OSError as exc:
+                        raise RuntimeError(
+                            "publisher secret changed while the gate was running; "
+                            f"preserving the replacement at {displaced} and any newer path entry: {exc}"
+                        ) from exc
+                    displaced.unlink()
+                    raise RuntimeError(
+                        "publisher secret changed while the gate was running; "
+                        "preserving the replacement"
+                    )
+                displaced.unlink()
             flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
             descriptor = os.open(item.path, flags, item.mode)
             try:
@@ -180,7 +217,19 @@ def _mask_secret_overlays(
             "private publisher-secret backup directory is inside the mounted repository"
         )
     backups: list[_SecretBackup] = []
+    restoring = False
+    previous_signal_handlers = {}
+
+    def _restore_on_termination_signal(signum, _frame) -> None:
+        if restoring:
+            return
+        raise SystemExit(128 + signum)
+
     try:
+        for signum in (signal.SIGTERM, signal.SIGHUP):
+            previous_signal_handlers[signum] = signal.signal(
+                signum, _restore_on_termination_signal,
+            )
         for index, path in enumerate(dict.fromkeys(paths)):
             saved = _read_secret(path)
             if saved is None:
@@ -191,41 +240,94 @@ def _mask_secret_overlays(
             current = path.lstat()
             if (current.st_dev, current.st_ino) != (metadata.st_dev, metadata.st_ino):
                 raise RuntimeError(f"publisher secret changed before masking: {path}")
-            record = _SecretBackup(
-                path=path,
-                backup=backup,
-                device=metadata.st_dev,
-                inode=metadata.st_ino,
-                mode=stat.S_IMODE(metadata.st_mode),
-                uid=metadata.st_uid,
-                gid=metadata.st_gid,
-                atime_ns=metadata.st_atime_ns,
-                mtime_ns=metadata.st_mtime_ns,
-            )
             temporary_link = path.with_name(
                 f".{path.name}.mask-{secrets.token_hex(16)}"
             )
+            displaced = path.with_name(
+                f".{path.name}.mask-displaced-{secrets.token_hex(16)}"
+            )
             os.symlink(backup, temporary_link)
-            backups.append(record)
             try:
-                os.replace(temporary_link, path)
+                overlay_metadata = temporary_link.lstat()
+                record = _SecretBackup(
+                    path=path,
+                    backup=backup,
+                    device=metadata.st_dev,
+                    inode=metadata.st_ino,
+                    mode=stat.S_IMODE(metadata.st_mode),
+                    uid=metadata.st_uid,
+                    gid=metadata.st_gid,
+                    atime_ns=metadata.st_atime_ns,
+                    mtime_ns=metadata.st_mtime_ns,
+                    overlay_device=overlay_metadata.st_dev,
+                    overlay_inode=overlay_metadata.st_ino,
+                )
+                backups.append(record)
+                # Move the visible entry first, then inspect the inode that was
+                # actually moved. Replacing the path with the overlay directly
+                # could erase a credential rotated in after the lstat above.
+                os.replace(path, displaced)
+                moved = displaced.lstat()
+                if (moved.st_dev, moved.st_ino) != (metadata.st_dev, metadata.st_ino):
+                    backups.pop()
+                    try:
+                        os.link(displaced, path, follow_symlinks=False)
+                    except OSError as exc:
+                        raise RuntimeError(
+                            "publisher secret changed while masking; "
+                            f"preserving the moved entry at {displaced}: {exc}"
+                        ) from exc
+                    displaced.unlink()
+                    raise RuntimeError(f"publisher secret changed before masking: {path}")
+                try:
+                    # Hard-linking the symlink itself is an exclusive install:
+                    # it fails if another writer has created a new path entry.
+                    os.link(temporary_link, path, follow_symlinks=False)
+                except OSError as exc:
+                    backups.pop()
+                    try:
+                        path.lstat()
+                    except FileNotFoundError:
+                        try:
+                            os.link(displaced, path, follow_symlinks=False)
+                        except OSError as restore_exc:
+                            raise RuntimeError(
+                                "could not install the publisher-secret overlay; "
+                                f"the original is preserved at {displaced}: {restore_exc}"
+                            ) from exc
+                        displaced.unlink()
+                    else:
+                        raise RuntimeError(
+                            "could not install the publisher-secret overlay without "
+                            "replacing a concurrent path entry; "
+                            f"the original is preserved at {displaced}: {exc}"
+                        ) from exc
+                    raise RuntimeError(
+                        f"could not install the publisher-secret overlay at {path}: {exc}"
+                    ) from exc
+                displaced.unlink()
             finally:
                 temporary_link.unlink(missing_ok=True)
         yield
     finally:
+        restoring = True
         try:
-            _restore(backups)
-        except Exception as exc:
-            raise RuntimeError(
-                f"{exc}; private publisher-secret backups retained at {backup_root}"
-            ) from exc
-        try:
-            shutil.rmtree(backup_root)
-        except OSError as exc:
-            raise RuntimeError(
-                "publisher secret overlays were restored, but private backups "
-                f"could not be removed at {backup_root}: {exc}"
-            ) from exc
+            try:
+                _restore(backups)
+            except Exception as exc:
+                raise RuntimeError(
+                    f"{exc}; private publisher-secret backups retained at {backup_root}"
+                ) from exc
+            try:
+                shutil.rmtree(backup_root)
+            except OSError as exc:
+                raise RuntimeError(
+                    "publisher secret overlays were restored, but private backups "
+                    f"could not be removed at {backup_root}: {exc}"
+                ) from exc
+        finally:
+            for signum, previous_handler in previous_signal_handlers.items():
+                signal.signal(signum, previous_handler)
 
 
 def _lane_environment() -> dict[str, str]:

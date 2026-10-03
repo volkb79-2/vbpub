@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import subprocess
 import sys
@@ -58,6 +59,33 @@ def test_disposable_fixture_copies_shared_libraries_and_estate_configs(tmp_path,
         assert (workspace / relative).read_text(encoding="utf-8") == (
             f"name = {relative.parts[0]!r}\n"
         )
+
+
+def test_test_manifest_fingerprints_dangling_fixture_symlinks_without_following_them(tmp_path):
+    repo = tmp_path / "repo"
+    project = repo / "cmru"
+    (project / "src" / "cmru").mkdir(parents=True)
+    (project / "tests").mkdir()
+    (project / "src" / "cmru" / "thing.py").write_text("value = 1\n", encoding="utf-8")
+    (project / "tests" / "test_thing.py").write_text(
+        "def test_ok(): assert True\n", encoding="utf-8",
+    )
+    (project / "pyproject.toml").write_text("[tool.pytest.ini_options]\n", encoding="utf-8")
+    linked = repo / "libraries" / "worktree" / "run-gate.py"
+    linked.parent.mkdir(parents=True)
+    linked.symlink_to("missing-run-gate.py")
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    subprocess.run(["git", "-C", str(repo), "add", "cmru", "libraries/worktree"], check=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-qm", "base"],
+        check=True,
+    )
+
+    manifest = mutation_campaign._test_manifest(repo, Path("cmru"))
+
+    assert manifest["fixture_files"]["libraries/worktree/run-gate.py"] == hashlib.sha256(
+        b"symlink\0missing-run-gate.py"
+    ).hexdigest()
 
 
 def _job(path: str = "cmru/src/cmru/thing.py", line: int = 7):
@@ -262,7 +290,81 @@ def test_resume_refuses_changed_source(tmp_path):
         )
 
 
-def test_resume_accepts_only_strictly_additive_test_suites(tmp_path):
+def test_resume_refuses_changed_shared_library_in_the_executed_fixture(tmp_path):
+    repo = tmp_path / "repo"
+    project = repo / "cmru"
+    (project / "src" / "cmru").mkdir(parents=True)
+    (project / "tests").mkdir()
+    (project / "src" / "cmru" / "thing.py").write_text("value = 1\n", encoding="utf-8")
+    (project / "tests" / "test_thing.py").write_text("def test_ok(): assert True\n", encoding="utf-8")
+    (project / "pyproject.toml").write_text("[tool.pytest.ini_options]\n", encoding="utf-8")
+    dependency = repo / "libraries" / "worktree" / "src" / "worktree" / "__init__.py"
+    dependency.parent.mkdir(parents=True)
+    dependency.write_text("value = 1\n", encoding="utf-8")
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    subprocess.run(["git", "-C", str(repo), "add", "cmru", "libraries/worktree"], check=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-qm", "base"],
+        check=True,
+    )
+    base = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"], check=True, text=True,
+        stdout=subprocess.PIPE,
+    ).stdout.strip()
+    job = _job()
+    previous = {
+        "base": base,
+        "head": base,
+        "project_prefix": "cmru",
+        "assay_source_commit": "assay-commit",
+        "max_mutants": 1,
+        "operators": list(mutation_campaign.OPERATORS),
+        "test_argv": ["pytest", "tests"],
+        "timeout_seconds": 120,
+        "candidate_count": 1,
+        "test_manifest": mutation_campaign._test_manifest(repo, Path("cmru")),
+        "results": [{
+            "path": job.path,
+            "line": job.site.lineno,
+            "operator": job.site.operator,
+            "description": job.site.description,
+            "exit_code": 1,
+            "outcome": "killed",
+        }],
+    }
+    evidence = project / ".assay" / "mutation-cmru.json"
+    evidence.parent.mkdir()
+    evidence.write_text(json.dumps(previous), encoding="utf-8")
+
+    dependency.write_text("value = 2\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo), "add", "libraries/worktree"], check=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-qm", "change copied library"],
+        check=True,
+    )
+    head = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"], check=True, text=True,
+        stdout=subprocess.PIPE,
+    ).stdout.strip()
+
+    with pytest.raises(ValueError, match="test suite and fixture closure"):
+        mutation_campaign._resume_results(
+            evidence_path=evidence,
+            repo_root=repo,
+            resume=True,
+            base=base,
+            head=head,
+            project_prefix=Path("cmru"),
+            assay_source_commit="assay-commit",
+            assay_git=assay_git,
+            test_argv=["pytest", "tests"],
+            jobs=[job],
+            max_mutants=1,
+            timeout_seconds=120,
+        )
+
+
+def test_resume_refuses_added_or_changed_test_files(tmp_path):
     repo = tmp_path / "repo"
     project = repo / "cmru"
     (project / "src" / "cmru").mkdir(parents=True)
@@ -321,21 +423,21 @@ def test_resume_accepts_only_strictly_additive_test_suites(tmp_path):
         stdout=subprocess.PIPE,
     ).stdout.strip()
 
-    resumed = mutation_campaign._resume_results(
-        evidence_path=evidence,
-        repo_root=repo,
-        resume=True,
-        base=previous_head,
-        head=additive_head,
-        project_prefix=Path("cmru"),
-        assay_source_commit="assay-commit",
-        assay_git=assay_git,
-        test_argv=["pytest", "tests"],
-        jobs=[job],
-        max_mutants=1,
-        timeout_seconds=120,
-    )
-    assert resumed == [previous["results"][0]]
+    with pytest.raises(ValueError, match="test suite and fixture closure"):
+        mutation_campaign._resume_results(
+            evidence_path=evidence,
+            repo_root=repo,
+            resume=True,
+            base=previous_head,
+            head=additive_head,
+            project_prefix=Path("cmru"),
+            assay_source_commit="assay-commit",
+            assay_git=assay_git,
+            test_argv=["pytest", "tests"],
+            jobs=[job],
+            max_mutants=1,
+            timeout_seconds=120,
+        )
 
     test_file.write_text("def test_ok(): assert False\n", encoding="utf-8")
     subprocess.run(["git", "-C", str(repo), "add", "cmru/tests"], check=True)
@@ -347,7 +449,7 @@ def test_resume_accepts_only_strictly_additive_test_suites(tmp_path):
         ["git", "-C", str(repo), "rev-parse", "HEAD"], check=True, text=True,
         stdout=subprocess.PIPE,
     ).stdout.strip()
-    with pytest.raises(ValueError, match="strictly additive test suite"):
+    with pytest.raises(ValueError, match="test suite and fixture closure"):
         mutation_campaign._resume_results(
             evidence_path=evidence,
             repo_root=repo,

@@ -102,6 +102,8 @@ def test_assay_and_release_gate_split_rigor_without_empty_release_mutation():
     assert "_mask_secret_overlays(" in release_gate
     assert "RUN_GATE_EXTRA_MOUNTS" in release_gate
     mutation_command = " ".join(gate["lanes"]["mutation"]["argv"])
+    assert "--cov" not in mutation_command
+    assert "--cov-fail-under" not in mutation_command
     assert gate["lanes"]["mutation"]["environment"] == "cmru-mutation"
     assert gate["lanes"]["mutation"]["required_env"] == ["CMRU_ASSAY_BASELINE_FACTS"]
     mutation_environment = gate["environments"]["cmru-mutation"]

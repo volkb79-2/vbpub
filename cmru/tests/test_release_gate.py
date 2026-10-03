@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import signal
 import stat
 import sys
 from pathlib import Path
 from types import SimpleNamespace
+
+import pytest
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -140,6 +143,118 @@ def test_release_gate_restores_secrets_after_a_failed_registered_lane(tmp_path, 
     assert calls == ["installed-wheel", "assay"]
     assert root_secret.read_bytes() == b"root credential\n"
     assert project_secret.read_bytes() == b"project override\n"
+
+
+@pytest.mark.parametrize("signum", [signal.SIGTERM, signal.SIGHUP])
+def test_secret_overlay_restores_files_and_handler_when_termination_signal_arrives(
+    tmp_path, monkeypatch, signum,
+):
+    repo = tmp_path / "repository"
+    repo.mkdir()
+    secret = repo / "cmru.secret.toml"
+    secret.write_bytes(b"publisher credential\n")
+    private_root = tmp_path / "private-backups"
+    private_root.mkdir(mode=0o700)
+    handler_calls = []
+
+    def record_signal_handler(received_signum, handler):
+        handler_calls.append((received_signum, handler))
+        return signal.SIG_DFL
+
+    monkeypatch.setattr(run_release_gate.signal, "signal", record_signal_handler)
+
+    with pytest.raises(SystemExit) as interrupted:
+        with run_release_gate._mask_secret_overlays(
+            [secret], mount_root=repo, temp_parent=private_root,
+        ):
+            assert secret.is_symlink()
+            handler_calls[0][1](signum, None)
+
+    assert interrupted.value.code == 128 + signum
+    assert secret.read_bytes() == b"publisher credential\n"
+    assert handler_calls[2:] == [
+        (signal.SIGTERM, signal.SIG_DFL),
+        (signal.SIGHUP, signal.SIG_DFL),
+    ]
+
+
+def test_secret_overlay_preserves_atomic_rotation_during_gate(tmp_path, monkeypatch):
+    repo = tmp_path / "repository"
+    repo.mkdir()
+    secret = repo / "cmru.secret.toml"
+    secret.write_bytes(b"old publisher credential\n")
+    private_root = tmp_path / "private-backups"
+    private_root.mkdir(mode=0o700)
+    replacement = tmp_path / "rotated.secret"
+    replacement.write_bytes(b"rotated publisher credential\n")
+
+    try:
+        with run_release_gate._mask_secret_overlays(
+            [secret], mount_root=repo, temp_parent=private_root,
+        ):
+            assert secret.is_symlink()
+            real_replace = os.replace
+            rotated = False
+
+            def rotate_at_restore(source, destination):
+                nonlocal rotated
+                if (
+                    not rotated
+                    and Path(source) == secret
+                    and ".restore-" in Path(destination).name
+                ):
+                    rotated = True
+                    real_replace(replacement, secret)
+                return real_replace(source, destination)
+
+            monkeypatch.setattr(os, "replace", rotate_at_restore)
+    except RuntimeError as exc:
+        assert "preserving the replacement" in str(exc)
+        assert "private publisher-secret backups retained at" in str(exc)
+        assert rotated
+        backup_root = Path(str(exc).rsplit("retained at ", 1)[1])
+    else:
+        raise AssertionError("atomic credential rotation was silently overwritten")
+
+    assert secret.read_bytes() == b"rotated publisher credential\n"
+    backup = next(backup_root.glob("overlay-*.bin"))
+    assert backup.read_bytes() == b"old publisher credential\n"
+
+
+def test_secret_overlay_preserves_atomic_rotation_at_mask_boundary(tmp_path, monkeypatch):
+    repo = tmp_path / "repository"
+    repo.mkdir()
+    secret = repo / "cmru.secret.toml"
+    secret.write_bytes(b"old publisher credential\n")
+    private_root = tmp_path / "private-backups"
+    private_root.mkdir(mode=0o700)
+    replacement = tmp_path / "rotated.secret"
+    replacement.write_bytes(b"rotated publisher credential\n")
+    real_replace = os.replace
+    rotated = False
+
+    def rotate_before_mask_move(source, destination):
+        nonlocal rotated
+        if (
+            not rotated
+            and Path(source) == secret
+            and ".mask-displaced-" in Path(destination).name
+        ):
+            rotated = True
+            real_replace(replacement, secret)
+        return real_replace(source, destination)
+
+    monkeypatch.setattr(os, "replace", rotate_before_mask_move)
+    with pytest.raises(RuntimeError, match="publisher secret changed before masking"):
+        with run_release_gate._mask_secret_overlays(
+            [secret], mount_root=repo, temp_parent=private_root,
+        ):
+            pytest.fail("the overlay was installed after a credential rotation")
+
+    assert rotated
+    assert secret.read_bytes() == b"rotated publisher credential\n"
+    assert not list(repo.glob(".cmru.secret.toml.mask-*"))
+    assert not list(repo.glob(".cmru.secret.toml.mask-displaced-*"))
 
 
 def test_release_gate_retains_private_backups_when_secret_restoration_fails(

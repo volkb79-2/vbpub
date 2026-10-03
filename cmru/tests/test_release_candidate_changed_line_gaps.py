@@ -1,6 +1,7 @@
 """Behavioral witnesses for remaining changed-line release coverage gaps."""
 from __future__ import annotations
 
+import errno
 import json
 import os
 import subprocess
@@ -30,6 +31,20 @@ def test_local_tag_helpers_validate_git_object_ids_and_existence(monkeypatch, tm
         cli.local_git_tag_oid(tmp_path, "demo-v1")
 
 
+def test_local_tag_deletion_honors_a_previewed_absence(monkeypatch, tmp_path, capsys):
+    inspected = []
+    monkeypatch.setattr(
+        cli, "local_git_tag_oid",
+        lambda *args, **kwargs: inspected.append((args, kwargs)) or "a" * 40,
+    )
+
+    assert cli.delete_git_tag_local(
+        tmp_path, "demo-v1", False, expected_present=False,
+    ) is None
+    assert inspected == []
+    assert "absent from the confirmed cleanup preview" in capsys.readouterr().out
+
+
 def test_tag_deletion_refuses_malformed_or_incomplete_preview_identity(monkeypatch, tmp_path):
     tag = "demo-v1"
     oid = "a" * 40
@@ -52,7 +67,7 @@ def test_tag_deletion_refuses_malformed_or_incomplete_preview_identity(monkeypat
 
 def test_cleanup_preview_does_not_plan_deleting_an_absent_tag(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(cli, "list_releases", lambda *_: [
-        {"tag_name": "demo-v1.0.0", "id": 7},
+        {"tag_name": "demo-v1.0.0", "id": 7, "assets": []},
     ])
     monkeypatch.setattr(cli, "list_remote_tag_refs_matching", lambda *_a, **_k: {})
     monkeypatch.setattr(cli, "local_git_tag_oid", lambda *_a, **_k: None)
@@ -266,6 +281,31 @@ def test_resume_migrates_an_existing_legacy_record_without_a_scope_marker(
         _remove_raw_release_worktree(root, path, branch)
 
 
+def test_resume_preserves_an_existing_legacy_scope_marker(monkeypatch, tmp_path):
+    root, path, branch, _base = _raw_release_worktree(tmp_path, suffix="existing-marker")
+    shared = transaction._shared_worktree()
+    adopted = shared.adopt_workspace(
+        root, path, purpose="cmru-legacy", labels={"cmru.purpose": "release"},
+        metadata={
+            transaction._LEGACY_RESUME_METADATA_KEY:
+                transaction._LEGACY_RESUME_METADATA_VALUE,
+        },
+        identity_path=path,
+    )
+    expected_metadata = dict(shared.find_workspace(adopted.git_common_dir, path).metadata)
+    monkeypatch.setattr(
+        transaction, "run_remote_git",
+        lambda *_args, **_kwargs: SimpleNamespace(returncode=0, stdout="", stderr=""),
+    )
+    try:
+        resumed = transaction.resume_workspace(root, path)
+        record = shared.find_workspace(adopted.git_common_dir, path)
+        assert resumed.workspace_id == adopted.workspace_id
+        assert record.metadata == expected_metadata
+    finally:
+        _remove_raw_release_worktree(root, path, branch)
+
+
 @pytest.mark.parametrize(
     "metadata,message",
     [
@@ -396,6 +436,8 @@ def test_read_release_scope_for_path_reports_unverifiable_candidates(
 def test_cleanup_build_output_refuses_a_valid_but_absent_record_before_apply(monkeypatch, tmp_path):
     project = cli.ProjectConfig("demo", {}, {}, project_root=tmp_path / "demo")
     project.project_root.mkdir()
+    (project.project_root / "artifacts").mkdir()
+    (project.project_root / "logs").mkdir()
     monkeypatch.setattr(cli, "_resolve_config", lambda _arg: tmp_path / "cmru.toml")
     monkeypatch.setattr(cli, "load_config", lambda _path: (
         tmp_path, {"demo": project}, ["demo"], ["demo"], [], "project-first", {},
@@ -493,6 +535,12 @@ def test_build_output_cleanup_refuses_a_fifo_manifest_without_blocking(tmp_path)
     project, output_id, artifact_root, _logs_root = _retained_build_output(tmp_path)
     manifest_path = artifact_root / "build.json"
     manifest_path.unlink()
+    manifest_path.mkdir()
+    with pytest.raises(RuntimeError, match="retained build record is incomplete or unsafe"):
+        transaction.retained_build_output_identity(
+            tmp_path, project, "demo", output_id,
+        )
+    manifest_path.rmdir()
     os.mkfifo(manifest_path)
 
     child_code = """
@@ -525,6 +573,359 @@ raise SystemExit(1)
         timeout=5,
     )
     assert result.returncode == 0, result.stderr
+
+
+def test_descriptor_cleanup_refuses_missing_safety_flags_and_noncanonical_paths(
+    monkeypatch, tmp_path,
+):
+    monkeypatch.delattr(transaction.os, "O_NOFOLLOW")
+    with pytest.raises(RuntimeError, match="safe descriptor-relative build-output cleanup is unavailable"):
+        transaction._directory_open_flags()
+
+    with pytest.raises(RuntimeError, match="cannot safely open non-canonical directory path"):
+        transaction._open_directory_path_nofollow(Path("relative/path"))
+    with pytest.raises(RuntimeError, match="cannot safely open non-canonical directory path"):
+        transaction._open_directory_path_nofollow(tmp_path / ".." / "escape")
+
+
+def test_open_directory_path_closes_its_current_descriptor_after_open_failure(
+    monkeypatch, tmp_path,
+):
+    opened = []
+    original_open = transaction.os.open
+
+    def track_open(path, *args, **kwargs):
+        descriptor = original_open(path, *args, **kwargs)
+        opened.append(descriptor)
+        return descriptor
+
+    monkeypatch.setattr(transaction.os, "open", track_open)
+    with pytest.raises(FileNotFoundError):
+        transaction._open_directory_path_nofollow(tmp_path / "missing" / "child")
+
+    assert opened
+    for descriptor in opened:
+        with pytest.raises(OSError) as raised:
+            os.fstat(descriptor)
+        assert raised.value.errno == errno.EBADF
+
+
+def test_descriptor_tree_walk_detects_a_directory_changed_before_visit(
+    monkeypatch, tmp_path,
+):
+    descriptor = os.open(tmp_path, transaction._directory_open_flags())
+    original_identity = transaction._filesystem_stat_identity
+    calls = 0
+
+    def change_identity(info):
+        nonlocal calls
+        calls += 1
+        identity = original_identity(info)
+        return (*identity[:-1], identity[-1] + 1) if calls == 2 else identity
+
+    monkeypatch.setattr(transaction, "_filesystem_stat_identity", change_identity)
+    try:
+        with pytest.raises(RuntimeError, match="retained build output changed during inspection"):
+            transaction._filesystem_tree_identity_fd(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def test_manifest_reader_detects_a_file_changed_during_read(monkeypatch, tmp_path):
+    (tmp_path / "build.json").write_text("{}", encoding="utf-8")
+    parent_fd = os.open(tmp_path, transaction._directory_open_flags())
+    original_identity = transaction._filesystem_stat_identity
+    calls = 0
+
+    def change_identity(info):
+        nonlocal calls
+        calls += 1
+        identity = original_identity(info)
+        return (*identity[:-1], identity[-1] + 1) if calls == 2 else identity
+
+    monkeypatch.setattr(transaction, "_filesystem_stat_identity", change_identity)
+    try:
+        with pytest.raises(RuntimeError, match="retained build manifest changed during inspection"):
+            transaction._read_regular_file_at(
+                parent_fd, "build.json", "demo", tmp_path / "build.json",
+            )
+    finally:
+        os.close(parent_fd)
+
+
+def test_retained_output_parent_open_translates_symlink_errors(monkeypatch, tmp_path):
+    project_root = tmp_path / "demo"
+    (project_root / "artifacts").mkdir(parents=True)
+    (project_root / "logs").mkdir()
+    project = SimpleNamespace(project_root=project_root)
+    monkeypatch.setattr(transaction, "_assert_no_symlink_components", lambda *_a, **_k: None)
+    original_open = transaction.os.open
+
+    def fail_artifacts(path, *args, **kwargs):
+        if path == "artifacts" and kwargs.get("dir_fd") is not None:
+            raise OSError(errno.ELOOP, "simulated symlink")
+        return original_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(transaction.os, "open", fail_artifacts)
+    with pytest.raises(RuntimeError, match="retained build output path is or crosses a symlink"):
+        with transaction._retained_build_output_parent_fds(
+            tmp_path, project, "demo", "20260101T000000Z_" + "a" * 40,
+        ):
+            pytest.fail("unsafe parent descriptors were yielded")
+
+
+def test_retained_output_parent_open_closes_prior_descriptors_on_unexpected_error(
+    monkeypatch, tmp_path,
+):
+    project_root = tmp_path / "demo"
+    (project_root / "artifacts").mkdir(parents=True)
+    (project_root / "logs").mkdir()
+    project = SimpleNamespace(project_root=project_root)
+    captured = []
+    original_open = transaction.os.open
+
+    def fail_logs(path, *args, **kwargs):
+        if path == "logs" and kwargs.get("dir_fd") is not None:
+            raise RuntimeError("injected opener failure")
+        descriptor = original_open(path, *args, **kwargs)
+        if path == "artifacts" and kwargs.get("dir_fd") is not None:
+            captured.append(descriptor)
+        return descriptor
+
+    monkeypatch.setattr(transaction.os, "open", fail_logs)
+    with pytest.raises(RuntimeError, match="injected opener failure"):
+        with transaction._retained_build_output_parent_fds(
+            tmp_path, project, "demo", "20260101T000000Z_" + "a" * 40,
+        ):
+            pytest.fail("incomplete parent descriptors were yielded")
+    assert len(captured) == 1
+    with pytest.raises(OSError) as raised:
+        os.fstat(captured[0])
+    assert raised.value.errno == errno.EBADF
+
+
+def test_retained_output_leaf_open_translates_symlink_errors(monkeypatch, tmp_path):
+    project, output_id, artifact_root, logs_root = _retained_build_output(tmp_path)
+    monkeypatch.setattr(transaction, "_assert_no_symlink_components", lambda *_a, **_k: None)
+    original_open = transaction.os.open
+
+    def fail_output_leaf(path, *args, **kwargs):
+        if path == output_id and kwargs.get("dir_fd") is not None:
+            raise OSError(errno.ELOOP, "simulated symlink")
+        return original_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(transaction.os, "open", fail_output_leaf)
+    with pytest.raises(RuntimeError, match="retained build output path is or crosses a symlink"):
+        transaction.retained_build_output_identity(tmp_path, project, "demo", output_id)
+    assert (artifact_root / "build.json").is_file()
+    assert (logs_root / "build.log").is_file()
+
+
+def test_retained_output_leaf_open_closes_prior_descriptors_on_unexpected_error(
+    monkeypatch, tmp_path,
+):
+    project, output_id, _artifact_root, _logs_root = _retained_build_output(tmp_path)
+    captured = []
+    original_open = transaction.os.open
+    output_opens = 0
+
+    def fail_second_leaf(path, *args, **kwargs):
+        nonlocal output_opens
+        if path == output_id and kwargs.get("dir_fd") is not None:
+            output_opens += 1
+            if output_opens == 2:
+                raise RuntimeError("injected leaf opener failure")
+            descriptor = original_open(path, *args, **kwargs)
+            captured.append(descriptor)
+            return descriptor
+        return original_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(transaction.os, "open", fail_second_leaf)
+    with pytest.raises(RuntimeError, match="injected leaf opener failure"):
+        transaction.retained_build_output_identity(tmp_path, project, "demo", output_id)
+    assert len(captured) == 1
+    with pytest.raises(OSError) as raised:
+        os.fstat(captured[0])
+    assert raised.value.errno == errno.EBADF
+
+
+def test_retained_output_identity_rechecks_root_directories_after_tree_walk(
+    monkeypatch, tmp_path,
+):
+    project, output_id, _artifact_root, _logs_root = _retained_build_output(tmp_path)
+    original_walk = transaction._filesystem_tree_identity_fd
+    walks = 0
+
+    def add_artifact_after_walk(root_fd):
+        nonlocal walks
+        walks += 1
+        result = original_walk(root_fd)
+        if walks == 1:
+            descriptor = os.open(
+                "late-arrival.txt", os.O_CREAT | os.O_WRONLY, 0o600,
+                dir_fd=root_fd,
+            )
+            os.close(descriptor)
+        return result
+
+    monkeypatch.setattr(transaction, "_filesystem_tree_identity_fd", add_artifact_after_walk)
+    with pytest.raises(RuntimeError, match="retained build output changed during inspection"):
+        transaction.retained_build_output_identity(tmp_path, project, "demo", output_id)
+    assert walks == 1
+
+
+def test_private_cleanup_stage_retries_collisions_and_removes_failed_open(
+    monkeypatch, tmp_path,
+):
+    parent_fd = os.open(tmp_path, transaction._directory_open_flags())
+    token = "0" * 24
+    stage_name = f".cmru-cleanup-demo-{token}"
+    monkeypatch.setattr(transaction.secrets, "token_hex", lambda _count: token)
+    (tmp_path / stage_name).mkdir()
+    try:
+        with pytest.raises(RuntimeError, match="could not allocate a private build-output cleanup directory"):
+            transaction._create_private_cleanup_stage(parent_fd, "demo")
+
+        (tmp_path / stage_name).rmdir()
+        original_open = transaction.os.open
+
+        def fail_stage_open(path, *args, **kwargs):
+            if path == stage_name and kwargs.get("dir_fd") == parent_fd:
+                raise RuntimeError("injected stage opener failure")
+            return original_open(path, *args, **kwargs)
+
+        monkeypatch.setattr(transaction.os, "open", fail_stage_open)
+        with pytest.raises(RuntimeError, match="injected stage opener failure"):
+            transaction._create_private_cleanup_stage(parent_fd, "demo")
+        assert not (tmp_path / stage_name).exists()
+    finally:
+        os.close(parent_fd)
+
+
+def test_restore_cleanup_stage_record_handles_absence_vacancy_and_collision(
+    monkeypatch, tmp_path,
+):
+    parent = tmp_path / "parent"
+    stage = parent / "stage"
+    stage.mkdir(parents=True)
+    output_id = "output-1"
+    parent_fd = os.open(parent, transaction._directory_open_flags())
+    stage_fd = os.open(stage, transaction._directory_open_flags())
+    try:
+        assert transaction._restore_cleanup_stage_record(parent_fd, stage_fd, output_id)
+        (stage / "record").mkdir()
+
+        def rename_record(source, source_fd, destination, destination_fd):
+            os.rename(
+                source, destination, src_dir_fd=source_fd, dst_dir_fd=destination_fd,
+            )
+            return True
+
+        monkeypatch.setattr(transaction, "_rename_noreplace_at", rename_record)
+        assert transaction._restore_cleanup_stage_record(parent_fd, stage_fd, output_id)
+        assert (parent / output_id).is_dir()
+        (stage / "record").mkdir()
+        assert not transaction._restore_cleanup_stage_record(parent_fd, stage_fd, output_id)
+    finally:
+        os.close(stage_fd)
+        os.close(parent_fd)
+
+
+def test_rename_noreplace_handles_missing_symbol_results_and_unexpected_errors(
+    monkeypatch,
+):
+    monkeypatch.setattr(transaction.ctypes, "CDLL", lambda *_a, **_k: SimpleNamespace())
+    assert not transaction._rename_noreplace_at("source", 1, "destination", 2)
+
+    calls = []
+    error_number = errno.EEXIST
+
+    def renameat2(*args):
+        calls.append(args)
+        return 0 if len(calls) == 1 else -1
+
+    monkeypatch.setattr(renameat2, "argtypes", None, raising=False)
+    monkeypatch.setattr(renameat2, "restype", None, raising=False)
+    monkeypatch.setattr(
+        transaction.ctypes, "CDLL",
+        lambda *_a, **_k: SimpleNamespace(renameat2=renameat2),
+    )
+    monkeypatch.setattr(transaction.ctypes, "get_errno", lambda: error_number)
+
+    assert transaction._rename_noreplace_at("source", 1, "destination", 2)
+    assert calls[-1][-1] == 1
+    assert not transaction._rename_noreplace_at("source", 1, "destination", 2)
+
+    error_number = errno.EIO
+    with pytest.raises(OSError, match="Input/output error"):
+        transaction._rename_noreplace_at("source", 1, "destination", 2)
+
+
+def test_delete_retained_build_output_refuses_unsafe_rmtree(tmp_path, monkeypatch):
+    project, output_id, artifact_root, logs_root = _retained_build_output(tmp_path)
+    monkeypatch.setattr(transaction.shutil.rmtree, "avoids_symlink_attacks", False)
+    with pytest.raises(RuntimeError, match="safe descriptor-relative build-output cleanup is unavailable"):
+        transaction.delete_retained_build_output(
+            tmp_path, project, "demo", output_id, dry_run=False,
+        )
+    assert artifact_root.is_dir() and logs_root.is_dir()
+
+
+def test_cleanup_reports_restore_oserror_and_preserves_staged_records(
+    monkeypatch, tmp_path,
+):
+    project, output_id, _artifact_root, _logs_root = _retained_build_output(tmp_path)
+    identity = transaction.retained_build_output_identity(tmp_path, project, "demo", output_id)
+    monkeypatch.setattr(transaction, "_staged_cleanup_identity_matches", lambda *_a: False)
+    monkeypatch.setattr(
+        transaction, "_restore_cleanup_stage_record",
+        lambda *_a: (_ for _ in ()).throw(OSError(errno.EIO, "injected restore failure")),
+    )
+
+    with pytest.raises(RuntimeError, match="cleanup stopped and retained records need inspection at"):
+        transaction.delete_retained_build_output(
+            tmp_path, project, "demo", output_id,
+            dry_run=False, expected_identity=identity,
+        )
+    assert len(list((project.project_root / "artifacts").glob(".cmru-cleanup-*/record"))) == 1
+    assert len(list((project.project_root / "logs").glob(".cmru-cleanup-*/record"))) == 1
+
+
+def test_cleanup_restores_records_and_ignores_a_stage_removed_during_recovery(
+    monkeypatch, tmp_path,
+):
+    project, output_id, artifact_root, logs_root = _retained_build_output(tmp_path)
+    identity = transaction.retained_build_output_identity(tmp_path, project, "demo", output_id)
+    monkeypatch.setattr(transaction, "_staged_cleanup_identity_matches", lambda *_a: False)
+
+    def restore_without_race(source, source_fd, destination, destination_fd):
+        os.rename(source, destination, src_dir_fd=source_fd, dst_dir_fd=destination_fd)
+        return True
+
+    monkeypatch.setattr(transaction, "_rename_noreplace_at", restore_without_race)
+    original_rmdir = transaction.os.rmdir
+    vanished = False
+
+    def remove_then_report_missing(path, *args, **kwargs):
+        nonlocal vanished
+        if not vanished and str(path).startswith(".cmru-cleanup-"):
+            vanished = True
+            original_rmdir(path, *args, **kwargs)
+            raise FileNotFoundError(path)
+        return original_rmdir(path, *args, **kwargs)
+
+    monkeypatch.setattr(transaction.os, "rmdir", remove_then_report_missing)
+    with pytest.raises(RuntimeError, match="retained build record changed during cleanup"):
+        transaction.delete_retained_build_output(
+            tmp_path, project, "demo", output_id,
+            dry_run=False, expected_identity=identity,
+        )
+
+    assert vanished
+    assert (artifact_root / "build.json").is_file()
+    assert (logs_root / "build.log").is_file()
+    assert list((project.project_root / "artifacts").glob(".cmru-cleanup-*")) == []
+    assert list((project.project_root / "logs").glob(".cmru-cleanup-*")) == []
 
 
 def test_build_output_cleanup_preserves_new_id_when_atomic_restore_is_unavailable(

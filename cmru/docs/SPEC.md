@@ -123,6 +123,13 @@ missing, stale, malformed, or ambiguous. Remote inspection failures MUST fail cl
 After a successful `ls-remote --heads` response, absence of `refs/heads/main` or a malformed
 object ID for any requested ref is indeterminate promotion state and MUST withhold abandonment
 just like a failed remote query.
+Every new release transaction MUST capture the exact origin tag refs before release work starts.
+Abandonment MUST compare reachable remote tags with that immutable snapshot, including tags at
+the original snapshot commit, and MUST withhold cleanup when a reachable tag is new, retargeted,
+or cannot be classified because the retained transaction predates snapshots. After confirmation,
+CMRU MUST recheck the exact candidate and main branch refs and the complete tag-ref set before
+the first mutation. Candidate deletion MUST use a lease against the inspected object ID; local
+cleanup MUST wait until remote deletion has been verified.
 Abandonment MUST remove only the selected CMRU origin candidate ref, local worktree and
 branch, and transaction sidecars. It MUST NOT rewrite `origin/main`, delete public release
 assets, or remove unrelated refs. If deleting the remote candidate fails or cannot be
@@ -137,6 +144,12 @@ will remain unchanged.
 `cmru cleanup` is separate from abandonment. Its configured remote policy may delete GitHub
 Release records and their assets, matching Git tags, and GHCR package versions; it MUST NOT
 be described as deleting a retained local release transaction or its candidate branch.
+After a cleanup plan is confirmed, each GitHub Release deletion MUST re-fetch the captured
+Release ID and verify its tag and current selection policy still match the preview. A missing,
+ambiguous, retagged, asset-changed, or newly ineligible Release MUST be skipped for a later
+preview; its matching Git tag MUST also be kept. A planned `steps.clean` MUST receive the
+highest-semver Release remaining after the confirmed actions, not the preview's hypothetical
+deletion set.
 
 **S-CLI.4 — Retained-worktree discovery.** `cmru worktrees` is read-only and derives the
 current Git repository without loading a CMRU config. It MUST list every CMRU-managed
@@ -672,7 +685,11 @@ combination is deliberate project policy.
 commit declared generated paths, push the commit. The artifact-specific work (build the
 wheel/image/bundle, create the GitHub Release + upload assets, push to ghcr, write
 `latest.json`) is performed by the **project's own required step commands**. cmru never
-hardcodes a project's file paths or infers a step from an artifact label.
+hardcodes a project's file paths or infers a step from an artifact label. The exact release tag
+MUST be present on origin before CMRU invokes any build or publisher step. If a tag push reports
+failure, CMRU MUST verify the origin ref: an exact match to the candidate permits continuation;
+a confirmed absence MUST remove that exact local tag and stop before publication with a resumable
+pre-tag candidate; an indeterminate result MUST retain the local tag and candidate for inspection.
 
 **S-REL.4a — Prepared source is source-first and fail-closed.** A `steps.prepare` command
 MAY derive a version or regenerate mechanical source inputs. Every tracked output MUST be
@@ -1041,7 +1058,13 @@ ref still points to the captured object when the plan is applied. A ref absent
 from the preview MUST remain outside the plan; a ref created or retargeted while
 confirmation is open MUST be skipped. Local deletion MUST pass the captured ID
 as the expected old value to `git update-ref`, and remote deletion MUST use a
-force-with-lease for that exact tag ref. For a declared `steps.clean`, CMRU
+force-with-lease for that exact tag ref. Before deleting a GitHub Release, CMRU
+MUST re-fetch the captured release ID and require its tag, update time, asset
+inventory, and displayed eligibility to match the preview. Before deleting a
+GHCR package version, it MUST re-fetch the captured version ID and require its
+update time and container-tag inventory to match the preview and still satisfy
+the age policy. A changed or indeterminate record MUST be skipped or refused
+without deleting it. For a declared `steps.clean`, CMRU
 MUST snapshot dirty paths immediately before the step and stage and commit only
 literal paths that become dirty during it; paths already dirty at that point
 MUST remain outside the cleanup commit. It MUST commit such paths even
@@ -1259,7 +1282,10 @@ The built-in handlers require existing versioned and `<prefix>-latest` GitHub Re
 the versioned tag MUST resolve to the retained source commit. They update Release assets in place,
 without creating Release records or Git refs. A dry-run verifies the local record but does not
 query remote tags. The retained record is not modified while the handlers generate sidecars and
-`latest.json`; those files are created from temporary copies. This path publishes artifact bytes
+`latest.json`; those files are created from temporary copies. When the retained stable version is
+older than the highest current version, publication MUST leave `<prefix>-latest` unchanged. It MUST
+recheck the highest version immediately before updating the pointer, to avoid moving it backward
+when another release appears during the asset upload. This path publishes artifact bytes
 without source branch promotion; the source-first tagged workflow remains `cmru release`. See
 [KI-10](../KNOWN_ISSUES_TODO_BACKLOG.md#ki-10--publish-retained-build-output-by-id--shipped).
 
@@ -1273,7 +1299,9 @@ registry manifest digest.
 the same explicit push contract. `cmru resolve` can consume that pointer, but CMRU does not
 invent one for a project that did not choose it. Retained-build publication updates an existing
 pointer Release in place and MUST refuse if its GitHub Release or tag is absent; it does not
-delete/recreate the pointer tag.
+delete/recreate the pointer tag. For a stable retained version older than the highest current
+version, it MUST leave the pointer unchanged and recheck the highest version immediately before
+any pointer upload.
 
 **S4.4** CMRU's reusable wheel/tarball handler commands implement the S4.2/S4.3 GitHub
 Release convention. Projects with another publication mechanism must provide equivalent
@@ -2041,9 +2069,11 @@ the `cmru` lane with the mandatory resume/progress arguments. Its verdict is
 `.assay/verdict-cmru.json` and its progress stream is
 `.assay/progress-cmru.jsonl`, both outside the judged tree. The separate R2
 mutation lane records `.assay/mutation-cmru.json` and appends
-`.assay/progress-mutation-cmru.jsonl`; its first-failure limit stops a bad
-mutant from running the rest of the suite. Both campaigns preserve their own
-resume state. The mutation and canary controls copy the CMRU test closure,
+`.assay/progress-mutation-cmru.jsonl`; the JSON record contains mutation outcomes and the JSONL
+file is an append-only progress stream. Its first-failure limit stops a bad mutant from running
+the rest of the suite. Mutation outcomes MAY be reused on resume only when the test suite and
+copied fixture closure exactly match the recorded run; any test or fixture change requires a
+new campaign. Both campaigns preserve their own resume state. The mutation and canary controls copy the CMRU test closure,
 including `topos/cmru.toml` and `nyxloom/cmru.toml`, which the estate adoption
 contract test reads. Missing closure files fail the control before mutation or
 canary evidence is written. The `gate` lane runs these with the total-coverage,

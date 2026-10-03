@@ -618,6 +618,40 @@ def test_abandon_workspace_refuses_when_remote_state_cannot_be_read(monkeypatch,
         transaction.abandon_workspace(tmp_path, workspace)
 
 
+@pytest.mark.parametrize("changed", ["candidate", "tags"])
+def test_abandon_workspace_rechecks_inspected_remote_facts_before_deleting(
+    monkeypatch, tmp_path, changed,
+):
+    workspace = SimpleNamespace(branch="cmru-release-candidate", context=None)
+
+    def run(argv, **_kwargs):
+        if argv[:3] == ["git", "ls-remote", "--heads"]:
+            oid = "b" * 40 if changed == "candidate" else "a" * 40
+            return SimpleNamespace(
+                returncode=0, stdout=oid + "\trefs/heads/" + workspace.branch + "\n", stderr="",
+            )
+        if argv[:3] == ["git", "ls-remote", "--tags"]:
+            oid = "d" * 40 if changed == "tags" else "c" * 40
+            return SimpleNamespace(
+                returncode=0, stdout=oid + "\trefs/tags/demo-v1\n", stderr="",
+            )
+        if argv[:2] == ["git", "push"]:
+            pytest.fail("changed remote facts must block deletion")
+        raise AssertionError(argv)
+
+    monkeypatch.setattr(transaction.subprocess, "run", run)
+    monkeypatch.setattr(transaction, "backup_was_pushed", lambda *_: True)
+    monkeypatch.setattr(transaction, "backup_was_removed", lambda *_: False)
+    monkeypatch.setattr(transaction, "remove_workspace", lambda *_: pytest.fail("removed local state"))
+
+    with pytest.raises(RuntimeError, match="changed after abandonment inspection"):
+        transaction.abandon_workspace(
+            tmp_path, workspace,
+            expected_remote_candidate_oid="a" * 40,
+            expected_remote_tag_refs={"refs/tags/demo-v1": "c" * 40},
+        )
+
+
 @pytest.mark.parametrize("verification", ["deleted", "still-present", "unknown", "delete-failed"])
 def test_abandon_workspace_deletes_remote_ref_then_verifies_before_local_cleanup(
     monkeypatch, tmp_path, verification,
@@ -646,7 +680,7 @@ def test_abandon_workspace_deletes_remote_ref_then_verifies_before_local_cleanup
                     stderr="",
                 )
             return SimpleNamespace(returncode=0, stdout="", stderr="")
-        if argv[:3] == ["git", "push", "origin"]:
+        if argv[:2] == ["git", "push"]:
             return SimpleNamespace(
                 returncode=3 if verification == "delete-failed" else 0,
                 stdout="", stderr="delete refused",
@@ -663,7 +697,11 @@ def test_abandon_workspace_deletes_remote_ref_then_verifies_before_local_cleanup
     if verification == "deleted":
         transaction.abandon_workspace(tmp_path, workspace)
         assert removed_marker == [True] and removed_local == [True] and forgotten == [True]
-        assert calls[1][0:4] == ["git", "push", "origin", "--delete"]
+        assert calls[1] == [
+            "git", "push",
+            f"--force-with-lease=refs/heads/{workspace.branch}:" + "a" * 40,
+            "origin", f":refs/heads/{workspace.branch}",
+        ]
     else:
         with pytest.raises(RuntimeError):
             transaction.abandon_workspace(tmp_path, workspace)
