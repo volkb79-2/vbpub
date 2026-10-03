@@ -6194,3 +6194,31 @@ unchanged until the P1 composite gate finishes. The earlier CIU allocation
 refusal (`[S16] ready record lacks a closed runtime identity`) remains
 untouched; the standalone clone uses registered run-gate without editing
 that identity or changing any CIU network.
+
+### RW-418 — 2026-10-03 15:44:04Z — continue survivor-oracle work while P1 R2 runs
+
+P1's exact-tree composite gate remains asynchronous in
+`run-gate-vbpub-r2-659999-1791017899` (candidate
+`bf7dc95fb47356ef527db08077788fe22a5a3b0b`; tree
+`dbd217b855c0bcc67ad3558b61b71c44ff1acb69`). The last permitted progress
+read at 15:35Z recorded 648/1,161 candidates: 574 killed, 74 survived, and
+no other buckets. At that observed rate, roughly 5.2 hours remained; this is
+an estimate only. Do not inspect campaign progress again before 16:00Z.
+Its fresh R0/R1 had passed 2,160 tests at 100% changed line and branch
+coverage. No P6 mutation run is active.
+
+Continued behavioral-oracle work in the separate CIU-managed branch
+`rg55-p1-survivor-fix` (HEAD `e2454ffa3ec206d093dd4648db50b289e266e400`)
+without changing the judged tree. Added a subprocess fake that reproduces
+`subprocess.run(check=True)` raising on nonzero status, then used it to test
+systemd lookup/property/attach/scope-create/scope-stop refusals. The four new
+focused tests pass; all 125 tests in `test_placement_systemd_helpers.py`
+pass. Also strengthened successful and failed descendant-migration journal
+assertions; their two focused tests pass. These regression changes are
+uncommitted and not yet backported or included in any gate evidence.
+
+The separate access-survivor investigation remains open: a P1 R2 survivor
+reported at `access.py:235` was killed by a manual local mutation of that
+expression against the current tests. Preserve the campaign record and
+resolve this test/snapshot discrepancy after the next scheduled progress read;
+do not reinterpret the live campaign or mutate its candidate tree.
