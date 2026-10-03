@@ -2002,11 +2002,12 @@ match the configured Assay R1 base in `assay.toml`, then mutates CMRU source
 changed since that tag. The host gate sends all published CMRU tag names and
 commit IDs to the tester so the checker can verify the selection through
 Assay's sanitized ancestry API. On an untagged candidate, the selected ancestor
-MUST also be the latest published CMRU release. On a tagged-HEAD rerun, every
-release tag at HEAD is excluded and the highest-version published ancestor
-remains the baseline; the latest published tag may be one of the verified tags
-at HEAD. Equal-distance tags on different merge parents are ordered by release
-version rather than Git's `describe` traversal choice.
+MUST also be the latest published CMRU release. On a tagged-HEAD rerun, the
+checker excludes every local CMRU release tag at HEAD before selecting the
+highest-version published ancestor as the baseline; the latest published tag
+may be one of the verified tags at HEAD. Equal-distance tags on different
+merge parents are ordered by release version rather than Git's `describe`
+traversal choice.
 The registered host `gate` lane queries
 origin with CMRU's credential-scoped Git transport immediately before the
 mutation lane and passes only token-free facts for every published tag and its
