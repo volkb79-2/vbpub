@@ -1534,14 +1534,14 @@ remember that path. README, DESIGN-GUIDE, CONSUMERS, and SPEC carry the same rec
 
 ### KI-49 — `get.py enroll` runs unauthenticated as root: the installer is not verified before it executes, minisign is skipped without a key, and the install is not pinned to the requested release
 
-**Reported:** 2026-10-03, v8 round-4 third-party review (T4-05, T4-07), filed by the v8 spec writer (dstdns D-658). **Severity:** High (security: a root-level trust path). **Related:** KI-24 (the feature), ciu CIU-93/CIU-122/CIU-123, SPEC-V8 draft.9 S7.2.4 and `ciu/docs/CIU-HOST-ENROLLMENT-PROPOSAL.md` rev 3 §11 (the v8 contract).
+**Reported:** 2026-10-03, v8 round-4 third-party review (T4-05, T4-07), filed by the v8 spec writer (dstdns D-658). **Severity:** High (security: a root-level trust path). **Related:** KI-24 (the feature), ciu CIU-93/CIU-122/CIU-123, SPEC-V8 draft.9 S7.2.4 and `ciu/docs/CIU-HOST-ENROLLMENT-PROPOSAL.md` rev 4 §11 (the v8 contract).
 
 **Observed (source, `src/cmru/templates/get.py.tmpl`).**
 - `curl … | sudo python3 -` gives the downloaded bytes root execution authority. The SHA-256 sidecar and the optional minisign check run **inside** those bytes and cover the later bundle, not the verifier itself (`download_and_verify`, `:491-525`).
 - `--manifest-pubkey` absent → "skipping minisign verification" (`:522-524`): an unsigned install proceeds.
 - `--version` is optional; without it `resolve_latest_tag` runs (`:1195-1205`, `:1262`), so the printed version-pinned URL authenticates neither the selected wheel nor the installed result. `_install_wheels` installs into a private venv and the subcommand defines no stable launcher path.
 
-**Proposed contract.** `enroll` requires `--version`, and requires `--manifest-pubkey` and refuses an absent signature; the installer's own digest is verified by the caller **before** execution (the trust root of that digest is a ciu design question, SPEC-V8 `PENDING-OPERATOR (T4-07)`); the subcommand reports the absolute launcher path (`<install_dir_system>/bin/ciu`) that ciu's step 2 invokes; prerequisite failures are raised before any payload fetch.
+**Proposed contract.** `enroll` requires `--version`, and requires `--manifest-pubkey` and refuses an absent signature; the installer's own digest is verified by the caller **before** execution (trust root ruled in dstdns D-661: the controller's installed ciu wheel carries the digest of that version's committed `get.py` and the release's manifest public key in `ciu/enroll_trust.json`; so `cmru release` must render and hash `get.py` and record the digest and the manifest public key into the project's package data **before the wheel is built**, and the `[project.installer]` table must name the file it writes); the subcommand reports the absolute launcher path (`<install_dir_system>/bin/ciu`) that ciu's step 2 invokes; prerequisite failures are raised before any payload fetch.
 
 **Oracles.** `enroll` without `--version` or without a signature refuses and installs nothing; a tampered `get.py` fails the caller's digest check before `sudo python3` runs; a published newer release does not change the installed version; a controlled wrong implementation that resolves `latest` fails the third; the reported launcher path exists and reports the pinned version.
 
