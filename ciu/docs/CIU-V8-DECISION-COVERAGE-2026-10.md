@@ -96,4 +96,52 @@ The note is a 2026-08-26/09-02 design note about the init graph. Most of it is u
 
 ## 5. Draft.8 open items
 
-(Appended after the SPEC-V8 draft.8 work; see the end of this file.)
+SPEC-V8 draft.8 applies **every** Appendix R row (R.1 has 46 rows; all 46 are applied, traced in SPEC-V8 Appendix C and D.9; two of them ask for no text — S4.1.4 "unchanged", and S14.4.7–S14.4.8's "still to fold" half — and are recorded as carried unchanged). Where Appendix R is silent, ambiguous, or conflicts with a rule it does not mention, draft.8 took the smallest consistent reading and the item is listed here with both texts. Each is a question for the reviewer or the operator; none blocks the draft. "R" is Appendix R or the cited proposal section; "draft.7" is the replaced rule.
+
+**O-1. The fourth verdict's name.** R S16.8: "PASS 0 / FAIL 1 / ERROR 2 / NOT_RUN 3 / BUDGET_EXCEEDED 4". D-654 and run-gate RG-78: "BUDGET 4 (the budget was exceeded and the lane is resumable)". Draft.8 uses `BUDGET_EXCEEDED` (draft.7's and run-gate's LaneResult vocabulary; proposal X116). RG-78's text should be aligned before the parity tests are written.
+
+**O-2. A run measured without DAMON.** R S16.6 / proposal §4.1.10a: "Measured without DAMON (a run whose profile has `damon: null`): the measured peak ... is charged ... This is the author's reading of D-653, not a ruling." D-653: "Total or logical memory, including cold pages, is 'nice to know' but irrelevant to scheduling". The peak counts cold pages. Draft.8 S16.6.6 carries the peak fallback; the operator has not ruled. The alternative is the declared `memory_max` until a DAMON run exists.
+
+**O-3. A wave-by-wave bring-up against admission.** R S16.6: "a `compose create` deploy set" is reserved; `V8-REALIZATION-GRAPH.md` / SPEC-V8 S8.4: "Realizations deploy as units in topological waves". Nothing says whether `ciu up` reserves the whole deploy set once or each wave when it starts, and proposal §4.10 item 37 leaves "how `compose create` reserves a whole deploy set at once" to V8-30's carve. Draft.8 S14.1.2 and S16.6.1 say only "the deploy set's containers".
+
+**O-4. What switches admission on, and the `no_daemon` default.** R S2.7: "the no-daemon policy `no_daemon = \"count\" | \"unbudgeted\"` with per-tier counts"; D-653 Q16: "ciu applies whichever policy its config declares ... Refusing by default (option 2) is not wanted". Neither says what happens with no `capacity` table, or with one that omits `no_daemon`. Draft.8 S2.7.2/S2.7.4: admission is on exactly when `capacity.tiers.<t>` is declared; `no_daemon` is required inside a `capacity` table; with no table nothing is budgeted and each run says so. A `capacity` table on a non-local host row is permitted and unused (S2.7.5).
+
+**O-5. Lock contention inside `ciu gate`.** R S18.1: "exit 4 = contention: a lock, or an admission refusal". R S16.8: "BUDGET_EXCEEDED 4" in the gate's closed table, and "NOT_RUN/no-headroom" for admission. Draft.7 S14.4.4: "Contention: fail fast ... `--wait[=<duration>]` blocks". For `ciu gate` the codes collide: a refused lock is not one of the five verdicts. Draft.8 S16.8 gives the gate only the closed table and S18.1 says the gate uses it instead; a lock the gate cannot take should be an ERROR (2) or a new NOT_RUN reason, which draft.8 does not add.
+
+**O-6. How a lane asks to be placed.** R S16.6: "placement of exec and host lanes"; proposal §4.1.10a: "Exec and host lanes may be **placed** (`--place`)". No lane or project key carries the request. Draft.8 S16.6.7 says only that the request is made through the profiling session.
+
+**O-7. Authored `cgroup_parent` and the host singleton.** SPEC-V8 D.6 (5): "S4's instance-scoped naming convention needs a sanctioned exception class for ... host-level infrastructure ... and v8's governance must not re-place a service whose author has explicitly set `cgroup_parent`". D.7 (5) repeats it. Appendix R's D.6/D.7 row only says to close them "per the shipped daemon". Draft.8 closes D.6/D.7 and records that item (5) is not carried by any R row.
+
+**O-8. The path the instance id is derived from.** R S4.1.1: "`workspace_id_for_path`: base36, lexical path". Draft.7 S4.1.1: "SHA-256 over the checkout's **physical** absolute path (the host path, resolved through the container's mount table ...)"; S4.5.1: "`ciu.checkout` (the physical checkout path the id was derived from)". dstdns's id is derived for `/workspaces/dstdns`, the container path. Draft.8 derives from the lexical checkout path as ciu sees it, keeps `physical_repo_root` (S4.1.4's sentinel bind) for mounts only, and defines `ciu.checkout` as the path the id was derived from.
+
+**O-9. `--move` against repair in place.** R S4.1.2: "cold `--move`/`--fresh` without the token steps; repair-in-place of an outdated or mismatching generated file with a WARN naming old and new id". Draft.7 S4.1.2: "Without `--host`, re-running `init` on a checkout whose physical path changed is an ERROR ... unless `--move` is given". If a mismatching file is repaired without a flag, `--move`'s refusal (old-id resources live) is bypassed. Draft.8 S4.1.2: plain `init` repairs with a WARN; `--move` additionally asserts a move and keeps its cold refusal; the reviewer should say whether plain repair must also refuse while old-id resources are live.
+
+**O-10. The tenant-provisioning hook.** R S9.5: "tenant namespaces derived from the joiner's id, created and removed by the provider's hook". Proposal §4.10 item 34: "the provider hook ... is named, not specified. It needs a hookkit entry contract like V8-S12.5's." Draft.8 S9.5.8 states the obligation and no hook contract.
+
+**O-11. Which fields moved from `ciu.instance.json` to the shared record.** R S14.7: "the registry is `libraries/worktree`'s `.workspace-instances/` records ... `ciu.instance.json` is ciu's product record (realness records), not a registry ... the record carries the fork commit". Draft.7 S14.7.1 listed `path`, `label`, `created`, `lease_until`, `claims`, `realness` in `ciu.instance.json`. Draft.8 S14.7.1 keeps `claims` and `realness` there and attributes path, label, creation, lease and fork commit to the library's record; the split is inferred.
+
+**O-12. Host lanes and the slice.** R S16.6: "placement of exec and host lanes". Draft.7 S16.6.2: "`host` lanes run in a child cgroup of the slice". Draft.8 S16.6.2 makes an unplaced host lane uncapped (requested values only), because the slice is invisible from a devcontainer (proposal §4.1.10a "Why ciu needs it").
+
+**O-13. Reservation protocol details.** Proposal §4.10 item 37: "the tie-break on equal creation times (by object id), the recheck cadence, how a waiting `created` object shows in `ciu status`, how `compose create` reserves a whole deploy set at once, and how its agreement under concurrent creation is tested are for V8-30's carve". Draft.8 S16.6.1 fixes the tie-break and requires an agreement test; the other three are open.
+
+**O-14. Names Appendix R implies but does not give.** (a) the per-lane raw-code mapping key (draft.8: `exit_map`); (b) the LaneResult's log-path field (`log_path`); (c) the internals of `admission`, `liveness` and `placement` (defined minimally in S16.9); (d) the failure digest's file (`failure-digest.txt`) and field (`failure_digest`); (e) the minimum measuring window `ciu footprint --write` refuses below ("a declared minimum", proposal §4.1.10a): no key declared in draft.8; (f) ERROR's `reason` is free text naming the fix, not a closed vocabulary.
+
+**O-15. `verdict` against `outcome`.** R S16.8: "`verdict`, the raw `exit_code`, `reason` and the log path in the LaneResult". Draft.7 S16.8/S16.9: the LaneResult key is `outcome`. Draft.8 renames the LaneResult key to `verdict` (the assay verdict file keeps `outcome`); lane-result `api_version` stays 1 because draft.8 has not shipped.
+
+**O-16. The minimum judge.** Draft.7 S16.3: "CIU 8.0.0 declares `4.1.0`" as the oldest assay carrying `lanes --json`, `--resume`, `--progress`, `--require-judge-provenance`. R S16.7.2 passes `--state-dir`, which assay added in 5.2.0 (assay CHANGES). Draft.8 declares `5.2.0`; not stated in any source.
+
+**O-17. T4-10's scope.** R S18: "fold T4-10". T4-10's proposed fix also covers cmru/`get.py` packaging inputs, README/DESIGN-GUIDE/CONSUMERS documentation and a `[project.installer]` for ciu. Draft.8 folds the testable surface (`ciu version --surfaces --json`, `ciu/surfaces`) and the `known_host` grammar only; the rest stays in proposal §4.10 item 28.
+
+**O-18. The "git-family state root".** R S16.7.2: "`--state-dir <git-family state root>/ciu-gate-state/<path>/`". No source defines the directory. Draft.8 S16.7.2: the git common directory for a git checkout, the state root (S2.6) otherwise.
+
+**O-19. Two ways to name the gate tier's slice.** R S16.2: `cgroup_slice` / `cgroup_slice_env` (R-10); R S2.6/S2.7: `capacity.tiers.<t>.slice` / `slice_env`. One fact in two places (invariant I1). Draft.8 S16.2.1 requires the two to agree when both are declared (stage 11 ERROR).
+
+**O-20. Where the pinned judge artifact is in `command`.** R S16.3: "`command` + `sha256`"; proposal §4.1.10 example: `command = ["python3", "tools/assay/assay-7.2.0.pyz"]`, "`sha256 = <64-hex digest of the zipapp>`". Draft.8 S16.3.3: the first element of `command` that is a path to an existing file.
+
+**O-21. `memory_min`: admitted, and charges nothing.** R S13.2.1: "`memory_min` is written to the container's scope and admitted against the slice floor (a protection)". Proposal §4.1.10a: "It protects memory and admits nothing". Draft.8 S13.2.1 reads both as true of two different checks: the floor admission of CIU-94 (against the slice's `memory.min` ceiling) and S16.6's budget admission, to which `memory_min` contributes nothing.
+
+**O-22. Imported assay lanes.** R S16.3: "`import = { environment, lanes }`". RG-76 allows `"all" | [<glob>...]`; proposal §4.5 A7 allows `"all"|[names]`. Draft.8 allows names, not globs.
+
+**O-23. Joins no preset produced.** R S9.5: "joins only through `[ciu.instances.join_presets.<p>]`". Draft.7 S9.5.5 said "a hand-written instance file is equivalent". Draft.8 S9.5.1 makes a joined Realization no preset produced a stage-12 ERROR.
+
+**R.2 confirmation.** The stale-demo list exists in the proposal (Appendix R.2, 13 files) and is unchanged; `v8-dstdns-demo/` was not edited.
