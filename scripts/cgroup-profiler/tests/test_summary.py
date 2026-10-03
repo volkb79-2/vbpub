@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import filecmp
 import json
-from math import ceil
+from math import ceil, log2
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -357,6 +357,24 @@ class TestAbsentInputsStayNull:
         result = acc.finalize(ended_at="2026-09-12T10:15:01Z")
         assert result["cpu"]["cores_max"] is None
 
+    def test_unreadable_usage_delta_invalidates_an_earlier_cores_max(self):
+        acc = _new_accumulator("container-shared", damon_enabled=False)
+        acc.add_sample(cgroup={"cpu": {"usage_usec": 0}}, host={}, mono=0.0)
+        acc.add_sample(cgroup={"cpu": {"usage_usec": 1_000_000}}, host={}, mono=1.0)
+        # A valid first pair must not mask a later pair whose usage delta is
+        # unavailable: the aggregate maximum is unknown for the whole stream.
+        acc.add_sample(cgroup={}, host={}, mono=2.0)
+        result = acc.finalize(ended_at="2026-09-12T10:15:02Z")
+        assert result["cpu"]["cores_max"] is None
+
+    def test_non_positive_timestamp_delta_invalidates_an_earlier_cores_max(self):
+        acc = _new_accumulator("container-shared", damon_enabled=False)
+        acc.add_sample(cgroup={"cpu": {"usage_usec": 0}}, host={}, mono=0.0)
+        acc.add_sample(cgroup={"cpu": {"usage_usec": 1_000_000}}, host={}, mono=1.0)
+        acc.add_sample(cgroup={"cpu": {"usage_usec": 2_000_000}}, host={}, mono=1.0)
+        result = acc.finalize(ended_at="2026-09-12T10:15:02Z")
+        assert result["cpu"]["cores_max"] is None
+
     def test_unparsable_timestamps_leave_duration_and_cores_avg_null(self):
         acc = _new_accumulator("container-shared", damon_enabled=False)
         acc.started_at = "not-a-timestamp"
@@ -614,6 +632,47 @@ class TestStreamingSummaryState:
                 rank = max(1, min(len(ordered), rank))
                 expected = ordered[rank - 1]
             assert tree.nearest_rank(percentile) == expected
+
+    def test_repeated_observations_are_counted_in_one_node(self):
+        tree = summary._OrderStatisticMultiset()
+        for _ in range(256):
+            tree.add(7)
+
+        assert tree._root is not None
+        assert tree._root.count == 256
+        assert tree._root.size == 256
+        assert tree._root.left is None
+        assert tree._root.right is None
+        assert tree.nearest_rank(50) == 7
+
+    def test_monotone_and_zigzag_insertions_preserve_avl_balance_and_cached_sizes(self):
+        def assert_valid(node):
+            if node is None:
+                return 0, 0
+            left_height, left_size = assert_valid(node.left)
+            right_height, right_size = assert_valid(node.right)
+            assert abs(left_height - right_height) <= 1
+            expected_height = 1 + max(left_height, right_height)
+            expected_size = node.count + left_size + right_size
+            assert node.height == expected_height
+            assert node.size == expected_size
+            return expected_height, expected_size
+
+        # Monotone inputs exercise deep growth. These mirrored zigzags also
+        # expose premature rotations at balance +1 and -1: either one can
+        # leave a descendant two levels out of balance while ranks still work.
+        zigzag = (25, 21, 2, 1, 0, 28, 4, 6, 9, 12, 20, 11, 3, 7, 10,
+                  19, 23, 17, 8, 24, 22, 18, 14, 5, 27, 26, 16, 13, 15)
+        for values in (range(128), range(127, -1, -1), zigzag,
+                       tuple(28 - value for value in zigzag)):
+            tree = summary._OrderStatisticMultiset()
+            expected_size = 0
+            for value in values:
+                tree.add(value)
+                expected_size += 1
+                height, size = assert_valid(tree._root)
+                assert size == expected_size
+                assert height <= 2 * ceil(log2(size + 1))
 
     def test_long_session_summary_is_snapshotted_as_samples_arrive(self):
         """A long stream is reduced at ingestion; later input mutation cannot

@@ -40,6 +40,16 @@ def test_proc_start_time_ticks_rejects_stat_without_comm_closing_delimiter(tmp_p
     assert t.proc_start_time_ticks(42, str(proc)) is None
 
 
+def test_proc_start_time_ticks_accepts_empty_comm_name(tmp_path):
+    proc = tmp_path / "proc"
+    stat_path = proc / "42" / "stat"
+    stat_path.parent.mkdir(parents=True)
+    fields = ["S", *("0" for _ in range(18)), "98765"]
+    stat_path.write_text(f"42 () {' '.join(fields)}\n")
+
+    assert t.proc_start_time_ticks(42, str(proc)) == 98765
+
+
 def test_proc_start_time_ticks_rejects_stat_for_a_different_pid(tmp_path):
     proc = tmp_path / "proc"
     stat_path = proc / "42" / "stat"

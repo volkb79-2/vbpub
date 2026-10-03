@@ -273,13 +273,23 @@ def _tree_balance(node: _OrderNode) -> _OrderNode:
     balance = _tree_height(node.left) - _tree_height(node.right)
     if balance > 1:
         left = cast(_OrderNode, node.left)
-        if _tree_height(left.left) < _tree_height(left.right):
-            node.left = _tree_rotate_left(left)
+        left_balance = _tree_height(left.left) - _tree_height(left.right)
+        # This insertion-only AVL tree crosses +1 only when the left child
+        # grew, so its balance is +1 or -1 here, never zero. Compare at the
+        # reachable -1 boundary: the mutation must distinguish the double-
+        # rotation case rather than only an impossible equal-height state.
+        if left_balance > -1:
+            return _tree_rotate_right(node)
+        node.left = _tree_rotate_left(left)
         return _tree_rotate_right(node)
     if balance < -1:
         right = cast(_OrderNode, node.right)
-        if _tree_height(right.right) < _tree_height(right.left):
-            node.right = _tree_rotate_right(right)
+        right_balance = _tree_height(right.left) - _tree_height(right.right)
+        # Symmetrically, a right-heavy insertion has child balance -1 or +1.
+        # The reachable +1 boundary selects the double rotation.
+        if right_balance < 1:
+            return _tree_rotate_left(node)
+        node.right = _tree_rotate_right(right)
         return _tree_rotate_left(node)
     return node
 
@@ -487,8 +497,9 @@ class SummaryAccumulator:
                 value = damon.get(name)
                 if value is not None:
                     current_peak = self._damon_peaks[name]
-                    if current_peak is None or value > current_peak:
-                        self._damon_peaks[name] = value
+                    self._damon_peaks[name] = (
+                        value if current_peak is None else max(current_peak, value)
+                    )
                 self._damon_ranks[name].add(value)
 
         self._last_fields = fields
@@ -498,8 +509,11 @@ class SummaryAccumulator:
 
     def _update_max(self, name: str, value: Any) -> None:
         current = self._maxima[name]
-        if value is not None and (current is None or value > current):
-            self._maxima[name] = value
+        if value is None:
+            return
+        self._maxima[name] = (
+            value if current is None else max(current, value)
+        )
 
     def mark_damon_unavailable(self, reason: str) -> None:
         """DAMON was requested but sysfs is absent or read-only (contract

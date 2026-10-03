@@ -324,3 +324,23 @@ The pasteable CIU pin and verification command live in
 
 This repair does not invent policy for the S1–S5 follow-up surfaces. Those
 decisions remain with the controller and their existing design records.
+
+## Mutation comparison base
+
+The P1 R2 lane uses Assay's `judge.base_source = "request"`: the acceptance
+campaign's comparison commit is a fact recorded by the controller, while a
+moving `origin/main` would stop including already integrated daemon code.
+The registered `r2` command passes run-gate's resolved `{base}` to Assay as
+`--request-base`; the full `gate` passes the same ref to its nested `r2`
+invocation. Neither lane should silently drop a caller's `--base` flag.
+
+Run-gate can derive a worktree fork or upstream base when its caller omits
+`--base`. That derivation is useful for ordinary changed-line lanes but does
+not establish this historical P1 campaign's scope. The acceptance command
+therefore supplies the exact recorded ref and checks the Assay plan's tree,
+candidate count, and source inventory before starting R2. A zero-candidate
+plan cannot certify the P1 changes. After a provisional merge, Assay's
+merge-commit base handling can change the resolved scope; the post-merge plan
+must be checked again rather than transferring a prior-tree count. The
+pasteable invocation is in
+[`CONSUMERS.md`](CONSUMERS.md#run-the-p1-review-gates).

@@ -1939,3 +1939,56 @@ basic in-lane sampling were used under R-36h without changing verdicts. Rerun
 R0/R1, R3, and doctor on the exact post-checkpoint candidate. Current-tree
 R2/full gate and reviewer-owned live probes remain open; no review acceptance,
 merge, release, or daemon activation is claimed.
+
+## Controller addendum — current-tree R2 on `10a344e2` and survivor triage (2026-10-02)
+
+The exact-tree R2 started at `2026-10-01T23:42:00.395131Z` and ended at
+`2026-10-02T00:24:29.142187Z` on commit
+`10a344e2f4685ac033f586fcb846b99e5fc2c8d5` (tree
+`9c084d1f29783c6a61b24d186befdb132813f7fa`, identical to the pre-repair P1
+release worktree). The terminal progress event and separately read verdict
+account for all 193 candidates: 182 killed, 11 survived, and zero equivalent,
+budget-exceeded, crashed, or hung. R0 passed; R2 failed with
+`MUTANTS_SURVIVED` (exit 1). The 11 exact survivor records are:
+
+| Candidate | Location | Mutation | Disposition |
+|---|---|---|---|
+| `208359b9b43882ed` | `lib/summary.py:274` | `>` → `>=` AVL rebalance threshold | Oracle gap: the extra rotation at balance +1 can violate the AVL height invariant; monotone-insertion invariant regression added. |
+| `efb43ec506b8cc2b` | `lib/summary.py:276` | `<` → `<=` inner rotation choice | Equivalent: on equal child heights this chooses the other valid double/single rotation; both preserve in-order values, counts, subtree sizes, and nearest-rank output. |
+| `d20d3df22a4180e3` | `lib/summary.py:279` | `<` → `<=` AVL rebalance threshold | Oracle gap: the extra rotation at balance −1 can violate the AVL height invariant; monotone-insertion invariant regression added. |
+| `e92685cc96686007` | `lib/summary.py:281` | `<` → `<=` inner rotation choice | Equivalent by the symmetric equal-height rotation argument above. |
+| `c0539093c9deee64` | `lib/summary.py:290` | `<` → `<=` duplicate insertion branch | Oracle gap: equal observations become separate nodes rather than incrementing the duplicate count, violating the documented O(unique-values) retained-state bound; structural regression added. |
+| `602318ef1fa5b002` | `lib/summary.py:292` | `>` → `>=` duplicate insertion branch | Same O(unique-values) contract gap for the symmetric duplicate branch; structural regression added. |
+| `a7eb6fddcbf6d5a5` | `lib/summary.py:431` | `True` → `False` | Oracle gap: a later missing CPU-usage delta must invalidate a previously observed maximum; multi-sample regression added. |
+| `8a3e6e274bcff0c1` | `lib/summary.py:435` | `True` → `False` | Oracle gap: a later non-positive timestamp delta must invalidate a previously observed maximum; multi-sample regression added. |
+| `c183150a11bafb18` | `lib/summary.py:490` | `>` → `>=` peak update | Equivalent: equal parsed integer peak values assign the same immutable value and do not alter the summary. |
+| `6d1ec19a0e9d0a1e` | `lib/summary.py:501` | `>` → `>=` max update | Equivalent for the same equal-integer assignment reason. |
+| `6ebd5d1f230d0ced` | `lib/targets.py:288` | `<` → `<=` proc-stat delimiter guard | Oracle gap: an empty `comm` is valid in the parenthesized `/proc/<pid>/stat` field; the exact-boundary acceptance regression was added. |
+
+The new regressions exercise all seven identified oracle gaps: two monotone
+AVL directions, duplicate compression, invalidation after prior valid CPU
+data, and the empty-`comm` parser boundary. Serial, load-niced focused
+`test_summary.py` + `test_targets.py` passed **176 tests** at memory full PSI
+avg10 0.45%. This focused result does not replace a new exact-tree R2: the
+test changes alter the Git tree, so the 10a344e2 verdict is historical for
+the final candidate. The exact judged worktree and its `.assay` evidence were
+left untouched. No registered P1 gate, merge, review, or release is claimed
+by this addendum.
+
+## Controller addendum — P1 oracle candidate reconciled with current main (2026-10-02)
+
+The attached P1 candidate branch was behind current main by 108 commits. To
+avoid integrating its old pre-P6 daemon tree, current main
+`665246456ef2f503949b9d4449747e5f90b62f42` was merged into the P1 branch as
+`e0ce67dc0ab360ed083dd479d7c49da85f678018`. The merge was clean. The
+reconciled worktree is clean, and the effective delta from current main is
+limited to this P1 report/log addendum and the survivor-oracle regressions in
+`tests/test_summary.py` and `tests/test_targets.py`; no daemon implementation,
+deployment, contract, or configuration change is pending in this branch.
+
+The prior `38e38349` short-gate and doctor results predate this reconciliation
+and do not certify the new tip. The R2 failure on `10a344e2` also remains
+specific to its old tree; the reconciled candidate still requires a fresh
+exact-tree R2 and registered full gate. A fresh supplemental review of the
+survivor dispositions and test oracles is pending. No gate or release is
+claimed for `e0ce67dc`.

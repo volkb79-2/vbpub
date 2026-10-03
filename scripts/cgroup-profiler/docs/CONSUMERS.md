@@ -306,3 +306,25 @@ Consumers may type these public values:
 Only a non-null token enables idempotent reuse. Omitting it deliberately starts
 an independent session, so two no-token starts count separately against
 `max_sessions`.
+
+## Run the P1 review gates
+
+For the current P1 acceptance campaign, the controller recorded the
+pre-wave comparison commit below. From the attached candidate worktree,
+pass that commit explicitly to both registered entrypoints:
+
+```bash
+P1_BASE=e5e9b95c5ac8be3452c93f1066f9436347f862fd
+./run-gate.py --base "$P1_BASE" --dry-run r2
+./run-gate.py --base "$P1_BASE" r2
+./run-gate.py --base "$P1_BASE" gate
+```
+
+Run these from `scripts/cgroup-profiler/`. The dry run shows the expanded
+`--request-base` argument without starting the judged lane. Before the long
+R2 run, inspect Assay's plan for the exact commit/tree and the intended
+source candidates. The `gate` lane passes the same base to its nested `r2`.
+R2 and the full gate are release checks; their results belong to the exact
+tree they judge. Run-gate can derive a different base when `--base` is
+omitted, so an omitted flag is not the P1 acceptance command. The rationale
+is in the [design guide](DESIGN-GUIDE.md#mutation-comparison-base).

@@ -1571,3 +1571,67 @@ without conflict in merge `0485d82e475930fcbf74040a0138268b437b30b6`.
 Registered R0/R1, R3, and doctor had passed on `bd915d7f` immediately before
 this merge, but those exact-tree receipts do not transfer. Repeat all three
 on the current post-checkpoint candidate before review.
+
+### Session 37 — 2026-10-02 00:37:27Z — current-tree R2 result and survivor oracles
+
+The isolated current-tree R2 on `10a344e2f4685ac033f586fcb846b99e5fc2c8d5`
+ended at `2026-10-02T00:24:29.142187Z`. Its separately read verdict is
+`FAIL/MUTANTS_SURVIVED`: 193/193 accounted, 182 killed, 11 survived, and no
+equivalent, budget-exceeded, crash, or hang bucket. The exact container and
+PID were gone at the scheduled 00:28Z check; the progress stream's terminal
+event and verdict file prove completion. The exact tree is
+`9c084d1f29783c6a61b24d186befdb132813f7fa`, identical to the pre-repair P1
+candidate tree, and remains preserved in its isolated worktree.
+
+The survivor-by-survivor disposition and evidence are in the P1 REPORT's
+current-tree addendum. Four are contract-equivalent alternate equal-height
+rotations or equal-value assignments. Seven exposed missing oracles: two
+AVL-balance threshold cases, duplicate-count compression, two later-invalid
+CPU-delta cases, and empty `/proc` comm parsing. Added those regressions on
+the release-candidate branch. Load-niced focused `test_summary.py` and
+`test_targets.py` passed 176 tests at memory full PSI avg10 0.45%;
+`git diff --check` passed. This is local focused evidence only. Exact-tree
+R2, registered short/full gates, fresh final review, and release remain
+pending; no gate container was launched in this session.
+
+### Session 38 — 2026-10-02 01:03:22Z — reconcile P1 oracle candidate with current main
+
+The P1 worktree was attached to its recorded branch and clean at
+`38e383499a016b5bf9e7efacc2af682ee9a08c4a`. Current main had advanced to
+`665246456ef2f503949b9d4449747e5f90b62f42`; it was merged into the P1
+branch without conflict as `e0ce67dc0ab360ed083dd479d7c49da85f678018`.
+This brings the candidate through the intervening P6 and workspace changes;
+the old R2 judged tree and its evidence were left untouched.
+
+The reconciled branch is clean. Its effective tree delta from current main is
+limited to the P1 survivor report/log and the `test_summary.py` and
+`test_targets.py` oracle additions; no daemon implementation, deployment,
+contract, or configuration delta remains. The focused and registered short
+gates reported on `38e38349` predate this reconciliation and are not exact-tip
+evidence. Run fresh short gates and doctor after the supplemental review
+artifact is committed. The 10a344e2 R2 remains a historical failure, not a
+result for the reconciled tree. No gate, review, merge to main, or release was
+started after the reconciliation.
+
+### Session 39 — 2026-10-02 01:06:31Z — supersede stale numbered-review handoff
+
+Updated the P1 review handoff to mark the numbered series complete at round 6
+ACCEPT and explicitly scope the next independent review to the supplemental
+R2 survivor-test/evidence delta; it is not a new round 7 or a full daemon
+review. The note refers to the reconciliation merge `e0ce67dc` and the
+documentation checkpoint `d97ecae4`, while the exact current review HEAD will
+be recorded by the controller at dispatch. This documentation-only update
+does not change daemon code or make prior gate results transferable. No gate
+or review has run on the resulting tip.
+
+### Session 40 — 2026-10-02 01:15:00Z — write scoped Sol review packet
+
+Added `cgprofile-P1-R2-SURVIVOR-SUPPLEMENTAL-REVIEW-HANDOFF.md` as the
+authoritative, narrow review packet and linked it from the historical P1
+review handoff. It names the exact files/sections, survivor oracles, Assay
+equivalence-policy check, live-evidence boundary, no-touch paths, and
+mechanical BLOCKED condition. The packet distinguishes prior exact-tree
+evidence from the current candidate and directs the reviewer not to open
+numbered round 7. It does not authorize a merge, release, install, or long
+gate; those remain controller actions after review. No review or gate has yet
+run on this packet's candidate.
