@@ -16,11 +16,13 @@ from cmru import cli, transaction
 
 def test_local_tag_helpers_validate_git_object_ids_and_existence(monkeypatch, tmp_path):
     oid = "a" * 40
+    original_local_git_tag_oid = cli.local_git_tag_oid
     monkeypatch.setattr(cli, "local_git_tag_oid", lambda *_args, **_kwargs: oid)
     assert cli.local_git_tag_exists(tmp_path, "demo-v1") is True
     monkeypatch.setattr(cli, "local_git_tag_oid", lambda *_args, **_kwargs: None)
     assert cli.local_git_tag_exists(tmp_path, "demo-v1") is False
 
+    monkeypatch.setattr(cli, "local_git_tag_oid", original_local_git_tag_oid)
     monkeypatch.setattr(cli, "run_local_git", lambda *_args, **_kwargs: SimpleNamespace(
         returncode=0, stdout="not-an-object-id\n", stderr="",
     ))
