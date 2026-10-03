@@ -988,7 +988,8 @@ Git processes. The selected project's secret overlay remains scoped to that proj
 and does not replace the repository-level credential for CMRU's Git operations. Hook-capable
 local Git operations (including commit, revert, and rebase) MUST strip `GITHUB_PUSH_PAT`,
 `GITHUB_TOKEN`, and `CMRU_GIT_AUTH_TOKEN` from the Git child environment so local hooks can run
-without receiving a CMRU publisher credential.
+without receiving a CMRU publisher credential. The local ancestry probes performed by
+`cmru abandon` MUST use the same credential-stripping helper.
 
 ### S2.6a — tester-gate environment preflight (KI-17)
 

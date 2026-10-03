@@ -367,8 +367,8 @@ def test_tag_deletion_is_idempotent_for_missing_local_and_remote(monkeypatch, tm
     cli.delete_git_tag_remote(tmp_path, "demo-v1", False)
     cli.delete_git_tag_local(tmp_path, "demo-v1", False)
     output = capsys.readouterr().out
-    assert "remote tag demo-v1 not found" in output
-    assert "local tag demo-v1 not found" in output
+    assert "Remote tag demo-v1 not found" in output
+    assert "Local tag demo-v1 not found" in output
 
 
 def test_remote_tag_delete_fails_if_push_fails_and_tag_still_exists(monkeypatch, tmp_path):
@@ -632,7 +632,7 @@ def test_cleanup_commit_does_not_commit_a_path_already_dirty_before_clean_step(
     )
 
     assert calls == []
-    assert "paths already dirty before steps.clean are excluded" in capsys.readouterr().err
+    assert "paths already dirty before steps.clean are excluded" in capsys.readouterr().out
 
 
 def test_cleanup_commit_can_commit_clean_step_paths_without_deleted_tags(

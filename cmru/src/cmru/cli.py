@@ -3621,16 +3621,16 @@ def _abandon_locked(args, runtime, repo_root: Path) -> int:
             if expected_remote_candidate != (remote_candidate is not None):
                 raise RuntimeError("backup-branch marker and origin ref disagree")
             if remote_candidate is not None:
-                candidate = subprocess.run(
-                    ["git", "merge-base", "--is-ancestor", remote_candidate,
-                     "refs/heads/" + workspace.branch],
-                    cwd=repo_root, capture_output=True, text=True, check=False,
+                candidate = run_local_git(
+                    repo_root, "merge-base", "--is-ancestor", remote_candidate,
+                    "refs/heads/" + workspace.branch,
+                    capture_output=True, text=True, check=False,
                 )
                 if candidate.returncode != 0:
                     raise RuntimeError("origin candidate ref is not a known ancestor of the retained worktree")
-            promoted = subprocess.run(
-                ["git", "merge-base", "--is-ancestor", progress, remote_main],
-                cwd=repo_root, capture_output=True, text=True, check=False,
+            promoted = run_local_git(
+                repo_root, "merge-base", "--is-ancestor", progress, remote_main,
+                capture_output=True, text=True, check=False,
             )
             if progress != base_commit and promoted.returncode == 0:
                 remote_assets.append("origin/refs/heads/main")
@@ -3657,18 +3657,18 @@ def _abandon_locked(args, runtime, repo_root: Path) -> int:
                     tag_refs.setdefault(tag_ref, fields[0])
             new_tags = []
             for tag_ref, tag_sha in tag_refs.items():
-                tag_on_candidate = subprocess.run(
-                    ["git", "merge-base", "--is-ancestor", tag_sha,
-                     "refs/heads/" + workspace.branch],
-                    cwd=repo_root, capture_output=True, text=True, check=False,
+                tag_on_candidate = run_local_git(
+                    repo_root, "merge-base", "--is-ancestor", tag_sha,
+                    "refs/heads/" + workspace.branch,
+                    capture_output=True, text=True, check=False,
                 )
                 if tag_on_candidate.returncode not in (0, 1):
                     raise RuntimeError(f"could not inspect remote tag {tag_ref}")
                 if tag_on_candidate.returncode == 1:
                     continue
-                contains = subprocess.run(
-                    ["git", "merge-base", "--is-ancestor", str(base_commit), tag_sha],
-                    cwd=repo_root, capture_output=True, text=True, check=False,
+                contains = run_local_git(
+                    repo_root, "merge-base", "--is-ancestor", str(base_commit), tag_sha,
+                    capture_output=True, text=True, check=False,
                 )
                 if contains.returncode == 0 and tag_sha != base_commit:
                     new_tags.append(tag_ref.removeprefix("refs/tags/"))

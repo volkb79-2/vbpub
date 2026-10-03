@@ -383,8 +383,10 @@ release gates are the checks for the release candidate. The askpass helper also 
 that do not identify `github.com`. When no repository token resolves, Git's configured helpers
 and SSH authentication remain in effect. Hook-capable local operations (commit, revert, and
 rebase) still run local hooks, but CMRU removes `GITHUB_PUSH_PAT`, `GITHUB_TOKEN`, and
-`CMRU_GIT_AUTH_TOKEN` from the Git child environment first. This keeps local user hooks available
-without exposing a publisher credential to them.
+`CMRU_GIT_AUTH_TOKEN` from the Git child environment first. The local ancestry probes in
+`cmru abandon` use the same credential-stripping helper. This keeps local user hooks available
+without exposing publisher credentials to them and ensures those local probes receive no
+publisher token variables.
 
 Repository operations use the CMRU-root credential because candidate refs and `main` belong to
 the repository as a whole. A project-local secret override remains scoped to that project's

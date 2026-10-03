@@ -490,6 +490,8 @@ for credential-bearing Git calls because hooks inherit the Git process environme
 reuse the repository token against another remote; the registered release gates remain the
 release checks. Local hook-capable operations such as commit, revert, and rebase still run
 configured hooks, with publisher token environment variables removed from Git and its hooks.
+The local ancestry probes used by `cmru abandon` also remove those variables from the Git
+child environment.
 If no repository token resolves, Git's configured helpers and SSH authentication remain in
 effect. See the [pasteable
 secret file example](docs/CONSUMERS.md#3-the-release-flow-and-what-an-isolated-transaction-is)

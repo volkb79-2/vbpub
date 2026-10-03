@@ -1531,3 +1531,16 @@ original release. The command could consequently load a different policy file.
 **Resolution.** Missing-scope guidance now requires candidate inspection, the explicit target,
 and the same original external config when one was used. The transaction does not claim to
 remember that path. README, DESIGN-GUIDE, CONSUMERS, and SPEC carry the same recovery rule.
+
+### KI-48 — Abandon ancestry probes inherited publisher credentials — *fixed in source, pending release*
+
+**Reported:** 2026-10-03, when the CMRU release gate exercised `cmru abandon` with publisher
+credentials present in the inherited process environment.
+
+**Observed.** Four local `git merge-base --is-ancestor` probes used `subprocess.run` directly,
+bypassing `run_local_git` and passing `GITHUB_PUSH_PAT`, `GITHUB_TOKEN`, and
+`CMRU_GIT_AUTH_TOKEN` to the Git child process.
+
+**Resolution.** All four ancestry probes now use `run_local_git`, preserving their return-code
+handling while removing publisher credential variables from the Git environment. The registered
+gate exercises the regression; README, DESIGN-GUIDE, CONSUMERS, and SPEC document the behavior.

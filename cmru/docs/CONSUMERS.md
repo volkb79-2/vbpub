@@ -571,7 +571,9 @@ inherit the token-bearing process environment; the registered release gates rema
 checks. Local hook-capable operations such as commit, revert, and rebase still run configured
 hooks, with `GITHUB_PUSH_PAT`, `GITHUB_TOKEN`, and `CMRU_GIT_AUTH_TOKEN` removed from the Git
 child environment. SSH and other-host remotes keep their configured Git authentication. If no
-repository token resolves, Git's configured helpers and SSH authentication remain in effect. Secret files
+repository token resolves, Git's configured helpers and SSH authentication remain in effect.
+The local ancestry probes used by `cmru abandon` also remove publisher token variables from
+the Git child environment. Secret files
 written before `schema_version` was introduced remain readable. See the [transport
 rationale](DESIGN-GUIDE.md#git-transport-authentication).
 
