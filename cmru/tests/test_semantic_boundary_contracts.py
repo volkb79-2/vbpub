@@ -367,7 +367,12 @@ def _install_abandon_facts(monkeypatch, root, workspace, *, progress=None):
     monkeypatch.setattr(transaction, "backup_was_removed", lambda *_: False)
     monkeypatch.setattr(
         cli, "load_config",
-        lambda _path: (root, {"alpha": SimpleNamespace(git_tag=True)}, ["alpha"]),
+        lambda _path: (
+            root, {"alpha": SimpleNamespace(git_tag=True)}, ["alpha"], ["alpha"],
+            [], "project-first", {}, cli.CleanupConfig([], [], [], []),
+            cli.GitHubConfig("owner", "repo", "", "user"),
+            cli.ReleaseEnvConfig({}, None),
+        ),
     )
 
 
@@ -531,13 +536,19 @@ def test_abandon_preview_lists_the_remote_candidate_ref(monkeypatch, tmp_path, c
     _install_abandon_facts(monkeypatch, tmp_path, workspace)
     monkeypatch.setattr(transaction, "backup_was_pushed", lambda *_: True)
 
+    merge_calls = 0
     def run(argv, **_kwargs):
+        nonlocal merge_calls
         if argv[:3] == ["git", "ls-remote", "--heads"]:
             return subprocess.CompletedProcess(
-                argv, 0, "a" * 40 + "\trefs/heads/" + workspace.branch + "\n", "",
+                argv, 0,
+                "a" * 40 + "\trefs/heads/" + workspace.branch + "\n"
+                + "b" * 40 + "\trefs/heads/main\n",
+                "",
             )
         if argv[:2] == ["git", "merge-base"]:
-            return subprocess.CompletedProcess(argv, 0, "", "")
+            merge_calls += 1
+            return subprocess.CompletedProcess(argv, 0 if merge_calls == 1 else 1, "", "")
         if argv[:3] == ["git", "ls-remote", "--tags"]:
             return subprocess.CompletedProcess(argv, 0, "", "")
         raise AssertionError(argv)

@@ -567,7 +567,8 @@ def test_abandon_checks_remote_tag_metadata_and_detects_release_coordinates(
     ):
         def run(argv, **kwargs):
             if argv[:3] == ["git", "ls-remote", "--heads"]:
-                return subprocess.CompletedProcess(argv, 0, "", "")
+                heads = "b" * 40 + "\trefs/heads/main\n"
+                return subprocess.CompletedProcess(argv, 0, heads, "")
             if argv[:3] == ["git", "ls-remote", "--tags"]:
                 return subprocess.CompletedProcess(argv, result, tags, "")
             if argv[:2] == ["git", "merge-base"]:
@@ -588,7 +589,8 @@ def test_abandon_checks_remote_tag_metadata_and_detects_release_coordinates(
     )
     def run_tag(argv, **kwargs):
         if argv[:3] == ["git", "ls-remote", "--heads"]:
-            return subprocess.CompletedProcess(argv, 0, "", "")
+            heads = "b" * 40 + "\trefs/heads/main\n"
+            return subprocess.CompletedProcess(argv, 0, heads, "")
         if argv[:3] == ["git", "ls-remote", "--tags"]:
             return subprocess.CompletedProcess(argv, 0, tag_output, "")
         if argv[:2] == ["git", "merge-base"]:
@@ -627,16 +629,21 @@ def test_abandon_distinguishes_remote_tag_graph_results(
     def run(argv, **_kwargs):
         nonlocal merge_calls
         if argv[:3] == ["git", "ls-remote", "--heads"]:
-            return subprocess.CompletedProcess(argv, 0, "", "")
+            heads = "b" * 40 + "\trefs/heads/main\n"
+            return subprocess.CompletedProcess(argv, 0, heads, "")
         if argv[:3] == ["git", "ls-remote", "--tags"]:
             return subprocess.CompletedProcess(argv, 0, tag_output, "")
         if argv[:2] == ["git", "merge-base"]:
             merge_calls += 1
+            if merge_calls == 1:
+                # Progress equals the snapshot base and is not promoted to this
+                # independent origin/main commit.
+                return subprocess.CompletedProcess(argv, 1, "", "")
             if mode == "candidate-unknown":
                 return subprocess.CompletedProcess(argv, 2, "", "bad object")
             if mode == "not-on-candidate":
                 return subprocess.CompletedProcess(argv, 1, "", "")
-            return subprocess.CompletedProcess(argv, 0 if merge_calls == 1 else 2, "", "")
+            return subprocess.CompletedProcess(argv, 0 if merge_calls == 2 else 2, "", "")
         raise AssertionError(argv)
 
     monkeypatch.setattr(cli.subprocess, "run", run)
