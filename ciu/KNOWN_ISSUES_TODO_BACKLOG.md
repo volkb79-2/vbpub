@@ -4608,3 +4608,35 @@ Severity: Medium. Type: spec correction. Spec owner: S3.1c (v7), SPEC-V8 S4.1.1.
 3. Controlled wrong implementation: a v8 using SHA-256 hex must fail oracle 1.
 
 **v8: absorb** (spec correction, S4.1.1).
+
+## CIU-122 — `ciu host enroll --replace` destroys the active key before the new one is proven, the enrollment key aliases the S14.3a host-secret store, and concurrent enrollments lose each other's writes
+
+Severity: High (credential loss; silent aliasing of a secret path). Type: bugfix. Spec owner: `docs/SPEC.md` S14.7 (v7), S14.3a; v8 form SPEC-V8 S7.2.4. Filed 2026-10-03 from the v8 round-4 third-party review (T4-06) by the v8 spec writer (dstdns D-658). Related: CIU-93 (the feature), CIU-99, cmru KI-24. v8: the rewritten contract is SPEC-V8 draft.9 S7.2.4 and `docs/CIU-HOST-ENROLLMENT-PROPOSAL.md` rev 3 §11; this entry is the **v7 line's** shipped defect.
+
+**Observed (source, `src/ciu/host_enroll.py`).**
+- `enroll_step1` with `replace=True` calls `generate_key_pair(repo_root, name, …)` at the same `key_paths(repo_root, name)` as the active key (`:216`). The old private key is overwritten at step 1. If the admin's console command is mistyped or never run, the old public key stays authorized on the target and the only private key that could log in is gone; `--abort` then removes the new pair as well.
+- The key lives at `<repo>/.ciu/secrets/hosts/<name>/ssh_key` (`KEY_ENTRY`, `:52-64`), exactly the path S14.3a assigns to a host-scoped secret entry named `ssh_key` (`ssh_key = "GEN_LOCAL:…"`). A project already using that valid S14 path has its secret bytes overwritten by an OpenSSH private key, and the converse.
+- Nothing serializes two enrollments: the inventory read-modify-write and the key generation take no lock, so two controllers (or two shells) enrolling different names concurrently can drop one row.
+
+**Why ciu owns it.** The verb, the key path and the inventory writer are ciu's.
+
+**Proposed contract.**
+- Every attempt creates a random **pending generation** under an enrollment-specific directory outside the S14.3a store namespace; the active key and row stay untouched until target authorization and an exact-version proof (CIU-123) succeed, then one atomic switch; `--abort` removes only the named pending generation; the old generation is retained until an explicit `--revoke-old`.
+- A no-follow file lock around key-generation state and the inventory update; temp file, `fsync`, atomic rename, generation compare.
+
+**Oracles.** A failed step 2 leaves the active key and row byte-identical; `--abort` removes only the named pending generation; an existing `ssh_key` host secret is not touched by enrollment; two concurrent enrollments of different names both rows present; a controlled wrong implementation that regenerates at the active path fails the first oracle.
+
+## CIU-123 — `ciu host enroll` step 2 proves only that *some* `ciu version` exits zero; the printed command does not pin the installed release; the `known_host` grammar contradicts the transport; the no-fingerprint path trusts the scan
+
+Severity: High (the trust path of a root-level install). Type: bugfix. Spec owner: `docs/SPEC.md` S14.7 (v7); v8 SPEC-V8 S7.2.4. Filed 2026-10-03 from the v8 round-4 third-party review (T4-05, T4-07 host half, T4-10) by the v8 spec writer (dstdns D-658). Related: CIU-93, CIU-99 (asset resolution; a different defect), cmru KI-49/KI-50.
+
+**Observed (source).**
+- `host_enroll.py:411` runs `exec_fn(host_cfg, ["ciu", "version"], …)` and accepts any zero exit: a stale, newer, PATH-shadowing or different `ciu` satisfies step 2, and no version, line or API is compared.
+- The printed one-liner pins the `get.py` URL but not the installed release: cmru's `get.py` resolves `latest` when `--version` does not reach the install path (`get.py.tmpl:1195-1205`, `:1262`), so a release published between printing and running is installed.
+- `known_host`: v7 S14.4c says the entry must contain `[host]:port`, while `transport_ssh._known_hosts_file` (`:77-88`) prepends the host token itself; following both yields two host tokens and a failed pin.
+- Step 2 without `--fingerprint` asks a TTY to confirm fingerprints produced by the same unauthenticated network path (no second channel).
+
+**Proposed contract.** The printed command carries `--version ciu-v<version>` and a mode-0600 download whose SHA-256 is checked before it runs; step 2 invokes the installer-reported **absolute** launcher with `version --json` and compares exact version, line and API versions (a wrong-version and a PATH-shadow binary must fail); `known_host` is the key only, a value carrying a host token is refused; `--fingerprint` is required and typed, scan-and-confirm only under `CIU_SSH_INSECURE_TOFU=1`, labelled "no second channel".
+
+**Oracles.** A controlled wrong-version `ciu` and a PATH-shadowing `ciu` both fail step 2; a printed command without `--version` fails a lint test; a `known_host` with a host token is refused; step 2 without `--fingerprint` and without the env opt-in is refused.
+

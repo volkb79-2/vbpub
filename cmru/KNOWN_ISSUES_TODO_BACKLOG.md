@@ -1531,3 +1531,27 @@ original release. The command could consequently load a different policy file.
 **Resolution.** Missing-scope guidance now requires candidate inspection, the explicit target,
 and the same original external config when one was used. The transaction does not claim to
 remember that path. README, DESIGN-GUIDE, CONSUMERS, and SPEC carry the same recovery rule.
+
+### KI-49 — `get.py enroll` runs unauthenticated as root: the installer is not verified before it executes, minisign is skipped without a key, and the install is not pinned to the requested release
+
+**Reported:** 2026-10-03, v8 round-4 third-party review (T4-05, T4-07), filed by the v8 spec writer (dstdns D-658). **Severity:** High (security: a root-level trust path). **Related:** KI-24 (the feature), ciu CIU-93/CIU-122/CIU-123, SPEC-V8 draft.9 S7.2.4 and `ciu/docs/CIU-HOST-ENROLLMENT-PROPOSAL.md` rev 3 §11 (the v8 contract).
+
+**Observed (source, `src/cmru/templates/get.py.tmpl`).**
+- `curl … | sudo python3 -` gives the downloaded bytes root execution authority. The SHA-256 sidecar and the optional minisign check run **inside** those bytes and cover the later bundle, not the verifier itself (`download_and_verify`, `:498-525`).
+- `--manifest-pubkey` absent → "skipping minisign verification" (`:522-524`): an unsigned install proceeds.
+- `--version` is optional; without it `resolve_latest_tag` runs (`:1195-1205`, `:1262`), so the printed version-pinned URL authenticates neither the selected wheel nor the installed result. `_install_wheels` installs into a private venv and the subcommand defines no stable launcher path.
+
+**Proposed contract.** `enroll` requires `--version`, and requires `--manifest-pubkey` and refuses an absent signature; the installer's own digest is verified by the caller **before** execution (the trust root of that digest is a ciu design question, SPEC-V8 `PENDING-OPERATOR (T4-07)`); the subcommand reports the absolute launcher path (`<install_dir_system>/bin/ciu`) that ciu's step 2 invokes; prerequisite failures are raised before any payload fetch.
+
+**Oracles.** `enroll` without `--version` or without a signature refuses and installs nothing; a tampered `get.py` fails the caller's digest check before `sudo python3` runs; a published newer release does not change the installed version; a controlled wrong implementation that resolves `latest` fails the third; the reported launcher path exists and reports the pinned version.
+
+### KI-50 — `get.py enroll` mutates root-trusted `authorized_keys` through attacker-controllable paths and an unvalidated `--from` pattern
+
+**Reported:** 2026-10-03, v8 round-4 third-party review (T4-08), filed by the v8 spec writer (dstdns D-658). **Severity:** High (security: root follows paths an existing user controls). **Related:** KI-24, KI-25, KI-49, ciu CIU-93, SPEC-V8 draft.9 S7.2.4.
+
+**Observed (source, `get.py.tmpl:1066-1135`).** The subcommand resolves the user, then `ssh_dir.mkdir(parents=True, exist_ok=True)`, `os.chmod(ssh_dir, 0o700)`, `os.chown(ssh_dir, …)`, reads `authorized_keys` as text and later `os.chmod`/`os.chown`s it. It does not validate the passwd record's home, shell or uid, does not open through directory descriptors or refuse symlinks, non-regular files or extra links, takes no lock against `sshd` or a concurrent enrollment, and rewrites the file without a verified atomic transaction. `--from PATTERN` is placed into an OpenSSH option string (`from="…"`, `:951-966`) with no accepted grammar and no refusal of quotes, backslashes or CR/LF. A pre-existing deploy user whose `~/.ssh/authorized_keys` is a symlink to `/root/.ssh/authorized_keys` has root's file chowned and appended to.
+
+**Proposed contract.** Resolve the user through the account database and validate home, uid/gid and shell; walk home, `.ssh` and `authorized_keys` with no-follow directory descriptors and require the expected owner, type and link count (refuse, never repair); lock a dedicated file in the verified `.ssh`, parse the records, write a complete temporary file preserving unrelated bytes, `fsync`, rename atomically, `fsync` the directory; append at most once under that lock; serialize the record, never concatenate; accept `--from` only against a closed grammar (addresses, CIDRs, label patterns with `*`/`?`, each optionally negated) and refuse quotes, backslashes, whitespace and CR/LF; shell-quote every printed argument.
+
+**Oracles.** A symlinked, hard-linked or FIFO `authorized_keys` and a foreign-owned `.ssh` are refused with the target untouched; a concurrent second enrollment leaves one key line; a pre-existing unrelated key and comment survive byte-for-byte; a `--from` value with a quote, CR or LF is refused before anything is written; a controlled wrong implementation that follows the symlink fails the first oracle.
+
