@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from cmru import config, git_auth, transaction
+from cmru import config, git_auth, transaction, version
 
 
 @pytest.mark.parametrize(
@@ -153,6 +153,126 @@ def test_run_remote_git_uses_secret_only_for_matching_origin(monkeypatch, tmp_pa
     assert "GITHUB_PUSH_PAT" not in kwargs["env"]
     assert "GITHUB_TOKEN" not in kwargs["env"]
     assert os.environ.get("CMRU_GIT_AUTH_TOKEN") == "stale-private-secret"
+
+
+def test_run_local_git_strips_publisher_tokens_from_hook_environment(monkeypatch, tmp_path):
+    monkeypatch.setenv("GITHUB_PUSH_PAT", "publisher-secret")
+    monkeypatch.setenv("GITHUB_TOKEN", "api-secret")
+    monkeypatch.setenv("CMRU_GIT_AUTH_TOKEN", "transport-secret")
+    monkeypatch.setenv("CMRU_UNRELATED_SETTING", "preserved")
+    calls = []
+
+    def fake_run(argv, **kwargs):
+        calls.append((argv, kwargs))
+        return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(git_auth.subprocess, "run", fake_run)
+
+    result = git_auth.run_local_git(tmp_path, "commit", "-m", "prepare", check=True)
+
+    assert result.returncode == 0
+    argv, kwargs = calls[0]
+    assert argv == ["git", "commit", "-m", "prepare"]
+    assert kwargs["cwd"] == tmp_path
+    assert "PATH" in kwargs["env"]
+    assert kwargs["env"]["CMRU_UNRELATED_SETTING"] == "preserved"
+    assert not {"GITHUB_PUSH_PAT", "GITHUB_TOKEN", "CMRU_GIT_AUTH_TOKEN"} & kwargs["env"].keys()
+
+
+def test_run_local_git_scrubs_caller_supplied_environment_without_mutating_it(
+    monkeypatch, tmp_path,
+):
+    supplied = {
+        "GITHUB_PUSH_PAT": "publisher-secret",
+        "GITHUB_TOKEN": "api-secret",
+        "CMRU_GIT_AUTH_TOKEN": "transport-secret",
+        "KEEP": "value",
+    }
+    calls = []
+    monkeypatch.setattr(
+        git_auth.subprocess, "run",
+        lambda argv, **kwargs: calls.append((argv, kwargs))
+        or subprocess.CompletedProcess(argv, 0, stdout="", stderr=""),
+    )
+
+    git_auth.run_local_git(tmp_path, "status", env=supplied)
+
+    assert calls[0][1]["env"] == {"KEEP": "value"}
+    assert supplied["GITHUB_PUSH_PAT"] == "publisher-secret"
+
+
+def test_without_publisher_tokens_temporarily_clears_and_restores_only_present_keys(
+    monkeypatch,
+):
+    monkeypatch.setenv("GITHUB_PUSH_PAT", "publisher-secret")
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    monkeypatch.setenv("CMRU_GIT_AUTH_TOKEN", "transport-secret")
+    monkeypatch.setenv("KEEP", "value")
+
+    with git_auth.without_publisher_tokens():
+        assert not {"GITHUB_PUSH_PAT", "GITHUB_TOKEN", "CMRU_GIT_AUTH_TOKEN"} & os.environ.keys()
+        assert os.environ["KEEP"] == "value"
+
+    assert os.environ["GITHUB_PUSH_PAT"] == "publisher-secret"
+    assert "GITHUB_TOKEN" not in os.environ
+    assert os.environ["CMRU_GIT_AUTH_TOKEN"] == "transport-secret"
+
+
+def test_local_commit_hook_runs_without_publisher_tokens(tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    subprocess.run(["git", "config", "user.name", "cmru test"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.email", "cmru@example.invalid"], cwd=repo, check=True)
+    (repo / "tracked.txt").write_text("tracked\n", encoding="utf-8")
+    subprocess.run(["git", "add", "tracked.txt"], cwd=repo, check=True)
+    observed = repo / "hook-env.txt"
+    hook = repo / ".git" / "hooks" / "pre-commit"
+    hook.write_text(
+        "#!/bin/sh\n"
+        f"printf '%s|%s|%s' \"${{GITHUB_PUSH_PAT-unset}}\" "
+        "\"${GITHUB_TOKEN-unset}\" \"${CMRU_GIT_AUTH_TOKEN-unset}\" > hook-env.txt\n",
+        encoding="utf-8",
+    )
+    hook.chmod(0o700)
+    subprocess.run(
+        ["git", "config", "core.hooksPath", str(hook.parent)], cwd=repo, check=True,
+    )
+    monkeypatch.setenv("GITHUB_PUSH_PAT", "publisher-secret")
+    monkeypatch.setenv("GITHUB_TOKEN", "api-secret")
+    monkeypatch.setenv("CMRU_GIT_AUTH_TOKEN", "transport-secret")
+
+    git_auth.run_local_git(repo, "commit", "-m", "initial", check=True)
+
+    assert observed.read_text(encoding="utf-8") == "unset|unset|unset"
+
+
+def test_release_tag_reference_hook_runs_without_publisher_tokens(tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    subprocess.run(["git", "config", "user.name", "cmru test"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.email", "cmru@example.invalid"], cwd=repo, check=True)
+    hook_dir = repo / ".git" / "hooks"
+    hook_dir.mkdir(exist_ok=True)
+    observed = tmp_path / "reference-hook-env.txt"
+    hook = hook_dir / "reference-transaction"
+    hook.write_text(
+        "#!/bin/sh\n"
+        "printf '%s|%s|%s' \"${GITHUB_PUSH_PAT-unset}\" "
+        "\"${GITHUB_TOKEN-unset}\" \"${CMRU_GIT_AUTH_TOKEN-unset}\" "
+        "> \"$CMRU_TEST_HOOK_OUT\"\n",
+        encoding="utf-8",
+    )
+    hook.chmod(0o700)
+    monkeypatch.setenv("GITHUB_PUSH_PAT", "publisher-secret")
+    monkeypatch.setenv("GITHUB_TOKEN", "api-secret")
+    monkeypatch.setenv("CMRU_GIT_AUTH_TOKEN", "transport-secret")
+    monkeypatch.setenv("CMRU_TEST_HOOK_OUT", str(observed))
+
+    assert version._apply_strategy_scm(repo, "demo-v", "1.0.0") == "demo-v1.0.0"
+
+    assert observed.read_text(encoding="utf-8") == "unset|unset|unset"
 
 
 def test_run_remote_git_fetch_uses_fetch_origin_auth_scope(monkeypatch, tmp_path):

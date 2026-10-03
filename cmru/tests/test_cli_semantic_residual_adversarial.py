@@ -91,3 +91,62 @@ def test_worktrees_dispatch_reports_empty_and_prunable_records(monkeypatch, caps
     cli.main(["worktrees"])
     output = capsys.readouterr().out
     assert "action: withheld" in output
+
+    workspace = transaction.ReleaseWorkspace(
+        Path("/repo"), Path("/repo/.worktrees/cmru-release-demo"),
+        "cmru-release-demo", "a" * 40,
+    )
+    monkeypatch.setattr(cli.transaction, "list_cmru_workspaces", lambda _: [workspace])
+    monkeypatch.setattr(
+        cli.transaction, "read_release_scope_for_workspace",
+        lambda _root, _workspace: ["demo"],
+    )
+    cli.main(["worktrees"])
+    output = capsys.readouterr().out
+    assert "project scope: demo" in output
+    assert "resume: cmru release demo" in output
+    assert "repeat the same --config PATH" in output
+
+
+def test_worktrees_legacy_scope_advice_requires_target_and_external_config(monkeypatch, tmp_path, capsys):
+    workspace = transaction.ReleaseWorkspace(
+        tmp_path, tmp_path / "foreign-namespace" / "missing",
+        "cmru-release-20261001_000000-demo-abcdef", "a" * 40,
+    )
+    monkeypatch.setattr(cli, "_current_git_root", lambda: tmp_path)
+    monkeypatch.setattr(cli.transaction, "list_cmru_workspaces", lambda _root: [workspace])
+    monkeypatch.setattr(
+        cli.transaction, "read_release_scope_for_workspace",
+        lambda _root, _workspace: None,
+    )
+    monkeypatch.setattr(
+        cli.transaction, "read_release_scope_for_path",
+        lambda _path: (_ for _ in ()).throw(AssertionError("must not inspect listed path")),
+    )
+
+    cli.main(["worktrees"])
+
+    output = capsys.readouterr().out
+    assert "project scope: missing" in output
+    assert "pass its explicit target" in output
+    assert "repeat the original external --config PATH" in output
+    assert "resume: cmru release" not in output
+
+
+def test_worktrees_unreadable_scope_withholds_resume(monkeypatch, tmp_path, capsys):
+    workspace = transaction.ReleaseWorkspace(
+        tmp_path, tmp_path / "foreign-namespace" / "missing",
+        "cmru-release-20261001_000000-demo-abcdef", "a" * 40,
+    )
+    monkeypatch.setattr(cli, "_current_git_root", lambda: tmp_path)
+    monkeypatch.setattr(cli.transaction, "list_cmru_workspaces", lambda _root: [workspace])
+    monkeypatch.setattr(
+        cli.transaction, "read_release_scope_for_workspace",
+        lambda _root, _workspace: (_ for _ in ()).throw(RuntimeError("unreadable")),
+    )
+
+    cli.main(["worktrees"])
+
+    output = capsys.readouterr().out
+    assert "project scope: unreadable" in output
+    assert "resume: withheld" in output

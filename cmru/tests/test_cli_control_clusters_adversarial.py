@@ -22,9 +22,14 @@ def test_worktrees_existing_release_prints_resume_command(monkeypatch, tmp_path,
     retained.path.mkdir()
     monkeypatch.setattr(cli, "_current_git_root", lambda: tmp_path)
     monkeypatch.setattr(transaction, "list_cmru_workspaces", lambda _: [retained])
+    monkeypatch.setattr(
+        transaction, "read_release_scope_for_workspace",
+        lambda _root, _workspace: ["demo"],
+    )
     cli.main(["worktrees"])
     output = capsys.readouterr().out
     assert "resume: cmru release" in output
+    assert "release demo --resume" in output
     assert "--resume" in output and str(retained.path) in output
 
 

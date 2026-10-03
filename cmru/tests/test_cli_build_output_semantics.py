@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import tomllib
 import venv
 from pathlib import Path
 from types import SimpleNamespace
@@ -462,7 +463,6 @@ def test_tarball_publish_validates_retained_version_file_and_artifact_selection(
             cwd=str(tmp_path), prefix="alpha", glob="*.tar.xz", notes_env=None,
             version_env=None, version_file="VERSION",
         ))
-
     monkeypatch.setattr(
         handlers, "_build_output_files", lambda *_args, **_kwargs: []
     )
@@ -471,6 +471,62 @@ def test_tarball_publish_validates_retained_version_file_and_artifact_selection(
             cwd=str(tmp_path), prefix="alpha", glob="*.tar.xz", notes_env=None,
             version_env=None, version_file="VERSION",
         ))
+
+
+def test_tls_edge_retained_tarball_inventory_contains_the_publisher_version_file():
+    repo_root = Path(__file__).resolve().parents[2]
+    config = tomllib.loads((repo_root / "tls-edge" / "cmru.toml").read_text(encoding="utf-8"))
+    script = (repo_root / "tls-edge" / "scripts" / "build-artifact.sh").read_text(encoding="utf-8")
+    publish_argv = config["steps"]["push"]["commands"][0]["argv"]
+
+    assert config["project"]["release"]["artifact_dirs"] == ["dist"]
+    assert publish_argv[publish_argv.index("--version-file") + 1] == "dist/VERSION"
+    assert 'cp -p "$VERSION_FILE" "$DIST_DIR/VERSION"' in script
+
+
+def test_tarball_publish_reads_version_and_tarball_from_real_retained_inventory(
+    monkeypatch, tmp_path,
+):
+    artifact_root = tmp_path / "artifacts"
+    dist = artifact_root / "dist"
+    dist.mkdir(parents=True)
+    version_file = dist / "VERSION"
+    version_file.write_text("1.2.3\n", encoding="utf-8")
+    tarball = dist / "tls-edge-v1.2.3.tar.xz"
+    tarball.write_bytes(b"tarball bytes")
+
+    def entry(path: Path) -> dict[str, str]:
+        data = path.read_bytes()
+        return {
+            "path": path.name,
+            "sha256": hashlib.sha256(data).hexdigest(),
+            "bytes": str(len(data)),
+        }
+
+    record = {
+        "artifact_root": artifact_root,
+        "manifest": {"artifacts": [{
+            "directory": "dist",
+            "files": [entry(version_file), entry(tarball)],
+        }]},
+    }
+    monkeypatch.setattr(handlers, "_require_env", lambda _name: "configured")
+    monkeypatch.setattr(handlers, "_build_output_record", lambda _args: record)
+    published = []
+    monkeypatch.setattr(
+        handlers, "_publish_versioned_artifacts",
+        lambda _gh, **kwargs: published.append(kwargs) or {"ok": True},
+    )
+
+    handlers.cmd_tarball_publish(SimpleNamespace(
+        cwd=str(tmp_path), prefix="tls-edge", glob="tls-edge-v*.tar.xz",
+        notes_env=None, version_env=None, version_file="dist/VERSION",
+    ))
+
+    assert published == [{
+        "prefix": "tls-edge", "version": "1.2.3", "asset_path": tarball,
+        "notes": None, "extra_assets": None, "build_output": record,
+    }]
 
 
 def test_build_output_dry_run_validates_and_displays_retained_bytes_without_credentials(
@@ -994,8 +1050,10 @@ def test_run_project_step_protects_bound_cmru_environment(monkeypatch, tmp_path)
         quiet=True,
     )
     project = SimpleNamespace(
-        name="alpha", cwd="alpha", project_root=tmp_path / "alpha", env={"CMRU_BIN": "/wrong/project"},
-        runtime_kind="none", build_metadata={}, runner_steps={"build": step},
+        name="alpha", cwd="alpha", project_root=tmp_path / "alpha",
+        env={"CMRU_BIN": "/wrong/project", "GITHUB_PUSH_PAT": "declared-value"},
+        runtime_kind="none", build_metadata={}, github_token="resolved-token",
+        runner_steps={"build": step},
     )
     launcher_directory = []
 
@@ -1011,8 +1069,11 @@ def test_run_project_step_protects_bound_cmru_environment(monkeypatch, tmp_path)
 
     cli.run_project_step(project, "build", tmp_path, tmp_path / "logs")
 
-    assert captured["extra_env"] == {"CMRU_BIN": "/wrong/project"}
+    assert captured["extra_env"] == {
+        "CMRU_BIN": "/wrong/project", "GITHUB_PUSH_PAT": "declared-value",
+    }
     assert captured["protected_env"]["CMRU_BIN"] == str(launcher_directory[0] / "cmru")
+    assert captured["protected_env"]["GITHUB_PUSH_PAT"] == "resolved-token"
     assert captured["path_prefixes"] == (launcher_directory[0],)
 
 

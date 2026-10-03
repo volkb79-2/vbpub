@@ -21,6 +21,30 @@ def test_child_release_args_replaces_parent_only_options_and_preserves_operation
     assert cli._child_release_args([], outside, repo) == ["--config", str(outside.resolve())]
 
 
+def test_resume_target_defaults_to_the_saved_scope_and_rejects_widening(tmp_path):
+    config_path = tmp_path / "cmru.orchestration.toml"
+    configs = {"alpha": object(), "beta": object()}
+    project_order = ["alpha", "beta"]
+
+    assert cli._release_resume_target(
+        config_path, None, ["beta"], configs, project_order,
+    ) == "beta"
+    assert cli._release_resume_target(
+        config_path, "beta", ["beta"], configs, project_order,
+    ) == "beta"
+    with pytest.raises(RuntimeError, match="does not match the retained transaction scope"):
+        cli._release_resume_target(
+            config_path, "alpha,beta", ["beta"], configs, project_order,
+        )
+    with pytest.raises(RuntimeError, match="no recorded project scope"):
+        cli._release_resume_target(
+            config_path, None, None, configs, project_order,
+        )
+    assert cli._release_resume_target(
+        config_path, "alpha", None, configs, project_order,
+    ) == "alpha"
+
+
 def test_cleanup_project_step_dry_run_and_execution_pass_version_and_environment(monkeypatch, tmp_path, capsys):
     command = cli.Command("clean", ["echo", "clean"], tmp_path)
     project = cli.ProjectConfig("demo", {"BASE": "yes"}, {"clean": [command]})
@@ -29,12 +53,18 @@ def test_cleanup_project_step_dry_run_and_execution_pass_version_and_environment
 
     seen = {}
     monkeypatch.setattr(cli, "_build_step_config", lambda name, commands: (name, commands))
-    monkeypatch.setattr("cmru.runner.execute_step", lambda step, root, logs, extra_env: seen.update(
-        step=step, root=root, logs=logs, env=extra_env) or None)
+    monkeypatch.setattr(
+        "cmru.runner.execute_step",
+        lambda step, root, logs, extra_env, protected_env=None: seen.update(
+            step=step, root=root, logs=logs, env=extra_env,
+            protected_env=protected_env,
+        ) or None,
+    )
     assert cli.cleanup_project_step(tmp_path, project, "2.3.4", False) is True
     assert seen == {
         "step": ("clean", [command]), "root": tmp_path, "logs": tmp_path / "logs",
         "env": {"BASE": "yes", "CMRU_VERSION": "2.3.4"},
+        "protected_env": None,
     }
 
 
@@ -64,7 +94,7 @@ def test_cleanup_commit_deletions_refuses_empty_staging_and_reports_commit_failu
         tmp_path, "demo", ["v1", "v2", "v3", "v4", "v5", "v6"], False,
         before_paths=set(),
     )
-    assert calls[-1][6] == "chore(demo): cleanup deleted v1, v2, v3, v4, v5 (+1 more)"
+    assert calls[-1][4] == "chore(demo): cleanup deleted v1, v2, v3, v4, v5 (+1 more)"
     assert "commit failed" in capsys.readouterr().out
 
 

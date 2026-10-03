@@ -67,6 +67,12 @@ SPEC §9.
 | RG-66 | no way to pass assay's `--reuse-from` / `--rejudge` through `run-gate <lane>`, so assay 7.1+ provenance-safe selective R2 reruns cannot be used via the gate | Minor | OPEN |
 | RG-67 | no per-environment (per-runner-container) invocation limit, and a composite lane does not declare which runners its members use, so consumers hand-hold whole-invocation flocks and the composite over-holds a second runner | Minor | OPEN |
 | RG-68 | `footprint` only counts PASS runs; a completed FAIL (for example surviving mutants) is a valid resource measurement, so first-run budget calibration stalls on a red first run | Minor | OPEN |
+| RG-73 | an `ephemeral` environment cannot stand in for a per-worktree runner: literal `image`, and the judged worktree is not mounted at the image's canonical root | Major | OPEN 2026-10-03 |
+| RG-74 | post-merge trunk base (`HEAD^1`) and composite-member base propagation are consumer scripts (dstdns `gate-base.sh`), not run-gate derivations | Minor | OPEN 2026-10-03 |
+| RG-75 | no lane-scoped throwaway service (database): schema/mutation lanes hand-provision and tear down their own Postgres | Major | OPEN 2026-10-03 |
+| RG-76 | external-assay consumers restate judge command, pin and one lane block per assay lane (dstdns: 118 identical pin blocks); import lanes from `assay lanes --json` | Minor | OPEN 2026-10-03 |
+| RG-77 | the per-assay-lane `--state-dir` contract (RG-38) and its root-owned-parent repair (RG-49) are in no SPEC rule or skill, so consumers restate them in their own instruction files | Minor | OPEN 2026-10-03 |
+| RG-78 | adopt the ciu v8 closed exit table and explicit environment modes in run-gate now (backport, operator ruling D-654): lane exit passthrough overlaps the 2/3 refusal codes, and the built-in `host` environment is a container | Major | OPEN 2026-10-03 |
 
 ---
 
@@ -3546,6 +3552,14 @@ this entry should be mirrored or moved to `ciu/KNOWN_ISSUES_TODO_BACKLOG.md`.
 
 ### Status — OPEN 2026-09-09
 
+**Recurrence 2026-10-03 (dstdns-P234, PRIORITY EVIDENCE — third independent hit).**
+Installed run-gate `23.9.2.dev1126+g998a43552` (latest vbpub main at the time). A Mode-B worktree
+instance (`p234-silo`, its own test-runner) failed the composite's `assay` lane with
+`mkdir /workspaces/dstdns/.run-gate: Permission denied`; the implementer worked around it by creating
+the directory as root inside that worktree's runner. This matters more now: dstdns is moving
+toward worktree-owned test environments as the default (dstdns D-646, run-gate RG-73), which makes
+Mode B the common path rather than the exception.
+
 ---
 
 ## RG-50 — `ProgressWatch._rate_per_min`'s B065 own-clock branch divides by an index of 0 (the first real candidate) and produces a nonsensical negative rate for assay's own `-1` baseline sentinel
@@ -5062,6 +5076,14 @@ reproduction of the SAME underlying defect goes here, not a new entry).
 
 **Consumer evidence (dstdns 2026-10-01, `dstdns@5cf2ed55`, decisions D-619/D-620):** the operator authorised two concurrent gates on the shared `dstdns-98535c-test-runner`: the container ceiling is 3000M, a mock suite peaks at about 1.3–1.5 GB and uses about 0.9 cores, the host has 8 cores, and CPU PSI was about 5–8%. Six gates were queued behind N=1. A caller-side two-slot semaphore did nothing alone, because R-41's exec lock kept the second run "waiting for container". The working consumer workaround, `scripts/gate-slot.sh`, gives slot 2 its own `RUN_GATE_LOCK_DIR`. That is safe there only because the project declares no RG-20 shared-infra locks; under a project that declares them, the knob would also silently split the shared-infra mutex. This hazard is the strongest argument for (a): `max_concurrent` keyed per container, which leaves the shared-infra locks single. A second gap belongs with (a): with N>1, the per-invocation resource profile (RG-27 history, `footprint`) measures a container cgroup shared by both runs. Either record `concurrent_with` in the history entry, or refuse `footprint --write` from a run that overlapped another.
 
+**Consumer evidence, 2026-10-03 (dstdns tooling-boundary pass, `dstdns/docs/proposals/TOOLING-BOUNDARY-2026-10.md`).** Three further facts for whoever builds this:
+- **The workaround has two latent defects that a native cap would not.** `dstdns/scripts/gate-slot.sh:44,47` treats a wrapped command's exit 75 as "slot busy" and silently re-runs the whole gate, because run-gate passes the lane's own status through (R-04/RG-11). And `:41` gives slot 2 a fixed `RUN_GATE_LOCK_DIR=/tmp/run-gate-slot2` that is not keyed by instance. Two different projects or instances using the same wrapper would share one slot-2 exec-lock namespace.
+- **The cap now has three hand-maintained homes in the consumer:** the wrapper's slot count, the D-570/D-636 decision records, and the runner's `mem_limit` sizing comment (`tools/test-runner/ciu.defaults.toml.j2:43-45`). Under (a), the count would live once, in `run-gate.toml`, next to the environment it bounds.
+- **Placement of the count.** (a) should apply to `mode = "ephemeral"` environments too, not only exec. R-29's memory admission cannot see the gates slice from the devcontainer, where every gate is launched. Live 2026-10-03: `/proc/self/cgroup` reads `0::/` and `/sys/fs/cgroup/dev.slice` is absent. R-29 therefore degrades to "admission by shared-infra rules only", and the only working bound on concurrent ephemeral lanes is a count (until RG-56 admits through the profiler daemon). Proposed: `max_concurrent` (default 1 for exec; default unbounded for ephemeral) per environment, enforced as N slot locks keyed by container for exec and by environment name plus project for ephemeral.
+- **v8 conflict to resolve.** SPEC-V8 S16.5.7 says an exec target is used by one lane at a time "and a project that wants two lanes inside one container at once has no way to say so". Proposal §4.10 gap 18 adds "revisit only with a real consumer". dstdns is that consumer (D-619/D-636). The recommended resolution (dstdns memo, Q2): keep S16.5.7 for v8, and move dstdns's hermetic lanes to ephemeral environments (RG-73). Then N>1 is needed only as a v7 bridge for the exec runner. The ephemeral-environment count (third bullet) is needed in v8 as well, as the S16.6.1 fallback where the slice cgroup directory is invisible.
+- **v8: absorb** (as S16.6's count fallback; exec N>1 stays v7-only).
+
+
 ## RG-68 — `footprint` ignores completed FAIL runs
 
 **Provenance:** found in dstdns 2026-09-30 (first-run budget calibration for new R2 lanes, D-572 section 3).
@@ -5104,6 +5126,9 @@ reproduction of the SAME underlying defect goes here, not a new entry).
 
 **Spec owner:** SPEC (exec-mode environments, R-41).
 
+**Consumer evidence, 2026-10-03 (dstdns tooling-boundary pass).** The improvised "find the runner and `docker exec`/`docker run` a clone of it" pattern is already copied five times in dstdns: `scripts/p128-assay-schema.sh`, `p129-assay-schema.sh:41-51`, `p165-assay-schema.sh:47-92`, `p167-assay-schema.sh`, `p201-assay-schema.sh:100-145`. Each one derives the runner's name itself (see also `scripts/schema-gate.sh:214-219` and `scripts/config_helper.py:151,180`), five derivations in total. Each then reads the image, binds, network and cgroup parent back off the running container with `docker inspect`. `p129:34-39` even re-implements ciu's instance-id hash (`sha256(path)[:6]`), which ciu 7.15's base36 derivation (vbpub@d1eb98770) has made silently wrong. The per-package `P1xx_TEST_RUNNER`/`P1xx_PHYSICAL_REPO_ROOT` names hand-listed in dstdns's `[environments.test-runner] forward_env` (`run-gate.toml:12-21`) are this pattern's plumbing. dstdns would delete all of it given RG-70 plus RG-75 (lane-scoped throwaway services). ciu already ships the container-resolution half for managed worktrees (`ciu worktree exec --target`, S16.7, with a mount proof). RG-70 should reuse that resolution rather than add a fourth one. **v8: absorb** (`ciu instance exec --env`, SPEC-V8 S14.6.3).
+
+
 ## RG-71 — the `schema` lane cannot take a single-file target: iterating on one `tests/schema/` test costs the full lane every time
 
 **Provenance:** found in dstdns 2026-09-30 (schema-test authoring in the P2xx packages). run-gate rev 46.
@@ -5117,3 +5142,228 @@ reproduction of the SAME underlying defect goes here, not a new entry).
 **Oracles:** `run-gate schema --worktree <wt> -- tests/schema/test_x.py::test_y` runs only that node and still provisions and disposes the throwaway DB; the same flag on a non-opted lane refuses by name; history marks the run selective; a controlled wrong implementation that lets a selective run satisfy the gate lane's freshness check must fail.
 
 **Spec owner:** SPEC (lane argv construction).
+
+## RG-72 — a failed `kind = "assay"` lane leaves no failing-test evidence in the gate log, and the next run overwrites its verdict
+
+**Provenance:** found in dstdns 2026-10-02 (package P231). run-gate rev 46, assay 7.2.0. dstdns@10f9df30, branch `p231-doc-truth`.
+
+**Observed:**
+- A composite `run-gate gate` failed its `assay` member. The log shows only `mock: FAIL/COMMAND_FAILED (exit 1)` and `lane 'assay' exit 1`. It carries no failing node ids, no error kind and no pytest summary line.
+- The implementer read the detail (5 errors in `tests/config/test_fault_boundary_completeness.py`) from `.assay/verdict-mock.json` before re-running.
+- The green re-run then rewrote `.assay/verdict-mock.json` and `.assay/progress-mock.jsonl` at the same fixed paths. Nothing kept the failing run's evidence.
+- The failure looked like a load-induced flake: the same run's test-runner member peaked at 3598 MiB and stalled 35.8 s on memory with two gates sharing one container. Without the verdict, the flake can no longer be characterised. Was it an error kind, a timeout or an OOM-kill?
+
+**Why it matters:**
+- A flake is a defect to diagnose (dstdns withdrew its flake-retry allowances). The canonical retry destroys the only evidence.
+- Agents that keep a log of each run still lose the detail, because the log never had it.
+
+**Proposed fix direction (either; both preferred):**
+- (a) On a non-PASS assay verdict, run-gate prints a bounded failure digest into the lane log: the verdict status, the first N failing or erroring node ids with their exception class, and the pytest summary line.
+- (b) run-gate copies a non-PASS verdict, and its progress file, to a run-keyed path, e.g. `.assay/failed/<lane>-<run-id>.json` or under the run-gate history store, before the next run of that lane can overwrite it. The run record names that path.
+
+**Oracles:**
+- A lane forced to fail (one asserting-false test) prints that node id and `AssertionError` in the gate log.
+- After a subsequent green run of the same lane, the failed run's verdict is still readable at the path the failed run's record names.
+- A PASS run writes no digest and no archived copy.
+
+**Spec owner:** SPEC (assay-kind lane result handling) and the run-history store.
+
+## RG-73 — an `ephemeral` environment cannot stand in for a per-worktree runner: its image is a fixed literal and the judged worktree is not mounted at the image's canonical root
+
+**Provenance:** dstdns tooling-boundary pass, 2026-10-03 (`dstdns/docs/proposals/TOOLING-BOUNDARY-2026-10.md` Q1). run-gate rev 46, ciu 7.15.1.
+
+**Observed:**
+- dstdns judges almost every worktree inside main's one persistent exec runner (GUIDE §3 "Mode A"). That runner bakes main's identity: `REPO_ROOT={{ ciu.repo_root }}` and `PYTHONPATH={{repo_root}}:{{repo_root}}/scripts` (`tools/test-runner/ciu.compose.yml.j2:41` and `:29-57`).
+- Consequences of that bake:
+  - Every worktree lane must `cd {worktree}` (`run-gate.toml`, 11 lanes) and must defend against main's `REPO_ROOT` (D-362; `scripts/gate-slot.sh:33-37` pins it by hand).
+  - A worktree can never change the test runtime it is judged in, because the image and its dependency closure are main's.
+- The worktree-owned alternative today is a full Mode-B ciu stack with its own exec runner. It costs a stack (vault, consul, redis, postgres) per worktree on a host capped at 2-3 stacks (dstdns GUIDE §3.0).
+- run-gate's own `mode = "ephemeral"` (R-07/R-15) would remove the stack entirely for hermetic lanes (mock suite, assay R0-R2, frontend unit, schema with a throwaway DB). Two gaps stop dstdns from using it:
+  1. `[environments.<n>] image` is a literal string. A worktree that rebuilt its runner image (new pins in `requirements.txt`) has no way to name its own tag, and it must not overwrite the shared `:latest` (dstdns GUIDE §3.2 "Images"; ciu CIU-117).
+  2. R-15 dual-mounts the REPO at its physical and namespace paths. The image's canonical root (`WORKDIR /workspaces/dstdns`, `tools/test-runner/Dockerfile:167`, with `PYTHONPATH` baked to it) is therefore main's checkout, not the judged worktree. A lane that imports by `PYTHONPATH` silently imports main's copy of `libs/` and `scripts/`. UNVERIFIED whether the importlib import mode (`pytest.ini`) masks this for every dstdns lane; the hazard class is D-362's.
+
+**Why run-gate owns it:** it constructs the ephemeral container's argv (image, mounts, workdir). A consumer cannot change them.
+
+**Proposed contract:**
+- (a) `image` may be derived per checkout. Proposed form: `image_from_ciu = "<stack>.<service>"`, resolved through the judged checkout's rendered ciu config (the RG-24/RG-37 resolution path). With v8, this becomes `image_from` (SPEC-V8 S16.4). A literal stays legal. The resolved image reference and its id are recorded in the run record.
+- (b) `mount_worktree_at = "<abs path>"`: the judged worktree, never the repo root, is bind-mounted at that path. It becomes the container workdir, and `{worktree}` substitutes to it. The shared `.git` is mounted where the worktree's gitfile expects it (dstdns already does this in compose, `ciu.compose.yml.j2:84-124`). Refuse when the path collides with another declared mount.
+- (c) `doctor` warns when an ephemeral environment's image declares `WORKDIR`/`PYTHONPATH` under a path that is not `mount_worktree_at`.
+
+**Oracles:**
+- A lane `python -c 'import scripts, sys; print(scripts.__file__)'` run with `--worktree W` prints a path under W's mount, not main's.
+- With `image_from_ciu`, a worktree whose rendered config names `dstdns/test-runner:w1` runs that image; `--dry-run` shows it.
+- Two worktrees run the same ephemeral lane concurrently with no shared container.
+- A controlled wrong implementation that keeps R-15's repo-root dual mount while also mounting the worktree at `mount_worktree_at` must fail the first oracle when main's checkout carries a different `scripts/__init__.py`.
+
+**Spec owner:** SPEC R-07 (environment keys), R-15 (container lanes), R-23 (mounts).
+
+**v8: absorb** (S16.4 `image_from`; the mount rule belongs in S16.4.3's mount proof).
+
+**Amendment (2026-10-03, ciu v8 adversarial review, dstdns D-658; SPEC-V8 draft.9 S16.12 is the per-oracle table; not yet built, amended before the build):** drop proposed contract (b) `mount_worktree_at`. dstdns D-653 Q7 decided option A: the worktree is mounted at **its own path** plus the git common directory (read-write, at its own path, derived from the gitfile and its `commondir`); an image may bake no checkout path or content (`WORKDIR`, `PYTHONPATH`, a `COPY` of imported sources, an editable install of a copied tree), and `doctor` (c) checks that instead. `workdir` defaults to the checkout's own path and `{worktree}` is that path. Oracles 1, 2 (as `image_from`), 3 and 4 stand; in a linked worktree `image_from` resolves to the instance-scoped tag when present locally, else the primary's declared reference, and records the image id in the run record. Reference: ciu `SPEC-V8.md` S16.4.6, S16.4.9, S16.11.6.
+
+## RG-74 — the post-merge trunk base and the composite-member base are consumer scripts, not run-gate derivations
+
+**Provenance:** dstdns tooling-boundary pass, 2026-10-03. run-gate rev 46.
+
+**Observed:**
+- RG-51 (FIXED, rev 40) made a worktree lane's default base the ciu-recorded fork point (CIU-106). Two cases remain consumer-scripted. dstdns's `scripts/gate-base.sh` (79 lines, 93 references) covers both.
+- **(1) Post-merge trunk gate.** On the trunk, with a `--no-ff` merge commit at HEAD, the correct base is `HEAD^1` (`gate-base.sh:109-111`). run-gate derives nothing there, because no worktree record exists on the trunk. assay's first-parent rule (RG-54) only coincidentally agrees, and only for merge commits.
+- **(2) Composite members.** dstdns's composite `[lanes.gate]` (`run-gate.toml:511`) is a string conjunction. It must compute `GATE_BASE="$(bash {worktree}/scripts/gate-base.sh {worktree})"` itself and pass it to the one changed-line member, because a conjunction's members never see the parent's resolution. `--base` is refused on the composite by design (dstdns AGENTS §6.1).
+- `gate-base.sh` also hardcodes the trunk name `main`, with an `origin/main` fallback (`:95-97`). That is the RG-51 stale-remote hazard again, in consumer code.
+
+**Why run-gate owns it:** it already owns comparison-base resolution (`resolve_comparison_base`, R-35, RG-51) and the composite's invocation. Every consumer with a merge-commit trunk workflow re-writes the same three cases.
+
+**Proposed contract:**
+- (a) An additional resolution step after the RG-51 record and before `@{upstream}`: if the judged tree's HEAD is a merge commit on the declared trunk, the base is `HEAD^1`. The trunk name is declared once (`[project] trunk = "main"` or the central config), never guessed. Recorded as `base_source = "trunk-merge-first-parent"`.
+- (b) `kind = "sequence"` lanes (RG-37's second alignment item, ciu proposal N21) resolve the base once and pass it to every member whose assay lane reports `base_source = "request"`. This removes the need for `GATE_BASE` plumbing.
+- (c) A non-merge HEAD on the trunk refuses by name, which is gate-base.sh's case 3.
+
+**Oracles:**
+- On a trunk whose HEAD is a merge commit M, `--dry-run` reports base `M^1` with source `trunk-merge-first-parent`.
+- A sequence lane passes that base to its `base_source = "request"` member only.
+- A non-merge trunk HEAD refuses with exit 2.
+- A controlled wrong implementation using `merge-base HEAD trunk` (which equals HEAD on the trunk) must fail the first oracle.
+
+**Spec owner:** SPEC R-35 (comparison base), R-25 (conjunctions) / the sequence-lane section once written.
+
+**v8: absorb** (SPEC-V8 S16.5.4/S16.5.5: sequence lanes and request-base pass-through. The trunk-merge step is missing there too).
+
+**Amendment (2026-10-03, ciu v8 adversarial review, dstdns D-658; SPEC-V8 draft.9 S16.12 is the per-oracle table; not yet built, amended before the build):** oracle 3 ("a non-merge trunk HEAD refuses with exit 2") becomes NOT_RUN/`no-base`, exit 3, after RG-78: a base that cannot be derived is a precondition refused before execution, not a configuration error. The same holds for `--base` outside R-35b's charset. Reference: ciu `SPEC-V8.md` S16.7.4, S16.8.
+
+## RG-75 — no lane-scoped throwaway service (database): every schema/mutation lane provisions and tears down its own Postgres by hand
+
+**Provenance:** dstdns tooling-boundary pass, 2026-10-03. Related: RG-18 (pg_dump version guard, OPEN, scoped dstdns-side), RG-70.
+
+**Observed:**
+- dstdns has seven hand-rolled copies of "start a throwaway Postgres on the instance network, wait for it, create roles, apply DDL, export a DSN, run tests, remove it":
+  - `scripts/schema-gate.sh` (220 lines; `:94` image read off the running stack, `:102` literal `dstdns-schemagate-$$`, `:144-149` `docker run` with tmpfs, `:160-165` readiness loop)
+  - `scripts/sql-mutation-gate.sh` (177)
+  - `scripts/p128-`, `p129-`, `p165-`, `p167-` and `p201-assay-schema.sh` (119-292 lines each, each copied from the previous one)
+- They run inside the exec runner and spawn sibling containers through the mounted docker socket. Each one re-derives the runner's identity, network and cgroup parent (RG-70 note). Each one owns its own cleanup on signal paths. `p167-assay-schema.sh:14-24` documents that the copied derivation branch is dead and broken.
+- None of this is dstdns-specific. Any project with a relational schema needs a disposable database for schema and mutation lanes.
+
+**Why run-gate owns it:** run-gate owns the lane lifecycle (start, budget, kill, evidence, `finally` cleanup, inflight record and re-attach, RG-35). A sidecar started by a lane script escapes all of it. A killed client leaves the sidecar running, which nothing reaps.
+
+**Proposed contract:**
+- `[environments.<n>.services.<s>]` (or per lane) with:
+  - `image` (literal or `image_from_ciu`, RG-73)
+  - `tmpfs`
+  - `env`
+  - `ready` (argv run in the service until exit 0, bounded)
+  - `init` (argv run once after ready, e.g. a DDL apply script from `{worktree}`)
+  - `expose_env` (e.g. `DSN = "postgresql://...@{host}:{port}/db"`, delivered to the lane)
+- The service gets a run-scoped name and network, joins the lane container's network (ephemeral) or the target's network (exec), and is placed in the same slice.
+- It is started after admission and removed in the same `finally` as the lane. It is recorded in the inflight record so that a re-attaching client (RG-35) can remove it.
+- The `pg_dump` client-version guard (RG-18) becomes a `ready`-time check that the declared client matches the service's server major.
+
+**Oracles:**
+- A lane declaring a pg service sees `DSN` and can connect.
+- After the lane (PASS, FAIL, budget kill), no container carrying the run's label remains.
+- A client killed mid-lane leaves the sidecar, and the next invocation of the lane removes it.
+- Two concurrent invocations get distinct services.
+- A controlled wrong implementation that removes the service only on PASS must fail the second oracle.
+
+**Spec owner:** SPEC §5 (execution contract), new subsection.
+
+**v8: absorb** (SPEC-V8 S16.4 ephemeral environments with `binds`; a lane-scoped Realization or `[testing.externals]`-style typed service is the natural home).
+
+**Amendment (2026-10-03, ciu v8 adversarial review, dstdns D-658; SPEC-V8 draft.9 S16.12 is the per-oracle table; not yet built, amended before the build):** align with ciu `SPEC-V8.md` S16.4.7. (1) Drop the service keys `env` and `init`: the lane's own argv applies DDL from `{worktree}`; a service has `image`/`image_from`, `tmpfs`, `ready`, `expose_env`, `resources`. (2) Drop the join of an exec target's network: lane services are an `ephemeral`-environment feature, started on the lane's network; an `exec` or `host` environment declaring `services` refuses. (3) `resources.memory_max` is mandatory unless a manifest entry exists, and the service's charge is part of the lane's admission reservation. (4) `expose_env` values may use `{host}`, `{port}` and `{secret}` only. The oracles on `DSN` delivery, removal after PASS, FAIL and budget kill, a killed client's sidecar removed by the next run, and distinct services per concurrent run stand.
+
+## RG-76 — an external-assay consumer must restate the judge command, its pin and one lane block per assay lane: dstdns's `run-gate.toml` is ~70% boilerplate
+
+**Provenance:** dstdns tooling-boundary pass, 2026-10-03 (`dstdns/docs/proposals/TOOLING-BOUNDARY-2026-10.md` Q3). run-gate rev 46, assay 7.2.0.
+
+**Observed:**
+- dstdns's `run-gate.toml` has 2131 lines and 142 lanes. Of those, 118 are `kind = "assay"` lanes, and every one of them carries an identical `[lanes.X.pins.assay] version = "7.2.0", sha256 = "tools/assay/assay-7.2.0.pyz.sha256"` block.
+- 102 of them also carry `assay_command = ["python3", "tools/assay/assay-7.2.0.pyz"]`. The other 16 prefix that command with the same `env GIT_CONFIG_COUNT=1 ... safe.directory ...` triple.
+- The judge version string is repeated in more than 236 places, so a judge upgrade is a 236-site edit.
+- 69 lanes are mutation families (`<target>-r2-{compare,boolop,flips,falsy}`) that differ only in `assay_lane`, which already names a lane that `assay.toml` declares.
+- Per-package variables are listed twice: once in `required_env` and again in the environment's `forward_env` (`run-gate.toml:12-21`).
+- vbpub-internal projects avoid all of this through source mode (R-08: `assay_command` and `pins` omitted). External consumers cannot use source mode.
+
+**Why run-gate owns it:**
+- run-gate already reads `assay lanes --json` (RG-25/RG-26) to derive each lane's `base_source` and toolchain. The lane list itself is therefore derivable from the same document. A consumer restating it creates a second source of truth that drifts. dstdns keeps a meta-test, `tests/config/test_assay_pin_integrity.py`, just to hold the two in step.
+
+**Proposed contract:**
+- (a) A top-level `[assay]` table holding `command`, `pins` and `environment`, inherited by every `kind = "assay"` lane that does not override it.
+- (b) `[assay] import = "all" | [<glob>...]` auto-declares one `kind = "assay"` lane per lane that `assay lanes --json` reports. An explicit `[lanes.<n>]` may still override an imported lane by name. `--list` marks imported lanes as such.
+- (c) A lane's `required_env` is forwarded automatically in its environment; `forward_env` then becomes only the extra set.
+
+**Oracles:**
+- With (a) and (b), a fixture `assay.toml` with three lanes and a `run-gate.toml` holding only `[assay]` lists three runnable lanes, each verifying the single pin.
+- An explicit lane override wins.
+- A lane removed from `assay.toml` disappears from `--list` with no edit to `run-gate.toml`.
+- A `required_env` variable reaches the container without being listed in `forward_env`.
+- A controlled wrong implementation that imports lanes but skips pin verification for imported lanes must fail the first oracle (by tampering with the sha256 sidecar).
+
+**Spec owner:** SPEC R-06/R-08 (config schema), R-24 (required_env).
+
+**v8: absorb** (`[testing.judge]` already declares the judge once, S16.3; lane import from `assay lanes --json` belongs in S16.5/S16.7).
+
+**Amendment (2026-10-03, ciu v8 adversarial review, dstdns D-658; SPEC-V8 draft.9 S16.12 is the per-oracle table; not yet built, amended before the build):** drop (c) and its oracle ("a `required_env` variable reaches the container without being listed in `forward_env`"). ciu `SPEC-V8.md` S16.4.5 requires a lane's `required_env` to be a subset of the environment's available set (`forward_env` ∪ `env` ∪ binding variables ∪ lane-service `expose_env` ∪ the fixed `CIU_*` variables), checked by `ciu check`, and an auto-forward would make that check vacuous. (a) and (b) and their oracles stand, with names only (no globs) in `import`.
+
+## RG-77 — the assay-lane `--state-dir` contract (RG-38) and its repair (RG-49) are documented nowhere a consumer reads
+
+**Provenance:** dstdns P235 (agent-instructions restructure, D-648), 2026-10-03. run-gate rev 46.
+
+**Observed:**
+- SPEC `R-38` documents the unconditional `--resume --progress .assay/progress-<lane>.jsonl` (RG-33). But it never mentions `--state-dir <repo>/.run-gate/assay-state/<project-relative-path>/`, which RG-38 added to every assay-kind lane on all three runner kinds. `grep -c state-dir SPEC.md README.md CONSUMERS.md LANE-AUTHORING.md` gives 0 for each file. Only CHANGES.md and this backlog carry it.
+- RG-49's repair (prove containment, then `chown` a root-owned synthetic parent in a partial-bind-mount worktree container) is likewise only in CHANGES.md and backlog prose.
+- The `run-gate-cli` skill mentions none of resume, progress or state-dir.
+- dstdns therefore had to carry two paragraphs restating this in its own AGENTS.md §6.1, including "a fresh worktree keeps resume state" and "a permission error under `.run-gate/assay-state/` means check the run-gate version first". P235 cut them to a pointer (D-648 "cut now, file gaps"). That pointer currently lands on the skill and CHANGES.md, so a consumer can learn the behavior only from the changelog.
+
+**Why run-gate owns it:** run-gate constructs the argv, so the state-dir location, its keying (the checkout owning the shared `.git`, plus the project-relative path) and its durability across throwaway worktrees are run-gate's contract, not the consumer's.
+
+**Proposed contract:**
+- Extend SPEC `R-38` (or add a sibling rule) to state the `--state-dir` argument and its location derivation. It should also say why that location survives a deleted worktree, state the RG-49 containment-then-chown behavior, and name the exact refusal a failure produces.
+- Add a "Resume and progress" section to the `run-gate-cli` skill covering the three flags, where to tail progress, and the version floor.
+- Add a one-paragraph mention to CONSUMERS.md.
+
+**Oracles:**
+- A doc-drift test asserts that every flag appended unconditionally by the assay argv builder (`--resume`, `--progress`, `--state-dir`) is named in SPEC and in the skill.
+- A controlled wrong implementation, a new unconditional flag added to the builder without a SPEC mention, must fail that test.
+
+**Spec owner:** SPEC R-38.
+
+**v8: absorb** (the v8 gate inherits the argv builder, so the same drift test belongs there).
+
+## RG-78 — adopt v8's closed exit table and explicit environment modes now, not at the ciu8 cutover
+
+**Provenance:**
+- dstdns D-654: the operator chose v8 Q11 option A and directed a backport into run-gate, because ciu v8 is far away.
+- ciu v8 proposal rev 4.1 (vbpub@1602bbbac) §4.1.10 and Q11.
+- The analysis behind the choice is in dstdns `nyxloom-trove/decisions.md` D-654.
+
+**Observed:**
+- `run-gate <lane>` passes the lane's own exit code through. RG-11 reserved 2 (configuration/refusal) and 3 (infrastructure) for gate refusals, so a lane exiting 2 (pytest "interrupted"/usage error) or 3 cannot be told apart from a gate refusal, and pytest's 5 ("no tests collected") passes through as an unexplained non-zero.
+- This is the bug class behind dstdns `gate-slot.sh`'s exit-75 rerun (D-646): the wrapper's own code collided with a lane's.
+- Agents misread raw lane codes repeatedly: vitest exiting 1 with every test passing (RG-45), and "killed" statuses that mask a finished run.
+- The built-in `host` environment is a container, while `bare-host` is the subprocess. That is a standing naming trap.
+
+**Why run-gate owns it:** the gate is the only component that knows both the lane's raw result and its own refusal reasons. Every consumer (nyxloom gate pointers, cmru, CI, shell wrappers, agents) otherwise reconstructs the distinction from logs.
+
+**Proposed contract (v8 S16 Q11 option A, verbatim semantics):**
+- **Exit table, closed:**
+  - PASS 0;
+  - FAIL 1 (the lane ran and failed, including a mapped "collected nothing");
+  - ERROR 2 (the gate could not run the lane because of config or infrastructure; replaces RG-11's 2/3);
+  - NOT_RUN 3 (a precondition refused before execution: dirty tree, missing base, admission);
+  - BUDGET 4 (the budget was exceeded and the lane is resumable).
+  - No other code ever leaves run-gate.
+- **LaneResult:** the JSON result (`--json`) and a one-line human summary always carry `verdict`, the lane's raw `exit_code`, `reason` (for ERROR/NOT_RUN, naming the fix), and the log path.
+- **Raw-code mapping:** a documented table per lane kind. For example: pytest 5 → FAIL; a vitest non-zero with every test passing stays FAIL but `reason` names RG-45; a timeout or kill → BUDGET or ERROR as appropriate. The table is declared per lane where it differs from the default.
+- **Environment modes:** each environment declares `mode = "ephemeral" | "exec" | "host"`, and implicit built-in names go away. `host` means a bare subprocess.
+- **Cutover (D-652 Q13 style, atomic):** a `run-gate migrate` (or a documented one-shot) rewrites consumer `run-gate.toml` environments and lists wrapper scripts that branch on raw codes. Pin tests are reclassified. The CHANGES entry carries a consumer checklist: nyxloom `[gates.*]` pointers (0/non-0, unaffected), dstdns `gate-slot.sh` (deleted by RG-67) and `gate-base.sh`, CI workflows, cmru tester-gate.
+
+**Oracles:**
+- A lane exiting 2 yields FAIL with `exit_code: 2`, distinguishable from an ERROR refusal.
+- A pytest lane collecting nothing yields FAIL with a reason.
+- A dirty tree yields NOT_RUN.
+- A budget overrun yields BUDGET, and `--resume` then continues.
+- No code outside 0–4 can be produced (fuzz the lane's exit across 0–255).
+- An environment without `mode` refuses with ERROR, naming the key.
+- A controlled wrong implementation that passes the raw code through for FAIL must fail the first oracle.
+
+**Spec owner:** SPEC R-04 (exit codes), R-18 (verdict discipline), R-06 (environments). The ciu8 port inherits the same table (parity test).
+
+**Amendment (2026-10-03, ciu v8 adversarial review, dstdns D-658; SPEC-V8 draft.9 S16.12 is the per-oracle table; not yet built, amended before the build):** (1) The fourth verdict is `BUDGET_EXCEEDED`, not `BUDGET`: it is the token assay emits and the ciu `SPEC-V8.md` S16.8 vocabulary; "BUDGET 4" above is shorthand for it, and the LaneResult key is `verdict`. (2) Drop the oracle "a budget overrun yields BUDGET, and `--resume` then continues": v8 has no `ciu gate --resume` (assay resumes itself, S16.7.2), so the oracle is "a budget overrun yields `BUDGET_EXCEEDED` and the lane is resumable by assay's own state". (3) "missing base" is NOT_RUN with reason `no-base`; a lock the gate cannot take within `--admission-wait` is NOT_RUN/`lock-busy`; a judge-artifact digest mismatch is NOT_RUN/`judge-digest`; a verdict without judge provenance is ERROR. (4) assay's six outcomes map `NO_MEASUREMENT` and `INCONCLUSIVE` to FAIL, keeping the raw outcome as `assay_outcome`. (5) A multi-lane invocation exits as a sequence does (PASS iff all passed, else the first non-PASS in argument order); `gate exec` returns the command's own status and is outside the table; sub-verbs (`history`, `footprint`, `doctor`, `--list`) use the general table. Reference: ciu `SPEC-V8.md` S16.8, S16.8.2, S16.8.2a.

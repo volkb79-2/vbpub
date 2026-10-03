@@ -537,6 +537,10 @@ def test_worktrees_json_lists_a_flat_branch_with_no_slash_without_crashing(tmp_p
         cli, "_current_git_root", lambda: tmp_path,
     )
     monkeypatch.setattr(cli.transaction, "list_cmru_workspaces", lambda root: [workspace])
+    monkeypatch.setattr(
+        cli.transaction, "read_release_scope_for_workspace",
+        lambda _root, _workspace: ["ciu"],
+    )
 
     out = io.StringIO()
     with redirect_stdout(out):
@@ -548,6 +552,8 @@ def test_worktrees_json_lists_a_flat_branch_with_no_slash_without_crashing(tmp_p
         "purpose": "release",
         "source_commit": "a" * 40,
         "prunable": True,
+        "project_scope": ["ciu"],
+        "project_scope_state": "recorded",
     }]
 
 
@@ -562,6 +568,10 @@ def test_worktrees_plain_lists_a_flat_branch_with_no_slash_without_crashing(tmp_
         cli, "_current_git_root", lambda: tmp_path,
     )
     monkeypatch.setattr(cli.transaction, "list_cmru_workspaces", lambda root: [workspace])
+    monkeypatch.setattr(
+        cli.transaction, "read_release_scope_for_workspace",
+        lambda _root, _workspace: ["ciu"],
+    )
 
     out = io.StringIO()
     with redirect_stdout(out):
@@ -569,7 +579,8 @@ def test_worktrees_plain_lists_a_flat_branch_with_no_slash_without_crashing(tmp_
 
     text = out.getvalue()
     assert "release: cmru-release-20260101_000000-ciu-abcd1234" in text
-    assert f"resume: cmru release --resume {workspace_path}" in text
+    assert f"resume: cmru release ciu --resume {workspace_path}" in text
+    assert "repeat the same --config PATH" in text
 
 
 def test_worktrees_recovery_advice_includes_the_repository_config(tmp_path, monkeypatch):

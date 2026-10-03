@@ -23,6 +23,28 @@ def _fake_shared(*, discover=None, records=()):
     class SharedError(Exception):
         pass
 
+    discover = discover or (lambda path: (Path(path), Path("/common"), "main", "a" * 40))
+
+    def ensure_workspace(record, *, labels=None, metadata=None):
+        if metadata is not None:
+            record.metadata = dict(metadata)
+        if labels is not None:
+            record.labels = dict(labels)
+        return record
+
+    def adopt_workspace(source, target, *, purpose="workspace", labels=None, metadata=None, **_kwargs):
+        top, common, branch, head = discover(target)
+        return SimpleNamespace(
+            purpose=f"cmru-{purpose}" if purpose != "workspace" else purpose,
+            branch=branch,
+            worktree_path=Path(target),
+            source_git_root=Path(source),
+            workspace_id="seedid",
+            base_commit=head,
+            metadata=dict(metadata or {}),
+            labels=dict(labels or {}),
+        )
+
     return SimpleNamespace(
         WorkspaceError=SharedError,
         workspace_id_for_path=lambda path: "seedid",
@@ -30,12 +52,13 @@ def _fake_shared(*, discover=None, records=()):
             worktree_path=Path(args[1]), branch=kwargs["branch"], base_commit=kwargs["base"],
         ),
         remove_workspace=lambda *args, **kwargs: None,
-        discover_git_context=discover or (lambda path: (Path(path), Path("/common"), "main", "a" * 40)),
+        discover_git_context=discover,
         list_workspaces=lambda common: list(records),
         find_workspace=lambda _common, path: next(
             (record for record in records if record.worktree_path == path), None
         ),
-        ensure_workspace=lambda record: record,
+        ensure_workspace=ensure_workspace,
+        adopt_workspace=adopt_workspace,
     )
 
 
@@ -156,13 +179,24 @@ def test_resume_legacy_workspace_uses_git_fallback_when_shared_record_is_absent(
     path = root / ".worktrees" / "cmru-release-legacy"
     path.mkdir(parents=True)
     common = root / ".git"
-    shared = _fake_shared(discover=lambda value: (path, common, "cmru-release-legacy", "a" * 40))
+
+    def discover_git_context(value):
+        top = root if Path(value).resolve() == root.resolve() else path
+        return top, common, "cmru-release-legacy", "b" * 40
+
+    shared = _fake_shared(discover=discover_git_context)
     monkeypatch.setattr(transaction, "_shared_worktree", lambda: shared)
-    monkeypatch.setattr(transaction, "_common_git_dir", lambda _value: (_ for _ in ()).throw(RuntimeError("not git")))
+    monkeypatch.setattr(transaction, "_common_git_dir", lambda _value: common)
     monkeypatch.setattr(
         transaction,
         "_git",
         lambda _path, *args: "cmru-release-legacy" if args == ("branch", "--show-current") else "b" * 40,
+    )
+    monkeypatch.setattr(transaction, "read_release_progress", lambda *_args: "a" * 40)
+    monkeypatch.setattr(
+        transaction,
+        "run_local_git",
+        lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 0, stdout="", stderr=""),
     )
     fetched = []
     monkeypatch.setattr(
@@ -172,7 +206,83 @@ def test_resume_legacy_workspace_uses_git_fallback_when_shared_record_is_absent(
     )
     resumed = transaction.resume_workspace(root, path)
     assert resumed.branch == "cmru-release-legacy"
+    assert resumed.context.metadata[transaction._LEGACY_RESUME_METADATA_KEY] == (
+        transaction._LEGACY_RESUME_METADATA_VALUE
+    )
     assert fetched and fetched[0][0][:3] == ["git", "fetch", "--prune"]
+
+
+def test_resume_revalidates_leftover_legacy_removal_bridge_record(monkeypatch, tmp_path):
+    root = tmp_path / "repo"
+    path = root / ".worktrees" / "cmru-release-legacy"
+    path.mkdir(parents=True)
+    common = root / ".git"
+    record = SimpleNamespace(
+        purpose="cmru-legacy",
+        branch="cmru-release-legacy",
+        worktree_path=path,
+        source_git_root=root,
+        workspace_id="legacy-workspace",
+        base_commit="b" * 40,
+        metadata={},
+    )
+    shared = _fake_shared(
+        discover=lambda _value: (path, common, "cmru-release-legacy", "b" * 40),
+        records=(record,),
+    )
+    monkeypatch.setattr(transaction, "_shared_worktree", lambda: shared)
+    monkeypatch.setattr(transaction, "_common_git_dir", lambda _value: common)
+    monkeypatch.setattr(transaction, "read_release_progress", lambda *_args: "a" * 40)
+    monkeypatch.setattr(
+        transaction,
+        "run_local_git",
+        lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 0, stdout="", stderr=""),
+    )
+
+    resumed = transaction.resume_workspace(root, path)
+
+    assert resumed.context is record
+    assert record.metadata == {
+        transaction._LEGACY_RESUME_METADATA_KEY: transaction._LEGACY_RESUME_METADATA_VALUE,
+    }
+
+
+@pytest.mark.parametrize("progress,returncode", [(None, 0), ("a" * 40, 1)])
+def test_resume_refuses_leftover_legacy_record_without_usable_ancestor_progress(
+    monkeypatch, tmp_path, progress, returncode,
+):
+    root = tmp_path / "repo"
+    path = root / ".worktrees" / "cmru-release-legacy"
+    path.mkdir(parents=True)
+    common = root / ".git"
+    record = SimpleNamespace(
+        purpose="cmru-legacy",
+        branch="cmru-release-legacy",
+        worktree_path=path,
+        source_git_root=root,
+        workspace_id="legacy-workspace",
+        base_commit="b" * 40,
+        metadata={},
+    )
+    shared = _fake_shared(
+        discover=lambda _value: (path, common, "cmru-release-legacy", "b" * 40),
+        records=(record,),
+    )
+    monkeypatch.setattr(transaction, "_shared_worktree", lambda: shared)
+    monkeypatch.setattr(transaction, "_common_git_dir", lambda _value: common)
+    monkeypatch.setattr(transaction, "read_release_progress", lambda *_args: progress)
+    monkeypatch.setattr(
+        transaction,
+        "run_local_git",
+        lambda *args, **kwargs: subprocess.CompletedProcess(
+            args[0], returncode, stdout="", stderr="not an ancestor"
+        ),
+    )
+
+    message = "no valid CMRU release progress" if progress is None else "not an ancestor"
+    with pytest.raises(RuntimeError, match=message):
+        transaction.resume_workspace(root, path)
+    assert record.metadata == {}
 
 
 def test_resume_rejects_a_workspace_from_another_git_family(monkeypatch, tmp_path):

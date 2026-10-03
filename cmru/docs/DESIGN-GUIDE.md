@@ -165,7 +165,10 @@ set and asks before changing anything unless `--yes` was supplied. A cleanup
 dry-run stops after that preview. The confirmed action set is captured before
 the prompt and applied as-is; rescanning would widen the deletion to targets
 the operator never saw, including an age-based asset that crossed its cutoff
-while confirmation was open. The canonical semantic table records each
+while confirmation was open. Git-tag targets carry the exact local and remote
+object IDs from that preview. Conditional local ref deletion and a remote
+lease ensure a newly created or retargeted ref is not removed by a confirmation
+that named the previous object. The canonical semantic table records each
 verb's scope, combinations, defaults, writes, network effects, and dry-run
 boundary.
 
@@ -185,9 +188,10 @@ aggregate gates slice. An empty value is already refused; a live Docker check sh
 `--cpus 0` is accepted but records `NanoCpus=0`, `CpuQuota=0`, and `CpuPeriod=0`, which
 leaves the container without a per-container CPU limit. Live runs also showed values below
 `0.00001` CPUs produce `cpu.max = max 100000`, while `0.00001` produces a bounded quota.
-CMRU pins Docker's CPU period at 100000 microseconds and accepts only a finite CPU value of at
-least `0.00001` that Docker can represent, whether supplied through `--cpus` or
-`CMRU_TESTER_CPUS`. It validates the value before starting privileged host probes.
+CMRU accepts only a finite CPU value of at least `0.00001` that Docker can represent, whether
+supplied through `--cpus` or `CMRU_TESTER_CPUS`. It uses Docker's `--cpus` field alone:
+Docker rejects a HostConfig that supplies both `NanoCPUs` (from `--cpus`) and `CpuPeriod`
+(from `--cpu-period`). The value is checked before starting privileged host probes.
 
 The optional DinD sidecar is a separate container. It receives the same gates-slice parent,
 but currently has no per-container CPU or memory cap. The CMRU S-CLI.9 audit records this as
@@ -247,6 +251,35 @@ transaction. Abandonment accepts `--config` because the release's external
 orchestration document may be the only policy that names every project in a
 multi-project transaction; guessing from the current directory can turn valid
 scope members into apparent untagged publishers and falsely refuse recovery.
+Remote promotion status is determinate only when the successful branch lookup returns
+`origin/main` with a valid object ID. A successful but empty or malformed result does not mean
+the candidate is unpromoted, so abandonment withholds cleanup until that ref can be inspected.
+
+### Release resume keeps its recorded scope
+
+A retained candidate stores the projects selected for that transaction. Resume
+uses that recorded scope when the operator omits a target, and refuses an
+explicit target that adds or drops a project. `cmru worktrees` prints the scope
+and a scope-safe command when the metadata is readable. It reads the sidecar
+from the shared Git directory using the inventory's branch fact; it does not
+stat a listed worktree path that may belong to another filesystem namespace.
+Release rows in `cmru worktrees --json` include `project_scope` and
+`project_scope_state`. The state vocabulary is `recorded`, `missing`, and
+`unreadable`; only `recorded` carries the exact project-name array. Consumers
+must not resume from a missing or unreadable scope. If the failed release used
+an external config, the operator repeats that same `--config PATH`; the path is
+not stored in the transaction. A legacy candidate with no scope record needs an
+explicit target after inspection. This keeps a failed single-project release
+from expanding to every project that happens to be changed later, while still
+letting a deliberate fresh release use the configured default scope.
+
+A recordless legacy release checkout is not trusted from its branch name alone.
+Resume first verifies its linked-worktree registration, exact source Git family,
+release branch, and a progress commit that is an ancestor of the candidate, then
+records it through the shared worktree lifecycle API. The child requires that
+record's path, branch, source, workspace ID, and base to match its routing
+environment. This preserves the older recovery path while making ownership
+explicit before execution.
 
 Cleanup freezes remote IDs and local build-record/worktree identities before
 confirmation. For a declared `steps.clean`, CMRU snapshots dirty paths
@@ -327,6 +360,11 @@ standalone bootstrap path.
 
 Repository secrets are resolved separately: the environment wins for an invocation, then the
 CMRU root secret, then a project-local overlay. No credential is copied into a project config.
+The resolved publisher token must remain the same credential through the runner and CMRU's
+Git transport. For that reason, `GITHUB_PUSH_PAT`, `GITHUB_TOKEN`, and
+`CMRU_GIT_AUTH_TOKEN` are reserved: config `[env]` and `[steps.*.env]` tables cannot replace
+them after secret resolution. Operators supply them through the invoking environment or an
+ignored `cmru.secret.toml`.
 
 ## Git transport authentication
 
@@ -343,7 +381,10 @@ operation, CMRU points `core.hooksPath` at its private temporary directory. Git 
 Git process environment and could otherwise reuse the token for a second remote; the registered
 release gates are the checks for the release candidate. The askpass helper also refuses prompts
 that do not identify `github.com`. When no repository token resolves, Git's configured helpers
-and SSH authentication remain in effect.
+and SSH authentication remain in effect. Hook-capable local operations (commit, revert, and
+rebase) still run local hooks, but CMRU removes `GITHUB_PUSH_PAT`, `GITHUB_TOKEN`, and
+`CMRU_GIT_AUTH_TOKEN` from the Git child environment first. This keeps local user hooks available
+without exposing a publisher credential to them.
 
 Repository operations use the CMRU-root credential because candidate refs and `main` belong to
 the repository as a whole. A project-local secret override remains scoped to that project's
@@ -416,6 +457,14 @@ The Assay lane uses the estate-approved `repository-minus-unsafe-symlinks`
 snapshot and names the three tracked Topos fixture omissions explicitly; a
 new unsafe symlink therefore fails closed. The selected worktree's Assay
 source is installed at run time, so its verdict records the tool version.
+
+## Release history errors refuse the plan
+
+CMRU uses `git log` to decide whether a registered project changed since its release tag.
+An empty successful result means there are no matching commits; a nonzero result means CMRU
+could not determine that fact. Returning an empty list on Git failure would silently skip the
+project, so release planning preserves Git's diagnostic and refuses before any project cycle
+starts. The `cmru status` and release paths share this fail-closed history reader.
 
 ## Candidate-first promotion protects the source history
 

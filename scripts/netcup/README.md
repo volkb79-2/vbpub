@@ -34,6 +34,13 @@ union supported by the CLI. Use `help VERB` or `VERB --help` for detailed
 command help; that selected-verb help shows which options such as `--json`
 actually apply.
 
+[`CLI-SPEC.md`](CLI-SPEC.md) is the canonical `monitor-task` grammar and
+semantic review. Its generated inventory follows the live registry; the
+product-owned catalog records accepted/refused combinations, effects, and the
+behavior tests that keep each reviewed call linked to executable evidence.
+See the [`cli-extended` design guide](../../libraries/cli-extended/docs/DESIGN-GUIDE.md#keep-a-generated-surface-and-a-human-semantic-record)
+for why grammar and semantic decisions have separate sources.
+
 Then create the local secret file. A target is optional in an interactive
 terminal: the installer can ask the authenticated API for a server list later.
 

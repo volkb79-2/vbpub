@@ -178,6 +178,12 @@ invocation, `help`, and version requests do not read `.env`, load API settings,
 or make requests. JSON redacts sensitive response fields; `--debug-raw` is an
 explicit, warning-emitting opt-out for troubleshooting and may reveal root
 passwords or tokens. Progress is sent to stderr, and Ctrl-C exits cleanly.
+The canonical grammar and semantic table is
+[`scripts/netcup/CLI-SPEC.md`](../scripts/netcup/CLI-SPEC.md); it records valid
+and refused call combinations, expected effects, and exact test links. Its
+catalog and machine manifest sit next to the spec, and the Netcup gate checks
+that every active case is linked to a collected behavior test before executing
+the suite.
 
 For server operations and diagnostics:
 

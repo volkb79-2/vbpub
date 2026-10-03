@@ -28,7 +28,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from cmru.config_names import PROJECT_CONFIG_FILENAME
-from cmru.git_auth import GitHubGitAuth, run_remote_git
+from cmru.git_auth import GitHubGitAuth, run_local_git, run_remote_git
 
 
 # ---------------------------------------------------------------------------
@@ -72,7 +72,19 @@ def _git_log(repo_root: Path, since_ref: str, *paths: str, end_ref: str = "HEAD"
     cmd = ["git", "log", f"{since_ref}..{end_ref}", "--format=%s"]
     if paths:
         cmd += ["--"] + list(paths) + list(_RELEASE_CONTROL_EXCLUDES)
-    result = subprocess.run(cmd, cwd=repo_root, capture_output=True, text=True)
+    try:
+        result = subprocess.run(cmd, cwd=repo_root, capture_output=True, text=True)
+    except OSError as exc:
+        raise ReleasePlanRefused(
+            f"cannot inspect commit history since {since_ref!r}: "
+            f"git log could not start: {exc}"
+        ) from exc
+    if result.returncode != 0:
+        detail = result.stderr.strip() or result.stdout.strip() or "no diagnostic output"
+        raise ReleasePlanRefused(
+            f"cannot inspect commit history since {since_ref!r}: "
+            f"git log failed ({result.returncode}): {detail}"
+        )
     return [line for line in result.stdout.splitlines() if line.strip()]
 
 
@@ -346,9 +358,8 @@ def _apply_strategy_scm(
     if dry_run:
         print(f"[DRY] Would tag: {tag}")
         return tag
-    rc = subprocess.run(
-        ["git", "tag", "-a", tag, "-m", f"Release {tag}"],
-        cwd=repo_root,
+    rc = run_local_git(
+        repo_root, "tag", "-a", tag, "-m", f"Release {tag}",
     ).returncode
     if rc != 0:
         print(f"[ERROR] git tag {tag} failed (exit {rc})", file=sys.stderr)
@@ -379,15 +390,14 @@ def _apply_strategy_file(
         ["git", "diff", "--cached", "--quiet", "--", str(vfile)], cwd=repo_root
     ).returncode != 0
     if has_staged:
-        subprocess.run(
-            ["git", "commit", "-m", f"chore: bump {prefix} to {next_version}"],
-            cwd=repo_root, check=True,
+        run_local_git(
+            repo_root, "commit", "-m", f"chore: bump {prefix} to {next_version}",
+            check=True,
         )
     else:
         print(f"[INFO] {version_file} already {next_version} — tagging current HEAD.")
-    rc = subprocess.run(
-        ["git", "tag", "-a", tag, "-m", f"Release {tag}"],
-        cwd=repo_root,
+    rc = run_local_git(
+        repo_root, "tag", "-a", tag, "-m", f"Release {tag}",
     ).returncode
     if rc != 0:
         print(f"[ERROR] git tag {tag} failed (exit {rc})", file=sys.stderr)
@@ -408,9 +418,8 @@ def _apply_strategy_counter(
     if dry_run:
         print(f"[DRY] Would tag: {tag}")
         return tag
-    rc = subprocess.run(
-        ["git", "tag", "-a", tag, "-m", f"Release {tag}"],
-        cwd=repo_root,
+    rc = run_local_git(
+        repo_root, "tag", "-a", tag, "-m", f"Release {tag}",
     ).returncode
     if rc != 0:
         print(f"[ERROR] git tag {tag} failed (exit {rc})", file=sys.stderr)
