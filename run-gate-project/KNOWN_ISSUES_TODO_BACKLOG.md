@@ -5199,6 +5199,8 @@ reproduction of the SAME underlying defect goes here, not a new entry).
 
 **v8: absorb** (S16.4 `image_from`; the mount rule belongs in S16.4.3's mount proof).
 
+**Amendment (2026-10-03, ciu v8 adversarial review, dstdns D-658; SPEC-V8 draft.9 S16.12 is the per-oracle table; not yet built, amended before the build):** drop proposed contract (b) `mount_worktree_at`. dstdns D-653 Q7 decided option A: the worktree is mounted at **its own path** plus the git common directory (read-write, at its own path, derived from the gitfile and its `commondir`); an image may bake no checkout path or content (`WORKDIR`, `PYTHONPATH`, a `COPY` of imported sources, an editable install of a copied tree), and `doctor` (c) checks that instead. `workdir` defaults to the checkout's own path and `{worktree}` is that path. Oracles 1, 2 (as `image_from`), 3 and 4 stand; in a linked worktree `image_from` resolves to the instance-scoped tag when present locally, else the primary's declared reference, and records the image id in the run record. Reference: ciu `SPEC-V8.md` S16.4.6, S16.4.9, S16.11.6.
+
 ## RG-74 — the post-merge trunk base and the composite-member base are consumer scripts, not run-gate derivations
 
 **Provenance:** dstdns tooling-boundary pass, 2026-10-03. run-gate rev 46.
@@ -5225,6 +5227,8 @@ reproduction of the SAME underlying defect goes here, not a new entry).
 **Spec owner:** SPEC R-35 (comparison base), R-25 (conjunctions) / the sequence-lane section once written.
 
 **v8: absorb** (SPEC-V8 S16.5.4/S16.5.5: sequence lanes and request-base pass-through. The trunk-merge step is missing there too).
+
+**Amendment (2026-10-03, ciu v8 adversarial review, dstdns D-658; SPEC-V8 draft.9 S16.12 is the per-oracle table; not yet built, amended before the build):** oracle 3 ("a non-merge trunk HEAD refuses with exit 2") becomes NOT_RUN/`no-base`, exit 3, after RG-78: a base that cannot be derived is a precondition refused before execution, not a configuration error. The same holds for `--base` outside R-35b's charset. Reference: ciu `SPEC-V8.md` S16.7.4, S16.8.
 
 ## RG-75 — no lane-scoped throwaway service (database): every schema/mutation lane provisions and tears down its own Postgres by hand
 
@@ -5263,6 +5267,8 @@ reproduction of the SAME underlying defect goes here, not a new entry).
 
 **v8: absorb** (SPEC-V8 S16.4 ephemeral environments with `binds`; a lane-scoped Realization or `[testing.externals]`-style typed service is the natural home).
 
+**Amendment (2026-10-03, ciu v8 adversarial review, dstdns D-658; SPEC-V8 draft.9 S16.12 is the per-oracle table; not yet built, amended before the build):** align with ciu `SPEC-V8.md` S16.4.7. (1) Drop the service keys `env` and `init`: the lane's own argv applies DDL from `{worktree}`; a service has `image`/`image_from`, `tmpfs`, `ready`, `expose_env`, `resources`. (2) Drop the join of an exec target's network: lane services are an `ephemeral`-environment feature, started on the lane's network; an `exec` or `host` environment declaring `services` refuses. (3) `resources.memory_max` is mandatory unless a manifest entry exists, and the service's charge is part of the lane's admission reservation. (4) `expose_env` values may use `{host}`, `{port}` and `{secret}` only. The oracles on `DSN` delivery, removal after PASS, FAIL and budget kill, a killed client's sidecar removed by the next run, and distinct services per concurrent run stand.
+
 ## RG-76 — an external-assay consumer must restate the judge command, its pin and one lane block per assay lane: dstdns's `run-gate.toml` is ~70% boilerplate
 
 **Provenance:** dstdns tooling-boundary pass, 2026-10-03 (`dstdns/docs/proposals/TOOLING-BOUNDARY-2026-10.md` Q3). run-gate rev 46, assay 7.2.0.
@@ -5293,6 +5299,8 @@ reproduction of the SAME underlying defect goes here, not a new entry).
 **Spec owner:** SPEC R-06/R-08 (config schema), R-24 (required_env).
 
 **v8: absorb** (`[testing.judge]` already declares the judge once, S16.3; lane import from `assay lanes --json` belongs in S16.5/S16.7).
+
+**Amendment (2026-10-03, ciu v8 adversarial review, dstdns D-658; SPEC-V8 draft.9 S16.12 is the per-oracle table; not yet built, amended before the build):** drop (c) and its oracle ("a `required_env` variable reaches the container without being listed in `forward_env`"). ciu `SPEC-V8.md` S16.4.5 requires a lane's `required_env` to be a subset of the environment's available set (`forward_env` ∪ `env` ∪ binding variables ∪ lane-service `expose_env` ∪ the fixed `CIU_*` variables), checked by `ciu check`, and an auto-forward would make that check vacuous. (a) and (b) and their oracles stand, with names only (no globs) in `import`.
 
 ## RG-77 — the assay-lane `--state-dir` contract (RG-38) and its repair (RG-49) are documented nowhere a consumer reads
 
@@ -5357,3 +5365,5 @@ reproduction of the SAME underlying defect goes here, not a new entry).
 - A controlled wrong implementation that passes the raw code through for FAIL must fail the first oracle.
 
 **Spec owner:** SPEC R-04 (exit codes), R-18 (verdict discipline), R-06 (environments). The ciu8 port inherits the same table (parity test).
+
+**Amendment (2026-10-03, ciu v8 adversarial review, dstdns D-658; SPEC-V8 draft.9 S16.12 is the per-oracle table; not yet built, amended before the build):** (1) The fourth verdict is `BUDGET_EXCEEDED`, not `BUDGET`: it is the token assay emits and the ciu `SPEC-V8.md` S16.8 vocabulary; "BUDGET 4" above is shorthand for it, and the LaneResult key is `verdict`. (2) Drop the oracle "a budget overrun yields BUDGET, and `--resume` then continues": v8 has no `ciu gate --resume` (assay resumes itself, S16.7.2), so the oracle is "a budget overrun yields `BUDGET_EXCEEDED` and the lane is resumable by assay's own state". (3) "missing base" is NOT_RUN with reason `no-base`; a lock the gate cannot take within `--admission-wait` is NOT_RUN/`lock-busy`; a judge-artifact digest mismatch is NOT_RUN/`judge-digest`; a verdict without judge provenance is ERROR. (4) assay's six outcomes map `NO_MEASUREMENT` and `INCONCLUSIVE` to FAIL, keeping the raw outcome as `assay_outcome`. (5) A multi-lane invocation exits as a sequence does (PASS iff all passed, else the first non-PASS in argument order); `gate exec` returns the command's own status and is outside the table; sub-verbs (`history`, `footprint`, `doctor`, `--list`) use the general table. Reference: ciu `SPEC-V8.md` S16.8, S16.8.2, S16.8.2a.
