@@ -36,6 +36,9 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 - Bind retained publication to the captured Release ID and tag commit, rechecking them before metadata and asset mutations.
 - Treat GHCR 404 responses as absent-or-inaccessible and skip cleanup without certifying absence.
 - Install gate secret overlays without replacing a credential rotated at the masking boundary.
+- Copy resume credentials through no-follow paths and atomic mode-0600 destination files.
+- Verify staged retained artifact bytes against the build manifest before remote publication.
+- Require the registered real-enrollment lane to fail when prerequisites or fixture-image construction fail.
 
 ### Testing
 - Add registry, age-policy, project/root ownership, output transaction, mutation-runner, and adopter-doc contract tests.
@@ -43,6 +46,7 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 - Cover discovery-scope choices, rolling-tag digest changes, Docker attestation indexes, and loadable `.go` consumer examples.
 - Cover package replacement during cleanup confirmation, scoped tag abandonment, exact local tag recovery, credential rotation, and mutation resume evidence.
 - Cover retained-release identity changes, GHCR 404 ambiguity, and credential rotation during overlay installation.
+- Cover symlinked credential destinations, altered retained upload staging, and required enrollment-lane prerequisites.
 
 <!-- cmru: release history -->
 

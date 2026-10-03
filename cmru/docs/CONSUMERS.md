@@ -559,6 +559,9 @@ baseline and mutant copy.
 real-enrollment evidence lanes. It starts with the KI-26 installed-wheel
 acceptance lane, which builds the wheel, installs it into a fresh isolated venv,
 and invokes `cmru get-py` outside the source checkout.
+The registered real-enrollment lane requires Docker, the gates cgroup slice, and a successful
+fixture-image build; missing prerequisites or a failed build are lane failures, not skips.
+Standalone local test runs may skip that container oracle when Docker is unavailable.
 
 The host `gate` lane keeps CMRU publisher credentials out of tester-unified:
 it points visible root/project `cmru.secret.toml` overlays at private host
@@ -689,6 +692,10 @@ valid, with its progress commit an ancestor of the candidate. Without that
 evidence CMRU refuses resume; inspect the retained checkout before starting a
 fresh release. A candidate whose scope cannot be read has no safe resume command
 until that metadata can be inspected.
+Before resuming, keep copied root and project `cmru.secret.toml` paths in the
+candidate as regular files, not symlinks. CMRU refuses unsafe credential paths
+instead of following them outside the candidate; inspect and repair the path
+before retrying.
 
 For JSON automation, a recorded release looks like this (the commit is a full
 Git object ID in actual output):
@@ -802,11 +809,14 @@ without deleting or recreating the tag. CMRU creates no Git refs or Release
 records. CMRU captures each Release ID and tag commit, then checks those exact
 identities before changing Release metadata and before each asset delete or
 upload. GitHub has no atomic conditional-update API, so a remote change after a
-successful check can race the next request. For a stable retained build, CMRU leaves `-latest` pointing at a newer
+successful check can race the next request. After staging each selected file,
+the built-in handler verifies its size and digest against `build.json` before
+the first GitHub request; a changed copy stops publication. For a stable retained build, CMRU leaves `-latest` pointing at a newer
 version instead of moving it backward; it checks the highest version again after
 uploading the retained versioned assets. A custom `push` step must publish files under
-`CMRU_BUILD_OUTPUT_ROOT`, must not rebuild from the caller checkout, and must
-not create or move Git refs or promote a source branch. Generated checksum and
+`CMRU_BUILD_OUTPUT_ROOT`, compare any staged copy with `build.json` before upload,
+must not rebuild from the caller checkout, and must not create or move Git refs
+or promote a source branch. Generated checksum and
 latest-pointer files use temporary copies so the retained build record stays
 valid for another publish. `--dry-run` checks local evidence and renders the
 step but does not query remote tag availability. Use `cmru release` for the

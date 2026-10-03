@@ -4204,7 +4204,7 @@ def _abandon_locked(args, runtime, repo_root: Path) -> int:
                 # Legacy candidates have no baseline. Keep their original
                 # conservative ancestry test, but restrict it to this scope.
                 for tag_name, tag_record in _tag_records_by_name(scoped_remote_tags).items():
-                    tag_sha = tag_record.get(f"refs/tags/{tag_name}^{}") or tag_record.get(
+                    tag_sha = tag_record.get(f"refs/tags/{tag_name}^{{}}") or tag_record.get(
                         f"refs/tags/{tag_name}"
                     )
                     if tag_sha is None:

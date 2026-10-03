@@ -776,6 +776,44 @@ def test_builtin_retained_publish_preserves_manifest_and_existing_tag_targets(
         handlers._build_output_record(None)
 
 
+def test_builtin_retained_publish_rejects_changed_staging_bytes_before_remote_publish(
+    monkeypatch, tmp_path,
+):
+    artifact_root = tmp_path / OUTPUT_ID
+    asset = artifact_root / "dist" / "alpha-1.2.3.whl"
+    asset.parent.mkdir(parents=True)
+    expected_bytes = b"recorded wheel"
+    asset.write_bytes(expected_bytes)
+    manifest = {
+        "source_commit": SOURCE_COMMIT,
+        "artifacts": [{"directory": "dist", "files": [{
+            "path": asset.name,
+            "sha256": hashlib.sha256(expected_bytes).hexdigest(),
+            "bytes": str(len(expected_bytes)),
+        }]}],
+    }
+    record = {"artifact_root": artifact_root, "manifest": manifest}
+    remote_calls = []
+
+    def substituted_copy(_source, destination):
+        Path(destination).write_bytes(b"substituted bytes")
+        return destination
+
+    monkeypatch.setattr(handlers.shutil, "copy2", substituted_copy)
+    monkeypatch.setattr(
+        handlers, "publish_versioned",
+        lambda *args, **kwargs: remote_calls.append((args, kwargs)),
+    )
+
+    with pytest.raises(RuntimeError, match="staged retained artifact differs from build.json"):
+        handlers._publish_versioned_artifacts(
+            object(), prefix="alpha", version="1.2.3", asset_path=asset,
+            notes=None, extra_assets=None, build_output=record,
+        )
+
+    assert remote_calls == []
+
+
 def test_retained_publish_refuses_missing_or_mismatched_tags_before_upload(
     tmp_path,
 ):
@@ -826,7 +864,7 @@ def test_retained_publish_refuses_missing_or_mismatched_tags_before_upload(
                 require_existing_targets=True, latest_pointer_recreate=False,
                 expected_tag_commit=SOURCE_COMMIT,
             )
-        assert publisher.uploads == []
+    assert publisher.uploads == []
 
     for options in (
         {"target_commitish": SOURCE_COMMIT},

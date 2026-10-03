@@ -17,8 +17,10 @@ from __future__ import annotations
 import argparse
 import fnmatch
 import glob
+import hashlib
 import os
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -119,11 +121,13 @@ def _publish_versioned_artifacts(
         staged_asset = staging / "asset" / asset_path.name
         staged_asset.parent.mkdir()
         shutil.copy2(asset_path, staged_asset)
+        _verify_staged_build_output_file(build_output, asset_path, staged_asset)
         staged_extras: list[Path] = []
         for index, extra in enumerate(extra_assets or []):
             staged_extra = staging / f"extra-{index}" / extra.name
             staged_extra.parent.mkdir()
             shutil.copy2(extra, staged_extra)
+            _verify_staged_build_output_file(build_output, extra, staged_extra)
             staged_extras.append(staged_extra)
 
         return publish_versioned(
@@ -131,6 +135,45 @@ def _publish_versioned_artifacts(
             notes=notes, extra_assets=staged_extras or None, latest_pointer=True,
             require_existing_targets=True, latest_pointer_recreate=False,
             expected_tag_commit=build_output["manifest"]["source_commit"],
+        )
+
+
+def _verify_staged_build_output_file(
+    record: dict, source_path: Path, staged_path: Path,
+) -> None:
+    """Bind a staged upload to the validated manifest, closing copy-time races."""
+    artifact_root = Path(record["artifact_root"]).absolute()
+    try:
+        coordinate = source_path.absolute().relative_to(artifact_root).as_posix()
+    except ValueError as exc:
+        raise RuntimeError(
+            f"retained publisher input is outside its build record: {source_path}"
+        ) from exc
+    expected = None
+    for artifact in record["manifest"]["artifacts"]:
+        directory = artifact["directory"]
+        for entry in artifact["files"]:
+            if f"{directory}/{entry['path']}" == coordinate:
+                expected = (entry["sha256"], int(entry["bytes"]))
+                break
+        if expected is not None:
+            break
+    if expected is None:
+        raise RuntimeError(
+            f"retained publisher input is not present in build.json: {source_path}"
+        )
+
+    metadata = staged_path.lstat()
+    if not stat.S_ISREG(metadata.st_mode):
+        raise RuntimeError(f"staged retained artifact is not a regular file: {staged_path}")
+    digest = hashlib.sha256()
+    with staged_path.open("rb") as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(block)
+    actual = (digest.hexdigest(), metadata.st_size)
+    if actual != expected:
+        raise RuntimeError(
+            f"staged retained artifact differs from build.json: {source_path}"
         )
 
 

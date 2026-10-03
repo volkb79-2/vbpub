@@ -696,18 +696,133 @@ def assert_resume_workspace_committed(path: Path) -> None:
         )
 
 
+def _copy_secret_overlay(
+    source: Path, workspace_root: Path, relative_target: Path,
+) -> None:
+    """Install one mode-0600 secret copy without following source or target links."""
+    try:
+        source_metadata = source.lstat()
+    except FileNotFoundError:
+        return
+    if not stat.S_ISREG(source_metadata.st_mode):
+        raise RuntimeError(f"publisher credential path is not a regular file: {source}")
+    if relative_target.is_absolute() or ".." in relative_target.parts or not relative_target.parts:
+        raise RuntimeError(f"publisher credential target escapes its worktree: {relative_target}")
+
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    source_fd = os.open(source, flags)
+    parent_flags = (
+        os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    )
+    root_fd = parent_fd = -1
+    destination_fd = -1
+    temporary_name: str | None = None
+    try:
+        opened_source = os.fstat(source_fd)
+        if (
+            not stat.S_ISREG(opened_source.st_mode)
+            or (opened_source.st_dev, opened_source.st_ino)
+            != (source_metadata.st_dev, source_metadata.st_ino)
+        ):
+            raise RuntimeError(f"publisher credential changed while being opened: {source}")
+
+        root_fd = os.open(workspace_root, parent_flags)
+        parent_fd = root_fd
+        for component in relative_target.parts[:-1]:
+            try:
+                os.mkdir(component, 0o755, dir_fd=parent_fd)
+            except FileExistsError:
+                pass
+            child_fd = os.open(component, parent_flags, dir_fd=parent_fd)
+            if parent_fd != root_fd:
+                os.close(parent_fd)
+            parent_fd = child_fd
+
+        target_name = relative_target.parts[-1]
+
+        def target_metadata():
+            try:
+                return os.stat(target_name, dir_fd=parent_fd, follow_symlinks=False)
+            except FileNotFoundError:
+                return None
+
+        original_target = target_metadata()
+        if original_target is not None and not stat.S_ISREG(original_target.st_mode):
+            raise RuntimeError(
+                f"publisher credential destination is not a regular file: "
+                f"{workspace_root / relative_target}"
+            )
+
+        temporary_name = f".{target_name}.cmru-secret-{secrets.token_hex(16)}"
+        destination_fd = os.open(
+            temporary_name,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+            0o600,
+            dir_fd=parent_fd,
+        )
+        with os.fdopen(source_fd, "rb", closefd=False) as source_stream:
+            with os.fdopen(destination_fd, "wb", closefd=False) as destination_stream:
+                shutil.copyfileobj(source_stream, destination_stream)
+                destination_stream.flush()
+                os.fchmod(destination_fd, 0o600)
+                os.fsync(destination_fd)
+        os.close(destination_fd)
+        destination_fd = -1
+        after_source = source.lstat()
+        if (
+            not stat.S_ISREG(after_source.st_mode)
+            or (after_source.st_dev, after_source.st_ino)
+            != (source_metadata.st_dev, source_metadata.st_ino)
+        ):
+            raise RuntimeError(f"publisher credential changed while being copied: {source}")
+
+        current_target = target_metadata()
+        if original_target is None:
+            target_changed = current_target is not None
+        else:
+            target_changed = (
+                current_target is None
+                or not stat.S_ISREG(current_target.st_mode)
+                or (current_target.st_dev, current_target.st_ino)
+                != (original_target.st_dev, original_target.st_ino)
+            )
+        if target_changed:
+            raise RuntimeError(
+                f"publisher credential destination changed while being copied: "
+                f"{workspace_root / relative_target}"
+            )
+
+        # The temp file and final name share a directory. Replacing the path is
+        # atomic and never follows a symlink installed at the destination.
+        os.replace(
+            temporary_name, target_name,
+            src_dir_fd=parent_fd, dst_dir_fd=parent_fd,
+        )
+        temporary_name = None
+    finally:
+        os.close(source_fd)
+        if destination_fd >= 0:
+            os.close(destination_fd)
+        if temporary_name is not None and parent_fd >= 0:
+            try:
+                os.unlink(temporary_name, dir_fd=parent_fd)
+            except FileNotFoundError:
+                pass
+        if parent_fd >= 0 and parent_fd != root_fd:
+            os.close(parent_fd)
+        if root_fd >= 0:
+            os.close(root_fd)
+
+
 def copy_secret_overlays(
     repo_root: Path, workspace: ReleaseWorkspace, project_config_paths: Sequence[Path],
 ) -> None:
     """Copy the root credential and explicit project overlays into a child worktree."""
     source_root = workspace.repo_root.resolve()
+    workspace_root = workspace.path
     source = repo_root.resolve() / "cmru.secret.toml"
-    if source.exists() and not source.is_file():
-        raise RuntimeError(f"repository credential path is not a regular file: {source}")
-    if source.is_file() and repo_root.resolve() == source_root:
-        target = workspace.path / "cmru.secret.toml"
-        shutil.copyfile(source, target)
-        target.chmod(0o600)
+    if repo_root.resolve() == source_root:
+        _copy_secret_overlay(source, workspace_root, Path("cmru.secret.toml"))
     # A central CMRU root can be outside the selected Git family. In that
     # layout the child receives the absolute orchestration config and reads the
     # central root secret directly; copying it into an unrelated worktree would
@@ -721,14 +836,9 @@ def copy_secret_overlays(
                 f"project config is outside selected Git workspace {source_root}: {config_path}"
             ) from exc
         source = config_path.with_name("cmru.secret.toml")
-        if source.exists() and not source.is_file():
-            raise RuntimeError(f"project credential path is not a regular file: {source}")
-        if not source.is_file():
-            continue
-        target = workspace.path / relative / "cmru.secret.toml"
-        target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(source, target)
-        target.chmod(0o600)
+        _copy_secret_overlay(
+            source, workspace_root, relative / "cmru.secret.toml",
+        )
 
 
 def remove_workspace(workspace: ReleaseWorkspace) -> None:

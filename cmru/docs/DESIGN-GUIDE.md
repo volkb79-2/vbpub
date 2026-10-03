@@ -150,15 +150,17 @@ coordinates before metadata changes and before every asset deletion or upload.
 GitHub does not offer an atomic conditional update, so a change after a check
 can still race the following request; retaining the ID and rechecking the tag
 target prevents a stale preflight from silently authorizing a later asset set.
-Temporary
-copies hold generated sidecars and `latest.json`, leaving the retained record
-unchanged. When a stable retained build is older than the highest current
+Each staged artifact copy is hashed against the manifest before the first GitHub
+request. Otherwise a source-file change between manifest validation and staging
+could make a generated checksum certify substituted bytes. Temporary copies hold
+generated sidecars and `latest.json`, leaving the retained record unchanged. When a stable retained build is older than the highest current
 release, CMRU can refresh that version's assets but does not rewrite `-latest`.
 It checks the highest version both before publishing and again before pointer
 upload, which protects against a newer release appearing during the upload.
 Custom push steps must consume the protected
-`CMRU_BUILD_OUTPUT_ROOT` input and must not create or move Git refs or promote a
-source branch. Publication refuses a retained record with any tracked or
+`CMRU_BUILD_OUTPUT_ROOT` input, compare any staged copy with `build.json` before
+uploading, and must not create or move Git refs or promote a source branch.
+Publication refuses a retained record with any tracked or
 untracked source-tree changes: otherwise the artifact could contain edits that
 the recorded source commit and release tag do not identify. Consumers should
 ignore expected, untracked generated build outputs, while keeping source paths
@@ -526,6 +528,9 @@ The full `run-gate.py gate` still covers R0 through R3: R0 runs the full test
 suite, R1 requires 100% line-and-branch coverage, R2 runs the tag-based
 changed-source campaign, and R3 runs an import-break canary. The gate also
 retains total-coverage, cause-sensitive canary, and real-enrollment lanes.
+The registered enrollment lane marks its fixture checks as required: absent Docker or gate-slice
+prerequisites and a failed fixture-image build must fail the lane. Local standalone test runs may
+skip the container oracle when Docker is unavailable.
 The Assay lane uses the estate-approved `repository-minus-unsafe-symlinks`
 snapshot and names the three tracked Topos fixture omissions explicitly; a
 new unsafe symlink therefore fails closed. The selected worktree's Assay
@@ -535,7 +540,10 @@ source is installed at run time, so its verdict records the tool version.
 
 CMRU copies its ignored root and selected-project secret overlays into a
 release worktree so its host-side release transaction can use the configured
-GitHub credential. A tester-unified container can read a mode-0600 file owned
+GitHub credential. The copy opens source files without following links, walks
+candidate directories without following links, rejects nonregular destinations,
+and atomically installs a mode-0600 sibling file. A symlink in a retained
+candidate therefore cannot redirect credentials outside the worktree. A tester-unified container can read a mode-0600 file owned
 by its mapped uid, even when its environment allowlist does not forward the
 token. The registered host `gate` lane therefore resolves CMRU's scoped Git
 auth first, saves any copied overlays in a private temporary directory outside

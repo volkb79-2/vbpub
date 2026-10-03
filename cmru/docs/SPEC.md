@@ -1275,7 +1275,10 @@ Without `--build-output`, `publish` runs the declared push step against the call
 With `--build-output ID`, it validates the selected build record and supplies its exact
 inventoried bytes to the project's push step without rebuilding. Built-in wheel and tarball
 handlers consume the retained inventory directly; a custom publisher MUST consume files beneath
-`CMRU_BUILD_OUTPUT_ROOT` and MUST NOT rebuild from the caller worktree or create/move Git refs.
+`CMRU_BUILD_OUTPUT_ROOT`, verify any staged copy against `build.json` before upload, and MUST NOT
+rebuild from the caller worktree or create/move Git refs.
+Before making any remote request, built-in handlers MUST hash each staged upload and compare its
+size and digest with the corresponding `build.json` entry; a mismatch MUST refuse publication.
 Publication MUST refuse if the manifest records any tracked or untracked source-tree change,
 including during `--dry-run`; expected generated outputs therefore need appropriate ignore rules.
 The built-in handlers require existing versioned and `<prefix>-latest` GitHub Releases and tags;
@@ -2097,9 +2100,18 @@ scoped origin queries; only token-free tag and commit facts may be forwarded
 to `cmru-mutation`. The host MUST restore the original overlay bytes, owner,
 group, mode, and timestamps after success or failure. A restore failure MUST
 fail the gate and MUST retain the private backup directory, reporting its path,
-until restoration succeeds.
+until restoration succeeds. Copying an overlay into a retained worktree MUST open the source
+without following symlinks, reject symlink and nonregular destination paths, and install the
+mode-0600 copy atomically from a sibling temporary file.
 Direct tester component lanes do not apply this host wrapper and MUST only run
 when the mounted checkout contains no publisher secret overlays.
+
+**S16.5 — Required real enrollment.** The registered `enroll` lane MUST set
+`CMRU_ENROLL_REQUIRED=1`. In this mode, missing Docker or
+`CGROUP_PARENT_DEV_GATES`, and failure to build the fixture image,
+MUST fail the lane rather than skip its real-system checks. A direct local test
+run without this marker MAY skip the enrollment container oracle when Docker
+is unavailable.
 
 ---
 

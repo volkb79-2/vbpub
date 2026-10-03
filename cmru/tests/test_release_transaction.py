@@ -161,6 +161,39 @@ def test_copy_secret_overlays_rejects_a_non_file_secret_path(tmp_path):
         transaction.copy_secret_overlays(repo_root, workspace, [])
 
 
+@pytest.mark.parametrize("project_scoped", [False, True])
+def test_copy_secret_overlays_refuses_symlink_destinations_without_touching_targets(
+    tmp_path, project_scoped,
+):
+    repo_root = tmp_path / "repo"
+    workspace_path = tmp_path / "workspace"
+    secret_dir = repo_root / "alpha" if project_scoped else repo_root
+    target_dir = workspace_path / "alpha" if project_scoped else workspace_path
+    secret_dir.mkdir(parents=True)
+    target_dir.mkdir(parents=True)
+    source = secret_dir / "cmru.secret.toml"
+    source.write_text("publisher token\n", encoding="utf-8")
+    outside = tmp_path / "outside.txt"
+    outside.write_text("must remain unchanged\n", encoding="utf-8")
+    outside.chmod(0o644)
+    destination = target_dir / "cmru.secret.toml"
+    destination.symlink_to(outside)
+    project_config = repo_root / "alpha" / "cmru.toml"
+    project_config.parent.mkdir(parents=True, exist_ok=True)
+    project_config.write_text("schema_version = 1\n", encoding="utf-8")
+    workspace = transaction.ReleaseWorkspace(
+        repo_root, workspace_path, "cmru/release/test", "a" * 40,
+    )
+
+    project_configs = [project_config] if project_scoped else []
+    with pytest.raises(RuntimeError, match="destination is not a regular file"):
+        transaction.copy_secret_overlays(repo_root, workspace, project_configs)
+
+    assert destination.is_symlink()
+    assert outside.read_text(encoding="utf-8") == "must remain unchanged\n"
+    assert outside.stat().st_mode & 0o777 == 0o644
+
+
 def test_child_args_replaces_absolute_config_with_snapshot_relative_path(tmp_path):
     config = tmp_path / "nested" / "cmru.toml"
     config.parent.mkdir()

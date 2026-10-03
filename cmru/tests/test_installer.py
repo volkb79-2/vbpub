@@ -16,7 +16,9 @@ Covers:
 
 Stdlib + tmp files only — no network, no git side effects. The enroll container
 tests are integration tests by nature; they run against a fixture image this
-file owns, never a live host, and skip (never fail) where docker is absent.
+file owns, never a live host. Direct local runs may skip when Docker is
+unavailable; the registered `enroll` lane sets `CMRU_ENROLL_REQUIRED=1`, making
+missing prerequisites and fixture-build failures fatal.
 """
 from __future__ import annotations
 
@@ -2018,11 +2020,17 @@ def _docker_unavailable_reason() -> Optional[str]:
     return None
 
 
+def _skip_or_fail_enroll_preflight(reason: str) -> None:
+    if os.environ.get("CMRU_ENROLL_REQUIRED") == "1":
+        pytest.fail(f"registered enrollment gate preflight failed: {reason}", pytrace=False)
+    pytest.skip(f"enroll container oracle needs docker ({reason})")
+
+
 @pytest.fixture(scope="session")
 def enroll_fixture_image() -> str:
     reason = _docker_unavailable_reason()
     if reason:
-        pytest.skip(f"enroll container oracle needs docker ({reason})")
+        _skip_or_fail_enroll_preflight(reason)
     present = subprocess.run(
         ["docker", "image", "inspect", ENROLL_FIXTURE_IMAGE],
         capture_output=True, text=True,
@@ -2035,11 +2043,37 @@ def enroll_fixture_image() -> str:
                 capture_output=True, text=True, timeout=900,
             )
             if built.returncode != 0:
-                pytest.skip(
+                _skip_or_fail_enroll_preflight(
                     "could not build the enroll fixture image: "
                     f"{built.stderr.strip()[-400:]}"
                 )
     return ENROLL_FIXTURE_IMAGE
+
+
+def test_registered_enroll_lane_fails_when_container_prerequisites_are_missing(monkeypatch):
+    monkeypatch.setenv("CMRU_ENROLL_REQUIRED", "1")
+    monkeypatch.setattr(
+        sys.modules[__name__], "_docker_unavailable_reason",
+        lambda: "docker CLI not present",
+    )
+
+    with pytest.raises(pytest.fail.Exception, match="registered enrollment gate preflight failed"):
+        enroll_fixture_image.__wrapped__()
+
+
+def test_registered_enroll_lane_fails_when_fixture_image_build_fails(monkeypatch):
+    monkeypatch.setenv("CMRU_ENROLL_REQUIRED", "1")
+    monkeypatch.setattr(
+        sys.modules[__name__], "_docker_unavailable_reason", lambda: None,
+    )
+    results = iter([
+        mock.Mock(returncode=1, stderr="missing fixture image"),
+        mock.Mock(returncode=1, stderr="image build failed"),
+    ])
+    monkeypatch.setattr(subprocess, "run", lambda *_args, **_kwargs: next(results))
+
+    with pytest.raises(pytest.fail.Exception, match="could not build the enroll fixture image"):
+        enroll_fixture_image.__wrapped__()
 
 
 @pytest.fixture()

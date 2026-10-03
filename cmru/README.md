@@ -236,14 +236,18 @@ continues; when origin cannot be checked, it retains the tag and candidate for i
 A concurrent remote update fails closed and leaves the candidate branch/worktree for diagnosis;
 CMRU never rebases a candidate after building its public artifact. See
 [KI-06](KNOWN_ISSUES_TODO_BACKLOG.md#ki-06--durable-post-tag-publication-resume--open-scoped-deliberately).
+When resuming, CMRU installs copied credential overlays through no-follow paths and refuses
+symlink or nonregular destinations in the retained worktree.
 Release planning refuses when Git cannot read a project's history; it does not
 treat a failed history query as an unchanged project. See the
 [versioning design](docs/DESIGN-GUIDE.md#release-history-errors-refuse-the-plan).
 `build` creates an isolated, commit-addressed local output record. To publish those exact bytes,
 use the ID printed by `cmru build` with `cmru publish <project> --build-output ID`. CMRU
 revalidates the manifest and every artifact digest before invoking that project's declared
-`push` step. Built-in wheel and tarball handlers consume the retained files; a custom publisher
-must read `CMRU_BUILD_OUTPUT_ROOT` and must not create or move Git refs when this option is used.
+`push` step. Built-in wheel and tarball handlers consume the retained files and rehash every
+staged upload against `build.json` before contacting GitHub; a changed copy is refused. A custom
+publisher must read `CMRU_BUILD_OUTPUT_ROOT`, compare any staged copy with `build.json` before
+uploading it, and must not create or move Git refs when this option is used.
 Publication is refused if prepare or build left any tracked or untracked source-tree changes in
 the retained record; ignore expected untracked generated output paths such as `dist/` in the
 project's `.gitignore`, without hiding source paths. Ignore rules do not hide modified tracked
@@ -614,6 +618,9 @@ mismatch fails the gate. Run the registered `gate` lane so it prepares fresh
 origin facts immediately before mutation.
 The checker verifies every local CMRU release tag at HEAD against its exact
 origin commit, including older tag names that point to the same commit.
+The registered real-enrollment lane sets `CMRU_ENROLL_REQUIRED=1`; missing Docker or gate-slice
+prerequisites and a failed fixture-image build fail that lane instead of skipping O2/O3. Direct
+local test runs may still skip the container integration checks when Docker is unavailable.
 Before tester-unified starts, the host gate points all visible root and selected
 project secret overlays at private host backups outside the repository mount
 and strips publisher-token and extra-mount variables from nested runner calls.

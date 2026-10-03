@@ -154,9 +154,11 @@ memory_swap = "16g"
 # bare-host, same reasoning as [lanes.gate] below: real docker access, on
 # this invoking shell's own python/pytest -- no /opt/tester-venv/ path
 # here, that venv exists only inside the tester-unified image. The fixture
-# chain self-skips (not errors) when docker or CGROUP_PARENT_DEV_GATES
-# are genuinely unavailable (_docker_unavailable_reason); on the real
-# bare-host gate environment both are present, so this lane actually
+# chain skips only for optional direct/local suite runs when docker or
+# CGROUP_PARENT_DEV_GATES are unavailable. The registered lane sets
+# CMRU_ENROLL_REQUIRED=1 so missing prerequisites and fixture-image build
+# failures fail the gate instead of skipping O2/O3. On the real bare-host
+# gate environment both prerequisites must be present, so this lane actually
 # EXERCISES O2/O3 instead of skipping past them -- closing the gap the
 # other, tester-unified-scoped sub-lanes above could never close on their
 # own. No [lanes.enroll.resources]: the containers this spawns are
@@ -165,7 +167,7 @@ memory_swap = "16g"
 [lanes.enroll]
 kind = "command"
 environment = "bare-host"
-argv = ["bash", "-c", "cd {worktree}/cmru && exec env PYTHONPATH=src:../libraries/cli-extended/src:../libraries/worktree/src PYTHONDONTWRITEBYTECODE=1 python3 -m pytest tests/test_installer.py -k TestEnrollAgainstRealSystem -q"]
+argv = ["bash", "-c", "cd {worktree}/cmru && exec env CMRU_ENROLL_REQUIRED=1 PYTHONPATH=src:../libraries/cli-extended/src:../libraries/worktree/src PYTHONDONTWRITEBYTECODE=1 python3 -m pytest tests/test_installer.py -k TestEnrollAgainstRealSystem -q"]
 budget = "20m"
 
 # The implementation/release gate: every consumer (cmru release steps, agents,
