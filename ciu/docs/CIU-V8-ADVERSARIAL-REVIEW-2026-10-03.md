@@ -877,3 +877,119 @@ The verdict covers the 8.0 core plus the v8.1 annex, per D-658 and D-661.
 - the demo rewrite listed in R.2.
 
 None of them needs an operator decision.
+
+---
+
+## 9 r5 (draft.11): remote deployment is v8.2; the backports (dstdns D-666)
+
+**Checked:**
+- vbpub `e3efcf871`: SPEC-V8 draft.11, proposal rev 4.9, the graph, and coverage memo §11.
+- vbpub `ab33c3cd3`: RG-79 reframed, RG-80, and RG-67/73/76/78 amended.
+- vbpub `f4943af97`: CIU-125, and CIU-115..119 and CIU-122..124 reviewed.
+- vbpub `0c4f72e9e`: CP-15 and CP-16.
+- D-666, read verbatim from the scratchpad copy.
+- **Shipped source:**
+  - run-gate `resolve_container_name` (`run-gate.py:7697`ff);
+  - ciu 7.15.1 `worktree.py` `up_instance` (`:3164`, which runs a bare `ciu up`) and `create` (`:3680`, "Deploy is deliberately NOT performed");
+  - `cli.py` `p_up` (`:1592`, `logical_name` only).
+- **The rev 4.8 `\1` damage:** I diffed `1db165afd`, `1fe6e7564`, `811565b7e`, `52b688c78`, `c514c704a` and `48af4f54b` for backreference and escape artifacts.
+
+### 9.1 Is 8.0 independent of v8.2?
+
+**Mostly yes.** I scanned every reference from the 8.0 text (S1–S20 outside S17.2–S17.5, S7.2.4 and the appendices) to S17.2–S17.5, S7.2.4 and S2.6.5–S2.6.6.
+- Every hit sits in a sentence or table row tagged **(v8.2)**: S2.6.1, S2.3.1's file names, S7.2's `bundle_dir` row, S14.2.3, and the S18 rows for `push`, `activate` and `host enroll`.
+- No 8.0 rule depends on a v8.2 rule for its behaviour.
+- The Appendix E split agrees with the text:
+  - `verbs_v82` = `activate`, `push`;
+  - `api_names_v82` = `activation`, `deployment-owner`, `pointers`, `release`;
+  - `assumed_reasons_v82` holds the three receipt reasons;
+  - `pointer_phases_v82`;
+  - `ciu/receipt` stays in the 8.0 `api_names`.
+- S17.7's table matches the tags.
+
+**The S17.7 forms.** The 8.0 receipt of one `up` (S8.5.6) and the `--allow-assumed` ERROR for remote facts (S8.5.3) are coherent and minimal:
+- 8.0 keeps multi-host *layouts*, hand-started per host;
+- cross-host *resolutions* use host addresses, which needs no evidence;
+- the only thing that needed evidence across hosts (facts and completions) refuses by default and is recorded `assumed` under the flag.
+
+Two defects (R5-01, R5-02) and one consequence (R5-03) remain.
+
+### 9.2 Findings
+
+| id | sev | location | finding | minimal fix |
+|---|---|---|---|---|
+| R5-01 | MEDIUM | S8.5.6 ("the reference is up only when its receipt is present"); S17.7 ("a receipt is also what S9.5.3 reads to know the reference is up") vs S9.5.3, S14.1.3 | S9.5.3 says the reference is up when "its rendered file [is] present and the borrowed variant service healthy". It does not read a receipt. And `down` keeps everything else on disk (S14.1.3), so the receipt **survives `down`**. If presence meant "up", a downed reference would read as up and its stale facts would be served to a joiner. | S8.5.6: the receipt supplies the reference's **facts and completions only**. Liveness stays S9.5.3's health check. `down` removes the receipt (`clean` already does, through the S2.3 list). A joiner refuses a receipt whose `container_id`s are not the running containers. Correct S17.7's sentence to match. |
+| R5-02 | LOW | S8.5.3, S8.5.4 (`assumed_reasons = no-manifest`) | 8.0's only `assumed` reason names a v8.2 concept (an activation manifest) that 8.0 does not have. It is coherent as a forward-compatible token, but a reader of 8.0 cannot know what "manifest" means. | Define the token in S8.5.4 for 8.0: "no remote evidence carrier; the activation manifest is v8.2". Keep the spelling for v8.2. |
+| R5-03 | LOW | S14.2 (`[ciu.instance.generated] # identical on every host of a layout`), S4.1.1 | In 8.0, each host deploys from its **own checkout**, so each host derives its own `instance_id` from its own physical path. "Identical on every host" holds only for v8.2 releases. Nothing breaks, because cross-host resolution uses addresses, not names, but the comment states a v8.2 property as 8.0 fact. | Tag the comment **(v8.2)** and add one 8.0 sentence: "in 8.0 each host's checkout derives its own id; container names are per host". |
+| R5-04 | **HIGH** | S21.4.8, S21.3.1, Appendix E; RG-80 (c)–(e) | **The label *values* have no grammar.** The fixed labels `ciu.reservation.owner` ("lane, run id and the owner tuple"), `ciu.reservation.deadline` and `ciu.admission.owner` (`{ user, host, time, ciu_version }`) are named, but their encodings are not: the JSON keys, the deadline as epoch or RFC 3339, and the time zone are all open. RG-80 explicitly lets a v7 run-gate and a ciu8 gate share one daemon's tickets, and each one's janitor must judge the other's tickets. With differing encodings a janitor either never reaps a foreign abandoned ticket, which stalls the gates tier permanently and defeats S21.6.5's bound, or misreads it and releases a live one. That is the same race class as R3-01, now across tools. | Fix the value grammar in S21.4.8: `owner` = compact JSON with exactly the keys `{lane, run_id, host, boot_id, pid_ns, pid, start_ticks}`; `deadline` = integer seconds since the epoch, UTC; the same for `ciu.admission.owner`. Add an Appendix E `label_value_grammar` surface, have RG-80 cite it verbatim, and add a cross-tool parity oracle: a ciu8 janitor releases an abandoned run-gate ticket and vice versa, and neither releases the other's live ticket. |
+| R5-05 | MEDIUM | S21.4.6 ("the collection of expired runs of S16.9.6 for the tier's lanes"); RG-80 (d) and oracle 3 | This was r4's nit, and it has now been copied into a backport contract. A waiter in worktree B cannot *collect* a run of worktree A: the run's `run.json` and evidence (and, in run-gate, `.run-gate/inflight/`) live in A's checkout, which B may not even see. As written, the rule cannot be implemented. | The waiter **stops** expired group members (the marker's deadline identifies them by label) and **releases** the ticket. Collection stays with the owning lane's next invocation. Say so in S21.4.6 and in RG-80 (d) and oracle 3. |
+| R5-06 | LOW | RG-80 (b), (e), (c) | Two gaps. (1) `run-gate admission set` publishes a `created` container but names no image for it; `ticket_image` should explicitly cover the object too. (2) RG-80's NOT_RUN/`no-headroom` "exit 3" depends on RG-78's table, which is not built yet. | State that `ticket_image` is also the object's image. State the build order: RG-78 before RG-80, or RG-80 carries RG-78's exit 3 for this one reason. |
+| R5-07 | MEDIUM | S17.0 ("a consumer that needs a remote deployment stays on ciu 7 for it"), Appendix A step 2 | **Infeasible after a repo's cutover.** Appendix A step 2 converts the v7 declaration files into v8 ones in the cutover commit, and S3.2.6 and S2.3.2 refuse v7 files in v8. After a repo cuts over, `ciu7` has no v7 configuration left to deploy from. Keeping both sets of files would be the dual path that greenfield policy forbids. So "stay on ciu 7 for remote" works only for a repo that has **not** cut over. For dstdns, with a live remote host (P171), the 8.0 cutover and remote deployment exclude each other until v8.2. | **OPERATOR** (§10 Q2). |
+| R5-08 | LOW | `CIU-V8-TESTING-GATE-PROPOSAL.md` line 577 (the V8-38 row) | **A residue of the `\1` damage.** The restored V8-38 row still carries two artifacts: `ciu host admission set\\|show`, where the doubled backslash makes the pipe a column separator, so the row gains a column; and a literal trailing `\n`. The three rows the writer restored (V8-37, X150, the 4.7-amendments row) and X151 are clean. I found no `\1`, `\\|` or literal `\n` artifact in SPEC-V8, the memo, the graph or the enrollment proposal. | Change it to `set\|show` and drop the trailing `\n`. |
+| R5-09 | LOW | proposal §4.11 N22 | The row still says "so v7 run-gate and v8 `ciu gate`/`ciu lease` serialize against each other during the cutover", while its own parenthesis says the shared key never shipped (N18 was dropped). The two keys (`/tmp/run-gate-exec-<name>.lock` and the stack directory) do not serialize. It is also unnecessary: the cutover is atomic per repo, so no runner is judged by both tools at once. | Delete the claim and note the atomic cutover as the reason. |
+
+### 9.3 The backport dispositions, against draft.11
+
+**Aligned:** N23 (scheduling only), N25 (CIU-115's ordering is copied), N26, N27, N28/RG-80 (subject to R5-04..R5-06), N29/RG-79, N30/CIU-125, and RG-73/74/75/76/78 as amended. I found no "aligned" entry that contradicts draft.11, except N22's sentence (R5-09).
+
+**RG-67 (a)** is a per-environment N > 1 for one shared exec runner. It survives in N24's Phase A build list with **no consumer**: dstdns, its only consumer, now runs one runner per worktree (D-666). It also contradicts v8 S16.5.7 (one lane per exec target), so it would be a v7-only feature with nothing to port. See §10 Q3.
+
+**Can RG-80 share one daemon with ciu8?**
+- The names (`ciu-res-gates-<n>`, `ciu-run-<ticket>`, `ciu-admission-<g>`), the label keys, `scheme = ticket`, monotone numbering and the release-by-tombstone rule are identical. Listing is by name and label, so a run-gate ticket built from a project image and a ciu8 ticket built from the helper image coexist.
+- Making `ticket_image` mandatory with no default is right (AGENTS §4.2a). The project's own runner image with `--entrypoint /bin/true` works.
+- **Safe once R5-04 fixes the label value grammar and R5-05 fixes the cross-worktree collection wording.**
+
+### 9.4 RG-79 and CIU-125 against the source
+
+- **RG-79 reframe: correct.** `resolve_container_name` (`run-gate.py:7720`ff) does `if worktree_toml.is_file(): global_toml = worktree_toml / elif repo_toml.is_file(): global_toml = repo_toml`. That is exactly the silent fallback to main's config, and so to main's runner.
+  - The docstring calls it "additive precedence". The fix (refuse, naming "start this worktree's own test-runner") is right, and RG-24's Mode-B oracle is the right regression.
+  - The original remedy text (`'ciu render' if stale, then 'ciu up'`) is the wrong remedy, as the entry says.
+  - Small note: the v7 container name is `{project}-{environment_tag}-{env_name}`, keyed by run-gate's **environment** name, not the stack. The refusal can name the derived container, but it can only *suggest* the stack directory. Wording "ciu up --dir <test-runner stack>" as a template is fine.
+- **CIU-125: correct.**
+  - `create` deploys nothing (`worktree.py:3680`).
+  - `up_instance` (`:3164`) runs a bare `ciu up`, which is the whole default set.
+  - `p_up` accepts only `logical_name` (`cli.py:1592`).
+  - The v7 contract and its oracles are sound.
+  - The v8 mapping (`default_bundles` + `instance init --up`) is consistent with S7.5 and S14.6. The writer correctly leaves it out of draft.11, pending the call.
+
+### 9.5 The rev 4.8 `\1` damage
+
+- The three rows the writer named are restored verbatim and are well-formed: V8-37 at line 576, X150 at line 1318, and the last row of the 4.7-amendments table.
+- `1db165afd` also replaced V8-38 and X151 rows and a lone line with `\1`-prefixed text. X151 and the lone line are clean now; **V8-38 still carries artifacts** (R5-08).
+- No other commit in the rev 4.8/4.9 range introduced a `\1`, a doubled `\\|` or a literal `\n`.
+
+### 9.6 The writer's four questions (proposal §4.9 "Writer's calls left by D-666")
+
+1. **Remote evidence in 8.0.** I agree with (a), keeping the receipt of one `up` and `--allow-assumed`, provided R5-01's correction is made. (b), single-host 8.0, would cut dstdns's four-host layouts out of 8.0 entirely. (c) drags v8.2's subject into 8.0.
+2. **ciu 7 after the cutover.** I **do not** accept (a) as stated: R5-07 shows that a cut-over repo leaves `ciu7` nothing to deploy from. See §10 Q2.
+3. **Declaring a worktree's test environment in v8.** I agree with (a), `default_bundles` + `instance init --up` as an 8.0 closed-key addition. It is the v8 home for D-666's "ciu has to start it there" and is symmetrical with `default_join_preset`. Make `--up` release the instance lock before `up` takes it, as the writer notes.
+4. **Order.** Ruled by D-666: v8.1, then v8.2.
+
+### 9.7 r5 verdict: **READY-WITH-FIXES**
+
+The 8.0/v8.2 split is clean. There is no dangling cross-reference, and the closed surfaces agree with the text. The kept receipt and `--allow-assumed` are the right minimal 8.0 form. RG-79's reframe and CIU-125 match the shipped source.
+
+**Before sign-off:**
+- **R5-04 (HIGH):** a fixed label value grammar, which the v7/ciu8 daemon sharing promised by RG-80 depends on.
+- **R5-01 and R5-05 (MEDIUM).**
+- **R5-07 (MEDIUM):** needs the operator.
+- The LOW edits: R5-02, R5-03, R5-06, R5-08, R5-09.
+
+A one-paragraph check of R5-01, R5-04 and R5-05 is enough after the repair.
+
+**Count this round:** HIGH 1, MEDIUM 3 (R5-01, R5-05, R5-07), LOW 5.
+
+## 10 Operator decisions still needed (after r5)
+
+1. **(Writer's Q3) Where a worktree's own test environment is declared in v8.**
+   - (a) **Recommended:** `[ciu.instances] default_bundles` plus `ciu instance init --up`, in 8.0.
+   - (b) A post-8.0 minor.
+   - (c) Nothing; document `ciu up --bundles test`.
+2. **(Writer's Q2, revised by R5-07) Remote deployment between a repo's 8.0 cutover and v8.2.** A cut-over repo has no v7 files for `ciu7`.
+   - (a) **Recommended:** a repo with a live remote deployment (dstdns, P171) **holds its 8.0 cutover until v8.2**. `ciu7` stays installable and maintained (bug fixes, CIU-122/123, KI-49/50) until every such repo has cut over. Repos with no remote deployment cut over to 8.0 freely.
+   - (b) Cut dstdns over to 8.0 now and run remote deployment from a pinned pre-cutover branch with `ciu7` until v8.2. This is a sanctioned temporary dual path, recorded as such.
+   - (c) Pull v8.2 ahead of v8.1 (the writer's Q4 (b)), overturning D-666's order.
+3. **(R5 §9.3) RG-67 (a), a per-environment N > 1 for one shared exec runner, in run-gate's Phase A build list (D-651 Q2).**
+   - (a) **Recommended:** withdraw (a) from Phase A. It has no consumer since D-666 and contradicts v8 S16.5.7. Keep (b), composite runner listing, only if a composite consumer remains.
+   - (b) Keep it as a v7-only feature.
+   - (c) Defer it indefinitely as OPEN without building it.

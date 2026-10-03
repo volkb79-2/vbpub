@@ -368,3 +368,19 @@ The 8.0 text was read for any mention of `<ns>`, a release directory, `ciu.relea
 - The spec amendment for question 3 (S14.6, S18, Appendix E) is **not** applied; CIU-125 and N30 carry the mapping.
 - The conformance test of S3.8.6 compares Appendix E's blocks with the implementation's emission: the new `_v82` surfaces, the narrowed `assumed_reasons`, `api_names` and `verbs`, and the `_v82` suffix rule are the only changes to compare.
 - A cmru KI-49 prerequisite for v8.2 enrollment is unchanged (S7.2.4).
+
+## 12. Round 7 (the r5 review and D-667: SPEC-V8 draft.12, proposal rev 4.10)
+
+The r5 review (`CIU-V8-ADVERSARIAL-REVIEW-2026-10-03.md` §9–§10, READY-WITH-FIXES) is applied and the operator's rulings D-667 are folded (read from the coordinator's message; they land in the dstdns ledger as D-667). SPEC-V8 Appendix D.16 and proposal §4.3.17 "4.10 amendments" (X166–X171) trace them. This section **supersedes §11's open questions and the counts of §11a**.
+
+| # | D-667 / r5 says | SPEC-V8 draft.12 | in the text? |
+|---|---|---|---|
+| 77 | Q1 → (a): keep the receipt of one `up` and the `--allow-assumed` ERROR; R5-01: facts only, S9.5.3 health decides, `down` removes the receipt | S8.5.6, S9.5.3, S14.1.3, S17.7 | yes |
+| 78 | Q2: v7 remote deployment and enrollment are unused; roll out 8.0 and lose them until v8.2; no `ciu7` bridge or maintenance promise; R5-07 noted neutrally (the operator's statement governs over the reviewer's live-host note) | S17.0, Appendix A step 10; proposal §4.9, N23 | yes |
+| 79 | Q3 → (a) + v7 backport: `default_bundles`, `instance init --up` in 8.0 with check-stage validation and oracles; CIU-125 as `worktree create --up` | S14.1.6, S14.6, S15 stage 4, S18, Appendix E `instances_keys`; V8-39, N30; CIU-125 | yes (row 75 is closed) |
+| 80 | RG-67 (a) withdrawn | proposal N24; RG-67 Amendment 5 (entry stays OPEN for (b), the file having only OPEN/FIXED) | yes |
+| 81 | R5-04 (HIGH): fixed label encodings, a closed surface, a cross-tool oracle | S21.4.8, S21.3.1, Appendix E `label_value_grammar`; RG-80 (c) and oracle 8 | yes |
+| 82 | R5-05: waiters stop and release; only the owning lane collects | S21.4.6, S21.6.5; RG-80 (d), oracle 3 | yes |
+| 83 | R5-02, R5-03, R5-06, R5-08, R5-09 | S8.5.4, S4.1.1/S14.2; RG-80 (e), (g); V8-38 row; N22 | yes |
+
+**Counts including D-667** (83 rows): **yes 81, partial 1 (row 20), n/a 1 (row 7).** Open operator questions: **none.** §11b's independence findings stand; §11c's N23 row now reads "unavailable after cutover until v8.2" and N30 is 8.0 (V8-39).
