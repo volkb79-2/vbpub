@@ -4640,3 +4640,12 @@ Severity: High (the trust path of a root-level install). Type: bugfix. Spec owne
 
 **Oracles.** A controlled wrong-version `ciu` and a PATH-shadowing `ciu` both fail step 2; a printed command without `--version` fails a lint test; a `known_host` with a host token is refused; step 2 without `--fingerprint` and without the env opt-in is refused.
 
+## CIU-124 — `ciu up --dir <stack>` rejects `--deploy`/`--healthcheck`, though `ciu up --help` lists them as actions of every `ciu up`
+
+Severity: Medium (the documented form fails with a usage error; consumers' docs and CI copy it). Type: bugfix. Spec owner: `docs/SPEC.md` S10.2 (actions) / single-stack mode. Filed 2026-10-03 from dstdns P237 (implementer escalation; controller verified on ciu 7.15.1). Related: CIU-68 (auto health gate).
+
+**Observed.** `ciu up --dir tools/admin-debug --deploy --healthcheck -y` → `ciu: error: unrecognized arguments: --deploy --healthcheck`; same for either flag alone. `ciu up --help` (7.15.1) presents "Actions (S10.2) — with none of these, `ciu up` runs --deploy: --deploy / --healthcheck / --check" above the mode-specific sections, so a reader takes them as valid in every mode. The actions are defined only on the profile/multi-stack parser (`deploy.py:4749-4792`); single-stack mode routes to the engine parser, which has neither. dstdns `AGENTS.md` §5 carried `ciu up --dir applications/controller --deploy --healthcheck` as its one-service example for weeks — evidence the help text misleads.
+
+**Proposed contract.** Either (a) single-stack mode accepts `--deploy` (no-op: deploying is its only action) and `--healthcheck` (runs the S7.7 gate for that one stack after start), or (b) the help text moves the Actions block under profile mode and single-stack mode refuses them with a message naming the valid form. (a) is preferred: the same command line works in both modes and the health gate is useful per stack.
+
+**Oracles.** `ciu up --dir <stack> --deploy --healthcheck --dry-run -y` exits 0 and, without `--dry-run`, runs the health gate for that stack (a stack whose healthcheck fails makes the command fail); a controlled wrong implementation that accepts and ignores `--healthcheck` is caught by the failing-health row; `ciu up --help` lists only flags each mode accepts (a test parses the help and the parsers and compares).
