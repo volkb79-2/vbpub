@@ -498,7 +498,8 @@ def test_abandon_rechecks_remote_state_after_confirmation_before_mutating(
         )
 
     assert runtime.confirmed
-    assert calls == {"heads": 2, "tags": 2}
+    expected_tag_lookups = 1 if changed_ref == "candidate" else 2
+    assert calls == {"heads": 2, "tags": expected_tag_lookups}
 
 
 def test_abandon_refuses_while_a_local_release_holds_the_lock(monkeypatch, tmp_path):
