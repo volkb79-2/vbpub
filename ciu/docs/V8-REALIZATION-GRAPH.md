@@ -25,7 +25,7 @@
 > The five-wave dstdns trace, the two races (D-210, D-212) and their lessons are unchanged
 > and remain the acceptance narrative for V8-7 (the graph package).
 >
-> ## Reading this note against proposal rev 4.4 / SPEC-V8 draft.8 (2026-10-03, dstdns D-656)
+> ## Reading this note against proposal rev 4.5 / SPEC-V8 draft.9 (2026-10-03, dstdns D-656, D-658)
 >
 > The two prefaces compose: the table above maps the 2026-08-26 notation to the rev 3.0 notation, and
 > the rest of this preface maps what the 2026-10 reconciliation (D-647, D-651..D-655) changed around it.
@@ -48,8 +48,9 @@
 >   *start* is decided separately, by the sum of the warm working sets of the containers `ciu up` would
 >   start, against the host-config capacity, through Docker-object reservations (SPEC-V8 S16.6): there
 >   is no instance count and no admission lock. How a wave-by-wave bring-up interacts with that
->   reservation (one deploy-set reservation or one per wave) is not specified; it is draft.8 open item
->   O-3 in `CIU-V8-DECISION-COVERAGE-2026-10.md`.
+>   reservation (one deploy-set reservation or one per wave) is **PENDING-OPERATOR (V8R-03)**: a later wave's
+>   containers cannot exist before the earlier waves have run, so the question is not a detail. It is
+>   rev 4.5 §4.9 question 1.
 > - **v7 local state in the trace.** The swimlane below describes v7 and is kept as history: secrets
 >   materialize to `<stack>/.ciu/secrets/<name>` and Vault's init state goes to `infra/vault/ciu.toml
 >   [state]`. In v8 the `.ciu/` directory is gone (V8-10, SPEC-V8 S2.3.2): a service's secret copies are
@@ -419,6 +420,8 @@ to ship at all.
 
 ## Resolved / open
 
+> **Historical (marked 2026-10-03, dstdns D-658).** This section is the 2026-08-26 state. The items it lists as open are closed in v8: contract conformance at config time is `ciu check` stage 5 (SPEC-V8 S5.3, S15.3), the `pg:schema/*` ref kind exists (S5.6), and the preface's table maps the rest. Read it for the reasoning, not for what is still open.
+
 **Resolved this session:**
 - `realized_by`, not `realizes` — the pointer reads from the abstract side toward the concrete side.
 - No `fulfills` field. A realization never references the logical name above it — one-directional pointing only, so re-pointing `realized_by` can never leave a stale back-reference.
@@ -433,7 +436,7 @@ to ship at all.
 - **Reversed, not just resolved:** vault-liveness and schema-completion are NOT ciu limitations — both already expressible via shipped `stack:*:healthy|completed` probes, live-verified, now applied in dstdns's own config (dstdns@d1688765). Filed instead: CIU-63 (the static lint's blindness to how `stack:*` actually resolves), CIU-64 (`ciu check` should run automatically before `ciu up`), CIU-65 (`validate_config` findings need WARN/ERROR severity, reusing `warn_policy.py`'s existing `exit_on` vocabulary) — all three in `KNOWN_ISSUES_TODO_BACKLOG.md`.
 - **Found and fixed, not just theorized:** the health-gate timing race described above (D-212) — a real, reproduced-live failure of the exact mechanism this document's own worked example relies on. Filed as CIU-67 (`deploy.health.timeout`'s dual-purpose conflation) and CIU-68 (the S7.7 gate not being part of `ciu up`'s default action sequence, and the one-shot `stack:*` probe's zero retry).
 
-**Still open:**
+**Still open (as of 2026-08-26; closed in v8, see the note above):**
 - **Contract conformance at config time** — checked the current proposal and both backlog files: **not planned anywhere yet**. Should be an explicit addition; the natural home is extending ciu's existing `validate_config()` static preflight (S9.5) from per-hook checks to the graph itself — does a realization's aggregate `init_provides` actually cover its logical service's `contract`, checked without a live probe. This is also the actual prerequisite for §4.3 dropping `[deploy.phases]` — see the section above.
 - **`pg:schema/*` ref kind** — `stack:infra/db-init:completed` is a working substitute for dstdns's specific case, but the underlying ref kind still doesn't exist; a stack whose completion doesn't map 1:1 to "the fact I actually care about" (e.g. a job that produces two independent facts at different points in its own run) still can't express the finer-grained dependency.
 - **Credential rotation — settled as OUT of scope, not open (operator directive, 2026-08-26):** rotation is an app-level concern, handled through Consul (a service watches its own KV path live and picks up a rotated value without a restart) — not a mechanism ciu is meant to build. What remains a real thing to verify (not design): whether ciu's own secret-delivery shape (`expose_env` baking a value into an environment variable at container start — inherently restart-required) is ever chosen by default for a secret that will need live rotation later, when a Consul-KV-backed delivery would have been rotation-friendly. Not a ciu gap; a dstdns authoring-clarity question.
