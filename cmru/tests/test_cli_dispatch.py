@@ -611,16 +611,22 @@ def test_cleanup_uses_current_directory_orchestration_without_a_shim(tmp_path, m
     monkeypatch.chdir(tmp_path)
     target = tmp_path / "retained-build"
     calls = []
-    monkeypatch.setattr(
-        cli.transaction,
-        "discard_build_workspace",
-        lambda root, path, *, dry_run: calls.append((root, path, dry_run))
-        or SimpleNamespace(path=path, branch="cmru/build/debug"),
+    preview = cli.transaction.ReleaseWorkspace(
+        repo_root=tmp_path, path=target, branch="cmru/build/debug",
+        base="a" * 40,
     )
+
+    def discard(root, path, *, dry_run, expected_workspace=None):
+        calls.append((root, path, dry_run, expected_workspace))
+        return preview
+
+    monkeypatch.setattr(cli.transaction, "discard_build_workspace", discard)
 
     cli.main(["cleanup", "--discard-build-worktree", str(target), "--yes"])
 
-    assert calls == [(tmp_path, target, True), (tmp_path, target, False)]
+    assert calls[0] == (tmp_path, target, True, None)
+    assert calls[1][:3] == (tmp_path, target, False)
+    assert calls[1][3] is preview
 
 
 def test_source_module_invocation_works_from_the_cmru_project_directory():
