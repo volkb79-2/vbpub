@@ -693,18 +693,20 @@ def test_cleanup_delete_unmanaged_release_is_project_scoped_and_dry_runnable(tmp
         '[github]\ntoken = "test-token"\n', encoding="utf-8"
     )
     calls = []
-    monkeypatch.setattr(
-        cli, "delete_unmanaged_release_tag",
-        lambda owner, repo, token, tag, *, dry_run: calls.append(
-            (owner, repo, token, tag, dry_run)
-        ) or True,
-    )
+
+    def delete_unmanaged(owner, repo, token, tag, *, dry_run, plan):
+        calls.append((owner, repo, token, tag, dry_run, plan))
+        return True
+
+    monkeypatch.setattr(cli, "delete_unmanaged_release_tag", delete_unmanaged)
 
     cli.main([
         "cleanup", "alpha", "--config", str(cfg_path),
         "--delete-unmanaged-release-tag", "alpha-wheel-latest", "--dry-run",
     ])
-    assert calls == [("octocat", "demo", "test-token", "alpha-wheel-latest", True)]
+    assert len(calls) == 1
+    assert calls[0][:5] == ("octocat", "demo", "test-token", "alpha-wheel-latest", True)
+    assert isinstance(calls[0][5], cli.CleanupPlan)
 
 
 def test_cleanup_delete_unmanaged_release_rejects_a_managed_tag(tmp_path):
