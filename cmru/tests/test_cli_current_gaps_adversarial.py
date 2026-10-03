@@ -54,7 +54,7 @@ def test_tag_deletion_success_reports_real_mutation(monkeypatch, tmp_path, capsy
     monkeypatch.setattr(cli, "run_local_git", local)
     cli.delete_git_tag_remote(tmp_path, "demo-v1", False)
     cli.delete_git_tag_local(tmp_path, "demo-v1", False)
-    assert [call[0] for call in remote_calls] == ["ls-remote", "ls-remote", "push"]
+    assert [call[0] for call in remote_calls] == ["ls-remote", "push"]
     assert remote_calls[-1] == (
         "push", f"--force-with-lease=refs/tags/demo-v1:{oid}",
         "origin", ":refs/tags/demo-v1",
