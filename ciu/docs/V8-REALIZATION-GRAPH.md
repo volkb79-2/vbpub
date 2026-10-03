@@ -1,6 +1,6 @@
 # V8 provisioning model — the realization graph
 
-**Status:** design note (revision 4, 2026-10-03 — the admission preface follows D-661; revision 3 was 2026-10-03; revision 2 was 2026-09-02), feeding `CIU-V8-TESTING-GATE-PROPOSAL.md` §4.1.6/§4.3.4 and `SPEC-V8.md` S8
+**Status:** design note (revision 5, 2026-10-03 — a v8.2 preface follows D-666; revision 4 was the admission preface of D-661; revision 3 was 2026-10-03; revision 2 was 2026-09-02), feeding `CIU-V8-TESTING-GATE-PROPOSAL.md` §4.1.6/§4.3.4 and `SPEC-V8.md` S8
 **Session:** dstdns/vbpub joint design discussion, 2026-08-26; prefaces added 2026-09-02 and 2026-10-03
 
 > **Reading this note against proposal rev 3.0 / SPEC-V8 draft.3 (2026-09-02).** The
@@ -56,6 +56,15 @@
 >   wave's containers group under it by label, so a later wave's containers need not exist before its
 >   wave runs (S21.4.4). In the proposal's build plan the count mode is V8-38 in checkpoint D (8.0) and
 >   V8-30/V8-31 are checkpoint F (v8.1).
+> - **Remote deployment (v8.2; D-666).** The graph above is the **8.0** graph and is unchanged. Remote
+> deployment — releases, the activation state machine, the activation-bound receipt and host enrollment
+> — is the v8.2 annex that follows v8.1 (SPEC-V8 S17.0, S17.7, Appendix F; proposal §4.4 checkpoint G,
+> V8-23, V8-29). What it changes here: in 8.0 a provider on another host is *probed* and its facts need
+> `--allow-assumed` (S8.5.3: no evidence crosses hosts), so a multi-host trace is one wave graph per host
+> joined by reachability edges only; `ciu activate apply` running hosts serially in layout order and a
+> receipt checked against an activation manifest (S17.4) are v8.2. The one remote-adjacent piece that
+> stays in 8.0 is the receipt of one `up` (S8.5.6), the evidence a `joined` reference gives its joiner.
+> The multi-host transport-readiness callout at the end of this note is unaffected.
 > - **v7 local state in the trace.** The swimlane below describes v7 and is kept as history: secrets
 >   materialize to `<stack>/.ciu/secrets/<name>` and Vault's init state goes to `infra/vault/ciu.toml
 >   [state]`. In v8 the `.ciu/` directory is gone (V8-10, SPEC-V8 S2.3.2): a service's secret copies are

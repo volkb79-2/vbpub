@@ -304,3 +304,67 @@ The r3 spot-check verdict was READY-WITH-FIXES with no operator decision needed.
 **Final counts.** Review findings: r1 V8R-01..V8R-34 and r2 R2-01..R2-16 are all closed in the text; r3 R3-01..R3-07 (1 HIGH, 3 MEDIUM, 3 LOW) are applied; the matrix of §1–§1d stands at **70 rows: yes 68, partial 1, n/a 1**. Open operator questions: **none**. `PENDING-OPERATOR` markers for T4-07, O-31 and R2-12: none remain.
 
 **Release state.** SPEC-V8 draft.10 and the proposal rev 4.8 are **ready for operator sign-off**. Successor note: after sign-off, V8-29, V8-38, V8-30 and V8-31 are the build rows for enrollment, the count mode, the byte budget and the profiler additions; cmru KI-49 must land before any v8 release carries an enrollment trust entry.
+
+## 11. Round 6 (D-666: remote deployment is v8.2; the backports re-reviewed) and a successor note
+
+Read from the scratchpad text the coordinator supplied (it lands in the dstdns ledger as D-666). Applied in SPEC-V8 draft.11 (Appendix D.15) and proposal rev 4.9 (§4.3.17 "4.9 amendments", X160–X165).
+
+### 11a. Matrix rows (D-666)
+
+| # | D-666 says | proposal rev 4.9 | SPEC-V8 draft.11 | in the text? |
+|---|---|---|---|---|
+| 71 | remote deployment is its own minor version: **v8.1 = admission, v8.2 = remote** — releases, receipts, activation, host enrollment and the v7 enrollment backport (T4-01..T4-03, T4-05..T4-08, trust root T4-07 (a)) | §4.4 checkpoint G, V8-23, V8-29 tagged (v8.2), X160, §4.11 N23 | S17 retitled with S17.0 and S17.7, S7.2.4, S2.6.5–S2.6.6 and the release halves of S2.6.1–S2.6.4, S4.1.2, S4.1.4, S3.1.5 tagged **(v8.2)**; Appendix E `_v82` surfaces; Appendix F is an 8.0 / 8.1 / 8.2 table | yes |
+| 72 | the 8.0 core must be re-checked independent of v8.2, rule by rule, with a minimal self-contained version or the dependency moved | X161, X162 | S17.7 (the table); S2.6 (the 8.0 state root is the checkout root), S4.1.4, S14.4.1(c)/S14.4.7, S8.5.3 (no remote evidence without `--allow-assumed`), **S8.5.6 (new: the receipt of one `up` stays in 8.0)** | yes; one dependency kept in minimal form (the receipt) |
+| 73 | the worktree's own runner is the design; the defect is run-gate **silently falling back** to main's runner; refuse and name "start this worktree's own test-runner" | §4.11 N29, X165 | — (run-gate backlog RG-79, reframed; S9.5.1 already says a worktree owns its test environment) | yes (backlog) |
+| 74 | the Docker-name ticket count cap as a run-gate feature, retiring `gate-slot.sh` **before** v8 | §4.11 N28, X164 | S21.4.2, S21.6 (the contract of record; the count mode is 8.0) | yes (RG-80) |
+| 75 | ciu brings up a worktree's declared test environment | §4.11 N30, §4.9 writer's call 3 | not yet: a gap in both lines; the v8 shape (`[ciu.instances] default_bundles`, `ciu instance init --up`) needs the operator's call | **partial**: CIU-125 filed and mapped; the spec amendment waits for §4.9 writer's call 3 |
+| 76 | review the existing backports (N18–N27, RG-67/73–79, CIU-115–124, CP-15/16, CLI-EXT-05) against draft.10 and amend what disagrees | §4.11 intro, N18–N26 rows | — | yes (11c) |
+
+**Counts including D-666** (76 rows): **yes 73, partial 2 (row 20: the primary has no library record, O-24; row 75: the v8 declaration waits for an operator call), n/a 1 (row 7).**
+
+### 11b. Independence re-check (8.0 ⟂ v8.2) — summary of SPEC-V8 S17.7
+
+The 8.0 text was read for any mention of `<ns>`, a release directory, `ciu.release.json`, the pointers lock, a receipt, an activation manifest, `bundle_dir`, `docker_optional`, enrollment or `push`. Verdicts, by rule (the full table, with the 8.0 form of each, is S17.7):
+
+- **Self-contained (the 8.0 text keeps a minimal version):** S2.6.1–S2.6.4 (the state root is the checkout root; a non-git checkout's lock is `<checkout>/locks/instance.lock`), S4.1.4 (the checkout sentinel; `instance init` always needs Docker), S14.2/S14.2.3 (every host writes its own host file), S14.4.1(c)/S14.4.3/S14.4.7 (no pointers lock, no release lock files), S10.4/S10.6.1, S7.6.2, S8.4.3, S15 stage 7 and S15.4, S6.2/S6.8/S6.10 (the `inputs` key stays: stage 4 and the `tenant` hooks use it), S3.1.5 (inheritance resolves; only the flattening is v8.2).
+- **Moved whole (the dependency left 8.0):** S2.6.5–S2.6.6 (T4-01), S7.2.4 (enrollment), S17.2–S17.5, the verbs `push`, `activate`, `host enroll`, the `ciu up` flags `--activation-manifest`/`--receipts`, the S7.2 keys `bundle_dir`, `push_mode`, `bundle_excludes`, `docker_optional`, `[activate]`.
+- **Split:** S8.5.3/S8.5.4 and the receipt. **The one finding that is not a clean cut:** S8.5.3 lets a `joined` Realization take its reference's facts from "the reference's own receipt", and S9.5.3 needs a way to know the reference is up, so the receipt of one `up` cannot leave 8.0. It stays as S8.5.6 (no portable subject, no activation fields). What leaves is everything that carries evidence **between hosts**. Consequence, for the operator: in 8.0 a required fact of a provider on another host is an ERROR unless `ciu up --allow-assumed` (reason `no-manifest`).
+- **Also found:** T4-03 is split, not moved: the helper image and its launcher are 8.0 (the count mode and the probes use them); only the state-root sentinel for a release and the `docker_optional` skip are v8.2. S17.1 (the inventory lookup, which S21.2 reads) and S17.6 (build provenance, the image map, instance-scoped tags: V8-35) stay 8.0. S21.9.1 cited "the up receipt" for the v8.1 override record, a portable artifact in v8.1's text; it now cites `ciu up`'s command result.
+- **Repairs to the proposal made in passing:** three rows had been replaced by a `\1` artifact in the rev 4.8 commits (V8-37, X150 and the last row of the "4.7 amendments" table) and are restored verbatim from rev 4.7.
+
+### 11c. The backports against draft.11 (disposition per entry)
+
+| entry | disposition | what changed |
+|---|---|---|
+| N18, N21, N22 | aligned (status marks) | N18 dropped and N21 optional (rev 4.0), N22 shipped as the name-keyed lock only; marked in the rows |
+| N19, N20, N27 (CLI-EXT-05) | aligned | CLI-EXT-05's verb group equals S18's `skills` row; no edit |
+| N23 | amended | shipped 2026-09-08 (CIU-93); part of the v8.2 group; the only enrollment until v8.2; open defects CIU-122/123 |
+| N24 | amended | `gate-slot.sh` is retired by N28/RG-80, not RG-67; Mode A retired |
+| N25 | amended | CIU-115's v7 build follows S4.1.2's ordering (refuse while old-id resources are live) |
+| N26 | amended | the opt-out flag is v7-only; v8 has none |
+| RG-67 | amended (Amendment 4) | the cross-worktree cap is RG-80; the per-environment N stays a v7 feature; the 8.0 `max_concurrent` oracle belongs to RG-80 |
+| RG-73 | amended (Amendment 2) | premise corrected: Mode A is retired and the own runner is one stack; the entry is the stackless alternative |
+| RG-74, RG-75, RG-77 | aligned | already amended against draft.9/10; the S-numbers and the closed vocabularies were re-read |
+| RG-76 | amended (Amendment 2) | `[assay]` → `[testing.judge]` key mapping (inline `sha256`, `import = { environment, lanes }`) |
+| RG-78 | amended (Amendment 4) | `gate-slot.sh` deletion moves to RG-80; `no-headroom` and the admission flags exist in v7 only with RG-80 |
+| RG-79 | reframed | the silent fallback is the defect; refuse and name the worktree's own runner; the RG-24 Mode-B oracle kept |
+| CIU-115 | amended | the repair ordering; the sibling scan is v7-only |
+| CIU-116 | amended | the committed preset is specified (S9.5.1); tenants; no alias map |
+| CIU-117 | amended | absorbed (S6.2, S17.6.1; S17.6 stays 8.0); v8 has no opt-out |
+| CIU-118 | amended | absorbed (`ciu resolve`/`ciu exec`); `instance exec --env` withdrawn; `attach-self` has no v8 verb |
+| CIU-119 | amended | the spec half is done (S4.1.1, S14.1.5); the v7 half is N25 |
+| CIU-122, CIU-123 | amended | scheduling: the v8 form is v8.2; these are the v7 line's defects |
+| CIU-124 | amended | v7-line only; v8 has one action and `--realization` |
+| CP-15, CP-16 | amended | the count mode is 8.0 and the byte budget v8.1; S16.6.6 → S21.5.1; the switch name |
+| (none) | CIU-120, CIU-121 | no such entries exist; the numbers are unused and are not reused here |
+
+### 11d. New entries
+
+**RG-80** (the Docker-name ticket count cap; proposal N28), **RG-79 reframed** (N29), **CIU-125** (a worktree's declared test environment; N30). RG-80 found one gap in the 8.0 text's own pieces: S21.4.2 builds tickets from the ciu helper image (S8.5.2b), which does not exist before ciu8, so the v7 build needs a declared `ticket_image` (no default, AGENTS §4.2a).
+
+### 11e. Open items and a successor note
+
+- **Operator questions (proposal §4.9, closed options, recommendations first):** (1) remote evidence in 8.0 (keep the receipt of one `up` + `--allow-assumed`); (2) ciu 7 after the cutover (keep it installable for remote deployment until v8.2); (3) where a worktree's test environment is declared in v8 (`default_bundles` + `instance init --up`); (4) the order of v8.1 and v8.2 (as ruled).
+- The spec amendment for question 3 (S14.6, S18, Appendix E) is **not** applied; CIU-125 and N30 carry the mapping.
+- The conformance test of S3.8.6 compares Appendix E's blocks with the implementation's emission: the new `_v82` surfaces, the narrowed `assumed_reasons`, `api_names` and `verbs`, and the `_v82` suffix rule are the only changes to compare.
+- A cmru KI-49 prerequisite for v8.2 enrollment is unchanged (S7.2.4).
