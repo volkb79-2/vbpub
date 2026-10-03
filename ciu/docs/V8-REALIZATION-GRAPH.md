@@ -1,6 +1,6 @@
 # V8 provisioning model — the realization graph
 
-**Status:** design note (revision 3, 2026-10-03; revision 2 was 2026-09-02), feeding `CIU-V8-TESTING-GATE-PROPOSAL.md` §4.1.6/§4.3.4 and `SPEC-V8.md` S8
+**Status:** design note (revision 4, 2026-10-03 — the admission preface follows D-661; revision 3 was 2026-10-03; revision 2 was 2026-09-02), feeding `CIU-V8-TESTING-GATE-PROPOSAL.md` §4.1.6/§4.3.4 and `SPEC-V8.md` S8
 **Session:** dstdns/vbpub joint design discussion, 2026-08-26; prefaces added 2026-09-02 and 2026-10-03
 
 > **Reading this note against proposal rev 3.0 / SPEC-V8 draft.3 (2026-09-02).** The
@@ -44,14 +44,18 @@
 > - **Joins (D-651 Q9).** A worktree instance borrows only what a committed join preset names, and a
 >   service is shareable only when it declares a tenant namespace. This note's `external` and realness
 >   rows are unaffected; a `joined` realization is the one new kind (SPEC-V8 S9.5).
-> - **Admission (v8.1; D-647 #4, D-653 Q4, D-655, D-658).** The waves above are ordering only, and
->   resource management and admission are **v8.1** (SPEC-V8 S21, behind `[ciu] admission`, default `off`):
->   the 8.0 graph, waves and gates neither need nor mention it. With admission on, a stack start is one
->   **placeholder ticket per `up`** carrying the sum of the warm charges of every container `ciu up` would
->   start across all waves; each wave's containers group under it by label, so a later wave's containers
->   need not exist before its wave runs (S21.4.4). The realization order, the checkpoint-B build order and
->   the five-wave trace are unchanged by the 8.0/8.1 split; only the proposal's checkpoint D lost
->   V8-30/V8-31 to the new checkpoint F (v8.1).
+> - **Admission (count mode 8.0, byte budget v8.1; D-647 #4, D-653 Q4, D-655, D-658, D-661).** The waves
+>   above are ordering only and the graph, waves and gates neither need nor mention admission. Every
+>   admission setting is grouped under the name `admission` (SPEC-V8 S21.1: participant-scoped
+>   `[admission] enabled`, default `false`, and host-scoped `[hosts.<h>.admission]`). **8.0** has the
+>   count mode on the `gates` tier only: gap-free name tickets, a published `max_concurrent`, deadline
+>   and group reaping (S21.4); a stack start (`ciu up`, `ciu dev`) takes no ticket and a stack has no
+>   count, so the realization order, the checkpoint-B build order and the five-wave trace are unchanged.
+>   **v8.1** adds the byte budget: with it enabled, a stack start is one **placeholder ticket per `up`**
+>   carrying the sum of the warm charges of every container `ciu up` would start across all waves; each
+>   wave's containers group under it by label, so a later wave's containers need not exist before its
+>   wave runs (S21.4.4). In the proposal's build plan the count mode is V8-38 in checkpoint D (8.0) and
+>   V8-30/V8-31 are checkpoint F (v8.1).
 > - **v7 local state in the trace.** The swimlane below describes v7 and is kept as history: secrets
 >   materialize to `<stack>/.ciu/secrets/<name>` and Vault's init state goes to `infra/vault/ciu.toml
 >   [state]`. In v8 the `.ciu/` directory is gone (V8-10, SPEC-V8 S2.3.2): a service's secret copies are

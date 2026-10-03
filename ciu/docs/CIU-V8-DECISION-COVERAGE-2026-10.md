@@ -103,9 +103,9 @@ D-658 adds decision bullets; each is checked against proposal rev 4.6 and SPEC-V
 | 58 | V8R-03: one placeholder per admitted `up` carrying the whole warm charge; wave containers group under it | §4.1.10a, X131 | S21.4.3, S21.4.4, S21.6 | yes (lifecycle specified: create, up-complete, `down`/`clean`, failure, crash) |
 | 59 | V8R-04: gap-free tickets `ciu-res-<tier>-<n>` through Docker's atomic name reservation; the settle delay as the alternative | §4.1.10a, X132 | S21.4.2, S21.4.10 | yes — tickets are **containers**, because `docker volume create` under an existing name is idempotent (open item O-29) |
 | 60 | V8R-06: host facts stay host-scoped config; `ciu host capacity set` publishes one labelled object per daemon; every run reads it | §4.1.10a, §4.5 D2, X133 | S21.2, S21.3 | yes (missing/differs/who-may-write specified) |
-| 61 | V8R-08: fold round 4 first; sign-off covers the 8.0 core plus the v8.1 annex | §4.3.17 4.6 amendments, X134–X140 | Appendix D.11 | yes, with T4-07 pending (below) |
+| 61 | V8R-08: fold round 4 first; sign-off covers the 8.0 core plus the v8.1 annex | §4.3.17 4.6 amendments, X134–X140 | Appendix D.11 | yes (T4-07 ruled in D-661, §1d) |
 
-**Counts including D-658** (61 rows): **yes 59, partial 1 (row 20: the primary has no library record, O-24), n/a 1 (row 7).** Rows 25, 45, 46 and 49 of §1a are now **yes** (S21.3, S21.4.4, S21.4.2 and S21.2–S21.6); rows 52–61 are yes. The one open question is round 4's T4-07, which is not a D-record row.
+**Counts including D-658** (61 rows): **yes 59, partial 1 (row 20: the primary has no library record, O-24), n/a 1 (row 7).** Rows 25, 45, 46 and 49 of §1a are now **yes** (S21.3, S21.4.4, S21.4.2 and S21.2–S21.6); rows 52–61 are yes. No question is open: round 4's T4-07 is ruled in D-661 (§1d).
 
 ### 1c. Round-4 findings (D-658: fold first)
 
@@ -117,11 +117,29 @@ D-658 adds decision bullets; each is checked against proposal rev 4.6 and SPEC-V
 | T4-04 | stage 4 containing-worktree test; flattening shape; fixture defects listed in R.2 (the demo is not edited) | folded in the spec; the demo fix is its own work |
 | T4-05 | `--version` pinned; absolute launcher; exact `ciu version --json` proof | folded |
 | T4-06 | pending generations; atomic promotion; `--revoke-old`; XDG for `--global`; locks | folded |
-| T4-07 | digest before execution; signature required; typed fingerprint required; scan-and-confirm only under `CIU_SSH_INSECURE_TOFU=1` | folded except the **trust root of the digest and key**, `PENDING-OPERATOR (T4-07)` |
+| T4-07 | digest before execution; signature required; typed fingerprint required; scan-and-confirm only under `CIU_SSH_INSECURE_TOFU=1` | folded; the trust root of the digest and key is the controller's wheel (D-661, §1d) |
 | T4-08 | account database, no-follow walk, lock, atomic rewrite, closed `--from` grammar | folded |
 | T4-09 | direct-child descriptors with validation; `CIU_LEASE_ID`; owner tuple; completion marker | folded |
 | T4-10 | Appendix E and `--surfaces`; `known_host` grammar; docs inputs; cmru install root | folded |
 | T3-08 residue | the progress path follows the estate directive (`.assay/progress-<lane>.jsonl`) | folded |
+
+### 1d. D-661 rows (the operator's rulings on the r2 fix-verify, 2026-10-03)
+
+D-661 is read from the scratchpad text the coordinator supplied (it lands in the ledger later). Verdicts are after SPEC-V8 draft.10 and proposal rev 4.8.
+
+| # | D-661 says | proposal rev 4.8 | SPEC-V8 draft.10 | in the text? |
+|---|---|---|---|---|
+| 62 | T4-07 → (a): the controller's installed ciu release is the trust root; its wheel carries the installer digest and manifest key per enrollable version; `ciu host enroll --version X` verifies against them and prints both | §4.9 item 1, V8-29, X151; enrollment proposal rev 4 §3, §11 | S7.2.4, S18 | yes (`ciu/enroll_trust.json`; `--installer-sha256` withdrawn) |
+| 63 | O-31 → default off, "for no surprises"; declared limits apply only after an explicit enable | §4.1.10a, §4.9 item 2 | S21.1.3, S21.1.5 | yes |
+| 64 | every admission setting is grouped so it is obvious what the switch affects; `enabled = false` disables every admission behaviour and limit for one's own runs whatever else is configured; `on` can limit | §4.1.10a, §4.1.10b (layout and the alternatives that lost), §4.5 A1/D2, X152 | S3.3, S3.4.7, S21.1.2, S21.1.3, S21.2; Appendix E `admission_*` | yes: participant-scoped `[admission] enabled`, host-scoped `[hosts.<h>.admission]`, `ciu host admission`, `ciu-admission-<g>`, `ciu.admission.*` |
+| 65 | governance (S13) is unaffected by the switch; admission only reads the tier slice and `memory_max` as the charge of an unmeasured container | §4.1.10a, §4.1.10b | S21.1.3, S21.0 | yes |
+| 66 | the units: caps per container; charges per start unit (one ticket per lane, one placeholder per `up`); the charge is the measured warm set committed in `ciu.footprint.json`, else `memory_max` | §4.1.10b | S21.0, S21.5.1 | yes |
+| 67 | no daemon: the budget runs from committed figures plus `/proc`; only fresh measurement and the floor check are lost; a missing fact falls to `unreadable_policy` | §4.1.10a, §4.1.10b | S21.8 | yes (8.0: no change at all, the count needs Docker only) |
+| 68 | a one-page user explanation, with one worked example of two worktrees racing for the gate tier | §4.1.10b | S21.0 (informative note at the head of the admission rules) | yes |
+| 69 | R2-12 → (2): a global count cap in 8.0 — the ticket protocol (tickets, tombstones, deadline/group reaping, the helper-image ticket) in count mode, at most `max_concurrent` live tickets per tier per Docker daemon, ordered by ticket number, behind the same switch, default off; bytes, capacity objects, charges, manifest, floors and PSI stay v8.1 | §4.1.10a, V8-38, X153–X156 | S21.1.1, S21.2.2, S21.3–S21.4, S21.6, S21.8, S21.9; Appendix E/F | yes, with the narrowings listed in §9 |
+| 70 | dstdns's `gate-slot.sh` can retire when its cutover reaches 8.0 with the cap on | V8-38 | Appendix A step 8; S16.5.8 | yes |
+
+**Counts including D-661** (70 rows): yes 68, partial 1 (row 20), n/a 1 (row 7). Row 69 is "yes" with the writer's narrowings of §9, which the operator can overturn.
 
 ## 2. Stale-residue sweep (proposal, rev 4.3 text)
 
@@ -249,6 +267,8 @@ Run-gate's backlog is the legacy single file `run-gate-project/KNOWN_ISSUES_TODO
 - **RG-74:** the non-merge-trunk oracle's "exit 2" becomes NOT_RUN/`no-base`.
 - **RG-75:** `env`/`init` service keys and the exec-network join retired; lane services are `ephemeral`-only; charged in the lane's reservation.
 - **RG-76:** the `required_env` auto-forward oracle (c) retired (S16.4.5).
+- **RG-67, RG-78 (D-661, Amendment 3 in each):** the daemon-wide gate cap is 8.0 (RG-67's v8 absorption moves back from v8.1 to 8.0; the `max_concurrent` oracle joins the 8.0 parity set); `no-headroom` is an 8.0 NOT_RUN reason, exit 3 in the gate table (exit 4 for `ciu up` stays v8.1); dstdns retires `gate-slot.sh` at cutover.
+- **ciu CIU-123, cmru KI-49 (D-661):** the proposed contract now names the trust root (the wheel's `ciu/enroll_trust.json`) and, for cmru, that `cmru release` records the installer digest and manifest key into package data before the wheel is built.
 - **cgprofile:** the combined `damon.warm_set_bytes` Summary series is filed as CP-16 (checked: CP-6 is the per-class series; CP-15 is the reservation mirror and now optional).
 
 ## 7. Draft.9 resolutions of D-658 (round 2) and new open items
@@ -257,9 +277,22 @@ Resolved: O-3 and O-13 (the stack reservation unit and ordering: S21.4.2–S21.4
 - **O-28 (filed 2026-10-03: ciu CIU-122, CIU-123; cmru KI-49, KI-50).** Round 4's v7-line findings (the `get.py` unpinned install, the key path aliasing S14.3a, the unauthenticated root program, `authorized_keys` handling, the `known_host` grammar) are defects of **shipped** CIU-93 and cmru KI-24 code; filing them needs ids allocated in the ciu and cmru backlogs, which this pass does not do (enrollment proposal rev 3 §11 lists them).
 - **O-29.** The operator's ruling says tickets come from "Docker's atomic name reservation". The adversarial review recommended volumes; draft.9 uses **containers**, because Docker's volume create is idempotent for an existing name and cannot arbitrate. A ticket therefore needs the helper image on the daemon; an absent image is an unreadable fact (S21.8.2).
 - **O-30.** T4-01 reviewer flagged that its fix challenges a settled decision "narrowly" (the state-root/bundle-dir design). Draft.9 changes `bundle_dir`'s default to `/var/lib/ciu` and adds the per-instance namespace; the in-checkout posture is untouched. Listed for the operator to confirm.
-- **O-31.** The default of `[ciu] admission` is `off`. The alternative reading of D-658 ("even if configured it needs a switch to turn it off") is `on` whenever a capacity table is declared; draft.9 rejects it because a published capacity object on a shared daemon would then switch every participant on (S21.1.3).
+- **O-31.** The default of `[ciu] admission` is `off`. The alternative reading of D-658 ("even if configured it needs a switch to turn it off") is `on` whenever a capacity table is declared; draft.9 rejected it because a published capacity object on a shared daemon would then switch every participant on (S21.1.3). **Resolved in draft.10 (D-661, §1d):** default off, "for no surprises"; every setting grouped under `admission`.
 - **O-32.** The demo's stale files (R.2) now include the monorepo fixture's wrong build context, the missing child gitignore coverage and the hosts' `bootstrap` values; the demo is still not edited.
 
 ## 8. Round 3 (the r2 fix-verify) and a successor note
 
-R2-01..R2-16 are applied (SPEC-V8 Appendix D.12; proposal rev 4.7 §4.3.17 "4.7 amendments", X141–X150) except three, which stay `PENDING-OPERATOR`: **T4-07** (the enrollment installer's trust root), **O-31** (the `[ciu] admission` default) and **R2-12** (a gate cap in 8.0). Writer's calls recorded here: the `run.json` deadline uses fixed constants (24 hours when a lane declares no `budget`, plus a one-hour grace) rather than a new key; a ticket helper's tier is `stacks`; a move versus a copy is never decided by `exists()` on a physical path — the operator declares `--move` or `--fresh`. **Successor note:** nothing is left unfinished in this pass; the next step is the operator's answers to the three questions, then an r3 spot-check of R2-01..R2-03 and R2-05..R2-09 as the reviewer proposed. O-28's four entries are filed (`ciu/KNOWN_ISSUES_TODO_BACKLOG.md` CIU-122, CIU-123; `cmru/KNOWN_ISSUES_TODO_BACKLOG.md` KI-49, KI-50).
+R2-01..R2-16 are applied (SPEC-V8 Appendix D.12; proposal rev 4.7 §4.3.17 "4.7 amendments", X141–X150) except three, which were left to the operator and are ruled in D-661 (§9): **T4-07** (the enrollment installer's trust root), **O-31** (the `[ciu] admission` default) and **R2-12** (a gate cap in 8.0). Writer's calls recorded here: the `run.json` deadline uses fixed constants (24 hours when a lane declares no `budget`, plus a one-hour grace) rather than a new key; a ticket helper's tier is `stacks`; a move versus a copy is never decided by `exists()` on a physical path — the operator declares `--move` or `--fresh`. **Successor note:** nothing is left unfinished in this pass; the next step is the operator's answers to the three questions, then an r3 spot-check of R2-01..R2-03 and R2-05..R2-09 as the reviewer proposed. O-28's four entries are filed (`ciu/KNOWN_ISSUES_TODO_BACKLOG.md` CIU-122, CIU-123; `cmru/KNOWN_ISSUES_TODO_BACKLOG.md` KI-49, KI-50).
+
+## 9. Round 4 (D-661 applied: SPEC-V8 draft.10, proposal rev 4.8) and a successor note
+
+The three questions round 3 left to the operator are applied (SPEC-V8 Appendix D.13; proposal §4.3.17 "4.8 amendments", X151–X156; enrollment proposal rev 4), and every `PENDING-OPERATOR` marker is gone. **Writer's calls recorded here** (decided without a fork, listed in proposal §4.9 so they can be overturned cheaply):
+
+1. **The count-only subset of the published object is 8.0.** D-661's text keeps "capacity objects" in v8.1; the task asked for the count's home to be reasoned through. A count each participant read from its own table would disagree between participants on one daemon (V8R-06), so it must be published the same way. The byte keys (`usable`, `psi_full_avg10_max`) stay v8.1 and extend the same object.
+2. **The 8.0 count applies to the `gates` tier only.** A stack count (a placeholder counted against `max_concurrent`) would reintroduce the instance count that D-647 #4 removed. In 8.0 `ciu up`, `ciu dev` and helpers take no ticket; `max_concurrent` on any other tier is an ERROR; in v8.1 a helper's fixed `memory_max` rides its caller's ticket (draft.9 gave a helper its own ticket, which would deadlock a one-slot count behind its own caller).
+3. **`unreadable_policy` is `unbudgeted | refuse`.** The count now always applies, so draft.9's `count` value said nothing; `refuse` gives an operator who enabled admission a way to fail closed.
+4. **`ciu host admission set|show` work whatever `enabled` says** (they are operator verbs, not runs); `ciu footprint` still refuses when disabled.
+5. **Layout.** One name, two scopes: participant `[admission] enabled`, host `[hosts.<h>.admission]`. Alternatives and why they lost are in proposal §4.1.10b.
+6. **Independence re-check (8.0 ⟂ v8.1).** The 8.0 count mode uses only 8.0 pieces: the helper image (S8.5.2b), the owner tuple (S16.9.7), the `run.json` deadline (S16.9.4), the closed exit table with `no-headroom` (S16.8, Appendix E), and the new verb and host table. No v8.1 rule is needed; an 8.0 and a v8.1 participant can share one daemon because v8.1 only adds labels and object keys that an 8.0 reader ignores, and a live ticket without a `bytes` label counts as 1 against the count.
+
+**Successor note:** nothing is left unfinished in this pass. The next step is the operator's confirmation of calls 1 and 2, then an r3 spot-check of S21 against Appendix E (the `admission_*` surfaces replace `capacity_*`, `ciu_keys_v81`, `admission_values_v81`, `not_run_reasons_v81`, `gate_flags_v81` and `lane_result_fields_v81`) and of the enrollment trust table's release-time generation (cmru KI-49).
