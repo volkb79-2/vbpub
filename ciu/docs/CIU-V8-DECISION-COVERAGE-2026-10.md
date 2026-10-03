@@ -88,6 +88,41 @@ The independent adversarial review (`CIU-V8-ADVERSARIAL-REVIEW-2026-10-03.md`, p
 
 **Counts after draft.9 / rev 4.5** (51 rows): **yes 45, partial 2 (rows 20, 25), pending-operator 3 (rows 45, 46, 49), missing 0, contradicted 0, n/a 1.** The five operator questions are rev 4.5 §4.9.
 
+### 1b. D-658 rows (the operator's rulings on the review, 2026-10-03)
+
+D-658 adds decision bullets; each is checked against proposal rev 4.6 and SPEC-V8 draft.9. Verdicts are after draft.9.
+
+| # | D-658 bullet | proposal rev 4.6 | SPEC-V8 draft.9 | verdict |
+|---|---|---|---|---|
+| 52 | V8R-01: the id is derived from the physical path | §4.1.4, R S4.1.1, X119 | S4.1.1, S4.1.4 | yes |
+| 53 | V8R-02: one lock per instance | §4.1.9, X120 | S14.4.1(c), S14.4.7 | yes |
+| 54 | the other non-operator findings and O-items applied; run-gate entries amended; CP-16 filed; CLI-EXT-05 | §4.3.17 4.5 amendments | Appendix D.10 | yes |
+| 55 | V8R-09 scope ruling: resource management and admission come as **v8.1** | §4.1.10a, §4.4 checkpoint F, X129, Appendix F reference | S21, Appendix F, S21.10 | yes |
+| 56 | v8.1 needs **one config switch** that turns admission off so ciu just runs | §4.1.10a opening, §4.5 A1 | S21.1 (`[ciu] admission`, `off | on`, default `off`; S3.4.7; Appendix E) | yes — the default is derived in S21.1.3 and is the operator's-reading "off when unconfigured" (open item O-31 records the alternative) |
+| 57 | V8R-09 → 1: the daemon's absence changes only the inputs; the policy applies only to unreadable facts | §4.1.10a, §4.5 D2, X130 | S21.8 | yes |
+| 58 | V8R-03: one placeholder per admitted `up` carrying the whole warm charge; wave containers group under it | §4.1.10a, X131 | S21.4.3, S21.4.4, S21.6 | yes (lifecycle specified: create, up-complete, `down`/`clean`, failure, crash) |
+| 59 | V8R-04: gap-free tickets `ciu-res-<tier>-<n>` through Docker's atomic name reservation; the settle delay as the alternative | §4.1.10a, X132 | S21.4.2, S21.4.10 | yes — tickets are **containers**, because `docker volume create` under an existing name is idempotent (open item O-29) |
+| 60 | V8R-06: host facts stay host-scoped config; `ciu host capacity set` publishes one labelled object per daemon; every run reads it | §4.1.10a, §4.5 D2, X133 | S21.2, S21.3 | yes (missing/differs/who-may-write specified) |
+| 61 | V8R-08: fold round 4 first; sign-off covers the 8.0 core plus the v8.1 annex | §4.3.17 4.6 amendments, X134–X140 | Appendix D.11 | yes, with T4-07 pending (below) |
+
+**Counts including D-658** (61 rows): **yes 55, partial 2 (rows 20, 25 — now row 25 is closed by S21.3, so rows 20 only), pending-operator 0, missing 0, contradicted 0, n/a 1.** Precisely: rows 1–51 as in §1a with rows 25, 45, 46 and 49 now **yes** (S21.2/S21.3, S21.4.4, S21.4.2 and S21.2–S21.6 respectively) and row 20 still **partial** (the primary has no library record, O-24); rows 52–61 yes. **yes 59, partial 1 (row 20), n/a 1.** The one open question is round-4's T4-07 (not a D-record row).
+
+### 1c. Round-4 findings (D-658: fold first)
+
+| finding | disposition in draft.9 | status |
+|---|---|---|
+| T4-01 | deployment namespace and owner marker; disjoint install root; release lock files | folded |
+| T4-02 | pointer record, CAS, single candidate resolution, image reload, unique activation files | folded |
+| T4-03 | state-root sentinel; no write into a release; `docker_optional` skip; helper image and launcher | folded |
+| T4-04 | stage 4 containing-worktree test; flattening shape; fixture defects listed in R.2 (the demo is not edited) | folded in the spec; the demo fix is its own work |
+| T4-05 | `--version` pinned; absolute launcher; exact `ciu version --json` proof | folded |
+| T4-06 | pending generations; atomic promotion; `--revoke-old`; XDG for `--global`; locks | folded |
+| T4-07 | digest before execution; signature required; typed fingerprint required; scan-and-confirm only under `CIU_SSH_INSECURE_TOFU=1` | folded except the **trust root of the digest and key**, `PENDING-OPERATOR (T4-07)` |
+| T4-08 | account database, no-follow walk, lock, atomic rewrite, closed `--from` grammar | folded |
+| T4-09 | direct-child descriptors with validation; `CIU_LEASE_ID`; owner tuple; completion marker | folded |
+| T4-10 | Appendix E and `--surfaces`; `known_host` grammar; docs inputs; cmru install root | folded |
+| T3-08 residue | the progress path follows the estate directive (`.assay/progress-<lane>.jsonl`) | folded |
+
 ## 2. Stale-residue sweep (proposal, rev 4.3 text)
 
 | pattern | hits | disposition |
@@ -215,3 +250,12 @@ Run-gate's backlog is the legacy single file `run-gate-project/KNOWN_ISSUES_TODO
 - **RG-75:** `env`/`init` service keys and the exec-network join retired; lane services are `ephemeral`-only; charged in the lane's reservation.
 - **RG-76:** the `required_env` auto-forward oracle (c) retired (S16.4.5).
 - **cgprofile:** the combined `damon.warm_set_bytes` Summary series is filed as CP-16 (checked: CP-6 is the per-class series; CP-15 is the reservation mirror and now optional).
+
+## 7. Draft.9 resolutions of D-658 (round 2) and new open items
+
+Resolved: O-3 and O-13 (the stack reservation unit and ordering: S21.4.2–S21.4.4), O-4 (the capacity location and the daemon-absent policy: S21.2, S21.3, S21.8), O-17 (the scope question: round 4 is folded). New:
+- **O-28.** Round 4's v7-line findings (the `get.py` unpinned install, the key path aliasing S14.3a, the unauthenticated root program, `authorized_keys` handling, the `known_host` grammar) are defects of **shipped** CIU-93 and cmru KI-24 code; filing them needs ids allocated in the ciu and cmru backlogs, which this pass does not do (enrollment proposal rev 3 §11 lists them).
+- **O-29.** The operator's ruling says tickets come from "Docker's atomic name reservation". The adversarial review recommended volumes; draft.9 uses **containers**, because Docker's volume create is idempotent for an existing name and cannot arbitrate. A ticket therefore needs the helper image on the daemon; an absent image is an unreadable fact (S21.8.2).
+- **O-30.** T4-01 reviewer flagged that its fix challenges a settled decision "narrowly" (the state-root/bundle-dir design). Draft.9 changes `bundle_dir`'s default to `/var/lib/ciu` and adds the per-instance namespace; the in-checkout posture is untouched. Listed for the operator to confirm.
+- **O-31.** The default of `[ciu] admission` is `off`. The alternative reading of D-658 ("even if configured it needs a switch to turn it off") is `on` whenever a capacity table is declared; draft.9 rejects it because a published capacity object on a shared daemon would then switch every participant on (S21.1.3).
+- **O-32.** The demo's stale files (R.2) now include the monorepo fixture's wrong build context, the missing child gitignore coverage and the hosts' `bootstrap` values; the demo is still not edited.
