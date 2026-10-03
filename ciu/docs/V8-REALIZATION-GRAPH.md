@@ -1,7 +1,7 @@
 # V8 provisioning model — the realization graph
 
-**Status:** design note (revision 2, 2026-09-02), feeding `CIU-V8-TESTING-GATE-PROPOSAL.md` §4.1.6/§4.3.4
-**Session:** dstdns/vbpub joint design discussion, 2026-08-26; preface added 2026-09-02
+**Status:** design note (revision 3, 2026-10-03; revision 2 was 2026-09-02), feeding `CIU-V8-TESTING-GATE-PROPOSAL.md` §4.1.6/§4.3.4 and `SPEC-V8.md` S8
+**Session:** dstdns/vbpub joint design discussion, 2026-08-26; prefaces added 2026-09-02 and 2026-10-03
 
 > **Reading this note against proposal rev 3.0 / SPEC-V8 draft.3 (2026-09-02).** The
 > entity split this note argues for — a consumer depends on a *logical* name, never on
@@ -24,6 +24,41 @@
 >
 > The five-wave dstdns trace, the two races (D-210, D-212) and their lessons are unchanged
 > and remain the acceptance narrative for V8-7 (the graph package).
+>
+> ## Reading this note against proposal rev 4.4 / SPEC-V8 draft.8 (2026-10-03, dstdns D-656)
+>
+> The two prefaces compose: the table above maps the 2026-08-26 notation to the rev 3.0 notation, and
+> the rest of this preface maps what the 2026-10 reconciliation (D-647, D-651..D-655) changed around it.
+> The graph itself (logical services, realizations, derived edges, waves, gates) is unchanged by every
+> one of those decisions. The authoritative texts are `SPEC-V8.md` S5 and S8 (the graph), S14.4 (locks)
+> and S16.6 (admission).
+>
+> - **Where the graph lives in the build plan.** The mechanism is proposal §4.4 V8-3 (registry, logical
+>   services, derived contract), V8-7 (init graph, waves, gates, this note's acceptance narrative), V8-8
+>   (realness and joins) and V8-32 (join presets, tenant namespaces), all in checkpoint B, after
+>   checkpoint A (files, inheritance, identity, locks, check). The gate port (V8-12, checkpoint D) does
+>   not touch the graph.
+> - **Identity (D-651 Q10, D-647 #5).** This note names no instance id and no owner token, so nothing
+>   here is stale. A stack's container names come from the one derivation (SPEC-V8 S4), over 7.15.1's
+>   path-derived id.
+> - **Joins (D-651 Q9).** A worktree instance borrows only what a committed join preset names, and a
+>   service is shareable only when it declares a tenant namespace. This note's `external` and realness
+>   rows are unaffected; a `joined` realization is the one new kind (SPEC-V8 S9.5).
+> - **Admission (D-647 #4, D-653 Q4, D-655).** The waves above are ordering only. Whether a stack may
+>   *start* is decided separately, by the sum of the warm working sets of the containers `ciu up` would
+>   start, against the host-config capacity, through Docker-object reservations (SPEC-V8 S16.6): there
+>   is no instance count and no admission lock. How a wave-by-wave bring-up interacts with that
+>   reservation (one deploy-set reservation or one per wave) is not specified; it is draft.8 open item
+>   O-3 in `CIU-V8-DECISION-COVERAGE-2026-10.md`.
+> - **v7 local state in the trace.** The swimlane below describes v7 and is kept as history: secrets
+>   materialize to `<stack>/.ciu/secrets/<name>` and Vault's init state goes to `infra/vault/ciu.toml
+>   [state]`. In v8 the `.ciu/` directory is gone (V8-10): materialized files live under `ciu.rendered/`,
+>   secrets in the one store `ciu.secrets.toml` under the state root (V8-9, SPEC-V8 S10.6, S2.6), and the
+>   `[state]` table is replaced by the instance's state files. The waves and the D-210/D-212 lessons are
+>   unaffected.
+> - **Not touched.** The gate (Phase A on the v7 track, RG-78's exit table, `ciu gate`), cmru calling
+>   `ciu gate`, and the atomic per-repo cutover (D-652 Q3, Q13; D-654) concern the testing gate, which
+>   has no node in this graph.
 **Problem this resolves:** §3.1's worked examples nest a service's realness
 variants inside the stack that happens to run it today
 (`service.our_db_stack.postgres.live`). That is an addressing scheme, not an
