@@ -5400,6 +5400,8 @@ reproduction of the SAME underlying defect goes here, not a new entry).
 - Same W with the default scope and a non-running derived container refuses with exit 2, and the text contains the full path of W's `ciu.global.toml` and the word `delete` or `scope`.
 - A controlled wrong implementation that silently falls back to the repo config whenever the derived container is not running must fail a third oracle: W declares scope `worktree` and its runner is down, and the lane must still refuse.
 
+**Note (dstdns P240 carve review):** the refusal exit stays 2 (a configuration refusal, not a lane verdict); the existing RG-24 Mode-B behavior (the worktree's own config wins when scope is `worktree`) is the regression oracle for the default path.
+
 **Spec owner:** SPEC (exec-mode container resolution, RG-24 rule).
 
 **v8: absorb** (explicit environment modes, RG-78).
