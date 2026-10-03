@@ -5,6 +5,7 @@ import copy
 import hashlib
 import json
 import subprocess
+from contextlib import nullcontext
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -355,6 +356,7 @@ def _abandon_workspace(root, *, base_commit="a" * 40):
 
 def _install_abandon_facts(monkeypatch, root, workspace, *, progress=None):
     monkeypatch.setattr(cli, "_current_git_root", lambda: root)
+    monkeypatch.setattr(transaction, "release_lock", lambda _root: nullcontext())
     monkeypatch.setattr(cli, "_resolve_config", lambda _path: root / "cmru.toml")
     monkeypatch.setattr(transaction, "list_cmru_workspaces", lambda _root: [workspace])
     monkeypatch.setattr(transaction, "read_release_scope", lambda *_: ["alpha"])
