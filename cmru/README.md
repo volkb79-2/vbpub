@@ -561,9 +561,37 @@ discovers the declared lanes; definitions live in `run-gate.toml`. The
 `assay` lane declares R0/R1/R3: the full suite, 100% line+branch coverage,
 and an import-break canary. The release `gate` adds R2 through a separate
 changed-source mutation campaign based on the nearest ancestor `cmru-v*` tag.
-This keeps the release candidate set nonempty after the code is already merged
-to `main`; a main-based R2 lane would find no source changes. The selected
-worktree's Assay source is installed at lane time. Mutation runs stop each
+The registered `gate` lane queries origin on the host through CMRU's
+credential-scoped Git transport, then forwards only token-free tag and commit
+facts to the `cmru-mutation` tester environment as
+`CMRU_ASSAY_BASELINE_FACTS`. The mutation lane checks those facts against its
+HEAD and requires the selected tag to match the configured Assay R1 base. On
+an untagged candidate, that ancestor must also be the latest published CMRU
+release. On a tagged-HEAD rerun, the selected ancestor remains the previous
+baseline; the latest published tag may be one of the verified tags at HEAD. It
+also checks Assay's effective
+comparison commit: if Assay resolves a merge's first parent after the tag, the
+configured CMRU source roots must be unchanged across the gap. A missing tag or
+mismatch fails the gate. Run the registered `gate` lane so it prepares fresh
+origin facts immediately before mutation.
+The checker verifies every local CMRU release tag at HEAD against its exact
+origin commit, including older tag names that point to the same commit.
+Before tester-unified starts, the host gate points all visible root and selected
+project secret overlays at private host backups outside the repository mount
+and strips publisher-token and extra-mount variables from nested runner calls.
+It uses CMRU's scoped Git auth on the host to prepare token-free origin facts
+for mutation, then restores the original secret files. If restoration fails,
+the gate reports and retains the private backup path for recovery. See the
+[gate credential design](docs/DESIGN-GUIDE.md#keeping-release-credentials-out-of-gate-containers).
+When rerunning on a release-tagged HEAD, the checker excludes every local CMRU
+release tag at HEAD and selects the nearest preceding release tag from its full
+ancestry. An empty source diff records a skip bound to the candidate HEAD. The
+selected worktree's Assay source is installed at lane time.
+Keep each candidate's R1 base on the latest release published before that
+candidate; advance the pin to a newly tagged release on the next release
+candidate.
+See the [Assay baseline design](docs/DESIGN-GUIDE.md#why-cmru-pins-assay-r1-to-a-release-tag-and-splits-r2-out).
+Mutation runs stop each
 failing candidate at its first failed test (`--maxfail=1`), cap each candidate
 at 120 seconds, and resume from the mutation progress file. A successful
 full-suite run still executes all tests. `.assay/` verdict/progress artifacts

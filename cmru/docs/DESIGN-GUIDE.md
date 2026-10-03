@@ -437,14 +437,36 @@ base against the tested commit; once a branch is merged, `main` can resolve to
 the tested commit and leave R1 with no changed lines. CMRU therefore pins R1 to
 the latest previously published ancestor release tag (`cmru-v5.5.0` in the current config), which
 keeps changed-line coverage meaningful after merge. Advance this pinned base
-with each CMRU release. R2 is a separate concern: the release candidate is
-already at `origin/main`, so using `main` as its mutation base would leave no
-mutation candidates. The dedicated mutation lane resolves the nearest
+to the newly tagged release on the next release candidate; keep the current
+candidate pinned to the release before it. A rerun on the newly tagged HEAD
+then excludes every local CMRU release tag at HEAD and finds the preceding
+release tag in HEAD's full ancestry, preserving the same baseline. R2 is a
+separate concern: the release
+candidate is already at `origin/main`, so using `main` as its mutation base
+would leave no mutation candidates. The dedicated mutation lane resolves the nearest
 ancestor `cmru-v*` tag dynamically and mutates CMRU source changed since that
-release. If that source diff is empty, the mutation lane writes its explicit
-skipped-evidence record. The serial campaign uses a 120-second timeout per
-candidate, stops each failed candidate at its first failing test (`--maxfail=1`),
-and resumes from its progress stream.
+release. The registered `gate` lane queries origin on the host using CMRU's
+credential-scoped Git transport, then passes token-free tag and commit facts
+to the dedicated `cmru-mutation` tester environment through
+`CMRU_ASSAY_BASELINE_FACTS`. The mutation checker binds those facts to HEAD,
+requires the selected tag to match the configured Assay R1 base and verifies
+its origin commit. On an untagged candidate, that ancestor must also be the
+latest published CMRU release. On a tagged-HEAD rerun, the selected ancestor
+remains the previous baseline; the latest published tag may be one of the
+verified tags at HEAD. It
+also verifies every local CMRU release tag at HEAD against its exact origin
+commit, including older tag names that point to the same commit. It
+checks Assay's effective comparison commit too: if a merge's first parent is
+after the tag, CMRU source roots must be unchanged across that gap so the two
+lanes use the same source range. A missing tag or mismatch fails the gate. Run the
+registered `./run-gate.py gate` lane to generate fresh origin facts immediately
+before mutation. If that source diff is empty, the mutation lane writes explicit
+skip evidence bound to the candidate HEAD. The serial campaign uses a
+120-second timeout per candidate, stops each failed candidate at its first
+failing test (`--maxfail=1`), and resumes from its progress stream. If a gate
+is rerun after HEAD itself received one or more release tags, the checker
+excludes every local CMRU release tag at HEAD and finds the preceding release
+tag in HEAD's full ancestry, keeping the pinned R1 base stable.
 
 The mutation and coverage-canary controls use the same disposable CMRU test
 closure. It includes the Topos and nyxloom CMRU manifests read by the estate
@@ -459,6 +481,27 @@ The Assay lane uses the estate-approved `repository-minus-unsafe-symlinks`
 snapshot and names the three tracked Topos fixture omissions explicitly; a
 new unsafe symlink therefore fails closed. The selected worktree's Assay
 source is installed at run time, so its verdict records the tool version.
+
+### Keeping release credentials out of gate containers
+
+CMRU copies its ignored root and selected-project secret overlays into a
+release worktree so its host-side release transaction can use the configured
+GitHub credential. A tester-unified container can read a mode-0600 file owned
+by its mapped uid, even when its environment allowlist does not forward the
+token. The registered host `gate` lane therefore resolves CMRU's scoped Git
+auth first, saves any copied overlays in a private temporary directory outside
+the mounted repository, and replaces their worktree paths with symlinks to the
+host backups for the full lane sequence. Host CMRU processes can still follow
+those links; tester containers see the same absolute `/tmp` paths in their own
+filesystem, where the host backup directory is not mounted. Nested
+`run-gate.py` processes strip publisher-token and extra-mount variables
+(`RUN_GATE_EXTRA_MOUNTS`). The host uses the saved auth object to query origin
+immediately before mutation and forwards only token-free tag and commit facts.
+A `finally` path restores the original overlay bytes and file metadata even
+when a registered lane fails. If restoration fails, the gate reports and keeps
+the private backup directory so the only saved secret copy is not deleted.
+The aggregate `gate` lane owns this boundary. Direct component-lane runs use
+the mounted checkout as-is and require a secret-free checkout.
 
 ## Release history errors refuse the plan
 

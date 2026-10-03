@@ -5,10 +5,19 @@
 # packages in this monorepo, so they are explicit import roots alongside CMRU.
 #
 # Assay owns R0/R1/R3 here. R1 uses the latest ancestor CMRU release tag as
-# its changed-line baseline; advance that pinned tag with each CMRU release.
+# its changed-line baseline. After release N is tagged, advance this pin to N
+# on the next release candidate; keep N pinned to N-1 for tagged-HEAD reruns.
 # R2 lives in run-gate.toml's tag-based mutation lane, which resolves that
-# nearest ancestor tag dynamically. `main` is unsuitable after merge because
-# Assay can resolve it to HEAD and correctly refuse an empty coverage delta.
+# nearest ancestor tag dynamically. The host gate queries origin through
+# CMRU's scoped Git transport and forwards token-free tag facts to the mutation
+# container. The lane requires the selected tag to match the latest published
+# CMRU release and match the Assay R1 base. If Assay resolves a merge's first
+# parent after the tag, configured source roots must be unchanged across the gap.
+# If HEAD itself is release-tagged on a gate rerun, the checker excludes that
+# tag and resolves the nearest preceding release tag from HEAD's full ancestry,
+# which remains the pinned R1 baseline.
+# `main` is unsuitable after merge because Assay can resolve it to HEAD and
+# correctly refuse an empty coverage delta.
 # The repository-minus-unsafe-symlinks selection is the
 # estate-approved monorepo boundary: it omits only the three tracked Topos
 # fixture links that cannot be materialised safely, while preserving every

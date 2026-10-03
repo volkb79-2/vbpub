@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
 import subprocess
 import sys
@@ -143,16 +144,38 @@ def _candidate_result(
     )
 
 
-def _changed_since(repo_root: Path, older: str, newer: str, paths: Sequence[str]) -> bool:
-    if subprocess.run(
-        ["git", "merge-base", "--is-ancestor", older, newer],
-        cwd=repo_root, check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-    ).returncode:
-        return True
-    return subprocess.run(
-        ["git", "diff", "--quiet", older, newer, "--", *paths],
-        cwd=repo_root, check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-    ).returncode != 0
+def _changed_since(
+    repo_root: Path,
+    older: str,
+    newer: str,
+    paths: Sequence[str],
+    *,
+    assay_git,
+) -> bool:
+    """Compare resume inputs through Assay's sanitized Git boundary.
+
+    Assay discovers the campaign's source diff with replacement refs disabled.
+    A raw Git resume check can therefore mistake a replaced commit for an
+    unchanged tree and reuse killed results for a different candidate set.
+    """
+    from assay.errors import AssayError
+
+    remaining = lambda: math.inf
+    try:
+        if not assay_git.is_ancestor(
+            repo_root, older, newer, remaining=remaining,
+        ):
+            return True
+        return any(
+            not assay_git.path_is_current(
+                repo_root, older, newer, path, remaining=remaining,
+            )
+            for path in paths
+        )
+    except AssayError as exc:
+        raise RuntimeError(
+            f"could not verify mutation resume history through Assay's Git boundary: {exc}"
+        ) from exc
 
 
 def _campaign_tree_status(repo_root: Path, project_prefix: Path) -> str:
@@ -216,6 +239,7 @@ def _resume_results(
     project_prefix: Path,
     assay_source_commit: str,
     assay_source_prefix: Path | None = None,
+    assay_git,
     test_argv: Sequence[str],
     jobs: Sequence[Any],
     max_mutants: int,
@@ -241,9 +265,13 @@ def _resume_results(
     ]
     if not isinstance(previous_head, str):
         raise ValueError("mutation resume evidence has no prior head commit")
-    if _changed_since(repo_root, previous_head, head, source_paths):
+    if _changed_since(
+        repo_root, previous_head, head, source_paths, assay_git=assay_git,
+    ):
         raise ValueError("mutation resume evidence predates a product-source change")
-    if _changed_since(repo_root, previous_head, head, [test_paths[-1]]):
+    if _changed_since(
+        repo_root, previous_head, head, [test_paths[-1]], assay_git=assay_git,
+    ):
         raise ValueError("mutation resume evidence predates a pytest configuration change")
     if _campaign_tree_status(repo_root, project_prefix):
         raise ValueError("mutation resume requires committed source, tests, and pytest configuration")
@@ -270,6 +298,7 @@ def _resume_results(
         )
         if not assay_paths or _changed_since(
             repo_root, previous_assay_source_commit, assay_source_commit, assay_paths,
+            assay_git=assay_git,
         ):
             raise ValueError("mutation resume evidence predates an Assay source change")
     if (
@@ -401,6 +430,7 @@ def run(argv: Sequence[str] | None = None) -> int:
         project_prefix=project_prefix,
         assay_source_commit=assay_source_commit,
         assay_source_prefix=assay_source_prefix,
+        assay_git=git,
         test_argv=test_argv,
         jobs=jobs,
         max_mutants=args.max_mutants,

@@ -47,7 +47,16 @@ memory_swap = "16g"
 [lanes.coverage]
 kind = "command"
 environment = "tester-unified"
-argv = ["bash", "-c", "cd {worktree}/cmru && exec env PYTHONPATH=src:../libraries/cli-extended/src:../libraries/worktree/src /opt/tester-venv/bin/python -m pytest tests -q --maxfail=1 --cov=src/cmru --cov-branch --cov-fail-under=100 --cov-report=json:coverage.json"]
+argv = [
+  "bash",
+  "-c",
+  '''
+set -euo pipefail
+cd {worktree}/cmru
+/opt/tester-venv/bin/python -m pip install --quiet --disable-pip-version-check --no-input --no-deps --no-build-isolation --editable ../assay
+exec env PYTHONPATH=src:../libraries/cli-extended/src:../libraries/worktree/src /opt/tester-venv/bin/python -m pytest tests -q --maxfail=1 --cov=src/cmru --cov-branch --cov-fail-under=100 --cov-report=json:coverage.json
+''',
+]
 budget = "20m"
 artifacts = ["coverage.json"]       # disclosed after every run (RG-10)
 
@@ -55,18 +64,32 @@ artifacts = ["coverage.json"]       # disclosed after every run (RG-10)
 memory = "2g"
 memory_swap = "16g"
 
-# Mutation base = the PREVIOUS cmru release tag, resolved at gate time — NOT
-# origin/main (KI-18): at release time the tree IS origin/main, so a base of
-# origin/main leaves zero candidates and the campaign fails
-# --require-candidates. git describe returns the nearest ancestor cmru-v* tag,
-# so every source line changed since the last release gets mutated. When the
-# source diff against that verified-ancestor tag is genuinely EMPTY (a
-# release that changes no src/ lines), the lane skips with a notice instead
-# of failing — describe can only return an ancestor, so an empty diff here is
-# a true "nothing to mutate", never a misresolved base.
+# The mutation lane receives token-free remote facts generated immediately
+# before it starts. CMRU's host-side gate uses its configured secret through
+# CMRU's scoped Git transport; the tester container receives tag names and
+# commit IDs only, never publisher credentials.
+[environments.cmru-mutation]
+image = "tester-unified:local"
+cgroup_slice_env = "CGROUP_PARENT_DEV_GATES"
+forward_env = ["CGROUP_PARENT_DEV_BACKGROUND", "CMRU_ASSAY_BASELINE_FACTS"]
+
+# Mutation and Assay R1 must use the same PREVIOUS cmru release tag, never
+# origin/main (KI-18): at release time the tree IS origin/main, so that base
+# leaves zero candidates and the campaign fails --require-candidates. The
+# checker resolves the nearest ancestor cmru-v* tag and requires it to match
+# CMRU's latest published release baseline and assay.toml's pinned R1 base. It
+# verifies exact origin commits from host-prepared facts. A rerun on a
+# release-tagged HEAD excludes that tag and selects the preceding release tag
+# from HEAD's full ancestry. If Assay resolves a merge's first
+# parent after that tag, configured CMRU source roots must be unchanged across
+# the gap. Changed-source checks use Assay's sanitized Git boundary. Run the
+# registered `gate` lane to prepare the one-shot remote facts before mutation.
+# An empty source diff writes skip evidence bound to candidate HEAD and emits
+# no tag; otherwise only an older skip record is removed before emitting it.
 [lanes.mutation]
 kind = "command"
-environment = "tester-unified"
+environment = "cmru-mutation"
+required_env = ["CMRU_ASSAY_BASELINE_FACTS"]
 argv = [
   "bash",
   "-c",
@@ -75,11 +98,9 @@ set -euo pipefail
 cd {worktree}/cmru
 /opt/tester-venv/bin/python -m pip install --quiet --disable-pip-version-check --no-input --no-deps --no-build-isolation --editable ../assay
 /opt/tester-venv/bin/python -m pytest tools/test_mutation_campaign.py -q
-BASE=$(git describe --tags --abbrev=0 --match 'cmru-v*' 2>/dev/null || echo origin/main)
-if git diff --quiet "$BASE"..HEAD -- src; then
-    echo "mutation: no changed source since $BASE — nothing to mutate, skipping"
-    mkdir -p .assay
-    printf '{"status": "skipped", "reason": "no-changed-source", "base": "%s"}\n' "$BASE" > .assay/mutation-cmru.json
+BASE=$(/opt/tester-venv/bin/python tools/check_assay_baseline.py --skip-evidence)
+if [ -z "$BASE" ]; then
+    echo "mutation: no changed source — explicit skip evidence recorded"
     exit 0
 fi
 mkdir -p .assay
@@ -104,7 +125,17 @@ memory_swap = "16g"
 [lanes.canary]
 kind = "command"
 environment = "tester-unified"
-argv = ["bash", "-c", "cd {worktree}/cmru && mkdir -p .assay && exec /opt/tester-venv/bin/python tools/coverage_canary.py --repo-root {worktree} --project-root . --target src/cmru/config.py --evidence .assay/coverage-canary-cmru.json -- env PYTHONPATH=src:../libraries/cli-extended/src:../libraries/worktree/src /opt/tester-venv/bin/python -m pytest tests -q --maxfail=1 --cov=src/cmru --cov-branch --cov-fail-under=100 --cov-report=json:coverage.json"]
+argv = [
+  "bash",
+  "-c",
+  '''
+set -euo pipefail
+cd {worktree}/cmru
+/opt/tester-venv/bin/python -m pip install --quiet --disable-pip-version-check --no-input --no-deps --no-build-isolation --editable ../assay
+mkdir -p .assay
+exec /opt/tester-venv/bin/python tools/coverage_canary.py --repo-root {worktree} --project-root . --target src/cmru/config.py --evidence .assay/coverage-canary-cmru.json -- env PYTHONPATH=src:../libraries/cli-extended/src:../libraries/worktree/src /opt/tester-venv/bin/python -m pytest tests -q --maxfail=1 --cov=src/cmru --cov-branch --cov-fail-under=100 --cov-report=json:coverage.json
+''',
+]
 budget = "20m"
 artifacts = [".assay/coverage-canary-cmru.json"]
 
@@ -151,7 +182,7 @@ budget = "20m"
 [lanes.gate]
 kind = "command"
 environment = "bare-host"
-argv = ["bash", "-c", "cd {worktree}/cmru && ./run-gate.py --worktree {worktree} installed-wheel && ./run-gate.py --worktree {worktree} assay && ./run-gate.py --worktree {worktree} coverage && ./run-gate.py --worktree {worktree} mutation && ./run-gate.py --worktree {worktree} canary && ./run-gate.py --worktree {worktree} enroll"]
+argv = ["python3", "{worktree}/cmru/tools/run_release_gate.py", "--worktree", "{worktree}"]
 clean_tree = false   # sub-lanes each enforce their own clean-tree check
 # The conjunction includes the 20m Assay R0/R1/R3 lane plus the retained
 # total-coverage, 7h tag-based R2 mutation, cause-sensitive canary, and

@@ -1983,8 +1983,10 @@ action, reviewed like any other source change before it is committed.
 CMRU's internal `assay.toml` declares the `cmru` lane at R0/R1/R3. R0 runs
 the full CMRU test suite. R1 judges the `coverage.json` artifact against
 the latest previously published ancestor CMRU release tag (currently `cmru-v5.5.0`), requires 100%
-line and branch coverage, and forbids excluded source. Advance this pinned R1
-base to the new release tag during each CMRU release. `main` is not a stable
+line and branch coverage, and forbids excluded source. After release N is
+tagged, advance this pin to N on the next release candidate; the candidate
+for N remains pinned to N-1 so a tagged-HEAD rerun excludes its tag and finds
+the same baseline in HEAD's full ancestry. `main` is not a stable
 post-merge baseline: Assay's merge-base can resolve it to the tested commit,
 leaving no changed lines to measure. R3 runs an import-break canary against
 `src/cmru/config.py`.
@@ -1995,10 +1997,28 @@ The release `gate` supplies R2 separately through `run-gate.toml`'s
 `mutation` lane. A release candidate is already at `origin/main`; using
 `main` as Assay's mutation base would leave no changed-source candidates and
 correctly produce `NO_MUTANTS`. The dedicated lane resolves the nearest
-ancestor `cmru-v*` tag dynamically and mutates CMRU source changed since that release tag,
-with a serial campaign, a 120-second per-candidate timeout, `--maxfail=1`,
-`--resume`, and a progress stream. An empty source diff writes explicit
-skipped evidence.
+ancestor `cmru-v*` tag dynamically and requires it to match the configured
+Assay R1 base in `assay.toml`, then mutates CMRU source changed since that tag.
+On an untagged candidate, this ancestor MUST also be the latest published CMRU
+release. On a tagged-HEAD rerun, the selected ancestor remains the previous
+baseline; the latest published tag may be one of the verified tags at HEAD.
+The registered host `gate` lane queries
+origin with CMRU's credential-scoped Git transport immediately before the
+mutation lane and passes only token-free tag and commit facts through
+`CMRU_ASSAY_BASELINE_FACTS` to its dedicated `cmru-mutation` environment. The
+guard binds those facts to HEAD, verifies the selected tag's origin commit, and
+checks every local CMRU release tag at HEAD against its exact origin commit,
+including older tag names that point to the same commit. It also checks Assay's
+effective comparison commit.
+If Assay's merge first parent differs from the tag commit, the configured CMRU
+source roots MUST be unchanged between them.
+A missing tag or mismatched base fails the gate. If HEAD itself is
+release-tagged during a rerun, the selected baseline MUST be the nearest
+preceding ancestor tag from HEAD's full ancestry, excluding every local CMRU
+release tag at HEAD.
+An empty source diff writes skip evidence bound to HEAD. The serial campaign
+has a 120-second per-candidate timeout,
+`--maxfail=1`, `--resume`, and a progress stream.
 `run-gate.py gate` runs the Assay R0/R1/R3 lane plus the tag-based R2 campaign,
 total coverage, cause-sensitive canary, and real-system enrollment checks.
 
@@ -2027,6 +2047,22 @@ contract.
 `./run-gate.py`; the tester-unified lane requires the estate-provided
 `$CGROUP_PARENT_DEV_GATES` slice and fails closed when it is absent or not a
 loaded unit. A local devcontainer pytest result is not gate evidence.
+
+**S16.4 — Publisher credential boundary.** Before starting any tester-unified
+lane, the registered host `gate` lane MUST resolve the selected CMRU Git auth,
+save all visible root/project `cmru.secret.toml` overlays in a private
+temporary directory outside the repository mount, and replace their worktree
+paths with symlinks to those host-only backups. Every nested `run-gate.py`
+process MUST have
+`GITHUB_PUSH_PAT`, `GITHUB_TOKEN`, `CMRU_GIT_AUTH_TOKEN`, and
+`RUN_GATE_EXTRA_MOUNTS` removed. The host MAY use its in-memory auth object for
+scoped origin queries; only token-free tag and commit facts may be forwarded
+to `cmru-mutation`. The host MUST restore the original overlay bytes, owner,
+group, mode, and timestamps after success or failure. A restore failure MUST
+fail the gate and MUST retain the private backup directory, reporting its path,
+until restoration succeeds.
+Direct tester component lanes do not apply this host wrapper and MUST only run
+when the mounted checkout contains no publisher secret overlays.
 
 ---
 

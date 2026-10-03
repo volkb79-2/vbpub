@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import re
-import subprocess
 import tomllib
 from pathlib import Path
 
@@ -79,9 +78,12 @@ def test_assay_and_release_gate_split_rigor_without_empty_release_mutation():
     lane = tomllib.loads((ROOT / "assay.toml").read_text(encoding="utf-8"))["lanes"]["cmru"]
     assert lane["rigor"] == ["R0", "R1", "R3"]
     assert "--maxfail=1" in lane["argv"]
+
     assert lane["isolation"]["snapshot_selection"] == "repository-minus-unsafe-symlinks"
     assert lane["judge"]["coverage"]["artifact"] == "coverage.json"
-    assert lane["judge"]["base"] == _latest_previous_cmru_release_tag()
+    assert lane["judge"]["source_roots"] == ["src"]
+    declared_base = lane["judge"]["base"]
+    assert isinstance(declared_base, str) and declared_base.startswith("cmru-v")
     assert lane["env_passthrough"] == ["PATH"]
     assert "mutation" not in lane["judge"]
     assert lane["judge"]["canary"]["mechanism"] == "import-break"
@@ -91,16 +93,78 @@ def test_assay_and_release_gate_split_rigor_without_empty_release_mutation():
 
     gate = tomllib.loads((ROOT / "run-gate.toml").read_text(encoding="utf-8"))
     gate_command = " ".join(gate["lanes"]["gate"]["argv"])
-    for name in ("assay", "coverage", "mutation", "canary", "enroll"):
-        assert f"./run-gate.py --worktree {{worktree}} {name}" in gate_command
+    assert gate_command == (
+        "python3 {worktree}/cmru/tools/run_release_gate.py --worktree {worktree}"
+    )
+    release_gate = (ROOT / "tools" / "run_release_gate.py").read_text(encoding="utf-8")
+    for name in ("installed-wheel", "assay", "coverage", "mutation", "canary", "enroll"):
+        assert f'"{name}"' in release_gate
+    assert "_mask_secret_overlays(" in release_gate
+    assert "RUN_GATE_EXTRA_MOUNTS" in release_gate
     mutation_command = " ".join(gate["lanes"]["mutation"]["argv"])
-    assert "git describe --tags --abbrev=0 --match 'cmru-v*'" in mutation_command
-    assert 'git diff --quiet "$BASE"..HEAD -- src' in mutation_command
-    assert '"reason": "no-changed-source"' in mutation_command
+    assert gate["lanes"]["mutation"]["environment"] == "cmru-mutation"
+    assert gate["lanes"]["mutation"]["required_env"] == ["CMRU_ASSAY_BASELINE_FACTS"]
+    mutation_environment = gate["environments"]["cmru-mutation"]
+    assert "CMRU_ASSAY_BASELINE_FACTS" in mutation_environment["forward_env"]
+    assert "CGROUP_PARENT_DEV_BACKGROUND" in mutation_environment["forward_env"]
+    assert (
+        "BASE=$(/opt/tester-venv/bin/python tools/check_assay_baseline.py "
+        "--skip-evidence)"
+    ) in mutation_command
+    assert (ROOT / "tools" / "check_assay_baseline.py").is_file()
+    assert 'if [ -z "$BASE" ]; then' in mutation_command
+    assert "explicit skip evidence recorded" in mutation_command
+    assert "exit 0" in mutation_command
+    assert mutation_command.index('if [ -z "$BASE" ]; then') < mutation_command.index(
+        "tools/mutation_campaign.py",
+    )
+    assert "git diff --quiet" not in mutation_command
+    baseline_checker = (ROOT / "tools" / "check_assay_baseline.py").read_text(encoding="utf-8")
+    assert '"reason": "no-changed-source"' in baseline_checker
+    assert 'PROJECT_ROOT / ".assay" / "mutation-cmru.json"' in baseline_checker
+    assert "assay_git.resolve_base" in baseline_checker
+    assert "assay_git.base_resolution_mode" in baseline_checker
+    assert "assay_git.run(" in baseline_checker
+    assert 'os.environ.get("CMRU_ASSAY_BASELINE_FACTS"' in baseline_checker
+    assert '"--exclude"' in baseline_checker
+    assert '"head": head_commit' in baseline_checker
+    assert 'source_roots = judge["source_roots"]' in baseline_checker
+    assert "relative_to(repo_top)" in baseline_checker
+    assert "subprocess.run" not in baseline_checker
+    assert "path.is_symlink()" in baseline_checker
+    assert "os.replace(temporary, path)" in baseline_checker
+    assert "_remove_stale_skip_evidence" in baseline_checker
+    baseline_preparer = (ROOT / "tools" / "prepare_assay_baseline.py").read_text(encoding="utf-8")
+    assert "load_config(config_path, validate_dependencies=False)" in baseline_preparer
+    assert "_highest_remote_tag_for_prefix" in baseline_preparer
+    assert "run_remote_git(" in baseline_preparer
+    assert '"remote_tag_commits": remote_tags' in baseline_preparer
+    assert '"head_release_tags": head_release_tags' in baseline_preparer
+    assert '"schema_version": 2' in baseline_preparer
+    assert "GITHUB_PUSH_PAT" not in baseline_preparer
+    assert "remote_head_commit != head_commit" in baseline_checker
     assert "--require-candidates" in mutation_command
 
     for name in ("coverage", "mutation", "canary"):
         assert "--maxfail=1" in " ".join(gate["lanes"][name]["argv"])
+
+    coverage_command = " ".join(gate["lanes"]["coverage"]["argv"])
+    source_assay_install = (
+        "/opt/tester-venv/bin/python -m pip install --quiet "
+        "--disable-pip-version-check --no-input --no-deps --no-build-isolation "
+        "--editable ../assay"
+    )
+    assert source_assay_install in coverage_command
+    assert coverage_command.index(source_assay_install) < coverage_command.index("-m pytest tests")
+
+    canary_command = " ".join(gate["lanes"]["canary"]["argv"])
+    assert source_assay_install in canary_command
+    assert canary_command.index(source_assay_install) < canary_command.index(
+        "tools/coverage_canary.py",
+    )
+    assert canary_command.index("tools/coverage_canary.py") < canary_command.index(
+        "-m pytest tests",
+    )
 
     for document in (
         ROOT / "README.md",
@@ -115,26 +179,30 @@ def test_assay_and_release_gate_split_rigor_without_empty_release_mutation():
         assert "progress" in text.lower()
         assert "nearest ancestor" in normalized
         assert "cmru-v*" in text
+        assert "selected tag" in normalized.lower()
+        assert "Assay R1 base" in text
+        assert "latest published CMRU release" in normalized
+        assert "latest published tag may be one of the verified tags at head" in normalized.lower()
+        assert "effective comparison commit" in normalized.lower()
+        assert "first parent" in normalized.lower()
+        assert "full ancestry" in normalized.lower()
+        assert "missing tag" in normalized.lower()
+        assert "mismatch" in normalized.lower()
+        assert "fails the gate" in normalized.lower()
+        assert "next release candidate" in normalized.lower()
+        assert "every local cmru release tag at head" in normalized.lower()
+        assert "excludes every local cmru release tag at head" in normalized.lower()
 
 
-def _latest_previous_cmru_release_tag() -> str:
-    """Return the latest prior release tag for the tree under test.
-
-    A release gate runs before it creates the tag for HEAD. A test rerun on the
-    released commit sees that exact tag at HEAD, so compare against its parent
-    tag in that one case; later commits must advance the declared R1 baseline.
-    """
-    def git(*args: str) -> subprocess.CompletedProcess[str]:
-        return subprocess.run(
-            ["git", "-C", str(ROOT), *args],
-            capture_output=True, text=True, check=False,
-        )
-
-    exact = git("describe", "--exact-match", "--tags", "--match", "cmru-v*", "HEAD")
-    target = "HEAD^" if exact.returncode == 0 else "HEAD"
-    result = git("describe", "--abbrev=0", "--tags", "--match", "cmru-v*", target)
-    assert result.returncode == 0, result.stderr
-    return result.stdout.strip()
+def test_release_gate_credential_boundary_is_documented_in_all_user_guides():
+    for document in DOCS:
+        text = " ".join(document.read_text(encoding="utf-8").split())
+        assert "publisher-token and extra-mount variables" in text
+        assert "gate credential design" in text or document.name == "DESIGN-GUIDE.md"
+        assert "if restoration fails" in text.lower()
+        assert "private backup" in text.lower()
+    consumer_text = " ".join(DOCS[-1].read_text(encoding="utf-8").split())
+    assert "individual tester component lane bypasses this host wrapper" in consumer_text
 
 
 def test_cross_document_links_resolve():

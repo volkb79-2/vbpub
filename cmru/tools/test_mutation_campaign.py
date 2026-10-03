@@ -8,6 +8,10 @@ from types import SimpleNamespace
 
 import pytest
 
+REPO_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(REPO_ROOT / "assay" / "src"))
+from assay import git as assay_git
+
 sys.path.insert(0, str(Path(__file__).parent))
 import mutation_campaign
 import project_fixture
@@ -154,6 +158,7 @@ def test_resume_reuses_killed_candidates_and_retries_other_outcomes(tmp_path):
         head=head,
         project_prefix=Path("cmru"),
         assay_source_commit="assay-commit",
+        assay_git=assay_git,
         test_argv=["pytest", "tests"],
         jobs=jobs,
         max_mutants=10,
@@ -171,6 +176,7 @@ def test_resume_reuses_killed_candidates_and_retries_other_outcomes(tmp_path):
         head=head,
         project_prefix=Path("cmru"),
         assay_source_commit="assay-commit",
+        assay_git=assay_git,
         test_argv=["pytest", "tests"],
         jobs=jobs,
         max_mutants=10,
@@ -210,6 +216,14 @@ def test_resume_refuses_changed_source(tmp_path):
         ["git", "-C", str(repo), "rev-parse", "HEAD"], check=True, text=True,
         stdout=subprocess.PIPE,
     ).stdout.strip()
+    # Raw Git would now see the replaced old commit as the new HEAD and reuse
+    # results for a source tree whose Assay-discovered candidate set changed.
+    subprocess.run(["git", "-C", str(repo), "replace", previous_head, head], check=True)
+    raw_diff = subprocess.run(
+        ["git", "-C", str(repo), "diff", "--quiet", previous_head, head, "--", "cmru/src"],
+        check=False,
+    )
+    assert raw_diff.returncode == 0
     job = _job()
     evidence = project / ".assay" / "mutation-cmru.json"
     evidence.parent.mkdir()
@@ -240,6 +254,7 @@ def test_resume_refuses_changed_source(tmp_path):
             head=head,
             project_prefix=Path("cmru"),
             assay_source_commit="assay-commit",
+            assay_git=assay_git,
             test_argv=["pytest", "tests"],
             jobs=[job],
             max_mutants=1,
@@ -314,6 +329,7 @@ def test_resume_accepts_only_strictly_additive_test_suites(tmp_path):
         head=additive_head,
         project_prefix=Path("cmru"),
         assay_source_commit="assay-commit",
+        assay_git=assay_git,
         test_argv=["pytest", "tests"],
         jobs=[job],
         max_mutants=1,
@@ -340,6 +356,7 @@ def test_resume_accepts_only_strictly_additive_test_suites(tmp_path):
             head=changed_head,
             project_prefix=Path("cmru"),
             assay_source_commit="assay-commit",
+            assay_git=assay_git,
             test_argv=["pytest", "tests"],
             jobs=[job],
             max_mutants=1,
@@ -414,6 +431,7 @@ def test_resume_accepts_monorepo_commits_with_unchanged_assay_source(tmp_path):
         project_prefix=Path("cmru"),
         assay_source_commit=additive_head,
         assay_source_prefix=Path("assay"),
+        assay_git=assay_git,
         test_argv=["pytest", "tests"],
         jobs=[job],
         max_mutants=1,
@@ -441,6 +459,7 @@ def test_resume_accepts_monorepo_commits_with_unchanged_assay_source(tmp_path):
             project_prefix=Path("cmru"),
             assay_source_commit=changed_assay_head,
             assay_source_prefix=Path("assay"),
+            assay_git=assay_git,
             test_argv=["pytest", "tests"],
             jobs=[job],
             max_mutants=1,

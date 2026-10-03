@@ -619,9 +619,9 @@ with `{"status": "skipped", "reason": "no-changed-source", "base": "<ref>"}`
 before exiting 0 (the proposed contract, as-is), verified in isolation
 (the real lane could not be exercised without exercising the full mutation
 campaign, since this same session's other changes touch `src/`).
-**Mechanism.** Since KI-18's fix moved into `cmru/run-gate.toml`
-`[lanes.mutation]`, the lane short-circuits when the source diff against the
-resolved base tag is empty:
+**Original mechanism (2026-09-08).** After KI-18's fix moved into
+`cmru/run-gate.toml` `[lanes.mutation]`, the lane short-circuited when the
+source diff against the resolved base tag was empty:
 
 ```bash
 if git diff --quiet "$BASE"..HEAD -- src; then
@@ -630,20 +630,26 @@ if git diff --quiet "$BASE"..HEAD -- src; then
 fi
 ```
 
-On that path the lane exits 0 **without writing
-`.assay/mutation-cmru.json`** — the file the `--evidence` flag names as this
-lane's recorded output. Pre-adoption, the same situation failed loudly via
-`--require-candidates` (ugly, but the failure and its reason existed in a
-log). The ancestry argument for the skip itself is sound (`git describe
---match 'cmru-v*'` can only return an ancestor, so an empty diff is a true
-"nothing to mutate", never a misresolved base) — the gap is purely the
-missing record.
+That path exited 0 without writing `.assay/mutation-cmru.json`, the file the
+`--evidence` flag named as this lane's recorded output. Pre-adoption, the same
+situation failed via `--require-candidates`. The ancestry argument for the
+skip itself was sound; the gap was the missing record.
 
-**Reproduction.**
+**Current mechanism (2026-10-03).** The registered `gate` lane prepares
+authenticated origin tag facts on the host, then forwards only those facts to
+the `cmru-mutation` tester environment as `CMRU_ASSAY_BASELINE_FACTS`. The
+checker binds the facts to the candidate HEAD, validates the selected tag
+against the latest published release and configured Assay R1 base, and checks
+Assay's effective comparison commit. An empty source diff now writes explicit
+skip evidence bound to HEAD. Run `./run-gate.py gate` for the supported path;
+a direct `mutation` lane invocation requires fresh host-prepared baseline
+facts.
+
+**Historical reproduction (before the 2026-10-03 baseline-gate update).**
 
 ```bash
 cd cmru && ./run-gate.py mutation      # on any tree with no src/ delta since the last cmru-v* tag
-# → "mutation: no changed source since cmru-v4.1.1 — nothing to mutate, skipping"; exit 0
+# → the pre-fix lane exited 0 without creating the evidence file
 ls .assay/mutation-cmru.json           # → No such file or directory
 ```
 
@@ -656,14 +662,10 @@ a future verdict collector) sees the file MISSING exactly when "we checked
 and there was nothing to mutate" is the claim being made. Absence is
 indistinguishable from "never ran".
 
-**Proposed contract.** The skip path writes a machine-readable skipped
-record at the same declared path before exiting 0 — closed vocabulary, e.g.
-`{"status": "skipped", "reason": "no-changed-source", "base": "<tag>"}` — so
-absence keeps meaning "never ran" and presence always means "ran or
-consciously skipped, with the reason recorded". Alternatively verify no
-consumer will ever collect these artifacts and document the absence in the
-lane comment; the stub is preferred because the file already advertises
-itself as evidence via `--evidence`.
+**Resolved contract.** The current skip path writes a machine-readable skipped
+record at the declared evidence path before exiting 0. Absence means the lane
+did not produce evidence; a present record distinguishes a completed campaign
+from a conscious skip and records the reason and candidate HEAD.
 
 **Oracles.**
 - Skip-condition run → `.assay/mutation-cmru.json` exists with the closed
