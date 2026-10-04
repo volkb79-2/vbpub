@@ -54,6 +54,18 @@ def test_declared_environment_rejects_publisher_credential_names(name, capsys):
 
 
 @pytest.mark.parametrize(
+    "name", [
+        "CMRU_INTERNAL_RELEASE_PREFLIGHT_FD",
+        "CMRU_RELEASE_PREFLIGHT_SNAPSHOT",
+    ],
+)
+def test_declared_environment_rejects_internal_launch_state(name, capsys):
+    with pytest.raises(SystemExit):
+        config._scalar_env({name: "injected"}, "env", reject_credentials=True)
+    assert "reserved for CMRU internal launch state" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
     "name", ["GITHUB_PUSH_PAT", "GITHUB_TOKEN", "CMRU_GIT_AUTH_TOKEN"],
 )
 def test_runner_step_environment_rejects_publisher_credential_names(name, capsys):

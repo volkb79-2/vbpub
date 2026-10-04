@@ -16,7 +16,9 @@ Covers:
 
 Stdlib + tmp files only — no network, no git side effects. The enroll container
 tests are integration tests by nature; they run against a fixture image this
-file owns, never a live host, and skip (never fail) where docker is absent.
+file owns, never a live host. Direct local runs may skip when Docker is
+unavailable; the registered `enroll` lane sets `CMRU_ENROLL_REQUIRED=1`, making
+missing prerequisites and fixture-build failures fatal.
 """
 from __future__ import annotations
 
@@ -39,6 +41,7 @@ from typing import Iterator, List, Optional, Tuple
 from unittest import mock
 
 import pytest
+from cmru import tester_gate
 
 # ─── helpers ─────────────────────────────────────────────────────────────────
 
@@ -1989,9 +1992,9 @@ class TestEnrollHostProbes:
 # There is no prior "spin up a container, run the installer, assert on real
 # system state" pattern in this repo; this is it. The fixture image is built and
 # owned here (never a live host), every container is torn down in a finally, and
-# the whole group SKIPS — never fails — where docker or the estate's cgroup tier
-# is unavailable, which is exactly the case inside the gate's own tester-unified
-# container (no docker socket is mounted into it).
+# a direct local run skips if Docker or the estate's cgroup tier is unavailable.
+# The registered lane sets CMRU_ENROLL_REQUIRED=1 to turn those conditions into
+# failures so the O2/O3 oracle cannot disappear from release evidence.
 
 ENROLL_FIXTURE_IMAGE = "cmru-enroll-fixture:local"
 ENROLL_FIXTURE_DOCKERFILE = """\
@@ -2013,16 +2016,71 @@ def _docker_unavailable_reason() -> Optional[str]:
     # AGENTS.md "Host cgroup placement": no hardcoded fallback slice — a
     # gate fixture we cannot place on the host's dedicated gates tier is one
     # we do not start next to production.
-    if not os.environ.get("CGROUP_PARENT_DEV_GATES", "").strip():
+    slice_name = os.environ.get("CGROUP_PARENT_DEV_GATES", "").strip()
+    if not slice_name:
         return "CGROUP_PARENT_DEV_GATES unset — refusing an unplaced container"
+    try:
+        probe_image = tester_gate.resolve_cgroup_probe_image(None)
+    except SystemExit as exc:
+        return f"could not verify CGROUP_PARENT_DEV_GATES unit: {exc}"
+    exists, note = tester_gate.check_slice_unit(slice_name, probe_image, slice_name)
+    if exists is not True:
+        return f"could not verify CGROUP_PARENT_DEV_GATES unit on the Docker host: {note}"
     return None
+
+
+@pytest.mark.parametrize(
+    ("probe_result", "note"),
+    [
+        (False, "LoadState=not-found"),
+        (False, "FragmentPath is empty"),
+        (None, "could not determine"),
+    ],
+)
+def test_enroll_preflight_rejects_gate_slice_not_verified_on_docker_host(
+    monkeypatch, probe_result, note,
+):
+    monkeypatch.setenv("CGROUP_PARENT_DEV_GATES", "typo-or-transient.slice")
+    monkeypatch.setattr(shutil, "which", lambda _name: "/usr/bin/docker")
+    monkeypatch.setattr(
+        subprocess, "run", lambda *_args, **_kwargs:
+        subprocess.CompletedProcess(["docker", "info"], 0, "", ""),
+    )
+    monkeypatch.setattr(tester_gate, "resolve_cgroup_probe_image", lambda _image: "probe:image")
+    monkeypatch.setattr(tester_gate, "check_slice_unit", lambda *_args: (probe_result, note))
+
+    assert note in _docker_unavailable_reason()
+
+
+def test_enroll_preflight_accepts_loaded_gate_slice_with_fragment(monkeypatch):
+    monkeypatch.setenv("CGROUP_PARENT_DEV_GATES", "dev-gates.slice")
+    monkeypatch.setattr(shutil, "which", lambda _name: "/usr/bin/docker")
+    monkeypatch.setattr(
+        subprocess, "run", lambda *_args, **_kwargs:
+        subprocess.CompletedProcess(["docker", "info"], 0, "", ""),
+    )
+    monkeypatch.setattr(tester_gate, "resolve_cgroup_probe_image", lambda _image: "probe:image")
+    observed = []
+    monkeypatch.setattr(
+        tester_gate, "check_slice_unit",
+        lambda *args: (observed.append(args) or (True, "loaded with fragment")),
+    )
+
+    assert _docker_unavailable_reason() is None
+    assert observed == [("dev-gates.slice", "probe:image", "dev-gates.slice")]
+
+
+def _skip_or_fail_enroll_preflight(reason: str) -> None:
+    if os.environ.get("CMRU_ENROLL_REQUIRED") == "1":
+        pytest.fail(f"registered enrollment gate preflight failed: {reason}", pytrace=False)
+    pytest.skip(f"enroll container oracle needs docker ({reason})")
 
 
 @pytest.fixture(scope="session")
 def enroll_fixture_image() -> str:
     reason = _docker_unavailable_reason()
     if reason:
-        pytest.skip(f"enroll container oracle needs docker ({reason})")
+        _skip_or_fail_enroll_preflight(reason)
     present = subprocess.run(
         ["docker", "image", "inspect", ENROLL_FIXTURE_IMAGE],
         capture_output=True, text=True,
@@ -2035,11 +2093,37 @@ def enroll_fixture_image() -> str:
                 capture_output=True, text=True, timeout=900,
             )
             if built.returncode != 0:
-                pytest.skip(
+                _skip_or_fail_enroll_preflight(
                     "could not build the enroll fixture image: "
                     f"{built.stderr.strip()[-400:]}"
                 )
     return ENROLL_FIXTURE_IMAGE
+
+
+def test_registered_enroll_lane_fails_when_container_prerequisites_are_missing(monkeypatch):
+    monkeypatch.setenv("CMRU_ENROLL_REQUIRED", "1")
+    monkeypatch.setattr(
+        sys.modules[__name__], "_docker_unavailable_reason",
+        lambda: "docker CLI not present",
+    )
+
+    with pytest.raises(pytest.fail.Exception, match="registered enrollment gate preflight failed"):
+        enroll_fixture_image.__wrapped__()
+
+
+def test_registered_enroll_lane_fails_when_fixture_image_build_fails(monkeypatch):
+    monkeypatch.setenv("CMRU_ENROLL_REQUIRED", "1")
+    monkeypatch.setattr(
+        sys.modules[__name__], "_docker_unavailable_reason", lambda: None,
+    )
+    results = iter([
+        mock.Mock(returncode=1, stderr="missing fixture image"),
+        mock.Mock(returncode=1, stderr="image build failed"),
+    ])
+    monkeypatch.setattr(subprocess, "run", lambda *_args, **_kwargs: next(results))
+
+    with pytest.raises(pytest.fail.Exception, match="could not build the enroll fixture image"):
+        enroll_fixture_image.__wrapped__()
 
 
 @pytest.fixture()

@@ -1532,6 +1532,19 @@ original release. The command could consequently load a different policy file.
 and the same original external config when one was used. The transaction does not claim to
 remember that path. README, DESIGN-GUIDE, CONSUMERS, and SPEC carry the same recovery rule.
 
+### KI-48 — Abandon ancestry probes inherited publisher credentials — *fixed in source, pending release*
+
+**Reported:** 2026-10-03, when the CMRU release gate exercised `cmru abandon` with publisher
+credentials present in the inherited process environment.
+
+**Observed.** Four local `git merge-base --is-ancestor` probes used `subprocess.run` directly,
+bypassing `run_local_git` and passing `GITHUB_PUSH_PAT`, `GITHUB_TOKEN`, and
+`CMRU_GIT_AUTH_TOKEN` to the Git child process.
+
+**Resolution.** All four ancestry probes now use `run_local_git`, preserving their return-code
+handling while removing publisher credential variables from the Git environment. The registered
+gate exercises the regression; README, DESIGN-GUIDE, CONSUMERS, and SPEC document the behavior.
+
 ### KI-49 — `get.py enroll` runs unauthenticated as root: the installer is not verified before it executes, minisign is skipped without a key, and the install is not pinned to the requested release
 
 **Reported:** 2026-10-03, v8 round-4 third-party review (T4-05, T4-07), filed by the v8 spec writer (dstdns D-658). **Severity:** High (security: a root-level trust path). **Related:** KI-24 (the feature), ciu CIU-93/CIU-122/CIU-123, SPEC-V8 draft.9 S7.2.4 and `ciu/docs/CIU-HOST-ENROLLMENT-PROPOSAL.md` rev 4 §11 (the v8 contract).
@@ -1554,4 +1567,3 @@ remember that path. README, DESIGN-GUIDE, CONSUMERS, and SPEC carry the same rec
 **Proposed contract.** Resolve the user through the account database and validate home, uid/gid and shell; walk home, `.ssh` and `authorized_keys` with no-follow directory descriptors and require the expected owner, type and link count (refuse, never repair); lock a dedicated file in the verified `.ssh`, parse the records, write a complete temporary file preserving unrelated bytes, `fsync`, rename atomically, `fsync` the directory; append at most once under that lock; serialize the record, never concatenate; accept `--from` only against a closed grammar (addresses, CIDRs, label patterns with `*`/`?`, each optionally negated) and refuse quotes, backslashes, whitespace and CR/LF; shell-quote every printed argument.
 
 **Oracles.** A symlinked, hard-linked or FIFO `authorized_keys` and a foreign-owned `.ssh` are refused with the target untouched; a concurrent second enrollment leaves one key line; a pre-existing unrelated key and comment survive byte-for-byte; a `--from` value with a quote, CR or LF is refused before anything is written; a controlled wrong implementation that follows the symlink fails the first oracle.
-

@@ -301,6 +301,10 @@ def test_old_style_worktrees_remain_discoverable_resumable_and_removable(tmp_pat
     (root / ".worktrees").mkdir()
     old_release_path = root / ".worktrees" / f"cmru-release-{old_release_token}-legacy"
     _git(root, "worktree", "add", "-q", "-b", old_release_branch, str(old_release_path), base)
+    old_release_workspace = transaction.ReleaseWorkspace(
+        repo_root=root, path=old_release_path, branch=old_release_branch, base=base,
+    )
+    transaction.write_release_progress(root, old_release_workspace, base)
 
     old_build_token = uuid.uuid4().hex[:12]
     old_build_branch = f"cmru/build/{old_build_token}"

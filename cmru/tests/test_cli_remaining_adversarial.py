@@ -53,6 +53,9 @@ def test_apply_release_env_and_credentials_have_explicit_clear_and_refuse_paths(
     assert os.environ["GITHUB_REPO"] == "repo"
     assert "GITHUB_TOKEN" not in os.environ and "GITHUB_PUSH_PAT" not in os.environ
     assert os.environ["EMPTY"] == ""
+    for name in cli._RESERVED_CMRU_INTERNAL_ENV:
+        with pytest.raises(RuntimeError, match="reserved for CMRU internal launch state"):
+            cli.apply_release_env(github, cli.ReleaseEnvConfig({name: "injected"}, None))
     project = SimpleNamespace(github_token="", env={})
     with pytest.raises(RuntimeError, match="project"):
         cli.require_project_publish_credentials({"demo": project}, ["demo"])
