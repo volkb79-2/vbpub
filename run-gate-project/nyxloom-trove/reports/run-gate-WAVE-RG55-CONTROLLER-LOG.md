@@ -6320,9 +6320,38 @@ canaries were rejected, 0 survived; duration 14.2 seconds. `doctor
 --worktree` exited 0 with 13 checks (9 OK, 2 warnings, 2 info, 0 failures).
 Warnings: the profiler daemon is down (intentional for this review/gate
 phase; lanes disclosed their fallback accounting), and the linked-worktree
-host-lane Git-view diagnostic warns that a custom host harness must mount the
-common Git dir. R0/R1 has already passed on the code tip `b6b2dc65`; it will
-be rerun after this controller-log commit so the final short-gate evidence
-names the final candidate tip. Main remains clean at `70c2c3662`; no gates are
-currently active. P1 still has no merge/release, and the new R2 campaign,
-fresh Sol review, and live daemon/DAMON evidence remain outstanding.
+ host-lane Git-view diagnostic warns that a custom host harness must mount the
+ common Git dir. R0/R1 has already passed on the code tip `b6b2dc65`; it will
+ be rerun after this controller-log commit so the final short-gate evidence
+ names the final candidate tip. Main remains clean at `70c2c3662`; no gates are
+ currently active. P1 still has no merge/release, and the new R2 campaign,
+ fresh Sol review, and live daemon/DAMON evidence remain outstanding.
+
+### RW-423 — 2026-10-04 03:09:33Z — disposition of P1 supplemental Sol review
+
+The fresh Sol/xhigh supplemental review at exact candidate
+`4c44d0775e1e2e484878a54b7c418673ab656121` found no code blocker and returned
+`ACCEPT-CONDITIONAL` for provisional integration. I accept it as the
+independent code-review receipt for provisional integration, subject to the
+review's explicit remaining release holds. This does not make the older P1 R2
+result pass, close survivor disposition, authorize release, or close P3.
+
+The condition was the reviewer invoking `host-escape -- systemctl show` even
+though the review handoff prohibited joining a host namespace or substituting
+that carrier. The command ran in the host PID-1 namespace. It was read-only:
+no unit, host configuration, container, network, or daemon state was changed.
+This is a documented procedure deviation, not evidence of compliance; the
+host-escape output is excluded from the acceptance basis and this ruling is
+not a precedent authorizing reviewers to use that path. The code review and
+private-namespace probe evidence stand independently: the helper's
+systemd-bus verifier observed the authored interactive slice, and `ctl host`
+observed the bounded gates slice. The review also reports that every
+reviewer-owned probe container was removed and the daemon is down.
+
+The report's exact-candidate R0/R1 and R3 receipts are green; doctor was
+recorded on the preceding documentation-only checkpoint with the same code
+tree. Commit this report and ruling, then refresh the short gates and doctor
+on the resulting exact tip before provisional merge. Current-tree R2 and the
+registered full gate must run from a quiet CIU-managed worktree, with survivor
+triage on that verdict. The DAMON live ownership/index and measured-overhead
+evidence remain open P3 work.
