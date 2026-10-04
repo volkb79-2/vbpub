@@ -91,6 +91,48 @@ def test_single_stack_healthcheck_is_scoped_to_one_stack_and_fails_closed(
     assert [entry["path"] for entry in seen["selection"]] == [str(stack)]
 
 
+@pytest.mark.parametrize(
+    ("kwargs", "expected_shipped"),
+    [({}, False), ({"shipped": True}, True)],
+)
+def test_single_stack_healthcheck_passes_complete_enabled_service_facts(
+    monkeypatch, tmp_path, kwargs, expected_shipped,
+):
+    stack = tmp_path / "tools" / "test-runner"
+    stack.mkdir(parents=True)
+    expected_root = tmp_path.resolve()
+    seen = {}
+    config = {"deployment_marker": "preserved"}
+    monkeypatch.setattr(engine, "resolve_env_root", lambda *_args: expected_root)
+
+    def healthcheck(root, profile, selection):
+        seen["root"] = root
+        seen["config"] = profile.config
+        seen["selection"] = selection
+        return 7
+
+    monkeypatch.setattr(deploy, "action_healthcheck", healthcheck)
+
+    assert engine._run_single_stack_healthcheck(stack, tmp_path, config, **kwargs) == 7
+    assert seen == {
+        "root": expected_root,
+        "config": config,
+        "selection": [{
+            "phase_num": 1,
+            "phase_key": "single-stack",
+            "path": str(stack.resolve()),
+            "name": "test-runner",
+            "service": {
+                "path": str(stack.resolve()),
+                "name": "test-runner",
+                "enabled": True,
+                "health": True,
+                "shipped": expected_shipped,
+            },
+        }],
+    }
+
+
 def test_worktree_up_profile_declaration_is_validated_before_launch():
     try:
         worktree.resolve_worktree_up_profiles({
