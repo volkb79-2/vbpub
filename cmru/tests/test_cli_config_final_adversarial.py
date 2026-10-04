@@ -207,7 +207,7 @@ def test_push_tags_has_no_side_effect_for_empty_and_warns_on_failure(monkeypatch
     assert local_calls == ["demo-v1"]
     assert remote_calls == [
         ("push", "origin", "demo-v1"),
-        ("ls-remote", "--tags", "origin", "refs/tags/demo-v1", "refs/tags/demo-v1^{}"),
+        ("ls-remote", "--tags", "origin"),
     ]
     assert "continuing" in capsys.readouterr().out
 
