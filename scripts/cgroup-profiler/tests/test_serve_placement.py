@@ -389,6 +389,11 @@ class TestParseRequest:
         request = placement.parse_request({"place": True, "memory_high": 0})
         assert request.memory_high == 0
 
+    def test_integral_float_cpu_weight_is_normalized_to_an_integer(self):
+        request = placement.parse_request({"place": True, "cpu_weight": 100.0})
+        assert request.cpu_weight == 100
+        assert isinstance(request.cpu_weight, int)
+
     @pytest.mark.parametrize("weight", [placement.CPU_WEIGHT_MIN, placement.CPU_WEIGHT_MAX])
     def test_cpu_weight_minimum_and_maximum_are_inclusive(self, weight):
         request = placement.parse_request({"place": True, "cpu_weight": weight})
@@ -598,6 +603,31 @@ class TestWriteGuard:
             cgroup_root=str(root), gates_cgroup=GATES_CGROUP,
             origin_cgroup=None, leaf_name=None,
             container_cgroup=container_cgroup, container_id=container_id,
+        )
+        assert guard.container_kill_abs is None
+
+    @pytest.mark.parametrize(
+        "gates_cgroup, container_cgroup",
+        [
+            (
+                "dev.slice/dev-gates.slice",
+                "/dev.slice/dev-gates.slice/docker-" + CONTAINER_ID + ".scope",
+            ),
+            (
+                GATES_CGROUP,
+                "/dev.slice/dev-gates.slice/../dev-gates.slice/docker-"
+                + CONTAINER_ID + ".scope",
+            ),
+        ],
+    )
+    def test_container_kill_refuses_relative_or_noncanonical_claimed_paths(
+        self, tmp_path, gates_cgroup, container_cgroup,
+    ):
+        root = _fake_cgroup_root(tmp_path)
+        guard = placement.CgroupWriteGuard(
+            cgroup_root=str(root), gates_cgroup=gates_cgroup,
+            origin_cgroup=None, leaf_name=None,
+            container_cgroup=container_cgroup, container_id=CONTAINER_ID,
         )
         assert guard.container_kill_abs is None
 
@@ -3016,7 +3046,7 @@ class TestPlacementJournalRecovery:
         )
         monkeypatch.setattr(placement, "_systemd_unit_cgroup_matches", lambda *_args: True)
 
-    def _patch_factory(self, monkeypatch, root):
+    def _patch_factory(self, monkeypatch, root, **factory_overrides):
         real_class = placement.LanePlacement
 
         def recovery_factory(**kwargs):
@@ -3027,6 +3057,7 @@ class TestPlacementJournalRecovery:
                 origin_cgroup=kwargs["origin_cgroup"],
                 state_write=kwargs["state_write"],
                 proc_root=kwargs["proc_root"],
+                **factory_overrides,
             )
 
         monkeypatch.setattr(placement, "LanePlacement", recovery_factory)
@@ -3107,6 +3138,144 @@ class TestPlacementJournalRecovery:
         assert snapshots[0]["state"] == "restoring"
         assert snapshots[0]["was_placed"] is True
         assert not (root / SCOPE_UNIT_CGROUP).exists()
+
+    def test_recovery_handles_a_leaf_removed_before_its_journal_update(
+        self, tmp_path, monkeypatch,
+    ):
+        root = _fake_cgroup_root(tmp_path)
+        journal = self._make_journal(root)
+        shutil.rmtree(_leaf(root))
+        self._patch_manager(monkeypatch)
+        self._patch_factory(monkeypatch, root)
+        updates = []
+
+        result = placement.recover_journal(
+            journal, cgroup_root=str(root), gates_cgroup=GATES_CGROUP,
+            proc_root="/hostproc", state_write=lambda value: updates.append(
+                json.loads(json.dumps(value))
+            ),
+        )
+
+        assert result is None
+        assert updates[-1]["state"] == "complete"
+        assert updates[-1]["leaf_created"] is False
+        assert updates[-1]["pids"]["101"]["state"] == "restored"
+        assert not (root / SCOPE_UNIT_CGROUP).exists()
+
+    def test_recovery_completes_a_missing_leaf_when_the_pid_has_exited(
+        self, tmp_path, monkeypatch,
+    ):
+        root = _fake_cgroup_root(tmp_path)
+        journal = self._make_journal(root)
+        shutil.rmtree(_leaf(root))
+        self._patch_manager(monkeypatch)
+        self._patch_factory(
+            monkeypatch, root,
+            pid_exists=lambda _pid: False,
+            pid_start_time=lambda *_args: pytest.fail("exited pid must not be read"),
+            pid_cgroup=lambda *_args: pytest.fail("exited pid must not be inspected"),
+        )
+        updates = []
+
+        result = placement.recover_journal(
+            journal, cgroup_root=str(root), gates_cgroup=GATES_CGROUP,
+            proc_root="/hostproc", state_write=updates.append,
+        )
+
+        assert result is None
+        assert updates[-1]["state"] == "complete"
+        assert updates[-1]["pids"]["101"]["state"] == "exited"
+
+    def test_recovery_does_not_inspect_a_reused_pid_after_leaf_removal(
+        self, tmp_path, monkeypatch,
+    ):
+        root = _fake_cgroup_root(tmp_path)
+        journal = self._make_journal(root)
+        shutil.rmtree(_leaf(root))
+        self._patch_manager(monkeypatch)
+        self._patch_factory(
+            monkeypatch, root,
+            pid_start_time=lambda _pid: "different-process",
+            pid_cgroup=lambda *_args: pytest.fail("reused pid must not be inspected"),
+        )
+        updates = []
+
+        result = placement.recover_journal(
+            journal, cgroup_root=str(root), gates_cgroup=GATES_CGROUP,
+            proc_root="/hostproc", state_write=updates.append,
+        )
+
+        assert result is None
+        assert updates[-1]["state"] == "complete"
+        assert updates[-1]["pids"]["101"]["state"] == "exited"
+
+    @pytest.mark.parametrize(
+        "pid_overrides",
+        [
+            {"pid_start_time": lambda _pid: None},
+            {"pid_cgroup": lambda _pid: None},
+            {"pid_cgroup": lambda _pid: "/dev.slice/dev-background.slice/other.scope"},
+        ],
+        ids=["identity-unavailable", "cgroup-unavailable", "unexpected-cgroup"],
+    )
+    def test_recovery_refuses_unproved_processes_after_leaf_removal(
+        self, tmp_path, monkeypatch, pid_overrides,
+    ):
+        root = _fake_cgroup_root(tmp_path)
+        journal = self._make_journal(root)
+        shutil.rmtree(_leaf(root))
+        self._patch_manager(monkeypatch)
+        self._patch_factory(monkeypatch, root, **pid_overrides)
+
+        result = placement.recover_journal(
+            journal, cgroup_root=str(root), gates_cgroup=GATES_CGROUP,
+            proc_root="/hostproc",
+            state_write=lambda _value: pytest.fail("unproved recovery was persisted"),
+        )
+
+        assert result == placement.REFUSED_IDENTITY_UNAVAILABLE
+
+    def test_recovery_restores_a_pid_still_in_scope_after_leaf_removal(
+        self, tmp_path, monkeypatch,
+    ):
+        root = _fake_cgroup_root(tmp_path)
+        journal = self._make_journal(root)
+        shutil.rmtree(_leaf(root))
+        (root / SCOPE_UNIT_CGROUP / "cgroup.procs").write_text("101\n")
+        self._patch_manager(monkeypatch)
+        self._patch_factory(monkeypatch, root)
+        updates = []
+
+        result = placement.recover_journal(
+            journal, cgroup_root=str(root), gates_cgroup=GATES_CGROUP,
+            proc_root="/hostproc", state_write=lambda value: updates.append(
+                json.loads(json.dumps(value))
+            ),
+        )
+
+        assert result is None
+        assert updates[-1]["state"] == "complete"
+        assert updates[-1]["pids"]["101"]["state"] == "restored"
+        assert (root / SCOPE_CGROUP / "cgroup.procs").read_text() == "101\n"
+
+    def test_recovery_refuses_a_non_directory_at_the_owned_leaf_path(
+        self, tmp_path, monkeypatch,
+    ):
+        root = _fake_cgroup_root(tmp_path)
+        journal = self._make_journal(root)
+        leaf = _leaf(root)
+        shutil.rmtree(leaf)
+        leaf.write_text("not a cgroup directory")
+        self._patch_manager(monkeypatch)
+        self._patch_factory(monkeypatch, root)
+
+        result = placement.recover_journal(
+            journal, cgroup_root=str(root), gates_cgroup=GATES_CGROUP,
+            proc_root="/hostproc",
+            state_write=lambda _value: pytest.fail("unexpected leaf was adopted"),
+        )
+
+        assert result == placement.REFUSED_STATE_UNAVAILABLE
 
     @pytest.mark.parametrize(
         "corruption",

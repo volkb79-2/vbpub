@@ -2102,6 +2102,31 @@ def recover_journal(
             recovery.leaf_created = True
         elif os.path.lexists(expected_leaf_abs):
             return REFUSED_STATE_UNAVAILABLE
+        else:
+            # A crash can happen after the empty leaf was removed but before
+            # the journal records `leaf_created = false`. With no leaf left
+            # to enumerate, prove each original PID is gone, already at its
+            # recorded origin, or still in this exact scope for release below.
+            for pid, record in records.items():
+                if not recovery._pid_exists(pid):
+                    record["state"] = "exited"
+                    continue
+                start_time = recovery._pid_start_time(pid)
+                if start_time is None:
+                    return REFUSED_IDENTITY_UNAVAILABLE
+                if start_time != record["start_time_ticks"]:
+                    record["state"] = "exited"
+                    continue
+                current = recovery._pid_cgroup(pid)
+                if current is None:
+                    return REFUSED_IDENTITY_UNAVAILABLE
+                normalized_current = posixpath.normpath(current)
+                if normalized_current == posixpath.normpath(record["origin_cgroup"]):
+                    record["state"] = "restored"
+                elif normalized_current == recovery.scope_cgroup:
+                    record["state"] = "scope"
+                else:
+                    return REFUSED_IDENTITY_UNAVAILABLE
     # A leaf path that appeared before the write-ahead record said cgprofile
     # created it is never adopted or removed by recovery.
     for record in records.values():
