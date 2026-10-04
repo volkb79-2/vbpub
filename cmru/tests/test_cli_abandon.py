@@ -591,6 +591,24 @@ def test_abandon_refuses_selected_scope_tag_changes_since_snapshot(monkeypatch, 
     assert "selected-scope release tag refs that changed" in capsys.readouterr().out
 
 
+def test_abandon_refuses_a_baseline_tag_that_disappeared_from_origin(
+    monkeypatch, tmp_path, capsys,
+):
+    candidate = _workspace(tmp_path, "cmru-release-20260924_120000-alpha-ab12cd")
+    tag_ref = "refs/tags/alpha-v9"
+    oid = "d" * 40
+    _install_abandon_inspection(
+        monkeypatch, tmp_path, candidate,
+        snapshot={tag_ref: oid}, attempts={tag_ref: oid},
+        local_tags={tag_ref: oid}, remote_tags={},
+    )
+
+    assert _invoke_abandon(candidate, branch=candidate.branch) == 2
+    output = capsys.readouterr().out
+    assert "selected-scope release tag refs that changed" in output
+    assert "origin/refs/tags/alpha-v9" in output
+
+
 def test_abandon_refuses_a_scope_without_a_git_tag_prefix(monkeypatch, tmp_path, capsys):
     candidate = _workspace(tmp_path, "cmru-release-20260924_120000-alpha-ab12cd")
     _install_abandon_inspection(

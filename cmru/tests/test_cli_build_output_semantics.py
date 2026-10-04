@@ -1126,6 +1126,45 @@ def test_existing_only_publish_rechecks_each_asset_before_mutation(tmp_path):
 
 
 @pytest.mark.parametrize(
+    "changed_check, expected_actions",
+    [
+        (3, ["update"]),
+        (4, ["update", "delete"]),
+    ],
+)
+def test_existing_only_publish_stops_when_tag_target_changes_between_asset_mutations(
+    tmp_path, changed_check, expected_actions,
+):
+    asset = tmp_path / "old.whl"
+    asset.write_bytes(b"wheel")
+    client = release.GitHubReleases("owner", "repo", "token")
+    record = {"id": 7, "tag_name": "alpha-v1", "upload_url": "https://upload/{?name}"}
+    tag_reads = 0
+    actions = []
+
+    def tag_commit(_tag):
+        nonlocal tag_reads
+        tag_reads += 1
+        return "c" * 40 if tag_reads == changed_check else SOURCE_COMMIT
+
+    client.get_release_by_tag = lambda _tag: record
+    client.get_tag_commit = tag_commit
+    client.update_release = lambda *args: actions.append("update")
+    client.list_assets = lambda _rid: [{"name": asset.name, "id": 8}]
+    client.delete_asset = lambda _ident: actions.append("delete")
+    client.upload_asset = lambda *_args: actions.append("upload")
+
+    with pytest.raises(SystemExit, match="tag target changed"):
+        client.publish(
+            "alpha-v1", "title", "notes", [asset],
+            require_existing_release=True, expected_release_id=7,
+            expected_tag_commit=SOURCE_COMMIT,
+        )
+
+    assert actions == expected_actions
+
+
+@pytest.mark.parametrize(
     "release_record, tag_commit, expected",
     [
         ("not-a-record", SOURCE_COMMIT, "malformed GitHub Release"),
@@ -1316,12 +1355,20 @@ def test_staged_build_output_verifier_refuses_changed_staged_content(tmp_path, f
     source.parent.mkdir(parents=True)
     source.write_bytes(b"wheel")
     staged = tmp_path / "staged.whl"
-    staged.write_bytes(b"changed" if fault == "digest" else b"no")
+    staged_content = b"other" if fault == "digest" else b"longer"
+    staged.write_bytes(staged_content)
     record = {
         "artifact_root": str(tmp_path / "build"),
         "manifest": {"artifacts": [{
             "directory": "dist",
-            "files": [{"path": "artifact.whl", "sha256": ARTIFACT_SHA, "bytes": 5}],
+            "files": [{
+                "path": "artifact.whl",
+                "sha256": (
+                    hashlib.sha256(staged_content).hexdigest()
+                    if fault == "length" else hashlib.sha256(b"wheel").hexdigest()
+                ),
+                "bytes": 5,
+            }],
         }]},
     }
     with pytest.raises(RuntimeError, match="differs from build.json"):
