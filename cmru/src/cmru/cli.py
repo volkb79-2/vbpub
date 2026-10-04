@@ -1420,13 +1420,38 @@ def local_git_tag_oid(
     repo_root: Path, tag: str, *, action: str = "inspect",
 ) -> str | None:
     """Return a local tag's exact ref object ID, or None when the ref is absent."""
+    ref = f"refs/tags/{tag}"
     result = run_local_git(
-        repo_root, "show-ref", "--hash", "--verify", f"refs/tags/{tag}",
+        repo_root, "show-ref", "--hash", "--verify", ref,
         capture_output=True, text=True, check=False,
     )
     if result.returncode == 1:
         return None
     if result.returncode != 0:
+        if result.returncode == 128:
+            # Some Git builds report a valid but absent ref as 128 from the
+            # hash-returning form of `show-ref --verify`. Its quiet form has a
+            # status-only contract: 1 means absent, 0 means present. Use that
+            # to distinguish absence from a real inspection failure.
+            presence = run_local_git(
+                repo_root, "show-ref", "--verify", "--quiet", ref,
+                capture_output=True, text=True, check=False,
+            )
+            if presence.returncode == 1:
+                return None
+            if presence.returncode == 0:
+                raise RuntimeError(
+                    f"local tag {tag} changed during inspection; refusing to infer "
+                    "its state"
+                )
+            detail = (
+                presence.stderr.strip() or presence.stdout.strip()
+                or "no diagnostic output"
+            )
+            raise RuntimeError(
+                f"Failed to recheck local tag {tag} after inspection failed "
+                f"({presence.returncode}): {detail}"
+            )
         detail = result.stderr.strip() or result.stdout.strip() or "no diagnostic output"
         suffix = "" if action == "inspect" else " after deletion failed"
         verb = "inspect" if action == "inspect" else "recheck"

@@ -31,6 +31,60 @@ def test_local_tag_helpers_validate_git_object_ids_and_existence(monkeypatch, tm
         cli.local_git_tag_oid(tmp_path, "demo-v1")
 
 
+def test_local_tag_oid_confirms_git_128_is_absence_with_quiet_check(
+    monkeypatch, tmp_path,
+):
+    calls = []
+    results = iter([
+        SimpleNamespace(
+            returncode=128, stdout="",
+            stderr="fatal: 'refs/tags/demo-v1' - not a valid ref",
+        ),
+        SimpleNamespace(returncode=1, stdout="", stderr=""),
+    ])
+
+    def run_local(_root, *args, **kwargs):
+        calls.append(args)
+        return next(results)
+
+    monkeypatch.setattr(cli, "run_local_git", run_local)
+
+    assert cli.local_git_tag_oid(tmp_path, "demo-v1") is None
+    assert calls == [
+        ("show-ref", "--hash", "--verify", "refs/tags/demo-v1"),
+        ("show-ref", "--verify", "--quiet", "refs/tags/demo-v1"),
+    ]
+
+
+def test_local_tag_oid_does_not_fold_quiet_check_failure_into_absence(
+    monkeypatch, tmp_path,
+):
+    results = iter([
+        SimpleNamespace(returncode=128, stdout="", stderr="lookup failed"),
+        SimpleNamespace(returncode=128, stdout="", stderr="repository unreadable"),
+    ])
+    monkeypatch.setattr(cli, "run_local_git", lambda *_args, **_kwargs: next(results))
+
+    with pytest.raises(
+        RuntimeError,
+        match="Failed to recheck local tag demo-v1 after inspection failed \\(128\\): repository unreadable",
+    ):
+        cli.local_git_tag_oid(tmp_path, "demo-v1")
+
+
+def test_local_tag_oid_refuses_a_ref_that_reappears_during_inspection(
+    monkeypatch, tmp_path,
+):
+    results = iter([
+        SimpleNamespace(returncode=128, stdout="", stderr="missing ref"),
+        SimpleNamespace(returncode=0, stdout="", stderr=""),
+    ])
+    monkeypatch.setattr(cli, "run_local_git", lambda *_args, **_kwargs: next(results))
+
+    with pytest.raises(RuntimeError, match="changed during inspection"):
+        cli.local_git_tag_oid(tmp_path, "demo-v1")
+
+
 def test_local_tag_deletion_honors_a_previewed_absence(monkeypatch, tmp_path, capsys):
     inspected = []
     monkeypatch.setattr(
