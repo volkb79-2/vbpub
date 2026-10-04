@@ -16,6 +16,7 @@ not just that ``version.detect_changed_projects`` supports them.
 from __future__ import annotations
 
 from contextlib import nullcontext
+from pathlib import Path
 
 import pytest
 
@@ -150,6 +151,17 @@ def test_parent_discards_worktree_on_a_plan_refusal_and_reports_sync_failure(
     workspace = transaction.ReleaseWorkspace(tmp_path, tmp_path / "release", "cmru/release/x", "a" * 40)
     monkeypatch.setattr(cli, "_resolve_config", lambda _: tmp_path / "cmru.toml")
     monkeypatch.setattr(cli, "load_config", lambda _: config)
+    monkeypatch.setattr(
+        cli, "_project_config_paths_at_snapshot",
+        lambda _root, _base, _config, _configs, names: {
+            name: Path(name) / "cmru.toml" for name in names
+        },
+    )
+    monkeypatch.setattr(
+        cli, "_project_git_tag_policy_at_snapshot",
+        lambda _root, _base, project, **_kwargs: getattr(project, "git_tag", True),
+    )
+    monkeypatch.setattr(cli, "_require_local_tag_inspection_support", lambda _root: None)
     monkeypatch.setattr(cli.transaction, "project_git_family_groups", lambda root, projects: {root: list(projects)})
     monkeypatch.setattr(cli, "apply_release_env", lambda *_: None)
     monkeypatch.setattr(cli.transaction, "release_lock", lambda _: nullcontext())
@@ -157,6 +169,7 @@ def test_parent_discards_worktree_on_a_plan_refusal_and_reports_sync_failure(
     monkeypatch.setattr(cli.transaction, "fetch_origin_main", lambda *_, **__: "a" * 40)
     monkeypatch.setattr(cli.transaction, "assert_local_main_not_ahead", lambda *_, **__: 0)
     monkeypatch.setattr(cli.transaction, "create_workspace", lambda *args, **kwargs: workspace)
+    monkeypatch.setattr(cli.transaction, "clear_plan_refused", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(cli.transaction, "copy_secret_overlays", lambda *args, **kwargs: None)
     monkeypatch.setattr(cli.transaction, "run_child", lambda *args, **kwargs: 1)
     monkeypatch.setattr(cli.transaction, "plan_was_refused", lambda *args: True)

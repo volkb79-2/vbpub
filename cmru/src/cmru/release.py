@@ -269,12 +269,8 @@ class GitHubReleases:
 
         release = self.get_release_by_tag(tag)
         if release is None:
-            if require_existing_release:
-                _die(f"refusing to create GitHub Release {tag}: an existing release is required")
             release = self.create_release(tag, title, notes, target_commitish)
         elif recreate and release.get("id"):
-            if require_existing_release:
-                _die(f"refusing to recreate GitHub Release {tag}: existing refs must remain untouched")
             self.delete_release(int(release["id"]))
             release = self.create_release(tag, title, notes, target_commitish)
         elif release.get("id"):
