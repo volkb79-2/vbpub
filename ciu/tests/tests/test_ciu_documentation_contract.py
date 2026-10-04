@@ -187,16 +187,21 @@ def test_new_v7_workflows_are_explained_in_all_three_user_documents():
     assert "[ciu.worktree].up" in readme and "--up" in readme
     assert "DRY_RUN_SAFE = True" in readme
     assert "ciu resolve" in readme and "ciu exec" in readme
+    assert "ciu down --dir <stack>" in readme
+    assert "stop-one-stack-without-stopping-its-neighbors" in readme
 
     assert "DRY_RUN_SAFE = True" in design
     assert "resolved.identities" in design
     assert "ciu clean --identity <old-id>" in design
     assert "resumes only if HEAD still matches" in design
+    assert "ciu down --dir" in design
+    assert "com.docker.compose.project" in design
 
     assert "[ciu.worktree]" in consumers and "up = [\"test\"]" in consumers
     assert "DRY_RUN_SAFE = True" in consumers
     assert "ciu resolve --stack" in consumers
     assert "ciu exec --profile test tools/test-runner:test-runner" in consumers
+    assert "ciu down --dir tools/admin-debug" in consumers
     assert "ciu clean --identity OLD_ID" in consumers
 
 
