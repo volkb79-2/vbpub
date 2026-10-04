@@ -588,6 +588,10 @@ def _expand_env_reference(value: str, where: str, key: str) -> str:
 _RESERVED_CREDENTIAL_ENV = frozenset({
     "GITHUB_PUSH_PAT", "GITHUB_TOKEN", "CMRU_GIT_AUTH_TOKEN",
 })
+_RESERVED_CMRU_INTERNAL_ENV = frozenset({
+    "CMRU_INTERNAL_RELEASE_PREFLIGHT_FD",
+    "CMRU_RELEASE_PREFLIGHT_SNAPSHOT",
+})
 
 
 def _scalar_env(
@@ -606,6 +610,11 @@ def _scalar_env(
                 f"{where}.{key} is reserved for resolved publisher credentials; "
                 "supply tokens through GITHUB_PUSH_PAT/GITHUB_TOKEN in the invoking "
                 "environment or the ignored cmru.secret.toml file"
+            )
+        if reject_credentials and key in _RESERVED_CMRU_INTERNAL_ENV:
+            _error(
+                f"{where}.{key} is reserved for CMRU internal launch state and "
+                "cannot be declared in project or orchestration configuration"
             )
         result[key] = _expand_env_reference(str(value), where, key)
     return result

@@ -715,7 +715,9 @@ until that metadata can be inspected.
 Before resuming, keep copied root and project `cmru.secret.toml` paths in the
 candidate as regular files, not symlinks. CMRU refuses unsafe credential paths
 instead of following them outside the candidate; inspect and repair the path
-before retrying.
+before retrying. CMRU reads `project.release.git_tag` from the committed retained
+candidate before starting its child, so a candidate policy change receives the
+same Git-version preflight as a new release.
 
 For JSON automation, a recorded release looks like this (the commit is a full
 Git object ID in actual output):

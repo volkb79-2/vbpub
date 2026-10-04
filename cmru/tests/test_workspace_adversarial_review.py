@@ -749,11 +749,18 @@ def test_release_dispatch_passes_exact_preflight_snapshot_to_each_family(
     monkeypatch.setattr(transaction, "project_git_family_groups", lambda *_args: roots)
     monkeypatch.setenv("CMRU_BIN", "/usr/bin/cmru")
     seen = []
+
+    def fake_run(argv, **kwargs):
+        handoff = None
+        if cli._RELEASE_PREFLIGHT_SNAPSHOT_FD_ENV in kwargs["env"]:
+            fd = int(kwargs["env"][cli._RELEASE_PREFLIGHT_SNAPSHOT_FD_ENV])
+            assert fd in kwargs["pass_fds"]
+            handoff = os.read(fd, 4096).decode("utf-8")
+        seen.append((argv, kwargs["env"], handoff))
+        return subprocess.CompletedProcess(argv, 0)
+
     monkeypatch.setattr(
-        cli.subprocess, "run",
-        lambda argv, **kwargs: seen.append(
-            kwargs["env"].get("CMRU_RELEASE_PREFLIGHT_SNAPSHOT")
-        ) or subprocess.CompletedProcess(argv, 0),
+        cli.subprocess, "run", fake_run,
     )
 
     with pytest.raises(RuntimeError, match="do not match the selected release families"):
@@ -775,10 +782,16 @@ def test_release_dispatch_passes_exact_preflight_snapshot_to_each_family(
         ["left", "right"], original_target=None,
         origin_main_snapshots=snapshots,
     ) == 0
-    assert seen == [
+    assert [
+        handoff for _argv, _env, handoff in seen
+    ] == [
         f"{(tmp_path / 'left').resolve()}:{'a' * 40}",
         f"{(tmp_path / 'right').resolve()}:{'b' * 40}",
     ]
+    assert all(
+        "CMRU_RELEASE_PREFLIGHT_SNAPSHOT" not in env
+        for _argv, env, _handoff in seen
+    )
 
 
 def test_child_release_args_removes_only_the_first_original_target(tmp_path):

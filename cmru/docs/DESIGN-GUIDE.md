@@ -597,8 +597,13 @@ before creating the candidate worktree, running a project gate, or creating a ta
 projects span independent Git families, it fetches each family's origin/main snapshot, reads each
 selected project's tag policy from that snapshot, then checks all tagged families before dispatching
 any one family. Each launcher receives that same commit and builds from it, so a later fetch cannot
-change the policy after preflight. Cleanup checks during its preview, before the captured plan can be
-applied. This keeps a repository read failure from silently skipping a tag operation.
+change the policy after preflight. For an in-repository orchestration config, preflight also reads
+the selected project's config path from that snapshot instead of trusting a caller checkout that
+may point to an older path. The handoff travels through a private inherited pipe, so ambient or
+declared environment values cannot replace the checked commit. Resume reads the config path and
+tag policy from the committed retained candidate before starting its child. Cleanup checks during
+its preview, before the captured plan can be applied. These checks keep a repository read failure
+from silently skipping or postponing a tag operation.
 
 ## Candidate-first promotion protects the source history
 

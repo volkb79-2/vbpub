@@ -1,4 +1,5 @@
 from contextlib import nullcontext
+from pathlib import Path
 
 import pytest
 
@@ -17,6 +18,13 @@ def fake_git_family(monkeypatch):
         cli, "_project_git_tag_policy_at_snapshot",
         lambda _root, _base, project: getattr(project, "git_tag", True),
     )
+    monkeypatch.setattr(
+        cli, "_project_config_paths_in_candidate",
+        lambda _source, _candidate, _config, _configs, names: {
+            name: Path(name) / "cmru.toml" for name in names
+        },
+    )
+    monkeypatch.setattr(cli, "_project_git_tag_policy_in_candidate", lambda *_args: True)
 
 
 def test_release_resume_cleans_workspace_and_reports_sync_failure(monkeypatch, tmp_path, capsys):

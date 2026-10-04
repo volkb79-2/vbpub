@@ -15,7 +15,8 @@ CMRU's local tag inspection requires Git 2.43 or newer. Check `git --version`
 before running release or cleanup workflows. A multi-repository release reads
 tag policy from each fetched `origin/main` snapshot and checks all tagged
 repositories before dispatching any family, then passes those exact commits to
-the family launchers; the reason is in the
+the family launchers. A resumed release checks the committed candidate's tag
+policy before running its child; the reason is in the
 [local tag inspection design](docs/DESIGN-GUIDE.md#local-tag-inspection-requires-git-243).
 The [consumer guide](docs/CONSUMERS.md#git-version-for-local-tag-inspection)
 shows the prerequisite check.

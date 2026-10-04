@@ -8,6 +8,7 @@ import os
 import re
 import shlex
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -24,7 +25,7 @@ from cmru.runner import StepConfig, execute_step, parse_step as _runner_parse_st
 from cmru import transaction
 from cmru import exit_codes
 from cmru.git_auth import GitHubGitAuth, run_local_git, run_remote_git
-from cmru.config import load_forge_config
+from cmru.config import _RESERVED_CMRU_INTERNAL_ENV, load_forge_config
 from cmru.config import InvocationContext, resolve_invocation_context
 from cmru.config_names import ORCHESTRATION_CONFIG_FILENAME, PROJECT_CONFIG_FILENAME
 from cmru.cli_support import (
@@ -35,7 +36,8 @@ from cmru.cli_support import (
 from cmru.dependencies import build_report, render_text as render_dependency_report
 
 
-_RELEASE_PREFLIGHT_SNAPSHOT_ENV = "CMRU_RELEASE_PREFLIGHT_SNAPSHOT"
+_RELEASE_PREFLIGHT_SNAPSHOT_FD_ENV = "CMRU_INTERNAL_RELEASE_PREFLIGHT_FD"
+_ACTIVE_RELEASE_PREFLIGHT_SNAPSHOT: str | None = None
 
 
 @dataclass(frozen=True)
@@ -702,6 +704,12 @@ def apply_release_env(github: GitHubConfig, env_config: ReleaseEnvConfig) -> Non
         raise RuntimeError(
             "release environment key(s) are reserved for resolved publisher credentials: "
             + ", ".join(configured_credentials)
+        )
+    configured_internal = sorted(_RESERVED_CMRU_INTERNAL_ENV.intersection(env_config.env))
+    if configured_internal:
+        raise RuntimeError(
+            "release environment key(s) are reserved for CMRU internal launch state: "
+            + ", ".join(configured_internal)
         )
     if github.owner:
         os.environ["GITHUB_USERNAME"] = github.owner
@@ -2969,16 +2977,30 @@ def _dispatch_independent_git_families(
                 original_target=original_target,
             )
             child_env = os.environ.copy()
-            child_env.pop(_RELEASE_PREFLIGHT_SNAPSHOT_ENV, None)
-            if origin_main_snapshots is not None:
-                child_env[_RELEASE_PREFLIGHT_SNAPSHOT_ENV] = (
-                    f"{family_root.resolve()}:{origin_main_snapshots[family_root]}"
+            child_env.pop("CMRU_RELEASE_PREFLIGHT_SNAPSHOT", None)
+            child_env.pop(_RELEASE_PREFLIGHT_SNAPSHOT_FD_ENV, None)
+            snapshot_fd = None
+            try:
+                if origin_main_snapshots is not None:
+                    snapshot_fd, write_fd = os.pipe()
+                    try:
+                        payload = (
+                            f"{family_root.resolve()}:{origin_main_snapshots[family_root]}"
+                        ).encode("utf-8")
+                        if os.write(write_fd, payload) != len(payload):
+                            raise RuntimeError("short write while handing off release snapshot")
+                    finally:
+                        os.close(write_fd)
+                    child_env[_RELEASE_PREFLIGHT_SNAPSHOT_FD_ENV] = str(snapshot_fd)
+                completed = subprocess.run(
+                    [*command_prefix, verb, *child_args],
+                    cwd=Path.cwd(),
+                    env=child_env,
+                    **({"pass_fds": (snapshot_fd,)} if snapshot_fd is not None else {}),
                 )
-            completed = subprocess.run(
-                [*command_prefix, verb, *child_args],
-                cwd=Path.cwd(),
-                env=child_env,
-            )
+            finally:
+                if snapshot_fd is not None:
+                    os.close(snapshot_fd)
             if completed.returncode:
                 return completed.returncode
     except OSError as exc:
@@ -2991,6 +3013,7 @@ def _preflight_multi_family_release_tag_support(
     configs: Mapping[str, "ProjectConfig"],
     project_names: Sequence[str],
     *,
+    config_path: Path,
     git_auth: GitHubGitAuth | None,
 ) -> dict[Path, str] | None:
     """Check every tagged family before a release launcher dispatches any child.
@@ -3015,11 +3038,16 @@ def _preflight_multi_family_release_tag_support(
     tagged_families: dict[Path, bool] = {}
     for family_root, members in groups.items():
         base = snapshots[family_root]
+        project_config_paths = _project_config_paths_at_snapshot(
+            family_root, base, config_path, configs,
+            [getattr(project, "name") for project in members],
+        )
         has_tagged_project = False
         for project in members:
             has_tagged_project = (
                 _project_git_tag_policy_at_snapshot(
                     family_root, base, project,
+                    project_config_rel=project_config_paths[getattr(project, "name")],
                 ) or has_tagged_project
             )
         tagged_families[family_root] = has_tagged_project
@@ -3030,27 +3058,25 @@ def _preflight_multi_family_release_tag_support(
 
 
 def _project_git_tag_policy_at_snapshot(
-    repo_root: Path, base: str, project: "ProjectConfig",
+    repo_root: Path,
+    base: str,
+    project: "ProjectConfig",
+    *,
+    project_config_rel: Path | None = None,
 ) -> bool:
     """Read one selected project's explicit release tag policy from a commit."""
-    project_root_value = getattr(project, "project_root", None)
-    if project_root_value is None:
-        raise RuntimeError(
-            f"{getattr(project, 'name', 'selected project')}: project_root is required "
-            "to read release policy from origin/main"
-        )
-    project_root = Path(project_root_value)
-    if not project_root.is_absolute():
-        project_root = repo_root / project_root
-    project_root = project_root.resolve()
-    try:
-        project_rel = project_root.relative_to(repo_root.resolve())
-    except ValueError as exc:
-        raise RuntimeError(
-            f"{getattr(project, 'name', 'selected project')}: project config is "
-            f"outside Git family {repo_root}"
-        ) from exc
-    config_rel = (project_rel / PROJECT_CONFIG_FILENAME).as_posix()
+    project_name = getattr(project, "name", "selected project")
+    if project_config_rel is None:
+        project_config_rel = _project_config_paths_from_loaded(
+            repo_root, {project_name: project}, [project_name],
+        )[project_name]
+    if (
+        project_config_rel.is_absolute()
+        or ".." in project_config_rel.parts
+        or project_config_rel.name != PROJECT_CONFIG_FILENAME
+    ):
+        raise RuntimeError(f"{project_name}: invalid project config path in Git family")
+    config_rel = project_config_rel.as_posix()
     result = run_local_git(
         repo_root, "show", f"{base}:{config_rel}",
         capture_output=True, text=True, check=False,
@@ -3058,28 +3084,201 @@ def _project_git_tag_policy_at_snapshot(
     if result.returncode != 0:
         detail = result.stderr.strip() or result.stdout.strip() or "no diagnostic output"
         raise RuntimeError(
-            f"Failed to read {getattr(project, 'name', 'selected project')} release "
+            f"Failed to read {project_name} release "
             f"policy from origin/main ({base}:{config_rel}): {detail}"
         )
+    return _parse_project_git_tag_policy(
+        result.stdout, project_name,
+        f"origin/main ({base}:{config_rel})",
+    )
+
+
+def _project_config_paths_from_loaded(
+    repo_root: Path,
+    configs: Mapping[str, "ProjectConfig"],
+    project_names: Sequence[str],
+) -> dict[str, Path]:
+    """Resolve selected project config paths from an external/current config."""
+    result: dict[str, Path] = {}
+    for name in project_names:
+        project_root_value = getattr(configs[name], "project_root", None)
+        if project_root_value is None:
+            raise RuntimeError(
+                f"{name}: project_root is required to read release policy"
+            )
+        project_root = Path(project_root_value)
+        if not project_root.is_absolute():
+            project_root = repo_root / project_root
+        try:
+            project_rel = project_root.resolve().relative_to(repo_root.resolve())
+        except ValueError as exc:
+            raise RuntimeError(
+                f"{name}: project config is outside Git family {repo_root}"
+            ) from exc
+        result[name] = project_rel / PROJECT_CONFIG_FILENAME
+    return result
+
+
+def _parse_project_config_paths_from_orchestration(
+    orchestration_rel: Path,
+    content: str,
+    project_names: Sequence[str],
+    *,
+    source_label: str,
+) -> dict[str, Path]:
+    """Read selected cmru.toml paths from one orchestration document."""
     try:
-        project_document = tomllib.loads(result.stdout)["project"]
+        orchestration = tomllib.loads(content)["orchestration"]
+        entries = orchestration["project"]
+    except (tomllib.TOMLDecodeError, KeyError, TypeError) as exc:
+        raise RuntimeError(
+            f"Invalid orchestration config at {source_label}: "
+            "selected project config paths are unavailable"
+        ) from exc
+
+    result: dict[str, Path] = {}
+    for name in project_names:
+        try:
+            entry = entries[name]
+            config_value = entry["config"]
+        except (KeyError, TypeError) as exc:
+            raise RuntimeError(
+                f"Invalid orchestration config at {source_label}: "
+                f"project {name!r} has no config path"
+            ) from exc
+        if not isinstance(config_value, str) or not config_value.strip():
+            raise RuntimeError(
+                f"Invalid orchestration config at {source_label}: "
+                f"project {name!r} config must be a non-empty relative path"
+            )
+        config_rel = Path(config_value)
+        if (
+            config_rel.is_absolute()
+            or ".." in config_rel.parts
+            or config_rel.name != PROJECT_CONFIG_FILENAME
+        ):
+            raise RuntimeError(
+                f"Invalid orchestration config at {source_label}: "
+                f"project {name!r} config must stay inside the family and end in "
+                f"{PROJECT_CONFIG_FILENAME}"
+            )
+        result[name] = orchestration_rel.parent / config_rel
+    return result
+
+
+def _project_config_paths_at_snapshot(
+    repo_root: Path,
+    base: str,
+    config_path: Path,
+    configs: Mapping[str, "ProjectConfig"],
+    project_names: Sequence[str],
+) -> dict[str, Path]:
+    """Resolve selected config paths from the exact release source snapshot."""
+    try:
+        config_rel = config_path.resolve().relative_to(repo_root.resolve())
+    except ValueError:
+        return _project_config_paths_from_loaded(repo_root, configs, project_names)
+
+    if config_path.name == PROJECT_CONFIG_FILENAME:
+        if len(project_names) != 1:
+            raise RuntimeError(
+                f"{config_path}: a project config can select only one project"
+            )
+        return {project_names[0]: config_rel}
+    if config_path.name != ORCHESTRATION_CONFIG_FILENAME:
+        raise RuntimeError(f"Unsupported CMRU config path in Git family: {config_path}")
+
+    result = run_local_git(
+        repo_root, "show", f"{base}:{config_rel.as_posix()}",
+        capture_output=True, text=True, check=False,
+    )
+    if result.returncode != 0:
+        detail = result.stderr.strip() or result.stdout.strip() or "no diagnostic output"
+        raise RuntimeError(
+            f"Failed to read orchestration config from origin/main "
+            f"({base}:{config_rel.as_posix()}): {detail}"
+        )
+    return _parse_project_config_paths_from_orchestration(
+        config_rel, result.stdout, project_names,
+        source_label=f"origin/main ({base}:{config_rel.as_posix()})",
+    )
+
+
+def _project_config_paths_in_candidate(
+    source_git_root: Path,
+    candidate_root: Path,
+    config_path: Path,
+    configs: Mapping[str, "ProjectConfig"],
+    project_names: Sequence[str],
+) -> dict[str, Path]:
+    """Resolve selected config paths from a committed retained candidate."""
+    try:
+        config_rel = config_path.resolve().relative_to(source_git_root.resolve())
+    except ValueError:
+        return _project_config_paths_from_loaded(source_git_root, configs, project_names)
+
+    if config_path.name == PROJECT_CONFIG_FILENAME:
+        if len(project_names) != 1:
+            raise RuntimeError(
+                f"{config_path}: a project config can select only one project"
+            )
+        return {project_names[0]: config_rel}
+    if config_path.name != ORCHESTRATION_CONFIG_FILENAME:
+        raise RuntimeError(f"Unsupported CMRU config path in Git family: {config_path}")
+    candidate_config = candidate_root / config_rel
+    try:
+        content = candidate_config.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise RuntimeError(
+            f"Failed to read orchestration config from retained candidate "
+            f"({candidate_config}): {exc}"
+        ) from exc
+    return _parse_project_config_paths_from_orchestration(
+        config_rel, content, project_names,
+        source_label=f"retained candidate ({candidate_config})",
+    )
+
+
+def _parse_project_git_tag_policy(
+    content: str, project_name: str, source_label: str,
+) -> bool:
+    try:
+        project_document = tomllib.loads(content)["project"]
         git_tag = project_document["release"]["git_tag"]
     except (tomllib.TOMLDecodeError, KeyError, TypeError) as exc:
         raise RuntimeError(
-            f"Invalid project config in origin/main ({base}:{config_rel}): "
+            f"Invalid project config at {source_label}: "
             "project.release.git_tag must be explicitly true or false"
         ) from exc
     if not isinstance(git_tag, bool):
         raise RuntimeError(
-            f"Invalid project config in origin/main ({base}:{config_rel}): "
+            f"Invalid project config at {source_label}: "
             "project.release.git_tag must be explicitly true or false"
         )
     return git_tag
 
 
-def _consume_release_snapshot_handoff(repo_root: Path) -> str | None:
-    """Consume a parent dispatch's exact, already-fetched origin/main commit."""
-    handoff = os.environ.pop(_RELEASE_PREFLIGHT_SNAPSHOT_ENV, None)
+def _project_git_tag_policy_in_candidate(
+    candidate_root: Path, project_name: str, project_config_rel: Path,
+) -> bool:
+    """Read release.git_tag from one project config in a retained worktree."""
+    candidate_config = candidate_root / project_config_rel
+    try:
+        content = candidate_config.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise RuntimeError(
+            f"Failed to read {project_name} release policy from retained candidate "
+            f"({candidate_config}): {exc}"
+        ) from exc
+    return _parse_project_git_tag_policy(
+        content, project_name, f"retained candidate ({candidate_config})",
+    )
+
+
+def _consume_release_snapshot_handoff(
+    repo_root: Path, handoff: str | None,
+) -> str | None:
+    """Validate the private family-launcher handoff for an exact commit."""
     if handoff is None:
         return None
     source_root, separator, base = handoff.rpartition(":")
@@ -3097,6 +3296,36 @@ def _consume_release_snapshot_handoff(repo_root: Path) -> str | None:
         detail = result.stderr.strip() or result.stdout.strip() or "no diagnostic output"
         raise RuntimeError(f"preflighted origin/main commit is unavailable: {detail}")
     return base
+
+
+def _read_release_snapshot_handoff_from_pipe() -> str | None:
+    """Read the private snapshot payload passed by a family-dispatch parent."""
+    raw_fd = os.environ.pop(_RELEASE_PREFLIGHT_SNAPSHOT_FD_ENV, None)
+    if raw_fd is None:
+        return None
+    fd = None
+    try:
+        fd = int(raw_fd)
+        if fd <= 2 or not stat.S_ISFIFO(os.fstat(fd).st_mode):
+            raise ValueError("expected an inherited pipe descriptor")
+        os.set_blocking(fd, False)
+        payload = bytearray()
+        while len(payload) <= 8192:
+            chunk = os.read(fd, 8193 - len(payload))
+            if not chunk:
+                break
+            payload.extend(chunk)
+        if len(payload) > 8192:
+            raise ValueError("snapshot handoff payload is too large")
+        return payload.decode("utf-8")
+    except (OSError, UnicodeDecodeError, ValueError) as exc:
+        raise RuntimeError(f"invalid internal release snapshot pipe: {exc}") from exc
+    finally:
+        if fd is not None and fd > 2:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
 
 
 def _configs_for_git_family(
@@ -3830,6 +4059,20 @@ def _dispatch(args, runtime):
         if not vargs.dry_run:
             require_project_publish_credentials(configs, release_scope)
 
+        preflight_snapshot_handoff = _ACTIVE_RELEASE_PREFLIGHT_SNAPSHOT
+        if preflight_snapshot_handoff is not None:
+            if transaction_child or vargs.dry_run or vargs.resume:
+                raise RuntimeError(
+                    "the internal origin/main snapshot handoff is valid only for a "
+                    "new family release launcher"
+                )
+            if len(transaction.project_git_family_groups(
+                repo_root, [configs[name] for name in release_scope],
+            )) != 1:
+                raise RuntimeError(
+                    "the internal origin/main snapshot handoff cannot span Git families"
+                )
+
         origin_main_snapshots = None
         if (
             verb == "release"
@@ -3838,7 +4081,8 @@ def _dispatch(args, runtime):
             and not vargs.resume
         ):
             origin_main_snapshots = _preflight_multi_family_release_tag_support(
-                repo_root, configs, release_scope, git_auth=git_auth,
+                repo_root, configs, release_scope,
+                config_path=cfg_path, git_auth=git_auth,
             )
 
         if not transaction_child:
@@ -3867,7 +4111,9 @@ def _dispatch(args, runtime):
                 transaction_root = transaction.source_git_root_for_projects(
                     repo_root, [configs[name] for name in release_scope]
                 )
-                preflighted_base = _consume_release_snapshot_handoff(transaction_root)
+                preflighted_base = _consume_release_snapshot_handoff(
+                    transaction_root, preflight_snapshot_handoff,
+                )
                 child_args = _child_release_args(
                     rest, cfg_path, repo_root, source_git_root=transaction_root,
                     target_override=",".join(release_scope), original_target=vargs.target,
@@ -3897,13 +4143,6 @@ def _dispatch(args, runtime):
                         workspace = transaction.resume_workspace(
                             transaction_root, Path(vargs.resume), git_auth=git_auth,
                         )
-                        if not vargs.dry_run and any(
-                            _project_git_tag_policy_at_snapshot(
-                                transaction_root, workspace.base, configs[name],
-                            )
-                            for name in release_scope
-                        ):
-                            _require_local_tag_inspection_support(transaction_root)
                         current_scope = transaction.read_release_scope_for_path(workspace.path)
                         if current_scope != resume_scope:
                             raise RuntimeError(
@@ -3911,17 +4150,34 @@ def _dispatch(args, runtime):
                                 "inspect the candidate and retry"
                             )
                         transaction.assert_resume_workspace_committed(workspace.path)
+                        if not vargs.dry_run:
+                            candidate_config_paths = _project_config_paths_in_candidate(
+                                transaction_root, workspace.path, cfg_path, configs,
+                                release_scope,
+                            )
+                            if any(
+                                _project_git_tag_policy_in_candidate(
+                                    workspace.path, name, candidate_config_paths[name],
+                                )
+                                for name in release_scope
+                            ):
+                                _require_local_tag_inspection_support(transaction_root)
                     else:
                         base = preflighted_base or transaction.fetch_origin_main(
                             transaction_root, git_auth=git_auth,
                         )
-                        if not vargs.dry_run and any(
-                            _project_git_tag_policy_at_snapshot(
-                                transaction_root, base, configs[name],
+                        if not vargs.dry_run:
+                            snapshot_config_paths = _project_config_paths_at_snapshot(
+                                transaction_root, base, cfg_path, configs, release_scope,
                             )
-                            for name in release_scope
-                        ):
-                            _require_local_tag_inspection_support(transaction_root)
+                            if any(
+                                _project_git_tag_policy_at_snapshot(
+                                    transaction_root, base, configs[name],
+                                    project_config_rel=snapshot_config_paths[name],
+                                )
+                                for name in release_scope
+                            ):
+                                _require_local_tag_inspection_support(transaction_root)
                         initial_tag_refs = None
                         if not vargs.dry_run:
                             initial_tag_refs = _read_origin_tag_refs(
@@ -4799,11 +5055,25 @@ def usage() -> str:
 
 
 def main(argv: Optional[List[str]] = None) -> int:
+    global _ACTIVE_RELEASE_PREFLIGHT_SNAPSHOT
     from cmru.output import configure_from_environment
 
+    # Discard the previous environment-based handoff protocol. A release
+    # snapshot comes only from the private descriptor inherited by a family
+    # launcher; configured environment values are applied later in dispatch.
+    os.environ.pop("CMRU_RELEASE_PREFLIGHT_SNAPSHOT", None)
+    previous_handoff = _ACTIVE_RELEASE_PREFLIGHT_SNAPSHOT
+    try:
+        _ACTIVE_RELEASE_PREFLIGHT_SNAPSHOT = _read_release_snapshot_handoff_from_pipe()
+    except RuntimeError as exc:
+        log_error(str(exc))
+        return 2
     arguments = list(argv) if argv is not None else sys.argv[1:]
-    configure_from_environment()
-    return _build_cli().run(argv=arguments)
+    try:
+        configure_from_environment()
+        return _build_cli().run(argv=arguments)
+    finally:
+        _ACTIVE_RELEASE_PREFLIGHT_SNAPSHOT = previous_handoff
 
 
 if __name__ == "__main__":
