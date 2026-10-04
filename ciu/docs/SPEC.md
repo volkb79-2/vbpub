@@ -4236,7 +4236,7 @@ missing or malformed generated-facts file is silently treated as a fresh
 identity.
 
 The CIU record reader accepts a ready record with both runtime identity values
-null only when the record checkout itself has no committed CIU root marker.
+null only when the record checkout itself has no CIU root marker on disk.
 This preserves the format written for a generic Git worktree and derives its
 meaning from the filesystem; a CIU-root ready record with a null identity is
 still invalid. Family registry scans parse and cross-check each sibling
