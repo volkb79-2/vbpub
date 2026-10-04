@@ -3219,7 +3219,7 @@ def test_source_inventory_checks_and_runs_selected_package_from_project_cwd(
             exec(compile(args[1], "<run-gate-import-check>", "exec"),
                  {{"__name__": "__main__"}})
         elif args[:2] == ["-m", "assay.cli"]:
-            sys.argv = ["-m", "assay.cli", *args[2:]]
+            sys.argv = ["assay.cli", *args[2:]]
             runpy.run_module("assay.cli", run_name="__main__", alter_sys=True)
         else:
             raise SystemExit(91)
@@ -21634,7 +21634,7 @@ class TestFinalChangedLineCoverageOracles:
         monkeypatch.setattr(run_gate, "resolve_slice",
                             lambda *_args: ("run-gates.slice", "fixture"))
         monkeypatch.setattr(run_gate, "verify_slice_loaded", lambda _slice: None)
-        monkeypatch.setattr(run_gate, "run_container_lane",
+        monkeypatch.setattr(run_gate, "run_bare_host_lane",
                             lambda *_args, **_kwargs: 0)
         result = run_gate._dispatch(
             ["unit", "--allow-dirty"], _admission_ticket=ticket,
@@ -21646,7 +21646,11 @@ class TestFinalChangedLineCoverageOracles:
         record["run_id"] = "selective-run"
         monkeypatch.setattr(run_gate, "start_run_record",
                             lambda *_args, **_kwargs: record)
-        monkeypatch.setattr(run_gate, "run_container_lane",
+        monkeypatch.setattr(run_gate, "assay_inventory_entry",
+                            lambda *_args, **_kwargs: (
+                                {"name": "unit", "rigor": ["R0", "R2"]},
+                                "8.0.0", None))
+        monkeypatch.setattr(run_gate, "run_bare_host_lane",
                             lambda *_args, **_kwargs: 1)
         result = run_gate._dispatch(
             ["unit", "--allow-dirty", "--rejudge", "case::bad"])
@@ -21666,7 +21670,7 @@ class TestFinalChangedLineCoverageOracles:
         monkeypatch.setattr(run_gate, "resolve_slice",
                             lambda *_args: ("run-gates.slice", "fixture"))
         monkeypatch.setattr(run_gate, "verify_slice_loaded", lambda _slice: None)
-        monkeypatch.setattr(run_gate, "run_container_lane",
+        monkeypatch.setattr(run_gate, "run_bare_host_lane",
                             lambda *_args, **_kwargs: 1)
         result = run_gate._dispatch(["unit", "--allow-dirty"])
         assert result.verdict == "ERROR"
@@ -21683,7 +21687,7 @@ class TestFinalChangedLineCoverageOracles:
         monkeypatch.setattr(run_gate, "resolve_slice",
                             lambda *_args: ("run-gates.slice", "fixture"))
         monkeypatch.setattr(run_gate, "verify_slice_loaded", lambda _slice: None)
-        monkeypatch.setattr(run_gate, "run_container_lane",
+        monkeypatch.setattr(run_gate, "run_bare_host_lane",
                             lambda *_args, **_kwargs: 1)
         result = run_gate._dispatch(["unit", "--allow-dirty"])
         assert result.verdict == "ERROR"
