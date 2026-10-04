@@ -812,7 +812,7 @@ def test_generic_root_stays_non_ready_during_nested_preparation_and_ensure_retri
     )
     monkeypatch.setattr(
         worktree, "find_instance_record",
-        lambda _root, name: records.get(name),
+        lambda _root, name, **_kwargs: records.get(name),
     )
     monkeypatch.setattr(worktree, "_current_git_facts", lambda *_args: {})
     workspace_context = SimpleNamespace(
@@ -859,7 +859,7 @@ def test_ensure_repairs_a_legacy_ready_record_missing_nested_facts(monkeypatch, 
     )
     monkeypatch.setattr(
         worktree, "find_instance_record",
-        lambda _root, name: records.get(name),
+        lambda _root, name, **_kwargs: records.get(name),
     )
     monkeypatch.setattr(worktree, "_current_git_facts", lambda *_args: {})
     workspace_context = SimpleNamespace(
