@@ -628,8 +628,14 @@ def test_multi_family_release_preflights_origin_policies_before_dispatch(
         lambda root, **_kwargs: fetched.append(root) or "f" * 40,
     )
     origin_configs = {
-        untagged_root: "[project.release]\ngit_tag = false\n",
-        tagged_root: "[project.release]\ngit_tag = true\n",
+        untagged_root: (
+            '[project]\nid = "untagged"\nprefix = "untagged-v"\n'
+            "[project.release]\ngit_tag = false\n"
+        ),
+        tagged_root: (
+            '[project]\nid = "tagged"\nprefix = "tagged-v"\n'
+            "[project.release]\ngit_tag = true\n"
+        ),
     }
     monkeypatch.setattr(
         cli, "_read_git_path_at_commit",
