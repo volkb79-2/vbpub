@@ -3165,7 +3165,6 @@ def _resolve_git_file_at_commit(
     pending = PurePosixPath(relative_path.as_posix())
     for _ in range(40):
         parts = pending.parts
-        followed_link = False
         treeish = revision
         parent_parts: list[str] = []
         for index, component in enumerate(parts):
@@ -3178,14 +3177,38 @@ def _resolve_git_file_at_commit(
                 detail = result.stderr.strip() or result.stdout.strip() or "no diagnostic output"
                 raise RuntimeError(f"Failed to inspect {source_label}: {detail}")
             entry = None
-            for raw_entry in result.stdout.split("\0"):
+            tree_output = result.stdout
+            if tree_output and not tree_output.endswith("\0"):
+                raise RuntimeError(
+                    f"Malformed Git tree response at {source_label}: missing NUL terminator"
+                )
+            raw_entries = tree_output[:-1].split("\0") if tree_output else []
+            if any(not raw_entry for raw_entry in raw_entries):
+                raise RuntimeError(
+                    f"Malformed Git tree response at {source_label}: empty entry"
+                )
+            if len(raw_entries) > 1:
+                raise RuntimeError(
+                    f"Malformed Git tree response at {source_label}: expected a single entry"
+                )
+            if raw_entries:
+                raw_entry = raw_entries[0]
                 metadata, separator, entry_path = raw_entry.partition("\t")
-                if not separator or entry_path != component:
-                    continue
+                if not separator:
+                    raise RuntimeError(
+                        f"Malformed Git tree response at {source_label}: missing path separator"
+                    )
                 fields = metadata.split()
-                if len(fields) == 3:
-                    entry = (fields[0], fields[1], fields[2])
-                    break
+                if len(fields) != 3:
+                    raise RuntimeError(
+                        f"Malformed Git tree metadata at {source_label}: "
+                        "expected mode, type and object ID"
+                    )
+                if entry_path != component:
+                    raise RuntimeError(
+                        f"Git returned an unexpected path at {source_label}: {entry_path!r}"
+                    )
+                entry = (fields[0], fields[1], fields[2])
             if entry is None:
                 tracked_path = PurePosixPath(*parent_parts, component)
                 raise RuntimeError(
@@ -3206,13 +3229,14 @@ def _resolve_git_file_at_commit(
                     raise RuntimeError(
                         f"Failed to read symlink at {source_label} ({tracked_path}): {detail}"
                     )
-                target = PurePosixPath(target_result.stdout)
+                target_value = target_result.stdout
+                target = PurePosixPath(target_value)
                 if target.is_absolute():
                     raise RuntimeError(
                         f"Symlink escapes the Git family at {source_label}: {tracked_path}"
                     )
                 resolved = list(parts[:index])
-                for component in target.parts:
+                for component in target_value.split("/"):
                     if component in {"", "."}:
                         continue
                     if component == "..":
@@ -3230,7 +3254,6 @@ def _resolve_git_file_at_commit(
                         f"Symlink does not resolve to a file at {source_label}: {tracked_path}"
                     )
                 pending = PurePosixPath(*resolved)
-                followed_link = True
                 break
             if index < len(parts) - 1:
                 if mode != "040000" or object_type != "tree":
@@ -3253,8 +3276,6 @@ def _resolve_git_file_at_commit(
                 detail = content.stderr.strip() or content.stdout.strip() or "no diagnostic output"
                 raise RuntimeError(f"Failed to read {source_label}: {detail}")
             return Path(tracked_path.as_posix()), content.stdout
-        if not followed_link:
-            break
     raise RuntimeError(f"Symlink resolution exceeded its limit at {source_label}: {relative_path}")
 
 
@@ -3495,6 +3516,12 @@ def _assert_resume_candidate_is_safe_to_replay(
 ) -> None:
     """Allow only pre-tag retries and results already promoted to origin/main."""
     scope = set(project_names)
+    unknown_projects = sorted(scope - set(configs))
+    if unknown_projects:
+        raise RuntimeError(
+            "retained release scope names unknown project(s): "
+            + ", ".join(unknown_projects)
+        )
     policies = {
         name: (
             getattr(configs[name], "prefix", None) or f"{name}-v",
@@ -3538,11 +3565,6 @@ def _assert_resume_candidate_is_safe_to_replay(
         tag_records = _tag_records_by_name(origin_tags or {})
         attempts = transaction.read_release_tag_attempts(repo_root, workspace) or {}
         for name, result_id in results.items():
-            project = configs.get(name)
-            if project is None:
-                raise RuntimeError(
-                    f"retained release result names unknown project {name!r}"
-                )
             if policies[name][1]:
                 prefix = policies[name][0]
                 tag_name = result_id
