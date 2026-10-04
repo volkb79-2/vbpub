@@ -463,9 +463,9 @@ class TestOwnRecordOperations:
 
 
 class TestLeaseTtlConfig:
-    def test_the_table_key_set_is_closed_and_now_holds_three_keys(self):
+    def test_the_table_key_set_is_closed_and_now_holds_four_keys(self):
         assert worktree.WORKTREE_TABLE_KEYS == {
-            "max_concurrent_instances", "lease_ttl_hours", "exec_targets",
+            "max_concurrent_instances", "lease_ttl_hours", "exec_targets", "up",
         }
 
     def test_absent_table_means_no_lease_behavior_at_all(self):
@@ -502,25 +502,23 @@ class TestLeaseTtlConfig:
             {"max_concurrent_instances": 2, "lease_ttl_hours": 24}
         ) == 2
 
-    def test_all_three_families_coexist_in_one_table(self):
-        """CIU-69: `[ciu.worktree]` is documented as carrying THREE key
-        families (S16.3 `max_concurrent_instances`, S16.9 `lease_ttl_hours`,
-        S16.7 `exec_targets.<alias>`), but `WORKTREE_TABLE_KEYS` used to omit
-        `exec_targets` — so a consumer who declared a budget or a lease TTL
-        in the SAME table as an exec target got a spurious
-        `[S16.3] unknown key(s)` refusal, even though `exec_targets`'s own
-        per-alias grammar is validated separately by
-        `resolve_exec_targets_config`. Declare all three together and prove
-        budget resolution, lease resolution, AND exec-target resolution all
-        accept the table without refusing."""
+    def test_all_four_families_coexist_in_one_table(self):
+        """CIU-69/125: `[ciu.worktree]` carries four key families (S16.3
+        `max_concurrent_instances`, S16.9 `lease_ttl_hours`, S16.7
+        `exec_targets.<alias>`, and S16.1 `up`). The closed key set must
+        accept them together while each reader validates its own contract."""
         worktree_table = {
             "max_concurrent_instances": 2,
             "lease_ttl_hours": 24,
             "exec_targets": {
                 "tester": {"stack": "test", "service": "tester", "workdir": "/workspace"},
             },
+            "up": ["core"],
         }
-        global_config = {"ciu": {"worktree": worktree_table}}
+        global_config = {
+            "ciu": {"worktree": worktree_table},
+            "deploy": {"profiles": {"core": {}}},
+        }
 
         assert worktree.resolve_max_concurrent_instances(worktree_table) == 2
         assert worktree.resolve_lease_ttl_hours(worktree_table) == 24.0
@@ -529,6 +527,7 @@ class TestLeaseTtlConfig:
         assert (targets["tester"].stack, targets["tester"].service, targets["tester"].workdir) == (
             "test", "tester", "/workspace",
         )
+        assert worktree.resolve_worktree_up_profiles(global_config) == ("core",)
 
     def test_resolve_from_a_repo_reads_the_primary_ciu_roots_table(
         self, tmp_repo, monkeypatch

@@ -610,39 +610,35 @@ class TestResolveBudgetCandidates:
         assert "[INFO] [S16.3]" in out
         assert str(linked) in out
 
-    def test_env_missing_docker_network_internal_raises(self, tmp_git_repo):
+    def test_env_missing_network_is_counted_as_unknown_owner(self, tmp_git_repo, capsys):
         _write_ciu_env(tmp_git_repo, network="net-primary")
         linked = _add_linked_worktree(tmp_git_repo, "linked")
         _write_ciu_env(linked, network="")
-        with pytest.raises(
-            worktree.WorktreeError, match=r"\[S16\.3\].*declares no instance network"
-        ):
-            worktree._resolve_budget_candidates(_ciu_root(tmp_git_repo), _stack_rel())
+        candidates = worktree._resolve_budget_candidates(_ciu_root(tmp_git_repo), _stack_rel())
+        unknown = next(c for c in candidates if c.worktree_path == linked)
+        assert unknown.unknown_owner
+        assert "counting this sibling as a possible active instance" in capsys.readouterr().err
 
-    def test_env_unparseable_raises(self, tmp_git_repo):
+    def test_env_unparseable_is_counted_as_unknown_owner(self, tmp_git_repo, capsys):
         _write_ciu_env(tmp_git_repo, network="net-primary")
         linked = _add_linked_worktree(tmp_git_repo, "linked")
         (linked / "ciu.instance.generated.toml").write_text(
             "[ciu.instance.generated]\nnetwork = not-a-toml-value\n"
         )
-        with pytest.raises(worktree.WorktreeError, match=r"\[S16\.3\]"):
-            worktree._resolve_budget_candidates(_ciu_root(tmp_git_repo), _stack_rel())
+        candidates = worktree._resolve_budget_candidates(_ciu_root(tmp_git_repo), _stack_rel())
+        assert next(c for c in candidates if c.worktree_path == linked).unknown_owner
+        assert "counting this sibling as a possible active instance" in capsys.readouterr().err
 
-    def test_env_non_utf8_raises(self, tmp_git_repo):
-        """CIU-62 — the gap `(OSError, WorkspaceEnvError)` still left open at
-        this site. A non-UTF-8 byte raises `UnicodeDecodeError`, a SIBLING of
-        `WorkspaceEnvError` under `ValueError`, not a subclass of it; the
-        S16.3 capacity count must refuse an instance it cannot read rather
-        than crash mid-survey (and never silently undercount). CIU-75 moved
-        the source to the generated facts file and normalized the three
-        exception types at the reader; the refusal contract is unchanged."""
+    def test_env_non_utf8_is_counted_as_unknown_owner(self, tmp_git_repo, capsys):
+        """Unreadable sibling facts conservatively count as a possible owner."""
         _write_ciu_env(tmp_git_repo, network="net-primary")
         linked = _add_linked_worktree(tmp_git_repo, "linked")
         (linked / "ciu.instance.generated.toml").write_bytes(
             b'[ciu.instance.generated]\nnetwork = "\xff\xfe"\n'
         )
-        with pytest.raises(worktree.WorktreeError, match=r"\[S16\.3\] could not read/parse"):
-            worktree._resolve_budget_candidates(_ciu_root(tmp_git_repo), _stack_rel())
+        candidates = worktree._resolve_budget_candidates(_ciu_root(tmp_git_repo), _stack_rel())
+        assert next(c for c in candidates if c.worktree_path == linked).unknown_owner
+        assert "counting this sibling as a possible active instance" in capsys.readouterr().err
 
     def test_duplicate_network_across_candidates_raises(self, tmp_git_repo):
         _write_ciu_env(tmp_git_repo, network="same-net")
@@ -651,19 +647,23 @@ class TestResolveBudgetCandidates:
         with pytest.raises(worktree.WorktreeError, match=r"\[S16\.3\].*same-net"):
             worktree._resolve_budget_candidates(_ciu_root(tmp_git_repo), _stack_rel())
 
-    def test_present_candidate_with_unrenderable_config_raises(self, tmp_git_repo):
-        """A present candidate stack whose global config cannot render is a
-        loud [S16.3] failure -- never treated as an inactive instance."""
+    def test_present_candidate_with_unrenderable_config_counts_unknown_owner(
+        self, tmp_git_repo, capsys,
+    ):
+        """A present candidate stack whose config cannot render is counted."""
         _write_ciu_env(tmp_git_repo, network="net-primary")
         linked = _add_linked_worktree(tmp_git_repo, "linked")
         _write_ciu_env(linked, network="net-linked")
         (_ciu_root(linked) / "ciu.global.defaults.toml.j2").write_text("not [ valid toml\n")
         _git_ok(["add", "-A"], linked)
         _git_ok(["commit", "-m", "break linked config"], linked)
-        with pytest.raises(worktree.WorktreeError, match=r"\[S16\.3\].*could not render"):
-            worktree._resolve_budget_candidates(_ciu_root(tmp_git_repo), _stack_rel())
+        candidates = worktree._resolve_budget_candidates(_ciu_root(tmp_git_repo), _stack_rel())
+        assert next(c for c in candidates if c.worktree_path == linked).unknown_owner
+        assert "could not render the global configuration" in capsys.readouterr().err
 
-    def test_present_candidate_missing_deploy_identity_raises(self, tmp_git_repo):
+    def test_present_candidate_missing_deploy_identity_counts_unknown_owner(
+        self, tmp_git_repo, capsys,
+    ):
         """A present candidate whose global config has no
         deploy.project_name/environment_tag cannot derive a compose project
         -- [S16.3], never evidence of an inactive instance."""
@@ -673,8 +673,9 @@ class TestResolveBudgetCandidates:
         (_ciu_root(linked) / "ciu.global.defaults.toml.j2").write_text("[ciu]\nx = 1\n")
         _git_ok(["add", "-A"], linked)
         _git_ok(["commit", "-m", "drop deploy identity on linked"], linked)
-        with pytest.raises(worktree.WorktreeError, match=r"\[S16\.3\].*could not derive"):
-            worktree._resolve_budget_candidates(_ciu_root(tmp_git_repo), _stack_rel())
+        candidates = worktree._resolve_budget_candidates(_ciu_root(tmp_git_repo), _stack_rel())
+        assert next(c for c in candidates if c.worktree_path == linked).unknown_owner
+        assert "could not derive the compose project" in capsys.readouterr().err
 
     def test_candidate_env_isolation_ambient_identity_never_leaks(
         self, tmp_git_repo, monkeypatch
@@ -814,6 +815,21 @@ class TestWorktreeBudgetSlotDecisionTable:
             ):
                 executor_called.append(True)  # pragma: no cover -- must not run
         assert executor_called == []
+
+    def test_unreadable_sibling_counts_toward_cap_without_docker_guess(
+        self, tmp_git_repo, monkeypatch, capsys,
+    ):
+        _write_ciu_env(tmp_git_repo, network="net-primary")
+        linked = _add_linked_worktree(tmp_git_repo, "linked")
+        (linked / "ciu.instance.generated.toml").write_bytes(b"\xff")
+        monkeypatch.setattr(worktree.procutil, "docker", _deployed_docker({}))
+
+        with pytest.raises(worktree.WorktreeError, match="cap 1"):
+            with worktree.worktree_budget_slot(
+                _ciu_root(tmp_git_repo), 1, "net-primary", _stack_rel()
+            ):
+                pytest.fail("the unreadable sibling must consume the only slot")
+        assert "counting this sibling as a possible active instance" in capsys.readouterr().err
 
     def test_current_already_deployed_allows_rerun_even_over_cap(self, tmp_git_repo, monkeypatch):
         """The already-deployed-may-rerun rule: even with total >= cap, the

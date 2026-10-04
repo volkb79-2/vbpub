@@ -54,6 +54,20 @@ def tmp_repo(tmp_path: Path) -> Path:
     return repo
 
 
+@pytest.fixture
+def rootless_repo(tmp_path: Path) -> Path:
+    """A Git family that has no CIU root marker in any committed tree."""
+    repo = tmp_path / "rootless"
+    repo.mkdir()
+    assert _git(["init", "-b", "main"], repo).returncode == 0
+    assert _git(["config", "user.email", "t@example.com"], repo).returncode == 0
+    assert _git(["config", "user.name", "Test"], repo).returncode == 0
+    (repo / "README.md").write_text("generic Git family\n", encoding="utf-8")
+    assert _git(["add", "README.md"], repo).returncode == 0
+    assert _git(["commit", "-m", "init"], repo).returncode == 0
+    return repo
+
+
 def _instance_id_for(path: Path) -> str:
     return hashlib.sha256(str(path.resolve()).encode("utf-8")).hexdigest()[:6]
 
@@ -621,7 +635,27 @@ class TestForkPointProvenance:
         stored = json.loads(record.record_path.read_text(encoding="utf-8"))
         assert "fork_point_sha" not in stored
 
-    def test_a_partial_ADOPT_never_resumes_into_a_checkout(
+    def test_a_partial_adopt_resumes_without_checkout_when_head_is_unchanged(
+        self, tmp_repo, fake_generate_env, monkeypatch
+    ):
+        wt_path = tmp_repo.parent / "adopted-same-head"
+        assert _git(["worktree", "add", "-b", "adopted-same-head", str(wt_path), "main"],
+                    tmp_repo).returncode == 0
+        adopted_head = _git(["rev-parse", "HEAD"], wt_path).stdout.strip()
+        monkeypatch.setattr(
+            worktree, "_write_worktree_overlay",
+            lambda *_a, **_kw: (_ for _ in ()).throw(OSError("overlay failed")),
+        )
+        with pytest.raises(OSError):
+            worktree.adopt(tmp_repo, "adopted-same-head", str(wt_path))
+        monkeypatch.setattr(worktree, "_write_worktree_overlay", lambda *_a, **_kw: None)
+
+        resumed = worktree.ensure(tmp_repo, "adopted-same-head")
+        assert resumed.state == "ready"
+        assert _git(["rev-parse", "HEAD"], wt_path).stdout.strip() == adopted_head
+        assert resumed.fork_point_sha is None
+
+    def test_a_partial_adopt_refuses_resume_after_head_moves(
         self, tmp_repo, fake_generate_env, monkeypatch
     ):
         """Regression (round-5 review): `adopt` wrote its record and THEN
@@ -656,14 +690,12 @@ class TestForkPointProvenance:
         work = _git(["rev-parse", "HEAD"], wt_path).stdout.strip()
         assert work != adopted_head
 
-        resumed = worktree.ensure(tmp_repo, "adopted-one")
-        assert resumed.state == "ready"
-        # not reset back to the adopted HEAD, and still no fork point
+        with pytest.raises(worktree.WorktreeError, match=r"\[CIU-107\].*HEAD moved"):
+            worktree.ensure(tmp_repo, "adopted-one")
+        # The new commit remains exactly where the operator made it; resume
+        # never attempts a hard reset against the recorded adoption target.
         assert _git(["rev-parse", "HEAD"], wt_path).stdout.strip() == work
         assert (wt_path / "mine.txt").exists()
-        assert resumed.fork_point_sha is None
-        stored = json.loads(resumed.record_path.read_text(encoding="utf-8"))
-        assert "fork_point_sha" not in stored
 
     def test_a_record_without_the_field_stays_readable(self, tmp_path):
         """Every record written before CIU-106 lacks the key. Absence is
@@ -983,8 +1015,107 @@ class TestManagedRecordValidation:
             worktree._write_instance_record(record)
         assert not any(tmp_path.glob(".*.tmp"))
 
+    def test_rootless_reader_checks_marker_file_type_and_symlink_target(self, tmp_path):
+        checkout = tmp_path / "checkout"
+        checkout.mkdir()
+        path = checkout / worktree.WORKTREE_INSTANCE_RECORD
+        raw = self.raw(tmp_path)
+        raw["git_worktree_path"] = str(checkout)
+        raw["runtime"] = {"instance_id": None, "network": None}
+
+        target = checkout / "defaults"
+        target.write_text("[ciu]\n", encoding="utf-8")
+        marker = checkout / worktree.GLOBAL_CONFIG_DEFAULTS
+        marker.symlink_to(target)
+        with pytest.raises(worktree.WorktreeError, match="ready record"):
+            worktree._record_from_dict(raw, path)
+        marker.unlink()
+
+        marker.symlink_to(checkout / "missing")
+        with pytest.raises(worktree.WorktreeError, match="could not inspect CIU root marker"):
+            worktree._record_from_dict(raw, path)
+        marker.unlink()
+
+        marker.symlink_to(checkout, target_is_directory=True)
+        with pytest.raises(worktree.WorktreeError, match="not a regular file"):
+            worktree._record_from_dict(raw, path)
+        marker.unlink()
+
+        marker.mkdir()
+        with pytest.raises(worktree.WorktreeError, match="not a regular file"):
+            worktree._record_from_dict(raw, path)
+
+    def test_rootless_reader_wraps_marker_lstat_oserror(self, tmp_path, monkeypatch):
+        checkout = tmp_path / "checkout"
+        checkout.mkdir()
+        path = checkout / worktree.WORKTREE_INSTANCE_RECORD
+        raw = self.raw(tmp_path)
+        raw["git_worktree_path"] = str(checkout)
+        raw["runtime"] = {"instance_id": None, "network": None}
+        marker = checkout / worktree.GLOBAL_CONFIG_DEFAULTS
+        original = Path.lstat
+
+        def denied(candidate):
+            if candidate == marker:
+                raise PermissionError("denied")
+            return original(candidate)
+
+        monkeypatch.setattr(Path, "lstat", denied)
+        with pytest.raises(worktree.WorktreeError, match="could not inspect CIU root marker"):
+            worktree._record_from_dict(raw, path)
+
+    def test_read_instance_record_wraps_unexpected_reader_errors(self, tmp_path, monkeypatch):
+        path = tmp_path / "record.json"
+        path.write_text("{}", encoding="utf-8")
+        monkeypatch.setattr(
+            worktree, "_record_from_dict",
+            lambda *_a, **_kw: (_ for _ in ()).throw(RuntimeError("reader bug")),
+        )
+        with pytest.raises(worktree.WorktreeError, match="reader bug"):
+            worktree.read_instance_record(path)
+
+    def test_clean_in_routes_outdated_identity_and_strips_primary_environment(
+        self, tmp_path, monkeypatch,
+    ):
+        from ciu import workspace_env
+
+        monkeypatch.setattr(
+            workspace_env, "outdated_generated_identity",
+            lambda _worktree: {"instance_id": "old123"},
+        )
+        monkeypatch.setattr(
+            workspace_env, "read_instance_identity_env",
+            lambda *_a: pytest.fail("old identity must use label cleanup"),
+        )
+        monkeypatch.setenv("INSTANCE_ID", "primary-id")
+        calls = []
+
+        def run(argv, *, cwd, env, check):
+            calls.append((argv, cwd, env, check))
+            return type("Completed", (), {"returncode": 17})()
+
+        monkeypatch.setattr(worktree.subprocess, "run", run)
+        assert worktree._clean_in(tmp_path, yes=True) == 17
+        assert worktree._clean_in(tmp_path, yes=False) == 17
+        assert calls[0][0][-2:] == ["old123", "-y"]
+        assert calls[1][0][-2:] == ["old123", "--yes"]
+        assert all(call[2].get("INSTANCE_ID") is None for call in calls)
+
+        monkeypatch.setattr(workspace_env, "outdated_generated_identity", lambda _worktree: None)
+        monkeypatch.setattr(
+            workspace_env, "read_instance_identity_env",
+            lambda *_a: (_ for _ in ()).throw(workspace_env.WorkspaceEnvError("unreadable")),
+        )
+        with pytest.raises(worktree.WorktreeError, match="could not read"):
+            worktree._clean_in(tmp_path, yes=True)
+
+    def test_record_logical_hint_returns_none_for_non_object_json(self, tmp_path):
+        path = tmp_path / "record.json"
+        path.write_text("[]", encoding="utf-8")
+        assert worktree._record_logical_name_hint(path) is None
+
     def test_family_scan_rejects_record_git_fact_mismatches(
-        self, tmp_repo, fake_generate_env
+        self, tmp_repo, fake_generate_env, capsys
     ):
         record = worktree.create(tmp_repo, "logical-one")
         original = json.loads(record.record_path.read_text(encoding="utf-8"))
@@ -997,20 +1128,177 @@ class TestManagedRecordValidation:
             changed = dict(original)
             changed[key] = value
             record.record_path.write_text(json.dumps(changed), encoding="utf-8")
+            assert worktree.list_instance_records(tmp_repo) == []
+            assert message in capsys.readouterr().err
             with pytest.raises(worktree.WorktreeError, match=message):
-                worktree.list_instance_records(tmp_repo)
+                worktree.find_instance_record(tmp_repo, record.logical_name)
         record.record_path.write_text(json.dumps(original), encoding="utf-8")
 
     def test_family_scan_rejects_duplicate_logical_identity(
-        self, tmp_repo, fake_generate_env
+        self, tmp_repo, fake_generate_env, capsys
     ):
         first = worktree.create(tmp_repo, "logical-one")
         second = worktree.create(tmp_repo, "logical-two")
         raw = json.loads(second.record_path.read_text(encoding="utf-8"))
         raw["logical_name"] = first.logical_name
         second.record_path.write_text(json.dumps(raw), encoding="utf-8")
+        assert len(worktree.list_instance_records(tmp_repo)) == 2
+        assert "duplicate logical" in capsys.readouterr().err
         with pytest.raises(worktree.WorktreeError, match="duplicate logical"):
-            worktree.list_instance_records(tmp_repo)
+            worktree.find_instance_record(tmp_repo, first.logical_name)
+
+    def test_rootless_create_round_trips_and_keeps_record_format(
+        self, rootless_repo, monkeypatch
+    ):
+        real_write = worktree._write_instance_record
+        writes = []
+
+        def checked_write(record):
+            real_write(record)
+            assert worktree.read_instance_record(record.record_path) == record
+            writes.append(record)
+
+        monkeypatch.setattr(worktree, "_write_instance_record", checked_write)
+        first = worktree.create(rootless_repo, "generic-one")
+        second = worktree.create(rootless_repo, "generic-two")
+
+        assert [record.state for record in writes] == [
+            "allocating", "ready", "allocating", "ready",
+        ]
+        for record in (first, second):
+            assert record.state == "ready"
+            assert record.instance_id is None
+            assert record.network is None
+            raw = json.loads(record.record_path.read_text(encoding="utf-8"))
+            assert raw["runtime"] == {"instance_id": None, "network": None}
+            assert worktree.read_instance_record(record.record_path) == record
+
+    def test_ciu_root_create_round_trips_every_written_state(
+        self, tmp_repo, fake_generate_env, monkeypatch
+    ):
+        real_write = worktree._write_instance_record
+        writes = []
+
+        def checked_write(record):
+            real_write(record)
+            assert worktree.read_instance_record(record.record_path) == record
+            writes.append(record)
+
+        monkeypatch.setattr(worktree, "_write_instance_record", checked_write)
+        ready = worktree.create(tmp_repo, "ciu-root-one")
+
+        assert ready.state == "ready"
+        assert ready.instance_id
+        assert ready.network
+        assert [record.state for record in writes] == [
+            "allocating", "allocating", "ready",
+        ]
+
+    def test_ciu_root_ready_record_still_rejects_null_identity(self, tmp_path):
+        checkout = tmp_path / "checkout"
+        checkout.mkdir()
+        (checkout / "ciu.global.defaults.toml.j2").write_text("[ciu]\n", encoding="utf-8")
+        path = checkout / worktree.WORKTREE_INSTANCE_RECORD
+        raw = self.raw(tmp_path)
+        raw["runtime"] = {"instance_id": None, "network": None}
+
+        with pytest.raises(worktree.WorktreeError, match="ready record"):
+            worktree._record_from_dict(raw, path)
+
+    def test_unreadable_sibling_does_not_block_create_list_lease_branches_reap_or_rm(
+        self, rootless_repo, capsys, monkeypatch
+    ):
+        rootless = worktree.create(rootless_repo, "rootless")
+        damaged = worktree.create(rootless_repo, "damaged")
+        damaged.record_path.write_text('{"logical_name":"damaged",\n', encoding="utf-8")
+
+        # An unrelated malformed sibling is visible but does not prevent a
+        # fresh allocation or a complete listing of readable records.
+        created = worktree.create(rootless_repo, "new-instance")
+        assert created.state == "ready"
+        document = worktree.list_instances(rootless_repo)
+        assert {row["instance"]["logical_name"] for row in document["instances"]} == {
+            "rootless", "new-instance",
+        }
+        assert "damaged" in capsys.readouterr().err
+
+        # The rootless record supports record-only lease handling. Branch
+        # hygiene protects the unreadable checkout as possibly managed.
+        released = worktree.apply_lease(rootless_repo, "rootless", release=True)
+        assert released.instance_id is None
+        branches = worktree.branch_hygiene(rootless_repo)
+        damaged_branch = next(row for row in branches["branches"] if row["name"] == damaged.branch)
+        assert damaged_branch["category"] == "managed-instance"
+
+        monkeypatch.setattr(worktree, "_reap_docker_rows", lambda *_a, **_kw: [])
+        reap = worktree.survey_reap_groups(rootless_repo)
+        assert not reap["identity_complete"]
+        assert str(damaged.git_worktree_path) in reap["unresolved_checkouts"]
+        assert str(rootless.git_worktree_path) not in reap["unresolved_checkouts"]
+
+        # A corrupt sibling at another path does not block clean Git removal
+        # of this rootless managed checkout. Its malformed record remains.
+        removed = worktree.remove(rootless_repo, "rootless", yes=True)
+        assert removed == rootless.git_worktree_path
+        assert not rootless.git_worktree_path.exists()
+        assert damaged.record_path.exists()
+
+    def test_corrupt_record_at_requested_name_or_path_refuses_create_and_rm(
+        self, tmp_repo, fake_generate_env
+    ):
+        damaged = worktree.create(tmp_repo, "damaged")
+        raw = json.loads(damaged.record_path.read_text(encoding="utf-8"))
+        raw.pop("branch")
+        damaged.record_path.write_text(json.dumps(raw), encoding="utf-8")
+
+        with pytest.raises(worktree.WorktreeError, match="requested logical identity"):
+            worktree.create(tmp_repo, "damaged")
+        with pytest.raises(worktree.WorktreeError, match="requested checkout path"):
+            worktree.remove(tmp_repo, str(damaged.git_worktree_path), yes=True)
+        assert damaged.git_worktree_path.exists()
+
+    def test_family_scan_counts_stat_failure_without_blocking_other_reads(
+        self, tmp_repo, fake_generate_env, monkeypatch, capsys,
+    ):
+        record = worktree.create(tmp_repo, "stat-denied")
+        record_path = record.record_path
+        original_stat = Path.stat
+
+        def denied(path, *args, **kwargs):
+            if path == record_path:
+                raise PermissionError("permission denied")
+            return original_stat(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "stat", denied)
+        assert worktree.list_instance_records(tmp_repo) == []
+        assert "could not inspect instance record" in capsys.readouterr().err
+
+    def test_family_scan_reports_nonfile_and_unhinted_corrupt_record(
+        self, tmp_repo, fake_generate_env, capsys,
+    ):
+        record = worktree.create(tmp_repo, "malformed")
+        record.record_path.unlink()
+        record.record_path.mkdir()
+        assert worktree.list_instance_records(tmp_repo) == []
+        assert "is not a file" in capsys.readouterr().err
+
+        record.record_path.rmdir()
+        record.record_path.write_text("{}", encoding="utf-8")
+        scan = worktree._scan_instance_records(tmp_repo)
+        assert len(scan.problems) == 1 and scan.problems[0].logical_name is None
+        assert worktree.list_instance_records(tmp_repo) == []
+        assert "malformed" in capsys.readouterr().err
+
+    def test_family_scan_isolates_unexpected_validation_exception(
+        self, tmp_repo, fake_generate_env, monkeypatch, capsys,
+    ):
+        worktree.create(tmp_repo, "validator-error")
+        monkeypatch.setattr(
+            worktree, "_registered_record_problem",
+            lambda *_a: (_ for _ in ()).throw(RuntimeError("validator failed")),
+        )
+        assert worktree.list_instance_records(tmp_repo) == []
+        assert "could not validate instance record" in capsys.readouterr().err
 
 
 class TestManagedHelperRefusals:
@@ -1445,7 +1733,7 @@ class TestBestEffortCleanupArcs:
             state="ready", instance_id="x", network="y",
         )
         monkeypatch.setattr(
-            worktree, "list_instance_records", lambda repo_root: [rec, rec]
+            worktree, "list_instance_records", lambda repo_root, **kwargs: [rec, rec]
         )
         with pytest.raises(worktree.WorktreeError, match="ambiguous logical identity"):
             worktree.find_instance_record(tmp_path, "dup")
@@ -1735,6 +2023,46 @@ class TestExactWorktreeControl:
         assert worktree.up_instance(repo_root, "ctrl") == 17
         capsys.readouterr()  # output captured; the exit code is still 17
 
+    def test_up_uses_all_declared_profiles_in_one_child_invocation(
+        self, ready, monkeypatch, fake_run,
+    ):
+        repo_root, record = ready
+        config = {
+            "ciu": {"worktree": {"up": ["core", "db"]}},
+            "deploy": {"profiles": {
+                "core": {"stacks": ["infra/core"]},
+                "db": {"stacks": ["infra/db"]},
+            }},
+        }
+        monkeypatch.setattr(
+            worktree.config_model,
+            "render_global_chain",
+            lambda *_args, **_kwargs: config,
+        )
+
+        assert worktree.up_instance(repo_root, "ctrl") == 0
+        argv, kwargs = fake_run["last"]
+        assert argv == [
+            sys.executable, "-m", "ciu.cli", "up",
+            "--profile", "core", "--profile", "db", "--deploy", "--healthcheck",
+        ]
+        assert kwargs["cwd"] == record.ciu_root
+
+    def test_up_all_ignores_declared_profiles(self, ready, monkeypatch, fake_run):
+        repo_root, _record = ready
+        monkeypatch.setattr(
+            worktree.config_model,
+            "render_global_chain",
+            lambda *_args, **_kwargs: {
+                "ciu": {"worktree": {"up": ["core"]}},
+                "deploy": {"profiles": {"core": {"stacks": ["infra/core"]}}},
+            },
+        )
+
+        assert worktree.up_instance(repo_root, "ctrl", all_profiles=True) == 0
+        argv, _kwargs = fake_run["last"]
+        assert argv == [sys.executable, "-m", "ciu.cli", "up"]
+
     def test_up_refuses_missing_instance(self, tmp_repo):
         with pytest.raises(worktree.WorktreeError, match="no managed worktree instance"):
             worktree.up_instance(tmp_repo, "ghost")
@@ -1754,7 +2082,7 @@ class TestExactWorktreeControl:
             worktree, "_run_child",
             lambda *a, **k: (_ for _ in ()).throw(OSError("no exec")),
         )
-        with pytest.raises(worktree.WorktreeError, match="could not run `ciu up`"):
+        with pytest.raises(worktree.WorktreeError, match="could not run `ciu worktree up ctrl`"):
             worktree.up_instance(repo_root, "ctrl")
 
     # -- exec_instance -------------------------------------------------------

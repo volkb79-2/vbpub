@@ -618,6 +618,101 @@ class TestRunHooksNoneReturn:
         # Must not raise
         run_hooks([str(hook)], "pre_compose", {}, ctx, tmp_path / "ciu.toml")
 
+
+class TestDryRunPostComposeHooks:
+    def test_unsafe_hook_is_not_imported_or_run(self, tmp_path: Path, capsys) -> None:
+        marker = tmp_path / "side-effect"
+        hook = _write_hook(
+            tmp_path,
+            "unsafe.py",
+            f"""\
+            from pathlib import Path
+            Path({str(marker)!r}).write_text("imported")
+            def run(config, ctx):
+                Path({str(marker)!r}).write_text("ran")
+                return {{}}
+            """,
+        )
+        run_hooks(
+            [str(hook)], "post_compose", {}, _ctx(tmp_path), tmp_path / "ciu.toml",
+            dry_run=True,
+        )
+        assert not marker.exists()
+        assert "skipped post_compose hook" in capsys.readouterr().out
+
+    def test_literal_safe_hook_runs_under_dry_run(self, tmp_path: Path) -> None:
+        marker = tmp_path / "side-effect"
+        hook = _write_hook(
+            tmp_path,
+            "safe.py",
+            f"""\
+            DRY_RUN_SAFE = True
+            from pathlib import Path
+            def run(config, ctx):
+                Path({str(marker)!r}).write_text("ran")
+                return {{}}
+            """,
+        )
+        run_hooks(
+            [str(hook)], "post_compose", {}, _ctx(tmp_path), tmp_path / "ciu.toml",
+            dry_run=True,
+        )
+        assert marker.read_text(encoding="utf-8") == "ran"
+
+    def test_annotated_literal_safe_hook_runs_under_dry_run(self, tmp_path: Path) -> None:
+        hook = _write_hook(
+            tmp_path,
+            "annotated_safe.py",
+            "DRY_RUN_SAFE: bool = True\n"
+            "def run(config, ctx):\n"
+            "    return {}\n",
+        )
+        run_hooks(
+            [str(hook)], "post_compose", {}, _ctx(tmp_path), tmp_path / "ciu.toml",
+            dry_run=True,
+        )
+
+    @pytest.mark.parametrize(
+        ("body", "message"),
+        [("def run(:\n", "invalid hook syntax"), ("\xff", "cannot inspect dry-run hook")],
+    )
+    def test_dry_run_hook_inspection_errors_refuse(self, tmp_path, body, message):
+        hook = tmp_path / "broken.py"
+        if body == "\xff":
+            hook.write_bytes(b"\xff")
+        else:
+            hook.write_text(body, encoding="utf-8")
+        with pytest.raises(ValueError, match=message):
+            run_hooks(
+                [str(hook)], "post_compose", {}, _ctx(tmp_path), tmp_path / "ciu.toml",
+                dry_run=True,
+            )
+
+    def test_missing_dry_run_post_compose_hook_refuses_before_skip(self, tmp_path):
+        with pytest.raises(FileNotFoundError, match="Hook file not found"):
+            run_hooks(
+                [str(tmp_path / "missing.py")], "post_compose", {}, _ctx(tmp_path),
+                tmp_path / "ciu.toml", dry_run=True,
+            )
+
+    def test_pre_compose_still_runs_under_dry_run(self, tmp_path: Path) -> None:
+        marker = tmp_path / "side-effect"
+        hook = _write_hook(
+            tmp_path,
+            "pre.py",
+            f"""\
+            from pathlib import Path
+            def run(config, ctx):
+                Path({str(marker)!r}).write_text("ran")
+                return {{}}
+            """,
+        )
+        run_hooks(
+            [str(hook)], "pre_compose", {}, _ctx(tmp_path), tmp_path / "ciu.toml",
+            dry_run=True,
+        )
+        assert marker.read_text(encoding="utf-8") == "ran"
+
     def test_empty_dict_return_is_ok(self, tmp_path: Path) -> None:
         hook = _write_hook(
             tmp_path,

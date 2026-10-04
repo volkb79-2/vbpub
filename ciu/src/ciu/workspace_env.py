@@ -1300,7 +1300,9 @@ def generated_facts_document(ciu_root: Path) -> dict:
         ) from exc
 
 
-def read_generated_facts(ciu_root: Path) -> dict[str, str]:
+def read_generated_facts(
+    ciu_root: Path, *, allow_repair: bool = True,
+) -> dict[str, str]:
     """S3.1c (CIU-75) — the ``[ciu.instance.generated]`` facts for *ciu_root*.
 
     The READ side of S3.1b, and since CIU-75 the ONLY source CIU itself
@@ -1353,8 +1355,53 @@ def read_generated_facts(ciu_root: Path) -> dict[str, str]:
             f"[S3.1c] {path} {GENERATED_FACTS_HEADER} is "
             f"{type(table).__name__}, not a table"
         )
-    _require_generated_schema_version(path, GENERATED_FACTS_HEADER, table)
-    facts: dict[str, str] = {}
+
+    facts = _validated_identity_table(path, table)
+    version = table.get("schema_version")
+    if _is_current_schema_version(version):
+        return facts
+    if not _is_outdated_schema_version(version):
+        _require_generated_schema_version(path, GENERATED_FACTS_HEADER, table)
+
+    # CIU-115: schema-v1 (and the immediately preceding header-less shape) is
+    # still CIU-owned data, but replacing it while Docker resources carry its
+    # identity would orphan those resources. Validate the entire recognized
+    # old document before treating it as migratable; a broken current value is
+    # never converted into a fresh identity by this path.
+    _validate_outdated_machine_table(path, parsed)
+    old_id = facts["instance_id"]
+    old_network = facts["network"]
+    if not old_id or not old_network:
+        raise WorkspaceEnvError(
+            f"[S3.1c] {path} outdated identity is missing instance_id or network"
+        )
+    if not allow_repair:
+        raise WorkspaceEnvError(
+            f"[S3.1c] {path} has outdated identity {old_id!r}; this read-only "
+            "operation will not repair generated facts. Run `ciu env generate` "
+            "to perform the guarded migration."
+        )
+    if _old_identity_resources_exist(facts):
+        raise WorkspaceEnvError(
+            f"[S3.1c] {path} has outdated identity {old_id!r}, and Docker still "
+            "has resources carrying it. Remove those resources with `ciu clean "
+            f"--identity {old_id}`, then retry."
+        )
+
+    generate_ciu_env(Path(ciu_root), notice_stream=sys.stderr)
+    repaired = _read_current_generated_identity(ciu_root)
+    _log_warn(
+        f"[S3.1c] repaired outdated identity in {path}: "
+        f"{old_id} -> {repaired['instance_id']}",
+        stream=sys.stderr,
+    )
+    return repaired
+
+
+def _validated_identity_table(
+    path: Path, table: Mapping[str, object]
+) -> dict[str, str]:
+    """Validate the stable identity fields independently of their version."""
     missing = [key for key in GENERATED_FACTS_KEYS if key not in table]
     if missing:
         raise WorkspaceEnvError(
@@ -1365,9 +1412,9 @@ def read_generated_facts(ciu_root: Path) -> dict[str, str]:
         raise WorkspaceEnvError(
             f"[S3.1c] {path} has unknown generated-facts keys: {unknown}"
         )
-    for key, value in table.items():
-        if key == "schema_version":
-            continue
+    facts: dict[str, str] = {}
+    for key in GENERATED_FACTS_KEYS:
+        value = table[key]
         if not isinstance(value, str):
             raise WorkspaceEnvError(
                 f"[S3.1c] {path} {GENERATED_FACTS_HEADER}.{key} is "
@@ -1375,6 +1422,272 @@ def read_generated_facts(ciu_root: Path) -> dict[str, str]:
             )
         facts[key] = value
     return facts
+
+
+def _is_outdated_schema_version(version: object) -> bool:
+    return version is None or (
+        isinstance(version, int)
+        and not isinstance(version, bool)
+        and 0 < version < GENERATED_FACTS_SCHEMA_VERSION
+    )
+
+
+def _is_current_schema_version(version: object) -> bool:
+    return (
+        isinstance(version, int)
+        and not isinstance(version, bool)
+        and version == GENERATED_FACTS_SCHEMA_VERSION
+    )
+
+
+def outdated_generated_identity(ciu_root: Path) -> dict[str, str] | None:
+    """Return a validated old identity without repairing it, if one exists.
+
+    Teardown uses this narrow reader to route an old-format checkout through
+    ``ciu clean --identity`` before ordinary identity reads can migrate it.
+    That avoids generating a new network for a worktree which is about to be
+    removed. Current, absent and corrupt records return ``None`` or raise by
+    the same distinctions as :func:`read_generated_facts`.
+    """
+    path = generated_facts_path(ciu_root)
+    parsed = generated_facts_document(ciu_root)
+    table: object = parsed
+    for part in GENERATED_FACTS_TABLE.split("."):
+        if not isinstance(table, dict):
+            raise WorkspaceEnvError(
+                f"[S3.1c] {path} nests '{part}' under a non-table value"
+            )
+        if part not in table:
+            return None
+        table = table[part]
+    if not isinstance(table, dict):
+        raise WorkspaceEnvError(
+            f"[S3.1c] {path} {GENERATED_FACTS_HEADER} is not a table"
+        )
+    version = table.get("schema_version")
+    if _is_current_schema_version(version):
+        return None
+    if not _is_outdated_schema_version(version):
+        _require_generated_schema_version(path, GENERATED_FACTS_HEADER, table)
+    facts = _validated_identity_table(path, table)
+    if not facts["instance_id"] or not facts["network"]:
+        raise WorkspaceEnvError(
+            f"[S3.1c] {path} outdated identity is missing instance_id or network"
+        )
+    _validate_outdated_machine_table(path, parsed)
+    return facts
+
+
+def _validate_outdated_machine_table(
+    path: Path, parsed: Mapping[str, object]
+) -> None:
+    """Accept only the known old machine table, if it was present."""
+    table: object = parsed
+    for part in MACHINE_FACTS_TABLE.split("."):
+        if not isinstance(table, dict):
+            raise WorkspaceEnvError(
+                f"[S3.1c] {path} has malformed {MACHINE_FACTS_HEADER}"
+            )
+        if part not in table:
+            return
+        table = table[part]
+    if not isinstance(table, dict):
+        raise WorkspaceEnvError(
+            f"[S3.1c] {path} {MACHINE_FACTS_HEADER} is not a table"
+        )
+    version = table.get("schema_version")
+    if _is_current_schema_version(version):
+        _require_generated_schema_version(path, MACHINE_FACTS_HEADER, table)
+    elif not _is_outdated_schema_version(version):
+        _require_generated_schema_version(path, MACHINE_FACTS_HEADER, table)
+    missing = [key for key in MACHINE_FACTS_KEYS if key not in table]
+    unknown = sorted(set(table) - {"schema_version", *MACHINE_FACTS_KEYS})
+    if missing or unknown:
+        raise WorkspaceEnvError(
+            f"[S3.1c] {path} outdated machine facts invalid: "
+            f"missing={missing}, unknown={unknown}"
+        )
+    for key in MACHINE_FACTS_KEYS:
+        if not isinstance(table[key], str):
+            raise WorkspaceEnvError(
+                f"[S3.1c] {path} {MACHINE_FACTS_HEADER}.{key} is not a string"
+            )
+
+
+def _identity_labeled_resources(
+    instance_id: str,
+    *,
+    expected_checkout: str | None = None,
+) -> dict[str, list[str]]:
+    """List exact ``ciu.instance`` resources and verify their checkout label.
+
+    The ownership overlay stamps containers, named volumes and created
+    networks. The instance id selects candidates; ``ciu.repo-root`` proves
+    which checkout owns them. A resource with a matching id but a different
+    checkout is a collision, so migration/cleanup refuses rather than deleting
+    a neighbour's resources.
+    """
+    from . import procutil
+
+    expected = os.path.normpath(expected_checkout) if expected_checkout else None
+    found: dict[str, list[str]] = {"container": [], "volume": [], "network": []}
+    project_names: set[str] = set()
+    queries = (
+        (
+            "container",
+            [
+                "ps", "-a", "--filter", f"label=ciu.instance={instance_id}",
+                "--format", '{{.ID}}\t{{.Label "ciu.repo-root"}}\t'
+                '{{.Label "com.docker.compose.project"}}',
+            ],
+        ),
+        (
+            "volume",
+            [
+                "volume", "ls", "--filter", f"label=ciu.instance={instance_id}",
+                "--format", '{{.Name}}\t{{.Label "ciu.repo-root"}}\t'
+                '{{.Label "com.docker.compose.project"}}',
+            ],
+        ),
+        (
+            "network",
+            [
+                "network", "ls", "--filter", f"label=ciu.instance={instance_id}",
+                "--format", '{{.Name}}\t{{.Label "ciu.repo-root"}}\t'
+                '{{.Label "com.docker.compose.project"}}',
+            ],
+        ),
+    )
+    for kind, args in queries:
+        try:
+            result = procutil.docker(args, capture=True, check=False)
+        except (FileNotFoundError, OSError) as exc:
+            raise WorkspaceEnvError(
+                f"[S3.1c] cannot inspect {kind}s labelled ciu.instance="
+                f"{instance_id}: {exc}"
+            ) from exc
+        if result.returncode != 0:
+            detail = (result.stderr or result.stdout or "Docker query failed").strip()
+            raise WorkspaceEnvError(
+                f"[S3.1c] cannot inspect {kind}s labelled ciu.instance="
+                f"{instance_id}: {detail}"
+            )
+        for line in (result.stdout or "").splitlines():
+            fields = line.split("\t", 2)
+            if not fields or not fields[0].strip():
+                continue
+            resource = fields[0].strip()
+            checkout = fields[1].strip() if len(fields) > 1 else ""
+            project = fields[2].strip() if len(fields) > 2 else ""
+            if checkout in ("", "<no value>"):
+                raise WorkspaceEnvError(
+                    f"[S3.1c] {kind} {resource!r} is labelled "
+                    f"ciu.instance={instance_id} but has no ciu.repo-root; "
+                    "ownership cannot be proved"
+                )
+            if expected is not None and os.path.normpath(checkout) != expected:
+                raise WorkspaceEnvError(
+                    f"[S3.1c] {kind} {resource!r} is labelled "
+                    f"ciu.instance={instance_id} for checkout {checkout!r}, "
+                    f"not {expected!r}"
+                )
+            found[kind].append(resource)
+            if project and project != "<no value>":
+                project_names.add(project)
+    found["project"] = sorted(project_names)
+    return found
+
+
+def _identity_project_labels(
+    instance_id: str,
+    repo_name: str,
+    *,
+    expected_checkout: str | None = None,
+) -> set[str]:
+    """Compose projects attributable by exact ownership or old id prefix."""
+    from . import procutil
+
+    prefix = f"{repo_name.lower()}-{instance_id}-"
+    projects: set[str] = set()
+    for args in (
+        ["ps", "-a", "--filter", "label=com.docker.compose.project",
+         "--format", '{{.Label "com.docker.compose.project"}}'],
+        ["network", "ls", "--filter", "label=com.docker.compose.project",
+         "--format", '{{.Label "com.docker.compose.project"}}'],
+        ["volume", "ls", "--filter", "label=com.docker.compose.project",
+         "--format", '{{.Label "com.docker.compose.project"}}'],
+    ):
+        try:
+            result = procutil.docker(args, capture=True, check=False)
+        except (FileNotFoundError, OSError) as exc:
+            raise WorkspaceEnvError(
+                f"[S3.1c] cannot check Docker resources for outdated identity "
+                f"{instance_id}: {exc}"
+            ) from exc
+        if result.returncode != 0:
+            detail = (result.stderr or result.stdout or "Docker query failed").strip()
+            raise WorkspaceEnvError(
+                f"[S3.1c] cannot check Docker resources for outdated identity "
+                f"{instance_id}: {detail}"
+            )
+        projects.update(
+            line.strip() for line in (result.stdout or "").splitlines()
+            if line.strip().startswith(prefix)
+        )
+    projects.update(
+        _identity_labeled_resources(
+            instance_id, expected_checkout=expected_checkout
+        )["project"]
+    )
+    return projects
+
+
+def _old_identity_resources_exist(facts: Mapping[str, str]) -> bool:
+    """Check the old identity network and Compose labels before regeneration."""
+    from . import procutil
+
+    network = facts["network"]
+    try:
+        result = procutil.docker(
+            ["network", "ls", "--filter", f"name=^{network}$", "--format", "{{.Name}}"],
+            capture=True, check=False,
+        )
+    except (FileNotFoundError, OSError) as exc:
+        raise WorkspaceEnvError(
+            f"[S3.1c] cannot check Docker network {network!r}: {exc}"
+        ) from exc
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "Docker query failed").strip()
+        raise WorkspaceEnvError(
+            f"[S3.1c] cannot check Docker network {network!r}: {detail}"
+        )
+    if network in {line.strip() for line in (result.stdout or "").splitlines()}:
+        return True
+    labelled = _identity_labeled_resources(
+        facts["instance_id"],
+        expected_checkout=facts.get("physical_repo_root"),
+    )
+    return any(labelled[kind] for kind in ("container", "volume", "network")) or bool(
+        _identity_project_labels(
+            facts["instance_id"],
+            facts["repo_name"],
+            expected_checkout=facts.get("physical_repo_root"),
+        )
+    )
+
+
+def _read_current_generated_identity(ciu_root: Path) -> dict[str, str]:
+    """Read a just-written current-format identity without triggering repair."""
+    parsed = generated_facts_document(ciu_root)
+    table: object = parsed
+    for part in GENERATED_FACTS_TABLE.split("."):
+        if not isinstance(table, dict) or part not in table:
+            return {}
+        table = table[part]
+    if not isinstance(table, dict):
+        return {}
+    _require_generated_schema_version(generated_facts_path(ciu_root), GENERATED_FACTS_HEADER, table)
+    return _validated_identity_table(generated_facts_path(ciu_root), table)
 
 
 def read_generated_machine_facts(ciu_root: Path) -> dict[str, str]:

@@ -39,7 +39,7 @@ env_overrides flow into the env dict handed to stacks), no ``eval``.
 
 from __future__ import annotations
 
-from .cli_utils import CiuArgumentParser
+from .cli_utils import CiuArgumentParser, build_up_action_parent
 
 import argparse
 import json
@@ -197,13 +197,18 @@ def resolve_repo_root(
         raise WorkspaceEnvError(str(exc)) from exc
 
 
-def load_global_config(repo_root: Path) -> dict:
+def load_global_config(repo_root: Path, *, write_rendered: bool = True) -> dict:
     """Render the global chain ONCE per invocation (S3.3, working_dir=repo_root).
 
     Then reject [deploy.groups] (S7.5) so the operator gets the profiles
     pointer immediately at config load.
     """
-    global_cfg = config_model.render_global_chain(repo_root, repo_root)
+    if write_rendered:
+        global_cfg = config_model.render_global_chain(repo_root, repo_root)
+    else:
+        global_cfg = config_model.render_global_chain(
+            repo_root, repo_root, write_rendered=False,
+        )
     profiles_pkg.reject_groups(global_cfg)
     return global_cfg
 
@@ -371,6 +376,312 @@ def render_selected_stacks(
             ciu_context=ciu_context,
         )
     return rendered
+
+
+def _resolve_identity_stack_paths(
+    repo_root: Path, selection: list[dict], selector: str | None,
+) -> list[dict]:
+    """Resolve an optional ``ciu resolve --stack`` selector exactly.
+
+    A full repo-relative path is preferred. A basename is accepted only when
+    it names one selected stack; ambiguous basenames are never guessed.
+    """
+    if selector is None:
+        return list(selection)
+    wanted = Path(selector)
+    if wanted.is_absolute():
+        try:
+            selector = wanted.resolve().relative_to(repo_root.resolve()).as_posix()
+        except ValueError as exc:
+            raise ValueError(
+                f"[S18] --stack {selector!r} is outside repo root {repo_root}"
+            ) from exc
+    selector = selector.strip("/")
+    exact = [entry for entry in selection if entry["path"] == selector]
+    if exact:
+        return exact
+    if "/" not in selector:
+        matches = [
+            entry for entry in selection
+            if Path(entry["path"]).name == selector
+        ]
+        if len(matches) == 1:
+            return matches
+        if len(matches) > 1:
+            raise ValueError(
+                f"[S18] --stack {selector!r} matches multiple selected stacks: "
+                + ", ".join(sorted(entry["path"] for entry in matches))
+            )
+    raise ValueError(
+        f"[S18] --stack {selector!r} is not in the current deploy selection; "
+        "use a selected repo-relative stack path"
+    )
+
+
+def resolve_identities(
+    repo_root: Path,
+    *,
+    stack: str | None = None,
+    service: str | None = None,
+    live: bool = False,
+) -> dict:
+    """Resolve rendered service identity facts without writing files.
+
+    This is CIU-118's v7 counterpart to v8's ``[resolved.identities]``. It
+    renders the selected configuration in memory and consults Docker only for
+    ``live=True``. The returned document deliberately groups services by
+    repo-relative stack path so duplicate service keys in different stacks
+    remain unambiguous.
+    """
+    from . import composefile
+    from .config_constants import CIU_COMPOSE_TEMPLATE, SHIPPED_COMPOSE
+    from .workspace_env import read_generated_facts
+
+    repo_root = Path(repo_root).resolve()
+    global_config = load_global_config(repo_root, write_rendered=False)
+    profile = resolve_profiles(global_config, None)
+    selection = build_selection(profile)
+    selected = _resolve_identity_stack_paths(repo_root, selection, stack)
+    ciu_context = profiles_pkg.render_ciu_context(profile, selection)
+
+    facts: dict[str, str] = {}
+    facts_path = repo_root / INSTANCE_GENERATED_FACTS
+    if facts_path.exists():
+        # A query is read-only. An outdated identity must be migrated by the
+        # explicit env-generation path, which checks live Docker ownership.
+        facts = read_generated_facts(repo_root, allow_repair=False)
+
+    deployment = profile.config.get("deploy", {})
+    network = deployment.get("network_name") or facts.get("network")
+    if not isinstance(network, str) or not network:
+        raise ValueError(
+            "[S18] this instance has no declared network identity; set "
+            "deploy.network_name or run `ciu env generate`"
+        )
+    physical_root = facts.get("physical_repo_root")
+    environment = profile_env(profile)
+    identities: dict[str, dict[str, dict]] = {}
+
+    for entry in selected:
+        rel = entry["path"]
+        stack_dir = (repo_root / rel).resolve()
+        shipped = phases_pkg.service_shipped(entry["service"])
+        if shipped:
+            compose_path = stack_dir / SHIPPED_COMPOSE
+            if not compose_path.is_file():
+                raise ValueError(
+                    f"[S18] selected shipped stack {rel!r} has no {SHIPPED_COMPOSE}"
+                )
+            rendered_compose = compose_path.read_text(encoding="utf-8")
+        else:
+            stack_cfg = config_model.render_stack(
+                stack_dir,
+                global_config=profile.config,
+                preserve_state=True,
+                ciu_context=ciu_context,
+                write_rendered=False,
+            )
+            merged = config_model.deep_merge(profile.config, stack_cfg)
+            root_key = config_model.validate_stack_shape(stack_cfg)
+            engine.auto_generate_values(merged)
+            _resolve_hostdirs_for_render(
+                merged,
+                stack_dir,
+                repo_root,
+                physical_root=Path(physical_root) if physical_root else None,
+            )
+            specs = secret_directives.discover(root_key, merged)
+            compose_template = stack_dir / CIU_COMPOSE_TEMPLATE
+            if not compose_template.is_file():
+                raise ValueError(
+                    f"[S18] selected stack {rel!r} has no {CIU_COMPOSE_TEMPLATE}; "
+                    "declare it as a shipped stack to resolve its committed compose"
+                )
+            rendered_compose = composefile.render_compose(
+                compose_template,
+                composefile.guard_config(merged, specs),
+                ciu_context=ciu_context,
+                environ=environment,
+            )
+
+        try:
+            import yaml
+        except ImportError as exc:
+            raise RuntimeError("[S18] PyYAML is required to resolve Compose identities") from exc
+        try:
+            compose_doc = yaml.safe_load(rendered_compose) or {}
+        except yaml.YAMLError as exc:
+            raise ValueError(f"[S18] rendered compose for {rel!r} is invalid: {exc}") from exc
+        services = compose_doc.get("services", {}) if isinstance(compose_doc, dict) else {}
+        if not isinstance(services, dict):
+            raise ValueError(f"[S18] rendered compose for {rel!r} has no services table")
+
+        try:
+            compose_project = engine.compose_project_name(profile.config, stack_dir)
+        except ValueError:
+            compose_project = engine.identity_compose_project_name(
+                repo_root, stack_dir, allow_identity_repair=False
+            )
+        topology_services = profile.config.get("topology", {}).get("services", {})
+        stack_identities: dict[str, dict] = {}
+        for service_name, service_config in services.items():
+            if not isinstance(service_config, dict):
+                raise ValueError(
+                    f"[S18] rendered service {rel}:{service_name} must be a table"
+                )
+            if service is not None and service_name != service:
+                continue
+            topology = (
+                topology_services.get(service_name, {})
+                if isinstance(topology_services, dict) else {}
+            )
+            row = {
+                "container_name": service_config.get("container_name")
+                or f"{compose_project}-{service_name}-1",
+                "hostname": service_config.get("hostname")
+                or service_config.get("container_name")
+                or f"{compose_project}-{service_name}-1",
+                "compose_key": service_name,
+                "compose_project": compose_project,
+                "network": network,
+                "image": service_config.get("image"),
+                "internal_host": topology.get("internal_host")
+                if isinstance(topology, dict) else None,
+                "port": topology.get("internal_port")
+                if isinstance(topology, dict) else None,
+            }
+            if service_config.get("working_dir"):
+                row["working_dir"] = service_config["working_dir"]
+            if live:
+                row["live"] = _resolve_identity_live_state(
+                    compose_project, service_name
+                )
+            stack_identities[service_name] = row
+        if stack_identities:
+            identities[rel] = stack_identities
+
+    if service is not None and not any(
+        service in stack_services for stack_services in identities.values()
+    ):
+        scope = f" in stack {stack!r}" if stack is not None else ""
+        raise ValueError(f"[S18] service {service!r} was not found{scope}")
+    return {"schema_version": 1, "resolved": {"identities": identities}}
+
+
+def _resolve_identity_live_state(project: str, service: str) -> dict:
+    """Read live Docker state by exact Compose labels for ``--live`` only."""
+    try:
+        result = procutil.docker(
+            [
+                "ps", "-a", "--filter", f"label=com.docker.compose.project={project}",
+                "--filter", f"label=com.docker.compose.service={service}",
+                "--format", "{{.ID}}",
+            ],
+            capture=True,
+            check=False,
+        )
+    except (FileNotFoundError, OSError) as exc:
+        raise RuntimeError(f"[S18] could not query Docker for {project}:{service}: {exc}") from exc
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"[S18] Docker query failed for {project}:{service}: "
+            f"{(result.stderr or result.stdout or '').strip()}"
+        )
+    ids = [line.strip() for line in (result.stdout or "").splitlines() if line.strip()]
+    if not ids:
+        return {"state": "absent", "health": None, "containers": []}
+    states: list[dict] = []
+    for container_id in ids:
+        inspected = procutil.docker(
+            ["inspect", "--format", "{{json .State}}", container_id],
+            capture=True,
+            check=False,
+        )
+        if inspected.returncode != 0:
+            raise RuntimeError(
+                f"[S18] Docker inspect failed for {container_id}: "
+                f"{(inspected.stderr or inspected.stdout or '').strip()}"
+            )
+        try:
+            state = json.loads(inspected.stdout or "{}")
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(f"[S18] Docker returned invalid state for {container_id}") from exc
+        health = state.get("Health", {}).get("Status") if isinstance(state, dict) else None
+        states.append({"container_id": container_id, "state": state, "health": health})
+    return {
+        "state": states[0]["state"].get("Status") if len(states) == 1 else "multiple",
+        "health": states[0]["health"] if len(states) == 1 else None,
+        "containers": states,
+    }
+
+
+def exec_service(
+    repo_root: Path, selector: str, argv: list[str],
+) -> int:
+    """Run exact argv in one already-running service of this checkout."""
+    from .workspace_env import read_generated_facts
+
+    if not argv:
+        raise ValueError("[S18] `ciu exec <stack>[:<service>] -- ARGV...` requires a command")
+    if ":" in selector:
+        stack, service = selector.rsplit(":", 1)
+        if not stack or not service:
+            raise ValueError("[S18] service selector must be `<stack>[:<service>]`")
+    else:
+        stack, service = selector, None
+    repo_root = Path(repo_root).resolve()
+    document = resolve_identities(repo_root, stack=stack)
+    identities = document["resolved"]["identities"]
+    stack_path = next(iter(identities), None)
+    if stack_path is None:
+        raise ValueError(f"[S18] stack {stack!r} has no rendered services")
+    stack_services = identities[stack_path]
+    if service is None:
+        if len(stack_services) != 1:
+            raise ValueError(
+                f"[S18] stack {stack_path!r} has {len(stack_services)} services; "
+                "name one as `<stack>:<service>`"
+            )
+        service = next(iter(stack_services))
+    identity = stack_services.get(service)
+    if identity is None:
+        raise ValueError(f"[S18] service {service!r} was not found in stack {stack_path!r}")
+
+    global_config = load_global_config(repo_root, write_rendered=False)
+    targets = worktree_pkg.resolve_exec_targets_config(global_config)
+    matching_targets = [
+        target for target in targets.values()
+        if target.stack == stack_path and target.service == service
+    ]
+    if len(matching_targets) > 1:
+        raise ValueError(
+            f"[S18] multiple declared exec targets match {stack_path}:{service}: "
+            + ", ".join(sorted(target.alias for target in matching_targets))
+        )
+    target = matching_targets[0] if matching_targets else None
+    network = identity["network"]
+    container_id = worktree_pkg._resolve_target_container(
+        identity["compose_project"], service, network
+    )
+    if target is not None and target.requires_worktree_mount:
+        facts = read_generated_facts(repo_root, allow_repair=False)
+        physical_checkout = facts.get("physical_repo_root")
+        if not physical_checkout:
+            raise ValueError(
+                f"[S18] {repo_root / INSTANCE_GENERATED_FACTS} has no physical_repo_root; "
+                "cannot prove the declared worktree mount"
+            )
+        worktree_pkg._verify_checkout_mount(
+            container_id, physical_checkout, target.workdir
+        )
+
+    workdir = target.workdir if target is not None else identity.get("working_dir")
+    docker_argv = ["exec"]
+    if workdir:
+        docker_argv += ["-w", workdir]
+    docker_argv += [container_id, *argv]
+    result = procutil.docker(docker_argv, capture=False, check=False)
+    return result.returncode
 
 
 # ===========================================================================
@@ -2727,7 +3038,13 @@ def _workspace_identity(repo_root: Path) -> tuple[dict, bool]:
         return {}, True
 
 
-def _resolve_hostdirs_for_render(config: dict, stack_dir: Path, repo_root: Path) -> None:
+def _resolve_hostdirs_for_render(
+    config: dict,
+    stack_dir: Path,
+    repo_root: Path,
+    *,
+    physical_root: Path | None = None,
+) -> None:
     """Rewrite every ``[<...>.hostdir]`` value to its path string — creating NOTHING.
 
     Why this exists: the real pipeline rewrites these declarations to absolute
@@ -2759,7 +3076,9 @@ def _resolve_hostdirs_for_render(config: dict, stack_dir: Path, repo_root: Path)
 
     def _physical(path: Path) -> str:
         try:
-            return str(to_physical_path(path, repo_root=repo_root))
+            return str(to_physical_path(
+                path, repo_root=repo_root, physical_root=physical_root
+            ))
         except ValueError:
             # No PHYSICAL_REPO_ROOT in scope (S1.4 needs one). The logical path
             # is a faithful-enough bind source for a render that only has to be
@@ -4222,6 +4541,196 @@ def _remove_identity_networks(
     return removed, blocked
 
 
+def action_clean_identity(
+    repo_root: Path, instance_id: str, *, yes: bool = False
+) -> int:
+    """Remove Docker resources carrying one retired CIU identity.
+
+    This intentionally bypasses normal config/bootstrap loading: the normal
+    reader refuses the very old identity this command exists to retire. V7
+    Compose labels are the authority for stack resources; the identity
+    network name is read from the old generated record when available, with
+    the top-level deterministic spelling as the no-record case.
+    """
+    if not re.fullmatch(r"[a-z0-9]{6}", instance_id):
+        error("--identity must be a six-character lower-case base36 instance id")
+        return 2
+    repo_name = repo_root.name.lower()
+    if not re.fullmatch(r"[a-z0-9][a-z0-9_-]*", repo_name):
+        error(f"cannot derive a safe CIU resource prefix from repo name {repo_name!r}")
+        return 2
+
+    if not yes:
+        try:
+            answer = input(
+                f"Remove Docker resources labelled for {repo_name}/{instance_id} "
+                f"from {repo_root}? [y/N] "
+            ).strip().lower()
+        except EOFError:
+            answer = ""
+        if answer not in ("y", "yes"):
+            info("clean identity cancelled")
+            return 0
+
+    from .workspace_env import (
+        WorkspaceEnvError,
+        _detect_physical_repo_root,
+        _identity_labeled_resources,
+        generated_facts_path,
+        outdated_generated_identity,
+        read_generated_facts,
+    )
+
+    network_names = {f"{repo_name}-{instance_id}-network"}
+    expected_checkout: str | None = None
+    try:
+        outdated = outdated_generated_identity(repo_root)
+    except WorkspaceEnvError as exc:
+        # A corrupt file does not stop label cleanup. The requested identity
+        # is explicit and each Docker target below is independently selected
+        # by its exact Compose project label.
+        warn(f"could not read {generated_facts_path(repo_root)}: {exc}")
+        outdated = None
+    if outdated and outdated.get("instance_id") == instance_id:
+        network_names.add(outdated.get("network", ""))
+        expected_checkout = outdated.get("physical_repo_root") or None
+    network_names.discard("")
+
+    if expected_checkout is None:
+        try:
+            current = read_generated_facts(repo_root, allow_repair=False)
+        except WorkspaceEnvError:
+            current = {}
+        expected_checkout = current.get("physical_repo_root") or None
+    if expected_checkout is None:
+        try:
+            expected_checkout = str(_detect_physical_repo_root(repo_root))
+        except (OSError, WorkspaceEnvError):
+            expected_checkout = None
+
+    try:
+        from .workspace_env import _identity_project_labels
+        labelled = _identity_labeled_resources(
+            instance_id, expected_checkout=expected_checkout
+        )
+        projects = _identity_project_labels(
+            instance_id, repo_name, expected_checkout=expected_checkout
+        )
+    except WorkspaceEnvError as exc:
+        error(str(exc))
+        return 1
+
+    failures: list[str] = []
+    removed: list[str] = []
+    # The CIU ownership pair is the strongest v7 witness. Remove only objects
+    # bearing the exact id and checkout labels; a project label found on one
+    # such object is not by itself permission to delete every sibling object
+    # with that project name.
+    for kind in ("container", "volume", "network"):
+        resources = labelled[kind]
+        if not resources:
+            continue
+        command = {
+            "container": ["rm", "-f", *resources],
+            "volume": ["volume", "rm", *resources],
+            "network": ["network", "rm", *resources],
+        }[kind]
+        try:
+            result = procutil.docker(command, capture=True, check=False)
+        except (FileNotFoundError, OSError) as exc:
+            failures.append(f"could not remove labelled {kind}s: {exc}")
+            continue
+        if result.returncode != 0:
+            failures.append(
+                f"could not remove labelled {kind}s: "
+                f"{(result.stderr or result.stdout or '').strip()}"
+            )
+        else:
+            removed.extend(f"{kind}:{name}" for name in resources)
+
+    # Pre-S16.9 v7 resources have no `ciu.instance` label. Their generated
+    # Compose project contains the exact repo/id prefix, so it is safe to
+    # enumerate the complete old project by Compose's exact project label.
+    legacy_prefix = f"{repo_name}-{instance_id}-"
+    legacy_projects = sorted(
+        project for project in projects if project.startswith(legacy_prefix)
+    )
+    for project in legacy_projects:
+        if not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9_.-]*", project):
+            failures.append(f"refusing malformed Compose project label {project!r}")
+            continue
+        for kind, args in (
+            ("container", ["ps", "-aq", "--filter", f"label=com.docker.compose.project={project}"]),
+            ("volume", ["volume", "ls", "-q", "--filter", f"label=com.docker.compose.project={project}"]),
+            ("network", ["network", "ls", "-q", "--filter", f"label=com.docker.compose.project={project}"]),
+        ):
+            try:
+                listed = procutil.docker(args, capture=True, check=False)
+            except (FileNotFoundError, OSError) as exc:
+                failures.append(f"could not list {kind}s for {project!r}: {exc}")
+                continue
+            if listed.returncode != 0:
+                failures.append(
+                    f"could not list {kind}s for {project!r}: "
+                    f"{(listed.stderr or listed.stdout or '').strip()}"
+                )
+                continue
+            resources = [line.strip() for line in (listed.stdout or "").splitlines() if line.strip()]
+            if not resources:
+                continue
+            verb = {"container": "rm", "volume": "volume rm", "network": "network rm"}[kind]
+            argv = verb.split() + ( ["-f"] if kind == "container" else [] ) + resources
+            try:
+                result = procutil.docker(argv, capture=True, check=False)
+            except (FileNotFoundError, OSError) as exc:
+                failures.append(f"could not remove {kind}s for {project!r}: {exc}")
+                continue
+            if result.returncode != 0:
+                failures.append(
+                    f"could not remove {kind}s for {project!r}: "
+                    f"{(result.stderr or result.stdout or '').strip()}"
+                )
+            else:
+                removed.extend(f"{kind}:{name}" for name in resources)
+
+    # CIU's workspace network is created outside Compose and has no Compose
+    # label, so its exact name comes from the old file (or the same-root
+    # derivation) and is removed separately after labelled containers.
+    try:
+        listed_networks = procutil.docker(
+            ["network", "ls", "--format", "{{.Name}}"], capture=True, check=False
+        )
+    except (FileNotFoundError, OSError) as exc:
+        failures.append(f"could not list Docker networks: {exc}")
+    else:
+        if listed_networks.returncode != 0:
+            failures.append(
+                "could not list Docker networks: "
+                f"{(listed_networks.stderr or listed_networks.stdout or '').strip()}"
+            )
+        else:
+            existing = {line.strip() for line in (listed_networks.stdout or "").splitlines()}
+            for network in sorted(existing & network_names):
+                result = procutil.docker(["network", "rm", network], capture=True, check=False)
+                if result.returncode != 0:
+                    failures.append(
+                        f"could not remove network {network!r}: "
+                        f"{(result.stderr or result.stdout or '').strip()}"
+                    )
+                else:
+                    removed.append(f"network:{network}")
+
+    if failures:
+        for detail in failures:
+            error(detail)
+        return 1
+    success(
+        f"cleaned identity {instance_id}: "
+        + (", ".join(removed) if removed else "no labelled resources found")
+    )
+    return 0
+
+
 # S6.4b (CIU-60) — the workspace-level files `ciu clean --vanilla`
 # additionally removes. Every one of them is gitignored and regenerable:
 # `ciu.global.toml` by any render, `ciu.env` and `ciu.instance.generated.toml`
@@ -4760,11 +5269,12 @@ def build_action_sequence(argv: list[str]) -> list[str]:
     return [action_flags[arg] for arg in argv if arg in action_flags]
 
 
-def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
-    """Argparse for ``ciu-deploy`` (S10.2). NOTE: --groups is NOT defined (S7.5)."""
+def build_argument_parser() -> CiuArgumentParser:
+    """Build the profile/multi-stack parser for ``ciu up`` (S10.2)."""
     parser = CiuArgumentParser(
         description=f"CIU-deploy {get_cli_version()}: deployment orchestrator (S7).",
         formatter_class=argparse.RawDescriptionHelpFormatter,
+        parents=[build_up_action_parent()],
         epilog="""
 Host profiles (--profile) select which stacks run on THIS host (S7.4); compose
 profiles (compose_profiles in a profile/service) select which services inside a
@@ -4785,11 +5295,9 @@ Examples:
 """,
     )
 
-    actions = parser.add_argument_group("Actions")
-    actions.add_argument("--deploy", action="store_true", help="Deploy selected stacks (default)")
+    actions = parser.add_argument_group("Profile actions")
     actions.add_argument("--stop", action="store_true", help="Stop project containers (preserve volumes)")
     actions.add_argument("--clean", action="store_true", help="Remove containers, volumes, rendered artifacts")
-    actions.add_argument("--healthcheck", action="store_true", help="Run the health gate over the selection (S7.7)")
     actions.add_argument("--preflight", action="store_true",
                          help="Probe healthcheck tool availability in service images (ciu health --preflight)")
     actions.add_argument("--check", action="store_true",
@@ -4863,7 +5371,12 @@ Examples:
                          help="With --host: docker-optional push→activate mode (S14.6)")
     control.add_argument("--version", action="version", version=f"ciu-deploy {get_cli_version()}")
 
-    return parser.parse_args(argv)
+    return parser
+
+
+def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
+    """Argparse for ``ciu-deploy`` (S10.2). NOTE: --groups is NOT defined."""
+    return build_argument_parser().parse_args(argv)
 
 
 def _parse_phase_filter(raw: Optional[str]) -> Optional[set[str]]:
@@ -4973,8 +5486,16 @@ def _run(args: argparse.Namespace, raw: list[str]) -> int:
     # callers that replace the resolver for bounded orchestration tests.
     repo_root = resolve_repo_root(define_root)
 
+    requested_actions = build_action_sequence(raw)
+
     # --- config + profile (S3.3 / S7.4 / Seam 4) ---
-    global_cfg = load_global_config(repo_root)
+    if requested_actions == ["list_profiles"]:
+        global_cfg = load_global_config(repo_root, write_rendered=False)
+    else:
+        # Keep the established one-argument call on write-capable paths. Aside
+        # from preserving the adapter seam, the loader's default is the
+        # existing write behavior; only the read-only listing needs to opt out.
+        global_cfg = load_global_config(repo_root)
     # args.profile is now a list[str] | None (action="append"). Expand any
     # comma forms so --profile core,db behaves like --profile core --profile db.
     raw_profiles = args.profile  # list[str] | None
@@ -4995,7 +5516,7 @@ def _run(args: argparse.Namespace, raw: list[str]) -> int:
     selection = build_selection(profile, cli_phases)
 
     # --- action ordering (S10.2): explicit order, else default deploy ---
-    actions = build_action_sequence(raw)
+    actions = requested_actions
     if not actions:
         actions = ["deploy"]
         _run_info("No action specified; defaulting to --deploy")

@@ -560,7 +560,7 @@ class TestClosedPartition:
     def test_inconsistent_record_is_a_finding_and_never_licenses_destruction(
         self, repo, docker
     ):
-        """#16 — `list_instance_records` would RAISE here; the survey must not.
+        """#16 — an inconsistent sibling is warned about; the survey must report it.
 
         A survey that dies on one bad record is useless exactly when it is
         most needed. The group is reported as `ambiguous`, which is a
@@ -577,8 +577,9 @@ class TestClosedPartition:
         )
         project = deploy_instance(docker, root, "d4e5f6")
 
-        with pytest.raises(worktree.WorktreeError, match="claims branch"):
-            worktree.list_instance_records(repo)
+        # The family scan warns and excludes the contradictory sibling; it
+        # leaves the destructive survey itself to report the full finding.
+        assert worktree.list_instance_records(repo) == []
 
         doc = survey(repo)
         assert categories(doc)[project] == "ambiguous"
@@ -591,10 +592,10 @@ class TestClosedPartition:
     ):
         """All four checks, and more than one from a single record.
 
-        `list_instance_records` refuses the whole family on the FIRST of
-        these; the survey reports every one of them and keeps going, because
-        "the survey crashed" is the worst possible answer to "what is safe to
-        delete?".
+        The ordinary family scan excludes the contradictory sibling and
+        warns. The reap survey reports every contradiction and keeps going,
+        because "the survey crashed" is the worst possible answer to "what
+        is safe to delete?".
         """
         first = add_instance(repo, logical="twin", instance_id="ab0001")
         second = add_instance(
@@ -609,8 +610,9 @@ class TestClosedPartition:
         deploy_instance(docker, first, "ab0001")
         project = deploy_instance(docker, second, "ab0002")
 
-        with pytest.raises(worktree.WorktreeError):
-            worktree.list_instance_records(repo)
+        assert [record.logical_name for record in worktree.list_instance_records(repo)] == [
+            "twin",
+        ]
 
         doc = survey(repo)
         details = " || ".join(f["detail"] for f in doc["findings"])

@@ -21,6 +21,16 @@ it is user-owned state and may not exist in a newly created checkout. The
 workspace operation therefore prepares all committed roots, while ordinary
 stack verbs resolve the nearest root above their invocation directory.
 
+The family registry also records generic Git worktrees whose selected base
+contains no CIU root. Their ready record has null runtime values because there
+is no CIU instance to identify; the reader accepts that exact state only when
+the checkout itself has no root marker. Keeping the record format unchanged
+lets older CIU versions in the same Git family continue reading it. Registry
+scans isolate sibling failures so one stale or corrupt record cannot block an
+unrelated checkout; the requested name or path still refuses when its own
+record cannot be trusted. Branch cleanup protects unreadable checkouts because
+a Git-only removal cannot prove that CIU owns no runtime state.
+
 Root selection is explicit or derived: `--root-folder` wins, then the nearest
 marker above `pwd`/`--dir`; a missing marker refuses. Ambient `REPO_ROOT` is an
 export for child processes, not a selector. This closes the cross-checkout
@@ -48,7 +58,7 @@ author's choice to cap one service. A Compose service's own key still wins.
 Memory defaults are recorded in
 [D-013](../nyxloom-trove/decisions.md#d-013--governance-memory-settings-are-explicit-only-2026-09-27);
 the explicit-only IOPS rule is recorded in
-[D-014](../nyxloom-trove/decisions.md#d-014--ciu-resource-caps-are-configured-explicitly-2026-09-27).
+[D-014](../nyxloom-trove/decisions.md#d-014--ciu-resource-caps-require-explicit-config-2026-09-27).
 The full contract is in [S15.1–S15.4](SPEC.md#s151--declaration). `ciu init`
 puts the complete governance table in the generated global config with
 governance disabled and all caps unset, making the supported settings visible
@@ -502,6 +512,64 @@ passes argv to `subprocess.run` as a list with no shell, so spaces, globs,
 cannot be interpreted by a shell or misparsed as CIU flags. The child's exit
 code is returned exactly — an automation lane that runs a gate command through
 `exec` needs that code, not a wrapper's guess.
+
+## Why worktree startup is one declared, combined deploy
+
+A worktree's test environment is project policy: every new linked checkout of
+that project needs the same set of stacks. CIU reads `[ciu.worktree].up` from
+the selected checkout and starts those profiles together in one `ciu up`
+process. Running one process per profile would split static preflight from the
+selection it must validate; for example, a database profile can require the
+core profile in the same invocation. `create --up` is only a convenience over
+`worktree create` followed by `worktree up`: if startup fails, the durable
+checkout remains available for inspection and retry.
+
+The single-stack and profile modes share `--deploy` and `--healthcheck` via one
+parser parent. The `--dir` health gate runs after the selected stack starts and
+is skipped on dry-run because no live stack was started. Profile mode keeps its
+phase-by-phase health ordering. Single-stack mode keeps its existing validation
+pipeline; `--check` remains a profile-mode action.
+
+## Why reporting and dry-run paths do not run live hooks
+
+`ciu profiles` reports the declared profiles, so it renders the shared config
+in memory and never writes `ciu.global.toml`. `--dry-run` is not a general
+read-only mode: it still runs the pre-deploy preparation steps and pre-hooks.
+The live `post_compose` hook is different because it can provision accounts or
+change an external service even when Compose itself was skipped. CIU therefore
+skips that hook unless its source has the literal module-level declaration
+`DRY_RUN_SAFE = True`. CIU checks this with Python's AST and skips before
+importing an unsafe hook, so import-time side effects are skipped too. This is
+an explicit hook-author contract, not an inference from a function name or
+its return value.
+
+## Why CIU owns service identity queries
+
+Names such as Compose project, container, network, internal host, and port are
+facts CIU resolves from the selected config and identity record. Consumers
+that rebuild those formulas can silently select another instance after an
+identity change. `ciu resolve --json` returns those facts grouped by exact
+stack path and Compose service key, in a shape aligned with v8's
+`resolved.identities`; `--live` adds Docker state. `ciu exec` uses the same
+resolution, requires exactly one already-running container, and passes argv
+without a shell. It never starts a missing service. A declared exec target
+retains the worktree-mount proof for consumers that need it.
+
+## Why identity migration checks Docker before rewriting
+
+An outdated generated identity is CIU-owned state and can be derived again,
+but its old id may still own labeled Docker resources. Rewriting first would
+orphan them under an id the checkout no longer knows. CIU checks the old
+network and exact ownership labels first; if any remain it refuses and names
+`ciu clean --identity <old-id>`, which removes resources for that id using
+labels. Corrupt current-format data remains a refusal because it is not a
+format-only migration.
+
+An interrupted `worktree adopt` has the opposite risk: the checkout belongs to
+the operator, and a retry cannot assume it is still at the original HEAD. CIU
+records the target HEAD and resumes only if HEAD still matches. If it moved,
+the commit is preserved and the operator must review the checkout before
+adopting again.
 
 ## Why container targets are declared aliases, not arbitrary services
 
