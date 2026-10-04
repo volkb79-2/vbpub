@@ -445,7 +445,7 @@ def test_release_refuses_unsupported_git_before_creating_candidate_or_running_ch
     result = cli.main(["release", "--config", str(config), "alpha"])
 
     assert result == 1
-    assert calls == []
+    assert calls == ["fetch"]
     assert git_calls == [(
         "show-ref", "--exists", "refs/tags/__cmru_tag_inspection_probe__",
     )]
