@@ -1317,7 +1317,9 @@ def test_resume_checks_tag_policy_from_committed_candidate_before_running_child(
     candidate_config = candidate_root / "demo" / "cmru.toml"
     candidate_config.parent.mkdir(parents=True)
     candidate_config.write_text(
-        "[project.release]\ngit_tag = true\n", encoding="utf-8",
+        '[project]\nid = "demo"\nprefix = "demo-v"\n'
+        "[project.release]\ngit_tag = true\n",
+        encoding="utf-8",
     )
     _git("add", "demo/cmru.toml", cwd=candidate_root)
     _git("commit", "-q", "-m", "record candidate config", cwd=candidate_root)
@@ -1339,6 +1341,10 @@ def test_resume_checks_tag_policy_from_committed_candidate_before_running_child(
         lambda _path: events.append("candidate-committed"),
     )
     monkeypatch.setattr(
+        cli, "_assert_resume_candidate_is_safe_to_replay",
+        lambda *_args, **_kwargs: events.append("candidate-safe"),
+    )
+    monkeypatch.setattr(
         cli, "_require_local_tag_inspection_support",
         lambda _root: events.append("tag-support"),
     )
@@ -1347,7 +1353,6 @@ def test_resume_checks_tag_policy_from_committed_candidate_before_running_child(
         cli.transaction, "run_child",
         lambda *_args, **_kwargs: events.append("child") or 0,
     )
-    monkeypatch.setattr(cli.transaction, "read_release_results", lambda *_args: {"demo": "demo-v1"})
     monkeypatch.setattr(cli.transaction, "retain_success_outputs", lambda *_args, **_kwargs: [])
     monkeypatch.setattr(cli.transaction, "remove_backup_branch", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(cli.transaction, "remove_workspace", lambda *_args, **_kwargs: None)
@@ -1360,7 +1365,7 @@ def test_resume_checks_tag_policy_from_committed_candidate_before_running_child(
     assert cli.main([
         "release", "--resume", str(candidate_root), "--config", str(config_path),
     ]) == 0
-    assert events == ["candidate-committed", "tag-support", "child"]
+    assert events == ["candidate-committed", "candidate-safe", "tag-support", "child"]
 
 
 @pytest.mark.parametrize("handoff_kind", ["malformed", "wrong-root", "bad-hash"])
