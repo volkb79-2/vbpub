@@ -402,6 +402,53 @@ def test_exec_declared_mount_target_and_duplicate_target_guards(resolvable_repo,
         deploy.exec_service(repo, "tools/test-runner:test-runner", ["true"])
 
 
+@pytest.mark.parametrize(
+    ("other_stack", "other_service"),
+    [
+        ("tools/other", "test-runner"),
+        ("tools/test-runner", "other-service"),
+    ],
+)
+def test_exec_target_match_requires_exact_stack_and_service(
+    resolvable_repo, monkeypatch, other_stack, other_service,
+):
+    repo, _stack, global_config = resolvable_repo
+    identity_doc = {"resolved": {"identities": {"tools/test-runner": {
+        "test-runner": {
+            "compose_project": "project",
+            "network": "net",
+            "working_dir": "/default",
+        },
+    }}}}
+    target = SimpleNamespace(
+        alias="requested", stack="tools/test-runner", service="test-runner",
+        requires_worktree_mount=False, workdir="/requested",
+    )
+    other = SimpleNamespace(
+        alias="other", stack=other_stack, service=other_service,
+        requires_worktree_mount=False, workdir="/wrong",
+    )
+    monkeypatch.setattr(deploy, "resolve_identities", lambda *_a, **_kw: identity_doc)
+    monkeypatch.setattr(deploy, "load_global_config", lambda *_a, **_kw: global_config)
+    monkeypatch.setattr(
+        worktree, "resolve_exec_targets_config",
+        lambda _cfg: {"requested": target, "other": other},
+    )
+    monkeypatch.setattr(worktree, "_resolve_target_container", lambda *_a: "cid")
+    calls = []
+    monkeypatch.setattr(
+        deploy.procutil, "docker",
+        lambda argv, **kwargs: calls.append((argv, kwargs))
+        or SimpleNamespace(returncode=0, stdout="", stderr=""),
+    )
+
+    assert deploy.exec_service(repo, "tools/test-runner:test-runner", ["true"]) == 0
+    assert calls == [
+        (["exec", "-w", "/requested", "cid", "true"],
+         {"capture": False, "check": False}),
+    ]
+
+
 def test_exec_mount_proof_refuses_outdated_identity_without_repair(
     resolvable_repo, monkeypatch,
 ):
@@ -510,6 +557,21 @@ def test_exec_runs_verbatim_in_the_single_exact_service(resolvable_repo, monkeyp
     ]
     assert calls[1][0] == ["exec", "cid-api", "python", "--help"]
     assert calls[1][1] == {"capture": False, "check": False}
+
+
+def test_exec_does_not_render_global_config(resolvable_repo, monkeypatch):
+    repo, _stack, _global = resolvable_repo
+    rendered_config = repo / "ciu.global.toml"
+    assert not rendered_config.exists()
+    monkeypatch.setattr(worktree, "resolve_exec_targets_config", lambda _cfg: {})
+    monkeypatch.setattr(worktree, "_resolve_target_container", lambda *_a: "cid")
+    monkeypatch.setattr(
+        deploy.procutil, "docker",
+        lambda *_a, **_kw: SimpleNamespace(returncode=0, stdout="", stderr=""),
+    )
+
+    assert deploy.exec_service(repo, "tools/test-runner:test-runner", ["true"]) == 0
+    assert not rendered_config.exists()
 
 
 def test_exec_requests_tty_only_when_stdin_and_stdout_are_terminals(
