@@ -1282,6 +1282,27 @@ class TestManagedRecordValidation:
             worktree.remove(tmp_repo, str(damaged.git_worktree_path), yes=True)
         assert damaged.git_worktree_path.exists()
 
+    def test_corrupt_record_at_explicit_create_path_refuses_before_git_changes(
+        self, tmp_repo, fake_generate_env
+    ):
+        damaged = worktree.create(tmp_repo, "occupied-path")
+        raw = json.loads(damaged.record_path.read_text(encoding="utf-8"))
+        raw.pop("branch")
+        damaged.record_path.write_text(json.dumps(raw), encoding="utf-8")
+        branch_before = worktree._git(
+            ["branch", "--list"], tmp_repo
+        ).stdout
+
+        with pytest.raises(worktree.WorktreeError, match="requested checkout path"):
+            worktree.create(
+                tmp_repo,
+                "different-logical-name",
+                path=damaged.git_worktree_path,
+            )
+
+        assert damaged.git_worktree_path.exists()
+        assert worktree._git(["branch", "--list"], tmp_repo).stdout == branch_before
+
     def test_family_scan_counts_stat_failure_without_blocking_other_reads(
         self, tmp_repo, fake_generate_env, monkeypatch, capsys,
     ):
@@ -1381,6 +1402,25 @@ class TestManagedHelperRefusals:
         )
         assert worktree._docker_network_exists("wanted") is True
         assert worktree._docker_network_exists("missing") is False
+
+    def test_docker_network_probe_uses_substring_filter_and_exact_membership(
+        self, monkeypatch
+    ):
+        calls = []
+
+        def docker(argv, **kwargs):
+            calls.append((argv, kwargs))
+            return subprocess.CompletedProcess(
+                argv, 0, "prefix-wanted-suffix\nwanted\n", ""
+            )
+
+        monkeypatch.setattr(worktree.procutil, "docker", docker)
+        assert worktree._docker_network_exists("wanted") is True
+        assert worktree._docker_network_exists("prefix-wanted-suffix") is True
+        assert worktree._docker_network_exists("prefix") is False
+        assert [call[0][3] for call in calls] == [
+            "name=wanted", "name=prefix-wanted-suffix", "name=prefix",
+        ]
 
     def test_runtime_identity_reader_rejects_missing_and_malformed_env(
         self, tmp_path, write_instance_facts

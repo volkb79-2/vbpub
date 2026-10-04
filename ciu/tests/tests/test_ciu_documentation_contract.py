@@ -196,6 +196,7 @@ def test_new_v7_workflows_are_explained_in_all_three_user_documents():
         doc.read_text(encoding="utf-8") for doc in DOCS
     )
     assert "[ciu.worktree].up" in readme and "--up" in readme
+    assert "docs/DESIGN-GUIDE.md#why-worktree-startup-is-one-declared-combined-deploy" in readme
     assert "DRY_RUN_SAFE = True" in readme
     assert "ciu resolve" in readme and "ciu exec" in readme
     assert "ciu down --dir <stack>" in readme
@@ -208,12 +209,28 @@ def test_new_v7_workflows_are_explained_in_all_three_user_documents():
     assert "ciu down --dir" in design
     assert "com.docker.compose.project" in design
 
-    assert "[ciu.worktree]" in consumers and "up = [\"test\"]" in consumers
+    assert "[ciu.worktree]" in consumers and 'up = ["core", "db", "test"]' in consumers
     assert "DRY_RUN_SAFE = True" in consumers
     assert "ciu resolve --stack" in consumers
     assert "ciu exec --profile test tools/test-runner:test-runner" in consumers
     assert "ciu down --dir tools/admin-debug" in consumers
     assert "ciu clean --identity OLD_ID" in consumers
+
+
+def test_worktree_startup_consumer_example_uses_the_shipped_profile_loader():
+    consumers = (REPO_ROOT / "docs" / "CONSUMERS.md").read_text(encoding="utf-8")
+    blocks = [
+        block for block in _toml_blocks(REPO_ROOT / "docs" / "CONSUMERS.md")
+        if "[ciu.worktree]" in block and 'up = ["core", "db", "test"]' in block
+    ]
+    assert len(blocks) == 1
+    parsed = config_model.parse_toml_string(blocks[0], "worktree startup consumer example")
+    assert worktree.resolve_worktree_up_profiles(parsed) == ("core", "db", "test")
+    assert "tools/test-runner" in blocks[0]
+    assert "why-worktree-startup-is-one-declared-combined-deploy" in consumers
+
+    readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    assert "docs/DESIGN-GUIDE.md#why-worktree-startup-is-one-declared-combined-deploy" in readme
 
 
 def test_every_cross_document_anchor_resolves():

@@ -3801,7 +3801,10 @@ def _docker_network_exists(network: str) -> bool:
     """Check one exact host network name; Docker absence means local-only CIU."""
     try:
         result = procutil.docker(
-            ["network", "ls", "--filter", f"name=^{network}$", "--format", "{{.Name}}"],
+            # Docker's network name filter is substring-based, not a regular
+            # expression. Ask for candidates by substring and prove exact
+            # membership from the returned names below.
+            ["network", "ls", "--filter", f"name={network}", "--format", "{{.Name}}"],
             capture=True, check=False,
         )
     except (FileNotFoundError, OSError):

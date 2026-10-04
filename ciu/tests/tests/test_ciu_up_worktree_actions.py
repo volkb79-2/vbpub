@@ -151,7 +151,9 @@ def test_create_up_failure_preserves_checkout_and_names_retry(monkeypatch, tmp_p
     assert "ciu worktree up logical" in capsys.readouterr().err
 
 
-def test_create_up_success_returns_ready_after_start(monkeypatch, tmp_path):
+def test_create_up_success_starts_before_return_without_recommending_up_again(
+    monkeypatch, tmp_path, capsys,
+):
     record = SimpleNamespace(git_worktree_path=tmp_path / "created", ciu_root=tmp_path / "created")
     started = []
     monkeypatch.setattr(cli, "_resolve_worktree_git_root_cli", lambda *_args: tmp_path)
@@ -160,6 +162,21 @@ def test_create_up_success_returns_ready_after_start(monkeypatch, tmp_path):
 
     assert cli._worktree(["create", "logical", "--up"]) == 0
     assert started == [True]
+    output = capsys.readouterr().out
+    assert "worktree ready:" in output
+    assert "next: cd" not in output
+
+
+def test_create_without_up_prints_the_startup_next_step(monkeypatch, tmp_path, capsys):
+    record = SimpleNamespace(git_worktree_path=tmp_path / "created", ciu_root=tmp_path / "created")
+    started = []
+    monkeypatch.setattr(cli, "_resolve_worktree_git_root_cli", lambda *_args: tmp_path)
+    monkeypatch.setattr(worktree, "create", lambda *_args, **_kwargs: record)
+    monkeypatch.setattr(worktree, "up_instance", lambda *_args, **_kwargs: started.append(True) or 0)
+
+    assert cli._worktree(["create", "logical"]) == 0
+    assert started == []
+    assert f"next: cd {record.ciu_root} && ciu up" in capsys.readouterr().out
 
 
 def test_worktree_up_all_forwards_explicit_default_selection(monkeypatch, tmp_path):

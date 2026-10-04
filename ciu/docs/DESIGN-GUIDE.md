@@ -45,6 +45,24 @@ and strict; malformed or wrong-version facts are not replaced by a sibling
 file, ambient variables, or legacy `ciu.env`. `ciu.env` remains an export-only
 compatibility file for shell consumers.
 
+## Why worktree startup is one declared combined deploy
+
+A worktree's own test environment is committed policy, not an operator's
+remembered command. `[ciu.worktree].up` names the profiles CIU starts after
+creating the worktree, and `create --up` requests that startup as part of the
+same lifecycle operation.
+
+CIU passes all declared profiles to one `ciu up` process. Cross-profile
+preflights inspect the whole selected set; dstdns's `db` profile requires the
+services in `core` to be selected in the same invocation. Running one deploy
+per profile would make `db` fail its preflight even though `core` had just
+started. CIU keeps each profile's declared stack order.
+
+This maps to the v8 rule in SPEC-V8 S14.1.6: `[ciu.instances]
+default_bundles` supplies a new worktree instance's default bundles, and
+`ciu instance init --up` starts the selected bundles after initialization.
+See the [consumer declaration and create command](CONSUMERS.md#1-declare-the-config-a-consumer-needs-valid-toml).
+
 ## Stop one stack without stopping its neighbors
 
 Profile-mode `ciu down` is project-wide, which is too broad for a helper that

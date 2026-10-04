@@ -15,7 +15,7 @@ surface reads:
 ```toml
 [ciu.worktree]
 max_concurrent_instances = 3
-up = ["test"]
+up = ["core", "db", "test"]
 
 [deploy]
 project_name = "myapp"
@@ -23,9 +23,20 @@ environment_tag = "dev"
 network_name = "$DOCKER_NETWORK_INTERNAL"
 landscape_id = "prod-eu"
 
+[deploy.profiles.core]
+stacks = ["infra/vault", "infra/consul-server", "infra/redis-core"]
+
+[deploy.profiles.db]
+stacks = ["infra/db-core", "infra/db-init"]
+
 [deploy.profiles.test]
-stacks = ["tools/test-runner"]
+stacks = ["infra/seeded-targets", "infra/pwmcp", "tools/test-runner"]
 ```
+
+This dstdns-shaped example keeps the database profile's `core` prerequisite
+inside the same deployment selection and includes the profile that starts
+`tools/test-runner`. CIU starts all three profiles in one `ciu up` process;
+see [why the startup is one combined deploy](DESIGN-GUIDE.md#why-worktree-startup-is-one-declared-combined-deploy).
 
 `landscape_id` is opt-in [S3.11](SPEC.md#s3--configuration-model): a
 DNS-label-safe slug (`^[a-z][a-z0-9-]{0,62}$`) that a consumer renders its
@@ -86,7 +97,9 @@ $ ciu worktree up pkg-under-test --all
 ```
 
 `--up` and `worktree up` run all declared profiles in one `ciu up` process, so
-cross-profile dependency checks see the full selection. `--all` explicitly
+cross-profile dependency checks see the full selection. [The design guide
+explains why splitting profiles into separate deploys is incorrect](DESIGN-GUIDE.md#why-worktree-startup-is-one-declared-combined-deploy).
+`--all` explicitly
 selects the default deploy set. Without `create --up`, creation remains
 prepare-only. If startup fails, CIU keeps the created worktree and tells you
 to retry with `ciu worktree up pkg-under-test`.

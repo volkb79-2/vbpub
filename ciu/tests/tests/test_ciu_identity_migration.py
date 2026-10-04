@@ -330,6 +330,61 @@ def test_old_identity_resource_check_covers_network_labels_projects_and_errors(m
     monkeypatch.setattr(procutil, "docker", lambda *_a, **_kw: (_ for _ in ()).throw(OSError("daemon")))
     with pytest.raises(workspace_env.WorkspaceEnvError, match="cannot check Docker network"):
         workspace_env._old_identity_resources_exist(facts)
+
+
+def test_old_identity_network_filter_handles_docker_substring_matching_exactly(
+    monkeypatch,
+):
+    facts = {**OLD_FACTS}
+    network = facts["network"]
+    calls = []
+
+    def docker(args, **_kwargs):
+        calls.append(args)
+        if args[:2] == ["network", "ls"] and "--filter" in args:
+            filter_value = args[args.index("--filter") + 1]
+            if filter_value.startswith("name="):
+                return SimpleNamespace(
+                    returncode=0,
+                    stdout=f"{network}\n{network}-suffix\n",
+                    stderr="",
+                )
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(procutil, "docker", docker)
+    assert workspace_env._old_identity_resources_exist(facts)
+    name_query = next(
+        args for args in calls
+        if args[:2] == ["network", "ls"]
+        and "--filter" in args
+        and args[args.index("--filter") + 1].startswith("name=")
+    )
+    assert name_query == [
+        "network", "ls", "--filter", f"name={network}",
+        "--format", "{{.Name}}",
+    ]
+
+    calls.clear()
+
+    def prefix_only(args, **_kwargs):
+        calls.append(args)
+        if args[:2] == ["network", "ls"] and "--filter" in args:
+            filter_value = args[args.index("--filter") + 1]
+            if filter_value.startswith("name="):
+                return SimpleNamespace(
+                    returncode=0,
+                    stdout=f"{network}-suffix\n",
+                    stderr="",
+                )
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(procutil, "docker", prefix_only)
+    monkeypatch.setattr(
+        workspace_env, "_identity_labeled_resources",
+        lambda *_a, **_kw: {"container": [], "volume": [], "network": [], "project": []},
+    )
+    monkeypatch.setattr(workspace_env, "_identity_project_labels", lambda *_a, **_kw: set())
+    assert not workspace_env._old_identity_resources_exist(facts)
     monkeypatch.setattr(procutil, "docker", lambda *_a, **_kw: SimpleNamespace(returncode=1, stdout="", stderr="denied"))
     with pytest.raises(workspace_env.WorkspaceEnvError, match="cannot check Docker network"):
         workspace_env._old_identity_resources_exist(facts)

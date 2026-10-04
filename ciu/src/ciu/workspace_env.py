@@ -1649,7 +1649,7 @@ def _old_identity_resources_exist(facts: Mapping[str, str]) -> bool:
     network = facts["network"]
     try:
         result = procutil.docker(
-            ["network", "ls", "--filter", f"name=^{network}$", "--format", "{{.Name}}"],
+            ["network", "ls", "--filter", f"name={network}", "--format", "{{.Name}}"],
             capture=True, check=False,
         )
     except (FileNotFoundError, OSError) as exc:

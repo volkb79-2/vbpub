@@ -1733,7 +1733,8 @@ def _worktree(rest: list[str]) -> int:
             else:
                 print(f"worktree ready: {record.git_worktree_path}")
                 print(f"  CIU root: {record.ciu_root}")
-                print(f"  next: cd {record.ciu_root} && ciu up")
+                if not (opts.action == "create" and opts.up):
+                    print(f"  next: cd {record.ciu_root} && ciu up")
 
         if opts.action in ("create", "ensure"):
             lifecycle = wt_mod.create if opts.action == "create" else wt_mod.ensure
