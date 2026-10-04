@@ -132,6 +132,26 @@ def test_read_only_and_unidentifiable_old_records_refuse_without_repair(tmp_path
 
 
 @pytest.mark.parametrize("missing_key", ["instance_id", "network"])
+def test_read_generated_facts_refuses_when_either_old_identity_fact_is_missing(
+    tmp_path, monkeypatch, missing_key,
+):
+    path = _write_old_facts(tmp_path, {**OLD_FACTS, missing_key: ""})
+    before = path.read_bytes()
+    monkeypatch.setattr(
+        workspace_env, "generate_ciu_env",
+        lambda *_a, **_kw: pytest.fail("incomplete old identity must not be repaired"),
+    )
+    monkeypatch.setattr(
+        procutil, "docker",
+        lambda *_a, **_kw: pytest.fail("identity must be validated before Docker"),
+    )
+
+    with pytest.raises(workspace_env.WorkspaceEnvError, match="missing instance_id or network"):
+        workspace_env.read_generated_facts(tmp_path)
+    assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize("missing_key", ["instance_id", "network"])
 def test_outdated_identity_refuses_when_either_identity_fact_is_missing(
     tmp_path, missing_key,
 ):
@@ -159,6 +179,14 @@ def test_float_current_schema_version_is_not_accepted_as_integer(tmp_path):
     )
     with pytest.raises(workspace_env.WorkspaceEnvError, match="schema_version"):
         workspace_env.read_generated_facts(tmp_path)
+
+
+def test_outdated_schema_version_requires_a_strict_positive_prior_integer():
+    current = workspace_env.GENERATED_FACTS_SCHEMA_VERSION
+    assert workspace_env._is_outdated_schema_version(0) is False
+    assert workspace_env._is_outdated_schema_version(current - 1) is True
+    assert workspace_env._is_outdated_schema_version(current) is False
+    assert workspace_env._is_outdated_schema_version(current + 1) is False
 
 
 def test_outdated_identity_inspector_refuses_malformed_and_unidentifiable_shapes(tmp_path):
@@ -287,6 +315,18 @@ def test_identity_label_scan_refuses_unreadable_or_unowned_resources(monkeypatch
     monkeypatch.setattr(procutil, "docker", docker)
     with pytest.raises(workspace_env.WorkspaceEnvError):
         workspace_env._identity_labeled_resources("ab12cd")
+
+
+def test_identity_label_scan_keeps_stdout_error_detail(monkeypatch):
+    monkeypatch.setattr(
+        procutil, "docker",
+        lambda *_a, **_kw: SimpleNamespace(
+            returncode=1, stdout="label scan detail", stderr=""
+        ),
+    )
+    with pytest.raises(workspace_env.WorkspaceEnvError) as exc_info:
+        workspace_env._identity_labeled_resources("ab12cd")
+    assert "label scan detail" in str(exc_info.value)
 
 
 def test_identity_project_labels_include_exact_old_prefix_and_owned_labels(monkeypatch):
@@ -705,6 +745,19 @@ def test_clean_identity_uses_stdout_when_docker_failure_has_no_stderr(
     assert "failure reported on stdout" in captured.out + captured.err
 
 
+def test_clean_identity_network_list_failure_preserves_stdout(tmp_path, monkeypatch, capsys):
+    _clean_identity_helpers(monkeypatch)
+    monkeypatch.setattr(
+        procutil, "docker",
+        lambda args, **_kwargs: SimpleNamespace(
+            returncode=1, stdout="network list detail", stderr=""
+        ) if args == ["network", "ls", "--format", "{{.Name}}"] else _docker_empty(),
+    )
+    assert deploy.action_clean_identity(tmp_path, "ab12cd", yes=True) == 1
+    captured = capsys.readouterr()
+    assert "network list detail" in captured.out + captured.err
+
+
 def test_clean_identity_network_removal_failure_is_reported(tmp_path, monkeypatch, capsys):
     _clean_identity_helpers(monkeypatch)
     network = f"{tmp_path.name.lower()}-ab12cd-network"
@@ -721,6 +774,23 @@ def test_clean_identity_network_removal_failure_is_reported(tmp_path, monkeypatc
     captured = capsys.readouterr()
     output = captured.out + captured.err
     assert "in use" in output
+
+
+def test_clean_identity_network_removal_failure_preserves_stdout(tmp_path, monkeypatch, capsys):
+    _clean_identity_helpers(monkeypatch)
+    network = f"{tmp_path.name.lower()}-ab12cd-network"
+
+    def docker(args, **_kwargs):
+        if args == ["network", "ls", "--format", "{{.Name}}"]:
+            return SimpleNamespace(returncode=0, stdout=f"{network}\n", stderr="")
+        if args == ["network", "rm", network]:
+            return SimpleNamespace(returncode=1, stdout="network removal detail", stderr="")
+        return _docker_empty()
+
+    monkeypatch.setattr(procutil, "docker", docker)
+    assert deploy.action_clean_identity(tmp_path, "ab12cd", yes=True) == 1
+    captured = capsys.readouterr()
+    assert "network removal detail" in captured.out + captured.err
 
 
 def test_clean_identity_reports_docker_network_list_exception(tmp_path, monkeypatch, capsys):

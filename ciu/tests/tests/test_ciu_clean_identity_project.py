@@ -185,6 +185,21 @@ def test_identity_project_name_shape(tmp_path):
     )
 
 
+def test_identity_project_name_allows_guarded_repair_by_default(tmp_path, monkeypatch):
+    repo = _identity_repo(tmp_path, with_env=False)
+    observed = {}
+
+    def read_facts(root, *, allow_repair):
+        observed.update(root=root, allow_repair=allow_repair)
+        return {"repo_name": REPO_NAME, "instance_id": INSTANCE_ID}
+
+    monkeypatch.setattr(engine, "read_generated_facts", read_facts)
+    assert engine.identity_compose_project_name(repo, repo / "apps" / "vault") == (
+        f"{IDENTITY_PREFIX}-vault"
+    )
+    assert observed == {"root": repo, "allow_repair": True}
+
+
 def test_identity_project_name_refuses_non_round_tripping_basename(tmp_path):
     """Review fix: sibling stacks 'Vault' and 'vault' would normalize onto the
     SAME compose project within one workspace — the second up silently
