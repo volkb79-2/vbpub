@@ -6312,3 +6312,17 @@ the final controller-log commit, run R3 and doctor, obtain a fresh Sol/xhigh
 adversarial review, then provisionally merge if accepted. Resume R2 from the
 reviewed exact tree in a CIU-managed worktree and backport any required fixes;
 daemon live probes and measured DAMON overhead remain separate P3 evidence.
+
+### RW-422 — 2026-10-04 02:22:54Z — P1 R3 and doctor
+
+On candidate `0aa294334da1f81af088edf0cadfe2b82f811f54`, R3 passed: all 7
+canaries were rejected, 0 survived; duration 14.2 seconds. `doctor
+--worktree` exited 0 with 13 checks (9 OK, 2 warnings, 2 info, 0 failures).
+Warnings: the profiler daemon is down (intentional for this review/gate
+phase; lanes disclosed their fallback accounting), and the linked-worktree
+host-lane Git-view diagnostic warns that a custom host harness must mount the
+common Git dir. R0/R1 has already passed on the code tip `b6b2dc65`; it will
+be rerun after this controller-log commit so the final short-gate evidence
+names the final candidate tip. Main remains clean at `70c2c3662`; no gates are
+currently active. P1 still has no merge/release, and the new R2 campaign,
+fresh Sol review, and live daemon/DAMON evidence remain outstanding.
