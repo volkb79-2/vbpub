@@ -21,7 +21,9 @@ but starting a session failed with `OSError(EINVAL)` at
 context while the kdamond was off, then issued `state=commit` before its
 first `state=on`. Linux DAMON sysfs treats commit as an update to an already
 running kdamond and rejects the stopped state; initial sysfs inputs are
-consumed by `state=on`.
+consumed by `state=on`. See the kernel's
+[`damon_sysfs_commit_input()`](https://github.com/torvalds/linux/blob/master/mm/damon/sysfs.c#L2008-L2024)
+and [`state=on` implementation](https://github.com/torvalds/linux/blob/master/mm/damon/sysfs.c#L2113-L2142).
 
 This made a capability check look healthy while every real session start
 could fail, and prevented P3 from measuring DAMON samples or overhead.

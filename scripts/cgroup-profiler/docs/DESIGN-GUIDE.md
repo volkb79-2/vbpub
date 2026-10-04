@@ -225,7 +225,11 @@ is an online update for an already-running kdamond; issuing it before the
 first `on` returns `EINVAL`. Recommit is used only for target changes after
 startup. See the
 [kernel DAMON usage documentation](https://docs.kernel.org/6.19/admin-guide/mm/damon/usage.html)
-for the interface and commit semantics.
+for the interface and commit semantics. The kernel's
+[`damon_sysfs_commit_input()`](https://github.com/torvalds/linux/blob/master/mm/damon/sysfs.c#L2008-L2024)
+explicitly refuses a stopped kdamond; its
+[`state=on` path](https://github.com/torvalds/linux/blob/master/mm/damon/sysfs.c#L2113-L2142)
+builds and starts the context from those initial inputs.
 
 Starting DAMON is best-effort for profiling: inspect the session's `start`
 response for `damon: "on"` versus `unavailable:<reason>`, and treat a
