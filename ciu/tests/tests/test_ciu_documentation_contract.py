@@ -21,7 +21,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
-from ciu import config_model, worktree  # noqa: E402
+from ciu import config_model, worktree, workspace_env  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -112,7 +112,18 @@ def _toml_blocks(path: Path) -> list[str]:
 def test_every_toml_example_parses_with_the_shipped_loader():
     for doc in DOCS:
         for block in _toml_blocks(doc):
-            config_model.parse_toml_string(block, str(doc))
+            parsed = config_model.parse_toml_string(block, str(doc))
+            ciu_table = parsed.get("ciu", {})
+            instance = ciu_table.get("instance", {}) if isinstance(ciu_table, dict) else {}
+            if not isinstance(instance, dict):
+                continue
+            for table_name in ("generated", "machine"):
+                table = instance.get(table_name)
+                if table is not None:
+                    assert isinstance(table, dict)
+                    assert table.get("schema_version") == (
+                        workspace_env.GENERATED_FACTS_SCHEMA_VERSION
+                    )
 
 
 def test_governance_resource_examples_parse_and_document_explicit_policy():
