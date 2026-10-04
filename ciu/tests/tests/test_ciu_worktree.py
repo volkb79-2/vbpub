@@ -1184,7 +1184,8 @@ class TestManagedRecordValidation:
         second = worktree.create(rootless_repo, "generic-two")
 
         assert [record.state for record in writes] == [
-            "allocating", "ready", "allocating", "ready",
+            "allocating", "allocating", "ready",
+            "allocating", "allocating", "ready",
         ]
         for record in (first, second):
             assert record.state == "ready"
