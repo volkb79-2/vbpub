@@ -648,7 +648,10 @@ project paths from the source Git root. If an in-repository orchestration change
 moved a project config since your caller checkout, CMRU reads its policy and
 places the copied project secret overlay at the path recorded in the snapshot.
 Project config symlinks may point within the Git family; the resolved target
-must keep the `cmru.toml` filename accepted by the config loader.
+must keep the `cmru.toml` filename accepted by the config loader. CMRU preserves
+the selected repository link path when it checks the snapshot and when it
+starts the transaction child, so a caller checkout still pointing at an older
+symlink target cannot override the committed target.
 
 `cmru release` never publishes from your working tree (`S-CLI.5`). It fetches `origin/main`,
 refuses local-only `main` commits the snapshot would omit, and creates a temporary worktree at
@@ -687,8 +690,14 @@ For a tagged project, the exact release tag must be on origin before CMRU invoke
 publisher. A failed push makes CMRU recheck origin. If origin contains the exact candidate tag, CMRU continues;
 if origin confirms the tag is absent, CMRU removes that exact local tag, stops before build or
 publish, and retains a pre-tag candidate that can be resumed with its printed `resume:` command.
-If origin cannot be checked, CMRU retains the tag and candidate for inspection. CMRU does not
-automatically retry a post-tag publication step; `--resume` is for retained pre-tag candidates.
+If origin cannot be checked, CMRU retains the tag and candidate for inspection. If origin has
+the same tag name at a different object, CMRU also retains the local tag and candidate for
+inspection. CMRU does not automatically retry a post-tag publication step; `--resume` is for
+retained pre-tag candidates.
+On resume, CMRU checks tag-push attempts and recorded release results against origin. A tag that
+may have been pushed without a completed result, or a recorded result whose source commit is not
+in `origin/main`, causes a refusal and keeps the candidate for inspection. A release-plan refusal
+during resume also keeps the existing worktree and origin backup branch.
 
 For a script, use `cmru worktrees --json`. `prunable: true` reports Git's
 worktree-registration marker; it does not prove the checkout directory is

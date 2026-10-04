@@ -602,10 +602,12 @@ handoff travels through a private inherited pipe, and the child's fresh fetch co
 commit is authoritative instead of trusting the descriptor alone. For an in-repository
 orchestration config, preflight also reads the selected project's config path from that snapshot
 instead of trusting a caller checkout that may point to an older path. Project config symlinks are
-resolved from the same Git tree, and a target outside the family is refused. The resolved target
-must remain named `cmru.toml`, matching the config loader's filename rule. Project secret overlays
-are copied from the caller's config area to the matching snapshot path. Resume reads the config
-path and tag policy from the committed retained candidate before starting its child.
+resolved from the selected repository path in the same Git tree, and a target outside the family
+is refused. This preserves the link path when the caller's checkout still points to an older
+target. The resolved target must remain named `cmru.toml`, matching the config loader's filename
+rule. Project secret overlays are copied from the caller's config area to the matching snapshot
+path. Resume reads the config path and tag policy from the committed retained candidate before
+starting its child.
 Cleanup checks during its preview, before the captured plan can be applied. These checks keep a
 repository read failure from silently skipping or postponing a tag operation.
 
@@ -628,9 +630,15 @@ project is prepared and gated there, then its exact tag must be on origin before
 build or publisher. Consumers resolve release artifacts through the published source tag. After
 a failed push, CMRU verifies the remote tag: a matching tag permits publication to continue; a
 confirmed absent tag is removed locally and the pre-tag candidate remains resumable; an unknown
-remote state retains the tag and candidate for inspection. CMRU fast-forwards `origin/main` from the same candidate only after
+remote state retains the tag and candidate for inspection. A same-name remote tag with a
+different ref object is a conflict, not proof of absence, so CMRU preserves the local ref and
+candidate. CMRU fast-forwards `origin/main` from the same candidate only after
 publication succeeds. This keeps a failed build or upload out of `main` and lets a later project
-consume an earlier project's completed release in the same run.
+consume an earlier project's completed release in the same run. Resume checks attempted release
+tags and recorded results against origin before replaying a candidate. It refuses when a tag may
+have been pushed without a completed result or when a recorded result has not been promoted; it
+also keeps an existing candidate after a release-plan refusal. This prevents a successful child
+exit from erasing evidence of an incomplete post-tag release.
 
 The promotion is deliberately a single fast-forward push. CMRU does not rebase the candidate
 when another writer advances `origin/main`, because that would change the SHA that was gated and

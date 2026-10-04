@@ -1038,6 +1038,7 @@ def write_release_tag_attempts(
         os.replace(temporary, path)
     finally:
         temporary.unlink(missing_ok=True)
+    clear_release_tag_absence(repo_root, workspace, incoming)
 
 
 def read_release_tag_attempts(
@@ -1073,6 +1074,113 @@ def read_release_tag_attempts(
             raise RuntimeError(f"release tag attempt record is malformed: {path}")
         attempts[ref] = oid
     return attempts
+
+
+def write_confirmed_absent_release_tag_attempts(
+    repo_root: Path,
+    workspace: ReleaseWorkspace,
+    tag_refs: Mapping[str, str],
+) -> None:
+    """Record exact tag attempts CMRU confirmed absent remotely and removed locally."""
+    attempts = read_release_tag_attempts(repo_root, workspace) or {}
+    local_tags = list_local_tag_refs(repo_root)
+    path = _scope_dir(repo_root) / f"{_release_token(workspace)}.tag-absent.json"
+    existing = read_confirmed_absent_release_tag_attempts(repo_root, workspace)
+    incoming: dict[str, str] = {}
+    for ref, oid in tag_refs.items():
+        if (
+            not isinstance(ref, str)
+            or not _valid_ls_remote_ref(ref, "refs/tags/")
+            or not isinstance(oid, str)
+            or not re.fullmatch(r"[0-9a-f]{40}", oid)
+        ):
+            raise RuntimeError("confirmed absent release tag record contains a malformed ref")
+        if attempts.get(ref) != oid:
+            raise RuntimeError(
+                f"confirmed absent release tag {ref} does not match its recorded push attempt"
+            )
+        if ref in local_tags:
+            raise RuntimeError(
+                f"confirmed absent release tag {ref} still exists in the local repository"
+            )
+        incoming[ref] = oid
+    existing.update(incoming)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{secrets.token_hex(12)}")
+    try:
+        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            stream.write(json.dumps(dict(sorted(existing.items())), indent=2) + "\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def read_confirmed_absent_release_tag_attempts(
+    repo_root: Path, workspace: ReleaseWorkspace,
+) -> dict[str, str]:
+    """Return CMRU's exact remote-absence confirmations for prior tag attempts."""
+    path = _scope_dir(repo_root) / f"{_release_token(workspace)}.tag-absent.json"
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        return {}
+    except OSError as exc:
+        raise RuntimeError(f"cannot inspect release tag absence record {path}: {exc}") from exc
+    if not stat.S_ISREG(info.st_mode):
+        raise RuntimeError(f"release tag absence record is not a regular file: {path}")
+    try:
+        raw = json.loads(
+            path.read_text(encoding="utf-8"),
+            object_pairs_hook=_unique_json_object,
+        )
+    except (OSError, UnicodeError, ValueError) as exc:
+        raise RuntimeError(f"cannot read release tag absence record {path}: {exc}") from exc
+    if not isinstance(raw, dict):
+        raise RuntimeError(f"release tag absence record is malformed: {path}")
+    proofs: dict[str, str] = {}
+    attempts = read_release_tag_attempts(repo_root, workspace) or {}
+    for ref, oid in raw.items():
+        if (
+            not isinstance(ref, str)
+            or not _valid_ls_remote_ref(ref, "refs/tags/")
+            or not isinstance(oid, str)
+            or not re.fullmatch(r"[0-9a-f]{40}", oid)
+            or attempts.get(ref) != oid
+        ):
+            raise RuntimeError(f"release tag absence record is malformed: {path}")
+        proofs[ref] = oid
+    return proofs
+
+
+def clear_release_tag_absence(
+    repo_root: Path, workspace: ReleaseWorkspace, tag_refs: Mapping[str, str],
+) -> None:
+    """Invalidate absence proofs whenever CMRU makes another attempt for those refs."""
+    if not tag_refs:
+        return
+    existing = read_confirmed_absent_release_tag_attempts(repo_root, workspace)
+    changed = False
+    for ref in tag_refs:
+        changed = existing.pop(ref, None) is not None or changed
+    if not changed:
+        return
+    path = _scope_dir(repo_root) / f"{_release_token(workspace)}.tag-absent.json"
+    if not existing:
+        path.unlink(missing_ok=True)
+        return
+    temporary = path.with_name(f".{path.name}.{secrets.token_hex(12)}")
+    try:
+        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            stream.write(json.dumps(dict(sorted(existing.items())), indent=2) + "\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def _unique_json_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
@@ -1210,6 +1318,7 @@ def forget_release_scope(repo_root: Path, workspace: ReleaseWorkspace) -> None:
     (_scope_dir(repo_root) / f"{_release_token(workspace)}.json").unlink(missing_ok=True)
     (_scope_dir(repo_root) / f"{_release_token(workspace)}.tags.json").unlink(missing_ok=True)
     (_scope_dir(repo_root) / f"{_release_token(workspace)}.tag-attempts.json").unlink(missing_ok=True)
+    (_scope_dir(repo_root) / f"{_release_token(workspace)}.tag-absent.json").unlink(missing_ok=True)
     _forget_release_progress(repo_root, workspace)
     (_scope_dir(repo_root) / f"{_release_token(workspace)}.results.json").unlink(missing_ok=True)
     _forget_plan_refused(repo_root, workspace)
@@ -1273,6 +1382,11 @@ def mark_plan_refused(repo_root: Path, workspace: ReleaseWorkspace) -> None:
 def plan_was_refused(repo_root: Path, workspace: ReleaseWorkspace) -> bool:
     """True if :func:`mark_plan_refused` was called for this exact workspace."""
     return (_scope_dir(repo_root) / f"{_release_token(workspace)}.plan-refused").exists()
+
+
+def clear_plan_refused(repo_root: Path, workspace: ReleaseWorkspace) -> None:
+    """Clear the child-to-parent refusal marker before another transaction attempt."""
+    _forget_plan_refused(repo_root, workspace)
 
 
 def _forget_plan_refused(repo_root: Path, workspace: ReleaseWorkspace) -> None:

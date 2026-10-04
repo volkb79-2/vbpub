@@ -2357,9 +2357,10 @@ def _default_config_path() -> Path:
 
 
 def _resolve_config(config_opt: Optional[str]) -> Path:
-    return resolve_invocation_context(
+    context = resolve_invocation_context(
         Path(config_opt).expanduser() if config_opt else None,
-    ).config_path
+    )
+    return getattr(context, "config_reference_path", None) or context.config_path
 
 
 def _invocation_context(config_opt: Optional[str]) -> InvocationContext:
@@ -2515,8 +2516,12 @@ def _push_tags(
     rc = run_remote_git(repo_root, "push", "origin", *tags, auth=git_auth).returncode
     if rc != 0:
         try:
-            pushed = {
-                tag: _release_tag_matches_origin(repo_root, tag, git_auth=git_auth)
+            advertised_refs = _read_origin_tag_refs(
+                repo_root, git_auth=git_auth,
+                context="verify release tags after a failed push",
+            )
+            origin_refs = {
+                tag: _tag_origin_ref_subset(advertised_refs, tag)
                 for tag in tags
             }
         except Exception as exc:
@@ -2524,15 +2529,25 @@ def _push_tags(
                 "release tag push failed and CMRU could not determine origin state; "
                 "the local tag and candidate were retained for inspection"
             ) from exc
+        pushed = {
+            tag: origin_refs[tag].get(f"refs/tags/{tag}") == local_oids[tag]
+            for tag in tags
+        }
         if all(pushed.values()):
             log_warn(
                 "git push reported failure, but origin now has every exact release tag; "
                 "continuing with the verified candidate"
             )
             return
+        conflicting = {
+            tag: oid for tag, refs in origin_refs.items()
+            if (oid := refs.get(f"refs/tags/{tag}")) is not None
+            and oid != local_oids[tag]
+        }
         cleanup_errors = []
-        for tag, is_pushed in pushed.items():
-            if is_pushed:
+        confirmed_absent: dict[str, str] = {}
+        for tag, refs in origin_refs.items():
+            if f"refs/tags/{tag}" in refs:
                 continue
             try:
                 delete_git_tag_local(
@@ -2544,8 +2559,14 @@ def _push_tags(
                     cleanup_errors.append(
                         f"{tag}: local ref remains at {remaining_oid} after its guarded cleanup"
                     )
+                else:
+                    confirmed_absent[f"refs/tags/{tag}"] = local_oids[tag]
             except Exception as exc:
                 cleanup_errors.append(f"{tag}: {exc}")
+        if confirmed_absent and workspace is not None:
+            transaction.write_confirmed_absent_release_tag_attempts(
+                repo_root, workspace, confirmed_absent,
+            )
         if cleanup_errors:
             raise RuntimeError(
                 "release tag push failed; could not remove every origin-absent local tag, "
@@ -2557,16 +2578,23 @@ def _push_tags(
                 "origin-absent local tags were removed and the candidate was retained "
                 "for inspection"
             )
+        if conflicting:
+            names = ", ".join(sorted(conflicting))
+            raise RuntimeError(
+                "release tag push failed because origin already has conflicting release "
+                f"tag(s) at those names ({names}); the local tags and candidate were "
+                "retained for inspection"
+            )
         raise RuntimeError(
             "could not push release tag(s) to origin; CMRU removed the unpushed local tag(s), "
             "stopped before build or publish, and retained an untagged candidate that can be resumed"
         )
 
 
-def _release_tag_matches_origin(
+def _release_tag_origin_refs(
     repo_root: Path, tag: str, *, git_auth: GitHubGitAuth | None,
-) -> bool:
-    """Determine whether origin has this tag name pointing at the local commit."""
+) -> dict[str, str]:
+    """Return origin's direct and peeled refs for one release tag."""
     ref = f"refs/tags/{tag}"
     result = run_remote_git(
         repo_root, "ls-remote", "--tags", "origin", ref, ref + "^{}",
@@ -2578,7 +2606,37 @@ def _release_tag_matches_origin(
     refs = transaction.parse_ls_remote_refs(
         result.stdout, namespace="refs/tags/", description=f"origin tag lookup for {tag!r}",
     )
-    remote_commit = refs.get(ref + "^{}") or refs.get(ref)
+    return _tag_origin_ref_subset(refs, tag)
+
+
+def _tag_origin_ref_subset(refs: Mapping[str, str], tag: str) -> dict[str, str]:
+    """Select one exact direct/peeled tag pair from a complete ref advertisement."""
+    ref = f"refs/tags/{tag}"
+    if ref + "^{}" in refs and ref not in refs:
+        raise RuntimeError(
+            f"origin advertised a peeled release tag {tag!r} without its direct ref"
+        )
+    return {
+        candidate: refs[candidate]
+        for candidate in (ref, ref + "^{}")
+        if candidate in refs
+    }
+
+
+def _release_tag_origin_commit(
+    repo_root: Path, tag: str, *, git_auth: GitHubGitAuth | None,
+) -> str | None:
+    """Return origin's peeled release-tag commit, or None if the tag is absent."""
+    ref = f"refs/tags/{tag}"
+    refs = _release_tag_origin_refs(repo_root, tag, git_auth=git_auth)
+    return refs.get(ref + "^{}") or refs.get(ref)
+
+
+def _release_tag_matches_origin(
+    repo_root: Path, tag: str, *, git_auth: GitHubGitAuth | None,
+) -> bool:
+    """Determine whether origin has this tag name pointing at the local commit."""
+    remote_commit = _release_tag_origin_commit(repo_root, tag, git_auth=git_auth)
     if remote_commit is None:
         return False
     local_commit = _git(repo_root, "rev-parse", f"{tag}^{{commit}}")
@@ -2903,8 +2961,11 @@ def _child_release_args(
             removed_target = True
             continue
         result.append(value)
+    config_reference = config_path.expanduser()
+    if not config_reference.is_absolute():
+        config_reference = Path.cwd() / config_reference
     try:
-        relative = config_path.resolve().relative_to(
+        relative = config_reference.relative_to(
             (source_git_root or repo_root).resolve()
         )
     except ValueError:
@@ -2912,7 +2973,7 @@ def _child_release_args(
         # selected Git family. Such a root is still the authoritative config
         # source for the child; load_config remaps registered project documents
         # into the isolated worktree.
-        config_arg = str(config_path.resolve())
+        config_arg = str(config_reference)
     else:
         config_arg = str(relative)
     if target_override is not None:
@@ -3308,7 +3369,10 @@ def _project_config_paths_at_snapshot(
 ) -> dict[str, Path]:
     """Resolve selected config paths from the exact release source snapshot."""
     try:
-        config_rel = config_path.resolve().relative_to(repo_root.resolve())
+        config_reference = config_path.expanduser()
+        if not config_reference.is_absolute():
+            config_reference = Path.cwd() / config_reference
+        config_rel = config_reference.relative_to(repo_root.resolve())
     except ValueError:
         return _project_config_paths_from_loaded(repo_root, configs, project_names)
 
@@ -3348,7 +3412,10 @@ def _project_config_paths_in_candidate(
 ) -> dict[str, Path]:
     """Resolve selected config paths from a committed retained candidate."""
     try:
-        config_rel = config_path.resolve().relative_to(source_git_root.resolve())
+        config_reference = config_path.expanduser()
+        if not config_reference.is_absolute():
+            config_reference = Path.cwd() / config_reference
+        config_rel = config_reference.relative_to(source_git_root.resolve())
     except ValueError:
         return _project_config_paths_from_loaded(source_git_root, configs, project_names)
 
@@ -3391,29 +3458,252 @@ def _project_config_paths_in_candidate(
     )
 
 
+def _assert_resume_candidate_is_safe_to_replay(
+    repo_root: Path,
+    workspace: transaction.ReleaseWorkspace,
+    project_names: Sequence[str],
+    configs: Mapping[str, "ProjectConfig"],
+    *,
+    git_auth: GitHubGitAuth,
+    release_policies: Mapping[str, tuple[str, bool]] | None = None,
+) -> None:
+    """Allow only pre-tag retries and results already promoted to origin/main."""
+    scope = set(project_names)
+    policies = {
+        name: (
+            getattr(configs[name], "prefix", None) or f"{name}-v",
+            getattr(configs[name], "git_tag", True),
+        )
+        for name in project_names
+    }
+    if release_policies is not None:
+        unknown_policies = sorted(set(release_policies) - scope)
+        if unknown_policies:
+            raise RuntimeError(
+                "retained candidate release policy names project(s) outside the recorded "
+                "scope: " + ", ".join(unknown_policies)
+            )
+        policies.update(release_policies)
+    results = transaction.read_release_results(repo_root, workspace)
+    unexpected_results = sorted(set(results) - scope)
+    if unexpected_results:
+        raise RuntimeError(
+            "retained release result metadata names project(s) outside the recorded "
+            "scope: " + ", ".join(unexpected_results)
+        )
+
+    pending_tagged = [
+        name for name in project_names
+        if name not in results and policies[name][1]
+    ]
+    has_tagged_results = any(
+        name in configs and policies[name][1]
+        for name in results
+    )
+    origin_tags: dict[str, str] | None = None
+    if pending_tagged or has_tagged_results:
+        origin_tags = _read_origin_tag_refs(
+            repo_root, git_auth=git_auth,
+            context="verify release tags before resuming a retained candidate",
+        )
+
+    if results:
+        origin_main = transaction.fetch_origin_main(repo_root, git_auth=git_auth)
+        tag_records = _tag_records_by_name(origin_tags or {})
+        attempts = transaction.read_release_tag_attempts(repo_root, workspace) or {}
+        for name, result_id in results.items():
+            project = configs.get(name)
+            if project is None:
+                raise RuntimeError(
+                    f"retained release result names unknown project {name!r}"
+                )
+            if policies[name][1]:
+                prefix = policies[name][0]
+                tag_name = result_id
+                if not tag_name.startswith(prefix) or tag_name.endswith("-latest"):
+                    raise RuntimeError(
+                        f"retained release result for {name} is not a valid release tag: "
+                        f"{result_id!r}"
+                    )
+                tag_record = tag_records.get(tag_name, {})
+                result_commit = (
+                    tag_record.get(f"refs/tags/{tag_name}^{{}}")
+                    or tag_record.get(f"refs/tags/{tag_name}")
+                )
+                attempted_oid = attempts.get(f"refs/tags/{tag_name}")
+                remote_oid = (origin_tags or {}).get(f"refs/tags/{tag_name}")
+                if result_commit is None or remote_oid is None:
+                    raise RuntimeError(
+                        f"retained release result for {name} names {tag_name}, but origin "
+                        "does not advertise that release tag; inspect the candidate and "
+                        "published artifact before retrying"
+                    )
+                if attempted_oid is not None and remote_oid != attempted_oid:
+                    raise RuntimeError(
+                        f"origin release tag {tag_name} no longer matches CMRU's recorded "
+                        "push attempt; inspect the candidate before retrying"
+                    )
+            else:
+                if not result_id.startswith("source-"):
+                    raise RuntimeError(
+                        f"retained untagged release result for {name} is malformed"
+                    )
+                source_prefix = result_id.removeprefix("source-")
+                if not re.fullmatch(r"[0-9a-f]{12,40}", source_prefix):
+                    raise RuntimeError(
+                        f"retained untagged release result for {name} is malformed"
+                    )
+                resolved = run_local_git(
+                    repo_root, "rev-parse", "--verify", f"{source_prefix}^{{commit}}",
+                    capture_output=True, text=True, check=False,
+                )
+                if resolved.returncode != 0:
+                    raise RuntimeError(
+                        f"cannot resolve retained source result for {name}: "
+                        f"{resolved.stderr.strip() or resolved.stdout.strip() or 'unknown Git error'}"
+                    )
+                result_commit = resolved.stdout.strip()
+
+            promoted = run_local_git(
+                repo_root, "merge-base", "--is-ancestor", result_commit, origin_main,
+                capture_output=True, text=True, check=False,
+            )
+            if promoted.returncode == 1:
+                raise RuntimeError(
+                    f"retained result for {name} is recorded, but its source commit "
+                    "is not in origin/main; publication or promotion is incomplete, "
+                    "so the candidate was kept for inspection"
+                )
+            if promoted.returncode != 0:
+                raise RuntimeError(
+                    f"cannot verify retained result for {name} against origin/main: "
+                    f"{promoted.stderr.strip() or promoted.stdout.strip() or 'unknown Git error'}"
+                )
+
+    if not pending_tagged:
+        return
+
+    assert origin_tags is not None
+    initial_tags = transaction.read_release_tag_snapshot(repo_root, workspace)
+    tag_attempts = transaction.read_release_tag_attempts(repo_root, workspace) or {}
+    absence_proofs = transaction.read_confirmed_absent_release_tag_attempts(
+        repo_root, workspace,
+    )
+    local_tags = transaction.list_local_tag_refs(repo_root)
+    completed_tag_names = {
+        result_id for name, result_id in results.items()
+        if policies[name][1]
+    }
+
+    for name in pending_tagged:
+        prefix = policies[name][0]
+        current_project_tags = {
+            ref: oid for ref, oid in origin_tags.items()
+            if _tag_ref_name(ref).startswith(prefix)
+            and not _tag_ref_name(ref).endswith("-latest")
+            and _tag_ref_name(ref) not in completed_tag_names
+        }
+        if initial_tags is not None:
+            initial_project_tags = {
+                ref: oid for ref, oid in initial_tags.items()
+                if _tag_ref_name(ref).startswith(prefix)
+                and not _tag_ref_name(ref).endswith("-latest")
+                and _tag_ref_name(ref) not in completed_tag_names
+            }
+            if current_project_tags != initial_project_tags:
+                raise RuntimeError(
+                    f"origin release tags for {name} changed after this candidate was "
+                    "created; refuse to replay it and inspect the candidate first"
+                )
+
+        attempted_refs = [
+            ref for ref in tag_attempts
+            if _tag_ref_name(ref).startswith(prefix)
+            and not _tag_ref_name(ref).endswith("-latest")
+            and _tag_ref_name(ref) not in completed_tag_names
+        ]
+        unresolved_attempts = [
+            ref for ref in attempted_refs
+            if (
+                ref in local_tags
+                or ref in origin_tags
+                or absence_proofs.get(ref) != tag_attempts.get(ref)
+            )
+        ]
+        if unresolved_attempts:
+            names = ", ".join(sorted(_tag_ref_name(ref) for ref in unresolved_attempts))
+            raise RuntimeError(
+                f"CMRU attempted to push release tag(s) for {name} ({names}), but a tag "
+                "is still present or CMRU has no exact record proving origin confirmed "
+                "its absence after local removal. Refusing to replay this candidate; "
+                "inspect the retained candidate and published artifact before manual "
+                "recovery"
+            )
+
+        if initial_tags is None:
+            head_result = run_local_git(
+                workspace.path, "rev-parse", "--verify", "HEAD",
+                capture_output=True, text=True, check=False,
+            )
+            if head_result.returncode != 0:
+                raise RuntimeError(
+                    "cannot identify retained candidate HEAD while checking legacy "
+                    "release tags"
+                )
+            candidate_head = head_result.stdout.strip()
+            tag_records = _tag_records_by_name(current_project_tags)
+            for tag_name, records in tag_records.items():
+                target = (
+                    records.get(f"refs/tags/{tag_name}^{{}}")
+                    or records.get(f"refs/tags/{tag_name}")
+                )
+                if target == candidate_head:
+                    raise RuntimeError(
+                        f"legacy retained candidate HEAD is tagged as {tag_name}, but no "
+                        "pre-attempt tag snapshot proves whether this transaction pushed "
+                        "it; inspect the candidate before retrying"
+                    )
+
+
 def _parse_project_git_tag_policy(
     content: str, project_name: str, source_label: str,
 ) -> bool:
+    return _parse_project_release_policy(content, project_name, source_label)[1]
+
+
+def _parse_project_release_policy(
+    content: str, project_name: str, source_label: str,
+) -> tuple[str, bool]:
+    """Read the project tag prefix and tag policy from one project document."""
     try:
         project_document = tomllib.loads(content)["project"]
+        project_id = project_document["id"]
+        prefix = project_document["prefix"]
         git_tag = project_document["release"]["git_tag"]
     except (tomllib.TOMLDecodeError, KeyError, TypeError) as exc:
         raise RuntimeError(
             f"Invalid project config at {source_label}: "
-            "project.release.git_tag must be explicitly true or false"
+            "project.id, project.prefix, and project.release.git_tag are required"
         ) from exc
+    if project_id != project_name:
+        raise RuntimeError(
+            f"Invalid project config at {source_label}: project.id is {project_id!r}, "
+            f"expected {project_name!r}"
+        )
+    if not isinstance(prefix, str) or not prefix.strip():
+        raise RuntimeError(f"Invalid project config at {source_label}: project.prefix is required")
     if not isinstance(git_tag, bool):
         raise RuntimeError(
             f"Invalid project config at {source_label}: "
             "project.release.git_tag must be explicitly true or false"
         )
-    return git_tag
+    return prefix.strip(), git_tag
 
 
-def _project_git_tag_policy_in_candidate(
+def _project_release_policy_in_candidate(
     candidate_root: Path, project_name: str, project_config_rel: Path,
-) -> bool:
-    """Read release.git_tag from one project config in a retained worktree."""
+) -> tuple[str, bool]:
+    """Read prefix and release.git_tag from one retained candidate config."""
     candidate_revision = run_local_git(
         candidate_root, "rev-parse", "--verify", "HEAD",
         capture_output=True, text=True, check=False,
@@ -3431,10 +3721,19 @@ def _project_git_tag_policy_in_candidate(
             f"retained candidate ({candidate_sha}:{project_config_rel.as_posix()})"
         ),
     )
-    return _parse_project_git_tag_policy(
+    return _parse_project_release_policy(
         content, project_name,
         f"retained candidate ({candidate_sha}:{project_config_rel.as_posix()})",
     )
+
+
+def _project_git_tag_policy_in_candidate(
+    candidate_root: Path, project_name: str, project_config_rel: Path,
+) -> bool:
+    """Read release.git_tag from one project config in a retained worktree."""
+    return _project_release_policy_in_candidate(
+        candidate_root, project_name, project_config_rel,
+    )[1]
 
 
 def _consume_release_snapshot_handoff(
@@ -4333,17 +4632,23 @@ def _dispatch(args, runtime):
                             transaction_root, workspace.path, cfg_path, configs,
                             release_scope,
                         )
+                        candidate_release_policies = {
+                            name: _project_release_policy_in_candidate(
+                                workspace.path, name, candidate_config_paths[name],
+                            )
+                            for name in release_scope
+                        }
+                        _assert_resume_candidate_is_safe_to_replay(
+                            transaction_root, workspace, release_scope, configs,
+                            git_auth=git_auth,
+                            release_policies=candidate_release_policies,
+                        )
                         candidate_project_config_paths = [
                             candidate_config_paths[name] for name in release_scope
                             if configs[name].project_root is not None
                         ]
                         if not vargs.dry_run:
-                            if any(
-                                _project_git_tag_policy_in_candidate(
-                                    workspace.path, name, candidate_config_paths[name],
-                                )
-                                for name in release_scope
-                            ):
+                            if any(policy[1] for policy in candidate_release_policies.values()):
                                 _require_local_tag_inspection_support(transaction_root)
                     else:
                         base = preflighted_base or transaction.fetch_origin_main(
@@ -4397,6 +4702,7 @@ def _dispatch(args, runtime):
                         f"Release transaction {workspace.branch}: "
                         f"snapshot {workspace.base[:12]} at {workspace.path}"
                     )
+                    transaction.clear_plan_refused(transaction_root, workspace)
                     rc = transaction.run_child(
                         workspace, child_args, project_names=release_scope,
                     )
@@ -4429,19 +4735,23 @@ def _dispatch(args, runtime):
                             log_info("Local main synced with origin/main.")
                         log_info("Release transaction complete; isolated worktree removed.")
                     elif transaction.plan_was_refused(transaction_root, workspace):
-                        # The release plan itself refused (S12.2a/S12.2b) before any
-                        # project's cycle started: no gate ran, nothing was promoted or
-                        # tagged, and `push_backup_branch` never ran either -- there is
-                        # nothing here worth retaining a worktree for, unlike a genuine
-                        # mid-release failure. Discard it exactly like a success would
-                        # (the detailed refusal was already printed by the child above).
-                        transaction.remove_workspace(workspace)
-                        transaction.forget_release_scope(transaction_root, workspace)
-                        _sync_local_main_and_report(transaction_root, git_auth=git_auth)
-                        log_error(
-                            "Release plan refused before any project started; no changes "
-                            "were made (see the error above). Worktree discarded."
-                        )
+                        if vargs.resume:
+                            log_error(
+                                "Release plan refused before any project started; the "
+                                f"existing candidate {workspace.path} on branch "
+                                f"{workspace.branch} was retained for inspection. "
+                                "Resolve the refusal before retrying or abandoning it."
+                            )
+                        else:
+                            # A new workspace has no prior work or remote backup to
+                            # preserve when its first release-plan check refuses.
+                            transaction.remove_workspace(workspace)
+                            transaction.forget_release_scope(transaction_root, workspace)
+                            _sync_local_main_and_report(transaction_root, git_auth=git_auth)
+                            log_error(
+                                "Release plan refused before any project started; no changes "
+                                "were made (see the error above). Worktree discarded."
+                            )
                     else:
                         # Promotion is now the final step of every project's
                         # candidate cycle. A failed project therefore leaves its

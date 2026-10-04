@@ -182,6 +182,7 @@ class InvocationContext:
     worktree_path: Optional[Path] = None
     physical_source_git_root: Optional[Path] = None
     physical_worktree_path: Optional[Path] = None
+    config_reference_path: Optional[Path] = None
 
 
 def _git_scope(path: Path) -> dict[str, Optional[Path]]:
@@ -1178,7 +1179,7 @@ def _nearest_file(cwd: Path, filename: str) -> Optional[Path]:
         if candidate.exists():
             if not candidate.is_file():
                 _error(f"{candidate}: expected a regular file")
-            return candidate.resolve()
+            return candidate
     return None
 
 
@@ -1230,13 +1231,17 @@ def resolve_invocation_context(
     current = (cwd or Path.cwd()).resolve()
     explicit = config_path is not None
     if config_path is not None:
-        selected = config_path.expanduser().resolve()
+        selected_reference = config_path.expanduser()
+        if not selected_reference.is_absolute():
+            selected_reference = Path.cwd() / selected_reference
+        selected = selected_reference.resolve()
     else:
-        selected = _nearest_file(current, ORCHESTRATION_CONFIG_FILENAME)
-        if selected is None:
-            selected = _nearest_file(current, PROJECT_CONFIG_FILENAME)
-        if selected is None:
-            selected = current / PROJECT_CONFIG_FILENAME
+        selected_reference = _nearest_file(current, ORCHESTRATION_CONFIG_FILENAME)
+        if selected_reference is None:
+            selected_reference = _nearest_file(current, PROJECT_CONFIG_FILENAME)
+        if selected_reference is None:
+            selected_reference = current / PROJECT_CONFIG_FILENAME
+        selected = selected_reference.resolve()
     if selected.name == ORCHESTRATION_CONFIG_FILENAME:
         forge = load_forge_config(selected, require_orchestration=True)
         _refuse_unregistered_project(forge, current)
@@ -1247,6 +1252,7 @@ def resolve_invocation_context(
         )
         return InvocationContext(
             config_path=selected,
+            config_reference_path=selected_reference,
             config_kind="orchestration",
             cmru_root=selected.parent.resolve(),
             project_name=project_name,
@@ -1261,6 +1267,7 @@ def resolve_invocation_context(
         git_scope = _git_scope(selected.parent)
         return InvocationContext(
             config_path=selected,
+            config_reference_path=selected_reference,
             config_kind="project",
             cmru_root=selected.parent.resolve(),
             project_name=project_name,

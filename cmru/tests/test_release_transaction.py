@@ -907,13 +907,17 @@ def test_snapshot_reader_resolves_project_config_symlinks_inside_git_tree(tmp_pa
     ) == {"demo": Path("shared/cmru.toml")}
 
 
-def test_snapshot_and_candidate_follow_symlinked_orchestration_parent(tmp_path):
+def test_snapshot_and_candidate_follow_orchestration_link_selected_by_caller(tmp_path, monkeypatch):
     source_root = tmp_path / "source"
     _init_repo(source_root)
     target_orchestration = source_root / "cfg" / "cmru.orchestration.toml"
     target_project_config = source_root / "cfg" / "demo" / "cmru.toml"
+    old_orchestration = source_root / "cfg" / "old" / "cmru.orchestration.toml"
+    old_project_config = source_root / "cfg" / "old" / "demo" / "cmru.toml"
     target_orchestration.parent.mkdir(parents=True)
     target_project_config.parent.mkdir(parents=True)
+    old_orchestration.parent.mkdir(parents=True)
+    old_project_config.parent.mkdir(parents=True)
     target_orchestration.write_text(
         '[orchestration.project.demo]\nconfig = "demo/cmru.toml"\n',
         encoding="utf-8",
@@ -921,21 +925,35 @@ def test_snapshot_and_candidate_follow_symlinked_orchestration_parent(tmp_path):
     target_project_config.write_text(
         "[project.release]\ngit_tag = true\n", encoding="utf-8",
     )
+    old_orchestration.write_text(
+        '[orchestration.project.demo]\nconfig = "demo/cmru.toml"\n',
+        encoding="utf-8",
+    )
+    old_project_config.write_text(
+        "[project.release]\ngit_tag = false\n", encoding="utf-8",
+    )
     invocation_config = source_root / "cmru.orchestration.toml"
     invocation_config.symlink_to("cfg/cmru.orchestration.toml")
     _git(
         "add", "cfg/cmru.orchestration.toml", "cfg/demo/cmru.toml",
+        "cfg/old/cmru.orchestration.toml", "cfg/old/demo/cmru.toml",
         "cmru.orchestration.toml", cwd=source_root,
     )
     _git("commit", "-q", "-m", "add symlinked orchestration config", cwd=source_root)
     revision = _git("rev-parse", "HEAD", cwd=source_root)
 
-    # Model a caller whose still-regular config path predates the snapshot link.
+    # The caller still resolves the link to the old target while the source
+    # snapshot and retained candidate resolve the same selected link to cfg/.
     invocation_config.unlink()
-    invocation_config.write_text(
-        '[orchestration.project.demo]\nconfig = "old/demo/cmru.toml"\n',
-        encoding="utf-8",
+    invocation_config.symlink_to("cfg/old/cmru.orchestration.toml")
+    monkeypatch.setattr(
+        cli, "resolve_invocation_context",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            config_path=old_orchestration.resolve(),
+            config_reference_path=invocation_config,
+        ),
     )
+    config_reference = cli._resolve_config(str(invocation_config))
     candidate_root = tmp_path / "candidate"
     _git("clone", "-q", str(source_root), str(candidate_root), cwd=tmp_path)
     configs = {
@@ -943,10 +961,10 @@ def test_snapshot_and_candidate_follow_symlinked_orchestration_parent(tmp_path):
     }
 
     assert _real_project_config_paths_at_snapshot(
-        source_root, revision, invocation_config, configs, ["demo"],
+        source_root, revision, config_reference, configs, ["demo"],
     ) == {"demo": Path("cfg/demo/cmru.toml")}
     assert _real_project_config_paths_in_candidate(
-        source_root, candidate_root, invocation_config, configs, ["demo"],
+        source_root, candidate_root, config_reference, configs, ["demo"],
     ) == {"demo": Path("cfg/demo/cmru.toml")}
 
 
@@ -2922,7 +2940,16 @@ def test_release_tag_snapshot_round_trips_is_immutable_and_is_forgotten():
         attempts = {"refs/tags/demo-v3": "c" * 40}
         transaction.write_release_tag_attempts(h.repo_root, workspace, attempts)
         assert transaction.read_release_tag_attempts(h.repo_root, workspace) == attempts
+        transaction.write_confirmed_absent_release_tag_attempts(
+            h.repo_root, workspace, attempts,
+        )
+        assert transaction.read_confirmed_absent_release_tag_attempts(
+            h.repo_root, workspace,
+        ) == attempts
         transaction.write_release_tag_attempts(h.repo_root, workspace, attempts)
+        assert transaction.read_confirmed_absent_release_tag_attempts(
+            h.repo_root, workspace,
+        ) == {}
         with pytest.raises(RuntimeError, match="changed after a prior push attempt"):
             transaction.write_release_tag_attempts(
                 h.repo_root, workspace, {"refs/tags/demo-v3": "d" * 40},
@@ -2931,6 +2958,9 @@ def test_release_tag_snapshot_round_trips_is_immutable_and_is_forgotten():
         transaction.forget_release_scope(h.repo_root, workspace)
         assert transaction.read_release_tag_snapshot(h.repo_root, workspace) is None
         assert transaction.read_release_tag_attempts(h.repo_root, workspace) is None
+        assert transaction.read_confirmed_absent_release_tag_attempts(
+            h.repo_root, workspace,
+        ) == {}
 
 
 @pytest.mark.parametrize(

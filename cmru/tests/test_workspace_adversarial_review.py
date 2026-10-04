@@ -599,6 +599,10 @@ def test_resolve_invocation_context_keeps_project_git_scope(monkeypatch, tmp_pat
     project_config.parent.mkdir(parents=True)
     project_config.write_text(_project_document())
     orchestration = source / "cmru.orchestration.toml"
+    target = source / "cfg" / "cmru.orchestration.toml"
+    target.parent.mkdir(parents=True)
+    target.write_text("", encoding="utf-8")
+    orchestration.symlink_to("cfg/cmru.orchestration.toml")
     forge = _child_forge(source, project_config)
     monkeypatch.setattr(config, "load_forge_config", lambda _path, **_kwargs: forge)
     monkeypatch.setattr(config, "_refuse_unregistered_project", lambda *_args: None)
@@ -609,6 +613,9 @@ def test_resolve_invocation_context_keeps_project_git_scope(monkeypatch, tmp_pat
     context = config.resolve_invocation_context(orchestration, cwd=project_config.parent)
     assert context.project_name == "demo"
     assert context.source_git_root == project_config.parent
+    assert context.config_path == target.resolve()
+    assert context.config_reference_path == orchestration
+    assert cli._resolve_config(str(orchestration)) == orchestration
 
 
 def test_load_config_refuses_missing_or_escaping_child_project(monkeypatch, tmp_path):

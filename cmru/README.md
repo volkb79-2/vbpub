@@ -20,7 +20,11 @@ it moved after preflight, so every family uses the checked snapshot. A resumed
 release checks the committed candidate's tag policy before running its child;
 when an in-repository orchestration change moves a project config, its secret
 overlay follows the snapshot path. Project config symlinks resolve within that
-snapshot and their targets must retain the `cmru.toml` filename. The reason is in the
+snapshot from the selected repository path, even if the caller's checkout still
+points at an older target, and their targets must retain the `cmru.toml` filename.
+CMRU refuses to resume when a tag push may have landed without a completed release
+record or when a recorded release has not reached `origin/main`; it keeps that
+candidate for inspection. The reason is in the
 [local tag inspection design](docs/DESIGN-GUIDE.md#local-tag-inspection-requires-git-243).
 The [consumer guide](docs/CONSUMERS.md#git-version-for-local-tag-inspection)
 shows the prerequisite check.
@@ -251,8 +255,12 @@ The exact release tag must be on `origin` before CMRU starts the build or publis
 failed push, CMRU checks origin: if the tag is absent, it removes that exact local tag and retains
 an untagged candidate that can be resumed; if origin confirms the exact candidate tag, it
 continues; when origin cannot be checked, it retains the tag and candidate for inspection.
+A same-name origin tag pointing to another object is a conflict, so CMRU retains the local
+tag and candidate for inspection instead of treating that state as absence.
 A concurrent remote update fails closed and leaves the candidate branch/worktree for diagnosis;
-CMRU never rebases a candidate after building its public artifact. See
+CMRU never rebases a candidate after building its public artifact. Resume retries only a
+pre-tag candidate; a release-plan refusal during resume also retains the existing candidate
+and its origin backup branch. See
 [KI-06](KNOWN_ISSUES_TODO_BACKLOG.md#ki-06--durable-post-tag-publication-resume--open-scoped-deliberately).
 When resuming, CMRU installs copied credential overlays through no-follow paths and refuses
 symlink or nonregular destinations in the retained worktree.

@@ -227,6 +227,9 @@ def test_plan_refused_marker_round_trips_and_is_forgotten_with_the_rest_of_scope
     assert transaction.plan_was_refused(root, workspace) is False  # must-succeed control: unmarked
     transaction.mark_plan_refused(root, workspace)
     assert transaction.plan_was_refused(root, workspace) is True
+    transaction.clear_plan_refused(root, workspace)
+    assert transaction.plan_was_refused(root, workspace) is False
+    transaction.mark_plan_refused(root, workspace)
     transaction.forget_release_scope(root, workspace)
     assert transaction.plan_was_refused(root, workspace) is False  # cleaned up with the rest
 
