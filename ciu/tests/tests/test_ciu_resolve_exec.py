@@ -466,9 +466,12 @@ def test_live_resolution_uses_exact_labels_and_reports_state(resolvable_repo, mo
     calls = []
 
     def docker(argv, **kwargs):
-        calls.append(argv)
+        calls.append((argv, kwargs))
         if argv[0] == "ps":
-            return SimpleNamespace(returncode=0, stdout="cid-1\n", stderr="")
+            # Match subprocess.run: without capture_output=True, stdout is
+            # None, so a live service must not be certified as running.
+            stdout = "cid-1\n" if kwargs.get("capture") else None
+            return SimpleNamespace(returncode=0, stdout=stdout, stderr=None)
         return SimpleNamespace(
             returncode=0,
             stdout='{"Status":"running","Health":{"Status":"healthy"}}',
@@ -480,10 +483,11 @@ def test_live_resolution_uses_exact_labels_and_reports_state(resolvable_repo, mo
     identity = document["resolved"]["identities"]["tools/test-runner"]["test-runner"]
     assert identity["live"]["state"] == "running"
     assert identity["live"]["health"] == "healthy"
-    assert calls[0] == [
+    assert calls[0][0] == [
         "ps", "-a", "--filter", "label=com.docker.compose.project=demo-test-test-runner",
         "--filter", "label=com.docker.compose.service=test-runner", "--format", "{{.ID}}",
     ]
+    assert calls[0][1]["capture"] is True
 
 
 def test_exec_runs_verbatim_in_the_single_exact_service(resolvable_repo, monkeypatch):
