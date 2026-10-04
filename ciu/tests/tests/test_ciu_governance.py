@@ -50,7 +50,6 @@ class TestResolveConfig:
         assert cfg["mem_swap_limit"] == ""
         assert cfg["mem_reservation"] == ""
         assert cfg["read_iops"] == ""
-        assert cfg["write_iops"] == 0
         assert cfg["cgroup_parent"] == ""
 
     def test_exempt_services_defaults_to_empty_list(self) -> None:
@@ -440,7 +439,7 @@ class TestBaselineSearchOrder:
         monkeypatch.setattr(gov, "resolve_device", lambda configured: ("/dev/vda", "explicit"))
         configured = self._touch(tmp_path / "stack-baseline.env", 900)
         cfg = gov.resolve_config({
-            "enabled": True, "baseline_path": str(configured), "cgroup_parent": "dev-background.slice",
+            "enabled": True, "read_iops": 0, "baseline_path": str(configured), "cgroup_parent": "dev-background.slice",
         })
         injections, _ = gov.build_injections({"redis": {"image": "redis"}}, cfg)
         rate = injections["redis"]["blkio_config"]["device_read_iops"][0]["rate"]
@@ -910,7 +909,7 @@ class TestBuildInjections:
         assert injections["redis"]["blkio_config"] == {"weight": 500}
 
     def test_io_weight_zero_omits_weight_key(self) -> None:
-        cfg = self._cfg(device="/dev/vda", io_weight=0)
+        cfg = self._cfg(device="/dev/vda", read_iops=100, io_weight=0)
         injections, _ = gov.build_injections({"redis": {"image": "redis"}}, cfg)
         assert "weight" not in injections["redis"]["blkio_config"]
 
@@ -936,9 +935,7 @@ class TestBuildInjections:
     def test_bandwidth_caps_default_to_uncapped(self) -> None:
         cfg = self._cfg(device="/dev/vda")
         injections, notes = gov.build_injections({"redis": {"image": "redis"}}, cfg)
-        blk = injections["redis"]["blkio_config"]
-        assert "device_read_bps" not in blk
-        assert "device_write_bps" not in blk
+        assert "blkio_config" not in injections["redis"]
         assert any("uncapped" in n for n in notes)
 
     def test_bandwidth_caps_skipped_without_device_even_if_set(
