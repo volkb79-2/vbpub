@@ -6379,3 +6379,168 @@ meet the agreed provisional-integration bar. P1 is ready for a serial
 `--no-ff` provisional merge to local `main`. This is not a release signal:
 current-tree R2, the registered full gate, survivor triage, and P3 DAMON live
 ownership/index plus measured-overhead evidence remain open.
+
+### RW-425 — 2026-10-04 04:46:51Z — CIU gate resumed; P1 R2 active
+
+The exact P1 candidate `8bd5d0a8e86de48b0c262ec07fdcfbe9b652fc36` is being
+judged from the CIU-managed worktree
+`.worktrees/rg55-p1-r2-isolated/.worktrees/rg55-p1-r2-20261004`, branch
+`rg55-p1-r2-20261004`. The correct package runner is `scripts/cgroup-profiler/`
+and lane `r2`; the container name printed by that run is
+`run-gate-rg55-p1-r2-isolated-r2-2617646-1791087745`. Do not detach or commit
+in the judged worktree. P1 still requires complete R2 accounting and survivor
+triage; no result is inferred from runtime alone.
+
+The separate CIU marker-parser fix is at `06c719802ef2b5ae25830925cd2b1390e228fa77`.
+Its first registered gate attempt found contradictory stale governance tests
+and exited before mutation. The tests now reflect the explicit-opt-in resource
+contract, and the registered lane declares `cpus = "3"`. The focused
+governance file passes (221 tests). Follow-up commit
+`467152fd7c7dea4b9949712b6dfb38cd6b6d05ae` is clean. The retry started
+04:43:11Z as `run-gate-vbpub-ciu-2667310-1791088991`, under
+`dev-gates.slice`, `NanoCpus=3000000000`. At 04:45:20Z its baseline had
+completed and R2 had selected 9 candidates; outcomes remain pending. This CIU
+gate is the second active mutation lane alongside P1.
+
+Local `main` remains `f516d7e52d11a46f73dde89d2015be05b735511b` (139 commits
+ahead of `origin/main`); no new main work or publication event was found in
+this check. No package has been released by this continuation.
+
+### RW-426 — 2026-10-04 04:56:29Z — P6 current-tree preparation and CIU record refusal
+
+P6's earlier implementation is already in local `main` through the
+provisional cgprofile/P5 integration; no duplicate merge is needed. The old
+P6 R2 receipt at `aae66356bf3a65ef8b3ba7fa04a8042f2feee55c` is a
+`BUDGET_EXCEEDED/LANE_TIMEOUT` result from 2026-09-24 (362 candidates: 312
+killed, 12 survived, 38 budget-exceeded). It is not current-tree evidence.
+The 973-candidate/24-hour estimate recorded in the P6 lane describes the
+older `2f3689ef` tree, not current `main`, whose cgprofile sources/tests have
+since changed. Do not reuse that count as the current ETA.
+
+The existing CIU-managed checkout
+`.worktrees/rg55-p6-r2-ciu` was clean and attached to its recorded branch;
+its record has complete runtime identity. It was fast-forwarded on that same
+branch to current `main` `f516d7e52d11a46f73dde89d2015be05b735511b`, without
+detaching it or editing its CIU record. It is prepared for the current-tree
+P6 plan, but no P6 gate has started. Before launch, read the exact candidate
+count from that tree; then hold HEAD quiet for the full run.
+
+`ciu worktree inspect rg55-p6-r2-ciu --json` currently refuses before
+inspecting that instance because the separate older checkout
+`.worktrees/rg55-p1-r2-20261003` has a ready generic-root record with
+`runtime.instance_id = null` and `runtime.network = null`. No CIU identity
+record was edited. This is the generic-root parser/writer mismatch being
+fixed on `fix/ciu-ready-record-generic-root-20261004`; use no CIU lifecycle
+command until that refusal is fixed or separately resolved. The existing P6
+checkout remains attached and usable for its registered run-gate command.
+
+### RW-427 — 2026-10-04 05:42:39Z — CIU R1-01 repair in progress; P1 R2 checkpoint
+
+The Sol fix-verification report at `467152fd7c7dea4b9949712b6dfb38cd6b6d05ae`
+closed B9 but rejected on R1-01: CIU could publish `ready` before nested-root
+facts and shared `root_entries` metadata were complete, and the markerless
+`ensure` path could skip a retry. CIU-126 now records the defect. The repair
+keeps the instance record `allocating` through preparation, resolves roots from
+the allocated checkout's exact HEAD, stores all root entries before `ready`,
+and makes `ensure` retry and validate old ready records. The focused
+`test_ciu_workspace_adversarial_review.py` and `test_ciu_worktree.py` run passed
+213 tests. CIU SPEC, README, DESIGN-GUIDE, CONSUMERS, and backlog now describe
+the readiness contract. The Sol verification artifact remains untracked; the
+registered CIU gate must be rerun on the final quiet commit before asking the
+same reviewer for fix verification.
+
+P1's actual running checkout is nested at
+`.worktrees/rg55-p1-r2-isolated/.worktrees/rg55-p1-r2-20261004`; the earlier
+top-level progress path was stale and must not be used. At 05:40Z the exact
+container `run-gate-rg55-p1-r2-isolated-r2-2617646-1791087745` was still up,
+host wrapper PID `2617646`, with `NanoCpus=3000000000` under
+`dev-gates.slice`. The checkout was clean at the judged tree
+`8bd5d0a8e86de48b0c262ec07fdcfbe9b652fc36`; current progress was 213/1,118
+mutants, all killed, no other outcome buckets. Recent rate implies a rough
+5.5–8 hour remaining range; do not poll before 06:05Z.
+
+### RW-428 — 2026-10-04 10:58:16Z — P1 R2 interrupted; CIU backlog ID reserved
+
+At the next due checkpoint, the P1 container and wrapper were gone. Its
+registered history records `aborted` / `KeyboardInterrupt` at 09:55:59Z,
+not a candidate verdict. The exact judged tree remains
+`8bd5d0a8e86de48b0c262ec07fdcfbe9b652fc36`, clean on
+`rg55-p1-r2-20261004`; progress reached 608/1,118 with 605 killed and 3
+survived, so it must resume on that same tree before disposition. Do not
+promote this partial accounting to a complete mutation result. At 10:58Z host
+memory PSI was `full avg10=9.45%`, above the launch gate, so no restart was
+made. A separate CIU mutation lane was active at the time; it is not ours to
+interrupt.
+
+The local main tip advanced from `f516d7e5` to `041862e3` (+2 commits) in the
+shared checkout. The added commits are the run-gate worktree policy merge and
+its shared admission-label fixture; our CIU fix branch remains at
+`467152fd` and must reconcile current main before final evidence. Two active
+CIU branches already reserve backlog IDs CIU-126 (rootless-record lifecycle)
+and CIU-127 (single-stack down); this branch's nested-root readiness finding
+is therefore CIU-128, not CIU-126. Those worktrees were left untouched. Local
+main is now 141 commits ahead of `origin/main`; the earlier push authorization
+covered only 83, so publication remains unauthorized pending renewed scope.
+
+### RW-429 — 2026-10-04 11:04:01Z — latest main reconciled; host pressure blocks execution
+
+Main advanced again during this check to `8ef923b7` (142 commits ahead of
+`origin/main`) with the RG-49 amendment to the run-gate backlog. The CIU fix
+worktree's merge commit `2c5c3a39` already has that exact main commit as its
+second parent, so its eventual gate will include the current integration tip;
+no merge onto main was made. The new RG-49 backlog text is unrelated to the
+CIU readiness patch and is not being independently edited here.
+
+The 11:04Z memory PSI sample was `full avg10=13.99%`; all test/gate launches
+remain paused. The CIU readiness implementation is still uncommitted and its
+last 213-test focused pass predates the final safety/test edits. Its prior
+registered lane PASS on `467152fd` does not cover this fix, and Sol's
+fix-verification still REJECTS that tree on R1-01. Next required evidence is
+focused tests, then the registered CIU lane on the final reconciled commit,
+then fix-verification by the same Sol reviewer session.
+
+### RW-430 — 2026-10-04 11:11:19Z — serialize shared root metadata updates
+
+Static audit found that the CIU-128 implementation's atomic file replacement
+was still an unlocked read-modify-write of the generic workspace record. A
+concurrent lease/opaque-metadata update could be lost. The fix now holds the
+shared library's Git-family `workspace_lock` across reads/writes of
+`root_entries` and during the historical-ready verification read; a focused
+regression asserts the lock spans both the record read and write and that
+opaque metadata survives. The CIU allocation lock is a distinct lock, so the
+new shared lock is not self-nested. `git diff --check` is clean. These edits
+have not yet been tested; the memory-PSI launch gate remains in force.
+
+### RW-431 — 2026-10-04 15:17:45Z — resume P1 R2; CIU-128 focus green
+
+Correction to RW-430: after memory PSI fell below the launch threshold, the
+CIU-128 focused tests ran on the final uncommitted implementation and passed:
+214 passed across `test_ciu_workspace_adversarial_review.py` and
+`test_ciu_worktree.py`. The fix worktree `fix/ciu-ready-record-generic-root-20261004`
+is based on current local main `759444fc`; main remains diverged from
+`origin/main` (3 ahead, 16 behind). No publication or push was made.
+
+P1 R2 resumed from the clean, attached exact tree `8bd5d0a8` using base
+`e5e9b95c`. Container `run-gate-rg55-p1-r2-isolated-r2-3714427-1791126902`
+is in `dev-gates.slice` with a 3-CPU cap. Its required 90-second check found
+the runner alive and baseline pytest progressing at 120 seconds; mutation
+candidate judging had not started yet. The previous partial campaign accounted
+for 608/1,118 candidates, so the prior observed rate implies roughly 5.5–6
+hours after baseline, subject to the resumed run's actual pace. Do not poll this
+campaign more often than every 25 minutes; it has no verdict yet.
+
+### RW-432 — 2026-10-04 15:22:58Z — serialize lease and root-entry record updates
+
+Static review of CIU-128 found a second writer to the neutral workspace
+record: CIU's lease mirror used an unlocked read-modify-write. The new
+root-entry lock could not protect against that writer unless it participates
+in the same family lock. `_sync_shared_lease` now re-reads and writes under
+that lock, with a regression that also asserts existing opaque/root-entry
+metadata survives. The DESIGN-GUIDE, SPEC, and CIU-128 backlog contract now
+document the shared-lock invariant. `git diff --check` is clean.
+
+The earlier 214-test focused pass recorded in RW-431 predates this additional
+lease-lock edit and is not final evidence for it. At 15:21Z host memory PSI
+`full avg10` had risen to 16.35%; additional test launches remain paused until
+the launch threshold is satisfied. P1 remains on its exact clean judged tree;
+no progress was polled before the 25-minute interval.
