@@ -6277,3 +6277,38 @@ through RG-80, notably RG-79 (refuse fallback to main's runner) and RG-80
 (daemon-wide concurrent-gate admission); RG-67(a) was withdrawn. cgprofile
 CP-15/CP-16 were also recorded. These are backlog/design changes, not P1
 implementation changes, and were not started as work in this check.
+
+### RW-421 — 2026-10-04 02:19:52Z — P1 survivor-fix integration and R0/R1 coverage
+
+Resumed P1 on the latest local main base (`70c2c3662`) in the isolated
+worktree `rg55-p1-survivor-final-20261004`; the integration candidate is a
+single-parent history at `b6b2dc6599d4951183f069e83eb8c6755a528abc`. The
+survivor-oracle changes were replayed onto this current base without merging
+the stale P1 branch wholesale. Root main remains clean and unchanged.
+
+The exact-tree R0/R1 run at `4636a9c4` initially failed coverage despite
+2,263 passing tests: only `lib/placement.py:2127` (the exact-scope process
+state in the leaf-removal recovery window) was missed. The regression fake
+had reported the PID at its origin before recovery enumerated the scope. The
+test now derives the PID cgroup from the fake `cgroup.procs` files and proves
+restore from that exact scope. Seven focused recovery cases passed; the full
+P1-focused set passed 1,069 tests with six skips.
+
+R0/R1 then passed on `b6b2dc6599d4951183f069e83eb8c6755a528abc`: 2,263
+passed, four fork deprecation warnings, and 100% line and branch coverage
+(7,429 statements, 2,752 branches). Runtime was 136.59 seconds. Its exact
+container was `cgprofile-gate-2341635-1791080191`, capped at 3 CPUs under
+`dev-gates.slice`; the ~90-second health check saw 82% progress and host
+memory PSI `full avg10=0.14`. The gate's expected test-fixture ownership
+warning did not fail its test. The cgprofile daemon was down, so resource
+profiling used coarse rusage; this does not close the live DAMON evidence gap.
+
+The historical P1 R2 result is still FAIL on its unchanged judged tree
+`bf7dc95fb47356ef527db08077788fe22a5a3b0b` (1,036 killed, 125 survived,
+1,161 accounted). Survivor triage/fixes require a new exact-tree R2 campaign;
+the previous campaign is not being reinterpreted. No merge or release has
+occurred. No gate is active at this ruling. Next: record the R0/R1 result on
+the final controller-log commit, run R3 and doctor, obtain a fresh Sol/xhigh
+adversarial review, then provisionally merge if accepted. Resume R2 from the
+reviewed exact tree in a CIU-managed worktree and backport any required fixes;
+daemon live probes and measured DAMON overhead remain separate P3 evidence.
