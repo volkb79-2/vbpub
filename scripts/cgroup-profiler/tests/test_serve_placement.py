@@ -3241,9 +3241,19 @@ class TestPlacementJournalRecovery:
         root = _fake_cgroup_root(tmp_path)
         journal = self._make_journal(root)
         shutil.rmtree(_leaf(root))
-        (root / SCOPE_UNIT_CGROUP / "cgroup.procs").write_text("101\n")
+        scope_procs = root / SCOPE_UNIT_CGROUP / "cgroup.procs"
+        origin_procs = root / SCOPE_CGROUP / "cgroup.procs"
+        scope_procs.write_text("101\n")
+
+        def pid_cgroup(_pid):
+            if "101" in scope_procs.read_text().splitlines():
+                return "/" + SCOPE_UNIT_CGROUP
+            if "101" in origin_procs.read_text().splitlines():
+                return "/" + SCOPE_CGROUP
+            return None
+
         self._patch_manager(monkeypatch)
-        self._patch_factory(monkeypatch, root)
+        self._patch_factory(monkeypatch, root, pid_cgroup=pid_cgroup)
         updates = []
 
         result = placement.recover_journal(
@@ -3256,7 +3266,7 @@ class TestPlacementJournalRecovery:
         assert result is None
         assert updates[-1]["state"] == "complete"
         assert updates[-1]["pids"]["101"]["state"] == "restored"
-        assert (root / SCOPE_CGROUP / "cgroup.procs").read_text() == "101\n"
+        assert origin_procs.read_text() == "101\n"
 
     def test_recovery_refuses_a_non_directory_at_the_owned_leaf_path(
         self, tmp_path, monkeypatch,
