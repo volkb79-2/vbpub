@@ -239,39 +239,41 @@ def test_git_version_for_local_tag_inspection_is_documented_across_user_guides()
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
     design = (ROOT / "docs" / "DESIGN-GUIDE.md").read_text(encoding="utf-8")
     consumers = (ROOT / "docs" / "CONSUMERS.md").read_text(encoding="utf-8")
+    readme_flat = " ".join(readme.split())
+    design_flat = " ".join(design.split())
     consumers_flat = " ".join(consumers.split())
 
-    assert "Git 2.43 or newer" in readme
-    assert "local-tag-inspection-requires-git-243" in readme
-    assert "each fetched `origin/main` snapshot" in readme
-    assert "all tagged" in readme and "before dispatching any family" in readme
-    assert "passes those exact commits to" in readme
-    assert "fetches `origin/main` again and refuses if" in readme
-    assert "secret overlay follows the snapshot path" in readme
-    assert "targets must retain the `cmru.toml` filename" in readme
-    assert "from the selected repository path" in readme
-    assert "CMRU refuses to resume when a tag push may have landed" in readme
-    assert "same-name origin tag pointing to another object is a conflict" in readme
-    assert "selected `--config` link may use another basename" in readme
-    assert "checks the committed candidate's tag" in readme
-    assert "Git 2.43" in design and "git show-ref --exists" in design
-    assert "exit 2 means absent; exit 1 means lookup error" in design
-    assert "before creating the candidate worktree" in design
-    assert "reads each" in design and "tag policy from that snapshot" in design
-    assert "before dispatching" in design
-    assert "Each launcher receives the checked commit" in design
-    assert "reads the selected project's config path from that snapshot" in design
-    assert "private inherited pipe" in design
-    assert "fetches `origin/main` again under its" in design
-    assert "Project config symlinks are" in design
-    assert "preserves the link path when the caller's checkout" in design
-    assert "must remain named `cmru.toml`" in design
-    assert "tag policy from the committed retained candidate" in design
-    assert "Resume checks attempted release tags" in design
-    assert "release-plan refusal" in design
-    assert "different ref object is a conflict" in design
-    assert "classify it by the resolved target's canonical config filename" in design
-    assert "origin-absence proof" in design
+    assert "Git 2.43 or newer" in readme_flat
+    assert "local-tag-inspection-requires-git-243" in readme_flat
+    assert "each fetched `origin/main` snapshot" in readme_flat
+    assert "all tagged" in readme_flat and "before dispatching any family" in readme_flat
+    assert "passes those exact commits to" in readme_flat
+    assert "fetches `origin/main` again and refuses if" in readme_flat
+    assert "secret overlay follows the snapshot path" in readme_flat
+    assert "targets must retain the `cmru.toml` filename" in readme_flat
+    assert "from the selected repository path" in readme_flat
+    assert "CMRU refuses to resume when a tag push may have landed" in readme_flat
+    assert "same-name origin tag pointing to another object is a conflict" in readme_flat
+    assert "selected `--config` link may use another basename" in readme_flat
+    assert "checks the committed candidate's tag" in readme_flat
+    assert "Git 2.43" in design_flat and "git show-ref --exists" in design_flat
+    assert "exit 2 means absent; exit 1 means lookup error" in design_flat
+    assert "before creating the candidate worktree" in design_flat
+    assert "reads each" in design_flat and "tag policy from that snapshot" in design_flat
+    assert "before dispatching" in design_flat
+    assert "Each launcher receives the checked commit" in design_flat
+    assert "reads the selected project's config path from that snapshot" in design_flat
+    assert "private inherited pipe" in design_flat
+    assert "fetches `origin/main` again under its" in design_flat
+    assert "Project config symlinks are" in design_flat
+    assert "preserves the link path when the caller's checkout" in design_flat
+    assert "must remain named `cmru.toml`" in design_flat
+    assert "tag policy from the committed retained candidate" in design_flat
+    assert "Resume checks attempted release tags" in design_flat
+    assert "release-plan refusal" in design_flat
+    assert "different ref object is a conflict" in design_flat
+    assert "classify it by the resolved target's canonical config filename" in design_flat
+    assert "origin-absence proof" in design_flat
     assert "Git 2.43 or newer" in consumers
     assert "git --version" in consumers
     assert "local-tag-inspection-requires-git-243" in consumers
