@@ -6529,6 +6529,25 @@ for 608/1,118 candidates, so the prior observed rate implies roughly 5.5–6
 hours after baseline, subject to the resumed run's actual pace. Do not poll this
 campaign more often than every 25 minutes; it has no verdict yet.
 
+### RW-433 — 2026-10-04 15:31:11Z — CIU-128 focused repair committed
+
+The lease/root-entry shared-record serialization repair is complete on
+`fix/ciu-ready-record-generic-root-20261004`, commit `b8437c482`. After the
+last code and documentation edits, the focused CIU suite passed 215/215 in
+27.64 seconds; `git diff --check` was clean. The commit includes the preserved
+prior Sol review/fix-verification artifact. The registered CIU lane has not
+been rerun on this tree. At the last container inventory (15:15Z), the
+separate CIU-127 R2 and P1 R2 together occupied both mutation slots; recheck at
+the next due progress checkpoint before considering CIU R2.
+
+Current local `main` is `74d71a90`, ahead 4 / behind 18 relative to
+`origin/main` (`ca663b6d`). The remote-only movement is CMRU release-test
+fixture work touching CMRU and run-gate release surfaces. No merge or push was
+attempted; inspect/reconcile that divergence before publication rather than
+assuming the earlier push scope still describes the remote state. P1's exact
+judged worktree remains clean; its next progress poll is not due until at
+least 15:42Z.
+
 ### RW-432 — 2026-10-04 15:22:58Z — serialize lease and root-entry record updates
 
 Static review of CIU-128 found a second writer to the neutral workspace
