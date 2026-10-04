@@ -515,7 +515,7 @@ cwd = "alpha"
     assert "removed" in calls
 
 
-def test_multi_family_release_preflights_tagged_families_before_dispatch(
+def test_multi_family_release_preflights_origin_policies_before_dispatch(
     tmp_path, monkeypatch, capsys,
 ):
     config = tmp_path / "cmru.toml"
@@ -523,6 +523,11 @@ def test_multi_family_release_preflights_tagged_families_before_dispatch(
     untagged = _project("untagged")
     untagged.git_tag = False
     tagged = _project("tagged")
+    tagged.git_tag = False  # caller checkout can lag behind origin/main policy
+    untagged_root = tmp_path / "untagged-repo"
+    tagged_root = tmp_path / "tagged-repo"
+    untagged.project_root = untagged_root / "untagged"
+    tagged.project_root = tagged_root / "tagged"
     loaded = (
         tmp_path,
         {"untagged": untagged, "tagged": tagged},
@@ -530,25 +535,38 @@ def test_multi_family_release_preflights_tagged_families_before_dispatch(
         ["untagged", "tagged"], "project-first", {}, SimpleNamespace(),
         _github_config(), SimpleNamespace(),
     )
-    untagged_root = tmp_path / "untagged-repo"
-    tagged_root = tmp_path / "tagged-repo"
     monkeypatch.setattr(cli, "load_config", lambda _path: loaded)
     monkeypatch.setattr(cli, "apply_release_env", lambda *_args: None)
     monkeypatch.setattr(
         transaction, "project_git_family_groups",
         lambda *_args: {untagged_root: [untagged], tagged_root: [tagged]},
     )
-    calls = []
+    fetched = []
+    monkeypatch.setattr(
+        transaction, "fetch_origin_main",
+        lambda root, **_kwargs: fetched.append(root) or "f" * 40,
+    )
+    origin_configs = {
+        untagged_root: "[project.release]\ngit_tag = false\n",
+        tagged_root: "[project.release]\ngit_tag = true\n",
+    }
+    monkeypatch.setattr(
+        cli, "run_local_git",
+        lambda root, *_args, **_kwargs: SimpleNamespace(
+            returncode=0, stdout=origin_configs[root], stderr="",
+        ),
+    )
+    checked = []
 
     def refuse_tagged_family(root):
-        calls.append(root)
+        checked.append(root)
         if root == tagged_root:
             raise RuntimeError("local tag inspection requires Git 2.43 or newer")
 
     monkeypatch.setattr(cli, "_require_local_tag_inspection_support", refuse_tagged_family)
     monkeypatch.setattr(
         cli, "_dispatch_independent_git_families",
-        lambda *_args, **_kwargs: calls.append("dispatch") or 0,
+        lambda *_args, **_kwargs: pytest.fail("release family dispatched before full preflight"),
     )
 
     result = cli.main([
@@ -556,8 +574,59 @@ def test_multi_family_release_preflights_tagged_families_before_dispatch(
     ])
 
     assert result == 1
-    assert calls == [tagged_root]
+    assert fetched == [untagged_root, tagged_root]
+    assert checked == [tagged_root]
     assert "local tag inspection requires Git 2.43 or newer" in capsys.readouterr().err
+
+
+def test_multi_family_release_with_untagged_origin_policies_needs_no_tag_support(
+    tmp_path, monkeypatch,
+):
+    config = tmp_path / "cmru.toml"
+    config.write_text("[project]\n", encoding="utf-8")
+    projects = [_project("left"), _project("right")]
+    roots = [tmp_path / "left-repo", tmp_path / "right-repo"]
+    for project, root in zip(projects, roots, strict=True):
+        project.git_tag = False
+        project.project_root = root / project.name
+    loaded = (
+        tmp_path,
+        {project.name: project for project in projects},
+        [project.name for project in projects],
+        [project.name for project in projects],
+        [project.name for project in projects], "project-first", {}, SimpleNamespace(),
+        _github_config(), SimpleNamespace(),
+    )
+    monkeypatch.setattr(cli, "load_config", lambda _path: loaded)
+    monkeypatch.setattr(cli, "apply_release_env", lambda *_args: None)
+    monkeypatch.setattr(
+        transaction, "project_git_family_groups",
+        lambda *_args: {root: [project] for root, project in zip(roots, projects, strict=True)},
+    )
+    fetched = []
+    monkeypatch.setattr(
+        transaction, "fetch_origin_main",
+        lambda root, **_kwargs: fetched.append(root) or "f" * 40,
+    )
+    monkeypatch.setattr(
+        cli, "run_local_git",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            returncode=0, stdout="[project.release]\ngit_tag = false\n", stderr="",
+        ),
+    )
+    monkeypatch.setattr(
+        cli, "_require_local_tag_inspection_support",
+        lambda _root: pytest.fail("untagged release required Git 2.43 tag support"),
+    )
+    dispatched = []
+    monkeypatch.setattr(
+        cli, "_dispatch_independent_git_families",
+        lambda *_args, **_kwargs: dispatched.append(True) or 0,
+    )
+
+    assert cli.main(["release", "left,right", "--config", str(config)]) == 0
+    assert fetched == roots
+    assert dispatched == [True]
 
 
 def test_parent_reverts_promotion_and_reports_sync_failure_on_child_failure(

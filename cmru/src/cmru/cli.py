@@ -2974,12 +2974,16 @@ def _preflight_multi_family_release_tag_support(
     repo_root: Path,
     configs: Mapping[str, "ProjectConfig"],
     project_names: Sequence[str],
+    *,
+    git_auth: GitHubGitAuth | None,
 ) -> None:
     """Check every tagged family before a release launcher dispatches any child.
 
     A later family's Git refusal must not come after an earlier independent
-    family has already started its release cycle. Each child repeats the check
-    under its own release lock before doing family-local work.
+    family has already started its release cycle. Read ``git_tag`` from each
+    family's fetched origin/main snapshot, which is the configuration the child
+    will release. Each child repeats the capability check under its own release
+    lock before doing family-local work.
     """
     groups = transaction.project_git_family_groups(
         repo_root, [configs[name] for name in project_names]
@@ -2987,8 +2991,49 @@ def _preflight_multi_family_release_tag_support(
     if len(groups) <= 1:
         return
     for family_root, members in groups.items():
-        if any(getattr(project, "git_tag", True) for project in members):
-            _require_local_tag_inspection_support(family_root)
+        base = transaction.fetch_origin_main(family_root, git_auth=git_auth)
+        for project in members:
+            project_root = Path(getattr(project, "project_root", "")).resolve()
+            try:
+                project_rel = project_root.relative_to(family_root.resolve())
+            except ValueError as exc:
+                raise RuntimeError(
+                    f"{getattr(project, 'name', 'selected project')}: project config is "
+                    f"outside Git family {family_root}"
+                ) from exc
+            config_rel = (project_rel / PROJECT_CONFIG_FILENAME).as_posix()
+            result = run_local_git(
+                family_root, "show", f"{base}:{config_rel}",
+                capture_output=True, text=True, check=False,
+            )
+            if result.returncode != 0:
+                detail = result.stderr.strip() or result.stdout.strip() or "no diagnostic output"
+                raise RuntimeError(
+                    f"Failed to read {getattr(project, 'name', 'selected project')} release "
+                    f"policy from origin/main ({base}:{config_rel}): {detail}"
+                )
+            try:
+                document = tomllib.loads(result.stdout)
+            except tomllib.TOMLDecodeError as exc:
+                raise RuntimeError(
+                    f"Invalid project config in origin/main ({base}:{config_rel}): {exc}"
+                ) from exc
+            project_document = document.get("project")
+            release_document = (
+                project_document.get("release")
+                if isinstance(project_document, dict) else None
+            )
+            git_tag = (
+                release_document.get("git_tag")
+                if isinstance(release_document, dict) else None
+            )
+            if not isinstance(git_tag, bool):
+                raise RuntimeError(
+                    f"Invalid project config in origin/main ({base}:{config_rel}): "
+                    "project.release.git_tag must be explicitly true or false"
+                )
+            if git_tag:
+                _require_local_tag_inspection_support(family_root)
 
 
 def _configs_for_git_family(
@@ -3729,7 +3774,7 @@ def _dispatch(args, runtime):
             and not vargs.resume
         ):
             _preflight_multi_family_release_tag_support(
-                repo_root, configs, release_scope,
+                repo_root, configs, release_scope, git_auth=git_auth,
             )
 
         if not transaction_child:

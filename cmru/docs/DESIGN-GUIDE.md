@@ -594,10 +594,11 @@ resolves the exact object ID. `--exists` was added in Git 2.43. On an older Git,
 local tag inspection with an explicit version requirement instead of treating an ambiguous
 lookup as absence. For a real release that includes tagged projects, the launcher checks support
 before creating the candidate worktree, running a project gate, or creating a tag. When selected
-projects span independent Git families, it checks every tagged family before dispatching any one
-family, so a later family's refusal cannot follow an earlier family release. Cleanup checks during
-its preview, before the captured plan can be applied. This keeps a repository read failure from
-silently skipping a tag operation.
+projects span independent Git families, it fetches each family's origin/main snapshot, reads each
+selected project's tag policy from that snapshot, then checks all tagged families before dispatching
+any one family. A policy changed only on origin/main therefore cannot make a later family's refusal
+follow an earlier family release. Cleanup checks during its preview, before the captured plan can be
+applied. This keeps a repository read failure from silently skipping a tag operation.
 
 ## Candidate-first promotion protects the source history
 
