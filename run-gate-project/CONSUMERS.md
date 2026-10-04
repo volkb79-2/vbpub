@@ -401,17 +401,45 @@ judged worktree so a deleted or recreated worktree can resume:
 
 For a nested project, the key includes its path relative to the checkout, so
 two projects named `backend` do not share state. A project outside that
-checkout uses a sanitized resolved path key. Pin versions below **5.2.0** are
-refused before the lane starts because that is the first Assay release with
-`--state-dir` (the other two flags require only 2.4.1). The run header names
-the state directory.
+checkout uses a sanitized resolved path key. By default the state root is
+`<checkout owning the shared .git>/.run-gate`. A container environment whose
+durable mount is at another in-container path declares that exact path as
+`state_root` in its `[environments.<name>]` table. The runner owner must mount
+the corresponding durable host directory read-write before the gate runs;
+run-gate never creates a root-owned directory in an exec runner's disposable
+container layer. For example, if the runner mounts the checkout's `.run-gate`
+at `/workspace/project/.run-gate`, declare:
 
-The current implementation creates the directory as the lane's execution
-user. A Mode-B partial bind mount can expose a root-owned synthetic parent;
-that creation can then fail inside the runner. RG-49 tracks the root-owned
-parent repair separately. run-gate does not claim to repair or chown that
-path today; check that the test-runner user can write the selected checkout's
-`.run-gate/assay-state/` parent when using that mount layout.
+<!-- run-gate-config -->
+```toml
+schema_version = 1
+
+[environments.test-runner]
+mode = "exec"
+image = "yourproj/test-runner:local"
+container_name = "yourproj-test-runner"
+state_root = "/workspace/project/.run-gate"
+```
+
+For a host environment, run-gate uses the default checkout path directly;
+`state_root` is only meaningful for container environments. For a bare-host
+lane, create `<checkout>/.run-gate` on the host and make it writable by the
+lane user before the first assay run; run-gate does not synthesize this root
+as a preflight side effect. Before Assay runs, run-gate checks that the
+selected root exists and is writable by the lane user, then checks the
+deepest existing directory along that lane's keyed state path. This catches
+an old state directory owned by a different user before Assay starts. A
+missing or unwritable root or ancestor is refused
+before the assay command with NOT_RUN/`state-mount`, naming the path and
+applicable remedy; it is never reported as an assay FAIL. The `doctor`
+command checks once per assay environment, and `--dry-run` prints the planned
+probe. `state_root` is a container path, so
+run-gate does not stat it in the host namespace. Pin versions below **5.2.0**
+are refused before the lane starts because that is the first Assay release
+with `--state-dir` (the other two flags require only 2.4.1). The run header
+names the resolved state directory. See the
+[mount rationale](docs/DESIGN-GUIDE.md#assay-resume-state-needs-an-environment-owned-mount)
+for why run-gate does not create this root inside a runner.
 
 ### Shared assay lane imports
 
@@ -429,6 +457,7 @@ schema_version = 1
 mode = "exec"
 image = "yourproj/test-runner:local"
 container_name = "yourproj-test-runner"
+state_root = "/workspace/project/.run-gate"
 
 [assay]
 command = ["/opt/tester-venv/bin/python", "tools/assay/assay-7.2.0.pyz"]
@@ -543,16 +572,21 @@ treated as "nothing needed".
 
 > **`doctor` and `--check-env` START CONTAINERS for this check.** Fitness
 > cannot be read, only observed, so the inventory question and the
-> `command -v` checks execute inside the lane's own environment. They are
+> `command -v` checks execute inside the lane's own environment. `doctor`
+> also probes Assay's durable state root once per assay environment, as the
+> lane user; a live assay invocation probes it once per lane. `--check-env`
+> does not run the state-root check. These probes are
 > short-lived and read-only (`assay lanes` runs nothing; `command -v` is a
 > shell builtin), they judge nothing and write nothing into your tree, and
 > ephemeral ones carry `--cgroup-parent` like every container run-gate
-> starts. The cost is bounded: **one inventory probe per (environment,
-> judge identity) plus one batched `command -v` probe per environment** —
-> not per lane. A project with no `kind = "assay"` lane starts nothing at
-> all, and neither verb ever starts your judged lane. If you run `doctor` in
-> a context where starting a container is unacceptable, that is the check to
-> know about.
+> starts. The cost is bounded: `doctor` runs **one inventory probe per
+> (environment, judge identity), one batched `command -v` probe per
+> environment, and one state-root probe per assay environment**;
+> `--check-env` runs only the first two; a live assay invocation adds one
+> state-root probe for its lane. A project with no `kind = "assay"` lane
+> starts none of these probes, and neither verb ever starts your judged
+> lane. If you run `doctor` in a context where starting a container is
+> unacceptable, that is the check to know about.
 
 ### Lanes that take their comparison base from the gate (RG-26)
 

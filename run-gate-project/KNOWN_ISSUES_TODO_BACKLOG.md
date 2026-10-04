@@ -62,12 +62,11 @@ SPEC §9.
 | RG-38 | resume state lives under the JUDGED project root, so a fresh worktree per run (cmru release transaction, Mode-B instances) loses it and a retry restarts from mutant #1 despite `--resume` | Medium | FIXED 2026-09-08 (rev 37, run-gate-P05) — assay B066 (`--state-dir`) shipped in assay-v5.2.0, unblocking this; every assay-kind lane on all three runners (container, exec, bare-host) now passes `--state-dir <repo>/.run-gate/assay-state/<project>/`, `repo` (the checkout owning the shared `.git`) being durable by construction even when the judged worktree is not; an older pin refuses by name (R-38's own floor extended to 5.2.0). Verified via the real, executed judge argv (fake-assay end-to-end test); the resume mechanics themselves are assay's own, already covered by assay's suite |
 | RG-44 | `GONE_SIGNALS` matches docker's "gone" stderr case-sensitively; this docker version emits lowercase and the container-truly-gone case is never recognized | Major | FIXED 2026-09-08 (rev 37, run-gate-P05) — case-folded the match (`signal.lower() in stderr.lower()`); a genuinely gone container on this host's docker no longer wedges the lane with a stale inflight record. Red-first proven with a regression test reproducing the exact reported wording |
 | RG-45 | a `vitest`-backed lane (`kind = "command"` or `kind = "assay"` coverage) can exit non-zero purely from vitest's own internal worker/main RPC heartbeat (birpc, hardcoded 60s timeout, no config path in any pool type) tripping under HOST-WIDE multi-tenant CPU contention across DIFFERENT repos' containers — RG-39's exec lock only serializes SAME-container access within one tool, it does not bound the SUM of concurrently-active gate containers' CPU quotas against the host's real core count | Major | OPEN 2026-09-08 — reproduced 5/5 identical (dstdns P176, `frontend-unit`+`ui_unit`, all real tests green every time); NOT run-gate's to fix — traced to assay's own R0 exit-code-only evaluation, moved to assay as B078 (design: `assay/nyxloom-trove/R0-STRUCTURED-REPORT-DESIGN.md`), see disposition in prose section below |
-| RG-49 | RG-38's `--state-dir` `mkdir -p`s under `<repo>/.run-gate` inside the lane container; a worktree-owned runner (the dstdns default since D-666) mounts only the worktree and `.git`, so the parent is a root-owned placeholder and every assay-kind lane fails, reported as exit 1 (a lane failure) instead of a refusal | Major | OPEN 2026-09-09 — four hits (P175, P93, P234, P239); Amendment 2026-10-04: preflight refusal + declarable `state_root`, container-layer `mkdir` rejected (loses RG-38 durability); dstdns carries a `WORKAROUND(RG-49)` mount until it ships |
 | RG-46 | a FOLLOWER (a client re-attaching to a lane whose inflight record names a still-alive owner) performs no independent stall detection of its own — `follow_container` arms neither `ProgressWatch` nor `LogStreamWatch`, by design (RW-14: "does NOT remove the container... all three belong to the client that started the run"), so if the OWNER is killed before its own `stall_timeout` fires, the follower just blocks on `docker wait`/`docker logs -f` forever, with nothing left to notice the container is silent | Minor | OPEN 2026-09-08 — found during RG-41's round-2 adversarial review; pre-existing (the same gap already applied to any assay lane declaring `stall_timeout` — `follow_container` has never armed a watch), RG-41 only widens exposure by lane COUNT (5 command lanes vs 3 assay lanes, RG-41's own backlog count). Not fixed as part of RG-41: a follower deciding to act on a stall it detects independently is a real design question (does it save evidence and `rm -f` a container it does not own? at minimum it would need the SAME owner-liveness re-check `promote_follower` already does before acting) that deserves its own scoped decision, not a silent addition to an unrelated item |
 | RG-39 | run-gate has no internal mutual exclusion around the `docker exec`/`docker run` it performs into a resolved container, so every consumer must remember to wrap each invocation in its own `flock` (dstdns `GUIDE.md` §1) or two lanes racing the SAME container silently contaminate each other's evidence — but `resolve_container_name()` (the same function RG-37 tracks) already computes the exact container identity BEFORE that exec, every single call, so the tool already has everything it needs to serialize itself | Medium | FIXED 2026-09-03 (rev 35, SPEC `R-41`) — refinements (1) and (2) below, built exactly as specified; refinement (3) deliberately NOT built (RG-37, the v8 `ciu.resolved.toml` container-identity path, doesn't exist yet). New `acquire_exec_lock()` takes `/tmp/run-gate-exec-<container>.lock` (RG-20's `_open_lockfile()` discipline, now factored into a shared helper) on the container name `resolve_container_name()` resolves — resolved ONCE in `main()`, threaded into `run_exec_lane()` (no longer re-derived there) so the lock key and the `docker exec` target can never drift apart. Acquired strictly after `acquire_shared_locks()`'s locks in `main()`'s dispatch, released from the SAME `finally` (`exec_lock_fd`, closed before the shared-infra fds — LIFO, not load-bearing). `LOCK_EX` blocking with a `waiting for container '<name>' — another gate holds <path>` line; `--dry-run` prints the planned lock (name + path) and never blocks. Five new tests in `TestExecModeMutex`: same-container serialization (thread-raced, proven genuinely red pre-fix — a leaked lock fd on that test's own assertion failure path self-deadlocked the NEXT test via flock()'s per-open-file-description semantics, fixed with a try/finally, unrelated to the shipped fix itself), isolated containers never contend, `--dry-run` never blocks, the lock releases even when the lane raises (finally path), and a direct ordering assertion (shared-infra locks acquired before the exec lock); a sixth test (added after the first `selftest` run below caught it uncovered) exercises `acquire_exec_lock()`'s OSError branch, in-process (a `run_tool()` subprocess, RG-20's own precedent's pattern, is invisible to this suite's coverage instrumentation). Red-first proven: a scoped `git stash` of `run-gate.py` alone (fix reverted, tests kept) reproduced 3/5 new tests failing for the expected reasons before the fix, restored clean after. `./run-gate.py selftest` green (post-commit `2c6b2bbc` + a same-day coverage follow-up): 495 passed, 2 skipped, diff-coverage 25/25 = 100.0% (≥ 100.0% floor), exit 0. Originally filed from dstdns (D-321/D-339/D-321-correction): acquire an internal `flock` keyed by the resolved container name (or `${project_name}-${environment_tag}`, the same pair `resolve_container_name()` already reads) around the exec/run call itself, so a caller-side `flock` is no longer required for correctness, only for pre-emptive scheduling (e.g. a caller who wants to skip a busy container rather than block). A genuinely independent container (different `project_name`/`environment_tag`, including a Mode-B instance) naturally gets a distinct lock name and runs unblocked; two consumers that resolve to the SAME container (main's shared instance, or ciu's `--shared-infra-ref-services`) naturally serialize correctly with no caller coordination needed. Cross-reference RG-37: whichever container-identity resolution path RG-37 adds for `ciu.resolved.toml` (v8) should feed the SAME lock key, not a second scheme. **2026-09-03 (ciu v8 design, SPEC-V8 draft.5 / proposal rev 3.2 §4.11 N22): buildable as described, with three refinements.** (1) Exec mode only — an ephemeral `docker run` container is per invocation, there is nothing to serialize. (2) Take the lock AFTER `acquire_shared_locks()`' sorted shared-infra locks and release it in the same `finally` — a fixed global order (shared-infra, then the exec target) so no ABBA with RG-20 is possible; `/tmp/run-gate-exec-<container>.lock` with RG-20's 0600+O_NOFOLLOW discipline, LOCK_EX blocking with a "waiting for container X — another gate holds …" line, dry runs plan but never block (`acquire_shared_locks` is the pattern to copy); hold across the whole `run_exec_lane()` including evidence collection, and keep `flush_run_record` outside it (RG-27). (3) Alignment with v8: once RG-37 reads `ciu.resolved.toml`, key the lock on the owning Realization's **stack directory** (`[realization.<R>] location` of the container's owner, `flock` on the directory) instead of a name — draft.5 S14.4.7 declares the checkout root and the stack directory the ONLY canonical lock keys, `ciu gate` exec lanes take that same directory lock (S16.5.7) and `ciu lease acquire --realization` exposes it, so v7 run-gate and v8 ciu serialize against each other during the cutover; the name-keyed `/tmp` file is the v7-only form. The caller-side `flock` of dstdns GUIDE §1 stays valid as an outer lock (always acquired first → consistent order) and becomes optional for correctness |
 | RG-47 | `--worktree` selected the judged files but not `run-gate.toml`, so main's lanes could judge a worktree and hide lanes that existed only there | Major | FIXED 2026-10-04 (rev 47): project and inherited config resolve from the selected worktree, including monorepo-relative projects; missing project config refuses; path and SHA-256 are printed/recorded. Merged duplicate RG-65 here |
 | RG-48 | lane worker count could disagree with the environment CPU cap when `resources.cpus` was absent | Major | FIXED 2026-09-12 — `doctor` names the missing cap; environment-level `resources.cpus` now supplies the shared limit |
-| RG-49 | `--state-dir` setup fails against root-owned parents in partial-bind worktree containers | Major | OPEN 2026-09-09 |
+| RG-49 | `--state-dir` setup fails against root-owned parents in partial-bind worktree containers | Major | FIXED 2026-10-04 (rev 50): read-only state-root preflight, optional `[environments.<name>].state_root`, `doctor`, and NOT_RUN/`state-mount`; registered gate and fresh Dstdns worktree-runner acceptance passed |
 | RG-50 | B065's first-candidate rate calculation produced a negative rate from Assay's `-1` baseline | Minor | FIXED 2026-09-10 |
 | RG-51 | delegated lanes could derive their default comparison base from stale upstream state | Major | FIXED 2026-09-11 (rev 40), with ciu CIU-106 |
 | RG-52 | composite-lane base substitution used unquoted shell text | Major | FIXED 2026-09-11 (rev 40) |
@@ -95,7 +94,7 @@ SPEC §9.
 | RG-74 | post-merge trunk base (`HEAD^1`) and composite-member base propagation are consumer scripts (dstdns `gate-base.sh`), not run-gate derivations | Minor | FIXED 2026-10-04 (rev 49): `[project].trunk` and native sequence base propagation |
 | RG-75 | no lane-scoped throwaway service (database): schema/mutation lanes hand-provision and tear down their own Postgres | Major | OPEN 2026-10-03 |
 | RG-76 | external-assay consumers restate judge command, pin and one lane block per assay lane (dstdns: 118 identical pin blocks); import lanes from `assay lanes --json` | Minor | FIXED 2026-10-04 (rev 49): v8-shaped `{ environment, lanes }` import |
-| RG-77 | the per-assay-lane `--state-dir` contract (RG-38) and its root-owned-parent repair (RG-49) are in no SPEC rule or skill, so consumers restate them in their own instruction files | Minor | FIXED 2026-10-04 (rev 49): shipped state contract documented; RG-49 repair remains separately OPEN |
+| RG-77 | the per-assay-lane `--state-dir` contract (RG-38) and its root-owned-parent repair (RG-49) are in no SPEC rule or skill, so consumers restate them in their own instruction files | Minor | FIXED 2026-10-04 (rev 49): shipped state contract documented; RG-49 implementation is tracked separately |
 | RG-78 | adopt the ciu v8 closed exit table and explicit environment modes in run-gate now (backport, operator ruling D-654): lane exit passthrough overlaps the 2/3 refusal codes, and the built-in `host` environment is a container | Major | FIXED 2026-10-04 (rev 49): single finish path, AST guard, byte-status lane oracle |
 | RG-79 | exec-mode resolution **silently falls back to main's runner** when the judged worktree has no rendered ciu config (a shadowing default, AGENTS §4.2a); the worktree's own test-runner is the design (D-647 #2, D-666), so run-gate must refuse and name "start this worktree's own test-runner" (reframed 2026-10-03; originally filed as a stray-render defect) | Major | FIXED 2026-10-04 (rev 47; same implementation as RG-47) |
 | RG-80 | no daemon-wide cap on concurrent gates: the cross-worktree cap is a consumer flock wrapper (dstdns `gate-slot.sh`); build SPEC-V8 S21's count mode (Docker-name tickets, tombstones, deadlines, run marker, published `ciu-admission-<g>` object) behind an off-by-default switch, so the wrapper retires before v8 | Major | FIXED 2026-10-04 (rev 49): ticket/publish and owner/reaping packages |
@@ -2001,7 +2000,7 @@ decorative. This is a `R-04`-class defect (a config value indistinguishable
 from a real setting through normal reading, silently doing nothing) rather
 than a cosmetic nit.
 
-### Proposed fix
+### Initial proposed fixes (superseded by the D-666 amendment below)
 
 Either (a) `_validate_lane` rejects an unrecognized `budget` key under
 `[lanes.*.pins.assay]` outright (a `kind = "assay"` lane's budget, if
@@ -3577,40 +3576,15 @@ edited — not a fix, a pre-flight): `docker exec -u root` pre-created
 per-worktree, per-run step today; nothing in `ciu`'s Mode-B compose
 generation or run-gate's `--state-dir` construction does it automatically.
 
-### Proposed fix
+### Status — FIXED 2026-10-04 (run-gate rev 50; originally filed 2026-09-09)
 
-One of, not yet decided which is more correct for the ownership boundary
-run-gate vs. ciu are meant to hold:
-
-1. **run-gate side:** before the unconditional `mkdir -p
-   <state-dir>`, `mkdir -p`+`chown` as root (or `install -d -o -g`) rather
-   than relying on the app user's own privileges — the container already
-   runs a `git config --global safe.directory` step as part of the same
-   inner script (see RG-22), so a root-context setup step ahead of the
-   app-user command is a precedented shape here.
-2. **ciu side:** Mode-B's `tools/test-runner/ciu.compose.yml` generation
-   pre-creates and chowns the synthetic `/workspaces/dstdns` parent (and
-   `.run-gate/` under it) at container startup, the same way it already
-   must handle `.worktrees/<branch>` and `.git`'s own ownership — so every
-   consumer that assumes a writable repo-root subdirectory (not just
-   `--state-dir`) is covered by construction, not per-consumer.
-
-Filed here (run-gate) rather than ciu because the concrete symptom is
-`--state-dir`'s own `mkdir -p`; if the ciu-side shape is chosen instead,
-this entry should be mirrored or moved to `ciu/KNOWN_ISSUES_TODO_BACKLOG.md`.
-
-### Acceptance
-
-- [ ] a fresh Mode-B worktree's FIRST assay-kind lane run (no manual
-      pre-chown) creates and writes `.run-gate/assay-state/...` successfully;
-- [ ] a regression test exercises a container with only sub-paths bind-mounted
-      at the repo root (not the repo root itself), reproducing this entry's
-      exact `Permission denied` without the fix and passing with it;
-- [ ] RG-38's own two-full-tree-worktree acceptance criteria still pass
-      unchanged (no regression for the Mode-A / persistent-worktree case
-      RG-38 was built and verified against).
-
-### Status — OPEN 2026-09-09
+The preflight now runs in the lane's own environment before Assay. It checks
+the durable root and deepest existing keyed-state ancestor as the lane user;
+an unavailable root is NOT_RUN/`state-mount`, while an indeterminate probe is
+an infrastructure ERROR. The registered `tester-unified` selftest passed
+(`1530 passed, 1 skipped`; changed-line coverage `198/198` and branches
+`86/86`). A fresh Dstdns worktree's own test-runner then passed its first
+`assay` lane without manual setup (exit 0, 618.365 s).
 
 **Recurrence 2026-10-03 (dstdns-P234, PRIORITY EVIDENCE — third independent hit).**
 Installed run-gate `23.9.2.dev1126+g998a43552` (latest vbpub main at the time). A Mode-B worktree
@@ -3640,17 +3614,19 @@ inside the lane's inner script, so run-gate reports exit 1, the code of a lane t
 A reader (or wrapper) sees a red test lane, not a missing environment precondition. Together with
 the stale verdict file left behind, this reads as "the tests failed" (cf. RG-72, RG-78).
 
-*Why both earlier fix options are wrong.* Options 1 (a root-context `mkdir`+`chown` in the inner
-script) and 2 (ciu chowning the synthetic parent at container start) both create the directory in
-the CONTAINER's writable layer. The resume state then dies with the runner, which is exactly the
-durability RG-38 was built for ("`repo` ... durable by construction even when the judged worktree
-is not"). A root step also widens what every lane's inner script runs as.
+*Why the earlier proposals are rejected.* The root-context `mkdir`/`chown` and
+container-start `chown` proposals create the directory in the CONTAINER's
+writable layer. The resume state then dies with the runner, which is exactly
+the durability RG-38 was built for ("`repo` ... durable by construction even
+when the judged worktree is not"). A root step also widens what every lane's
+inner script runs as.
 
-*Proposed contract (replaces "Proposed fix").*
+*Amended contract (dstdns D-666; replaces "Proposed fix").*
 1. **Preflight, not mid-lane failure.** Before executing an assay-kind lane, run-gate probes, in the
-   lane's own environment, that the state-dir parent exists and is writable by the lane user. If not,
-   it refuses before execution: exit 2 today (configuration refusal, RG-11), NOT_RUN once RG-78
-   lands. The message names the path, the container and the remedy: "mount `<repo>/.run-gate` into
+   lane's own environment, that the durable state root exists and is writable, and that the deepest
+   existing directory on the keyed state path is writable by the lane user. If not,
+   it refuses before execution with NOT_RUN 3/`state-mount` (RG-78). The message names the path, the
+   container and the remedy: "mount `<repo>/.run-gate` into
    this environment, or declare `state_root`". `--dry-run` shows the probe.
 2. **The state root is declarable.** `[environments.<e>] state_root = "<container path>"`, default
    `<repo>/.run-gate` (today's RG-38 value, unchanged for full-tree mounts). A consumer whose runner
@@ -3659,22 +3635,41 @@ is not"). A root step also widens what every lane's inner script runs as.
    for exec environments. It documents that an exec runner must mount `<repo>/.run-gate` (or the
    declared root) read-write, and `doctor` checks it per environment (R-37 per-tree scope).
 
-*Consumer workaround in force (dstdns, marked for removal).* dstdns P241 repair r2 (2026-10-04)
-mounts main's `<repo>/.run-gate` read-write into every worktree runner
-(`tools/test-runner/ciu.compose.yml.j2`, worktree branch, source derived like the `.git` mount, no
-literal path). The mount is tagged `WORKAROUND(RG-49)`. Removal condition: when this entry ships,
-dstdns re-checks the mount against contract item 3 and either keeps it as the documented required
-mount (dropping the tag) or replaces it with a declared `state_root`. The `docker exec -u root mkdir`
-pre-flights used in P175/P93/P234/P239 are testing-only and are not the workflow.
+*Consumer decision and live acceptance (dstdns D-666).* A fresh CIU-managed
+worktree (`run-gate-rg49-live-20261004`) mounted main's `<repo>/.run-gate`
+read-write into its own `test-runner`. The first `assay` lane passed and wrote
+the keyed state directory without manual in-container setup. Dstdns keeps this
+mount as its required durable root: it matches run-gate's default
+`state_root` path, and the per-worktree key keeps resume state isolated while
+the common root survives runner recreation. Dstdns documents the required
+mount and removed the obsolete workaround/shortcoming label in
+`dstdns@305d8519`. The `docker exec -u root mkdir` pre-flights used in
+P175/P93/P234/P239 remain testing-only, not the workflow.
 
-*Additional acceptance (extends the list above).*
-- [ ] an assay-kind lane in an environment whose state-dir parent is not writable refuses BEFORE
-      execution with exit 2 (NOT_RUN after RG-78), and never exits 1;
-- [ ] the refusal text names the path and the mount remedy; `doctor` reports the same per environment;
-- [ ] with `state_root` declared, the argv's `--state-dir` sits under it, and `--dry-run` shows it;
-- [ ] controlled wrong implementation: a root `mkdir` into the container layer passes the first
-      acceptance item but fails a test that recreates the runner and expects the resume state to
-      survive (RG-38's durability).
+*Acceptance (replaces the superseded pre-amendment list).*
+- [x] A fresh Dstdns worktree runner with the durable root mounted read-write
+      ran its first assay-kind lane without manual setup; run-gate reported
+      `/workspaces/dstdns/.run-gate/assay-state/.worktrees/run-gate-rg49-live-20261004`
+      as its state directory and the lane passed (exit 0).
+- [x] Unavailable or unwritable roots/ancestors refuse before Assay as NOT_RUN
+      3/`state-mount`, without creating or chowning the root or descendants.
+      Oracles: `test_state_root_probe_is_read_only_and_checks_directory_and_write_access`,
+      `test_state_root_probe_does_not_create_missing_root_or_state_descendants`,
+      `test_missing_state_root_under_synthetic_readonly_repo_refuses_without_mkdir`,
+      and `test_state_root_preflight_refuses_before_assay_and_uses_exact_runner`.
+- [x] Refusals name the environment, container-visible path, and mount remedy;
+      `doctor` reports once per assay environment. Oracles:
+      `test_state_mount_refusal_names_ephemeral_or_host_runner` and
+      `test_doctor_checks_state_root_once_per_assay_environment`.
+- [x] A declared `state_root` replaces the default mount root in state-dir argv,
+      and `--dry-run` discloses its probe and resulting path. Oracles:
+      `test_declared_state_root_replaces_only_the_mount_root` and
+      `test_state_root_dry_run_discloses_probe_without_running_it`.
+- [x] The durability oracle recreates the runner while preserving the declared
+      mount and observes resume state; its container-layer control loses state
+      after recreation: `test_resume_state_survives_runner_recreation_not_container_layer`.
+- [x] RG-38's two-full-tree-worktree behavior remains covered by the registered
+      selftest; all 1530 tests passed, with 1 skipped.
 
 ---
 
@@ -5421,14 +5416,14 @@ this entry is not marked FIXED until that work lands.
 
 **Observed:**
 - SPEC `R-38` documents the unconditional `--resume --progress .assay/progress-<lane>.jsonl` (RG-33). But it never mentions `--state-dir <repo>/.run-gate/assay-state/<project-relative-path>/`, which RG-38 added to every assay-kind lane on all three runner kinds. `grep -c state-dir SPEC.md README.md CONSUMERS.md LANE-AUTHORING.md` gives 0 for each file. Only CHANGES.md and this backlog carry it.
-- RG-49's repair (prove containment, then `chown` a root-owned synthetic parent in a partial-bind-mount worktree container) is likewise only in CHANGES.md and backlog prose.
+- At filing, RG-49's proposed repair (prove containment, then `chown` a root-owned synthetic parent in a partial-bind-mount worktree container) was likewise only in CHANGES.md and backlog prose. D-666 superseded that repair on 2026-10-04 with a read-only preflight and a declared durable mount root; container-layer `chown` is rejected because it loses resume state when the runner is recreated.
 - The `run-gate-cli` skill mentions none of resume, progress or state-dir.
 - dstdns therefore had to carry two paragraphs restating this in its own AGENTS.md §6.1, including "a fresh worktree keeps resume state" and "a permission error under `.run-gate/assay-state/` means check the run-gate version first". P235 cut them to a pointer (D-648 "cut now, file gaps"). That pointer currently lands on the skill and CHANGES.md, so a consumer can learn the behavior only from the changelog.
 
 **Why run-gate owns it:** run-gate constructs the argv, so the state-dir location, its keying (the checkout owning the shared `.git`, plus the project-relative path) and its durability across throwaway worktrees are run-gate's contract, not the consumer's.
 
-**Proposed contract:**
-- Extend SPEC `R-38` (or add a sibling rule) to state the `--state-dir` argument and its location derivation. It should also say why that location survives a deleted worktree, state the RG-49 containment-then-chown behavior, and name the exact refusal a failure produces.
+**Initial proposed contract (superseded by the D-666 amendment below):**
+- Extend SPEC `R-38` (or add a sibling rule) to state the `--state-dir` argument and its location derivation. It should also say why that location survives a deleted worktree, state the initial containment-then-chown proposal, and name the exact refusal a failure produces.
 - Add a "Resume and progress" section to the `run-gate-cli` skill covering the three flags, where to tail progress, and the version floor.
 - Add a one-paragraph mention to CONSUMERS.md.
 
@@ -5440,7 +5435,9 @@ this entry is not marked FIXED until that work lands.
 
 **v8: absorb** (the v8 gate inherits the argv builder, so the same drift test belongs there).
 
-### Status — FIXED 2026-10-04 (rev 49) for the shipped documentation contract: SPEC, skill, and CONSUMERS now name `--resume`, `--progress`, `--state-dir`, the 5.2.0 floor, and the durable state path. RG-49 parent repair remains OPEN and is explicitly not described as shipped.
+**Amendment (2026-10-04, D-666):** RG-49 now uses a read-only preflight in the lane's environment, `[environments.<name>].state_root` for a durable mount at another container path, and NOT_RUN/`state-mount` when the root or deepest existing state ancestor is unavailable or unwritable. The environment owner provides the durable read-write mount; run-gate creates only the per-project descendants beneath it. An indeterminate probe is ERROR, never evidence that the root is writable.
+
+### Status — FIXED 2026-10-04 (rev 50): SPEC, skill, README, DESIGN-GUIDE, and CONSUMERS document `--resume`, `--progress`, `--state-dir`, the 5.2.0 floor, durable path, `state_root`, and preflight result. RG-49 implementation, registered gate, and fresh Dstdns worktree-runner acceptance are complete.
 
 ## RG-78 — adopt v8's closed exit table and explicit environment modes now, not at the ciu8 cutover
 

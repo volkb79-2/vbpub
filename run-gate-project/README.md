@@ -74,6 +74,10 @@ five process statuses: **PASS 0**, **FAIL 1**, **ERROR 2**, **NOT_RUN 3**, or
 `--json` to read `verdict`, raw `exit_code`, `reason`, `log_path`, and assay
 outcome and admission as structured result fields. The full mapping is in
 [the CLI contract](SPEC.md#2-cli-contract).
+NOT_RUN reasons are closed: realness-mismatch, service-down,
+environment-down, environment-mismatch, env-missing, external-missing,
+external-down, dirty-tree, no-headroom, lock-busy, no-base, judge-floor,
+judge-digest, provenance-mismatch, and state-mount.
 
 Every `[environments.<name>]` declares `mode = "ephemeral"`, `"exec"`, or
 `"host"`. Names carry no behavior: `host` is an ordinary name and is a
@@ -117,7 +121,15 @@ and the [request-scope rationale](docs/DESIGN-GUIDE.md#selective-requests-stay-w
 
 Every assay lane receives `--resume`, a worktree-local progress file, and a
 durable `--state-dir` under the checkout that owns the shared Git directory.
-The durable-state option requires Assay 5.2.0. Read the [state contract](CONSUMERS.md#resume-progress-and-durable-assay-state)
+The default state root is `<checkout>/.run-gate`; container environments can
+declare `state_root` for a different durable mount. Before Assay starts,
+run-gate checks that root and the deepest existing directory on the keyed
+state path are writable as the lane user, and `doctor` reports the result
+per environment. An unavailable or unwritable state area is
+NOT_RUN/`state-mount`, not a test failure. The durable-state option requires
+Assay 5.2.0. Read the
+[state contract](CONSUMERS.md#resume-progress-and-durable-assay-state) and
+[mount rationale](docs/DESIGN-GUIDE.md#assay-resume-state-needs-an-environment-owned-mount)
 before removing an ephemeral worktree.
 
 ### Daemon-wide count admission and failed evidence
@@ -300,12 +312,14 @@ supplied with `./run-gate.py <lane> --base REF`). Neither becomes a
 the drift this design exists to remove.
 
 Asking has a price, stated rather than hidden: those questions are answered
-INSIDE the lane's environment, so `doctor`, `--check-env`, and any assay-lane
-invocation (`--dry-run` included) start short read-only probe containers —
-one inventory probe per environment+judge, plus one batched `command -v`
-probe per environment for the fitness check. They judge nothing, write
-nothing, and never start your judged lane; a project with no
-`kind = "assay"` lane starts none of them.
+INSIDE the lane's environment. `doctor` starts short read-only probes: one
+inventory probe per environment+judge, one batched `command -v` probe per
+environment for the fitness check, and one Assay state-root probe per assay
+environment. `--check-env` runs the first two probes only. An assay-lane
+invocation adds one state-root probe for its lane; `--dry-run` prints that
+probe without running it. They judge nothing, write nothing, and never start
+your judged lane; a project with no `kind = "assay"` lane starts none of
+them.
 
 ### Environment mechanics the tool must own (the hard-won list)
 

@@ -14,7 +14,7 @@ Judgment policy is NOT here: assay lanes reference assay.toml by name.
 See run-gate-project/README.md (design authority) and CONSUMERS.md (adoption).
 """
 # stdlib only — this launcher must run on a fresh clone with zero installs.
-__revision__ = 49  # rev 49: RG-66/68/69/71/72/74/76/77/78/80
+__revision__ = 50  # rev 50: RG-49 durable Assay-state preflight
 # selective assay and command requests; failed-assay evidence; completed-fail
 # and partial footprint manifests; native sequences with trunk bases; shared
 # assay inventory import; documented durable --state-dir; closed results,
@@ -135,6 +135,7 @@ import secrets
 import shlex
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import threading
@@ -170,6 +171,7 @@ NOT_RUN_REASONS = frozenset({
     "environment-mismatch", "env-missing", "external-missing",
     "external-down", "dirty-tree", "no-headroom", "lock-busy",
     "no-base", "judge-floor", "judge-digest", "provenance-mismatch",
+    "state-mount",
 })
 ASSAY_OUTCOMES = frozenset({
     "PASS", "FAIL", "ERROR", "NO_MEASUREMENT", "BUDGET_EXCEEDED",
@@ -580,7 +582,7 @@ def _check_keys(table: dict, allowed: set, where: str) -> None:
 
 def _validate_environment(name: str, table: dict, where: str) -> None:
     _check_keys(table, {"image", "cgroup_slice", "cgroup_slice_env", "mode", "container_name",
-                        "forward_env", "resources"},
+                        "forward_env", "resources", "state_root"},
                 f"{where} [environments.{name}]")
     image = table.get("image")
     mode = table.get("mode")
@@ -596,6 +598,18 @@ def _validate_environment(name: str, table: dict, where: str) -> None:
                  "host subprocess and cannot declare 'image'")
     elif not isinstance(image, str) or not image.strip():
         fail(f"{where} [environments.{name}]: 'image' must be a non-empty string")
+    state_root = table.get("state_root")
+    if state_root is not None:
+        if mode == "host":
+            fail(f"{where} [environments.{name}]: 'state_root' names a "
+                 "container path and cannot be declared for mode = \"host\"")
+        if (not isinstance(state_root, str) or not state_root.startswith("/")
+                or "\x00" in state_root
+                or any(part in ("", ".", "..")
+                       for part in state_root.split("/")[1:])):
+            fail(f"{where} [environments.{name}]: 'state_root' must be a "
+                 "canonical absolute container path without empty, '.' or "
+                 "'..' components")
     slice_ = table.get("cgroup_slice")
     if slice_ is not None and (not isinstance(slice_, str) or not slice_.strip()):
         fail(f"{where} [environments.{name}]: 'cgroup_slice' must be a non-empty string")
@@ -4901,10 +4915,11 @@ def redact_forwarded_values(argv: list[str], keys: list[str]) -> list[str]:
 
 def print_lane_artifacts(lane: dict, lane_name: str, project_dir: Path,
                          repo: Path, worktree: Path,
-                         recorded: dict | None = None) -> None:
+                         recorded: dict | None = None,
+                         state_root: str | Path | None = None) -> None:
     """R-18/RG-10: after EVERY run — any kind, any runner mode, success or
     failure — say where the evidence landed. Assay lanes always disclose the
-    verdict convention AND (RG-38) the mutation-resume-state directory;
+    verdict convention AND (RG-38/RG-49) the mutation-resume-state directory;
     declared `artifacts` add to it. Paths resolve against the EFFECTIVE
     project dir (relocated into the judged tree, R-21); `{worktree}` tokens
     inside entries are substituted.
@@ -4938,8 +4953,12 @@ def print_lane_artifacts(lane: dict, lane_name: str, project_dir: Path,
         # recorded-vs-live drift question here: repo/project_dir (what
         # assay_state_dir derives from) are facts about THIS invocation, not
         # about which run's config produced the recorded verdict/progress.
-        print(f"run-gate: state directory: {assay_state_dir(repo, project_dir)}",
-              flush=True)
+        recorded_state = (recorded.get("state_dir")
+                          if recorded is not None else None)
+        state_dir = (Path(recorded_state) if isinstance(recorded_state, str)
+                     and recorded_state else
+                     assay_state_dir(repo, project_dir, state_root))
+        print(f"run-gate: state directory: {state_dir}", flush=True)
     for entry in lane.get("artifacts", []):
         substituted = substitute_worktree([entry], worktree)[0]
         target = Path(substituted)
@@ -5505,9 +5524,31 @@ ASSAY_LANGUAGE_TOOLCHAIN = {
 }
 
 
+def extra_mount_flags() -> list[str]:
+    """Parse the operator's extra bind mounts once for lanes and probes."""
+    raw = os.environ.get(EXTRA_MOUNT_ENV_VAR, "")
+    if not raw:
+        return []
+    specs = raw.split(":")
+    if "" in specs:
+        fail(f"invalid ${EXTRA_MOUNT_ENV_VAR}: empty element in {raw!r}")
+    flags = []
+    for spec in specs:
+        if "=" not in spec or spec.count("=") != 1:
+            fail(f"invalid ${EXTRA_MOUNT_ENV_VAR} entry {spec!r}: "
+                 "expected 'host=container'")
+        source, target = spec.split("=", 1)
+        if not source or not target:
+            fail(f"invalid ${EXTRA_MOUNT_ENV_VAR} entry {spec!r}: empty path")
+        flags += ["-v", f"{source}:{target}"]
+    return flags
+
+
 def build_env_probe_argv(docker: str, env: dict, env_name: str, repo: Path,
                          worktree: Path, env_source: str, slice_name: str,
-                         script: str) -> list[str]:
+                         script: str,
+                         resolved_container_name: str | None = None
+                         ) -> list[str]:
     """The ONE way run-gate runs a short, synchronous, read-only command
     INSIDE a lane's environment (RG-25's `assay lanes --json` inventory and
     its `command -v` fitness checks; RG-26's base_source query).
@@ -5530,12 +5571,20 @@ def build_env_probe_argv(docker: str, env: dict, env_name: str, repo: Path,
         # container to enter, and the same script answers the same question.
         return ["bash", "-c", script]
     if env.get("mode") == "exec":
-        name, _src, _remedy = resolve_container_name(env_name, env, repo,
-                                                     worktree, env_source)
+        name = resolved_container_name
+        if name is None:
+            name, _src, _remedy = resolve_container_name(env_name, env, repo,
+                                                         worktree, env_source)
         return [docker, "exec", "--workdir", str(repo), name, "bash", "-c", script]
-    return [docker, "run", "--rm", "--init", "--cgroup-parent", slice_name,
+    argv = [docker, "run", "--rm", "--init", "--cgroup-parent", slice_name,
             *dual_mount_flags(repo, physical_path(repo)),
-            env["image"], "bash", "-c", script]
+            *extra_mount_flags()]
+    if env.get("user"):
+        # A path probe must run as the same user as the real lane: image root
+        # can write a root-owned synthetic parent that the app user cannot.
+        argv += ["--user", env["user"]]
+    argv += [env["image"], "bash", "-c", script]
+    return argv
 
 
 def _probe_slice(env: dict, env_source: str) -> str:
@@ -6538,8 +6587,9 @@ def cmd_doctor(lanes: dict, project_dir: Path, cfg: dict, central: dict,
     CONTAINERS. Toolchain fitness cannot be read, only observed, so doctor
     asks the judge for its lane inventory and runs `command -v` inside the
     lane's own environment — at most one inventory probe per (environment,
-    assay_command) plus one batched tool probe per environment, all read-only
-    and short-lived. Nothing is judged and nothing in the tree is written.
+    assay_command) plus one batched tool probe per environment. RG-49 adds
+    one state-root probe per assay environment. All probes are read-only and
+    short-lived. Nothing is judged and nothing in the tree is written.
     Say so out loud rather than letting "doctor runs nothing" quietly become
     false.
 
@@ -6720,9 +6770,14 @@ def cmd_doctor(lanes: dict, project_dir: Path, cfg: dict, central: dict,
                host_mode_stall_timeout_inert_reason(name))
 
     # 3. physical-path derivability + git health
+    doctor_repo: Path | None = None
+    doctor_worktree: Path | None = None
+    doctor_project_dir: Path | None = None
     try:
-        repo, worktree, _, worktree_scope = resolve_worktree_scope(
+        repo, worktree, effective_project_dir, worktree_scope = resolve_worktree_scope(
             project_dir, worktree_override, "doctor")
+        doctor_repo, doctor_worktree = repo, worktree
+        doctor_project_dir = effective_project_dir
         record("OK", "git", f"worktree {worktree}"
                + (f"  (named by --worktree {worktree_scope!r})"
                   if worktree_scope else ""))
@@ -6770,6 +6825,53 @@ def cmd_doctor(lanes: dict, project_dir: Path, cfg: dict, central: dict,
     except OSError as exc:
         # A preflight that tracebacks on a broken host defeats its purpose.
         record("FAIL", "git", f"git not runnable: {exc}")
+
+    # RG-49: assay resume state has to live on a durable mount owned by the
+    # environment. Probe once per assay environment as that lane's user. A
+    # missing/unwritable root is a confirmed failure; a failed Docker probe
+    # is SKIP, never an [OK] inferred from not seeing an error.
+    assay_environments: dict[str, tuple[dict, str]] = {}
+    for lane_name, lane in sorted(lanes.items()):
+        if lane.get("kind") != "assay":
+            continue
+        env_name = lane_environment_name(lane)
+        try:
+            env, env_source = resolve_environment(lane, lane_name, cfg,
+                                                 central, cfg_path, central_path)
+        except GateError:
+            continue  # the lane's environment error is already recorded above
+        assay_environments.setdefault(env_name, (env, env_source))
+    for env_name, (env, env_source) in sorted(assay_environments.items()):
+        topic = f"Assay state root for env {env_name} (RG-49)"
+        if (doctor_repo is None or doctor_worktree is None
+                or doctor_project_dir is None):
+            record("SKIP", topic,
+                   "cannot resolve the selected git worktree to probe its "
+                   "environment paths")
+            continue
+        root = assay_state_root(doctor_repo, env)
+        state_dir = assay_state_dir(doctor_repo, doctor_project_dir,
+                                    env.get("state_root"))
+        try:
+            probe_slice = _probe_slice(env, env_source)
+            writable, why = probe_assay_state_root(
+                docker, env, env_name, doctor_repo, doctor_worktree,
+                env_source, probe_slice, root, state_dir)
+        except (GateError, OSError) as exc:
+            writable, why = None, str(exc)
+        if writable is True:
+            record("OK", topic,
+                   f"{root} and the nearest existing directory for "
+                   f"{state_dir} are writable by the lane user")
+        elif writable is False:
+            record("FAIL", topic,
+                   f"{root} or the nearest existing directory for {state_dir} "
+                   f"is missing, not a directory, or not writable by the "
+                   f"lane user — {assay_state_root_remedy(root, env_name, env)}")
+        else:
+            record("SKIP", topic,
+                   f"could not determine whether the state root {root} and "
+                   f"state path {state_dir} are writable: {why}")
     if os.access("/tmp", os.W_OK):
         record("OK", "git-config", "/tmp writable for GIT_CONFIG_GLOBAL "
                                    "(safe.directory isolation)")
@@ -7363,11 +7465,41 @@ def resolve_assay_reuse_path(value: str, project_dir: Path,
     return str(target)
 
 
-def assay_state_dir(repo: Path, project_dir: Path) -> Path:
-    """RG-38: the durable, per-project mutation-resume-state root, OUTSIDE
-    the judged worktree (which may be ephemeral) -- rooted at `repo` (the
-    checkout owning the shared .git, durable by construction even when the
-    judged worktree is not). Keyed by `project_dir`'s path RELATIVE to
+def assay_state_root(repo: Path, env: dict | None = None) -> Path:
+    """The lane-visible mount root for durable Assay state.
+
+    A container environment may name a different root when its runner mounts
+    durable state somewhere other than `<repo>/.run-gate`. Paths are interpreted
+    inside that environment; callers must not stat a container path locally.
+    """
+    configured = (env or {}).get("state_root")
+    return Path(configured) if configured is not None else repo / ".run-gate"
+
+
+def assay_state_root_remedy(state_root: Path, env_name: str,
+                            env: dict | None) -> str:
+    """Name a repair that matches whether the mount path is configurable."""
+    if not env or env.get("mode") == "host":
+        return (f"ensure '{state_root}' is a directory writable by the lane "
+                "user on this host (create it there if missing), and make "
+                "any existing state directories writable too")
+    if env.get("state_root") is not None:
+        return (f"mount the durable host directory read-write at '{state_root}' "
+                f"in environment '{env_name}' and ensure existing state "
+                "directories are writable by the lane user")
+    return (f"mount '{state_root}' read-write into this environment, or "
+            f"declare state_root on [environments.{env_name}] if the durable "
+            "mount uses another in-container path; ensure existing state "
+            "directories are writable by the lane user")
+
+
+def assay_state_dir(repo: Path, project_dir: Path,
+                    state_root: str | Path | None = None) -> Path:
+    """RG-38/RG-49: the durable, per-project mutation-resume-state root,
+    OUTSIDE the judged worktree (which may be ephemeral) -- rooted by default
+    at `repo` (the checkout owning the shared .git, durable by construction
+    even when the judged worktree is not), or at the environment's declared
+    durable mount. Keyed by `project_dir`'s path RELATIVE to
     `repo` when it is under `repo` (the common case, no --worktree
     override): a bare basename key would let two projects that happen to
     share a directory NAME (e.g. two nested `backend/` projects) collide.
@@ -7381,10 +7513,171 @@ def assay_state_dir(repo: Path, project_dir: Path) -> Path:
         key = project_dir.relative_to(repo).as_posix()
     except ValueError:
         key = str(project_dir.resolve()).lstrip("/").replace("/", "-")
-    return repo / ".run-gate" / "assay-state" / key
+    root = Path(state_root) if state_root is not None else repo / ".run-gate"
+    return root / "assay-state" / key
 
 
-def assay_artifact_paths(lane: dict, project_dir: Path, repo: Path
+ASSAY_STATE_READY = "RUN_GATE_STATE_ROOT_READY"
+ASSAY_STATE_UNAVAILABLE = "RUN_GATE_STATE_ROOT_UNAVAILABLE"
+
+
+def assay_state_ancestor_candidates(state_root: Path,
+                                    state_dir: Path) -> list[Path]:
+    """Return the target and its descendants' ancestors, deepest first."""
+    try:
+        state_dir.relative_to(state_root)
+    except ValueError:
+        fail(f"Assay state directory {state_dir} is outside its state root "
+             f"{state_root}")
+    candidates = []
+    candidate = state_dir
+    while candidate != state_root:
+        candidates.append(candidate)
+        candidate = candidate.parent
+    return candidates
+
+
+def assay_state_probe_script(state_root: Path, state_dir: Path) -> str:
+    """Read only: check the root and the deepest existing state ancestor."""
+    quoted_root = shlex.quote(str(state_root))
+    branches = [
+        f"if [ ! -d {quoted_root} ] || [ ! -w {quoted_root} ] || "
+        f"[ ! -x {quoted_root} ]; then "
+        f"printf '%s\\n' {ASSAY_STATE_UNAVAILABLE}"
+    ]
+    for candidate in assay_state_ancestor_candidates(state_root, state_dir):
+        quoted = shlex.quote(str(candidate))
+        branches.append(
+            f"elif [ -e {quoted} ] || [ -L {quoted} ]; then "
+            f"if [ -d {quoted} ] && [ -w {quoted} ] && [ -x {quoted} ]; then "
+            f"printf '%s\\n' {ASSAY_STATE_READY}; "
+            f"else printf '%s\\n' {ASSAY_STATE_UNAVAILABLE}; fi")
+    branches.append(f"else printf '%s\\n' {ASSAY_STATE_READY}; fi")
+    return "; ".join(branches)
+
+
+def host_state_directory_status(path: Path) -> tuple[str, str | None]:
+    """Classify one host directory without folding unreadable into absent."""
+    try:
+        info = path.stat()
+    except FileNotFoundError:
+        try:
+            path.lstat()
+        except FileNotFoundError:
+            return "missing", None
+        except OSError as exc:
+            return "unknown", f"cannot inspect {path}: {exc}"
+        # A dangling symlink blocks creation of this directory path.
+        return "unavailable", None
+    except NotADirectoryError:
+        return "unavailable", None
+    except OSError as exc:
+        return "unknown", f"cannot inspect {path}: {exc}"
+    if (not stat.S_ISDIR(info.st_mode)
+            or not os.access(path, os.W_OK | os.X_OK)):
+        return "unavailable", None
+    return "ready", None
+
+
+def probe_assay_state_root(docker: str | None, env: dict, env_name: str,
+                           repo: Path, worktree: Path, env_source: str,
+                           slice_name: str, state_root: Path,
+                           state_dir: Path,
+                           resolved_container_name: str | None = None
+                           ) -> tuple[bool | None, str | None]:
+    """Return (writable, reason); None means the probe itself was unknown."""
+    if not env or env.get("mode") == "host":
+        root_status, reason = host_state_directory_status(state_root)
+        if root_status == "unknown":
+            return None, reason
+        if root_status != "ready":
+            return False, None
+        for candidate in assay_state_ancestor_candidates(state_root, state_dir):
+            status, reason = host_state_directory_status(candidate)
+            if status == "missing":
+                continue
+            if status == "unknown":
+                return None, reason
+            return status == "ready", None
+        return True, None
+    if not docker:
+        return None, "docker not found on PATH"
+    argv = build_env_probe_argv(
+        docker, env, env_name, repo, worktree, env_source, slice_name,
+        assay_state_probe_script(state_root, state_dir),
+        resolved_container_name=resolved_container_name)
+    try:
+        result = subprocess.run(argv, capture_output=True, text=True)
+    except OSError as exc:
+        return None, f"probe could not start: {exc}"
+    if result.returncode != 0:
+        tail = (result.stderr.strip().splitlines() or
+                [f"exit {result.returncode}"])[-1]
+        return None, f"probe failed (exit {result.returncode}): {tail}"
+    answer = result.stdout.strip()
+    if answer == ASSAY_STATE_READY:
+        return True, None
+    if answer == ASSAY_STATE_UNAVAILABLE:
+        return False, None
+    return None, f"probe returned an unexpected response: {answer!r}"
+
+
+def assure_assay_state_root(docker: str | None, lane: dict, env: dict,
+                            env_name: str, env_source: str, repo: Path,
+                            project_dir: Path, worktree: Path,
+                            slice_name: str,
+                            resolved_container_name: str | None = None,
+                            dry_run: bool = False) -> None:
+    """Refuse assay execution unless its durable state mount is writable."""
+    if lane.get("kind") != "assay":
+        return
+    state_root = assay_state_root(repo, env)
+    state_dir = assay_state_dir(repo, project_dir, env.get("state_root"))
+    if not env or env.get("mode") == "host":
+        if dry_run:
+            print(f"run-gate: assay state root preflight: would check "
+                  f"{state_root} and the nearest existing directory for "
+                  f"{state_dir} are writable on this host", flush=True)
+            return
+    else:
+        probe_argv = build_env_probe_argv(
+            docker or "docker", env, env_name, repo, worktree, env_source,
+            slice_name, assay_state_probe_script(state_root, state_dir),
+            resolved_container_name=resolved_container_name)
+        if dry_run:
+            print(f"run-gate: assay state root preflight: "
+                  f"{shlex.join(probe_argv)}", flush=True)
+            return
+    ready, why = probe_assay_state_root(
+        docker, env, env_name, repo, worktree, env_source, slice_name,
+        state_root, state_dir, resolved_container_name=resolved_container_name)
+    if ready is None:
+        fail_infra(f"could not determine whether Assay state root "
+                   f"'{state_root}' and state path '{state_dir}' are usable "
+                   f"in environment '{env_name}': {why}")
+    if not ready:
+        if resolved_container_name:
+            runner = f"container '{resolved_container_name}'"
+        elif env and env.get("mode") != "host":
+            runner = f"image '{env.get('image', '<unknown>')}'"
+        else:
+            runner = "bare host process"
+        remedy = assay_state_root_remedy(state_root, env_name, env)
+        raise GateNotRunError(
+            "state-mount",
+            f"lane '{lane.get('assay_lane', '?')}' not run: Assay state root "
+            f"'{state_root}' or the nearest existing directory for state "
+            f"path '{state_dir}' is missing, not a directory, or not "
+            f"writable by the lane user in {runner} for environment "
+            f"'{env_name}'; "
+            f"{remedy}")
+    print(f"run-gate: assay state root: {state_root} and the nearest "
+          f"existing directory for {state_dir} are writable in "
+          f"environment '{env_name}'", flush=True)
+
+
+def assay_artifact_paths(lane: dict, project_dir: Path, repo: Path,
+                         state_root: str | Path | None = None
                          ) -> tuple[str | None, str | None, str | None]:
     """(verdict, progress, state_dir) as ABSOLUTE strings for an assay lane,
     (None, None, None) for a command lane. R-38 constructs verdict/progress
@@ -7398,12 +7691,13 @@ def assay_artifact_paths(lane: dict, project_dir: Path, repo: Path
         return None, None, None
     return (str(project_dir / assay_verdict_rel(lane["assay_lane"])),
             str(project_dir / assay_progress_rel(lane["assay_lane"])),
-            str(assay_state_dir(repo, project_dir)))
+            str(assay_state_dir(repo, project_dir, state_root)))
 
 
 def build_assay_inner(lane: dict, project_dir: Path, repo: Path,
                       request_base: str | None = None,
-                      worktree: Path | None = None) -> str:
+                      worktree: Path | None = None,
+                      state_root: str | Path | None = None) -> str:
     verdict = assay_verdict_rel(lane["assay_lane"])
     selected_worktree = worktree or repo
     command = assay_command_text(lane)
@@ -7502,8 +7796,26 @@ def build_assay_inner(lane: dict, project_dir: Path, repo: Path,
     # ignored, never masking a source edit. assay_state_dir() is the single
     # construction (RG-10's own rule, extended) -- print_lane_artifacts()
     # discloses the SAME path this inner script actually creates and uses.
-    state_dir = assay_state_dir(repo, project_dir)
-    parts.append(f"mkdir -p {shlex.quote(str(state_dir))}")
+    state_dir = assay_state_dir(repo, project_dir, state_root)
+    state_root_path = (Path(state_root) if state_root is not None
+                       else repo / ".run-gate")
+    state_descendants = state_dir.relative_to(state_root_path).parts
+    quoted_root = shlex.quote(str(state_root_path))
+    unavailable = shlex.quote(
+        f"Assay state root '{state_root_path}' became unavailable after preflight")
+    parts.append(
+        f"if [ ! -d {quoted_root} ] || [ ! -w {quoted_root} ] || "
+        f"[ ! -x {quoted_root} ]; then "
+        f"printf '%s\\n' {unavailable} >&2; exit 1; fi")
+    # Create each descendant directly beneath its already-mounted parent.
+    # `mkdir -p <state_dir>` would recreate a missing `<state_root>` in the
+    # runner's writable layer if the mount disappeared after preflight.
+    current = state_root_path
+    for component in state_descendants:
+        current = current / component
+        quoted = shlex.quote(str(current))
+        parts.append(f"if [ ! -d {quoted} ]; then "
+                     f"mkdir {quoted} 2>/dev/null || [ -d {quoted} ]; fi")
     progress = assay_progress_rel(lane["assay_lane"])
     run_argv = ["run", lane["assay_lane"], "--file", "assay.toml",
                 "--verdict-json", verdict, "--resume", "--progress",
@@ -8007,7 +8319,8 @@ def await_container(docker: str, name: str, lane: dict, lane_name: str,
                     profiler: dict | None = None,
                     run_record: dict | None = None,
                     clock=time.monotonic,
-                    budget_deadline: float | None = None) -> int:
+                    budget_deadline: float | None = None,
+                    state_root: str | Path | None = None) -> int:
     """Stream a running container's logs, wait for its status, preserve
     evidence on failure, remove it, clear its inflight record, disclose its
     artifacts. ONE path for all three arrivals (a fresh `docker run -d`, a
@@ -8257,7 +8570,8 @@ def await_container(docker: str, name: str, lane: dict, lane_name: str,
                  "; container logs could NOT be captured before removal")
         print(f"run-gate: lane {lane_name!r} failed with exit {code}{where}",
               flush=True)
-    print_lane_artifacts(lane, lane_name, project_dir, repo, worktree, recorded)
+    print_lane_artifacts(lane, lane_name, project_dir, repo, worktree,
+                         recorded, state_root)
     return code
 
 
@@ -8713,24 +9027,13 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
     if attached is not None:
         return attached
     phys = physical_path(repo)
-    mounts = dual_mount_flags(repo, phys)  # dual: worktree gitfiles (RG-3)
-    extra_mounts_raw = os.environ.get(EXTRA_MOUNT_ENV_VAR, "")
-    if extra_mounts_raw:
-        mount_specs = extra_mounts_raw.split(":")
-        if "" in mount_specs:
-            fail(f"invalid ${EXTRA_MOUNT_ENV_VAR}: empty element in {extra_mounts_raw!r}")
-    else:
-        mount_specs = []
-    for mount_spec in mount_specs:
-        if "=" not in mount_spec or mount_spec.count("=") != 1:
-            fail(f"invalid ${EXTRA_MOUNT_ENV_VAR} entry {mount_spec!r}: expected 'host=container'")
-        source, target = mount_spec.split("=", 1)
-        if not source or not target:
-            fail(f"invalid ${EXTRA_MOUNT_ENV_VAR} entry {mount_spec!r}: empty path")
-        mounts += ["-v", f"{source}:{target}"]
+    # dual: worktree gitfiles (RG-3); the same explicit mounts also reach
+    # doctor and Assay-state probes through build_env_probe_argv().
+    mounts = [*dual_mount_flags(repo, phys), *extra_mount_flags()]
     verify_slice_loaded(slice_name)
     inner = build_assay_inner(lane, project_dir, repo, request_base,
-                              worktree=worktree) \
+                              worktree=worktree,
+                              state_root=env.get("state_root")) \
         if lane["kind"] == "assay" \
         else build_command_inner(lane, worktree, request_base)
     name = f"run-gate-{repo.name}-{lane_name}-{os.getpid()}-{int(time.time())}"
@@ -8786,6 +9089,10 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
     print(f"run-gate: docker argv: "
           f"{shlex.join(redact_forwarded_values(argv, env.get('forward_env', [])))}",
           flush=True)
+    if lane.get("kind") == "assay":
+        assure_assay_state_root(
+            docker, lane, env, lane_environment_name(lane), env_source,
+            repo, project_dir, worktree, slice_name, dry_run=dry_run)
     if dry_run:
         # RG-8: the plan above IS what the live run executes — same assembly
         # code path, only the `docker run` itself skipped. Unconditional
@@ -8811,7 +9118,8 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
     # RW-1: written on a SUCCESSFUL `docker run -d` and only then — a record
     # naming a container that was never created would send the next
     # invocation looking for a ghost.
-    verdict_path, progress_path, _state_dir = assay_artifact_paths(lane, project_dir, repo)
+    verdict_path, progress_path, state_dir = assay_artifact_paths(
+        lane, project_dir, repo, env.get("state_root"))
     inflight_payload = {
         "schema": INFLIGHT_SCHEMA,
         "lane": lane_name,
@@ -8852,6 +9160,7 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
         "project_dir": str(project_dir),
         "verdict": verdict_path,
         "progress": progress_path,
+        "state_dir": state_dir,
         "revision": __revision__,
         # RG-55/contract Sec 4.1: recorded as soon as it is known — a client
         # that dies between here and `start` still leaves enough for a
@@ -8923,6 +9232,7 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
                            repo, worktree,
                            profiler=profiler_state, run_record=run_record,
                            budget_deadline=budget_deadline,
+                           state_root=env.get("state_root"),
                            watch=make_progress_watch(lane, lane_name,
                                                      project_dir))
 
@@ -9028,7 +9338,8 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
             f"persistent runner '{name}' ({name_src}) is not running — "
             f"{start_remedy}")
     inner = build_assay_inner(lane, project_dir, repo, request_base,
-                              worktree=worktree) \
+                              worktree=worktree,
+                              state_root=env.get("state_root")) \
         if lane["kind"] == "assay" \
         else build_command_inner(lane, worktree, request_base)
     argv = [docker, "exec", "--workdir", str(repo)]
@@ -9066,6 +9377,11 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
     print(f"run-gate: docker argv: "
           f"{shlex.join(redact_forwarded_values(argv, env.get('forward_env', [])))}",
           flush=True)
+    if lane.get("kind") == "assay":
+        assure_assay_state_root(
+            docker, lane, env, lane_environment_name(lane), env_source,
+            repo, project_dir, worktree, slice_name or "",
+            resolved_container_name=name, dry_run=dry_run)
     if dry_run:
         # RG-8: name resolution + running-check above are rehearsed too —
         # a dry-run against a stopped runner reports the real refusal.
@@ -9126,8 +9442,8 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
     # scope: the record exists to be found, reconciliation is a separate
     # follow-up); written unconditionally — whether or not profiling is
     # enabled, a client can die mid-run either way (RW-1's own rule).
-    verdict_path, progress_path, _state_dir = assay_artifact_paths(
-        lane, project_dir, repo)
+    verdict_path, progress_path, state_dir = assay_artifact_paths(
+        lane, project_dir, repo, env.get("state_root"))
     inflight_payload = {
         "schema": INFLIGHT_SCHEMA,
         "lane": lane_name,
@@ -9155,6 +9471,7 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
         "project_dir": str(project_dir),
         "verdict": verdict_path,
         "progress": progress_path,
+        "state_dir": state_dir,
         "revision": __revision__,
         "profile_token": profile_plan["token"] if profiling else None,
         "profile_daemon": profile_plan["daemon"] if profiling else None,
@@ -9270,7 +9587,8 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
             # child exists and this client is killed externally, this finally
             # is never entered, so the record remains for reconciliation.
             clear_inflight_record(project_dir, lane_name)
-    print_lane_artifacts(lane, lane_name, project_dir, repo, worktree)
+    print_lane_artifacts(lane, lane_name, project_dir, repo, worktree,
+                         state_root=env.get("state_root"))
     if budget_deadline is not None \
             and time.monotonic() >= budget_deadline:
         raise GateBudgetExceeded(code,
@@ -9301,6 +9619,10 @@ def run_bare_host_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
             else lane_command_argv(lane, worktree, request_base))
     print(f"run-gate: rev {__revision__} | lane {lane_name} | env {env_source}",
           flush=True)
+    if lane.get("kind") == "assay":
+        assure_assay_state_root(
+            None, lane, {}, lane_environment_name(lane), env_source,
+            repo, project_dir, worktree, "", dry_run=dry_run)
     if lane.get("budget"):
         print(f"run-gate: budget {lane['budget']} (hard limit; clock starts "
               f"after admission and lock waits)", flush=True)
@@ -9558,10 +9880,11 @@ def usage(lanes: dict, inherited: set[str] | None = None) -> str:
         "          git view (RG-21), unprefixed relative script paths in container",
         "          command lanes (RG-34), and each assay lane's toolchain fitness asked",
         "          of the judge itself (RG-25). Judges nothing and writes nothing,",
-        "          but DOES start short read-only probe containers for that last",
-        "          check — fitness can only be observed, not read: one inventory",
-        "          probe per environment+judge, plus one batched `command -v`",
-        "          probe per environment. --worktree redirects every per-tree",
+        "          but DOES start short read-only probe containers — fitness can",
+        "          only be observed, not read: one inventory probe per",
+        "          environment+judge, one batched `command -v` probe per",
+        "          environment, and one Assay state-root probe per assay",
+        "          environment. --worktree redirects every per-tree",
         "          check at THAT tree instead of the invoking checkout, and the",
         "          report names it (RG-30))",
         "       run-gate.py history [LANE] [--worktree PATH] [--json]",

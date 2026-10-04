@@ -7,7 +7,15 @@ moves. Normative behavior lives in SPEC.md; entry-by-entry rationale lives in
 KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 
 ## [Unreleased]
-<!-- This unreleased block describes source rev 49. At release, fold these entries into the generated dated section by hand; the release generator does not clear this block. -->
+<!-- This unreleased block describes source rev 50. At release, fold these entries into the generated dated section by hand; the release generator does not clear this block. -->
+
+- **Durable Assay state mount preflight (RG-49, rev 50).** Every assay lane
+  checks that its durable state root and deepest existing state directory
+  are writable as the lane user before starting Assay. An unavailable or
+  unwritable state area is NOT_RUN/`state-mount`;
+  `[environments.<name>].state_root` names a different container mount point,
+  `doctor` checks once per assay environment, and `--dry-run` prints the probe.
+  run-gate leaves durable-root creation and mounting to the environment owner.
 
 - **Closed results and explicit environment modes (RG-78, rev 49).** All
   normal CLI outcomes now pass through `finish(LaneResult)` and the closed
@@ -41,9 +49,8 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
   `--include-failed`; repeatable `footprint --write --lane NAME` merges only
   selected lanes; `accepts_args = true` permits arguments after `--` on one
   command lane.
-- **Remaining compatibility boundary.** RG-49's root-owned-parent repair
-  remains OPEN. RG-70 is absorbed into ciu CIU-118's `ciu exec` work and is
-  not a separate run-gate v7 implementation.
+- **Remaining compatibility boundary.** RG-70 is absorbed into ciu CIU-118's
+  `ciu exec` work and is not a separate run-gate v7 implementation.
 
 - **Source-backed Assay consumers.** Internal lanes may omit
   `assay_command` and `pins`; run-gate installs `assay/` from the selected
