@@ -175,13 +175,17 @@ def test_removed_backup_marker_creates_its_scope_directory(tmp_path):
 def test_abandon_uses_explicit_return_code_handling_for_all_remote_mutations(monkeypatch, tmp_path):
     branch = "cmru-release-20260927_120000-alpha-ab12cd"
     ref = f"refs/heads/{branch}"
+    oid = "a" * 40
     calls = []
 
     def run(argv, **kwargs):
         calls.append((list(argv), kwargs))
         if argv[:3] == ["git", "ls-remote", "--heads"] and len(calls) == 1:
-            return subprocess.CompletedProcess(argv, 0, "a" * 40 + "\t" + ref + "\n", "")
-        if argv[:4] == ["git", "push", "origin", "--delete"]:
+            return subprocess.CompletedProcess(argv, 0, oid + "\t" + ref + "\n", "")
+        if argv == [
+            "git", "push", f"--force-with-lease={ref}:{oid}",
+            "origin", f":{ref}",
+        ]:
             return subprocess.CompletedProcess(argv, 0, "", "")
         if argv[:3] == ["git", "ls-remote", "--heads"]:
             return subprocess.CompletedProcess(argv, 0, "", "")
