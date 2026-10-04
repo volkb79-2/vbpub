@@ -65,6 +65,7 @@ def test_release_uses_fetched_origin_and_moved_config_path_when_local_main_is_be
     monkeypatch.setattr(cli.transaction, "remove_backup_branch", lambda *args, **kwargs: None)
     monkeypatch.setattr(cli.transaction, "remove_workspace", lambda *args, **kwargs: None)
     monkeypatch.setattr(cli.transaction, "forget_release_scope", lambda *args, **kwargs: None)
+    monkeypatch.setattr(cli.transaction, "clear_plan_refused", lambda *_args: None)
     monkeypatch.setattr(
         cli.transaction, "_sync_local_main_result",
         lambda *args, **kwargs: transaction._SyncLocalMainResult(True),
