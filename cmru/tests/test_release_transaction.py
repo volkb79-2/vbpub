@@ -1129,9 +1129,15 @@ def test_snapshot_reader_refuses_symlink_escape_from_git_tree(tmp_path):
 
 def test_snapshot_config_path_refuses_unsupported_internal_config_name(tmp_path):
     repo_root = tmp_path / "repo"
+    _init_repo(repo_root)
+    (repo_root / "other.toml").write_text("invalid = true\n", encoding="utf-8")
+    _git("add", "other.toml", cwd=repo_root)
+    _git("commit", "-q", "-m", "add unsupported config", cwd=repo_root)
+    revision = _git("rev-parse", "HEAD", cwd=repo_root)
+
     with pytest.raises(RuntimeError, match="Unsupported CMRU config path in Git family"):
         _real_project_config_paths_at_snapshot(
-            repo_root, "f" * 40, repo_root / "other.toml",
+            repo_root, revision, repo_root / "other.toml",
             {"demo": SimpleNamespace(name="demo", project_root=repo_root / "demo")},
             ["demo"],
         )
