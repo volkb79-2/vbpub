@@ -1257,7 +1257,14 @@ def test_candidate_orchestration_read_failure_refuses_resume(tmp_path):
 
 @pytest.mark.parametrize(
     ("content", "expected_error"),
-    [("invalid = [", "Invalid project config"), ("[project.release]\ngit_tag = 1\n", "git_tag must be explicitly true or false")],
+    [
+        ("invalid = [", "Invalid project config"),
+        (
+            '[project]\nid = "demo"\nprefix = "demo-v"\n'
+            "[project.release]\ngit_tag = 1\n",
+            "git_tag must be explicitly true or false",
+        ),
+    ],
 )
 def test_candidate_tag_policy_refuses_invalid_project_policy(
     tmp_path, content, expected_error,
