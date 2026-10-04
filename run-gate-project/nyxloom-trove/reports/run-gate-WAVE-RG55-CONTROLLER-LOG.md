@@ -6563,3 +6563,13 @@ lease-lock edit and is not final evidence for it. At 15:21Z host memory PSI
 `full avg10` had risen to 16.35%; additional test launches remain paused until
 the launch threshold is satisfied. P1 remains on its exact clean judged tree;
 no progress was polled before the 25-minute interval.
+
+### RW-434 — 2026-10-04 15:41:01Z — cgroup-profiler release boundary
+
+The operator chose the combined release boundary: because P1 and P6 are
+already present on `origin/main` and CMRU releases snapshot that ref, ship the
+combined P1+P6 source as `cgroup-profiler` 1.0.0. Create a 1.1.0 only if
+substantive post-1.0.0 changes genuinely warrant it; do not manufacture a
+second release to preserve the now-lost historical split. This settles the
+release boundary, not the pending campaign, review, gate, publication, or
+daemon-running requirements.
