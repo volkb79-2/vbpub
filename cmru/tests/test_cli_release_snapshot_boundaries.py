@@ -141,7 +141,9 @@ def test_release_rejects_internal_handoff_on_dry_run(monkeypatch, tmp_path, caps
         {tmp_path: [projects["demo"]]},
     )
 
-    assert cli.main(["release", "--dry-run", "--config", "cmru.orchestration.toml"]) == 1
+    assert cli.main([
+        "release", "demo", "--dry-run", "--config", "cmru.orchestration.toml",
+    ]) == 1
     assert "valid only for a new family release launcher" in capsys.readouterr().err
 
 
@@ -157,7 +159,9 @@ def test_release_rejects_an_internal_snapshot_spanning_multiple_git_families(
     }
     _stub_release_launcher(monkeypatch, tmp_path, projects, config_value, groups)
 
-    assert cli.main(["release", "--config", "cmru.orchestration.toml"]) == 1
+    assert cli.main([
+        "release", "alpha,beta", "--config", "cmru.orchestration.toml",
+    ]) == 1
     assert "snapshot handoff cannot span Git families" in capsys.readouterr().err
 
 
@@ -177,7 +181,9 @@ def test_release_accepts_a_handoff_for_one_new_family_before_preflight(
 
     monkeypatch.setattr(cli, "_preflight_multi_family_release_tag_support", stop_after_handoff)
 
-    assert cli.main(["release", "--config", "cmru.orchestration.toml"]) == 1
+    assert cli.main([
+        "release", "demo", "--config", "cmru.orchestration.toml",
+    ]) == 1
     error = capsys.readouterr().err
     assert calls == ["preflight"]
     assert "controlled preflight stop" in error
