@@ -371,6 +371,9 @@ def _install_abandon_facts(monkeypatch, root, workspace, *, progress=None):
         transaction, "read_release_progress",
         lambda *_: progress if progress is not None else workspace.context.base_commit,
     )
+    monkeypatch.setattr(transaction, "read_release_tag_snapshot", lambda *_: {})
+    monkeypatch.setattr(transaction, "read_release_tag_attempts", lambda *_: None)
+    monkeypatch.setattr(transaction, "list_local_tag_refs", lambda *_: {})
     monkeypatch.setattr(transaction, "backup_was_pushed", lambda *_: False)
     monkeypatch.setattr(transaction, "backup_was_removed", lambda *_: False)
     monkeypatch.setattr(
