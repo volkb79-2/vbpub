@@ -1201,7 +1201,6 @@ def test_candidate_orchestration_path_uses_retained_candidate_config(tmp_path):
     _init_repo(candidate_root)
     config_path = source_root / "cmru.orchestration.toml"
     candidate_config = candidate_root / "cmru.orchestration.toml"
-    candidate_config.parent.mkdir(parents=True)
     candidate_config.write_text(
         '[orchestration.project.demo]\nconfig = "new/demo/cmru.toml"\n',
         encoding="utf-8",
