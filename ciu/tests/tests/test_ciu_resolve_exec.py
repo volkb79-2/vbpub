@@ -54,11 +54,14 @@ def resolvable_repo(tmp_path, monkeypatch):
             }
         },
     }
-    monkeypatch.setattr(
-        deploy,
-        "load_global_config",
-        lambda _root, write_rendered=True: global_config,
-    )
+    def load_global_config(root, *, write_rendered=True):
+        if write_rendered:
+            (Path(root) / "ciu.global.toml").write_text(
+                "# rendered global config\n", encoding="utf-8"
+            )
+        return global_config
+
+    monkeypatch.setattr(deploy, "load_global_config", load_global_config)
     return repo, stack, global_config
 
 
@@ -76,6 +79,7 @@ def test_resolve_reads_exact_service_keys_without_docker_or_rendered_files(
     identity = document["resolved"]["identities"]["tools/test-runner"]["test-runner"]
     assert document["schema_version"] == 1
     assert identity["container_name"] == "demo-test-runner"
+    assert identity["hostname"] == "demo-test-runner"
     assert identity["compose_project"] == "demo-test-test-runner"
     assert identity["network"] == "demo-test-net"
     assert identity["image"] == "example/runner:1"
@@ -101,6 +105,38 @@ def test_stack_selector_accepts_absolute_inside_and_unique_basename(resolvable_r
     assert deploy.resolve_identities(repo, stack="test-runner")["resolved"]["identities"].keys() == {
         "tools/test-runner"
     }
+
+
+def test_single_stack_resolve_preserves_existing_state_without_writing(
+    resolvable_repo,
+):
+    repo, stack, _global = resolvable_repo
+    rendered = stack / "ciu.toml"
+    deploy.config_model.write_rendered_toml(
+        rendered, {"state": {"marker": "state-v"}}
+    )
+    before = rendered.read_bytes()
+    (stack / "ciu.compose.yml.j2").write_text(
+        "services:\n"
+        "  runner:\n"
+        "    image: {{ state.marker }}\n",
+        encoding="utf-8",
+    )
+
+    document = deploy.resolve_identities(repo)
+
+    identity = document["resolved"]["identities"]["tools/test-runner"]["runner"]
+    assert identity["image"] == "state-v"
+    assert rendered.read_bytes() == before
+    assert not (repo / "ciu.global.toml").exists()
+
+
+def test_resolve_rejects_truthy_non_string_network(resolvable_repo):
+    repo, _stack, global_config = resolvable_repo
+    global_config["deploy"]["network_name"] = 17
+
+    with pytest.raises(ValueError, match="no declared network identity"):
+        deploy.resolve_identities(repo)
 
 
 def test_stack_selector_refuses_outside_ambiguous_and_unselected_paths(tmp_path):
@@ -141,8 +177,64 @@ def test_resolve_refuses_missing_network_and_missing_service(resolvable_repo):
     with pytest.raises(ValueError, match="no declared network identity"):
         deploy.resolve_identities(repo)
     global_config["deploy"]["network_name"] = "demo-test-net"
-    with pytest.raises(ValueError, match="service 'missing' was not found"):
+    with pytest.raises(
+        ValueError,
+        match="service 'missing' was not found in stack 'test-runner'",
+    ):
         deploy.resolve_identities(repo, stack="test-runner", service="missing")
+
+
+def test_resolve_does_not_repair_identity_that_appears_during_query(
+    resolvable_repo, monkeypatch,
+):
+    from ciu import workspace_env
+
+    repo, _stack, _global = resolvable_repo
+    facts = {
+        "repo_name": "demo",
+        "instance_id": "ab12cd",
+        "network": "demo-ab12cd-network",
+        "physical_repo_root": str(repo),
+        "repo_root": str(repo),
+        "public_fqdn": "demo.test",
+    }
+
+    def old_format_record() -> None:
+        path = workspace_env.generated_facts_path(repo)
+        lines = workspace_env.render_generated_facts_block(facts)
+        path.write_text(
+            "\n".join(
+                line for line in lines
+                if not line.startswith("schema_version = ")
+            ) + "\n",
+            encoding="utf-8",
+        )
+
+    def project_name(_config, _stack_dir):
+        old_format_record()
+        raise ValueError("compose project is not declared")
+
+    monkeypatch.setattr(deploy.engine, "compose_project_name", project_name)
+    monkeypatch.setattr(
+        deploy.procutil,
+        "docker",
+        lambda *_args, **_kwargs: pytest.fail(
+            "read-only resolve must reject before checking resources"
+        ),
+    )
+    monkeypatch.setattr(
+        workspace_env,
+        "generate_ciu_env",
+        lambda *_args, **_kwargs: pytest.fail(
+            "read-only resolve must never rewrite generated identity"
+        ),
+    )
+
+    with pytest.raises(
+        workspace_env.WorkspaceEnvError,
+        match="read-only operation will not repair",
+    ):
+        deploy.resolve_identities(repo)
 
 
 def test_resolve_uses_generated_facts_network_when_global_has_none(resolvable_repo):
@@ -568,3 +660,19 @@ def test_exec_parser_leaves_help_to_top_level_dispatcher(capsys):
         cli._exec_service_cli(["--help", "--", "true"])
     assert exc.value.code == 2
     assert "error:" in capsys.readouterr().err
+
+
+def test_exec_parser_rejects_abbreviated_profile_option(monkeypatch, capsys):
+    monkeypatch.setattr(
+        deploy,
+        "exec_service",
+        lambda *_args, **_kwargs: pytest.fail(
+            "abbreviated --profile must be rejected before service resolution"
+        ),
+    )
+    with pytest.raises(SystemExit) as exc:
+        cli._exec_service_cli([
+            "--prof", "test", "tools/test-runner", "--", "true",
+        ])
+    assert exc.value.code == 2
+    assert "unrecognized arguments" in capsys.readouterr().err

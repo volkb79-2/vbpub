@@ -1755,7 +1755,7 @@ def _worktree(rest: list[str]) -> int:
                         f"up {opts.logical_name}` failed (exit {rc}); the "
                         f"checkout is preserved. Retry with `ciu worktree up "
                         f"{opts.logical_name}`.",
-                        file=sys.stderr, flush=True,
+                        file=sys.stderr,
                     )
                     return rc
             return 0
@@ -2279,8 +2279,8 @@ def main() -> None:
             raise SystemExit(ssh_exec(host_cfg, [remote_cmd], config=config, repo_root=repo_root))
         if _flag_given(rest, "--dir"):
             define_root, rest = _extract_define_root(rest)
-            parser = CiuArgumentParser(prog="ciu down --dir", add_help=False)
-            parser.add_argument("--dir", required=True, metavar="PATH")
+            parser = CiuArgumentParser(prog="ciu down --dir")
+            parser.add_argument("--dir", metavar="PATH")
             parser.add_argument("--profile", action="append", default=None, metavar="NAME")
             opts = parser.parse_args(rest)
             repo_root = _resolve_repo_root_deploy(define_root)
@@ -2301,8 +2301,8 @@ def main() -> None:
         if _flag_given(rest, "--identity"):
             import argparse as _ap
             define_root, rest = _extract_define_root(rest)
-            parser = CiuArgumentParser(prog="ciu clean --identity", add_help=False)
-            parser.add_argument("--identity", required=True, metavar="OLD_ID")
+            parser = CiuArgumentParser(prog="ciu clean --identity")
+            parser.add_argument("--identity", metavar="OLD_ID")
             parser.add_argument("-y", "--yes", action="store_true")
             opts, remaining = parser.parse_known_args(rest)
             if remaining:

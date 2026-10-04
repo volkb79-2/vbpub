@@ -405,13 +405,13 @@ def _resolve_identity_stack_paths(
             entry for entry in selection
             if Path(entry["path"]).name == selector
         ]
-        if len(matches) == 1:
-            return matches
         if len(matches) > 1:
             raise ValueError(
                 f"[S18] --stack {selector!r} matches multiple selected stacks: "
                 + ", ".join(sorted(entry["path"] for entry in matches))
             )
+        if len(matches) == 1:
+            return matches
     raise ValueError(
         f"[S18] --stack {selector!r} is not in the current deploy selection; "
         "use a selected repo-relative stack path or pass --profile for an "
