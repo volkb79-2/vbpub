@@ -104,6 +104,54 @@ def test_publish_existing_release_updates_and_uploads_only_new_assets(tmp_path):
     assert {name for kind, name in calls[1:]} == {asset.name}
 
 
+def test_retained_publish_refuses_a_different_release_id_before_metadata_update(tmp_path):
+    asset = tmp_path / "artifact.whl"
+    asset.write_bytes(b"wheel")
+    gh = release.GitHubReleases("o", "r", "t")
+    gh.get_release_by_tag = lambda tag: {
+        "id": 8, "tag_name": tag, "upload_url": "https://upload/{?name}",
+    }
+    updates = []
+    gh.update_release = lambda *args: updates.append(args)
+
+    with pytest.raises(SystemExit):
+        gh.publish(
+            "demo-v1", "title", "notes", [asset],
+            require_existing_release=True,
+            expected_release_id=7,
+            expected_tag_commit="a" * 40,
+        )
+
+    assert updates == []
+
+
+def test_retained_publish_rechecks_tag_commit_after_metadata_before_asset_mutation(tmp_path):
+    asset = tmp_path / "artifact.whl"
+    asset.write_bytes(b"wheel")
+    gh = release.GitHubReleases("o", "r", "t")
+    gh.get_release_by_tag = lambda tag: {
+        "id": 7, "tag_name": tag, "upload_url": "https://upload/{?name}",
+    }
+    commits = iter(["a" * 40, "b" * 40])
+    gh.get_tag_commit = lambda _tag: next(commits)
+    updates = []
+    asset_actions = []
+    gh.update_release = lambda *args: updates.append(args)
+    gh.list_assets = lambda _release_id: asset_actions.append("list") or []
+    gh.upload_asset = lambda *args: asset_actions.append("upload")
+
+    with pytest.raises(SystemExit):
+        gh.publish(
+            "demo-v1", "title", "notes", [asset],
+            require_existing_release=True,
+            expected_release_id=7,
+            expected_tag_commit="a" * 40,
+        )
+
+    assert updates == [(7, "title", "notes")]
+    assert asset_actions == []
+
+
 def test_validate_latest_release_retries_then_returns_integrity_coordinates(monkeypatch):
     gh = Mock()
     gh.resolve_latest.side_effect = [None, {
@@ -196,10 +244,23 @@ def test_transaction_workspace_records_reject_corrupt_results_and_forget_markers
 def test_transaction_delete_retained_output_requires_exact_verified_coordinate(tmp_path):
     root = _repo(tmp_path)
     project_root = root / "demo"
-    project = SimpleNamespace(project_root=project_root)
+    class ProjectRootMustNotBeRead:
+        @property
+        def project_root(self):
+            raise AssertionError("invalid ID validation must precede project-root resolution")
+
+    invalid_coordinate_message = (
+        "--delete-build-output must be the exact <commit-date>_<40-hex-commit> "
+        "coordinate printed by cmru build"
+    )
     for output_id in ("bad", "20240101T000000Z_" + "a" * 39):
-        with pytest.raises(RuntimeError, match="exact"):
-            transaction.delete_retained_build_output(root, project, "demo", output_id, dry_run=False)
+        with pytest.raises(RuntimeError) as raised:
+            transaction.delete_retained_build_output(
+                root, ProjectRootMustNotBeRead(), "demo", output_id, dry_run=False,
+            )
+        assert str(raised.value) == invalid_coordinate_message
+
+    project = SimpleNamespace(project_root=project_root)
     output_id = "20240101T000000Z_" + "a" * 40
     target = project_root / "artifacts" / output_id
     target.mkdir(parents=True)

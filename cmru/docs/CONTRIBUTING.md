@@ -28,14 +28,17 @@ cheap, and it is the weakest. A change set here reached a passing suite at 100%
 statement *and* branch coverage while the campaign found **six surviving
 mutants** — one in the single line deciding whether a pinned version was stale.
 
-From the repository root, run the project lane:
+From the repository root, run the registered release gate:
 
 ```bash
-./run-gate.py mutation
+./run-gate.py gate
 ```
 
-The lane runs the campaign in `tester-unified`, with a 120-second timeout for
-each candidate. A timeout is recorded as a killed mutant so an infinite-loop
+The gate prepares authenticated origin baseline facts on the host, then runs
+the campaign in `tester-unified`; the publisher token is not forwarded into the
+test container. Run `mutation` directly only when you have supplied fresh
+`CMRU_ASSAY_BASELINE_FACTS` from the host preflight. Each candidate has a
+120-second timeout. A timeout is recorded as a killed mutant so an infinite-loop
 mutation cannot hold the lane indefinitely. The runner updates
 `.assay/mutation-cmru.json` and appends per-candidate events to
 `.assay/progress-mutation-cmru.jsonl`; another run resumes from completed killed

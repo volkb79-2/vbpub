@@ -2,7 +2,8 @@
 # cmru project gate lanes — parsed ONLY by run-gate.py (one parser, D-110).
 # Environment facts come from the CENTRAL vbpub-root run-gate.root.toml; judgment
 # Assay owns R0/R1/R3 in assay.toml [lanes.cmru]; the release-specific
-# mutation lane owns R2 using the nearest ancestor cmru-v* tag as its base.
+# mutation lane owns R2 using the highest-version published cmru-v* tag in
+# the candidate's full ancestry as its base.
 # The release-gate conjunction is lane
 # `gate`; cmru.toml [steps.run-tests] points at it and owns NO test logic itself.
 # The lanes use a 2g hard ceiling and ample swap for mutation campaigns. The
@@ -47,7 +48,16 @@ memory_swap = "16g"
 [lanes.coverage]
 kind = "command"
 environment = "tester-unified"
-argv = ["bash", "-c", "cd {worktree}/cmru && exec env PYTHONPATH=src:../libraries/cli-extended/src:../libraries/worktree/src /opt/tester-venv/bin/python -m pytest tests -q --maxfail=1 --cov=src/cmru --cov-branch --cov-fail-under=100 --cov-report=json:coverage.json"]
+argv = [
+  "bash",
+  "-c",
+  '''
+set -euo pipefail
+cd {worktree}/cmru
+/opt/tester-venv/bin/python -m pip install --quiet --disable-pip-version-check --no-input --no-deps --no-build-isolation --editable ../assay
+exec env PYTHONPATH=src:../libraries/cli-extended/src:../libraries/worktree/src /opt/tester-venv/bin/python -m pytest tests -q --maxfail=1 --cov=src/cmru --cov-branch --cov-fail-under=100 --cov-report=json:coverage.json
+''',
+]
 budget = "20m"
 artifacts = ["coverage.json"]       # disclosed after every run (RG-10)
 
@@ -55,18 +65,33 @@ artifacts = ["coverage.json"]       # disclosed after every run (RG-10)
 memory = "2g"
 memory_swap = "16g"
 
-# Mutation base = the PREVIOUS cmru release tag, resolved at gate time — NOT
-# origin/main (KI-18): at release time the tree IS origin/main, so a base of
-# origin/main leaves zero candidates and the campaign fails
-# --require-candidates. git describe returns the nearest ancestor cmru-v* tag,
-# so every source line changed since the last release gets mutated. When the
-# source diff against that verified-ancestor tag is genuinely EMPTY (a
-# release that changes no src/ lines), the lane skips with a notice instead
-# of failing — describe can only return an ancestor, so an empty diff here is
-# a true "nothing to mutate", never a misresolved base.
+# The mutation lane receives token-free remote facts generated immediately
+# before it starts. CMRU's host-side gate uses its configured secret through
+# CMRU's scoped Git transport; the tester container receives tag names and
+# commit IDs only, never publisher credentials.
+[environments.cmru-mutation]
+image = "tester-unified:local"
+cgroup_slice_env = "CGROUP_PARENT_DEV_GATES"
+forward_env = ["CGROUP_PARENT_DEV_BACKGROUND", "CMRU_ASSAY_BASELINE_FACTS"]
+
+# Mutation and Assay R1 must use the same PREVIOUS cmru release tag, never
+# origin/main (KI-18): at release time the tree IS origin/main, so that base
+# leaves zero candidates and the campaign fails --require-candidates. The
+# checker resolves the highest-version published cmru-v* tag in the candidate's
+# full ancestry and requires it to match assay.toml's pinned R1 base. Host facts
+# include every published CMRU tag and its commit so the tester can verify the
+# selection through Assay's sanitized ancestry API. A rerun on a
+# release-tagged HEAD excludes every tag at HEAD and selects the highest-version
+# published release in the remaining ancestry. If Assay resolves a merge's first
+# parent after that tag, configured CMRU source roots must be unchanged across
+# the gap. Changed-source checks use Assay's sanitized Git boundary. Run the
+# registered `gate` lane to prepare the one-shot remote facts before mutation.
+# An empty source diff writes skip evidence bound to candidate HEAD and emits
+# no tag; otherwise only an older skip record is removed before emitting it.
 [lanes.mutation]
 kind = "command"
-environment = "tester-unified"
+environment = "cmru-mutation"
+required_env = ["CMRU_ASSAY_BASELINE_FACTS"]
 argv = [
   "bash",
   "-c",
@@ -75,11 +100,9 @@ set -euo pipefail
 cd {worktree}/cmru
 /opt/tester-venv/bin/python -m pip install --quiet --disable-pip-version-check --no-input --no-deps --no-build-isolation --editable ../assay
 /opt/tester-venv/bin/python -m pytest tools/test_mutation_campaign.py -q
-BASE=$(git describe --tags --abbrev=0 --match 'cmru-v*' 2>/dev/null || echo origin/main)
-if git diff --quiet "$BASE"..HEAD -- src; then
-    echo "mutation: no changed source since $BASE — nothing to mutate, skipping"
-    mkdir -p .assay
-    printf '{"status": "skipped", "reason": "no-changed-source", "base": "%s"}\n' "$BASE" > .assay/mutation-cmru.json
+BASE=$(/opt/tester-venv/bin/python tools/check_assay_baseline.py --skip-evidence)
+if [ -z "$BASE" ]; then
+    echo "mutation: no changed source — explicit skip evidence recorded"
     exit 0
 fi
 mkdir -p .assay
@@ -90,8 +113,7 @@ exec /opt/tester-venv/bin/python tools/mutation_campaign.py \
     --progress .assay/progress-mutation-cmru.jsonl \
     --require-candidates --resume -- \
     env PYTHONPATH=src:../libraries/cli-extended/src:../libraries/worktree/src PYTHONDONTWRITEBYTECODE=1 \
-    /opt/tester-venv/bin/python -m pytest tests -q --maxfail=1 \
-    --cov=src/cmru --cov-branch --cov-fail-under=100 --cov-report=json:coverage.json
+    /opt/tester-venv/bin/python -m pytest tests -q --maxfail=1
 ''',
 ]
 budget = "7h"
@@ -104,7 +126,17 @@ memory_swap = "16g"
 [lanes.canary]
 kind = "command"
 environment = "tester-unified"
-argv = ["bash", "-c", "cd {worktree}/cmru && mkdir -p .assay && exec /opt/tester-venv/bin/python tools/coverage_canary.py --repo-root {worktree} --project-root . --target src/cmru/config.py --evidence .assay/coverage-canary-cmru.json -- env PYTHONPATH=src:../libraries/cli-extended/src:../libraries/worktree/src /opt/tester-venv/bin/python -m pytest tests -q --maxfail=1 --cov=src/cmru --cov-branch --cov-fail-under=100 --cov-report=json:coverage.json"]
+argv = [
+  "bash",
+  "-c",
+  '''
+set -euo pipefail
+cd {worktree}/cmru
+/opt/tester-venv/bin/python -m pip install --quiet --disable-pip-version-check --no-input --no-deps --no-build-isolation --editable ../assay
+mkdir -p .assay
+exec /opt/tester-venv/bin/python tools/coverage_canary.py --repo-root {worktree} --project-root . --target src/cmru/config.py --evidence .assay/coverage-canary-cmru.json -- env PYTHONPATH=src:../libraries/cli-extended/src:../libraries/worktree/src /opt/tester-venv/bin/python -m pytest tests -q --maxfail=1 --cov=src/cmru --cov-branch --cov-fail-under=100 --cov-report=json:coverage.json
+''',
+]
 budget = "20m"
 artifacts = [".assay/coverage-canary-cmru.json"]
 
@@ -122,9 +154,11 @@ memory_swap = "16g"
 # bare-host, same reasoning as [lanes.gate] below: real docker access, on
 # this invoking shell's own python/pytest -- no /opt/tester-venv/ path
 # here, that venv exists only inside the tester-unified image. The fixture
-# chain self-skips (not errors) when docker or CGROUP_PARENT_DEV_GATES
-# are genuinely unavailable (_docker_unavailable_reason); on the real
-# bare-host gate environment both are present, so this lane actually
+# chain skips only for optional direct/local suite runs when docker or
+# CGROUP_PARENT_DEV_GATES are unavailable. The registered lane sets
+# CMRU_ENROLL_REQUIRED=1 so missing prerequisites and fixture-image build
+# failures fail the gate instead of skipping O2/O3. On the real bare-host
+# gate environment both prerequisites must be present, so this lane actually
 # EXERCISES O2/O3 instead of skipping past them -- closing the gap the
 # other, tester-unified-scoped sub-lanes above could never close on their
 # own. No [lanes.enroll.resources]: the containers this spawns are
@@ -133,7 +167,7 @@ memory_swap = "16g"
 [lanes.enroll]
 kind = "command"
 environment = "bare-host"
-argv = ["bash", "-c", "cd {worktree}/cmru && exec env PYTHONPATH=src:../libraries/cli-extended/src:../libraries/worktree/src PYTHONDONTWRITEBYTECODE=1 python3 -m pytest tests/test_installer.py -k TestEnrollAgainstRealSystem -q"]
+argv = ["bash", "-c", "cd {worktree}/cmru && exec env CMRU_ENROLL_REQUIRED=1 PYTHONPATH=src:../libraries/cli-extended/src:../libraries/worktree/src PYTHONDONTWRITEBYTECODE=1 python3 -m pytest tests/test_installer.py -k TestEnrollAgainstRealSystem -q"]
 budget = "20m"
 
 # The implementation/release gate: every consumer (cmru release steps, agents,
@@ -151,7 +185,7 @@ budget = "20m"
 [lanes.gate]
 kind = "command"
 environment = "bare-host"
-argv = ["bash", "-c", "cd {worktree}/cmru && ./run-gate.py --worktree {worktree} installed-wheel && ./run-gate.py --worktree {worktree} assay && ./run-gate.py --worktree {worktree} coverage && ./run-gate.py --worktree {worktree} mutation && ./run-gate.py --worktree {worktree} canary && ./run-gate.py --worktree {worktree} enroll"]
+argv = ["python3", "{worktree}/cmru/tools/run_release_gate.py", "--worktree", "{worktree}"]
 clean_tree = false   # sub-lanes each enforce their own clean-tree check
 # The conjunction includes the 20m Assay R0/R1/R3 lane plus the retained
 # total-coverage, 7h tag-based R2 mutation, cause-sensitive canary, and

@@ -96,7 +96,10 @@ def _make_project(
 
 # Fake GitHub releases list: each entry is a minimal release dict.
 def _release(tag: str, release_id: int) -> dict:
-    return {"tag_name": tag, "id": release_id, "published_at": "2024-01-01T00:00:00Z"}
+    return {
+        "tag_name": tag, "id": release_id,
+        "published_at": "2024-01-01T00:00:00Z", "assets": [],
+    }
 
 
 class TestDeleteUnmanagedReleaseTag:

@@ -63,6 +63,7 @@ def test_main_cleanup_build_output_and_discard_worktree_route_exact_targets(monk
     monkeypatch.setattr(cli, "_resolve_config", lambda _: tmp_path / "cmru.toml")
     monkeypatch.setattr(cli, "load_config", lambda _: _loaded(tmp_path))
     deleted = []
+    monkeypatch.setattr(transaction, "retained_build_output_identity", lambda *_args: object())
     monkeypatch.setattr(transaction, "delete_retained_build_output", lambda *args, **kwargs: deleted.append((args, kwargs)) or [tmp_path / "logs/id"])
     cli.main(["cleanup", "demo", "--dry-run", "--delete-build-output", "20240101T000000Z_" + "a" * 40, "--config", "x"])
     assert deleted and deleted[0][1]["dry_run"] is True

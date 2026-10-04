@@ -46,6 +46,12 @@ def test_build_success_runs_child_retains_outputs_and_reports_cleanup_command(mo
     calls = []
     overlays = []
     monkeypatch.setattr(cli.transaction, "fetch_origin_main", lambda *_, **__: "b" * 40)
+    monkeypatch.setattr(
+        cli, "_project_config_paths_at_snapshot",
+        lambda _root, _base, _config, _configs, names: {
+            name: Path(name) / "cmru.toml" for name in names
+        },
+    )
     monkeypatch.setattr(cli.transaction, "assert_local_main_not_ahead", lambda *_, **__: 0)
     monkeypatch.setattr(cli.transaction, "create_workspace", lambda *args, **kwargs: workspace)
     monkeypatch.setattr(cli.transaction, "copy_secret_overlays", lambda *args, **kwargs: overlays.append(args[-1]))

@@ -29,7 +29,7 @@ def test_dry_run_prepares_external_version_before_plan(monkeypatch, tmp_path, ca
         "project-first",
         {},
         cli.CleanupConfig([], [], [], []),
-        SimpleNamespace(owner="owner", repo="repo"),
+        SimpleNamespace(owner="owner", repo="repo", token="token"),
         SimpleNamespace(),
     )
     config_path = tmp_path / "cmru.orchestration.toml"
