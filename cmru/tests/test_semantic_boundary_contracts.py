@@ -318,6 +318,7 @@ def test_release_api_refuses_http_400_and_existing_target_creation(monkeypatch, 
             require_existing_targets=True, latest_pointer=True,
         )
     assert recreate_error.value.code == 1
+    assert not asset.with_name(asset.name + ".sha256").exists()
 
     with pytest.raises(SystemExit) as target_error:
         release.publish_versioned(
@@ -326,6 +327,7 @@ def test_release_api_refuses_http_400_and_existing_target_creation(monkeypatch, 
             require_existing_targets=True,
         )
     assert target_error.value.code == 1
+    assert not asset.with_name(asset.name + ".sha256").exists()
 
 
 def _install_config_loader(monkeypatch, tmp_path, names=("alpha", "beta"), *, owner="owner", repo="repo"):

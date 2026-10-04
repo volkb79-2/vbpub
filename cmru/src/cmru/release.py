@@ -350,6 +350,14 @@ def publish_versioned(
 
     Returns ``{version, release_tag|None, sha256, asset_url|None}``.
     """
+    if require_existing_targets and (
+        target_commitish is not None or (latest_pointer and latest_pointer_recreate)
+    ):
+        _die(
+            "require_existing_targets cannot create or recreate Git refs; "
+            "omit target_commitish and disable latest_pointer_recreate"
+        )
+
     digest = sha256_file(asset_path)
     sidecar = write_sha256_sidecar(asset_path)
     extras = list(extra_assets or [])
@@ -369,11 +377,6 @@ def publish_versioned(
                 f"retained build {release_tag} is older"
             )
     if require_existing_targets:
-        if target_commitish is not None or (latest_pointer and latest_pointer_recreate):
-            _die(
-                "require_existing_targets cannot create or recreate Git refs; "
-                "omit target_commitish and disable latest_pointer_recreate"
-            )
         required_tags = ([release_tag] if release_tag else [])
         if latest_pointer:
             required_tags.append(latest_tag)
