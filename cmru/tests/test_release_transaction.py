@@ -555,6 +555,7 @@ cwd = "alpha"
         lambda _root, *, base, **_kw: workspace_bases.append(base) or calls.append("workspace") or workspace,
     )
     monkeypatch.setattr(transaction, "write_release_tag_snapshot", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(transaction, "clear_plan_refused", lambda *_args: None)
     monkeypatch.setattr(transaction, "copy_secret_overlays", lambda *_args, **_kwargs: calls.append("secret"))
     monkeypatch.setattr(transaction, "run_child", lambda _workspace, args, **kwargs: calls.append(list(args)) or 0)
     monkeypatch.setattr(transaction, "remove_workspace", lambda _workspace: calls.append("removed"))
