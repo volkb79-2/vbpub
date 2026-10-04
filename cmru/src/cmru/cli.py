@@ -1411,6 +1411,26 @@ def delete_git_tag_remote(
     )
 
 
+def _require_local_tag_inspection_support(repo_root: Path) -> None:
+    """Refuse before a release cycle when Git cannot distinguish a missing tag."""
+    probe = run_local_git(
+        repo_root, "show-ref", "--exists", "refs/tags/__cmru_tag_inspection_probe__",
+        capture_output=True, text=True, check=False,
+    )
+    if probe.returncode in (0, 2):
+        return
+    detail = probe.stderr.strip() or probe.stdout.strip() or "no diagnostic output"
+    if probe.returncode == 129:
+        raise RuntimeError(
+            "local tag inspection requires Git 2.43 or newer: "
+            f"`git show-ref --exists` is unsupported ({detail})"
+        )
+    raise RuntimeError(
+        "Failed to verify Git local tag inspection support "
+        f"({probe.returncode}): {detail}"
+    )
+
+
 def local_git_tag_exists(repo_root: Path, tag: str, *, action: str = "inspect") -> bool:
     """Check one local tag ref, distinguishing absence from Git failure."""
     return local_git_tag_oid(repo_root, tag, action=action) is not None
@@ -3730,6 +3750,11 @@ def _dispatch(args, runtime):
                                 "pass --allow-uncommitted to release without them."
                             )
                             _sys.exit(2)
+
+                    if not vargs.dry_run and any(
+                        getattr(configs[name], "git_tag", True) for name in release_scope
+                    ):
+                        _require_local_tag_inspection_support(transaction_root)
 
                     if getattr(vargs, "resume", None):
                         workspace = transaction.resume_workspace(

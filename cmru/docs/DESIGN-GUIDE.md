@@ -592,7 +592,10 @@ hash-returning `git show-ref --verify` form does not give those cases distinct e
 CMRU first asks `git show-ref --exists` (exit 2 means absent; exit 1 means lookup error), then
 resolves the exact object ID. `--exists` was added in Git 2.43. On an older Git, CMRU refuses
 local tag inspection with an explicit version requirement instead of treating an ambiguous
-lookup as absence. This keeps a repository read failure from silently skipping a tag operation.
+lookup as absence. For a real release that includes tagged projects, the launcher checks support
+before creating the candidate worktree, running a project gate, or creating a tag. Cleanup checks
+during its preview, before the captured plan can be applied. This keeps a repository read failure
+from silently skipping a tag operation.
 
 ## Candidate-first promotion protects the source history
 

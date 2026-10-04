@@ -818,8 +818,10 @@ def test_remote_tag_delete_error_uses_available_diagnostic(
 
 def test_local_tag_delete_fails_if_tag_remains_after_git_error(monkeypatch, tmp_path):
     results = iter([
+        SimpleNamespace(returncode=0, stdout="", stderr=""),
         SimpleNamespace(returncode=0, stdout="a" * 40, stderr=""),
         SimpleNamespace(returncode=1, stdout="", stderr="hook refused"),
+        SimpleNamespace(returncode=0, stdout="", stderr=""),
         SimpleNamespace(returncode=0, stdout="a" * 40, stderr=""),
     ])
     monkeypatch.setattr(cli, "run_local_git", lambda *args, **kwargs: next(results))

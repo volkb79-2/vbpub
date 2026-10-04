@@ -373,6 +373,45 @@ def test_release_proceeds_when_uncommitted_changes_are_explicitly_allowed(monkey
         assert "ran-child" in calls
 
 
+def test_release_refuses_unsupported_git_before_creating_candidate_or_running_child(
+    tmp_path, monkeypatch, capsys,
+):
+    config = tmp_path / "cmru.toml"
+    config.write_text("", encoding="utf-8")
+    project = _project("alpha")
+    loaded = (tmp_path, {"alpha": project}, ["alpha"], ["alpha"], [], "project-first", {},
+              SimpleNamespace(), _github_config(), SimpleNamespace())
+    calls = []
+    git_calls = []
+
+    monkeypatch.setattr(cli, "load_config", lambda _path: loaded)
+    monkeypatch.setattr(cli, "apply_release_env", lambda *_args: None)
+    monkeypatch.setattr(cli, "_uncommitted_release_paths", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(transaction, "release_lock", lambda _root: nullcontext())
+    monkeypatch.setattr(cli, "run_local_git", lambda _root, *args, **_kwargs: (
+        git_calls.append(args)
+        or SimpleNamespace(returncode=129, stdout="", stderr="unknown option: --exists")
+    ))
+    monkeypatch.setattr(
+        transaction, "fetch_origin_main", lambda *_args, **_kwargs: calls.append("fetch"),
+    )
+    monkeypatch.setattr(
+        transaction, "create_workspace", lambda *_args, **_kwargs: calls.append("workspace"),
+    )
+    monkeypatch.setattr(
+        transaction, "run_child", lambda *_args, **_kwargs: calls.append("child"),
+    )
+
+    result = cli.main(["release", "--config", str(config), "alpha"])
+
+    assert result == 1
+    assert calls == []
+    assert git_calls == [(
+        "show-ref", "--exists", "refs/tags/__cmru_tag_inspection_probe__",
+    )]
+    assert "requires Git 2.43 or newer" in capsys.readouterr().err
+
+
 def test_dry_run_is_not_blocked_by_uncommitted_release_path_changes(monkeypatch):
     """--dry-run has no publish step to protect against silently-omitted local
     edits, and "I have uncommitted work I haven't committed yet" is exactly the
@@ -440,7 +479,14 @@ cwd = "alpha"
     monkeypatch.setattr(transaction, "release_lock", lambda _root: nullcontext())
     monkeypatch.setattr(transaction, "fetch_origin_main", lambda _root, **_kwargs: "a" * 40)
     monkeypatch.setattr(transaction, "assert_local_main_not_ahead", lambda _root, **_kw: 0)
-    monkeypatch.setattr(transaction, "create_workspace", lambda _root, *, base, **_kw: workspace)
+    monkeypatch.setattr(
+        cli, "_require_local_tag_inspection_support",
+        lambda _root: calls.append("tag-inspection-preflight"),
+    )
+    monkeypatch.setattr(
+        transaction, "create_workspace",
+        lambda _root, *, base, **_kw: calls.append("workspace") or workspace,
+    )
     monkeypatch.setattr(transaction, "write_release_tag_snapshot", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(transaction, "copy_secret_overlays", lambda *_args, **_kwargs: calls.append("secret"))
     monkeypatch.setattr(transaction, "run_child", lambda _workspace, args, **kwargs: calls.append(list(args)) or 0)
@@ -459,6 +505,7 @@ cwd = "alpha"
 
     assert exc == 0
     assert not any(isinstance(call, tuple) for call in calls)
+    assert calls.index("tag-inspection-preflight") < calls.index("workspace")
     assert [
         "alpha", "--discard-logs-on-release", "--discard-artifacts-on-release",
         "--config", "cmru.toml",
@@ -496,6 +543,7 @@ cwd = "alpha"
     monkeypatch.setattr(cli, "apply_release_env", lambda *_args: None)
     monkeypatch.setattr(cli, "_uncommitted_release_paths", lambda *_args, **_kwargs: {})
     monkeypatch.setattr(transaction, "release_lock", lambda _root: nullcontext())
+    monkeypatch.setattr(cli, "_require_local_tag_inspection_support", lambda _root: None)
     monkeypatch.setattr(transaction, "fetch_origin_main", lambda _root, **_kwargs: "a" * 40)
     monkeypatch.setattr(transaction, "assert_local_main_not_ahead", lambda _root, **_kw: 0)
     monkeypatch.setattr(transaction, "create_workspace", lambda _root, *, base, **_kw: workspace)
@@ -560,6 +608,7 @@ cwd = "alpha"
     monkeypatch.setattr(cli, "apply_release_env", lambda *_args: None)
     monkeypatch.setattr(cli, "_uncommitted_release_paths", lambda *_args, **_kwargs: {})
     monkeypatch.setattr(transaction, "release_lock", lambda _root: nullcontext())
+    monkeypatch.setattr(cli, "_require_local_tag_inspection_support", lambda _root: None)
     monkeypatch.setattr(transaction, "fetch_origin_main", lambda _root, **_kwargs: "a" * 40)
     monkeypatch.setattr(transaction, "assert_local_main_not_ahead", lambda _root, **_kw: 0)
     monkeypatch.setattr(transaction, "create_workspace", lambda _root, *, base, **_kw: workspace)

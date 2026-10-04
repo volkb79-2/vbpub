@@ -64,6 +64,17 @@ def test_local_tag_oid_returns_none_only_for_explicit_missing_status(monkeypatch
     assert calls == [("show-ref", "--exists", "refs/tags/demo-v1")]
 
 
+def test_local_tag_inspection_preflight_refuses_a_lookup_error(monkeypatch, tmp_path):
+    monkeypatch.setattr(cli, "run_local_git", lambda *_args, **_kwargs: SimpleNamespace(
+        returncode=1, stdout="", stderr="repository unreadable",
+    ))
+    with pytest.raises(
+        RuntimeError,
+        match="Failed to verify Git local tag inspection support \\(1\\): repository unreadable",
+    ):
+        cli._require_local_tag_inspection_support(tmp_path)
+
+
 def test_local_tag_oid_does_not_fold_lookup_failure_into_absence(monkeypatch, tmp_path):
     monkeypatch.setattr(cli, "run_local_git", lambda *_args, **_kwargs: SimpleNamespace(
         returncode=1, stdout="", stderr="repository unreadable",
@@ -100,6 +111,23 @@ def test_local_tag_oid_refuses_hash_failure_after_presence_is_confirmed(
         match="Failed to resolve local tag demo-v1 after its presence was confirmed \\(1\\): permission denied",
     ):
         cli.local_git_tag_oid(tmp_path, "demo-v1")
+
+
+def test_local_tag_oid_reports_recheck_hash_failure_after_presence(monkeypatch, tmp_path):
+    results = iter([
+        SimpleNamespace(returncode=0, stdout="", stderr=""),
+        SimpleNamespace(returncode=128, stdout="", stderr="hash lookup failed"),
+    ])
+    monkeypatch.setattr(cli, "run_local_git", lambda *_args, **_kwargs: next(results))
+
+    with pytest.raises(
+        RuntimeError,
+        match=(
+            "Failed to recheck local tag demo-v1 after deletion failed; its presence had been "
+            "confirmed \\(128\\): hash lookup failed"
+        ),
+    ):
+        cli.local_git_tag_oid(tmp_path, "demo-v1", action="recheck")
 
 
 @pytest.mark.parametrize(
@@ -575,18 +603,18 @@ def test_abandon_workspace_rechecks_local_tag_after_guarded_deletion(
         # Local deletion is issued through the separate local Git wrapper.
 
 
-def test_local_tag_oid_refuses_a_ref_present_after_hash_lookup_failure(
+def test_local_tag_oid_refuses_hash_failure_after_presence_was_confirmed(
     monkeypatch, tmp_path,
 ):
     results = iter([
-        SimpleNamespace(returncode=128, stdout="", stderr="missing ref"),
         SimpleNamespace(returncode=0, stdout="", stderr=""),
+        SimpleNamespace(returncode=128, stdout="", stderr="missing ref"),
     ])
     monkeypatch.setattr(cli, "run_local_git", lambda *_args, **_kwargs: next(results))
 
     with pytest.raises(
         RuntimeError,
-        match="is present after its hash lookup failed \\(128\\): missing ref; refusing to infer its state",
+        match="Failed to resolve local tag demo-v1 after its presence was confirmed \\(128\\): missing ref",
     ):
         cli.local_git_tag_oid(tmp_path, "demo-v1")
 
