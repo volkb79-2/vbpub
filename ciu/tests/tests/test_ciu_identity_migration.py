@@ -468,8 +468,8 @@ def test_clean_identity_removes_labelled_and_legacy_project_resources(tmp_path, 
     )
     calls = []
 
-    def docker(args, **_kwargs):
-        calls.append(list(args))
+    def docker(args, **kwargs):
+        calls.append((list(args), dict(kwargs)))
         if args[0:2] == ["ps", "-aq"]:
             return SimpleNamespace(returncode=0, stdout="legacy-cid\n", stderr="")
         if args[0:2] == ["volume", "ls"]:
@@ -486,17 +486,48 @@ def test_clean_identity_removes_labelled_and_legacy_project_resources(tmp_path, 
 
     monkeypatch.setattr(procutil, "docker", docker)
     assert deploy.action_clean_identity(tmp_path, "ab12cd", yes=True) == 0
-    assert [call for call in calls if call[:2] == ["rm", "-f"]] == [
+    argv_calls = [args for args, _kwargs in calls]
+    assert [call for call in argv_calls if call[:2] == ["rm", "-f"]] == [
         ["rm", "-f", "cid"], ["rm", "-f", "legacy-cid"],
     ]
-    assert [call for call in calls if call[:2] == ["volume", "rm"]] == [
+    assert [call for call in argv_calls if call[:2] == ["volume", "rm"]] == [
         ["volume", "rm", "vol"], ["volume", "rm", "legacy-vol"],
     ]
-    assert [call for call in calls if call[:2] == ["network", "rm"]] == [
+    assert [call for call in argv_calls if call[:2] == ["network", "rm"]] == [
         ["network", "rm", "label-net"], ["network", "rm", "legacy-net"],
         ["network", "rm", f"{repo_name}-ab12cd-network"],
         ["network", "rm", "vbpub-ab12cd-network"],
     ]
+    assert all(kwargs == {"capture": True, "check": False} for _, kwargs in calls)
+
+
+def test_clean_identity_uses_read_only_current_checkout_fact(tmp_path, monkeypatch):
+    observed = {}
+    current = {"physical_repo_root": "/physical/selected"}
+    monkeypatch.setattr(workspace_env, "outdated_generated_identity", lambda *_a: None)
+
+    def read_facts(_root, *, allow_repair=True):
+        observed["allow_repair"] = allow_repair
+        return current
+
+    def labeled(_instance_id, *, expected_checkout=None):
+        observed["expected_checkout"] = expected_checkout
+        return {"container": [], "volume": [], "network": []}
+
+    monkeypatch.setattr(workspace_env, "read_generated_facts", read_facts)
+    monkeypatch.setattr(
+        workspace_env, "_detect_physical_repo_root",
+        lambda *_a: pytest.fail("current checkout fact must avoid host-root re-derivation"),
+    )
+    monkeypatch.setattr(workspace_env, "_identity_labeled_resources", labeled)
+    monkeypatch.setattr(workspace_env, "_identity_project_labels", lambda *_a, **_kw: set())
+    monkeypatch.setattr(procutil, "docker", _docker_empty)
+
+    assert deploy.action_clean_identity(tmp_path, "ab12cd", yes=True) == 0
+    assert observed == {
+        "allow_repair": False,
+        "expected_checkout": "/physical/selected",
+    }
 
 
 def test_clean_identity_validation_cancel_and_indeterminate_helpers(tmp_path, monkeypatch, capsys):
@@ -526,7 +557,9 @@ def test_clean_identity_validation_cancel_and_indeterminate_helpers(tmp_path, mo
     assert deploy.action_clean_identity(tmp_path, "ab12cd", yes=True) == 1
 
 
-def test_clean_identity_records_failures_without_touching_unlabelled_resources(tmp_path, monkeypatch):
+def test_clean_identity_records_failures_without_touching_unlabelled_resources(
+    tmp_path, monkeypatch, capsys,
+):
     repo_name = tmp_path.name.lower()
     _clean_identity_helpers(
         monkeypatch,
@@ -566,9 +599,14 @@ def test_clean_identity_records_failures_without_touching_unlabelled_resources(t
 
     monkeypatch.setattr(procutil, "docker", docker)
     assert deploy.action_clean_identity(tmp_path, "ab12cd", yes=True) == 1
+    captured = capsys.readouterr()
+    output = captured.out + captured.err
+    assert "busy" in output
+    assert "cannot list" in output
+    assert "daemon stopped" in output
 
 
-def test_clean_identity_network_removal_failure_is_reported(tmp_path, monkeypatch):
+def test_clean_identity_network_removal_failure_is_reported(tmp_path, monkeypatch, capsys):
     _clean_identity_helpers(monkeypatch)
     network = f"{tmp_path.name.lower()}-ab12cd-network"
 
@@ -581,9 +619,12 @@ def test_clean_identity_network_removal_failure_is_reported(tmp_path, monkeypatc
 
     monkeypatch.setattr(procutil, "docker", docker)
     assert deploy.action_clean_identity(tmp_path, "ab12cd", yes=True) == 1
+    captured = capsys.readouterr()
+    output = captured.out + captured.err
+    assert "in use" in output
 
 
-def test_clean_identity_reports_docker_network_list_exception(tmp_path, monkeypatch):
+def test_clean_identity_reports_docker_network_list_exception(tmp_path, monkeypatch, capsys):
     _clean_identity_helpers(monkeypatch)
     monkeypatch.setattr(
         procutil, "docker",
@@ -594,3 +635,6 @@ def test_clean_identity_reports_docker_network_list_exception(tmp_path, monkeypa
         ),
     )
     assert deploy.action_clean_identity(tmp_path, "ab12cd", yes=True) == 1
+    captured = capsys.readouterr()
+    output = captured.out + captured.err
+    assert "daemon gone" in output
