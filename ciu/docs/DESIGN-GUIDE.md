@@ -117,7 +117,11 @@ identity for every `ready` record, so creation appeared successful but later
 inspect/list/create calls refused the persisted record. The reader now uses
 the same exact-root marker predicate as allocation. A CIU-root record still
 requires both runtime strings; a partial pair is always malformed; a marker
-lookup error refuses instead of turning uncertainty into “no CIU root.”
+lookup error refuses instead of turning uncertainty into “no CIU root.” Only
+a truly absent marker path permits the generic shape. If the path exists, its
+target must resolve to a regular file: directories, dangling symlinks, and
+unreadable entries refuse. This keeps an indeterminate or malformed marker
+from silently erasing the runtime identity requirement.
 
 Two alternatives are deliberately rejected. Requiring identity for every
 aggregate would make a generic Git workspace impossible to represent and

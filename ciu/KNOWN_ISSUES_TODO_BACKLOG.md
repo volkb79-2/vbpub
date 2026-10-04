@@ -4397,8 +4397,9 @@ checkout and nested CIU roots. The writer already persisted a `ready` aggregate
 record with `runtime.instance_id` and `runtime.network` both null, but the
 reader rejected every ready record without runtime values. Align the reader
 with allocation's exact-root marker check: accept null/null only when the
-record's exact CIU root has no regular defaults marker; require both values
-when it does; reject partial pairs and marker lookup errors. This resolves the
+marker path is truly absent; if present, it must resolve to a regular defaults
+file and requires both runtime values. Reject partial pairs, non-regular
+marker entries, dangling symlinks, and lookup errors. This resolves the
 create-then-read mismatch. It does **not** settle whether `ciu worktree rm`
 can safely clean and remove a family whose aggregate root has no CIU config;
 that lifecycle path still needs an explicit end-to-end oracle before CIU-112

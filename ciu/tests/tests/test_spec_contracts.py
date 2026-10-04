@@ -13,10 +13,11 @@ Design rules (all enforced below):
   (``CIU_SKIP_DOOD_PREFLIGHT=1`` + ``SKIP_DEPENDENCY_CHECK=1``), and the network
   attach step is monkeypatched to a no-op. Vault-backed flows monkeypatch
   ``engine.VaultKV2`` with an in-memory fake.
-* **Hermetic + parallel-safe.** Each test fabricates a minimal repo root under
-  ``tmp_path`` (``ciu.global.defaults.toml.j2`` copied from the demo, ``ciu.env``
-  generated with ``REPO_ROOT == PHYSICAL_REPO_ROOT == tmp``) and copytree's only
-  the stack(s) it needs. The real ``test-repo`` is NEVER mutated.
+* **Hermetic + parallel-safe.** Each test fabricates a minimal Git repo under
+  ``tmp_path`` (``ciu.global.defaults.toml.j2`` copied from the demo and
+  committed as the root marker, ``ciu.env`` generated with
+  ``REPO_ROOT == PHYSICAL_REPO_ROOT == tmp``) and copytree's only the stack(s)
+  it needs. The real ``test-repo`` is NEVER mutated.
 * **Inherited-env hazard.** The devcontainer exports a *foreign* dstdns
   ``REPO_ROOT`` / ``PHYSICAL_REPO_ROOT``; the autouse fixture defensively
   ``delenv``s them (and the demo's secret env) before each test sets its own.
@@ -30,6 +31,7 @@ from __future__ import annotations
 import os
 import shutil
 import stat
+import subprocess
 import sys
 import tomllib
 from pathlib import Path
@@ -139,15 +141,28 @@ def build_repo(tmp_path: Path, monkeypatch) -> Path:
     Copies the demo ``ciu.global.defaults.toml.j2`` verbatim (it is
     self-contained — every ``$VAR`` resolves from ``ciu.env``) and generates
     ``ciu.env`` with ``REPO_ROOT == PHYSICAL_REPO_ROOT == repo_root`` (S2.7:
-    the pre-set env wins, so the generated file carries the tmp paths). The repo
-    lives under ``/tmp`` which is NOT a git work tree, so the S1.7 gitignore
-    probe no-ops cleanly.
+    the pre-set env wins, so the generated file carries the tmp paths). The
+    helper initializes a local Git repository and commits the root marker,
+    matching CIU bootstrap's current workspace-identity contract.
 
     Returns the repo-root path (already exported as ``REPO_ROOT``).
     """
     repo_root = tmp_path / "repo"
     repo_root.mkdir(parents=True, exist_ok=True)
     shutil.copy2(TEST_REPO / GLOBAL_DEFAULTS, repo_root / GLOBAL_DEFAULTS)
+    (repo_root / ".gitignore").write_text("**/.ciu/\n", encoding="utf-8")
+
+    def git(*args: str) -> None:
+        subprocess.run(
+            ["git", *args], cwd=repo_root, capture_output=True, text=True,
+            check=True,
+        )
+
+    git("init", "--quiet")
+    git("config", "user.name", "CIU contract fixture")
+    git("config", "user.email", "ciu-contract-fixture@example.invalid")
+    git("add", GLOBAL_DEFAULTS, ".gitignore")
+    git("commit", "--quiet", "-m", "initialize CIU contract fixture")
 
     # S2.7: pre-set the repo-root pair so generation + reload carry the tmp paths.
     monkeypatch.setenv("REPO_ROOT", str(repo_root))

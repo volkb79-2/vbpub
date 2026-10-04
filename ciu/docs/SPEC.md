@@ -4479,7 +4479,9 @@ carry both values as `null`: it describes the checkout, not a runtime at that
 root, and nested CIU roots are initialized separately. Failure to determine
 whether the marker exists is a refusal, not evidence that the root is
 generic. This rule matches allocation's root classification; it does not
-invent an identity or change the record schema.
+invent an identity or change the record schema. Only a truly absent marker
+path is “no marker”; a present path must resolve to a regular file, and a
+directory, dangling symlink, or unreadable entry is refused.
 
 Git facts are freshly read from Git, never inferred from a name or a stale
 record: `git.registered` (the record's checkout is a current registered

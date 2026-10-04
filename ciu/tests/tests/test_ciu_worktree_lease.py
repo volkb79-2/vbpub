@@ -172,6 +172,42 @@ class TestReadingV1AndV2Records:
         assert record.instance_id == "abc123"
         assert record.network == "repo-network"
 
+    @pytest.mark.ciu_no_auto_root
+    def test_ready_ciuroot_symlink_to_regular_marker_requires_identity(self, tmp_path):
+        target = tmp_path / "defaults.toml.j2"
+        target.write_text("[ciu]\n", encoding="utf-8")
+        (tmp_path / worktree.GLOBAL_CONFIG_DEFAULTS).symlink_to(target)
+        raw = _raw_v1(tmp_path)
+        raw["runtime"] = {"instance_id": None, "network": None}
+
+        with pytest.raises(
+            worktree.WorktreeError, match="lacks a closed runtime identity"
+        ):
+            worktree._record_from_dict(
+                raw, tmp_path / worktree.WORKTREE_INSTANCE_RECORD
+            )
+
+    @pytest.mark.ciu_no_auto_root
+    def test_directory_root_marker_is_not_treated_as_absent(self, tmp_path):
+        (tmp_path / worktree.GLOBAL_CONFIG_DEFAULTS).mkdir()
+
+        with pytest.raises(worktree.WorktreeError, match="not a regular file"):
+            worktree._ciu_root_marker_present(tmp_path)
+
+    @pytest.mark.ciu_no_auto_root
+    def test_broken_root_marker_symlink_is_not_treated_as_absent(self, tmp_path):
+        marker = tmp_path / worktree.GLOBAL_CONFIG_DEFAULTS
+        marker.symlink_to(tmp_path / "missing-target")
+        raw = _raw_v1(tmp_path)
+        raw["runtime"] = {"instance_id": None, "network": None}
+
+        with pytest.raises(
+            worktree.WorktreeError, match="could not determine.*CIU root"
+        ):
+            worktree._record_from_dict(
+                raw, tmp_path / worktree.WORKTREE_INSTANCE_RECORD
+            )
+
     def test_ready_record_cannot_carry_recovery_status(self, tmp_path):
         raw = _raw_v1(tmp_path)
         raw["recovery_status"] = "env-generation-failed"
@@ -196,14 +232,14 @@ class TestReadingV1AndV2Records:
         raw = _raw_v1(tmp_path)
         raw["runtime"] = {"instance_id": None, "network": None}
         marker = tmp_path / worktree.GLOBAL_CONFIG_DEFAULTS
-        real_stat = Path.stat
+        real_lstat = Path.lstat
 
         def denied(path, *args, **kwargs):
             if path == marker:
-                raise PermissionError("marker stat denied")
-            return real_stat(path, *args, **kwargs)
+                raise PermissionError("marker lstat denied")
+            return real_lstat(path, *args, **kwargs)
 
-        monkeypatch.setattr(Path, "stat", denied)
+        monkeypatch.setattr(Path, "lstat", denied)
         with pytest.raises(worktree.WorktreeError, match="could not determine.*CIU root"):
             worktree._record_from_dict(
                 raw, tmp_path / worktree.WORKTREE_INSTANCE_RECORD

@@ -379,7 +379,7 @@ def _ciu_root_marker_present(root: Path) -> bool:
     root = Path(root)
     marker = root / GLOBAL_CONFIG_DEFAULTS
     try:
-        marker_stat = marker.stat()
+        marker_lstat = marker.lstat()
     except FileNotFoundError:
         return False
     except OSError as exc:
@@ -387,7 +387,21 @@ def _ciu_root_marker_present(root: Path) -> bool:
             f"[S16] could not determine whether {root} is a CIU root "
             f"because marker {marker} could not be read: {exc}"
         ) from exc
-    return stat.S_ISREG(marker_stat.st_mode)
+    if stat.S_ISLNK(marker_lstat.st_mode):
+        try:
+            marker_stat = marker.stat()
+        except OSError as exc:
+            raise WorktreeError(
+                f"[S16] could not determine whether {root} is a CIU root "
+                f"because marker {marker} could not be resolved: {exc}"
+            ) from exc
+    else:
+        marker_stat = marker_lstat
+    if not stat.S_ISREG(marker_stat.st_mode):
+        raise WorktreeError(
+            f"[S16] marker {marker} exists but is not a regular file"
+        )
+    return True
 
 
 def _record_from_dict(raw: Any, path: Path) -> WorktreeInstanceRecord:

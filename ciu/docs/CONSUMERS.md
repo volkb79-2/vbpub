@@ -48,8 +48,10 @@ aggregate `ready` record correctly has
 at that root. CIU still initializes every discovered nested root and writes
 that root's own `ciu.instance.generated.toml`. This null/null pair is valid
 only for a root with no marker. A CIU-root record needs both runtime strings;
-a partial pair or an unreadable marker is refused. Do not fill in or infer
-the aggregate record's identity.
+a partial pair is always refused. “No marker” means the marker path is truly
+absent: a directory, dangling symlink, or unreadable marker is refused rather
+than treated as a generic root. Do not fill in or infer the aggregate
+record's identity.
 
 For a root-specific operation, enter that root (or pass `--dir`) and use the
 ordinary stack verb. The canonical explicit selector is:

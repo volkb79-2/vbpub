@@ -49,7 +49,9 @@ When a worktree's Git root is only an aggregate for nested CIU roots, its
 `ready` family record has no runtime identity of its own (`runtime` contains
 two nulls); each discovered CIU root is initialized separately. The record
 reader distinguishes that shape from a malformed CIU-root record using the
-exact root marker, and refuses partial identities or an unreadable marker.
+exact root marker: only a genuinely absent marker path permits null/null.
+The marker must resolve to a regular file; a directory, dangling symlink, or
+unreadable marker is refused, as are partial identities.
 See the [aggregate-record rationale](docs/DESIGN-GUIDE.md#aggregate-family-records-and-runtime-identity)
 and [consumer example](docs/CONSUMERS.md#2-create-a-managed-workspace).
 
