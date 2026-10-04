@@ -1109,6 +1109,26 @@ class TestManagedRecordValidation:
         with pytest.raises(worktree.WorktreeError, match="could not read"):
             worktree._clean_in(tmp_path, yes=True)
 
+    def test_clean_in_reports_old_identity_when_child_cannot_start(
+        self, tmp_path, monkeypatch,
+    ):
+        from ciu import workspace_env
+
+        monkeypatch.setattr(
+            workspace_env, "outdated_generated_identity",
+            lambda _worktree: {"instance_id": "old123"},
+        )
+
+        def fail_to_spawn(*_args, **_kwargs):
+            raise OSError("spawn failed")
+
+        monkeypatch.setattr(worktree.subprocess, "run", fail_to_spawn)
+        with pytest.raises(
+            worktree.WorktreeError,
+            match=r"ciu clean --identity old123.*spawn failed",
+        ):
+            worktree._clean_in(tmp_path, yes=True)
+
     def test_record_logical_hint_returns_none_for_non_object_json(self, tmp_path):
         path = tmp_path / "record.json"
         path.write_text("[]", encoding="utf-8")

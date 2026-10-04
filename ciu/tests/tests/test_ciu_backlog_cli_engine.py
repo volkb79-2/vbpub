@@ -106,6 +106,28 @@ def test_down_dir_dispatches_exact_stack_and_profiles(monkeypatch, tmp_path):
     assert called == [(tmp_path, "tools/test-runner", ["test"])]
 
 
+@pytest.mark.parametrize(
+    ("error", "expected"),
+    [
+        (ValueError("outside root"), 2),
+        (OSError("docker unavailable"), 1),
+        (RuntimeError("docker stop failed"), 1),
+    ],
+)
+def test_down_dir_maps_stop_stack_errors(monkeypatch, tmp_path, capsys, error, expected):
+    monkeypatch.setattr(cli, "_resolve_repo_root_deploy", lambda _root: tmp_path)
+    monkeypatch.setattr(
+        deploy,
+        "stop_stack",
+        lambda *_a, **_kw: (_ for _ in ()).throw(error),
+    )
+    monkeypatch.setattr(sys, "argv", ["ciu", "down", "--dir", "tools/test-runner"])
+    with pytest.raises(SystemExit) as exc:
+        cli.main()
+    assert exc.value.code == expected
+    assert str(error) in capsys.readouterr().err
+
+
 def test_clean_identity_cli_routes_and_rejects_mixed_options(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(cli, "_resolve_repo_root_deploy", lambda _root: tmp_path)
     calls = []

@@ -419,6 +419,83 @@ def test_stop_stack_refuses_docker_query_failure_before_stop(resolvable_repo, mo
     ]]
 
 
+def test_stop_stack_refuses_stack_outside_the_selected_root(resolvable_repo, monkeypatch):
+    repo, _stack, _global = resolvable_repo
+    monkeypatch.setattr(
+        deploy.procutil,
+        "docker",
+        lambda *_a, **_kw: pytest.fail("outside stack must refuse before Docker"),
+    )
+    with pytest.raises(ValueError, match="must select a stack below CIU root"):
+        deploy.stop_stack(repo, "../outside")
+
+
+@pytest.mark.parametrize(
+    ("rows", "message"),
+    [
+        ({}, "no resolved services"),
+        ({"api": {"compose_project": None}}, "one exact Compose project"),
+        ({"api": {"compose_project": ""}}, "one exact Compose project"),
+        (
+            {"api": {"compose_project": "project-a"},
+             "worker": {"compose_project": "project-b"}},
+            "one exact Compose project",
+        ),
+    ],
+)
+def test_stop_stack_refuses_missing_or_ambiguous_projects(
+    resolvable_repo, monkeypatch, rows, message,
+):
+    repo, _stack, _global = resolvable_repo
+    monkeypatch.setattr(
+        deploy,
+        "resolve_identities",
+        lambda *_a, **_kw: {"resolved": {"identities": {"tools/test-runner": rows}}},
+    )
+    monkeypatch.setattr(
+        deploy.procutil,
+        "docker",
+        lambda *_a, **_kw: pytest.fail("invalid project must refuse before Docker"),
+    )
+    with pytest.raises(ValueError, match=message):
+        deploy.stop_stack(repo, "tools/test-runner")
+
+
+@pytest.mark.parametrize("stdout", ["", "  \n\t\n", None])
+def test_stop_stack_succeeds_when_no_containers_are_running(
+    resolvable_repo, monkeypatch, stdout, capsys,
+):
+    repo, _stack, _global = resolvable_repo
+    calls = []
+
+    def docker(argv, **kwargs):
+        calls.append((argv, kwargs))
+        return SimpleNamespace(returncode=0, stdout=stdout, stderr="")
+
+    monkeypatch.setattr(deploy.procutil, "docker", docker)
+    assert deploy.stop_stack(repo, "tools/test-runner") == 0
+    assert len(calls) == 1
+    assert "No running containers" in capsys.readouterr().out
+
+
+def test_stop_stack_reports_docker_stop_failure_without_success_message(
+    resolvable_repo, monkeypatch,
+):
+    repo, _stack, _global = resolvable_repo
+    calls = []
+
+    def docker(argv, **kwargs):
+        calls.append((argv, kwargs))
+        if argv[0] == "ps":
+            return SimpleNamespace(returncode=0, stdout="container-a\n", stderr="")
+        return SimpleNamespace(returncode=17, stdout="", stderr="stop denied")
+
+    monkeypatch.setattr(deploy.procutil, "docker", docker)
+    with pytest.raises(RuntimeError, match="stop denied"):
+        deploy.stop_stack(repo, "tools/test-runner")
+    assert [call[0][0] for call in calls] == ["ps", "stop"]
+
+
 def test_exec_selects_the_only_service_when_no_service_suffix_is_given(resolvable_repo, monkeypatch):
     repo, _stack, global_config = resolvable_repo
     monkeypatch.setattr(deploy, "resolve_identities", lambda *_a, **_kw: {
