@@ -115,6 +115,21 @@ def test_root_context_is_frozen_and_root_lock_is_reentrant_for_setup(
         pass
 
 
+def test_instance_registry_scan_value_objects_are_frozen(tmp_path):
+    problem = worktree._InstanceRecordProblem(
+        record_path=tmp_path / "instance.json",
+        worktree_path=tmp_path / "checkout",
+        logical_name="demo",
+        detail="invalid record",
+    )
+    scan = worktree._InstanceRegistryScan(records=(), problems=(problem,))
+
+    with pytest.raises(FrozenInstanceError):
+        problem.detail = "changed after scan"
+    with pytest.raises(FrozenInstanceError):
+        scan.problems = ()
+
+
 def test_context_for_root_refuses_root_outside_discovered_git_family(monkeypatch, tmp_path):
     fake = SimpleNamespace(
         discover_git_context=lambda _root: (tmp_path / "git", tmp_path / ".git", "main", "a" * 40)
