@@ -7,7 +7,14 @@ moves. Normative behavior lives in SPEC.md; entry-by-entry rationale lives in
 KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 
 ## [Unreleased]
-<!-- This unreleased block describes source rev 49. At release, fold these entries into the generated dated section by hand; the release generator does not clear this block. -->
+<!-- This unreleased block describes source rev 50. At release, fold these entries into the generated dated section by hand; the release generator does not clear this block. -->
+
+- **Source-backed Assay identity (RG-81, rev 50).** Internal editable
+  installs must import and execute through the selected Python interpreter,
+  and emit a non-empty `assay_version` with the selected commit. A fresh
+  attempt clears stale verdicts before setup. External artifact lanes continue
+  to require `judge_provenance`; run-gate does not fabricate an artifact
+  digest for source.
 
 - **Closed results and explicit environment modes (RG-78, rev 49).** All
   normal CLI outcomes now pass through `finish(LaneResult)` and the closed

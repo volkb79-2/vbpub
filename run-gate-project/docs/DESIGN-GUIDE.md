@@ -58,6 +58,26 @@ and requiring the operator to review the resulting diff. It migrates one
 file per call so a project config and an ancestor `run-gate.root.toml` can be
 checked independently.
 
+## Source-backed Assay identifies code as source
+
+Internal vbpub lanes install Assay from the selected worktree with an editable
+install. That source tree is not a built wheel or zipapp, so an artifact digest
+would claim evidence that does not exist. Run-gate instead checks that the
+imported `assay` module resolves to the selected worktree's
+`assay/src/assay/__init__.py`, and that the verdict has a non-empty
+`assay_version` plus a full Git commit matching the commit captured in the run
+record. Both checks matter: the path binds Python to the chosen source tree,
+while the commit binds the verdict to the tree run-gate sampled. A source-mode
+verdict without that identity or with a different commit is ERROR. The same
+Python interpreter both performs the import check and executes Assay, so a
+different `assay` script on `PATH` cannot replace the checked package.
+
+External consumers use immutable artifacts and retain the full
+`judge_provenance` check. The two modes use evidence appropriate to their
+input: source location and selected commit for an editable source tree, or an
+artifact digest for a built distribution. Run-gate does not convert one form
+into the other.
+
 The same closed-contract principle applies to process status. A raw command
 status is preserved in `LaneResult`; run-gate returns only PASS 0, FAIL 1,
 ERROR 2, NOT_RUN 3, or BUDGET_EXCEEDED 4. This prevents a command's code 2 or

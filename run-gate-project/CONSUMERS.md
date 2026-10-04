@@ -374,8 +374,14 @@ sha256 = "tools/assay/assay-<version>.pyz.sha256"
 
 The internal source mode is selected by omitting both fields. The source is
 installed with `--no-deps` from the selected tree, so no registry or ambient
-Assay installation is consulted. The resulting Assay verdict records its
-actual `assay_version`; the selected tree's commit is the source identity.
+Assay installation is consulted. Run-gate invokes Assay through the same
+Python interpreter it uses for the source check. Before the lane runs, it
+verifies that the imported `assay` module resolves to the selected tree's
+`assay/src/assay/__init__.py`. Afterward it requires a non-empty
+`assay_version` and a full Git `commit` in the verdict that matches the run
+record's selected commit. Missing identity or a different commit makes the
+lane ERROR. This is source identity, not an artifact digest; external
+immutable mode continues to require `judge_provenance`.
 
 Division of labor, spelled out:
 

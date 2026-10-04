@@ -120,6 +120,12 @@ durable `--state-dir` under the checkout that owns the shared Git directory.
 The durable-state option requires Assay 5.2.0. Read the [state contract](CONSUMERS.md#resume-progress-and-durable-assay-state)
 before removing an ephemeral worktree.
 
+In internal source mode, run-gate invokes Assay through the same Python
+interpreter used to verify that the import came from the selected worktree.
+It also checks that the verdict's `assay_version` and `commit` identify the
+recorded run. External artifact mode continues to require complete
+`judge_provenance`. See the [source identity rationale](docs/DESIGN-GUIDE.md#source-backed-assay-identifies-code-as-source).
+
 ### Daemon-wide count admission and failed evidence
 
 Count admission is an opt-in project switch backed by Docker-name tickets, so

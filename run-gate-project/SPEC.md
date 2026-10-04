@@ -66,6 +66,9 @@ sequences; RG-76 v8-shaped assay inventory imports; RG-77 documents the
 existing durable state-dir contract (RG-49's parent repair remains open);
 RG-78's closed result table and explicit modes; RG-80's off-by-default
 Docker-name count admission, owner tuple, deadlines, and janitor.
+Rev 13 (run-gate rev 50): RG-81 verifies internal source-backed Assay by its
+selected import path and verdict commit; external artifact mode retains
+`judge_provenance`.
 Distilled from `README.md` (design
 authority), `CONSUMERS.md` (adoption contract), `HANDOFF-P01` (build contract)
 and the controller's session amendments (§8). Requirement IDs (`R-xx`) are the
@@ -178,7 +181,15 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   or ERROR. A pytest status 5 is FAIL with reason `pytest-collected-no-tests`.
   An assay lane uses the verdict artifact's closed outcome vocabulary;
   `NO_MEASUREMENT` and `INCONCLUSIVE` map to FAIL, and the raw outcome is
-  retained as `assay_outcome`. Missing/invalid judge provenance is ERROR.
+  retained as `assay_outcome`. External artifact mode requires complete,
+  valid `judge_provenance`. Internal source mode (no `assay_command`) requires
+  run-gate to invoke Assay through the same Python interpreter used for the
+  import check, a non-empty verdict `assay_version`, a full Git `commit` equal
+  to the commit captured in the run record, and an imported `assay` module at
+  the selected worktree's `assay/src/assay/__init__.py`. Missing or mismatched
+  identity is ERROR; source mode does not invent artifact provenance. A fresh
+  assay attempt clears its prior verdict before setup starts; a reattached run
+  keeps its existing artifact.
   `--json` lane results contain `verdict`, raw `exit_code`, `reason`,
   `log_path`, `assay_outcome`, and `admission`. The human lane summary names
   verdict, raw code when present, reason when present, and log path when one

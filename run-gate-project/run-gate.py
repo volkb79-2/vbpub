@@ -14,7 +14,7 @@ Judgment policy is NOT here: assay lanes reference assay.toml by name.
 See run-gate-project/README.md (design authority) and CONSUMERS.md (adoption).
 """
 # stdlib only — this launcher must run on a fresh clone with zero installs.
-__revision__ = 49  # rev 49: RG-66/68/69/71/72/74/76/77/78/80
+__revision__ = 50  # rev 50: RG-81 source-backed Assay verdict identity
 # selective assay and command requests; failed-assay evidence; completed-fail
 # and partial footprint manifests; native sequences with trunk bases; shared
 # assay inventory import; documented durable --state-dir; closed results,
@@ -239,9 +239,13 @@ def command_lane_result(exit_code: int, lane: dict | None = None,
 
 def assay_lane_result(exit_code: int, outcome: str | None,
                       *, judge_provenance: object = None,
+                      source_mode: bool = False,
+                      source_version: object = None,
+                      source_commit: object = None,
+                      expected_source_commit: object = None,
                       reason: str | None = None,
                       log_path: str | None = None) -> LaneResult:
-    """Use assay's artifact as the authority; absence/provenance failure is ERROR."""
+    """Map Assay's verdict only when its configured judge identity is verified."""
     provenance_keys = {"name", "version", "artifact", "digest_algorithm", "digest"}
     provenance_ok = (isinstance(judge_provenance, dict)
                      and set(judge_provenance) == provenance_keys
@@ -251,9 +255,28 @@ def assay_lane_result(exit_code: int, outcome: str | None,
                      and judge_provenance["digest_algorithm"] == "sha256"
                      and re.fullmatch(r"[0-9a-f]{64}",
                                       judge_provenance["digest"]) is not None)
-    if outcome not in ASSAY_OUTCOMES or not provenance_ok:
+    if outcome not in ASSAY_OUTCOMES:
+        return LaneResult("ERROR", exit_code, "invalid-assay-outcome", log_path,
+                          assay_outcome=outcome)
+    if source_mode:
+        source_commit_ok = (isinstance(source_commit, str)
+                            and re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})",
+                                             source_commit) is not None)
+        expected_commit_ok = (
+            isinstance(expected_source_commit, str)
+            and re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})",
+                             expected_source_commit) is not None)
+        if not isinstance(source_version, str) or not source_version.strip() \
+                or not source_commit_ok or not expected_commit_ok:
+            return LaneResult("ERROR", exit_code,
+                              "missing-or-invalid-source-identity", log_path,
+                              assay_outcome=outcome)
+        if source_commit != expected_source_commit:
+            return LaneResult("ERROR", exit_code, "source-commit-mismatch",
+                              log_path, assay_outcome=outcome)
+    elif not provenance_ok:
         return LaneResult("ERROR", exit_code,
-                          reason or "missing-or-invalid-judge-provenance", log_path,
+                          "missing-or-invalid-judge-provenance", log_path,
                           assay_outcome=outcome)
     verdict = {
         "PASS": "PASS",
@@ -5559,9 +5582,10 @@ def assay_inventory(docker: str, lane: dict, env: dict, env_name: str,
     """
     command = assay_command_text(lane)
     setup = assay_source_setup(lane, worktree)
-    probe = " && ".join([*setup,
-                          f"cd {shlex.quote(str(project_dir))} && "
-                          f"{command} lanes --json --file assay.toml"])
+    probe = " && ".join([
+        f"cd {shlex.quote(str(project_dir))}", *setup,
+        f"{command} lanes --json --file assay.toml",
+    ])
     argv = build_env_probe_argv(
         docker, env, env_name, repo, worktree, env_source,
         _probe_slice(env, env_source),
@@ -5834,12 +5858,11 @@ BASE_TOKEN = "{base}"
 ASSAY_INVENTORY_FLOOR = "3.2.0"  # the assay that first ships `lanes --json` (B044)
 
 # Internal vbpub consumers deliberately do not carry a versioned assay
-# artifact.  A missing `assay_command` means: install the assay package from
-# the SELECTED worktree and invoke the resulting console script.  The
-# explicit-command branch remains for external/copy-of-run-gate consumers,
+# artifact. A missing `assay_command` means: install the assay package from
+# the SELECTED worktree and invoke it through that same Python interpreter.
+# The explicit-command branch remains for external/copy-of-run-gate consumers,
 # where an immutable artifact is the correct boundary.
 ASSAY_SOURCE_PYTHON = "/opt/tester-venv/bin/python"
-ASSAY_SOURCE_BIN = "/opt/tester-venv/bin/assay"
 
 
 def assay_command_text(lane: dict) -> str:
@@ -5852,7 +5875,7 @@ def assay_command_text(lane: dict) -> str:
     """
     if lane.get("assay_command") is not None:
         return shlex.join(lane["assay_command"])
-    return '"$RUN_GATE_ASSAY_BIN"'
+    return '"$ASSAY_PYTHON" -m assay.cli'
 
 
 def assay_source_setup(lane: dict, worktree: Path) -> list[str]:
@@ -5867,12 +5890,19 @@ def assay_source_setup(lane: dict, worktree: Path) -> list[str]:
     if lane.get("assay_command") is not None:
         return []
     source = shlex.quote(str(worktree / "assay"))
+    source_root = shlex.quote(str(worktree))
+    source_python = shlex.quote(ASSAY_SOURCE_PYTHON)
+    verify_import = shlex.quote(
+        "import pathlib,sys,assay; "
+        "actual=pathlib.Path(assay.__file__).resolve(); "
+        "expected=pathlib.Path(sys.argv[1]).resolve()/"
+        "'assay/src/assay/__init__.py'; "
+        "raise SystemExit(actual != expected)")
     return [
-        'if [ -x /opt/tester-venv/bin/python ]; then '
-        f'ASSAY_PYTHON={ASSAY_SOURCE_PYTHON}; '
-        f'RUN_GATE_ASSAY_BIN={ASSAY_SOURCE_BIN}; '
+        f'if [ -x {source_python} ]; then '
+        f'ASSAY_PYTHON={source_python}; '
         'elif command -v python3 >/dev/null 2>&1; then '
-        'ASSAY_PYTHON=$(command -v python3); RUN_GATE_ASSAY_BIN=assay; '
+        'ASSAY_PYTHON=$(command -v python3); '
         'else echo "run-gate: source-backed assay needs python3 or '
         '/opt/tester-venv/bin/python" >&2; exit 2; fi',
         f'test -f {source}/pyproject.toml || '
@@ -5883,9 +5913,9 @@ def assay_source_setup(lane: dict, worktree: Path) -> list[str]:
         f'--disable-pip-version-check --no-input --no-deps '
         f'--no-build-isolation --editable {source}; then '
         'echo "run-gate: editable assay install failed" >&2; exit 2; fi',
-        'command -v "$RUN_GATE_ASSAY_BIN" >/dev/null 2>&1 || '
-        '{ echo "run-gate: editable assay install did not provide an assay '
-        'executable" >&2; exit 2; }',
+        f'if ! "$ASSAY_PYTHON" -c {verify_import} {source_root}; then '
+        'echo "run-gate: imported assay package is not from the selected '
+        'worktree source" >&2; exit 2; fi',
     ]
 
 
@@ -7401,6 +7431,23 @@ def assay_artifact_paths(lane: dict, project_dir: Path, repo: Path
             str(assay_state_dir(repo, project_dir)))
 
 
+def clear_previous_assay_verdict(lane: dict, project_dir: Path, repo: Path,
+                                 run_record: dict | None = None) -> None:
+    """Remove old output only for a fresh Assay attempt, before setup starts."""
+    if lane.get("kind") != "assay":
+        return
+    recorded = (run_record.get("_verdict_path")
+                if run_record and isinstance(run_record.get("_verdict_path"), str)
+                else None)
+    paths = assay_artifact_paths(lane, project_dir, repo)
+    verdict_path = Path(recorded or paths[0])
+    try:
+        verdict_path.unlink(missing_ok=True)
+    except OSError as exc:
+        raise GateError(f"cannot remove previous assay verdict at "
+                        f"{verdict_path}: {exc}") from exc
+
+
 def build_assay_inner(lane: dict, project_dir: Path, repo: Path,
                       request_base: str | None = None,
                       worktree: Path | None = None) -> str:
@@ -7426,11 +7473,13 @@ def build_assay_inner(lane: dict, project_dir: Path, repo: Path,
                     f"or the lane would fail inside the container with "
                     f"assay's own 'unrecognized arguments' line")
     parts = ["set -euo pipefail",
+             f"cd {shlex.quote(str(project_dir))}",
+             "mkdir -p .assay",
+             f"rm -f -- {shlex.quote(verdict)}",
              "export GIT_CONFIG_GLOBAL=/tmp/run-gate-gitconfig",
              shlex.join(["git", "config", "--global", "--replace-all",
                         "safe.directory", "*"]),
-             *assay_source_setup(lane, selected_worktree),
-             f"cd {shlex.quote(str(project_dir))}"]
+             *assay_source_setup(lane, selected_worktree)]
     for pin_name, pin in lane.get("pins", {}).items():
         sha = Path(pin["sha256"])
         # verify FROM the pin file's own directory (bare-filename resolution trap)
@@ -7460,11 +7509,6 @@ def build_assay_inner(lane: dict, project_dir: Path, repo: Path,
                 f"echo \"run-gate: pin '{pin_name}' version mismatch: declared "
                 f"{declared}, artifact reports: $reported — fix pins.{pin_name}.version "
                 f"or republish the artifact\" >&2; exit 2; fi; }}")
-    # A killed run may leave the previous invocation's verdict in place.
-    # Never let that stale PASS certify the current run, and let RG-72 archive
-    # only an artifact produced by this invocation.
-    parts.append("mkdir -p .assay")
-    parts.append(f"rm -f -- {shlex.quote(verdict)}")
     # RG-33 (R-38): EVERY assay-kind lane runs with `--resume` and
     # `--progress`, unconditionally. Both are no-ops on a lane that declares
     # no R2 (assay's own `--progress` help: "Ignored by a lane that declares
@@ -8712,6 +8756,8 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
                                 worktree, fresh, dry_run, run_record)
     if attached is not None:
         return attached
+    if not dry_run:
+        clear_previous_assay_verdict(lane, project_dir, repo, run_record)
     phys = physical_path(repo)
     mounts = dual_mount_flags(repo, phys)  # dual: worktree gitfiles (RG-3)
     extra_mounts_raw = os.environ.get(EXTRA_MOUNT_ENV_VAR, "")
@@ -9027,6 +9073,8 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
             "environment-down",
             f"persistent runner '{name}' ({name_src}) is not running — "
             f"{start_remedy}")
+    if not dry_run:
+        clear_previous_assay_verdict(lane, project_dir, repo, run_record)
     inner = build_assay_inner(lane, project_dir, repo, request_base,
                               worktree=worktree) \
         if lane["kind"] == "assay" \
@@ -9319,6 +9367,7 @@ def run_bare_host_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
         print(f"run-gate: DRY RUN — would run in {project_dir}: "
               f"{shlex.join(argv)}", flush=True)
         return 0
+    clear_previous_assay_verdict(lane, project_dir, repo, run_record)
     # RG-55/RG-57 (RW-27b): a bare-host lane IS profiled once profiling is
     # enabled — there is no fresh container/cgroup of run-gate's own to
     # sample, so the daemon path (when reachable) targets run-gate's OWN
@@ -10849,19 +10898,19 @@ def _dispatch(argv: list[str] | None = None, *,
                 result = LaneResult("ERROR", code,
                                     f"assay verdict unavailable at {verdict_path}: {exc}")
             else:
-                provenance = verdict_doc.get("judge_provenance") \
-                    if isinstance(verdict_doc, dict) else None
-                outcome = verdict_doc.get("outcome") \
-                    if isinstance(verdict_doc, dict) else None
-                if not isinstance(provenance, dict) or not {
-                        "name", "version", "artifact", "digest_algorithm", "digest"
-                } <= set(provenance):
+                if not isinstance(verdict_doc, dict):
                     result = LaneResult("ERROR", code,
-                                        "assay verdict has no complete judge_provenance",
-                                        assay_outcome=outcome)
+                                        "assay verdict is not a JSON object")
                 else:
+                    provenance = verdict_doc.get("judge_provenance")
                     result = assay_lane_result(
-                        code, outcome, judge_provenance=provenance,
+                        code, verdict_doc.get("outcome"),
+                        judge_provenance=provenance,
+                        source_mode=lane.get("assay_command") is None,
+                        source_version=verdict_doc.get("assay_version"),
+                        source_commit=verdict_doc.get("commit"),
+                        expected_source_commit=(record.get("commit")
+                                                if record else None),
                         reason=verdict_doc.get("reason_code"))
         elif lane["kind"] == "assay":
             result = LaneResult("PASS" if code == 0 else "FAIL", code)

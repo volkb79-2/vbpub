@@ -206,6 +206,7 @@ def fake_docker(tmp_path: Path, monkeypatch, wait_code: int | str = 0) -> Path:
         from pathlib import Path
         import re
         import shlex
+        import subprocess
         import sys
 
         status = sys.argv[1]
@@ -215,6 +216,7 @@ def fake_docker(tmp_path: Path, monkeypatch, wait_code: int | str = 0) -> Path:
                 continue
             value = argument.split(marker, 1)[1].strip().split()[0]
             path = Path(value.strip("'\\\""))
+            base = Path.cwd()
             if not path.is_absolute():
                 # Assay writes after run-gate's inner command has changed to
                 # the project directory. The fake Docker process itself runs
@@ -222,7 +224,6 @@ def fake_docker(tmp_path: Path, monkeypatch, wait_code: int | str = 0) -> Path:
                 changedir = re.search(
                     r"(?:^|&&)\\s*cd\\s+(.+?)(?=\\s*&&|\\s*;|$)",
                     argument)
-                base = Path.cwd()
                 if changedir:
                     parts = shlex.split(changedir.group(1))
                     if parts:
@@ -230,9 +231,16 @@ def fake_docker(tmp_path: Path, monkeypatch, wait_code: int | str = 0) -> Path:
                         base = candidate if candidate.is_absolute() else base / candidate
                 path = base / path
             path.parent.mkdir(parents=True, exist_ok=True)
+            commit_result = subprocess.run(
+                ["git", "-C", str(base), "rev-parse", "--verify", "HEAD"],
+                capture_output=True, text=True)
+            commit = commit_result.stdout.strip() \
+                if commit_result.returncode == 0 else ""
             outcome = "PASS" if status == "0" else "FAIL"
             path.write_text(json.dumps({
                 "outcome": outcome,
+                "assay_version": "7.2.0",
+                "commit": commit,
                 "reason_code": None,
                 "judge_provenance": {
                     "name": "assay", "version": "7.2.0",
@@ -1228,9 +1236,28 @@ class TestRG78ClosedExitTable:
                                                 judge_provenance=provenance)
             assert result.verdict == verdict
             assert result.assay_outcome == outcome
+        selected_commit = "b" * 40
+        for outcome, verdict in expected.items():
+            result = run_gate.assay_lane_result(
+                1, outcome, source_mode=True, source_version="8.0.0.dev1",
+                source_commit=selected_commit,
+                expected_source_commit=selected_commit)
+            assert result.verdict == verdict
+            assert result.assay_outcome == outcome
         missing = run_gate.assay_lane_result(0, "PASS")
         assert missing.verdict == "ERROR"
+        assert missing.reason == "missing-or-invalid-judge-provenance"
         assert missing.gate_exit_code == 2
+        missing_source = run_gate.assay_lane_result(
+            0, "PASS", source_mode=True, source_version="8.0.0.dev1",
+            source_commit=selected_commit, expected_source_commit=None)
+        assert missing_source.verdict == "ERROR"
+        assert missing_source.reason == "missing-or-invalid-source-identity"
+        mismatch = run_gate.assay_lane_result(
+            0, "PASS", source_mode=True, source_version="8.0.0.dev1",
+            source_commit="c" * 40, expected_source_commit=selected_commit)
+        assert mismatch.verdict == "ERROR"
+        assert mismatch.reason == "source-commit-mismatch"
 
     def test_only_finish_returns_the_cli_gate_code_and_sys_exit_is_unique(self):
         tree = ast.parse((RUN_GATE_DIR / "run-gate.py").read_text())
@@ -3117,7 +3144,13 @@ def test_source_backed_assay_inner_installs_selected_worktree_source():
     )
     assert "pip install" in inner
     assert "--editable /tree/assay" in inner
-    assert '"$RUN_GATE_ASSAY_BIN" run x' in inner
+    assert "import pathlib,sys,assay" in inner
+    assert "assay/src/assay/__init__.py" in inner
+    assert "/tree" in inner
+    assert "not from the selected worktree source" in inner
+    assert '"$ASSAY_PYTHON" -m assay.cli run x' in inner
+    assert inner.index("rm -f -- .assay/verdict-x.json") < inner.index(
+        "--editable /tree/assay")
     assert "assay-6." not in inner
     assert "sha256sum" not in inner
 
@@ -3127,6 +3160,136 @@ def test_source_and_external_assay_commands_have_distinct_probe_identity():
     assert run_gate.assay_command_identity({"assay_command": ["assay"]}) == (
         "assay",
     )
+    assert run_gate.assay_command_text({}) == '"$ASSAY_PYTHON" -m assay.cli'
+    assert run_gate.assay_command_text(
+        {"assay_command": ["/opt/assay/assay.pyz"]}) == \
+        "/opt/assay/assay.pyz"
+    external = run_gate.build_assay_inner(
+        {"assay_lane": "x", "assay_command": ["assay"], "pins": {}},
+        Path("/proj"), Path("/repo"), worktree=Path("/tree"))
+    assert "not from the selected worktree source" not in external
+
+
+def test_source_inventory_checks_and_runs_selected_package_from_project_cwd(
+        tmp_path, monkeypatch):
+    source_root = tmp_path / "selected-tree"
+    package = source_root / "assay" / "src" / "assay"
+    package.mkdir(parents=True)
+    (source_root / "assay" / "pyproject.toml").write_text("[project]\nname='assay'\n")
+    (package / "__init__.py").write_text("__version__ = 'test'\n")
+    project_dir = tmp_path / "consumer"
+    project_dir.mkdir()
+    (project_dir / "assay.toml").write_text("# inventory probe fixture\n")
+    trace = tmp_path / "selected-python-calls.jsonl"
+    (package / "cli.py").write_text(textwrap.dedent("""\
+        import json
+        import os
+        import sys
+
+        with open(os.environ["ASSAY_TEST_TRACE"], "a", encoding="utf-8") as stream:
+            stream.write(json.dumps({"kind": "assay.cli", "argv": sys.argv[1:], "cwd": os.getcwd()}) + "\\n")
+        print(json.dumps({"assay_version": "selected-source", "inventory_schema": 1,
+                          "lanes": [{"name": "selected-tree-lane"}]}))
+        """))
+
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    selected_python = fake_bin / "selected-python"
+    selected_python.write_text(textwrap.dedent(f"""\
+        #!{sys.executable}
+        import json
+        import os
+        import runpy
+        import sys
+        from pathlib import Path
+
+        args = sys.argv[1:]
+        with open(os.environ["ASSAY_TEST_TRACE"], "a", encoding="utf-8") as stream:
+            stream.write(json.dumps({{"kind": "interpreter", "argv": args}}) + "\\n")
+        if args[:2] == ["-m", "pip"]:
+            raise SystemExit(0)
+        source = Path(os.environ["ASSAY_SOURCE_ROOT"]) / "assay" / "src"
+        if sys.path:
+            sys.path[0] = os.getcwd()
+        else:
+            sys.path.insert(0, os.getcwd())
+        sys.path.insert(1, str(source))
+        if args[:1] == ["-c"]:
+            sys.argv = ["-c", *args[2:]]
+            exec(compile(args[1], "<run-gate-import-check>", "exec"),
+                 {{"__name__": "__main__"}})
+        elif args[:2] == ["-m", "assay.cli"]:
+            sys.argv = ["-m", "assay.cli", *args[2:]]
+            runpy.run_module("assay.cli", run_name="__main__", alter_sys=True)
+        else:
+            raise SystemExit(91)
+        """))
+    selected_python.chmod(selected_python.stat().st_mode | stat.S_IEXEC)
+    monkeypatch.setattr(run_gate, "ASSAY_SOURCE_PYTHON", str(selected_python))
+
+    other_python_log = tmp_path / "other-python-used"
+    other_python = fake_bin / "python3"
+    other_python.write_text(
+        "#!/bin/sh\nprintf 'used\\n' > \"$OTHER_PYTHON_LOG\"\nexit 92\n")
+    other_python.chmod(other_python.stat().st_mode | stat.S_IEXEC)
+    shadow_log = tmp_path / "shadow-assay-used"
+    shadow_assay = fake_bin / "assay"
+    shadow_assay.write_text(
+        "#!/bin/sh\nprintf 'used\\n' > \"$SHADOW_LOG\"\nexit 93\n")
+    shadow_assay.chmod(shadow_assay.stat().st_mode | stat.S_IEXEC)
+
+    env = os.environ.copy()
+    env.update({"ASSAY_TEST_TRACE": str(trace),
+                "ASSAY_SOURCE_ROOT": str(source_root),
+                "OTHER_PYTHON_LOG": str(other_python_log),
+                "SHADOW_LOG": str(shadow_log),
+                "PATH": f"{fake_bin}:{env['PATH']}"})
+    lane = {"kind": "assay", "assay_lane": "unit"}
+    monkeypatch.setenv("ASSAY_TEST_TRACE", str(trace))
+    monkeypatch.setenv("ASSAY_SOURCE_ROOT", str(source_root))
+    monkeypatch.setenv("OTHER_PYTHON_LOG", str(other_python_log))
+    monkeypatch.setenv("SHADOW_LOG", str(shadow_log))
+    monkeypatch.setenv("PATH", env["PATH"])
+    document, why = run_gate.assay_inventory(
+        "/unused/docker", lane, {}, "bare-host", source_root, source_root,
+        "bare-host", project_dir)
+    assert why is None
+    assert document == {
+        "assay_version": "selected-source", "inventory_schema": 1,
+        "lanes": [{"name": "selected-tree-lane"}],
+    }
+    rows = [json.loads(line) for line in trace.read_text().splitlines()]
+    interpreter_calls = [row["argv"] for row in rows
+                         if row["kind"] == "interpreter"]
+    assert interpreter_calls[0][:2] == ["-m", "pip"]
+    assert interpreter_calls[1][0] == "-c"
+    assert interpreter_calls[2][:3] == ["-m", "assay.cli", "lanes"]
+    assert {"kind": "assay.cli",
+            "argv": ["lanes", "--json", "--file", "assay.toml"],
+            "cwd": str(project_dir)} in rows
+    assert not other_python_log.exists()
+    assert not shadow_log.exists()
+
+    local_shadow = project_dir / "assay"
+    local_shadow.mkdir()
+    (local_shadow / "__init__.py").write_text("__version__ = 'shadow'\n")
+    (local_shadow / "cli.py").write_text(
+        "import json\nprint(json.dumps({'inventory_schema': 1, "
+        "'lanes': [{'name': 'project-shadow'}]}))\n")
+    rows_before_shadow_probe = len(trace.read_text().splitlines())
+    document, why = run_gate.assay_inventory(
+        "/unused/docker", lane, {}, "bare-host", source_root, source_root,
+        "bare-host", project_dir)
+    assert document is None
+    assert "imported assay package is not from the selected worktree source" in why
+    rows = [json.loads(line) for line in trace.read_text().splitlines()]
+    recent_calls = [row["argv"] for row in rows if row["kind"] == "interpreter"]
+    assert recent_calls[-2][0] == "-m" and recent_calls[-2][1] == "pip"
+    assert recent_calls[-1][0] == "-c"
+    assert not any(row.get("kind") == "assay.cli" and
+                   row.get("argv", [None])[0] == "lanes" and
+                   row.get("cwd") == str(project_dir)
+                   for row in rows[rows_before_shadow_probe:])
 
 
 class TestPinVersionVerify:
@@ -14165,6 +14328,66 @@ class TestInflightRecordStore:
         assert run_gate.assay_artifact_paths(
             {"kind": "command"}, Path("/p"), Path("/repo")) == (None, None, None)
 
+    def test_fresh_launch_failure_cannot_reuse_stale_pass_but_attach_keeps_it(
+            self, tmp_path, monkeypatch):
+        repo = make_repo(tmp_path)
+        lane = {"kind": "assay", "assay_lane": "unit"}
+        verdict, _progress, _state_dir = run_gate.assay_artifact_paths(
+            lane, repo, repo)
+        verdict_path = Path(verdict)
+        verdict_path.parent.mkdir(parents=True)
+        commit = run_gate.head_commit(repo)
+        stale_pass = {"outcome": "PASS", "assay_version": "8.0.0",
+                      "commit": commit}
+        verdict_path.write_text(json.dumps(stale_pass))
+        run_record = {"commit": commit, "_verdict_path": verdict}
+        starts_seen = []
+        resolutions = iter((None, 0, 1))
+        monkeypatch.setattr(run_gate.shutil, "which",
+                            lambda _name: "/usr/bin/docker")
+        monkeypatch.setattr(run_gate, "resolve_inflight",
+                            lambda *_args, **_kwargs: next(resolutions))
+        monkeypatch.setattr(run_gate, "physical_path",
+                            lambda _repo, **_kwargs: Path("/phys"))
+        monkeypatch.setattr(run_gate, "dual_mount_flags", lambda *_args: [])
+        monkeypatch.setattr(run_gate, "verify_slice_loaded", lambda _slice: None)
+        monkeypatch.setattr(run_gate, "print_lane_bounds", lambda *_args: None)
+        monkeypatch.setattr(run_gate, "log_forwarded_env", lambda *_args: None)
+        monkeypatch.setattr(run_gate, "save_container_logs", lambda *_args: None)
+
+        def docker_run(argv, **_kwargs):
+            if argv[1] == "run":
+                starts_seen.append(not verdict_path.exists())
+                return subprocess.CompletedProcess(argv, 125, "", "setup failed")
+            if argv[1:3] == ["rm", "-f"]:
+                return subprocess.CompletedProcess(argv, 0, "", "")
+            raise AssertionError(f"unexpected docker argv: {argv!r}")
+
+        monkeypatch.setattr(run_gate.subprocess, "run", docker_run)
+        env = {"image": "tester-unified:local"}
+        profile_plan = {"enabled": False, "disabled_reason": "test"}
+
+        with pytest.raises(run_gate.GateInfraError, match="docker run failed"):
+            run_gate.run_container_lane(
+                lane, "unit", repo, repo, repo, env, "fixture", "slice",
+                "slice source", run_record=run_record,
+                profile_plan=profile_plan)
+        assert starts_seen == [True]
+        assert not verdict_path.exists()
+
+        # A resolver result may follow a live container or collect a completed
+        # one; both return before fresh-attempt cleanup.
+        for attached_code, attached_verdict in (
+                (0, stale_pass),
+                (1, {"outcome": "FAIL", "assay_version": "8.0.0",
+                     "commit": commit})):
+            verdict_path.write_text(json.dumps(attached_verdict))
+            assert run_gate.run_container_lane(
+                lane, "unit", repo, repo, repo, env, "fixture", "slice",
+                "slice source", run_record=run_record,
+                profile_plan=profile_plan) == attached_code
+            assert json.loads(verdict_path.read_text()) == attached_verdict
+
     def test_an_unignored_store_disables_re_attach_but_not_the_lane(
             self, tmp_path, monkeypatch, capsys):
         repo, proj = make_history_repo(tmp_path, SIMPLE_LANE, ignore="nope\n")
@@ -20031,12 +20254,12 @@ class TestDispatchAssayEvidenceAndAdmissionOracles:
             "event": "test", "when": "call", "nodeid": "case::bad",
             "outcome": "failed", "exception_class": "AssertionError"}) + "\n")
         verdict = assay_dir / "verdict-unit.json"
-        provenance = {"name": "assay", "version": "8.0.0",
-                      "artifact": "assay", "digest_algorithm": "sha256",
-                      "digest": "d" * 64}
+        commit = run_gate.head_commit(repo)
         verdict.write_text(json.dumps({"outcome": "FAIL",
-                                       "judge_provenance": provenance}))
-        record = {"run_id": "evidence-run", "log_path": None,
+                                       "assay_version": "8.0.0",
+                                       "commit": commit}))
+        record = {"run_id": "evidence-run", "commit": commit,
+                  "log_path": None,
                   "_verdict_path": str(verdict),
                   "_progress_path": str(progress)}
         monkeypatch.setattr(run_gate, "preflight_assay_pins",
@@ -21434,7 +21657,7 @@ class TestFinalChangedLineCoverageOracles:
             "rejudge_outcome": None,
         }
 
-    def test_dispatch_rejects_assay_verdict_without_provenance(
+    def test_dispatch_rejects_source_verdict_without_version_or_commit(
             self, tmp_path, monkeypatch):
         _repo, _project, _record, verdict, _progress = \
             TestDispatchAssayEvidenceAndAdmissionOracles._project(
@@ -21447,4 +21670,21 @@ class TestFinalChangedLineCoverageOracles:
                             lambda *_args, **_kwargs: 1)
         result = run_gate._dispatch(["unit", "--allow-dirty"])
         assert result.verdict == "ERROR"
-        assert "no complete judge_provenance" in result.reason
+        assert result.reason == "missing-or-invalid-source-identity"
+
+    def test_dispatch_rejects_source_verdict_for_another_commit(
+            self, tmp_path, monkeypatch):
+        _repo, _project, _record, verdict, _progress = \
+            TestDispatchAssayEvidenceAndAdmissionOracles._project(
+                tmp_path, monkeypatch)
+        verdict.write_text(json.dumps({"outcome": "FAIL",
+                                       "assay_version": "8.0.0",
+                                       "commit": "f" * 40}))
+        monkeypatch.setattr(run_gate, "resolve_slice",
+                            lambda *_args: ("run-gates.slice", "fixture"))
+        monkeypatch.setattr(run_gate, "verify_slice_loaded", lambda _slice: None)
+        monkeypatch.setattr(run_gate, "run_container_lane",
+                            lambda *_args, **_kwargs: 1)
+        result = run_gate._dispatch(["unit", "--allow-dirty"])
+        assert result.verdict == "ERROR"
+        assert result.reason == "source-commit-mismatch"

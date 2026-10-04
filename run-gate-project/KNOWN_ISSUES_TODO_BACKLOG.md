@@ -99,6 +99,7 @@ SPEC §9.
 | RG-78 | adopt the ciu v8 closed exit table and explicit environment modes in run-gate now (backport, operator ruling D-654): lane exit passthrough overlaps the 2/3 refusal codes, and the built-in `host` environment is a container | Major | FIXED 2026-10-04 (rev 49): single finish path, AST guard, byte-status lane oracle |
 | RG-79 | exec-mode resolution **silently falls back to main's runner** when the judged worktree has no rendered ciu config (a shadowing default, AGENTS §4.2a); the worktree's own test-runner is the design (D-647 #2, D-666), so run-gate must refuse and name "start this worktree's own test-runner" (reframed 2026-10-03; originally filed as a stray-render defect) | Major | FIXED 2026-10-04 (rev 47; same implementation as RG-47) |
 | RG-80 | no daemon-wide cap on concurrent gates: the cross-worktree cap is a consumer flock wrapper (dstdns `gate-slot.sh`); build SPEC-V8 S21's count mode (Docker-name tickets, tombstones, deadlines, run marker, published `ciu-admission-<g>` object) behind an off-by-default switch, so the wrapper retires before v8 | Major | FIXED 2026-10-04 (rev 49): ticket/publish and owner/reaping packages |
+| RG-81 | internal source-backed Assay lanes fail because editable installs intentionally omit artifact `judge_provenance`; bind the selected source and verdict commit instead | Major | IN PROGRESS (rev 50; pending review/gate) |
 
 ---
 
@@ -5586,3 +5587,29 @@ A declared literal `container_name` remains the explicit shared-runner choice.
 **v8: absorb.** This is ciu8's V8-38 (checkpoint D, `gate/admission.py`); the oracles above are its parity tests. Proposal row N28 (`CIU-V8-TESTING-GATE-PROPOSAL.md` §4.11). Related: RG-67 (Amendment 4), RG-78 (the `no-headroom` reason), RG-79.
 
 ### Status — FIXED 2026-10-04 (rev 49) in two implementation packages: (1) Docker-name CAS ticket allocation/release, published generations, disabled-by-default switch and budget start at admission; (2) owner PID-namespace proof, wait/run deadlines, group reaping, tombstone cleanup and the shared v8 label fixture. Byte admission, stack tickets and v8.1 policy stay out of scope.
+
+## RG-81 — source-backed Assay lanes reject the verdict shape of an editable install
+
+**Observed:** internal vbpub lanes omit `assay_command` and pins, then install
+Assay from the selected worktree with `pip install -e`. Assay intentionally
+omits `judge_provenance` for a source checkout because there is no built
+artifact to hash. Run-gate nevertheless required artifact provenance for every
+Assay verdict, so healthy internal source lanes failed after the judge ran.
+
+**Contract:** a fresh attempt clears its previous verdict before setup begins.
+Source mode verifies that the imported `assay` module resolves to the selected
+tree's `assay/src/assay/__init__.py` and invokes `assay.cli` through that same
+Python interpreter; it then requires a non-empty `assay_version` and a full
+Git `commit` matching the selected commit in the run record. External
+explicit-command mode continues to require full artifact
+`judge_provenance`. A missing or mismatched identity is ERROR; no artifact
+digest is synthesized for editable source.
+
+**Oracles:** a matching internal source verdict maps all six closed Assay
+outcomes; a missing identity and a verdict for a different commit are ERROR;
+a same-commit previous PASS is deleted before a fresh attempt; external
+artifact mode without judge provenance stays ERROR; the generated internal
+setup rejects an import outside the selected tree; and a conflicting `assay`
+on `PATH` cannot replace the checked Python module.
+
+### Status — IN PROGRESS (rev 50; pending Sol xhigh review and registered gate)
