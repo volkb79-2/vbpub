@@ -179,8 +179,12 @@ def test_tag_sidecar_reader_preserves_inspection_os_errors(monkeypatch, tmp_path
     [
         ("", {}),
         ("bad-row\n", "malformed"),
-        ("a" * 40 + "\trefs/heads/main\n", "malformed"),
-        ("a" * 40 + "\trefs/tags/demo-v1\n" + "b" * 40 + "\trefs/tags/demo-v1\n", "duplicate"),
+        ("refs/heads/main\t" + "a" * 40 + "\n", "malformed"),
+        (
+            "refs/tags/demo-v1\t" + "a" * 40 + "\n"
+            + "refs/tags/demo-v1\t" + "b" * 40 + "\n",
+            "duplicate",
+        ),
     ],
 )
 def test_list_local_tag_refs_validates_git_rows(monkeypatch, tmp_path, stdout, expected):
