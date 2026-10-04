@@ -35,6 +35,9 @@ from cmru.cli_support import (
 from cmru.dependencies import build_report, render_text as render_dependency_report
 
 
+_RELEASE_PREFLIGHT_SNAPSHOT_ENV = "CMRU_RELEASE_PREFLIGHT_SNAPSHOT"
+
+
 @dataclass(frozen=True)
 class Command:
     label: str
@@ -2919,6 +2922,7 @@ def _dispatch_independent_git_families(
     project_names: Sequence[str],
     *,
     original_target: str | None,
+    origin_main_snapshots: Mapping[Path, str] | None = None,
 ) -> int | None:
     """Run one normal transaction per independent selected Git family.
 
@@ -2935,6 +2939,12 @@ def _dispatch_independent_git_families(
     )
     if len(groups) <= 1:
         return None
+    if origin_main_snapshots is not None and (
+        verb != "release" or set(origin_main_snapshots) != set(groups)
+    ):
+        raise RuntimeError(
+            "preflighted origin/main snapshots do not match the selected release families"
+        )
     if any(flag in rest or any(item.startswith(flag + "=") for item in rest)
            for flag in ("--resume",)):
         raise RuntimeError(
@@ -2958,10 +2968,16 @@ def _dispatch_independent_git_families(
                 target_override=",".join(names),
                 original_target=original_target,
             )
+            child_env = os.environ.copy()
+            child_env.pop(_RELEASE_PREFLIGHT_SNAPSHOT_ENV, None)
+            if origin_main_snapshots is not None:
+                child_env[_RELEASE_PREFLIGHT_SNAPSHOT_ENV] = (
+                    f"{family_root.resolve()}:{origin_main_snapshots[family_root]}"
+                )
             completed = subprocess.run(
                 [*command_prefix, verb, *child_args],
                 cwd=Path.cwd(),
-                env=os.environ.copy(),
+                env=child_env,
             )
             if completed.returncode:
                 return completed.returncode
@@ -2976,7 +2992,7 @@ def _preflight_multi_family_release_tag_support(
     project_names: Sequence[str],
     *,
     git_auth: GitHubGitAuth | None,
-) -> None:
+) -> dict[Path, str] | None:
     """Check every tagged family before a release launcher dispatches any child.
 
     A later family's Git refusal must not come after an earlier independent
@@ -2989,51 +3005,98 @@ def _preflight_multi_family_release_tag_support(
         repo_root, [configs[name] for name in project_names]
     )
     if len(groups) <= 1:
-        return
+        return None
+    snapshots: dict[Path, str] = {}
+    for family_root in groups:
+        snapshots[family_root] = transaction.fetch_origin_main(
+            family_root, git_auth=git_auth,
+        )
+
+    tagged_families: dict[Path, bool] = {}
     for family_root, members in groups.items():
-        base = transaction.fetch_origin_main(family_root, git_auth=git_auth)
+        base = snapshots[family_root]
+        has_tagged_project = False
         for project in members:
-            project_root = Path(getattr(project, "project_root", "")).resolve()
-            try:
-                project_rel = project_root.relative_to(family_root.resolve())
-            except ValueError as exc:
-                raise RuntimeError(
-                    f"{getattr(project, 'name', 'selected project')}: project config is "
-                    f"outside Git family {family_root}"
-                ) from exc
-            config_rel = (project_rel / PROJECT_CONFIG_FILENAME).as_posix()
-            result = run_local_git(
-                family_root, "show", f"{base}:{config_rel}",
-                capture_output=True, text=True, check=False,
+            has_tagged_project = (
+                _project_git_tag_policy_at_snapshot(
+                    family_root, base, project,
+                ) or has_tagged_project
             )
-            if result.returncode != 0:
-                detail = result.stderr.strip() or result.stdout.strip() or "no diagnostic output"
-                raise RuntimeError(
-                    f"Failed to read {getattr(project, 'name', 'selected project')} release "
-                    f"policy from origin/main ({base}:{config_rel}): {detail}"
-                )
-            try:
-                document = tomllib.loads(result.stdout)
-            except tomllib.TOMLDecodeError as exc:
-                raise RuntimeError(
-                    f"Invalid project config in origin/main ({base}:{config_rel}): {exc}"
-                ) from exc
-            project_document = document.get("project")
-            release_document = (
-                project_document.get("release")
-                if isinstance(project_document, dict) else None
-            )
-            git_tag = (
-                release_document.get("git_tag")
-                if isinstance(release_document, dict) else None
-            )
-            if not isinstance(git_tag, bool):
-                raise RuntimeError(
-                    f"Invalid project config in origin/main ({base}:{config_rel}): "
-                    "project.release.git_tag must be explicitly true or false"
-                )
-            if git_tag:
-                _require_local_tag_inspection_support(family_root)
+        tagged_families[family_root] = has_tagged_project
+    for family_root, is_tagged in tagged_families.items():
+        if is_tagged:
+            _require_local_tag_inspection_support(family_root)
+    return snapshots
+
+
+def _project_git_tag_policy_at_snapshot(
+    repo_root: Path, base: str, project: "ProjectConfig",
+) -> bool:
+    """Read one selected project's explicit release tag policy from a commit."""
+    project_root_value = getattr(project, "project_root", None)
+    if project_root_value is None:
+        raise RuntimeError(
+            f"{getattr(project, 'name', 'selected project')}: project_root is required "
+            "to read release policy from origin/main"
+        )
+    project_root = Path(project_root_value)
+    if not project_root.is_absolute():
+        project_root = repo_root / project_root
+    project_root = project_root.resolve()
+    try:
+        project_rel = project_root.relative_to(repo_root.resolve())
+    except ValueError as exc:
+        raise RuntimeError(
+            f"{getattr(project, 'name', 'selected project')}: project config is "
+            f"outside Git family {repo_root}"
+        ) from exc
+    config_rel = (project_rel / PROJECT_CONFIG_FILENAME).as_posix()
+    result = run_local_git(
+        repo_root, "show", f"{base}:{config_rel}",
+        capture_output=True, text=True, check=False,
+    )
+    if result.returncode != 0:
+        detail = result.stderr.strip() or result.stdout.strip() or "no diagnostic output"
+        raise RuntimeError(
+            f"Failed to read {getattr(project, 'name', 'selected project')} release "
+            f"policy from origin/main ({base}:{config_rel}): {detail}"
+        )
+    try:
+        project_document = tomllib.loads(result.stdout)["project"]
+        git_tag = project_document["release"]["git_tag"]
+    except (tomllib.TOMLDecodeError, KeyError, TypeError) as exc:
+        raise RuntimeError(
+            f"Invalid project config in origin/main ({base}:{config_rel}): "
+            "project.release.git_tag must be explicitly true or false"
+        ) from exc
+    if not isinstance(git_tag, bool):
+        raise RuntimeError(
+            f"Invalid project config in origin/main ({base}:{config_rel}): "
+            "project.release.git_tag must be explicitly true or false"
+        )
+    return git_tag
+
+
+def _consume_release_snapshot_handoff(repo_root: Path) -> str | None:
+    """Consume a parent dispatch's exact, already-fetched origin/main commit."""
+    handoff = os.environ.pop(_RELEASE_PREFLIGHT_SNAPSHOT_ENV, None)
+    if handoff is None:
+        return None
+    source_root, separator, base = handoff.rpartition(":")
+    if (
+        not separator
+        or Path(source_root).resolve() != repo_root.resolve()
+        or not re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", base)
+    ):
+        raise RuntimeError("invalid CMRU preflighted origin/main snapshot handoff")
+    result = run_local_git(
+        repo_root, "cat-file", "-e", f"{base}^{{commit}}",
+        capture_output=True, text=True, check=False,
+    )
+    if result.returncode != 0:
+        detail = result.stderr.strip() or result.stdout.strip() or "no diagnostic output"
+        raise RuntimeError(f"preflighted origin/main commit is unavailable: {detail}")
+    return base
 
 
 def _configs_for_git_family(
@@ -3767,13 +3830,14 @@ def _dispatch(args, runtime):
         if not vargs.dry_run:
             require_project_publish_credentials(configs, release_scope)
 
+        origin_main_snapshots = None
         if (
             verb == "release"
             and not transaction_child
             and not vargs.dry_run
             and not vargs.resume
         ):
-            _preflight_multi_family_release_tag_support(
+            origin_main_snapshots = _preflight_multi_family_release_tag_support(
                 repo_root, configs, release_scope, git_auth=git_auth,
             )
 
@@ -3786,6 +3850,7 @@ def _dispatch(args, runtime):
                 configs,
                 release_scope,
                 original_target=vargs.target,
+                origin_main_snapshots=origin_main_snapshots,
             )
             if dispatched is not None:
                 _sys.exit(dispatched)
@@ -3802,6 +3867,7 @@ def _dispatch(args, runtime):
                 transaction_root = transaction.source_git_root_for_projects(
                     repo_root, [configs[name] for name in release_scope]
                 )
+                preflighted_base = _consume_release_snapshot_handoff(transaction_root)
                 child_args = _child_release_args(
                     rest, cfg_path, repo_root, source_git_root=transaction_root,
                     target_override=",".join(release_scope), original_target=vargs.target,
@@ -3827,15 +3893,17 @@ def _dispatch(args, runtime):
                             )
                             _sys.exit(2)
 
-                    if not vargs.dry_run and any(
-                        getattr(configs[name], "git_tag", True) for name in release_scope
-                    ):
-                        _require_local_tag_inspection_support(transaction_root)
-
                     if getattr(vargs, "resume", None):
                         workspace = transaction.resume_workspace(
                             transaction_root, Path(vargs.resume), git_auth=git_auth,
                         )
+                        if not vargs.dry_run and any(
+                            _project_git_tag_policy_at_snapshot(
+                                transaction_root, workspace.base, configs[name],
+                            )
+                            for name in release_scope
+                        ):
+                            _require_local_tag_inspection_support(transaction_root)
                         current_scope = transaction.read_release_scope_for_path(workspace.path)
                         if current_scope != resume_scope:
                             raise RuntimeError(
@@ -3844,7 +3912,16 @@ def _dispatch(args, runtime):
                             )
                         transaction.assert_resume_workspace_committed(workspace.path)
                     else:
-                        base = transaction.fetch_origin_main(transaction_root, git_auth=git_auth)
+                        base = preflighted_base or transaction.fetch_origin_main(
+                            transaction_root, git_auth=git_auth,
+                        )
+                        if not vargs.dry_run and any(
+                            _project_git_tag_policy_at_snapshot(
+                                transaction_root, base, configs[name],
+                            )
+                            for name in release_scope
+                        ):
+                            _require_local_tag_inspection_support(transaction_root)
                         initial_tag_refs = None
                         if not vargs.dry_run:
                             initial_tag_refs = _read_origin_tag_refs(

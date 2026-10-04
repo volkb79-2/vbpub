@@ -15,6 +15,10 @@ def fake_release_preflight(monkeypatch):
     monkeypatch.setattr(cli, "_read_origin_tag_refs", lambda *_args, **_kwargs: {})
     monkeypatch.setattr(cli.transaction, "write_release_tag_snapshot", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(cli, "_require_local_tag_inspection_support", lambda _root: None)
+    monkeypatch.setattr(
+        cli, "_project_git_tag_policy_at_snapshot",
+        lambda _root, _base, project: getattr(project, "git_tag", True),
+    )
 
 
 def test_release_uses_fetched_origin_when_local_main_is_behind(monkeypatch, tmp_path, capsys):

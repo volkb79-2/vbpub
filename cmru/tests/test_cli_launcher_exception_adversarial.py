@@ -23,6 +23,10 @@ def test_release_launcher_surfaces_workspace_creation_failure_and_stops(monkeypa
     monkeypatch.setattr(cli.transaction, "release_lock", lambda _: nullcontext())
     monkeypatch.setattr(cli, "_uncommitted_release_paths", lambda *args: {})
     monkeypatch.setattr(cli, "_require_local_tag_inspection_support", lambda _root: None)
+    monkeypatch.setattr(
+        cli, "_project_git_tag_policy_at_snapshot",
+        lambda _root, _base, project: getattr(project, "git_tag", True),
+    )
     monkeypatch.setattr(cli.transaction, "fetch_origin_main", lambda *_, **__: "a" * 40)
     monkeypatch.setattr(cli, "_read_origin_tag_refs", lambda *_args, **_kwargs: {})
     monkeypatch.setattr(cli.transaction, "assert_local_main_not_ahead", lambda *_, **__: 0)

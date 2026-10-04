@@ -15,6 +15,8 @@ import pytest
 from cmru import cli, transaction
 from cmru import tester_gate
 
+_real_project_git_tag_policy_at_snapshot = cli._project_git_tag_policy_at_snapshot
+
 
 # ---------------------------------------------------------------------------
 # Real-repo harness for promotion_landed / revert_promotion / sync_local_main —
@@ -117,6 +119,10 @@ def mocked_invocation_context(monkeypatch):
         lambda root, projects: {root: list(projects)},
     )
     monkeypatch.setattr(cli, "_read_origin_tag_refs", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(
+        cli, "_project_git_tag_policy_at_snapshot",
+        lambda _root, _base, project: getattr(project, "git_tag", True),
+    )
 
 
 def test_copy_secret_overlays_preserves_root_and_project_scoped_credentials(tmp_path):
@@ -477,7 +483,23 @@ cwd = "alpha"
     monkeypatch.setattr(cli, "apply_release_env", lambda *_args: None)
     monkeypatch.setattr(cli, "_uncommitted_release_paths", lambda *_args, **_kwargs: {})
     monkeypatch.setattr(transaction, "release_lock", lambda _root: nullcontext())
-    monkeypatch.setattr(transaction, "fetch_origin_main", lambda _root, **_kwargs: "a" * 40)
+    base = "a" * 40
+    monkeypatch.setenv(
+        "CMRU_RELEASE_PREFLIGHT_SNAPSHOT", f"{tmp_path.resolve()}:{base}",
+    )
+    monkeypatch.setattr(
+        transaction, "fetch_origin_main",
+        lambda *_args, **_kwargs: pytest.fail("child fetched past its preflight snapshot"),
+    )
+    monkeypatch.setattr(cli, "_project_git_tag_policy_at_snapshot", _real_project_git_tag_policy_at_snapshot)
+    monkeypatch.setattr(
+        cli, "run_local_git",
+        lambda _root, *args, **_kwargs: SimpleNamespace(
+            returncode=0,
+            stdout="[project.release]\ngit_tag = true\n" if args[0] == "show" else "",
+            stderr="",
+        ),
+    )
     monkeypatch.setattr(transaction, "assert_local_main_not_ahead", lambda _root, **_kw: 0)
     monkeypatch.setattr(
         cli, "_require_local_tag_inspection_support",
@@ -504,6 +526,7 @@ cwd = "alpha"
         ])
 
     assert exc == 0
+    assert "CMRU_RELEASE_PREFLIGHT_SNAPSHOT" not in os.environ
     assert not any(isinstance(call, tuple) for call in calls)
     assert calls.index("tag-inspection-preflight") < calls.index("workspace")
     assert [
@@ -537,6 +560,10 @@ def test_multi_family_release_preflights_origin_policies_before_dispatch(
     )
     monkeypatch.setattr(cli, "load_config", lambda _path: loaded)
     monkeypatch.setattr(cli, "apply_release_env", lambda *_args: None)
+    monkeypatch.setattr(
+        cli, "_project_git_tag_policy_at_snapshot",
+        _real_project_git_tag_policy_at_snapshot,
+    )
     monkeypatch.setattr(
         transaction, "project_git_family_groups",
         lambda *_args: {untagged_root: [untagged], tagged_root: [tagged]},
@@ -587,7 +614,7 @@ def test_multi_family_release_with_untagged_origin_policies_needs_no_tag_support
     projects = [_project("left"), _project("right")]
     roots = [tmp_path / "left-repo", tmp_path / "right-repo"]
     for project, root in zip(projects, roots, strict=True):
-        project.git_tag = False
+        project.git_tag = True  # caller checkout is stale; origin/main is untagged
         project.project_root = root / project.name
     loaded = (
         tmp_path,
@@ -599,6 +626,10 @@ def test_multi_family_release_with_untagged_origin_policies_needs_no_tag_support
     )
     monkeypatch.setattr(cli, "load_config", lambda _path: loaded)
     monkeypatch.setattr(cli, "apply_release_env", lambda *_args: None)
+    monkeypatch.setattr(
+        cli, "_project_git_tag_policy_at_snapshot",
+        _real_project_git_tag_policy_at_snapshot,
+    )
     monkeypatch.setattr(
         transaction, "project_git_family_groups",
         lambda *_args: {root: [project] for root, project in zip(roots, projects, strict=True)},
@@ -621,12 +652,144 @@ def test_multi_family_release_with_untagged_origin_policies_needs_no_tag_support
     dispatched = []
     monkeypatch.setattr(
         cli, "_dispatch_independent_git_families",
-        lambda *_args, **_kwargs: dispatched.append(True) or 0,
+        lambda *_args, **kwargs: dispatched.append(kwargs["origin_main_snapshots"]) or 0,
     )
 
     assert cli.main(["release", "left,right", "--config", str(config)]) == 0
     assert fetched == roots
-    assert dispatched == [True]
+    assert dispatched == [{root: "f" * 40 for root in roots}]
+
+
+def test_multi_family_preflight_fetch_failure_stops_before_dispatch(
+    tmp_path, monkeypatch, capsys,
+):
+    config = tmp_path / "cmru.toml"
+    config.write_text("[project]\n", encoding="utf-8")
+    projects = [_project("left"), _project("right")]
+    roots = [tmp_path / "left-repo", tmp_path / "right-repo"]
+    for project, root in zip(projects, roots, strict=True):
+        project.project_root = root / project.name
+    loaded = (
+        tmp_path,
+        {project.name: project for project in projects},
+        [project.name for project in projects],
+        [project.name for project in projects],
+        [project.name for project in projects], "project-first", {}, SimpleNamespace(),
+        _github_config(), SimpleNamespace(),
+    )
+    monkeypatch.setattr(cli, "load_config", lambda _path: loaded)
+    monkeypatch.setattr(cli, "apply_release_env", lambda *_args: None)
+    monkeypatch.setattr(
+        transaction, "project_git_family_groups",
+        lambda *_args: {root: [project] for root, project in zip(roots, projects, strict=True)},
+    )
+    fetched = []
+
+    def fail_second_fetch(root, **_kwargs):
+        fetched.append(root)
+        if root == roots[1]:
+            raise RuntimeError("origin/main fetch refused")
+        return "f" * 40
+
+    monkeypatch.setattr(transaction, "fetch_origin_main", fail_second_fetch)
+    monkeypatch.setattr(
+        cli, "_dispatch_independent_git_families",
+        lambda *_args, **_kwargs: pytest.fail("family dispatched after preflight fetch failure"),
+    )
+
+    assert cli.main(["release", "left,right", "--config", str(config)]) == 1
+    assert fetched == roots
+    assert "origin/main fetch refused" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    ("project_root", "stdout", "returncode", "expected_error"),
+    [
+        ("outside", "", 0, "outside Git family"),
+        ("inside", "", 1, "Failed to read demo release policy"),
+        ("inside", "invalid = [", 0, "Invalid project config"),
+        ("inside", "[project]\n", 0, "git_tag must be explicitly true or false"),
+        (
+            "inside", "[project.release]\ngit_tag = 1\n", 0,
+            "git_tag must be explicitly true or false",
+        ),
+    ],
+)
+def test_snapshot_tag_policy_refuses_missing_or_invalid_facts(
+    tmp_path, monkeypatch, project_root, stdout, returncode, expected_error,
+):
+    repo_root = tmp_path / "repo"
+    selected_root = tmp_path / project_root if project_root == "outside" else repo_root / "demo"
+    project = SimpleNamespace(name="demo", project_root=selected_root)
+    monkeypatch.setattr(
+        cli, "run_local_git",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            returncode=returncode, stdout=stdout,
+            stderr="snapshot read failed" if returncode else "",
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match=expected_error):
+        cli._project_git_tag_policy_at_snapshot(repo_root, "f" * 40, project)
+
+
+def test_snapshot_tag_policy_requires_project_root(tmp_path, monkeypatch):
+    project = SimpleNamespace(name="demo", project_root=None)
+    monkeypatch.setattr(
+        cli, "run_local_git",
+        lambda *_args, **_kwargs: pytest.fail("read a policy without an authoritative project root"),
+    )
+
+    with pytest.raises(RuntimeError, match="project_root is required"):
+        cli._project_git_tag_policy_at_snapshot(tmp_path, "f" * 40, project)
+
+
+def test_snapshot_tag_policy_resolves_relative_project_root(tmp_path, monkeypatch):
+    project = SimpleNamespace(name="demo", project_root=Path("projects/demo"))
+    seen = []
+    monkeypatch.setattr(
+        cli, "run_local_git",
+        lambda root, *args, **_kwargs: seen.append((root, args)) or SimpleNamespace(
+            returncode=0,
+            stdout="[project.release]\ngit_tag = false\n",
+            stderr="",
+        ),
+    )
+
+    assert cli._project_git_tag_policy_at_snapshot(tmp_path, "f" * 40, project) is False
+    assert seen == [(
+        tmp_path, ("show", f"{'f' * 40}:projects/demo/cmru.toml"),
+    )]
+
+
+@pytest.mark.parametrize("handoff_kind", ["malformed", "wrong-root", "bad-hash"])
+def test_snapshot_handoff_rejects_malformed_identity(tmp_path, monkeypatch, handoff_kind):
+    repo_root = tmp_path / "repo"
+    handoff = {
+        "malformed": "not-a-handoff",
+        "wrong-root": f"{tmp_path / 'other'}:{'a' * 40}",
+        "bad-hash": f"{repo_root}:{'z' * 40}",
+    }[handoff_kind]
+    monkeypatch.setenv("CMRU_RELEASE_PREFLIGHT_SNAPSHOT", handoff)
+
+    with pytest.raises(RuntimeError, match="invalid CMRU preflighted origin/main snapshot handoff"):
+        cli._consume_release_snapshot_handoff(repo_root)
+
+
+def test_snapshot_handoff_refuses_commit_missing_from_family_object_store(tmp_path, monkeypatch):
+    repo_root = tmp_path / "repo"
+    monkeypatch.setenv(
+        "CMRU_RELEASE_PREFLIGHT_SNAPSHOT", f"{repo_root.resolve()}:{'a' * 40}",
+    )
+    monkeypatch.setattr(
+        cli, "run_local_git",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            returncode=1, stdout="", stderr="unknown commit",
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="preflighted origin/main commit is unavailable"):
+        cli._consume_release_snapshot_handoff(repo_root)
 
 
 def test_parent_reverts_promotion_and_reports_sync_failure_on_child_failure(

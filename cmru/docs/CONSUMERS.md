@@ -45,8 +45,8 @@ An older Git cannot distinguish a missing local tag from a failed ref lookup. Fo
 that includes tagged projects, CMRU checks support before creating its candidate or starting a
 project gate. If selected projects span independent repositories, CMRU reads each selected
 project's tag policy from its fetched `origin/main` snapshot and checks all tagged repositories
-before starting any family release. Cleanup checks support while preparing the preview, before any
-planned action is applied. See the
+before starting any family release; each family launcher uses that same fetched commit. Cleanup
+checks support while preparing the preview, before any planned action is applied. See the
 [design rationale](DESIGN-GUIDE.md#local-tag-inspection-requires-git-243).
 
 ## 1. The two files

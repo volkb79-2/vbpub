@@ -596,8 +596,8 @@ lookup as absence. For a real release that includes tagged projects, the launche
 before creating the candidate worktree, running a project gate, or creating a tag. When selected
 projects span independent Git families, it fetches each family's origin/main snapshot, reads each
 selected project's tag policy from that snapshot, then checks all tagged families before dispatching
-any one family. A policy changed only on origin/main therefore cannot make a later family's refusal
-follow an earlier family release. Cleanup checks during its preview, before the captured plan can be
+any one family. Each launcher receives that same commit and builds from it, so a later fetch cannot
+change the policy after preflight. Cleanup checks during its preview, before the captured plan can be
 applied. This keeps a repository read failure from silently skipping a tag operation.
 
 ## Candidate-first promotion protects the source history

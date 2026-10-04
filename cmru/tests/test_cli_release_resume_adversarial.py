@@ -13,6 +13,10 @@ def fake_git_family(monkeypatch):
         lambda root, projects: {root: list(projects)},
     )
     monkeypatch.setattr(cli, "_require_local_tag_inspection_support", lambda _root: None)
+    monkeypatch.setattr(
+        cli, "_project_git_tag_policy_at_snapshot",
+        lambda _root, _base, project: getattr(project, "git_tag", True),
+    )
 
 
 def test_release_resume_cleans_workspace_and_reports_sync_failure(monkeypatch, tmp_path, capsys):

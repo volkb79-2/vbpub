@@ -735,6 +735,52 @@ def test_dispatch_does_not_split_a_single_project_and_uses_path_launcher(monkeyp
     assert called[0][0] == "/found/cmru"
 
 
+def test_release_dispatch_passes_exact_preflight_snapshot_to_each_family(
+    monkeypatch, tmp_path,
+):
+    left = SimpleNamespace(name="left")
+    right = SimpleNamespace(name="right")
+    configs = {"left": left, "right": right}
+    roots = {tmp_path / "left": [left], tmp_path / "right": [right]}
+    snapshots = {
+        tmp_path / "left": "a" * 40,
+        tmp_path / "right": "b" * 40,
+    }
+    monkeypatch.setattr(transaction, "project_git_family_groups", lambda *_args: roots)
+    monkeypatch.setenv("CMRU_BIN", "/usr/bin/cmru")
+    seen = []
+    monkeypatch.setattr(
+        cli.subprocess, "run",
+        lambda argv, **kwargs: seen.append(
+            kwargs["env"].get("CMRU_RELEASE_PREFLIGHT_SNAPSHOT")
+        ) or subprocess.CompletedProcess(argv, 0),
+    )
+
+    with pytest.raises(RuntimeError, match="do not match the selected release families"):
+        cli._dispatch_independent_git_families(
+            "release", [], tmp_path / "cmru.toml", tmp_path, configs,
+            ["left", "right"], original_target=None,
+            origin_main_snapshots={tmp_path / "left": "a" * 40},
+        )
+    with pytest.raises(RuntimeError, match="do not match the selected release families"):
+        cli._dispatch_independent_git_families(
+            "build", [], tmp_path / "cmru.toml", tmp_path, configs,
+            ["left", "right"], original_target=None,
+            origin_main_snapshots=snapshots,
+        )
+    assert seen == []
+
+    assert cli._dispatch_independent_git_families(
+        "release", [], tmp_path / "cmru.toml", tmp_path, configs,
+        ["left", "right"], original_target=None,
+        origin_main_snapshots=snapshots,
+    ) == 0
+    assert seen == [
+        f"{(tmp_path / 'left').resolve()}:{'a' * 40}",
+        f"{(tmp_path / 'right').resolve()}:{'b' * 40}",
+    ]
+
+
 def test_child_release_args_removes_only_the_first_original_target(tmp_path):
     config_path = tmp_path / "cmru.toml"
     config_path.write_text("x")
