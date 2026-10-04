@@ -485,8 +485,10 @@ def test_project_cleanup_plan_does_not_delete_tags_added_after_preview(monkeypat
 
     assert deleted_releases == [1]
     assert deleted_local_tags == [
+        ("show-ref", "--exists", "refs/tags/demo-v1.0.0"),
         ("show-ref", "--hash", "--verify", "refs/tags/demo-v1.0.0"),
         ("update-ref", "-d", "refs/tags/demo-v1.0.0", "b" * 40),
+        ("show-ref", "--exists", "refs/tags/demo-v1.0.0"),
         ("show-ref", "--hash", "--verify", "refs/tags/demo-v1.0.0"),
     ]
     assert outcomes["demo-v1.0.0"] is False
@@ -838,7 +840,10 @@ def test_local_tag_delete_skips_a_tag_retargeted_after_preview(monkeypatch, tmp_
         tmp_path, "demo-v1", False, expected_present=True, expected_oid="a" * 40,
     )
 
-    assert calls == [("show-ref", "--hash", "--verify", "refs/tags/demo-v1")]
+    assert calls == [
+        ("show-ref", "--exists", "refs/tags/demo-v1"),
+        ("show-ref", "--hash", "--verify", "refs/tags/demo-v1"),
+    ]
     assert "changed after the confirmed cleanup preview" in capsys.readouterr().out
 
 
@@ -856,6 +861,7 @@ def test_local_tag_delete_uses_expected_old_object_update(monkeypatch, tmp_path)
     )
 
     assert calls == [
+        ("show-ref", "--exists", "refs/tags/demo-v1"),
         ("show-ref", "--hash", "--verify", "refs/tags/demo-v1"),
         ("update-ref", "-d", "refs/tags/demo-v1", oid),
     ]
@@ -866,8 +872,8 @@ def test_local_tag_delete_treats_confirmed_concurrent_removal_as_idempotent(
 ):
     results = iter([
         SimpleNamespace(returncode=0, stdout="a" * 40, stderr=""),
+        SimpleNamespace(returncode=0, stdout="a" * 40, stderr=""),
         SimpleNamespace(returncode=1, stdout="", stderr="already gone"),
-        SimpleNamespace(returncode=1, stdout="", stderr=""),
         SimpleNamespace(returncode=2, stdout="", stderr=""),
     ])
     monkeypatch.setattr(cli, "run_local_git", lambda *args, **kwargs: next(results))
@@ -877,23 +883,22 @@ def test_local_tag_delete_treats_confirmed_concurrent_removal_as_idempotent(
 
 def test_local_tag_delete_fails_on_lookup_or_recheck_errors(monkeypatch, tmp_path):
     first_results = iter([
-        SimpleNamespace(returncode=128, stdout="", stderr="bad repository"),
         SimpleNamespace(returncode=1, stdout="", stderr="repository unreadable"),
     ])
     monkeypatch.setattr(
         cli, "run_local_git", lambda *args, **kwargs: next(first_results),
     )
-    with pytest.raises(RuntimeError, match="Failed to determine local tag.*repository unreadable"):
+    with pytest.raises(RuntimeError, match="Failed to inspect local tag.*repository unreadable"):
         cli.delete_git_tag_local(tmp_path, "demo-v1", False)
 
     results = iter([
+        SimpleNamespace(returncode=0, stdout="", stderr=""),
         SimpleNamespace(returncode=0, stdout="a" * 40, stderr=""),
         SimpleNamespace(returncode=1, stdout="", stderr="delete failed"),
-        SimpleNamespace(returncode=128, stdout="", stderr="bad repository"),
         SimpleNamespace(returncode=1, stdout="", stderr="repository unreadable"),
     ])
     monkeypatch.setattr(cli, "run_local_git", lambda *args, **kwargs: next(results))
-    with pytest.raises(RuntimeError, match="Failed to determine local tag.*repository unreadable"):
+    with pytest.raises(RuntimeError, match="Failed to recheck local tag.*repository unreadable"):
         cli.delete_git_tag_local(tmp_path, "demo-v1", False)
 
 

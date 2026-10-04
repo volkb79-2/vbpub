@@ -11,6 +11,12 @@ cmru is **just the orchestrator**: it owns the generic git/host mechanics (tags,
 pip install -e .             # provides the `cmru` console script
 ```
 
+CMRU's local tag inspection requires Git 2.43 or newer. Check `git --version`
+before running release or cleanup workflows; the reason is in the
+[local tag inspection design](docs/DESIGN-GUIDE.md#local-tag-inspection-requires-git-243).
+The [consumer guide](docs/CONSUMERS.md#git-version-for-local-tag-inspection)
+shows the prerequisite check.
+
 The wheel also installs the companion `cmru-agent` and `cmru-controller`
 entrypoints. All three use CMRU's registered CLI grammar; `cmru --help` lists
 root verbs, and `cmru help <verb>` (or `<verb> --help`) shows that verb's exact

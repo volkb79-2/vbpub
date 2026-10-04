@@ -31,6 +31,20 @@ they are outside this top-level identity surface.
 
 ---
 
+## Git version for local tag inspection
+
+Release and cleanup workflows that inspect local tags require Git 2.43 or newer. Before using
+those verbs, check the Git executable in the environment that runs CMRU:
+
+```bash
+git --version
+# Require git version 2.43.0 or later.
+```
+
+An older Git cannot distinguish a missing local tag from a failed ref lookup, so CMRU refuses
+the tag operation with the required version. See the
+[design rationale](DESIGN-GUIDE.md#local-tag-inspection-requires-git-243).
+
 ## 1. The two files
 
 A product is releasable when two files exist. Nothing is auto-discovered beyond them.

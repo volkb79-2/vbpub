@@ -132,7 +132,7 @@ def test_tag_helpers_are_idempotent_and_parse_annotated_refs(monkeypatch, tmp_pa
         ("check-ref-format", "refs/tags/v1"),
     ] * 4
     assert [call[0] for call in local_calls if call[0] != "check-ref-format"] == [
-        "show-ref", "update-ref",
+        "show-ref", "show-ref", "update-ref",
     ]
     assert "deleted remote tag" in capsys.readouterr().out.lower()
 

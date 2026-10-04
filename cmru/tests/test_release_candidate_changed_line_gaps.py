@@ -32,16 +32,14 @@ def test_local_tag_helpers_validate_git_object_ids_and_existence(monkeypatch, tm
         cli.local_git_tag_oid(tmp_path, "demo-v1")
 
 
-def test_local_tag_oid_confirms_git_128_is_absence_with_exists_check(
+def test_local_tag_oid_uses_explicit_exists_check_then_reads_the_oid(
     monkeypatch, tmp_path,
 ):
+    oid = "a" * 40
     calls = []
     results = iter([
-        SimpleNamespace(
-            returncode=128, stdout="",
-            stderr="fatal: 'refs/tags/demo-v1' - not a valid ref",
-        ),
-        SimpleNamespace(returncode=2, stdout="", stderr=""),
+        SimpleNamespace(returncode=0, stdout="", stderr=""),
+        SimpleNamespace(returncode=0, stdout=oid, stderr=""),
     ])
 
     def run_local(_root, *args, **kwargs):
@@ -50,86 +48,73 @@ def test_local_tag_oid_confirms_git_128_is_absence_with_exists_check(
 
     monkeypatch.setattr(cli, "run_local_git", run_local)
 
-    assert cli.local_git_tag_oid(tmp_path, "demo-v1") is None
+    assert cli.local_git_tag_oid(tmp_path, "demo-v1") == oid
     assert calls == [
-        ("show-ref", "--hash", "--verify", "refs/tags/demo-v1"),
         ("show-ref", "--exists", "refs/tags/demo-v1"),
+        ("show-ref", "--hash", "--verify", "refs/tags/demo-v1"),
     ]
 
 
-def test_local_tag_oid_confirms_git_1_is_absence_with_exists_check(
-    monkeypatch, tmp_path,
-):
-    results = iter([
-        SimpleNamespace(returncode=1, stdout="", stderr=""),
-        SimpleNamespace(returncode=2, stdout="", stderr=""),
-    ])
-    monkeypatch.setattr(cli, "run_local_git", lambda *_args, **_kwargs: next(results))
-
+def test_local_tag_oid_returns_none_only_for_explicit_missing_status(monkeypatch, tmp_path):
+    calls = []
+    monkeypatch.setattr(cli, "run_local_git", lambda _root, *args, **_kwargs: (
+        calls.append(args) or SimpleNamespace(returncode=2, stdout="", stderr="")
+    ))
     assert cli.local_git_tag_oid(tmp_path, "demo-v1") is None
+    assert calls == [("show-ref", "--exists", "refs/tags/demo-v1")]
 
 
-def test_local_tag_oid_does_not_fold_exists_lookup_failure_into_absence(
-    monkeypatch, tmp_path,
-):
-    results = iter([
-        SimpleNamespace(returncode=128, stdout="", stderr="initial lookup failed"),
-        SimpleNamespace(returncode=1, stdout="", stderr="repository unreadable"),
-    ])
-    monkeypatch.setattr(cli, "run_local_git", lambda *_args, **_kwargs: next(results))
-
+def test_local_tag_oid_does_not_fold_lookup_failure_into_absence(monkeypatch, tmp_path):
+    monkeypatch.setattr(cli, "run_local_git", lambda *_args, **_kwargs: SimpleNamespace(
+        returncode=1, stdout="", stderr="repository unreadable",
+    ))
     with pytest.raises(
         RuntimeError,
-        match="Failed to determine local tag demo-v1 after hash lookup failed \\(1\\): repository unreadable; initial hash lookup \\(128\\): initial lookup failed",
+        match="Failed to inspect local tag demo-v1 \\(1\\): repository unreadable",
     ):
         cli.local_git_tag_oid(tmp_path, "demo-v1")
 
 
-def test_local_tag_oid_initial_git_1_does_not_fold_lookup_failure_into_absence(
-    monkeypatch, tmp_path,
-):
-    results = iter([
-        SimpleNamespace(returncode=1, stdout="", stderr=""),
-        SimpleNamespace(returncode=1, stdout="", stderr="repository unreadable"),
-    ])
-    monkeypatch.setattr(cli, "run_local_git", lambda *_args, **_kwargs: next(results))
-
+def test_local_tag_oid_refuses_git_without_show_ref_exists(monkeypatch, tmp_path):
+    monkeypatch.setattr(cli, "run_local_git", lambda *_args, **_kwargs: SimpleNamespace(
+        returncode=129, stdout="", stderr="unknown option: --exists",
+    ))
     with pytest.raises(
         RuntimeError,
-        match="Failed to determine local tag demo-v1 after hash lookup failed \\(1\\): repository unreadable; initial hash lookup \\(1\\): no diagnostic output",
+        match="requires Git 2\\.43 or newer.*unknown option: --exists",
     ):
         cli.local_git_tag_oid(tmp_path, "demo-v1")
 
 
-def test_local_tag_oid_preserves_initial_diagnostic_when_ref_is_present(
+def test_local_tag_oid_refuses_hash_failure_after_presence_is_confirmed(
     monkeypatch, tmp_path,
 ):
     results = iter([
-        SimpleNamespace(returncode=1, stdout="", stderr="permission denied"),
         SimpleNamespace(returncode=0, stdout="", stderr=""),
+        SimpleNamespace(returncode=1, stdout="", stderr="permission denied"),
     ])
     monkeypatch.setattr(cli, "run_local_git", lambda *_args, **_kwargs: next(results))
 
     with pytest.raises(
         RuntimeError,
-        match="is present after its hash lookup failed \\(1\\): permission denied; refusing to infer its state",
+        match="Failed to resolve local tag demo-v1 after its presence was confirmed \\(1\\): permission denied",
     ):
         cli.local_git_tag_oid(tmp_path, "demo-v1")
 
 
 @pytest.mark.parametrize(
-    "action, stdout, stderr, expected",
+    "action, returncode, stdout, stderr, expected",
     [
-        ("inspect", "", "bad repository", "Failed to inspect local tag demo-v1 (2): bad repository"),
-        ("recheck", "git diagnostic", "", "Failed to recheck local tag demo-v1 after deletion failed (2): git diagnostic"),
-        ("inspect", "", "", "Failed to inspect local tag demo-v1 (2): no diagnostic output"),
+        ("inspect", 1, "", "bad repository", "Failed to inspect local tag demo-v1 (1): bad repository"),
+        ("recheck", 128, "git diagnostic", "", "Failed to recheck local tag demo-v1 after deletion failed (128): git diagnostic"),
+        ("inspect", 128, "", "", "Failed to inspect local tag demo-v1 (128): no diagnostic output"),
     ],
 )
 def test_local_tag_oid_reports_unambiguous_lookup_failures(
-    monkeypatch, tmp_path, action, stdout, stderr, expected,
+    monkeypatch, tmp_path, action, returncode, stdout, stderr, expected,
 ):
     monkeypatch.setattr(cli, "run_local_git", lambda *_args, **_kwargs: SimpleNamespace(
-        returncode=2, stdout=stdout, stderr=stderr,
+        returncode=returncode, stdout=stdout, stderr=stderr,
     ))
 
     with pytest.raises(RuntimeError, match=re.escape(expected)):

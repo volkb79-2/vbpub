@@ -1421,48 +1421,41 @@ def local_git_tag_oid(
 ) -> str | None:
     """Return a local tag's exact ref object ID, or None when the ref is absent."""
     ref = f"refs/tags/{tag}"
+    presence = run_local_git(
+        repo_root, "show-ref", "--exists", ref,
+        capture_output=True, text=True, check=False,
+    )
+    if presence.returncode == 2:
+        return None
+    if presence.returncode != 0:
+        detail = presence.stderr.strip() or presence.stdout.strip() or "no diagnostic output"
+        if presence.returncode == 129:
+            raise RuntimeError(
+                "local tag inspection requires Git 2.43 or newer: "
+                f"`git show-ref --exists` is unsupported ({detail})"
+            )
+        verb = "inspect" if action == "inspect" else "recheck"
+        suffix = "" if action == "inspect" else " after deletion failed"
+        raise RuntimeError(
+            f"Failed to {verb} local tag {tag}{suffix} "
+            f"({presence.returncode}): {detail}"
+        )
+
     result = run_local_git(
         repo_root, "show-ref", "--hash", "--verify", ref,
         capture_output=True, text=True, check=False,
     )
     if result.returncode != 0:
-        if result.returncode in (1, 128):
-            # Some Git builds report a valid but absent ref as 128 from the
-            # hash-returning form of `show-ref --verify`; status 1 is also
-            # ambiguous between absence and a lookup failure. `--exists` has
-            # distinct status codes: 2 means absent and 1 means lookup failed.
-            # Do not use `--quiet` here; its status 1 can also mean failure.
-            presence = run_local_git(
-                repo_root, "show-ref", "--exists", ref,
-                capture_output=True, text=True, check=False,
-            )
-            if presence.returncode == 2:
-                return None
-            initial_detail = (
-                result.stderr.strip() or result.stdout.strip()
-                or "no diagnostic output"
-            )
-            if presence.returncode == 0:
-                raise RuntimeError(
-                    f"local tag {tag} is present after its hash lookup failed "
-                    f"({result.returncode}): {initial_detail}; "
-                    "refusing to infer its state"
-                )
-            presence_detail = (
-                presence.stderr.strip() or presence.stdout.strip()
-                or "no diagnostic output"
-            )
-            raise RuntimeError(
-                f"Failed to determine local tag {tag} after hash lookup failed "
-                f"({presence.returncode}): {presence_detail}; "
-                f"initial hash lookup ({result.returncode}): {initial_detail}"
-            )
         detail = result.stderr.strip() or result.stdout.strip() or "no diagnostic output"
-        suffix = "" if action == "inspect" else " after deletion failed"
-        verb = "inspect" if action == "inspect" else "recheck"
+        if action == "inspect":
+            context = f"Failed to resolve local tag {tag} after its presence was confirmed"
+        else:
+            context = (
+                f"Failed to recheck local tag {tag} after deletion failed; "
+                "its presence had been confirmed"
+            )
         raise RuntimeError(
-            f"Failed to {verb} local tag {tag}{suffix} "
-            f"({result.returncode}): {detail}"
+            f"{context} ({result.returncode}): {detail}"
         )
     oid = result.stdout.strip()
     if not re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", oid):

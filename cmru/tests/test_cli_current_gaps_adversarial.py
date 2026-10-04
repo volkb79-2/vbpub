@@ -61,6 +61,7 @@ def test_tag_deletion_success_reports_real_mutation(monkeypatch, tmp_path, capsy
     )
     assert local_calls == [
         ("check-ref-format", "refs/tags/demo-v1"),
+        ("show-ref", "--exists", "refs/tags/demo-v1"),
         ("show-ref", "--hash", "--verify", "refs/tags/demo-v1"),
         ("update-ref", "-d", "refs/tags/demo-v1", oid),
     ]

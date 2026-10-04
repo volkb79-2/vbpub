@@ -585,6 +585,15 @@ could not determine that fact. Returning an empty list on Git failure would sile
 project, so release planning preserves Git's diagnostic and refuses before any project cycle
 starts. The `cmru status` and release paths share this fail-closed history reader.
 
+### Local tag inspection requires Git 2.43
+
+Release and cleanup workflows distinguish an absent local tag from a failed ref lookup. The
+hash-returning `git show-ref --verify` form does not give those cases distinct exit statuses, so
+CMRU first asks `git show-ref --exists` (exit 2 means absent; exit 1 means lookup error), then
+resolves the exact object ID. `--exists` was added in Git 2.43. On an older Git, CMRU refuses
+local tag inspection with an explicit version requirement instead of treating an ambiguous
+lookup as absence. This keeps a repository read failure from silently skipping a tag operation.
+
 ## Candidate-first promotion protects the source history
 
 ### Dry-run external version discovery
