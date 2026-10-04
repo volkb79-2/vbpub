@@ -49,13 +49,30 @@ $ ciu worktree create pkg-under-test --base "$(git rev-parse HEAD)" --json
 {"schema_version": 1, "operation": "create", "status": "ready", "instance": {...}}
 ```
 
-Creation discovers every committed `ciu.global.defaults.toml.j2` in the base
-commit and prepares each root. The optional ignored
-`ciu.global.instance.toml.j2` overlay is not a discovery marker. Every lifecycle verb (`create`, `ensure`, `adopt`) with `--json` emits
-the same envelope. `status` is one of `allocating`, `ready`,
+Creation discovers every committed `ciu.global.defaults.toml.j2` from the
+allocated checkout's exact commit and prepares each root. A `ready` response
+means every discovered root has readable generated facts and the shared
+workspace record contains the matching root-entry list. CIU does not report
+`ready` while nested-root preparation is in progress. The optional ignored
+`ciu.global.instance.toml.j2` overlay is not a discovery marker. Every
+lifecycle verb (`create`, `ensure`, `adopt`) with `--json` emits the same
+envelope. `status` is one of `allocating`, `ready`,
 `recovery-required`; a `recovery-required` instance carries a closed
 `recovery_status` of `checkout-incomplete`, `env-generation-failed`, or
 `runtime-collision`. Resume a partial allocation with `ensure`.
+
+If root preparation fails, keep the checkout and retry through CIU:
+
+```console
+$ ciu worktree ensure pkg-under-test --json
+```
+
+`ensure` regenerates missing root facts and metadata before returning `ready`.
+It also checks older ready records against their discovered roots, repairing
+ones that were interrupted before the ready-ordering fix when their allocation
+commit is still provable. If a legacy record has only a symbolic base and HEAD
+has moved past the neutral workspace's recorded base commit, `ensure` refuses
+instead of guessing which roots belonged to the original allocation.
 
 A Git family with no committed `ciu.global.defaults.toml.j2` is also valid.
 CIU records the Git worktree as ready with null runtime identity, because no

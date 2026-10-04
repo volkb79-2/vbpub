@@ -11,7 +11,7 @@ WITHDRAWN issue means the claimed product behavior was removed or never
 adopted after its premise was disproved; it must not remain described as a
 shipped capability.
 
-Last updated: 2026-10-04 — **CIU-103, CIU-107, CIU-109, CIU-112, CIU-115, CIU-118, CIU-119, CIU-124, CIU-125, CIU-126, and CIU-127 FIXED** in the CIU v7 worktree/identity wave. dstdns caller migration ships with CIU-118; RG-70's direct service command path is folded into `ciu exec`, while run-gate remains the owner of declared gate invocations and their budgets.
+Last updated: 2026-10-04 — **CIU-103, CIU-107, CIU-109, CIU-112, CIU-115, CIU-118, CIU-119, CIU-124, CIU-125, CIU-126, and CIU-127 FIXED** in the CIU v7 worktree/identity wave; CIU-128 is in progress. dstdns caller migration ships with CIU-118; RG-70's direct service command path is folded into `ciu exec`, while run-gate remains the owner of declared gate invocations and their budgets.
 
 Previously, 2026-09-02 — **V8-2 BACKPORTED (ciu-P47): the identity-file
 split and the overlay rename.** `[ciu.instance.generated]` moved out of the
@@ -576,6 +576,7 @@ Last reconciled: 2026-08-17, automation-safe worktree lifecycle milestone.
 | CIU-125 | Worktree create cannot start a committed worktree-specific environment | Medium | FIXED 2026-10-04 |
 | CIU-126 | CIU rejects its own valid rootless worktree record and siblings can block lifecycle verbs | Medium | FIXED 2026-10-04 |
 | CIU-127 | `ciu down` cannot stop one stack without targeting the whole project | Medium | FIXED 2026-10-04 |
+| CIU-128 | Worktree reports `ready` before committed nested roots are prepared | High | IN PROGRESS — implementation and regression oracle pending gate |
 
 
 The approved milestone decisions and serial package order are in
@@ -4773,3 +4774,57 @@ Severity: Medium. Type: feature. Spec owner: v7 S10.2a; v8 check: SPEC-V8 S14.1.
 **v8 mapping.** SPEC-V8 S14.1.3/S18 selects `ciu down --realization R`. Projects needing one stack to stop independently represent it as its own Realization; v7's `--dir` is scoped to one Compose project and does not stop a profile's neighbors.
 
 **Disposition (2026-10-04): FIXED.** `ciu down --dir` uses CIU resolve data and the exact Compose project label. The dstdns wrapper now stops its admin-debug stack through CIU with `--profile admin`; Docker query failures are errors, and volumes remain untouched.
+
+## CIU-128 — a worktree reports `ready` before all committed nested CIU roots are prepared
+
+Severity: High (false lifecycle certification can send consumers into an
+incompletely initialized checkout). Type: bugfix. Spec owner: v7 S16.1 and
+S16.4; v8 mapping: SPEC-V8 S14.1.1 and S14.7.1. Filed 2026-10-04 from
+RG-55's CIU worktree inspection.
+
+**Observed.** `create()` called `_finish_allocation()`, which wrote the CIU
+instance record as `ready`, before `create()` discovered and prepared the
+remaining committed roots and persisted the neutral workspace's `root_entries`
+metadata. A concurrent `inspect` could observe `ready` during that window. If
+nested generation failed, `create()` changed the record to
+`recovery-required`, but `ensure()` could take the generic-root shortcut and
+mark the allocation ready without retrying nested preparation. A hard
+interruption in the original window could also strand a ready record without
+completed root metadata.
+
+**Required contract.** Keep the CIU record `allocating` until every committed
+root at the allocated checkout's exact allocation commit has readable
+generated facts and its root entry is persisted in shared workspace metadata.
+On recoverable failure, retain the checkout as `recovery-required`; `ensure`
+repeats missing work and verifies older ready records before returning them.
+Root discovery uses the allocation's resolved commit, not a mutable base name
+in the primary checkout. For a legacy record without `fork_point_sha`, the
+neutral workspace `base_commit` is usable only while HEAD still equals it. If
+a symbolic base and moved HEAD make the allocation commit unknowable, refuse
+rather than infer a new root set. Root-entry and lease-mirror changes are
+read-modify-write operations on the shared workspace record and must preserve
+each other's metadata under the Git-family lock.
+
+**Oracles.** (1) During nested generation, a concurrent `inspect --json`
+reports `allocating`, never `ready`. (2) Inject one nested-root generation
+failure, confirm `create` leaves `recovery-required` and no nested facts, then
+restore generation and verify `ensure` creates the facts and returns `ready`
+only after root metadata is stored. (3) A pre-fix ready record missing root
+facts/metadata is repaired by `ensure`, not returned unchanged. (4) Moving a
+symbolic base after allocation cannot change the root set selected for that
+checkout. (5) `ensure` never hard-resets an adopted checkout; if HEAD moved
+after adoption was recorded, it refuses and preserves the newer commit. (6) A
+ready record without an exact allocation commit and with a moved HEAD refuses
+without being rewritten as a generation failure. (7) A stale lease-mirror
+read cannot erase root entries written concurrently to the shared record.
+
+**v8: absorb the readiness ordering.** SPEC-V8 S14.1.1 writes generated and
+host facts and establishes the instance file before writing the linked
+worktree's shared record (S14.7.1). That already carries the important
+initialize-before-record contract. The v7 aggregate `root_entries` list is
+specific to a generic Git worktree containing multiple CIU roots; v8 has one
+instance per checkout, so that aggregate metadata detail is not applicable.
+
+**Disposition (2026-10-04): IN PROGRESS.** The writer and reader are being
+changed together; keep this entry open until the registered CIU gate and the
+adversarial readiness/retry checks pass.

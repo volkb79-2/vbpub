@@ -51,6 +51,13 @@ checking that no Docker resource still carries the old identity; if resources
 remain, `ciu clean --identity <old-id>` removes only resources labeled for that
 identity. An interrupted `worktree adopt` resume also compares HEAD with the
 recorded target and refuses if the checkout moved, preserving newer commits.
+`ciu worktree create` reports `ready` only after every CIU root committed at
+the allocated checkout's exact commit has generated facts and a matching entry
+in the shared workspace record. While those roots are being prepared,
+inspection reports `allocating`; a recoverable failure reports
+`recovery-required`, and `ciu worktree ensure NAME` retries it. See the
+[readiness rationale](docs/DESIGN-GUIDE.md#workspace-and-root-identity) and
+[worktree example](docs/CONSUMERS.md#2-create-a-managed-workspace).
 
 > **ciu builds-and-runs; cmru releases.** ciu is the **inner loop** (build local images,
 > run the stack on this host); its sibling **cmru** is the **outer loop** (version + publish

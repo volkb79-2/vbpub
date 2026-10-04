@@ -31,6 +31,24 @@ unrelated checkout; the requested name or path still refuses when its own
 record cannot be trusted. Branch cleanup protects unreadable checkouts because
 a Git-only removal cannot prove that CIU owns no runtime state.
 
+The aggregate CIU record's `ready` state is a completion claim. CIU keeps it
+`allocating` while it discovers committed roots from the allocated checkout's
+exact commit, generates their facts, and persists the matching root-entry list
+in the shared workspace record. Only then does it write `ready`. If generation
+fails, the record remains attributable as `recovery-required`; `ensure` repeats
+the missing work. This ordering avoids a false-ready window and lets recovery
+repair records written by older code. Discovery uses the allocated commit
+rather than resolving a symbolic base such as `main` again, since that name can
+move after checkout creation. v8 already writes generated and host facts plus
+the instance file before its linked-worktree record (SPEC-V8 S14.1.1 and
+S14.7.1); it has no v7 multi-root aggregate list to persist. For old records
+without a fork-point SHA, CIU accepts the neutral record's base commit only if
+the checkout still points there. A moved HEAD with no exact allocation commit
+is indeterminate, so `ensure` refuses without changing the lifecycle record.
+The shared record also holds lease and root-entry metadata, so both writers
+re-read and merge under the same Git-family lock; an old lease snapshot cannot
+erase newer root evidence.
+
 Root selection is explicit or derived: `--root-folder` wins, then the nearest
 marker above `pwd`/`--dir`; a missing marker refuses. Ambient `REPO_ROOT` is an
 export for child processes, not a selector. This closes the cross-checkout
