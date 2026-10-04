@@ -1459,7 +1459,7 @@ def _clean_in(worktree: Path, *, yes: bool) -> int:
             return subprocess.run(
                 argv, cwd=str(worktree), env=env, check=False
             ).returncode
-        except OSError as exc:  # pragma: no cover - environmental
+        except OSError as exc:
             raise WorktreeError(
                 f"[S16] could not run `ciu clean --identity "
                 f"{outdated['instance_id']}`: {exc}"
