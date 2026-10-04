@@ -525,7 +525,7 @@ cwd = "alpha"
             os.environ.__setitem__(
                 "CMRU_RELEASE_PREFLIGHT_SNAPSHOT", f"{tmp_path.resolve()}:{'d' * 40}",
             ),
-            os.environ.__setitem__(cli._RELEASE_PREFLIGHT_SNAPSHOT_FD_ENV, "999999999"),
+            monkeypatch.setenv(cli._RELEASE_PREFLIGHT_SNAPSHOT_FD_ENV, "999999999"),
         ),
     )
     monkeypatch.setattr(cli, "_uncommitted_release_paths", lambda *_args, **_kwargs: {})
