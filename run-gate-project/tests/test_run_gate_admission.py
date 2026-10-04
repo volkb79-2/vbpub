@@ -198,6 +198,26 @@ def test_owner_validation_rejects_pid_zero():
     assert admission.validate_owner(admission.compact_json(owner)) is None
 
 
+def test_oversized_admission_owner_is_unreadable_and_cannot_be_replaced():
+    fake, clock = FakeDocker(), Clock()
+    manager = make_manager(fake, clock)
+    digits = "9" * 5000
+    fake._add("ciu-admission-1", {
+        "ciu.admission.generation": "1",
+        "ciu.admission.owner":
+            '{"ciu_version":"test","host":"host","time":' + digits
+            + ',"user":"runner"}',
+        "ciu.admission.tiers.gates.max_concurrent": "1",
+        "ciu.admission.unreadable_policy": "refuse",
+    })
+
+    assert manager.read_limit()[0] is None
+    with pytest.raises(admission.AdmissionError,
+                       match="refusing to replace unreadable admission object"):
+        manager.publish("ticket:local", 1, owner_version="test",
+                        unreadable_policy="refuse", replace=True)
+
+
 def test_status_snapshot_decodes_running_queued_dead_owner_and_tombstone_read_only():
     fake, clock = FakeDocker(), Clock()
     manager = make_manager(fake, clock)
@@ -230,6 +250,42 @@ def test_status_snapshot_decodes_running_queued_dead_owner_and_tombstone_read_on
     assert tickets["ciu-res-gates-2"]["deadline"] == 1_800_000_300
     assert tickets["ciu-res-gates-3"]["state"] == "dead-owner"
     assert tickets["ciu-res-gates-4"]["state"] == "tombstone"
+    assert all(call[1] not in {"create", "start", "stop", "rm"}
+               for call in fake.calls)
+
+
+def test_status_snapshot_keeps_oversized_external_labels_visible():
+    fake, clock = FakeDocker(), Clock()
+    manager = make_manager(fake, clock)
+    publish(manager, 1)
+    digits = "9" * 5000
+    fake.objects["ciu-admission-1"]["Config"]["Labels"].update({
+        "ciu.admission.owner":
+            '{"ciu_version":"test","host":"host","time":' + digits
+            + ',"user":"runner"}',
+        "ciu.admission.tiers.gates.max_concurrent": digits,
+    })
+    fake._add("ciu-res-gates-1", {
+        "ciu.reservation.deadline": digits,
+        "ciu.reservation.group": "ciu-res-gates-1",
+        "ciu.reservation.kind": "lane",
+        "ciu.reservation.owner":
+            '{"boot_id":"boot","host":"host","lane":"schema",'
+            '"pid":' + digits + ',"pid_ns":"1","run_id":"r1",'
+            '"start_ticks":1}',
+        "ciu.reservation.scheme": "ticket",
+        "ciu.reservation.tier": "gates",
+    })
+    fake.calls.clear()
+
+    snapshot = manager.status_snapshot()
+
+    assert snapshot["published"] is None
+    assert snapshot["visible_admission_objects"][0]["identity_readable"] is False
+    ticket = snapshot["tickets"][0]
+    assert ticket["name"] == "ciu-res-gates-1"
+    assert ticket["state"] == "unreadable-live"
+    assert ticket["deadline"] is None
     assert all(call[1] not in {"create", "start", "stop", "rm"}
                for call in fake.calls)
 

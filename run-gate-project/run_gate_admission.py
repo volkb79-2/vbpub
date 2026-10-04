@@ -118,7 +118,7 @@ def validate_owner(value: object) -> dict | None:
         return None
     try:
         owner = json.loads(value)
-    except (json.JSONDecodeError, TypeError, RecursionError):
+    except (ValueError, TypeError, RecursionError):
         return None
     if not isinstance(owner, dict) or set(owner) != {
             "boot_id", "host", "lane", "pid", "pid_ns", "run_id",
@@ -144,7 +144,13 @@ def validate_owner(value: object) -> dict | None:
 def parse_decimal(value: object, label: str) -> int | None:
     if not isinstance(value, str) or not re.fullmatch(r"[0-9]+", value):
         return None
-    return int(value)
+    try:
+        return int(value)
+    except ValueError:
+        # Python limits decimal conversion length. Docker labels are external
+        # input: an oversized decimal is unreadable state, not an exception
+        # that can bypass the caller's closed-result handling.
+        return None
 
 
 def parse_reservation_labels(labels: object) -> dict | None:
@@ -325,7 +331,7 @@ class DockerAdmission:
             owner = labels.get("ciu.admission.owner")
             try:
                 owner_doc = json.loads(owner) if isinstance(owner, str) else None
-            except json.JSONDecodeError:
+            except (ValueError, TypeError, RecursionError):
                 owner_doc = None
             if (generation is None or generation < 1
                     or self._name(obj) != f"{ADMISSION_PREFIX}{generation}"
@@ -446,7 +452,7 @@ class DockerAdmission:
                                        "ciu.admission.generation")
             try:
                 owner_doc = json.loads(labels.get("ciu.admission.owner", ""))
-            except (json.JSONDecodeError, TypeError, RecursionError):
+            except (ValueError, TypeError, RecursionError):
                 owner_doc = None
             if (generation is None or generation < 1
                     or self._name(obj) != f"{ADMISSION_PREFIX}{generation}"
@@ -591,7 +597,7 @@ class DockerAdmission:
             raw_owner = labels.get("ciu.admission.owner")
             try:
                 owner = json.loads(raw_owner) if isinstance(raw_owner, str) else None
-            except (json.JSONDecodeError, TypeError, RecursionError):
+            except (ValueError, TypeError, RecursionError):
                 owner = None
             identity_valid = (generation is not None and generation >= 1
                               and name == f"{ADMISSION_PREFIX}{generation}"
@@ -667,7 +673,7 @@ class DockerAdmission:
             try:
                 decoded_owner = (json.loads(raw_owner)
                                  if isinstance(raw_owner, str) else None)
-            except (json.JSONDecodeError, TypeError, RecursionError):
+            except (ValueError, TypeError, RecursionError):
                 decoded_owner = None
             raw_tickets.append({
                 "name": name, "number": number,
