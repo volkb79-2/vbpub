@@ -708,9 +708,13 @@ def test_tag_deletion_is_idempotent_for_missing_local_and_remote(monkeypatch, tm
     monkeypatch.setattr(cli, "run_remote_git", lambda *args, **kwargs: SimpleNamespace(
         returncode=0, stdout="", stderr="",
     ))
-    monkeypatch.setattr(cli, "run_local_git", lambda *args, **kwargs: SimpleNamespace(
-        returncode=1, stdout="", stderr="",
-    ))
+    def local_git(_root, *args, **kwargs):
+        return SimpleNamespace(
+            returncode=2 if args[:2] == ("show-ref", "--exists") else 1,
+            stdout="", stderr="",
+        )
+
+    monkeypatch.setattr(cli, "run_local_git", local_git)
     cli.delete_git_tag_remote(tmp_path, "demo-v1", False)
     cli.delete_git_tag_local(tmp_path, "demo-v1", False)
     output = capsys.readouterr().out
@@ -863,6 +867,7 @@ def test_local_tag_delete_treats_confirmed_concurrent_removal_as_idempotent(
         SimpleNamespace(returncode=0, stdout="a" * 40, stderr=""),
         SimpleNamespace(returncode=1, stdout="", stderr="already gone"),
         SimpleNamespace(returncode=1, stdout="", stderr=""),
+        SimpleNamespace(returncode=2, stdout="", stderr=""),
     ])
     monkeypatch.setattr(cli, "run_local_git", lambda *args, **kwargs: next(results))
     cli.delete_git_tag_local(tmp_path, "demo-v1", False)

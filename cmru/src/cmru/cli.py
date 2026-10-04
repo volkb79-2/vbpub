@@ -1438,18 +1438,24 @@ def local_git_tag_oid(
             )
             if presence.returncode == 2:
                 return None
+            initial_detail = (
+                result.stderr.strip() or result.stdout.strip()
+                or "no diagnostic output"
+            )
             if presence.returncode == 0:
                 raise RuntimeError(
-                    f"local tag {tag} is present after its hash lookup failed; "
+                    f"local tag {tag} is present after its hash lookup failed "
+                    f"({result.returncode}): {initial_detail}; "
                     "refusing to infer its state"
                 )
-            detail = (
+            presence_detail = (
                 presence.stderr.strip() or presence.stdout.strip()
                 or "no diagnostic output"
             )
             raise RuntimeError(
                 f"Failed to determine local tag {tag} after hash lookup failed "
-                f"({presence.returncode}): {detail}"
+                f"({presence.returncode}): {presence_detail}; "
+                f"initial hash lookup ({result.returncode}): {initial_detail}"
             )
         detail = result.stderr.strip() or result.stdout.strip() or "no diagnostic output"
         suffix = "" if action == "inspect" else " after deletion failed"

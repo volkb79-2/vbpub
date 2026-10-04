@@ -72,7 +72,7 @@ def test_local_tag_oid_does_not_fold_exists_lookup_failure_into_absence(
     monkeypatch, tmp_path,
 ):
     results = iter([
-        SimpleNamespace(returncode=128, stdout="", stderr="lookup failed"),
+        SimpleNamespace(returncode=128, stdout="", stderr="initial lookup failed"),
         SimpleNamespace(returncode=1, stdout="", stderr="repository unreadable"),
     ])
     monkeypatch.setattr(cli, "run_local_git", lambda *_args, **_kwargs: next(results))
@@ -95,7 +95,23 @@ def test_local_tag_oid_initial_git_1_does_not_fold_lookup_failure_into_absence(
 
     with pytest.raises(
         RuntimeError,
-        match="Failed to determine local tag demo-v1 after hash lookup failed \\(1\\): repository unreadable",
+        match="Failed to determine local tag demo-v1 after hash lookup failed \\(1\\): repository unreadable; initial hash lookup \\(128\\): initial lookup failed",
+    ):
+        cli.local_git_tag_oid(tmp_path, "demo-v1")
+
+
+def test_local_tag_oid_preserves_initial_diagnostic_when_ref_is_present(
+    monkeypatch, tmp_path,
+):
+    results = iter([
+        SimpleNamespace(returncode=1, stdout="", stderr="permission denied"),
+        SimpleNamespace(returncode=0, stdout="", stderr=""),
+    ])
+    monkeypatch.setattr(cli, "run_local_git", lambda *_args, **_kwargs: next(results))
+
+    with pytest.raises(
+        RuntimeError,
+        match="is present after its hash lookup failed \\(1\\): permission denied; refusing to infer its state",
     ):
         cli.local_git_tag_oid(tmp_path, "demo-v1")
 
@@ -109,7 +125,10 @@ def test_local_tag_oid_refuses_a_ref_present_after_hash_lookup_failure(
     ])
     monkeypatch.setattr(cli, "run_local_git", lambda *_args, **_kwargs: next(results))
 
-    with pytest.raises(RuntimeError, match="is present after its hash lookup failed"):
+    with pytest.raises(
+        RuntimeError,
+        match="is present after its hash lookup failed \\(128\\): missing ref; refusing to infer its state",
+    ):
         cli.local_git_tag_oid(tmp_path, "demo-v1")
 
 
