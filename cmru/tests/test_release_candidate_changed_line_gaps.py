@@ -56,11 +56,39 @@ def test_local_tag_oid_confirms_git_128_is_absence_with_exists_check(
     ]
 
 
+def test_local_tag_oid_confirms_git_1_is_absence_with_exists_check(
+    monkeypatch, tmp_path,
+):
+    results = iter([
+        SimpleNamespace(returncode=1, stdout="", stderr=""),
+        SimpleNamespace(returncode=2, stdout="", stderr=""),
+    ])
+    monkeypatch.setattr(cli, "run_local_git", lambda *_args, **_kwargs: next(results))
+
+    assert cli.local_git_tag_oid(tmp_path, "demo-v1") is None
+
+
 def test_local_tag_oid_does_not_fold_exists_lookup_failure_into_absence(
     monkeypatch, tmp_path,
 ):
     results = iter([
         SimpleNamespace(returncode=128, stdout="", stderr="lookup failed"),
+        SimpleNamespace(returncode=1, stdout="", stderr="repository unreadable"),
+    ])
+    monkeypatch.setattr(cli, "run_local_git", lambda *_args, **_kwargs: next(results))
+
+    with pytest.raises(
+        RuntimeError,
+        match="Failed to determine local tag demo-v1 after hash lookup failed \\(1\\): repository unreadable",
+    ):
+        cli.local_git_tag_oid(tmp_path, "demo-v1")
+
+
+def test_local_tag_oid_initial_git_1_does_not_fold_lookup_failure_into_absence(
+    monkeypatch, tmp_path,
+):
+    results = iter([
+        SimpleNamespace(returncode=1, stdout="", stderr=""),
         SimpleNamespace(returncode=1, stdout="", stderr="repository unreadable"),
     ])
     monkeypatch.setattr(cli, "run_local_git", lambda *_args, **_kwargs: next(results))

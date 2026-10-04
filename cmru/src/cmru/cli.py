@@ -1425,12 +1425,11 @@ def local_git_tag_oid(
         repo_root, "show-ref", "--hash", "--verify", ref,
         capture_output=True, text=True, check=False,
     )
-    if result.returncode == 1:
-        return None
     if result.returncode != 0:
-        if result.returncode == 128:
+        if result.returncode in (1, 128):
             # Some Git builds report a valid but absent ref as 128 from the
-            # hash-returning form of `show-ref --verify`. `--exists` has
+            # hash-returning form of `show-ref --verify`; status 1 is also
+            # ambiguous between absence and a lookup failure. `--exists` has
             # distinct status codes: 2 means absent and 1 means lookup failed.
             # Do not use `--quiet` here; its status 1 can also mean failure.
             presence = run_local_git(
