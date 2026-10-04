@@ -782,9 +782,15 @@ def test_multi_family_preflight_fetch_failure_stops_before_dispatch(
         ("outside", "", 0, "outside Git family"),
         ("inside", "", 1, "Failed to read demo release policy"),
         ("inside", "invalid = [", 0, "Invalid project config"),
-        ("inside", "[project]\n", 0, "git_tag must be explicitly true or false"),
         (
-            "inside", "[project.release]\ngit_tag = 1\n", 0,
+            "inside", '[project]\nid = "demo"\nprefix = "demo-v"\n', 0,
+            "project.id, project.prefix, and project.release.git_tag are required",
+        ),
+        (
+            "inside",
+            '[project]\nid = "demo"\nprefix = "demo-v"\n'
+            "[project.release]\ngit_tag = 1\n",
+            0,
             "git_tag must be explicitly true or false",
         ),
     ],
@@ -795,6 +801,10 @@ def test_snapshot_tag_policy_refuses_missing_or_invalid_facts(
     repo_root = tmp_path / "repo"
     selected_root = tmp_path / project_root if project_root == "outside" else repo_root / "demo"
     project = SimpleNamespace(name="demo", project_root=selected_root)
+    monkeypatch.setattr(
+        cli, "_project_git_tag_policy_at_snapshot",
+        _real_project_git_tag_policy_at_snapshot,
+    )
 
     def fake_read(*_args, **_kwargs):
         if returncode:
@@ -810,6 +820,10 @@ def test_snapshot_tag_policy_refuses_missing_or_invalid_facts(
 def test_snapshot_tag_policy_requires_project_root(tmp_path, monkeypatch):
     project = SimpleNamespace(name="demo", project_root=None)
     monkeypatch.setattr(
+        cli, "_project_git_tag_policy_at_snapshot",
+        _real_project_git_tag_policy_at_snapshot,
+    )
+    monkeypatch.setattr(
         cli, "run_local_git",
         lambda *_args, **_kwargs: pytest.fail("read a policy without an authoritative project root"),
     )
@@ -820,11 +834,16 @@ def test_snapshot_tag_policy_requires_project_root(tmp_path, monkeypatch):
 
 def test_snapshot_tag_policy_resolves_relative_project_root(tmp_path, monkeypatch):
     project = SimpleNamespace(name="demo", project_root=Path("projects/demo"))
+    monkeypatch.setattr(
+        cli, "_project_git_tag_policy_at_snapshot",
+        _real_project_git_tag_policy_at_snapshot,
+    )
     seen = []
     monkeypatch.setattr(
         cli, "_read_git_path_at_commit",
         lambda root, revision, path, **_kwargs: seen.append((root, revision, path))
-        or "[project.release]\ngit_tag = false\n",
+        or '[project]\nid = "demo"\nprefix = "demo-v"\n'
+        "[project.release]\ngit_tag = false\n",
     )
 
     assert cli._project_git_tag_policy_at_snapshot(tmp_path, "f" * 40, project) is False
@@ -839,11 +858,18 @@ def test_snapshot_policy_path_comes_from_the_origin_orchestration_file(tmp_path,
     configs = {"demo": project}
     read_paths = []
     resolved_paths = []
+    monkeypatch.setattr(
+        cli, "_project_git_tag_policy_at_snapshot",
+        _real_project_git_tag_policy_at_snapshot,
+    )
 
     def fake_read(_root, revision, path, **_kwargs):
         read_paths.append(path)
         assert revision == base
-        return "[project.release]\ngit_tag = true\n"
+        return (
+            '[project]\nid = "demo"\nprefix = "demo-v"\n'
+            "[project.release]\ngit_tag = true\n"
+        )
 
     monkeypatch.setattr(cli, "_read_git_path_at_commit", fake_read)
     monkeypatch.setattr(
