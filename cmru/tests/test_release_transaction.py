@@ -1526,6 +1526,7 @@ cwd = "alpha"
 
 
 def test_parent_skips_revert_when_promotion_never_landed(tmp_path, monkeypatch):
+    _init_repo(tmp_path)
     config = tmp_path / "cmru.toml"
     config.write_text(
         """
