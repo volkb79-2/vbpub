@@ -683,6 +683,26 @@ class TestForkPointProvenance:
         assert partial.recovery_status == "env-generation-failed"
         assert partial.fork_point_sha is None
 
+        # A process can be interrupted just after ensure republishes the
+        # in-progress record. An adopted checkout must keep the no-reset
+        # marker across that boundary; otherwise the next resume sees an
+        # ordinary allocating record and may reset the operator's branch.
+        write_instance_record = worktree._write_instance_record
+
+        def interrupt_after_record(record):
+            write_instance_record(record)
+            raise KeyboardInterrupt("simulated interruption after record write")
+
+        monkeypatch.setattr(worktree, "_write_instance_record", interrupt_after_record)
+        with pytest.raises(KeyboardInterrupt, match="simulated interruption"):
+            worktree.ensure(tmp_repo, "adopted-one")
+        monkeypatch.setattr(worktree, "_write_instance_record", write_instance_record)
+        interrupted = worktree.find_instance_record(tmp_repo, "adopted-one")
+        assert interrupted is not None
+        assert interrupted.state == "recovery-required"
+        assert interrupted.recovery_status == "env-generation-failed"
+        assert interrupted.fork_point_sha is None
+
         # The operator keeps working in their own checkout before resuming.
         (wt_path / "mine.txt").write_text("do not lose this\n", encoding="utf-8")
         assert _git(["add", "-A"], wt_path).returncode == 0
