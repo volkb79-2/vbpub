@@ -538,8 +538,12 @@ def load_config(
     function deliberately only maps that validated grammar; it accepts no
     retired central ``[project.<name>]`` shape and no second build-runner document.
     """
-    forge = load_forge_config(config_path)
-    if validate_dependencies and config_path.name == ORCHESTRATION_CONFIG_FILENAME:
+    resolved_config_path = config_path.expanduser().resolve()
+    forge = load_forge_config(resolved_config_path)
+    if (
+        validate_dependencies
+        and resolved_config_path.name == ORCHESTRATION_CONFIG_FILENAME
+    ):
         report = build_report(
             repo_root=forge.repo_root,
             project_order=forge.orchestration.project_order,
@@ -4174,8 +4178,12 @@ def _dispatch(args, runtime):
     elif verb == "dependencies":
         vargs = args
         cfg_path = _resolve_config(vargs.config)
-        forge = load_forge_config(cfg_path)
-        if forge.orchestration is None or cfg_path.name != ORCHESTRATION_CONFIG_FILENAME:
+        resolved_cfg_path = cfg_path.expanduser().resolve()
+        forge = load_forge_config(resolved_cfg_path)
+        if (
+            forge.orchestration is None
+            or resolved_cfg_path.name != ORCHESTRATION_CONFIG_FILENAME
+        ):
             _usage_error(f"dependencies requires {ORCHESTRATION_CONFIG_FILENAME}")
         report = build_report(
             repo_root=forge.repo_root,
@@ -4186,10 +4194,10 @@ def _dispatch(args, runtime):
         if vargs.write:
             from cmru.dependencies import write_comment_block
             if vargs.dry_run:
-                if not write_comment_block(cfg_path, report, dry_run=True):
+                if not write_comment_block(resolved_cfg_path, report, dry_run=True):
                     print(f"[INFO] Dependency graph already matches {cfg_path}")
             else:
-                write_comment_block(cfg_path, report)
+                write_comment_block(resolved_cfg_path, report)
                 print(f"[INFO] Wrote generated dependency graph to {cfg_path}")
         elif vargs.dry_run:
             _usage_error("dependencies --dry-run requires --write")
