@@ -1430,26 +1430,26 @@ def local_git_tag_oid(
     if result.returncode != 0:
         if result.returncode == 128:
             # Some Git builds report a valid but absent ref as 128 from the
-            # hash-returning form of `show-ref --verify`. Its quiet form has a
-            # status-only contract: 1 means absent, 0 means present. Use that
-            # to distinguish absence from a real inspection failure.
+            # hash-returning form of `show-ref --verify`. `--exists` has
+            # distinct status codes: 2 means absent and 1 means lookup failed.
+            # Do not use `--quiet` here; its status 1 can also mean failure.
             presence = run_local_git(
-                repo_root, "show-ref", "--verify", "--quiet", ref,
+                repo_root, "show-ref", "--exists", ref,
                 capture_output=True, text=True, check=False,
             )
-            if presence.returncode == 1:
+            if presence.returncode == 2:
                 return None
             if presence.returncode == 0:
                 raise RuntimeError(
-                    f"local tag {tag} changed during inspection; refusing to infer "
-                    "its state"
+                    f"local tag {tag} is present after its hash lookup failed; "
+                    "refusing to infer its state"
                 )
             detail = (
                 presence.stderr.strip() or presence.stdout.strip()
                 or "no diagnostic output"
             )
             raise RuntimeError(
-                f"Failed to recheck local tag {tag} after inspection failed "
+                f"Failed to determine local tag {tag} after hash lookup failed "
                 f"({presence.returncode}): {detail}"
             )
         detail = result.stderr.strip() or result.stdout.strip() or "no diagnostic output"
