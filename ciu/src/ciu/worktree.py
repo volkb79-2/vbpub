@@ -373,14 +373,14 @@ def _lease_from_dict(raw: Any, path: Path) -> WorktreeLease:
     )
 
 
-def _record_has_ciu_root_marker(path: Path) -> bool:
+def _ciu_root_marker_present(root: Path) -> bool:
     """Read the checkout's committed CIU-root fact from the filesystem.
 
     A CIU-created generic Git worktree has a ready lifecycle record but no CIU
     runtime identity. The distinction is the marker file in the record's own
     CIU-root directory, never an absent identity value by itself.
     """
-    marker = Path(path).parent / GLOBAL_CONFIG_DEFAULTS
+    marker = Path(root) / GLOBAL_CONFIG_DEFAULTS
     try:
         mode = marker.lstat().st_mode
     except FileNotFoundError:
@@ -467,7 +467,7 @@ def _record_from_dict(raw: Any, path: Path) -> WorktreeInstanceRecord:
         )
         if recovery is not None or (
             not has_identity
-            and (not rootless_identity or _record_has_ciu_root_marker(path))
+            and (not rootless_identity or _ciu_root_marker_present(path.parent))
         ):
             raise WorktreeError(
                 f"[S16] ready record lacks a closed runtime identity in {path}"
@@ -4571,7 +4571,7 @@ def remove(
         and managed.state == "ready"
         and managed.instance_id is None
         and managed.network is None
-        and not _record_has_ciu_root_marker(managed.record_path)
+        and not _ciu_root_marker_present(managed.ciu_root)
     )
     rc = 0 if rootless_managed else _clean_in(ciu_root, yes=yes)
     if rc != 0 and not force:
