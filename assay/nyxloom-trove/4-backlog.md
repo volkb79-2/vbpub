@@ -11823,3 +11823,22 @@ Fix: add both names in pytest's own precedence order, and check the order agains
 **Oracles:** a file-level root excludes a changed sibling file in the same directory from judgment; a directory root behaves unchanged; a root naming a missing file refuses by name; a controlled wrong implementation that treats a file root as its parent directory must fail the sibling-exclusion oracle.
 
 **Found in:** dstdns 2026-09-30, R2 campaign package P214 (changed-lines lanes), decision D-577.
+
+## B142 — verdict JSON writes `env_passthrough` values verbatim: secrets (database passwords, DSNs with credentials) land in plain text in every verdict file
+
+**Status: OPEN (filed 2026-10-04 from dstdns, P241 gate diagnosis; source-grounded; assay 7.2.0).**
+
+**Observed:** `resolve_command_plan` (`src/assay/runner.py` l.~877) copies every `env_passthrough` name's value into `env_effective`, and `verdict.py` l.~5438 serialises it unchanged (`payload["env_effective"] = dict(self.env_effective or {})`). dstdns's `[lanes.mock]` passes through the test-runner's database credentials, so `.assay/verdict-mock.json` holds `POSTGRES_PASSWORD=<value>` in clear text. `[lanes.schema-*]` passes `SCHEMA_GATE_DSN` (a DSN with credentials) the same way. The value then travels wherever a verdict goes: a controller printing a verdict to diagnose a failure, a review that quotes it, `run-gate history`/evidence copies, CI artifacts. In dstdns it reached a session transcript while diagnosing a LANE_TIMEOUT.
+
+**Why assay owns it:** the verdict schema and its writer are assay's. A consumer cannot keep a credential out of `env_effective` without also keeping it out of the lane's environment, which breaks the lane.
+
+**Proposed contract:** the verdict records `env_effective` NAMES with their provenance (declared / infrastructure / passthrough), never passthrough VALUES. Either (a) every passthrough value becomes a fixed marker (`"<passthrough>"`) plus a SHA-256 prefix for identity comparison, or (b) values are kept only for a lane-declared `env_record_values = [...]` allowlist (default empty). Declared `env` values (committed in `assay.toml`, so not secret by construction) and infrastructure facts stay as they are. `assay verify` compares markers/digests, not values. The verdict schema version bumps; CHANGES carries the consumer note.
+
+**Oracles:**
+- a lane passing through `X_PASSWORD=s3cr3t` produces a verdict whose bytes do not contain `s3cr3t`, on PASS, FAIL, BUDGET_EXCEEDED and refusal outcomes alike;
+- the name `X_PASSWORD` and its provenance are still present;
+- a declared `env` value is still recorded verbatim;
+- `assay verify` on such a verdict still passes, and fails when the passthrough value changed (digest mismatch);
+- controlled wrong implementation: redacting only names matching `*PASSWORD*` must fail a test that passes through `SCHEMA_GATE_DSN=postgresql://u:p@h/db`.
+
+**Found in:** dstdns 2026-10-04, P241 composite `assay` lane diagnosis (`.assay/verdict-mock.json`); decision record D-670.
