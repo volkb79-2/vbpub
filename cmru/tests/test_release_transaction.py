@@ -2903,7 +2903,11 @@ def test_abandon_keeps_local_evidence_when_remote_candidate_deletion_fails(monke
         real_run = subprocess.run
 
         def reject_remote_delete(argv, *args, **kwargs):
-            if list(argv) == ["git", "push", "origin", "--delete", workspace.branch]:
+            if list(argv) == [
+                "git", "push",
+                f"--force-with-lease=refs/heads/{workspace.branch}:{base}",
+                "origin", f":refs/heads/{workspace.branch}",
+            ]:
                 return subprocess.CompletedProcess(argv, 1, "", "permission denied")
             return real_run(argv, *args, **kwargs)
 
