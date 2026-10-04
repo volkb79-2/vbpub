@@ -1091,6 +1091,7 @@ class TestManagedRecordValidation:
         calls = []
 
         def run(argv, *, cwd, env, check):
+            assert check is False, "CIU must preserve the child's exit status"
             calls.append((argv, cwd, env, check))
             return type("Completed", (), {"returncode": 17})()
 
