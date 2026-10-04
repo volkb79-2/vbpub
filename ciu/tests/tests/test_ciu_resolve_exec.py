@@ -402,6 +402,65 @@ def test_exec_declared_mount_target_and_duplicate_target_guards(resolvable_repo,
         deploy.exec_service(repo, "tools/test-runner:test-runner", ["true"])
 
 
+def test_exec_mount_proof_refuses_outdated_identity_without_repair(
+    resolvable_repo, monkeypatch,
+):
+    from ciu import workspace_env
+
+    repo, _stack, global_config = resolvable_repo
+    identity_doc = {"resolved": {"identities": {"tools/test-runner": {"test-runner": {
+        "compose_project": "project", "network": "net", "working_dir": "/default",
+    }}}}}
+    monkeypatch.setattr(deploy, "resolve_identities", lambda *_a, **_kw: identity_doc)
+    monkeypatch.setattr(deploy, "load_global_config", lambda *_a, **_kw: global_config)
+    target = SimpleNamespace(
+        alias="runner", stack="tools/test-runner", service="test-runner",
+        requires_worktree_mount=True, workdir="/workspace",
+    )
+    monkeypatch.setattr(worktree, "resolve_exec_targets_config", lambda _cfg: {"runner": target})
+    monkeypatch.setattr(worktree, "_resolve_target_container", lambda *_a: "cid")
+
+    old_facts = {
+        "repo_name": "demo",
+        "instance_id": "ab12cd",
+        "network": "demo-ab12cd-network",
+        "physical_repo_root": str(repo),
+        "repo_root": str(repo),
+        "public_fqdn": "demo.test",
+    }
+    path = workspace_env.generated_facts_path(repo)
+    old_document = workspace_env.render_generated_facts_block(old_facts)
+    path.write_text(
+        "\n".join(
+            line for line in old_document
+            if not line.startswith("schema_version = ")
+        ) + "\n",
+        encoding="utf-8",
+    )
+    before = path.read_bytes()
+    docker_calls = []
+
+    def docker(argv, **kwargs):
+        docker_calls.append((argv, kwargs))
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(deploy.procutil, "docker", docker)
+    monkeypatch.setattr(
+        workspace_env,
+        "generate_ciu_env",
+        lambda *_a, **_kw: pytest.fail("exec must not repair generated identity facts"),
+    )
+
+    with pytest.raises(
+        workspace_env.WorkspaceEnvError,
+        match="read-only operation will not repair",
+    ):
+        deploy.exec_service(repo, "tools/test-runner:test-runner", ["true"])
+
+    assert path.read_bytes() == before
+    assert docker_calls == []
+
+
 def test_live_resolution_uses_exact_labels_and_reports_state(resolvable_repo, monkeypatch):
     repo, _stack, _global = resolvable_repo
     calls = []
@@ -446,6 +505,7 @@ def test_exec_runs_verbatim_in_the_single_exact_service(resolvable_repo, monkeyp
         "--filter", "network=demo-test-net", "--format", "{{.ID}}",
     ]
     assert calls[1][0] == ["exec", "cid-api", "python", "--help"]
+    assert calls[1][1] == {"capture": False, "check": False}
 
 
 def test_exec_requests_tty_only_when_stdin_and_stdout_are_terminals(
@@ -467,6 +527,27 @@ def test_exec_requests_tty_only_when_stdin_and_stdout_are_terminals(
         repo, "tools/test-runner:test-runner", ["bash"]
     ) == 0
     assert calls[1] == ["exec", "-it", "cid-api", "bash"]
+
+
+@pytest.mark.parametrize("stdin_tty,stdout_tty", [(True, False), (False, True)])
+def test_exec_requests_no_tty_when_only_one_stream_is_a_terminal(
+    resolvable_repo, monkeypatch, stdin_tty, stdout_tty,
+):
+    repo, _stack, _global = resolvable_repo
+    monkeypatch.setattr(deploy.sys, "stdin", SimpleNamespace(isatty=lambda: stdin_tty))
+    monkeypatch.setattr(deploy.sys, "stdout", SimpleNamespace(isatty=lambda: stdout_tty))
+    calls = []
+
+    def docker(argv, **kwargs):
+        calls.append((argv, kwargs))
+        if argv[0] == "ps":
+            return SimpleNamespace(returncode=0, stdout="cid-api\n", stderr="")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(deploy.procutil, "docker", docker)
+    assert deploy.exec_service(repo, "tools/test-runner:test-runner", ["bash"]) == 0
+    assert calls[1][0] == ["exec", "cid-api", "bash"]
+    assert calls[1][1] == {"capture": False, "check": False}
 
 
 def test_stop_stack_uses_only_the_exact_compose_project(resolvable_repo, monkeypatch):
