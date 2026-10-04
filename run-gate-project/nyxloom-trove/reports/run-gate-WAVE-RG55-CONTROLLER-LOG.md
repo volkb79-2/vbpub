@@ -6355,3 +6355,27 @@ on the resulting exact tip before provisional merge. Current-tree R2 and the
 registered full gate must run from a quiet CIU-managed worktree, with survivor
 triage on that verdict. The DAMON live ownership/index and measured-overhead
 evidence remain open P3 work.
+
+### RW-424 — 2026-10-04 03:20:44Z — P1 exact-tip short gates refreshed
+
+After RW-423's evidence commit, candidate `8bd5d0a8e86de48b0c262ec07fdcfbe9b652fc36`
+passed the exact-tip short gates. R0/R1 (`tools/gate.sh coverage`) passed
+2,263 tests at 100% line and branch coverage (7,429 statements, 2,752
+branches); run-gate history is PASS/exit 0, history-eligible, duration
+144.208 s, start 03:12:29Z. Its test container
+`cgprofile-gate-2435328-1791083553` ran under `dev-gates.slice` with
+`NanoCpus=3000000000`; the daemon was down, so its profiling report used the
+declared coarse rusage fallback. R3 then passed 7/7 canaries, zero survivors,
+history PASS/exit 0, history-eligible, duration 11.438 s, start 03:16:23Z;
+its run-gate argv had the 3-CPU cap at container creation under
+`dev-gates.slice`. `doctor --worktree` reported 13 checks: 9 OK, 2 expected
+warnings (daemon intentionally down and linked-worktree host Git view), 0
+failures, 0 skipped, and 2 info.
+
+No P1 source or test file changed after the exact code reviewed by Sol; the
+later commits add only the review record and controller evidence. The
+conditional review is dispositioned in RW-423, and these refreshed checks
+meet the agreed provisional-integration bar. P1 is ready for a serial
+`--no-ff` provisional merge to local `main`. This is not a release signal:
+current-tree R2, the registered full gate, survivor triage, and P3 DAMON live
+ownership/index plus measured-overhead evidence remain open.
