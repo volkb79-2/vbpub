@@ -2970,6 +2970,27 @@ def _dispatch_independent_git_families(
     return 0
 
 
+def _preflight_multi_family_release_tag_support(
+    repo_root: Path,
+    configs: Mapping[str, "ProjectConfig"],
+    project_names: Sequence[str],
+) -> None:
+    """Check every tagged family before a release launcher dispatches any child.
+
+    A later family's Git refusal must not come after an earlier independent
+    family has already started its release cycle. Each child repeats the check
+    under its own release lock before doing family-local work.
+    """
+    groups = transaction.project_git_family_groups(
+        repo_root, [configs[name] for name in project_names]
+    )
+    if len(groups) <= 1:
+        return
+    for family_root, members in groups.items():
+        if any(getattr(project, "git_tag", True) for project in members):
+            _require_local_tag_inspection_support(family_root)
+
+
 def _configs_for_git_family(
     configs: Mapping[str, "ProjectConfig"],
     project_names: Sequence[str],
@@ -3700,6 +3721,16 @@ def _dispatch(args, runtime):
         release_scope = selected_names
         if not vargs.dry_run:
             require_project_publish_credentials(configs, release_scope)
+
+        if (
+            verb == "release"
+            and not transaction_child
+            and not vargs.dry_run
+            and not vargs.resume
+        ):
+            _preflight_multi_family_release_tag_support(
+                repo_root, configs, release_scope,
+            )
 
         if not transaction_child:
             dispatched = _dispatch_independent_git_families(

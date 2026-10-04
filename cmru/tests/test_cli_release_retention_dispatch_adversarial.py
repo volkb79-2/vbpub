@@ -12,6 +12,7 @@ def fake_git_family(monkeypatch):
         "project_git_family_groups",
         lambda root, projects: {root: list(projects)},
     )
+    monkeypatch.setattr(cli, "_require_local_tag_inspection_support", lambda _root: None)
 
 
 def _dispatch_fixture(monkeypatch, tmp_path, retained, *, evidence_paths=()):

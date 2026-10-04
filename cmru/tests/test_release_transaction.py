@@ -515,6 +515,51 @@ cwd = "alpha"
     assert "removed" in calls
 
 
+def test_multi_family_release_preflights_tagged_families_before_dispatch(
+    tmp_path, monkeypatch, capsys,
+):
+    config = tmp_path / "cmru.toml"
+    config.write_text("[project]\n", encoding="utf-8")
+    untagged = _project("untagged")
+    untagged.git_tag = False
+    tagged = _project("tagged")
+    loaded = (
+        tmp_path,
+        {"untagged": untagged, "tagged": tagged},
+        ["untagged", "tagged"], ["untagged", "tagged"],
+        ["untagged", "tagged"], "project-first", {}, SimpleNamespace(),
+        _github_config(), SimpleNamespace(),
+    )
+    untagged_root = tmp_path / "untagged-repo"
+    tagged_root = tmp_path / "tagged-repo"
+    monkeypatch.setattr(cli, "load_config", lambda _path: loaded)
+    monkeypatch.setattr(cli, "apply_release_env", lambda *_args: None)
+    monkeypatch.setattr(
+        transaction, "project_git_family_groups",
+        lambda *_args: {untagged_root: [untagged], tagged_root: [tagged]},
+    )
+    calls = []
+
+    def refuse_tagged_family(root):
+        calls.append(root)
+        if root == tagged_root:
+            raise RuntimeError("local tag inspection requires Git 2.43 or newer")
+
+    monkeypatch.setattr(cli, "_require_local_tag_inspection_support", refuse_tagged_family)
+    monkeypatch.setattr(
+        cli, "_dispatch_independent_git_families",
+        lambda *_args, **_kwargs: calls.append("dispatch") or 0,
+    )
+
+    result = cli.main([
+        "release", "untagged,tagged", "--config", str(config),
+    ])
+
+    assert result == 1
+    assert calls == [tagged_root]
+    assert "local tag inspection requires Git 2.43 or newer" in capsys.readouterr().err
+
+
 def test_parent_reverts_promotion_and_reports_sync_failure_on_child_failure(
     tmp_path, monkeypatch, capsys,
 ):

@@ -239,16 +239,20 @@ def test_git_version_for_local_tag_inspection_is_documented_across_user_guides()
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
     design = (ROOT / "docs" / "DESIGN-GUIDE.md").read_text(encoding="utf-8")
     consumers = (ROOT / "docs" / "CONSUMERS.md").read_text(encoding="utf-8")
+    consumers_flat = " ".join(consumers.split())
 
     assert "Git 2.43 or newer" in readme
     assert "local-tag-inspection-requires-git-243" in readme
+    assert "every selected tagged repository before dispatching any family" in readme
     assert "Git 2.43" in design and "git show-ref --exists" in design
     assert "exit 2 means absent; exit 1 means lookup error" in design
     assert "before creating the candidate worktree" in design
+    assert "checks every tagged family before dispatching any one" in design
     assert "Git 2.43 or newer" in consumers
     assert "git --version" in consumers
     assert "local-tag-inspection-requires-git-243" in consumers
     assert "before creating its candidate" in consumers
+    assert "checks all tagged repositories before starting any family release" in consumers_flat
 
 
 def test_consumers_central_config_example_is_complete_and_loadable(tmp_path: Path):

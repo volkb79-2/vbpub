@@ -12,6 +12,7 @@ def fake_release_preflight(monkeypatch):
         "project_git_family_groups",
         lambda root, projects: {root: list(projects)},
     )
+    monkeypatch.setattr(cli, "_require_local_tag_inspection_support", lambda _root: None)
     monkeypatch.setattr(cli, "_read_origin_tag_refs", lambda *_args, **_kwargs: {})
     monkeypatch.setattr(cli.transaction, "write_release_tag_snapshot", lambda *_args, **_kwargs: None)
 

@@ -593,9 +593,11 @@ CMRU first asks `git show-ref --exists` (exit 2 means absent; exit 1 means looku
 resolves the exact object ID. `--exists` was added in Git 2.43. On an older Git, CMRU refuses
 local tag inspection with an explicit version requirement instead of treating an ambiguous
 lookup as absence. For a real release that includes tagged projects, the launcher checks support
-before creating the candidate worktree, running a project gate, or creating a tag. Cleanup checks
-during its preview, before the captured plan can be applied. This keeps a repository read failure
-from silently skipping a tag operation.
+before creating the candidate worktree, running a project gate, or creating a tag. When selected
+projects span independent Git families, it checks every tagged family before dispatching any one
+family, so a later family's refusal cannot follow an earlier family release. Cleanup checks during
+its preview, before the captured plan can be applied. This keeps a repository read failure from
+silently skipping a tag operation.
 
 ## Candidate-first promotion protects the source history
 
