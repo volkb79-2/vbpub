@@ -61,6 +61,9 @@ consumers. The tester-unified image supplies the declared build backend and a
 writable runtime venv for that source install.
 Rev 13 (run-gate rev 50): RG-49 state-root preflight and declarable durable
 mount; an unavailable root is NOT_RUN/`state-mount` before Assay.
+Rev 14 (run-gate rev 51): RG-64 `status` reads internal exec locks, selected
+tree inflight records, and RG-80 admission state; `doctor` checks enabled
+admission image and published count policy.
 Rev 12 (run-gate rev 49): RG-66 selective assay requests; RG-68 completed FAIL
 footprints; RG-69 merged lane manifest updates; RG-71 declared command args;
 RG-72 failure digests and retained artifacts; RG-74 trunk bases and native
@@ -135,7 +138,10 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   `footprint --include-failed` admits completed profiled FAIL measurements;
   repeatable `footprint --write --lane NAME` merges selected entries (RG-68/69).
   `admission set|show`, `--admission-wait`, and `--override-admission` are
-  the RG-80 daemon-wide count-cap interface.
+  the RG-80 daemon-wide count-cap interface. `status [--worktree PATH]
+  [--json]` reports selected-tree inflight records plus host-wide internal
+  exec locks and Docker admission tickets/tombstones (RG-64/RG-80); it is a
+  reserved lane name.
 - `R-02` `--worktree PATH` overrides the judged worktree (daemon substitutes
   its attempt path textually before invoking) AND the source of every config
   read. First discover the invoking project as usual, then preserve its path
@@ -143,7 +149,7 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   `<worktree>/<project-relative-to-toplevel>`. Load that project's
   `run-gate.toml` and the nearest ancestor `run-gate.root.toml` inside the
   selected tree before resolving lanes, including for `--help`, `--list`,
-  `doctor`, `history`, `footprint`, and `--check-env`. A missing selected
+  `doctor`, `history`, `footprint`, `status`, and `--check-env`. A missing selected
   `run-gate.toml` is a configuration refusal naming the path; never fall back
   to the invoking checkout's project or central config. This preserves
   monorepo project layout while making CWD irrelevant to the judged policy.
@@ -591,6 +597,32 @@ disagree, §8 amendments win, then README, then CONSUMERS.
     PSI, stack placeholders, and the stacks tier remain outside the v7
     contract. The object names, ticket labels, owner grammar, and count
     semantics are the CIU v8 S21 port surface.
+
+- `R-51` **Runner occupancy status (RG-64/RG-80).** `status
+  [--worktree PATH] [--json]` is read-only and returns one result using the
+  closed exit table. Its project-scoped source is the selected project's
+  `.run-gate/inflight/*.json`; its host-wide sources are run-gate's
+  `/tmp/run-gate-exec-<container>.lock` files plus `/proc/locks`, and the
+  local Docker daemon's published `ciu-admission-<g>` object, ticket labels,
+  run markers, and tombstones. The lock files contain no owner metadata, so
+  status joins their device/inode identities to `FLOCK` records in the
+  configured proc root. It reports holder and waiter PIDs and liveness; a
+  lane name comes from a matching inflight record or process argv when
+  readable. Missing PID visibility is `unknown`, not an empty or dead owner.
+  Inflight and admission owners are dead only when the reader proves the same
+  boot and PID namespace and the pid is absent, a zombie, or has different
+  start ticks. Docker status reads labels through the RG-80 shared grammar;
+  it never calls `reap`, `create`, `start`, `stop`, or `rm`. No source error is
+  treated as an empty list: JSON reports partial sources, `verdict = ERROR`,
+  and exit code 2. `--worktree` changes the config and inflight scope, not the
+  host lock or Docker daemon scope. `doctor`, only when `[admission]
+  enabled = true`, checks the configured `ticket_image` with `docker image
+  inspect`, requires a valid published object, and requires a readable
+  positive `max_concurrent`; the image check does not run a container. Each
+  failed check names a safe local repair when one exists. If a visible
+  publication has unreadable identity labels, doctor names it and says that
+  `admission set` refuses to replace it rather than prescribing that command
+  as a false repair.
 
 - `R-19a` **safe.directory scope:** both ephemeral and exec inner commands set
   `GIT_CONFIG_GLOBAL=/tmp/run-gate-gitconfig` before running `git config

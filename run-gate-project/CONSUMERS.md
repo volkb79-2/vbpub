@@ -1007,6 +1007,46 @@ Admission is local to one daemon. A remote Docker context is refused for
 client to use it. Resource limits and cgroup placement continue to apply
 independently of the admission switch.
 
+### Runner occupancy status
+
+Use `status` when a gate appears to be waiting and you need to see who owns
+or is queued for the runner:
+
+```console
+./run-gate.py status
+./run-gate.py status --worktree .worktrees/feature
+./run-gate.py status --json
+```
+
+The selected project's `.run-gate/inflight/` records follow `--worktree` and
+the config path shown in the report. The exec-lock and Docker admission views
+are host-wide: run-gate maps its `/tmp/run-gate-exec-<container>.lock` files
+to Linux `/proc/locks` entries, then reports holder and waiter PIDs and their
+local liveness. That internal lock is authoritative for run-gate access to
+the runner; a project's own wrapper lock cannot reveal runs that did not use
+that wrapper. Docker admission output includes the published
+`ciu-admission-<generation>` cap, decoded tickets and owner labels, queued or
+running state, and exited tombstones.
+
+The command does not start, stop, or remove containers. Its Docker reads are
+limited to the admission objects, tickets, and ticket run markers. It does
+not repair inflight records or reap tickets. If one source cannot be
+read, human output names the failure and JSON returns the available partial
+data with `verdict = "ERROR"`, `exit_code = 2` (the closed result table's
+ERROR code). It never presents an unreadable source as an empty queue.
+
+When `[admission] enabled = true`, `doctor` also checks that
+`ticket_image` exists on the local daemon, a valid published admission object
+exists, and its positive `max_concurrent` value is readable. This preflight
+uses `docker image inspect` only; it does not run the image. Its remedies are
+specific: load the configured image or name a local one, publish a cap with
+`run-gate admission set --max-concurrent <desired-N>`, or republish an
+unreadable cap with `--replace`. If Docker shows an admission object whose
+identity labels are unreadable, doctor names that object and reports that
+`admission set` refuses to replace it. Resolve that exact object with the
+daemon owner before publishing another cap; doctor will not suggest a
+command that cannot succeed safely.
+
 ### Consumer timeouts must not cut lanes short
 
 A consumer `timeout_seconds` tighter than the paired lane's `budget`

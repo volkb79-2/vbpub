@@ -146,6 +146,16 @@ time is excluded. The [admission guide](CONSUMERS.md#daemon-wide-gate-admission)
 and operator commands; the [design rationale](docs/DESIGN-GUIDE.md#docker-names-order-daemon-wide-admission)
 covers the Docker object protocol.
 
+`run-gate status [--worktree PATH] [--json]` reports the selected project's
+inflight records, run-gate's host-wide exec-runner lock holders and waiters,
+and the daemon's published admission cap, tickets, and tombstones. It only
+reads those sources. A missing or unreadable source is reported as ERROR 2
+with the available partial results. `doctor` checks an enabled admission
+config's local ticket image, published object, and readable positive cap;
+the image check uses `docker image inspect` and does not start a ticket
+container. See the [status and doctor guide](CONSUMERS.md#runner-occupancy-status)
+and [scope rationale](docs/DESIGN-GUIDE.md#status-uses-the-authoritative-host-signals).
+
 Failed Assay lanes print a compact failure digest and preserve their verdict
 and progress files under `.run-gate/failed/<lane>/<run_id>/` before a later
 run can overwrite them. The archive keeps the latest ten per lane. Footprint

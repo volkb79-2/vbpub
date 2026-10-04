@@ -118,7 +118,7 @@ def validate_owner(value: object) -> dict | None:
         return None
     try:
         owner = json.loads(value)
-    except (json.JSONDecodeError, TypeError):
+    except (json.JSONDecodeError, TypeError, RecursionError):
         return None
     if not isinstance(owner, dict) or set(owner) != {
             "boot_id", "host", "lane", "pid", "pid_ns", "run_id",
@@ -235,15 +235,7 @@ class DockerAdmission:
         bounded probe also catches images without the configured /bin/true
         entrypoint before a live ticket can become impossible to release.
         """
-        if not isinstance(image, str) or not image.strip():
-            raise AdmissionError("admission ticket_image must be explicit")
-        inspected = self._call("image", "inspect", image, check=False,
-                               timeout=timeout)
-        if inspected.returncode:
-            detail = (inspected.stderr or inspected.stdout or "").strip()
-            if self._looks_unavailable(detail):
-                raise AdmissionDockerUnavailable(
-                    f"docker image inspect failed: {detail}")
+        if not self.image_present(image, timeout=timeout):
             raise AdmissionError(f"admission ticket image {image!r} is not "
                                  "present locally; run-gate never pulls an "
                                  "implicit admission image")
@@ -261,6 +253,24 @@ class DockerAdmission:
             raise AdmissionError(f"admission ticket image {image!r} cannot "
                                  "run /bin/true: "
                                  f"{detail[-1] if detail else 'no detail'}")
+
+    def image_present(self, image: str, *, timeout: float = 20.0) -> bool:
+        """Read-only check for the explicitly named local ticket image."""
+        if not isinstance(image, str) or not image.strip():
+            raise AdmissionError("admission ticket_image must be explicit")
+        inspected = self._call("image", "inspect", image, check=False,
+                               timeout=timeout)
+        if inspected.returncode:
+            detail = (inspected.stderr or inspected.stdout or "").strip()
+            if self._looks_unavailable(detail):
+                raise AdmissionDockerUnavailable(
+                    f"docker image inspect failed: {detail}")
+            if "no such image" in detail.lower():
+                return False
+            raise AdmissionError(
+                f"docker image inspect failed ({inspected.returncode}): "
+                f"{detail or 'no detail'}")
+        return True
 
     def _containers(self, *, label: str | None = None,
                     name: str | None = None) -> list[dict]:
@@ -436,7 +446,7 @@ class DockerAdmission:
                                        "ciu.admission.generation")
             try:
                 owner_doc = json.loads(labels.get("ciu.admission.owner", ""))
-            except (json.JSONDecodeError, TypeError):
+            except (json.JSONDecodeError, TypeError, RecursionError):
                 owner_doc = None
             if (generation is None or generation < 1
                     or self._name(obj) != f"{ADMISSION_PREFIX}{generation}"
@@ -483,7 +493,7 @@ class DockerAdmission:
                 "ciu.admission.generation")
             try:
                 seen_owner = json.loads(labels.get("ciu.admission.owner", ""))
-            except (json.JSONDecodeError, TypeError):
+            except (json.JSONDecodeError, TypeError, RecursionError):
                 seen_owner = None
             if (seen_generation is None or seen_generation < 1
                     or self._name(obj) !=
@@ -530,6 +540,185 @@ class DockerAdmission:
                     "ciu.admission.unreadable_policy"),
                 "owner": labels.get("ciu.admission.owner"),
                 "state": self._status(obj)}
+
+    def _owner_liveness(self, owner: dict) -> str:
+        """Return alive/dead only when this reader can prove it locally.
+
+        A PID from another host boot or PID namespace is opaque here. In
+        particular, a missing ``/proc/<pid>`` entry is not proof of death
+        unless this reader shares the owner's boot and PID namespace.
+        """
+        try:
+            root = self.proc_root
+            boot = open(os.path.join(root, "sys/kernel/random/boot_id"),
+                        encoding="ascii").read().strip()
+            host = socket.gethostname().split(".", 1)[0]
+            pid_ns = str(os.stat(os.path.join(root, "self/ns/pid")).st_ino)
+        except (OSError, UnicodeError):
+            return "unknown"
+        if (owner.get("host"), owner.get("boot_id"), owner.get("pid_ns")) != \
+                (host, boot, pid_ns):
+            return "unknown"
+        pid = owner.get("pid")
+        if isinstance(pid, bool) or not isinstance(pid, int) or pid < 1:
+            return "unknown"
+        try:
+            live_ns = str(os.stat(os.path.join(root, str(pid), "ns/pid")).st_ino)
+            live_ticks = process_start_ticks(pid, root)
+        except FileNotFoundError:
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                return "dead"
+            except (PermissionError, OSError):
+                return "unknown"
+            return "unknown"
+        except (PermissionError, OSError, UnicodeError, AdmissionError):
+            return "unknown"
+        return ("alive" if live_ns == owner["pid_ns"]
+                and live_ticks == owner["start_ticks"] else "dead")
+
+    def admission_snapshot(self) -> dict:
+        """Read visible publication objects, preserving malformed entries."""
+        admission_rows = []
+        valid_admissions = []
+        for obj in self._admission_objects():
+            name = self._name(obj)
+            labels = self._labels(obj)
+            generation = parse_decimal(
+                labels.get("ciu.admission.generation"),
+                "ciu.admission.generation")
+            raw_owner = labels.get("ciu.admission.owner")
+            try:
+                owner = json.loads(raw_owner) if isinstance(raw_owner, str) else None
+            except (json.JSONDecodeError, TypeError, RecursionError):
+                owner = None
+            identity_valid = (generation is not None and generation >= 1
+                              and name == f"{ADMISSION_PREFIX}{generation}"
+                              and self._valid_admission_owner(owner, raw_owner))
+            limit = parse_decimal(labels.get(
+                "ciu.admission.tiers.gates.max_concurrent"), "limit")
+            if limit is not None and limit < 1:
+                limit = None
+            policy = labels.get("ciu.admission.unreadable_policy")
+            row = {"name": name, "generation": generation,
+                   "docker_status": self._status(obj),
+                   "max_concurrent": limit,
+                   "max_concurrent_readable": limit is not None,
+                   "unreadable_policy": policy if policy in
+                   ("refuse", "unbudgeted") else None,
+                   "owner": owner if identity_valid else None,
+                   "identity_readable": bool(identity_valid)}
+            if identity_valid:
+                valid_admissions.append((generation, row))
+            admission_rows.append(row)
+        valid_admissions.sort(key=lambda item: item[0])
+        published = valid_admissions[-1][1] if valid_admissions else None
+        return {"published": published,
+                "visible_admission_objects": admission_rows}
+
+    def status_snapshot(self) -> dict:
+        """Read the published cap and ticket queue without reaping or writing.
+
+        Unlike ``acquire`` and ``reap``, this method is observational only:
+        it calls Docker ``ps``/``inspect`` and reads labels and procfs, but
+        never creates, starts, stops, or removes a container. Malformed
+        objects remain visible and are not treated as free capacity.
+        """
+        admission = self.admission_snapshot()
+        published = admission["published"]
+        limit = published.get("max_concurrent") if published else None
+
+        objects = [obj for obj in self._containers(name=TICKET_PREFIX)
+                   if self._name(obj).startswith(TICKET_PREFIX)]
+        raw_tickets = []
+        for obj in objects:
+            name = self._name(obj)
+            labels = self._labels(obj)
+            parsed = self._valid_ticket_labels(obj)
+            try:
+                number = self._ticket_number(name)
+            except AdmissionError:
+                number = None
+            docker_status = self._status(obj)
+            tombstone = docker_status in ("exited", "dead", "removing")
+            marker = None
+            if parsed is not None:
+                marker_name = f"{RUN_PREFIX}{name}"
+                markers = [member for member in self._group_objects(name)
+                           if self._name(member) == marker_name]
+                if len(markers) == 1:
+                    marker_obj = markers[0]
+                    marker_labels = self._valid_marker_labels(marker_obj,
+                                                              parsed)
+                    marker = {
+                        "name": marker_name,
+                        "docker_status": self._status(marker_obj),
+                        "deadline": (marker_labels["deadline"]
+                                     if marker_labels else None),
+                        "readable": marker_labels is not None,
+                    }
+                elif len(markers) > 1:
+                    marker = {"name": marker_name, "readable": False,
+                              "error": "duplicate run markers"}
+            liveness = (self._owner_liveness(parsed["owner"])
+                        if parsed is not None else "unknown")
+            raw_owner = labels.get("ciu.reservation.owner")
+            try:
+                decoded_owner = (json.loads(raw_owner)
+                                 if isinstance(raw_owner, str) else None)
+            except (json.JSONDecodeError, TypeError, RecursionError):
+                decoded_owner = None
+            raw_tickets.append({
+                "name": name, "number": number,
+                "docker_status": docker_status,
+                "labels_readable": parsed is not None,
+                "owner": parsed["owner"] if parsed is not None else decoded_owner,
+                "owner_liveness": liveness,
+                "deadline": parsed["deadline"] if parsed is not None else
+                parse_decimal(labels.get("ciu.reservation.deadline"),
+                              "deadline"),
+                "marker": marker,
+                "tombstone": tombstone,
+                "counted_live": not tombstone,
+                "_valid": parsed is not None,
+            })
+
+        live = sorted((ticket for ticket in raw_tickets
+                       if ticket["counted_live"] and
+                       ticket["number"] is not None),
+                      key=lambda item: item["number"])
+        for ticket in raw_tickets:
+            marker = ticket["marker"]
+            if ticket["tombstone"]:
+                ticket["state"] = "tombstone" if ticket["_valid"] else \
+                    "unreadable-tombstone"
+            elif ticket["owner_liveness"] == "dead":
+                ticket["state"] = "dead-owner"
+            elif not ticket["_valid"] or (marker is not None
+                                           and not marker.get("readable")):
+                ticket["state"] = "unreadable-live"
+            elif marker is not None:
+                # A marker is written only after the ticket fits the current
+                # published cap. A later cap reduction does not retroactively
+                # turn an admitted run into a waiter.
+                ticket["state"] = ("running" if
+                                    ticket["owner_liveness"] == "alive"
+                                    else "owner-unknown")
+            elif limit is None:
+                ticket["state"] = "queue-unknown"
+            else:
+                position = sum(1 for earlier in live
+                               if earlier["number"] <= ticket["number"])
+                ticket["state"] = ("admitting" if position <= limit
+                                    else "queued")
+            ticket.pop("_valid", None)
+
+        return {**admission,
+                "tickets": sorted(raw_tickets,
+                                  key=lambda item: (item["number"] is None,
+                                                    item["number"] or 0,
+                                                    item["name"]))}
 
     @staticmethod
     def _ticket_number(name: str) -> int:

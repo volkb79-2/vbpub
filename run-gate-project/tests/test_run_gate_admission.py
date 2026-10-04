@@ -198,6 +198,42 @@ def test_owner_validation_rejects_pid_zero():
     assert admission.validate_owner(admission.compact_json(owner)) is None
 
 
+def test_status_snapshot_decodes_running_queued_dead_owner_and_tombstone_read_only():
+    fake, clock = FakeDocker(), Clock()
+    manager = make_manager(fake, clock)
+    publish(manager, 1)
+
+    running_owner = admission.owner_tuple("schema", "run-running")
+    add_ticket(fake, "ciu-res-gates-1", running_owner, 1_800_000_300)
+    add_ticket(fake, "ciu-run-ciu-res-gates-1", running_owner,
+               1_800_003_600, kind="marker", group="ciu-res-gates-1")
+
+    queued_owner = admission.owner_tuple("unit", "run-queued")
+    add_ticket(fake, "ciu-res-gates-2", queued_owner, 1_800_000_300)
+
+    dead_owner = admission.owner_tuple("mutation", "run-dead")
+    dead_owner["pid"] = 2_000_000_000
+    add_ticket(fake, "ciu-res-gates-3", dead_owner, 1_800_000_300)
+
+    tombstone_owner = admission.owner_tuple("old", "run-old")
+    add_ticket(fake, "ciu-res-gates-4", tombstone_owner,
+               1_800_000_300, status="exited")
+    fake.calls.clear()
+
+    snapshot = manager.status_snapshot()
+
+    assert snapshot["published"]["max_concurrent"] == 1
+    tickets = {ticket["name"]: ticket for ticket in snapshot["tickets"]}
+    assert tickets["ciu-res-gates-1"]["state"] == "running"
+    assert tickets["ciu-res-gates-1"]["owner"]["lane"] == "schema"
+    assert tickets["ciu-res-gates-2"]["state"] == "queued"
+    assert tickets["ciu-res-gates-2"]["deadline"] == 1_800_000_300
+    assert tickets["ciu-res-gates-3"]["state"] == "dead-owner"
+    assert tickets["ciu-res-gates-4"]["state"] == "tombstone"
+    assert all(call[1] not in {"create", "start", "stop", "rm"}
+               for call in fake.calls)
+
+
 def test_ticket_tombstone_preserves_monotone_numbers_and_reaps_lower_tombstone():
     fake, clock = FakeDocker(), Clock()
     manager = make_manager(fake, clock)
@@ -535,6 +571,17 @@ def test_local_image_probe_is_bounded_and_placed_in_the_gates_slice():
     assert probe[1:] == ["run", "--rm", "--pull=never", "--network=none",
                          "--cgroup-parent", "dev-gates.slice", "--entrypoint",
                          "/bin/true", "ticket:local"]
+
+
+def test_image_inspect_error_is_not_misreported_as_missing_image():
+    def invalid_reference(argv, **_kwargs):
+        return subprocess.CompletedProcess(
+            argv, 1, "", "invalid reference format")
+
+    manager = admission.DockerAdmission(run=invalid_reference)
+    with pytest.raises(admission.AdmissionError,
+                       match="invalid reference format"):
+        manager.image_present("invalid ref")
 
 
 def test_missing_policy_uses_local_unreadable_policy_without_taking_a_ticket():

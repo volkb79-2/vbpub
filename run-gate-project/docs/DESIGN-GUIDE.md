@@ -130,6 +130,29 @@ Each lane's elapsed budget starts after the runner locks are held and count
 admission succeeds. Waiting for another gate to release its ticket therefore
 does not consume the lane's own execution budget.
 
+## Status uses the authoritative host signals
+
+The selected project's inflight file answers which lane and checkout wrote a
+run record. It is useful context, but it is per worktree and can outlive its
+owner. The exec lock answers a different question: whether any run-gate
+process currently holds or waits for the exact persistent runner. The lock
+file's contents are intentionally empty, so status matches its device and
+inode against `/proc/locks`; a caller-side wrapper lock cannot stand in for
+it because invocations that bypass the wrapper still take run-gate's lock.
+
+Admission tickets answer the host-wide queue question for ephemeral as well
+as exec lanes. They are read from the shared Docker daemon and decoded with
+the same label grammar the allocator and future CIU port use. Status never
+reaps, repairs, or starts anything. It shows project scope for inflight
+records and host scope for locks and Docker tickets, and marks a source
+unknown when it cannot read it. A partial answer exits with the closed ERROR
+code so an unavailable `/proc` or Docker response cannot look like an empty
+queue. `doctor` checks admission setup only when the project switch is on;
+the image check is `docker image inspect`, with no ticket container probe.
+When a visible publication has unreadable identity labels, doctor names it
+and does not recommend `admission set`: that command refuses to replace an
+object whose ownership cannot be verified.
+
 ## Assay resume state needs an environment-owned mount
 
 Assay keeps verdict and progress beside the judged project for this run, but

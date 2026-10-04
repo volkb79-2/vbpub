@@ -5552,6 +5552,275 @@ class TestExecModeMutex:
 # RG-9 — doctor: one preflight command for the first-contact failure classes
 # ---------------------------------------------------------------------------
 
+def test_status_json_reads_internal_exec_lock_inflight_and_admission(
+        tmp_path, monkeypatch, capsys):
+    repo = make_repo(tmp_path)
+    config = """\
+        schema_version = 1
+        [lanes.schema]
+        kind = "command"
+        environment = "bare-host"
+        argv = ["true"]
+        clean_tree = false
+
+        [admission]
+        enabled = true
+        ticket_image = "ticket:local"
+    """
+    project = make_project(repo, config)
+    fake_docker(tmp_path, monkeypatch)
+    lock_dir = tmp_path / "status-locks"
+    lock_dir.mkdir()
+    monkeypatch.setenv("RUN_GATE_LOCK_DIR", str(lock_dir))
+    lock_path = lock_dir / "run-gate-exec-test-runner.lock"
+    fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+    inflight = project / ".run-gate" / "inflight"
+    inflight.mkdir(parents=True)
+    record = {
+        "schema": run_gate.INFLIGHT_SCHEMA,
+        "lane": "schema",
+        "runner": "exec",
+        "container": "test-runner",
+        "container_id": "runner-id",
+        "started_at": "2026-10-04T00:00:00Z",
+        "owner_pid": os.getpid(),
+        "owner_start": run_gate.process_start_ticks(os.getpid()),
+        "boot_id": run_gate.boot_id(),
+        "pid_ns": run_gate.pid_ns_inode(),
+    }
+    (inflight / "schema.json").write_text(json.dumps(record))
+    fixture = {
+        "published": {"name": "ciu-admission-1", "generation": 1,
+                      "max_concurrent": 1,
+                      "max_concurrent_readable": True},
+        "visible_admission_objects": [],
+        "tickets": [
+            {"name": "ciu-res-gates-1", "state": "running",
+             "owner": {"lane": "schema", "pid": 501, "run_id": "r1"},
+             "owner_liveness": "alive", "deadline": 1800000300},
+            {"name": "ciu-res-gates-2", "state": "queued",
+             "owner": {"lane": "assay-r1", "pid": 502, "run_id": "r2"},
+             "owner_liveness": "alive", "deadline": 1800000300},
+            {"name": "ciu-res-gates-3", "state": "dead-owner",
+             "owner": {"lane": "old-lane", "pid": 503, "run_id": "r3"},
+             "owner_liveness": "dead", "deadline": 1800000300},
+        ],
+    }
+
+    class StatusAdmission:
+        def __init__(self, **_kwargs):
+            pass
+
+        def status_snapshot(self):
+            return fixture
+
+    monkeypatch.setattr(run_gate, "DockerAdmission", StatusAdmission)
+    monkeypatch.setattr(run_gate, "local_docker_endpoint",
+                        lambda: (True, "local Docker Unix endpoint"))
+    monkeypatch.chdir(project)
+    try:
+        assert run_gate.main(["status", "--json"]) == 0
+    finally:
+        os.close(fd)
+
+    result = json.loads(capsys.readouterr().out)
+    internal = next(lock for lock in result["exec_locks"]
+                    if lock["runner"] == "test-runner")
+    assert internal["state"] == "running"
+    assert internal["holders"] == [{"pid": os.getpid(), "liveness": "alive",
+                                     "lane": "schema",
+                                     "inflight_record": str(inflight / "schema.json")}]
+    assert not (lock_dir / "dstdns-gate-slot.lock").exists()
+    assert {ticket["state"] for ticket in result["admission"]["tickets"]} \
+        == {"running", "queued", "dead-owner"}
+    assert result["verdict"] == "PASS" and result["exit_code"] == 0
+
+
+def test_status_does_not_call_an_invisible_lock_pid_dead(tmp_path):
+    assert run_gate._status_pid_liveness(123456789, tmp_path) == "unknown"
+
+
+def test_status_worktree_selects_its_config_and_inflight_scope(
+        tmp_path, monkeypatch, capsys):
+    repo = make_repo(tmp_path)
+    project = make_project(repo, """\
+        schema_version = 1
+        [admission]
+        enabled = false
+        ticket_image = "ticket:local"
+    """)
+    worktree = make_worktree(repo, tmp_path)
+    selected_project = worktree / "proj"
+    inflight = selected_project / ".run-gate" / "inflight"
+    inflight.mkdir(parents=True)
+    (inflight / "target.json").write_text(json.dumps({
+        "schema": run_gate.INFLIGHT_SCHEMA,
+        "lane": "target-lane",
+        "runner": "exec",
+        "container": "target-runner",
+    }))
+    fake_docker(tmp_path, monkeypatch)
+    lock_dir = tmp_path / "status-locks"
+    lock_dir.mkdir()
+    monkeypatch.setenv("RUN_GATE_LOCK_DIR", str(lock_dir))
+    monkeypatch.setattr(run_gate, "local_docker_endpoint",
+                        lambda: (True, "local Docker Unix endpoint"))
+
+    class StatusAdmission:
+        def __init__(self, **_kwargs):
+            pass
+
+        def status_snapshot(self):
+            return {"published": None,
+                    "visible_admission_objects": [], "tickets": []}
+
+    monkeypatch.setattr(run_gate, "DockerAdmission", StatusAdmission)
+    monkeypatch.chdir(project)
+    assert run_gate.main(["status", "--worktree", str(worktree),
+                          "--json"]) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["scope"]["project"] == str(selected_project)
+    assert result["scope"]["worktree"] == str(worktree)
+    assert result["scope"]["config"] == str(
+        selected_project / "run-gate.toml")
+    assert [row["lane"] for row in result["inflight"]] == ["target-lane"]
+
+
+@pytest.mark.parametrize("published, remedy", [
+    (None, "run-gate admission set --max-concurrent <desired-N>"),
+    ({"name": "ciu-admission-2", "generation": 2,
+      "max_concurrent": None, "max_concurrent_readable": False},
+     "--max-concurrent <desired-N> --replace"),
+])
+def test_doctor_checks_enabled_admission_publication_and_readable_cap(
+        tmp_path, monkeypatch, capsys, published, remedy):
+    repo = make_repo(tmp_path)
+    project = make_project(repo, """\
+        schema_version = 1
+        [admission]
+        enabled = true
+        ticket_image = "ticket:local"
+    """)
+    fake_docker(tmp_path, monkeypatch)
+    monkeypatch.setattr(run_gate.shutil, "which",
+                        lambda name: "/usr/bin/docker" if name == "docker" else None)
+    monkeypatch.setattr(run_gate, "local_docker_endpoint",
+                        lambda: (True, "local Docker Unix endpoint"))
+
+    class DoctorAdmission:
+        def __init__(self, **_kwargs):
+            pass
+
+        def image_present(self, image):
+            assert image == "ticket:local"
+            return True
+
+        def admission_snapshot(self):
+            visible = ([{"name": published["name"],
+                         "identity_readable": True}]
+                       if published else [])
+            return {"published": published,
+                    "visible_admission_objects": visible}
+
+    monkeypatch.setattr(run_gate, "DockerAdmission", DoctorAdmission)
+    monkeypatch.chdir(project)
+    cfg, cfg_path, central, central_path = run_gate.load_config(project)
+    code = run_gate.cmd_doctor({}, project, cfg, central, cfg_path, central_path)
+    out = capsys.readouterr().out
+    assert code == 2
+    assert "[OK] admission ticket image: 'ticket:local' is present locally" in out
+    assert remedy in out
+
+
+def test_doctor_admission_image_check_is_read_only_and_names_missing_image(
+        tmp_path, monkeypatch, capsys):
+    repo = make_repo(tmp_path)
+    project = make_project(repo, """\
+        schema_version = 1
+        [admission]
+        enabled = true
+        ticket_image = "ticket:missing"
+    """)
+    fake_docker(tmp_path, monkeypatch)
+    monkeypatch.setattr(run_gate.shutil, "which",
+                        lambda name: "/usr/bin/docker" if name == "docker" else None)
+    monkeypatch.setattr(run_gate, "local_docker_endpoint",
+                        lambda: (True, "local Docker Unix endpoint"))
+    calls = []
+
+    class DoctorAdmission:
+        def __init__(self, **_kwargs):
+            pass
+
+        def image_present(self, image):
+            calls.append(("image_present", image))
+            return False
+
+        def admission_snapshot(self):
+            calls.append(("admission_snapshot",))
+            published = {"name": "ciu-admission-1", "generation": 1,
+                         "max_concurrent": 1,
+                         "max_concurrent_readable": True}
+            return {"published": published,
+                    "visible_admission_objects": [
+                        {"name": "ciu-admission-1",
+                         "identity_readable": True}]}
+
+        def verify_image(self, _image):
+            raise AssertionError("doctor must not run a ticket container")
+
+    monkeypatch.setattr(run_gate, "DockerAdmission", DoctorAdmission)
+    monkeypatch.chdir(project)
+    cfg, cfg_path, central, central_path = run_gate.load_config(project)
+    code = run_gate.cmd_doctor({}, project, cfg, central, cfg_path, central_path)
+    out = capsys.readouterr().out
+    assert code == 2
+    assert calls == [("image_present", "ticket:missing"),
+                     ("admission_snapshot",)]
+    assert "build/load it or set [admission].ticket_image" in out
+    assert "max-concurrent=1 is readable" in out
+
+
+def test_doctor_names_unreadable_admission_object_without_false_repair(
+        tmp_path, monkeypatch, capsys):
+    repo = make_repo(tmp_path)
+    project = make_project(repo, """\
+        schema_version = 1
+        [admission]
+        enabled = true
+        ticket_image = "ticket:local"
+    """)
+    fake_docker(tmp_path, monkeypatch)
+    monkeypatch.setattr(run_gate.shutil, "which",
+                        lambda name: "/usr/bin/docker" if name == "docker" else None)
+    monkeypatch.setattr(run_gate, "local_docker_endpoint",
+                        lambda: (True, "local Docker Unix endpoint"))
+
+    class DoctorAdmission:
+        def __init__(self, **_kwargs):
+            pass
+
+        def image_present(self, _image):
+            return True
+
+        def admission_snapshot(self):
+            return {"published": None,
+                    "visible_admission_objects": [
+                        {"name": "ciu-admission-7",
+                         "identity_readable": False}]}
+
+    monkeypatch.setattr(run_gate, "DockerAdmission", DoctorAdmission)
+    monkeypatch.chdir(project)
+    cfg, cfg_path, central, central_path = run_gate.load_config(project)
+    code = run_gate.cmd_doctor({}, project, cfg, central, cfg_path, central_path)
+    out = capsys.readouterr().out
+    assert code == 2
+    assert "ciu-admission-7" in out
+    assert "run-gate admission set` is not a repair" in out
+    assert "no valid ciu-admission object is published" not in out
+
 class TestDoctor:
     def test_exec_declared_slice_is_reported_naming_only_in_process(
             self, tmp_path, monkeypatch, capsys):

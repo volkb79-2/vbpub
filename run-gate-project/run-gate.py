@@ -14,7 +14,7 @@ Judgment policy is NOT here: assay lanes reference assay.toml by name.
 See run-gate-project/README.md (design authority) and CONSUMERS.md (adoption).
 """
 # stdlib only — this launcher must run on a fresh clone with zero installs.
-__revision__ = 50  # rev 50: RG-49 durable Assay-state preflight
+__revision__ = 51  # rev 51: RG-64 runner occupancy and RG-80 doctor checks
 # selective assay and command requests; failed-assay evidence; completed-fail
 # and partial footprint manifests; native sequences with trunk bases; shared
 # assay inventory import; documented durable --state-dir; closed results,
@@ -1457,7 +1457,7 @@ def _git_toplevel_if_available(project_dir: Path) -> Path | None:
         result = subprocess.run(
             ["git", "rev-parse", "--show-toplevel"], cwd=project_dir,
             capture_output=True, text=True, check=False)
-    except OSError:
+    except (OSError, UnicodeError):
         return None
     if result.returncode or not result.stdout.strip():
         return None
@@ -2466,7 +2466,7 @@ def read_host_pressure_snapshot() -> dict | None:
     root = Path(os.environ.get(PROC_ROOT_ENV_VAR, "/proc"))
     try:
         text = (root / "pressure" / "memory").read_text()
-    except OSError:
+    except (OSError, UnicodeError):
         return None
     return _profile_parse_pressure(text) or None
 
@@ -4054,6 +4054,235 @@ def load_inflight_record(path: Path, fresh: bool = False) -> dict | None:
     return data
 
 
+def _proc_stat_identity(pid: int, proc_root: Path) -> tuple[str, int] | None:
+    """Return (state, start_ticks) for a process in the selected procfs."""
+    try:
+        raw = (proc_root / str(pid) / "stat").read_text(encoding="ascii")
+    except (OSError, UnicodeError):
+        return None
+    fields = raw.rpartition(")")[2].split()
+    try:
+        return fields[0], int(fields[19])  # state is field 3; starttime is 22
+    except (IndexError, ValueError):
+        return None
+
+
+def _status_pid_liveness(pid: int, proc_root: Path) -> str:
+    """Read process presence without sending a signal or guessing on errors."""
+    try:
+        (proc_root / str(pid) / "stat").read_text(encoding="ascii")
+    except FileNotFoundError:
+        # Lock rows do not contain the owner's PID namespace. A live holder
+        # outside this reader's namespace can be invisible through /proc.
+        return "unknown"
+    except (OSError, UnicodeError):
+        return "unknown"
+    identity = _proc_stat_identity(pid, proc_root)
+    if identity is None:
+        return "unknown"
+    return "dead" if identity[0] in ("Z", "X") else "alive"
+
+
+def _status_inflight_owner_liveness(record: dict, proc_root: Path) -> str:
+    """Only call an inflight owner dead when boot and PID namespace match."""
+    pid = record.get("owner_pid")
+    recorded_ns = record.get("pid_ns")
+    recorded_start = record.get("owner_start")
+    if (isinstance(pid, bool) or not isinstance(pid, int) or pid < 1
+            or isinstance(recorded_ns, bool)
+            or not isinstance(recorded_ns, int)
+            or isinstance(recorded_start, bool)
+            or not isinstance(recorded_start, int)):
+        return "unknown"
+    try:
+        boot = (proc_root / "sys/kernel/random/boot_id").read_text(
+            encoding="ascii").strip()
+        pid_ns = os.stat(proc_root / "self/ns/pid").st_ino
+    except (OSError, UnicodeError):
+        return "unknown"
+    if not boot or (record.get("boot_id"), recorded_ns) != (boot, pid_ns):
+        return "unknown"
+    try:
+        raw = (proc_root / str(pid) / "stat").read_text(encoding="ascii")
+    except FileNotFoundError:
+        return "dead"
+    except (OSError, UnicodeError):
+        return "unknown"
+    fields = raw.rpartition(")")[2].split()
+    try:
+        identity = fields[0], int(fields[19])
+    except (IndexError, ValueError):
+        return "unknown"
+    state, start_ticks = identity
+    return ("alive" if state not in ("Z", "X")
+            and start_ticks == recorded_start else "dead")
+
+
+def _read_inflight_status(project_dir: Path, proc_root: Path
+                          ) -> tuple[list[dict], list[str]]:
+    """Read this project's inflight records without adopting or repairing them."""
+    directory = inflight_dir(project_dir)
+    try:
+        info = directory.lstat()
+        if not stat.S_ISDIR(info.st_mode):
+            raise OSError("not a directory")
+        paths = sorted(directory.glob("*.json"))
+    except FileNotFoundError:
+        return [], []
+    except OSError as exc:
+        return [], [f"cannot list inflight directory {directory}: {exc}"]
+    records: list[dict] = []
+    errors: list[str] = []
+    for path in paths:
+        try:
+            info = path.lstat()
+            if not stat.S_ISREG(info.st_mode):
+                raise OSError("not a regular file")
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, ValueError, RecursionError) as exc:
+            errors.append(f"cannot read inflight record {path}: {exc}")
+            records.append({"path": str(path), "state": "unreadable"})
+            continue
+        if not isinstance(data, dict):
+            errors.append(f"inflight record {path} is not a JSON object")
+            records.append({"path": str(path), "state": "unreadable"})
+            continue
+        if data.get("schema") != INFLIGHT_SCHEMA:
+            errors.append(f"inflight record {path} declares schema "
+                          f"{data.get('schema')!r}; status reads schema "
+                          f"{INFLIGHT_SCHEMA}")
+            records.append({"path": str(path), "state": "unknown-schema",
+                            "schema": data.get("schema")})
+            continue
+        lane = data.get("lane")
+        runner = data.get("runner")
+        container = data.get("container")
+        if (not isinstance(lane, str) or not lane
+                or runner not in ("container", "exec")
+                or not isinstance(container, str) or not container):
+            errors.append(f"inflight record {path} has unreadable lane, "
+                          "runner, or container fields")
+            records.append({"path": str(path), "state": "unreadable"})
+            continue
+        records.append({
+            "path": str(path), "lane": lane, "runner": runner,
+            "container": container, "container_id": data.get("container_id"),
+            "started_at": data.get("started_at"),
+            "owner_pid": data.get("owner_pid"),
+            "owner_liveness": _status_inflight_owner_liveness(data, proc_root),
+            "state": "inflight-record",
+        })
+    return records, errors
+
+
+def _parse_proc_lock_rows(
+        text: str
+        ) -> dict[tuple[int, int, int], dict[str, list[int | None]]]:
+    """Index Linux FLOCK rows by (device major, minor, inode)."""
+    result: dict[tuple[int, int, int], dict[str, list[int | None]]] = {}
+    for line in text.splitlines():
+        fields = line.split()
+        if fields and fields[0].endswith(":"):
+            fields.pop(0)
+        queued = bool(fields and fields[0] == "->")
+        if queued:
+            fields.pop(0)
+        if len(fields) < 5 or fields[0] != "FLOCK":
+            continue
+        if fields[1] != "ADVISORY" or fields[2] not in ("READ", "WRITE"):
+            continue
+        try:
+            pid = None if fields[3] in ("-", "0") else int(fields[3], 10)
+            device, inode = fields[4].rsplit(":", 1)
+            major_text, minor_text = device.split(":", 1)
+            key = (int(major_text, 16), int(minor_text, 16),
+                   int(inode, 10))
+        except (ValueError, TypeError):
+            continue
+        if pid is not None and pid < 1:
+            continue
+        row = result.setdefault(key, {"holders": [], "waiters": []})
+        row["waiters" if queued else "holders"].append(pid)
+    for row in result.values():
+        row["holders"] = sorted(
+            set(row["holders"]), key=lambda pid: (pid is None, pid or 0))
+        row["waiters"] = sorted(
+            set(row["waiters"]), key=lambda pid: (pid is None, pid or 0))
+    return result
+
+
+def _read_exec_lock_status(lock_dir: Path, proc_root: Path
+                           ) -> tuple[list[dict], list[str]]:
+    """Read run-gate's host-wide exec flocks and Linux's holder/waiter PIDs."""
+    errors: list[str] = []
+    try:
+        proc_locks = (proc_root / "locks").read_text(encoding="ascii")
+    except (OSError, UnicodeError) as exc:
+        return [], [f"cannot read {proc_root / 'locks'}: {exc}"]
+    rows = _parse_proc_lock_rows(proc_locks)
+    try:
+        entries = sorted(lock_dir.glob("run-gate-exec-*.lock"))
+    except OSError as exc:
+        return [], [f"cannot list exec lock directory {lock_dir}: {exc}"]
+    locks: list[dict] = []
+    for path in entries:
+        runner = path.name.removeprefix("run-gate-exec-").removesuffix(".lock")
+        try:
+            info = path.lstat()
+            if not stat.S_ISREG(info.st_mode):
+                raise OSError("not a regular file")
+        except OSError as exc:
+            errors.append(f"exec lock {path} is unreadable: {exc}")
+            locks.append({"runner": runner, "path": str(path),
+                          "holders": [], "waiters": [],
+                          "state": "unreadable"})
+            continue
+        key = (os.major(info.st_dev), os.minor(info.st_dev), info.st_ino)
+        row = rows.get(key, {"holders": [], "waiters": []})
+        locks.append({
+            "runner": runner, "path": str(path),
+            "holders": [{"pid": pid,
+                         "liveness": (_status_pid_liveness(pid, proc_root)
+                                      if pid is not None else "unknown")}
+                        for pid in row["holders"]],
+            "waiters": [{"pid": pid,
+                         "liveness": (_status_pid_liveness(pid, proc_root)
+                                      if pid is not None else "unknown")}
+                        for pid in row["waiters"]],
+            "state": ("running" if row["holders"] else
+                      "queued" if row["waiters"] else "idle"),
+        })
+    return locks, errors
+
+
+def _status_command_lane(pid: int, proc_root: Path) -> str | None:
+    """Best-effort lane name from a run-gate process's argv."""
+    try:
+        argv = (proc_root / str(pid) / "cmdline").read_bytes().split(b"\0")
+    except OSError:
+        return None
+    words = [part.decode("utf-8", "replace") for part in argv if part]
+    for index, word in enumerate(words[:-1]):
+        if Path(word).name in ("run-gate", "run-gate.py"):
+            tail = words[index + 1:]
+            value_flags = {"--worktree", "--base", "--lock-wait",
+                           "--admission-wait", "--reuse-from", "--rejudge",
+                           "--rejudge-outcome"}
+            pos = 0
+            while pos < len(tail):
+                candidate = tail[pos]
+                if candidate == "--":
+                    return None
+                if candidate in value_flags:
+                    pos += 2
+                    continue
+                if candidate.startswith("--"):
+                    pos += 1
+                    continue
+                return candidate
+    return None
+
+
 def write_inflight_record(project_dir: Path, worktree: Path, lane_name: str,
                           payload: dict) -> bool:
     """Record the container that is now running, so a restart re-attaches
@@ -5340,7 +5569,7 @@ _INVOCATION_RE = re.compile(
     r"(?:run-gate\.py|(?<![\w./-])run-gate(?![\w.-]))(?:\s+[^&;]*)?")
 _BARE_TOOL_RE = re.compile(r"(?<![\w./-])run-gate(?![\w.-])")
 _RESERVED_POINTER_VERBS = {"doctor", "validate-pointers", "history",
-                           "footprint", "migrate-modes", "admission"}
+                           "footprint", "migrate-modes", "admission", "status"}
 _DISCOVERY_FLAGS = {"--list", "--help", "--check-env"}
 # Fields that are prose BY NAME: a label describes an invocation, it doesn't
 # run one ("label = \"proj: run-gate gate conjunction\"" — found live in
@@ -6576,6 +6805,136 @@ def linked_worktree_gitdir(worktree: Path) -> Path | None:
     return None
 
 
+def cmd_status(project_dir: Path, cfg: dict, cfg_path: Path,
+               json_mode: bool = False,
+               worktree_override: str | None = None) -> int:
+    """Read the selected project's inflight records and host-wide queues."""
+    proc_root = Path(os.environ.get(PROC_ROOT_ENV_VAR, "/proc"))
+    lock_dir = _lock_dir()
+    exec_locks, errors = _read_exec_lock_status(lock_dir, proc_root)
+    inflight, inflight_errors = _read_inflight_status(project_dir, proc_root)
+    errors.extend(inflight_errors)
+
+    for lock in exec_locks:
+        for role in ("holders", "waiters"):
+            for participant in lock[role]:
+                pid = participant.get("pid")
+                match = next((record for record in inflight
+                              if record.get("runner") == "exec"
+                              and record.get("container") == lock["runner"]
+                              and record.get("owner_pid") == pid
+                              and isinstance(pid, int)), None)
+                participant["lane"] = (match.get("lane") if match else
+                                       _status_command_lane(pid, proc_root)
+                                       if isinstance(pid, int) else None)
+                participant["inflight_record"] = (
+                    match.get("path") if match else None)
+
+    docker = shutil.which("docker")
+    admission = {"enabled_here": bool(cfg.get("admission", {}).get("enabled")),
+                 "published": None, "visible_admission_objects": [],
+                 "tickets": []}
+    endpoint = "unavailable"
+    if not docker:
+        errors.append("Docker CLI not found on PATH; admission state is unknown")
+    else:
+        local, reason = local_docker_endpoint()
+        endpoint = "local Docker Unix endpoint" if local else reason
+        if not local:
+            errors.append("cannot inspect RG-80 state safely: " + reason)
+        else:
+            try:
+                manager = DockerAdmission(docker=docker, proc_root=proc_root)
+                admission.update(manager.status_snapshot())
+            except AdmissionDockerUnavailable as exc:
+                errors.append(f"Docker admission state unavailable: {exc}")
+            except AdmissionError as exc:
+                errors.append(f"Docker admission state unreadable: {exc}")
+
+    worktree = (str(Path(worktree_override).resolve()) if worktree_override
+                else str(_git_toplevel_if_available(project_dir)
+                         or project_dir.resolve()))
+    code = 2 if errors else 0
+    result = {
+        "verdict": "ERROR" if code else "PASS",
+        "exit_code": code,
+        "scope": {"config": str(cfg_path), "project": str(project_dir),
+                  "worktree": worktree, "exec_lock_directory": str(lock_dir),
+                  "proc_root": str(proc_root), "docker_endpoint": endpoint},
+        "exec_locks": exec_locks,
+        "inflight": inflight,
+        "admission": admission,
+        "errors": errors,
+    }
+    if json_mode:
+        print(json.dumps(result, sort_keys=True))
+        return code
+
+    print(f"run-gate status: {result['verdict']} exit_code={code}")
+    print(f"  config: {cfg_path}")
+    print(f"  project: {project_dir}; worktree: {worktree}")
+    print(f"  host locks: {lock_dir}; Docker: {endpoint}")
+    active_locks = [lock for lock in exec_locks
+                    if lock["holders"] or lock["waiters"]]
+    print("exec runners:")
+    if not active_locks:
+        print("  none held or queued")
+    for lock in active_locks:
+        for participant in lock["holders"]:
+            print(f"  {lock['runner']}: running pid={participant['pid']} "
+                  f"liveness={participant['liveness']} "
+                  f"lane={participant.get('lane') or '(unknown)'}")
+        for participant in lock["waiters"]:
+            print(f"  {lock['runner']}: queued pid={participant['pid']} "
+                  f"liveness={participant['liveness']} "
+                  f"lane={participant.get('lane') or '(unknown)'}")
+    idle_n = sum(1 for lock in exec_locks if lock["state"] == "idle")
+    if idle_n:
+        print(f"  {idle_n} idle lock file(s)")
+    print("inflight records:")
+    if not inflight:
+        print("  none")
+    for record in inflight:
+        if record.get("lane"):
+            print(f"  {record['lane']}: {record['runner']} runner="
+                  f"{record['container']} owner_pid={record.get('owner_pid')} "
+                  f"owner_liveness={record['owner_liveness']} "
+                  f"({record['path']})")
+        else:
+            print(f"  {record.get('state')}: {record['path']}")
+    published = admission.get("published")
+    if published:
+        print(f"admission: enabled_here="
+              f"{str(admission['enabled_here']).lower()} published="
+              f"{published['name']} cap={published['max_concurrent']} "
+              f"cap_readable={str(published['max_concurrent_readable']).lower()}")
+    else:
+        print(f"admission: enabled_here="
+              f"{str(admission['enabled_here']).lower()} no readable "
+              "published object")
+    for item in admission.get("visible_admission_objects", []):
+        if not item.get("identity_readable"):
+            print(f"  unreadable admission object: {item['name']} "
+                  f"generation={item.get('generation')} "
+                  f"docker_status={item.get('docker_status')} "
+                  f"cap_readable={str(item.get('max_concurrent_readable', False)).lower()}")
+    if admission["tickets"]:
+        for ticket in admission["tickets"]:
+            owner = ticket.get("owner")
+            if not isinstance(owner, dict):
+                owner = {}
+            print(f"  {ticket['name']}: {ticket['state']} "
+                  f"lane={owner.get('lane', '(unreadable)')} "
+                  f"pid={owner.get('pid', '(unreadable)')} "
+                  f"owner={ticket['owner_liveness']} "
+                  f"deadline={ticket.get('deadline')}")
+    else:
+        print("  no visible admission tickets or tombstones")
+    for error in errors:
+        print(f"run-gate status: ERROR: {error}", file=sys.stderr)
+    return code
+
+
 def cmd_doctor(lanes: dict, project_dir: Path, cfg: dict, central: dict,
                cfg_path: Path, central_path: Path | None,
                worktree_override: str | None = None) -> int:
@@ -6624,6 +6983,99 @@ def cmd_doctor(lanes: dict, project_dir: Path, cfg: dict, central: dict,
         record("OK", "docker", docker)
     else:
         record("FAIL", "docker", "not found on PATH — container/exec lanes need it")
+
+    admission_cfg = cfg.get("admission", {})
+    if admission_cfg.get("enabled") is True:
+        ticket_image = admission_cfg.get("ticket_image")
+        if not docker:
+            record("FAIL", "admission Docker",
+                   "[admission] enabled = true, but Docker is unavailable — "
+                   "install the Docker CLI and start the local Docker daemon")
+            record("SKIP", "admission ticket image",
+                   "could not inspect the configured local image without Docker")
+            record("SKIP", "admission published count",
+                   "could not read the published object or max-concurrent without Docker")
+        else:
+            local_endpoint, endpoint_reason = local_docker_endpoint()
+            if not local_endpoint:
+                remedy = ("select a Docker context backed by a local Unix socket; "
+                          "unset remote DOCKER_HOST/DOCKER_CONTEXT overrides if set")
+                record("FAIL", "admission Docker endpoint",
+                       f"[admission] enabled = true requires the daemon shared "
+                       f"by local gates; {endpoint_reason} — {remedy}")
+                record("SKIP", "admission ticket image",
+                       "cannot verify local image presence until a local endpoint is selected")
+                record("SKIP", "admission published count",
+                       "cannot verify the shared object or max-concurrent until a local endpoint is selected")
+            else:
+                admission_manager = DockerAdmission(docker=docker)
+                if not isinstance(ticket_image, str) or not ticket_image.strip():
+                    record("FAIL", "admission ticket image",
+                           f"[admission] enabled = true in {cfg_path} requires "
+                           "ticket_image; name an image present on the local daemon")
+                else:
+                    try:
+                        present = admission_manager.image_present(ticket_image)
+                    except AdmissionDockerUnavailable as exc:
+                        present = None
+                        record("FAIL", "admission ticket image",
+                               f"could not inspect {ticket_image!r}: {exc} — "
+                               "restore access to the local Docker daemon and rerun doctor")
+                    except AdmissionError as exc:
+                        present = None
+                        record("FAIL", "admission ticket image",
+                               f"could not verify {ticket_image!r}: {exc} — "
+                               "correct [admission].ticket_image if its "
+                               "reference is invalid; otherwise resolve the "
+                               "reported Docker error and rerun doctor")
+                    if present is False:
+                        record("FAIL", "admission ticket image",
+                               f"{ticket_image!r} is not present locally — build/load it "
+                               "or set [admission].ticket_image to an image already "
+                               "present on this Docker daemon")
+                    elif present is True:
+                        record("OK", "admission ticket image",
+                               f"{ticket_image!r} is present locally")
+                try:
+                    admission_state = admission_manager.admission_snapshot()
+                except AdmissionDockerUnavailable as exc:
+                    record("FAIL", "admission published count",
+                           f"Docker could not read the published count: {exc} — "
+                           "restore access to the local Docker daemon")
+                except AdmissionError as exc:
+                    record("FAIL", "admission published count",
+                           f"published admission state is unreadable: {exc} — "
+                           "repair Docker access, then republish the cap")
+                else:
+                    visible = admission_state["visible_admission_objects"]
+                    unreadable = [item for item in visible
+                                  if not item["identity_readable"]]
+                    published = admission_state["published"]
+                    if unreadable:
+                        names = ", ".join(repr(item["name"])
+                                           for item in unreadable)
+                        record("FAIL", "admission published object",
+                               f"visible object(s) {names} have unreadable "
+                               "identity labels; run-gate refuses to replace "
+                               "them, so `run-gate admission set` is not a "
+                               "repair. Resolve the named object with the "
+                               "Docker-daemon owner before publishing a cap")
+                    elif published is None:
+                        record("FAIL", "admission published count",
+                               "no valid ciu-admission object is published — run "
+                               "'run-gate admission set --max-concurrent <desired-N>'")
+                    elif not published["max_concurrent_readable"]:
+                        record("FAIL", "admission max-concurrent",
+                               f"{published['name']} generation "
+                               f"{published['generation']} has no "
+                               "readable positive max-concurrent — republish with "
+                               "'run-gate admission set --max-concurrent "
+                               "<desired-N> --replace'")
+                    else:
+                        record("OK", "admission published count",
+                               f"{published['name']} generation "
+                               f"{published['generation']}; max-concurrent="
+                               f"{published['max_concurrent']} is readable")
 
     # 2. per-environment facts: resolution + slice LoadState
     env_cache: dict[str, tuple[dict, str]] = {}
@@ -9875,6 +10327,9 @@ def usage(lanes: dict, inherited: set[str] | None = None) -> str:
         "       run-gate.py admission show",
         "         (RG-80: publish or inspect the daemon-wide gates ticket cap;",
         "          each project's [admission] switch is independent and off by default)",
+        "       run-gate.py status [--worktree PATH] [--json]",
+        "         (RG-64/RG-80: read this project's inflight records, host-wide",
+        "          exec-runner locks, and the daemon's admission tickets/tombstones)",
         "       run-gate.py doctor [--worktree PATH]   (RG-9 preflight: docker,",
         "          slices, mountinfo, git, images, the linked-worktree host-lane",
         "          git view (RG-21), unprefixed relative script paths in container",
@@ -9995,10 +10450,10 @@ def usage(lanes: dict, inherited: set[str] | None = None) -> str:
         "                    first — by name, disclosed — and runs anew. Refused",
         "                    by name on host and exec lanes, which start no",
         "                    container of run-gate's own",
-        "  --json            `history`/`footprint` ONLY: the same data as one",
-        "                    JSON document (history: latest + bounded history +",
-        "                    median/min/max, split passes vs all completed runs;",
-        "                    footprint: the exact run-gate.footprint.json shape).",
+        "  --json            `history`/`footprint`/`status`: emit one JSON",
+        "                    document (history has latest + bounded history +",
+        "                    duration stats; footprint has the manifest shape;",
+        "                    status has its closed verdict/exit code and occupancy).",
         "                    Every other verb REFUSES it by name rather than",
         "                    silently printing its human form (--list is already",
         "                    a machine table)",
@@ -10497,9 +10952,8 @@ def _dispatch(argv: list[str] | None = None, *,
     parser.add_argument("--unreadable-policy", choices=("unbudgeted", "refuse"),
                         default=None, help="admission set only: behavior without a readable count")
     parser.add_argument("--json", action="store_true",
-                        help="RG-27/RG-55: `history`/`footprint` emit one "
-                             "machine-readable JSON document instead of the "
-                             "human table")
+                        help="`history`, `footprint`, and `status` emit one "
+                             "machine-readable JSON document")
     parser.add_argument("--write", action="store_true",
                         help="RG-55/R-44: `footprint` only — write "
                              "run-gate.footprint.json next to the effective "
@@ -10560,7 +11014,7 @@ def _dispatch(argv: list[str] | None = None, *,
         if (args.admission_wait is not None or args.override_admission) \
                 and (args.lane is None or args.lane in (
                     "doctor", "history", "footprint", "validate-pointers",
-                    "migrate-modes", "admission")):
+                    "migrate-modes", "admission", "status")):
             fail("--admission-wait and --override-admission apply to a lane "
                  "run only")
         if args.lane == "migrate-modes":
@@ -10604,19 +11058,22 @@ def _dispatch(argv: list[str] | None = None, *,
         # lane's inflight run, so every verb and every other runner refuses
         # it by name rather than accepting it and doing nothing (R-25/R-35).
         if args.fresh and args.lane in (None, "doctor", "history",
-                                        "footprint", "validate-pointers"):
+                                        "footprint", "validate-pointers",
+                                        "status"):
             fail("--fresh is honored on the run path only (run-gate.py <lane> "
                  "--fresh) — it removes the container an earlier client left "
                  "running for that lane; the query and preflight verbs start "
                               "no container and have nothing to refresh")
         if lane_args and (args.lane is None or args.lane in (
-                "doctor", "history", "footprint", "validate-pointers")):
+                "doctor", "history", "footprint", "validate-pointers",
+                "status")):
             fail("arguments after -- are supported only by an opted-in "
                  "command lane")
         assay_selective = (args.reuse_from is not None or bool(args.rejudge)
                            or args.rejudge_outcome is not None)
         if assay_selective and (args.lane is None or args.lane in (
-                "doctor", "history", "footprint", "validate-pointers")):
+                "doctor", "history", "footprint", "validate-pointers",
+                "status")):
             fail("--reuse-from, --rejudge and --rejudge-outcome apply only to "
                  "an assay lane")
         if args.include_failed and args.lane != "footprint":
@@ -10631,9 +11088,10 @@ def _dispatch(argv: list[str] | None = None, *,
         if args.rejudge_outcome and not args.rejudge:
             fail("--rejudge-outcome requires at least one --rejudge ID")
         if args.json and (args.lane is None or args.lane in (
-                "doctor", "validate-pointers", "history", "footprint")) \
-                and args.lane not in ("history", "footprint"):
-            fail("--json is honored by the `history`/`footprint` verbs only "
+                "doctor", "validate-pointers", "history", "footprint",
+                "status")) \
+                and args.lane not in ("history", "footprint", "status"):
+            fail("--json is honored by the `history`/`footprint`/`status` verbs only "
                  "and by a lane result (run-gate.py <lane> --json); `--list` "
                  "is already a machine table (name<TAB>kind<TAB>environment)")
         if args.write and args.lane != "footprint":
@@ -10641,7 +11099,8 @@ def _dispatch(argv: list[str] | None = None, *,
                  "(run-gate.py footprint [LANE] --write) — every other verb "
                  "either judges a lane or reports without writing")
         if args.lock_wait is not None and args.lane in (
-                None, "doctor", "history", "footprint", "validate-pointers"):
+                None, "doctor", "history", "footprint", "validate-pointers",
+                "status"):
             fail("--lock-wait applies to a lane run only")
         if args.lane == "validate-pointers" and not args.help:
             # RG-2 linkage verb — certifies CONSUMER documents; needs no
@@ -10685,6 +11144,22 @@ def _dispatch(argv: list[str] | None = None, *,
                      f"the invoking checkout's config")
         (cfg, cfg_path, central, central_path,
          cfg_sha256, central_cfg_sha256) = load_config_snapshot(project_dir)
+        if args.lane == "status":
+            if (args.target is not None or args.list or args.check_env
+                    or args.root is not None or args.base is not None
+                    or args.lock_wait is not None or args.write
+                    or args.include_failed or args.footprint_lanes
+                    or args.reuse_from is not None or args.rejudge
+                    or args.rejudge_outcome is not None or args.replace
+                    or args.max_concurrent is not None
+                    or args.unreadable_policy is not None
+                    or args.allow_dirty or args.fresh or args.dry_run
+                    or lane_args):
+                fail("run-gate status accepts only [--worktree PATH] and "
+                     "[--json]")
+            return operation_result(cmd_status(
+                project_dir, cfg, cfg_path, args.json,
+                worktree_override=args.worktree), "status-query-failed")
         assay_defaults = cfg.get("assay", central.get("assay", {}))
         imported_lanes = {}
         if "import" in assay_defaults:

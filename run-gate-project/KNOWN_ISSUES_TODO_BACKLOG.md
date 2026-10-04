@@ -81,7 +81,7 @@ SPEC §9.
 | RG-61 | RG-55 wave left documentation drift | Minor | FIXED 2026-09-12 |
 | RG-62 | two order-/timing-sensitive selftest flakes were found live | Minor | OPEN |
 | RG-63 | assay lane budget included time queued on the exec lock | Major | FIXED 2026-10-04 (rev 49): budget starts after admission and runner locks |
-| RG-64 | caller-side lock checks could not reliably diagnose actual container occupancy | Minor | OPEN — internal run-gate exec lock is authoritative; first-class status query is unresolved |
+| RG-64 | caller-side lock checks could not reliably diagnose actual container occupancy | Minor | FIXED 2026-10-04 (rev 51): `status` reads internal exec-lock holders/waiters, selected-tree inflight records, and daemon-wide admission state |
 | RG-65 | duplicate of RG-47: worktree-only lanes were hidden by invoking-CWD config resolution | Major | MERGED INTO RG-47 2026-10-04 (rev 47) |
 | RG-66 | no way to pass assay's `--reuse-from` / `--rejudge` through `run-gate <lane>`, so assay 7.1+ provenance-safe selective R2 reruns cannot be used via the gate | Minor | FIXED 2026-10-04 (rev 49): assay-only selective flags are forwarded |
 | RG-67 | no per-environment (per-runner-container) invocation limit, and a composite lane does not declare which runners its members use, so consumers hand-hold whole-invocation flocks and the composite over-holds a second runner — **(a) WITHDRAWN 2026-10-03 (D-667); (b) remains** | Minor | FIXED 2026-10-04 (rev 49): (a) remains withdrawn; (b) uses native serial sequences |
@@ -97,7 +97,7 @@ SPEC §9.
 | RG-77 | the per-assay-lane `--state-dir` contract (RG-38) and its root-owned-parent repair (RG-49) are in no SPEC rule or skill, so consumers restate them in their own instruction files | Minor | FIXED 2026-10-04 (rev 49): shipped state contract documented; RG-49 implementation is tracked separately |
 | RG-78 | adopt the ciu v8 closed exit table and explicit environment modes in run-gate now (backport, operator ruling D-654): lane exit passthrough overlaps the 2/3 refusal codes, and the built-in `host` environment is a container | Major | FIXED 2026-10-04 (rev 49): single finish path, AST guard, byte-status lane oracle |
 | RG-79 | exec-mode resolution **silently falls back to main's runner** when the judged worktree has no rendered ciu config (a shadowing default, AGENTS §4.2a); the worktree's own test-runner is the design (D-647 #2, D-666), so run-gate must refuse and name "start this worktree's own test-runner" (reframed 2026-10-03; originally filed as a stray-render defect) | Major | FIXED 2026-10-04 (rev 47; same implementation as RG-47) |
-| RG-80 | no daemon-wide cap on concurrent gates: the cross-worktree cap is a consumer flock wrapper (dstdns `gate-slot.sh`); build SPEC-V8 S21's count mode (Docker-name tickets, tombstones, deadlines, run marker, published `ciu-admission-<g>` object) behind an off-by-default switch, so the wrapper retires before v8 | Major | FIXED 2026-10-04 (rev 49): ticket/publish and owner/reaping packages |
+| RG-80 | no daemon-wide cap on concurrent gates: the cross-worktree cap is a consumer flock wrapper (dstdns `gate-slot.sh`); build SPEC-V8 S21's count mode (Docker-name tickets, tombstones, deadlines, run marker, published `ciu-admission-<g>` object) behind an off-by-default switch, so the wrapper retires before v8 | Major | FIXED 2026-10-04 (rev 49; operability rev 51): ticket/publish and owner/reaping packages; read-only status view and enabled-policy doctor checks |
 
 ---
 
@@ -4948,9 +4948,15 @@ does not participate in that same convention.
   item, tracked in that project's own controller record.
 
 
-### Status — OPEN
+### Status — FIXED 2026-10-04 (rev 51)
 
-A first-class run-gate query for the internal exec lock remains unresolved.
+`run-gate status [--worktree PATH] [--json]` reads the selected project's
+inflight records, maps `/tmp/run-gate-exec-<container>.lock` device/inode
+pairs to `/proc/locks` holders and waiters, and reads the shared Docker
+admission object, live tickets, owner/deadline labels, and tombstones. A
+controlled regression oracle holds only the internal exec lock; status reports
+its holder without creating a caller-side wrapper lock. Unreadable sources
+produce a partial JSON document and ERROR/2, never an empty result.
 
 ## RG-63 — an assay lane's `LANE_TIMEOUT` budget appears to include exec-lock queue-wait time under multi-package contention, not just execution time
 
@@ -5583,3 +5589,23 @@ A declared literal `container_name` remains the explicit shared-runner choice.
 **v8: absorb.** This is ciu8's V8-38 (checkpoint D, `gate/admission.py`); the oracles above are its parity tests. Proposal row N28 (`CIU-V8-TESTING-GATE-PROPOSAL.md` §4.11). Related: RG-67 (Amendment 4), RG-78 (the `no-headroom` reason), RG-79.
 
 ### Status — FIXED 2026-10-04 (rev 49) in two implementation packages: (1) Docker-name CAS ticket allocation/release, published generations, disabled-by-default switch and budget start at admission; (2) owner PID-namespace proof, wait/run deadlines, group reaping, tombstone cleanup and the shared v8 label fixture. Byte admission, stack tickets and v8.1 policy stay out of scope.
+
+### Amendment 1 (2026-10-04): operator status and doctor preflight
+
+`status` provides a read-only view of the local Docker daemon's published
+count cap and ticket queue, alongside run-gate's internal exec locks and the
+selected project's inflight records. It decodes live tickets and tombstones
+with the shared label grammar; it never calls the janitor or any Docker
+mutation. `doctor`, when `[admission] enabled = true`, verifies that the
+configured ticket image is local using image inspect only, that a valid
+`ciu-admission-<g>` object is published, and that `max_concurrent` is a
+readable positive integer. Each ordinary setup failure names its repair
+command or exact config field. If a visible object's identity labels are
+unreadable, doctor names that object and reports that `admission set` refuses
+to replace it; the daemon owner must resolve that specific object before
+publishing another cap.
+
+**Status — FIXED 2026-10-04 (rev 51).** The `status` JSON fixture covers one
+running ticket, one queued ticket, and one dead-owner ticket; doctor oracles
+cover missing image, missing publication, and unreadable cap. The shared
+module remains independent of run-gate globals for direct CIU v8 porting.

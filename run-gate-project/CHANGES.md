@@ -7,7 +7,14 @@ moves. Normative behavior lives in SPEC.md; entry-by-entry rationale lives in
 KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 
 ## [Unreleased]
-<!-- This unreleased block describes source rev 50. At release, fold these entries into the generated dated section by hand; the release generator does not clear this block. -->
+<!-- This unreleased block describes source rev 51. At release, fold these entries into the generated dated section by hand; the release generator does not clear this block. -->
+
+- **Runner occupancy and admission preflight (RG-64/RG-80, rev 51).**
+  `run-gate status [--worktree PATH] [--json]` joins selected-tree inflight
+  records, host-wide exec-lock holders/waiters, and read-only Docker
+  admission tickets and tombstones. An unreadable source returns partial
+  output with ERROR/2. `doctor` checks an enabled admission image, published
+  object, and readable positive cap without running the ticket image.
 
 - **Durable Assay state mount preflight (RG-49, rev 50).** Every assay lane
   checks that its durable state root and deepest existing state directory
