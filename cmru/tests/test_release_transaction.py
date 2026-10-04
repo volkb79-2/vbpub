@@ -1460,6 +1460,7 @@ def test_snapshot_pipe_refuses_oversized_payload(tmp_path, monkeypatch):
 def test_parent_reverts_promotion_and_reports_sync_failure_on_child_failure(
     tmp_path, monkeypatch, capsys,
 ):
+    _init_repo(tmp_path)
     config = tmp_path / "cmru.toml"
     config.write_text(
         """
