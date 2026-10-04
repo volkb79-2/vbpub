@@ -26,10 +26,6 @@ def fake_git_family(monkeypatch):
             name: Path(name) / "cmru.toml" for name in names
         },
     )
-    monkeypatch.setattr(
-        cli, "_project_release_policy_in_candidate",
-        lambda _candidate, name, _config: (f"{name}-v", True),
-    )
 
 
 def test_release_resume_cleans_workspace_and_reports_sync_failure(monkeypatch, tmp_path, capsys):
@@ -41,6 +37,10 @@ def test_release_resume_cleans_workspace_and_reports_sync_failure(monkeypatch, t
     )
     workspace = transaction.ReleaseWorkspace(tmp_path, tmp_path / "retained", "cmru/release/resume", "a" * 40)
     monkeypatch.setattr(cli, "_resolve_config", lambda _: tmp_path / "cmru.toml")
+    monkeypatch.setattr(
+        cli, "_project_release_policy_in_candidate",
+        lambda _candidate, name, _config: (f"{name}-v", True),
+    )
     monkeypatch.setattr(
         cli, "_assert_resume_candidate_is_safe_to_replay",
         lambda *_args, **_kwargs: None,
@@ -97,6 +97,10 @@ def test_release_resume_plan_refusal_keeps_existing_candidate(monkeypatch, tmp_p
         tmp_path, tmp_path / "retained", "cmru/release/resume", "a" * 40,
     )
     monkeypatch.setattr(cli, "_resolve_config", lambda _: tmp_path / "cmru.toml")
+    monkeypatch.setattr(
+        cli, "_project_release_policy_in_candidate",
+        lambda _candidate, name, _config: (f"{name}-v", True),
+    )
     monkeypatch.setattr(
         cli, "_assert_resume_candidate_is_safe_to_replay",
         lambda *_args, **_kwargs: None,
