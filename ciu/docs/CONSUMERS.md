@@ -35,12 +35,27 @@ $ ciu worktree create pkg-under-test --base "$(git rev-parse HEAD)" --json
 ```
 
 Creation discovers every committed `ciu.global.defaults.toml.j2` in the base
-commit and prepares each root. The optional ignored
-`ciu.global.instance.toml.j2` overlay is not a discovery marker. Every lifecycle verb (`create`, `ensure`, `adopt`) with `--json` emits
-the same envelope. `status` is one of `allocating`, `ready`,
+commit as resolved in the allocated checkout and prepares each root. A
+`ready` response means every discovered root has readable generated facts and
+the shared workspace record contains the corresponding root-entry list; CIU
+does not emit `ready` while nested preparation is in progress. The optional
+ignored `ciu.global.instance.toml.j2` overlay is not a discovery marker.
+Every lifecycle verb (`create`, `ensure`, `adopt`) with `--json` emits the
+same envelope. `status` is one of `allocating`, `ready`,
 `recovery-required`; a `recovery-required` instance carries a closed
 `recovery_status` of `checkout-incomplete`, `env-generation-failed`, or
 `runtime-collision`. Resume a partial allocation with `ensure`.
+
+If preparation fails, keep the checkout and retry through the lifecycle verb:
+
+```console
+$ ciu worktree ensure pkg-under-test --json
+```
+
+`ensure` regenerates missing root facts and metadata before returning `ready`.
+It also verifies the recorded root set for an older ready record, so a
+worktree interrupted by an earlier CIU release is repaired instead of being
+accepted on its stale status alone.
 
 If the Git worktree root itself has no `ciu.global.defaults.toml.j2`, its
 aggregate `ready` record correctly has

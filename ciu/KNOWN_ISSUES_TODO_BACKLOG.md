@@ -11,7 +11,10 @@ WITHDRAWN issue means the claimed product behavior was removed or never
 adopted after its premise was disproved; it must not remain described as a
 shipped capability.
 
-Last updated: 2026-09-02 — **V8-2 BACKPORTED (ciu-P47): the identity-file
+Last updated: 2026-10-04 — CIU-128 filed (nested worktree-root readiness; see
+the entry below for contract and regression oracles).
+
+Previously updated 2026-09-02 — **V8-2 BACKPORTED (ciu-P47): the identity-file
 split and the overlay rename.** `[ciu.instance.generated]` moved out of the
 shared per-checkout overlay into its own CIU-owned
 `ciu.instance.generated.toml` (plain TOML, rewritten wholesale — the
@@ -4709,3 +4712,41 @@ Severity: Medium. Type: feature. Spec owner: v7 S16 (worktree lifecycle, S16.1 `
 7. v8 (SPEC-V8 S14.1.6): `ciu instance init --up` in a fresh worktree with `default_bundles = ["test"]` starts the `test` bundle's services and nothing else; `--bundles all` overrides it; an undeclared name fails stage 4.
 
 **Related:** CIU-116, CIU-124, run-gate RG-79 (the refusal that tells an agent to run this), RG-80, dstdns P241 (the validated end-to-end recipe), proposal row N30.
+
+## CIU-128 — a worktree reports `ready` before all committed nested CIU roots are prepared
+
+Severity: High (false lifecycle certification can send consumers into an
+incompletely initialized checkout). Type: bugfix. Spec owner: S16.1 and
+S16.4. Filed 2026-10-04 from RG-55's CIU worktree inspection.
+
+**Observed.** `create()` called `_finish_allocation()`, which wrote the CIU
+instance record as `ready`, before `create()` discovered and prepared the
+remaining committed roots and persisted the neutral workspace's `root_entries`
+metadata. A concurrent `inspect` could observe `ready` during that window. If
+nested generation failed, `create()` changed the record to
+`recovery-required`, but `ensure()` called `_finish_allocation()` again; the
+markerless aggregate-root branch immediately wrote `ready` without retrying
+the nested preparation. A hard interruption in the original window could
+also strand a ready record without completed root metadata.
+
+**Required contract.** Keep the CIU record `allocating` until every committed
+root at the allocated checkout's exact `HEAD` has readable generated facts and
+its root entry is persisted in shared workspace metadata. On recoverable
+failure, retain the checkout as `recovery-required`; `ensure` repeats missing
+work and verifies older ready records before returning them. Root discovery
+must use the allocated tree's resolved commit, not re-resolve a mutable base
+name in the primary checkout. Root-entry and lease-mirror updates to the
+shared record must re-read and merge under the Git-family workspace lock so
+concurrent metadata is not lost.
+
+**Oracles.** (1) During nested generation, a concurrent `inspect --json`
+reports `allocating`, never `ready`. (2) Inject one nested-root generation
+failure, confirm `create` leaves `recovery-required` and no nested facts, then
+restore generation and verify `ensure` creates the facts and returns `ready`
+only after root metadata is stored. (3) A pre-fix ready record missing root
+facts/metadata is repaired by `ensure`, not returned unchanged. (4) A moved
+symbolic base cannot change the root set selected for an already allocated
+checkout.
+
+**Status: OPEN — implementation and focused regression are on the RG-55 CIU
+fix branch; registered gate and independent verification remain pending.**

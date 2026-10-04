@@ -4143,12 +4143,14 @@ and `ciu.env` is the shell-export rendering of those facts.
 Create/adopt admission rejects an occupied path, branch, or six-character
 identity collision before allocation. The shared allocator holds one blocking
 Git-family lock, refuses any existing target path (empty or not), records the
-allocation atomically, and runs adapter cleanup before removal. CIU then
-discovers every committed root, acquires per-root locks in stable offset order,
-and prepares each root's generated facts and runtime names. A partial
-preparation remains attributable and is reported as recovery-required; no
-missing or malformed generated-facts file is silently treated as a fresh
-identity.
+allocation atomically, and runs adapter cleanup before removal. After the
+allocated checkout's exact `HEAD` is established, CIU discovers every
+committed root from that commit, acquires per-root locks in stable offset
+order, and prepares each root's generated facts and runtime names. The CIU
+instance record remains `allocating` until root facts and shared root-entry
+metadata are complete, then transitions to `ready`. A partial preparation
+remains attributable and is reported as recovery-required; no missing or
+malformed generated-facts file is silently treated as a fresh identity.
 
 Environment generation and clean run as subprocesses at the exact target CIU
 root (which may be nested below the Git worktree root). `--root-folder` selects
@@ -4482,6 +4484,22 @@ generic. This rule matches allocation's root classification; it does not
 invent an identity or change the record schema. Only a truly absent marker
 path is “no marker”; a present path must resolve to a regular file, and a
 directory, dangling symlink, or unreadable entry is refused.
+
+For `create`, `adopt`, and resumed `ensure`, `ready` additionally means that
+every committed CIU root discovered from the allocated checkout's exact
+`HEAD` has readable generated facts and that the corresponding root-entry list
+has been persisted in the shared workspace record. The CIU instance record
+MUST remain `allocating` while those roots or their metadata are being
+prepared; a recoverable preparation failure MUST leave it
+`recovery-required` with `recovery_status: "env-generation-failed"`. `ensure`
+MUST repeat incomplete preparation before returning `ready`, and MUST NOT
+fast-return an older ready record unless its discovered roots, generated
+facts, and recorded root entries agree. Root discovery uses the allocated
+checkout's resolved commit, not a mutable base-ref name in the primary
+checkout. Root-entry updates MUST re-read and merge the neutral workspace
+record under its Git-family workspace lock, preserving unrelated metadata and
+lease fields; CIU's lease mirror MUST use that same lock for its own
+read-modify-write. No runtime identity is invented for an aggregate root.
 
 Git facts are freshly read from Git, never inferred from a name or a stale
 record: `git.registered` (the record's checkout is a current registered

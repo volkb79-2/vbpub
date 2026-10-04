@@ -164,7 +164,12 @@ def _sync_shared_lease(ciu_root: Path, lease) -> None:
         shared = _shared_worktree()
         record = _shared_record_for_checkout(ciu_root)
         if record is not None:
-            shared.write_record(replace(record, lease=lease))
+            # Root-metadata and lease updates are read-modify-write operations
+            # on the same neutral record. Re-read under the shared family lock
+            # so either update preserves the other's fields.
+            with shared.workspace_lock(record.git_common_dir):
+                current = shared.read_record(record.record_path)
+                shared.write_record(replace(current, lease=lease))
     except Exception as exc:
         raise WorktreeError(
             f"[S16.9] could not update shared workspace lease for {ciu_root}: {exc}"
@@ -3596,12 +3601,144 @@ def _mark_recovery(record: WorktreeInstanceRecord, status: str) -> WorktreeInsta
     return failed
 
 
+def _committed_root_entries(
+    repo_root: Path,
+    record: WorktreeInstanceRecord,
+    workspace_context: object | None,
+    *,
+    prepare: bool,
+    persist: bool,
+) -> list[dict[str, Any]]:
+    """Read or prepare every CIU root committed at this checkout's exact HEAD.
+
+    The CIU instance record is the readiness signal consumed by callers. Keep
+    its state non-ready until these root facts and the neutral workspace's
+    ``root_entries`` metadata agree. Resolve roots from the allocated checkout
+    HEAD, not from the mutable base name in the primary checkout.
+    """
+    from . import workspace as workspace_adapter
+    from .workspace_env import generate_ciu_env, read_generated_facts
+
+    if workspace_context is None:
+        raise WorktreeError(
+            "[S16] cannot certify worktree readiness without its shared "
+            "workspace record for committed-root metadata"
+        )
+    head = _git(
+        ["rev-parse", "HEAD^{commit}"],
+        record.git_worktree_path,
+    )
+    commit = head.stdout.strip() if head.returncode == 0 else ""
+    if not _FULL_SHA_RE.fullmatch(commit):
+        raise WorktreeError(
+            f"[S16] could not determine the allocated worktree commit at "
+            f"{record.git_worktree_path}: {(head.stderr or head.stdout).strip()}"
+        )
+
+    primary = primary_worktree_root(repo_root).resolve()
+    discovered_roots = workspace_adapter.discover_committed_roots(primary, base=commit)
+    physical_primary = Path(workspace_context.physical_worktree_path)
+    specs: list[tuple[Path, Path, object]] = []
+    for discovered in discovered_roots:
+        relative = discovered.relative_to(primary)
+        target_root = (record.git_worktree_path / relative).resolve()
+        if not _ciu_root_marker_present(target_root):
+            raise WorktreeError(
+                f"[S16] committed CIU root marker did not materialize at {target_root}"
+            )
+        root_context = workspace_adapter.context_for_root(
+            target_root, physical_git_root=physical_primary
+        )
+        specs.append((relative, target_root, root_context))
+
+    workspace_adapter.assert_root_identity_distinct(
+        [root_context for _relative, _target_root, root_context in specs]
+    )
+
+    root_entries: list[dict[str, Any]] = []
+    with ExitStack() as locks:
+        for _relative, _target_root, root_context in sorted(
+            specs, key=lambda item: str(item[0])
+        ):
+            locks.enter_context(workspace_adapter.root_lock(root_context))
+        for relative, target_root, root_context in specs:
+            if prepare and target_root.resolve() != record.ciu_root.resolve():
+                generate_ciu_env(target_root, notice_stream=None)
+            facts = read_generated_facts(target_root)
+            root_entries.append({
+                "offset": relative.as_posix() if relative != Path(".") else ".",
+                "generated_facts_path": str(
+                    workspace_adapter._shared().canonical_path(
+                        target_root / "ciu.instance.generated.toml"
+                    )
+                ),
+                "root_instance_id": root_context.root_instance_id,
+                "workspace_id": root_context.workspace_id,
+                "network": facts.get("network", ""),
+                "state": "ready",
+            })
+
+    if persist:
+        _write_committed_root_entries(workspace_context, root_entries)
+    return root_entries
+
+
+def _write_committed_root_entries(
+    workspace_context: object | None,
+    root_entries: list[dict[str, Any]],
+) -> None:
+    if workspace_context is None:
+        raise WorktreeError(
+            "[S16] cannot persist committed-root metadata without a shared "
+            "workspace context"
+        )
+    shared = _shared_worktree()
+    # ``write_record`` is an atomic file replacement, not a locked
+    # read-modify-write. Preserve opaque metadata and lease updates made by
+    # other shared-worktree consumers by holding the family lock across both.
+    with shared.workspace_lock(workspace_context.git_common_dir):
+        generic_record = shared.read_record(workspace_context.record_path)
+        shared.write_record(
+            replace(
+                generic_record,
+                metadata={
+                    **dict(generic_record.metadata),
+                    "root_entries": root_entries,
+                },
+            )
+        )
+
+
+def _ready_roots_are_complete(
+    repo_root: Path,
+    record: WorktreeInstanceRecord,
+    workspace_context: object | None,
+) -> bool:
+    """Recognize complete historical ready records before ensure fast-returns."""
+    if workspace_context is None:
+        return False
+    try:
+        entries = _committed_root_entries(
+            repo_root, record, workspace_context, prepare=False, persist=False
+        )
+        shared = _shared_worktree()
+        with shared.workspace_lock(workspace_context.git_common_dir):
+            generic_record = shared.read_record(workspace_context.record_path)
+        return generic_record.metadata.get("root_entries") == entries
+    except Exception:
+        # ensure() will demote the claim and run the normal repair path. The
+        # repair path reports a concrete refusal if the missing evidence cannot
+        # be regenerated.
+        return False
+
+
 def _finish_allocation(
     repo_root: Path,
     record: WorktreeInstanceRecord,
     *,
     checkout_required: bool,
     allow_existing_network: bool = False,
+    workspace_context: object | None = None,
 ) -> WorktreeInstanceRecord:
     if checkout_required:
         checkout = _git(["reset", "--hard", record.base_ref], record.git_worktree_path)
@@ -3636,58 +3773,63 @@ def _finish_allocation(
         if _FULL_SHA_RE.fullmatch(candidate):
             record = replace(record, fork_point_sha=candidate)
 
-    # A generic Git worktree is valid even when the selected family contains no
-    # CIU root marker.  Worktree creation must report that there are no CIU
-    # roots to prepare; it must not reinterpret the Git top level as a root or
-    # fail before `discover_committed_roots` can inspect nested markers.
-    if not _ciu_root_marker_present(record.ciu_root):
-        ready = replace(record, state="ready", recovery_status=None)
-        _write_instance_record(ready)
-        return ready
-
-    rc = _generate_env_in(record.ciu_root, identity_only=True)
-    if rc != 0:
-        _mark_recovery(record, "env-generation-failed")
-        raise WorktreeError(
-            f"[S16] worktree exists at {record.git_worktree_path}, but "
-            f"`ciu env generate` failed in {record.ciu_root} (exit {rc}). "
-            f"Resume with `ciu worktree ensure {record.logical_name}`."
-        )
-    try:
-        instance_id, network = _runtime_identity(record.ciu_root)
-        _check_runtime_collision(repo_root, record, instance_id, network)
-        if not allow_existing_network and _docker_network_exists(network):
-            raise WorktreeError(
-                f"[S16] host runtime network {network!r} already exists before "
-                "this allocation; refusing a possible independent-clone collision"
-            )
-    except WorktreeError:
-        _mark_recovery(record, "runtime-collision")
-        raise
-    allocating = replace(
-        record, state="allocating", instance_id=instance_id, network=network,
-        recovery_status=None,
-    )
+    allocating = replace(record, state="allocating", recovery_status=None)
     _write_instance_record(allocating)
+    recovery_status = "env-generation-failed"
+    try:
+        # A generic Git worktree is valid without a root marker at its family
+        # root. Its nested roots are still prepared before the aggregate record
+        # can transition to ready.
+        if _ciu_root_marker_present(record.ciu_root):
+            rc = _generate_env_in(record.ciu_root, identity_only=True)
+            if rc != 0:
+                raise WorktreeError(
+                    f"[S16] worktree exists at {record.git_worktree_path}, but "
+                    f"`ciu env generate` failed in {record.ciu_root} (exit {rc}). "
+                    f"Resume with `ciu worktree ensure {record.logical_name}`."
+                )
+            try:
+                instance_id, network = _runtime_identity(record.ciu_root)
+                _check_runtime_collision(repo_root, allocating, instance_id, network)
+                if not allow_existing_network and _docker_network_exists(network):
+                    raise WorktreeError(
+                        f"[S16] host runtime network {network!r} already exists before "
+                        "this allocation; refusing a possible independent-clone collision"
+                    )
+            except WorktreeError:
+                recovery_status = "runtime-collision"
+                raise
+            allocating = replace(
+                allocating, instance_id=instance_id, network=network,
+            )
+            _write_instance_record(allocating)
 
-    rc = _generate_env_in(record.ciu_root)
-    if rc != 0:
-        _mark_recovery(allocating, "env-generation-failed")
-        raise WorktreeError(
-            f"[S16] worktree exists at {record.git_worktree_path}, but full "
-            f"`ciu env generate` failed in {record.ciu_root} (exit {rc}). "
-            f"Resume with `ciu worktree ensure {record.logical_name}`."
+            rc = _generate_env_in(record.ciu_root)
+            if rc != 0:
+                raise WorktreeError(
+                    f"[S16] worktree exists at {record.git_worktree_path}, but full "
+                    f"`ciu env generate` failed in {record.ciu_root} (exit {rc}). "
+                    f"Resume with `ciu worktree ensure {record.logical_name}`."
+                )
+            confirmed_id, confirmed_network = _runtime_identity(record.ciu_root)
+            if (confirmed_id, confirmed_network) != (instance_id, network):
+                recovery_status = "runtime-collision"
+                raise WorktreeError(
+                    "[S16] runtime identity changed between identity-only and full env generation"
+                )
+
+        _committed_root_entries(
+            repo_root, allocating, workspace_context, prepare=True, persist=True
         )
-    confirmed_id, confirmed_network = _runtime_identity(record.ciu_root)
-    if (confirmed_id, confirmed_network) != (instance_id, network):
-        _mark_recovery(allocating, "runtime-collision")
+    except Exception as exc:
+        _mark_recovery(allocating, recovery_status)
+        if isinstance(exc, WorktreeError):
+            raise
         raise WorktreeError(
-            "[S16] runtime identity changed between identity-only and full env generation"
-        )
-    ready = replace(
-        allocating, state="ready", instance_id=instance_id, network=network,
-        recovery_status=None,
-    )
+            f"[S16] multi-root preparation failed in {record.git_worktree_path}: {exc}"
+        ) from exc
+
+    ready = replace(allocating, state="ready", recovery_status=None)
     _write_instance_record(ready)
     return ready
 
@@ -3874,91 +4016,10 @@ def create(
         except WorktreeError:
             _mark_recovery(record, "checkout-incomplete")
             raise
-        ready = _finish_allocation(repo_root, record, checkout_required=True)
-        # Worktree creation is a workspace operation: every committed CIU root
-        # in the selected Git tree is prepared with its own generated facts.
-        # The root selected by the legacy CIU record has already been prepared
-        # by _finish_allocation; the remaining roots are generated by exact
-        # root-relative translation and never by ignored overlays or ambient
-        # REPO_ROOT.
-        root_entries: list[dict[str, Any]] = []
-        try:
-            from . import workspace as workspace_adapter
-            from .workspace_env import generate_ciu_env, read_generated_facts
-
-            discovered_roots = workspace_adapter.discover_committed_roots(primary, base=base)
-            specs: list[tuple[Path, Path, object]] = []
-            physical_primary = shared_context.physical_worktree_path
-            for discovered in discovered_roots:
-                relative = discovered.relative_to(primary)
-                target_root = (target / relative).resolve()
-                if not (target_root / GLOBAL_CONFIG_DEFAULTS).is_file():
-                    raise WorktreeError(
-                        f"[S16] committed CIU root marker did not materialize at {target_root}"
-                    )
-                root_context = workspace_adapter.context_for_root(
-                    target_root, physical_git_root=physical_primary
-                )
-                specs.append((relative, target_root, root_context))
-
-            workspace_adapter.assert_root_identity_distinct(
-                [root_context for _relative, _target_root, root_context in specs]
-            )
-
-            with ExitStack() as locks:
-                for _relative, _target_root, root_context in sorted(
-                    specs, key=lambda item: str(item[0])
-                ):
-                    locks.enter_context(workspace_adapter.root_lock(root_context))
-                for relative, target_root, root_context in specs:
-                    if target_root.resolve() != ready.ciu_root.resolve():
-                        generate_ciu_env(target_root, notice_stream=None)
-                    facts = read_generated_facts(target_root)
-                    root_entries.append({
-                        "offset": relative.as_posix() if relative != Path(".") else ".",
-                        "generated_facts_path": str(
-                            workspace_adapter._shared().canonical_path(
-                                target_root / "ciu.instance.generated.toml"
-                            )
-                        ),
-                        "root_instance_id": root_context.root_instance_id,
-                        "workspace_id": root_context.workspace_id,
-                        "network": facts.get("network", ""),
-                        "state": "ready",
-                    })
-
-            generic_record = _shared_worktree().read_record(shared_context.record_path)
-            _shared_worktree().write_record(
-                replace(
-                    generic_record,
-                    metadata={
-                        **dict(generic_record.metadata),
-                        "root_entries": root_entries,
-                    },
-                )
-            )
-        except Exception as exc:
-            if root_entries:
-                try:
-                    generic_record = _shared_worktree().read_record(shared_context.record_path)
-                    _shared_worktree().write_record(
-                        replace(
-                            generic_record,
-                            metadata={
-                                **dict(generic_record.metadata),
-                                "root_entries": root_entries,
-                            },
-                        )
-                    )
-                except Exception:
-                    pass
-            _mark_recovery(ready, "env-generation-failed")
-            if isinstance(exc, WorktreeError):
-                raise
-            raise WorktreeError(
-                f"[S16] multi-root preparation failed in {target}: {exc}"
-            ) from exc
-        return ready
+        return _finish_allocation(
+            repo_root, record, checkout_required=True,
+            workspace_context=shared_context,
+        )
 
 
 def ensure(
@@ -4012,13 +4073,41 @@ def ensure(
                         f"[S16] ensure mismatch for {field}: record has "
                         f"{actual!r}, caller requested {expected!r}"
                     )
-            _ensure_shared_record(repo_root, record)
+            shared_record = _ensure_shared_record(repo_root, record)
+            workspace_context = (
+                shared_record.context()
+                if shared_record is not None and hasattr(shared_record, "context")
+                else shared_record
+            )
             if record.state == "ready":
-                return record
-            checkout_required = record.recovery_status in (None, "checkout-incomplete")
+                if _ready_roots_are_complete(repo_root, record, workspace_context):
+                    return record
+                # Older writers exposed ready before nested-root metadata was
+                # committed. Demote such records and repair them through the
+                # same non-ready lifecycle as a fresh allocation.
+                record = replace(record, state="allocating", recovery_status=None)
+                _write_instance_record(record)
+                checkout_required = False
+                allow_existing_network = True
+            else:
+                # Once CIU recorded the exact post-reset fork point, a hard
+                # interruption during root preparation must resume in place.
+                # Re-resolving base_ref here could move a partially prepared
+                # worktree to a later main and discard work made during repair.
+                checkout_required = (
+                    record.recovery_status == "checkout-incomplete"
+                    or (
+                        record.recovery_status is None
+                        and record.fork_point_sha is None
+                    )
+                )
+                allow_existing_network = (
+                    record.recovery_status == "env-generation-failed"
+                )
             return _finish_allocation(
                 repo_root, record, checkout_required=checkout_required,
-                allow_existing_network=record.recovery_status == "env-generation-failed",
+                allow_existing_network=allow_existing_network,
+                workspace_context=workspace_context,
             )
     return create(repo_root, logical_name, **create_kwargs)
 
@@ -4078,7 +4167,12 @@ def adopt(
             base_ref=head.stdout.strip(), state="allocating",
         )
         _write_instance_record(record)
-        _ensure_shared_record(repo_root, record)
+        shared_record = _ensure_shared_record(repo_root, record)
+        workspace_context = (
+            shared_record.context()
+            if shared_record is not None and hasattr(shared_record, "context")
+            else shared_record
+        )
         if (record.ciu_root / GLOBAL_CONFIG_INSTANCE_OVERRIDES).exists() and (
             profile or shared_infra_intent is not None
         ):
@@ -4108,7 +4202,8 @@ def adopt(
             _mark_recovery(record, "env-generation-failed")
             raise
         return _finish_allocation(
-            repo_root, record, checkout_required=False, allow_existing_network=True
+            repo_root, record, checkout_required=False, allow_existing_network=True,
+            workspace_context=workspace_context,
         )
 
 
