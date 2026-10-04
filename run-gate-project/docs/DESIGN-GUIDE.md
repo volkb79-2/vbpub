@@ -130,14 +130,31 @@ Each lane's elapsed budget starts after the runner locks are held and count
 admission succeeds. Waiting for another gate to release its ticket therefore
 does not consume the lane's own execution budget.
 
-## Durable mutation state survives short-lived worktrees
+## Assay resume state needs an environment-owned mount
 
 Assay keeps verdict and progress beside the judged project for this run, but
 mutation resume state must outlive a CIU-managed worktree. run-gate therefore
 passes `--state-dir` under the checkout that owns the shared Git directory,
 keyed by the project's path there. This keeps retries resumable after the
-worktree is removed. The separate RG-49 repair for root-owned parents in
-partial-bind containers remains open; see the [consumer contract](../CONSUMERS.md#resume-progress-and-durable-assay-state).
+worktree is removed.
+
+A worktree-owned runner may mount the worktree and `.git` separately. Docker
+can create the missing repository parent as `root:root 0755`; the non-root
+lane user then cannot create `.run-gate` under it. Creating that directory
+inside the runner would make the immediate run pass but keep state in the
+container's writable layer, which is lost when the runner is recreated.
+
+run-gate now probes the state root in the lane's own environment before
+starting Assay. The root must already exist and be writable by the lane user;
+when keyed state directories already exist, the deepest existing directory
+on that path must also be writable.
+When the default `<checkout>/.run-gate` path is not mounted there, the result
+is NOT_RUN/`state-mount` with the required read-write mount named. A container
+environment can set `state_root` when its durable mount uses another path;
+`doctor` checks that path once per assay environment. run-gate creates only
+the keyed per-project descendants beneath the checked root. See the
+[consumer contract](../CONSUMERS.md#resume-progress-and-durable-assay-state)
+for the config and mount requirement.
 
 ## Keep failed assay evidence outside short-lived worktrees
 

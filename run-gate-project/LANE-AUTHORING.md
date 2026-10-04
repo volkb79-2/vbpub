@@ -231,9 +231,10 @@ with sqlfluff in a command lane if the project wants it.
   consumer outside this repository has no shared source tree, so it uses an
   explicit immutable command plus `pins.assay` digest/version; refresh that
   external/copy artifact deliberately when it adopts a new Assay release.
-- Environment facts (image, slice, mounts) come from the central
-  `run-gate.toml` — DERIVE or READ or FAIL, never a silent default (`AGENTS
-  §4.2a`).
+- Environment facts (image, slice, mounts, `state_root`) come from the
+  applicable `run-gate.toml` — DERIVE or READ or FAIL, never a silent default
+  (`AGENTS §4.2a`). Assay environments must have a durable, writable state
+  root; see the [consumer contract](CONSUMERS.md#resume-progress-and-durable-assay-state).
 
 **Evidence over assertion.**
 
