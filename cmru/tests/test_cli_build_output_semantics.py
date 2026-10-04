@@ -1071,14 +1071,17 @@ def test_github_publish_refuses_release_creation_or_recreation_in_existing_only_
     ],
 )
 def test_verified_existing_release_rejects_changed_or_malformed_identity(
-    monkeypatch, record, commit, expected,
+    monkeypatch, capsys, record, commit, expected,
 ):
     client = release.GitHubReleases("owner", "repo", "token")
     monkeypatch.setattr(client, "get_release_by_tag", lambda _tag: record)
     monkeypatch.setattr(client, "get_tag_commit", lambda _tag: commit)
 
-    with pytest.raises(SystemExit, match=expected):
+    with pytest.raises(SystemExit) as exc_info:
         client._verified_existing_release("alpha-v1", 7, SOURCE_COMMIT)
+
+    assert exc_info.value.code == 1
+    assert expected in capsys.readouterr().err
 
 
 def test_verified_existing_release_returns_only_matching_release(monkeypatch):
