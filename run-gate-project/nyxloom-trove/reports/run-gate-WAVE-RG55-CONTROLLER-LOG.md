@@ -6573,3 +6573,23 @@ substantive post-1.0.0 changes genuinely warrant it; do not manufacture a
 second release to preserve the now-lost historical split. This settles the
 release boundary, not the pending campaign, review, gate, publication, or
 daemon-running requirements.
+
+### RW-435 — 2026-10-04 15:52:52Z — one combined current-source cgprofile R2
+
+The active P1 request-base campaign at `8bd5d0a8` uses base
+`e5e9b95c` (2026-09-25); its `assay.toml` declares `source_roots = ["lib"]`
+and `base_source = "request"`. The base-to-judged-tree diff is the combined
+P1/P6 implementation delta. Read-only comparison found the judged tree's
+`scripts/cgroup-profiler/lib`, tests, and release/gate configuration match
+current `main`/`origin/main`; the only tracked source-tree difference under
+that project is its copied `run-gate.py` (rev 46 versus rev 49). The latter is
+outside the mutation source roots. Current local `main` also matches
+`origin/main` for the cgprofile library/tests/config paths.
+
+Therefore, this exact R2 campaign is the mutation evidence for the combined
+P1+P6 library release; do not launch a second campaign against the stale P6
+candidate solely to duplicate it. This is a scope ruling, not a verdict: the
+P1 campaign must finish, every survivor must be triaged, and any library fix
+invalidates this applicability until the resulting exact source is rejudged.
+The final registered short/full gates must still exercise the release target
+with its current rev-49 runner.
