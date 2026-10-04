@@ -25,6 +25,7 @@ from cmru import cli, transaction, version
 @pytest.fixture(autouse=True)
 def empty_origin_tag_inventory(monkeypatch):
     monkeypatch.setattr(cli, "_read_origin_tag_refs", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(cli.transaction, "write_release_tag_snapshot", lambda *_args, **_kwargs: None)
 
 
 def _config(tmp_path):

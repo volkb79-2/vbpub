@@ -441,6 +441,7 @@ cwd = "alpha"
     monkeypatch.setattr(transaction, "fetch_origin_main", lambda _root, **_kwargs: "a" * 40)
     monkeypatch.setattr(transaction, "assert_local_main_not_ahead", lambda _root, **_kw: 0)
     monkeypatch.setattr(transaction, "create_workspace", lambda _root, *, base, **_kw: workspace)
+    monkeypatch.setattr(transaction, "write_release_tag_snapshot", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(transaction, "copy_secret_overlays", lambda *_args, **_kwargs: calls.append("secret"))
     monkeypatch.setattr(transaction, "run_child", lambda _workspace, args, **kwargs: calls.append(list(args)) or 0)
     monkeypatch.setattr(transaction, "remove_workspace", lambda _workspace: calls.append("removed"))
@@ -498,6 +499,7 @@ cwd = "alpha"
     monkeypatch.setattr(transaction, "fetch_origin_main", lambda _root, **_kwargs: "a" * 40)
     monkeypatch.setattr(transaction, "assert_local_main_not_ahead", lambda _root, **_kw: 0)
     monkeypatch.setattr(transaction, "create_workspace", lambda _root, *, base, **_kw: workspace)
+    monkeypatch.setattr(transaction, "write_release_tag_snapshot", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(transaction, "copy_secret_overlays", lambda *_args, **_kwargs: calls.append("secret"))
     # Child fails after the candidate cycle started; the new parent must never
     # infer that source history needs a compensating revert.
@@ -561,6 +563,7 @@ cwd = "alpha"
     monkeypatch.setattr(transaction, "fetch_origin_main", lambda _root, **_kwargs: "a" * 40)
     monkeypatch.setattr(transaction, "assert_local_main_not_ahead", lambda _root, **_kw: 0)
     monkeypatch.setattr(transaction, "create_workspace", lambda _root, *, base, **_kw: workspace)
+    monkeypatch.setattr(transaction, "write_release_tag_snapshot", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(transaction, "copy_secret_overlays", lambda *_args, **_kwargs: None)
     # Child fails before ever reaching promote_workspace (e.g. gates failed).
     monkeypatch.setattr(transaction, "run_child", lambda _workspace, args, **kwargs: 1)

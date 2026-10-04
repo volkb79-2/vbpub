@@ -13,6 +13,7 @@ def fake_release_preflight(monkeypatch):
         lambda root, projects: {root: list(projects)},
     )
     monkeypatch.setattr(cli, "_read_origin_tag_refs", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(cli.transaction, "write_release_tag_snapshot", lambda *_args, **_kwargs: None)
 
 
 def _loaded(tmp_path):

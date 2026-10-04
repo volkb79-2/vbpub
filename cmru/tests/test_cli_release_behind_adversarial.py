@@ -13,6 +13,7 @@ def fake_release_preflight(monkeypatch):
         lambda root, projects: {root: list(projects)},
     )
     monkeypatch.setattr(cli, "_read_origin_tag_refs", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(cli.transaction, "write_release_tag_snapshot", lambda *_args, **_kwargs: None)
 
 
 def test_release_uses_fetched_origin_when_local_main_is_behind(monkeypatch, tmp_path, capsys):
