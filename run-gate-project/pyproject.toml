@@ -1,10 +1,11 @@
 # RG-14 — the wheel as a SECOND artifact beside the canonical script.
 #
 # The script stays PRIMARY: fresh clone, zero installs, `./run-gate.py --list`
-# unchanged (CONSUMERS step 1). This file only wraps the SAME single module
-# for pip-installable distribution, published through cmru's wheel-publish
-# like assay/ciu. The wheel must never become a requirement — CONSUMERS.md
-# says so in prose and this file cannot make it one.
+# unchanged (CONSUMERS step 1). This file wraps the launcher and its
+# standalone `run_gate_admission.py` module for pip-installable distribution,
+# published through cmru's wheel-publish like assay/ciu. The wheel must never
+# become a requirement — CONSUMERS.md says so in prose and this file cannot
+# make it one.
 #
 # Version is DERIVED from git tags by setuptools-scm (no clock, no manual
 # bump), exactly like ciu/cmru: release = annotated tag `run-gate-vX.Y.Z`
@@ -42,7 +43,7 @@ run-gate = "run_gate:main"
 # carry hyphens, so py_modules cannot auto-find it. The committed symlink
 # run_gate.py -> run-gate.py gives the build an importable name for the SAME
 # bytes (dereferenced at copy time), and the console script binds to it.
-py-modules = ["run_gate"]
+py-modules = ["run_gate", "run_gate_admission"]
 
 # Version comes from the git tag, resolved against the enclosing checkout
 # (root = ".."): the release transaction always builds from a worktree whose

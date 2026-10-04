@@ -137,6 +137,9 @@ def _run_launcher(tmp_path: Path, *args: str, pressure: float = 0.0,
     env["FAKE_DOCKER_STATE"] = str(log.parent)
     env["_TESTER_UNIFIED_PRESSURE_FILE"] = str(pressure_file)
     env["_TESTER_UNIFIED_LAUNCH_LOCK"] = str(tmp_path / "launch.lock")
+    socket = Path("/var/run/docker.sock")
+    env["_TESTER_UNIFIED_DOCKER_SOCKET_GID"] = str(
+        os.stat(socket).st_gid if socket.is_socket() else os.getgid())
     env["TESTER_UNIFIED_RUN_NAME"] = "tester-unified-contract-test"
     env["FAKE_DOCKER_UPDATE_FAIL"] = "1" if update_fails else "0"
     env["FAKE_DOCKER_EXECUTE_JOB"] = "1" if execute_job else "0"
@@ -170,7 +173,8 @@ def test_launcher_constructs_and_verifies_the_complete_gate_boundary(tmp_path):
         ["findmnt", "--target", str(REPO), "--noheadings", "--output", "FSROOT"],
         text=True, capture_output=True, check=True,
     ).stdout.strip()
-    socket_gid = os.stat("/var/run/docker.sock").st_gid
+    socket = Path("/var/run/docker.sock")
+    socket_gid = os.stat(socket).st_gid if socket.is_socket() else os.getgid()
 
     assert "run -d" in calls
     assert "--init" in calls
