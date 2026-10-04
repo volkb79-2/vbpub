@@ -1213,7 +1213,7 @@ class TestManagedRecordValidation:
         assert ready.instance_id
         assert ready.network
         assert [record.state for record in writes] == [
-            "allocating", "allocating", "ready",
+            "allocating", "allocating", "allocating", "ready",
         ]
 
     def test_ciu_root_ready_record_still_rejects_null_identity(self, tmp_path):
