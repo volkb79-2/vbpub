@@ -131,6 +131,22 @@ def test_read_only_and_unidentifiable_old_records_refuse_without_repair(tmp_path
         workspace_env.read_generated_facts(tmp_path)
 
 
+@pytest.mark.parametrize("missing_key", ["instance_id", "network"])
+def test_outdated_identity_refuses_when_either_identity_fact_is_missing(
+    tmp_path, missing_key,
+):
+    path = _write_old_facts(tmp_path, {**OLD_FACTS, missing_key: ""})
+    before = path.read_bytes()
+
+    with pytest.raises(
+        workspace_env.WorkspaceEnvError,
+        match="missing instance_id or network",
+    ):
+        workspace_env.outdated_generated_identity(tmp_path)
+
+    assert path.read_bytes() == before
+
+
 def test_float_current_schema_version_is_not_accepted_as_integer(tmp_path):
     path = _write_old_facts(tmp_path)
     body = path.read_text(encoding="utf-8")
@@ -234,8 +250,8 @@ def test_machine_fact_reader_rejects_non_table_parent_and_unknown_keys(tmp_path)
 def test_identity_label_scan_validates_checkout_and_collects_projects(monkeypatch):
     calls = []
 
-    def docker(args, **_kwargs):
-        calls.append(args)
+    def docker(args, **kwargs):
+        calls.append((args, kwargs))
         kind = args[0] if args[0] != "volume" else "volume"
         return SimpleNamespace(
             returncode=0,
@@ -243,7 +259,7 @@ def test_identity_label_scan_validates_checkout_and_collects_projects(monkeypatc
                 "ps": "cid\t/physical/repo\tproject-a\n\n",
                 "volume": "vol\t/physical/repo\tproject-b\n",
                 "network": "net\t/physical/repo\t<no value>\n",
-            }[kind],
+            }[kind] if kwargs.get("capture") else None,
             stderr="",
         )
 
@@ -256,6 +272,7 @@ def test_identity_label_scan_validates_checkout_and_collects_projects(monkeypatc
         "project": ["project-a", "project-b"],
     }
     assert len(calls) == 3
+    assert all(kwargs == {"capture": True, "check": False} for _, kwargs in calls)
 
 
 @pytest.mark.parametrize(
