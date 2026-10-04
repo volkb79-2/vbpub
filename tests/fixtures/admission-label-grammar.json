@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "surface": "label_value_grammar",
+  "source": "ciu/docs/SPEC-V8.md Appendix E",
+  "labels": {
+    "ciu.admission.generation": "decimal-integer",
+    "ciu.admission.owner": "json-compact-sorted{ciu_version,host,time,user}",
+    "ciu.admission.tiers.gates.max_concurrent": "decimal-integer",
+    "ciu.admission.unreadable_policy": "refuse|unbudgeted",
+    "ciu.reservation.deadline": "epoch-seconds-utc-decimal-integer",
+    "ciu.reservation.group": "ticket-name",
+    "ciu.reservation.kind": "lane|marker",
+    "ciu.reservation.override": "true",
+    "ciu.reservation.owner": "json-compact-sorted{boot_id=stripped-proc-boot_id,host=gethostname-unqualified,lane,pid,pid_ns=decimal-inode-string,run_id,start_ticks}",
+    "ciu.reservation.scheme": "settle|ticket",
+    "ciu.reservation.tier": "gates"
+  }
+}
