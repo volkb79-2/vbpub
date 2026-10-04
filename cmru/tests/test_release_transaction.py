@@ -701,14 +701,22 @@ def test_multi_family_release_with_untagged_origin_policies_needs_no_tag_support
         transaction, "fetch_origin_main",
         lambda root, **_kwargs: fetched.append(root) or "f" * 40,
     )
+    origin_configs = {
+        root: (
+            f'[project]\nid = "{project.name}"\n'
+            f'prefix = "{project.name}-v"\n'
+            "[project.release]\ngit_tag = false\n"
+        )
+        for root, project in zip(roots, projects, strict=True)
+    }
     monkeypatch.setattr(
         cli, "_read_git_path_at_commit",
-        lambda *_args, **_kwargs: "[project.release]\ngit_tag = false\n",
+        lambda root, *_args, **_kwargs: origin_configs[root],
     )
     monkeypatch.setattr(
         cli, "_resolve_git_file_at_commit",
-        lambda _root, _revision, path, **_kwargs: (
-            path, "[project.release]\ngit_tag = false\n",
+        lambda root, _revision, path, **_kwargs: (
+            path, origin_configs[root],
         ),
     )
     monkeypatch.setattr(
