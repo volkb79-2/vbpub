@@ -195,7 +195,8 @@ def test_new_v7_workflows_are_explained_in_all_three_user_documents():
 
     assert "[ciu.worktree]" in consumers and "up = [\"test\"]" in consumers
     assert "DRY_RUN_SAFE = True" in consumers
-    assert "ciu resolve --stack" in consumers and "ciu exec tools/test-runner" in consumers
+    assert "ciu resolve --stack" in consumers
+    assert "ciu exec --profile test tools/test-runner:test-runner" in consumers
     assert "ciu clean --identity OLD_ID" in consumers
 
 

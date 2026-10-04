@@ -1222,6 +1222,10 @@ class TestManagedRecordValidation:
         }
         assert "damaged" in capsys.readouterr().err
 
+        inspected = worktree.inspect_instance(rootless_repo, "rootless")
+        assert inspected["git"]["registered"] is True
+        assert "damaged" in capsys.readouterr().err
+
         # The rootless record supports record-only lease handling. Branch
         # hygiene protects the unreadable checkout as possibly managed.
         released = worktree.apply_lease(rootless_repo, "rootless", release=True)
@@ -1231,7 +1235,8 @@ class TestManagedRecordValidation:
         assert damaged_branch["category"] == "managed-instance"
 
         monkeypatch.setattr(worktree, "_reap_docker_rows", lambda *_a, **_kw: [])
-        reap = worktree.survey_reap_groups(rootless_repo)
+        reap = worktree.reap_groups(rootless_repo, yes=True, dry_run=True)
+        assert reap["status"] == "dry-run"
         assert not reap["identity_complete"]
         assert str(damaged.git_worktree_path) in reap["unresolved_checkouts"]
         assert str(rootless.git_worktree_path) not in reap["unresolved_checkouts"]

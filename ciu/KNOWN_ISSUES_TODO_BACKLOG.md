@@ -11,7 +11,7 @@ WITHDRAWN issue means the claimed product behavior was removed or never
 adopted after its premise was disproved; it must not remain described as a
 shipped capability.
 
-Last updated: 2026-10-04 — **CIU-103, CIU-107, CIU-109, CIU-112, CIU-115, CIU-118, CIU-119, CIU-124, CIU-125, and CIU-126 FIXED** in the CIU v7 worktree/identity wave. RG-70 remains with run-gate.
+Last updated: 2026-10-04 — **CIU-103, CIU-107, CIU-109, CIU-112, CIU-115, CIU-118, CIU-119, CIU-124, CIU-125, CIU-126, and CIU-127 FIXED** in the CIU v7 worktree/identity wave. dstdns caller migration ships with CIU-118; RG-70's direct service command path is folded into `ciu exec`, while run-gate remains the owner of declared gate invocations and their budgets.
 
 Previously, 2026-09-02 — **V8-2 BACKPORTED (ciu-P47): the identity-file
 split and the overlay rename.** `[ciu.instance.generated]` moved out of the
@@ -566,7 +566,7 @@ Last reconciled: 2026-08-17, automation-safe worktree lifecycle milestone.
 | CIU-115 | CIU-owned outdated identity records block siblings and teardown | Medium | FIXED 2026-10-04 |
 | CIU-116 | Worktree shared-infrastructure reuse is not declared in project config | Medium | OPEN — waiting for shareability measurements |
 | CIU-117 | Worktree builds overwrite the primary checkout image tag | Medium | OPEN |
-| CIU-118 | No supported resolve/exec API for services of any instance | Medium | FIXED 2026-10-04; run-gate RG-70 tracked separately |
+| CIU-118 | No supported resolve/exec API for services of any instance | Medium | FIXED 2026-10-04; RG-70 direct command path folded into `ciu exec` |
 | CIU-119 | v7 clean cannot remove resources owned by a retired instance id | Medium | FIXED 2026-10-04 with CIU-115 |
 | CIU-120 | Reserved; intentionally unused | — | UNUSED |
 | CIU-121 | Reserved; intentionally unused | — | UNUSED |
@@ -575,6 +575,7 @@ Last reconciled: 2026-08-17, automation-safe worktree lifecycle milestone.
 | CIU-124 | `ciu up --dir` rejects documented deploy and healthcheck actions | Medium | FIXED 2026-10-04 |
 | CIU-125 | Worktree create cannot start a committed worktree-specific environment | Medium | FIXED 2026-10-04 |
 | CIU-126 | CIU rejects its own valid rootless worktree record and siblings can block lifecycle verbs | Medium | FIXED 2026-10-04 |
+| CIU-127 | `ciu down` cannot stop one stack without targeting the whole project | Medium | FIXED 2026-10-04 |
 
 
 The approved milestone decisions and serial package order are in
@@ -4603,7 +4604,7 @@ Severity: Medium. Type: feature. Spec owner: S8.x (bake), S17 (provenance). v8: 
 
 ## CIU-118 — no supported way to name or exec into a service of ANY instance (the primary included); consumers re-derive container names from the rendered file
 
-Severity: Medium. Type: feature. Spec owner: S16.6, S16.7 (v8: S4.4, S14.6.3). Related: CIU-113's "stack-scoped one-shot `exec`" product question; run-gate RG-70. Filed 2026-10-03 from dstdns.
+Severity: Medium. Type: feature. Spec owner: S16.6, S16.7 (v8: S4.4, S14.6.3). Related: CIU-113's "stack-scoped one-shot `exec`" product question; run-gate RG-70 is folded into this entry's `ciu exec` surface. Filed 2026-10-03 from dstdns.
 
 **Observed.**
 - `ciu worktree exec LOGICAL --target ALIAS` (S16.7) resolves a declared container and proves its mount. It works only for a `ready` managed worktree record and only for targets in `[ciu.worktree.exec_targets]`. Nothing covers the primary checkout, or a one-off "which container is service X of this instance".
@@ -4631,7 +4632,7 @@ Severity: Medium. Type: feature. Spec owner: S16.6, S16.7 (v8: S4.4, S14.6.3). R
 
 **Amendment (2026-10-03, dstdns D-666; reviewed against SPEC-V8 draft.11 and proposal rev 4.9):** the **v8: absorb** paragraph above is superseded: draft.8+ specifies both verbs (proposal V8-34, N26). `ciu resolve [--realization r] [--service s] [--live] --json` (identities as data, S4.4.3, and the two lock keys, S14.4.7) and `ciu exec <realization>[:<svc>] -- <cmd>` (the primary included, after the mount proof S16.4.3) are S18; the v7 `--stack S` / `<stack>[:<service>]` selectors are v8's realization names. `ciu instance exec --env` is **withdrawn** (S14.6.3), replaced by `ciu gate exec [--env E] -- <cmd>`; the "covers gate environments only" gap is closed. `ciu network attach-self` has no v8 verb: S14.1.4 and `[ciu] auto_connect_network` (S3.4.7) cover CIU's own container; a devcontainer joining an instance network by hand stays an open v8 question. The v8.2 split does not touch these verbs.
 
-**Disposition (2026-10-04): CIU v7 API FIXED.** `ciu resolve --json` returns exact rendered service identities in a v8-shaped `resolved.identities` object and is read-only unless `--live` is requested. `ciu exec` requires one exact already-running service and passes argv without a shell, returning the child status; declared worktree targets keep the mount proof. Tests cover exact service filtering, no Docker/no writes, exact Docker labels, ambiguous matches, and exit propagation. Consumer migrations outside this checkout remain their owners' work; run-gate RG-70 is with the companion run-gate task.
+**Disposition (2026-10-04): CIU v7 API FIXED; RG-70 folded here.** `ciu resolve --json` returns exact rendered service identities in a v8-shaped `resolved.identities` object and is read-only unless `--live` is requested. Repeated `--profile` options select the exact profile composition for optional stacks; no profile is inferred or silently substituted. `ciu exec` requires one exact already-running service and passes argv without a shell, returning the child status; terminal use requests Docker's interactive terminal, while scripts and pipes remain non-interactive. Declared worktree targets keep the mount proof. This is the canonical direct-command path into a worktree's test-runner, so RG-70 adds no second command surface; run-gate continues to own declared lanes and gate budgets. The dstdns host, editor, and admin-debug caller migrations ship with the consumer change; host scripts read generated environment facts through `ciu env print`, replacing the duplicate `scripts/ciu-env.sh`. Legacy live-test fixtures remain in `ConfigHelper` because the test-runner image does not contain the CIU CLI. Tests cover exact service filtering, optional-profile selection, no Docker/no writes, exact Docker labels, ambiguous matches, terminal allocation, and exit propagation.
 
 ## CIU-119 — the instance-id derivation changed in 7.15 while SPEC-V8 still specifies the old one, and consumers that re-derive it break silently
 
@@ -4755,6 +4756,20 @@ Severity: Medium. Type: bugfix. Spec owner: v7 S16 (worktree lifecycle and regis
 
 **v8: n/a for the v7 format bug.** SPEC-V8 S14.1.1/S14.7 writes lifecycle state only for linked CIU instances, while S16.11 defines gate-only zero-instance projects with no instance record. A rootless Git worktree has no CIU instance to initialize, so v8 does not write this v7 record shape. Preserve the general reader rule: only trust explicit, readable lifecycle facts; never infer an identity from null fields.
 
-**Bootstrap and acceptance.** Package 0 cannot use the broken `ciu worktree create` to make its own checkout, so a plain `git worktree add` is the authorized bootstrap. Keep the vbpub `.worktrees/rg55-p1-r2-20261003/ciu.worktree-instance.json` record unchanged. The acceptance command is `ciu worktree create` in the vbpub family with that sibling still present and untouched. Until RG-47 lands, invoke run-gate from this package's own worktree so it reads this checkout's configuration.
+**Bootstrap and acceptance.** Package 0 cannot use the broken `ciu worktree create` to make its own checkout, so a plain `git worktree add` is the authorized bootstrap. Keep the vbpub `.worktrees/rg55-p1-r2-20261003/ciu.worktree-instance.json` record unchanged. The acceptance command is `ciu worktree create` in the vbpub family with that sibling still present and untouched. RG-47/65 is merged; run the registered lane from this checkout with `./run-gate.py ciu --worktree "$PWD"` so the selected worktree supplies its project config.
 
 **Disposition (2026-10-04): FIXED.** Rootless record bytes are unchanged; `ready` null-identity records are read only when the corresponding checkout has no CIU root marker. Registry parsing isolates corrupt siblings, warns/counts them, and protects untrusted branches; a corrupt target name/path still refuses. Round-trip, target refusal, lifecycle-isolation, and rootless reap cases are covered. The authorized bootstrap used plain Git worktree creation. The real `ciu worktree create` acceptance succeeded in the vbpub family while `rg55-p1-r2-20261003/ciu.worktree-instance.json` remained byte-identical (SHA-256 before and after: `2187f8f7960c9761efb9f24a5886a9c1ed55095c88f00f3fa104cf693b467c10`); the acceptance checkout was then removed with `ciu worktree rm`.
+
+## CIU-127 — `ciu down` cannot stop one stack without targeting the whole project
+
+Severity: Medium. Type: feature. Spec owner: v7 S10.2a; v8 check: SPEC-V8 S14.1.3 and S18. Filed 2026-10-04 while migrating dstdns `admin-debug-exec.sh` to CIU-118.
+
+**Observed.** `ciu down` only exposes profile/project-wide `--stop`. dstdns's admin-debug wrapper starts the single `tools/admin-debug` stack, while `[deploy.profiles.admin]` also selects `infra/pwmcp`. Stopping the profile would take down that neighboring stack; retaining `docker stop` in the wrapper would bypass CIU's lifecycle API.
+
+**Contract.** `ciu down --dir PATH [--profile NAME ...] [--root-folder PATH]` resolves exactly one repository stack, obtains its `compose_project` from CIU's resolved identity document, lists running containers by exact `com.docker.compose.project` label, and stops only those container IDs. It preserves volumes. Optional stacks require the profile that selects them. A Docker list failure refuses and never becomes an empty result; a stack outside the selected CIU root refuses.
+
+**Oracles.** (1) A stack with two running services stops both IDs returned under its exact Compose-project label. (2) A neighboring stack's containers are never in the stop argv. (3) An optional-profile-only stack resolves only when its explicit profile is given. (4) A failed `docker ps` refuses before any stop. (5) An already-stopped stack returns success without a stop call.
+
+**v8 mapping.** SPEC-V8 S14.1.3/S18 selects `ciu down --realization R`. Projects needing one stack to stop independently represent it as its own Realization; v7's `--dir` is scoped to one Compose project and does not stop a profile's neighbors.
+
+**Disposition (2026-10-04): FIXED.** `ciu down --dir` uses CIU resolve data and the exact Compose project label. The dstdns wrapper now stops its admin-debug stack through CIU with `--profile admin`; Docker query failures are errors, and volumes remain untouched.

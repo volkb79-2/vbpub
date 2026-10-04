@@ -24,10 +24,12 @@ def test_resolve_cli_requires_json_and_emits_document(monkeypatch, tmp_path, cap
     assert cli._resolve_identities_cli([]) == 2
     assert "requires --json" in capsys.readouterr().err
     assert cli._resolve_identities_cli([
+        "--profile", "apps", "--profile", "test",
         "--stack", "tools/api", "--service", "api", "--live", "--json",
     ]) == 0
     assert seen == {
-        "root": tmp_path, "stack": "tools/api", "service": "api", "live": True,
+        "root": tmp_path, "stack": "tools/api", "service": "api",
+        "profiles": ["apps", "test"], "live": True,
     }
     assert json.loads(capsys.readouterr().out)["schema_version"] == 1
 
@@ -52,18 +54,23 @@ def test_exec_cli_preserves_argv_and_child_status(monkeypatch, tmp_path):
     seen = []
     monkeypatch.setattr(
         deploy, "exec_service",
-        lambda root, selector, argv: seen.append((root, selector, argv)) or 7,
+        lambda root, selector, argv, **kwargs: seen.append((root, selector, argv, kwargs)) or 7,
     )
     assert cli._exec_service_cli([
-        "--root-folder", str(tmp_path), "tools/api:api", "--", "python", "--help",
+        "--root-folder", str(tmp_path), "--profile", "apps",
+        "tools/api:api", "--", "python", "--help",
     ]) == 7
-    assert seen == [(tmp_path, "tools/api:api", ["python", "--help"])]
+    assert seen == [(tmp_path, "tools/api:api", ["python", "--help"], {"profiles": ["apps"]})]
 
 
 @pytest.mark.parametrize(("error", "expected"), [(RuntimeError("docker"), 1), (ValueError("bad"), 2), (OSError("exec"), 2)])
 def test_exec_cli_maps_expected_errors(monkeypatch, tmp_path, capsys, error, expected):
     monkeypatch.setattr(cli, "_resolve_repo_root_deploy", lambda _root: tmp_path)
-    monkeypatch.setattr(deploy, "exec_service", lambda *_a: (_ for _ in ()).throw(error))
+    monkeypatch.setattr(
+        deploy,
+        "exec_service",
+        lambda *_a, **_kw: (_ for _ in ()).throw(error),
+    )
     assert cli._exec_service_cli(["tools/api", "--", "true"]) == expected
     assert str(error) in capsys.readouterr().err
 
@@ -78,6 +85,25 @@ def test_main_dispatches_resolve_and_exec(monkeypatch, verb, rest):
         cli.main()
     assert exc.value.code == 6
     assert called == [rest]
+
+
+def test_down_dir_dispatches_exact_stack_and_profiles(monkeypatch, tmp_path):
+    called = []
+    monkeypatch.setattr(cli, "_resolve_repo_root_deploy", lambda _root: tmp_path)
+    monkeypatch.setattr(
+        deploy, "stop_stack",
+        lambda root, selector, *, profiles: called.append((root, selector, profiles)) or 0,
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["ciu", "down", "--dir", "tools/test-runner", "--profile", "test",
+         "--root-folder", str(tmp_path)],
+    )
+    with pytest.raises(SystemExit) as exc:
+        cli.main()
+    assert exc.value.code == 0
+    assert called == [(tmp_path, "tools/test-runner", ["test"])]
 
 
 def test_clean_identity_cli_routes_and_rejects_mixed_options(monkeypatch, tmp_path, capsys):

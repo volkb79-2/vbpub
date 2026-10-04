@@ -45,6 +45,21 @@ and strict; malformed or wrong-version facts are not replaced by a sibling
 file, ambient variables, or legacy `ciu.env`. `ciu.env` remains an export-only
 compatibility file for shell consumers.
 
+## Stop one stack without stopping its neighbors
+
+Profile-mode `ciu down` is project-wide, which is too broad for a helper that
+owns one stack inside a project. `ciu down --dir` resolves that stack through
+CIU's selected configuration, then filters running containers by the exact
+`com.docker.compose.project` label emitted for the stack. The Docker daemon
+returns container IDs for that exact project; CIU stops only those IDs and
+preserves volumes. A failed Docker query is an error, never an empty result.
+When a stack exists only in an optional profile, pass that profile explicitly
+so resolution does not substitute the default selection.
+
+The v8 interface selects a Realization for `ciu down`; a stack that is meant
+to stop independently maps to its own Realization. The v7 path is the scoped
+compatibility surface for existing stack-oriented projects.
+
 ## Governance resource limits
 
 Enabling CIU governance for cgroup placement must not silently impose
@@ -550,10 +565,15 @@ facts CIU resolves from the selected config and identity record. Consumers
 that rebuild those formulas can silently select another instance after an
 identity change. `ciu resolve --json` returns those facts grouped by exact
 stack path and Compose service key, in a shape aligned with v8's
-`resolved.identities`; `--live` adds Docker state. `ciu exec` uses the same
-resolution, requires exactly one already-running container, and passes argv
-without a shell. It never starts a missing service. A declared exec target
-retains the worktree-mount proof for consumers that need it.
+`resolved.identities`; `--live` adds Docker state. Repeated `--profile`
+options select the same profile composition as `ciu up`, so an exact stack
+that belongs only to an optional profile can be resolved without silently
+falling back to the default selection. `ciu exec` uses the same resolution,
+requires exactly one already-running container, and passes argv without a
+shell. It never starts a missing service. When both stdin and stdout are
+terminals, it requests Docker's interactive terminal; scripted calls remain
+non-interactive. A declared exec target retains the worktree-mount proof for
+consumers that need it.
 
 ## Why identity migration checks Docker before rewriting
 

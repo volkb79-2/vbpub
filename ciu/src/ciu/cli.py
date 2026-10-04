@@ -116,7 +116,7 @@ Exit codes: 0 success · 1 runtime failure · 2 configuration/validation error
 
   STACK ORCHESTRATION
     up   [--profile NAME | --dir PATH | --layout NAME]   start Docker Compose stack
-    down [--profile NAME]                stop stack (preserve volumes)
+    down [--profile NAME | --dir PATH]  stop stack (preserve volumes)
     clean                                remove containers and volumes
     health [--profile NAME]              health gate check
     health --preflight [--strict]        probe images for missing healthcheck tools
@@ -172,19 +172,21 @@ Exit codes: 0 success · 1 runtime failure · 2 configuration/validation error
 
 _VERB_HELP: dict[str, str] = {
     "resolve": """\
-ciu resolve [--root-folder PATH] [--stack S] [--service X] [--live] --json
+ciu resolve [--root-folder PATH] [--profile NAME ...] [--stack S]
+            [--service X] [--live] --json
   Read service identities from the rendered config without writing generated
   files or contacting Docker. The JSON shape mirrors v8's
   `resolved.identities.<stack>.<service>` data (S18 / CIU-118).
 
   --stack S       selected repo-relative stack path; a unique basename works
+  --profile NAME  select a deployment profile; repeat to compose profiles
   --service X     exact Compose service key (not a substring)
   --live          add container state and health from exact Compose labels
   --root-folder   override the CIU repo root
   --json          emit one versioned JSON document on stdout (required)
 """,
     "exec": """\
-ciu exec [--root-folder PATH] <stack>[:<service>] -- ARGV...
+ciu exec [--root-folder PATH] [--profile NAME ...] <stack>[:<service>] -- ARGV...
   Run exact argv in exactly one already-running service of this instance.
   CIU does not start the stack. A matching declared
   [ciu.worktree.exec_targets] entry applies its workdir and mount proof
@@ -382,11 +384,13 @@ ciu up --host NAME --thin [--bootstrap | --rollback] [selection...] # docker-opt
 """,
     "down": """\
 ciu down [--profile NAME] [--phases N,M] [--root-folder PATH]
+ciu down --dir PATH [--profile NAME ...] [--root-folder PATH]
 ciu down --host NAME [--profile NAME]
   Stop project containers; volumes are preserved (use `ciu clean` to remove them).
 
   --profile NAME     restrict to the named host profile (repeatable)
   --phases N,M       restrict to the given phase numbers
+  --dir PATH         stop only the selected stack's running Compose project
   --root-folder PATH override repo root
   --host NAME        run the stop action on a configured remote host
 """,
@@ -1526,6 +1530,7 @@ def _resolve_identities_cli(rest: list[str]) -> int:
     """CLI adapter for the read-only ``ciu resolve`` data surface."""
     define_root, rest = _extract_define_root(rest)
     parser = CiuArgumentParser(prog="ciu resolve", add_help=False, allow_abbrev=False)
+    parser.add_argument("--profile", action="append", default=None, metavar="NAME")
     parser.add_argument("--stack", default=None)
     parser.add_argument("--service", default=None)
     parser.add_argument("--live", action="store_true")
@@ -1541,6 +1546,7 @@ def _resolve_identities_cli(rest: list[str]) -> int:
             repo_root,
             stack=opts.stack,
             service=opts.service,
+            profiles=opts.profile,
             live=opts.live,
         )
     except (OSError, RuntimeError, ValueError) as exc:
@@ -1561,10 +1567,10 @@ def _exec_service_cli(rest: list[str]) -> int:
     split = rest.index("--")
     command_args = rest[split + 1:]
     define_root, before_separator = _extract_define_root(rest[:split])
-    # This parser has no CIU options, so abbreviation policy has no effect.
-    # Keep the explicit no-help contract: `--help` belongs to the top-level
-    # dispatcher and the child command's post-`--` argv remains untouched.
-    parser = CiuArgumentParser(prog="ciu exec", add_help=False)
+    # Keep the explicit no-help and no-abbreviation contract: `--help`
+    # belongs to the top-level dispatcher and child argv stays untouched.
+    parser = CiuArgumentParser(prog="ciu exec", add_help=False, allow_abbrev=False)
+    parser.add_argument("--profile", action="append", default=None, metavar="NAME")
     parser.add_argument("selector", nargs="?")
     opts = parser.parse_args(before_separator)
     if not opts.selector or not command_args:
@@ -1577,7 +1583,9 @@ def _exec_service_cli(rest: list[str]) -> int:
     repo_root = _resolve_repo_root_deploy(define_root)
     from .deploy import exec_service
     try:
-        return exec_service(repo_root, opts.selector, command_args)
+        return exec_service(
+            repo_root, opts.selector, command_args, profiles=opts.profile
+        )
     except (OSError, RuntimeError, ValueError) as exc:
         print(f"[ERROR] {exc}", file=sys.stderr)
         return 1 if isinstance(exc, RuntimeError) else 2
@@ -2269,6 +2277,23 @@ def main() -> None:
             # an "sh -c" wrapper here would be re-split and break "&&"/cd. The login
             # shell ssh spawns already interprets the operators natively.
             raise SystemExit(ssh_exec(host_cfg, [remote_cmd], config=config, repo_root=repo_root))
+        if _flag_given(rest, "--dir"):
+            define_root, rest = _extract_define_root(rest)
+            parser = CiuArgumentParser(prog="ciu down --dir", add_help=False)
+            parser.add_argument("--dir", required=True, metavar="PATH")
+            parser.add_argument("--profile", action="append", default=None, metavar="NAME")
+            opts = parser.parse_args(rest)
+            repo_root = _resolve_repo_root_deploy(define_root)
+            from .deploy import stop_stack
+            try:
+                rc = stop_stack(repo_root, opts.dir, profiles=opts.profile)
+            except ValueError as exc:
+                print(f"[ERROR] {exc}", file=sys.stderr)
+                raise SystemExit(2)
+            except (OSError, RuntimeError) as exc:
+                print(f"[ERROR] {exc}", file=sys.stderr)
+                raise SystemExit(1)
+            raise SystemExit(rc)
         from .deploy import main as deploy_main
         raise SystemExit(deploy_main(["--stop"] + rest))
 

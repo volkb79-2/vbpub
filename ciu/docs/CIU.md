@@ -50,7 +50,8 @@ common verbs are:
 | `ciu env [generate\|print]` | show / regenerate `ciu.env` / print it as shell `export` lines |
 | `ciu render` | render global + stack config (TOML only) |
 | `ciu up [--profile N \| --dir PATH]` | render + secrets + `compose up` |
-| `ciu down` | stop containers (volumes preserved) |
+| `ciu down [--profile NAME]` | stop selected project containers (volumes preserved) |
+| `ciu down --dir PATH` | stop only one stack's running Compose project |
 | `ciu clean` | complete teardown (S6.4 invariant) |
 | `ciu health [--preflight]` | health gate / image tool probe |
 | `ciu diagnose` | read-only OOM/exit/health/log diagnosis (S10.5) |
