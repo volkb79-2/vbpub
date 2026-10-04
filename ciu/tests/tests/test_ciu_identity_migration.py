@@ -606,6 +606,27 @@ def test_clean_identity_records_failures_without_touching_unlabelled_resources(
     assert "daemon stopped" in output
 
 
+def test_clean_identity_uses_stdout_when_docker_failure_has_no_stderr(
+    tmp_path, monkeypatch, capsys,
+):
+    _clean_identity_helpers(
+        monkeypatch,
+        labelled={"container": ["bad-cid"], "volume": [], "network": []},
+    )
+
+    def docker(args, **_kwargs):
+        if args == ["rm", "-f", "bad-cid"]:
+            return SimpleNamespace(
+                returncode=17, stdout="failure reported on stdout", stderr="",
+            )
+        return _docker_empty()
+
+    monkeypatch.setattr(procutil, "docker", docker)
+    assert deploy.action_clean_identity(tmp_path, "ab12cd", yes=True) == 1
+    captured = capsys.readouterr()
+    assert "failure reported on stdout" in captured.out + captured.err
+
+
 def test_clean_identity_network_removal_failure_is_reported(tmp_path, monkeypatch, capsys):
     _clean_identity_helpers(monkeypatch)
     network = f"{tmp_path.name.lower()}-ab12cd-network"
