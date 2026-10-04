@@ -21,10 +21,16 @@ than the prose predicted (full rationale in `SPEC.md` §8 and the LOG):
    legal shared lanes every consuming project inherits BY NAME. Project
    tables shadow a central name entirely (auditable override, no field
    merging).
-2. **Config discovery:** the project config is found next to the INVOKED
-   script path WITHOUT resolving symlinks (a symlink's parent is the
-   project), CWD as fallback. CWD-first (the handoff's wording) breaks
-   `nyxloom/run-gate.py --list` from the repo root.
+2. **Config discovery:** without `--worktree`, the project config is found
+   next to the INVOKED script path WITHOUT resolving symlinks (a symlink's
+   parent is the project), CWD as fallback. With `--worktree`, run-gate first
+   preserves that project's path relative to its Git toplevel, then reads
+   `run-gate.toml` and the nearest `run-gate.root.toml` from the selected
+   tree. A missing target `run-gate.toml` is an error; the invoking checkout's
+   lanes are never substituted (see the
+   [design rationale](docs/DESIGN-GUIDE.md#a-worktree-is-the-complete-judgment-boundary)).
+   CWD-first (the handoff's wording) breaks `nyxloom/run-gate.py --list` from
+   the repo root.
 3. **Slice policy (controller A3):** the repository root's central
    `[environments.tester-unified]` binds `cgroup_slice_env` to
    `$CGROUP_PARENT_DEV_GATES`, so every inheriting project uses the same
@@ -256,12 +262,17 @@ the tool's reason to exist and MUST be implemented + tested:
   state is not evidence.
 - **Effective tree:** `--worktree` doesn't just redirect checks — the lane
   EXECUTES in the selected tree (assay cd, pin verification, artifacts,
-  host-lane cwd relocate; SPEC R-21). Judging checkout A while pointed at
-  worktree B is the silent false-PASS class this kills. The READ-ONLY verbs
-  follow the same rule: `doctor`/`--check-env --worktree B` report B's git
-  identity, host-lane view, and toolchain fitness, never the invoking
-  checkout's under B's name (SPEC `R-37`, RG-30 — the last instance
-  of the read-scope hazard RG-27 closed for `history`).
+  host-lane cwd relocate; SPEC R-21), and lane plus inherited configuration
+  are loaded from that same tree (RG-47/RG-65). The header prints
+  `run-gate: config: <path>`; run history stores the selected config path and
+  SHA-256, plus the nearest central config path and SHA when one was used.
+  Exec-mode runner selection follows the same tree boundary (see the
+  [design rationale](docs/DESIGN-GUIDE.md#the-runner-belongs-to-the-judged-worktree)).
+  Judging checkout A while pointed at worktree B is the silent false-PASS
+  class this kills. The READ-ONLY verbs follow the same config selection;
+  `doctor`/`--check-env --worktree B` report B's git identity, host-lane
+  view, and toolchain fitness, never the invoking checkout's under B's name
+  (SPEC `R-37`, RG-30).
 - **Run form:** detached container with Docker's init reaper + wait + logs
   (survives terminal loss and reaps orphaned descendants); the gate's exit
   status is the judged job's own — no wrapper/pipe masking.
