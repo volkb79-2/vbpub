@@ -70,6 +70,7 @@ memory_swap = "16g"
 # CMRU's scoped Git transport; the tester container receives tag names and
 # commit IDs only, never publisher credentials.
 [environments.cmru-mutation]
+mode = "ephemeral"
 image = "tester-unified:local"
 cgroup_slice_env = "CGROUP_PARENT_DEV_GATES"
 forward_env = ["CGROUP_PARENT_DEV_BACKGROUND", "CMRU_ASSAY_BASELINE_FACTS"]
