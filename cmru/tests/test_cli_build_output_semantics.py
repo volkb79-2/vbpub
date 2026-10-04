@@ -1178,7 +1178,7 @@ def test_existing_only_publish_stops_when_tag_target_changes_between_asset_mutat
     ],
 )
 def test_retained_publish_rejects_malformed_existing_release_records(
-    tmp_path, release_record, tag_commit, expected,
+    tmp_path, release_record, tag_commit, expected, capsys,
 ):
     asset = tmp_path / "alpha-1.2.3.whl"
     asset.write_bytes(b"wheel")
@@ -1196,12 +1196,14 @@ def test_retained_publish_rejects_malformed_existing_release_records(
         def publish(self, *_args, **_kwargs):
             pytest.fail("invalid retained release was published")
 
-    with pytest.raises(SystemExit, match=expected):
+    with pytest.raises(SystemExit) as excinfo:
         release.publish_versioned(
             Publisher(), prefix="alpha", version="1.2.3", asset_path=asset,
             require_existing_targets=True, latest_pointer_recreate=False,
             expected_tag_commit=SOURCE_COMMIT,
         )
+    assert excinfo.value.code == 1
+    assert expected in capsys.readouterr().err
 
 
 @pytest.mark.parametrize("latest", [None, {"version": "1.2.2"}])
@@ -1213,13 +1215,15 @@ def test_newer_release_comparison_handles_no_clean_latest_release(latest):
     assert release._newer_release_version(Publisher(), "alpha", "1.2.3") is None
 
 
-def test_newer_release_comparison_refuses_malformed_latest_version():
+def test_newer_release_comparison_refuses_malformed_latest_version(capsys):
     class Publisher:
         def resolve_latest(self, _prefix):
             return {"version": 17}
 
-    with pytest.raises(SystemExit, match="malformed result"):
+    with pytest.raises(SystemExit) as excinfo:
         release._newer_release_version(Publisher(), "alpha", "1.2.3")
+    assert excinfo.value.code == 1
+    assert "malformed result" in capsys.readouterr().err
 
 
 def test_newer_release_comparison_returns_a_newer_release_version():
