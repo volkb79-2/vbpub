@@ -4576,10 +4576,14 @@ def _dispatch(args, runtime):
             and not vargs.dry_run
             and not vargs.resume
         ):
-            origin_main_snapshots = _preflight_multi_family_release_tag_support(
-                repo_root, configs, release_scope,
-                config_path=cfg_path, git_auth=git_auth,
-            )
+            try:
+                origin_main_snapshots = _preflight_multi_family_release_tag_support(
+                    repo_root, configs, release_scope,
+                    config_path=cfg_path, git_auth=git_auth,
+                )
+            except Exception as exc:
+                log_error(str(exc))
+                _sys.exit(1)
 
         if not transaction_child:
             dispatched = _dispatch_independent_git_families(
