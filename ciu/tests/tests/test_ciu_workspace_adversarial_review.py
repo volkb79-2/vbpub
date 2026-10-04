@@ -649,6 +649,89 @@ def test_create_records_all_nested_roots_before_returning_ready(monkeypatch, tmp
     assert [entry["offset"] for entry in entries] == ["nested"]
 
 
+def test_committed_root_entries_requires_shared_context(tmp_path):
+    record = _record(tmp_path)
+    with pytest.raises(worktree.WorktreeError, match="without its shared workspace record"):
+        worktree._committed_root_entries(
+            tmp_path, record, None, prepare=False, persist=False,
+            allocation_commit="a" * 40,
+        )
+
+
+def test_committed_root_entries_checks_selected_root_and_optional_hooks(
+    monkeypatch, tmp_path
+):
+    primary = tmp_path / "primary"
+    primary.mkdir()
+    (primary / GLOBAL_CONFIG_DEFAULTS).write_text("[ciu]\n", encoding="utf-8")
+    record = _record(primary)
+    shared_context = SimpleNamespace(
+        physical_worktree_path=primary,
+        record_path=tmp_path / "workspace.json",
+        git_common_dir=tmp_path / ".git",
+    )
+    root_context = SimpleNamespace(
+        root_instance_id="root-one", workspace_id="workspace-one",
+    )
+    monkeypatch.setattr(worktree, "primary_worktree_root", lambda _root: primary)
+    monkeypatch.setattr(
+        workspace, "discover_committed_roots", lambda *_args, **_kwargs: ()
+    )
+    with pytest.raises(worktree.WorktreeError, match="selected CIU root .* is absent"):
+        worktree._committed_root_entries(
+            tmp_path, record, shared_context, prepare=True, persist=False,
+            allocation_commit="a" * 40,
+            preflight_selected_root=lambda: None,
+        )
+
+    monkeypatch.setattr(
+        workspace, "discover_committed_roots", lambda *_args, **_kwargs: (primary,)
+    )
+    monkeypatch.setattr(
+        workspace, "context_for_root", lambda *_args, **_kwargs: root_context
+    )
+    monkeypatch.setattr(workspace, "assert_root_identity_distinct", lambda _roots: None)
+    monkeypatch.setattr(workspace, "root_lock", lambda _context: nullcontext())
+    monkeypatch.setattr(
+        workspace, "_shared", lambda: SimpleNamespace(canonical_path=lambda path: path)
+    )
+    monkeypatch.setattr(workspace_env, "read_generated_facts", lambda _root: {
+        "network": "network-one",
+    })
+    monkeypatch.setattr(worktree, "_write_committed_root_entries", lambda *_args: None)
+
+    entries, verified = worktree._committed_root_entries(
+        tmp_path, record, shared_context, prepare=True, persist=False,
+        allocation_commit="a" * 40,
+    )
+    assert entries[0]["offset"] == "."
+    assert verified is None
+
+    entries, verified = worktree._committed_root_entries(
+        tmp_path, record, shared_context, prepare=False, persist=True,
+        allocation_commit="a" * 40,
+    )
+    assert entries[0]["network"] == "network-one"
+    assert verified is True
+
+
+def test_finish_allocation_refuses_selected_root_without_preflight_identity(
+    monkeypatch, tmp_path
+):
+    _primary, target, _shared = _create_setup(
+        monkeypatch, tmp_path, roots=[tmp_path / "primary"], failure=True
+    )
+    marker_checks = iter([False, True, True])
+    monkeypatch.setattr(
+        worktree, "_ciu_root_marker_present", lambda _root: next(marker_checks)
+    )
+    with pytest.raises(
+        worktree.WorktreeError, match="selected root identity preflight did not complete"
+    ):
+        worktree.create(tmp_path, "demo", path=target)
+    assert list(marker_checks) == []
+
+
 def test_ready_record_refuses_to_infer_allocation_commit_from_a_moved_head(
     monkeypatch, tmp_path
 ):
