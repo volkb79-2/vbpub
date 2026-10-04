@@ -6,6 +6,7 @@ one shared DAMON facility).
 
 from __future__ import annotations
 
+import errno
 import importlib
 import signal
 import sys
@@ -103,6 +104,11 @@ class FakeSysfsInterface:
     def kdamond_commit(cls, idx: int = 0) -> None:
         cls.calls.append(("kdamond_commit", idx))
         cls._maybe_fail("kdamond_commit")
+        # The kernel's `commit` command updates an already-running kdamond;
+        # initial configuration is applied by `on` after the sysfs inputs
+        # have been written. Model the observed off-state EINVAL here.
+        if cls.state_of(idx) != "on":
+            raise OSError(errno.EINVAL, "commit requires a running kdamond")
 
     @classmethod
     def kdamond_on(cls, idx: int = 0) -> None:
@@ -355,6 +361,9 @@ def test_enter_wires_the_vaddr_target_correctly(fake_damon):
         assert intervals_call[3:5] == (50_000, 1_000_000)
         action_call = next(c for c in fake_damon.calls if c[0] == "set_scheme_action")
         assert action_call[-1] == "stat"   # never a migrate/reclaim action
+        names = [call[0] for call in fake_damon.calls]
+        assert names[-1] == "kdamond_on"
+        assert "kdamond_commit" not in names
 
 
 def test_exception_inside_with_block_still_tears_down(fake_damon):
@@ -373,13 +382,10 @@ def test_exception_during_enter_still_tears_down(fake_damon):
             pytest.fail("should never reach the with-body")
     assert fake_damon.state_of(0) == "off"
     assert fake_damon.nr_kdamonds() == 0
-    # RG-55 live acceptance (2026-09-12): a foreign exception type raised by
-    # SysfsInterface (a plain RuntimeError here, standing in for the real
-    # OSError `kdamond_commit` raised live) must come out of __enter__ as a
-    # DamonSessionError — DamonSessionError subclasses RuntimeError, so the
-    # `pytest.raises(RuntimeError)` above alone would not catch a
-    # regression back to a bare `raise`; assert the wrapped type and message
-    # explicitly.
+    # A foreign exception type raised by SysfsInterface must come out of
+    # __enter__ as a DamonSessionError. The broad RuntimeError assertion above
+    # would not catch a regression back to a bare `raise`, so assert the
+    # wrapped type and message explicitly.
     assert isinstance(excinfo.value, damon.DamonSessionError)
     assert "RuntimeError: synthetic failure in set_scheme_action" in str(excinfo.value)
     assert excinfo.value.__cause__ is not None
@@ -397,7 +403,7 @@ def test_exception_during_enter_that_is_already_damon_session_error_is_not_rewra
     def _boom(idx: int = 0) -> None:
         raise sentinel
 
-    monkeypatch.setattr(fake_damon, "kdamond_commit", _boom)
+    monkeypatch.setattr(fake_damon, "kdamond_on", _boom)
     with pytest.raises(damon.DamonSessionError) as excinfo:
         with damon.DamonSession([make_target()]):
             pytest.fail("should never reach the with-body")

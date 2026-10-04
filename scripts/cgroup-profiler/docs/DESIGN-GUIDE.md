@@ -219,9 +219,11 @@ fails part-way through setup.
 The `damon` field in `ctl version` answers a narrow capability question:
 cgprofile loaded its DAMON analysis library and can see the admin sysfs
 interface. It does not create a kdamond, configure an operation, or prove that
-the kernel accepts a monitoring context. The sysfs `state=commit` operation
-re-reads and validates the configured context, so a visible interface can
-still reject a real session (for example, with `EINVAL`). See the
+the kernel accepts a monitoring context. Initial configuration is written
+while the kdamond is off, then `state=on` creates and starts it. `state=commit`
+is an online update for an already-running kdamond; issuing it before the
+first `on` returns `EINVAL`. Recommit is used only for target changes after
+startup. See the
 [kernel DAMON usage documentation](https://docs.kernel.org/6.19/admin-guide/mm/damon/usage.html)
 for the interface and commit semantics.
 

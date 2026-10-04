@@ -477,18 +477,17 @@ class DamonSession:
                 self.kdamond_idx, self._ctx_idx, self._scheme_idx,
                 0, 2 ** 63 - 1, 0, 2 ** 32 - 1, 0, 2 ** 32 - 1,
             )
-            SysfsInterface.kdamond_commit(self.kdamond_idx)
+            # `commit` updates a running kdamond's existing context; it is
+            # invalid before first start and returns EINVAL from the kernel.
+            # Initial sysfs inputs are consumed by `on` itself.
             SysfsInterface.kdamond_on(self.kdamond_idx)
         except Exception as exc:
             self._teardown()
             _restore_signal_handlers(self._prev_handlers)
             if isinstance(exc, DamonSessionError):
                 raise
-            # RG-55 live acceptance (2026-09-12): `SysfsInterface`'s own
-            # writes raise plain `OSError` (verified live —
-            # `kdamond_commit` -> EINVAL, a kernel DAMON context this host
-            # cannot actually commit despite `available()` reporting the
-            # sysfs tree present and writable). A bare `raise` here left
+            # `SysfsInterface` writes or kdamond startup can raise plain
+            # `OSError`. A bare `raise` here left
             # that as an untranslated OSError, which `_create_session_locked`
             # 's own `except damon_mod.DamonSessionError` never catches —
             # it propagated all the way out of the socket dispatch loop and
