@@ -4,6 +4,7 @@ from __future__ import annotations
 import errno
 import json
 import os
+import re
 import subprocess
 import sys
 from dataclasses import replace
@@ -114,6 +115,479 @@ def test_local_tag_oid_preserves_initial_diagnostic_when_ref_is_present(
         match="is present after its hash lookup failed \\(1\\): permission denied; refusing to infer its state",
     ):
         cli.local_git_tag_oid(tmp_path, "demo-v1")
+
+
+@pytest.mark.parametrize(
+    "action, stdout, stderr, expected",
+    [
+        ("inspect", "", "bad repository", "Failed to inspect local tag demo-v1 (2): bad repository"),
+        ("recheck", "git diagnostic", "", "Failed to recheck local tag demo-v1 after deletion failed (2): git diagnostic"),
+        ("inspect", "", "", "Failed to inspect local tag demo-v1 (2): no diagnostic output"),
+    ],
+)
+def test_local_tag_oid_reports_unambiguous_lookup_failures(
+    monkeypatch, tmp_path, action, stdout, stderr, expected,
+):
+    monkeypatch.setattr(cli, "run_local_git", lambda *_args, **_kwargs: SimpleNamespace(
+        returncode=2, stdout=stdout, stderr=stderr,
+    ))
+
+    with pytest.raises(RuntimeError, match=re.escape(expected)):
+        cli.local_git_tag_oid(tmp_path, "demo-v1", action=action)
+
+
+def _sidecar_workspace():
+    return SimpleNamespace(branch="cmru-release-token")
+
+
+@pytest.mark.parametrize("reader", ["snapshot", "attempts"])
+def test_tag_sidecar_reader_preserves_inspection_os_errors(monkeypatch, tmp_path, reader):
+    monkeypatch.setattr(transaction, "_scope_dir", lambda _root: tmp_path)
+    suffix = ".tags.json" if reader == "snapshot" else ".tag-attempts.json"
+    path = tmp_path / f"token{suffix}"
+    original_lstat = Path.lstat
+
+    def lstat(candidate):
+        if candidate == path:
+            raise PermissionError("sidecar is unreadable")
+        return original_lstat(candidate)
+
+    monkeypatch.setattr(Path, "lstat", lstat)
+    read = (
+        transaction.read_release_tag_snapshot
+        if reader == "snapshot" else transaction.read_release_tag_attempts
+    )
+    with pytest.raises(RuntimeError, match="cannot inspect release tag"):
+        read(tmp_path, _sidecar_workspace())
+
+
+@pytest.mark.parametrize(
+    "stdout, expected",
+    [
+        ("", {}),
+        ("bad-row\n", "malformed"),
+        ("a" * 40 + "\trefs/heads/main\n", "malformed"),
+        ("a" * 40 + "\trefs/tags/demo-v1\n" + "b" * 40 + "\trefs/tags/demo-v1\n", "duplicate"),
+    ],
+)
+def test_list_local_tag_refs_validates_git_rows(monkeypatch, tmp_path, stdout, expected):
+    monkeypatch.setattr(transaction, "run_local_git", lambda *_args, **_kwargs: SimpleNamespace(
+        returncode=0, stdout=stdout, stderr="",
+    ))
+    if expected == {}:
+        assert transaction.list_local_tag_refs(tmp_path) == {}
+    else:
+        with pytest.raises(RuntimeError, match=expected):
+            transaction.list_local_tag_refs(tmp_path)
+
+
+@pytest.mark.parametrize(
+    "stdout, stderr, expected",
+    [
+        ("", "repository unreadable", "repository unreadable"),
+        ("git output", "", "git output"),
+        ("", "", "no diagnostic output"),
+    ],
+)
+def test_list_local_tag_refs_preserves_git_failure_details(
+    monkeypatch, tmp_path, stdout, stderr, expected,
+):
+    monkeypatch.setattr(transaction, "run_local_git", lambda *_args, **_kwargs: SimpleNamespace(
+        returncode=2, stdout=stdout, stderr=stderr,
+    ))
+    with pytest.raises(RuntimeError, match=re.escape(expected)):
+        transaction.list_local_tag_refs(tmp_path)
+
+
+@pytest.mark.parametrize(
+    "ref, oid",
+    [
+        ("refs/heads/main", "a" * 40),
+        ("refs/tags/demo-v1", "bad"),
+    ],
+)
+def test_write_tag_attempts_refuses_malformed_records(monkeypatch, tmp_path, ref, oid):
+    monkeypatch.setattr(transaction, "_ensure_scope_dir", lambda _root: tmp_path)
+    with pytest.raises(RuntimeError, match="malformed ref record"):
+        transaction.write_release_tag_attempts(
+            tmp_path, _sidecar_workspace(), {ref: oid},
+        )
+
+
+def test_write_tag_attempts_preserves_read_refusal(monkeypatch, tmp_path):
+    failure = RuntimeError("corrupt existing attempt sidecar")
+    monkeypatch.setattr(transaction, "_ensure_scope_dir", lambda _root: tmp_path)
+    monkeypatch.setattr(
+        transaction, "read_release_tag_attempts",
+        lambda *_: (_ for _ in ()).throw(failure),
+    )
+    with pytest.raises(RuntimeError) as caught:
+        transaction.write_release_tag_attempts(
+            tmp_path, _sidecar_workspace(), {"refs/tags/demo-v1": "a" * 40},
+        )
+    assert caught.value is failure
+
+
+@pytest.mark.parametrize("payload", ["not-json", "[]", '{"refs/tags/demo-v1":"bad"}'])
+def test_read_tag_attempts_rejects_corrupt_or_invalid_sidecars(
+    monkeypatch, tmp_path, payload,
+):
+    monkeypatch.setattr(transaction, "_scope_dir", lambda _root: tmp_path)
+    path = tmp_path / "token.tag-attempts.json"
+    path.write_text(payload, encoding="utf-8")
+    with pytest.raises(RuntimeError, match="cannot read|malformed"):
+        transaction.read_release_tag_attempts(tmp_path, _sidecar_workspace())
+
+
+def test_read_tag_attempts_refuses_a_nonregular_sidecar(monkeypatch, tmp_path):
+    monkeypatch.setattr(transaction, "_scope_dir", lambda _root: tmp_path)
+    (tmp_path / "token.tag-attempts.json").mkdir()
+    with pytest.raises(RuntimeError, match="not a regular file"):
+        transaction.read_release_tag_attempts(tmp_path, _sidecar_workspace())
+
+
+def test_copy_secret_overlay_skips_an_absent_optional_source(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    transaction._copy_secret_overlay(
+        tmp_path / "missing.secret.toml", workspace, Path("cmru.secret.toml"),
+    )
+    assert not (workspace / "cmru.secret.toml").exists()
+
+
+@pytest.mark.parametrize("target", [Path("../escape"), Path("/absolute/target"), Path()])
+def test_copy_secret_overlay_rejects_escaping_or_empty_relative_targets(
+    tmp_path, target,
+):
+    source = tmp_path / "source.secret.toml"
+    source.write_text("token\n", encoding="utf-8")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    with pytest.raises(RuntimeError, match="target escapes its worktree"):
+        transaction._copy_secret_overlay(source, workspace, target)
+
+
+def test_copy_secret_overlay_overwrites_a_regular_destination_and_walks_nested_dirs(tmp_path):
+    source = tmp_path / "source.secret.toml"
+    source.write_text("new token\n", encoding="utf-8")
+    workspace = tmp_path / "workspace"
+    destination = workspace / "nested" / "deeper" / "secret.toml"
+    destination.parent.mkdir(parents=True)
+    destination.write_text("stale token\n", encoding="utf-8")
+
+    transaction._copy_secret_overlay(
+        source, workspace, Path("nested/deeper/secret.toml"),
+    )
+
+    assert destination.read_text(encoding="utf-8") == "new token\n"
+    assert destination.stat().st_mode & 0o777 == 0o600
+
+
+def test_copy_secret_overlay_refuses_a_source_identity_changed_when_opened(
+    monkeypatch, tmp_path,
+):
+    source = tmp_path / "source.secret.toml"
+    source.write_text("token\n", encoding="utf-8")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    real_fstat = transaction.os.fstat
+
+    def fstat(fd):
+        info = real_fstat(fd)
+        return SimpleNamespace(
+            st_mode=info.st_mode, st_dev=info.st_dev, st_ino=info.st_ino + 1,
+        )
+
+    monkeypatch.setattr(transaction.os, "fstat", fstat)
+    with pytest.raises(RuntimeError, match="changed while being opened"):
+        transaction._copy_secret_overlay(source, workspace, Path("secret.toml"))
+    assert list(workspace.iterdir()) == []
+
+
+def test_copy_secret_overlay_removes_temporary_file_when_copy_fails(monkeypatch, tmp_path):
+    source = tmp_path / "source.secret.toml"
+    source.write_text("token\n", encoding="utf-8")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    def fail_copy(_source, _destination):
+        raise OSError("copy interrupted")
+
+    monkeypatch.setattr(transaction.shutil, "copyfileobj", fail_copy)
+    with pytest.raises(OSError, match="copy interrupted"):
+        transaction._copy_secret_overlay(source, workspace, Path("secret.toml"))
+    assert list(workspace.iterdir()) == []
+
+
+def test_copy_secret_overlay_tolerates_temp_file_disappearing_during_cleanup(
+    monkeypatch, tmp_path,
+):
+    source = tmp_path / "source.secret.toml"
+    source.write_text("token\n", encoding="utf-8")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    def remove_then_fail(_source, _destination):
+        for temporary in workspace.glob(".secret.toml.cmru-secret-*"):
+            temporary.unlink()
+        raise OSError("copy interrupted")
+
+    monkeypatch.setattr(transaction.shutil, "copyfileobj", remove_then_fail)
+    with pytest.raises(OSError, match="copy interrupted"):
+        transaction._copy_secret_overlay(source, workspace, Path("secret.toml"))
+    assert list(workspace.iterdir()) == []
+
+
+def test_copy_secret_overlay_refuses_a_source_replaced_during_copy(monkeypatch, tmp_path):
+    source = tmp_path / "source.secret.toml"
+    source.write_text("token\n", encoding="utf-8")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    original_lstat = Path.lstat
+    calls = 0
+
+    def lstat(candidate):
+        nonlocal calls
+        if candidate == source:
+            calls += 1
+            result = original_lstat(candidate)
+            if calls == 2:
+                return SimpleNamespace(
+                    st_mode=result.st_mode, st_dev=result.st_dev, st_ino=result.st_ino + 1,
+                )
+            return result
+        return original_lstat(candidate)
+
+    monkeypatch.setattr(Path, "lstat", lstat)
+    with pytest.raises(RuntimeError, match="changed while being copied"):
+        transaction._copy_secret_overlay(source, workspace, Path("secret.toml"))
+    assert list(workspace.iterdir()) == []
+
+
+def test_copy_secret_overlay_refuses_a_destination_created_during_copy(monkeypatch, tmp_path):
+    source = tmp_path / "source.secret.toml"
+    source.write_text("token\n", encoding="utf-8")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    destination = workspace / "secret.toml"
+    copyfileobj = transaction.shutil.copyfileobj
+
+    def create_destination(source_stream, destination_stream):
+        copyfileobj(source_stream, destination_stream)
+        destination.write_text("concurrent writer\n", encoding="utf-8")
+
+    monkeypatch.setattr(transaction.shutil, "copyfileobj", create_destination)
+    with pytest.raises(RuntimeError, match="destination changed while being copied"):
+        transaction._copy_secret_overlay(source, workspace, Path("secret.toml"))
+    assert destination.read_text(encoding="utf-8") == "concurrent writer\n"
+
+
+def test_copy_secret_overlay_refuses_a_preexisting_destination_replaced_during_copy(
+    monkeypatch, tmp_path,
+):
+    source = tmp_path / "source.secret.toml"
+    source.write_text("token\n", encoding="utf-8")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    destination = workspace / "secret.toml"
+    destination.write_text("initial\n", encoding="utf-8")
+    copyfileobj = transaction.shutil.copyfileobj
+
+    def replace_destination(source_stream, destination_stream):
+        copyfileobj(source_stream, destination_stream)
+        destination.rename(workspace / "original-secret.toml")
+        destination.write_text("concurrent writer\n", encoding="utf-8")
+
+    monkeypatch.setattr(transaction.shutil, "copyfileobj", replace_destination)
+    with pytest.raises(RuntimeError, match="destination changed while being copied"):
+        transaction._copy_secret_overlay(source, workspace, Path("secret.toml"))
+    assert destination.read_text(encoding="utf-8") == "concurrent writer\n"
+
+
+def test_retained_build_cleanup_closes_open_descriptor_when_logs_are_missing(
+    monkeypatch, tmp_path,
+):
+    opened = []
+    closed = []
+
+    def open_directory(_name, _flags, *, dir_fd):
+        if not opened:
+            opened.append(501)
+            return 501
+        raise OSError(errno.EACCES, "logs directory unavailable")
+
+    monkeypatch.setattr(transaction.os, "open", open_directory)
+    monkeypatch.setattr(transaction.os, "close", lambda fd: closed.append(fd))
+    output_id = "20260927T120000Z_" + "a" * 40
+    with pytest.raises(RuntimeError, match="retained build record is incomplete or unsafe"):
+        transaction._retained_build_output_cleanup_facts(
+            "alpha", output_id, tmp_path, 10, 11,
+        )
+    assert closed == [501]
+
+
+def test_tag_prefix_filter_keeps_matching_annotated_and_lightweight_refs():
+    refs = {
+        "refs/tags/alpha-v1": "a" * 40,
+        "refs/tags/alpha-v1^{}": "b" * 40,
+        "refs/tags/beta-v1": "c" * 40,
+    }
+    assert transaction._tag_refs_for_prefixes(refs, ("alpha-v",)) == {
+        "refs/tags/alpha-v1": "a" * 40,
+        "refs/tags/alpha-v1^{}": "b" * 40,
+    }
+    assert transaction._tag_refs_for_prefixes(refs, ()) == refs
+
+
+def _install_transaction_abandon(
+    monkeypatch, tmp_path, *, branch_output="", pushed=False, removed=False,
+    tag_output="", local_tag_states=None, push_result=None,
+):
+    workspace = SimpleNamespace(
+        repo_root=tmp_path, path=tmp_path / "workspace", branch="cmru-release-test",
+        context=None,
+    )
+    calls = []
+    removed_workspaces = []
+    forgotten_scopes = []
+
+    def run_remote(_root, *args, **_kwargs):
+        calls.append(args)
+        if args[:3] == ("ls-remote", "--heads", "origin"):
+            return SimpleNamespace(returncode=0, stdout=branch_output, stderr="")
+        if args[:3] == ("ls-remote", "--tags", "origin"):
+            return SimpleNamespace(returncode=0, stdout=tag_output, stderr="")
+        if args and args[0] == "push":
+            return push_result or SimpleNamespace(returncode=0, stdout="", stderr="")
+        raise AssertionError(args)
+
+    monkeypatch.setattr(transaction, "run_remote_git", run_remote)
+    monkeypatch.setattr(transaction, "backup_was_pushed", lambda *_: pushed)
+    monkeypatch.setattr(transaction, "backup_was_removed", lambda *_: removed)
+    monkeypatch.setattr(transaction, "remove_workspace", lambda ws: removed_workspaces.append(ws))
+    monkeypatch.setattr(
+        transaction, "forget_release_scope", lambda *_: forgotten_scopes.append(True),
+    )
+    monkeypatch.setattr(transaction, "run_local_git", lambda *_args, **_kwargs: SimpleNamespace(
+        returncode=0, stdout="", stderr="",
+    ))
+    states = iter(local_tag_states or [])
+    monkeypatch.setattr(
+        transaction, "list_local_tag_refs", lambda *_: next(states, {}),
+    )
+    return workspace, calls, removed_workspaces, forgotten_scopes
+
+
+def test_abandon_workspace_rejects_unexpected_remote_branch_record(monkeypatch, tmp_path):
+    _workspace, _calls, removed, _forgotten = _install_transaction_abandon(
+        monkeypatch, tmp_path,
+        branch_output="a" * 40 + "\trefs/heads/other\n",
+    )
+    with pytest.raises(RuntimeError, match="unexpected ref"):
+        transaction.abandon_workspace(tmp_path, SimpleNamespace(branch="cmru-release-test"))
+    assert removed == []
+
+
+def test_abandon_workspace_rejects_unreadable_remote_tag_recheck(monkeypatch, tmp_path):
+    workspace, _calls, removed, _forgotten = _install_transaction_abandon(
+        monkeypatch, tmp_path, tag_output="",
+    )
+    monkeypatch.setattr(transaction, "run_remote_git", lambda _root, *args, **_kwargs:
+        SimpleNamespace(
+            returncode=2 if args[:3] == ("ls-remote", "--tags", "origin") else 0,
+            stdout="", stderr="offline",
+        )
+    )
+    with pytest.raises(RuntimeError, match="cannot recheck origin release tags"):
+        transaction.abandon_workspace(
+            tmp_path, workspace, expected_remote_tag_refs={}, release_tag_prefixes=("alpha-v",),
+        )
+    assert removed == []
+
+
+def test_abandon_workspace_rejects_changed_local_tag_facts(monkeypatch, tmp_path):
+    workspace, _calls, removed, _forgotten = _install_transaction_abandon(
+        monkeypatch, tmp_path, local_tag_states=[{"refs/tags/alpha-v1": "b" * 40}],
+    )
+    with pytest.raises(RuntimeError, match="local release tags changed"):
+        transaction.abandon_workspace(
+            tmp_path, workspace, expected_local_tag_refs={}, release_tag_prefixes=("alpha-v",),
+        )
+    assert removed == []
+
+
+def test_abandon_workspace_rejects_non_sha1_candidate_object_id(monkeypatch, tmp_path):
+    oid = "a" * 64
+    workspace, _calls, removed, _forgotten = _install_transaction_abandon(
+        monkeypatch, tmp_path,
+        pushed=True,
+    )
+    monkeypatch.setattr(
+        transaction, "parse_ls_remote_refs",
+        lambda *_args, **_kwargs: {"refs/heads/cmru-release-test": oid},
+    )
+    with pytest.raises(RuntimeError, match="object ID is unavailable"):
+        transaction.abandon_workspace(tmp_path, workspace)
+    assert removed == []
+
+
+@pytest.mark.parametrize(
+    "cleanup_targets, states, expected",
+    [
+        ({"refs/heads/main": "a" * 40}, [], "malformed local release-tag cleanup target"),
+        ({"refs/tags/alpha-v1": "a" * 40}, [{}], None),
+        ({"refs/tags/alpha-v1": "a" * 40}, [{"refs/tags/alpha-v1": "b" * 40}], "changed after abandonment inspection"),
+    ],
+)
+def test_abandon_workspace_validates_or_skips_local_tag_cleanup_targets(
+    monkeypatch, tmp_path, cleanup_targets, states, expected,
+):
+    workspace, _calls, removed, forgotten = _install_transaction_abandon(
+        monkeypatch, tmp_path, local_tag_states=states,
+    )
+    if expected is None:
+        transaction.abandon_workspace(
+            tmp_path, workspace, local_tags_to_remove=cleanup_targets,
+        )
+        assert removed == [workspace] and forgotten == [True]
+    else:
+        with pytest.raises(RuntimeError, match=expected):
+            transaction.abandon_workspace(
+                tmp_path, workspace, local_tags_to_remove=cleanup_targets,
+            )
+        assert removed == []
+
+
+@pytest.mark.parametrize(
+    "remaining, result, expected",
+    [
+        ({}, SimpleNamespace(returncode=0, stdout="", stderr=""), None),
+        ({"refs/tags/alpha-v1": "b" * 40}, SimpleNamespace(returncode=0, stdout="", stderr=""), "changed during abandonment"),
+        ({"refs/tags/alpha-v1": "a" * 40}, SimpleNamespace(returncode=3, stdout="", stderr="update-ref denied"), "update-ref denied"),
+    ],
+)
+def test_abandon_workspace_rechecks_local_tag_after_guarded_deletion(
+    monkeypatch, tmp_path, remaining, result, expected,
+):
+    ref = "refs/tags/alpha-v1"
+    oid = "a" * 40
+    workspace, calls, removed, forgotten = _install_transaction_abandon(
+        monkeypatch, tmp_path,
+        local_tag_states=[{ref: oid}, remaining],
+    )
+    monkeypatch.setattr(transaction, "run_local_git", lambda *_args, **_kwargs: result)
+    if expected is None:
+        transaction.abandon_workspace(
+            tmp_path, workspace, local_tags_to_remove={ref: oid},
+        )
+        assert removed == [workspace] and forgotten == [True]
+    else:
+        with pytest.raises(RuntimeError, match=expected):
+            transaction.abandon_workspace(
+                tmp_path, workspace, local_tags_to_remove={ref: oid},
+            )
+        assert removed == []
+        # Local deletion is issued through the separate local Git wrapper.
 
 
 def test_local_tag_oid_refuses_a_ref_present_after_hash_lookup_failure(

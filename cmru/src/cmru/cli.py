@@ -4288,8 +4288,6 @@ def _abandon_locked(args, runtime, repo_root: Path) -> int:
                     tag_sha = tag_record.get(f"refs/tags/{tag_name}^{{}}") or tag_record.get(
                         f"refs/tags/{tag_name}"
                     )
-                    if tag_sha is None:
-                        raise RuntimeError(f"origin tag {tag_name} has no usable object ID")
                     tag_on_candidate = run_local_git(
                         repo_root, "merge-base", "--is-ancestor", tag_sha,
                         "refs/heads/" + workspace.branch,
@@ -4352,15 +4350,12 @@ def _abandon_locked(args, runtime, repo_root: Path) -> int:
                     raise RuntimeError(
                         f"local release tag {tag_name} changed after its CMRU push attempt"
                     )
+                # The selected-scope snapshot comparison above already refused
+                # any tag ref that existed before the attempt but disappeared.
                 if initial_tag_refs is None:
                     raise RuntimeError(
                         f"local release tag {tag_name} has no origin tag baseline; "
                         "inspect it before abandoning the candidate"
-                    )
-                if ref in initial_tag_refs:
-                    raise RuntimeError(
-                        f"local release tag {tag_name} existed in the origin baseline but is now "
-                        "absent remotely; inspect it before abandoning the candidate"
                     )
                 local_tags_to_remove[ref] = oid
             if unclassified_local_tags:

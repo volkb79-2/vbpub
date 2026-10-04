@@ -1050,6 +1050,313 @@ def test_github_publish_refuses_release_creation_or_recreation_in_existing_only_
             require_existing_release=True,
         )
 
+    with pytest.raises(SystemExit):
+        client.publish(
+            "alpha-v1", "title", "notes", [],
+            require_existing_release=True,
+            expected_release_id=1,
+            expected_tag_commit="bad",
+        )
+
+
+@pytest.mark.parametrize(
+    "record, commit, expected",
+    [
+        (None, SOURCE_COMMIT, "no longer available"),
+        ([], SOURCE_COMMIT, "record is malformed"),
+        ({"id": True, "tag_name": "alpha-v1", "upload_url": "u"}, SOURCE_COMMIT, "release ID changed"),
+        ({"id": 7, "tag_name": "other", "upload_url": "u"}, SOURCE_COMMIT, "tag identity is malformed"),
+        ({"id": 7, "tag_name": "alpha-v1", "upload_url": "u"}, "c" * 40, "tag target changed"),
+        ({"id": 7, "tag_name": "alpha-v1", "upload_url": ""}, SOURCE_COMMIT, "missing upload_url"),
+    ],
+)
+def test_verified_existing_release_rejects_changed_or_malformed_identity(
+    monkeypatch, record, commit, expected,
+):
+    client = release.GitHubReleases("owner", "repo", "token")
+    monkeypatch.setattr(client, "get_release_by_tag", lambda _tag: record)
+    monkeypatch.setattr(client, "get_tag_commit", lambda _tag: commit)
+
+    with pytest.raises(SystemExit, match=expected):
+        client._verified_existing_release("alpha-v1", 7, SOURCE_COMMIT)
+
+
+def test_verified_existing_release_returns_only_matching_release(monkeypatch):
+    client = release.GitHubReleases("owner", "repo", "token")
+    record = {"id": 7, "tag_name": "alpha-v1", "upload_url": "https://upload/{?name}"}
+    monkeypatch.setattr(client, "get_release_by_tag", lambda _tag: record)
+    monkeypatch.setattr(client, "get_tag_commit", lambda _tag: SOURCE_COMMIT)
+
+    assert client._verified_existing_release("alpha-v1", 7, SOURCE_COMMIT) is record
+
+
+def test_existing_only_publish_rechecks_each_asset_before_mutation(tmp_path):
+    old_asset = tmp_path / "old.whl"
+    malformed_old_asset = tmp_path / "legacy.whl"
+    new_asset = tmp_path / "new.whl"
+    for path in (old_asset, malformed_old_asset, new_asset):
+        path.write_bytes(path.name.encode())
+    client = release.GitHubReleases("owner", "repo", "token")
+    record = {"id": 7, "tag_name": "alpha-v1", "upload_url": "https://upload/{?name}"}
+    actions = []
+    client.get_release_by_tag = lambda _tag: record
+    client.get_tag_commit = lambda _tag: SOURCE_COMMIT
+    client.update_release = lambda *args: actions.append(("update", args))
+    client.list_assets = lambda _rid: [
+        {"name": old_asset.name, "id": 8},
+        {"name": malformed_old_asset.name, "id": True},
+    ]
+    client.delete_asset = lambda ident: actions.append(("delete", ident))
+    client.upload_asset = lambda _url, _path, name: actions.append(("upload", name))
+
+    result = client.publish(
+        "alpha-v1", "title", "notes", [old_asset, malformed_old_asset, new_asset],
+        require_existing_release=True, expected_release_id=7,
+        expected_tag_commit=SOURCE_COMMIT,
+    )
+
+    assert result is record
+    assert actions == [
+        ("update", (7, "title", "notes")),
+        ("delete", 8),
+        ("upload", "old.whl"),
+        ("upload", "legacy.whl"),
+        ("upload", "new.whl"),
+    ]
+
+
+@pytest.mark.parametrize(
+    "release_record, tag_commit, expected",
+    [
+        ("not-a-record", SOURCE_COMMIT, "malformed GitHub Release"),
+        ({"id": 0, "tag_name": "alpha-v1"}, SOURCE_COMMIT, "existing GitHub Release ID"),
+        ({"id": 7, "tag_name": "other"}, SOURCE_COMMIT, "malformed GitHub Release identity"),
+        ({"id": 7, "tag_name": "alpha-v1"}, None, "existing Git tag alpha-v1"),
+    ],
+)
+def test_retained_publish_rejects_malformed_existing_release_records(
+    tmp_path, release_record, tag_commit, expected,
+):
+    asset = tmp_path / "alpha-1.2.3.whl"
+    asset.write_bytes(b"wheel")
+
+    class Publisher:
+        def resolve_latest(self, _prefix):
+            return {"version": "1.2.3"}
+
+        def get_release_by_tag(self, _tag):
+            return release_record
+
+        def get_tag_commit(self, _tag):
+            return tag_commit
+
+        def publish(self, *_args, **_kwargs):
+            pytest.fail("invalid retained release was published")
+
+    with pytest.raises(SystemExit, match=expected):
+        release.publish_versioned(
+            Publisher(), prefix="alpha", version="1.2.3", asset_path=asset,
+            require_existing_targets=True, latest_pointer_recreate=False,
+            expected_tag_commit=SOURCE_COMMIT,
+        )
+
+
+@pytest.mark.parametrize("latest", [None, {"version": "1.2.2"}])
+def test_newer_release_comparison_handles_no_clean_latest_release(latest):
+    class Publisher:
+        def resolve_latest(self, _prefix):
+            return latest
+
+    assert release._newer_release_version(Publisher(), "alpha", "1.2.3") is None
+
+
+def test_newer_release_comparison_refuses_malformed_latest_version():
+    class Publisher:
+        def resolve_latest(self, _prefix):
+            return {"version": 17}
+
+    with pytest.raises(SystemExit, match="malformed result"):
+        release._newer_release_version(Publisher(), "alpha", "1.2.3")
+
+
+def test_newer_release_comparison_returns_a_newer_release_version():
+    class Publisher:
+        def resolve_latest(self, _prefix):
+            return {"version": "1.3.0"}
+
+    assert release._newer_release_version(Publisher(), "alpha", "1.2.3") == "1.3.0"
+
+
+@pytest.mark.parametrize("mode", ["create", "update", "recreate"])
+def test_github_publish_handles_create_update_and_recreate_paths(tmp_path, mode):
+    asset = tmp_path / "alpha.whl"
+    asset.write_bytes(b"wheel")
+    client = release.GitHubReleases("owner", "repo", "token")
+    current = None if mode == "create" else {
+        "id": 7, "tag_name": "alpha-v1", "upload_url": "https://upload/{?name}",
+    }
+    events = []
+    client.get_release_by_tag = lambda _tag: current
+    client.create_release = lambda *args: events.append(("create", args)) or {
+        "id": 8, "tag_name": "alpha-v1", "upload_url": "https://upload/{?name}",
+    }
+    client.update_release = lambda *args: events.append(("update", args))
+    client.delete_release = lambda ident: events.append(("delete", ident))
+    client.list_assets = lambda _rid: []
+    client.upload_asset = lambda _url, _path, name: events.append(("upload", name))
+
+    result = client.publish(
+        "alpha-v1", "title", "notes", [asset], recreate=(mode == "recreate"),
+    )
+
+    action_names = [event[0] for event in events]
+    if mode == "create":
+        assert action_names == ["create", "upload"]
+    elif mode == "update":
+        assert action_names == ["update", "upload"]
+    else:
+        assert action_names == ["delete", "create", "upload"]
+    assert result["id"] == (8 if mode in {"create", "recreate"} else 7)
+
+
+@pytest.mark.parametrize("latest_pointer", [False, True])
+def test_retained_publish_updates_only_verified_existing_targets(
+    tmp_path, latest_pointer,
+):
+    asset = tmp_path / "alpha-1.2.3.whl"
+    asset.write_bytes(b"wheel")
+    existing = {
+        "alpha-v1.2.3": {"id": 17, "tag_name": "alpha-v1.2.3"},
+        "alpha-latest": {"id": 18, "tag_name": "alpha-latest"},
+    }
+    published = []
+
+    class Publisher:
+        def resolve_latest(self, _prefix):
+            return {"version": "1.2.3"}
+
+        def get_release_by_tag(self, tag):
+            return existing[tag]
+
+        def get_tag_commit(self, _tag):
+            return SOURCE_COMMIT
+
+        def publish(self, tag, title, notes, assets, **kwargs):
+            published.append((tag, title, notes, tuple(assets), kwargs))
+            return existing[tag]
+
+        def asset_download_url(self, tag, name):
+            return f"https://example.test/{tag}/{name}"
+
+    result = release.publish_versioned(
+        Publisher(), prefix="alpha", version="1.2.3", asset_path=asset,
+        latest_pointer=latest_pointer, require_existing_targets=True,
+        latest_pointer_recreate=False, expected_tag_commit=SOURCE_COMMIT,
+    )
+
+    assert result["release_tag"] == "alpha-v1.2.3"
+    assert result["asset_url"] == "https://example.test/alpha-v1.2.3/alpha-1.2.3.whl"
+    assert [entry[0] for entry in published] == (
+        ["alpha-v1.2.3", "alpha-latest"] if latest_pointer else ["alpha-v1.2.3"]
+    )
+    assert all(entry[4]["require_existing_release"] is True for entry in published)
+
+
+def test_retained_dev_publish_verifies_and_updates_only_latest_target(tmp_path):
+    asset = tmp_path / "alpha-dev.whl"
+    asset.write_bytes(b"wheel")
+    published = []
+
+    class Publisher:
+        def get_release_by_tag(self, tag):
+            assert tag == "alpha-latest"
+            return {"id": 18, "tag_name": tag}
+
+        def get_tag_commit(self, _tag):
+            return SOURCE_COMMIT
+
+        def publish(self, tag, _title, _notes, assets, **kwargs):
+            published.append((tag, tuple(assets), kwargs))
+            return {"id": 18}
+
+    release.publish_versioned(
+        Publisher(), prefix="alpha", version="1.2.3.dev4", asset_path=asset,
+        require_existing_targets=True, latest_pointer_recreate=False,
+        expected_tag_commit=SOURCE_COMMIT,
+    )
+
+    assert len(published) == 1
+    assert published[0][0] == "alpha-latest"
+    assert published[0][2]["expected_tag_commit"] == SOURCE_COMMIT
+
+
+def test_staged_build_output_verifier_accepts_matching_manifest_artifact(tmp_path):
+    source = tmp_path / "build" / "dist" / "artifact.whl"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"wheel")
+    staged = tmp_path / "staged.whl"
+    staged.write_bytes(b"wheel")
+    record = {
+        "artifact_root": str(tmp_path / "build"),
+        "manifest": {"artifacts": [{
+            "directory": "dist",
+            "files": [{
+                "path": "artifact.whl", "sha256": ARTIFACT_SHA, "bytes": 5,
+            }],
+        }]},
+    }
+    record["manifest"]["artifacts"][0]["files"][0]["sha256"] = hashlib.sha256(b"wheel").hexdigest()
+
+    handlers._verify_staged_build_output_file(record, source, staged)
+
+
+@pytest.mark.parametrize("fault", ["digest", "length"])
+def test_staged_build_output_verifier_refuses_changed_staged_content(tmp_path, fault):
+    source = tmp_path / "build" / "dist" / "artifact.whl"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"wheel")
+    staged = tmp_path / "staged.whl"
+    staged.write_bytes(b"changed" if fault == "digest" else b"no")
+    record = {
+        "artifact_root": str(tmp_path / "build"),
+        "manifest": {"artifacts": [{
+            "directory": "dist",
+            "files": [{"path": "artifact.whl", "sha256": ARTIFACT_SHA, "bytes": 5}],
+        }]},
+    }
+    with pytest.raises(RuntimeError, match="differs from build.json"):
+        handlers._verify_staged_build_output_file(record, source, staged)
+
+
+@pytest.mark.parametrize(
+    "record, source_path, staged_path, expected",
+    [
+        ({"artifact_root": "/build", "manifest": {"artifacts": []}}, Path("/outside/file.whl"), Path("/staged.whl"), "outside its build record"),
+        ({"artifact_root": "/build", "manifest": {"artifacts": [{"directory": "dist", "files": []}]}}, Path("/build/dist/missing.whl"), Path("/staged.whl"), "not present in build.json"),
+    ],
+)
+def test_staged_build_output_verifier_rejects_unlisted_sources(
+    tmp_path, record, source_path, staged_path, expected,
+):
+    with pytest.raises(RuntimeError, match=expected):
+        handlers._verify_staged_build_output_file(record, source_path, staged_path)
+
+
+def test_staged_build_output_verifier_requires_regular_staged_file(tmp_path):
+    source_path = tmp_path / "build" / "dist" / "artifact.whl"
+    record = {
+        "artifact_root": str(tmp_path / "build"),
+        "manifest": {"artifacts": [{
+            "directory": "dist",
+            "files": [{"path": "artifact.whl", "sha256": ARTIFACT_SHA, "bytes": 1}],
+        }]},
+    }
+    staged = tmp_path / "staged"
+    staged.mkdir()
+
+    with pytest.raises(RuntimeError, match="not a regular file"):
+        handlers._verify_staged_build_output_file(record, source_path, staged)
+
 
 def test_bound_cmru_launcher_precedes_ambient_path_and_checks_identity(monkeypatch, tmp_path):
     ambient = tmp_path / "ambient"

@@ -84,6 +84,47 @@ def _install_candidate_facts(monkeypatch, root, candidates):
     monkeypatch.setattr(cli, "load_config", lambda _path: _loaded_config(root, configs))
 
 
+def _install_abandon_inspection(
+    monkeypatch, root, candidate, *, scope=None, configs=None, snapshot=None,
+    attempts=None, local_tags=None, remote_tags=None, heads=None, merge_codes=None,
+):
+    _install_candidate_facts(monkeypatch, root, [candidate])
+    if scope is not None:
+        monkeypatch.setattr(transaction, "read_release_scope", lambda *_: scope)
+    if configs is not None:
+        monkeypatch.setattr(cli, "load_config", lambda _path: _loaded_config(root, configs))
+    monkeypatch.setattr(
+        transaction, "read_release_tag_snapshot", lambda *_: snapshot,
+    )
+    monkeypatch.setattr(
+        transaction, "read_release_tag_attempts", lambda *_: attempts,
+    )
+    monkeypatch.setattr(
+        transaction, "list_local_tag_refs", lambda *_: dict(local_tags or {}),
+    )
+    monkeypatch.setattr(
+        cli, "_read_origin_tag_refs", lambda *_args, **_kwargs: dict(remote_tags or {}),
+    )
+    branch_refs = heads if heads is not None else {
+        "refs/heads/main": "b" * 40,
+    }
+    monkeypatch.setattr(
+        cli, "run_remote_git",
+        lambda _root, *args, **_kwargs: SimpleNamespace(
+            returncode=0,
+            stdout="".join(f"{oid}\t{ref}\n" for ref, oid in branch_refs.items()),
+            stderr="",
+        ),
+    )
+    outcomes = dict(merge_codes or {})
+    monkeypatch.setattr(
+        cli, "run_local_git",
+        lambda _root, *args, **_kwargs: SimpleNamespace(
+            returncode=outcomes.get(args[2], 1), stdout="", stderr="",
+        ),
+    )
+
+
 def _invoke_abandon(candidate, *, branch=None, dry_run=True, yes=False, runtime=None):
     from types import SimpleNamespace
 
@@ -500,6 +541,216 @@ def test_abandon_rechecks_remote_state_after_confirmation_before_mutating(
     assert runtime.confirmed
     expected_tag_lookups = 1 if changed_ref == "candidate" else 2
     assert calls == {"heads": 2, "tags": expected_tag_lookups}
+
+
+def test_abandon_withholds_unrequested_origin_branch_refs(monkeypatch, tmp_path, capsys):
+    candidate = _workspace(tmp_path, "cmru-release-20260924_120000-alpha-ab12cd")
+    _install_abandon_inspection(
+        monkeypatch, tmp_path, candidate,
+        heads={
+            "refs/heads/main": "b" * 40,
+            "refs/heads/other": "c" * 40,
+        },
+    )
+
+    assert _invoke_abandon(candidate, branch=candidate.branch) == 2
+    output = capsys.readouterr().out
+    assert "origin branch lookup returned unexpected ref(s)" in output
+    assert "refs/heads/other" in output
+
+
+@pytest.mark.parametrize(
+    "tag_rc, expected",
+    [
+        (0, "no pre-attempt origin tag snapshot"),
+        (2, "could not inspect remote tag alpha-v9"),
+    ],
+)
+def test_abandon_legacy_snapshot_uses_conservative_tag_ancestry_check(
+    monkeypatch, tmp_path, capsys, tag_rc, expected,
+):
+    candidate = _workspace(tmp_path, "cmru-release-20260924_120000-alpha-ab12cd")
+    _install_abandon_inspection(
+        monkeypatch, tmp_path, candidate, snapshot=None,
+        remote_tags={"refs/tags/alpha-v9": "d" * 40},
+        merge_codes={"d" * 40: tag_rc},
+    )
+
+    assert _invoke_abandon(candidate, branch=candidate.branch) == 2
+    assert expected in capsys.readouterr().out
+
+
+def test_abandon_refuses_selected_scope_tag_changes_since_snapshot(monkeypatch, tmp_path, capsys):
+    candidate = _workspace(tmp_path, "cmru-release-20260924_120000-alpha-ab12cd")
+    _install_abandon_inspection(
+        monkeypatch, tmp_path, candidate, snapshot={},
+        remote_tags={"refs/tags/alpha-v9": "d" * 40},
+    )
+
+    assert _invoke_abandon(candidate, branch=candidate.branch) == 2
+    assert "selected-scope release tag refs that changed" in capsys.readouterr().out
+
+
+def test_abandon_refuses_a_scope_without_a_git_tag_prefix(monkeypatch, tmp_path, capsys):
+    candidate = _workspace(tmp_path, "cmru-release-20260924_120000-alpha-ab12cd")
+    _install_abandon_inspection(
+        monkeypatch, tmp_path, candidate,
+        configs={"alpha": SimpleNamespace(git_tag=False)},
+    )
+
+    assert _invoke_abandon(candidate, branch=candidate.branch) == 2
+    assert "no usable Git tag prefix" in capsys.readouterr().out
+
+
+def test_abandon_refuses_scope_with_a_project_that_can_publish_without_a_tag(
+    monkeypatch, tmp_path, capsys,
+):
+    candidate = _workspace(tmp_path, "cmru-release-20260924_120000-alpha-ab12cd")
+    _install_abandon_inspection(
+        monkeypatch, tmp_path, candidate, scope=["alpha", "beta"],
+        configs={
+            "alpha": SimpleNamespace(git_tag=True),
+            "beta": SimpleNamespace(git_tag=False),
+        },
+    )
+
+    assert _invoke_abandon(candidate, branch=candidate.branch) == 2
+    assert "can publish without a Git tag" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    "progress, merge_code, expected",
+    [
+        ("c" * 40, 0, "origin/main contains the recorded release progress"),
+        ("c" * 40, 2, "could not determine whether release progress reached origin/main"),
+    ],
+)
+def test_abandon_refuses_promoted_or_unclassifiable_release_progress(
+    monkeypatch, tmp_path, capsys, progress, merge_code, expected,
+):
+    candidate = _workspace(tmp_path, "cmru-release-20260924_120000-alpha-ab12cd")
+    _install_abandon_inspection(
+        monkeypatch, tmp_path, candidate, merge_codes={progress: merge_code},
+    )
+    monkeypatch.setattr(transaction, "read_release_progress", lambda *_: progress)
+
+    assert _invoke_abandon(candidate, branch=candidate.branch) == 2
+    assert expected in capsys.readouterr().out
+
+
+def test_abandon_refuses_candidate_ref_not_ancestral_to_its_worktree(
+    monkeypatch, tmp_path, capsys,
+):
+    candidate = _workspace(tmp_path, "cmru-release-20260924_120000-alpha-ab12cd")
+    candidate_oid = "c" * 40
+    _install_abandon_inspection(
+        monkeypatch, tmp_path, candidate,
+        heads={
+            "refs/heads/main": "b" * 40,
+            "refs/heads/" + candidate.branch: candidate_oid,
+        },
+        merge_codes={candidate_oid: 2},
+    )
+    monkeypatch.setattr(transaction, "backup_was_pushed", lambda *_: True)
+
+    assert _invoke_abandon(candidate, branch=candidate.branch) == 2
+    assert "not a known ancestor" in capsys.readouterr().out
+
+
+def test_abandon_refuses_tag_attempt_metadata_outside_project_scope(
+    monkeypatch, tmp_path, capsys,
+):
+    candidate = _workspace(tmp_path, "cmru-release-20260924_120000-alpha-ab12cd")
+    _install_abandon_inspection(
+        monkeypatch, tmp_path, candidate, snapshot={},
+        attempts={"refs/tags/beta-v9": "d" * 40},
+    )
+
+    assert _invoke_abandon(candidate, branch=candidate.branch) == 2
+    assert "outside the recorded project scope" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    "snapshot, attempted_oid, expected",
+    [
+        ({}, "e" * 40, "changed after its CMRU push attempt"),
+        (None, "d" * 40, "has no origin tag baseline"),
+    ],
+)
+def test_abandon_refuses_ambiguous_local_tag_attempts(
+    monkeypatch, tmp_path, capsys, snapshot, attempted_oid, expected,
+):
+    candidate = _workspace(tmp_path, "cmru-release-20260924_120000-alpha-ab12cd")
+    local_ref = "refs/tags/alpha-v9"
+    _install_abandon_inspection(
+        monkeypatch, tmp_path, candidate, snapshot=snapshot,
+        attempts={local_ref: attempted_oid}, local_tags={local_ref: "d" * 40},
+    )
+
+    assert _invoke_abandon(candidate, branch=candidate.branch) == 2
+    assert expected in capsys.readouterr().out
+
+
+def test_abandon_ignores_latest_and_origin_present_local_tags(monkeypatch, tmp_path, capsys):
+    candidate = _workspace(tmp_path, "cmru-release-20260924_120000-alpha-ab12cd")
+    origin_ref = "refs/tags/alpha-v9"
+    latest_ref = "refs/tags/alpha-latest"
+    _install_abandon_inspection(
+        monkeypatch, tmp_path, candidate,
+        snapshot={origin_ref: "d" * 40}, attempts=None,
+        local_tags={origin_ref: "d" * 40, latest_ref: "e" * 40},
+        remote_tags={origin_ref: "d" * 40},
+    )
+
+    assert _invoke_abandon(candidate, branch=candidate.branch) == 0
+    output = capsys.readouterr().out
+    assert "Candidate:" in output
+    assert "local-only release tag" not in output
+
+
+def test_abandon_rechecks_local_tags_after_confirmation(monkeypatch, tmp_path):
+    candidate = _workspace(tmp_path, "cmru-release-20260924_120000-alpha-ab12cd")
+    _install_abandon_inspection(monkeypatch, tmp_path, candidate, snapshot={})
+    snapshots = iter([{}, {"refs/tags/alpha-v9": "d" * 40}])
+    monkeypatch.setattr(
+        transaction, "list_local_tag_refs", lambda *_: next(snapshots),
+    )
+    monkeypatch.setattr(
+        transaction, "abandon_workspace",
+        lambda *_args, **_kwargs: pytest.fail("stale local tags reached abandonment"),
+    )
+
+    with pytest.raises(CliFailure, match="local release tags changed after confirmation"):
+        _invoke_abandon(
+            candidate, branch=candidate.branch, dry_run=False, yes=True,
+        )
+
+
+def test_abandon_refuses_when_origin_branch_recheck_fails(monkeypatch, tmp_path):
+    candidate = _workspace(tmp_path, "cmru-release-20260924_120000-alpha-ab12cd")
+    _install_abandon_inspection(monkeypatch, tmp_path, candidate, snapshot={})
+    calls = 0
+
+    def run_remote(_root, *_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        return SimpleNamespace(
+            returncode=0 if calls == 1 else 2,
+            stdout="b" * 40 + "\trefs/heads/main\n",
+            stderr="offline",
+        )
+
+    monkeypatch.setattr(cli, "run_remote_git", run_remote)
+    monkeypatch.setattr(
+        transaction, "abandon_workspace",
+        lambda *_args, **_kwargs: pytest.fail("unverified origin state reached abandonment"),
+    )
+
+    with pytest.raises(CliFailure, match="could not recheck origin branch state"):
+        _invoke_abandon(
+            candidate, branch=candidate.branch, dry_run=False, yes=True,
+        )
+    assert calls == 2
 
 
 def test_abandon_refuses_while_a_local_release_holds_the_lock(monkeypatch, tmp_path):

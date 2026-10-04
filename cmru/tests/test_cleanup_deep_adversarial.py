@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+import json
 import os
 from pathlib import Path
 from types import SimpleNamespace
@@ -1061,3 +1062,250 @@ def test_latest_version_excludes_releases_in_the_captured_cleanup_plan(monkeypat
 
 def test_empty_cleanup_plan_has_no_actions_to_apply():
     cli.CleanupPlan().apply()
+
+
+@pytest.mark.parametrize(
+    "release",
+    [
+        {},
+        {"assets": "not-a-list"},
+        {"assets": [None]},
+        {"assets": [{"id": True, "name": "a.whl", "size": 1, "state": "uploaded", "updated_at": "t"}]},
+        {"assets": [{"id": 1, "name": 4, "size": 1, "state": "uploaded", "updated_at": "t"}]},
+        {"assets": [{"id": 1, "name": "a.whl", "size": True, "state": "uploaded", "updated_at": "t"}]},
+        {"assets": [{"id": 1, "name": "a.whl", "size": 1, "state": None, "updated_at": "t"}]},
+        {"assets": [{"id": 1, "name": "a.whl", "size": 1, "state": "uploaded", "updated_at": None}]},
+        {"assets": [{"id": 1, "name": "a.whl", "size": 1, "state": "uploaded", "updated_at": "t", "digest": 7}]},
+        {"assets": [
+            {"id": 1, "name": "a.whl", "size": 1, "state": "uploaded", "updated_at": "t"},
+            {"id": 1, "name": "b.whl", "size": 2, "state": "uploaded", "updated_at": "t"},
+        ]},
+    ],
+)
+def test_release_asset_inventory_refuses_malformed_or_ambiguous_assets(release):
+    with pytest.raises(RuntimeError, match="asset inventory|duplicate asset IDs"):
+        cli._release_asset_inventory(release)
+
+
+def test_release_asset_inventory_sorts_valid_asset_identity():
+    assets = [
+        {"id": 2, "name": "b.whl", "size": 2, "state": "uploaded", "updated_at": "t"},
+        {"id": 1, "name": "a.whl", "size": 1, "state": "uploaded", "updated_at": "t", "digest": "sha256:x"},
+    ]
+    assert cli._release_asset_inventory({"assets": assets}) == (
+        (1, "a.whl", 1, "uploaded", "t", "sha256:x"),
+        (2, "b.whl", 2, "uploaded", "t", None),
+    )
+
+
+@pytest.mark.parametrize("releases", [[], [_release("demo-v1", 7), _release("demo-v1", 7)]])
+def test_release_delete_skips_a_disappeared_or_ambiguous_release(monkeypatch, capsys, releases):
+    deleted = []
+    monkeypatch.setattr(cli, "list_releases", lambda *_: releases)
+    monkeypatch.setattr(cli, "delete_release", lambda *_args, **_kwargs: deleted.append(True))
+
+    assert cli._delete_release_if_tag_still_matches(
+        "o", "r", "t", 7, "demo-v1", expected_updated_at="t",
+        expected_asset_inventory=(), eligible=lambda _release: True,
+    ) is False
+    assert deleted == []
+    assert "disappeared or became ambiguous" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    "current, eligible",
+    [
+        (_release("demo-v1", 7, updated_at="later"), True),
+        (_release("demo-v1", 7), False),
+    ],
+)
+def test_release_delete_skips_changed_or_ineligible_release(
+    monkeypatch, capsys, current, eligible,
+):
+    deleted = []
+    monkeypatch.setattr(cli, "list_releases", lambda *_: [current])
+    monkeypatch.setattr(cli, "delete_release", lambda *_args, **_kwargs: deleted.append(True))
+
+    assert cli._delete_release_if_tag_still_matches(
+        "o", "r", "t", 7, "demo-v1", expected_updated_at="t",
+        expected_asset_inventory=(), eligible=lambda _release: eligible,
+    ) is False
+    assert deleted == []
+    assert "changed or no longer qualifies" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    "status, body, expected",
+    [
+        (404, "", None),
+        (503, "offline", "Failed to recheck pkg version 17"),
+        (200, "{", "invalid JSON while rechecking"),
+        (200, "[]", "malformed record while rechecking"),
+    ],
+)
+def test_get_package_version_handles_absence_errors_and_malformed_records(
+    monkeypatch, status, body, expected,
+):
+    monkeypatch.setattr(cli, "http_request", lambda *_: (status, body, {}))
+    if expected is None:
+        assert cli.get_package_version("o", "pkg", "t", 17, "org") is None
+    else:
+        with pytest.raises(RuntimeError, match=expected):
+            cli.get_package_version("o", "pkg", "t", 17, "org")
+
+
+def test_get_package_version_uses_the_user_package_route(monkeypatch):
+    seen = []
+    monkeypatch.setattr(
+        cli, "http_request",
+        lambda method, url, token: seen.append((method, url, token))
+        or (200, '{"id":17}', {}),
+    )
+
+    assert cli.get_package_version("owner", "pkg", "token", 17, "user") == {"id": 17}
+    assert seen == [(
+        "GET", "https://api.github.com/users/owner/packages/container/pkg/versions/17", "token",
+    )]
+
+
+@pytest.mark.parametrize(
+    "version",
+    [
+        {},
+        {"metadata": None},
+        {"metadata": {"container": {"tags": "bad"}}},
+        {"metadata": {"container": {"tags": ["ok", 1]}}},
+    ],
+)
+def test_container_version_tags_rejects_malformed_tag_inventories(version):
+    with pytest.raises(RuntimeError, match="no usable container tag inventory"):
+        cli._container_version_tags(version)
+
+
+def test_container_version_tags_returns_sorted_tags():
+    assert cli._container_version_tags({"metadata": {"container": {"tags": ["z", "a"]}}}) == ("a", "z")
+
+
+@pytest.mark.parametrize(
+    "status, body, expected",
+    [
+        (404, "", None),
+        (500, "offline", "Failed to inspect GHCR package pkg"),
+        (200, "{", "invalid JSON while inspecting GHCR package"),
+        (200, "[]", "malformed record"),
+        (200, '{"package_type":"wrong","id":1,"name":"pkg"}', "malformed record"),
+        (200, '{"package_type":"container","id":0,"name":"pkg"}', "malformed record"),
+        (200, '{"package_type":"container","id":1,"name":4}', "malformed record"),
+        (200, '{"package_type":"container","id":1,"name":"other"}', "malformed record"),
+    ],
+)
+def test_get_container_package_checks_http_and_record_identity(
+    monkeypatch, status, body, expected,
+):
+    monkeypatch.setattr(cli, "http_request", lambda *_: (status, body, {}))
+    if expected is None:
+        assert cli.get_container_package("o", "pkg", "t", "org") is None
+    else:
+        with pytest.raises(RuntimeError, match=expected):
+            cli.get_container_package("o", "pkg", "t", "org")
+
+
+def test_get_container_package_uses_user_route_and_accepts_casefolded_name(monkeypatch):
+    seen = []
+    record = {"package_type": "container", "id": 5, "name": "pkg"}
+    monkeypatch.setattr(
+        cli, "http_request",
+        lambda method, url, token: seen.append((method, url, token)) or (200, json.dumps(record), {}),
+    )
+    assert cli.get_container_package("owner", "Pkg", "token", "user") == record
+    assert seen == [(
+        "GET", "https://api.github.com/users/owner/packages/container/Pkg", "token",
+    )]
+
+
+def test_explicit_package_dry_run_without_plan_reports_preview(monkeypatch, capsys):
+    monkeypatch.setattr(cli, "get_container_package", lambda *_: {"id": 17})
+    monkeypatch.setattr(cli, "list_package_versions", lambda *_: pytest.fail("package deletion listed versions"))
+    cli.cleanup_ghcr(
+        "o", "t", "org", datetime(2024, 1, 1, tzinfo=timezone.utc), True,
+        _cleanup(ghcr_packages=["pkg"], ghcr_delete_packages=["pkg"]),
+    )
+    assert "Would delete GHCR package pkg (id=17)" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    "dry_run, with_plan, expected",
+    [
+        (True, True, "no deletion is planned"),
+        (False, False, "package cleanup is skipped"),
+    ],
+)
+def test_run_cleanup_verb_skips_inaccessible_explicit_ghcr_package(
+    monkeypatch, capsys, dry_run, with_plan, expected,
+):
+    monkeypatch.setattr(cli, "resolve_versions_from_git", lambda *_: None)
+    monkeypatch.setattr(cli, "apply_release_env", lambda *_: None)
+    monkeypatch.setattr(cli, "get_container_package", lambda *_: None)
+    monkeypatch.setattr(
+        cli, "_delete_container_package_if_unchanged",
+        lambda *_: pytest.fail("inaccessible package was deleted"),
+    )
+    config = SimpleNamespace(
+        owner="owner", repo="repo", token="token", owner_type="org",
+    )
+    plan = cli.CleanupPlan() if with_plan else None
+
+    cli.run_cleanup_verb(
+        Path("."), {}, [], _cleanup(ghcr_delete_packages=["pkg"]), config,
+        SimpleNamespace(), None, dry_run, plan=plan,
+    )
+
+    assert expected in capsys.readouterr().out
+
+
+def test_project_tag_cleanup_skips_when_release_remains_after_preview(monkeypatch, tmp_path, capsys):
+    deleted = []
+    outcomes = {}
+    monkeypatch.setattr(cli, "list_releases", lambda *_: [_release("demo-v1", 7)])
+    monkeypatch.setattr(
+        cli, "delete_git_tag_remote",
+        lambda *_args, **_kwargs: deleted.append("remote"),
+    )
+    monkeypatch.setattr(
+        cli, "delete_git_tag_local",
+        lambda *_args, **_kwargs: deleted.append("local"),
+    )
+
+    cli._delete_project_tag_after_release_check(
+        tmp_path, "o", "r", "t", "demo-v1",
+        expected_remote_present=True, expected_local_present=True,
+        expected_remote_oid="a" * 40, expected_local_oid="a" * 40,
+        git_auth=None, release_was_planned=False, release_outcomes={},
+        cleanup_outcomes=outcomes,
+    )
+    assert deleted == []
+    assert outcomes == {"demo-v1": False}
+    assert "still exists after preview" in capsys.readouterr().out
+
+
+def test_project_tag_cleanup_skips_when_planned_release_was_not_deleted(
+    monkeypatch, tmp_path, capsys,
+):
+    monkeypatch.setattr(
+        cli, "list_releases",
+        lambda *_: pytest.fail("release list was queried after planned deletion failed"),
+    )
+    monkeypatch.setattr(
+        cli, "delete_git_tag_remote",
+        lambda *_args, **_kwargs: pytest.fail("remote tag was deleted"),
+    )
+    outcomes = {}
+    cli._delete_project_tag_after_release_check(
+        tmp_path, "o", "r", "t", "demo-v1",
+        expected_remote_present=True, expected_local_present=True,
+        expected_remote_oid="a" * 40, expected_local_oid="a" * 40,
+        git_auth=None, release_was_planned=True, release_outcomes={"demo-v1": False},
+        cleanup_outcomes=outcomes,
+    )
+    assert outcomes == {"demo-v1": False}
+    assert "was not deleted after preview" in capsys.readouterr().out
