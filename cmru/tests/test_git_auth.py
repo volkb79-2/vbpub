@@ -129,8 +129,11 @@ def test_run_remote_git_uses_secret_only_for_matching_origin(monkeypatch, tmp_pa
         lambda _root, *, for_push: ["https://github.com/acme/vbpub.git"],
     )
     calls = []
+    hook_states = []
 
     def fake_run(argv, **kwargs):
+        hooks_path = Path(argv[4].removeprefix("core.hooksPath="))
+        hook_states.append((hooks_path.is_dir(), not (hooks_path / "pre-push").exists()))
         calls.append((argv, kwargs))
         return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
 
@@ -145,8 +148,8 @@ def test_run_remote_git_uses_secret_only_for_matching_origin(monkeypatch, tmp_pa
     assert argv[:4] == ["git", "-c", "credential.helper=", "-c"]
     hooks_path = Path(argv[4].removeprefix("core.hooksPath="))
     assert argv[4].startswith("core.hooksPath=")
-    assert hooks_path.is_dir()
-    assert not (hooks_path / "pre-push").exists()
+    assert hook_states == [(True, True)]
+    assert not hooks_path.exists()
     assert argv[5:] == ["push", "origin", "HEAD:refs/heads/main"]
     assert kwargs["env"]["CMRU_GIT_AUTH_TOKEN"] == "secret"
     assert kwargs["env"]["GIT_TERMINAL_PROMPT"] == "0"
@@ -253,6 +256,7 @@ def test_release_tag_reference_hook_runs_without_publisher_tokens(tmp_path, monk
     subprocess.run(["git", "init", "-q", str(repo)], check=True)
     subprocess.run(["git", "config", "user.name", "cmru test"], cwd=repo, check=True)
     subprocess.run(["git", "config", "user.email", "cmru@example.invalid"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "--allow-empty", "-m", "initial"], cwd=repo, check=True)
     hook_dir = repo / ".git" / "hooks"
     hook_dir.mkdir(exist_ok=True)
     observed = tmp_path / "reference-hook-env.txt"
@@ -434,6 +438,8 @@ def test_run_child_self_release_imports_candidate_cmru_source(monkeypatch, tmp_p
         path.parent.mkdir(parents=True, exist_ok=True)
         if path.suffix:
             path.write_text("# candidate source\n", encoding="utf-8")
+        else:
+            path.mkdir(parents=True, exist_ok=True)
 
     observed = {}
     monkeypatch.setenv("PYTHONPATH", "/inherited/python/path")

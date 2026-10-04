@@ -197,20 +197,80 @@ class GitHubReleases:
         if status >= 400:
             self._fail(f"upload asset {asset_name}", status, body)
 
+    def _verified_existing_release(
+        self, tag: str, expected_release_id: int, expected_tag_commit: str,
+    ) -> Dict[str, Any]:
+        """Recheck the exact release object and tag target before a retained mutation."""
+        release = self.get_release_by_tag(tag)
+        if release is None:
+            _die(f"refusing to update GitHub Release {tag}: the captured release is no longer available")
+        if not isinstance(release, dict):
+            _die(f"refusing to update GitHub Release {tag}: the returned record is malformed")
+        release_id = release.get("id")
+        if type(release_id) is not int or release_id != expected_release_id:
+            _die(
+                f"refusing to update GitHub Release {tag}: its release ID changed "
+                f"from {expected_release_id} to {release_id!r}"
+            )
+        if release.get("tag_name") != tag:
+            _die(f"refusing to update GitHub Release {tag}: the returned tag identity is malformed")
+        current_commit = self.get_tag_commit(tag)
+        if current_commit != expected_tag_commit:
+            _die(
+                f"refusing to update GitHub Release {tag}: its tag target changed "
+                f"from {expected_tag_commit} to {current_commit!r}"
+            )
+        if not isinstance(release.get("upload_url"), str) or not release["upload_url"]:
+            self._fail(f"release {tag} missing upload_url", 0, json.dumps(release))
+        return release
+
     # composite -----------------------------------------------------------------
     def publish(self, tag: str, title: str, notes: str, assets: List[Path],
                 *, recreate: bool = False,
                 target_commitish: Optional[str] = None,
-                require_existing_release: bool = False) -> Dict[str, Any]:
+                require_existing_release: bool = False,
+                expected_release_id: Optional[int] = None,
+                expected_tag_commit: Optional[str] = None) -> Dict[str, Any]:
         """Create/refresh ``tag`` and (re)upload ``assets`` (same-named ones replaced)."""
+        if require_existing_release:
+            if recreate:
+                _die(f"refusing to recreate GitHub Release {tag}: existing refs must remain untouched")
+            if type(expected_release_id) is not int or expected_release_id <= 0:
+                _die(f"refusing to update GitHub Release {tag}: no valid captured release ID was supplied")
+            if not isinstance(expected_tag_commit, str) or not re.fullmatch(
+                r"[0-9a-f]{40}", expected_tag_commit,
+            ):
+                _die(f"refusing to update GitHub Release {tag}: no valid captured tag commit was supplied")
+            # Recheck directly before changing release metadata. GitHub has no
+            # conditional update API, so later asset mutations repeat this check.
+            release = self._verified_existing_release(
+                tag, expected_release_id, expected_tag_commit,
+            )
+            self.update_release(expected_release_id, title, notes)
+            release = self._verified_existing_release(
+                tag, expected_release_id, expected_tag_commit,
+            )
+            rid, upload_url = expected_release_id, release["upload_url"]
+            for asset in assets:
+                # Re-fetch assets for each name, then recheck target identity
+                # immediately before deleting or uploading.
+                current_assets = {a.get("name"): a for a in self.list_assets(rid)}
+                old = current_assets.get(asset.name)
+                if old and type(old.get("id")) is int:
+                    self._verified_existing_release(
+                        tag, expected_release_id, expected_tag_commit,
+                    )
+                    self.delete_asset(old["id"])
+                checked = self._verified_existing_release(
+                    tag, expected_release_id, expected_tag_commit,
+                )
+                self.upload_asset(str(checked["upload_url"]), asset, asset.name)
+            return release
+
         release = self.get_release_by_tag(tag)
         if release is None:
-            if require_existing_release:
-                _die(f"refusing to create GitHub Release {tag}: an existing release is required")
             release = self.create_release(tag, title, notes, target_commitish)
         elif recreate and release.get("id"):
-            if require_existing_release:
-                _die(f"refusing to recreate GitHub Release {tag}: existing refs must remain untouched")
             self.delete_release(int(release["id"]))
             release = self.create_release(tag, title, notes, target_commitish)
         elif release.get("id"):
@@ -286,6 +346,14 @@ def publish_versioned(
 
     Returns ``{version, release_tag|None, sha256, asset_url|None}``.
     """
+    if require_existing_targets and (
+        target_commitish is not None or (latest_pointer and latest_pointer_recreate)
+    ):
+        _die(
+            "require_existing_targets cannot create or recreate Git refs; "
+            "omit target_commitish and disable latest_pointer_recreate"
+        )
+
     digest = sha256_file(asset_path)
     sidecar = write_sha256_sidecar(asset_path)
     extras = list(extra_assets or [])
@@ -295,22 +363,45 @@ def publish_versioned(
     released = is_release_version(version)
     release_tag = version_to_tag(prefix, version) if released else None
     latest_tag = f"{prefix}-latest"
-    if require_existing_targets:
-        if target_commitish is not None or (latest_pointer and latest_pointer_recreate):
-            _die(
-                "require_existing_targets cannot create or recreate Git refs; "
-                "omit target_commitish and disable latest_pointer_recreate"
+    update_latest_pointer = latest_pointer
+    if require_existing_targets and released and latest_pointer:
+        newer_version = _newer_release_version(gh, prefix, version)
+        if newer_version is not None:
+            update_latest_pointer = False
+            print(
+                f"[INFO] Keeping {latest_tag} on newer {prefix}-v{newer_version}; "
+                f"retained build {release_tag} is older"
             )
+    if require_existing_targets:
         required_tags = ([release_tag] if release_tag else [])
         if latest_pointer:
             required_tags.append(latest_tag)
         resolved: dict[str, Optional[str]] = {}
+        resolved_release_ids: dict[str, int] = {}
         for tag in required_tags:
-            if gh.get_release_by_tag(tag) is None:
+            existing_release = gh.get_release_by_tag(tag)
+            if existing_release is None:
                 _die(
                     f"build-output publication cannot verify the existing GitHub Release {tag}; "
                     "confirm it exists and is accessible"
                 )
+            if not isinstance(existing_release, dict):
+                _die(
+                    f"build-output publication received a malformed GitHub Release "
+                    f"record for {tag}"
+                )
+            release_id = existing_release.get("id")
+            if type(release_id) is not int or release_id <= 0:
+                _die(
+                    f"build-output publication cannot verify the existing GitHub Release ID "
+                    f"for {tag}"
+                )
+            if existing_release.get("tag_name") != tag:
+                _die(
+                    f"build-output publication received a malformed GitHub Release identity "
+                    f"for {tag}"
+                )
+            resolved_release_ids[tag] = release_id
             resolved[tag] = gh.get_tag_commit(tag)
             if resolved[tag] is None:
                 _die(
@@ -335,6 +426,8 @@ def publish_versioned(
         }
         if require_existing_targets:
             options["require_existing_release"] = True
+            options["expected_release_id"] = resolved_release_ids[tag]
+            options["expected_tag_commit"] = resolved[tag]
         return gh.publish(tag, title, body, assets, **options)
 
     if released:
@@ -355,22 +448,31 @@ def publish_versioned(
 
     if latest_pointer:
         if released:
-            manifest = asset_path.with_name("latest.json")
-            manifest.write_text(json.dumps({
-                "project": prefix,
-                "version": version,
-                "tag": result["release_tag"],
-                "asset": asset_path.name,
-                "sha256": digest,
-                "url": result["asset_url"],
-                "note": "thin redirect — the real artifact lives on the versioned release",
-            }, indent=2) + "\n", encoding="utf-8")
-            publish_assets(
-                latest_tag, latest_tag,
-                f"{prefix} latest → {version} (thin pointer; see latest.json)",
-                [manifest], recreate=latest_pointer_recreate,
-            )
-            print(f"[INFO] Refreshed thin pointer {latest_tag} → {result['release_tag']}")
+            if update_latest_pointer and require_existing_targets:
+                newer_version = _newer_release_version(gh, prefix, version)
+                if newer_version is not None:
+                    update_latest_pointer = False
+                    print(
+                        f"[INFO] Keeping {latest_tag} on newer {prefix}-v{newer_version}; "
+                        f"retained build {release_tag} is older"
+                    )
+            if update_latest_pointer:
+                manifest = asset_path.with_name("latest.json")
+                manifest.write_text(json.dumps({
+                    "project": prefix,
+                    "version": version,
+                    "tag": result["release_tag"],
+                    "asset": asset_path.name,
+                    "sha256": digest,
+                    "url": result["asset_url"],
+                    "note": "thin redirect — the real artifact lives on the versioned release",
+                }, indent=2) + "\n", encoding="utf-8")
+                publish_assets(
+                    latest_tag, latest_tag,
+                    f"{prefix} latest → {version} (thin pointer; see latest.json)",
+                    [manifest], recreate=latest_pointer_recreate,
+                )
+                print(f"[INFO] Refreshed thin pointer {latest_tag} → {result['release_tag']}")
         else:
             publish_assets(
                 latest_tag, latest_tag, f"{prefix} latest (dev → {version})",
@@ -379,6 +481,19 @@ def publish_versioned(
             print(f"[INFO] Moved {latest_tag} (dev asset → {version})")
 
     return result
+
+
+def _newer_release_version(gh: GitHubReleases, prefix: str, version: str) -> str | None:
+    """Return the highest current version when it is newer than a retained release."""
+    latest = gh.resolve_latest(prefix)
+    if latest is None:
+        return None
+    latest_version = latest.get("version")
+    if not isinstance(latest_version, str) or not is_release_version(latest_version):
+        _die(f"cannot safely compare latest release version for {prefix!r}: malformed result")
+    if _semver_key(latest_version) > _semver_key(version):
+        return latest_version
+    return None
 
 
 # ─── multi-variant publish (S-REL.6) ─────────────────────────────────────────

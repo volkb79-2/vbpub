@@ -611,16 +611,22 @@ def test_cleanup_uses_current_directory_orchestration_without_a_shim(tmp_path, m
     monkeypatch.chdir(tmp_path)
     target = tmp_path / "retained-build"
     calls = []
-    monkeypatch.setattr(
-        cli.transaction,
-        "discard_build_workspace",
-        lambda root, path, *, dry_run: calls.append((root, path, dry_run))
-        or SimpleNamespace(path=path, branch="cmru/build/debug"),
+    preview = cli.transaction.ReleaseWorkspace(
+        repo_root=tmp_path, path=target, branch="cmru/build/debug",
+        base="a" * 40,
     )
+
+    def discard(root, path, *, dry_run, expected_workspace=None):
+        calls.append((root, path, dry_run, expected_workspace))
+        return preview
+
+    monkeypatch.setattr(cli.transaction, "discard_build_workspace", discard)
 
     cli.main(["cleanup", "--discard-build-worktree", str(target), "--yes"])
 
-    assert calls == [(tmp_path, target, True), (tmp_path, target, False)]
+    assert calls[0] == (tmp_path, target, True, None)
+    assert calls[1][:3] == (tmp_path, target, False)
+    assert calls[1][3] is preview
 
 
 def test_source_module_invocation_works_from_the_cmru_project_directory():
@@ -668,7 +674,9 @@ def test_cleanup_delete_unmanaged_release_previews_then_refuses_without_confirma
     cfg_path = _valid_config(tmp_path)
     monkeypatch.setattr(
         cli, "load_json",
-        lambda _url, _token: ([{"id": 42, "tag_name": "alpha-wheel-latest"}], {}),
+        lambda _url, _token: ([{
+            "id": 42, "tag_name": "alpha-wheel-latest", "assets": [],
+        }], {}),
     )
     assert cli.main([
         "cleanup", "alpha", "--config", str(cfg_path),
@@ -687,18 +695,20 @@ def test_cleanup_delete_unmanaged_release_is_project_scoped_and_dry_runnable(tmp
         '[github]\ntoken = "test-token"\n', encoding="utf-8"
     )
     calls = []
-    monkeypatch.setattr(
-        cli, "delete_unmanaged_release_tag",
-        lambda owner, repo, token, tag, *, dry_run: calls.append(
-            (owner, repo, token, tag, dry_run)
-        ) or True,
-    )
+
+    def delete_unmanaged(owner, repo, token, tag, *, dry_run, plan):
+        calls.append((owner, repo, token, tag, dry_run, plan))
+        return True
+
+    monkeypatch.setattr(cli, "delete_unmanaged_release_tag", delete_unmanaged)
 
     cli.main([
         "cleanup", "alpha", "--config", str(cfg_path),
         "--delete-unmanaged-release-tag", "alpha-wheel-latest", "--dry-run",
     ])
-    assert calls == [("octocat", "demo", "test-token", "alpha-wheel-latest", True)]
+    assert len(calls) == 1
+    assert calls[0][:5] == ("octocat", "demo", "test-token", "alpha-wheel-latest", True)
+    assert isinstance(calls[0][5], cli.CleanupPlan)
 
 
 def test_cleanup_delete_unmanaged_release_rejects_a_managed_tag(tmp_path):
@@ -712,12 +722,14 @@ def test_cleanup_delete_unmanaged_release_rejects_a_managed_tag(tmp_path):
 def test_cleanup_delete_build_output_is_project_scoped_and_dry_runnable(tmp_path, monkeypatch):
     cfg_path = _valid_config(tmp_path)
     expected_id = f"19700101T000000Z_{'a' * 40}"
+    identity = object()
     calls = []
+    monkeypatch.setattr(cli.transaction, "retained_build_output_identity", lambda *_args: identity)
     monkeypatch.setattr(
         cli.transaction,
         "delete_retained_build_output",
-        lambda root, project, name, output_id, *, dry_run: calls.append(
-            (root, project, name, output_id, dry_run)
+        lambda root, project, name, output_id, *, dry_run, expected_identity: calls.append(
+            (root, project, name, output_id, dry_run, expected_identity)
         ) or [tmp_path / "alpha" / "logs" / output_id, tmp_path / "alpha" / "artifacts" / output_id],
     )
 
@@ -728,7 +740,7 @@ def test_cleanup_delete_build_output_is_project_scoped_and_dry_runnable(tmp_path
 
     assert len(calls) == 1
     assert calls[0][0] == tmp_path
-    assert calls[0][2:] == ("alpha", expected_id, True)
+    assert calls[0][2:] == ("alpha", expected_id, True, identity)
 
 
 def test_invalid_config_missing_github_is_version_headed(tmp_path, capsys):

@@ -59,6 +59,13 @@ launcher installs Assay from the selected worktree and records the runtime
 judge identity, while explicit command-plus-pin mode remains for external
 consumers. The tester-unified image supplies the declared build backend and a
 writable runtime venv for that source install.
+Rev 12 (run-gate rev 49): RG-66 selective assay requests; RG-68 completed FAIL
+footprints; RG-69 merged lane manifest updates; RG-71 declared command args;
+RG-72 failure digests and retained artifacts; RG-74 trunk bases and native
+sequences; RG-76 v8-shaped assay inventory imports; RG-77 documents the
+existing durable state-dir contract (RG-49's parent repair remains open);
+RG-78's closed result table and explicit modes; RG-80's off-by-default
+Docker-name count admission, owner tuple, deadlines, and janitor.
 Distilled from `README.md` (design
 authority), `CONSUMERS.md` (adoption contract), `HANDOFF-P01` (build contract)
 and the controller's session amendments (§8). Requirement IDs (`R-xx`) are the
@@ -102,11 +109,11 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   identity; the wheel's SemVer remains a separate distribution identity. The
   output is exactly one identity line with no stderr. Every help, usage, and
   configuration diagnostic starts with `RUN-GATE rev <__revision__> —
-  per-project gate entrypoint` as line 1; normal lane output is unchanged.
+  per-project gate entrypoint` as line 1; lane runs end with a verdict summary; --json emits one result object on stdout.
 - `R-01` `<lane>` runs one lane; `--list` emits `name<TAB>kind<TAB>environment`
   per lane, sorted by name — THREE columns, stable, machine-readable, never
   extended (consumers parse it). `--help`/no-args prints revision + the
-  human lane table — each lane's `clean_tree`, advisory `budget`, `memory`,
+  human lane table — each lane's `clean_tree`, hard `budget`, `memory`,
   and declared `description` — plus a FLAGS section (`--worktree`;
   `--allow-dirty` with the caveat that assay lanes still enforce assay's own
   clean-tree rule) and an ENVIRONMENT CONTRACT section naming every
@@ -119,6 +126,13 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   0), a toolchain FAIL exits 2. `history [LANE] [--json]` (RG-27) is the
   lane-timing query verb (`R-36`); the usage text also documents the store
   location, the `[history] keep` bound and the history-eligibility rule.
+  Command-lane arguments after `--` are appended only for a lane that declares
+  `accepts_args = true` (RG-71). Assay-only `--reuse-from`, repeatable
+  `--rejudge`, and `--rejudge-outcome` are selective request controls (RG-66).
+  `footprint --include-failed` admits completed profiled FAIL measurements;
+  repeatable `footprint --write --lane NAME` merges selected entries (RG-68/69).
+  `admission set|show`, `--admission-wait`, and `--override-admission` are
+  the RG-80 daemon-wide count-cap interface.
 - `R-02` `--worktree PATH` overrides the judged worktree (daemon substitutes
   its attempt path textually before invoking) AND the source of every config
   read. First discover the invoking project as usual, then preserve its path
@@ -134,18 +148,41 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   fail closed inside assay itself — this flag never weakens assay).
 - `R-04` Every config/env error is ONE line on stderr naming the offending
   key AND file; a traceback reaching the user for any config/usage error is a
-  defect. Reserved exit codes (RG-11): the LANE'S OWN status passes through
-  unchanged; tool refusals and failures use **2** = configuration/refusal
-  (bad or unknown key/lane/environment, dirty tree, preflight refusals) and
-  **3** = execution-infrastructure failure (docker/git/mountinfo could not do
-  their job). Uniform legacy exit 1 for every refusal is superseded.
+  defect. The lane's raw status is data in a closed `LaneResult`, never the
+  process status directly. The one exit table is **PASS 0**, **FAIL 1**,
+  **ERROR 2**, **NOT_RUN 3**, and **BUDGET_EXCEEDED 4**. Configuration and
+  execution-infrastructure failures are both ERROR; preconditions refused
+  before the judge runs are NOT_RUN; only a declared hard lane budget yields
+  BUDGET_EXCEEDED. No other process status leaves run-gate.
   `{worktree}` in a lane argv is substituted textually with the judged
   worktree path (all occurrences, every element). Because consumer pointers
   embed that path into `bash -c` STRINGS unquoted (RG-5), the resolved
   worktree must be gate-safe — `^[A-Za-z0-9_./][A-Za-z0-9_./-]*$`, i.e. no
   whitespace or shell metacharacters anywhere in the path; any lane kind run
-  from a tree at an unsafe path refuses (exit 2) before execution, naming
+  from a tree at an unsafe path refuses before execution, naming
   the offending characters.
+- `R-04a` Every normal CLI dispatch path returns `LaneResult`; `finish()` is
+  the only function that persists the result, prints the final one-line
+  summary or `--json` object, and translates the verdict to the closed
+  process exit table. Config/usage errors are ERROR. Preconditions that did
+  not start the judge use NOT_RUN with one of the closed reasons:
+  `realness-mismatch`, `service-down`, `environment-down`,
+  `environment-mismatch`, `env-missing`, `external-missing`, `external-down`,
+  `dirty-tree`, `no-headroom`, `lock-busy`, `no-base`, `judge-floor`,
+  `judge-digest`, or `provenance-mismatch`. `no-headroom` is reserved for the
+  RG-80 count cap: it is returned when an enabled wait expires or unreadable
+  policy is `refuse`.
+- `R-04b` A command lane's raw code maps to PASS only at zero and FAIL at
+  every non-zero value, retaining the raw `exit_code`. A lane may declare
+  `[lanes.<name>.exit_map]` to map individual integer statuses to PASS, FAIL,
+  or ERROR. A pytest status 5 is FAIL with reason `pytest-collected-no-tests`.
+  An assay lane uses the verdict artifact's closed outcome vocabulary;
+  `NO_MEASUREMENT` and `INCONCLUSIVE` map to FAIL, and the raw outcome is
+  retained as `assay_outcome`. Missing/invalid judge provenance is ERROR.
+  `--json` lane results contain `verdict`, raw `exit_code`, `reason`,
+  `log_path`, `assay_outcome`, and `admission`. The human lane summary names
+  verdict, raw code when present, reason when present, and log path when one
+  exists.
 - `R-05` The tool prints, before executing: the selected project config path
   (`run-gate: config: <path>`), revision, lane name, environment source,
   resolved slice + its source (on exec lanes this is naming-only disclosure
@@ -156,31 +193,42 @@ disagree, §8 amendments win, then README, then CONSUMERS.
 ## 3. Config schema (both files; `schema_version` must equal 1)
 
 - `R-06` Top-level keys: `schema_version` (required), `environments`,
-  `lanes`, `history`. Unknown top-level key → error naming key + file. A
+  `lanes`, `history`, `profile`, `footprint`, `project`, `assay`, and
+  project-local `admission`. Unknown top-level key → error naming key + file. A
   central config's `[lanes.*]` are legal (R-22). `[history]` (RG-27) takes
   one optional key, `keep` (integer ≥ 1, default 10 — a bool is refused,
   not silently read as 1); a project `[history]` shadows the central one
-  entirely, per R-09's rule.
-- `R-07` `[environments.<name>]`: `image` (non-empty string, required),
-  `cgroup_slice` (optional non-empty string) or `cgroup_slice_env` (optional
-  valid environment-variable name; the two are mutually exclusive), `mode` (`"ephemeral"`
-  (default) | `"exec"` — RG-39/RG-43: ephemeral starts a fresh container
-  per invocation, exec runs inside a PERSISTENT runner this tool never
-  starts or stops), `container_name` (optional non-empty string — an
+  entirely, per R-09's rule. `[project]` accepts `trunk` (a gate-safe local
+  branch name; project config shadows an inherited value). `[assay]` accepts
+  shared judge defaults and the inventory import policy (`R-49`). `[admission]`
+  is forbidden in a central config and is never inherited (`R-50`).
+- `R-07` `[environments.<name>]`: `mode` is required and must be exactly
+  `"ephemeral"`, `"exec"`, or `"host"` — the name selects no behavior.
+  `ephemeral` requires `image` and starts a fresh container per invocation;
+  `exec` requires `image` and runs inside a PERSISTENT runner this tool never
+  starts or stops; `host` is a bare subprocess and forbids `image`. An
+  environment named `host` is a container only when it explicitly declares
+  `mode = "ephemeral"`; `bare-host` is an ordinary name, not a built-in.
+  `run-gate.py migrate-modes PATH` mechanically inserts missing modes in one
+  config while preserving comments. `cgroup_slice` (optional non-empty
+  string) or `cgroup_slice_env` (optional valid environment-variable name;
+  the two are mutually exclusive), `container_name` (optional non-empty string — an
   exec-mode environment's persistent runner, when it is not derivable from
   `ciu.global.toml`; declaring it on an ephemeral environment is legal but
   inert), `forward_env` (optional, unique list of valid environment-variable
   names; values are forwarded to container lanes only when set),
   `resources` (RG-48, rev 10: a table accepting `cpus` ONLY — `R-29`'s
   environment-level fallback for a lane's own `resources.cpus`). Redefining
-  `host` or `bare-host` → error.
-- `R-08` `[lanes.<name>]` keys: `kind` (`"command"`|`"assay"`), `environment`
+  a config without `mode` → error naming the environment and file.
+- `R-08` `[lanes.<name>]` keys: `kind` (`"command"`|`"assay"`|`"sequence"`), `environment`
   (non-empty string), `argv` (command kind: non-empty string list),
   `assay_lane` (assay kind: required) and optional `assay_command` (a
   non-empty string list when supplied). When omitted, run-gate installs the
   `assay/` package from the selected worktree and invokes its `assay` console
   script; this is the internal vbpub mode and the resulting verdict records
-  the runtime assay version. Supplying `assay_command` selects the explicit
+  the runtime assay version. `exit_map` is an optional non-empty table on a
+  command lane mapping integer raw status keys to `PASS`, `FAIL`, or `ERROR`.
+  Supplying `assay_command` selects the explicit
   external-consumer mode. `pins` is legal only with that explicit command;
   source mode rejects a non-empty pin table. `pins` (assay kind: table of
   `{sha256 = "<path>", version = "<str>"}` —
@@ -219,12 +267,32 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   rev 30 and `footprint` in rev 10 — each a LOAD-TIME BREAKING change for
   any consumer that had declared a lane by that name (no estate project
   had either; flagged in CHANGES and CONSUMERS for copied-script repos).
+- `R-08b` **Declared invocation arguments (RG-71).** A command lane may set
+  `accepts_args = true`. Only then are arguments after the invocation's `--`
+  appended to the lane argv, in order and as separate argv elements. They are
+  refused for assay lanes, undeclared command lanes, and command composites;
+  selective arguments do not mutate the stored lane declaration or its
+  history identity.
+- `R-08c` **Selective assay requests (RG-66).** Lane invocations may pass
+  `--reuse-from PATH`, repeatable `--rejudge ID`, and `--rejudge-outcome
+  BUCKET` only to one assay lane. `--reuse-from` resolves within the judged
+  worktree, the request is recorded in history, and the lane's constructed
+  Assay argv carries the selected flags. Assay's declared pin version must
+  meet `--state-dir`'s `5.2.0` floor (`R-38`). A command or sequence refuses
+  these assay-only request flags.
+- `R-08d` **Sequences (RG-67b/RG-74).** A sequence declares `lanes = [...]`
+  in execution order and may set `stop_on = "FAIL" | "never"` (default
+  `FAIL`). It accepts no runner or argv keys; each member owns its environment
+  and execution settings. Missing members and cycles are configuration
+  errors. The sequence records one ordered composite plus each member's
+  independent result.
 - `R-08a` **Pin tables carry two keys, and `budget` is not one of them
   (RG-32).** `[lanes.<name>.pins.<pin>]` accepts `sha256` and `version`
   ONLY. A `budget` key there is refused at load, by name, with the message
-  `pin '<pin>' declares 'budget' — run-gate never enforced it; the lane's
-  budget lives in the consumer's assay.toml [lanes.<assay_lane>] (delete
-  this key; the lane-level run-gate 'budget' stays advisory)`. This is an
+  `pin '<pin>' declares 'budget' — this pin table is not the lane budget;
+  the lane budget lives in the consumer's assay.toml
+  [lanes.<assay_lane>] (delete this key; the lane-level run-gate 'budget'
+  is a hard limit)`. This is an
   `R-04`-class defect, not a nit: the key sat one nesting level below a
   REAL, load-bearing `budget` that looks identical when read, and it did
   nothing. Measured cost — three readers on one dstdns session (two
@@ -308,10 +376,16 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   `cgroup_slice_env = "CGROUP_PARENT_DEV_GATES"`, so consuming projects inherit
   one policy while the host remains the authority for the value. No literal
   slice fallback exists in the source.
-- `R-11` **LoadState pre-check** runs ONLY where systemd is reachable
-  (`[ -d /run/systemd/system ]` equivalent); elsewhere skipped (containerized
-  contexts ship a shim). Not-loaded → hard error warning about fail-open
-  transient slices.
+- `R-11` **Systemd slice verification** runs where host systemd is reachable
+  (`/run/systemd/system` exists). A typo'd slice can be auto-created and still
+  report `LoadState=loaded`, so require both `LoadState=loaded` and a
+  non-empty `FragmentPath` (`systemctl show <slice>
+  --property=LoadState,FragmentPath`). If systemd is present but `systemctl`
+  cannot prove those facts, refuse rather than launch into an unverified
+  slice. In containerized gate clients without host systemd, the outer gate
+  launcher verifies the host unit before launch. The resolved slice is always
+  passed explicitly as `--cgroup-parent`; run-gate never falls through to
+  Docker's unconfined default.
 - `R-12` **Physical repo root:** derived from `/proc/self/mountinfo` (bind
   mount whose mount point contains the repo root; longest mount point wins;
   octal escapes `\040 \011 \012 \134` decoded; the `/` overlay never used).
@@ -381,9 +455,10 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   --progress .assay/progress-<assay_lane>.jsonl` (the two trailing flags
   unconditionally, `R-38`), then `--request-base REF` only for a delegating
   lane (`R-35`).
-- `R-17` **Run form + status:** `docker logs -f` streams; `docker wait`
-  supplies the exit code, which IS the tool's exit code (no masking); an
-  unreadable exit status → hard error ("refusing to guess"), never 0.
+- `R-17` **Run form + raw status:** `docker logs -f` streams; `docker wait`
+  supplies the raw lane exit code. An unreadable exit status is ERROR
+  ("refusing to guess"), never 0. `finish()` maps the raw status and any
+  infrastructure/refusal through R-04's closed table.
 - `R-18` **Verdict discipline:** after EVERY lane exit — any kind, any
   runner mode, success or failure — the gate says where the evidence
   landed: assay lanes always print the verdict artifact path
@@ -391,34 +466,126 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   namespace-visible); declared `artifacts` entries each print as
   `run-gate: artifact: <path>` (absolute-or-effective-project-dir-relative,
   `{worktree}`-substituted, deduplicated against the verdict convention);
-  every lane prints a final `lane '<name>' exit <code>` line. Disclosure is
-  unconditional — a FAILED lane names its evidence paths too.
-- `R-19` **`bare-host` lanes** exec the substituted argv directly with cwd =
-  the effective project dir — or, for a `kind = "assay"` lane on `bare-host`,
+  every lane prints a final `lane '<name>' verdict <v>; exit_code <raw>; ...`
+  summary (raw exit code omitted only when the judge never ran). Disclosure
+  is unconditional — a FAILED lane names its evidence paths too.
+- `R-19` **`mode = "host"` lanes** exec the substituted argv directly with cwd =
+  the effective project dir — or, for a `kind = "assay"` lane on host mode,
   the same assay inner the container runners build (RG-28: the validator
   accepts that combination, and the runner used to raise `KeyError('argv')`
   on it — a traceback for a legal config, which `R-04` calls a defect; this
-  fix now lives on `bare-host` specifically, since the host/bare-host flip
-  (RG-43) moved the OLD bare-execution behavior there — see `R-42`) (R-21). A command `bare-host`
+  fix now applies to every `mode = "host"` lane) (R-21). A command host-mode
   lane uses no docker and no safe.directory — that trap is container-specific;
-  an assay `bare-host` lane inherits the shared inner, whose
+  an assay host-mode lane inherits the shared inner, whose
   `GIT_CONFIG_GLOBAL` isolation (`R-19a`) keeps that write out of the
-  operator's own git config. Exit passthrough identical either way. `host`
-  lanes (the default, since the host/bare-host flip, RG-43) are container lanes in every respect,
-  in which the RG-28 combination was never reachable in the first place —
-  see `R-42`.
-- `R-42` **`host` is a container default, not a synonym for bare execution**
-  (rev 24, RG-43 — renumbered at the rev-36 merge: `R-39`/`RG-39` both
-  collided with unrelated work that reached main first, exec-mode internal
-  mutual exclusion): a lane declaring `environment = "host"` (or omitting it, where
-  `host` is the schema default) resolves to `image = DEFAULT_HOST_IMAGE`
-  (or `$RUN_GATE_HOST_IMAGE` if set), no `cgroup_slice` (resolves from
-  `$CGROUP_PARENT_DEV_GATES`, R-19's exec-mode "no fallbacks" rule
-  applies identically), and runs through the exact same code path as any
-  named `[environments.*]` entry — dual-mount, `--cgroup-parent`, budget,
-  evidence-on-failure. A lane that genuinely needs the literal host (not a
-  container's view of it) must declare `environment = "bare-host"`
-  explicitly.
+  operator's own git config. Raw status mapping remains identical on every
+  runner through R-04; the environment mode does not select an exit code.
+- `R-42` **Explicit environment modes replace built-in-name behavior**
+  (RG-78, operator ruling D-654): every environment declares `mode`.
+  `host` means the bare invoking host; `ephemeral` means a fresh container;
+  `exec` means a persistent external runner. The environment name `host` has
+  no special status; the repository may declare `[environments.host]` with
+  `mode = "ephemeral"` as an ordinary named container. Existing consumers
+  can use `run-gate.py migrate-modes PATH` on each local or root config; the
+  migration inserts the former implicit modes as text and preserves comments.
+
+- `R-45` **Trunk bases and native sequences (RG-74).** `[project].trunk`
+  names one gate-safe local branch. When HEAD is a merge commit on that branch,
+  the derived request base is `HEAD^1` with source
+  `trunk-merge-first-parent`; a non-merge HEAD on trunk is NOT_RUN/`no-base`
+  when a lane needs a request base. A `kind = "sequence"` has an ordered,
+  non-empty `lanes` list and optional `stop_on = "FAIL" | "never"` (default
+  `FAIL`). It resolves a requested base once, then passes that commit only to
+  members whose `{base}` argv token or assay inventory declares
+  `base_source = "request"`. Members run serially; each has its own history
+  result, and the sequence records the ordered composite result. With RG-80
+  enabled, one ticket covers the whole composite.
+- `R-46` **Selective lane requests (RG-66/RG-71).** A command lane may declare
+  `accepts_args = true`; CLI arguments after `--` are appended after its
+  declared argv. Arguments are refused for assay lanes, undeclared command
+  lanes, and command composites. `--reuse-from PATH`, repeatable `--rejudge
+  ID`, and `--rejudge-outcome BUCKET` are assay-only, refused on other kinds,
+  and forwarded only to the one selected assay lane. A reuse verdict path must
+  resolve inside the judged worktree; the request is stored in run history.
+- `R-47` **Footprint calibration controls (RG-68/RG-69).** By default the
+  committed manifest uses PASS history. `--include-failed` explicitly adds
+  completed, history-eligible profiled FAIL runs; timeout, abort, dirty,
+  infrastructure-error and unprofiled runs remain excluded. Repeatable
+  `footprint --write --lane NAME` requires an existing parseable schema-1
+  manifest, replaces only the named entries, and preserves all other lane
+  entries. A named lane with no eligible profiled measurement is refused.
+- `R-48` **Assay failure evidence (RG-72).** For every non-PASS assay verdict,
+  run-gate prints the verdict, up to five failing node IDs and exception
+  classes, and the available pytest summary line. Before a later invocation
+  overwrites them, existing non-symlink verdict and progress files are copied
+  to `<checkout>/.run-gate/failed/<lane>/<run_id>/` as `verdict.json` and
+  `progress.jsonl`. The root must be git-ignored; copied files are mode 0600,
+  directories mode 0700, the history record names the archive, and only the
+  latest ten run directories per lane remain.
+- `R-49` **Assay inventory imports (RG-76).** `[assay].import` is a table with
+  exactly `environment` and `lanes`. `environment` names the runner used for
+  `assay lanes --json`; `lanes` is `"all"` or a non-empty list of exact lane
+  names (duplicates and globs are refused). The shared `[assay].command` and
+  non-empty `[assay].pins` are required. Each selected inventory entry creates
+  one assay lane using its name and the import environment; explicit project
+  lanes override imported names. A failed or malformed inventory is an error,
+  never an empty import. The table shape matches CIU v8 S16.3's import object.
+- `R-50` **Daemon-wide gate count admission (RG-80, CIU v8 S21 count mode).**
+  `[admission]` is project-local, has closed keys `enabled` (default false),
+  `ticket_image` (required when enabled; already local; must run `/bin/true`),
+  and `unreadable_policy = "refuse" | "unbudgeted"` (default
+  `unbudgeted`). It is never inherited. Disabled mode creates no admission
+  ticket, makes no Docker admission calls, records `admission = null`, and
+  accepts `--admission-wait` / `--override-admission` with one notice.
+  `run-gate admission set --max-concurrent N [--replace]` and `show`, plus
+  enabled lane admission, require a local Docker Unix endpoint independently
+  of the run switch. Remote Docker contexts are refused. The ticket
+  image is verified with `--pull=never`; ticket and published-policy
+  containers are placed in the loaded `CGROUP_PARENT_DEV_GATES` slice.
+
+  - **Published policy object.** `set` creates `ciu-admission-<g>` with a
+    positive decimal generation, the count label
+    `ciu.admission.tiers.gates.max_concurrent`, compact sorted owner JSON, and
+    `unreadable_policy`. Docker's unique container name is the shared CAS;
+    generation labels are derived from the winning name. `--replace` creates a
+    higher generation and removes every older readable generation. An
+    unreadable object blocks replacement rather than being guessed away.
+  - **Tickets and fairness.** Enabled gates create `ciu-res-gates-<n>` using
+    Docker `create --name`; `n` is the highest visible ticket or tombstone plus
+    one, and name conflicts retry after a fresh listing. A reader counts live
+    tickets up to its own and starts only when that count is at most the
+    published cap. Waiting uses `--admission-wait` (default `10m`) and preserves
+    ticket order. `--override-admission` runs past the count with a labeled,
+    recorded ticket. Expiry yields NOT_RUN 3/`no-headroom`.
+  - **Release and tombstones.** A lower ticket is removed after a higher
+    number is visible. The highest released ticket is started as `/bin/true`
+    and left exited, so a number is never reused. The owner creates a
+    `ciu-run-<ticket>` group marker with a run deadline before starting lane
+    containers. Lane and marker labels use the exact
+    `tests/fixtures/admission-label-grammar.json` grammar shared with the
+    future CIU port. Malformed tickets count live and are reported.
+  - **Owner proof and janitor.** The owner tuple is compact sorted JSON with
+    `boot_id` (stripped `/proc/sys/kernel/random/boot_id`), unqualified host,
+    lane, pid, decimal PID-namespace inode, run id, and field-22 start ticks.
+    A reader calls an owner dead only in the same host, boot and PID namespace
+    and only when that pid is absent or has different start ticks; other
+    namespaces are unknown and wait for deadlines. A missing-marker wait
+    deadline is ticket creation plus wait plus five-minute grace. The run
+    marker deadline is admission plus the lane budget (24 hours when absent)
+    plus one-hour grace. Each waiter reaps abandoned groups. An expired marker
+    stops live group members and releases the ticket after no nonterminal
+    member remains; the janitor never removes or collects the lane container.
+    Owner-dead or deadline cleanup releases the ticket using the same
+    tombstone rule.
+  - **Budget clock.** For a standalone lane, `budget` begins after shared
+    locks and runner lock and when admission succeeds. Queue time therefore
+    consumes the admission wait, not the execution budget. A sequence carries
+    one ticket, while each member's own execution budget begins after that
+    member has acquired its runner lock.
+  - **v8 parity boundary.** This backport is count-only: byte charges, `usable`,
+    PSI, stack placeholders, and the stacks tier remain outside the v7
+    contract. The object names, ticket labels, owner grammar, and count
+    semantics are the CIU v8 S21 port surface.
 
 - `R-19a` **safe.directory scope:** both ephemeral and exec inner commands set
   `GIT_CONFIG_GLOBAL=/tmp/run-gate-gitconfig` before running `git config
@@ -430,8 +597,12 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   already carries more than one `safe.directory` entry — reachable in
   practice wherever exec-mode reuses that file across invocations sharing a
   host or another process writes to it under the same `GIT_CONFIG_GLOBAL`.
-- `R-20` `budget` is parsed, validated, and PRINTED as advisory; the tool
-  does not enforce it (consumers may).
+- `R-20` `budget` is parsed and enforced as a hard wall-clock bound beginning
+  at admission, after shared-infrastructure and exec-runner locks have been
+  acquired. Lock queue time is excluded (RG-63); when count admission is
+  enabled, the lane budget begins only after its Docker ticket admits. Expiry
+  stops the lane, preserves resumable assay state, and returns
+  BUDGET_EXCEEDED 4 (RG-78/RG-63/RG-80).
 
 - `R-21` **Effective tree (RG-15):** all user-declared execution paths —
   the assay `cd`, pin verification, verdict/artifact locations, command-argv
@@ -614,9 +785,11 @@ disagree, §8 amendments win, then README, then CONSUMERS.
 
 - `R-30` **Doctor (RG-9):** `doctor` recomposes the implemented preflights
   into one first-contact command — docker present; per-environment slice
-  resolution + LoadState where systemd reachable (exec environments are
-  checked naming-only — they need no slice; a host with the systemd run-dir
-  but no runnable `systemctl` degrades to a loud skip, never a traceback);
+  resolution + configured-unit verification where systemd is reachable (R-11);
+  exec environments are checked naming-only — they need no slice. If the
+  systemd run-dir exists but `systemctl` cannot verify the unit, the report is
+  `[FAIL]` with the cause; if host systemd is absent in a container, the
+  outer gate launcher owns host-side placement verification;
   physical-path
   derivability from mountinfo (bare-host view = warning naming
   `$RUN_GATE_MOUNT_ALIAS`); git worktree resolution and `/tmp`
@@ -995,7 +1168,7 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   lane's clean-tree check; every adopting project names `./run-gate.py` as
   its canonical test entrypoint in its own README; and the repo-root README
   carries the discovery line (`cd <project> && ./run-gate.py --list`).
-  Consumer `timeout_seconds` paired with a lane's advisory `budget` must
+  Consumer `timeout_seconds` paired with a lane's hard `budget` must
   never be TIGHTER than it: `TestEstateBudgetTimeoutPairing` loads each
   nyxloom-trove project's lanes with the REAL parser and enforces
   timeout >= budget wherever a gate argv names the lane as a whole token —
@@ -1243,14 +1416,16 @@ disagree, §8 amendments win, then README, then CONSUMERS.
     than silently scanning nothing under a nonexistent tree's name — the
     same refuse-loud shape `R-36i` uses for `history`'s read side.
 
-- `R-38` **Every assay lane resumes and reports progress (RG-33).** The
-  assay-kind inner command carries `--resume --progress
-  .assay/progress-<assay_lane>.jsonl` on EVERY invocation, on every runner
+- `R-38` **Every assay lane resumes, reports progress, and keeps durable
+  state (RG-33/RG-38).** The assay-kind inner command carries `--resume
+  --progress .assay/progress-<assay_lane>.jsonl --state-dir <path>` on EVERY
+  invocation, on every runner
   (container, exec, host), live and dry. Measured cause: dstdns's
   `sql-mutation` lane (2026-09-02) spent three 120-minute retries re-testing
   the first of four target files from mutant #1 because the argv never
   carried `--resume` and `.assay/mutation-state/` had never been written.
-  - **Unconditional, not rigor-gated.** assay ignores both flags on a lane
+  - **Unconditional, not rigor-gated.** Assay ignores `--resume` and
+    `--progress` on a lane
     that declares no R2 (its own `--progress` help says so; resume state is
     only read or written by the mutation sweep), so on an R0/R1 lane they
     cost nothing, and a lane that later gains R2 resumes from its first
@@ -1261,21 +1436,35 @@ disagree, §8 amendments win, then README, then CONSUMERS.
     file's exact source bytes, span, replacement and operator; an edited
     file re-executes every candidate touching it (assay CONSUMERS §"Resume
     and shard a long mutation lane"). run-gate adds no policy of its own.
-  - **Location.** Both artifacts live beside the verdict under `.assay/` —
+  - **Progress location.** Verdict and progress live under `.assay/` in the
+    effective project directory —
     the directory the inner creates one step earlier and every adopter
     git-ignores (`R-32`) — because a progress file anywhere in the judged
     tree makes assay refuse `NO_MEASUREMENT`/`DIRTY_TREE` on that lane's
     NEXT run. The verdict does not name either path (assay's contract),
     `artifacts = [".assay/progress-<lane>.jsonl"]` is how a consumer has it
     printed after every run (`R-08`).
-  - **Judge floor, refused by name.** `--resume` shipped in assay 2.4.0 and
-    `--progress` in 2.4.1. A pin whose declared `version` is below **2.4.1**
+  - **Durable mutation-state location.** `--state-dir` points outside the
+    judged worktree to `<checkout-owning-shared-.git>/.run-gate/assay-state/`
+    plus the effective project path relative to that checkout. Thus a
+    removed CIU-managed worktree can be recreated without losing resumable
+    candidate state, and nested projects with the same basename stay
+    separate. When the effective project is outside that checkout, the key
+    is derived from its sanitized resolved path. The same helper builds the
+    argv and the disclosed state-directory line.
+  - **Judge floor, refused by name.** `--resume` shipped in assay 2.4.0,
+    `--progress` in 2.4.1, and `--state-dir` in 5.2.0. A pin whose declared
+    `version` is below **5.2.0**
     refuses at argv construction — exit 2, naming the lane, the pin, the
     declared version, the floor and the remedy (re-pin the judge) — rather
-    than failing inside the container by argparse under a message run-gate
+    than failing inside the lane by argparse under a message run-gate
     never wrote. A pin that declares no version is not checked (there is no
     claim to hold it to); an older judge then fails the lane loudly with
     assay's own `unrecognized arguments` line, never silently.
+    The current implementation creates the state directory as the lane's
+    execution user. A root-owned synthetic parent in a partial-bind worktree
+    mount can prevent that; RG-49 remains open for the parent repair, and
+    run-gate does not claim to chown or otherwise repair that path.
 
 - `R-39` **Re-attach: a lane's container outlives its client, and is found
   again (RG-35).** A container lane runs detached (`R-15`) and is removed by
@@ -1543,9 +1732,9 @@ disagree, §8 amendments win, then README, then CONSUMERS.
     existed before RG-60), so old records keep their old behavior
     unchanged.
 
-- `R-40` **Progress-judged liveness (RG-36).** `budget` is advisory here and
-  a hard lane-wide bound in assay, so the only way to bound a long mutation
-  lane was to guess a TOTAL: dstdns raised `sql-mutation` from 90m to 120m
+- `R-40` **Progress-judged liveness (RG-36).** `budget` is the hard total wall-clock bound (RG-78); the
+  optional `stall_timeout` is a separate silence bound. Assay mutation progress
+  supplies the liveness signal, avoiding a guessed total duration: dstdns raised `sql-mutation` from 90m to 120m
   and it still could not finish a window (`R-38`'s transcript). Since rev 33
   every assay lane writes `.assay/progress-<assay_lane>.jsonl` with a
   `candidate_index`/`candidate_total` per candidate, so health is read off
@@ -1585,8 +1774,8 @@ disagree, §8 amendments win, then README, then CONSUMERS.
     grammar.** The lane is stopped ONLY when the container is STILL RUNNING
     and its liveness signal has not advanced for that long — `docker rm -f`,
     evidence saved (`R-26`), exit 3, naming the stall, the last event seen
-    and the age. **NEVER on total elapsed time**: `budget` stays advisory and
-    its disclosure is unchanged. The "still running" half is structural, not
+    and the age. **NEVER on total elapsed time**: the hard `budget` separately bounds total wall-clock
+    duration and returns BUDGET_EXCEEDED when it expires. The "still running" half is structural, not
     asserted: the check only ever runs in the poll of a `docker logs -f` that
     has not returned. A lane whose progress file never appears cannot stall
     by this rule (`R-40b` says so out loud), which is what keeps the key

@@ -32,10 +32,12 @@ def test_cleanup_delete_build_output_and_discard_worktree_dispatch_exact_targets
     monkeypatch.setattr(cli, "load_config", lambda _: _config(tmp_path, project))
     build_targets = [tmp_path / "demo" / "logs" / "id", tmp_path / "demo" / "artifacts" / "id"]
     seen = []
+    expected_identity = object()
+    monkeypatch.setattr(transaction, "retained_build_output_identity", lambda *_args: expected_identity)
     monkeypatch.setattr(transaction, "delete_retained_build_output", lambda *args, **kwargs: seen.append((args, kwargs)) or build_targets)
     cli.main(["cleanup", "--delete-build-output", "id", "demo", "--dry-run"])
     assert seen[0][0][1:] == (project, "demo", "id")
-    assert seen[0][1] == {"dry_run": True}
+    assert seen[0][1] == {"dry_run": True, "expected_identity": expected_identity}
     assert "Would delete retained local build output" in capsys.readouterr().out
 
     workspace = transaction.ReleaseWorkspace(tmp_path, tmp_path / "failed", "cmru/build/x", "a" * 40)

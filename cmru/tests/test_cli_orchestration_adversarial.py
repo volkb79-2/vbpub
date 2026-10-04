@@ -138,7 +138,10 @@ def test_cleanup_release_tag_union_keeps_latest_and_deletes_tag_only(monkeypatch
 def test_cleanup_unmanaged_release_is_idempotent_and_preserves_tag(monkeypatch):
     monkeypatch.setattr(cli, "list_releases", lambda *args: [])
     assert cli.delete_unmanaged_release_tag("o", "r", "t", "old", dry_run=False) is False
-    monkeypatch.setattr(cli, "list_releases", lambda *args: [{"tag_name": "old", "id": 4}])
+    monkeypatch.setattr(
+        cli, "list_releases",
+        lambda *args: [{"tag_name": "old", "id": 4, "assets": []}],
+    )
     calls = []
     monkeypatch.setattr(cli, "delete_release", lambda *args, **kwargs: calls.append(args[3]))
     assert cli.delete_unmanaged_release_tag("o", "r", "t", "old", dry_run=True) is True

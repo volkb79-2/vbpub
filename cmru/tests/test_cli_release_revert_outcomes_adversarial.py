@@ -1,4 +1,5 @@
 from contextlib import nullcontext
+from pathlib import Path
 
 import pytest
 
@@ -6,12 +7,26 @@ from cmru import cli, transaction
 
 
 @pytest.fixture(autouse=True)
-def fake_git_family(monkeypatch):
+def fake_release_preflight(monkeypatch):
     monkeypatch.setattr(
         cli.transaction,
         "project_git_family_groups",
         lambda root, projects: {root: list(projects)},
     )
+    monkeypatch.setattr(
+        cli, "_project_git_tag_policy_at_snapshot",
+        lambda _root, _base, project, **_kwargs: getattr(project, "git_tag", True),
+    )
+    monkeypatch.setattr(
+        cli, "_project_config_paths_at_snapshot",
+        lambda _root, _base, _config, _configs, names: {
+            name: Path(name) / "cmru.toml" for name in names
+        },
+    )
+    monkeypatch.setattr(cli, "_require_local_tag_inspection_support", lambda _root: None)
+    monkeypatch.setattr(cli, "_read_origin_tag_refs", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(cli.transaction, "write_release_tag_snapshot", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(cli.transaction, "clear_plan_refused", lambda *_args, **_kwargs: None)
 
 
 def _loaded(tmp_path):

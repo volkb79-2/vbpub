@@ -238,10 +238,20 @@ def test_resume_revalidates_leftover_legacy_removal_bridge_record(monkeypatch, t
         "run_local_git",
         lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 0, stdout="", stderr=""),
     )
+    fetches = []
+    monkeypatch.setattr(
+        transaction,
+        "run_remote_git",
+        lambda repo_root, *args, **kwargs: fetches.append((repo_root, args, kwargs))
+        or subprocess.CompletedProcess(["git", *args], 0, stdout="", stderr=""),
+    )
 
     resumed = transaction.resume_workspace(root, path)
 
     assert resumed.context is record
+    assert fetches == [
+        (path, ("fetch", "--prune", "origin", "main"), {"auth": None, "check": True}),
+    ]
     assert record.metadata == {
         transaction._LEGACY_RESUME_METADATA_KEY: transaction._LEGACY_RESUME_METADATA_VALUE,
     }
@@ -589,6 +599,10 @@ def test_resolve_invocation_context_keeps_project_git_scope(monkeypatch, tmp_pat
     project_config.parent.mkdir(parents=True)
     project_config.write_text(_project_document())
     orchestration = source / "cmru.orchestration.toml"
+    target = source / "cfg" / "cmru.orchestration.toml"
+    target.parent.mkdir(parents=True)
+    target.write_text("", encoding="utf-8")
+    orchestration.symlink_to("cfg/cmru.orchestration.toml")
     forge = _child_forge(source, project_config)
     monkeypatch.setattr(config, "load_forge_config", lambda _path, **_kwargs: forge)
     monkeypatch.setattr(config, "_refuse_unregistered_project", lambda *_args: None)
@@ -599,6 +613,9 @@ def test_resolve_invocation_context_keeps_project_git_scope(monkeypatch, tmp_pat
     context = config.resolve_invocation_context(orchestration, cwd=project_config.parent)
     assert context.project_name == "demo"
     assert context.source_git_root == project_config.parent
+    assert context.config_path == target.resolve()
+    assert context.config_reference_path == orchestration
+    assert cli._resolve_config(str(orchestration)) == orchestration
 
 
 def test_load_config_refuses_missing_or_escaping_child_project(monkeypatch, tmp_path):
@@ -723,6 +740,65 @@ def test_dispatch_does_not_split_a_single_project_and_uses_path_launcher(monkeyp
         original_target=None,
     ) == 0
     assert called[0][0] == "/found/cmru"
+
+
+def test_release_dispatch_passes_exact_preflight_snapshot_to_each_family(
+    monkeypatch, tmp_path,
+):
+    left = SimpleNamespace(name="left")
+    right = SimpleNamespace(name="right")
+    configs = {"left": left, "right": right}
+    roots = {tmp_path / "left": [left], tmp_path / "right": [right]}
+    snapshots = {
+        tmp_path / "left": "a" * 40,
+        tmp_path / "right": "b" * 40,
+    }
+    monkeypatch.setattr(transaction, "project_git_family_groups", lambda *_args: roots)
+    monkeypatch.setenv("CMRU_BIN", "/usr/bin/cmru")
+    seen = []
+
+    def fake_run(argv, **kwargs):
+        handoff = None
+        if cli._RELEASE_PREFLIGHT_SNAPSHOT_FD_ENV in kwargs["env"]:
+            fd = int(kwargs["env"][cli._RELEASE_PREFLIGHT_SNAPSHOT_FD_ENV])
+            assert fd in kwargs["pass_fds"]
+            handoff = os.read(fd, 4096).decode("utf-8")
+        seen.append((argv, kwargs["env"], handoff))
+        return subprocess.CompletedProcess(argv, 0)
+
+    monkeypatch.setattr(
+        cli.subprocess, "run", fake_run,
+    )
+
+    with pytest.raises(RuntimeError, match="do not match the selected release families"):
+        cli._dispatch_independent_git_families(
+            "release", [], tmp_path / "cmru.toml", tmp_path, configs,
+            ["left", "right"], original_target=None,
+            origin_main_snapshots={tmp_path / "left": "a" * 40},
+        )
+    with pytest.raises(RuntimeError, match="do not match the selected release families"):
+        cli._dispatch_independent_git_families(
+            "build", [], tmp_path / "cmru.toml", tmp_path, configs,
+            ["left", "right"], original_target=None,
+            origin_main_snapshots=snapshots,
+        )
+    assert seen == []
+
+    assert cli._dispatch_independent_git_families(
+        "release", [], tmp_path / "cmru.toml", tmp_path, configs,
+        ["left", "right"], original_target=None,
+        origin_main_snapshots=snapshots,
+    ) == 0
+    assert [
+        handoff for _argv, _env, handoff in seen
+    ] == [
+        f"{(tmp_path / 'left').resolve()}:{'a' * 40}",
+        f"{(tmp_path / 'right').resolve()}:{'b' * 40}",
+    ]
+    assert all(
+        "CMRU_RELEASE_PREFLIGHT_SNAPSHOT" not in env
+        for _argv, env, _handoff in seen
+    )
 
 
 def test_child_release_args_removes_only_the_first_original_target(tmp_path):

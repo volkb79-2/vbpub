@@ -5,6 +5,7 @@ import copy
 import hashlib
 import json
 import subprocess
+from contextlib import nullcontext
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -174,13 +175,17 @@ def test_removed_backup_marker_creates_its_scope_directory(tmp_path):
 def test_abandon_uses_explicit_return_code_handling_for_all_remote_mutations(monkeypatch, tmp_path):
     branch = "cmru-release-20260927_120000-alpha-ab12cd"
     ref = f"refs/heads/{branch}"
+    oid = "a" * 40
     calls = []
 
     def run(argv, **kwargs):
         calls.append((list(argv), kwargs))
         if argv[:3] == ["git", "ls-remote", "--heads"] and len(calls) == 1:
-            return subprocess.CompletedProcess(argv, 0, "a" * 40 + "\t" + ref + "\n", "")
-        if argv[:4] == ["git", "push", "origin", "--delete"]:
+            return subprocess.CompletedProcess(argv, 0, oid + "\t" + ref + "\n", "")
+        if argv == [
+            "git", "push", f"--force-with-lease={ref}:{oid}",
+            "origin", f":{ref}",
+        ]:
             return subprocess.CompletedProcess(argv, 0, "", "")
         if argv[:3] == ["git", "ls-remote", "--heads"]:
             return subprocess.CompletedProcess(argv, 0, "", "")
@@ -313,6 +318,7 @@ def test_release_api_refuses_http_400_and_existing_target_creation(monkeypatch, 
             require_existing_targets=True, latest_pointer=True,
         )
     assert recreate_error.value.code == 1
+    assert not asset.with_name(asset.name + ".sha256").exists()
 
     with pytest.raises(SystemExit) as target_error:
         release.publish_versioned(
@@ -321,6 +327,7 @@ def test_release_api_refuses_http_400_and_existing_target_creation(monkeypatch, 
             require_existing_targets=True,
         )
     assert target_error.value.code == 1
+    assert not asset.with_name(asset.name + ".sha256").exists()
 
 
 def _install_config_loader(monkeypatch, tmp_path, names=("alpha", "beta"), *, owner="owner", repo="repo"):
@@ -355,6 +362,7 @@ def _abandon_workspace(root, *, base_commit="a" * 40):
 
 def _install_abandon_facts(monkeypatch, root, workspace, *, progress=None):
     monkeypatch.setattr(cli, "_current_git_root", lambda: root)
+    monkeypatch.setattr(transaction, "release_lock", lambda _root: nullcontext())
     monkeypatch.setattr(cli, "_resolve_config", lambda _path: root / "cmru.toml")
     monkeypatch.setattr(transaction, "list_cmru_workspaces", lambda _root: [workspace])
     monkeypatch.setattr(transaction, "read_release_scope", lambda *_: ["alpha"])
@@ -363,11 +371,19 @@ def _install_abandon_facts(monkeypatch, root, workspace, *, progress=None):
         transaction, "read_release_progress",
         lambda *_: progress if progress is not None else workspace.context.base_commit,
     )
+    monkeypatch.setattr(transaction, "read_release_tag_snapshot", lambda *_: {})
+    monkeypatch.setattr(transaction, "read_release_tag_attempts", lambda *_: None)
+    monkeypatch.setattr(transaction, "list_local_tag_refs", lambda *_: {})
     monkeypatch.setattr(transaction, "backup_was_pushed", lambda *_: False)
     monkeypatch.setattr(transaction, "backup_was_removed", lambda *_: False)
     monkeypatch.setattr(
         cli, "load_config",
-        lambda _path: (root, {"alpha": SimpleNamespace(git_tag=True)}, ["alpha"]),
+        lambda _path: (
+            root, {"alpha": SimpleNamespace(git_tag=True)}, ["alpha"], ["alpha"],
+            [], "project-first", {}, cli.CleanupConfig([], [], [], []),
+            cli.GitHubConfig("owner", "repo", "", "user"),
+            cli.ReleaseEnvConfig({}, None),
+        ),
     )
 
 
@@ -531,13 +547,19 @@ def test_abandon_preview_lists_the_remote_candidate_ref(monkeypatch, tmp_path, c
     _install_abandon_facts(monkeypatch, tmp_path, workspace)
     monkeypatch.setattr(transaction, "backup_was_pushed", lambda *_: True)
 
+    merge_calls = 0
     def run(argv, **_kwargs):
+        nonlocal merge_calls
         if argv[:3] == ["git", "ls-remote", "--heads"]:
             return subprocess.CompletedProcess(
-                argv, 0, "a" * 40 + "\trefs/heads/" + workspace.branch + "\n", "",
+                argv, 0,
+                "a" * 40 + "\trefs/heads/" + workspace.branch + "\n"
+                + "b" * 40 + "\trefs/heads/main\n",
+                "",
             )
         if argv[:2] == ["git", "merge-base"]:
-            return subprocess.CompletedProcess(argv, 0, "", "")
+            merge_calls += 1
+            return subprocess.CompletedProcess(argv, 0 if merge_calls == 1 else 1, "", "")
         if argv[:3] == ["git", "ls-remote", "--tags"]:
             return subprocess.CompletedProcess(argv, 0, "", "")
         raise AssertionError(argv)

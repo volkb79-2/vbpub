@@ -69,7 +69,7 @@ def test_package_deletion_failures_are_safe_and_dry_run_has_no_http(monkeypatch,
 
     monkeypatch.setattr(cli, "http_request", lambda *args: (404, "gone", {}))
     cli.delete_package("o", "p", "t", "org", False)
-    assert "not found" in capsys.readouterr().out
+    assert "the package may be absent or inaccessible, so deletion was not confirmed" in capsys.readouterr().out
     monkeypatch.setattr(cli, "http_request", lambda *args: (500, "bad", {}))
     with pytest.raises(RuntimeError, match="Failed to delete p version 9"):
         cli.delete_package_version("o", "p", "t", 9, "org", False)
@@ -86,8 +86,14 @@ def test_cleanup_ghcr_applies_cutoff_and_explicit_package_delete(monkeypatch):
     ])
     deleted_versions = []
     deleted_packages = []
+    monkeypatch.setattr(
+        cli, "get_container_package",
+        lambda _owner, package, *_: {"id": 17, "name": package, "package_type": "container"},
+    )
     monkeypatch.setattr(cli, "delete_package_version", lambda *a: deleted_versions.append(a[3]))
-    monkeypatch.setattr(cli, "delete_package", lambda *a: deleted_packages.append(a[1]))
+    monkeypatch.setattr(
+        cli, "delete_package", lambda *a, **_kw: deleted_packages.append(a[1]),
+    )
     cli.cleanup_ghcr("o", "t", "user", datetime(2021, 1, 1, tzinfo=timezone.utc), False,
                      cleanup(ghcr_packages=["pkg", "whole"], ghcr_delete_packages=["whole"]))
     assert deleted_versions == [1]
@@ -122,7 +128,12 @@ def test_tag_helpers_are_idempotent_and_parse_annotated_refs(monkeypatch, tmp_pa
     cli.delete_git_tag_remote(tmp_path, "v1", False)
     cli.delete_git_tag_local(tmp_path, "v1", False)
     assert [call[0] for call in remote_calls] == ["ls-remote", "ls-remote", "push"]
-    assert [call[0] for call in local_calls] == ["show-ref", "update-ref"]
+    assert [call for call in local_calls if call[0] == "check-ref-format"] == [
+        ("check-ref-format", "refs/tags/v1"),
+    ] * 4
+    assert [call[0] for call in local_calls if call[0] != "check-ref-format"] == [
+        "show-ref", "show-ref", "update-ref",
+    ]
     assert "deleted remote tag" in capsys.readouterr().out.lower()
 
 

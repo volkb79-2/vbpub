@@ -13,12 +13,16 @@ closed without rebasing the candidate.
 """
 from __future__ import annotations
 
+import ctypes
+import errno
 import fcntl
 import hashlib
 import json
 import os
 import re
+import secrets
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -34,6 +38,7 @@ from cmru.git_auth import (
     run_remote_git,
     without_publisher_tokens,
 )
+from cmru.config_names import PROJECT_CONFIG_FILENAME
 
 
 CHILD_ENV = "CMRU_RELEASE_TRANSACTION_CHILD"
@@ -588,8 +593,8 @@ def resume_workspace(
     if expected_common is not None and path_common != expected_common:
         raise RuntimeError(f"{path} is not a worktree of {repo_root}")
     # New transactions resume directly from their CMRU record. Legacy
-    # candidates, including a removal-bridge record, pass the progress check
-    # before they can be promoted to validated legacy-resume ownership.
+    # candidates, including a removal-bridge record, must revalidate progress
+    # and refresh origin/main before returning or completing adoption.
     try:
         _top, common, _branch, _head = shared.discover_git_context(path)
         record = _shared_workspace_record(shared, common, path)
@@ -616,6 +621,10 @@ def resume_workspace(
                 _validate_legacy_release_progress(
                     repo_root, path, retained_branch, retained_head,
                 )
+                run_remote_git(
+                    path, "fetch", "--prune", "origin", "main",
+                    auth=git_auth, check=True,
+                )
                 if scope is None:
                     metadata = dict(metadata)
                     metadata[_LEGACY_RESUME_METADATA_KEY] = _LEGACY_RESUME_METADATA_VALUE
@@ -627,6 +636,8 @@ def resume_workspace(
                 base=context.base_commit,
                 context=context,
             )
+    except subprocess.CalledProcessError:
+        raise
     except Exception as exc:
         raise RuntimeError(str(exc)) from exc
     branch = _git(path, "branch", "--show-current")
@@ -648,6 +659,12 @@ def resume_workspace(
             or Path(path_top).resolve() != path
         ):
             raise RuntimeError("legacy release worktree and source root do not share the exact Git family")
+    except Exception as exc:
+        raise RuntimeError(f"cannot adopt validated legacy release worktree {path}: {exc}") from exc
+    run_remote_git(
+        path_top, "fetch", "--prune", "origin", "main", auth=git_auth, check=True,
+    )
+    try:
         context = shared.adopt_workspace(
             source_top,
             path,
@@ -658,9 +675,6 @@ def resume_workspace(
         )
     except Exception as exc:
         raise RuntimeError(f"cannot adopt validated legacy release worktree {path}: {exc}") from exc
-    run_remote_git(
-        path_top, "fetch", "--prune", "origin", "main", auth=git_auth, check=True,
-    )
     return ReleaseWorkspace(
         repo_root=repo_root.resolve(), path=path, branch=branch,
         base=context.base_commit, context=context,
@@ -683,39 +697,166 @@ def assert_resume_workspace_committed(path: Path) -> None:
         )
 
 
+def _copy_secret_overlay(
+    source: Path, workspace_root: Path, relative_target: Path,
+) -> None:
+    """Install one mode-0600 secret copy without following source or target links."""
+    try:
+        source_metadata = source.lstat()
+    except FileNotFoundError:
+        return
+    if not stat.S_ISREG(source_metadata.st_mode):
+        raise RuntimeError(f"publisher credential path is not a regular file: {source}")
+    if relative_target.is_absolute() or ".." in relative_target.parts or not relative_target.parts:
+        raise RuntimeError(f"publisher credential target escapes its worktree: {relative_target}")
+
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    source_fd = os.open(source, flags)
+    parent_flags = (
+        os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    )
+    root_fd = parent_fd = -1
+    destination_fd = -1
+    temporary_name: str | None = None
+    try:
+        opened_source = os.fstat(source_fd)
+        if (
+            not stat.S_ISREG(opened_source.st_mode)
+            or (opened_source.st_dev, opened_source.st_ino)
+            != (source_metadata.st_dev, source_metadata.st_ino)
+        ):
+            raise RuntimeError(f"publisher credential changed while being opened: {source}")
+
+        root_fd = os.open(workspace_root, parent_flags)
+        parent_fd = root_fd
+        for component in relative_target.parts[:-1]:
+            try:
+                os.mkdir(component, 0o755, dir_fd=parent_fd)
+            except FileExistsError:
+                pass
+            child_fd = os.open(component, parent_flags, dir_fd=parent_fd)
+            if parent_fd != root_fd:
+                os.close(parent_fd)
+            parent_fd = child_fd
+
+        target_name = relative_target.parts[-1]
+
+        def target_metadata():
+            try:
+                return os.stat(target_name, dir_fd=parent_fd, follow_symlinks=False)
+            except FileNotFoundError:
+                return None
+
+        original_target = target_metadata()
+        if original_target is not None and not stat.S_ISREG(original_target.st_mode):
+            raise RuntimeError(
+                f"publisher credential destination is not a regular file: "
+                f"{workspace_root / relative_target}"
+            )
+
+        temporary_name = f".{target_name}.cmru-secret-{secrets.token_hex(16)}"
+        destination_fd = os.open(
+            temporary_name,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+            0o600,
+            dir_fd=parent_fd,
+        )
+        with os.fdopen(source_fd, "rb", closefd=False) as source_stream:
+            with os.fdopen(destination_fd, "wb", closefd=False) as destination_stream:
+                shutil.copyfileobj(source_stream, destination_stream)
+                destination_stream.flush()
+                os.fchmod(destination_fd, 0o600)
+                os.fsync(destination_fd)
+        os.close(destination_fd)
+        destination_fd = -1
+        after_source = source.lstat()
+        if (
+            not stat.S_ISREG(after_source.st_mode)
+            or (after_source.st_dev, after_source.st_ino)
+            != (source_metadata.st_dev, source_metadata.st_ino)
+        ):
+            raise RuntimeError(f"publisher credential changed while being copied: {source}")
+
+        current_target = target_metadata()
+        if original_target is None:
+            target_changed = current_target is not None
+        else:
+            target_changed = (
+                current_target is None
+                or not stat.S_ISREG(current_target.st_mode)
+                or (current_target.st_dev, current_target.st_ino)
+                != (original_target.st_dev, original_target.st_ino)
+            )
+        if target_changed:
+            raise RuntimeError(
+                f"publisher credential destination changed while being copied: "
+                f"{workspace_root / relative_target}"
+            )
+
+        # The temp file and final name share a directory. Replacing the path is
+        # atomic and never follows a symlink installed at the destination.
+        os.replace(
+            temporary_name, target_name,
+            src_dir_fd=parent_fd, dst_dir_fd=parent_fd,
+        )
+        temporary_name = None
+    finally:
+        os.close(source_fd)
+        if destination_fd >= 0:
+            os.close(destination_fd)
+        if temporary_name is not None and parent_fd >= 0:
+            try:
+                os.unlink(temporary_name, dir_fd=parent_fd)
+            except FileNotFoundError:
+                pass
+        if parent_fd >= 0 and parent_fd != root_fd:
+            os.close(parent_fd)
+        if root_fd >= 0:
+            os.close(root_fd)
+
+
 def copy_secret_overlays(
     repo_root: Path, workspace: ReleaseWorkspace, project_config_paths: Sequence[Path],
+    *, candidate_config_paths: Sequence[Path] | None = None,
 ) -> None:
     """Copy the root credential and explicit project overlays into a child worktree."""
+    if candidate_config_paths is not None and len(candidate_config_paths) != len(project_config_paths):
+        raise RuntimeError(
+            "candidate project config paths must match the source project config paths"
+        )
     source_root = workspace.repo_root.resolve()
+    workspace_root = workspace.path
     source = repo_root.resolve() / "cmru.secret.toml"
-    if source.exists() and not source.is_file():
-        raise RuntimeError(f"repository credential path is not a regular file: {source}")
-    if source.is_file() and repo_root.resolve() == source_root:
-        target = workspace.path / "cmru.secret.toml"
-        shutil.copyfile(source, target)
-        target.chmod(0o600)
+    if repo_root.resolve() == source_root:
+        _copy_secret_overlay(source, workspace_root, Path("cmru.secret.toml"))
     # A central CMRU root can be outside the selected Git family. In that
     # layout the child receives the absolute orchestration config and reads the
     # central root secret directly; copying it into an unrelated worktree would
     # make ownership ambiguous.
-    for config_path in project_config_paths:
+    for index, config_path in enumerate(project_config_paths):
         config_path = config_path.resolve()
-        try:
-            relative = config_path.parent.relative_to(source_root)
-        except ValueError as exc:
-            raise RuntimeError(
-                f"project config is outside selected Git workspace {source_root}: {config_path}"
-            ) from exc
+        if candidate_config_paths is None:
+            try:
+                relative = config_path.parent.relative_to(source_root)
+            except ValueError as exc:
+                raise RuntimeError(
+                    f"project config is outside selected Git workspace {source_root}: {config_path}"
+                ) from exc
+        else:
+            candidate_config = Path(candidate_config_paths[index])
+            if (
+                candidate_config.is_absolute()
+                or ".." in candidate_config.parts
+                or candidate_config.name != PROJECT_CONFIG_FILENAME
+            ):
+                raise RuntimeError(
+                    f"candidate project config path is unsafe: {candidate_config}"
+                )
+            relative = candidate_config.parent
         source = config_path.with_name("cmru.secret.toml")
-        if source.exists() and not source.is_file():
-            raise RuntimeError(f"project credential path is not a regular file: {source}")
-        if not source.is_file():
-            continue
-        target = workspace.path / relative / "cmru.secret.toml"
-        target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(source, target)
-        target.chmod(0o600)
+        _copy_secret_overlay(
+            source, workspace_root, relative / "cmru.secret.toml",
+        )
 
 
 def remove_workspace(workspace: ReleaseWorkspace) -> None:
@@ -772,6 +913,339 @@ def write_release_scope(repo_root: Path, workspace: ReleaseWorkspace, project_na
     (scope_dir / f"{_release_token(workspace)}.json").write_text(
         json.dumps(sorted(project_names)), encoding="utf-8",
     )
+
+
+def write_release_tag_snapshot(
+    repo_root: Path, workspace: ReleaseWorkspace, tag_refs: Mapping[str, str],
+) -> None:
+    """Record origin's exact tag refs before this release attempt can create any.
+
+    The snapshot is a separate shared-Git sidecar so old project-scope records
+    remain readable. A resume must preserve the original snapshot rather than
+    replacing it with the post-failure remote state.
+    """
+    path = _ensure_scope_dir(repo_root) / f"{_release_token(workspace)}.tags.json"
+    for ref, oid in tag_refs.items():
+        if (
+            not isinstance(ref, str)
+            or not _valid_ls_remote_ref(ref, "refs/tags/")
+            or not isinstance(oid, str)
+            or not re.fullmatch(r"[0-9a-f]{40}", oid)
+        ):
+            raise RuntimeError("origin tag snapshot contains a malformed ref record")
+    try:
+        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError as exc:
+        raise RuntimeError(f"release tag snapshot already exists: {path}") from exc
+    with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+        stream.write(json.dumps(dict(sorted(tag_refs.items())), indent=2) + "\n")
+
+
+def read_release_tag_snapshot(
+    repo_root: Path, workspace: ReleaseWorkspace,
+) -> dict[str, str] | None:
+    """Return the immutable pre-attempt remote tag set, or None for legacy workspaces."""
+    path = _scope_dir(repo_root) / f"{_release_token(workspace)}.tags.json"
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise RuntimeError(f"cannot inspect release tag snapshot {path}: {exc}") from exc
+    if not stat.S_ISREG(info.st_mode):
+        raise RuntimeError(f"release tag snapshot is not a regular file: {path}")
+    try:
+        raw = json.loads(
+            path.read_text(encoding="utf-8"),
+            object_pairs_hook=_unique_json_object,
+        )
+    except (OSError, UnicodeError, ValueError) as exc:
+        raise RuntimeError(f"cannot read release tag snapshot {path}: {exc}") from exc
+    if not isinstance(raw, dict):
+        raise RuntimeError(f"release tag snapshot is malformed: {path}")
+    snapshot: dict[str, str] = {}
+    for ref, oid in raw.items():
+        if (
+            not isinstance(ref, str)
+            or not _valid_ls_remote_ref(ref, "refs/tags/")
+            or not isinstance(oid, str)
+            or not re.fullmatch(r"[0-9a-f]{40}", oid)
+        ):
+            raise RuntimeError(f"release tag snapshot is malformed: {path}")
+        snapshot[ref] = oid
+    return snapshot
+
+
+def list_local_tag_refs(repo_root: Path) -> dict[str, str]:
+    """Return local tag refs and their exact object IDs without folding errors into absence."""
+    result = run_local_git(
+        repo_root, "for-each-ref", "--format=%(refname)%09%(objectname)", "refs/tags/",
+        capture_output=True, text=True, check=False,
+    )
+    if result.returncode != 0:
+        detail = result.stderr.strip() or result.stdout.strip() or "no diagnostic output"
+        raise RuntimeError(f"cannot inspect local release tags ({result.returncode}): {detail}")
+    refs: dict[str, str] = {}
+    for line in result.stdout.splitlines():
+        fields = line.split("\t")
+        if (
+            len(fields) != 2
+            or not _valid_ls_remote_ref(fields[0], "refs/tags/")
+            or not re.fullmatch(r"[0-9a-f]{40}", fields[1])
+        ):
+            raise RuntimeError(f"local tag listing returned a malformed ref record: {line!r}")
+        ref, oid = fields
+        if ref in refs:
+            raise RuntimeError(f"local tag listing returned a duplicate ref record: {ref}")
+        refs[ref] = oid
+    return refs
+
+
+def write_release_tag_attempts(
+    repo_root: Path,
+    workspace: ReleaseWorkspace,
+    tag_refs: Mapping[str, str],
+) -> None:
+    """Record exact local release tags before CMRU attempts to push them."""
+    path = _ensure_scope_dir(repo_root) / f"{_release_token(workspace)}.tag-attempts.json"
+    incoming: dict[str, str] = {}
+    for ref, oid in tag_refs.items():
+        if (
+            not isinstance(ref, str)
+            or not _valid_ls_remote_ref(ref, "refs/tags/")
+            or not isinstance(oid, str)
+            or not re.fullmatch(r"[0-9a-f]{40}", oid)
+        ):
+            raise RuntimeError("local release tag attempt contains a malformed ref record")
+        incoming[ref] = oid
+    try:
+        existing = read_release_tag_attempts(repo_root, workspace) or {}
+    except RuntimeError:
+        raise
+    absence_proofs: dict[str, str] | None = None
+    for ref, oid in incoming.items():
+        previous = existing.get(ref)
+        if previous is not None and previous != oid:
+            if absence_proofs is None:
+                absence_proofs = read_confirmed_absent_release_tag_attempts(
+                    repo_root, workspace,
+                )
+            if absence_proofs.get(ref) != previous:
+                raise RuntimeError(
+                    f"release tag {ref} changed after a prior push attempt without "
+                    "an exact origin-absence confirmation"
+                )
+        existing[ref] = oid
+    # Clear proofs before replacing their matching attempt OIDs. If the later
+    # attempts-file write fails, the candidate remains fail-closed: its older
+    # proof cannot accidentally authorize the newly generated local tag.
+    clear_release_tag_absence(repo_root, workspace, incoming)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{secrets.token_hex(12)}")
+    try:
+        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            stream.write(json.dumps(dict(sorted(existing.items())), indent=2) + "\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def read_release_tag_attempts(
+    repo_root: Path, workspace: ReleaseWorkspace,
+) -> dict[str, str] | None:
+    """Return exact local tags attempted by CMRU, or None for older transactions."""
+    path = _scope_dir(repo_root) / f"{_release_token(workspace)}.tag-attempts.json"
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise RuntimeError(f"cannot inspect release tag attempt record {path}: {exc}") from exc
+    if not stat.S_ISREG(info.st_mode):
+        raise RuntimeError(f"release tag attempt record is not a regular file: {path}")
+    try:
+        raw = json.loads(
+            path.read_text(encoding="utf-8"),
+            object_pairs_hook=_unique_json_object,
+        )
+    except (OSError, UnicodeError, ValueError) as exc:
+        raise RuntimeError(f"cannot read release tag attempt record {path}: {exc}") from exc
+    if not isinstance(raw, dict):
+        raise RuntimeError(f"release tag attempt record is malformed: {path}")
+    attempts: dict[str, str] = {}
+    for ref, oid in raw.items():
+        if (
+            not isinstance(ref, str)
+            or not _valid_ls_remote_ref(ref, "refs/tags/")
+            or not isinstance(oid, str)
+            or not re.fullmatch(r"[0-9a-f]{40}", oid)
+        ):
+            raise RuntimeError(f"release tag attempt record is malformed: {path}")
+        attempts[ref] = oid
+    return attempts
+
+
+def write_confirmed_absent_release_tag_attempts(
+    repo_root: Path,
+    workspace: ReleaseWorkspace,
+    tag_refs: Mapping[str, str],
+) -> None:
+    """Record exact tag attempts CMRU confirmed absent remotely and removed locally."""
+    attempts = read_release_tag_attempts(repo_root, workspace) or {}
+    local_tags = list_local_tag_refs(repo_root)
+    path = _scope_dir(repo_root) / f"{_release_token(workspace)}.tag-absent.json"
+    existing = read_confirmed_absent_release_tag_attempts(repo_root, workspace)
+    incoming: dict[str, str] = {}
+    for ref, oid in tag_refs.items():
+        if (
+            not isinstance(ref, str)
+            or not _valid_ls_remote_ref(ref, "refs/tags/")
+            or not isinstance(oid, str)
+            or not re.fullmatch(r"[0-9a-f]{40}", oid)
+        ):
+            raise RuntimeError("confirmed absent release tag record contains a malformed ref")
+        if attempts.get(ref) != oid:
+            raise RuntimeError(
+                f"confirmed absent release tag {ref} does not match its recorded push attempt"
+            )
+        if ref in local_tags:
+            raise RuntimeError(
+                f"confirmed absent release tag {ref} still exists in the local repository"
+            )
+        incoming[ref] = oid
+    existing.update(incoming)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{secrets.token_hex(12)}")
+    try:
+        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            stream.write(json.dumps(dict(sorted(existing.items())), indent=2) + "\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def read_confirmed_absent_release_tag_attempts(
+    repo_root: Path, workspace: ReleaseWorkspace,
+) -> dict[str, str]:
+    """Return CMRU's exact remote-absence confirmations for prior tag attempts."""
+    path = _scope_dir(repo_root) / f"{_release_token(workspace)}.tag-absent.json"
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        return {}
+    except OSError as exc:
+        raise RuntimeError(f"cannot inspect release tag absence record {path}: {exc}") from exc
+    if not stat.S_ISREG(info.st_mode):
+        raise RuntimeError(f"release tag absence record is not a regular file: {path}")
+    try:
+        raw = json.loads(
+            path.read_text(encoding="utf-8"),
+            object_pairs_hook=_unique_json_object,
+        )
+    except (OSError, UnicodeError, ValueError) as exc:
+        raise RuntimeError(f"cannot read release tag absence record {path}: {exc}") from exc
+    if not isinstance(raw, dict):
+        raise RuntimeError(f"release tag absence record is malformed: {path}")
+    proofs: dict[str, str] = {}
+    attempts = read_release_tag_attempts(repo_root, workspace) or {}
+    for ref, oid in raw.items():
+        if (
+            not isinstance(ref, str)
+            or not _valid_ls_remote_ref(ref, "refs/tags/")
+            or not isinstance(oid, str)
+            or not re.fullmatch(r"[0-9a-f]{40}", oid)
+            or attempts.get(ref) != oid
+        ):
+            raise RuntimeError(f"release tag absence record is malformed: {path}")
+        proofs[ref] = oid
+    return proofs
+
+
+def clear_release_tag_absence(
+    repo_root: Path, workspace: ReleaseWorkspace, tag_refs: Mapping[str, str],
+) -> None:
+    """Invalidate absence proofs whenever CMRU makes another attempt for those refs."""
+    if not tag_refs:
+        return
+    existing = read_confirmed_absent_release_tag_attempts(repo_root, workspace)
+    changed = False
+    for ref in tag_refs:
+        changed = existing.pop(ref, None) is not None or changed
+    if not changed:
+        return
+    path = _scope_dir(repo_root) / f"{_release_token(workspace)}.tag-absent.json"
+    if not existing:
+        path.unlink(missing_ok=True)
+        return
+    temporary = path.with_name(f".{path.name}.{secrets.token_hex(12)}")
+    try:
+        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            stream.write(json.dumps(dict(sorted(existing.items())), indent=2) + "\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _unique_json_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    """Reject duplicate object keys instead of accepting the last sidecar value."""
+    value: dict[str, object] = {}
+    for key, item in pairs:
+        if key in value:
+            raise ValueError(f"duplicate JSON object key: {key}")
+        value[key] = item
+    return value
+
+
+def _valid_ls_remote_ref(ref: str, namespace: str) -> bool:
+    """Apply Git's ref-name restrictions to a remote advertisement row."""
+    if namespace == "refs/tags/" and ref.endswith("^{}"):
+        name = ref[:-3]
+    else:
+        name = ref
+    if not name.startswith(namespace) or name == namespace:
+        return False
+    if (
+        name.startswith("/") or name.endswith(("/", "."))
+        or "//" in name or ".." in name or "@{" in name
+        or "\\" in name
+        or any(ord(char) <= 32 or ord(char) == 127 or char in "~^:?*[" for char in name)
+    ):
+        return False
+    return all(
+        component and not component.startswith(".")
+        and not component.endswith(".lock")
+        for component in name.split("/")
+    )
+
+
+def parse_ls_remote_refs(
+    output: str, *, namespace: str, description: str,
+) -> dict[str, str]:
+    """Parse successful ``git ls-remote`` output without folding bad rows into absence."""
+    refs: dict[str, str] = {}
+    for line in output.splitlines():
+        if not line:
+            continue
+        fields = line.split("\t")
+        if len(fields) != 2:
+            raise RuntimeError(f"{description} returned a malformed ref record: {line!r}")
+        oid, ref = fields
+        valid_ref = _valid_ls_remote_ref(ref, namespace)
+        if not re.fullmatch(r"[0-9a-f]{40}", oid) or not valid_ref:
+            raise RuntimeError(f"{description} returned a malformed ref record: {line!r}")
+        if ref in refs:
+            raise RuntimeError(f"{description} returned a duplicate ref record: {ref}")
+        refs[ref] = oid
+    return refs
 
 
 def read_release_scope(repo_root: Path, workspace: ReleaseWorkspace) -> list[str] | None:
@@ -854,6 +1328,9 @@ def forget_release_scope(repo_root: Path, workspace: ReleaseWorkspace) -> None:
     abandon_workspace() (a discarded attempt) and a successful release (its scope
     marker is otherwise never cleaned up — see remove_workspace())."""
     (_scope_dir(repo_root) / f"{_release_token(workspace)}.json").unlink(missing_ok=True)
+    (_scope_dir(repo_root) / f"{_release_token(workspace)}.tags.json").unlink(missing_ok=True)
+    (_scope_dir(repo_root) / f"{_release_token(workspace)}.tag-attempts.json").unlink(missing_ok=True)
+    (_scope_dir(repo_root) / f"{_release_token(workspace)}.tag-absent.json").unlink(missing_ok=True)
     _forget_release_progress(repo_root, workspace)
     (_scope_dir(repo_root) / f"{_release_token(workspace)}.results.json").unlink(missing_ok=True)
     _forget_plan_refused(repo_root, workspace)
@@ -917,6 +1394,11 @@ def mark_plan_refused(repo_root: Path, workspace: ReleaseWorkspace) -> None:
 def plan_was_refused(repo_root: Path, workspace: ReleaseWorkspace) -> bool:
     """True if :func:`mark_plan_refused` was called for this exact workspace."""
     return (_scope_dir(repo_root) / f"{_release_token(workspace)}.plan-refused").exists()
+
+
+def clear_plan_refused(repo_root: Path, workspace: ReleaseWorkspace) -> None:
+    """Clear the child-to-parent refusal marker before another transaction attempt."""
+    _forget_plan_refused(repo_root, workspace)
 
 
 def _forget_plan_refused(repo_root: Path, workspace: ReleaseWorkspace) -> None:
@@ -1206,6 +1688,14 @@ def is_build_output_id(value: str) -> bool:
     return True
 
 
+def _require_build_output_id(output_id: str) -> None:
+    if not is_build_output_id(output_id):
+        raise RuntimeError(
+            "--delete-build-output must be the exact <commit-date>_<40-hex-commit> "
+            "coordinate printed by cmru build"
+        )
+
+
 def build_output_id(workspace: ReleaseWorkspace) -> tuple[str, str, str]:
     """Return the immutable local-output coordinate for the built source tree.
 
@@ -1259,19 +1749,21 @@ def _declared_evidence_path(name: str, raw_path: object) -> Path:
     return relative
 
 
-def _assert_no_symlink_components(root: Path, path: Path, name: str) -> None:
+def _assert_no_symlink_components(
+    root: Path, path: Path, name: str, *, subject: str = "evidence",
+) -> None:
     """Refuse a path that reaches its source or destination through a symlink."""
     try:
         relative = path.relative_to(root)
     except ValueError as exc:
-        raise RuntimeError(f"{name}: evidence path escaped its project root: {path}") from exc
+        raise RuntimeError(f"{name}: {subject} path escaped its project root: {path}") from exc
     if root.is_symlink():
-        raise RuntimeError(f"{name}: evidence project root is a symlink: {root}")
+        raise RuntimeError(f"{name}: {subject} project root is a symlink: {root}")
     current = root
     for part in relative.parts:
         current /= part
         if current.is_symlink():
-            raise RuntimeError(f"{name}: evidence path is or crosses a symlink: {current}")
+            raise RuntimeError(f"{name}: {subject} path is or crosses a symlink: {current}")
 
 
 def _sha256_file(path: Path) -> str:
@@ -1439,20 +1931,60 @@ def retain_successful_build_outputs(
     return retained
 
 
-def delete_retained_build_output(
-    repo_root: Path,
-    project: object,
-    project_name: str,
-    output_id: str,
-    *,
-    dry_run: bool,
-) -> list[Path]:
-    """Delete one verified local build record, never a glob or age range."""
-    if not is_build_output_id(output_id):
-        raise RuntimeError(
-            "--delete-build-output must be the exact <commit-date>_<40-hex-commit> "
-            "coordinate printed by cmru build"
-        )
+@dataclass(frozen=True)
+class RetainedBuildOutputIdentity:
+    """Filesystem identity captured by a cleanup preview for one build output."""
+
+    project_name: str
+    output_id: str
+    artifact_root: Path
+    artifact_root_stat: tuple[int, int, int, int, int, int]
+    artifact_tree_stat: tuple[tuple[str, tuple[int, int, int, int, int, int]], ...]
+    manifest_stat: tuple[int, int, int, int, int, int]
+    manifest_sha256: str
+    logs_root: Path
+    logs_root_stat: tuple[int, int, int, int, int, int]
+    logs_tree_stat: tuple[tuple[str, tuple[int, int, int, int, int, int]], ...]
+
+
+def _filesystem_stat_identity(info: os.stat_result) -> tuple[int, int, int, int, int, int]:
+    return (
+        info.st_dev, info.st_ino, info.st_mode, info.st_size,
+        info.st_mtime_ns, info.st_ctime_ns,
+    )
+
+
+def _directory_open_flags() -> int:
+    required = ("O_DIRECTORY", "O_NOFOLLOW", "O_NONBLOCK")
+    if any(not hasattr(os, name) for name in required):
+        raise RuntimeError("safe descriptor-relative build-output cleanup is unavailable")
+    return os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+
+
+def _open_directory_path_nofollow(path: Path) -> int:
+    """Open an absolute directory one component at a time without following symlinks."""
+    path = Path(path)
+    if not path.is_absolute() or ".." in path.parts:
+        raise RuntimeError(f"cannot safely open non-canonical directory path: {path}")
+    flags = _directory_open_flags()
+    current_fd = os.open(path.anchor, flags)
+    try:
+        for part in path.parts[1:]:
+            next_fd = os.open(part, flags, dir_fd=current_fd)
+            os.close(current_fd)
+            current_fd = next_fd
+        return current_fd
+    except BaseException:
+        os.close(current_fd)
+        raise
+
+
+@contextmanager
+def _retained_build_output_parent_fds(
+    repo_root: Path, project: object, project_name: str, output_id: str,
+) -> Iterator[tuple[Path, int, int]]:
+    """Hold no-follow descriptors for the project and both cleanup parents."""
+    _require_build_output_id(output_id)
     main_project_root, _child_project_root = _project_roots_for_retention(
         repo_root,
         ReleaseWorkspace(repo_root=repo_root, path=repo_root, branch="", base=""),
@@ -1461,20 +1993,171 @@ def delete_retained_build_output(
     )
     artifact_root = main_project_root / "artifacts" / output_id
     logs_root = main_project_root / "logs" / output_id
-    manifest_path = artifact_root / "build.json"
-    if (
-        not artifact_root.is_dir() or artifact_root.is_symlink()
-        or not logs_root.is_dir() or logs_root.is_symlink()
-        or not manifest_path.is_file() or manifest_path.is_symlink()
-    ):
+    _assert_no_symlink_components(
+        main_project_root, artifact_root, project_name, subject="retained build output",
+    )
+    _assert_no_symlink_components(
+        main_project_root, logs_root, project_name, subject="retained build output",
+    )
+    root_fd = artifact_parent_fd = logs_parent_fd = None
+    try:
+        root_fd = _open_directory_path_nofollow(main_project_root)
+        flags = _directory_open_flags()
+        artifact_parent_fd = os.open("artifacts", flags, dir_fd=root_fd)
+        logs_parent_fd = os.open("logs", flags, dir_fd=root_fd)
+    except OSError as exc:
+        for descriptor in (logs_parent_fd, artifact_parent_fd, root_fd):
+            if descriptor is not None:
+                os.close(descriptor)
+        if exc.errno == errno.ELOOP:
+            raise RuntimeError(
+                f"{project_name}: retained build output path is or crosses a symlink"
+            ) from exc
         raise RuntimeError(
             f"{project_name}: retained build record is incomplete or unsafe for {output_id}; "
             "remove it manually after inspection"
-        )
+        ) from exc
+    except BaseException:
+        for descriptor in (logs_parent_fd, artifact_parent_fd, root_fd):
+            if descriptor is not None:
+                os.close(descriptor)
+        raise
+    assert artifact_parent_fd is not None and logs_parent_fd is not None
+    assert root_fd is not None
     try:
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    except (OSError, ValueError) as exc:
-        raise RuntimeError(f"{project_name}: invalid retained build manifest: {manifest_path}") from exc
+        yield main_project_root, artifact_parent_fd, logs_parent_fd
+    finally:
+        os.close(logs_parent_fd)
+        os.close(artifact_parent_fd)
+        os.close(root_fd)
+
+
+def _filesystem_tree_identity_fd(
+    root_fd: int,
+) -> tuple[tuple[str, tuple[int, int, int, int, int, int]], ...]:
+    """Snapshot a tree through directory descriptors without following symlinks."""
+    entries: list[tuple[str, tuple[int, int, int, int, int, int]]] = []
+    pending: list[tuple[str, tuple[int, int, int, int, int, int]]] = [
+        ("", _filesystem_stat_identity(os.fstat(root_fd))),
+    ]
+    flags = _directory_open_flags()
+    while pending:
+        prefix, expected_identity = pending.pop()
+        parent_fd = os.dup(root_fd)
+        try:
+            if prefix:
+                for part in Path(prefix).parts:
+                    child_fd = os.open(part, flags, dir_fd=parent_fd)
+                    os.close(parent_fd)
+                    parent_fd = child_fd
+            if _filesystem_stat_identity(os.fstat(parent_fd)) != expected_identity:
+                raise RuntimeError("retained build output changed during inspection")
+            for name in os.listdir(parent_fd):
+                info = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+                relative = f"{prefix}/{name}" if prefix else name
+                identity = _filesystem_stat_identity(info)
+                entries.append((relative, identity))
+                if stat.S_ISDIR(info.st_mode):
+                    pending.append((relative, identity))
+        finally:
+            os.close(parent_fd)
+    return tuple(sorted(entries))
+
+
+def _read_regular_file_at(
+    parent_fd: int, name: str, project_name: str, path: Path,
+) -> tuple[bytes, tuple[int, int, int, int, int, int]]:
+    flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
+    descriptor = os.open(name, flags, dir_fd=parent_fd)
+    try:
+        before = os.fstat(descriptor)
+        if not stat.S_ISREG(before.st_mode):
+            raise RuntimeError(
+                f"{project_name}: retained build record is incomplete or unsafe: {path}"
+            )
+        chunks = []
+        while True:
+            chunk = os.read(descriptor, 1024 * 1024)
+            if not chunk:
+                break
+            chunks.append(chunk)
+        after = os.fstat(descriptor)
+        if _filesystem_stat_identity(before) != _filesystem_stat_identity(after):
+            raise RuntimeError(f"{project_name}: retained build manifest changed during inspection")
+        return b"".join(chunks), _filesystem_stat_identity(after)
+    finally:
+        os.close(descriptor)
+
+
+def _retained_build_output_cleanup_facts(
+    project_name: str,
+    output_id: str,
+    main_project_root: Path,
+    artifact_parent_fd: int,
+    logs_parent_fd: int,
+) -> tuple[list[Path], RetainedBuildOutputIdentity]:
+    _require_build_output_id(output_id)
+    artifact_root = main_project_root / "artifacts" / output_id
+    logs_root = main_project_root / "logs" / output_id
+    artifact_fd = logs_fd = None
+    open_flags = _directory_open_flags()
+    try:
+        artifact_fd = os.open(output_id, open_flags, dir_fd=artifact_parent_fd)
+        logs_fd = os.open(output_id, open_flags, dir_fd=logs_parent_fd)
+    except OSError as exc:
+        for descriptor in (logs_fd, artifact_fd):
+            if descriptor is not None:
+                os.close(descriptor)
+        if exc.errno == errno.ELOOP:
+            raise RuntimeError(
+                f"{project_name}: retained build output path is or crosses a symlink"
+            ) from exc
+        raise RuntimeError(
+            f"{project_name}: retained build record is incomplete or unsafe for {output_id}; "
+            "remove it manually after inspection"
+        ) from exc
+    except BaseException:
+        for descriptor in (logs_fd, artifact_fd):
+            if descriptor is not None:
+                os.close(descriptor)
+        raise
+    assert artifact_fd is not None and logs_fd is not None
+    try:
+        identity = _retained_build_output_identity_from_fds(
+            project_name, output_id, main_project_root, artifact_fd, logs_fd,
+        )
+        return [logs_root, artifact_root], identity
+    finally:
+        os.close(logs_fd)
+        os.close(artifact_fd)
+
+
+def _retained_build_output_identity_from_fds(
+    project_name: str,
+    output_id: str,
+    main_project_root: Path,
+    artifact_fd: int,
+    logs_fd: int,
+) -> RetainedBuildOutputIdentity:
+    _require_build_output_id(output_id)
+    artifact_root = main_project_root / "artifacts" / output_id
+    logs_root = main_project_root / "logs" / output_id
+    manifest_path = artifact_root / "build.json"
+    try:
+        manifest_bytes, manifest_stat = _read_regular_file_at(
+            artifact_fd, "build.json", project_name, manifest_path,
+        )
+    except OSError as exc:
+        raise RuntimeError(
+            f"{project_name}: retained build record is incomplete or unsafe for {output_id}; "
+            "remove it manually after inspection"
+        ) from exc
+    try:
+        manifest = json.loads(manifest_bytes.decode("utf-8"))
+    except (UnicodeError, ValueError) as exc:
+        raise RuntimeError(
+            f"{project_name}: invalid retained build manifest: {manifest_path}"
+        ) from exc
     if not isinstance(manifest, dict) or (
         manifest.get("schema_version") != 1
         or manifest.get("kind") != "cmru-local-build"
@@ -1482,17 +2165,235 @@ def delete_retained_build_output(
         or manifest.get("project") != project_name
         or manifest.get("build_id") != output_id
     ):
-        raise RuntimeError(f"{project_name}: retained build manifest does not authorize cleanup: {manifest_path}")
+        raise RuntimeError(
+            f"{project_name}: retained build manifest does not authorize cleanup: {manifest_path}"
+        )
 
-    targets = [logs_root, artifact_root]
-    if dry_run:
-        return targets
-    # Both paths were derived from a validated project root and a strict output
-    # ID, then authenticated by build.json.  They are therefore safe exact
-    # deletion targets; no user-supplied directory tree is ever recursed.
-    for target in targets:
-        shutil.rmtree(target)
-    return targets
+    artifact_root_stat = _filesystem_stat_identity(os.fstat(artifact_fd))
+    logs_root_stat = _filesystem_stat_identity(os.fstat(logs_fd))
+    artifact_tree_stat = _filesystem_tree_identity_fd(artifact_fd)
+    logs_tree_stat = _filesystem_tree_identity_fd(logs_fd)
+    if (
+        _filesystem_stat_identity(os.fstat(artifact_fd)) != artifact_root_stat
+        or _filesystem_stat_identity(os.fstat(logs_fd)) != logs_root_stat
+    ):
+        raise RuntimeError("retained build output changed during inspection")
+    return RetainedBuildOutputIdentity(
+        project_name=project_name,
+        output_id=output_id,
+        artifact_root=artifact_root,
+        artifact_root_stat=artifact_root_stat,
+        artifact_tree_stat=artifact_tree_stat,
+        manifest_stat=manifest_stat,
+        manifest_sha256=hashlib.sha256(manifest_bytes).hexdigest(),
+        logs_root=logs_root,
+        logs_root_stat=logs_root_stat,
+        logs_tree_stat=logs_tree_stat,
+    )
+
+
+def retained_build_output_identity(
+    repo_root: Path, project: object, project_name: str, output_id: str,
+) -> RetainedBuildOutputIdentity:
+    """Validate and capture the exact local record selected for cleanup."""
+    with _retained_build_output_parent_fds(
+        repo_root, project, project_name, output_id,
+    ) as (main_project_root, artifact_parent_fd, logs_parent_fd):
+        return _retained_build_output_cleanup_facts(
+            project_name, output_id, main_project_root,
+            artifact_parent_fd, logs_parent_fd,
+        )[1]
+
+
+def _create_private_cleanup_stage(parent_fd: int, output_id: str) -> tuple[str, int]:
+    flags = _directory_open_flags()
+    for _attempt in range(8):
+        stage_name = f".cmru-cleanup-{output_id}-{secrets.token_hex(12)}"
+        try:
+            os.mkdir(stage_name, mode=0o700, dir_fd=parent_fd)
+        except FileExistsError:
+            continue
+        try:
+            return stage_name, os.open(stage_name, flags, dir_fd=parent_fd)
+        except BaseException:
+            os.rmdir(stage_name, dir_fd=parent_fd)
+            raise
+    raise RuntimeError("could not allocate a private build-output cleanup directory")
+
+
+def _restore_cleanup_stage_record(
+    parent_fd: int, stage_fd: int, output_id: str,
+) -> bool:
+    """Restore a staged record only when its original name remains vacant."""
+    try:
+        os.stat("record", dir_fd=stage_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        return True
+    try:
+        os.stat(output_id, dir_fd=parent_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        return _rename_noreplace_at(
+            "record", stage_fd, output_id, parent_fd,
+        )
+    return False
+
+
+def _rename_noreplace_at(
+    source: str, source_fd: int, destination: str, destination_fd: int,
+) -> bool:
+    """Use Linux renameat2(RENAME_NOREPLACE); refuse a racy fallback."""
+    try:
+        libc = ctypes.CDLL(None, use_errno=True)
+        renameat2 = libc.renameat2
+    except (AttributeError, OSError):
+        return False
+    renameat2.argtypes = [
+        ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint,
+    ]
+    renameat2.restype = ctypes.c_int
+    rename_noreplace = 1  # RENAME_NOREPLACE from <linux/fs.h>.
+    result = renameat2(
+        source_fd, os.fsencode(source), destination_fd, os.fsencode(destination),
+        rename_noreplace,
+    )
+    if result == 0:
+        return True
+    error_number = ctypes.get_errno()
+    if error_number in {errno.EEXIST, errno.ENOSYS, errno.EINVAL, errno.EOPNOTSUPP}:
+        return False
+    raise OSError(error_number, os.strerror(error_number), destination)
+
+
+def _staged_cleanup_identity_matches(
+    expected: RetainedBuildOutputIdentity,
+    staged: RetainedBuildOutputIdentity,
+) -> bool:
+    """Compare a moved record while allowing rename to update root timestamps."""
+    # Moving a directory into its private staging folder may update the root's
+    # timestamps. The pre-move identity was already checked; this comparison
+    # still binds the inode and every entry to that same reviewed record.
+    return (
+        expected.project_name == staged.project_name
+        and expected.output_id == staged.output_id
+        and expected.artifact_root == staged.artifact_root
+        and expected.artifact_root_stat[:4] == staged.artifact_root_stat[:4]
+        and expected.artifact_tree_stat == staged.artifact_tree_stat
+        and expected.manifest_stat == staged.manifest_stat
+        and expected.manifest_sha256 == staged.manifest_sha256
+        and expected.logs_root == staged.logs_root
+        and expected.logs_root_stat[:4] == staged.logs_root_stat[:4]
+        and expected.logs_tree_stat == staged.logs_tree_stat
+    )
+
+
+def delete_retained_build_output(
+    repo_root: Path,
+    project: object,
+    project_name: str,
+    output_id: str,
+    *,
+    dry_run: bool,
+    expected_identity: RetainedBuildOutputIdentity | None = None,
+) -> list[Path]:
+    """Delete one verified local build record, never a glob or age range."""
+    with _retained_build_output_parent_fds(
+        repo_root, project, project_name, output_id,
+    ) as (main_project_root, artifact_parent_fd, logs_parent_fd):
+        targets, current_identity = _retained_build_output_cleanup_facts(
+            project_name, output_id, main_project_root,
+            artifact_parent_fd, logs_parent_fd,
+        )
+        if expected_identity is not None and current_identity != expected_identity:
+            raise RuntimeError(
+                f"{project_name}: retained build record changed after cleanup preview for "
+                f"{output_id}; inspect it and retry"
+            )
+        if dry_run:
+            return targets
+        if not shutil.rmtree.avoids_symlink_attacks:
+            raise RuntimeError("safe descriptor-relative build-output cleanup is unavailable")
+
+        # Move both entries under private, descriptor-pinned names. Recheck the
+        # moved records before deleting so a last-moment replacement at the
+        # public ID cannot be mistaken for the previewed output.
+        stages: list[tuple[int, str, int]] = []
+        moved: list[tuple[int, str, int]] = []
+        try:
+            logs_stage_name, logs_stage_fd = _create_private_cleanup_stage(
+                logs_parent_fd, output_id,
+            )
+            stages.append((logs_parent_fd, logs_stage_name, logs_stage_fd))
+            artifacts_stage_name, artifacts_stage_fd = _create_private_cleanup_stage(
+                artifact_parent_fd, output_id,
+            )
+            stages.append((artifact_parent_fd, artifacts_stage_name, artifacts_stage_fd))
+
+            os.rename(
+                output_id, "record",
+                src_dir_fd=logs_parent_fd, dst_dir_fd=logs_stage_fd,
+            )
+            moved.append((logs_parent_fd, logs_stage_name, logs_stage_fd))
+            os.rename(
+                output_id, "record",
+                src_dir_fd=artifact_parent_fd, dst_dir_fd=artifacts_stage_fd,
+            )
+            moved.append((artifact_parent_fd, artifacts_stage_name, artifacts_stage_fd))
+
+            open_flags = _directory_open_flags()
+            staged_artifact_fd = os.open("record", open_flags, dir_fd=artifacts_stage_fd)
+            try:
+                staged_logs_fd = os.open("record", open_flags, dir_fd=logs_stage_fd)
+                try:
+                    staged_identity = _retained_build_output_identity_from_fds(
+                        project_name, output_id, main_project_root,
+                        staged_artifact_fd, staged_logs_fd,
+                    )
+                finally:
+                    os.close(staged_logs_fd)
+            finally:
+                os.close(staged_artifact_fd)
+            if not _staged_cleanup_identity_matches(current_identity, staged_identity):
+                raise RuntimeError(
+                    f"{project_name}: retained build record changed during cleanup for "
+                    f"{output_id}; inspect it and retry"
+                )
+
+            # These names are private to directories created with mode 0700,
+            # and the validated parent descriptors remain open until deletion.
+            shutil.rmtree("record", dir_fd=logs_stage_fd)
+            shutil.rmtree("record", dir_fd=artifacts_stage_fd)
+            for parent_fd, stage_name, _stage_fd in stages:
+                os.rmdir(stage_name, dir_fd=parent_fd)
+            return targets
+        except BaseException as exc:
+            restore_failures: list[Path] = []
+            for parent_fd, stage_name, stage_fd in reversed(moved):
+                try:
+                    restored = _restore_cleanup_stage_record(
+                        parent_fd, stage_fd, output_id,
+                    )
+                except OSError:
+                    restored = False
+                if not restored:
+                    restore_failures.append(
+                        main_project_root / (
+                            "logs" if parent_fd == logs_parent_fd else "artifacts"
+                        ) / stage_name / "record"
+                    )
+            if restore_failures:
+                raise RuntimeError(
+                    f"{project_name}: cleanup stopped and retained records need inspection at "
+                    + ", ".join(map(str, restore_failures))
+                ) from exc
+            for parent_fd, stage_name, _stage_fd in stages:
+                try:
+                    os.rmdir(stage_name, dir_fd=parent_fd)
+                except FileNotFoundError:
+                    pass
+            raise
+        finally:
+            for _parent_fd, _stage_name, stage_fd in reversed(stages):
+                os.close(stage_fd)
 
 
 def discard_build_workspace(
@@ -1887,6 +2788,11 @@ def list_retained_workspaces(repo_root: Path) -> list[ReleaseWorkspace]:
 def abandon_workspace(
     repo_root: Path, workspace: ReleaseWorkspace, *,
     git_auth: GitHubGitAuth | None = None,
+    expected_remote_candidate_oid: str | None = None,
+    expected_remote_tag_refs: Mapping[str, str] | None = None,
+    release_tag_prefixes: Sequence[str] = (),
+    expected_local_tag_refs: Mapping[str, str] | None = None,
+    local_tags_to_remove: Mapping[str, str] | None = None,
 ) -> None:
     """Fully discard a retained release attempt and its origin candidate branch.
 
@@ -1901,16 +2807,50 @@ def abandon_workspace(
     )
     if remote.returncode != 0:
         raise RuntimeError("cannot determine origin candidate state; retained transaction was not removed")
-    present = any(line.split("\t", 1)[-1] == ref for line in remote.stdout.splitlines() if "\t" in line)
+    remote_refs = parse_ls_remote_refs(
+        remote.stdout, namespace="refs/heads/", description="origin branch lookup",
+    )
+    if any(remote_ref != ref for remote_ref in remote_refs):
+        raise RuntimeError("origin branch lookup returned an unexpected ref; retained transaction was not removed")
+    remote_candidate_oid = remote_refs.get(ref)
+    if (
+        expected_remote_candidate_oid is not None
+        and remote_candidate_oid != expected_remote_candidate_oid
+    ):
+        raise RuntimeError("origin candidate ref changed after abandonment inspection; retained transaction was not removed")
+    present = remote_candidate_oid is not None
     pushed = backup_was_pushed(repo_root, workspace)
     removed = backup_was_removed(repo_root, workspace)
     if pushed and not removed and not present:
         raise RuntimeError("origin candidate ref is missing but its removal was not recorded; refusing stale transaction metadata")
     if (not pushed or removed) and present:
         raise RuntimeError("origin candidate ref exists without matching active transaction state")
+    if expected_remote_tag_refs is not None:
+        tags = run_remote_git(
+            repo_root, "ls-remote", "--tags", "origin",
+            auth=git_auth, capture_output=True, text=True, check=False,
+        )
+        if tags.returncode != 0:
+            raise RuntimeError("cannot recheck origin release tags; retained transaction was not removed")
+        current_tag_refs = parse_ls_remote_refs(
+            tags.stdout, namespace="refs/tags/", description="origin release tag lookup",
+        )
+        current_tag_refs = _tag_refs_for_prefixes(current_tag_refs, release_tag_prefixes)
+        if current_tag_refs != dict(expected_remote_tag_refs):
+            raise RuntimeError("origin release tags changed after abandonment inspection; retained transaction was not removed")
+    if expected_local_tag_refs is not None:
+        current_local_tag_refs = _tag_refs_for_prefixes(
+            list_local_tag_refs(repo_root), release_tag_prefixes,
+        )
+        if current_local_tag_refs != dict(expected_local_tag_refs):
+            raise RuntimeError("local release tags changed after abandonment inspection; retained transaction was not removed")
     if pushed and not removed:
+        if remote_candidate_oid is None or not re.fullmatch(r"[0-9a-f]{40}", remote_candidate_oid):
+            raise RuntimeError("origin candidate object ID is unavailable; retained transaction was not removed")
         result = run_remote_git(
-            repo_root, "push", "origin", "--delete", workspace.branch,
+            repo_root, "push",
+            f"--force-with-lease={ref}:{remote_candidate_oid}",
+            "origin", f":{ref}",
             auth=git_auth, capture_output=True, text=True, check=False,
         )
         if result.returncode != 0:
@@ -1922,14 +2862,62 @@ def abandon_workspace(
             repo_root, "ls-remote", "--heads", "origin", ref,
             auth=git_auth, capture_output=True, text=True, check=False,
         )
-        if verify.returncode != 0 or any(
-            line.split("\t", 1)[-1] == ref
-            for line in verify.stdout.splitlines() if "\t" in line
-        ):
+        if verify.returncode != 0:
+            raise RuntimeError(f"origin candidate ref {ref} still exists or could not be verified; local transaction was retained")
+        remaining_refs = parse_ls_remote_refs(
+            verify.stdout, namespace="refs/heads/", description="origin candidate deletion verification",
+        )
+        if remaining_refs:
             raise RuntimeError(f"origin candidate ref {ref} still exists or could not be verified; local transaction was retained")
         mark_backup_removed(repo_root, workspace)
+    for tag_ref, expected_oid in sorted((local_tags_to_remove or {}).items()):
+        if (
+            not _valid_ls_remote_ref(tag_ref, "refs/tags/")
+            or not re.fullmatch(r"[0-9a-f]{40}", expected_oid)
+        ):
+            raise RuntimeError("abandonment has a malformed local release-tag cleanup target")
+        current_oid = list_local_tag_refs(repo_root).get(tag_ref)
+        if current_oid is None:
+            continue
+        if current_oid != expected_oid:
+            raise RuntimeError(
+                f"local release tag {tag_ref} changed after abandonment inspection; "
+                "the retained worktree was not removed"
+            )
+        result = run_local_git(
+            repo_root, "update-ref", "-d", tag_ref, expected_oid,
+            capture_output=True, text=True, check=False,
+        )
+        remaining_oid = list_local_tag_refs(repo_root).get(tag_ref)
+        if remaining_oid is not None:
+            if remaining_oid != expected_oid:
+                raise RuntimeError(
+                    f"local release tag {tag_ref} changed during abandonment; "
+                    "the retained worktree was not removed"
+                )
+            detail = result.stderr.strip() or result.stdout.strip() or "no diagnostic output"
+            raise RuntimeError(
+                f"could not remove local release tag {tag_ref} ({result.returncode}); "
+                f"the retained worktree was not removed: {detail}"
+            )
     remove_workspace(workspace)
     forget_release_scope(repo_root, workspace)
+
+
+def _tag_refs_for_prefixes(
+    tag_refs: Mapping[str, str], prefixes: Sequence[str],
+) -> dict[str, str]:
+    """Select complete tag-ref records in the named project release namespaces."""
+    if not prefixes:
+        return dict(tag_refs)
+    selected: dict[str, str] = {}
+    for ref, oid in tag_refs.items():
+        name = ref.removeprefix("refs/tags/")
+        if name.endswith("^{}"):
+            name = name[:-3]
+        if any(name.startswith(prefix) for prefix in prefixes):
+            selected[ref] = oid
+    return selected
 
 
 def promote_workspace(

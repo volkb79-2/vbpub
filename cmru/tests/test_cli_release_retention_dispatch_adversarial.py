@@ -1,4 +1,5 @@
 from contextlib import nullcontext
+from pathlib import Path
 
 import pytest
 
@@ -11,6 +12,21 @@ def fake_git_family(monkeypatch):
         cli.transaction,
         "project_git_family_groups",
         lambda root, projects: {root: list(projects)},
+    )
+    monkeypatch.setattr(cli, "_require_local_tag_inspection_support", lambda _root: None)
+    monkeypatch.setattr(
+        cli, "_project_git_tag_policy_at_snapshot",
+        lambda _root, _base, project, **_kwargs: getattr(project, "git_tag", True),
+    )
+    monkeypatch.setattr(
+        cli, "_project_config_paths_in_candidate",
+        lambda _source, _candidate, _config, _configs, names: {
+            name: Path(name) / "cmru.toml" for name in names
+        },
+    )
+    monkeypatch.setattr(
+        cli, "_project_release_policy_in_candidate",
+        lambda _candidate, name, _config: (f"{name}-v", True),
     )
 
 
@@ -33,6 +49,8 @@ def _dispatch_fixture(monkeypatch, tmp_path, retained, *, evidence_paths=()):
     monkeypatch.setattr(cli.transaction, "resume_workspace", lambda *args, **kwargs: workspace)
     monkeypatch.setattr(cli.transaction, "read_release_scope_for_path", lambda _path: ["demo"])
     monkeypatch.setattr(cli.transaction, "assert_resume_workspace_committed", lambda _path: None)
+    monkeypatch.setattr(cli, "_assert_resume_candidate_is_safe_to_replay", lambda *args, **kwargs: None)
+    monkeypatch.setattr(cli.transaction, "clear_plan_refused", lambda *args, **kwargs: None)
     monkeypatch.setattr(cli.transaction, "copy_secret_overlays", lambda *args, **kwargs: None)
     monkeypatch.setattr(cli.transaction, "run_child", lambda *args, **kwargs: 0)
     monkeypatch.setattr(cli.transaction, "read_release_results", lambda *args, **kwargs: {"demo": "demo-v1"})
@@ -63,6 +81,39 @@ def test_resumed_release_retains_by_default_with_no_flags(monkeypatch, tmp_path,
     out = capsys.readouterr().out
     assert f"Retained release output: {retained[0]}" in out
     assert f"Retained release output: {retained[1]}" in out
+
+
+def test_resumed_release_accepts_the_explicit_saved_scope(monkeypatch, tmp_path, capsys):
+    workspace, _seen = _dispatch_fixture(monkeypatch, tmp_path, [])
+
+    assert cli.main([
+        "release", "demo", "--resume", str(workspace.path),
+        "--config", str(tmp_path / "cmru.toml"),
+    ]) == 0
+    assert "Resuming recorded project scope:" not in capsys.readouterr().out
+
+
+def test_resumed_release_refuses_scope_changed_while_waiting_for_lock(
+    monkeypatch, tmp_path, capsys,
+):
+    workspace, _seen = _dispatch_fixture(monkeypatch, tmp_path, [])
+    child_calls = []
+    monkeypatch.setattr(
+        cli.transaction, "run_child",
+        lambda *args, **kwargs: child_calls.append((args, kwargs)) or 0,
+    )
+    scopes = iter([["demo"], ["other"]])
+    monkeypatch.setattr(
+        cli.transaction, "read_release_scope_for_path", lambda _path: next(scopes),
+    )
+
+    result = cli.main([
+        "release", "--resume", str(workspace.path),
+        "--config", str(tmp_path / "cmru.toml"),
+    ])
+    assert result == 1
+    assert "retained release scope changed while acquiring its lock" in capsys.readouterr().err
+    assert child_calls == []
 
 
 def test_resumed_release_discard_artifacts_flag_keeps_logs_only(monkeypatch, tmp_path, capsys):

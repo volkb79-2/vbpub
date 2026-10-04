@@ -7,7 +7,43 @@ moves. Normative behavior lives in SPEC.md; entry-by-entry rationale lives in
 KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 
 ## [Unreleased]
-<!-- hand-written ahead of release; cmru's generator will produce the real dated entry for this range at release time. Fold into the dated section BY HAND the moment that release is cut -- cmru's generator never clears this block itself, and this file's own 2026-09-09 comment records one past instance of that being written down but not carried out. Verified empty as of 2026-09-11's release; NOT empty as of this note (RG-61, 2026-09-12) -- 100+ lines accumulated since, all of it the RG-55 wave's own P1/P2 base package (rev 41) plus this P4 follow-up package (rev 42, RG-57/58/59/60/61 below) and the source-backed Assay package (rev 43). `__revision__` 41 -> 43 in this same work-in-progress; every entry below names its own RG id. -->
+<!-- This unreleased block describes source rev 49. At release, fold these entries into the generated dated section by hand; the release generator does not clear this block. -->
+
+- **Closed results and explicit environment modes (RG-78, rev 49).** All
+  normal CLI outcomes now pass through `finish(LaneResult)` and the closed
+  PASS/FAIL/ERROR/NOT_RUN/BUDGET_EXCEEDED table. `ephemeral`, `exec`, and
+  `host` are explicit mode values; the built-in `bare-host` environment name
+  continues to mean a host subprocess. No raw lane exit code can collide
+  with a run-gate refusal status.
+- **Selftest in tester-unified.** The registered selftest keeps pytest's
+  temporary repositories under the bind-mounted checkout so its real
+  `/proc/self/mountinfo` assertions work in the dedicated gate container.
+- **Native sequence and worktree policy (RG-47/65/74, rev 47/49).**
+  `--worktree` resolves project and inherited config from the selected tree,
+  including monorepo-relative project paths, and records config provenance.
+  `[project].trunk` and `kind = "sequence"` replace consumer shell
+  conjunctions, resolving a merge's first-parent base once and passing it
+  only to members that request it. RG-65 is merged into RG-47.
+- **Admission and lane budgets (RG-63/RG-80, rev 49).** Optional daemon-wide
+  count admission uses Docker-name tickets, tombstones and the published
+  `ciu-admission-<generation>` object, compatible with CIU v8 count mode.
+  The switch is off by default and requires an explicit local ticket image.
+  Lane budgets begin after admission and runner locks, excluding queue time.
+- **Assay requests and evidence (RG-66/RG-72/RG-76/RG-77, rev 49).**
+  Assay-only `--reuse-from`, repeatable `--rejudge`, and
+  `--rejudge-outcome` reach the judge; external lanes can be imported from
+  `assay lanes --json` with the CIU v8 `{ environment, lanes }` shape.
+  Non-PASS assay runs print a bounded failure digest and retain ignored
+  verdict/progress artifacts. The `--resume`, `--progress`, and durable
+  `--state-dir` contract, including the Assay 5.2.0 floor, is documented.
+- **Selective footprint updates and command arguments (RG-68/RG-69/RG-71,
+  rev 49).** Completed profiled FAIL runs are opt-in for calibration with
+  `--include-failed`; repeatable `footprint --write --lane NAME` merges only
+  selected lanes; `accepts_args = true` permits arguments after `--` on one
+  command lane.
+- **Remaining compatibility boundary.** RG-49's root-owned-parent repair
+  remains OPEN. RG-70 is absorbed into ciu CIU-118's `ciu exec` work and is
+  not a separate run-gate v7 implementation.
 
 - **Source-backed Assay consumers.** Internal lanes may omit
   `assay_command` and `pins`; run-gate installs `assay/` from the selected
