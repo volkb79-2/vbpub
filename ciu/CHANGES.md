@@ -125,6 +125,7 @@ restatement of the technical detail below it.
 ### Changed
 - Governance injects per-container memory, CPU, and IO limits only when configured. Omitted read/write IOPS no longer add caps; `read_iops = 0` is an explicit derivation opt-in.
 - `ciu init` emits the complete, disabled governance table with no resource caps configured.
+- Generic Git-family worktree records may be ready with a null/null runtime pair only when their exact root has no CIU marker; CIU-root identity remains mandatory, and partial or indeterminate identities refuse.
 
 ## [7.13.0] - 2026-09-11
 <!-- cmru: generated -->

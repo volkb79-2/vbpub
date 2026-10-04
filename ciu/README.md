@@ -45,6 +45,14 @@ isolated. The rationale and collision/namespace rules are in
 [docs/DESIGN-GUIDE.md#workspace-and-root-identity](docs/DESIGN-GUIDE.md#workspace-and-root-identity);
 copyable commands and config are in [docs/CONSUMERS.md](docs/CONSUMERS.md).
 
+When a worktree's Git root is only an aggregate for nested CIU roots, its
+`ready` family record has no runtime identity of its own (`runtime` contains
+two nulls); each discovered CIU root is initialized separately. The record
+reader distinguishes that shape from a malformed CIU-root record using the
+exact root marker, and refuses partial identities or an unreadable marker.
+See the [aggregate-record rationale](docs/DESIGN-GUIDE.md#aggregate-family-records-and-runtime-identity)
+and [consumer example](docs/CONSUMERS.md#2-create-a-managed-workspace).
+
 > **ciu builds-and-runs; cmru releases.** ciu is the **inner loop** (build local images,
 > run the stack on this host); its sibling **cmru** is the **outer loop** (version + publish
 > products). For the full role/overlap map and the border question, see
@@ -70,6 +78,9 @@ CIU governance does not add per-container RAM, swap, reservation, CPU, IOPS,
 or bandwidth caps by default. Set the corresponding keys in a stack's
 `[<root>.governance]` table or the global `[governance]` table only when the
 project wants those limits; service-authored Compose keys remain authoritative.
+The explicit controls include `mem_limit`, `mem_swap_limit`,
+`mem_reservation`, `cpus`, `read_iops`, `write_iops`, `read_bps`, and
+`write_bps`.
 The host's parent-slice limits continue to apply independently. See the
 [pasteable consumer example](docs/CONSUMERS.md#configure-ciu-resource-limits)
 and the [design rationale](docs/DESIGN-GUIDE.md#governance-resource-limits).

@@ -456,9 +456,17 @@ def test_shared_record_lookup_and_lease_sync_failures(monkeypatch, tmp_path):
 def test_finish_allocation_accepts_a_generic_git_worktree_without_ciu_marker(monkeypatch, tmp_path):
     record = _record(tmp_path)
     written = []
+    writer = worktree._write_instance_record
     monkeypatch.setattr(worktree, "_write_instance_record", lambda value: written.append(value))
     ready = worktree._finish_allocation(tmp_path, record, checkout_required=False)
     assert ready.state == "ready" and written[-1].state == "ready"
+    assert ready.instance_id is None and ready.network is None
+    assert not (ready.ciu_root / GLOBAL_CONFIG_DEFAULTS).exists()
+
+    monkeypatch.setattr(worktree, "_write_instance_record", writer)
+    writer(ready)
+    reread = worktree.read_instance_record(ready.record_path)
+    assert reread.to_dict() == ready.to_dict()
 
 
 def _create_setup(monkeypatch, tmp_path, *, roots, materialize=True, failure=None):

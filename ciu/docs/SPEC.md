@@ -4469,6 +4469,18 @@ persisted instance record is nested under `instance`
 (`WorktreeInstanceRecord.to_dict()` — v1, or v2 with a `lease` key per
 S16.9); current Git facts are nested under `git`.
 
+The persisted `runtime` object carries the pair `instance_id` and `network`.
+The pair MUST be either two non-empty strings or two JSON `null` values;
+partial identity is malformed in every lifecycle state. A `ready` record
+whose exact `ciu_root` contains a regular `ciu.global.defaults.toml.j2`
+marker MUST carry both strings and MUST have `recovery_status: null`. A
+`ready` aggregate Git-family record whose exact root has no such marker MAY
+carry both values as `null`: it describes the checkout, not a runtime at that
+root, and nested CIU roots are initialized separately. Failure to determine
+whether the marker exists is a refusal, not evidence that the root is
+generic. This rule matches allocation's root classification; it does not
+invent an identity or change the record schema.
+
 Git facts are freshly read from Git, never inferred from a name or a stale
 record: `git.registered` (the record's checkout is a current registered
 worktree), `git.path`, `git.branch` (or `(detached)`), `git.detached`,

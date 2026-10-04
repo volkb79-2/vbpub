@@ -39,6 +39,7 @@ import fcntl
 import json
 import os
 import re
+import stat
 import subprocess
 from collections.abc import Iterator, Mapping
 from contextlib import ExitStack, contextmanager
@@ -366,6 +367,29 @@ def _lease_from_dict(raw: Any, path: Path) -> WorktreeLease:
     )
 
 
+def _ciu_root_marker_present(root: Path) -> bool:
+    """Determine whether *root* is a CIU checkout by its defaults marker.
+
+    A generic Git-family allocation has no runtime identity of its own; its
+    nested CIU roots carry separate records. The defaults marker
+    distinguishes that aggregate record from a CIU-root record. Do not turn
+    an unreadable marker lookup into absence: that would make a malformed
+    ready record look like a valid generic allocation.
+    """
+    root = Path(root)
+    marker = root / GLOBAL_CONFIG_DEFAULTS
+    try:
+        marker_stat = marker.stat()
+    except FileNotFoundError:
+        return False
+    except OSError as exc:
+        raise WorktreeError(
+            f"[S16] could not determine whether {root} is a CIU root "
+            f"because marker {marker} could not be read: {exc}"
+        ) from exc
+    return stat.S_ISREG(marker_stat.st_mode)
+
+
 def _record_from_dict(raw: Any, path: Path) -> WorktreeInstanceRecord:
     if not isinstance(raw, dict):
         raise WorktreeError(f"[S16] {path} must contain one JSON object")
@@ -421,10 +445,16 @@ def _record_from_dict(raw: Any, path: Path) -> WorktreeInstanceRecord:
     for key, value in runtime.items():
         if value is not None and (not isinstance(value, str) or not value):
             raise WorktreeError(f"[S16] malformed runtime.{key} in {path}")
-    if state == "ready" and (
-        not runtime["instance_id"] or not runtime["network"] or recovery is not None
-    ):
-        raise WorktreeError(f"[S16] ready record lacks a closed runtime identity in {path}")
+    identity_values = (runtime["instance_id"], runtime["network"])
+    if (identity_values[0] is None) != (identity_values[1] is None):
+        raise WorktreeError(f"[S16] incomplete runtime identity in {path}")
+    if state == "ready":
+        if recovery is not None:
+            raise WorktreeError(f"[S16] ready record carries recovery_status in {path}")
+        if identity_values == (None, None) and _ciu_root_marker_present(path.parent):
+            raise WorktreeError(
+                f"[S16] ready record lacks a closed runtime identity in {path}"
+            )
     if state != "recovery-required" and recovery is not None:
         raise WorktreeError(f"[S16] {state!r} record carries recovery_status in {path}")
     offset = Path(raw["ciu_root_offset"])
@@ -3596,7 +3626,7 @@ def _finish_allocation(
     # CIU root marker.  Worktree creation must report that there are no CIU
     # roots to prepare; it must not reinterpret the Git top level as a root or
     # fail before `discover_committed_roots` can inspect nested markers.
-    if not (record.ciu_root / GLOBAL_CONFIG_DEFAULTS).is_file():
+    if not _ciu_root_marker_present(record.ciu_root):
         ready = replace(record, state="ready", recovery_status=None)
         _write_instance_record(ready)
         return ready

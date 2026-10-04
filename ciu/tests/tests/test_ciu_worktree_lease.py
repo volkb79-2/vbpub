@@ -133,6 +133,82 @@ class TestSchemaVersionConstants:
 
 
 class TestReadingV1AndV2Records:
+    @pytest.mark.ciu_no_auto_root
+    def test_ready_aggregate_record_without_a_root_marker_allows_null_runtime(self, tmp_path):
+        assert not (tmp_path / worktree.GLOBAL_CONFIG_DEFAULTS).exists()
+        raw = _raw_v1(tmp_path)
+        raw["runtime"] = {"instance_id": None, "network": None}
+
+        record = worktree._record_from_dict(
+            raw, tmp_path / worktree.WORKTREE_INSTANCE_RECORD
+        )
+
+        assert record.state == "ready"
+        assert record.instance_id is None and record.network is None
+        assert record.to_dict() == raw
+
+    def test_ready_ciuroot_with_null_runtime_is_refused(self, tmp_path):
+        (tmp_path / worktree.GLOBAL_CONFIG_DEFAULTS).write_text(
+            "[ciu]\n", encoding="utf-8"
+        )
+        raw = _raw_v1(tmp_path)
+        raw["runtime"] = {"instance_id": None, "network": None}
+
+        with pytest.raises(worktree.WorktreeError, match="lacks a closed runtime identity"):
+            worktree._record_from_dict(
+                raw, tmp_path / worktree.WORKTREE_INSTANCE_RECORD
+            )
+
+    def test_ready_ciuroot_with_complete_runtime_remains_valid(self, tmp_path):
+        (tmp_path / worktree.GLOBAL_CONFIG_DEFAULTS).write_text(
+            "[ciu]\n", encoding="utf-8"
+        )
+        raw = _raw_v1(tmp_path)
+
+        record = worktree._record_from_dict(
+            raw, tmp_path / worktree.WORKTREE_INSTANCE_RECORD
+        )
+
+        assert record.instance_id == "abc123"
+        assert record.network == "repo-network"
+
+    def test_ready_record_cannot_carry_recovery_status(self, tmp_path):
+        raw = _raw_v1(tmp_path)
+        raw["recovery_status"] = "env-generation-failed"
+
+        with pytest.raises(
+            worktree.WorktreeError, match="ready record carries recovery_status"
+        ):
+            worktree._record_from_dict(
+                raw, tmp_path / worktree.WORKTREE_INSTANCE_RECORD
+            )
+
+    def test_partial_runtime_identity_is_refused_even_for_aggregate_root(self, tmp_path):
+        raw = _raw_v1(tmp_path)
+        raw["runtime"] = {"instance_id": "abc123", "network": None}
+
+        with pytest.raises(worktree.WorktreeError, match="incomplete runtime identity"):
+            worktree._record_from_dict(
+                raw, tmp_path / worktree.WORKTREE_INSTANCE_RECORD
+            )
+
+    def test_unreadable_root_marker_is_not_treated_as_absent(self, monkeypatch, tmp_path):
+        raw = _raw_v1(tmp_path)
+        raw["runtime"] = {"instance_id": None, "network": None}
+        marker = tmp_path / worktree.GLOBAL_CONFIG_DEFAULTS
+        real_stat = Path.stat
+
+        def denied(path, *args, **kwargs):
+            if path == marker:
+                raise PermissionError("marker stat denied")
+            return real_stat(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "stat", denied)
+        with pytest.raises(worktree.WorktreeError, match="could not determine.*CIU root"):
+            worktree._record_from_dict(
+                raw, tmp_path / worktree.WORKTREE_INSTANCE_RECORD
+            )
+
     def test_v1_record_reads_as_lease_none_at_version_one(self, tmp_path):
         record = worktree._record_from_dict(_raw_v1(tmp_path), tmp_path / "r.json")
         assert record.lease is None

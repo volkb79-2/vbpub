@@ -48,7 +48,7 @@ author's choice to cap one service. A Compose service's own key still wins.
 Memory defaults are recorded in
 [D-013](../nyxloom-trove/decisions.md#d-013--governance-memory-settings-are-explicit-only-2026-09-27);
 the explicit-only IOPS rule is recorded in
-[D-014](../nyxloom-trove/decisions.md#d-014--ciu-resource-caps-are-configured-explicitly-2026-09-27).
+[D-014](../nyxloom-trove/decisions.md#d-014--ciu-resource-caps-require-explicit-config-2026-09-27).
 The full contract is in [S15.1–S15.4](SPEC.md#s151--declaration). `ciu init`
 puts the complete governance table in the generated global config with
 governance disabled and all caps unset, making the supported settings visible
@@ -100,6 +100,34 @@ record or reporting an inferred value — is precisely the silent-wrong-answer
 anti-pattern the estate doctrine forbids: an automation consumer that reads a
 "branch" from a stale record would run the wrong checkout's tests with a
 convincing-looking label on the result.
+
+### Aggregate family records and runtime identity
+
+The worktree root and a CIU root are related but not interchangeable. A Git
+family can contain several nested CIU roots, or none, while the family root
+itself has no `ciu.global.defaults.toml.j2`. CIU still needs one family record
+to own the Git checkout and lifecycle. That aggregate record is `ready` with
+`runtime.instance_id` and `runtime.network` both null: no runtime is attached
+to the aggregate root. Each discovered nested CIU root is prepared separately
+and receives identity facts derived from its own path.
+
+The writer already emits this generic shape when the exact root marker is
+absent. The old reader then contradicted it by demanding a complete runtime
+identity for every `ready` record, so creation appeared successful but later
+inspect/list/create calls refused the persisted record. The reader now uses
+the same exact-root marker predicate as allocation. A CIU-root record still
+requires both runtime strings; a partial pair is always malformed; a marker
+lookup error refuses instead of turning uncertainty into “no CIU root.”
+
+Two alternatives are deliberately rejected. Requiring identity for every
+aggregate would make a generic Git workspace impossible to represent and
+would prevent discovery of nested roots. Inventing an identity for the family
+root would be worse: it would create an unowned runtime identity unrelated to
+any CIU configuration. The two-null representation already exists in the
+record schema, so this clarifies its constrained meaning without a schema
+bump or a fallback identity. The normative rule is [S16.4](SPEC.md#s164--structured-json-documents-d-009);
+the inspection example and operator interpretation are in
+[CONSUMERS.md](CONSUMERS.md#2-create-a-managed-workspace).
 
 The same refusal applies to `git status` being unreadable: an unknown state is
 reported as a refusal (`[S16] could not read git status`), never collapsed into

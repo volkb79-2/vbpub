@@ -949,7 +949,7 @@ class TestManagedRecordValidation:
             (lambda raw: {**raw, "state": "future"}, "lifecycle state"),
             (lambda raw: {**raw, "recovery_status": "future"}, "recovery status"),
             (lambda raw: {**raw, "runtime": {"instance_id": 3, "network": "n"}}, "runtime.instance_id"),
-            (lambda raw: {**raw, "runtime": {"instance_id": None, "network": "n"}}, "ready record"),
+            (lambda raw: {**raw, "runtime": {"instance_id": None, "network": "n"}}, "incomplete runtime identity"),
             (lambda raw: {**raw, "state": "allocating", "recovery_status": "checkout-incomplete"}, "carries recovery"),
             (lambda raw: {**raw, "ciu_root_offset": "../escape"}, "unsafe ciu_root_offset"),
             (lambda raw: {**raw, "git_worktree_path": "relative"}, "not absolute"),

@@ -4389,7 +4389,20 @@ proceed with this integration.
 
 ## CIU-112
 
-`worktree lacks ciu instance identity so ciu won't clean them` - if people now start using `ciu worktree` to create a worktree: does it work when there is no riu root in the repo? and does the tear down/removal work? both should be possible. removal might give a warning, i do not see a reason to refuse?
+**Status: OPEN — generic-record parsing fixed; full generic-worktree removal behavior remains to be verified.**
+
+`worktree lacks ciu instance identity so ciu won't clean them` — generic Git
+family roots can have no CIU runtime identity while still owning a CIU-managed
+checkout and nested CIU roots. The writer already persisted a `ready` aggregate
+record with `runtime.instance_id` and `runtime.network` both null, but the
+reader rejected every ready record without runtime values. Align the reader
+with allocation's exact-root marker check: accept null/null only when the
+record's exact CIU root has no regular defaults marker; require both values
+when it does; reject partial pairs and marker lookup errors. This resolves the
+create-then-read mismatch. It does **not** settle whether `ciu worktree rm`
+can safely clean and remove a family whose aggregate root has no CIU config;
+that lifecycle path still needs an explicit end-to-end oracle before CIU-112
+can close.
 
 ## CIU-113 — Add a consumer onboarding recipe for a project-owned inspection stack
 

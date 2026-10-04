@@ -42,6 +42,15 @@ the same envelope. `status` is one of `allocating`, `ready`,
 `recovery_status` of `checkout-incomplete`, `env-generation-failed`, or
 `runtime-collision`. Resume a partial allocation with `ensure`.
 
+If the Git worktree root itself has no `ciu.global.defaults.toml.j2`, its
+aggregate `ready` record correctly has
+`"runtime": {"instance_id": null, "network": null}`: there is no CIU runtime
+at that root. CIU still initializes every discovered nested root and writes
+that root's own `ciu.instance.generated.toml`. This null/null pair is valid
+only for a root with no marker. A CIU-root record needs both runtime strings;
+a partial pair or an unreadable marker is refused. Do not fill in or infer
+the aggregate record's identity.
+
 For a root-specific operation, enter that root (or pass `--dir`) and use the
 ordinary stack verb. The canonical explicit selector is:
 
@@ -440,11 +449,12 @@ Allowlist the identifiers you depend on.
 
 ## Failure vocabulary, one place
 
-`allocating` — allocation in progress; `ready` — a complete, closed runtime
-identity; `recovery-required` — an interrupted allocation with a closed
-`recovery_status`; `removed` — the terminal removal state. Every JSON document
-carries `schema_version: 1` and a closed `operation`. Unknown shapes fail
-fast.
+`allocating` — allocation in progress; `ready` — a structurally complete
+allocation (with a runtime identity when its exact root is a CIU root, or a
+null/null runtime pair for a generic aggregate root); `recovery-required` —
+an interrupted allocation with a closed `recovery_status`; `removed` — the
+terminal removal state. Every JSON document carries `schema_version: 1` and a
+closed `operation`. Unknown shapes fail fast.
 
 ## 10. Derive feature flags from the selected profile set (S3.12, CIU-44)
 
