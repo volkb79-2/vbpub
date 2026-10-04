@@ -64,16 +64,39 @@ SPEC §9.
 | RG-45 | a `vitest`-backed lane (`kind = "command"` or `kind = "assay"` coverage) can exit non-zero purely from vitest's own internal worker/main RPC heartbeat (birpc, hardcoded 60s timeout, no config path in any pool type) tripping under HOST-WIDE multi-tenant CPU contention across DIFFERENT repos' containers — RG-39's exec lock only serializes SAME-container access within one tool, it does not bound the SUM of concurrently-active gate containers' CPU quotas against the host's real core count | Major | OPEN 2026-09-08 — reproduced 5/5 identical (dstdns P176, `frontend-unit`+`ui_unit`, all real tests green every time); NOT run-gate's to fix — traced to assay's own R0 exit-code-only evaluation, moved to assay as B078 (design: `assay/nyxloom-trove/R0-STRUCTURED-REPORT-DESIGN.md`), see disposition in prose section below |
 | RG-46 | a FOLLOWER (a client re-attaching to a lane whose inflight record names a still-alive owner) performs no independent stall detection of its own — `follow_container` arms neither `ProgressWatch` nor `LogStreamWatch`, by design (RW-14: "does NOT remove the container... all three belong to the client that started the run"), so if the OWNER is killed before its own `stall_timeout` fires, the follower just blocks on `docker wait`/`docker logs -f` forever, with nothing left to notice the container is silent | Minor | OPEN 2026-09-08 — found during RG-41's round-2 adversarial review; pre-existing (the same gap already applied to any assay lane declaring `stall_timeout` — `follow_container` has never armed a watch), RG-41 only widens exposure by lane COUNT (5 command lanes vs 3 assay lanes, RG-41's own backlog count). Not fixed as part of RG-41: a follower deciding to act on a stall it detects independently is a real design question (does it save evidence and `rm -f` a container it does not own? at minimum it would need the SAME owner-liveness re-check `promote_follower` already does before acting) that deserves its own scoped decision, not a silent addition to an unrelated item |
 | RG-39 | run-gate has no internal mutual exclusion around the `docker exec`/`docker run` it performs into a resolved container, so every consumer must remember to wrap each invocation in its own `flock` (dstdns `GUIDE.md` §1) or two lanes racing the SAME container silently contaminate each other's evidence — but `resolve_container_name()` (the same function RG-37 tracks) already computes the exact container identity BEFORE that exec, every single call, so the tool already has everything it needs to serialize itself | Medium | FIXED 2026-09-03 (rev 35, SPEC `R-41`) — refinements (1) and (2) below, built exactly as specified; refinement (3) deliberately NOT built (RG-37, the v8 `ciu.resolved.toml` container-identity path, doesn't exist yet). New `acquire_exec_lock()` takes `/tmp/run-gate-exec-<container>.lock` (RG-20's `_open_lockfile()` discipline, now factored into a shared helper) on the container name `resolve_container_name()` resolves — resolved ONCE in `main()`, threaded into `run_exec_lane()` (no longer re-derived there) so the lock key and the `docker exec` target can never drift apart. Acquired strictly after `acquire_shared_locks()`'s locks in `main()`'s dispatch, released from the SAME `finally` (`exec_lock_fd`, closed before the shared-infra fds — LIFO, not load-bearing). `LOCK_EX` blocking with a `waiting for container '<name>' — another gate holds <path>` line; `--dry-run` prints the planned lock (name + path) and never blocks. Five new tests in `TestExecModeMutex`: same-container serialization (thread-raced, proven genuinely red pre-fix — a leaked lock fd on that test's own assertion failure path self-deadlocked the NEXT test via flock()'s per-open-file-description semantics, fixed with a try/finally, unrelated to the shipped fix itself), isolated containers never contend, `--dry-run` never blocks, the lock releases even when the lane raises (finally path), and a direct ordering assertion (shared-infra locks acquired before the exec lock); a sixth test (added after the first `selftest` run below caught it uncovered) exercises `acquire_exec_lock()`'s OSError branch, in-process (a `run_tool()` subprocess, RG-20's own precedent's pattern, is invisible to this suite's coverage instrumentation). Red-first proven: a scoped `git stash` of `run-gate.py` alone (fix reverted, tests kept) reproduced 3/5 new tests failing for the expected reasons before the fix, restored clean after. `./run-gate.py selftest` green (post-commit `2c6b2bbc` + a same-day coverage follow-up): 495 passed, 2 skipped, diff-coverage 25/25 = 100.0% (≥ 100.0% floor), exit 0. Originally filed from dstdns (D-321/D-339/D-321-correction): acquire an internal `flock` keyed by the resolved container name (or `${project_name}-${environment_tag}`, the same pair `resolve_container_name()` already reads) around the exec/run call itself, so a caller-side `flock` is no longer required for correctness, only for pre-emptive scheduling (e.g. a caller who wants to skip a busy container rather than block). A genuinely independent container (different `project_name`/`environment_tag`, including a Mode-B instance) naturally gets a distinct lock name and runs unblocked; two consumers that resolve to the SAME container (main's shared instance, or ciu's `--shared-infra-ref-services`) naturally serialize correctly with no caller coordination needed. Cross-reference RG-37: whichever container-identity resolution path RG-37 adds for `ciu.resolved.toml` (v8) should feed the SAME lock key, not a second scheme. **2026-09-03 (ciu v8 design, SPEC-V8 draft.5 / proposal rev 3.2 §4.11 N22): buildable as described, with three refinements.** (1) Exec mode only — an ephemeral `docker run` container is per invocation, there is nothing to serialize. (2) Take the lock AFTER `acquire_shared_locks()`' sorted shared-infra locks and release it in the same `finally` — a fixed global order (shared-infra, then the exec target) so no ABBA with RG-20 is possible; `/tmp/run-gate-exec-<container>.lock` with RG-20's 0600+O_NOFOLLOW discipline, LOCK_EX blocking with a "waiting for container X — another gate holds …" line, dry runs plan but never block (`acquire_shared_locks` is the pattern to copy); hold across the whole `run_exec_lane()` including evidence collection, and keep `flush_run_record` outside it (RG-27). (3) Alignment with v8: once RG-37 reads `ciu.resolved.toml`, key the lock on the owning Realization's **stack directory** (`[realization.<R>] location` of the container's owner, `flock` on the directory) instead of a name — draft.5 S14.4.7 declares the checkout root and the stack directory the ONLY canonical lock keys, `ciu gate` exec lanes take that same directory lock (S16.5.7) and `ciu lease acquire --realization` exposes it, so v7 run-gate and v8 ciu serialize against each other during the cutover; the name-keyed `/tmp` file is the v7-only form. The caller-side `flock` of dstdns GUIDE §1 stays valid as an outer lock (always acquired first → consistent order) and becomes optional for correctness |
+| RG-47 | `--worktree` selected the judged files but not `run-gate.toml`, so main's lanes could judge a worktree and hide lanes that existed only there | Major | FIXED 2026-10-04 (rev 47): project and inherited config resolve from the selected worktree, including monorepo-relative projects; missing project config refuses; path and SHA-256 are printed/recorded. Merged duplicate RG-65 here |
+| RG-48 | lane worker count could disagree with the environment CPU cap when `resources.cpus` was absent | Major | FIXED 2026-09-12 — `doctor` names the missing cap; environment-level `resources.cpus` now supplies the shared limit |
+| RG-49 | `--state-dir` setup fails against root-owned parents in partial-bind worktree containers | Major | OPEN 2026-09-09 |
+| RG-50 | B065's first-candidate rate calculation produced a negative rate from Assay's `-1` baseline | Minor | FIXED 2026-09-10 |
+| RG-51 | delegated lanes could derive their default comparison base from stale upstream state | Major | FIXED 2026-09-11 (rev 40), with ciu CIU-106 |
+| RG-52 | composite-lane base substitution used unquoted shell text | Major | FIXED 2026-09-11 (rev 40) |
+| RG-53 | `coverage_gate.py` ignored `missing_branches` while claiming branch coverage | Minor | FIXED 2026-09-12 (RG-55 wave) |
+| RG-54 | Assay's merge-commit base behavior contradicted the apparent resolved base | Major | CLOSED 2026-09-30 — first-parent behavior is deliberate and false PASS is blocked |
+| RG-55 | no per-lane resource profile was measured or persisted | Major | FIXED 2026-09-12 |
+| RG-56 | profiler-registry admission has no capacity control | Minor | OPEN |
+| RG-57 | bare-host lanes did not record resource profiles | Minor | FIXED 2026-09-12 |
+| RG-58 | bare-host `stall_timeout` declarations had no config-load warning | Minor | FIXED 2026-09-12 |
+| RG-59 | daemon-absent profiling warning named the wrong cause | Minor | FIXED 2026-09-12 |
+| RG-60 | exec-lane profiling had no inflight recovery record | Major | FIXED 2026-09-12 |
+| RG-61 | RG-55 wave left documentation drift | Minor | FIXED 2026-09-12 |
+| RG-62 | two order-/timing-sensitive selftest flakes were found live | Minor | OPEN |
+| RG-63 | assay lane budget included time queued on the exec lock | Major | OPEN — RG-80 package 1 is intended to start the budget at admission |
+| RG-64 | caller-side lock checks could not reliably diagnose actual container occupancy | Minor | OPEN — internal run-gate exec lock is authoritative; first-class status query is unresolved |
+| RG-65 | duplicate of RG-47: worktree-only lanes were hidden by invoking-CWD config resolution | Major | MERGED INTO RG-47 2026-10-04 (rev 47) |
 | RG-66 | no way to pass assay's `--reuse-from` / `--rejudge` through `run-gate <lane>`, so assay 7.1+ provenance-safe selective R2 reruns cannot be used via the gate | Minor | OPEN |
 | RG-67 | no per-environment (per-runner-container) invocation limit, and a composite lane does not declare which runners its members use, so consumers hand-hold whole-invocation flocks and the composite over-holds a second runner — **(a) WITHDRAWN 2026-10-03 (D-667); (b) remains** | Minor | OPEN |
 | RG-68 | `footprint` only counts PASS runs; a completed FAIL (for example surviving mutants) is a valid resource measurement, so first-run budget calibration stalls on a red first run | Minor | OPEN |
+| RG-69 | `footprint --write` could not update one lane without regenerating the whole manifest | Minor | OPEN |
+| RG-70 | no canonical way to run a repository script inside a worktree's test-runner | Minor | OPEN |
+| RG-71 | schema lane could not target one file for fast iteration | Minor | OPEN |
+| RG-72 | failed assay lanes left no durable failure evidence before the next run overwrote it | Minor | OPEN |
 | RG-73 | an `ephemeral` environment cannot stand in for a per-worktree runner: literal `image`, and the judged worktree is not mounted at the image's canonical root | Major | OPEN 2026-10-03 |
 | RG-74 | post-merge trunk base (`HEAD^1`) and composite-member base propagation are consumer scripts (dstdns `gate-base.sh`), not run-gate derivations | Minor | OPEN 2026-10-03 |
 | RG-75 | no lane-scoped throwaway service (database): schema/mutation lanes hand-provision and tear down their own Postgres | Major | OPEN 2026-10-03 |
 | RG-76 | external-assay consumers restate judge command, pin and one lane block per assay lane (dstdns: 118 identical pin blocks); import lanes from `assay lanes --json` | Minor | OPEN 2026-10-03 |
 | RG-77 | the per-assay-lane `--state-dir` contract (RG-38) and its root-owned-parent repair (RG-49) are in no SPEC rule or skill, so consumers restate them in their own instruction files | Minor | OPEN 2026-10-03 |
 | RG-78 | adopt the ciu v8 closed exit table and explicit environment modes in run-gate now (backport, operator ruling D-654): lane exit passthrough overlaps the 2/3 refusal codes, and the built-in `host` environment is a container | Major | OPEN 2026-10-03 |
-| RG-79 | exec-mode resolution **silently falls back to main's runner** when the judged worktree has no rendered ciu config (a shadowing default, AGENTS §4.2a); the worktree's own test-runner is the design (D-647 #2, D-666), so run-gate must refuse and name "start this worktree's own test-runner" (reframed 2026-10-03; originally filed as a stray-render defect) | Major | OPEN 2026-10-03 |
+| RG-79 | exec-mode resolution **silently falls back to main's runner** when the judged worktree has no rendered ciu config (a shadowing default, AGENTS §4.2a); the worktree's own test-runner is the design (D-647 #2, D-666), so run-gate must refuse and name "start this worktree's own test-runner" (reframed 2026-10-03; originally filed as a stray-render defect) | Major | FIXED 2026-10-04 (rev 47; same implementation as RG-47) |
 | RG-80 | no daemon-wide cap on concurrent gates: the cross-worktree cap is a consumer flock wrapper (dstdns `gate-slot.sh`); build SPEC-V8 S21's count mode (Docker-name tickets, tombstones, deadlines, run marker, published `ciu-admission-<g>` object) behind an off-by-default switch, so the wrapper retires before v8 | Major | OPEN 2026-10-03 |
 
 ---
@@ -3328,32 +3351,57 @@ concrete hazards:
    reproductions and each one looks like an unrelated, unreproducible
    flake rather than a structural CWD-vs-`--worktree` gap.
 
-### Proposed fix
+### Resolution
 
-Make `--worktree` the single source of truth for BOTH the judged tree
-and the config file that describes it — resolve `run-gate.toml`
-relative to `--worktree` when the flag is given, not relative to CWD.
-If a caller genuinely wants to judge worktree X's tree against a
-DIFFERENT config (unusual, but not obviously wrong), that should be an
-explicit separate flag, not the silent default. At minimum, `run-gate
---worktree PATH` should print which `run-gate.toml` path it actually
-read (banner already prints the lane/env/container/slice — add the
-config path to the same line), so a CWD/`--worktree` mismatch is
-visible even before this is fixed structurally.
+With `--worktree W`, resolve the project directory as W plus the
+project's path relative to the shared Git repository root. This keeps
+monorepo projects scoped to their matching directory in W. Load the
+project config and inherited root config from that selected tree. If
+the project's `run-gate.toml` is missing, refuse rather than reading
+the invoking checkout's config. Print the selected config path in the
+run header and store that path and its SHA-256 in the history record.
+
+The same worktree boundary applies to exec-mode runner selection:
+`ciu.global.toml` is read only from the judged worktree. Missing config
+or a stopped derived runner refuses with the instruction to start that
+worktree's own test-runner. A declared literal `container_name` remains
+an explicit shared-runner choice.
 
 ### Oracles
 
-- `run-gate <lane> --worktree PATH`, invoked from a CWD whose own
-  `run-gate.toml` differs from `PATH`'s committed copy, reads (and the
-  banner discloses) `PATH`'s config — not the invoking CWD's.
-  Regression coverage: two fixture trees with deliberately different
-  `run-gate.toml` lane definitions, invoke from tree A with
-  `--worktree` pointed at tree B, assert the lane actually run is
-  tree B's.
-- The existing "invoked from inside the worktree" path (CWD ==
-  `--worktree`) is unaffected — this must not change behavior for the
-  common case, only make the CWD != `--worktree` case correct instead
-  of silently wrong.
+- Invoke from a checkout whose config differs from W's and prove a
+  lane declared only in W is selected and run from W's config.
+- Use a nested monorepo project and prove project and inherited root
+  configs both come from the corresponding paths under W.
+- Omit W's project config while main has one and prove run-gate refuses
+  with W's missing path; it must not list or run main's lane.
+- Prove the header names the selected config and the history record
+  contains that path and the SHA-256 of the bytes parsed. Change only
+  the root config and prove its own recorded path and digest follow W.
+- With `--worktree W`, prove `ciu.global.toml` in W selects W's runner
+  even when main declares another runner. If W's config is absent,
+  refuse with the own-runner remedy and issue no `docker exec`; if its
+  runner is stopped, use the same remedy before attempting exec.
+- A declared literal `container_name` remains the explicit shared-runner
+  exception.
+
+### Status — FIXED 2026-10-04 (rev 47; RG-65 merged here)
+
+The project and inherited configs now resolve from the selected
+worktree, preserving a nested project's repository-relative path.
+Missing project config refuses. The config path is printed and the
+parsed config's SHA-256 and path are saved in run history. Exec mode
+uses only the worktree's `ciu.global.toml`, and checks that its derived
+runner is running before execution. Regression coverage exercises
+worktree-only lanes, monorepo config inheritance, missing-config
+refusal, recorded provenance, no main-runner fallback, and stopped
+runner refusal.
+
+RG-65's independent reproduction added an important oracle: a green
+shared lane declared identically in main and W does not prove that a
+worktree-only lane resolves correctly. That reproduction and its false
+green wrapper report are merged into this issue; the wrapper's exit-0
+was not attributed to run-gate itself.
 
 ### SPEC ownership
 
@@ -4767,60 +4815,15 @@ convention that a tool's own defects, found while working in it, are
 recorded in the tool's backlog — never worked around locally without a
 record.
 
-## RG-65 — `run-gate` resolves lane config from the invoking CWD, not `--worktree`; a resulting "unknown lane" failure was reported as exit 0 by the background wrapper
+## RG-65 — duplicate config-resolution defect merged into RG-47
 
-**Provenance:** found live 2026-09-18 during dstdns Track B Wave B2, by
-`p195-b2-ctl`/P201 while trying to launch a worktree-only lane.
+This entry's independent 2026-09-18 reproduction and its worktree-only-lane
+oracle are incorporated into [RG-47](#rg-47). The background wrapper's
+reported exit 0 was wrapper behavior; it is not attributed to run-gate.
 
-### What's wrong
+---
 
-Invoking `run-gate <lane> --worktree /workspaces/dstdns/.worktrees/<branch>`
-from the REPO ROOT (`/workspaces/dstdns`), for a lane declared only in the
-worktree's own (not-yet-merged) `run-gate.toml`/`nyxloom-trove/nyxloom.toml`,
-fails with `unknown lane` — `--worktree` scopes where the judged tree and
-per-worktree history store live (per this project's own documented
-contract), but lane/config RESOLUTION itself apparently still reads from the
-process's current working directory rather than the `--worktree` path. The
-practical trap: an agent working inside a worktree who runs a command from
-outside it (or a background-wrapper script whose own CWD isn't the
-worktree) gets a config file that doesn't yet contain the lane they just
-declared, and the failure message (`unknown lane`) does not obviously point
-at "you're resolving config from the wrong directory."
-
-**Worse than a confusing error**: the background-task wrapper used to launch
-this invocation reported **exit code 0** for the run despite it never
-executing a single test — a silent false-green. A caller trusting the
-wrapper's own exit code (rather than reading run-gate's own stdout/log for
-an actual `unknown lane` message) would conclude the lane passed when it
-never ran at all.
-
-### Why it matters
-
-`--worktree` is this project's own documented, load-bearing mechanism for
-running gates against in-progress worktree branches (see dstdns
-`CLAUDE.md` "Feature worktrees" and `nyxloom-trove/GUIDE.md`) — every
-Wave B2 package relies on it. If lane-config resolution silently follows
-CWD instead, the flag's own promise ("scopes both the judged tree and the
-per-(worktree × project) history store to that worktree") is incomplete:
-it scopes execution and history, but not lane discovery. Combined with a
-false exit-0 on the resulting failure, this is a genuine correctness risk —
-a merge decision made on a background wrapper's reported success alone
-could be based on a gate that never ran.
-
-### Proposed fix
-
-- `run-gate <lane> --worktree <path>` should resolve lane/config
-  definitions from `<path>` unconditionally, regardless of the invoking
-  process's CWD — the flag's whole point is to make CWD irrelevant.
-- An `unknown lane` failure (or any failure) must never surface as exit 0
-  through any wrapping mechanism; audit whatever produced the exit-0 result
-  here (a shell wrapper swallowing the real exit code, or run-gate itself
-  writing a 0 on a config-resolution failure before attempting execution).
-- Not fixed by this session; reported rather than worked around locally.
-
-### Update 2026-09-18 (same day, later) — independently reproduced by a second package; explains why a green gate can hide the bug
-
-`p194-b2-io-fault` hit the identical failure independently while launching its own worktree-only lanes: `cd /workspaces/dstdns && ... run-gate <lane> --worktree /workspaces/dstdns/.worktrees/p194-b2-io-fault` died with `unknown lane ... (config: /workspaces/dstdns/run-gate.toml)` — CWD was the repo root, `--worktree` pointed at the branch, and config resolution followed CWD exactly as RG-65 describes. This package also identified WHY the bug had survived eight of its own prior gate runs undetected: its `test-runner` lane happens to be declared identically in both `main`'s and the worktree's own `run-gate.toml` (a lane common to the whole project, not worktree-specific), so a CWD-rooted invocation "worked" by accident — reading the wrong file but finding the same lane definition in it. The bug only becomes visible the moment a lane exists ONLY in the worktree's own copy (any package's own newly-declared `assay-*` lanes), which is exactly the shape every Wave B2 package's own lane declarations take. This means **a package's own green `test-runner`/shared-lane results provide no assurance that its own newly-declared lanes would resolve correctly** — each must be checked independently, not inferred from a passing shared lane.
+## RG-64 — caller-side lock checks can mistake queued container execution for a hang
 
 **Provenance:** found live 2026-09-18 during dstdns Track B Wave B2 (same
 six-package concurrent-container wave as RG-63), by a package (`p194-b2-io-fault`)
@@ -4882,6 +4885,11 @@ does not participate in that same convention.
   corrected to check the internal exec lock, not the convention lock, when
   diagnosing "is my gate actually queued or stuck" — a dstdns-side action
   item, tracked in that project's own controller record.
+
+
+### Status — OPEN
+
+A first-class run-gate query for the internal exec lock remains unresolved.
 
 ## RG-63 — an assay lane's `LANE_TIMEOUT` budget appears to include exec-lock queue-wait time under multi-package contention, not just execution time
 
@@ -5398,7 +5406,7 @@ reproduction of the SAME underlying defect goes here, not a new entry).
 
 **Corrected contract (replaces "Proposed contract" below).**
 - (a) Exec-mode resolution for an environment with no declared `container_name` reads the **judged worktree's own** rendered ciu config and nothing else. There is **no fallback to the repo's config**. The `runner_scope` key proposed below is withdrawn: it added the retired mode back as an option (SPEC-V8 S16.4 `exec_in` resolves the judged checkout's own identities, S1.5.3, with no such scope).
-- (b) When the judged worktree has no rendered config, run-gate **refuses** (exit 2, a configuration refusal) naming the remedy exactly: *start this worktree's own test-runner — `ciu up --dir <test-runner stack>` in that worktree* (in v8: `ciu up --realization <the exec_in realization>`), and names the worktree path it looked in. When the config exists but the runner it names is not running, the refusal names the same remedy and the container it derived.
+- (b) When the judged worktree has no rendered config, run-gate **refuses** (exit 2, a configuration refusal) naming the remedy exactly: *start this worktree's own test-runner — `ciu up --dir <test-runner stack> --deploy --healthcheck` in that worktree*, and names the worktree path it looked in. When the config exists but the runner it names is not running, the refusal names the same remedy and the container it derived.
 - (c) A project that deliberately shares one runner declares it: `container_name = "<literal>"` on the environment (unchanged by this entry), or, in v8, nothing (S16.5.7: one exec target, one lane at a time).
 
 **Oracles (corrected; the RG-24 Mode-B oracle stays).**
@@ -5407,6 +5415,14 @@ reproduction of the SAME underlying defect goes here, not a new entry).
 3. W has a rendered config whose runner is down: the lane refuses with the same remedy, naming the derived container.
 4. An environment with a declared literal `container_name` is unaffected: W with no rendered config still execs into that container.
 5. A controlled wrong implementation that falls back to the repo config when W has none fails oracle 2 (the original defect); one that keeps the fallback only when the derived container is down fails oracle 3.
+
+### Status — FIXED 2026-10-04 (rev 47; implemented with RG-47)
+
+Exec-mode resolution now reads only the judged worktree's `ciu.global.toml`;
+there is no fallback to main. Missing worktree config and a stopped derived
+runner both refuse before `docker exec`, with the remedy to start that
+worktree's own test-runner using `ciu up --dir <test-runner stack> --deploy --healthcheck`.
+A declared literal `container_name` remains the explicit shared-runner choice.
 
 *Related:* RG-80 (the daemon-wide gate cap that replaces the Mode-A runner's two-slot wrapper), RG-73 (the stackless ephemeral alternative), RG-24 (FIXED, the origin of the config lookup); dstdns P241 (`WORKTREE-OWN-TEST-ENV`: GUIDE §3.4, the dispatch templates and skills; the validated recipe) and the proposal row N29 (`CIU-V8-TESTING-GATE-PROPOSAL.md` §4.11).
 

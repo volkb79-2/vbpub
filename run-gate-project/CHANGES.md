@@ -14,6 +14,17 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
   worktree and leaves the runtime Assay version in the verdict. Explicit
   command + pin mode remains for external consumers.
 
+- **Worktree-owned policy and runner (RG-47/RG-65/RG-79, rev 47).** With
+  `--worktree`, lane config is loaded from the selected tree's project path
+  relative to the Git toplevel, including its nearest `run-gate.root.toml`.
+  A missing target `run-gate.toml` refuses instead of using the invoking
+  checkout's lane table. The run header prints the selected config path and
+  history records its path and SHA-256, plus inherited central-config
+  provenance when present. CIU-derived exec runner names now come only from
+  the judged worktree's `ciu.global.toml`; missing config or a stopped runner
+  names the worktree-local
+  `ciu up --dir <test-runner stack> --deploy --healthcheck` remedy.
+
 - **Dedicated gate placement.** Container lanes now require and forward
   `CGROUP_PARENT_DEV_GATES`; the background tier is reserved for a stack a
   gate starts deliberately.

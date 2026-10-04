@@ -14,7 +14,10 @@ Judgment policy is NOT here: assay lanes reference assay.toml by name.
 See run-gate-project/README.md (design authority) and CONSUMERS.md (adoption).
 """
 # stdlib only — this launcher must run on a fresh clone with zero installs.
-__revision__ = 46  # rev 46: declared versioned entrypoints accept top-level
+__revision__ = 47  # rev 47: --worktree selects project and inherited config
+# before lane resolution; run records retain config provenance, and exec-mode
+# runner identity is resolved only from the judged worktree (RG-47/65/79).
+# rev 46: declared versioned entrypoints accept top-level
 # --version with a stdout version line and zero exit status.
 # rev 45: shared root configuration uses the distinct
 # run-gate.root.toml filename; ancestor run-gate.toml files remain project-local
@@ -114,6 +117,7 @@ import argparse
 import ast
 import calendar
 import fcntl
+import hashlib
 import json
 import math
 import os
@@ -368,15 +372,19 @@ def fail_infra(msg: str) -> None:
 # config loading + validation (loud, names key + file, no silent defaults)
 # ---------------------------------------------------------------------------
 
-def _read_toml(path: Path) -> dict:
+def _read_toml_snapshot(path: Path) -> tuple[dict, str]:
     try:
-        with open(path, "rb") as fh:
-            return tomllib.load(fh)
+        raw = path.read_bytes()
+        return tomllib.loads(raw.decode("utf-8")), hashlib.sha256(raw).hexdigest()
     except FileNotFoundError:
         fail(f"{CONFIG_NAME} not found at {path} — run-gate resolves it next to "
              f"the invoked script (symlink or copy); create it there")
     except tomllib.TOMLDecodeError as exc:
         fail(f"{path}: invalid TOML: {exc}")
+
+
+def _read_toml(path: Path) -> dict:
+    return _read_toml_snapshot(path)[0]
 
 
 def _check_keys(table: dict, allowed: set, where: str) -> None:
@@ -882,23 +890,37 @@ def _validate_config(cfg: dict, path: Path, *, central: bool) -> dict:
     return cfg
 
 
-def load_config(project_dir: Path) -> tuple[dict, Path, dict, Path | None]:
+def load_config_snapshot(project_dir: Path
+                         ) -> tuple[dict, Path, dict, Path | None, str, str | None]:
     """Load the project config + the nearest ancestor root config.
 
     Root configs may define shared environments AND shared lanes (RG-16);
     every declared lane is schema-validated wherever it lives. Only the
     root-specific filename is eligible here, so an ancestor project's local
-    run-gate.toml cannot become shared configuration by accident."""
+    run-gate.toml cannot become shared configuration by accident. Hashes
+    describe the exact bytes parsed, so history records the policy actually
+    used even if a file changes while a lane is running."""
     project_path = project_dir / CONFIG_NAME
-    project = _validate_config(_read_toml(project_path), project_path, central=False)
+    project_raw, project_sha256 = _read_toml_snapshot(project_path)
+    project = _validate_config(project_raw, project_path, central=False)
     central_path: Path | None = None
+    central_sha256: str | None = None
     central: dict = {"environments": {}}
     for parent in project_dir.resolve().parents:  # Path.parents: nearest FIRST
         candidate = parent / ROOT_CONFIG_NAME
         if candidate.is_file():
             central_path = candidate
-            central = _validate_config(_read_toml(candidate), candidate, central=True)
+            central_raw, central_sha256 = _read_toml_snapshot(candidate)
+            central = _validate_config(central_raw, candidate, central=True)
             break
+    return (project, project_path, central, central_path,
+            project_sha256, central_sha256)
+
+
+def load_config(project_dir: Path) -> tuple[dict, Path, dict, Path | None]:
+    """Compatibility wrapper for callers that do not need provenance."""
+    project, project_path, central, central_path, _project_sha, _central_sha = \
+        load_config_snapshot(project_dir)
     return project, project_path, central, central_path
 
 
@@ -2943,14 +2965,18 @@ def worktree_is_dirty(worktree: Path) -> bool | None:
     return any(line.strip() for line in proc.stdout.splitlines())
 
 
-def start_run_record(lane_name: str, worktree: Path, repo: Path) -> dict:
+def start_run_record(lane_name: str, worktree: Path, repo: Path, *,
+                     config_path: Path | None = None,
+                     config_sha256: str | None = None,
+                     central_config_path: Path | None = None,
+                     central_config_sha256: str | None = None) -> dict:
     """Sample the state that is ABOUT to be judged, BEFORE the lane runs.
 
     Sampling afterwards would be a different tree: a lane may commit, stash,
     or leave artifacts behind, and a history entry keyed to a commit must
     describe the state that commit actually had when it was measured."""
     dirty = worktree_is_dirty(worktree)
-    return {
+    record = {
         "lane": lane_name,
         "commit": head_commit(worktree),
         "outcome": None,
@@ -2966,6 +2992,13 @@ def start_run_record(lane_name: str, worktree: Path, repo: Path) -> dict:
         "revision": __revision__,
         "_started_monotonic": time.monotonic(),
     }
+    if config_path is not None:
+        record["config_path"] = str(config_path)
+        record["config_sha256"] = config_sha256
+    if central_config_path is not None:
+        record["central_config_path"] = str(central_config_path)
+        record["central_config_sha256"] = central_config_sha256
+    return record
 
 
 def finish_run_record(record: dict, *, exit_code: int | None = None,
@@ -7704,22 +7737,11 @@ def resolve_container_name(env_name: str, env: dict, repo: Path,
     the ciu lifecycle (RG-6: a dstdns-shaped project must never be told to
     run a vbpub-specific ciu directory).
 
-    RG-24 — WHICH `ciu.global.toml`: a live deployed container's name is a
-    fact about the JUDGED TREE, not about the shared object store. `repo`
-    (`resolve_repo_and_worktree`) is deliberately the checkout owning the
-    shared `.git`, i.e. the MAIN checkout for any linked worktree — right for
-    source-code/object-store questions, WRONG here: a multi-instance
-    (dstdns "Mode-B") worktree gets its OWN rendered `ciu.global.toml` with
-    its own `project_name`/`environment_tag` and its OWN deployed runner on
-    its own network, and resolving from the main checkout silently execs the
-    lane into the MAIN landscape's container (network attachment and baked
-    env wrong; the inner `cd {worktree}` still finds the right FILES, which
-    is why the failure is partial and believable). So: the judged worktree's
-    own config WINS when it exists; a worktree that is not itself an adopted
-    instance falls back to the repo-relative resolution unchanged (additive
-    precedence, not a replacement). `repo`-relative resolution stays correct
-    everywhere else it is used — those questions really are about the tree
-    that owns the object store.
+    RG-24/RG-79 — the live deployed container is a fact about the JUDGED
+    TREE, not the checkout owning the shared `.git`. A linked worktree gets
+    its own rendered `ciu.global.toml` and runner. Falling back to the repo's
+    config when that file is absent silently targets the main landscape, so
+    derived names are read only from the judged worktree and absence refuses.
     """
     if env.get("container_name"):
         return env["container_name"], f"declared container_name ({env_source})", \
@@ -7727,41 +7749,34 @@ def resolve_container_name(env_name: str, env: dict, repo: Path,
             "this container); run-gate refuses to guess or auto-start " \
             "deployment-managed containers"
     worktree_toml = worktree / "ciu.global.toml"
-    repo_toml = repo / "ciu.global.toml"
-    if worktree_toml.is_file():
-        global_toml = worktree_toml
-    elif repo_toml.is_file():
-        global_toml = repo_toml
-    else:
-        tried = (f"{worktree_toml}" if worktree_toml == repo_toml
-                 else f"{worktree_toml} (judged worktree) nor {repo_toml} (repo)")
-        fail(f"exec-mode environment '{env_name}' needs either a declared "
-             f"container_name or a rendered {tried} with [deploy] "
-             f"(run 'ciu render' first)")
+    if not worktree_toml.is_file():
+        fail(f"exec-mode environment '{env_name}' needs a declared "
+             f"container_name or this worktree's rendered {worktree_toml} "
+             f"with [deploy]; start this worktree's own test-runner — run "
+             f"'ciu up --dir <test-runner stack> --deploy --healthcheck' "
+             f"from {worktree}")
+    global_toml = worktree_toml
     try:
         with open(global_toml, "rb") as fh:
             deploy = tomllib.load(fh).get("deploy", {})
     except tomllib.TOMLDecodeError as exc:
         fail(f"{global_toml}: invalid TOML: {exc}")
-    ciu_remedy = (f"start it via this project's ciu lifecycle ('ciu render' "
-                  f"if stale, then 'ciu up'; config: {global_toml}); run-gate "
-                  f"refuses to guess or auto-start deployment-managed containers")
-    # RG-24: name the SCOPE the config was read from, not only its path — the
-    # whole defect was that "which ciu.global.toml" was invisible.
-    scope = "judged worktree" if global_toml == worktree_toml else "repo"
+    ciu_remedy = (f"start this worktree's own test-runner — run 'ciu up "
+                  f"--dir <test-runner stack> --deploy --healthcheck' from "
+                  f"{worktree} (config: {global_toml})")
     project = deploy.get("project_name") or ""
     tag = deploy.get("environment_tag") or ""
     if project and tag:
         return f"{project}-{tag}-{env_name}", \
             f"ciu.global.toml deploy.project_name+environment_tag " \
-            f"({scope}: {global_toml})", \
+            f"(judged worktree: {global_toml})", \
             ciu_remedy
     network = deploy.get("network_name") or ""
     if network and network.endswith("-network"):
         prefix = network[:-len("-network")]
         return f"{prefix}-{env_name}", \
             f"ciu.global.toml deploy.network_name stripped of '-network' " \
-            f"({scope}: {global_toml})", \
+            f"(judged worktree: {global_toml})", \
             ciu_remedy
     fail(f"cannot derive container name from {global_toml}: need "
          f"[deploy] project_name+environment_tag OR network_name ending '-network'; "
@@ -8509,28 +8524,57 @@ def main(argv: list[str] | None = None) -> int:
             fail("--write is honored by the `footprint` verb only "
                  "(run-gate.py footprint [LANE] --write) — every other verb "
                  "either judges a lane or reports without writing")
-        project_dir = find_project_dir()
-        if args.help or (args.lane is None and not args.list
-                         and not args.check_env):
-            if project_dir is None:
-                fail(f"no {CONFIG_NAME} found next to the invoked script or CWD "
-                     f"(run-gate rev {__revision__})")
-            cfg, _, central, _ = load_config(project_dir)
-            print(usage(cfg.get("lanes", {}), set(central.get("lanes", {}))
-                        - set(cfg.get("lanes", {}))))
-            return 0
-        if args.lane == "validate-pointers":
+        if args.lane == "validate-pointers" and not args.help:
             # RG-2 linkage verb — certifies CONSUMER documents; needs no
             # project config of its own.
             if not args.target:
                 fail("validate-pointers requires the consumer file to certify "
                      "(e.g. <proj>/nyxloom-trove/nyxloom.toml)")
             return cmd_validate_pointers(Path(args.target), args.root)
+        project_dir = find_project_dir()
         if project_dir is None:
+            if args.help or (args.lane is None and not args.list
+                             and not args.check_env):
+                fail(f"no {CONFIG_NAME} found next to the invoked script or CWD "
+                     f"(run-gate rev {__revision__})")
             fail(f"no {CONFIG_NAME} found next to the invoked script or "
                  f"{Path.cwd()} — run-gate resolves its config beside the invoked "
                  f"(sym)link/copy")
-        cfg, cfg_path, central, central_path = load_config(project_dir)
+        if args.worktree:
+            if args.lane == "history":
+                # Preserve history's established invalid-target diagnosis
+                # before the new worktree-config requirement can mask it.
+                if not Path(args.worktree).is_dir():
+                    fail(f"--worktree {args.worktree!r}: not a directory — "
+                         f"`history` reports THAT tree's store, so it must "
+                         f"name a real worktree")
+                git_out("rev-parse", "--show-toplevel",
+                        cwd=Path(args.worktree))
+            # RG-47/RG-65: select the target project directory BEFORE reading
+            # any project or ancestor config. In a monorepo the project path
+            # is preserved relative to the git toplevel; there is no fallback
+            # to the invoking checkout when the target config is absent.
+            _, selected_worktree, invoking_toplevel = resolve_repo_and_worktree(
+                project_dir, args.worktree)
+            project_dir = effective_project_dir(
+                project_dir, invoking_toplevel, selected_worktree)
+            target_config = project_dir / CONFIG_NAME
+            if not target_config.is_file():
+                fail(f"--worktree {args.worktree!r} selects {target_config}, "
+                     f"but that worktree has no {CONFIG_NAME}; refusing to use "
+                     f"the invoking checkout's config")
+        (cfg, cfg_path, central, central_path,
+         cfg_sha256, central_cfg_sha256) = load_config_snapshot(project_dir)
+        if args.help or (args.lane is None and not args.list
+                         and not args.check_env):
+            print(usage(cfg.get("lanes", {}), set(central.get("lanes", {}))
+                        - set(cfg.get("lanes", {}))))
+            return 0
+        if args.lane == "validate-pointers":
+            if not args.target:
+                fail("validate-pointers requires the consumer file to certify "
+                     "(e.g. <proj>/nyxloom-trove/nyxloom.toml)")
+            return cmd_validate_pointers(Path(args.target), args.root)
         # RG-16: effective lane set = project lanes shadowing shared central
         # lanes by name; per-consumer pin existence checked inside.
         lanes = merge_lanes(cfg.get("lanes", {}), central, project_dir,
@@ -8566,14 +8610,8 @@ def main(argv: list[str] | None = None) -> int:
                 # invoking checkout's silence presented as tree B's answer.
                 # resolve_repo_and_worktree() takes the override verbatim by
                 # design (R-02), so the check belongs here.
-                if not Path(args.worktree).is_dir():
-                    fail(f"--worktree {args.worktree!r}: not a directory — "
-                         f"`history` reports THAT tree's store, so it must "
-                         f"name a real worktree")
-                git_out("rev-parse", "--show-toplevel",
-                        cwd=Path(args.worktree))  # refuses with git's own line
                 _, hist_wt, hist_top = resolve_repo_and_worktree(
-                    project_dir, args.worktree)
+                  project_dir, args.worktree)
                 hist_dir = effective_project_dir(project_dir, hist_top,
                                                  hist_wt)
                 hist_scope = str(hist_wt)
@@ -8680,7 +8718,11 @@ def main(argv: list[str] | None = None) -> int:
         # against. `--dry-run` records nothing at all: no lane started, so
         # nothing was measured and there is no result to be `latest`.
         if not args.dry_run:
-            record = start_run_record(args.lane, worktree, repo)
+            record = start_run_record(
+                args.lane, worktree, repo, config_path=cfg_path,
+                config_sha256=cfg_sha256,
+                central_config_path=central_path,
+                central_config_sha256=central_cfg_sha256)
             record["_project_dir"] = eff_proj
             record["_keep"] = resolve_history_keep(cfg, cfg_path, central,
                                                    central_path)[0]
@@ -8771,6 +8813,10 @@ def main(argv: list[str] | None = None) -> int:
         # `locks` (this variable simply stays None; nothing to close).
         exec_lock_fd = None
         try:
+            # The runner-specific header is printed by its execution helper.
+            # Keep the config source beside it so a worktree's selected
+            # policy is visible before any lane command is started.
+            print(f"run-gate: config: {cfg_path}", flush=True)
             if not env:  # built-in 'bare-host' — 'host' now resolves to a
                          # non-empty synthetic env and falls through to
                          # run_container_lane() below like any named env.

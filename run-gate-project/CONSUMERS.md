@@ -1082,29 +1082,40 @@ project's own deployment authority; ciu-derived → the ciu lifecycle naming
 the config file (never a vbpub-specific remedy for another project's tree).
 The old `testing-exec.sh` shim is retired — run-gate execs directly.
 
-**Multi-instance worktrees (RG-24): the container name follows the JUDGED
-TREE.** If your worktrees get their own isolated stacks (`ciu worktree
-adopt` — each with its own rendered `ciu.global.toml`, its own network and
-its own `test-runner`), run-gate derives the container name from
-`<worktree>/ciu.global.toml` when that file exists, and only falls back to
-`<repo>/ciu.global.toml` when it does not. This is the ONE place run-gate
-prefers the worktree over the repo (elsewhere `repo` — the checkout owning
-the shared `.git`, i.e. your main checkout — is the right authority). Do NOT
-work around a wrong container by pinning `container_name` in the tracked
-`run-gate.toml`: that literal is correct for exactly one running instance and
-wrong for the next worktree created. Verify which config decided it — the
-pre-execution disclosure names the scope:
+**Worktree config and runner follow the JUDGED TREE (RG-47/RG-65/RG-79).**
+When invoking from a main checkout with `--worktree PATH`, run-gate derives
+the project directory as `PATH` plus that project's path relative to the Git
+toplevel. It loads `run-gate.toml` and the nearest `run-gate.root.toml` from
+that tree. The target project config must exist; otherwise the invocation
+refuses instead of using the main checkout's lanes. The header prints the
+selected project config path, and a run's history record keeps its path and
+SHA-256 (plus the central config path/hash when used).
+
+For an exec lane whose name is derived from CIU, run-gate reads only the
+judged worktree's rendered `<worktree>/ciu.global.toml`. If your worktrees
+get their own isolated stacks (`ciu worktree create` — each with its own
+rendered config, network and `test-runner`), a missing file refuses with a
+remedy to start that worktree's runner using
+`ciu up --dir <test-runner stack> --deploy --healthcheck`. A stopped runner
+gets the same remedy before `docker exec`. run-gate never falls back to
+`<repo>/ciu.global.toml`, because that file names the main checkout's
+landscape. Do NOT work around a wrong container by pinning `container_name`
+in the tracked `run-gate.toml`: that literal is correct for exactly one
+running instance and wrong for the next worktree created. Verify which config
+decided the lane and runner — the pre-execution disclosure names both:
 
 ```
 $ ./run-gate.py test-runner --worktree /repo/.worktrees/p147b
-run-gate: rev 24 | lane test-runner | env project /repo/run-gate.toml |
+run-gate: config: /repo/.worktrees/p147b/run-gate.toml
+run-gate: rev 47 | lane test-runner | env project /repo/.worktrees/p147b/run-gate.toml |
   container p147b-8a6bc3-test-runner (ciu.global.toml
   deploy.project_name+environment_tag (judged worktree:
   /repo/.worktrees/p147b/ciu.global.toml)) | slice … (…)
 ```
 
-A `repo:` scope on a worktree you *did* adopt means its `ciu.global.toml` was
-never rendered there — run `ciu render` in the worktree, don't declare a name.
+A missing or stale `<worktree>/ciu.global.toml` means this worktree's runner
+has not been rendered or started — run the worktree's CIU up command, don't
+declare a main-checkout name.
 Set `$RUN_GATE_EXTRA_MOUNTS=/var/run/docker.sock=/var/run/docker.sock` when a
 lane needs Docker-in-Docker. Keep `assay.toml` lanes for the whole-target
 coverage work as they land (B1-style).

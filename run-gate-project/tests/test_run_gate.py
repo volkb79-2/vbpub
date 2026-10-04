@@ -9,6 +9,7 @@ import atexit
 import calendar
 import contextlib
 import fcntl
+import hashlib
 import json
 import os
 import queue
@@ -83,6 +84,12 @@ def make_repo(tmp_path: Path) -> Path:
 def commit_all(repo: Path, msg: str) -> None:
     git(repo, "add", "-A")
     git(repo, "commit", "-q", "-m", msg)
+
+
+def make_worktree(repo: Path, tmp_path: Path, name: str = "w1") -> Path:
+    worktree = tmp_path / name
+    git(repo, "worktree", "add", "-q", "-b", name, str(worktree))
+    return worktree
 
 
 def make_project(repo: Path, config: str, name: str = "proj") -> Path:
@@ -1030,7 +1037,8 @@ class TestArgvConstruction:
         repo = make_repo(tmp_path)
         proj = make_project(repo, SIMPLE_LANE)
         log = fake_docker(tmp_path, monkeypatch)
-        proc = run_tool(proj, "suite", "--worktree", "/wt/tree")
+        wt = make_worktree(repo, tmp_path)
+        proc = run_tool(proj, "suite", "--worktree", str(wt))
         assert proc.returncode == 0, proc.stderr
         run_call = docker_runs(log)[0]
         idx = lambda flag: run_call.index(flag)  # noqa: E731
@@ -1049,7 +1057,7 @@ class TestArgvConstruction:
         inner = run_call[-1]
         assert inner.startswith("set -euo pipefail && ")
         assert "git config --global --replace-all safe.directory '*'" in inner
-        assert "cd /wt/tree/proj && echo gate-ran" in inner  # {worktree} substituted
+        assert f"cd {wt}/proj && echo gate-ran" in inner  # {worktree} substituted
         # transparency: the docker argv is printed, never buried
         assert "docker argv:" in proc.stdout
 
@@ -1107,6 +1115,7 @@ class TestArgvConstruction:
         sidecar = proj / "tools/assay/assay-6.1.0.pyz.sha256"
         sidecar.parent.mkdir(parents=True, exist_ok=True)
         sidecar.write_text("0" * 64 + "  assay-6.1.0.pyz\n")
+        (repo / ".gitignore").write_text(".run-gate/\nciu.global.toml\n")
         commit_all(repo, "vendor sidecar")
         log = fake_docker(tmp_path, monkeypatch)
         monkeypatch.setattr(run_gate, "physical_path",
@@ -1304,6 +1313,7 @@ class TestEffectiveTreeExecution:
         sidecar = proj / "tools/assay/assay-6.1.0.pyz.sha256"
         sidecar.parent.mkdir(parents=True, exist_ok=True)
         sidecar.write_text("0" * 64 + "  assay-6.1.0.pyz\n")
+        (repo / ".gitignore").write_text(".run-gate/\nciu.global.toml\n")
         commit_all(repo, "vendor sidecar")
         wt = tmp_path / "w1"
         git(repo, "worktree", "add", "-q", "-b", "w1", str(wt))
@@ -1341,9 +1351,8 @@ class TestEffectiveTreeExecution:
             assay_lane = "mock"
             assay_command = ["assay"]
         """)
-        (repo / "ciu.global.toml").write_text(
+        (wt / "ciu.global.toml").write_text(
             "[deploy]\nproject_name = 'myproj'\nenvironment_tag = 'dev1'\n")
-        commit_all(repo, "ciu global")
         log = fake_docker(tmp_path, monkeypatch)
         shim = shim_dir_of(monkeypatch) / "docker"
         body = shim.read_text()
@@ -1685,6 +1694,7 @@ def test_no_stdlib_violations():
                # `os`, already allowed above) -- "resource" deliberately
                # NOT in this set any more: the import was removed.
                }
+    allowed.add("hashlib")  # RG-47 config provenance fingerprint
     assert set(imports) <= allowed, f"non-stdlib/unplanned imports: {imports}"
 
 
@@ -1747,8 +1757,10 @@ class TestExecMode:
         assert proc.returncode == 2
         assert "not running" in proc.stderr
         # RG-6: the remedy names the ciu lifecycle AND the config file used.
-        assert "ciu up" in proc.stderr
+        assert "start this worktree's own test-runner" in proc.stderr
+        assert "ciu up --dir <test-runner stack> --deploy --healthcheck" in proc.stderr
         assert "ciu.global.toml" in proc.stderr
+        assert not docker_execs(log)
 
     def test_exec_mode_declared_name_refusal_prescribes_project_authority(
             self, tmp_path, monkeypatch):
@@ -1795,20 +1807,21 @@ class TestExecMode:
 
 
 class TestWorktreeScopedContainerName:
-    """RG-24: an exec-mode container's name is a fact about the JUDGED TREE.
+    """RG-24/RG-79: an exec-mode container's name is a fact about the JUDGED TREE.
 
     `repo` is the checkout owning the shared `.git` — the MAIN checkout for
     any linked worktree — so resolving a LIVE DEPLOYED container's name from
     it silently targets the main landscape's runner whenever a per-worktree
-    deployment exists (dstdns "Mode-B"). The failure is partial and therefore
-    believable: the inner `cd {worktree}` still collects the right FILES, only
-    the container's own network/env are wrong. These tests pin the precedence
-    in both directions, since only the differing case exposes the defect.
+    deployment exists (dstdns "Mode-B"). If that tree has no rendered CIU
+    config, using the main checkout's name would still produce a plausible
+    but wrong test run. These tests require the target config or a refusal.
     """
 
     def _repo_with_worktree(self, tmp_path):
         repo = make_repo(tmp_path)
         proj = make_project(repo, EXEC_LANE)
+        (repo / ".gitignore").write_text(".run-gate/\nciu.global.toml\n")
+        commit_all(repo, "ignore generated gate and CIU state")
         wt = tmp_path / "w1"
         git(repo, "worktree", "add", "-q", "-b", "w1", str(wt))
         return repo, proj, wt
@@ -1844,19 +1857,21 @@ class TestWorktreeScopedContainerName:
         assert "judged worktree" in proc.stdout
         assert str(wt / "ciu.global.toml") in proc.stdout
 
-    def test_worktree_without_own_config_falls_back_to_repo(
+    def test_worktree_without_own_config_refuses_even_when_repo_has_one(
             self, tmp_path, monkeypatch):
-        """Additive precedence, not a replacement: a plain (non-adopted)
-        worktree keeps today's repo-relative resolution exactly."""
+        """A main runner is a tempting but unsafe fallback when a worktree's
+        own test-runner has not been deployed yet."""
         repo, proj, wt = self._repo_with_worktree(tmp_path)
         (repo / "ciu.global.toml").write_text(
             "[deploy]\nproject_name = 'mainland'\nenvironment_tag = '98535c'\n")
         log = fake_docker(tmp_path, monkeypatch)
         self._ps_returns(monkeypatch, "mainland-98535c-runner")
         proc = run_tool(proj, "suite", "--worktree", str(wt))
-        assert proc.returncode == 0, proc.stderr
-        assert "mainland-98535c-runner" in docker_execs(log)[0]
-        assert f"repo: {repo / 'ciu.global.toml'}" in proc.stdout
+        assert proc.returncode == 2
+        assert "start this worktree's own test-runner" in proc.stderr
+        assert "ciu up --dir <test-runner stack> --deploy --healthcheck" in proc.stderr
+        assert str(wt / "ciu.global.toml") in proc.stderr
+        assert not docker_execs(log)
 
     def test_worktree_network_name_derivation_is_also_worktree_scoped(
             self, tmp_path, monkeypatch):
@@ -1873,16 +1888,15 @@ class TestWorktreeScopedContainerName:
         assert "p147b-8a6bc3-runner" in docker_execs(log)[0]
         assert "judged worktree" in proc.stdout
 
-    def test_missing_config_names_both_candidate_paths(self, tmp_path, monkeypatch):
-        """With worktree != repo the refusal must name BOTH files tried —
-        naming only one sends the operator to render the wrong tree."""
+    def test_missing_config_names_only_the_judged_tree(self, tmp_path, monkeypatch):
+        """The refusal names the only authority run-gate is permitted to read."""
         repo, proj, wt = self._repo_with_worktree(tmp_path)
         fake_docker(tmp_path, monkeypatch)
         proc = run_tool(proj, "suite", "--worktree", str(wt))
         assert proc.returncode == 2
         assert str(wt / "ciu.global.toml") in proc.stderr
-        assert str(repo / "ciu.global.toml") in proc.stderr
-        assert "judged worktree" in proc.stderr
+        assert str(repo / "ciu.global.toml") not in proc.stderr
+        assert "this worktree" in proc.stderr
 
     # In-process unit oracles for the resolution itself. The end-to-end tests
     # above prove the WIRING (run_exec_lane passes the judged worktree, the
@@ -1907,14 +1921,15 @@ class TestWorktreeScopedContainerName:
         assert f"judged worktree: {wt / 'ciu.global.toml'}" in src
         assert str(wt / "ciu.global.toml") in remedy  # `ciu render` the RIGHT tree
 
-    def test_unit_repo_config_used_when_worktree_has_none(self, tmp_path):
+    def test_unit_repo_config_is_not_used_when_worktree_has_none(self, tmp_path):
         repo, wt = tmp_path / "repo", tmp_path / "repo" / ".worktrees" / "w1"
         wt.mkdir(parents=True)
         (repo / "ciu.global.toml").write_text(
             "[deploy]\nproject_name = 'mainland'\nenvironment_tag = '98535c'\n")
-        name, src, _ = self._resolve(repo, wt)
-        assert name == "mainland-98535c-runner"
-        assert f"repo: {repo / 'ciu.global.toml'}" in src
+        with pytest.raises(run_gate.GateError) as exc:
+            self._resolve(repo, wt)
+        assert str(wt / "ciu.global.toml") in str(exc.value)
+        assert "start this worktree's own test-runner" in str(exc.value)
 
     def test_unit_network_name_fallback_reports_scope(self, tmp_path):
         repo, wt = tmp_path / "repo", tmp_path / "repo" / ".worktrees" / "w1"
@@ -1925,13 +1940,14 @@ class TestWorktreeScopedContainerName:
         assert name == "p147b-8a6bc3-runner"
         assert "network_name stripped" in src and "judged worktree" in src
 
-    def test_unit_no_config_anywhere_names_both_paths(self, tmp_path):
+    def test_unit_no_worktree_config_does_not_name_main_config(self, tmp_path):
         repo, wt = tmp_path / "repo", tmp_path / "repo" / ".worktrees" / "w1"
         wt.mkdir(parents=True)
+        (repo / "ciu.global.toml").write_text("[deploy]\nproject_name='main'\n")
         with pytest.raises(run_gate.GateError) as exc:
             self._resolve(repo, wt)
         assert str(wt / "ciu.global.toml") in str(exc.value)
-        assert str(repo / "ciu.global.toml") in str(exc.value)
+        assert str(repo / "ciu.global.toml") not in str(exc.value)
 
     def test_unit_plain_checkout_message_names_one_path_once(self, tmp_path):
         """worktree == repo (no override, plain checkout): the refusal must
@@ -1943,9 +1959,9 @@ class TestWorktreeScopedContainerName:
         assert str(exc.value).count(str(repo / "ciu.global.toml")) == 1
         assert "judged worktree" not in str(exc.value)
 
-    def test_declared_container_name_still_wins_over_both(
+    def test_declared_container_name_still_wins_over_derived_name(
             self, tmp_path, monkeypatch):
-        """RG-24 changes only the DERIVED path; an explicit declaration is
+        """RG-24 changes only the derived path; an explicit declaration is
         still the top of the precedence chain."""
         repo = make_repo(tmp_path)
         cfg = EXEC_LANE.replace('mode = "exec"',
@@ -1961,6 +1977,81 @@ class TestWorktreeScopedContainerName:
         assert proc.returncode == 0, proc.stderr
         assert "declared-one" in docker_execs(log)[0]
 
+
+class TestWorktreeConfigResolution:
+    """RG-47/RG-65: lane policy and provenance follow the judged tree."""
+
+    @staticmethod
+    def _config(lane: str, command: str) -> str:
+        return textwrap.dedent(f"""\
+            schema_version = 1
+
+            [lanes.{lane}]
+            kind = "command"
+            environment = "bare-host"
+            argv = ["bash", "-c", "echo {command}"]
+            clean_tree = false
+        """)
+
+    def _monorepo_project(self, tmp_path):
+        repo = make_repo(tmp_path)
+        (repo / ".gitignore").write_text(".run-gate/\n")
+        (repo / "run-gate.root.toml").write_text(
+            self._config("central-main", "main-central-ran"))
+        project = repo / "packages" / "nested"
+        project.mkdir(parents=True)
+        (project / "run-gate.toml").write_text(
+            self._config("main-only", "main-config-ran"))
+        commit_all(repo, "nested project config")
+        worktree = tmp_path / "w1"
+        git(repo, "worktree", "add", "-q", "-b", "w1", str(worktree))
+        return repo, project, worktree
+
+    def test_worktree_config_controls_list_run_header_and_history(
+            self, tmp_path, monkeypatch):
+        repo, project, worktree = self._monorepo_project(tmp_path)
+        target_project = worktree / "packages" / "nested"
+        target_config = target_project / "run-gate.toml"
+        target_config.write_text(
+            self._config("worktree-only", "worktree-config-ran"))
+        target_central = worktree / "run-gate.root.toml"
+        target_central.write_text(
+            self._config("central-worktree", "worktree-central-ran"))
+        monkeypatch.setenv("RUN_GATE_PROFILE", "off")
+
+        listing = run_tool(project, "--list", "--worktree", str(worktree))
+        assert listing.returncode == 0, listing.stderr
+        assert "worktree-only" in listing.stdout
+        assert "central-worktree" in listing.stdout
+        assert "main-only" not in listing.stdout
+        assert "central-main" not in listing.stdout
+
+        proc = run_tool(project, "worktree-only", "--worktree", str(worktree))
+        assert proc.returncode == 0, proc.stderr
+        assert f"run-gate: config: {target_config}" in proc.stdout
+        assert "worktree-config-ran" in proc.stdout
+
+        store = json.loads(
+            (target_project / ".run-gate" / "history.json").read_text())
+        latest = store["lanes"]["worktree-only"]["latest"]
+        assert latest["config_path"] == str(target_config)
+        assert latest["config_sha256"] == hashlib.sha256(
+            target_config.read_bytes()).hexdigest()
+        assert latest["central_config_path"] == str(target_central)
+        assert latest["central_config_sha256"] == hashlib.sha256(
+            target_central.read_bytes()).hexdigest()
+
+    def test_missing_target_project_config_refuses_main_config_fallback(
+            self, tmp_path):
+        _repo, project, worktree = self._monorepo_project(tmp_path)
+        target_config = worktree / "packages" / "nested" / "run-gate.toml"
+        target_config.unlink()
+
+        proc = run_tool(project, "main-only", "--worktree", str(worktree))
+        assert proc.returncode == 2
+        assert str(target_config) in proc.stderr
+        assert "refusing to use the invoking checkout's config" in proc.stderr
+        assert "main-only" not in proc.stderr
 
 class TestExtraMounts:
     def _simple_ephemeral(self, tmp_path):
@@ -2903,7 +2994,8 @@ class TestConjunctionOverrideGuard:
         repo = make_repo(tmp_path)
         proj = make_project(repo, self.EPH_NO_TOKEN)
         log = fake_docker(tmp_path, monkeypatch)
-        proc = run_tool(proj, "suite", "--worktree", "/wt/tree")
+        wt = make_worktree(repo, tmp_path)
+        proc = run_tool(proj, "suite", "--worktree", str(wt))
         assert proc.returncode == 2
         assert "SILENTLY IGNORED" in proc.stderr
         assert "{worktree}" in proc.stderr
@@ -2914,7 +3006,8 @@ class TestConjunctionOverrideGuard:
         repo = make_repo(tmp_path)
         proj = make_project(repo, SIMPLE_LANE)
         fake_docker(tmp_path, monkeypatch)
-        proc = run_tool(proj, "suite", "--worktree", "/wt/tree")
+        wt = make_worktree(repo, tmp_path)
+        proc = run_tool(proj, "suite", "--worktree", str(wt))
         assert proc.returncode == 0, proc.stderr
 
     def test_host_lane_without_token_still_accepts_override(self, tmp_path, monkeypatch):
@@ -5330,29 +5423,18 @@ class TestAssayToolchainFitness:
         assert str(wt / "proj") in inventory_call[-1]
         assert str(proj) not in inventory_call[-1]
 
-    def test_bad_worktree_skip_names_the_real_problem_not_assay_version(
+    def test_doctor_does_not_fall_back_when_worktree_config_is_missing(
             self, tmp_path, monkeypatch, capsys):
-        """RG-31: this probe's OWN worktree resolution used the run-path's
-        lenient `resolve_repo_and_worktree` (no upfront validation), so a
-        bad `--worktree` silently built a `probe_dir` nothing mounted and
-        the resulting SKIP blamed "assay older than 3.2.0" instead of the
-        real cause — which check 3 ([FAIL] git) already names correctly two
-        checks earlier in the SAME report. Now routed through the identical
-        validated `resolve_worktree_scope()` check 3 uses, so both checks
-        raise and report the SAME cause."""
+        """Even report-only verbs read target policy from the target tree;
+        they cannot answer using the invoking checkout when it is missing."""
         self._project(tmp_path, monkeypatch)
-        fake_docker_executing(tmp_path, monkeypatch)
-        install_fake_assay(monkeypatch, _fake_judge(
-            _inventory(external_tools=["sh"], argv0="bash")))
         code = run_gate.main(["doctor", "--worktree", str(tmp_path / "nope")])
-        out = capsys.readouterr().out
+        captured = capsys.readouterr()
         assert code == 2
-        assert "[FAIL] git" in out and "not a directory" in out  # check 3
-        assert "[SKIP] lane 'ui-unit' toolchain" in out
-        toolchain_line = out.split("[SKIP] lane 'ui-unit' toolchain")[1]
-        assert "not a directory" in toolchain_line   # the real cause, repeated
-        assert "older than 3.2.0" not in out          # not the misleading guess
-        assert "Traceback" not in out
+        target_config = tmp_path / "nope" / "proj" / "run-gate.toml"
+        assert str(target_config) in captured.err
+        assert "refusing to use the invoking checkout's config" in captured.err
+        assert captured.out == ""
 
 
 class TestDoctorAndCheckEnvWorktreeReadScope:
@@ -5414,27 +5496,26 @@ class TestDoctorAndCheckEnvWorktreeReadScope:
         assert "[WARN] host-lane git view (RG-21)" in out
         assert "--worktree" not in out
 
-    def test_doctor_bad_worktree_fails_the_git_check_not_a_false_ok(
+    def test_doctor_missing_worktree_config_refuses_main_config_fallback(
             self, tmp_path, monkeypatch, capsys):
-        """A garbage --worktree must not let the RG-21 check read "no
-        gitdir file here" as "plain checkout, nothing to warn about" — it
-        FAILs the git check instead (never reaching RG-21), and every other
-        check still runs."""
-        repo, proj, wt = self._two_trees(tmp_path, monkeypatch, self.HOST_LANE)
+        """A missing target config cannot make doctor inspect the invoking
+        checkout and label that report as the selected tree's answer."""
+        _repo, proj, _wt = self._two_trees(tmp_path, monkeypatch, self.HOST_LANE)
         monkeypatch.chdir(proj)
         code = run_gate.main(["doctor", "--worktree", str(tmp_path / "nope")])
-        out = capsys.readouterr().out
+        captured = capsys.readouterr()
         assert code == 2
-        assert "[FAIL] git" in out and "not a directory" in out
-        assert "host-lane git view" not in out    # never reached -> no false OK
-        assert "[OK] docker" in out                # other checks still ran
+        assert str(tmp_path / "nope" / "proj" / "run-gate.toml") in captured.err
+        assert "refusing to use the invoking checkout's config" in captured.err
+        assert captured.out == ""
 
     def test_doctor_non_git_worktree_fails_with_gits_own_message(
             self, tmp_path, monkeypatch, capsys):
         repo, proj, wt = self._two_trees(tmp_path, monkeypatch, self.HOST_LANE)
         monkeypatch.chdir(proj)
         outside = tmp_path / "plain-dir"
-        outside.mkdir()
+        (outside / "proj").mkdir(parents=True)
+        shutil.copy(proj / "run-gate.toml", outside / "proj" / "run-gate.toml")
         code = run_gate.main(["doctor", "--worktree", str(outside)])
         captured = capsys.readouterr()
         assert code == 2
@@ -5489,8 +5570,8 @@ class TestDoctorAndCheckEnvWorktreeReadScope:
                               str(tmp_path / "nope")])
         captured = capsys.readouterr()
         assert code == 2
-        assert "not a directory" in captured.err
-        assert "--check-env" in captured.err
+        assert str(tmp_path / "nope" / "proj" / "run-gate.toml") in captured.err
+        assert "refusing to use the invoking checkout's config" in captured.err
         assert "Traceback" not in captured.err
 
     def test_check_env_non_git_worktree_refuses_with_gits_own_message(
@@ -5498,7 +5579,8 @@ class TestDoctorAndCheckEnvWorktreeReadScope:
         repo, proj, wt = self._two_trees(tmp_path, monkeypatch, SIMPLE_LANE)
         monkeypatch.chdir(proj)
         outside = tmp_path / "plain-dir"
-        outside.mkdir()
+        (outside / "proj").mkdir(parents=True)
+        shutil.copy(proj / "run-gate.toml", outside / "proj" / "run-gate.toml")
         code = run_gate.main(["--check-env", "--worktree", str(outside)])
         captured = capsys.readouterr()
         assert code == 3

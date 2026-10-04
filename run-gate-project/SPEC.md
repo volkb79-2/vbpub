@@ -120,7 +120,16 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   lane-timing query verb (`R-36`); the usage text also documents the store
   location, the `[history] keep` bound and the history-eligibility rule.
 - `R-02` `--worktree PATH` overrides the judged worktree (daemon substitutes
-  its attempt path textually before invoking).
+  its attempt path textually before invoking) AND the source of every config
+  read. First discover the invoking project as usual, then preserve its path
+  relative to the invoking Git toplevel: the selected project dir is
+  `<worktree>/<project-relative-to-toplevel>`. Load that project's
+  `run-gate.toml` and the nearest ancestor `run-gate.root.toml` inside the
+  selected tree before resolving lanes, including for `--help`, `--list`,
+  `doctor`, `history`, `footprint`, and `--check-env`. A missing selected
+  `run-gate.toml` is a configuration refusal naming the path; never fall back
+  to the invoking checkout's project or central config. This preserves
+  monorepo project layout while making CWD irrelevant to the judged policy.
 - `R-03` `--allow-dirty` bypasses the clean-tree pre-check (assay lanes still
   fail closed inside assay itself — this flag never weakens assay).
 - `R-04` Every config/env error is ONE line on stderr naming the offending
@@ -137,11 +146,12 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   whitespace or shell metacharacters anywhere in the path; any lane kind run
   from a tree at an unsafe path refuses (exit 2) before execution, naming
   the offending characters.
-- `R-05` The tool prints, before executing: revision, lane name, environment
-  source, resolved slice + its source (on exec lanes this is naming-only
-  disclosure — `docker exec` can neither place nor cap work), and (container
-  AND exec lanes) the fully assembled docker argv with forwarded values
-  redacted (RG-19). Mechanics are visible, never buried.
+- `R-05` The tool prints, before executing: the selected project config path
+  (`run-gate: config: <path>`), revision, lane name, environment source,
+  resolved slice + its source (on exec lanes this is naming-only disclosure
+  — `docker exec` can neither place nor cap work), and (container AND exec
+  lanes) the fully assembled docker argv with forwarded values redacted
+  (RG-19). Mechanics are visible, never buried.
 
 ## 3. Config schema (both files; `schema_version` must equal 1)
 
@@ -320,29 +330,25 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   (e.g. CIU). The container name is resolved from a declared `container_name`
   on the environment, or derived from a `ciu.global.toml` [deploy]
   table (`project_name + environment_tag`, falling back to
-  `network_name stripped of "-network"`). **Which `ciu.global.toml` (RG-24):
-  the JUDGED WORKTREE's own is preferred; the repo's is the fallback.** This
-  one resolution path is deliberately worktree-scoped, unlike every other
-  `repo`-relative resolution in the tool: `repo` (R-13) is the checkout
-  owning the shared `.git` — the MAIN checkout for any linked worktree —
-  which is the right authority for object-store questions and the WRONG one
-  for a LIVE DEPLOYED container. A multi-instance worktree (dstdns "Mode-B":
-  `ciu worktree adopt` gives a worktree its own stack, its own rendered
-  `ciu.global.toml`, its own network and its own runner) would otherwise have
-  its lane exec'd into the main landscape's runner — a partial, believable
-  failure, because the inner `cd <effective project dir>` still reaches the
-  right FILES and only the container's baked network/env are wrong. The
-  precedence is ADDITIVE: a worktree that is not itself an adopted instance
-  (no own `ciu.global.toml`) keeps repo-relative resolution unchanged.
-  The resolution SOURCE printed with the container name (R-05) names the
-  scope — `judged worktree:` or `repo:` — followed by the file used.
-  Missing config → hard error naming BOTH candidate paths when they differ.
-  If the resolved container is not running → hard error whose
-  START REMEDY names the authority the name was resolved FROM (RG-6):
-  declared `container_name` → the project's OWN deployment authority;
-  ciu.global.toml-derived → the ciu lifecycle (`ciu render` if stale, then
-  `ciu up`) naming the config file used. A non-ciu project must never be
-  prescribed a ciu command. No silent fallback.
+  `network_name stripped of "-network"`). **Which `ciu.global.toml`
+  (RG-24/RG-79):** a derived name is read only from the JUDGED WORKTREE's
+  own `<worktree>/ciu.global.toml`; there is no fallback to the checkout
+  owning shared `.git`. `repo` (R-13) is the MAIN checkout for a linked
+  worktree, which is the right authority for object-store questions and the
+  WRONG one for a LIVE DEPLOYED container. A multi-instance worktree (dstdns
+  "Mode-B": `ciu worktree create` gives it its own stack, rendered config,
+  network and runner) would otherwise exec into the main landscape's runner
+  — a partial, believable failure because the inner `cd <effective project
+  dir>` still reaches the right files while the container's network/env are
+  wrong. A missing worktree config is a refusal naming that path and telling
+  the operator to start this worktree's own test-runner with
+  `ciu up --dir <test-runner stack> --deploy --healthcheck`. A declared
+  `container_name` remains an explicit alternative and uses the project's
+  own deployment authority. The resolved name source names the judged
+  worktree config. Before `docker exec`, `docker ps` must confirm a
+  CIU-derived runner is running; a stopped CIU-derived runner gets the same
+  worktree-local CIU remedy, not a raw Docker error. A declared
+  `container_name` uses its project's own deployment remedy.
 
 - `R-14b` **Extra mounts:** `$RUN_GATE_EXTRA_MOUNTS` is an optional colon-
   separated list of `host=container` pairs appended as `-v` flags to ephemeral
@@ -1075,6 +1081,13 @@ disagree, §8 amendments win, then README, then CONSUMERS.
     `--dry-run` records NOTHING (no lane started, so nothing was measured).
     Aborts and infrastructure failures inside the window still update
     `latest` and re-raise unchanged.
+  - **`R-36l` Config provenance (RG-47/RG-65).** Every run record stores
+    `config_path` and `config_sha256` for the selected project's
+    `run-gate.toml`. The digest is over the exact bytes that were parsed.
+    When an ancestor `run-gate.root.toml` supplied shared config, also store
+    `central_config_path` and `central_config_sha256` over those exact parsed
+    bytes. This makes the policy used by a judged run auditable after either
+    config file changes.
   - **`R-36f` Storage — per (judged worktree × project).** The store is
     `<effective project dir>/.run-gate/history.json`; because R-21 already
     relocates the effective project dir into the judged tree, `--worktree B`
