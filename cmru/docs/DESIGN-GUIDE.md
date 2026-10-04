@@ -608,6 +608,10 @@ target. The resolved target must remain named `cmru.toml`, matching the config l
 rule. Project secret overlays are copied from the caller's config area to the matching snapshot
 path. Resume reads the config path and tag policy from the committed retained candidate before
 starting its child.
+The selected top-level config link can use an alias basename; snapshot and child resolution
+classify it by the resolved target's canonical config filename. When the checkout is reached
+through a repository symlink, CMRU maps the ancestor to the Git root while preserving link
+components inside the tree.
 Cleanup checks during its preview, before the captured plan can be applied. These checks keep a
 repository read failure from silently skipping or postponing a tag operation.
 
@@ -632,7 +636,9 @@ a failed push, CMRU verifies the remote tag: a matching tag permits publication 
 confirmed absent tag is removed locally and the pre-tag candidate remains resumable; an unknown
 remote state retains the tag and candidate for inspection. A same-name remote tag with a
 different ref object is a conflict, not proof of absence, so CMRU preserves the local ref and
-candidate. CMRU fast-forwards `origin/main` from the same candidate only after
+candidate. After a confirmed-absent attempt, the same tag name may acquire a new annotated-tag
+object on retry; the ledger permits that rotation only when the prior exact object has a matching
+origin-absence proof. CMRU fast-forwards `origin/main` from the same candidate only after
 publication succeeds. This keeps a failed build or upload out of `main` and lets a later project
 consume an earlier project's completed release in the same run. Resume checks attempted release
 tags and recorded results against origin before replaying a candidate. It refuses when a tag may

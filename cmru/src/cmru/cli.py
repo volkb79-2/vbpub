@@ -2965,8 +2965,8 @@ def _child_release_args(
     if not config_reference.is_absolute():
         config_reference = Path.cwd() / config_reference
     try:
-        relative = config_reference.relative_to(
-            (source_git_root or repo_root).resolve()
+        relative = _config_reference_relative_to_git_root(
+            config_path, source_git_root or repo_root,
         )
     except ValueError:
         # The CMRU root is allowed to be a central directory above/around the
@@ -3313,6 +3313,34 @@ def _project_config_paths_from_loaded(
     return result
 
 
+def _config_reference_relative_to_git_root(
+    config_path: Path, git_root: Path,
+) -> Path:
+    """Map a selected config link to its Git path without resolving the link.
+
+    The caller may reach the checkout through a symlinked repository alias.
+    Find the lexical ancestor that resolves to the physical Git root, then keep
+    every path component below that ancestor intact for Git-tree resolution.
+    """
+    reference = config_path.expanduser()
+    if not reference.is_absolute():
+        reference = Path.cwd() / reference
+    physical_root = git_root.resolve()
+    try:
+        return reference.relative_to(physical_root)
+    except ValueError:
+        pass
+
+    ancestor = reference.parent
+    while True:
+        if ancestor.resolve() == physical_root:
+            return reference.relative_to(ancestor)
+        if ancestor == ancestor.parent:
+            break
+        ancestor = ancestor.parent
+    raise ValueError(f"{reference} is outside Git family {physical_root}")
+
+
 def _parse_project_config_paths_from_orchestration(
     orchestration_rel: Path,
     content: str,
@@ -3369,14 +3397,15 @@ def _project_config_paths_at_snapshot(
 ) -> dict[str, Path]:
     """Resolve selected config paths from the exact release source snapshot."""
     try:
-        config_reference = config_path.expanduser()
-        if not config_reference.is_absolute():
-            config_reference = Path.cwd() / config_reference
-        config_rel = config_reference.relative_to(repo_root.resolve())
+        config_rel = _config_reference_relative_to_git_root(config_path, repo_root)
     except ValueError:
         return _project_config_paths_from_loaded(repo_root, configs, project_names)
 
-    if config_path.name == PROJECT_CONFIG_FILENAME:
+    resolved_config_rel, content = _resolve_git_file_at_commit(
+        repo_root, base, config_rel,
+        source_label=f"origin/main ({base}:{config_rel.as_posix()})",
+    )
+    if resolved_config_rel.name == PROJECT_CONFIG_FILENAME:
         if len(project_names) != 1:
             raise RuntimeError(
                 f"{config_path}: a project config can select only one project"
@@ -3385,17 +3414,13 @@ def _project_config_paths_at_snapshot(
             repo_root, base, {project_names[0]: config_rel},
             source_label=f"origin/main ({base})",
         )
-    if config_path.name != ORCHESTRATION_CONFIG_FILENAME:
+    if resolved_config_rel.name != ORCHESTRATION_CONFIG_FILENAME:
         raise RuntimeError(f"Unsupported CMRU config path in Git family: {config_path}")
 
-    resolved_orchestration_rel, content = _resolve_git_file_at_commit(
-        repo_root, base, config_rel,
-        source_label=f"origin/main ({base}:{config_rel.as_posix()})",
-    )
     parsed_paths = _parse_project_config_paths_from_orchestration(
-        resolved_orchestration_rel, content, project_names,
+        resolved_config_rel, content, project_names,
         source_label=(
-            f"origin/main ({base}:{resolved_orchestration_rel.as_posix()})"
+            f"origin/main ({base}:{resolved_config_rel.as_posix()})"
         ),
     )
     return _resolve_project_config_paths_at_commit(
@@ -3412,10 +3437,7 @@ def _project_config_paths_in_candidate(
 ) -> dict[str, Path]:
     """Resolve selected config paths from a committed retained candidate."""
     try:
-        config_reference = config_path.expanduser()
-        if not config_reference.is_absolute():
-            config_reference = Path.cwd() / config_reference
-        config_rel = config_reference.relative_to(source_git_root.resolve())
+        config_rel = _config_reference_relative_to_git_root(config_path, source_git_root)
     except ValueError:
         return _project_config_paths_from_loaded(source_git_root, configs, project_names)
 
@@ -3431,7 +3453,11 @@ def _project_config_paths_in_candidate(
         raise RuntimeError(f"Could not identify committed retained candidate: {detail}")
     candidate_sha = candidate_revision.stdout.strip()
 
-    if config_path.name == PROJECT_CONFIG_FILENAME:
+    resolved_config_rel, content = _resolve_git_file_at_commit(
+        candidate_root, candidate_sha, config_rel,
+        source_label=f"retained candidate ({candidate_sha}:{config_rel.as_posix()})",
+    )
+    if resolved_config_rel.name == PROJECT_CONFIG_FILENAME:
         if len(project_names) != 1:
             raise RuntimeError(
                 f"{config_path}: a project config can select only one project"
@@ -3440,16 +3466,12 @@ def _project_config_paths_in_candidate(
             candidate_root, candidate_sha, {project_names[0]: config_rel},
             source_label=f"retained candidate ({candidate_sha})",
         )
-    if config_path.name != ORCHESTRATION_CONFIG_FILENAME:
+    if resolved_config_rel.name != ORCHESTRATION_CONFIG_FILENAME:
         raise RuntimeError(f"Unsupported CMRU config path in Git family: {config_path}")
-    resolved_orchestration_rel, content = _resolve_git_file_at_commit(
-        candidate_root, candidate_sha, config_rel,
-        source_label=f"retained candidate ({candidate_sha}:{config_rel.as_posix()})",
-    )
     parsed_paths = _parse_project_config_paths_from_orchestration(
-        resolved_orchestration_rel, content, project_names,
+        resolved_config_rel, content, project_names,
         source_label=(
-            f"retained candidate ({candidate_sha}:{resolved_orchestration_rel.as_posix()})"
+            f"retained candidate ({candidate_sha}:{resolved_config_rel.as_posix()})"
         ),
     )
     return _resolve_project_config_paths_at_commit(

@@ -22,6 +22,9 @@ when an in-repository orchestration change moves a project config, its secret
 overlay follows the snapshot path. Project config symlinks resolve within that
 snapshot from the selected repository path, even if the caller's checkout still
 points at an older target, and their targets must retain the `cmru.toml` filename.
+The selected `--config` link may use another basename when its tracked target is
+named `cmru.toml` or `cmru.orchestration.toml`; CMRU resolves the target from the
+snapshot before it chooses the config kind.
 CMRU refuses to resume when a tag push may have landed without a completed release
 record or when a recorded release has not reached `origin/main`; it keeps that
 candidate for inspection. The reason is in the

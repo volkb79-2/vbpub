@@ -651,7 +651,9 @@ Project config symlinks may point within the Git family; the resolved target
 must keep the `cmru.toml` filename accepted by the config loader. CMRU preserves
 the selected repository link path when it checks the snapshot and when it
 starts the transaction child, so a caller checkout still pointing at an older
-symlink target cannot override the committed target.
+symlink target cannot override the committed target. A selected `--config` link
+may use another basename when its tracked target is named `cmru.toml` or
+`cmru.orchestration.toml`; the target name determines the config kind.
 
 `cmru release` never publishes from your working tree (`S-CLI.5`). It fetches `origin/main`,
 refuses local-only `main` commits the snapshot would omit, and creates a temporary worktree at
@@ -693,7 +695,9 @@ publish, and retains a pre-tag candidate that can be resumed with its printed `r
 If origin cannot be checked, CMRU retains the tag and candidate for inspection. If origin has
 the same tag name at a different object, CMRU also retains the local tag and candidate for
 inspection. CMRU does not automatically retry a post-tag publication step; `--resume` is for
-retained pre-tag candidates.
+retained pre-tag candidates. When CMRU proves that a failed tag push left no origin ref and
+removes the local tag, the saved resume command can retry that release; CMRU permits a freshly
+generated annotated tag object for the same tag name in that case.
 On resume, CMRU checks tag-push attempts and recorded release results against origin. A tag that
 may have been pushed without a completed result, or a recorded result whose source commit is not
 in `origin/main`, causes a refusal and keeps the candidate for inspection. A release-plan refusal

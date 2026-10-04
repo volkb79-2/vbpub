@@ -956,6 +956,9 @@ def test_snapshot_and_candidate_follow_orchestration_link_selected_by_caller(tmp
     config_reference = cli._resolve_config(str(invocation_config))
     candidate_root = tmp_path / "candidate"
     _git("clone", "-q", str(source_root), str(candidate_root), cwd=tmp_path)
+    repo_alias = tmp_path / "repo-alias"
+    repo_alias.symlink_to(source_root, target_is_directory=True)
+    aliased_config_reference = repo_alias / "cmru.orchestration.toml"
     configs = {
         "demo": SimpleNamespace(name="demo", project_root=source_root / "old/demo"),
     }
@@ -966,6 +969,50 @@ def test_snapshot_and_candidate_follow_orchestration_link_selected_by_caller(tmp
     assert _real_project_config_paths_in_candidate(
         source_root, candidate_root, config_reference, configs, ["demo"],
     ) == {"demo": Path("cfg/demo/cmru.toml")}
+    assert _real_project_config_paths_at_snapshot(
+        source_root, revision, aliased_config_reference, configs, ["demo"],
+    ) == {"demo": Path("cfg/demo/cmru.toml")}
+    assert _real_project_config_paths_in_candidate(
+        source_root, candidate_root, aliased_config_reference, configs, ["demo"],
+    ) == {"demo": Path("cfg/demo/cmru.toml")}
+
+
+def test_selected_config_link_can_have_alias_filename(tmp_path):
+    source_root = tmp_path / "source"
+    _init_repo(source_root)
+    target_orchestration = source_root / "cfg" / "cmru.orchestration.toml"
+    project_config = source_root / "cfg" / "demo" / "cmru.toml"
+    target_orchestration.parent.mkdir(parents=True)
+    project_config.parent.mkdir(parents=True)
+    target_orchestration.write_text(
+        '[orchestration.project.demo]\nconfig = "demo/cmru.toml"\n',
+        encoding="utf-8",
+    )
+    project_config.write_text("[project]\nid = \"demo\"\n", encoding="utf-8")
+    selected_link = source_root / "current.toml"
+    selected_link.symlink_to("cfg/cmru.orchestration.toml")
+    _git(
+        "add", "cfg/cmru.orchestration.toml", "cfg/demo/cmru.toml", "current.toml",
+        cwd=source_root,
+    )
+    _git("commit", "-q", "-m", "add aliased orchestration filename", cwd=source_root)
+    revision = _git("rev-parse", "HEAD", cwd=source_root)
+    candidate_root = tmp_path / "candidate"
+    _git("clone", "-q", str(source_root), str(candidate_root), cwd=tmp_path)
+    configs = {
+        "demo": SimpleNamespace(name="demo", project_root=source_root / "cfg/demo"),
+    }
+
+    expected = {"demo": Path("cfg/demo/cmru.toml")}
+    assert _real_project_config_paths_at_snapshot(
+        source_root, revision, selected_link, configs, ["demo"],
+    ) == expected
+    assert _real_project_config_paths_in_candidate(
+        source_root, candidate_root, selected_link, configs, ["demo"],
+    ) == expected
+    assert cli._child_release_args([], selected_link, source_root) == [
+        "--config", "current.toml",
+    ]
 
 
 def test_direct_project_config_path_resolves_snapshot_and_candidate_symlinks(tmp_path):
@@ -2958,6 +3005,28 @@ def test_release_tag_snapshot_round_trips_is_immutable_and_is_forgotten():
         transaction.forget_release_scope(h.repo_root, workspace)
         assert transaction.read_release_tag_snapshot(h.repo_root, workspace) is None
         assert transaction.read_release_tag_attempts(h.repo_root, workspace) is None
+        assert transaction.read_confirmed_absent_release_tag_attempts(
+            h.repo_root, workspace,
+        ) == {}
+
+
+def test_release_tag_attempt_can_rotate_after_exact_absence_confirmation():
+    with _OriginAndClone() as h:
+        workspace_path = h.clone_workspace("cmru/release/tag-retry")
+        base = _git("rev-parse", "HEAD", cwd=workspace_path)
+        workspace = transaction.ReleaseWorkspace(
+            h.repo_root, workspace_path, "cmru/release/tag-retry", base,
+        )
+        first = {"refs/tags/demo-v1": "c" * 40}
+        retry = {"refs/tags/demo-v1": "d" * 40}
+        transaction.write_release_tag_attempts(h.repo_root, workspace, first)
+        transaction.write_confirmed_absent_release_tag_attempts(
+            h.repo_root, workspace, first,
+        )
+
+        transaction.write_release_tag_attempts(h.repo_root, workspace, retry)
+
+        assert transaction.read_release_tag_attempts(h.repo_root, workspace) == retry
         assert transaction.read_confirmed_absent_release_tag_attempts(
             h.repo_root, workspace,
         ) == {}

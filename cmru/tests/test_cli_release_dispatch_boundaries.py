@@ -28,6 +28,12 @@ def test_child_release_args_replaces_parent_only_options_and_preserves_operation
     linked.symlink_to("cfg/old/cmru.orchestration.toml")
     linked_args = cli._child_release_args([], linked, repo)
     assert linked_args == ["--config", "cmru.orchestration.toml"]
+    repo_alias = tmp_path / "repo-alias"
+    repo_alias.symlink_to(repo, target_is_directory=True)
+    aliased_args = cli._child_release_args(
+        [], repo_alias / "cmru.orchestration.toml", repo,
+    )
+    assert aliased_args == ["--config", "cmru.orchestration.toml"]
 
     outside = tmp_path / "outside.toml"
     assert cli._child_release_args([], outside, repo) == ["--config", str(outside.resolve())]

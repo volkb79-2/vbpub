@@ -1022,11 +1022,24 @@ def write_release_tag_attempts(
         existing = read_release_tag_attempts(repo_root, workspace) or {}
     except RuntimeError:
         raise
+    absence_proofs: dict[str, str] | None = None
     for ref, oid in incoming.items():
         previous = existing.get(ref)
         if previous is not None and previous != oid:
-            raise RuntimeError(f"release tag {ref} changed after a prior push attempt")
+            if absence_proofs is None:
+                absence_proofs = read_confirmed_absent_release_tag_attempts(
+                    repo_root, workspace,
+                )
+            if absence_proofs.get(ref) != previous:
+                raise RuntimeError(
+                    f"release tag {ref} changed after a prior push attempt without "
+                    "an exact origin-absence confirmation"
+                )
         existing[ref] = oid
+    # Clear proofs before replacing their matching attempt OIDs. If the later
+    # attempts-file write fails, the candidate remains fail-closed: its older
+    # proof cannot accidentally authorize the newly generated local tag.
+    clear_release_tag_absence(repo_root, workspace, incoming)
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.{secrets.token_hex(12)}")
     try:
@@ -1038,7 +1051,6 @@ def write_release_tag_attempts(
         os.replace(temporary, path)
     finally:
         temporary.unlink(missing_ok=True)
-    clear_release_tag_absence(repo_root, workspace, incoming)
 
 
 def read_release_tag_attempts(

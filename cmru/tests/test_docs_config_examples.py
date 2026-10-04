@@ -252,6 +252,7 @@ def test_git_version_for_local_tag_inspection_is_documented_across_user_guides()
     assert "from the selected repository path" in readme
     assert "CMRU refuses to resume when a tag push may have landed" in readme
     assert "same-name origin tag pointing to another object is a conflict" in readme
+    assert "selected `--config` link may use another basename" in readme
     assert "checks the committed candidate's tag" in readme
     assert "Git 2.43" in design and "git show-ref --exists" in design
     assert "exit 2 means absent; exit 1 means lookup error" in design
@@ -269,6 +270,8 @@ def test_git_version_for_local_tag_inspection_is_documented_across_user_guides()
     assert "Resume checks attempted release tags" in design
     assert "release-plan refusal" in design
     assert "different ref object is a conflict" in design
+    assert "classify it by the resolved target's canonical config filename" in design
+    assert "origin-absence proof" in design
     assert "Git 2.43 or newer" in consumers
     assert "git --version" in consumers
     assert "local-tag-inspection-requires-git-243" in consumers
@@ -282,6 +285,8 @@ def test_git_version_for_local_tag_inspection_is_documented_across_user_guides()
     assert "checks tag-push attempts and recorded release results" in consumers_flat
     assert "keeps the existing worktree and origin backup branch" in consumers_flat
     assert "same tag name at a different object" in consumers_flat
+    assert "selected `--config` link" in consumers_flat
+    assert "freshly generated annotated tag object" in consumers_flat
     assert "reads `project.release.git_tag` from the committed retained candidate" in consumers_flat
 
 
