@@ -253,6 +253,98 @@ def test_scope_stop_reports_only_a_confirmed_retirement(monkeypatch, failure):
 
 
 @pytest.mark.parametrize(
+    ("active", "substate"),
+    [("inactive", "running"), ("active", "dead")],
+)
+def test_scope_stop_requires_inactive_and_dead_together(monkeypatch, active, substate):
+    monkeypatch.setattr(placement.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(placement, "_systemd_unit_path", lambda _unit: "/unit")
+    monkeypatch.setattr(
+        placement, "_systemd_property",
+        lambda _path, _interface, name: {
+            "ActiveState": active, "SubState": substate,
+        }.get(name),
+    )
+
+    assert placement._systemd_stop_unit(
+        "rg-profile-test.scope", run=lambda *_args, **_kwargs: _completed(),
+    ) is False
+
+
+def _run_with_real_check_failure(argv, **kwargs):
+    """Model subprocess.run raising when check=True and busctl exits nonzero."""
+    result = subprocess.CompletedProcess(argv, 1, "", "busctl request failed")
+    if kwargs.get("check") and result.returncode:
+        raise subprocess.CalledProcessError(
+            result.returncode, argv, output=result.stdout, stderr=result.stderr,
+        )
+    return result
+
+
+def test_systemd_read_helpers_keep_nonzero_status_as_unknown(monkeypatch):
+    monkeypatch.setenv("CGPROFILE_BUSCTL", "busctl-test")
+    monkeypatch.setattr(placement.subprocess, "run", _run_with_real_check_failure)
+
+    assert placement._systemd_unit_path("job.scope") is None
+    assert placement._systemd_property("/unit", "iface", "Name") is None
+    assert placement._systemd_bool_property("/unit", "iface", "Delegate") is None
+    assert placement._systemd_string_array_property(
+        "/unit", "iface", "DelegateControllers",
+    ) is None
+
+
+def test_systemd_helpers_request_captured_text_without_checking(monkeypatch):
+    calls = []
+
+    def run(argv, **kwargs):
+        calls.append((argv, kwargs))
+        return subprocess.CompletedProcess(argv, 1, "", "busctl request failed")
+
+    monkeypatch.setenv("CGPROFILE_BUSCTL", "busctl-test")
+    monkeypatch.setattr(placement.subprocess, "run", run)
+
+    assert placement._systemd_unit_path("job.scope") is None
+    assert placement._systemd_property("/unit", "iface", "Name") is None
+    assert placement._systemd_bool_property("/unit", "iface", "Delegate") is None
+    assert placement._systemd_string_array_property(
+        "/unit", "iface", "DelegateControllers",
+    ) is None
+    assert placement._systemd_unit_is_absent("job.scope", run=run) is None
+    assert placement._systemd_stop_unit("job.scope", run=run) is False
+
+    assert len(calls) == 6
+    for _argv, kwargs in calls:
+        assert kwargs["check"] is False
+        assert kwargs["capture_output"] is True
+        assert kwargs["text"] is True
+        assert kwargs["timeout"] in (5.0, 10.0)
+    assert placement._systemd_unit_is_absent(
+        "job.scope", run=_run_with_real_check_failure,
+    ) is None
+
+
+def test_systemd_attach_returns_false_for_nonzero_bus_status():
+    assert placement._systemd_attach_process(
+        "dev-gates.slice", "rg-token", 4242,
+        run=_run_with_real_check_failure,
+    ) is False
+
+
+def test_systemd_scope_creation_returns_unknown_for_nonzero_bus_status(monkeypatch):
+    monkeypatch.setattr(placement.time, "sleep", lambda _seconds: None)
+    assert placement._systemd_create_scope(
+        "rg-profile-test.scope", "dev-gates.slice", [123],
+        placement.REQUIRED_CONTROLLERS, run=_run_with_real_check_failure,
+    ) is None
+
+
+def test_systemd_scope_stop_returns_false_for_nonzero_bus_status():
+    assert placement._systemd_stop_unit(
+        "rg-profile-test.scope", run=_run_with_real_check_failure,
+    ) is False
+
+
+@pytest.mark.parametrize(
     ("cgroup", "expected"),
     [
         ("relative/path", None),
@@ -302,7 +394,9 @@ def test_proc_identity_readers_parse_fields_after_parenthesized_comm(tmp_path):
     assert placement._process_parent_pid(str(proc), 42) == 7
 
 
-@pytest.mark.parametrize("contents", ["", "not a stat line", "42 (short) S", "42 ("])
+@pytest.mark.parametrize(
+    "contents", ["", "not a stat line", "42 (short) S", "42 (", ") S 7"],
+)
 def test_proc_stat_identity_readers_reject_missing_or_short_records(tmp_path, contents):
     proc = tmp_path / "proc"
     process = proc / "42"
@@ -312,10 +406,41 @@ def test_proc_stat_identity_readers_reject_missing_or_short_records(tmp_path, co
     assert placement._process_parent_pid(str(proc), 42) is None
 
 
+def test_start_time_reader_requires_the_field_22_boundary(tmp_path):
+    proc = tmp_path / "proc"
+    process = proc / "42"
+    process.mkdir(parents=True)
+    suffix_without_start_time = ["S"] + ["0"] * 18
+    (process / "stat").write_text(
+        "42 (short but syntactically delimited) " + " ".join(suffix_without_start_time)
+    )
+    assert len(suffix_without_start_time) == 19
+    assert placement._process_start_time_ticks(str(proc), 42) is None
+
+
+def test_start_time_reader_rejects_a_delimiter_without_a_process_prefix(tmp_path):
+    proc = tmp_path / "proc"
+    process = proc / "42"
+    process.mkdir(parents=True)
+    valid_length_suffix = ["S"] + ["0"] * 18 + ["98765"]
+    (process / "stat").write_text(") " + " ".join(valid_length_suffix))
+    assert placement._process_start_time_ticks(str(proc), 42) is None
+
+
+def test_parent_reader_parses_the_minimum_prefix_through_field_4(tmp_path):
+    proc = tmp_path / "proc"
+    process = proc / "42"
+    process.mkdir(parents=True)
+    (process / "stat").write_text("42 (short comm) S 7")
+    assert placement._process_parent_pid(str(proc), 42) == 7
+
+
 @pytest.mark.parametrize(
     ("contents", "expected"),
     [
         ("Name: daemon\nNSpid:\t7123 12\n", 7123),
+        ("Uid:\t1000 1000 1000 1000\nNSpid:\t7123 12\n", 7123),
+        ("NSpid\nNSpid:\t7123 12\n", 7123),
         ("Name: daemon\n", None),
         ("NSpid:\t0 12\n", None),
         ("NSpid: invalid\n", None),
@@ -339,12 +464,40 @@ def test_host_pid_reader_treats_a_missing_status_file_as_unknown(tmp_path):
         ("/dev.slice/gates/lane", "/dev.slice/gates", True),
         ("/dev.slice/gates-extra/lane", "/dev.slice/gates", False),
         ("relative/path", "/dev.slice", False),
+        ("relative/path", "/", False),
         ("/dev.slice/lane", "relative", False),
         (None, "/dev.slice", False),
     ],
 )
 def test_cgroup_containment_uses_component_boundaries(path, parent, expected):
     assert placement._within_cgroup(path, parent) is expected
+
+
+def test_bounded_slice_capacity_accepts_only_finite_positive_limits(tmp_path):
+    root = tmp_path / "cgroup"
+    gates = root / "dev.slice" / "dev-gates.slice"
+    gates.mkdir(parents=True)
+    memory_max = gates / "memory.max"
+    cpu_max = gates / "cpu.max"
+
+    memory_max.write_text("1024\n")
+    cpu_max.write_text("250000 100000\n")
+    assert placement.bounded_slice_capacity(str(root), "dev.slice/dev-gates.slice")
+
+    for value in ("max", "0", "-1", "invalid"):
+        memory_max.write_text(value)
+        assert not placement.bounded_slice_capacity(
+            str(root), "dev.slice/dev-gates.slice",
+        )
+    memory_max.write_text("1024\n")
+    for value in (
+        "max 100000", "100000", "100000 100000 extra", "bad 100000",
+        "100000 bad", "0 100000", "-1 100000", "100000 0",
+    ):
+        cpu_max.write_text(value)
+        assert not placement.bounded_slice_capacity(
+            str(root), "dev.slice/dev-gates.slice",
+        )
 
 
 @pytest.mark.parametrize(

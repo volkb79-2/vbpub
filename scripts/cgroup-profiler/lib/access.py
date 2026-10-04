@@ -42,6 +42,14 @@ from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional, Tuple
 
 CGROUP_ROOT = "/sys/fs/cgroup"
+_ASCII_CONTROL_CHARACTERS = frozenset(chr(value) for value in range(32)) | {chr(127)}
+
+
+def _has_whitespace_or_control(value: str) -> bool:
+    return any(
+        char.isspace() or char in _ASCII_CONTROL_CHARACTERS
+        for char in value
+    )
 
 
 def _configured_proc_root() -> str:
@@ -199,15 +207,23 @@ def verify_systemd_slice(
     container's filesystem namespace; systemd's loaded-unit properties are
     authoritative for that host path.
     """
-    if (
-        not isinstance(unit_name, str) or not unit_name.endswith(".slice")
-        or not unit_name or unit_name.startswith("-")
-        or unit_name != unit_name.strip() or "/" in unit_name
-        or any(char.isspace() or ord(char) < 32 or ord(char) == 127 for char in unit_name)
-        or not isinstance(expected_cgroup, str) or not expected_cgroup.startswith("/")
-        or any(char.isspace() or ord(char) < 32 or ord(char) == 127 for char in expected_cgroup)
-        or any(part in ("", ".", "..") for part in expected_cgroup.split("/")[1:])
-    ):
+    if not isinstance(unit_name, str):
+        return False
+    if not unit_name.endswith(".slice"):
+        return False
+    if unit_name.startswith("-"):
+        return False
+    if unit_name != unit_name.strip() or "/" in unit_name:
+        return False
+    if _has_whitespace_or_control(unit_name):
+        return False
+    if not isinstance(expected_cgroup, str):
+        return False
+    if not expected_cgroup.startswith("/"):
+        return False
+    if _has_whitespace_or_control(expected_cgroup):
+        return False
+    if any(part in ("", ".", "..") for part in expected_cgroup.split("/")[1:]):
         return False
     # The daemon keeps a private PID namespace.  Even with the host system
     # bus mounted, systemctl refuses to run when PID 1 is not systemd.  The
@@ -226,13 +242,17 @@ def verify_systemd_slice(
         except (OSError, ValueError, subprocess.TimeoutExpired):
             return None
         stdout = getattr(result, "stdout", None)
-        if getattr(result, "returncode", 1) != 0 or not isinstance(stdout, str):
+        if getattr(result, "returncode", 1) != 0:
+            return None
+        if not isinstance(stdout, str):
             return None
         try:
             fields = shlex.split(stdout)
         except ValueError:
             return None
-        if len(fields) != 2 or fields[0] != signature:
+        if len(fields) != 2:
+            return None
+        if fields[0] != signature:
             return None
         return fields[1]
 

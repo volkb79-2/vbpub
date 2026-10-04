@@ -6277,3 +6277,105 @@ through RG-80, notably RG-79 (refuse fallback to main's runner) and RG-80
 (daemon-wide concurrent-gate admission); RG-67(a) was withdrawn. cgprofile
 CP-15/CP-16 were also recorded. These are backlog/design changes, not P1
 implementation changes, and were not started as work in this check.
+
+### RW-421 — 2026-10-04 02:19:52Z — P1 survivor-fix integration and R0/R1 coverage
+
+Resumed P1 on the latest local main base (`70c2c3662`) in the isolated
+worktree `rg55-p1-survivor-final-20261004`; the integration candidate is a
+single-parent history at `b6b2dc6599d4951183f069e83eb8c6755a528abc`. The
+survivor-oracle changes were replayed onto this current base without merging
+the stale P1 branch wholesale. Root main remains clean and unchanged.
+
+The exact-tree R0/R1 run at `4636a9c4` initially failed coverage despite
+2,263 passing tests: only `lib/placement.py:2127` (the exact-scope process
+state in the leaf-removal recovery window) was missed. The regression fake
+had reported the PID at its origin before recovery enumerated the scope. The
+test now derives the PID cgroup from the fake `cgroup.procs` files and proves
+restore from that exact scope. Seven focused recovery cases passed; the full
+P1-focused set passed 1,069 tests with six skips.
+
+R0/R1 then passed on `b6b2dc6599d4951183f069e83eb8c6755a528abc`: 2,263
+passed, four fork deprecation warnings, and 100% line and branch coverage
+(7,429 statements, 2,752 branches). Runtime was 136.59 seconds. Its exact
+container was `cgprofile-gate-2341635-1791080191`, capped at 3 CPUs under
+`dev-gates.slice`; the ~90-second health check saw 82% progress and host
+memory PSI `full avg10=0.14`. The gate's expected test-fixture ownership
+warning did not fail its test. The cgprofile daemon was down, so resource
+profiling used coarse rusage; this does not close the live DAMON evidence gap.
+
+The historical P1 R2 result is still FAIL on its unchanged judged tree
+`bf7dc95fb47356ef527db08077788fe22a5a3b0b` (1,036 killed, 125 survived,
+1,161 accounted). Survivor triage/fixes require a new exact-tree R2 campaign;
+the previous campaign is not being reinterpreted. No merge or release has
+occurred. No gate is active at this ruling. Next: record the R0/R1 result on
+the final controller-log commit, run R3 and doctor, obtain a fresh Sol/xhigh
+adversarial review, then provisionally merge if accepted. Resume R2 from the
+reviewed exact tree in a CIU-managed worktree and backport any required fixes;
+daemon live probes and measured DAMON overhead remain separate P3 evidence.
+
+### RW-422 — 2026-10-04 02:22:54Z — P1 R3 and doctor
+
+On candidate `0aa294334da1f81af088edf0cadfe2b82f811f54`, R3 passed: all 7
+canaries were rejected, 0 survived; duration 14.2 seconds. `doctor
+--worktree` exited 0 with 13 checks (9 OK, 2 warnings, 2 info, 0 failures).
+Warnings: the profiler daemon is down (intentional for this review/gate
+phase; lanes disclosed their fallback accounting), and the linked-worktree
+ host-lane Git-view diagnostic warns that a custom host harness must mount the
+ common Git dir. R0/R1 has already passed on the code tip `b6b2dc65`; it will
+ be rerun after this controller-log commit so the final short-gate evidence
+ names the final candidate tip. Main remains clean at `70c2c3662`; no gates are
+ currently active. P1 still has no merge/release, and the new R2 campaign,
+ fresh Sol review, and live daemon/DAMON evidence remain outstanding.
+
+### RW-423 — 2026-10-04 03:09:33Z — disposition of P1 supplemental Sol review
+
+The fresh Sol/xhigh supplemental review at exact candidate
+`4c44d0775e1e2e484878a54b7c418673ab656121` found no code blocker and returned
+`ACCEPT-CONDITIONAL` for provisional integration. I accept it as the
+independent code-review receipt for provisional integration, subject to the
+review's explicit remaining release holds. This does not make the older P1 R2
+result pass, close survivor disposition, authorize release, or close P3.
+
+The condition was the reviewer invoking `host-escape -- systemctl show` even
+though the review handoff prohibited joining a host namespace or substituting
+that carrier. The command ran in the host PID-1 namespace. It was read-only:
+no unit, host configuration, container, network, or daemon state was changed.
+This is a documented procedure deviation, not evidence of compliance; the
+host-escape output is excluded from the acceptance basis and this ruling is
+not a precedent authorizing reviewers to use that path. The code review and
+private-namespace probe evidence stand independently: the helper's
+systemd-bus verifier observed the authored interactive slice, and `ctl host`
+observed the bounded gates slice. The review also reports that every
+reviewer-owned probe container was removed and the daemon is down.
+
+The report's exact-candidate R0/R1 and R3 receipts are green; doctor was
+recorded on the preceding documentation-only checkpoint with the same code
+tree. Commit this report and ruling, then refresh the short gates and doctor
+on the resulting exact tip before provisional merge. Current-tree R2 and the
+registered full gate must run from a quiet CIU-managed worktree, with survivor
+triage on that verdict. The DAMON live ownership/index and measured-overhead
+evidence remain open P3 work.
+
+### RW-424 — 2026-10-04 03:20:44Z — P1 exact-tip short gates refreshed
+
+After RW-423's evidence commit, candidate `8bd5d0a8e86de48b0c262ec07fdcfbe9b652fc36`
+passed the exact-tip short gates. R0/R1 (`tools/gate.sh coverage`) passed
+2,263 tests at 100% line and branch coverage (7,429 statements, 2,752
+branches); run-gate history is PASS/exit 0, history-eligible, duration
+144.208 s, start 03:12:29Z. Its test container
+`cgprofile-gate-2435328-1791083553` ran under `dev-gates.slice` with
+`NanoCpus=3000000000`; the daemon was down, so its profiling report used the
+declared coarse rusage fallback. R3 then passed 7/7 canaries, zero survivors,
+history PASS/exit 0, history-eligible, duration 11.438 s, start 03:16:23Z;
+its run-gate argv had the 3-CPU cap at container creation under
+`dev-gates.slice`. `doctor --worktree` reported 13 checks: 9 OK, 2 expected
+warnings (daemon intentionally down and linked-worktree host Git view), 0
+failures, 0 skipped, and 2 info.
+
+No P1 source or test file changed after the exact code reviewed by Sol; the
+later commits add only the review record and controller evidence. The
+conditional review is dispositioned in RW-423, and these refreshed checks
+meet the agreed provisional-integration bar. P1 is ready for a serial
+`--no-ff` provisional merge to local `main`. This is not a release signal:
+current-tree R2, the registered full gate, survivor triage, and P3 DAMON live
+ownership/index plus measured-overhead evidence remain open.

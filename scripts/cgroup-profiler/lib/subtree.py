@@ -102,7 +102,7 @@ def _start_time_ticks(pid: int, proc_root: str) -> Optional[str]:
     if not text:
         return None
     close = text.rfind(")")
-    if close < 0:
+    if close <= 0:
         return None
     fields = text[close + 1 :].split()
     if len(fields) <= 19 or not fields[19].isdigit():

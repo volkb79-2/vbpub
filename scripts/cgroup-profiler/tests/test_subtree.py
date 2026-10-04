@@ -405,6 +405,20 @@ class TestInternals:
 
         assert subtree._start_time_ticks(42, str(tmp_path / "proc")) is None
 
+    def test_start_time_ticks_rejects_a_close_paren_without_a_prefix(self, tmp_path: Path):
+        stat = tmp_path / "proc" / "42" / "stat"
+        stat.parent.mkdir(parents=True)
+        stat.write_text(") " + " ".join(["S"] + ["0"] * 18 + ["98765"]))
+
+        assert subtree._start_time_ticks(42, str(tmp_path / "proc")) is None
+
+    def test_start_time_ticks_rejects_a_record_missing_field_22(self, tmp_path: Path):
+        stat = tmp_path / "proc" / "42" / "stat"
+        stat.parent.mkdir(parents=True)
+        stat.write_text("42 (comm) " + " ".join(["S"] + ["0"] * 18))
+
+        assert subtree._start_time_ticks(42, str(tmp_path / "proc")) is None
+
     def test_start_time_ticks_rejects_a_non_numeric_start_field(
         self, tmp_path: Path,
     ):
