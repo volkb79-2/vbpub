@@ -624,6 +624,43 @@ def test_ciuv8_encoded_live_or_different_namespace_owner_waits_for_deadline(
     assert fake.objects[ticket_name]["State"]["Status"] == "created"
 
 
+@pytest.mark.parametrize("mismatch", ["boot_id", "pid_ns"])
+def test_ciuv8_encoded_absent_owner_with_foreign_identity_waits_for_deadline(
+    tmp_path, monkeypatch, mismatch,
+):
+    """A dead PID is not proof of death across boots or PID namespaces."""
+    proc = tmp_path / "proc"
+    boot_file = proc / "sys/kernel/random/boot_id"
+    boot_file.parent.mkdir(parents=True)
+    boot_file.write_text("fixture-boot\n")
+    namespace_file = proc / "self/ns/pid"
+    namespace_file.parent.mkdir(parents=True)
+    namespace_file.write_text("fixture namespace\n")
+    namespace_inode = str(os.stat(namespace_file).st_ino)
+    owner = ciuv8_owner(
+        pid=77, pid_ns=namespace_inode, boot_id="fixture-boot", start_ticks=1,
+    )
+    if mismatch == "boot_id":
+        owner["boot_id"] = "other-boot"
+    else:
+        owner["pid_ns"] = str(int(namespace_inode) + 1)
+
+    def process_is_absent(pid, signal):
+        assert (pid, signal) == (77, 0)
+        raise ProcessLookupError()
+
+    monkeypatch.setattr(admission.os, "kill", process_is_absent)
+    fake, clock = FakeDocker(), Clock()
+    manager = make_manager(fake, clock)
+    manager.proc_root = str(proc)
+    ticket_name = "ciu-res-gates-1"
+    add_ciuv8_ticket(fake, ticket_name, owner, int(clock.wall()) + 300)
+
+    manager.reap()
+
+    assert fake.objects[ticket_name]["State"]["Status"] == "created"
+
+
 def test_expired_marker_keeps_ticket_when_group_member_is_only_created():
     fake, clock, notices = FakeDocker(), Clock(), []
     manager = make_manager(fake, clock, notices)
