@@ -6593,3 +6593,21 @@ P1 campaign must finish, every survivor must be triaged, and any library fix
 invalidates this applicability until the resulting exact source is rejudged.
 The final registered short/full gates must still exercise the release target
 with its current rev-49 runner.
+
+### RW-436 — 2026-10-04 16:07:54Z — DAMON initial start must not commit offline
+
+The RG-55 P3 live probe observed `kdamond_commit()` fail with `EINVAL` before
+the first start. Linux's DAMON sysfs documentation shows initial attributes
+written before `state=on`, and its implementation rejects `commit` unless the
+kdamond is running. Fix work is isolated at
+`.worktrees/rg55-damon-start-commit-fix-20261004`: initial setup now starts
+directly with `state=on`; online `recommit_targets()` retains `commit`. Its
+focused test file passes 83/83. The design guide and CP-17 backlog entry
+record the mechanism, boundary, and pending live-sample oracle. No live
+acceptance has been claimed yet.
+
+This changes a file under P1's `source_roots = ["lib"]`, so RW-435's running
+campaign remains evidence only for its exact old tree and cannot qualify the
+fix tree. Do not modify the judged campaign checkout. Once that campaign
+finishes, the exact final library source needs its own R2 verdict and all
+release gates; keep the existing run useful for triage, not as a substitute.
