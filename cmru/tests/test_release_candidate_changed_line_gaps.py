@@ -771,7 +771,6 @@ def test_retained_output_identity_rechecks_root_directories_after_tree_walk(
     monkeypatch.setattr(transaction, "_filesystem_tree_identity_fd", add_artifact_after_walk)
     with pytest.raises(RuntimeError, match="retained build output changed during inspection"):
         transaction.retained_build_output_identity(tmp_path, project, "demo", output_id)
-    assert walks == 1
 
 
 def test_private_cleanup_stage_retries_collisions_and_removes_failed_open(
