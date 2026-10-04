@@ -53,7 +53,7 @@ SPEC §9.
 | RG-33 | `kind = "assay"` mutation lanes never receive `--resume` (or `--progress`), so a budget-capped retry re-tests every mutant from #1 — dstdns `sql-mutation`, three 120-minute retries spent on the first of four target files, `.assay/mutation-state/` never written | Major | FIXED 2026-09-02 (rev 33, SPEC `R-38`) — every assay-kind invocation now carries `--resume --progress .assay/progress-<assay_lane>.jsonl` unconditionally (no-ops without R2, per assay's own contract); a pin declaring a judge older than 2.4.1 refuses by name at argv construction; five new tests in `TestResumeAndProgressAlways` including the executed host-runner argv and the dry-run docker argv line; assay's own gate script mirrors it in the assay wave |
 | RG-34 | a `kind = "command"` container lane whose `argv[0]` is a bare relative script path resolves against the container's `--workdir`, so it dies with `exit 127` in any container that mounts only the judged worktree (dstdns P152's `schema` lane, 100% reproducible) while working under the shared full-repo mount | Major | FIXED 2026-09-02 (rev 34, SPEC `R-30b`) — run-gate's half: `doctor` names the lane, the element, the fix and the mechanism; a WARNING, never a refusal, and run-gate never rewrites a consumer's argv. CLOSED 2026-09-03 (RW-26): the argv edit itself is dstdns-side, so the live `scale-admission` hit is a line in the dstdns notification, not an acceptance box run-gate can never tick |
 | RG-35 | a lane's container outlives a dead run-gate client (`docker run -d` … `rm -f` in a `finally` the client never reaches), but nothing re-attaches: exit status, evidence and history are lost and the next invocation starts a DUPLICATE container for the same lane — the one-gate rule broken by the tool | Major | FIXED 2026-09-02 (rev 34, SPEC `R-39`) — `.run-gate/inflight/<lane>.json`, automatic re-attach/collect/report-lost, `--fresh` escape, commit mismatch refused |
-| RG-36 | the only liveness bound for a long assay lane is a GUESSED total `budget` (advisory here, hard in assay); rev 33's progress file makes rate/ETA/stall observable but run-gate reads none of it | Major | FIXED 2026-09-02 (rev 34, SPEC `R-40`) — the COARSE half: 30 s progress disclosure with rate/ETA, no-events disclosed once and never a fault, optional `stall_timeout` lane key (assay lanes only; stops the lane only while RUNNING and silent that long, never on total elapsed). Exact timing = E-3, needs assay B065; the code already prefers an event's `elapsed_s`, so B065 makes it exact with no rewrite |
+| RG-36 | the only liveness signal for a long assay lane was a guessed total `budget`; progress made rate/ETA/stall observable but run-gate initially read none of it | Major | FIXED 2026-09-02 (rev 34, SPEC `R-40`) — progress disclosure and `stall_timeout`; **budget enforcement was added in rev 49 under RG-63** and now bounds execution time after admission and runner-lock acquisition |
 | RG-37 | exec-mode container derivation (`run-gate.py` `resolve_container_name`, R-14a) reads `deploy.project_name` + `deploy.environment_tag` (fallback `deploy.network_name`) from the consumer's rendered `ciu.global.toml`; a CIU v8 checkout (SPEC-V8 draft.3, ciu CIU-92) renders `ciu.resolved.toml` instead, with identities as data under `[resolved.identities.<realization>.<service>] container_name`, and has no `deploy` table — every dstdns exec lane would fail container resolution the day dstdns moves to v8, while the operator decided (2026-09-02) that run-gate STAYS maintained in parallel with `ciu gate` and is "aligned with future changes in ciu v8" | Major | OPEN 2026-09-02 — filed from the v8 design review (ciu `docs/CIU-V8-ADVERSARIAL-REVIEW-2026-09-02.md` R-01, proposal §4.4 V8-19 / §4.11 N18): additive lookup order — when `ciu.resolved.toml` exists in the judged checkout, resolve `environments.<n>.container_name` (or a new `exec_in = "<realization>.<service>"` key) through `resolved.identities`, otherwise keep the v7 path; `kind = "sequence"` in-process conjunction lanes (N21) are the second alignment item |
 | RG-42 | `TestPointerLinkageEstate`'s estate-wide sweep (`glob("*/nyxloom-trove/nyxloom.toml")`) certifies every subproject's declared gate pointers against real lanes on EVERY run-gate-project selftest, with no way for a subproject that is mid-bootstrap to say "not yet" — the ciu8 carve (`ciu8-P001`) hand-declared `[gates.tester-unified]` pointing at a `run-gate.toml` its own Part A bootstrap contract creates LATER, by design (mirrors `ciu/nyxloom-trove/nyxloom.toml`'s own pattern), which makes run-gate-project's OWN registered gate red for every consumer from the moment that trove is committed until the subproject's bootstrap actually lands — confirmed NOT caused by this wave or by RG-39 (reproduced identically on main's tip immediately before RG-39's own merge, `471703ee`) | Medium | OPEN 2026-09-03 — self-resolving once `ciu8-P001`'s Part A bootstrap creates `ciu8/run-gate.toml` (tracked separately in ciu8's own trove, not here); if a subproject bootstrap regularly outlives one gate cycle, the estate sweep could gain an opt-out (e.g. a `bootstrapping = true` key in `[project]`, skipped by `ESTATE_DOCS` until cleared) rather than every consumer tolerating a red selftest meanwhile — not built, no second occurrence yet to justify the mechanism |
 | RG-43 | `'host' becomes a container default, 'bare-host' is the literal old behavior` (rev 36, SPEC `R-42`) landed on `debian-install-update` (commit `e7d5cd7c`) tagged `RG-39`/`R-39` in its own comments and `__revision__` history at merge time — a real collision with main's OWN unrelated RG-39 (exec-mode internal mutual exclusion, rev 35, SPEC `R-41`), caught and renumbered while merging `origin/main` into that branch (2026-09-03) rather than at the point of origin. The feature itself: `environment = "host"` (default) now resolves to a synthetic container environment instead of literal bare execution; `environment = "bare-host"` is the new name for the old behavior | Major | FIXED (the flip itself; SEE OPEN NOTE) 2026-09-02 (rev 36 numbering as of the 2026-09-03 merge) — the flip's own commit message says explicitly: "NOT done here, deliberately: the estate-wide sweep across every other `environment = "host"` lane (~14 projects) this flip affects." That sweep has not happened as of this filing — every one of those ~14 projects' `host` lanes now runs containerized instead of bare the moment this branch reaches main, unverified. **2026-09-08 (run-gate-P05):** the sweep gap reached run-gate-project's OWN code too — `main()`'s `--fresh` refusal (`not env` branch) is now reached only by `environment = "bare-host"` (the built-in host env resolves non-empty post-flip), but the refusal MESSAGE still said "the built-in host environment" and `TestFreshFlagScope::test_a_host_lane_refuses_it` still constructed an `environment = "host"` lane to exercise it — silently testing NOTHING once RG-43 shipped (the refusal never fires for `host` anymore; the test passed only because `--fresh` on a fresh `host` lane happens to also exit non-zero for an unrelated reason, a real container-launching lane trying to reach `ghcr.io`, which coincidentally matched `== 2` on THIS host's docker access but is environment-dependent and not what the test claims to prove). Fixed: message corrected to name `'bare-host'`, the test renamed and reconfigured to actually exercise it, and a new regression guard (`test_a_host_lane_no_longer_refuses_it`, fully docker-mocked) pins that `environment = "host"` genuinely does NOT refuse `--fresh` post-RG-43, so a future accidental re-widening of the `not env` check is caught. Found while getting run-gate-project's own `./run-gate.py selftest` gate green for the RG-44/RG-38/RG-40 batch — this is the estate-wide sweep's remaining scope (~14 external projects) still open, unrelated to this internal fix |
@@ -80,24 +80,24 @@ SPEC §9.
 | RG-60 | exec-lane profiling had no inflight recovery record | Major | FIXED 2026-09-12 |
 | RG-61 | RG-55 wave left documentation drift | Minor | FIXED 2026-09-12 |
 | RG-62 | two order-/timing-sensitive selftest flakes were found live | Minor | OPEN |
-| RG-63 | assay lane budget included time queued on the exec lock | Major | OPEN — RG-80 package 1 is intended to start the budget at admission |
+| RG-63 | assay lane budget included time queued on the exec lock | Major | FIXED 2026-10-04 (rev 49): budget starts after admission and runner locks |
 | RG-64 | caller-side lock checks could not reliably diagnose actual container occupancy | Minor | OPEN — internal run-gate exec lock is authoritative; first-class status query is unresolved |
 | RG-65 | duplicate of RG-47: worktree-only lanes were hidden by invoking-CWD config resolution | Major | MERGED INTO RG-47 2026-10-04 (rev 47) |
-| RG-66 | no way to pass assay's `--reuse-from` / `--rejudge` through `run-gate <lane>`, so assay 7.1+ provenance-safe selective R2 reruns cannot be used via the gate | Minor | OPEN |
-| RG-67 | no per-environment (per-runner-container) invocation limit, and a composite lane does not declare which runners its members use, so consumers hand-hold whole-invocation flocks and the composite over-holds a second runner — **(a) WITHDRAWN 2026-10-03 (D-667); (b) remains** | Minor | OPEN |
-| RG-68 | `footprint` only counts PASS runs; a completed FAIL (for example surviving mutants) is a valid resource measurement, so first-run budget calibration stalls on a red first run | Minor | OPEN |
-| RG-69 | `footprint --write` could not update one lane without regenerating the whole manifest | Minor | OPEN |
-| RG-70 | no canonical way to run a repository script inside a worktree's test-runner | Minor | OPEN |
-| RG-71 | schema lane could not target one file for fast iteration | Minor | OPEN |
-| RG-72 | failed assay lanes left no durable failure evidence before the next run overwrote it | Minor | OPEN |
+| RG-66 | no way to pass assay's `--reuse-from` / `--rejudge` through `run-gate <lane>`, so assay 7.1+ provenance-safe selective R2 reruns cannot be used via the gate | Minor | FIXED 2026-10-04 (rev 49): assay-only selective flags are forwarded |
+| RG-67 | no per-environment (per-runner-container) invocation limit, and a composite lane does not declare which runners its members use, so consumers hand-hold whole-invocation flocks and the composite over-holds a second runner — **(a) WITHDRAWN 2026-10-03 (D-667); (b) remains** | Minor | FIXED 2026-10-04 (rev 49): (a) remains withdrawn; (b) uses native serial sequences |
+| RG-68 | `footprint` only counts PASS runs; a completed FAIL (for example surviving mutants) is a valid resource measurement, so first-run budget calibration stalls on a red first run | Minor | FIXED 2026-10-04 (rev 49): completed profiled FAIL is opt-in with `--include-failed` |
+| RG-69 | `footprint --write` could not update one lane without regenerating the whole manifest | Minor | FIXED 2026-10-04 (rev 49): repeatable `--lane` merges selected entries |
+| RG-70 | no canonical way to run a repository script inside a worktree's test-runner | Minor | ABSORBED into ciu CIU-118 `ciu exec` (implementation tracked by CIU-118; no separate run-gate v7 work) |
+| RG-71 | schema lane could not target one file for fast iteration | Minor | FIXED 2026-10-04 (rev 49): `accepts_args = true` enables `--` command args |
+| RG-72 | failed assay lanes left no durable failure evidence before the next run overwrote it | Minor | FIXED 2026-10-04 (rev 49): digest plus bounded failed-run archive |
 | RG-73 | an `ephemeral` environment cannot stand in for a per-worktree runner: literal `image`, and the judged worktree is not mounted at the image's canonical root | Major | OPEN 2026-10-03 |
-| RG-74 | post-merge trunk base (`HEAD^1`) and composite-member base propagation are consumer scripts (dstdns `gate-base.sh`), not run-gate derivations | Minor | OPEN 2026-10-03 |
+| RG-74 | post-merge trunk base (`HEAD^1`) and composite-member base propagation are consumer scripts (dstdns `gate-base.sh`), not run-gate derivations | Minor | FIXED 2026-10-04 (rev 49): `[project].trunk` and native sequence base propagation |
 | RG-75 | no lane-scoped throwaway service (database): schema/mutation lanes hand-provision and tear down their own Postgres | Major | OPEN 2026-10-03 |
-| RG-76 | external-assay consumers restate judge command, pin and one lane block per assay lane (dstdns: 118 identical pin blocks); import lanes from `assay lanes --json` | Minor | OPEN 2026-10-03 |
-| RG-77 | the per-assay-lane `--state-dir` contract (RG-38) and its root-owned-parent repair (RG-49) are in no SPEC rule or skill, so consumers restate them in their own instruction files | Minor | OPEN 2026-10-03 |
-| RG-78 | adopt the ciu v8 closed exit table and explicit environment modes in run-gate now (backport, operator ruling D-654): lane exit passthrough overlaps the 2/3 refusal codes, and the built-in `host` environment is a container | Major | OPEN 2026-10-03 |
+| RG-76 | external-assay consumers restate judge command, pin and one lane block per assay lane (dstdns: 118 identical pin blocks); import lanes from `assay lanes --json` | Minor | FIXED 2026-10-04 (rev 49): v8-shaped `{ environment, lanes }` import |
+| RG-77 | the per-assay-lane `--state-dir` contract (RG-38) and its root-owned-parent repair (RG-49) are in no SPEC rule or skill, so consumers restate them in their own instruction files | Minor | FIXED 2026-10-04 (rev 49): shipped state contract documented; RG-49 repair remains separately OPEN |
+| RG-78 | adopt the ciu v8 closed exit table and explicit environment modes in run-gate now (backport, operator ruling D-654): lane exit passthrough overlaps the 2/3 refusal codes, and the built-in `host` environment is a container | Major | FIXED 2026-10-04 (rev 49): single finish path, AST guard, byte-status lane oracle |
 | RG-79 | exec-mode resolution **silently falls back to main's runner** when the judged worktree has no rendered ciu config (a shadowing default, AGENTS §4.2a); the worktree's own test-runner is the design (D-647 #2, D-666), so run-gate must refuse and name "start this worktree's own test-runner" (reframed 2026-10-03; originally filed as a stray-render defect) | Major | FIXED 2026-10-04 (rev 47; same implementation as RG-47) |
-| RG-80 | no daemon-wide cap on concurrent gates: the cross-worktree cap is a consumer flock wrapper (dstdns `gate-slot.sh`); build SPEC-V8 S21's count mode (Docker-name tickets, tombstones, deadlines, run marker, published `ciu-admission-<g>` object) behind an off-by-default switch, so the wrapper retires before v8 | Major | OPEN 2026-10-03 |
+| RG-80 | no daemon-wide cap on concurrent gates: the cross-worktree cap is a consumer flock wrapper (dstdns `gate-slot.sh`); build SPEC-V8 S21's count mode (Docker-name tickets, tombstones, deadlines, run marker, published `ciu-admission-<g>` object) behind an off-by-default switch, so the wrapper retires before v8 | Major | FIXED 2026-10-04 (rev 49): ticket/publish and owner/reaping packages |
 
 ---
 
@@ -422,6 +422,10 @@ and a new validated optional `description` key (one line, `--help` only).
 (CONSUMERS anti-goal) and never grows columns. SPEC R-01/R-08 amended;
 CONSUMERS schema comment updated. Gitignore obligation for command-kind
 artifacts lands with RG-10/RG-13. Tests: TestUsageEnvironmentContract x5.
+
+**Current contract (rev 49, 2026-10-04):** the lane table still displays
+`budget`; it is a hard run-gate wall-clock limit that starts after admission
+and runner-lock waits (RG-63/RG-78), not an advisory value.
 
 ## RG-8 — no `--dry-run`
 
@@ -2561,6 +2565,11 @@ Never on total elapsed time — `budget` stays advisory, its print unchanged,
 and the two are disclosed side by side saying which is which. Declared on a
 `kind = "command"` lane the key is REFUSED at load: it could never do
 anything there, which is exactly RG-32's defect one key over.
+
+**Correction, 2026-10-04 (rev 49, RG-63):** the historical proposal above
+predates enforcement. `budget` is now a hard wall-clock limit. Its clock
+starts after admission and runner locks are acquired, so queue wait does not
+consume execution time; `stall_timeout` remains the separate silence bound.
 
 **Tests** (22): `TestProgressWatch` drives the arithmetic and the silence
 rule on a substituted clock (rate from run-gate's clock, rate from a
@@ -5056,6 +5065,8 @@ by this package's diff (same reasoning as every other update in this
 thread) — filed as a note per the standing convention (a second/Nth
 reproduction of the SAME underlying defect goes here, not a new entry).
 
+### Status — FIXED 2026-10-04 (rev 49): the hard assay budget starts after admission, following shared-infra and exec-runner locks. Lock-wait time no longer consumes the execution budget.
+
 ## RG-66 — no pass-through for assay's `--reuse-from` / `--rejudge`
 
 **Provenance:** found in dstdns 2026-09-30 (R2 campaign planning, `nyxloom-trove/decisions.md` D-569..D-573, dstdns@682c7ef4); run-gate 23.9.2.dev305, assay 7.2.0.
@@ -5069,6 +5080,8 @@ reproduction of the SAME underlying defect goes here, not a new entry).
 **Oracles:** `--dry-run` shows the forwarded flags; a command lane given `--reuse-from` refuses; a judge older than the floor refuses at construction; a controlled wrong implementation that forwards the flags for every lane kind must fail the refusal test.
 
 **Spec owner:** SPEC (assay lane argv construction, R-38).
+
+### Status — FIXED 2026-10-04 (rev 49). Run-gate forwards `--reuse-from`, repeatable `--rejudge`, and `--rejudge-outcome` only to assay lanes, validates the reuse path inside the judged worktree, records the request, and enforces the 5.2.0 judge floor.
 
 ## RG-67 — no per-environment invocation limit; composite lanes do not declare their runners
 
@@ -5102,6 +5115,8 @@ reproduction of the SAME underlying defect goes here, not a new entry).
 
 **Amendment 5 (2026-10-03, dstdns D-667; controller ruling on the r5 review §9.3 and §10 Q3): (a) is WITHDRAWN.** The per-environment N > 1 for one shared exec runner has no consumer since D-666 (dstdns, its only consumer, runs one runner per worktree; Mode A is retired) and it contradicts SPEC-V8 S16.5.7 (an exec target serves one lane at a time), so it would be a v7-only feature with nothing to port. It leaves run-gate's Phase A build list (proposal N24, D-651 Q2). The daemon-wide cap is RG-80. This file has only OPEN and FIXED statuses, so the entry stays **OPEN for (b)** (composite lanes declaring their runners, kept only while a composite consumer remains) and its index row says (a) is withdrawn; if (b) is also dropped the entry should be closed by a later note rather than deleted.
 
+### Status — FIXED 2026-10-04 (rev 49) for the remaining composite item. Native `kind = "sequence"` declares ordered member lanes; run-gate resolves each member runner and runs serially under one composite invocation. D-667 withdrew per-environment N; no such cap was built.
+
 ## RG-68 — `footprint` ignores completed FAIL runs
 
 **Provenance:** found in dstdns 2026-09-30 (first-run budget calibration for new R2 lanes, D-572 section 3).
@@ -5116,6 +5131,8 @@ reproduction of the SAME underlying defect goes here, not a new entry).
 
 **Spec owner:** SPEC R-44 (footprint manifest).
 
+### Status — FIXED 2026-10-04 (rev 49). `footprint` can include history-eligible completed profiled FAIL runs with explicit `--include-failed`; timeout, abort, dirty, infrastructure, and unprofiled runs remain excluded.
+
 ## RG-69 — `footprint --write` has no per-lane mode: a package cannot record one new lane's footprint without regenerating the whole tracked manifest
 
 **Provenance:** found in dstdns 2026-09-30, P224 (adds a lane); `nyxloom-trove/decisions.md` D-572 section 3. run-gate rev 46.
@@ -5129,6 +5146,8 @@ reproduction of the SAME underlying defect goes here, not a new entry).
 **Oracles:** with a two-lane manifest, `--write --lane B` changes only B's entry (other entry bytes equal); unknown/unprofiled lane refuses with exit 2; a missing manifest refuses; a controlled wrong implementation that writes only the named lane (dropping others) must fail the first oracle.
 
 **Spec owner:** SPEC R-44 (footprint manifest).
+
+### Status — FIXED 2026-10-04 (rev 49). Repeatable `footprint --write --lane NAME` merges selected lane entries into an existing schema-1 manifest and preserves other entries.
 
 ## RG-70 — no canonical way to exec a repo script or command inside a worktree's test-runner (the app-runtime dependency closure)
 
@@ -5146,6 +5165,11 @@ reproduction of the SAME underlying defect goes here, not a new entry).
 
 **Consumer evidence, 2026-10-03 (dstdns tooling-boundary pass).** The improvised "find the runner and `docker exec`/`docker run` a clone of it" pattern is already copied five times in dstdns: `scripts/p128-assay-schema.sh`, `p129-assay-schema.sh:41-51`, `p165-assay-schema.sh:47-92`, `p167-assay-schema.sh`, `p201-assay-schema.sh:100-145`. Each one derives the runner's name itself (see also `scripts/schema-gate.sh:214-219` and `scripts/config_helper.py:151,180`), five derivations in total. Each then reads the image, binds, network and cgroup parent back off the running container with `docker inspect`. `p129:34-39` even re-implements ciu's instance-id hash (`sha256(path)[:6]`), which ciu 7.15's base36 derivation (vbpub@d1eb98770) has made silently wrong. The per-package `P1xx_TEST_RUNNER`/`P1xx_PHYSICAL_REPO_ROOT` names hand-listed in dstdns's `[environments.test-runner] forward_env` (`run-gate.toml:12-21`) are this pattern's plumbing. dstdns would delete all of it given RG-70 plus RG-75 (lane-scoped throwaway services). ciu already ships the container-resolution half for managed worktrees (`ciu worktree exec --target`, S16.7, with a mount proof). RG-70 should reuse that resolution rather than add a fourth one. **v8: absorb** (`ciu instance exec --env`, SPEC-V8 S14.6.3).
 
+**Controller ruling (2026-10-04): absorbed into ciu CIU-118.** The supported
+`ciu exec` path owns this capability and its dstdns caller migration; RG-70 is
+not a separate run-gate v7 feature. CIU-118 tracks the implementation, so
+this entry is not marked FIXED until that work lands.
+
 
 ## RG-71 — the `schema` lane cannot take a single-file target: iterating on one `tests/schema/` test costs the full lane every time
 
@@ -5160,6 +5184,8 @@ reproduction of the SAME underlying defect goes here, not a new entry).
 **Oracles:** `run-gate schema --worktree <wt> -- tests/schema/test_x.py::test_y` runs only that node and still provisions and disposes the throwaway DB; the same flag on a non-opted lane refuses by name; history marks the run selective; a controlled wrong implementation that lets a selective run satisfy the gate lane's freshness check must fail.
 
 **Spec owner:** SPEC (lane argv construction).
+
+### Status — FIXED 2026-10-04 (rev 49). Command lanes may declare `accepts_args = true`; invocation arguments after `--` are appended after the lane argv. Assay and composite command lanes refuse them.
 
 ## RG-72 — a failed `kind = "assay"` lane leaves no failing-test evidence in the gate log, and the next run overwrites its verdict
 
@@ -5185,6 +5211,8 @@ reproduction of the SAME underlying defect goes here, not a new entry).
 - A PASS run writes no digest and no archived copy.
 
 **Spec owner:** SPEC (assay-kind lane result handling) and the run-history store.
+
+### Status — FIXED 2026-10-04 (rev 49). Non-PASS assay verdicts print a bounded digest and archive current verdict/progress under `.run-gate/failed/<lane>/<run_id>/`, retaining ten per lane and recording the archive path.
 
 ## RG-73 — an `ephemeral` environment cannot stand in for a per-worktree runner: its image is a fixed literal and the judged worktree is not mounted at the image's canonical root
 
@@ -5249,6 +5277,8 @@ reproduction of the SAME underlying defect goes here, not a new entry).
 **v8: absorb** (SPEC-V8 S16.5.4/S16.5.5: sequence lanes and request-base pass-through. The trunk-merge step is missing there too).
 
 **Amendment (2026-10-03, ciu v8 adversarial review, dstdns D-658; SPEC-V8 draft.9 S16.12 is the per-oracle table; not yet built, amended before the build):** oracle 3 ("a non-merge trunk HEAD refuses with exit 2") becomes NOT_RUN/`no-base`, exit 3, after RG-78: a base that cannot be derived is a precondition refused before execution, not a configuration error. The same holds for `--base` outside R-35b's charset. Reference: ciu `SPEC-V8.md` S16.7.4, S16.8.
+
+### Status — FIXED 2026-10-04 (rev 49). `[project].trunk` derives a merge-at-trunk first-parent base or returns NOT_RUN/`no-base`; native sequences resolve once and pass it only to delegating members.
 
 ## RG-75 — no lane-scoped throwaway service (database): every schema/mutation lane provisions and tears down its own Postgres by hand
 
@@ -5326,6 +5356,8 @@ reproduction of the SAME underlying defect goes here, not a new entry).
 
 **Amendment 2 (2026-10-03, dstdns D-666; reviewed against SPEC-V8 draft.11; still not built):** key mapping for the v8 absorption, so the v7 build and the port stay one shape. v7 `[assay] command` + `pins` (a version and a `sha256` **sidecar file**, e.g. `tools/assay/assay-7.2.0.pyz.sha256`) is v8 `[testing.judge] command` + an inline `sha256` (the digest, not a path; S16.3 (a)); an estate-internal consumer's `source` mode is `[testing.judge] source`; `[assay] environment` and `import = "all" | [names]` is `[testing.judge] import = { environment = "<e>", lanes = "all" | [<names>] }`, names only (S16.3). Oracle 1's "tampering with the sha256 sidecar" is, in v8, a digest that differs from `testing.judge.sha256`, NOT_RUN/`judge-digest` (S16.3.3). The `[testing.judge]` version floor (`version`) has no v7 `[assay]` key: run-gate's own pin check (RG-33's judge floor) is its v7 form. Nothing else in Amendment 1 changes.
 
+### Status — FIXED 2026-10-04 (rev 49). `[assay].import = { environment = "...", lanes = "all" | [names] }` imports from `assay lanes --json` with the shared command and pin. The nested import shape matches CIU v8.
+
 ## RG-77 — the assay-lane `--state-dir` contract (RG-38) and its repair (RG-49) are documented nowhere a consumer reads
 
 **Provenance:** dstdns P235 (agent-instructions restructure, D-648), 2026-10-03. run-gate rev 46.
@@ -5350,6 +5382,8 @@ reproduction of the SAME underlying defect goes here, not a new entry).
 **Spec owner:** SPEC R-38.
 
 **v8: absorb** (the v8 gate inherits the argv builder, so the same drift test belongs there).
+
+### Status — FIXED 2026-10-04 (rev 49) for the shipped documentation contract: SPEC, skill, and CONSUMERS now name `--resume`, `--progress`, `--state-dir`, the 5.2.0 floor, and the durable state path. RG-49 parent repair remains OPEN and is explicitly not described as shipped.
 
 ## RG-78 — adopt v8's closed exit table and explicit environment modes now, not at the ciu8 cutover
 
@@ -5397,6 +5431,8 @@ reproduction of the SAME underlying defect goes here, not a new entry).
 **Amendment 3 (2026-10-03, dstdns D-661; SPEC-V8 draft.10 S21; still not built):** Amendment 2 moved the NOT_RUN reason `no-headroom` to v8.1; with the count mode in 8.0 it is an **8.0** reason: a lane whose ticket waits past `--admission-wait` (default 10 m), or whose published limit is unreadable under `unreadable_policy = refuse`, is NOT_RUN/`no-headroom`, **exit 3** in the gate's closed table (the NOT_RUN class; 4 stays BUDGET_EXCEEDED). The closed reasons of 8.0 are therefore `realness-mismatch`, `service-down`, `environment-down`, `environment-mismatch`, `env-missing`, `external-missing`, `external-down`, `dirty-tree`, `no-headroom`, `lock-busy`, `no-base`, `judge-floor`, `judge-digest`, `provenance-mismatch` (SPEC-V8 Appendix E, `not_run_reasons`). Exit code 4 for `ciu up`/`ciu dev` as an admission refusal and the stack placeholder remain v8.1 (S21.4.4, S21.4.6). The flags `--admission-wait D` and `--override-admission` belong to `ciu gate` in 8.0 and are accepted and ignored with one notice while admission is disabled (S21.1.3), so a pointer or CI line that passes them never breaks.
 
 **Amendment 4 (2026-10-03, dstdns D-666; reviewed against SPEC-V8 draft.11; still not built):** (1) the "Cutover" checklist line "dstdns `gate-slot.sh` (deleted by RG-67)" is corrected: `gate-slot.sh` is deleted by **RG-80** (the count mode), before v8. (2) `no-headroom` (NOT_RUN, exit 3, Amendment 3) exists in the v7 closed reason set only once RG-80 lands; until then run-gate never produces it, and the accepted-and-ignored flags `--admission-wait` and `--override-admission` do not exist in the v7 CLI either (they arrive with RG-80, accepted-and-ignored while its switch is off, S21.1.3). (3) RG-79's refusal (no rendered config in the judged worktree; the worktree's own runner is down) is ERROR/exit 2 on the v7 line and, after this entry, `environment-down` NOT_RUN/exit 3 for a derived runner that is not running (S16.4 `exec`: "NOT_RUN/`environment-down` when not healthy"), while a worktree with **no rendered config at all** stays a configuration refusal (ERROR, exit 2; S16.11, S1.5.3). Draft.11's v8.2 split (remote deployment) changes nothing here; the closed reason list is unchanged (`not_run_reasons`, 14 values).
+
+### Status — FIXED 2026-10-04 (rev 49). Normal dispatch returns `LaneResult` through `finish()`, command exit bytes map to PASS/FAIL without escaping, and every environment declares one of the three modes.
 
 ## RG-79 — exec-mode resolution silently falls back to main's runner when the judged worktree has no rendered ciu config; it must refuse and name "start this worktree's own test-runner"
 
@@ -5491,3 +5527,5 @@ A declared literal `container_name` remains the explicit shared-runner choice.
 **Spec owner:** SPEC (execution contract, admission: new subsection); contract of record SPEC-V8 draft.11 S21.1–S21.4, S21.6, S21.8, S21.9.
 
 **v8: absorb.** This is ciu8's V8-38 (checkpoint D, `gate/admission.py`); the oracles above are its parity tests. Proposal row N28 (`CIU-V8-TESTING-GATE-PROPOSAL.md` §4.11). Related: RG-67 (Amendment 4), RG-78 (the `no-headroom` reason), RG-79.
+
+### Status — FIXED 2026-10-04 (rev 49) in two implementation packages: (1) Docker-name CAS ticket allocation/release, published generations, disabled-by-default switch and budget start at admission; (2) owner PID-namespace proof, wait/run deadlines, group reaping, tombstone cleanup and the shared v8 label fixture. Byte admission, stack tickets and v8.1 policy stay out of scope.

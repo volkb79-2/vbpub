@@ -7,22 +7,17 @@
 # this passes. Dogfooding by design — run-gate gates itself through its own
 # machinery.
 #
-# BARE-HOST mode, deliberately (rev 24: 'host' now means a container by
-# default, same as any named environment — R-38; this lane is the ONE
-# known case that needs the 'bare-host' opt-out instead) — NOT tester-unified
-# either (verified empirically 2026-08-24, a container run of this exact
-# lane produced 53 unrelated failures a bare-host run did not).
-# test_run_gate.py's own suite is
-# self-referential: many tests exercise physical_path()'s REAL
-# /proc/self/mountinfo lookup against pytest's own tmp_path fixtures (only
-# `docker run` itself is faked; RG-3's dual-mount and friends need a genuine
-# host-mounted /tmp to resolve). Wrapping that suite inside ANOTHER
-# container layer breaks mountinfo resolution for paths pytest creates
-# fresh inside that container's own filesystem — they were never
-# bind-mounted from anywhere, so "is the repo bind-mounted into this
-# container?" fires on tests that have nothing to do with this change. This
-# is unlike every other consumer's suite, which doesn't test run-gate's own
-# docker-orchestration internals and gates cleanly in tester-unified.
+# The lane uses `bare-host` so its tests exercise run-gate's direct host
+# subprocess path instead of starting a second judged container. The suite
+# itself is launched inside tester-unified by the repository's gate runner.
+# `host` continues to mean an ephemeral container by default (R-38).
+# test_run_gate.py's own suite is self-referential: many tests exercise
+# physical_path()'s REAL /proc/self/mountinfo lookup against pytest's own
+# tmp_path fixtures (only `docker run` itself is faked; RG-3's dual-mount and
+# friends need a genuinely host-mounted path to resolve). Pytest's default
+# /tmp is private to tester-unified, so keep its basetemp under this
+# bind-mounted checkout. This preserves the real mountinfo comparison while
+# allowing the registered selftest lane to run in tester-unified.
 #
 # Coverage discipline (2026-08-24 decision): the release lane enforces DIFF
 # coverage at 100% (topos/nyxloom estate pattern, vendored thin gate in
@@ -48,7 +43,7 @@ schema_version = 1
 [lanes.selftest]
 kind = "command"
 environment = "bare-host"
-argv = ["bash", "-c", "python3 -m pytest tests -q --cov=. --cov-branch --cov-report=json:coverage.json && exec python3 tools/coverage_gate.py --repo . --base main --coverage-json coverage.json --source run-gate.py"]
+argv = ["bash", "-c", "GIT_CEILING_DIRECTORIES=\"$PWD/.run-gate/selftest-tmp\" python3 -m pytest tests -q --basetemp .run-gate/selftest-tmp --cov=. --cov-branch --cov-report=json:coverage.json && exec python3 tools/coverage_gate.py --repo . --base main --coverage-json coverage.json --source run-gate.py"]
 budget = "20m"
 artifacts = ["coverage.json"]       # disclosed after every run (RG-10)
 
@@ -68,10 +63,9 @@ artifacts = ["coverage.json"]       # disclosed after every run (RG-10)
 # `.py` source under a non-test path and cannot enter the judged set either
 # way.
 #
-# `kind = "assay"`, bare-host (same reasoning as `selftest`: this project's
-# own suite is self-referential against real mountinfo/docker-orchestration
-# internals — see that lane's header — so it never runs inside a container
-# layer). `clean_tree = true` is the documented default (README "Lane
+# `kind = "assay"`, bare-host (same reason as `selftest`: the lane exercises
+# this project's host-subprocess path, while the outer gate still runs in
+# tester-unified; see that lane's header). `clean_tree = true` is the documented default (README "Lane
 # schema"), declared explicitly here because an assay R1+/R2 lane's own
 # DIRTY_TREE check would refuse a moment later anyway (assay/docs/
 # CONSUMERS.md) — stating the position once, at the layer that can name the
@@ -98,8 +92,8 @@ budget = "30m"
 # `subprocess.run` with no watch of any kind, so a `stall_timeout` here was
 # SILENTLY INERT: a stuck-but-still-running mutation sweep was never
 # stopped early, contrary to what the config used to claim. This lane's
-# only bound is the `budget` below (advisory, disclosed, never enforced by
-# a timer either — see `budget`'s own doc). After RG-43's host/bare-host
+# total-time bound is the hard `budget` below; `stall_timeout` separately
+# bounds silence while a container is running. After RG-43's host/bare-host
 # role swap, `stall_timeout` is live only on a lane with
 # `environment = "host"` (a real container), never on `bare-host`.
 [lanes.assay-r2]

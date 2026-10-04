@@ -118,9 +118,17 @@ fi
 mkdir -p -- "$evidence_root"
 
 docker_socket=/var/run/docker.sock
-[[ -S $docker_socket ]] \
-    || die "Docker socket '$docker_socket' is absent; nested container contract tests cannot run"
-socket_gid=$(stat -c %g "$docker_socket")
+if [[ -n ${_TESTER_UNIFIED_LAUNCH_LOCK:-} &&
+      ${_TESTER_UNIFIED_DOCKER_SOCKET_GID:-} =~ ^[0-9]+$ ]]; then
+    # Private launcher-test seam: these behavioral tests use a fake Docker
+    # client and an isolated launch lock, so they need only pin the constructed
+    # --group-add value. Real launches always inspect the actual socket.
+    socket_gid=$_TESTER_UNIFIED_DOCKER_SOCKET_GID
+else
+    [[ -S $docker_socket ]] \
+        || die "Docker socket '$docker_socket' is absent; nested container contract tests cannot run"
+    socket_gid=$(stat -c %g "$docker_socket")
+fi
 [[ $socket_gid =~ ^[0-9]+$ ]] || die "could not read Docker socket group"
 
 pressure_file=${_TESTER_UNIFIED_PRESSURE_FILE:-/proc/pressure/memory}
