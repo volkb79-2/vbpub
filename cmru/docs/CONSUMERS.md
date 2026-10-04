@@ -647,6 +647,8 @@ already points to snapshot paths; an external central file maps its registered
 project paths from the source Git root. If an in-repository orchestration change
 moved a project config since your caller checkout, CMRU reads its policy and
 places the copied project secret overlay at the path recorded in the snapshot.
+Project config symlinks may point within the Git family; the resolved target
+must keep the `cmru.toml` filename accepted by the config loader.
 
 `cmru release` never publishes from your working tree (`S-CLI.5`). It fetches `origin/main`,
 refuses local-only `main` commits the snapshot would omit, and creates a temporary worktree at

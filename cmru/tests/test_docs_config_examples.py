@@ -248,6 +248,7 @@ def test_git_version_for_local_tag_inspection_is_documented_across_user_guides()
     assert "passes those exact commits to" in readme
     assert "fetches `origin/main` again and refuses if" in readme
     assert "secret overlay follows the snapshot path" in readme
+    assert "targets must retain the `cmru.toml` filename" in readme
     assert "checks the committed candidate's tag" in readme
     assert "Git 2.43" in design and "git show-ref --exists" in design
     assert "exit 2 means absent; exit 1 means lookup error" in design
@@ -259,6 +260,7 @@ def test_git_version_for_local_tag_inspection_is_documented_across_user_guides()
     assert "private inherited pipe" in design
     assert "fetches `origin/main` again under its" in design
     assert "Project config symlinks are" in design
+    assert "must remain named `cmru.toml`" in design
     assert "tag policy from the committed retained candidate" in design
     assert "Git 2.43 or newer" in consumers
     assert "git --version" in consumers
@@ -268,6 +270,7 @@ def test_git_version_for_local_tag_inspection_is_documented_across_user_guides()
     assert "before starting any family release" in consumers_flat
     assert "fetches again and refuses if `origin/main` moved" in consumers_flat
     assert "places the copied project secret overlay at the path recorded in the snapshot" in consumers_flat
+    assert "resolved target must keep the `cmru.toml` filename" in consumers_flat
     assert "reads `project.release.git_tag` from the committed retained candidate" in consumers_flat
 
 

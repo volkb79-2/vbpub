@@ -828,18 +828,16 @@ def test_snapshot_policy_path_comes_from_the_origin_orchestration_file(tmp_path,
     def fake_read(_root, revision, path, **_kwargs):
         read_paths.append(path)
         assert revision == base
-        if path == Path("cmru.orchestration.toml"):
-            content = '[orchestration.project.demo]\nconfig = "new/demo/cmru.toml"\n'
-        else:
-            content = "[project.release]\ngit_tag = true\n"
-        return content
+        return "[project.release]\ngit_tag = true\n"
 
     monkeypatch.setattr(cli, "_read_git_path_at_commit", fake_read)
     monkeypatch.setattr(
         cli, "_resolve_git_file_at_commit",
         lambda _root, revision, path, **_kwargs: (
             resolved_paths.append(path) or path,
-            "[project.release]\ngit_tag = true\n",
+            '[orchestration.project.demo]\nconfig = "new/demo/cmru.toml"\n'
+            if path == Path("cmru.orchestration.toml")
+            else "[project.release]\ngit_tag = true\n",
         ),
     )
     paths = _real_project_config_paths_at_snapshot(
@@ -850,15 +848,22 @@ def test_snapshot_policy_path_comes_from_the_origin_orchestration_file(tmp_path,
     assert cli._project_git_tag_policy_at_snapshot(
         repo_root, base, project, project_config_rel=paths["demo"],
     ) is True
-    assert read_paths == [Path("cmru.orchestration.toml"), Path("new/demo/cmru.toml")]
-    assert resolved_paths == [Path("new/demo/cmru.toml")]
+    assert read_paths == [Path("new/demo/cmru.toml")]
+    assert resolved_paths == [Path("cmru.orchestration.toml"), Path("new/demo/cmru.toml")]
 
 
 def test_snapshot_project_config_direct_file_uses_its_snapshot_path(tmp_path):
     repo_root = tmp_path / "repo"
+    _init_repo(repo_root)
+    project_config = repo_root / "projects" / "demo" / "cmru.toml"
+    project_config.parent.mkdir(parents=True)
+    project_config.write_text("[project.release]\ngit_tag = true\n", encoding="utf-8")
+    _git("add", "projects/demo/cmru.toml", cwd=repo_root)
+    _git("commit", "-q", "-m", "add project config", cwd=repo_root)
+    revision = _git("rev-parse", "HEAD", cwd=repo_root)
     project = SimpleNamespace(name="demo", project_root=repo_root / "old")
     paths = _real_project_config_paths_at_snapshot(
-        repo_root, "f" * 40, repo_root / "projects/demo/cmru.toml",
+        repo_root, revision, project_config,
         {"demo": project}, ["demo"],
     )
 
@@ -900,6 +905,104 @@ def test_snapshot_reader_resolves_project_config_symlinks_inside_git_tree(tmp_pa
         {"demo": SimpleNamespace(name="demo", project_root=repo_root / "old/demo")},
         ["demo"],
     ) == {"demo": Path("shared/cmru.toml")}
+
+
+def test_snapshot_and_candidate_follow_symlinked_orchestration_parent(tmp_path):
+    source_root = tmp_path / "source"
+    _init_repo(source_root)
+    target_orchestration = source_root / "cfg" / "cmru.orchestration.toml"
+    target_project_config = source_root / "cfg" / "demo" / "cmru.toml"
+    target_orchestration.parent.mkdir(parents=True)
+    target_project_config.parent.mkdir(parents=True)
+    target_orchestration.write_text(
+        '[orchestration.project.demo]\nconfig = "demo/cmru.toml"\n',
+        encoding="utf-8",
+    )
+    target_project_config.write_text(
+        "[project.release]\ngit_tag = true\n", encoding="utf-8",
+    )
+    invocation_config = source_root / "cmru.orchestration.toml"
+    invocation_config.symlink_to("cfg/cmru.orchestration.toml")
+    _git(
+        "add", "cfg/cmru.orchestration.toml", "cfg/demo/cmru.toml",
+        "cmru.orchestration.toml", cwd=source_root,
+    )
+    _git("commit", "-q", "-m", "add symlinked orchestration config", cwd=source_root)
+    revision = _git("rev-parse", "HEAD", cwd=source_root)
+
+    # Model a caller whose still-regular config path predates the snapshot link.
+    invocation_config.unlink()
+    invocation_config.write_text(
+        '[orchestration.project.demo]\nconfig = "old/demo/cmru.toml"\n',
+        encoding="utf-8",
+    )
+    candidate_root = tmp_path / "candidate"
+    _git("clone", "-q", str(source_root), str(candidate_root), cwd=tmp_path)
+    configs = {
+        "demo": SimpleNamespace(name="demo", project_root=source_root / "old/demo"),
+    }
+
+    assert _real_project_config_paths_at_snapshot(
+        source_root, revision, invocation_config, configs, ["demo"],
+    ) == {"demo": Path("cfg/demo/cmru.toml")}
+    assert _real_project_config_paths_in_candidate(
+        source_root, candidate_root, invocation_config, configs, ["demo"],
+    ) == {"demo": Path("cfg/demo/cmru.toml")}
+
+
+def test_direct_project_config_path_resolves_snapshot_and_candidate_symlinks(tmp_path):
+    source_root = tmp_path / "source"
+    _init_repo(source_root)
+    shared_config = source_root / "shared" / "cmru.toml"
+    shared_config.parent.mkdir()
+    shared_config.write_text("[project.release]\ngit_tag = false\n", encoding="utf-8")
+    project_config = source_root / "demo" / "cmru.toml"
+    project_config.parent.mkdir()
+    project_config.symlink_to("../shared/cmru.toml")
+    _git("add", "shared/cmru.toml", "demo/cmru.toml", cwd=source_root)
+    _git("commit", "-q", "-m", "add symlinked project config", cwd=source_root)
+    revision = _git("rev-parse", "HEAD", cwd=source_root)
+
+    # Keep the caller's config path on the old regular file while snapshot/candidate
+    # contains the symlink, as happens when the caller checkout is behind origin.
+    project_config.unlink()
+    project_config.write_text("[project.release]\ngit_tag = true\n", encoding="utf-8")
+    candidate_root = tmp_path / "candidate"
+    _git("clone", "-q", str(source_root), str(candidate_root), cwd=tmp_path)
+    configs = {"demo": SimpleNamespace(name="demo", project_root=project_config.parent)}
+
+    assert _real_project_config_paths_at_snapshot(
+        source_root, revision, project_config, configs, ["demo"],
+    ) == {"demo": Path("shared/cmru.toml")}
+    assert _real_project_config_paths_in_candidate(
+        source_root, candidate_root, project_config, configs, ["demo"],
+    ) == {"demo": Path("shared/cmru.toml")}
+
+
+def test_project_config_symlink_target_must_match_loader_filename(tmp_path):
+    repo_root = tmp_path / "repo"
+    _init_repo(repo_root)
+    project_config = repo_root / "project" / "cmru.toml"
+    project_config.parent.mkdir(parents=True)
+    target = repo_root / "shared" / "policy.toml"
+    target.parent.mkdir()
+    target.write_text("[project.release]\ngit_tag = true\n", encoding="utf-8")
+    project_config.symlink_to("../shared/policy.toml")
+    orchestration = repo_root / "cmru.orchestration.toml"
+    orchestration.write_text(
+        '[orchestration.project.demo]\nconfig = "project/cmru.toml"\n',
+        encoding="utf-8",
+    )
+    _git("add", "project/cmru.toml", "shared/policy.toml", "cmru.orchestration.toml", cwd=repo_root)
+    _git("commit", "-q", "-m", "add config symlink with wrong target basename", cwd=repo_root)
+    revision = _git("rev-parse", "HEAD", cwd=repo_root)
+
+    with pytest.raises(RuntimeError, match="project config symlink target must be named cmru.toml"):
+        _real_project_config_paths_at_snapshot(
+            repo_root, revision, orchestration,
+            {"demo": SimpleNamespace(name="demo", project_root=repo_root / "project")},
+            ["demo"],
+        )
 
 
 def test_snapshot_reader_refuses_symlink_escape_from_git_tree(tmp_path):
@@ -951,7 +1054,8 @@ def test_snapshot_orchestration_path_refuses_missing_or_unsafe_config_paths(
     config_path = repo_root / "cmru.orchestration.toml"
     base = "f" * 40
     monkeypatch.setattr(
-        cli, "_read_git_path_at_commit", lambda *_args, **_kwargs: orchestration_text,
+        cli, "_resolve_git_file_at_commit",
+        lambda _root, _revision, path, **_kwargs: (path, orchestration_text),
     )
 
     with pytest.raises(RuntimeError, match=expected_error):
@@ -965,7 +1069,7 @@ def test_snapshot_orchestration_path_refuses_missing_or_unsafe_config_paths(
 def test_snapshot_orchestration_read_failure_stops_before_policy_lookup(tmp_path, monkeypatch):
     repo_root = tmp_path / "repo"
     monkeypatch.setattr(
-        cli, "_read_git_path_at_commit",
+        cli, "_resolve_git_file_at_commit",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
             RuntimeError("Failed to read orchestration config from origin/main")
         ),
@@ -1009,9 +1113,14 @@ def test_candidate_orchestration_path_uses_retained_candidate_config(tmp_path):
 
 def test_candidate_direct_project_config_uses_recorded_project_path(tmp_path):
     source_root = tmp_path / "source"
+    _init_repo(source_root)
     config_path = source_root / "projects/demo/cmru.toml"
+    config_path.parent.mkdir(parents=True)
+    config_path.write_text("[project.release]\ngit_tag = false\n", encoding="utf-8")
+    _git("add", "projects/demo/cmru.toml", cwd=source_root)
+    _git("commit", "-q", "-m", "add project config", cwd=source_root)
     paths = _real_project_config_paths_in_candidate(
-        source_root, tmp_path / "candidate", config_path,
+        source_root, source_root, config_path,
         {"demo": SimpleNamespace(name="demo", project_root=source_root / "old/demo")},
         ["demo"],
     )

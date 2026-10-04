@@ -602,9 +602,10 @@ handoff travels through a private inherited pipe, and the child's fresh fetch co
 commit is authoritative instead of trusting the descriptor alone. For an in-repository
 orchestration config, preflight also reads the selected project's config path from that snapshot
 instead of trusting a caller checkout that may point to an older path. Project config symlinks are
-resolved from the same Git tree, and a target outside the family is refused. Project secret
-overlays are copied from the caller's config area to the matching snapshot path. Resume reads the
-config path and tag policy from the committed retained candidate before starting its child.
+resolved from the same Git tree, and a target outside the family is refused. The resolved target
+must remain named `cmru.toml`, matching the config loader's filename rule. Project secret overlays
+are copied from the caller's config area to the matching snapshot path. Resume reads the config
+path and tag policy from the committed retained candidate before starting its child.
 Cleanup checks during its preview, before the captured plan can be applied. These checks keep a
 repository read failure from silently skipping or postponing a tag operation.
 

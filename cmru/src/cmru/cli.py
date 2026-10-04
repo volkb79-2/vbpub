@@ -3202,6 +3202,30 @@ def _read_git_path_at_commit(
     )[1]
 
 
+def _resolve_project_config_paths_at_commit(
+    repo_root: Path,
+    revision: str,
+    project_paths: Mapping[str, Path],
+    *,
+    source_label: str,
+) -> dict[str, Path]:
+    """Resolve selected configs and retain the loader's required basename."""
+    result: dict[str, Path] = {}
+    for name, path in project_paths.items():
+        resolved_path, _content = _resolve_git_file_at_commit(
+            repo_root, revision, path,
+            source_label=f"{source_label}:{path.as_posix()}",
+        )
+        if resolved_path.name != PROJECT_CONFIG_FILENAME:
+            raise RuntimeError(
+                f"{name}: project config symlink target must be named "
+                f"{PROJECT_CONFIG_FILENAME}, matching the shipped config loader "
+                f"({source_label}:{resolved_path.as_posix()})"
+            )
+        result[name] = resolved_path
+    return result
+
+
 def _project_config_paths_from_loaded(
     repo_root: Path,
     configs: Mapping[str, "ProjectConfig"],
@@ -3293,25 +3317,26 @@ def _project_config_paths_at_snapshot(
             raise RuntimeError(
                 f"{config_path}: a project config can select only one project"
             )
-        return {project_names[0]: config_rel}
+        return _resolve_project_config_paths_at_commit(
+            repo_root, base, {project_names[0]: config_rel},
+            source_label=f"origin/main ({base})",
+        )
     if config_path.name != ORCHESTRATION_CONFIG_FILENAME:
         raise RuntimeError(f"Unsupported CMRU config path in Git family: {config_path}")
 
-    content = _read_git_path_at_commit(
+    resolved_orchestration_rel, content = _resolve_git_file_at_commit(
         repo_root, base, config_rel,
         source_label=f"origin/main ({base}:{config_rel.as_posix()})",
     )
     parsed_paths = _parse_project_config_paths_from_orchestration(
-        config_rel, content, project_names,
-        source_label=f"origin/main ({base}:{config_rel.as_posix()})",
+        resolved_orchestration_rel, content, project_names,
+        source_label=(
+            f"origin/main ({base}:{resolved_orchestration_rel.as_posix()})"
+        ),
     )
-    return {
-        name: _resolve_git_file_at_commit(
-            repo_root, base, path,
-            source_label=f"origin/main ({base}:{path.as_posix()})",
-        )[0]
-        for name, path in parsed_paths.items()
-    }
+    return _resolve_project_config_paths_at_commit(
+        repo_root, base, parsed_paths, source_label=f"origin/main ({base})",
+    )
 
 
 def _project_config_paths_in_candidate(
@@ -3327,14 +3352,6 @@ def _project_config_paths_in_candidate(
     except ValueError:
         return _project_config_paths_from_loaded(source_git_root, configs, project_names)
 
-    if config_path.name == PROJECT_CONFIG_FILENAME:
-        if len(project_names) != 1:
-            raise RuntimeError(
-                f"{config_path}: a project config can select only one project"
-            )
-        return {project_names[0]: config_rel}
-    if config_path.name != ORCHESTRATION_CONFIG_FILENAME:
-        raise RuntimeError(f"Unsupported CMRU config path in Git family: {config_path}")
     candidate_revision = run_local_git(
         candidate_root, "rev-parse", "--verify", "HEAD",
         capture_output=True, text=True, check=False,
@@ -3346,23 +3363,32 @@ def _project_config_paths_in_candidate(
         )
         raise RuntimeError(f"Could not identify committed retained candidate: {detail}")
     candidate_sha = candidate_revision.stdout.strip()
-    content = _read_git_path_at_commit(
+
+    if config_path.name == PROJECT_CONFIG_FILENAME:
+        if len(project_names) != 1:
+            raise RuntimeError(
+                f"{config_path}: a project config can select only one project"
+            )
+        return _resolve_project_config_paths_at_commit(
+            candidate_root, candidate_sha, {project_names[0]: config_rel},
+            source_label=f"retained candidate ({candidate_sha})",
+        )
+    if config_path.name != ORCHESTRATION_CONFIG_FILENAME:
+        raise RuntimeError(f"Unsupported CMRU config path in Git family: {config_path}")
+    resolved_orchestration_rel, content = _resolve_git_file_at_commit(
         candidate_root, candidate_sha, config_rel,
         source_label=f"retained candidate ({candidate_sha}:{config_rel.as_posix()})",
     )
     parsed_paths = _parse_project_config_paths_from_orchestration(
-        config_rel, content, project_names,
-        source_label=f"retained candidate ({candidate_sha}:{config_rel.as_posix()})",
+        resolved_orchestration_rel, content, project_names,
+        source_label=(
+            f"retained candidate ({candidate_sha}:{resolved_orchestration_rel.as_posix()})"
+        ),
     )
-    return {
-        name: _resolve_git_file_at_commit(
-            candidate_root, candidate_sha, path,
-            source_label=(
-                f"retained candidate ({candidate_sha}:{path.as_posix()})"
-            ),
-        )[0]
-        for name, path in parsed_paths.items()
-    }
+    return _resolve_project_config_paths_at_commit(
+        candidate_root, candidate_sha, parsed_paths,
+        source_label=f"retained candidate ({candidate_sha})",
+    )
 
 
 def _parse_project_git_tag_policy(

@@ -19,7 +19,8 @@ the family launchers. Each launcher fetches `origin/main` again and refuses if
 it moved after preflight, so every family uses the checked snapshot. A resumed
 release checks the committed candidate's tag policy before running its child;
 when an in-repository orchestration change moves a project config, its secret
-overlay follows the snapshot path. The reason is in the
+overlay follows the snapshot path. Project config symlinks resolve within that
+snapshot and their targets must retain the `cmru.toml` filename. The reason is in the
 [local tag inspection design](docs/DESIGN-GUIDE.md#local-tag-inspection-requires-git-243).
 The [consumer guide](docs/CONSUMERS.md#git-version-for-local-tag-inspection)
 shows the prerequisite check.
