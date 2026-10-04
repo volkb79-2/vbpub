@@ -1300,6 +1300,7 @@ def test_resume_checks_tag_policy_from_committed_candidate_before_running_child(
     tmp_path, monkeypatch,
 ):
     source_root = tmp_path / "source"
+    _init_repo(source_root)
     candidate_root = tmp_path / "retained"
     _init_repo(candidate_root)
     config_path = tmp_path / "external" / "cmru.orchestration.toml"
