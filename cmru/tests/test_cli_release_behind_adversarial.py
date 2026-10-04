@@ -17,29 +17,49 @@ def fake_release_preflight(monkeypatch):
     monkeypatch.setattr(cli, "_require_local_tag_inspection_support", lambda _root: None)
     monkeypatch.setattr(
         cli, "_project_git_tag_policy_at_snapshot",
-        lambda _root, _base, project: getattr(project, "git_tag", True),
+        lambda _root, _base, project, **_kwargs: getattr(project, "git_tag", True),
+    )
+    monkeypatch.setattr(
+        cli, "_project_config_paths_at_snapshot",
+        lambda _root, _base, _config, _configs, names: {
+            name: Path(name) / "cmru.toml" for name in names
+        },
     )
 
 
-def test_release_uses_fetched_origin_when_local_main_is_behind(monkeypatch, tmp_path, capsys):
-    project = cli.ProjectConfig("demo", {}, {}, project_root=tmp_path / "demo", prefix="demo-v", github_token="token")
+def test_release_uses_fetched_origin_and_moved_config_path_when_local_main_is_behind(
+    monkeypatch, tmp_path, capsys,
+):
+    project = cli.ProjectConfig(
+        "demo", {}, {}, project_root=tmp_path / "old" / "demo",
+        prefix="demo-v", github_token="token",
+    )
     config = (
         tmp_path, {"demo": project}, ["demo"], ["demo"], ["demo"], "project-first", {},
         cli.CleanupConfig([], [], [], []), cli.GitHubConfig("o", "r", "token", "user"),
         cli.ReleaseEnvConfig({}, None),
     )
     workspace = transaction.ReleaseWorkspace(tmp_path, tmp_path / "release", "cmru/release/x", "b" * 40)
-    monkeypatch.setattr(cli, "_resolve_config", lambda _: tmp_path / "cmru.toml")
+    monkeypatch.setattr(cli, "_resolve_config", lambda _: tmp_path / "cmru.orchestration.toml")
     monkeypatch.setattr(cli, "load_config", lambda _: config)
     monkeypatch.setattr(cli, "apply_release_env", lambda *_: None)
     monkeypatch.setattr(cli.transaction, "release_lock", lambda _: nullcontext())
     monkeypatch.setattr(cli, "_uncommitted_release_paths", lambda *args: {})
     monkeypatch.setattr(cli.transaction, "fetch_origin_main", lambda *_, **__: "b" * 40)
     monkeypatch.setattr(cli.transaction, "assert_local_main_not_ahead", lambda *_, **__: 1)
+    monkeypatch.setattr(
+        cli, "_project_config_paths_at_snapshot",
+        lambda *_args: {"demo": Path("new/demo/cmru.toml")},
+    )
     workspace_args = {}
     overlays = []
     monkeypatch.setattr(cli.transaction, "create_workspace", lambda *args, **kwargs: workspace_args.update(kwargs) or workspace)
-    monkeypatch.setattr(cli.transaction, "copy_secret_overlays", lambda *args: overlays.append(args[-1]))
+    monkeypatch.setattr(
+        cli.transaction, "copy_secret_overlays",
+        lambda *args, **kwargs: overlays.append(
+            (args[-1], kwargs.get("candidate_config_paths")),
+        ),
+    )
     monkeypatch.setattr(cli.transaction, "run_child", lambda *args, **kwargs: 0)
     monkeypatch.setattr(cli.transaction, "remove_backup_branch", lambda *args, **kwargs: None)
     monkeypatch.setattr(cli.transaction, "remove_workspace", lambda *args, **kwargs: None)
@@ -49,12 +69,14 @@ def test_release_uses_fetched_origin_when_local_main_is_behind(monkeypatch, tmp_
         lambda *args, **kwargs: transaction._SyncLocalMainResult(True),
     )
     exc = cli.main([
-            "release", "demo", "--config", str(tmp_path / "cmru.toml"),
+            "release", "demo", "--config", str(tmp_path / "cmru.orchestration.toml"),
             "--discard-logs-on-release", "--discard-artifacts-on-release",
         ])
     assert exc == 0
     assert workspace_args == {"base": "b" * 40, "scope": "demo", "source_git_root": tmp_path}
-    assert overlays == [[tmp_path / "demo" / "cmru.toml"]]
+    assert overlays == [(
+        [tmp_path / "old" / "demo" / "cmru.toml"], [Path("new/demo/cmru.toml")],
+    )]
     output = capsys.readouterr().out
     assert "1 commit(s) behind origin/main" in output
     assert "Release transaction complete" in output
@@ -83,7 +105,7 @@ def test_release_ref_flag_overrides_the_ahead_of_origin_comparison_ref(monkeypat
         lambda _root, **kwargs: seen_refs.append(kwargs.get("ref")) or 0,
     )
     monkeypatch.setattr(cli.transaction, "create_workspace", lambda *args, **kwargs: workspace)
-    monkeypatch.setattr(cli.transaction, "copy_secret_overlays", lambda *args: None)
+    monkeypatch.setattr(cli.transaction, "copy_secret_overlays", lambda *args, **kwargs: None)
     monkeypatch.setattr(cli.transaction, "run_child", lambda *args, **kwargs: 0)
     monkeypatch.setattr(cli.transaction, "remove_backup_branch", lambda *args, **kwargs: None)
     monkeypatch.setattr(cli.transaction, "remove_workspace", lambda *args, **kwargs: None)
@@ -121,7 +143,7 @@ def test_release_ref_flag_defaults_to_main_when_omitted(monkeypatch, tmp_path):
         lambda _root, **kwargs: seen_refs.append(kwargs.get("ref")) or 0,
     )
     monkeypatch.setattr(cli.transaction, "create_workspace", lambda *args, **kwargs: workspace)
-    monkeypatch.setattr(cli.transaction, "copy_secret_overlays", lambda *args: None)
+    monkeypatch.setattr(cli.transaction, "copy_secret_overlays", lambda *args, **kwargs: None)
     monkeypatch.setattr(cli.transaction, "run_child", lambda *args, **kwargs: 0)
     monkeypatch.setattr(cli.transaction, "remove_backup_branch", lambda *args, **kwargs: None)
     monkeypatch.setattr(cli.transaction, "remove_workspace", lambda *args, **kwargs: None)

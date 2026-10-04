@@ -38,6 +38,7 @@ from cmru.git_auth import (
     run_remote_git,
     without_publisher_tokens,
 )
+from cmru.config_names import PROJECT_CONFIG_FILENAME
 
 
 CHILD_ENV = "CMRU_RELEASE_TRANSACTION_CHILD"
@@ -816,8 +817,13 @@ def _copy_secret_overlay(
 
 def copy_secret_overlays(
     repo_root: Path, workspace: ReleaseWorkspace, project_config_paths: Sequence[Path],
+    *, candidate_config_paths: Sequence[Path] | None = None,
 ) -> None:
     """Copy the root credential and explicit project overlays into a child worktree."""
+    if candidate_config_paths is not None and len(candidate_config_paths) != len(project_config_paths):
+        raise RuntimeError(
+            "candidate project config paths must match the source project config paths"
+        )
     source_root = workspace.repo_root.resolve()
     workspace_root = workspace.path
     source = repo_root.resolve() / "cmru.secret.toml"
@@ -827,14 +833,26 @@ def copy_secret_overlays(
     # layout the child receives the absolute orchestration config and reads the
     # central root secret directly; copying it into an unrelated worktree would
     # make ownership ambiguous.
-    for config_path in project_config_paths:
+    for index, config_path in enumerate(project_config_paths):
         config_path = config_path.resolve()
-        try:
-            relative = config_path.parent.relative_to(source_root)
-        except ValueError as exc:
-            raise RuntimeError(
-                f"project config is outside selected Git workspace {source_root}: {config_path}"
-            ) from exc
+        if candidate_config_paths is None:
+            try:
+                relative = config_path.parent.relative_to(source_root)
+            except ValueError as exc:
+                raise RuntimeError(
+                    f"project config is outside selected Git workspace {source_root}: {config_path}"
+                ) from exc
+        else:
+            candidate_config = Path(candidate_config_paths[index])
+            if (
+                candidate_config.is_absolute()
+                or ".." in candidate_config.parts
+                or candidate_config.name != PROJECT_CONFIG_FILENAME
+            ):
+                raise RuntimeError(
+                    f"candidate project config path is unsafe: {candidate_config}"
+                )
+            relative = candidate_config.parent
         source = config_path.with_name("cmru.secret.toml")
         _copy_secret_overlay(
             source, workspace_root, relative / "cmru.secret.toml",

@@ -596,14 +596,17 @@ lookup as absence. For a real release that includes tagged projects, the launche
 before creating the candidate worktree, running a project gate, or creating a tag. When selected
 projects span independent Git families, it fetches each family's origin/main snapshot, reads each
 selected project's tag policy from that snapshot, then checks all tagged families before dispatching
-any one family. Each launcher receives that same commit and builds from it, so a later fetch cannot
-change the policy after preflight. For an in-repository orchestration config, preflight also reads
-the selected project's config path from that snapshot instead of trusting a caller checkout that
-may point to an older path. The handoff travels through a private inherited pipe, so ambient or
-declared environment values cannot replace the checked commit. Resume reads the config path and
-tag policy from the committed retained candidate before starting its child. Cleanup checks during
-its preview, before the captured plan can be applied. These checks keep a repository read failure
-from silently skipping or postponing a tag operation.
+any one family. Each launcher receives the checked commit, fetches `origin/main` again under its
+release lock, and refuses before creating a candidate if the ref moved after preflight. The
+handoff travels through a private inherited pipe, and the child's fresh fetch confirms that the
+commit is authoritative instead of trusting the descriptor alone. For an in-repository
+orchestration config, preflight also reads the selected project's config path from that snapshot
+instead of trusting a caller checkout that may point to an older path. Project config symlinks are
+resolved from the same Git tree, and a target outside the family is refused. Project secret
+overlays are copied from the caller's config area to the matching snapshot path. Resume reads the
+config path and tag policy from the committed retained candidate before starting its child.
+Cleanup checks during its preview, before the captured plan can be applied. These checks keep a
+repository read failure from silently skipping or postponing a tag operation.
 
 ## Candidate-first promotion protects the source history
 

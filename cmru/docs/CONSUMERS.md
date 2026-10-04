@@ -45,8 +45,10 @@ An older Git cannot distinguish a missing local tag from a failed ref lookup. Fo
 that includes tagged projects, CMRU checks support before creating its candidate or starting a
 project gate. If selected projects span independent repositories, CMRU reads each selected
 project's tag policy from its fetched `origin/main` snapshot and checks all tagged repositories
-before starting any family release; each family launcher uses that same fetched commit. Cleanup
-checks support while preparing the preview, before any planned action is applied. See the
+before starting any family release; each family launcher fetches again and refuses if `origin/main`
+moved, ensuring it uses the checked commit. If that happens, rerun the release so the full set of
+families is preflighted again. Cleanup checks support while preparing the preview, before any
+planned action is applied. See the
 [design rationale](DESIGN-GUIDE.md#local-tag-inspection-requires-git-243).
 
 ## 1. The two files
@@ -642,7 +644,9 @@ rationale](DESIGN-GUIDE.md#git-transport-authentication).
 CMRU resolves the selected project's release config from the transaction's
 isolated source snapshot. A central orchestration file inside that snapshot
 already points to snapshot paths; an external central file maps its registered
-project paths from the source Git root.
+project paths from the source Git root. If an in-repository orchestration change
+moved a project config since your caller checkout, CMRU reads its policy and
+places the copied project secret overlay at the path recorded in the snapshot.
 
 `cmru release` never publishes from your working tree (`S-CLI.5`). It fetches `origin/main`,
 refuses local-only `main` commits the snapshot would omit, and creates a temporary worktree at

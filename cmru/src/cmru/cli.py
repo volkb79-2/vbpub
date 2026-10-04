@@ -14,7 +14,7 @@ import sys
 import tempfile
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Callable, List, Mapping, Optional, Sequence
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
@@ -3077,20 +3077,129 @@ def _project_git_tag_policy_at_snapshot(
     ):
         raise RuntimeError(f"{project_name}: invalid project config path in Git family")
     config_rel = project_config_rel.as_posix()
-    result = run_local_git(
-        repo_root, "show", f"{base}:{config_rel}",
-        capture_output=True, text=True, check=False,
+    content = _read_git_path_at_commit(
+        repo_root, base, project_config_rel,
+        source_label=f"origin/main ({base}:{config_rel})",
     )
-    if result.returncode != 0:
-        detail = result.stderr.strip() or result.stdout.strip() or "no diagnostic output"
-        raise RuntimeError(
-            f"Failed to read {project_name} release "
-            f"policy from origin/main ({base}:{config_rel}): {detail}"
-        )
     return _parse_project_git_tag_policy(
-        result.stdout, project_name,
+        content, project_name,
         f"origin/main ({base}:{config_rel})",
     )
+
+
+def _resolve_git_file_at_commit(
+    repo_root: Path, revision: str, relative_path: Path, *, source_label: str,
+) -> tuple[Path, str]:
+    """Resolve and read a regular file, following only in-tree Git symlinks."""
+    if (
+        relative_path.is_absolute()
+        or ".." in relative_path.parts
+        or not relative_path.parts
+    ):
+        raise RuntimeError(f"Invalid tracked path at {source_label}: {relative_path}")
+    pending = PurePosixPath(relative_path.as_posix())
+    for _ in range(40):
+        parts = pending.parts
+        followed_link = False
+        treeish = revision
+        parent_parts: list[str] = []
+        for index, component in enumerate(parts):
+            result = run_local_git(
+                repo_root,
+                "ls-tree", "-z", treeish, "--", f":(literal){component}",
+                capture_output=True, text=True, check=False,
+            )
+            if result.returncode != 0:
+                detail = result.stderr.strip() or result.stdout.strip() or "no diagnostic output"
+                raise RuntimeError(f"Failed to inspect {source_label}: {detail}")
+            entry = None
+            for raw_entry in result.stdout.split("\0"):
+                metadata, separator, entry_path = raw_entry.partition("\t")
+                if not separator or entry_path != component:
+                    continue
+                fields = metadata.split()
+                if len(fields) == 3:
+                    entry = (fields[0], fields[1], fields[2])
+                    break
+            if entry is None:
+                tracked_path = PurePosixPath(*parent_parts, component)
+                raise RuntimeError(
+                    f"Tracked path is missing from {source_label}: {tracked_path}"
+                )
+            mode, object_type, object_id = entry
+            tracked_path = PurePosixPath(*parent_parts, component)
+            if mode == "120000" and object_type == "blob":
+                target_result = run_local_git(
+                    repo_root, "cat-file", "blob", object_id,
+                    capture_output=True, text=True, check=False,
+                )
+                if target_result.returncode != 0:
+                    detail = (
+                        target_result.stderr.strip() or target_result.stdout.strip()
+                        or "no diagnostic output"
+                    )
+                    raise RuntimeError(
+                        f"Failed to read symlink at {source_label} ({tracked_path}): {detail}"
+                    )
+                target = PurePosixPath(target_result.stdout)
+                if target.is_absolute():
+                    raise RuntimeError(
+                        f"Symlink escapes the Git family at {source_label}: {tracked_path}"
+                    )
+                resolved = list(parts[:index])
+                for component in target.parts:
+                    if component in {"", "."}:
+                        continue
+                    if component == "..":
+                        if not resolved:
+                            raise RuntimeError(
+                                f"Symlink escapes the Git family at {source_label}: "
+                                f"{tracked_path}"
+                            )
+                        resolved.pop()
+                    else:
+                        resolved.append(component)
+                resolved.extend(parts[index + 1:])
+                if not resolved:
+                    raise RuntimeError(
+                        f"Symlink does not resolve to a file at {source_label}: {tracked_path}"
+                    )
+                pending = PurePosixPath(*resolved)
+                followed_link = True
+                break
+            if index < len(parts) - 1:
+                if mode != "040000" or object_type != "tree":
+                    raise RuntimeError(
+                        f"Tracked path component is not a directory at {source_label}: "
+                        f"{tracked_path}"
+                    )
+                treeish = object_id
+                parent_parts.append(component)
+                continue
+            if mode not in {"100644", "100755"} or object_type != "blob":
+                raise RuntimeError(
+                    f"Tracked path is not a regular file at {source_label}: {tracked_path}"
+                )
+            content = run_local_git(
+                repo_root, "cat-file", "blob", object_id,
+                capture_output=True, text=True, check=False,
+            )
+            if content.returncode != 0:
+                detail = content.stderr.strip() or content.stdout.strip() or "no diagnostic output"
+                raise RuntimeError(f"Failed to read {source_label}: {detail}")
+            return Path(tracked_path.as_posix()), content.stdout
+        if not followed_link:
+            break
+    raise RuntimeError(f"Symlink resolution exceeded its limit at {source_label}: {relative_path}")
+
+
+def _read_git_path_at_commit(
+    repo_root: Path, revision: str, relative_path: Path, *, source_label: str,
+) -> str:
+    """Read a regular file from a commit, resolving only in-tree symlinks."""
+    return _resolve_git_file_at_commit(
+        repo_root, revision, relative_path, source_label=source_label,
+    )[1]
 
 
 def _project_config_paths_from_loaded(
@@ -3188,20 +3297,21 @@ def _project_config_paths_at_snapshot(
     if config_path.name != ORCHESTRATION_CONFIG_FILENAME:
         raise RuntimeError(f"Unsupported CMRU config path in Git family: {config_path}")
 
-    result = run_local_git(
-        repo_root, "show", f"{base}:{config_rel.as_posix()}",
-        capture_output=True, text=True, check=False,
-    )
-    if result.returncode != 0:
-        detail = result.stderr.strip() or result.stdout.strip() or "no diagnostic output"
-        raise RuntimeError(
-            f"Failed to read orchestration config from origin/main "
-            f"({base}:{config_rel.as_posix()}): {detail}"
-        )
-    return _parse_project_config_paths_from_orchestration(
-        config_rel, result.stdout, project_names,
+    content = _read_git_path_at_commit(
+        repo_root, base, config_rel,
         source_label=f"origin/main ({base}:{config_rel.as_posix()})",
     )
+    parsed_paths = _parse_project_config_paths_from_orchestration(
+        config_rel, content, project_names,
+        source_label=f"origin/main ({base}:{config_rel.as_posix()})",
+    )
+    return {
+        name: _resolve_git_file_at_commit(
+            repo_root, base, path,
+            source_label=f"origin/main ({base}:{path.as_posix()})",
+        )[0]
+        for name, path in parsed_paths.items()
+    }
 
 
 def _project_config_paths_in_candidate(
@@ -3225,18 +3335,34 @@ def _project_config_paths_in_candidate(
         return {project_names[0]: config_rel}
     if config_path.name != ORCHESTRATION_CONFIG_FILENAME:
         raise RuntimeError(f"Unsupported CMRU config path in Git family: {config_path}")
-    candidate_config = candidate_root / config_rel
-    try:
-        content = candidate_config.read_text(encoding="utf-8")
-    except OSError as exc:
-        raise RuntimeError(
-            f"Failed to read orchestration config from retained candidate "
-            f"({candidate_config}): {exc}"
-        ) from exc
-    return _parse_project_config_paths_from_orchestration(
-        config_rel, content, project_names,
-        source_label=f"retained candidate ({candidate_config})",
+    candidate_revision = run_local_git(
+        candidate_root, "rev-parse", "--verify", "HEAD",
+        capture_output=True, text=True, check=False,
     )
+    if candidate_revision.returncode != 0:
+        detail = (
+            candidate_revision.stderr.strip() or candidate_revision.stdout.strip()
+            or "no diagnostic output"
+        )
+        raise RuntimeError(f"Could not identify committed retained candidate: {detail}")
+    candidate_sha = candidate_revision.stdout.strip()
+    content = _read_git_path_at_commit(
+        candidate_root, candidate_sha, config_rel,
+        source_label=f"retained candidate ({candidate_sha}:{config_rel.as_posix()})",
+    )
+    parsed_paths = _parse_project_config_paths_from_orchestration(
+        config_rel, content, project_names,
+        source_label=f"retained candidate ({candidate_sha}:{config_rel.as_posix()})",
+    )
+    return {
+        name: _resolve_git_file_at_commit(
+            candidate_root, candidate_sha, path,
+            source_label=(
+                f"retained candidate ({candidate_sha}:{path.as_posix()})"
+            ),
+        )[0]
+        for name, path in parsed_paths.items()
+    }
 
 
 def _parse_project_git_tag_policy(
@@ -3262,16 +3388,26 @@ def _project_git_tag_policy_in_candidate(
     candidate_root: Path, project_name: str, project_config_rel: Path,
 ) -> bool:
     """Read release.git_tag from one project config in a retained worktree."""
-    candidate_config = candidate_root / project_config_rel
-    try:
-        content = candidate_config.read_text(encoding="utf-8")
-    except OSError as exc:
-        raise RuntimeError(
-            f"Failed to read {project_name} release policy from retained candidate "
-            f"({candidate_config}): {exc}"
-        ) from exc
+    candidate_revision = run_local_git(
+        candidate_root, "rev-parse", "--verify", "HEAD",
+        capture_output=True, text=True, check=False,
+    )
+    if candidate_revision.returncode != 0:
+        detail = (
+            candidate_revision.stderr.strip() or candidate_revision.stdout.strip()
+            or "no diagnostic output"
+        )
+        raise RuntimeError(f"Could not identify committed retained candidate: {detail}")
+    candidate_sha = candidate_revision.stdout.strip()
+    content = _read_git_path_at_commit(
+        candidate_root, candidate_sha, project_config_rel,
+        source_label=(
+            f"retained candidate ({candidate_sha}:{project_config_rel.as_posix()})"
+        ),
+    )
     return _parse_project_git_tag_policy(
-        content, project_name, f"retained candidate ({candidate_config})",
+        content, project_name,
+        f"retained candidate ({candidate_sha}:{project_config_rel.as_posix()})",
     )
 
 
@@ -3816,6 +3952,9 @@ def _dispatch(args, runtime):
                             "changes first so the isolated build cannot silently omit them."
                         )
                     base = transaction.fetch_origin_main(transaction_root, git_auth=git_auth)
+                    snapshot_config_paths = _project_config_paths_at_snapshot(
+                        transaction_root, base, cfg_path, configs, names,
+                    )
                     behind = transaction.assert_local_main_not_ahead(transaction_root)
                     if behind:
                         log_warn(
@@ -3831,6 +3970,8 @@ def _dispatch(args, runtime):
                         workspace,
                         [Path(configs[name].project_root) / PROJECT_CONFIG_FILENAME for name in names
                          if configs[name].project_root is not None],
+                        candidate_config_paths=[snapshot_config_paths[name] for name in names
+                                                if configs[name].project_root is not None],
                     )
                     log_info(
                         f"Build transaction {workspace.branch}: snapshot {workspace.base[:12]} "
@@ -4108,6 +4249,7 @@ def _dispatch(args, runtime):
         # silently left out with no warning, since the build never looks at it.
         if not transaction_child:
             try:
+                candidate_project_config_paths: list[Path] | None = None
                 transaction_root = transaction.source_git_root_for_projects(
                     repo_root, [configs[name] for name in release_scope]
                 )
@@ -4119,6 +4261,17 @@ def _dispatch(args, runtime):
                     target_override=",".join(release_scope), original_target=vargs.target,
                 )
                 with transaction.release_lock(transaction_root):
+                    if preflighted_base is not None:
+                        verified_base = transaction.fetch_origin_main(
+                            transaction_root, git_auth=git_auth,
+                        )
+                        if verified_base != preflighted_base:
+                            raise RuntimeError(
+                                "origin/main changed after the multi-family release preflight "
+                                f"(checked {preflighted_base}, now {verified_base}); "
+                                "rerun the release so every family is checked against "
+                                "one consistent snapshot"
+                            )
                     scope = release_scope
                     # Not --dry-run: a preview has no publish step to protect, and "I have
                     # local edits I haven't committed yet" is exactly when you'd run one.
@@ -4150,11 +4303,15 @@ def _dispatch(args, runtime):
                                 "inspect the candidate and retry"
                             )
                         transaction.assert_resume_workspace_committed(workspace.path)
+                        candidate_config_paths = _project_config_paths_in_candidate(
+                            transaction_root, workspace.path, cfg_path, configs,
+                            release_scope,
+                        )
+                        candidate_project_config_paths = [
+                            candidate_config_paths[name] for name in release_scope
+                            if configs[name].project_root is not None
+                        ]
                         if not vargs.dry_run:
-                            candidate_config_paths = _project_config_paths_in_candidate(
-                                transaction_root, workspace.path, cfg_path, configs,
-                                release_scope,
-                            )
                             if any(
                                 _project_git_tag_policy_in_candidate(
                                     workspace.path, name, candidate_config_paths[name],
@@ -4166,10 +4323,14 @@ def _dispatch(args, runtime):
                         base = preflighted_base or transaction.fetch_origin_main(
                             transaction_root, git_auth=git_auth,
                         )
+                        snapshot_config_paths = _project_config_paths_at_snapshot(
+                            transaction_root, base, cfg_path, configs, release_scope,
+                        )
+                        candidate_project_config_paths = [
+                            snapshot_config_paths[name] for name in release_scope
+                            if configs[name].project_root is not None
+                        ]
                         if not vargs.dry_run:
-                            snapshot_config_paths = _project_config_paths_at_snapshot(
-                                transaction_root, base, cfg_path, configs, release_scope,
-                            )
                             if any(
                                 _project_git_tag_policy_at_snapshot(
                                     transaction_root, base, configs[name],
@@ -4204,6 +4365,7 @@ def _dispatch(args, runtime):
                         workspace,
                         [Path(configs[name].project_root) / PROJECT_CONFIG_FILENAME for name in release_scope
                          if configs[name].project_root is not None],
+                        candidate_config_paths=candidate_project_config_paths,
                     )
                     log_info(
                         f"Release transaction {workspace.branch}: "

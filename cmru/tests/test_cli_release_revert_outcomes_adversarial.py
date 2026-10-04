@@ -14,7 +14,13 @@ def fake_release_preflight(monkeypatch):
     )
     monkeypatch.setattr(
         cli, "_project_git_tag_policy_at_snapshot",
-        lambda _root, _base, project: getattr(project, "git_tag", True),
+        lambda _root, _base, project, **_kwargs: getattr(project, "git_tag", True),
+    )
+    monkeypatch.setattr(
+        cli, "_project_config_paths_at_snapshot",
+        lambda _root, _base, _config, _configs, names: {
+            name: Path(name) / "cmru.toml" for name in names
+        },
     )
     monkeypatch.setattr(cli, "_require_local_tag_inspection_support", lambda _root: None)
     monkeypatch.setattr(cli, "_read_origin_tag_refs", lambda *_args, **_kwargs: {})

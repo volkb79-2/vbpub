@@ -123,7 +123,7 @@ def mocked_invocation_context(monkeypatch):
     monkeypatch.setattr(cli, "_read_origin_tag_refs", lambda *_args, **_kwargs: {})
     monkeypatch.setattr(
         cli, "_project_git_tag_policy_at_snapshot",
-        lambda _root, _base, project: getattr(project, "git_tag", True),
+        lambda _root, _base, project, **_kwargs: getattr(project, "git_tag", True),
     )
     monkeypatch.setattr(
         cli, "_project_config_paths_at_snapshot",
@@ -160,6 +160,32 @@ def test_copy_secret_overlays_preserves_root_and_project_scoped_credentials(tmp_
     )
     assert (workspace_path / "cmru.secret.toml").stat().st_mode & 0o777 == 0o600
     assert (workspace_path / "alpha" / "cmru.secret.toml").stat().st_mode & 0o777 == 0o600
+
+
+def test_copy_secret_overlay_uses_snapshot_config_path_after_project_move(tmp_path):
+    repo_root = tmp_path / "repo"
+    workspace_path = tmp_path / "workspace"
+    source_project = repo_root / "old" / "alpha"
+    source_project.mkdir(parents=True)
+    workspace_path.mkdir()
+    source_config = source_project / "cmru.toml"
+    source_config.write_text("schema_version = 1\n", encoding="utf-8")
+    (source_project / "cmru.secret.toml").write_text(
+        '[github]\ntoken = "project-test-token"\n', encoding="utf-8",
+    )
+    workspace = transaction.ReleaseWorkspace(
+        repo_root, workspace_path, "cmru/release/test", "a" * 40,
+    )
+
+    transaction.copy_secret_overlays(
+        repo_root, workspace, [source_config],
+        candidate_config_paths=[Path("new/alpha/cmru.toml")],
+    )
+
+    assert (workspace_path / "new/alpha/cmru.secret.toml").read_text(encoding="utf-8") == (
+        '[github]\ntoken = "project-test-token"\n'
+    )
+    assert not (workspace_path / "old/alpha/cmru.secret.toml").exists()
 
 
 def test_copy_secret_overlays_rejects_a_non_file_secret_path(tmp_path):
@@ -505,20 +531,19 @@ cwd = "alpha"
     monkeypatch.setattr(cli, "_uncommitted_release_paths", lambda *_args, **_kwargs: {})
     monkeypatch.setattr(transaction, "release_lock", lambda _root: nullcontext())
     handoff_base = "a" * 40
-    fetched_base = "b" * 40
+    fetched_base = handoff_base if use_internal_snapshot else "b" * 40
     fetched = []
     monkeypatch.setattr(
         transaction, "fetch_origin_main",
         lambda *_args, **_kwargs: fetched.append(True) or fetched_base,
     )
-    monkeypatch.setattr(cli, "_project_git_tag_policy_at_snapshot", _real_project_git_tag_policy_at_snapshot)
+    monkeypatch.setattr(
+        cli, "_project_git_tag_policy_at_snapshot",
+        lambda *_args, **_kwargs: True,
+    )
     monkeypatch.setattr(
         cli, "run_local_git",
-        lambda _root, *args, **_kwargs: SimpleNamespace(
-            returncode=0,
-            stdout="[project.release]\ngit_tag = true\n" if args[0] == "show" else "",
-            stderr="",
-        ),
+        lambda *_args, **_kwargs: SimpleNamespace(returncode=0, stdout="", stderr=""),
     )
     monkeypatch.setattr(transaction, "assert_local_main_not_ahead", lambda _root, **_kw: 0)
     monkeypatch.setattr(
@@ -553,7 +578,7 @@ cwd = "alpha"
     exc = cli.main(argv)
 
     assert exc == 0
-    assert fetched == ([] if use_internal_snapshot else [True])
+    assert fetched == [True]
     assert workspace_bases == [handoff_base if use_internal_snapshot else fetched_base]
     assert not any(isinstance(call, tuple) for call in calls)
     assert calls.index("tag-inspection-preflight") < calls.index("workspace")
@@ -606,10 +631,12 @@ def test_multi_family_release_preflights_origin_policies_before_dispatch(
         tagged_root: "[project.release]\ngit_tag = true\n",
     }
     monkeypatch.setattr(
-        cli, "run_local_git",
-        lambda root, *_args, **_kwargs: SimpleNamespace(
-            returncode=0, stdout=origin_configs[root], stderr="",
-        ),
+        cli, "_read_git_path_at_commit",
+        lambda root, *_args, **_kwargs: origin_configs[root],
+    )
+    monkeypatch.setattr(
+        cli, "_resolve_git_file_at_commit",
+        lambda root, _revision, path, **_kwargs: (path, origin_configs[root]),
     )
     checked = []
 
@@ -668,9 +695,13 @@ def test_multi_family_release_with_untagged_origin_policies_needs_no_tag_support
         lambda root, **_kwargs: fetched.append(root) or "f" * 40,
     )
     monkeypatch.setattr(
-        cli, "run_local_git",
-        lambda *_args, **_kwargs: SimpleNamespace(
-            returncode=0, stdout="[project.release]\ngit_tag = false\n", stderr="",
+        cli, "_read_git_path_at_commit",
+        lambda *_args, **_kwargs: "[project.release]\ngit_tag = false\n",
+    )
+    monkeypatch.setattr(
+        cli, "_resolve_git_file_at_commit",
+        lambda _root, _revision, path, **_kwargs: (
+            path, "[project.release]\ngit_tag = false\n",
         ),
     )
     monkeypatch.setattr(
@@ -749,13 +780,13 @@ def test_snapshot_tag_policy_refuses_missing_or_invalid_facts(
     repo_root = tmp_path / "repo"
     selected_root = tmp_path / project_root if project_root == "outside" else repo_root / "demo"
     project = SimpleNamespace(name="demo", project_root=selected_root)
-    monkeypatch.setattr(
-        cli, "run_local_git",
-        lambda *_args, **_kwargs: SimpleNamespace(
-            returncode=returncode, stdout=stdout,
-            stderr="snapshot read failed" if returncode else "",
-        ),
-    )
+
+    def fake_read(*_args, **_kwargs):
+        if returncode:
+            raise RuntimeError("Failed to read demo release policy: snapshot read failed")
+        return stdout
+
+    monkeypatch.setattr(cli, "_read_git_path_at_commit", fake_read)
 
     with pytest.raises(RuntimeError, match=expected_error):
         cli._project_git_tag_policy_at_snapshot(repo_root, "f" * 40, project)
@@ -776,18 +807,13 @@ def test_snapshot_tag_policy_resolves_relative_project_root(tmp_path, monkeypatc
     project = SimpleNamespace(name="demo", project_root=Path("projects/demo"))
     seen = []
     monkeypatch.setattr(
-        cli, "run_local_git",
-        lambda root, *args, **_kwargs: seen.append((root, args)) or SimpleNamespace(
-            returncode=0,
-            stdout="[project.release]\ngit_tag = false\n",
-            stderr="",
-        ),
+        cli, "_read_git_path_at_commit",
+        lambda root, revision, path, **_kwargs: seen.append((root, revision, path))
+        or "[project.release]\ngit_tag = false\n",
     )
 
     assert cli._project_git_tag_policy_at_snapshot(tmp_path, "f" * 40, project) is False
-    assert seen == [(
-        tmp_path, ("show", f"{'f' * 40}:projects/demo/cmru.toml"),
-    )]
+    assert seen == [(tmp_path, "f" * 40, Path("projects/demo/cmru.toml"))]
 
 
 def test_snapshot_policy_path_comes_from_the_origin_orchestration_file(tmp_path, monkeypatch):
@@ -796,17 +822,26 @@ def test_snapshot_policy_path_comes_from_the_origin_orchestration_file(tmp_path,
     base = "f" * 40
     project = SimpleNamespace(name="demo", project_root=repo_root / "old/demo")
     configs = {"demo": project}
-    seen = []
+    read_paths = []
+    resolved_paths = []
 
-    def fake_git(_root, *args, **_kwargs):
-        seen.append(args[1])
-        if args[1] == f"{base}:cmru.orchestration.toml":
+    def fake_read(_root, revision, path, **_kwargs):
+        read_paths.append(path)
+        assert revision == base
+        if path == Path("cmru.orchestration.toml"):
             content = '[orchestration.project.demo]\nconfig = "new/demo/cmru.toml"\n'
         else:
             content = "[project.release]\ngit_tag = true\n"
-        return SimpleNamespace(returncode=0, stdout=content, stderr="")
+        return content
 
-    monkeypatch.setattr(cli, "run_local_git", fake_git)
+    monkeypatch.setattr(cli, "_read_git_path_at_commit", fake_read)
+    monkeypatch.setattr(
+        cli, "_resolve_git_file_at_commit",
+        lambda _root, revision, path, **_kwargs: (
+            resolved_paths.append(path) or path,
+            "[project.release]\ngit_tag = true\n",
+        ),
+    )
     paths = _real_project_config_paths_at_snapshot(
         repo_root, base, config_path, configs, ["demo"],
     )
@@ -815,10 +850,8 @@ def test_snapshot_policy_path_comes_from_the_origin_orchestration_file(tmp_path,
     assert cli._project_git_tag_policy_at_snapshot(
         repo_root, base, project, project_config_rel=paths["demo"],
     ) is True
-    assert seen == [
-        f"{base}:cmru.orchestration.toml",
-        f"{base}:new/demo/cmru.toml",
-    ]
+    assert read_paths == [Path("cmru.orchestration.toml"), Path("new/demo/cmru.toml")]
+    assert resolved_paths == [Path("new/demo/cmru.toml")]
 
 
 def test_snapshot_project_config_direct_file_uses_its_snapshot_path(tmp_path):
@@ -830,6 +863,59 @@ def test_snapshot_project_config_direct_file_uses_its_snapshot_path(tmp_path):
     )
 
     assert paths == {"demo": Path("projects/demo/cmru.toml")}
+
+
+def test_snapshot_reader_resolves_project_config_symlinks_inside_git_tree(tmp_path):
+    repo_root = tmp_path / "repo"
+    _init_repo(repo_root)
+    shared = repo_root / "shared"
+    shared.mkdir()
+    (shared / "cmru.toml").write_text(
+        "[project.release]\ngit_tag = true\n", encoding="utf-8",
+    )
+    project = repo_root / "project"
+    project.mkdir()
+    (project / "cmru.toml").symlink_to("../shared/cmru.toml")
+    (repo_root / "alias").symlink_to("project")
+    (repo_root / "cmru.orchestration.toml").write_text(
+        '[orchestration.project.demo]\nconfig = "project/cmru.toml"\n',
+        encoding="utf-8",
+    )
+    _git(
+        "add", "shared/cmru.toml", "project/cmru.toml", "alias",
+        "cmru.orchestration.toml", cwd=repo_root,
+    )
+    _git("commit", "-q", "-m", "add symlinked project config", cwd=repo_root)
+    revision = _git("rev-parse", "HEAD", cwd=repo_root)
+
+    expected = "[project.release]\ngit_tag = true\n"
+    assert cli._read_git_path_at_commit(
+        repo_root, revision, Path("project/cmru.toml"), source_label="origin/main",
+    ) == expected
+    assert cli._read_git_path_at_commit(
+        repo_root, revision, Path("alias/cmru.toml"), source_label="origin/main",
+    ) == expected
+    assert _real_project_config_paths_at_snapshot(
+        repo_root, revision, repo_root / "cmru.orchestration.toml",
+        {"demo": SimpleNamespace(name="demo", project_root=repo_root / "old/demo")},
+        ["demo"],
+    ) == {"demo": Path("shared/cmru.toml")}
+
+
+def test_snapshot_reader_refuses_symlink_escape_from_git_tree(tmp_path):
+    repo_root = tmp_path / "repo"
+    _init_repo(repo_root)
+    project = repo_root / "project"
+    project.mkdir()
+    (project / "cmru.toml").symlink_to("../../outside/cmru.toml")
+    _git("add", "project/cmru.toml", cwd=repo_root)
+    _git("commit", "-q", "-m", "add escaping config symlink", cwd=repo_root)
+    revision = _git("rev-parse", "HEAD", cwd=repo_root)
+
+    with pytest.raises(RuntimeError, match="Symlink escapes the Git family"):
+        cli._read_git_path_at_commit(
+            repo_root, revision, Path("project/cmru.toml"), source_label="origin/main",
+        )
 
 
 def test_snapshot_config_path_refuses_unsupported_internal_config_name(tmp_path):
@@ -865,10 +951,7 @@ def test_snapshot_orchestration_path_refuses_missing_or_unsafe_config_paths(
     config_path = repo_root / "cmru.orchestration.toml"
     base = "f" * 40
     monkeypatch.setattr(
-        cli, "run_local_git",
-        lambda *_args, **_kwargs: SimpleNamespace(
-            returncode=0, stdout=orchestration_text, stderr="",
-        ),
+        cli, "_read_git_path_at_commit", lambda *_args, **_kwargs: orchestration_text,
     )
 
     with pytest.raises(RuntimeError, match=expected_error):
@@ -882,9 +965,9 @@ def test_snapshot_orchestration_path_refuses_missing_or_unsafe_config_paths(
 def test_snapshot_orchestration_read_failure_stops_before_policy_lookup(tmp_path, monkeypatch):
     repo_root = tmp_path / "repo"
     monkeypatch.setattr(
-        cli, "run_local_git",
-        lambda *_args, **_kwargs: SimpleNamespace(
-            returncode=1, stdout="", stderr="snapshot config unavailable",
+        cli, "_read_git_path_at_commit",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("Failed to read orchestration config from origin/main")
         ),
     )
 
@@ -899,6 +982,7 @@ def test_snapshot_orchestration_read_failure_stops_before_policy_lookup(tmp_path
 def test_candidate_orchestration_path_uses_retained_candidate_config(tmp_path):
     source_root = tmp_path / "source"
     candidate_root = tmp_path / "candidate"
+    _init_repo(candidate_root)
     config_path = source_root / "cmru.orchestration.toml"
     candidate_config = candidate_root / "cmru.orchestration.toml"
     candidate_config.parent.mkdir(parents=True)
@@ -906,6 +990,13 @@ def test_candidate_orchestration_path_uses_retained_candidate_config(tmp_path):
         '[orchestration.project.demo]\nconfig = "new/demo/cmru.toml"\n',
         encoding="utf-8",
     )
+    candidate_project_config = candidate_root / "new" / "demo" / "cmru.toml"
+    candidate_project_config.parent.mkdir(parents=True)
+    candidate_project_config.write_text(
+        "[project.release]\ngit_tag = true\n", encoding="utf-8",
+    )
+    _git("add", "cmru.orchestration.toml", "new/demo/cmru.toml", cwd=candidate_root)
+    _git("commit", "-q", "-m", "record candidate config", cwd=candidate_root)
 
     paths = _real_project_config_paths_in_candidate(
         source_root, candidate_root, config_path,
@@ -931,7 +1022,11 @@ def test_candidate_direct_project_config_uses_recorded_project_path(tmp_path):
 def test_candidate_orchestration_read_failure_refuses_resume(tmp_path):
     source_root = tmp_path / "source"
     candidate_root = tmp_path / "candidate"
-    with pytest.raises(RuntimeError, match="Failed to read orchestration config from retained candidate"):
+    _init_repo(candidate_root)
+    (candidate_root / "README.md").write_text("candidate without config\n", encoding="utf-8")
+    _git("add", "README.md", cwd=candidate_root)
+    _git("commit", "-q", "-m", "candidate without config", cwd=candidate_root)
+    with pytest.raises(RuntimeError, match="Tracked path is missing from retained candidate"):
         _real_project_config_paths_in_candidate(
             source_root, candidate_root,
             source_root / "cmru.orchestration.toml",
@@ -948,10 +1043,13 @@ def test_candidate_tag_policy_refuses_invalid_project_policy(
     tmp_path, content, expected_error,
 ):
     candidate_root = tmp_path / "candidate"
+    _init_repo(candidate_root)
     project_config_rel = Path("demo/cmru.toml")
     candidate_config = candidate_root / project_config_rel
     candidate_config.parent.mkdir(parents=True)
     candidate_config.write_text(content, encoding="utf-8")
+    _git("add", project_config_rel.as_posix(), cwd=candidate_root)
+    _git("commit", "-q", "-m", "record candidate config", cwd=candidate_root)
 
     with pytest.raises(RuntimeError, match=expected_error):
         cli._project_git_tag_policy_in_candidate(
@@ -960,9 +1058,14 @@ def test_candidate_tag_policy_refuses_invalid_project_policy(
 
 
 def test_candidate_tag_policy_refuses_missing_project_config(tmp_path):
-    with pytest.raises(RuntimeError, match="Failed to read demo release policy"):
+    candidate_root = tmp_path / "candidate"
+    _init_repo(candidate_root)
+    (candidate_root / "README.md").write_text("candidate without config\n", encoding="utf-8")
+    _git("add", "README.md", cwd=candidate_root)
+    _git("commit", "-q", "-m", "candidate without config", cwd=candidate_root)
+    with pytest.raises(RuntimeError, match="Tracked path is missing from retained candidate"):
         cli._project_git_tag_policy_in_candidate(
-            tmp_path / "candidate", "demo", Path("demo/cmru.toml"),
+            candidate_root, "demo", Path("demo/cmru.toml"),
         )
 
 
@@ -971,6 +1074,7 @@ def test_resume_checks_tag_policy_from_committed_candidate_before_running_child(
 ):
     source_root = tmp_path / "source"
     candidate_root = tmp_path / "retained"
+    _init_repo(candidate_root)
     config_path = tmp_path / "external" / "cmru.orchestration.toml"
     project = cli.ProjectConfig(
         "demo", {}, {}, project_root=source_root / "demo", git_tag=False,
@@ -988,6 +1092,8 @@ def test_resume_checks_tag_policy_from_committed_candidate_before_running_child(
     candidate_config.write_text(
         "[project.release]\ngit_tag = true\n", encoding="utf-8",
     )
+    _git("add", "demo/cmru.toml", cwd=candidate_root)
+    _git("commit", "-q", "-m", "record candidate config", cwd=candidate_root)
     events = []
 
     monkeypatch.setattr(cli, "_resolve_config", lambda _path: config_path)
@@ -1055,6 +1161,39 @@ def test_snapshot_handoff_refuses_commit_missing_from_family_object_store(tmp_pa
         cli._consume_release_snapshot_handoff(
             repo_root, f"{repo_root.resolve()}:{'a' * 40}",
         )
+
+
+def test_release_refuses_handoff_after_origin_main_moves(tmp_path, monkeypatch, capsys):
+    config = tmp_path / "cmru.toml"
+    config.write_text("", encoding="utf-8")
+    project = _project("alpha")
+    loaded = (
+        tmp_path, {"alpha": project}, ["alpha"], ["alpha"], [],
+        "project-first", {}, SimpleNamespace(), _github_config(), SimpleNamespace(),
+    )
+    read_fd, write_fd = os.pipe()
+    checked_base = "a" * 40
+    assert os.write(
+        write_fd, f"{tmp_path.resolve()}:{checked_base}".encode("utf-8"),
+    ) == len(f"{tmp_path.resolve()}:{checked_base}".encode("utf-8"))
+    os.close(write_fd)
+    monkeypatch.setenv(cli._RELEASE_PREFLIGHT_SNAPSHOT_FD_ENV, str(read_fd))
+    monkeypatch.setattr(cli, "load_config", lambda _path: loaded)
+    monkeypatch.setattr(cli, "apply_release_env", lambda *_args: None)
+    monkeypatch.setattr(transaction, "project_git_family_groups", lambda root, projects: {root: projects})
+    monkeypatch.setattr(transaction, "release_lock", lambda _root: nullcontext())
+    monkeypatch.setattr(
+        cli, "run_local_git",
+        lambda *_args, **_kwargs: SimpleNamespace(returncode=0, stdout="", stderr=""),
+    )
+    monkeypatch.setattr(transaction, "fetch_origin_main", lambda *_args, **_kwargs: "b" * 40)
+    monkeypatch.setattr(
+        transaction, "create_workspace",
+        lambda *_args, **_kwargs: pytest.fail("workspace created after origin/main moved"),
+    )
+
+    assert cli.main(["release", "alpha", "--config", str(config)]) == 1
+    assert "origin/main changed after the multi-family release preflight" in capsys.readouterr().err
 
 
 @pytest.mark.parametrize("fd_value", ["not-an-int", "0", "999999999"])
@@ -3408,7 +3547,7 @@ def test_parent_build_retains_successful_outputs_then_removes_worktree(tmp_path,
     monkeypatch.setattr(
         transaction, "create_workspace", lambda _root, *, base, purpose, **_kw: workspace,
     )
-    monkeypatch.setattr(transaction, "copy_secret_overlays", lambda *_args: None)
+    monkeypatch.setattr(transaction, "copy_secret_overlays", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(transaction, "run_child", lambda *_args, **_kwargs: 0)
     monkeypatch.setattr(
         transaction,
@@ -3445,7 +3584,7 @@ def test_parent_build_failure_keeps_worktree_and_does_not_retain_outputs(tmp_pat
     monkeypatch.setattr(
         transaction, "create_workspace", lambda _root, *, base, purpose, **_kw: workspace,
     )
-    monkeypatch.setattr(transaction, "copy_secret_overlays", lambda *_args: None)
+    monkeypatch.setattr(transaction, "copy_secret_overlays", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(transaction, "run_child", lambda *_args, **_kwargs: 1)
     monkeypatch.setattr(
         transaction, "retain_successful_build_outputs", lambda *_args: calls.append("retained"),

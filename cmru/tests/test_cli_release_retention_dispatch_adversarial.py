@@ -16,7 +16,7 @@ def fake_git_family(monkeypatch):
     monkeypatch.setattr(cli, "_require_local_tag_inspection_support", lambda _root: None)
     monkeypatch.setattr(
         cli, "_project_git_tag_policy_at_snapshot",
-        lambda _root, _base, project: getattr(project, "git_tag", True),
+        lambda _root, _base, project, **_kwargs: getattr(project, "git_tag", True),
     )
     monkeypatch.setattr(
         cli, "_project_config_paths_in_candidate",
