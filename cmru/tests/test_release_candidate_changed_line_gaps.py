@@ -79,7 +79,7 @@ def test_local_tag_oid_does_not_fold_exists_lookup_failure_into_absence(
 
     with pytest.raises(
         RuntimeError,
-        match="Failed to determine local tag demo-v1 after hash lookup failed \\(1\\): repository unreadable",
+        match="Failed to determine local tag demo-v1 after hash lookup failed \\(1\\): repository unreadable; initial hash lookup \\(128\\): initial lookup failed",
     ):
         cli.local_git_tag_oid(tmp_path, "demo-v1")
 
@@ -95,7 +95,7 @@ def test_local_tag_oid_initial_git_1_does_not_fold_lookup_failure_into_absence(
 
     with pytest.raises(
         RuntimeError,
-        match="Failed to determine local tag demo-v1 after hash lookup failed \\(1\\): repository unreadable; initial hash lookup \\(128\\): initial lookup failed",
+        match="Failed to determine local tag demo-v1 after hash lookup failed \\(1\\): repository unreadable; initial hash lookup \\(1\\): no diagnostic output",
     ):
         cli.local_git_tag_oid(tmp_path, "demo-v1")
 

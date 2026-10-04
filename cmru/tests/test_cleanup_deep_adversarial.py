@@ -875,19 +875,24 @@ def test_local_tag_delete_treats_confirmed_concurrent_removal_as_idempotent(
 
 
 def test_local_tag_delete_fails_on_lookup_or_recheck_errors(monkeypatch, tmp_path):
-    monkeypatch.setattr(cli, "run_local_git", lambda *args, **kwargs: SimpleNamespace(
-        returncode=128, stdout="", stderr="bad repository",
-    ))
-    with pytest.raises(RuntimeError, match="Failed to inspect local tag.*bad repository"):
+    first_results = iter([
+        SimpleNamespace(returncode=128, stdout="", stderr="bad repository"),
+        SimpleNamespace(returncode=1, stdout="", stderr="repository unreadable"),
+    ])
+    monkeypatch.setattr(
+        cli, "run_local_git", lambda *args, **kwargs: next(first_results),
+    )
+    with pytest.raises(RuntimeError, match="Failed to determine local tag.*repository unreadable"):
         cli.delete_git_tag_local(tmp_path, "demo-v1", False)
 
     results = iter([
         SimpleNamespace(returncode=0, stdout="a" * 40, stderr=""),
         SimpleNamespace(returncode=1, stdout="", stderr="delete failed"),
         SimpleNamespace(returncode=128, stdout="", stderr="bad repository"),
+        SimpleNamespace(returncode=1, stdout="", stderr="repository unreadable"),
     ])
     monkeypatch.setattr(cli, "run_local_git", lambda *args, **kwargs: next(results))
-    with pytest.raises(RuntimeError, match="Failed to recheck local tag.*bad repository"):
+    with pytest.raises(RuntimeError, match="Failed to determine local tag.*repository unreadable"):
         cli.delete_git_tag_local(tmp_path, "demo-v1", False)
 
 
