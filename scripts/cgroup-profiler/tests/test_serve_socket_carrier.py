@@ -492,10 +492,16 @@ class TestWireShape:
             serve.SessionServer(
                 sessions_dir=str(tmp_path / "sessions"), request_line_timeout=0,
             )
-        with pytest.raises(ValueError, match="max_request_line_bytes must be at least 2"):
+        with pytest.raises(ValueError, match="max_request_line_bytes must be at least 3"):
             serve.SessionServer(
-                sessions_dir=str(tmp_path / "sessions"), max_request_line_bytes=1,
+                sessions_dir=str(tmp_path / "sessions"), max_request_line_bytes=2,
             )
+        server = serve.SessionServer(
+            sessions_dir=str(tmp_path / "sessions"), max_request_line_bytes=3,
+        )
+        conn = _FakeConn([b"{}\n"])
+        server._handle_connection(conn)
+        assert "exceeds 3 bytes" not in conn.reply()["error"]["message"]
 
     def test_wire_object_keys_must_be_strings(self, tmp_path):
         server = serve.SessionServer(sessions_dir=str(tmp_path / "sessions"))
@@ -651,6 +657,33 @@ class TestWireShape:
         assert conn.closed is True
         assert conn.sent == []
 
+    def test_request_received_exactly_at_the_absolute_deadline_is_not_dispatched(
+        self, tmp_path,
+    ):
+        now = [0.0]
+
+        class _AdvancingConn(_FakeConn):
+            def recv(self, size: int) -> bytes:
+                now[0] += 0.25
+                return super().recv(size)
+
+        server = serve.SessionServer(
+            sessions_dir=str(tmp_path / "sessions"), request_line_timeout=0.5,
+            request_clock=lambda: now[0],
+        )
+        wire = _wire_bytes("version")
+        assert wire.endswith(b"\n")
+        conn = _AdvancingConn([wire[:-2], wire[-2:]])
+        server._dispatch = lambda _request: pytest.fail(
+            "a request completed at the deadline was dispatched"
+        )
+
+        server._handle_connection(conn)
+
+        assert now[0] == pytest.approx(0.5)
+        assert conn.closed is True
+        assert conn.sent == []
+
     def test_idle_partial_request_timeout_closes_and_next_request_is_served(
         self, tmp_path
     ):
@@ -687,6 +720,30 @@ class TestWireShape:
         response = conn.reply()
         assert response["error"]["code"] == "bad-argument"
         assert "exceeds 8 bytes" in response["error"]["message"]
+
+    def test_complete_request_exactly_at_the_size_limit_is_accepted(self, tmp_path):
+        server = serve.SessionServer(
+            sessions_dir=str(tmp_path / "sessions"), max_request_line_bytes=3,
+        )
+        conn = _FakeConn([b"{}\n"])
+
+        server._handle_connection(conn)
+
+        assert "exceeds 3 bytes" not in conn.reply()["error"]["message"]
+
+    def test_unterminated_request_at_the_size_limit_is_refused_immediately(
+        self, tmp_path,
+    ):
+        server = serve.SessionServer(
+            sessions_dir=str(tmp_path / "sessions"), max_request_line_bytes=3,
+        )
+        conn = _FakeConn([b"123"])
+
+        server._handle_connection(conn)
+
+        response = conn.reply()
+        assert response["error"]["code"] == "bad-argument"
+        assert "exceeds 3 bytes" in response["error"]["message"]
 
     def test_request_line_size_is_bounded(self, tmp_path):
         socket_path = str(tmp_path / "run" / "ctl.sock")

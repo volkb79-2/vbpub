@@ -822,7 +822,9 @@ def _build_gates_and_daemon_tree(tmp_path: Path) -> Path:
         write_cgroup(root, f"{scope}/rg-{token}", cgroup_files())
     # NOT a profiler-owned scope -- proves the scope-name filter in
     # _gates_slice_snapshot, not just that list_children works.
-    write_cgroup(root, f"{gates}/some-container.scope", cgroup_files())
+    unrelated_scope = f"{gates}/some-container.scope"
+    write_cgroup(root, unrelated_scope, cgroup_files())
+    write_cgroup(root, f"{unrelated_scope}/rg-not-owned", cgroup_files())
     write_cgroup(root, "cgprofile.slice", cgroup_files(
         memory_min="134217728", memory_high="805306368",
     ))
@@ -912,6 +914,38 @@ def test_gates_slice_absent_when_directory_does_not_exist(tmp_path):
     assert snapshot["daemon_slice"] == {
         "cgroup": "/cgprofile.slice", "memory_min_bytes": None, "memory_high_bytes": None,
     }
+
+
+def test_gates_slice_verification_is_cached_but_presence_snapshots_refresh(tmp_path):
+    root = _build_gates_and_daemon_tree(tmp_path)
+    calls = []
+    server = serve.SessionServer(
+        sessions_dir=str(tmp_path / "sessions"),
+        cgroup_root=str(root),
+        proc_root=str(root / "proc"),
+        slice_unit_verifier=lambda unit, path: calls.append((unit, path)) or True,
+    )
+
+    assert server._gates_slice_is_verified() is True
+    assert server._gates_slice_is_verified() is True
+    assert len(calls) == 1
+
+    server.slice_unit_verifier = lambda _unit, _path: False
+    snapshot = server._gates_slice_snapshot()
+    assert snapshot == {"name": "dev-gates.slice", "present": False}
+    assert len(calls) == 1
+
+
+def test_gates_slice_unit_verification_requires_both_exact_identities(tmp_path):
+    server = serve.SessionServer(sessions_dir=str(tmp_path / "sessions"))
+    expected = "/dev.slice/dev-gates.slice"
+    calls = []
+    server.slice_unit_verifier = lambda unit, path: calls.append((unit, path)) or True
+
+    assert server._verify_gates_slice_unit("other.slice", expected) is False
+    assert server._verify_gates_slice_unit("dev-gates.slice", "/dev.slice/other.slice") is False
+    assert server._verify_gates_slice_unit("dev-gates.slice", expected) is True
+    assert calls == [("dev-gates.slice", expected)]
 
 
 def test_gates_slice_name_is_configurable(tmp_path):
@@ -1161,6 +1195,26 @@ class TestRestartRecovery:
         serve.SessionServer(sessions_dir=str(sessions_dir), clock=lambda: EPOCH_END)
         assert str(session_dir) not in calls
 
+    def test_recovery_json_write_opens_only_an_existing_run_directory(
+        self, tmp_path, monkeypatch,
+    ):
+        sessions_dir = tmp_path / "sessions"
+        session_dir = sessions_dir / "s-20260101T000000Z-aaaa"
+        session_dir.mkdir(parents=True)
+        real_run_dir = serve.store.RunDir
+        calls = []
+
+        def record_create(base, *, run_id, create=True):
+            calls.append(create)
+            return real_run_dir(base, run_id=run_id, create=create)
+
+        monkeypatch.setattr(serve.store, "RunDir", record_create)
+        path = session_dir / "placement-recovery.json"
+        serve.SessionServer._write_json_path(str(path), {"status": "restored"})
+
+        assert calls == [False]
+        assert json.loads(path.read_text()) == {"status": "restored"}
+
     def test_a_live_orphan_with_a_damon_unavailable_reason_carries_it_into_the_summary(self, tmp_path):
         sessions_dir = tmp_path / "sessions"
         session_dir = sessions_dir / "s-20260101T000000Z-aaaa"
@@ -1185,6 +1239,33 @@ class TestRestartRecovery:
             serve.os, "listdir", lambda p: (_ for _ in ()).throw(OSError("boom"))
         )
         server._recover_orphans()  # must not raise
+
+    def test_placement_recovery_logs_only_real_failures(self, tmp_path):
+        for with_manifest, error in (
+            (False, serve.placement_mod.REFUSED_STATE_UNAVAILABLE),
+            (False, None),
+            (True, serve.placement_mod.REFUSED_STATE_UNAVAILABLE),
+            (True, None),
+        ):
+            sessions_dir = tmp_path / f"sessions-{with_manifest}-{error is None}"
+            server = serve.SessionServer(sessions_dir=str(sessions_dir))
+            session_dir = sessions_dir / "s-20260101T000000Z-aaaa"
+            if with_manifest:
+                self._write_manifest(session_dir, status="finished")
+            else:
+                session_dir.mkdir(parents=True, exist_ok=True)
+            (session_dir / "placement-state.json").write_text(
+                json.dumps({"schema": 1, "state": "recovering"})
+            )
+            logs = []
+            server._recover_placement_file = lambda *_args, **_kwargs: error
+            server._log = logs.append
+
+            server._recover_orphans()
+
+            assert bool(logs) is (error is not None)
+            if error is not None:
+                assert "operator attention" in logs[0] or "requiring operator attention" in logs[0]
 
 
 # ── gc / retention ───────────────────────────────────────────────────────
@@ -2288,7 +2369,7 @@ class _ObserveSpy:
         return []
 
 
-@pytest.mark.parametrize("missing", ["detector", "previous", "delta"])
+@pytest.mark.parametrize("missing", ["detector", "previous", "delta", "zero-delta"])
 def test_detector_observation_requires_each_independent_precondition(simple_server, missing):
     resolved = targets_mod.find_container_cgroup(SIMPLE_CONTAINER_ID, root=simple_server.cgroup_root)
     with simple_server._lock:
@@ -2310,10 +2391,14 @@ def test_detector_observation_requires_each_independent_precondition(simple_serv
     elif missing == "previous":
         sess._prev_record = None
     else:
-        sess._prev_mono = None
+        if missing == "delta":
+            sess._prev_mono = None
 
     simple_server._on_session_sample(
-        sess, {"mono": 1.0, "cg": {sess.cgroup: {}}, "host": {}}, abs_target, None,
+        sess,
+        {"mono": 0.0 if missing == "zero-delta" else 1.0,
+         "cg": {sess.cgroup: {}}, "host": {}},
+        abs_target, None,
     )
     assert spy.calls == []
 

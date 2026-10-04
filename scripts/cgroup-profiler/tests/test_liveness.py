@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import os
+from dataclasses import FrozenInstanceError
 
 import pytest
 
@@ -52,6 +53,11 @@ class TestParsePolicy:
         # client forwards what it was given rather than deciding.
         assert policy.ceiling == 900.5
         assert policy.on_stall == "kill"
+
+    def test_policy_values_are_immutable_after_parsing(self):
+        policy = liveness.parse_policy({})
+        with pytest.raises(FrozenInstanceError):
+            policy.on_stall = "kill"
 
     @pytest.mark.parametrize("args, fragment", [
         ({"progress_stream": ""}, "non-empty"),
@@ -122,6 +128,11 @@ def _write_stream(path, *objects, trailing_newline=True):
 
 
 class TestReadProgressStream:
+    def test_stream_samples_are_immutable(self):
+        sample = liveness.StreamSample(path="/run/progress.ndjson", present=True)
+        with pytest.raises(FrozenInstanceError):
+            sample.present = False
+
     def test_fifo_without_writer_is_absent_and_cannot_block_the_watcher(self, tmp_path):
         path = tmp_path / "progress.ndjson"
         os.mkfifo(path)
@@ -336,6 +347,13 @@ class TestReadingHelpers:
         assert total == pytest.approx(2 * (100 + 50) / os.sysconf("SC_CLK_TCK"))
         assert liveness.subtree_cpu_seconds([], str(tmp_path)) is None
         assert liveness.subtree_cpu_seconds([99], str(tmp_path)) is None
+
+    @pytest.mark.parametrize("reading", [(None, 12), (12, None)])
+    def test_subtree_cpu_skips_a_partially_unreadable_process_sample(
+        self, tmp_path, monkeypatch, reading,
+    ):
+        monkeypatch.setattr(liveness.metrics, "_proc_cpu_usec", lambda _path: reading)
+        assert liveness.subtree_cpu_seconds([11], str(tmp_path)) is None
 
     def test_cgroup_io_bytes_sums_every_device(self, tmp_path):
         (tmp_path / "io.stat").write_text(

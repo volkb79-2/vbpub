@@ -373,8 +373,8 @@ class SessionServer:
         self.accept_timeout = accept_timeout
         if request_line_timeout <= 0:
             raise ValueError("request_line_timeout must be positive")
-        if max_request_line_bytes < 2:
-            raise ValueError("max_request_line_bytes must be at least 2")
+        if max_request_line_bytes < 3:
+            raise ValueError("max_request_line_bytes must be at least 3")
         self.request_line_timeout = request_line_timeout
         self.max_request_line_bytes = max_request_line_bytes
         self.request_clock = request_clock
@@ -978,10 +978,12 @@ class SessionServer:
             placement_obj.apply(
                 list(subtree_resolver.current_pids) if subtree_resolver is not None else []
             )
-            if subtree_resolver is not None and placement_obj.placed and placement_obj.error is None:
-                subtree_resolver.owned_cgroup = lambda: (
-                    placement_obj.leaf_cgroup if placement_obj.placed else None
-                )
+            if subtree_resolver is not None:
+                if placement_obj.placed:
+                    if placement_obj.error is None:
+                        subtree_resolver.owned_cgroup = lambda: (
+                            placement_obj.leaf_cgroup if placement_obj.placed else None
+                        )
             if placement_obj.error is not None:
                 self._log(
                     f"start: placement refused for {session_id}: {placement_obj.error}"

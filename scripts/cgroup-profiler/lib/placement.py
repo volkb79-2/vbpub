@@ -429,7 +429,7 @@ def _process_start_time_ticks(proc_root: str, pid: int) -> Optional[str]:
     if not text:
         return None
     close = text.rfind(")")
-    if close < 0:
+    if close <= 0:
         return None
     fields = text[close + 1 :].split()
     # The suffix starts at stat field 3 (state), so field 22 is index 19.
@@ -444,7 +444,7 @@ def _process_parent_pid(proc_root: str, pid: int) -> Optional[int]:
     if not text:
         return None
     close = text.rfind(")")
-    if close < 0:
+    if close <= 0:
         return None
     fields = text[close + 1 :].split()
     if len(fields) < 2 or not fields[1].isdigit():
@@ -459,7 +459,9 @@ def _host_pid_of_self(proc_root: str) -> Optional[int]:
         return None
     for line in text.splitlines():
         key, sep, value = line.partition(":")
-        if key != "NSpid" or not sep:
+        if key != "NSpid":
+            continue
+        if not sep:
             continue
         values = value.split()
         if values and values[0].isdigit() and int(values[0]) > 0:
@@ -471,7 +473,9 @@ def _within_cgroup(path: str, parent: str) -> bool:
     """Whether normalized absolute ``path`` is ``parent`` or below it."""
     if not isinstance(path, str) or not isinstance(parent, str):
         return False
-    if not path.startswith("/") or not parent.startswith("/"):
+    if not path.startswith("/"):
+        return False
+    if not parent.startswith("/"):
         return False
     normalized_path = posixpath.normpath(path)
     normalized_parent = posixpath.normpath(parent)
@@ -555,10 +559,10 @@ def bounded_slice_capacity(cgroup_root: str, gates_cgroup: str) -> bool:
         cpu_max = util.read_text(os.path.join(gates_abs, "cpu.max"))
         if not isinstance(cpu_max, str):
             return False
-        quota_period = cpu_max.split()
-        if len(quota_period) != 2 or quota_period[0] == "max":
-            return False
-        quota, period = map(int, quota_period)
+        # Unpacking enforces the two-field shape and int() rejects the
+        # kernel's unbounded "max" quota token. Keep one parser as the
+        # authority for both conditions rather than a redundant precheck.
+        quota, period = map(int, cpu_max.split())
     except (OSError, ValueError):
         return False
     return quota > 0 and period > 0
@@ -640,10 +644,11 @@ def parse_request(args: Dict[str, Any]) -> Optional[PlacementRequest]:
     if weight is not None:
         if isinstance(weight, bool) or not isinstance(weight, (int, float)):
             raise CapsError(f"--cpu-weight must be a number, got {weight!r}")
-        if isinstance(weight, float) and (
-            not math.isfinite(weight) or not weight.is_integer()
-        ):
-            raise CapsError(f"--cpu-weight must be a finite whole number, got {weight!r}")
+        if isinstance(weight, float):
+            if not math.isfinite(weight) or not weight.is_integer():
+                raise CapsError(
+                    f"--cpu-weight must be a finite whole number, got {weight!r}"
+                )
         weight = int(weight)
         if not CPU_WEIGHT_MIN <= weight <= CPU_WEIGHT_MAX:
             raise CapsError(
@@ -682,27 +687,30 @@ class CgroupWriteGuard:
         self.scope_abs = abs_path(cgroup_root, scope_cgroup) if scope_cgroup else None
         self.leaf_name = leaf_name
         self.container_kill_abs: Optional[str] = None
-        if container_cgroup is not None and container_id is not None:
-            gates_path = posixpath.normpath(gates_cgroup)
-            target_path = posixpath.normpath(container_cgroup)
-            if (
-                gates_path.startswith("/")
-                and target_path.startswith(gates_path.rstrip("/") + "/")
-                and target_path == container_cgroup
-                and container_cgroup_matches_id(container_cgroup, container_id)
-            ):
-                gates_real = os.path.realpath(self.gates_abs)
-                target_abs = abs_path(cgroup_root, target_path)
-                target_real = os.path.realpath(target_abs)
-                try:
-                    below_gates = os.path.commonpath((gates_real, target_real)) == gates_real
-                except ValueError:
-                    below_gates = False
-                if (
-                    below_gates and target_real != gates_real
-                    and container_cgroup_matches_id(target_real, container_id)
-                ):
-                    self.container_kill_abs = target_real
+        if container_cgroup is None or container_id is None:
+            return
+        gates_path = posixpath.normpath(gates_cgroup)
+        target_path = posixpath.normpath(container_cgroup)
+        if not gates_path.startswith("/"):
+            return
+        if not target_path.startswith(gates_path.rstrip("/") + "/"):
+            return
+        if target_path != container_cgroup:
+            return
+        if not container_cgroup_matches_id(container_cgroup, container_id):
+            return
+        gates_real = os.path.realpath(self.gates_abs)
+        target_abs = abs_path(cgroup_root, target_path)
+        target_real = os.path.realpath(target_abs)
+        try:
+            below_gates = os.path.commonpath((gates_real, target_real)) == gates_real
+        except ValueError:
+            below_gates = False
+        if (
+            below_gates and target_real != gates_real
+            and container_cgroup_matches_id(target_real, container_id)
+        ):
+            self.container_kill_abs = target_real
 
     # -- predicates --------------------------------------------------------
 
@@ -998,7 +1006,9 @@ class LanePlacement:
         parent = self._pid_parent(pid)
         visited: Set[int] = {pid}
         for _ in range(4096):
-            if parent is None or parent <= 0 or parent in visited:
+            if parent is None:
+                return None
+            if parent <= 0 or parent in visited:
                 return None
             visited.add(parent)
             record = self.pid_records.get(parent)
@@ -1220,8 +1230,6 @@ class LanePlacement:
             "gates_cgroup": posixpath.normpath(self.gates_cgroup),
             "scope_cgroup": None,
             "leaf_cgroup": None,
-            "leaf_created": False,
-            "was_placed": False,
             "pids": {},
         }
         if not self._persist(state="creating-scope"):
@@ -1251,23 +1259,33 @@ class LanePlacement:
         if not self._persist(state="scope-created"):
             self.error = REFUSED_STATE_UNAVAILABLE
             return
-        if (
-            not normalized_gates.startswith("/")
-            or not normalized_scope.startswith("/")
-            or posixpath.dirname(normalized_scope) != normalized_gates
-            or posixpath.basename(normalized_scope) != self.scope_name
-            or any(part in ("", ".", "..") for part in normalized_scope.split("/")[1:])
-        ):
+        if not normalized_gates.startswith("/"):
+            self.error = REFUSED_PARENT_NOT_GATES_SLICE
+            self._persist(state="recovery-required")
+            return
+        if not normalized_scope.startswith("/"):
+            self.error = REFUSED_PARENT_NOT_GATES_SLICE
+            self._persist(state="recovery-required")
+            return
+        if posixpath.dirname(normalized_scope) != normalized_gates:
+            self.error = REFUSED_PARENT_NOT_GATES_SLICE
+            self._persist(state="recovery-required")
+            return
+        if posixpath.basename(normalized_scope) != self.scope_name:
             self.error = REFUSED_PARENT_NOT_GATES_SLICE
             self._persist(state="recovery-required")
             return
         self._set_scope(normalized_scope)
         scope_abs = abs_path(self.cgroup_root, normalized_scope)
-        if (
-            not os.path.isdir(scope_abs)
-            or os.path.realpath(scope_abs) != os.path.abspath(scope_abs)
-            or not self._unit_cgroup_verifier(self.scope_name, normalized_scope)
-        ):
+        if not os.path.isdir(scope_abs):
+            self.error = REFUSED_PARENT_NOT_GATES_SLICE
+            self._persist(state="recovery-required")
+            return
+        if os.path.realpath(scope_abs) != os.path.abspath(scope_abs):
+            self.error = REFUSED_PARENT_NOT_GATES_SLICE
+            self._persist(state="recovery-required")
+            return
+        if not self._unit_cgroup_verifier(self.scope_name, normalized_scope):
             self.error = REFUSED_PARENT_NOT_GATES_SLICE
             self._persist(state="recovery-required")
             return
@@ -1298,13 +1316,12 @@ class LanePlacement:
             self.error = REFUSED_STATE_UNAVAILABLE
             return
         scope_procs = os.path.join(scope_abs, PROCS)
-        if os.path.lexists(leaf_abs) and not self.guard.is_leaf(leaf_abs):
-            self.error = REFUSED_PARENT_NOT_GATES_SLICE
-            self.leaf_cgroup = None
-            self._restore_and_retire()
-            return
         if os.path.lexists(leaf_abs):
-            self.error = write_failed(self._relative(leaf_abs))
+            self.error = (
+                write_failed(self._relative(leaf_abs))
+                if self.guard.is_leaf(leaf_abs)
+                else REFUSED_PARENT_NOT_GATES_SLICE
+            )
             self.leaf_cgroup = None
             self._restore_and_retire()
             return
@@ -1316,7 +1333,6 @@ class LanePlacement:
             self._restore_and_retire()
             return
         self.leaf_created = True
-        self._journal["leaf_created"] = True
         if not self._persist(state="leaf-created"):
             self.error = REFUSED_STATE_UNAVAILABLE
             self.release()
@@ -1449,7 +1465,7 @@ class LanePlacement:
         # namespace. If the explicit host-proc resolver cannot account for
         # every visible entry, that is unknown, never proof of emptiness.
         if len(entries) != len(visible):
-            return None if entries or visible else False
+            return None
         return bool(visible)
 
     def _delegate_controllers(self, scope_abs: str) -> None:
@@ -1572,7 +1588,7 @@ class LanePlacement:
                 break
             self.moved.add(pid)
             moved += 1
-        if self.error is not None and self._journal is not None:
+        if self.error is not None:
             self._persist(state="recovery-required")
         return moved
 
@@ -1675,7 +1691,6 @@ class LanePlacement:
             return False
         sources = [self.leaf_cgroup if self.leaf_created else None, self.scope_cgroup]
         for attempt in range(RMDIR_ATTEMPTS):
-            seen_any = False
             for source_cgroup in sources:
                 if source_cgroup is None:
                     continue
@@ -1686,7 +1701,6 @@ class LanePlacement:
                     self._cleanup_failure(source_cgroup)
                     return False
                 for pid in pids:
-                    seen_any = True
                     record = self.pid_records.get(pid)
                     if record is None:
                         record = self._capture_pid(pid)
@@ -1777,7 +1791,7 @@ class LanePlacement:
                 return False
             if not any(remaining):
                 return True
-            if attempt < RMDIR_ATTEMPTS - 1 and seen_any:
+            if attempt < RMDIR_ATTEMPTS - 1:
                 self._sleep(RMDIR_RETRY_SECONDS)
         self._cleanup_failure(self.scope_cgroup)
         return False
@@ -1811,8 +1825,6 @@ class LanePlacement:
                         self._log(f"placement: could not remove leaf {self.leaf_cgroup}: {last_error}")
                     return
             self.leaf_created = False
-            if self._journal is not None:
-                self._journal["leaf_created"] = False
             if not self._persist(state="leaf-removed"):
                 self.error = REFUSED_STATE_UNAVAILABLE
                 return
@@ -1849,15 +1861,11 @@ class LanePlacement:
 
     def _scope_retired_after_restore(self, scope_abs: str) -> bool:
         """Accept systemd auto-retirement only with independent proof of cleanup."""
-        leaf_abs = (
-            abs_path(self.cgroup_root, self.leaf_cgroup)
-            if self.leaf_cgroup is not None else None
-        )
-        if (
-            os.path.lexists(scope_abs)
-            or (leaf_abs is not None and os.path.lexists(leaf_abs))
-            or self._unit_absence_verifier(self.scope_unit or "") is not True
-        ):
+        # A lane leaf is always an exact child of this scope, so a missing
+        # scope path also proves its leaf path cannot still exist beneath it.
+        if os.path.lexists(scope_abs) or self._unit_absence_verifier(
+            self.scope_unit or ""
+        ) is not True:
             return False
         for pid, record in self.pid_records.items():
             if not self._pid_exists(pid):
@@ -2087,17 +2095,15 @@ def recover_journal(
     # path recovery may consider; rechecking the same implication here would
     # add an unreachable refusal branch.
     leaf_created = journal.get("leaf_created") is True
-    if leaf_created and os.path.isdir(abs_path(cgroup_root, expected_leaf)):
-        recovery.leaf_cgroup = expected_leaf
-        recovery.leaf_created = True
-    elif leaf_created and os.path.lexists(abs_path(cgroup_root, expected_leaf)):
-        return REFUSED_STATE_UNAVAILABLE
-    elif persisted_leaf is not None and os.path.lexists(abs_path(cgroup_root, expected_leaf)):
-        # A path that appeared before the write-ahead record said cgprofile
-        # created it is not adopted or removed by recovery.
-        recovery.leaf_cgroup = None
-    else:
-        recovery.leaf_cgroup = None
+    expected_leaf_abs = abs_path(cgroup_root, expected_leaf)
+    if leaf_created:
+        if os.path.isdir(expected_leaf_abs):
+            recovery.leaf_cgroup = expected_leaf
+            recovery.leaf_created = True
+        elif os.path.lexists(expected_leaf_abs):
+            return REFUSED_STATE_UNAVAILABLE
+    # A leaf path that appeared before the write-ahead record said cgprofile
+    # created it is never adopted or removed by recovery.
     for record in records.values():
         recovery.guard.allow_origin(record["origin_cgroup"])
     recovery.release()

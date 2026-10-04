@@ -298,7 +298,7 @@ def read_progress_stream(path: str, *, previous: Optional[StreamSample] = None) 
             start_offset = fh.tell()
             blob = fh.read(STREAM_TAIL_BYTES)
             head = b""
-            if previous is None and size > STREAM_TAIL_BYTES:
+            if previous is None and partial:
                 fh.seek(0)
                 head = fh.read(STREAM_TAIL_BYTES)
     except OSError:
@@ -518,7 +518,10 @@ class LivenessTracker:
             self._prev_cpu_total = total
         self._cpu_window.append((sample.mono, self.cpu_seconds))
         cutoff = sample.mono - CPU_WINDOW_SECONDS
-        while len(self._cpu_window) > 1 and self._cpu_window[0][0] < cutoff:
+        # The just-appended sample is at ``sample.mono`` and the cutoff is
+        # never later than that sample. With monotonic timestamps it keeps
+        # the window non-empty without a redundant length comparison here.
+        while self._cpu_window[0][0] < cutoff:
             self._cpu_window.pop(0)
         self.cpu_seconds_recent = self.cpu_seconds - self._cpu_window[0][1]
         return self.cpu_seconds_recent >= CPU_GROWTH_SECONDS

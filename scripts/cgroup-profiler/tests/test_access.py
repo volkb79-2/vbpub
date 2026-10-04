@@ -153,16 +153,58 @@ class TestVerifySystemdSlice:
             run=lambda argv, **_kwargs: subprocess.CompletedProcess(argv, 0, output, ""),
         ) is False
 
+    @pytest.mark.parametrize("output", [
+        's "/org/freedesktop/systemd1/unit/dev_2dgates_2eslice"',
+        'o "/org/freedesktop/systemd1/unit/dev_2dgates_2eslice" extra',
+    ])
+    def test_invalid_unit_lookup_stops_before_property_queries(
+        self, monkeypatch, output,
+    ):
+        monkeypatch.setattr(access.shutil, "which", lambda _name: "/usr/bin/busctl")
+        calls = []
+
+        def run(argv, **_kwargs):
+            calls.append(argv)
+            if "GetUnit" not in argv:
+                pytest.fail("invalid manager reply was used as a property object path")
+            return subprocess.CompletedProcess(argv, 0, output, "")
+
+        assert access.verify_systemd_slice(
+            "dev-gates.slice", "/dev.slice/dev-gates.slice", run=run,
+        ) is False
+        assert len(calls) == 1
+
+    def test_successful_bus_exit_with_non_text_stdout_is_unverified(self, monkeypatch):
+        monkeypatch.setattr(access.shutil, "which", lambda _name: "/usr/bin/busctl")
+
+        def run(argv, **_kwargs):
+            return subprocess.CompletedProcess(argv, 0, None, "")
+
+        assert access.verify_systemd_slice(
+            "dev-gates.slice", "/dev.slice/dev-gates.slice", run=run,
+        ) is False
+
     @pytest.mark.parametrize(("unit", "path"), [
         (None, "/dev.slice/dev-gates.slice"),
         (123, "/dev.slice/dev-gates.slice"),
+        ("", "/dev.slice/dev-gates.slice"),
         ("dev-gates", "/dev.slice/dev-gates"),
+        ("dev-gates.slice", None),
+        ("dev-gates.slice", 123),
         ("-bad.slice", "/dev.slice/-bad.slice"),
         ("bad\x00.slice", "/dev.slice/bad.slice"),
+        ("bad\x01.slice", "/dev.slice/bad.slice"),
+        ("bad\x1f.slice", "/dev.slice/bad.slice"),
+        ("bad\x7f.slice", "/dev.slice/bad.slice"),
         ("bad slice.slice", "/dev.slice/bad.slice"),
+        ("bad\u2003.slice", "/dev.slice/bad.slice"),
         ("dev-gates.slice", "relative"),
         ("dev-gates.slice", "/dev.slice/bad\x00.slice"),
+        ("dev-gates.slice", "/dev.slice/bad\x01.slice"),
+        ("dev-gates.slice", "/dev.slice/bad\x1f.slice"),
+        ("dev-gates.slice", "/dev.slice/bad\x7f.slice"),
         ("dev-gates.slice", "/dev.slice/bad\n.slice"),
+        ("dev-gates.slice", "/dev.slice/bad\u2003.slice"),
         ("dev-gates.slice", "/dev.slice//bad.slice"),
         ("dev-gates.slice", "/dev.slice/../bad.slice"),
         ("dev/child.slice", "/dev.slice/dev-child.slice"),
