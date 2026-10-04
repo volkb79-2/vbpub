@@ -1174,7 +1174,11 @@ def test_existing_only_publish_stops_when_tag_target_changes_between_asset_mutat
         ("not-a-record", SOURCE_COMMIT, "malformed GitHub Release"),
         ({"id": 0, "tag_name": "alpha-v1"}, SOURCE_COMMIT, "existing GitHub Release ID"),
         ({"id": 7, "tag_name": "other"}, SOURCE_COMMIT, "malformed GitHub Release identity"),
-        ({"id": 7, "tag_name": "alpha-v1"}, None, "existing Git tag alpha-v1"),
+        (
+            {"id": 7, "tag_name": "alpha-v1.2.3"},
+            None,
+            "existing Git tag alpha-v1.2.3",
+        ),
     ],
 )
 def test_retained_publish_rejects_malformed_existing_release_records(
