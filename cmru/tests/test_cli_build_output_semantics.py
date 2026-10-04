@@ -1133,7 +1133,7 @@ def test_existing_only_publish_rechecks_each_asset_before_mutation(tmp_path):
     ],
 )
 def test_existing_only_publish_stops_when_tag_target_changes_between_asset_mutations(
-    tmp_path, changed_check, expected_actions,
+    tmp_path, capsys, changed_check, expected_actions,
 ):
     asset = tmp_path / "old.whl"
     asset.write_bytes(b"wheel")
@@ -1154,13 +1154,14 @@ def test_existing_only_publish_stops_when_tag_target_changes_between_asset_mutat
     client.delete_asset = lambda _ident: actions.append("delete")
     client.upload_asset = lambda *_args: actions.append("upload")
 
-    with pytest.raises(SystemExit, match="tag target changed"):
+    with pytest.raises(SystemExit):
         client.publish(
             "alpha-v1", "title", "notes", [asset],
             require_existing_release=True, expected_release_id=7,
             expected_tag_commit=SOURCE_COMMIT,
         )
 
+    assert "tag target changed" in capsys.readouterr().err
     assert actions == expected_actions
 
 
