@@ -310,6 +310,23 @@ def test_identity_project_labels_include_exact_old_prefix_and_owned_labels(monke
     }
 
 
+def test_identity_project_label_scan_captures_without_checking(monkeypatch):
+    calls = []
+
+    def docker(args, **kwargs):
+        calls.append((list(args), dict(kwargs)))
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(procutil, "docker", docker)
+    monkeypatch.setattr(
+        workspace_env, "_identity_labeled_resources",
+        lambda *_a, **_kw: {"project": []},
+    )
+    assert workspace_env._identity_project_labels("ab12cd", "repo") == set()
+    assert len(calls) == 3
+    assert all(kwargs == {"capture": True, "check": False} for _, kwargs in calls)
+
+
 @pytest.mark.parametrize(
     "docker",
     [
@@ -359,6 +376,19 @@ def test_old_identity_resource_check_covers_network_labels_projects_and_errors(m
     monkeypatch.setattr(procutil, "docker", lambda *_a, **_kw: (_ for _ in ()).throw(OSError("daemon")))
     with pytest.raises(workspace_env.WorkspaceEnvError, match="cannot check Docker network"):
         workspace_env._old_identity_resources_exist(facts)
+
+
+def test_old_identity_network_scan_keeps_stdout_error_detail(monkeypatch):
+    facts = {**OLD_FACTS}
+    monkeypatch.setattr(
+        procutil, "docker",
+        lambda *_a, **_kw: SimpleNamespace(
+            returncode=1, stdout="network query detail", stderr=""
+        ),
+    )
+    with pytest.raises(workspace_env.WorkspaceEnvError) as exc_info:
+        workspace_env._old_identity_resources_exist(facts)
+    assert "network query detail" in str(exc_info.value)
 
 
 def test_old_identity_network_check_requires_captured_docker_output(monkeypatch):

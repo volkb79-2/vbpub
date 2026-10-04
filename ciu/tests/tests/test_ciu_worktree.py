@@ -1130,9 +1130,12 @@ class TestManagedRecordValidation:
         ):
             worktree._clean_in(tmp_path, yes=True)
 
-    def test_record_logical_hint_returns_none_for_non_object_json(self, tmp_path):
+    @pytest.mark.parametrize("contents", ["[]", "not-json"])
+    def test_record_logical_hint_returns_none_for_non_object_or_invalid_json(
+        self, tmp_path, contents,
+    ):
         path = tmp_path / "record.json"
-        path.write_text("[]", encoding="utf-8")
+        path.write_text(contents, encoding="utf-8")
         assert worktree._record_logical_name_hint(path) is None
 
     def test_family_scan_rejects_record_git_fact_mismatches(
