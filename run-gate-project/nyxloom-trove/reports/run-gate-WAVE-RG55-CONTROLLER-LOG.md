@@ -6894,3 +6894,16 @@ After preserving the report and this ruling, rerun short gates on the new
 commit-bound tree before provisional `--no-ff` integration. Then launch P1 R2
 from a quiet, supported CIU worktree and continue the remaining P3 live
 measurement/release work. This ACCEPT is not a release verdict.
+
+### RW-454 — 2026-10-05 17:51:43Z — detached short-gate wrapper produced no job or verdict
+
+The attempted post-RW-453 `r0-r1` launch at 17:48:58Z used a detached
+`nohup ... & disown` wrapper (PID 1909488). At the mandatory +90-second
+check, there was no surviving PID/process, no `cgprofile-gate-*` container,
+an empty output log with no exit marker, and no run-gate history verdict.
+This wrapper did not run a test and is not a gate failure or evidence. Do not
+infer its status from the wrapper PID or retry it detached. Restart the
+registered lane in a tracked foreground exec session; keep its exact session
+handle, verify the gate container/cap/progress at +90 seconds, and read the
+run-gate verdict/history separately after completion. Since this ruling
+changes the judged tree, those gates qualify only the resulting commit.
