@@ -119,3 +119,19 @@ Integration was merged into the branch first (`git merge --no-ff cli-extended-un
    (`__init__.py` -> package name) is untested beyond the current flat layout.
 
 Gate after the last edit: `run-gate: lane 'r0-r1' verdict PASS; exit_code 0` (100% statement and branch).
+
+## Batch 4
+
+Integration merged first (trivial).
+
+1. **`_common_option_specs`.** `include_traceback` and `include_dry_run` lost their `False`
+   defaults, so all five flags are required keyword-only arguments. Both call sites pass all five
+   (`HelpCatalog.render_markdown` ~line 820 and `add_common_options` ~line 1159). The one test
+   that called it with three flags (`test_parser_edges.py`) now passes all five; the patched wrapper in
+   `test_contract.py` forwards `**kwargs` and is unaffected. With no defaults, the equivalent
+   mutants cannot exist.
+2. **`HelpCatalog.include_traceback`.** `HelpCatalog` is public: exported from `cli_extended.__init__`
+   and documented in the design guide. So the default stays and is tested:
+   `test_public_help_catalog_omits_traceback_unless_asked` builds it without the flag and asserts no
+   `--traceback` in text or Markdown help, plus a positive control with `include_traceback=True`.
+   Planted mutant (default True): killed.

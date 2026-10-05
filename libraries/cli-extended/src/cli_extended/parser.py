@@ -486,8 +486,8 @@ def _common_option_specs(
     include_json: bool,
     include_progress: bool,
     include_confirmation: bool,
-    include_traceback: bool = False,
-    include_dry_run: bool = False,
+    include_traceback: bool,
+    include_dry_run: bool,
 ) -> tuple[OptionSpec, ...]:
     """Return common option metadata for generated help surfaces."""
 
