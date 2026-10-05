@@ -247,6 +247,19 @@ def test_watch_accepts_explicit_poll_and_debug_raw(monitor_task_mod, monkeypatch
     assert "Task finished: ERROR" in result.stderr
 
 
+def test_show_text_output_redacts_response_error_unless_debug_raw(monitor_task_mod, monkeypatch):
+    mod = monitor_task_mod
+    task = {"state": "ERROR", "responseError": {"rootPassword": "root-secret"}}
+    _stub_api(monkeypatch, mod, [dict(task), dict(task)])
+
+    redacted = _invoke_app(mod.build_cli(), ["show", TASK_UUID])
+    raw = _invoke_app(mod.build_cli(), ["show", TASK_UUID, "--debug-raw"])
+
+    assert "Task response error:" in redacted.stderr
+    assert "root-secret" not in redacted.stderr
+    assert "root-secret" in raw.stderr
+
+
 def test_watch_redacts_response_error_unless_debug_raw(monitor_task_mod, monkeypatch):
     mod = monitor_task_mod
     _stub_api(

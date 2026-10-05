@@ -252,6 +252,43 @@ The scratch copy has 3 unrelated failures in `tests/test_cli_contract.py` (doc-l
 | install-host | `if args.dry_run:` -> `if False and args.dry_run:` before the "NOT calling POST" plan | 16 tests beyond the baseline, among them `test_cli_cases_install_host.py::test_dry_run_plans_without_mutating[install]`, `::test_replayed_case_matches_catalog[install-poll-interval]` and `test_install_host.py::test_install_from_payload_dry_run_never_posts` |
 | monitor-task | `interval <= 0` -> `interval < 0` in `_watch` | `test_monitor_task.py::test_watch_rejects_nonpositive_or_nonfinite_poll_before_authentication` (4 failed incl. the 3 baseline) |
 
+### Reviewer-rejection round (controller rulings 1-7 plus nits)
+
+Done in this round (all in `scripts/netcup`):
+
+- **Blocker 1, hollow `--filter` rows.** `case_harness.SCP_ROUTES` imageflavours and isoimages now have a second non-matching row; `test_client_side_filter_keeps_only_matching_rows[imageflavours|iso-bootable]` (linked to the two `--filter` rows) asserts the reviewed value, its upper-case and capitalised forms keep one row and drop the other, with identical API calls.
+- **Blocker 2, effects not observed.** The install-host dry-run plan now prints the SSH target (`user@host:22`), identity choice, monitoring, customScript-log attachment, poll interval, completion marker/wait and local-key retention (`_print_dry_run_ssh_plan`), so the replay asserts those plan lines per row (`PLAN_LINES`). New: `test_local_controller_key_flag_decides_whether_the_key_is_removed` (6 params, linked to the six retention rows; a live run with a recorder for `monitor_task`: `remove` deletes the key and sets `CONTROLLER_LOCAL_KEY_RETENTION`, `retain` keeps it), `test_monitoring_receives_every_resolved_value` (host, user, identity, poll, completion wait/marker, attach flag reach `monitor_task`), `test_relative_completion_marker_is_refused`, `test_duplicate_account_key_ids_are_refused`, `test_missing_identity_file_is_refused_not_generated`, `test_install_defaults_to_monitoring_with_customscript_log_attachment`, `test_dry_run_plan_shows_the_ssh_target_a_live_run_would_use`, `test_active_task_lookup_treats_terminal_states_case_insensitively`. The replay also asserts, per row: dry-run runs only read, start no follower or task polling and write no config file; attach makes no API call and writes no file; refusals make no call and leave no file; named identity files are unmodified with no `.pub`; `--ssh-key-id` skips the key-list GET; wizard/configure `--yes` saves the config.
+- **Effects audit.** Reworded because a replay cannot prove them: the four `--ssh-identity-file` rows (now "requires the file to exist, refuses otherwise, unmodified"), the `--debug-raw` rows for wizard/configure/attach (the redaction switch is only observable on install), and the two parse-conflict rows ("reads no credentials" dropped).
+- **Blocker 3, stale text.** DESIGN-GUIDE and this report say MT-001 and SA-002 were FIXED.
+- **Ruling 4.** `attach-iso` (required exclusive group `iso-source` plus options) and `power` (two ArgumentSpecs) lost their configure callbacks; SA-008 and SA-013 `fixed`. The three attach-iso exclusive-group rows were renamed from `parser-exclusive-...` to `iso-source` and 8 signatures re-confirmed; the replay tests passed unchanged. Audit AC-07 now lists 8 verbs (all CLI-EXT-17).
+- **Ruling 5.** SA-007 wontfix now says "controller-confirmed".
+- **Ruling 6.** IH-003 raised to major and `fixed` (plan lines above, with tests).
+- **Ruling 7.** `--simulate-disconnect-seconds` is `hidden=True` with the AC-08 reason in a code comment and in IH-005 (`fixed`); audit AC-08 for install-host is a manual item judged by IH-005.
+- **Nits.** I6/I7: defaults tested (the redundant second `monitor = True` in `_prepare_runtime_arguments` was removed because it made either assignment an equivalent mutant); I9 duplicate key refusal; S8 default part size pinned (65 MiB file splits 64+1); M8 `show` text and `watch` redaction tests; I11 dead `install --server-id` check removed (note: it was reachable when `NETCUP_SCP_API_SERVER_ID` is set in the environment, so `install` no longer refuses in that case; the config file still names the target); `install-host.py` active-task terminal states compare `.upper()`; monitor-task `watch` kept no synopsis override (MT-006 `fixed`, 7 signatures re-confirmed); IH-008 now says the override is cosmetic, preserving the pre-adoption layout.
+
+Reviewer survivors planted again by hand in the scratch copy (`<scratchpad>/w9a-mut/netcup`, harness `<scratchpad>/w9a-probe/final*.py`); every one is now KILLED:
+
+| Mutant | Killed by |
+| --- | --- |
+| S1 `_filter_rows` returns all rows | `test_client_side_filter_keeps_only_matching_rows[imageflavours]` |
+| S17 `casefold()` dropped | `test_client_side_filter_keeps_only_matching_rows[imageflavours]` |
+| S20 iso-bootable filter ignored | `test_client_side_filter_keeps_only_matching_rows[iso-bootable]` |
+| S8 part-size default 64 -> 65 | `test_part_size_changes_how_a_large_iso_is_split` |
+| I6 install monitor default off (first copy was redundant, removed; second copy mutated as I6b) | `test_install_defaults_to_monitoring_with_customscript_log_attachment` |
+| I7 attach_custom_script default False | same test |
+| I8 wizard monitor ssh_user fixed | `test_monitoring_receives_every_resolved_value[wizard]` |
+| I9 duplicate key ids allowed | `test_duplicate_account_key_ids_are_refused` |
+| I13 retention always `retain` | `test_local_controller_key_flag_decides_whether_the_key_is_removed[wizard-remove]` |
+| I14a / I14b completion wait fixed (install / wizard path) | `test_monitoring_receives_every_resolved_value[install]` / `[wizard]` |
+| I16 completion-marker validation off | `test_relative_completion_marker_is_refused[wizard]` |
+| M8a / M8b `responseError` unredacted (show / watch) | `test_show_text_output_redacts_response_error_unless_debug_raw` / `test_watch_redacts_response_error_unless_debug_raw` |
+| T1 install-host terminal state case-sensitive | `test_active_task_lookup_treats_terminal_states_case_insensitively` |
+| P1 / P2 plan host / poll interval wrong | `test_replayed_case_matches_catalog[wizard-ssh-host]` / `[wizard-poll-interval]` |
+| S2, S4, S11 (hours+1, limit+1, power cycle option) | `metrics-hours`, `tasks-limit`, `power-choice-cycle` replay cases |
+| M1 watch always exits 0 | `test_watch_accepts_explicit_poll_and_debug_raw` |
+
+Not killed on purpose: S13/S14/S15 (dropping an explicit `default=None`/`False` on an option): the library now defaults verb options to None/False, so those are equivalent mutants. I11 and the first I6 copy no longer exist (code deleted as redundant).
+
 ### Deviations from the brief
 
 - Brief item 7 asked to FIX every blocker/major in Netcup code or mark wontfix for product decisions: the only blocker (SA-001) was fixed earlier; the two majors (MT-001, SA-002) were then FIXED on controller ruling (watch exit codes; per-verb `--filter` documentation).

@@ -2100,8 +2100,6 @@ def _prepare_runtime_arguments(cli_args, runtime):
             exit_code=2,
             show_help=True,
         )
-    if cli_args.command == "install" and not cli_args.no_monitor:
-        cli_args.monitor = True
     if getattr(cli_args, "poll_interval", None) is None:
         cli_args.poll_interval = SETTINGS["ssh.poll_interval"]
     if getattr(cli_args, "completion_wait_seconds", None) is None:

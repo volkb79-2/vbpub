@@ -460,6 +460,13 @@ def test_install_defaults_to_monitoring_with_customscript_log_attachment(
     _live(["install", "--yes", "--no-monitor"], "file", install_host_mod, tmp_path, monkeypatch,
           capsys, fake_client, skipped)
     assert skipped == []
+    # On a terminal (where monitoring is not implied by a missing tty) install
+    # still follows the task by default; that is the install verb's own default.
+    monkeypatch.setattr(install_host_mod, "is_noninteractive", lambda _args: False)
+    interactive: list = []
+    _live(["install", "--yes"], "file", install_host_mod, tmp_path, monkeypatch, capsys,
+          fake_client, interactive)
+    assert len(interactive) == 1
 
 
 @pytest.mark.parametrize("route", ["install", "wizard"])
