@@ -247,6 +247,23 @@ def test_watch_accepts_explicit_poll_and_debug_raw(monitor_task_mod, monkeypatch
     assert "Task finished: ERROR" in result.stderr
 
 
+def test_watch_redacts_response_error_unless_debug_raw(monitor_task_mod, monkeypatch):
+    mod = monitor_task_mod
+    _stub_api(
+        monkeypatch,
+        mod,
+        [{"state": "ERROR", "responseError": {"rootPassword": "root-secret"}}],
+    )
+    monkeypatch.setattr(mod.time, "sleep", lambda seconds: None)
+
+    result = _invoke_app(mod.build_cli(), ["watch", TASK_UUID])
+
+    assert result.returncode == 1
+    assert "Task response error:" in result.stderr
+    assert "root-secret" not in result.stderr
+    assert "Task finished: ERROR" in result.stderr
+
+
 @pytest.mark.parametrize("state", ["ERROR", "CANCELED", "ROLLBACK", "error"])
 def test_watch_exits_1_for_every_unsuccessful_terminal_state(
     state, monitor_task_mod, monkeypatch

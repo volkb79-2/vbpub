@@ -554,3 +554,27 @@ def test_active_task_lookup_treats_terminal_states_case_insensitively(
     client = fake_client(get_responses=[tasks])
     found = install_host_mod._find_active_task_for_server(client, 42)
     assert found["uuid"] == "live"
+
+
+@pytest.mark.parametrize("route", ["install", "wizard"])
+def test_dry_run_plan_shows_the_ssh_target_a_live_run_would_use(
+    route, install_host_mod, tmp_path, monkeypatch, capsys, fake_client
+):
+    monkeypatch.setattr(install_host_mod, "_extract_primary_ipv4", lambda _details: "203.0.113.5")
+    scenario = "file" if route == "install" else "gather"
+    default = run_install_host(
+        install_host_mod, [route, "--dry-run", "--yes"], tmp_path=tmp_path,
+        monkeypatch=monkeypatch, capsys=capsys, fake_client=fake_client, scenario=scenario,
+    )
+    assert default.status == 0
+    # With no --ssh-host the server's own IPv4 is the target, as in a live run.
+    assert "[dry-run] SSH target: root@203.0.113.5:22" in default.out
+    assert "[dry-run] SSH identity: none configured" in default.out
+    named = run_install_host(
+        install_host_mod,
+        [route, "--dry-run", "--yes", "--ssh-host", "192.0.2.10", "--ssh-user", "ops"],
+        tmp_path=tmp_path, monkeypatch=monkeypatch, capsys=capsys, fake_client=fake_client,
+        scenario=scenario,
+    )
+    assert "[dry-run] SSH target: ops@192.0.2.10:22" in named.out
+    assert "203.0.113.5:22" not in named.out
