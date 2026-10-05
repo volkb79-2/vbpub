@@ -1230,7 +1230,7 @@ surface and normative details are synced in `README.md`, `docs/DESIGN-GUIDE.md`,
 
 ### KI-30 — release leaves the hand-written `## [Unreleased]` section orphaned
 
-**Status:** OPEN 2026-09-23; filed from assay Wave C P0.
+**Status:** FIXED 2026-10-05 (program 2026-10 W0-REL, REL-10). A tagged release now refuses while a plain `## [Unreleased]` has a non-empty body (HTML comments and whitespace do not count), in the KI-23 guard's style (`changelog.py::_unreleased_body`). Tests: `tests/test_changelog.py::test_rel10_tagged_release_refuses_a_nonempty_plain_unreleased_section`, `::test_rel10_cleared_unreleased_section_with_a_comment_is_accepted`. Originally OPEN 2026-09-23; filed from assay Wave C P0.
 
 The assay changelog's hand-written `## [Unreleased]` block was left in place
 through releases 6.4.0, 6.5.0 and 7.0.0. Its `assay analyze` entry had already

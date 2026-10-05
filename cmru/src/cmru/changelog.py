@@ -37,6 +37,29 @@ _UNRELEASED_HEADING_RE = re.compile(r"^## \[([^\]]+)\] - UNRELEASED$", re.MULTIL
 _CONVENTIONAL_TYPE_RE = re.compile(r"^([a-z]+)(?:\([^)]+\))?!?:", re.IGNORECASE)
 
 
+_PLAIN_UNRELEASED_RE = re.compile(r"^## \[Unreleased\][ \t]*$", re.MULTILINE)
+_HTML_COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
+
+
+def _unreleased_body(existing: str) -> str:
+    """Return the non-comment text of a plain ``## [Unreleased]`` section (KI-30).
+
+    The body runs to the next ``## `` heading or the history marker. HTML comments
+    and whitespace do not count, so a cleared section that keeps an explanatory
+    comment is empty.
+    """
+    match = _PLAIN_UNRELEASED_RE.search(existing)
+    if match is None:
+        return ""
+    rest = existing[match.end():]
+    ends = [i for i in (
+        rest.find(_HISTORY_MARKER),
+        *(m.start() for m in re.finditer(r"^## ", rest, re.MULTILINE)),
+    ) if i >= 0]
+    body = rest[:min(ends)] if ends else rest
+    return _HTML_COMMENT_RE.sub("", body).strip()
+
+
 def _git(repo_root: Path, *args: str) -> str:
     result = subprocess.run(
         ["git", *args], cwd=repo_root, capture_output=True, text=True, check=False,
@@ -168,6 +191,30 @@ def _generated_exclusions(project: Any, changelog_path: Path, repo_root: Path) -
     return [f"{cwd}/{path}" for path in outputs]
 
 
+def _project_commits_after_cursor(
+    repo_root: Path, project: Any, changelog_path: Path, section: str,
+) -> bool:
+    """Whether project commits exist after a generated section's ``source-end``.
+
+    A section without a readable cursor, or whose cursor is not a commit in this
+    repository, is treated as current (kept byte-identical): regenerating cannot
+    be justified without evidence.
+    """
+    cursor = _last_generated_source_end(section)
+    if cursor is None:
+        return False
+    try:
+        newer = _subject_groups(
+            repo_root,
+            cursor,
+            list(getattr(project, "paths", None) or [getattr(project, "cwd", None) or project.name]),
+            exclude_paths=_generated_exclusions(project, changelog_path, repo_root),
+        )
+    except RuntimeError:
+        return False
+    return bool(newer)
+
+
 def _generated_outputs_changed(repo_root: Path, project: Any) -> bool:
     """Whether prepare changed a declared mechanical output in this transaction.
 
@@ -260,6 +307,14 @@ def generate_release_changelog(
             "same version -- fold it into the generated section by hand first, then rename "
             "its heading to match (or remove it)"
         )
+    if version is not None and _unreleased_body(existing):
+        raise RuntimeError(
+            f"{project.name}: {path} has a non-empty hand-written `## [Unreleased]` "
+            "section (KI-30); CMRU does not fold it, so a tagged release would leave "
+            "it orphaned and describing already-shipped work -- fold its content into "
+            "the commit history / next section by hand, then empty its body (keep a "
+            "comment if you like) before releasing"
+        )
     existing_versions = set(_HEADING_RE.findall(existing))
     if heading in existing_versions:
         expected = f"## [{heading}]"
@@ -271,7 +326,22 @@ def generate_release_changelog(
                 f"{project.name}: {path} already has a hand-authored [{version}] section; "
                 "CMRU refuses to overwrite it"
             )
-        return False
+        # REL-02: a generated section for the pending version is reused ONLY
+        # while nothing in the project changed after its recorded source cursor
+        # (a retained --resume sees just the history commit, which is excluded
+        # from the range). If project commits landed after the cursor, the section
+        # is stale -- it would ship without them -- so regenerate it in place.
+        if not _project_commits_after_cursor(
+            repo_root, project, path, section,
+        ):
+            return False
+        regenerated = _render_section(heading, groups, source_end=source_end)
+        new_content = (
+            existing[:start] + regenerated
+            + (existing[next_heading:] if next_heading >= 0 else "")
+        )
+        path.write_text(new_content, encoding="utf-8")
+        return True
 
     section = _render_section(heading, groups, source_end=source_end)
     if not existing:
