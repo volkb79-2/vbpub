@@ -12,7 +12,7 @@ argv = [
 ]
 env = { PYTHONPATH = "src", PYTHONDONTWRITEBYTECODE = "1" }
 env_passthrough = ["PATH"]
-budget = "180m"
+budget = "480m"
 allow_argv_append = false
 
 [lanes.cli-extended.isolation]
@@ -49,7 +49,10 @@ artifact = "coverage.json"
 
 [lanes.cli-extended.judge.mutation]
 jobs = 2
-max_mutants = 1200
+# Raised for the unified-adoption wave (2026-10-05): the library roughly
+# doubled (skills, doctor, config, findings, constraints), so the previous
+# 1,200 cap would refuse with MUTANT_LIMIT_EXCEEDED rather than sample.
+max_mutants = 3000
 operators = [
   "python:compare-swap",
   "python:boolop-swap",
