@@ -100,7 +100,7 @@ SPEC §9.
 | RG-80 | no daemon-wide cap on concurrent gates: the cross-worktree cap is a consumer flock wrapper (dstdns `gate-slot.sh`); build SPEC-V8 S21's count mode (Docker-name tickets, tombstones, deadlines, run marker, published `ciu-admission-<g>` object) behind an off-by-default switch, so the wrapper retires before v8 | Major | FIXED 2026-10-04 (rev 49; operability rev 51): ticket/publish and owner/reaping packages; read-only status view and enabled-policy doctor checks |
 | RG-81 | internal source-backed Assay lanes fail because editable installs omit artifact `judge_provenance`; verify selected source, bind the verdict commit, and preserve source/artifact mode across re-attachment | Major | IN PROGRESS (rev 54; Review #11 findings addressed, package gate pending) |
 
-| RG-83 | run-gate runs as an unreaping PID 1 (no init) and keeps reporting lane verdicts after the container hits `pids.max`; refuse PID 1, and treat `pids.events`/`memory.events` increments as infrastructure errors | Major | IN PROGRESS (rev 55 implementation; registered selftest pending; contaminated R2 outcomes discarded) |
+| RG-83 | run-gate runs as an unreaping PID 1 (no init) and keeps reporting lane verdicts after the container hits `pids.max`; refuse PID 1, and treat `pids.events`/`memory.events` increments as infrastructure errors | Major | IN PROGRESS (rev 55 implementation; selftest and low-pids acceptance pending; contaminated R2 outcomes discarded) |
 ---
 
 ## RG-1 — conjunction lanes silently drop `--worktree` and `--allow-dirty`
@@ -5640,7 +5640,7 @@ continues to require full artifact `judge_provenance`; no artifact digest is
 
 ## RG-83 — run-gate runs happily as an unreaping PID 1 and reports lane verdicts from a container that can no longer fork
 
-**Status:** IN PROGRESS (rev 55 implementation; registered selftest pending; severity major — it let a false-green R2 campaign continue; investigated read-only with `host-escape`).
+**Status:** IN PROGRESS (rev 55 implementation; selftest and low-pids acceptance pending; severity major — it let a false-green R2 campaign continue; investigated read-only with `host-escape`).
 
 **Observed.** `cmru tester-gate` started `tester-unified:local` without `--init` (cmru KI-52), so `./run-gate.py --base main assay-r2` ran as PID 1 of container `pedantic_antonelli`. git's detached auto-maintenance orphaned one `git` per commit to that PID 1, which never reaps; 19,108 zombies filled `pids.max` (19,115/19,117) at 03:11Z. The operator's contamination notice invalidated the R2 state, progress, all post-03:11Z candidate outcomes, and the final verdict; none are used as RG-83 evidence. run-gate's own `docker run` launches already pass `--init` (`run-gate.py:5873`, `:9856`); the gap is run-gate *being* PID 1 under someone else's launcher.
 
