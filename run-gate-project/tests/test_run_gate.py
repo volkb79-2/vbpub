@@ -5697,6 +5697,8 @@ def test_status_reports_inflight_directory_removed_during_listing(
 
 def test_status_proc_liveness_requires_matching_owner_identity(tmp_path):
     proc_root = tmp_path / "proc"
+    proc_root.mkdir()
+    assert run_gate._proc_stat_identity(999, proc_root) is None
     proc = proc_root / "321"
     (proc / "ns").mkdir(parents=True)
     (proc_root / "sys/kernel/random").mkdir(parents=True)
@@ -5738,10 +5740,39 @@ def test_status_proc_liveness_requires_matching_owner_identity(tmp_path):
     assert run_gate._proc_stat_identity(321, proc_root) is None
     assert run_gate._status_pid_liveness(321, proc_root) == "unknown"
     assert run_gate._status_inflight_owner_liveness(record, proc_root) == "unknown"
+    (proc_root / "sys/kernel/random/boot_id").unlink()
+    assert run_gate._status_inflight_owner_liveness(record, proc_root) == "unknown"
+
+
+def test_status_keeps_unreadable_proc_entries_unknown(tmp_path, monkeypatch):
+    proc_root = tmp_path / "proc"
+    proc = proc_root / "321"
+    (proc / "ns").mkdir(parents=True)
+    (proc_root / "sys/kernel/random").mkdir(parents=True)
+    (proc_root / "self/ns").mkdir(parents=True)
+    (proc_root / "sys/kernel/random/boot_id").write_text("boot-a\n")
+    (proc_root / "self/ns/pid").write_text("")
+    stat_path = proc / "stat"
+    stat_path.write_text("321 (runner) S " + "0 " * 18 + "456\n")
+    record = {"owner_pid": 321,
+              "pid_ns": os.stat(proc_root / "self/ns/pid").st_ino,
+              "owner_start": 456, "boot_id": "boot-a"}
+    read_text = Path.read_text
+
+    def denied(path, *args, **kwargs):
+        if path == stat_path:
+            raise PermissionError("proc entry hidden")
+        return read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", denied)
+
+    assert run_gate._status_pid_liveness(321, proc_root) == "unknown"
+    assert run_gate._status_inflight_owner_liveness(record, proc_root) == "unknown"
 
 
 def test_status_inflight_reader_preserves_malformed_records(tmp_path):
     project = tmp_path / "project"
+    assert run_gate._read_inflight_status(project, tmp_path) == ([], [])
     directory = project / ".run-gate" / "inflight"
     directory.mkdir(parents=True)
     cases = {
@@ -5770,8 +5801,22 @@ def test_status_inflight_reader_preserves_malformed_records(tmp_path):
     assert len(errors) == len(cases) + 2
 
 
+def test_status_inflight_reader_rejects_a_non_directory_scope(tmp_path):
+    project = tmp_path / "project"
+    inflight_parent = project / ".run-gate"
+    inflight_parent.mkdir(parents=True)
+    (inflight_parent / "inflight").write_text("not a directory")
+
+    records, errors = run_gate._read_inflight_status(project, tmp_path)
+
+    assert records == []
+    assert len(errors) == 1
+    assert "not a directory" in errors[0]
+
+
 def test_status_parses_proc_lock_holders_waiters_and_ignores_other_rows():
     locks = run_gate._parse_proc_lock_rows("\n".join([
+        "",
         "1: FLOCK ADVISORY WRITE 111 00:2a:42 0 EOF",
         "2: -> FLOCK ADVISORY WRITE 222 00:2a:42 0 EOF",
         "3: FLOCK ADVISORY READ - 00:2a:43 0 EOF",
@@ -5779,11 +5824,28 @@ def test_status_parses_proc_lock_holders_waiters_and_ignores_other_rows():
         "5: FLOCK MANDATORY WRITE 444 00:2a:45 0 EOF",
         "6: FLOCK ADVISORY READ nope bad-key 0 EOF",
         "7: FLOCK ADVISORY WRITE 0 00:2a:46 0 EOF",
+        "8: FLOCK ADVISORY WRITE -1 00:2a:47 0 EOF",
+        "FLOCK ADVISORY WRITE 333 00:2a:48 0 EOF",
     ]))
 
     assert locks[(0, 42, 42)] == {"holders": [111], "waiters": [222]}
     assert locks[(0, 42, 43)] == {"holders": [None], "waiters": []}
+    assert (0, 42, 47) not in locks
+    assert locks[(0, 42, 48)] == {"holders": [333], "waiters": []}
     assert (0, 42, 44) not in locks
+
+
+def test_status_reports_missing_proc_locks_as_a_source_error(tmp_path):
+    lock_dir = tmp_path / "locks"
+    lock_dir.mkdir()
+    proc_root = tmp_path / "proc"
+    proc_root.mkdir()
+
+    locks, errors = run_gate._read_exec_lock_status(lock_dir, proc_root)
+
+    assert locks == []
+    assert len(errors) == 1
+    assert "cannot read" in errors[0] and "/locks" in errors[0]
 
 
 def test_status_exec_lock_reader_joins_running_queued_idle_and_bad_lock_files(
@@ -5833,16 +5895,41 @@ def test_status_exec_lock_reader_joins_running_queued_idle_and_bad_lock_files(
     assert by_runner["broken"]["state"] == "unreadable"
 
 
+def test_status_human_output_discloses_empty_sources_and_docker_error(
+        tmp_path, monkeypatch, capsys):
+    project = tmp_path / "project"
+    project.mkdir()
+    monkeypatch.setattr(run_gate, "_read_exec_lock_status",
+                        lambda *_args: ([], []))
+    monkeypatch.setattr(run_gate, "_read_inflight_status",
+                        lambda *_args: ([], []))
+    monkeypatch.setattr(run_gate.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(run_gate, "_git_toplevel_if_available", lambda _path: None)
+
+    code = run_gate.cmd_status(project, {}, tmp_path / "run-gate.toml")
+    captured = capsys.readouterr()
+
+    assert code == 2
+    assert "run-gate status: ERROR exit_code=2" in captured.out
+    assert "none held or queued" in captured.out
+    assert "inflight records:\n  none" in captured.out
+    assert "no readable published object" in captured.out
+    assert "no visible admission tickets or tombstones" in captured.out
+    assert "Docker CLI not found on PATH" in captured.err
+
+
 def test_status_lane_name_can_be_recovered_from_proc_cmdline(tmp_path):
     proc = tmp_path / "789"
     proc.mkdir()
     cmdline = proc / "cmdline"
     cmdline.write_bytes(
         b"/usr/bin/python\0/workspaces/vbpub/run-gate-project/run-gate.py\0"
-        b"--worktree\0/worktrees/feature\0--base\0main\0schema\0")
+        b"--worktree\0/worktrees/feature\0--base\0main\0--json\0schema\0")
 
     assert run_gate._status_command_lane(789, tmp_path) == "schema"
     cmdline.write_bytes(b"run-gate.py\0--\0schema\0")
+    assert run_gate._status_command_lane(789, tmp_path) is None
+    cmdline.write_bytes(b"python\0--version\0")
     assert run_gate._status_command_lane(789, tmp_path) is None
     assert run_gate._status_command_lane(790, tmp_path) is None
 
