@@ -128,7 +128,7 @@ at once interleave cleanly rather than corrupting each other.
 ## 4. Reading the report
 
 ```
-runs/run-YYYYmmdd-HHMMSS-xxxx/
+runs/run-YYYYmmdd-HHMMSS-xxxxxxxx/
   report.html    interactive — zoom, pan, hover; open it in a browser
   report.md      static twin with PNGs, for pasting into a ledger or PR
   samples.jsonl  raw data, if you want to do your own analysis
@@ -258,3 +258,55 @@ container's own cgroup directly, no daemon involved) takes over silently;
 see the contract §4.3. This guide's `--target`/`--observe` collector mode
 (sections 1–7 above) is unaffected either way — it never talks to the
 daemon at all.
+
+## 9. Liveness watch and placement, from a consumer's view (D-20/D-27/D-31, §8.2-§8.4)
+
+Two OPTIONAL, independent `start` upgrades sit on top of section 8's basic
+attach — neither is required to get a Summary, and neither changes what
+`stop`/`report` return when unused.
+
+**Liveness policy** adds a daemon-side stall observation (the motivation
+RG-55 exists for — see CP-8): pass `--progress-stream`, `--idle-bound`,
+`--ceiling` and/or `--on-stall kill|report` on `start`. The daemon outlives
+the caller's own process, so its observation survives a caller crash — the
+one thing an in-process watcher cannot do. A consumer that wants to observe the
+judgement live (rather than poll `ctl status`) holds ONE `ctl watch
+<session>` open per lane — the one verb that streams more than one
+response per connection (`docs/PROTOCOL.md` §1's documented exception to
+"one request per connection, then close"). Three line shapes only:
+`reading` (informational, every `--watch-interval` seconds), `verdict`
+(only on a state change — this is what a consumer acts on:
+`verdict == "killed"` means the daemon successfully wrote `cgroup.kill` to
+the authorized boundary; `verdict == "reported"` is a warning line, nothing
+was killed, and the lane remains the caller's to manage), `end` (exactly one,
+last). An unparsable or unenforceable requested policy is `bad-policy` —
+`start` refuses and no session exists, so a typo or missing safe boundary is
+caught before the lane runs, not after.
+
+**Placement** (`--place [--memory-high] [--memory-max] [--cpu-weight]`)
+asks systemd for an `rg-profile-<token>.scope` directly beneath the verified
+gates slice, then puts the lane's pid subtree in cgprofile's own child leaf
+(`<scope>/rg-<token>`) instead of sharing whatever cgroup the lane
+container/exec session already had. The daemon reads the scope path back from
+systemd; the slice and scope remain systemd-owned, while cgprofile owns only
+the leaf. For `scope=container-shared`, this is
+the prerequisite for `--on-stall kill` to use `cgroup.kill` atomically; the
+daemon never walks the resolved PID list to send signals. For `scope=container`,
+the exact target container cgroup is the kill boundary when its identity is
+proven beneath the verified gates slice, so no extra lane leaf is needed. At
+enforcement time, `cgroup.events` must also report `populated 1` for that exact
+boundary; missing, malformed, or empty population evidence is reported rather
+than certified as a kill.
+From a consumer's view placement is optional: an ordinary placement refusal
+(`place-refused:*` in `placement.error`, `leaf: null`) still leaves a normal
+unplaced session. If the same request explicitly requires a shared-scope
+kill, however, refusal means `bad-policy` and no live session, since there is
+no safe enforcement boundary. `applied` in the
+response is what the KERNEL reports back after the write, never an echo
+of what was asked for — if a consumer needs to know whether a cap actually
+took, that is the field to read, not its own `--memory-high` argument.
+Leaf memory counters and limits describe cgroup charges, not total process
+RSS: pages faulted before placement keep their prior charge and are not
+transferred when a process moves. `memory.max` is therefore not a hard cap on
+all memory already resident in a shared lane; see `docs/CONSUMERS.md` for the
+adoption implication.

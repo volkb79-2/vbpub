@@ -18,7 +18,7 @@ def test_build_passes_tag_resolved_version_to_bake(monkeypatch):
     captured = {}
     monkeypatch.setattr(
         build_push, "resolve_build_version",
-        lambda root, *, require_release_tag, environ: "1.0.0",
+        lambda root, *, require_release_tag, environ: "1.1.0",
     )
     monkeypatch.setattr(build_push, "git_revision", lambda: "deadbeef")
     monkeypatch.setattr(
@@ -29,7 +29,7 @@ def test_build_passes_tag_resolved_version_to_bake(monkeypatch):
     build_push.do_build()
 
     assert captured["argv"] == ["docker", "buildx", "bake", *build_push._FS_ALLOW, "all", "--load"]
-    assert captured["env"]["CGPROFILE_VERSION"] == "1.0.0"
+    assert captured["env"]["CGPROFILE_VERSION"] == "1.1.0"
     assert captured["env"]["GIT_REVISION"] == "deadbeef"
 
 
@@ -39,7 +39,7 @@ def test_push_passes_resolved_version_to_login_and_bake(monkeypatch):
     monkeypatch.setenv("GITHUB_PUSH_PAT", "test-token")
     monkeypatch.setattr(
         build_push, "resolve_build_version",
-        lambda root, *, require_release_tag, environ: "1.0.0",
+        lambda root, *, require_release_tag, environ: "1.1.0",
     )
     monkeypatch.setattr(build_push, "git_revision", lambda: "deadbeef")
     monkeypatch.setattr(
@@ -55,8 +55,11 @@ def test_push_passes_resolved_version_to_login_and_bake(monkeypatch):
 
     assert captured["login"] == ["docker", "login", "ghcr.io", "-u", "release-user", "--password-stdin"]
     assert captured["login_options"]["input"] == b"test-token"
-    assert captured["bake"] == ["docker", "buildx", "bake", *build_push._FS_ALLOW, "all", "--push"]
-    assert captured["env"]["CGPROFILE_VERSION"] == "1.0.0"
+    assert captured["bake"] == [
+        "docker", "buildx", "bake", *build_push._FS_ALLOW,
+        "cgprofile-release", "--push",
+    ]
+    assert captured["env"]["CGPROFILE_VERSION"] == "1.1.0"
     assert captured["env"]["GIT_REVISION"] == "deadbeef"
 
 

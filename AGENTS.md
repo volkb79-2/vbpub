@@ -71,6 +71,41 @@ pass a positional prompt. Codex appends piped stdin to a positional prompt as a
 positional prompt is used. Explicit stdin keeps the invocation predictable in
 Python, Node, CI, and shell callers.
 
+### Nested Codex reviews in this devcontainer
+
+**Never start a nested Codex review with `--sandbox read-only` in this
+devcontainer.** Its bwrap startup has repeatedly failed before any repository
+command runs, with `bwrap: Can't mount proc on /proc: Operation not permitted`.
+Do not use that invocation as a probe or wait for it to fail before switching
+approaches.
+
+For a strictly read-only review, use `--sandbox danger-full-access` on the first
+invocation only when the outer runtime is already authorized for full
+filesystem access. The review prompt must explicitly forbid edits, commits,
+tests, and gates. Use `--ephemeral`, write the final response outside the
+checkout, and record `git rev-parse HEAD` and `git status --short` before and
+after to bind the findings to one revision and confirm no files changed. If the
+outer runtime is not authorized for full access, run the review in an approved
+runner whose read-only sandbox starts; do not try the known failing nested
+read-only sandbox first.
+
+Example, from the review worktree:
+
+```bash
+export CODEX_SQLITE_HOME="$HOME/.codex/sqlite-shared"
+# Use "$HOME/.codex2" instead only when the operator directs.
+export CODEX_HOME="$HOME/.codex"
+git rev-parse HEAD
+git status --short
+printf '%s' "$PROMPT" |
+  codex exec -m gpt-6-sol \
+    -c 'model_reasoning_effort="xhigh"' \
+    --sandbox danger-full-access --ephemeral \
+    -C "$PWD" -o /tmp/codex-review.md -
+git rev-parse HEAD
+git status --short
+```
+
 ## Defaults and fallbacks are hazards (MANDATORY, estate-wide)
 
 > **A default is legitimate only when it is a policy choice that is correct in
@@ -235,6 +270,21 @@ Merge serially onto the task's integration branch (normally `main`) with
 `--no-ff`; expect minor overlap reconciliation. Keep packages small +
 non-overlapping to parallelize. Each worktree has its own index, so
 `git add`/`commit` there is private and safe.
+
+## Use supported project workflows
+When a project CLI owns a workflow such as release, cleanup, publication,
+worktree lifecycle, or gate execution, read its consumer guide and use its
+supported verb end to end. Do not replace a missing product capability with a
+hand-built shell, API, Docker, or credential shim. If a required product-owned
+step is not supported, treat that as a product gap: extend and review the
+workflow, then use its supported verb. Source control remains Git's job under
+the worktree protocol above: create and review commits, merge the reviewed
+branch, and push the integration branch as needed. For CMRU-owned lifecycle
+actions, use `cmru release`, `cmru publish`, `cmru cleanup`, and `cmru abandon`;
+do not reproduce those actions with direct GitHub API calls or manual remote
+tag/branch mutations. Manual commands also remain appropriate for bounded
+read-only inspection and live acceptance probes the registered workflow cannot
+express.
 
 ## Committing from the shared `main` checkout
 The main checkout (`/workspaces/vbpub`) is shared: another agent's serial merge

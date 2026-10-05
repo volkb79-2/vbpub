@@ -17,7 +17,7 @@ import pytest
 
 from lib import store
 
-RUN_ID_RE = re.compile(r"^run-\d{8}-\d{6}-[0-9a-f]{4}$")
+RUN_ID_RE = re.compile(r"^run-\d{8}-\d{6}-[0-9a-f]{8}$")
 
 
 # ── new_run_id ───────────────────────────────────────────────────────────────
@@ -32,10 +32,22 @@ def test_new_run_id_uses_given_prefix():
     assert run_id.startswith("attach-")
 
 
-def test_new_run_id_is_unique_even_for_the_same_instant():
+def test_new_run_id_suffix_reflects_distinct_entropy_at_the_same_instant(monkeypatch):
+    """CP-4: prove distinct deterministic entropy without a probabilistic oracle."""
     when = 1_754_325_600.0
-    ids = {store.new_run_id(when=when) for _ in range(50)}
-    assert len(ids) == 50
+    values = iter((b"\x00\x00\x00\x01", b"\x00\x00\xfe\xff"))
+
+    def fixed_entropy(size):
+        assert size == 4
+        return next(values)
+
+    monkeypatch.setattr(store.os, "urandom", fixed_entropy)
+    first = store.new_run_id(when=when)
+    second = store.new_run_id(when=when)
+    assert first[:-8] == second[:-8]
+    assert first.endswith("00000001")
+    assert second.endswith("0000feff")
+    assert first != second
 
 
 def test_new_run_id_embeds_the_given_time():

@@ -1034,6 +1034,25 @@ def test_failed_pool_acquire_cannot_release_a_live_constructor_index(fake_damon)
         first.__exit__(None, None, None)
 
 
+def test_a_failed_pool_acquisition_does_not_release_the_constructor_placeholder(fake_damon):
+    """A failed ``acquire`` never claimed the session's constructor index.
+
+    Keep an unrelated pool slot live so ``DamonSession``'s default placeholder
+    is observable if teardown incorrectly releases it.
+    """
+    pool = damon.KdamondPool()
+    assert pool.acquire() == 0
+    fake_damon.fail_on = "create_kdamond"
+
+    with pytest.raises(RuntimeError):
+        with damon.DamonSession([make_target()], kdamond_idx=0, pool=pool):
+            pytest.fail("pool acquisition should fail before the body")
+
+    assert pool.live_indices == frozenset({0})
+    fake_damon.fail_on = None
+    pool.release(0)
+
+
 # ── DamonSession.thresholds / last_class_bytes (C3) ─────────────────────────
 
 def test_thresholds_reports_the_classifier_cutoffs_in_seconds(fake_damon):

@@ -1,6 +1,7 @@
 """Behavior checks added after reviewing the remaining mutation survivors."""
 from __future__ import annotations
 
+from contextlib import nullcontext
 from types import SimpleNamespace
 
 import pytest
@@ -43,6 +44,7 @@ def test_abandon_reports_malformed_scope_before_remote_inspection(
         context=SimpleNamespace(base_commit="a" * 40),
     )
     monkeypatch.setattr(cli, "_current_git_root", lambda: tmp_path)
+    monkeypatch.setattr(transaction, "release_lock", lambda _root: nullcontext())
     monkeypatch.setattr(
         transaction, "list_cmru_workspaces", lambda _root: [workspace],
     )
@@ -51,8 +53,17 @@ def test_abandon_reports_malformed_scope_before_remote_inspection(
     monkeypatch.setattr(transaction, "read_release_progress", lambda *_: "a" * 40)
     monkeypatch.setattr(transaction, "backup_was_pushed", lambda *_: False)
     monkeypatch.setattr(transaction, "backup_was_removed", lambda *_: False)
+    projects = {"alpha": SimpleNamespace(git_tag=True)}
+    loaded = (
+        tmp_path, projects, ["alpha"], ["alpha"], [], "project-first", {},
+        cli.CleanupConfig([], [], [], []),
+        cli.GitHubConfig("owner", "repo", "", "user"),
+        cli.ReleaseEnvConfig({}, None),
+    )
+    monkeypatch.setattr(cli, "_resolve_config", lambda _path: tmp_path / "cmru.toml")
+    monkeypatch.setattr(cli, "load_config", lambda _path: loaded)
     monkeypatch.setattr(
-        cli.subprocess, "run",
+        cli, "run_remote_git",
         lambda *_args, **_kwargs: pytest.fail("malformed scope reached remote inspection"),
     )
 

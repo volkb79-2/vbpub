@@ -89,6 +89,15 @@ class FakePopen:
         self.returncode = -9
 
 
+class FakePersistentPopen(FakePopen):
+    """A Docker child that remains live until the launcher terminates it."""
+
+    def wait(self, timeout=None):
+        if not self.terminated:
+            raise subprocess.TimeoutExpired("docker", timeout)
+        return super().wait(timeout=timeout)
+
+
 def make_fake_sampler(script: List[tuple]):
     """A lib.sampler.Sampler replacement driven by a scripted action list.
 
@@ -1350,6 +1359,41 @@ class TestLaunchHelper:
         assert result is child
         assert child.terminated is False
 
+    def test_completed_create_capped_helper_is_not_refused_after_update_race(
+        self, monkeypatch, tmp_path: Path,
+    ):
+        spec = access.HelperSpec(
+            image="cgprofile-self:local", repo_host_path="/host/repo", repo_mount_path=cg.HERE,
+            out_host_path="/host/out", out_mount_path=str(tmp_path),
+            cgroup_parent="dev-interactive.slice",
+        )
+        monkeypatch.setattr(access, "build_helper_spec", lambda *a, **k: spec)
+        monkeypatch.setattr(access, "docker_bin", lambda: "/usr/bin/docker")
+        child = FakePopen(exit_code=None)
+        launched = {}
+
+        def popen(command, **kwargs):
+            launched["command"] = command
+            return child
+
+        monkeypatch.setattr(cg.subprocess, "Popen", popen)
+        monkeypatch.setattr(
+            access, "_docker",
+            lambda *a, **k: access.subprocess.CompletedProcess(
+                args=["docker", *a], returncode=1, stdout="", stderr="already removed",
+            ),
+        )
+        monkeypatch.setattr(cg.time, "sleep", lambda _: None)
+
+        result = cg._launch_helper(
+            str(tmp_path / "fast-helper"), ["--run-dir", "fast-helper"], None,
+        )
+
+        assert result is child
+        assert result.wait() == 0
+        assert child.terminated is False
+        assert "--cpus=3" in launched["command"]
+
     def test_helper_cap_refusal_kills_child_if_termination_times_out(self, monkeypatch, tmp_path: Path):
         spec = access.HelperSpec(
             image="cgprofile-self:local", repo_host_path="/host/repo", repo_mount_path=cg.HERE,
@@ -1394,7 +1438,7 @@ class TestLaunchHelper:
         )
         monkeypatch.setattr(access, "build_helper_spec", lambda *a, **k: spec)
         monkeypatch.setattr(access, "docker_bin", lambda: "/usr/bin/docker")
-        child = FakePopen(exit_code=None)
+        child = FakePersistentPopen(exit_code=None)
         monkeypatch.setattr(cg.subprocess, "Popen", lambda *a, **k: child)
         calls = []
 
@@ -1422,7 +1466,7 @@ class TestLaunchHelper:
         )
         monkeypatch.setattr(access, "build_helper_spec", lambda *a, **k: spec)
         monkeypatch.setattr(access, "docker_bin", lambda: "/usr/bin/docker")
-        child = FakePopen(exit_code=None)
+        child = FakePersistentPopen(exit_code=None)
         monkeypatch.setattr(cg.subprocess, "Popen", lambda *a, **k: child)
 
         def fail_update(*args, **kwargs):
@@ -2536,29 +2580,55 @@ class TestCtlRequest:
         ns = argparse.Namespace(
             verb="version", target=None, scope=None, token=None, damon=None,
             interval=None, meta=None, session=None,
+            # C7 (§8.4/§8.2): the parser declares these on `start`/`watch`,
+            # so the reference translator may read them unconditionally.
+            progress_stream=None, idle_bound=None, ceiling=None, on_stall=None,
+            # C8 (§8.3): placement controls are part of the fixed start
+            # request shape, including the false/absent-option defaults.
+            place=False, memory_high=None, memory_max=None, cpu_weight=None,
+            watch_interval=30,
         )
         for key, value in overrides.items():
             setattr(ns, key, value)
         return ns
 
     def test_version_host_gc_take_no_fields(self):
-        assert cg._ctl_request(self._args(verb="version")) == {"verb": "version"}
-        assert cg._ctl_request(self._args(verb="host")) == {"verb": "host"}
-        assert cg._ctl_request(self._args(verb="gc")) == {"verb": "gc"}
+        # RG-55 C6: every request is contract §8.1's `{"verb", "args",
+        # "contract"}` — an argument-less verb still carries an (empty)
+        # `args` object and the contract major, because ONE shape on the
+        # wire is what lets a socket-carrier consumer parse without knowing
+        # the verb (D-30).
+        assert cg._ctl_request(self._args(verb="version")) == {
+            "verb": "version", "args": {}, "contract": 1,
+        }
+        assert cg._ctl_request(self._args(verb="host")) == {
+            "verb": "host", "args": {}, "contract": 1,
+        }
+        assert cg._ctl_request(self._args(verb="gc")) == {
+            "verb": "gc", "args": {}, "contract": 1,
+        }
 
     def test_status_stop_report_carry_session(self):
         assert cg._ctl_request(self._args(verb="status", session=None)) == {
-            "verb": "status", "session": None,
+            "verb": "status", "args": {"session": None}, "contract": 1,
         }
         assert cg._ctl_request(self._args(verb="status", session="s-1")) == {
-            "verb": "status", "session": "s-1",
+            "verb": "status", "args": {"session": "s-1"}, "contract": 1,
         }
         assert cg._ctl_request(self._args(verb="stop", session="s-1")) == {
-            "verb": "stop", "session": "s-1",
+            "verb": "stop", "args": {"session": "s-1"}, "contract": 1,
         }
         assert cg._ctl_request(self._args(verb="report", session="s-1")) == {
-            "verb": "report", "session": "s-1",
+            "verb": "report", "args": {"session": "s-1"}, "contract": 1,
         }
+
+    def test_contract_version_matches_lib_serve(self):
+        # Same drift guard `test_ctl_socket_matches_lib_serve` applies to
+        # the socket path: the client's own copy of the contract major must
+        # never diverge from the daemon's.
+        from lib import serve as serve_mod
+
+        assert cg.CONTRACT_VERSION == serve_mod.CONTRACT_VERSION
 
     def test_start_builds_the_full_request(self):
         args = self._args(
@@ -2566,15 +2636,33 @@ class TestCtlRequest:
             token="a-real-token-99", damon="on", interval=2.0,
             meta='{"lane": "l", "project": "p", "worktree": "w", "commit": null, '
                  '"run_gate_revision": 1, "kind": "command", "expected": null}',
+            place=True, memory_high=805306368, memory_max=1073741824, cpu_weight=100,
         )
         req = cg._ctl_request(args)
         assert req["verb"] == "start"
-        assert req["target"] == "containerid:" + "a" * 64
-        assert req["scope"] == "container"
-        assert req["token"] == "a-real-token-99"
-        assert req["damon"] == "on"
-        assert req["interval"] == 2.0
-        assert req["meta"]["lane"] == "l"
+        assert req["contract"] == 1
+        # §8.1 rule 2: `args` keys are the long-option names without the
+        # dashes, and `--meta` travels as a JSON OBJECT, not the string the
+        # CLI takes.
+        assert req["args"] == {
+            "target": "containerid:" + "a" * 64,
+            "scope": "container",
+            "token": "a-real-token-99",
+            "damon": "on",
+            "interval": 2.0,
+            "meta": {"lane": "l", "project": "p", "worktree": "w", "commit": None,
+                     "run_gate_revision": 1, "kind": "command", "expected": None},
+            # C7 (§8.4): the four policy options travel on every `start`,
+            # as explicit nulls when the caller gave none — one verb, one
+            # request shape (the daemon reads absent and null identically).
+            "progress_stream": None, "idle_bound": None, "ceiling": None, "on_stall": None,
+            # C8 (§8.3): the placement options travel the same way, and
+            # `place` is a BOOLEAN on the wire (the CLI's own `store_true`) —
+            # a socket consumer that cannot run `ctl` sends `false`, never an
+            # absent key, because one verb has exactly one request shape.
+            "place": True, "memory_high": 805306368, "memory_max": 1073741824,
+            "cpu_weight": 100,
+        }
 
     def test_start_with_malformed_meta_json_is_a_clean_exit_2(self, capsys):
         args = self._args(
@@ -2593,6 +2681,14 @@ class TestCtlRequest:
             cg._ctl_request(args)
         assert exc_info.value.code == 2
         assert "--meta must be a JSON object" in capsys.readouterr().err
+
+    def test_start_omits_damon_to_use_the_daemon_configured_default(self):
+        args = self._args(
+            verb="start", target="containerid:" + "a" * 64,
+            scope="container", meta="{}",
+        )
+        request = cg._ctl_request(args)
+        assert "damon" not in request["args"]
 
 
 class TestCtlRoundtrip:

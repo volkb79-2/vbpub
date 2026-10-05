@@ -430,6 +430,14 @@ def test_helper_pid_refuses_missing_or_invalid_nspid_facts(
         pytest.param("", id="empty-stat"),
         pytest.param("51001 worker S 0 0\n", id="malformed-stat"),
         pytest.param(
+            "junk) " + " ".join(["S", *("0" for _ in range(18)), "98765"]) + "\n",
+            id="missing-open-delimiter",
+        ),
+        pytest.param(
+            "999 (worker) " + " ".join(["S", *("0" for _ in range(18)), "98765"]) + "\n",
+            id="wrong-pid",
+        ),
+        pytest.param(
             "51001 (worker) " + " ".join(["S", *("0" for _ in range(18))]) + "\n",
             id="truncated-stat",
         ),

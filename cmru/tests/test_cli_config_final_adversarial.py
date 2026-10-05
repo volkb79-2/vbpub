@@ -98,6 +98,19 @@ def test_release_environment_clears_stale_credentials_and_merges_explicit_empty(
     assert os.environ["REGISTRY"] == "ghcr.io"
 
 
+@pytest.mark.parametrize(
+    "name", ["GITHUB_PUSH_PAT", "GITHUB_TOKEN", "CMRU_GIT_AUTH_TOKEN"],
+)
+def test_release_environment_rejects_configured_credential_override(monkeypatch, name):
+    monkeypatch.setenv("GITHUB_TOKEN", "stale")
+
+    with pytest.raises(RuntimeError, match="reserved for resolved publisher credentials"):
+        cli.apply_release_env(
+            cli.GitHubConfig("owner", "repo", "resolved", "org"),
+            cli.ReleaseEnvConfig({name: "configured"}, None),
+        )
+
+
 def test_project_environment_override_changes_token_and_process_values(monkeypatch):
     seen = []
     monkeypatch.setattr(cli, "apply_release_env", lambda github, env: seen.append((github, dict(env.env))))
@@ -167,12 +180,35 @@ def test_ordered_configs_omits_unorchestrated_projects_and_tag_selection_filters
 
 
 def test_push_tags_has_no_side_effect_for_empty_and_warns_on_failure(monkeypatch, tmp_path, capsys):
-    calls = []
-    monkeypatch.setattr(cli.subprocess, "run", lambda argv, **kwargs: calls.append(argv) or SimpleNamespace(returncode=1))
+    local_oid = "a" * 40
+    local_calls = []
+    remote_calls = []
+
+    def local_tag_oid(_root, tag, **_kwargs):
+        local_calls.append(tag)
+        return local_oid if tag == "demo-v1" else None
+
+    def remote(_root, *args, **_kwargs):
+        remote_calls.append(args)
+        if args[0] == "push":
+            return SimpleNamespace(returncode=1, stdout="", stderr="connection closed")
+        if args[0] == "ls-remote":
+            return SimpleNamespace(
+                returncode=0, stdout=f"{local_oid}\trefs/tags/demo-v1\n", stderr="",
+            )
+        raise AssertionError(args)
+
+    monkeypatch.setattr(cli, "local_git_tag_oid", local_tag_oid)
+    monkeypatch.setattr(cli, "run_remote_git", remote)
+    monkeypatch.setattr(cli, "_git", lambda _root, *_args: local_oid)
     cli._push_tags(tmp_path, [])
-    assert calls == []
+    assert local_calls == [] and remote_calls == []
     cli._push_tags(tmp_path, ["demo-v1"])
-    assert calls and "demo-v1" in calls[0]
+    assert local_calls == ["demo-v1"]
+    assert remote_calls == [
+        ("push", "origin", "demo-v1"),
+        ("ls-remote", "--tags", "origin"),
+    ]
     assert "continuing" in capsys.readouterr().out
 
 

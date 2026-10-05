@@ -132,8 +132,13 @@ def test_abandon_captures_remote_command_output_as_text(monkeypatch, tmp_path):
         calls.append((list(argv), kwargs))
         if argv[:3] == ["git", "ls-remote", "--heads"] and len(calls) == 1:
             return subprocess.CompletedProcess(argv, 0, "a" * 40 + "\t" + ref + "\n", "")
-        if argv[:4] == ["git", "push", "origin", "--delete"]:
-            return subprocess.CompletedProcess(argv, 0, "", "")
+        if argv[:2] == ["git", "push"]:
+            assert argv[2:] == [
+                f"--force-with-lease={ref}:{'a' * 40}",
+                "origin",
+                f":{ref}",
+            ]
+            return subprocess.CompletedProcess(argv, 0, "deleted", "")
         if argv[:3] == ["git", "ls-remote", "--heads"]:
             return subprocess.CompletedProcess(argv, 0, "", "")
         raise AssertionError(argv)
@@ -149,9 +154,11 @@ def test_abandon_captures_remote_command_output_as_text(monkeypatch, tmp_path):
 
     assert len(calls) == 3
     for _argv, kwargs in calls:
-        assert kwargs == {
-            "cwd": tmp_path,
-            "capture_output": True,
-            "text": True,
-            "check": False,
-        }
+        assert set(kwargs) == {"cwd", "capture_output", "text", "check", "env"}
+        assert kwargs["cwd"] == tmp_path
+        assert kwargs["capture_output"] is True
+        assert kwargs["text"] is True
+        assert kwargs["check"] is False
+        assert isinstance(kwargs["env"], dict)
+        assert "GITHUB_PUSH_PAT" not in kwargs["env"]
+        assert "GITHUB_TOKEN" not in kwargs["env"]

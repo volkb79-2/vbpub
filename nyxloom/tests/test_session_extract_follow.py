@@ -388,6 +388,10 @@ def test_jsonl_source_uses_codex_lossless_and_selected_record_paths(tmp_path):
     lossless = JsonlSource(fp, "codex", fp.stat().st_size, ExtractConfig(), True)
     selected = JsonlSource(fp, "codex", fp.stat().st_size, ExtractConfig(), False)
     with fp.open("a", encoding="utf-8") as f:
+        # Non-conversation metadata can arrive after the initial cursor too;
+        # the incremental filter must take the same path as parse().
+        f.write(json.dumps({"type": "session_meta", "timestamp": _TS,
+                            "payload": {}}) + "\n")
         f.write(json.dumps({"type": "response_item", "timestamp": _TS,
                             "payload": {"type": "agent_message", "message": "ignored"}}) + "\n")
         f.write(json.dumps({"type": "event_msg", "timestamp": _TS,

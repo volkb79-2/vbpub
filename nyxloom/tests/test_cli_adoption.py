@@ -275,6 +275,7 @@ def test_daemon_module_entrypoint_runs_the_current_daemon(monkeypatch):
 
     monkeypatch.setattr(config, "load_registry", lambda: registry)
     monkeypatch.setattr(daemon, "Daemon", StubDaemon)
+    monkeypatch.setattr(sys, "argv", ["nyxloomd"])
     importlib.import_module("nyxloom.daemon_entrypoint")
     monkeypatch.delitem(sys.modules, "nyxloom.daemon_entrypoint", raising=False)
 

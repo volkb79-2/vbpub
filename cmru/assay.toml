@@ -4,11 +4,22 @@
 # tester-gate wrapper. CLI implementation dependencies are sibling source
 # packages in this monorepo, so they are explicit import roots alongside CMRU.
 #
-# Assay owns R0/R1/R3 here. R1 uses the latest ancestor CMRU release tag as
-# its changed-line baseline; advance that pinned tag with each CMRU release.
-# R2 lives in run-gate.toml's tag-based mutation lane, which resolves that
-# nearest ancestor tag dynamically. `main` is unsuitable after merge because
-# Assay can resolve it to HEAD and correctly refuse an empty coverage delta.
+# Assay owns R0/R1/R3 here. R1 uses the highest-version published CMRU release
+# tag in the candidate's ancestry as its changed-line baseline. After release N is tagged, advance this pin to N
+# on the next release candidate; keep N pinned to N-1 for tagged-HEAD reruns.
+# R2 lives in run-gate.toml's tag-based mutation lane, which resolves the
+# highest-version published tag in HEAD's full ancestry. The host gate queries
+# origin through CMRU's scoped Git transport and forwards token-free facts to
+# the mutation container. The selected tag must match the Assay R1 base. For
+# an untagged candidate it must also match the latest published CMRU release;
+# for a tagged-HEAD rerun, that latest release must be a verified tag at HEAD.
+# If Assay resolves a merge's first
+# parent after the tag, configured source roots must be unchanged across the gap.
+# If HEAD itself is release-tagged on a gate rerun, the checker excludes every
+# release tag at HEAD and selects the highest-version published release in the
+# remaining ancestry, which remains the pinned R1 baseline.
+# `main` is unsuitable after merge because Assay can resolve it to HEAD and
+# correctly refuse an empty coverage delta.
 # The repository-minus-unsafe-symlinks selection is the
 # estate-approved monorepo boundary: it omits only the three tracked Topos
 # fixture links that cannot be materialised safely, while preserving every
@@ -24,7 +35,8 @@ argv = ["/opt/tester-venv/bin/python", "-m", "pytest", "tests", "-q", "--maxfail
 # A green run still executes the complete suite. These are project test facts,
 # not ambient conveniences: pytest must import the source snapshot it is
 # judging, and it must not create bytecode there. The separate R2 campaign
-# uses the nearest release tag, fail-fast candidates, and a bounded timeout.
+# uses the highest-version published ancestor release tag, fail-fast candidates,
+# and a bounded timeout.
 # Source-checkout tests import CMRU's sibling shared libraries explicitly.
 env = { PYTHONPATH = "src:../libraries/cli-extended/src:../libraries/worktree/src", PYTHONDONTWRITEBYTECODE = "1" }
 env_passthrough = ["PATH"]
@@ -45,7 +57,7 @@ source_roots = ["src"]
 fail_under = 100.0
 allow_excluded = false
 require_branch = true
-base = "cmru-v5.4.1"
+base = "cmru-v5.5.0"
 
 [lanes.cmru.judge.coverage]
 format = "coverage-py-json"

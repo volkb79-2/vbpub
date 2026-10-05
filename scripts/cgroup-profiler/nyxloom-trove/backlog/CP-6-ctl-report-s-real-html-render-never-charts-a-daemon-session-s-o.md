@@ -3,11 +3,13 @@ kind: backlog-entry
 schema_version: 1
 id: CP-6
 title: "ctl report's real HTML render never charts a daemon session's own DAMON hot/warm/cold/idle series -- analyze.py has no damon.jsonl reader at all"
-status: open
+status: fixed
 type: "feature"
 severity: "low"
 provenance: "RG-55 wave, cgprofile-P1-DAEMON C5 (RW-14), 2026-09-12"
 filed_date: "2026-09-12"
+closed_date: "2026-09-12"
+closed_reason: "DAMON series read into ctl report's HTML render, e053276b"
 ---
 
 ## Observed mechanism and reproduction

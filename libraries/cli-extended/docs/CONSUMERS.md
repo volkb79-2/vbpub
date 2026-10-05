@@ -50,6 +50,11 @@ the top-level catalog; it is distinct from each verb's `description`.
 It also checks duplicate command names and catalog/parser consistency. The
 consumer should not separately hand-maintain a command list, parser map, and
 help list.
+Registered handlers may return `None` for success; `RegisteredCli.run()` maps
+that result to process status `0`. Prefer `None` for ordinary successful
+handlers and return an integer when the product defines a meaningful status.
+This keeps successful handlers concise and leaves exit-status conversion at
+the shared CLI boundary.
 Long options must be supplied exactly as declared: the registry disables
 argparse's prefix abbreviations at the root and verb parsers. Set
 `allow_abbrev=True` on `CliRegistry` only if partial spellings are an intentional
@@ -112,6 +117,501 @@ distinct from `watch`. Keep cancellation in the API-owning CLI if it already
 owns task mutations; do not create two interfaces for the same operation by
 default.
 
+### Review caller surfaces and command semantics
+
+Treat adoption as a product interface review, not a mechanical translation
+of the old parser. `CliRegistry` keeps declared syntax, help, and dispatch in
+sync; it cannot decide which workflows deserve verbs, what a missing option
+means, or which effects a command performs.
+
+Before implementation, inventory every shipped caller surface: installed
+console scripts, supported `python -m` entrypoints, repository or project-step
+adapters, bootstrap commands, public Python APIs, and generated standalone
+tools. Classify each surface by its intended caller, whether it is installed in
+the wheel, and the contract it owns. A module may be a library without being a
+CLI; an active module adapter may be required by project contracts even when
+operators rarely invoke it. Remove a spelling only after confirming that it
+adds no distinct caller workflow, then document the supported replacement.
+
+For each supported CLI and leaf verb, keep a product-owned semantic table in
+the canonical product specification. Record the use case; positional
+selectors; accepted values and defaults; what omission means; selection
+scope; valid and refused option combinations; filesystem, state, network, and
+credential effects; dry-run and confirmation boundaries; output and exit
+status; and the decision behind the public spelling. This semantic record
+complements the registry's generated grammar. It does not belong in a generic
+library because its truth comes from the owning product.
+
+Keep the generated surface and semantic review in the same canonical CLI
+specification, but give them separate ownership. The generator owns only a
+clearly marked grammar inventory; the product owns use cases, combination
+decisions, effects, rationale, and test evidence keyed to stable surface and
+option IDs. A generator must update only its marked region, never rewrite the
+whole specification or its semantic rows. On re-run, added or changed grammar
+must appear as a reviewable diff and mark affected semantic entries as needing
+review. Removed grammar must remain visible as stale until a reviewer records
+its retirement; generation must not silently delete the associated decision,
+rationale, or evidence. A check mode should fail on grammar drift, missing
+semantic coverage, unresolved stale entries, or pending review. This makes
+regeneration repeatable while keeping product decisions durable.
+
+#### Current generator coverage
+
+The library exposes a stable machine-readable CLI manifest and a merge-aware
+specification generator alongside Markdown help. Generated help is not a
+substitute for the semantic audit. The live catalog pilot is Netcup's
+[`monitor-task.py` CLI spec](../../../scripts/netcup/CLI-SPEC.md), with its
+[`cli-review.toml`](../../../scripts/netcup/cli-review.toml), generated JSON
+manifest, and pytest collection hook. It demonstrates regeneration and test
+linkage on a real hyphenated script. CMRU's
+[`S-CLI.9`](../../../cmru/docs/SPEC.md#s-cli9-canonical-cli-grammar-and-semantic-audit)
+grammar and semantic tables remain hand-authored, with gate checks that
+compare the documented grammar to the live registered parsers. Its owner can
+adopt the shared catalog/generator separately after assessing the generated
+surface against the full CMRU interface.
+
+The first-party pilot uses the script-path factory form directly:
+
+```bash
+PYTHONPATH=libraries/cli-extended/src${PYTHONPATH:+:$PYTHONPATH} \
+python -m cli_extended.surface_cli \
+  --factory scripts/netcup/monitor-task.py:build_cli \
+  --review scripts/netcup/cli-review.toml \
+  --manifest scripts/netcup/cli-surface.json \
+  --spec scripts/netcup/CLI-SPEC.md check
+```
+
+When a registry changes, run `template` to discover new or stale review rows,
+review their invocations and effects, and edit the TOML decisions. Run `sync`
+to refresh only the manifest and marked Markdown region, then link collected
+behavior tests with `cli_case` markers. The consumer's gate checks both catalog
+coverage at collection and behavior by executing the tests. Finish with
+read-only `check` and review its diff. The marker proves linkage only; each
+referenced test must assert the promised output, status, and effects.
+
+Surface export and test helpers start from the built registry and
+publish a stable interface for verbs, delegated command paths, positional
+shapes, declared flags and aliases, option action/value shape, requiredness,
+choices, defaults, exclusive groups, and option scope. Custom parser callbacks
+must be represented explicitly or marked for consumer-specific inspection;
+the exporter must not quietly omit syntax it cannot understand. Use stable
+IDs rather than rendered help text as join keys so wording and table layout can
+change without losing semantic history.
+
+The generator does not enumerate every subset of every option: the invocation
+space grows exponentially. It generates the minimum route, positional shapes
+and choices, option spellings and choices, exclusive alternatives/conflicts,
+aliases, and each explicitly declared interaction. Product owners name the
+meaningful conditional or forbidden combinations in the TOML catalog; the
+library gives them stable IDs and signatures without guessing argv values or
+outcomes. The product records whether each case is accepted or refused, why,
+and which test proves parser, handler, or side-effect behavior. The shared
+pytest helper checks that each referenced node is collected and marked; the
+consumer's normal gate runs the test and checks its assertions.
+
+#### Adopt the generator
+
+Add two lines around one generated region in the product's canonical CLI
+specification:
+
+```markdown
+<!-- cli-extended-surface:start -->
+<!-- cli-extended-surface:end -->
+```
+
+Expose an import-safe factory that returns the normal `RegisteredCli`; it must
+not call `app.run()` while being imported. A dotted `python.module:callable`
+factory works for importable modules. For a single-file command that is not an
+importable Python module (for example a hyphenated script), use
+`path/to/command.py:callable`; the loader makes the script's sibling directory
+available for imports, matching direct script execution. Then use the shared
+command from the project root:
+
+```bash
+python -m cli_extended.surface_cli \
+  --factory example.cli:build_cli \
+  --review docs/cli-review.toml \
+  --manifest docs/cli-surface.json \
+  --spec docs/SPEC.md sync
+
+python -m cli_extended.surface_cli \
+  --factory example.cli:build_cli \
+  --review docs/cli-review.toml template
+
+python -m cli_extended.surface_cli \
+  --factory example.cli:build_cli \
+  --review docs/cli-review.toml \
+  --manifest docs/cli-surface.json \
+  --spec docs/SPEC.md check
+```
+
+The catalog has two closed vocabularies. `state` is `pending` while a generated
+case awaits review, `active` once its decision and test evidence match the
+current signature, or `retired` after an owner records why the case no longer
+applies. An active case's `decision` is `accept` or `refuse`; this records the
+product's semantic ruling and does not replace the behavior test. The following
+loader-valid example shows the required fields. Replace its generated ID,
+signature, invocation, effects, and test node ID with values from the consumer's
+surface and tests before running `check`.
+
+```toml
+schema_version = 1
+cli_id = "example-tool"
+
+[[cases]]
+id = "case:route:entrypoint:example-tool/publish/minimum"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:replace-after-export"
+rationale = "Publishing the selected staging artifact is a supported workflow."
+invocation = ["publish", "staging"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Publishes the selected staging artifact"]
+test_ids = ["tests/test_cli.py::test_publish_staging"]
+```
+
+`sync` updates only the JSON manifest and marked Markdown region. It never
+rewrites the TOML decisions or bytes outside the markers. It still writes the
+new grammar when it reports pending reviews, so the diff makes additions and
+signature changes visible. `template` prints TOML rows for new cases and
+instructions for changed or reappeared cases; the product owner reviews them
+and updates the catalog by hand. `check` is read-only and fails on stale
+generated files, missing/pending cases, changed signatures, unretired removed
+cases, or syntax the exporter could not enumerate. The default checklist cap
+is 512; set `max_candidates` in the catalog or use the explicit command-line
+override to raise it. Overflow is an error, never silent truncation.
+
+The manifest starts from the built parser tree, including options and nested
+actions added in `configure(parser)` and delegated CLIs. For a nested parser,
+it carries parent actions onto the child route and records which parser level
+accepts each argument or option. A required-subcommand parent is listed as a
+route prefix; semantic cases belong to runnable descendants. Multiple nested
+subparser groups at one parser level make the inventory incomplete so `check`
+cannot certify an ambiguous route. Required-subcommand parents and delegated
+command groups are route prefixes; checklist cases belong to their runnable
+child routes, which remain listed under the parent in the generated table. The
+manifest reports spellings,
+aliases, choices, defaults, requiredness, argument shape, exclusive groups,
+scope, placement, synopsis, parser-scoped `allow_abbrev`, callback-added
+actions, and whether empty argv shows help before parsing or is passed to the
+single-command parser. Required syntax can still reject an empty argument
+vector after that parser runs. For the route table, this applies to the
+executable entrypoint and single-command routes; ordinary command routes parse
+their remaining tokens, route prefixes select nested commands, and delegated
+groups pass remaining tokens to the child CLI. The table avoids claiming that
+every multi-command route shows help when called without a remainder, since its
+parser may dispatch or reject according to required syntax.
+Route records must include boolean `single_command` and `no_args_action`
+values. If a generated manifest is missing either fact, Markdown rendering
+refuses it; correct the exporter or manifest source rather than filling in a
+default.
+It also records argparse's negative-number matcher and whether each parser has
+negative-number-like options, so the checker classifies signed numeric values
+using the built parser's rules; custom or uninspectable matchers make the
+surface incomplete. Invocation mode and parser token rules participate in
+candidate signatures. Its generated
+Markdown renders each route's behavior and confirmation
+policy, synopsis/usage overrides, delegated metadata, parser-callback status,
+and opaque fields. Argument and option rows show descriptions, grammar shape,
+argparse action and converter, const values, requiredness, choices and defaults,
+exclusive-group requirements, scope and parser placement, and whether an
+option is hidden from operator help. A change to abbreviation policy changes
+case signatures. For nested delegated CLIs, every wrapper and the final
+single-command's behavior/confirmation metadata are shown and signed;
+wrapper-local parser declarations and inherited global options missing from
+the delegated parser make the surface incomplete. A delegated parser must
+preserve each inherited global's flags, destination, action type, `nargs`,
+converter, choices, constant, default, requiredness, and metavar. A mismatch
+also includes mutually-exclusive group membership and group requiredness, and
+requires custom converter/action objects to be the same runtime objects in both
+parsers. Matching import labels alone do not prove equivalent behavior. A
+mismatch marks its routes incomplete because the wrapper and child can split
+or interpret leading tokens differently. The checker uses the policy
+for the parser that owns each option, including when a callback
+configures a nested parser. Custom `prefix_chars` and argparse argument-file
+expansion (`fromfile_prefix_chars`) make the surface incomplete because the
+structural checker does not model their token syntax. A custom value converter
+is marked opaque while the parser syntax remains inventoried; an unenumerable
+grammar field makes the surface incomplete. Parser callbacks may add ordinary
+argparse actions, which the exporter inventories. A callback or parser subclass
+that replaces token-parsing methods, sets uncaptured parser-level defaults, or
+leaves `_option_string_actions` inconsistent with the parser's actions makes
+the surface incomplete; check mode will not certify that grammar. Set
+`surface_id` on a declaration
+to preserve its semantic identity through a rename. IDs are unique within a
+route; descriptions and help wording are not identifiers. For an interaction
+that references an option on another route, that option ID must resolve
+unambiguously across the CLI; use a globally unique `surface_id` if the
+route-derived ID is not convenient.
+
+The generated checklist is symbolic. It covers minimum executable syntax, positional
+shapes and enumerated choices, option spellings and choices, exclusive
+alternatives and conflicts, parser subcommand aliases, plus combinations in
+catalog `interaction_groups`. It does not invent real argument values, decide
+whether a combination is valid, or expand the power set of all switches.
+Library-owned common controls such as `--quiet`, `--debug`, `--color`, and
+`--progress` stay in the grammar table and rely on the library's normative
+contract. `--json`, `--yes`, and `--debug-raw` are also consumer review cases;
+declare an interaction when any common option participates in a product rule.
+
+## Review cross-route and arity interactions
+
+An interaction can describe a command with an option that belongs to a
+different route. This records parser-level scope rules such as
+`monitor-task show TASK_UUID --poll`, where `--poll` belongs to `watch` and
+`show` must refuse it. The interaction's `route_id` names the command being
+invoked; `option_ids` name the participating options wherever they are
+registered:
+
+```toml
+schema_version = 1
+cli_id = "monitor-task"
+
+[[interaction_groups]]
+id = "show-rejects-watch-only-options"
+route_id = "route:entrypoint:monitor-task/show"
+
+[[interaction_groups.combinations]]
+id = "watch-poll-is-not-show"
+option_ids = ["option:route:entrypoint:monitor-task/watch/--poll"]
+```
+
+The generated case signature includes the foreign option's owner route and
+action shape. Check mode requires each named local option, the foreign spelling
+as an unrecognized option at the target route's parser depth, and the target
+command's required arguments, options, and exclusive selections. For a
+value-taking foreign option, it consumes values according to the owner's
+declared arity while treating option-like target tokens as boundaries. Those
+tokens do not satisfy target positionals in the structural check. It validates
+fixed/minimum arity and enumerable choices. For registered `type=str`,
+`type=int`, `type=float`, or `type=bool`, it applies that exact built-in
+conversion; invalid conversions are findings even when no choices are declared.
+When choices exist, it compares the converted values to the declared choices.
+For example, `type=int, choices=(1, 2)` accepts `--count 1`, while
+`choices=(1, 2)` without a converter does not: argparse receives the raw string
+`"1"` in that case. A custom converter remains opaque; its acceptance and
+failure behavior belongs in the linked test, which invokes the real CLI and
+checks status and effects. Built-in converters are recognized by exact
+runtime object identity; a custom callable with a matching label stays opaque.
+Static choice checks likewise require the exact argparse action class;
+custom actions with a matching label stay opaque and need linked behavior
+tests. Choice containers must be exact built-in lists,
+tuples, sets, or frozensets with plain string, integer, finite-float, or
+boolean members. Custom containers and other choice objects make the surface
+incomplete because their runtime membership or equality cannot safely be
+represented by the exported JSON values.
+For an option with `nargs="?"`, invoking the option without a value selects
+`const`. Argparse applies the declared converter only to string constants.
+Whether the runtime checks an omitted constant against `choices` depends on
+the stock runtime's behavior for that exact built-in type. The exporter probes
+`None`, `bool`, `float`, `int`, and `str` constants with disposable parsers and
+records the matching result in the surface and generated spec. It signs this
+field into candidates. The structural check follows it without executing
+consumer code. An omitted
+optional positional uses its default, not `const`, and does not use this option
+rule.
+Any non-`None` option constant must be an exact built-in string, integer,
+finite float, or boolean; `None` is probed as its own built-in case. Custom
+scalar objects make the surface incomplete.
+Argparse does not check `choices` for a flag-only action such as
+`action="store_true"`; remove that unused declaration or use an action whose
+invocation carries a value. The surface reports it as incomplete.
+For positional `nargs=argparse.PARSER`, choices apply to the first converted
+value only. `nargs=argparse.REMAINDER` converts tokens without checking
+choices, so a remainder action with declared choices is marked incomplete.
+Custom action classes remain opaque.
+Any non-default parser type-registry registration makes the surface
+incomplete. Argparse resolves registered converters by dictionary equality,
+so even a distinct registry key that compares equal to an action's type can
+change its value conversion.
+Value-taking actions must use a callable converter or `None`. A non-callable
+type reference with no registered converter is not valid argparse syntax, so
+the surface marks it incomplete. Custom type registries are also incomplete.
+The structural check does not prove product outcomes. For this `show --poll`
+example, record
+`decision = "refuse"` and a non-zero `expected_exit_status` because `show`
+rejects the watch-only option. Check mode preserves the catalog's decision; it
+does not infer the outcome from route ownership. The only unrecognized options
+allowed are the foreign options named by the interaction. Reused option IDs on
+multiple foreign routes are ambiguous and cause generation to refuse the
+catalog.
+
+If another command intentionally forwards foreign-looking options, record an
+accepted decision only when its linked behavior test proves where those tokens
+go. For example, a command with an `argparse.REMAINDER` tail can document
+`exec PROGRAM --poll 5` as an accepted pass-through contract.
+
+The generator bounds option interactions by the named groups in the catalog;
+it does not infer which combinations have product meaning. It also does not
+automatically enumerate every token count for optional-arity, variadic, or
+repeatable options. If `--color` without a value and `--color VALUE`, or one
+`--tag` and repeated `--tag` occurrences, have different meaning, declare
+separate named combinations and write their exact argv in the semantic rows.
+Every generated candidate carries the route's required positional, required
+option, and required-exclusive-group baseline in its signature. Check mode
+requires that baseline for every candidate kind and validates the declared
+arity, modeled built-in conversion, and choices on every option occurrence; a
+valid first occurrence cannot hide a malformed repeat. The structural checker confirms the route, named
+option presence, declared value counts, enumerable choices it can model, and
+required baseline syntax; behavior tests assert custom converter behavior and
+exact value and repetition rules. Any bare token left after assigning declared positional
+arguments is reported, so an unrelated extra value cannot be mistaken for a
+valid option case. Those
+distinctions belong in the consumer's canonical CLI spec and
+should be re-reviewed whenever their signatures change.
+
+If a route or option named by `interaction_groups` is removed or renamed, run
+`sync` to regenerate the live grammar and keep the old semantic row visible in
+the stale-case section. Sync records the unresolved reference and leaves the
+TOML catalog byte-for-byte unchanged. Update the interaction and its reviewed
+case or explicitly retire the case; check mode remains red until the reference
+is resolved.
+
+An active `[[cases]]` record must contain a stable generated `id`,
+`decision = "accept"` or `"refuse"`, the current `reviewed_signature`, a
+rationale, `invocation`, `expected_exit_status`, `effects`, and one or more
+exact pytest `test_ids`. `invocation` is the argv passed to `app.run()` and
+excludes the executable name; include the real verb path and product-owned
+values. An empty invocation is valid only for a real no-token single-command
+case. Empty `effects = []` explicitly means the case has no effects. Keep a
+removed case in the catalog and set `state = "retired"` plus a reason only
+after a product review. Do not accept the expected decision from generated
+names, help text, or an AI-drafted table without verifying it against the
+handler and tests.
+
+The checker sanity-checks that argv reaches the declared route, accounting for
+recognized option values, parser scope, parser-depth `--` terminators, and
+required parent positionals before nested commands. Positional values are
+assigned to the registered argument ID at that parser depth, so a choice value
+in a sibling position does not satisfy the case. A flag-only option with an
+inline value is rejected by the structural check. A generated minimum case
+must provide values for required options and choose one option from each
+required exclusive group. Repeating the selected member remains valid when
+the built parser accepts it; add an explicit interaction when repetition has
+separate product meaning. The checker does not execute `parse_args`, custom
+converters/actions, or the handler. Route recognition is not proof that the
+whole invocation is accepted. The linked behavior test must run the real CLI
+invocation and prove the expected status, output, validation boundary, and
+effects.
+Each generated file is replaced atomically; if sync stops between the manifest
+and spec replacements, `check` reports their mismatch.
+Keep the review catalog, manifest, and spec as distinct files; sync and check
+reject equal paths and symlink or hard-link aliases before writing.
+
+Mark the behavior tests and register the shared assertion once at pytest
+collection:
+
+```toml
+# pyproject.toml
+[tool.pytest.ini_options]
+markers = ["cli_case(case_id): links a behavior test to a reviewed CLI case"]
+```
+
+```python
+# tests/conftest.py
+from pathlib import Path
+
+from cli_extended import assert_cli_case_tests, load_cli_review_catalog
+
+
+def pytest_collection_finish(session):
+    catalog = load_cli_review_catalog(Path("docs/cli-review.toml"))
+    assert_cli_case_tests(session.items, catalog)
+```
+
+```python
+import pytest
+
+
+@pytest.mark.cli_case(
+    "case:route:entrypoint:example/tool-deps/interaction:refresh-output/refresh-json"
+)
+def test_refresh_rejects_json():
+    # Exercise the registered CLI and assert status, output, and effects.
+    ...
+```
+
+The helper confirms that each exact node ID is collected and marked for its
+case, and rejects unknown or inactive case markers. It cannot prove an
+assertion is strong or that the test passed; the normal test gate must execute
+these marked behavioral tests. One test may carry several `cli_case` markers.
+
+CMRU's `tool-deps` is a useful first interaction example: declare
+`--dry-run`/`--refresh`, then `--refresh` with `--json` and
+`--allow-stale-tool-deps`; CMRU still owns the conditional rule and side-effect
+assertions. Netcup can map `monitor-task show TASK_UUID --poll` to its parser
+refusal test, and `show --json` / `watch --poll` to response-redaction and
+polling tests. The converter's UUID checks are opaque runtime validation, not
+missing CLI syntax. The CMRU and Netcup specs are examples only; adopting the
+new catalog in either product is a separate change.
+
+Use `OptionSpec` metadata for constraints argparse can express, such as
+choices and required mutually exclusive alternatives. Conditional rules such
+as “`--dry-run` requires `--update`” need an explicit refusal when the
+condition is false; do not accept an option and then ignore it. Keep domain or
+configuration-dependent checks in the consumer handler, and include the
+condition in help and the semantic table. Override `VerbSpec.synopsis` only
+when the actual syntax cannot be represented by the declared grammar, then
+test both the displayed synopsis and accepted/rejected invocations.
+
+Test effects at the owning boundary. A dry-run oracle should assert the
+complete planned actions and that none of the mutations declared by the
+product contract occurred. State separately whether read-only subprocesses,
+network access, or credential reads are part of plan derivation. Confirmation
+should follow validation and describe that same complete plan; `--yes` should
+bypass only that confirmation. Exercise handlers through the registry so
+tests receive the registered defaults. If a test calls a handler directly,
+provide the complete namespace shape rather than adding fallback reads that
+hide a mismatch between the handler and parser.
+
+### Service entrypoints and side-effect-free discovery
+
+For an executable that normally starts a daemon or other long-running process,
+make its entrypoint parse the invocation before constructing that process.
+Keep module-level imports and registry construction inert; a lightweight
+handler can import the service implementation only when valid arguments reach
+it. If the service's documented invocation has no verb, use
+`CliRegistry(single_command=True, no_args_action=True)` rather than making
+bare invocation accidentally start work. The parser still owns `--help`,
+`--version`, and malformed-argument exits.
+
+Prove the boundary through the installed executable, not only a parser unit
+test. Use a startup sentinel or fake service factory and assert that help,
+version, and invalid arguments do not start the service, read credentials,
+connect to a provider, or create state. Assert that the valid no-argument
+invocation reaches the service handler. Nyxloom found that its `nyxloomd
+--help` path started the daemon before arguments were handled; see the
+[command ownership guidance](../../../nyxloom/docs/CLI-REFERENCE.md#command-ownership).
+
+### Package the same library revision that was tested
+
+When a consumer bundles or vendors `cli-extended` from a sibling source tree,
+verify each boundary independently: its package-discovery metadata must include
+the library, the test lane must import the library from the selected worktree,
+and the container build context must contain the source after `.dockerignore`
+rules are applied. A successful local wheel build does not prove that a
+Dockerfile can see the same files. Build the real wheel or image target,
+inspect the artifact for the library package and console-script metadata, then
+install and invoke it from outside the checkout without a repository
+`PYTHONPATH`. Nyxloom's adoption review caught a root `.dockerignore` rule that
+silently excluded the library source from its Docker wheel build; the fix and
+acceptance evidence are recorded in its
+[P112 report](../../../nyxloom/nyxloom-trove/reports/nyxloom-P112-REPORT.md).
+
+In source-mode tests, point both the consumer and library imports at the same
+selected worktree. Keep that path explicit rather than inheriting a `PYTHONPATH`
+from the main checkout; otherwise the test can pass or fail against a different
+library revision than the one being adopted.
+
+Finally, test the built wheel from outside the source checkout. Invoke every
+installed script and supported module CLI, and exercise bootstrap/project-step
+entrypoints in the environment that actually uses them. Test generated
+standalone tools in their own runtime. CMRU's [canonical CLI semantic audit](../../../cmru/docs/SPEC.md#s-cli9-canonical-cli-grammar-and-semantic-audit)
+shows one way to keep the grammar inventory and product-owned behavior review
+together without treating Python libraries as executable commands.
+
 The `show`/`watch` example is the shape used by the Netcup task monitor. The
 Netcup `scp-api.py`, `install-host.py`, and `monitor-task.py` entrypoints now
 use `cli-extended` for parser setup, grouped help, common options, dispatch,
@@ -164,6 +664,22 @@ they can be copied, piped, or parsed. Use `runtime.output.info()`, `warn()`,
 `error()`, and `hint()` for human diagnostics; keep domain result tables
 uncolored unless the product has a separately documented, tested rendering
 contract.
+
+If a consumer owns a styled primary result, query the same stream-specific
+policy instead of repeating TTY/`NO_COLOR` checks:
+
+```python
+color = (
+    not runtime.json_mode
+    and runtime.output.color_enabled(runtime.output.stdout)
+)
+render_result(result, color=color)
+```
+
+`color_enabled(stream)` reports the CLI policy; it does not sanitize a
+consumer's renderer. The consumer must keep JSON and other machine output plain
+even when `--color` is explicit. Pass stdout for a primary result and stderr
+for a diagnostic renderer; the two streams can have different TTY state.
 
 The standard recipe is simply to let `RegisteredCli.run()` own dispatch and
 rendering:
@@ -278,6 +794,11 @@ collected values satisfy the product schema.
 validation before asking for consent. The helper cannot decide whether a
 Netcup firewall update, server reinstall, database migration, or deployment is
 safe, and it does not bypass deny-lists or other domain guards.
+When an explicit product safeguard is the consent boundary, declare the verb
+as `mutating=True, confirmation_required=False`; this preserves the mutation
+label without advertising a generic `--yes` that does not authorize the
+operation. Test both that `--yes` is rejected and that a failed role or state
+guard leaves the product unchanged.
 Use `runtime.output.is_interactive` when deciding whether to offer a multi-step
 flow before entering it. `runtime.prompts` enforces the same requirement before
 loading or calling a driver, using both injected stdin and stdout.

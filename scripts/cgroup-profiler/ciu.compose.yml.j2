@@ -39,12 +39,17 @@ services:
       {% endif %}
       - "--max-sessions"
       - "{{ cgprofile.daemon.max_sessions }}"
+      - "--gates-slice"
+      - "{{ cgprofile.daemon.gates_slice }}"
 
     # ── RG55-INTERFACE-CONTRACT.md §5: the daemon's safety envelope ──────
     # Namespaces stay private. The host observations the sampler needs are
-    # explicit mounts: proc and cgroup v2 read-only. Privilege is retained
-    # for the kernel DAMON sysfs interface; serve still refuses --cap and
-    # confines its writes to session storage and DAMON's own kdamonds.
+    # explicit host mounts: proc is read-only; cgroup v2 is writable only
+    # because opt-in P6 placement creates guarded rg-* leaves and moves lane
+    # pids. lib.placement.CgroupWriteGuard enforces the D-25 whitelist before
+    # every cgroup write. Privilege is also retained for DAMON sysfs; serve
+    # refuses --cap and confines its other writes to session storage and its
+    # own kdamonds.
     privileged: true
     cgroup: "private"
     # No docker socket, no network at all (§5: "no docker socket inside the
@@ -56,22 +61,46 @@ services:
     restart: unless-stopped
     environment:
       CGPROFILE_PROC_ROOT: /hostproc
+      {% if cgprofile.daemon.allow_uids %}
+      # §8.1's SO_PEERCRED allowlist applies to the socket carrier only;
+      # the exec carrier arrives as uid 0 and is always allowed.
+      CGPROFILE_ALLOW_UIDS: "{{ cgprofile.daemon.allow_uids }}"
+      {% endif %}
 
-    # AUTHORED here, not left to governance (C7): the daemon lives in the
-    # INTERACTIVE tier, not the `dev-background.slice` tier gate runs (the
-    # thing it profiles) live in — profiling the profiler's own noisy
-    # neighbour tier would be exactly backwards. Rendered by ciu's Jinja2
-    # pass reading the REAL process environment (`render_toml_template`'s
-    # `context['env']`, StrictUndefined): an unset $CGROUP_PARENT_DEV_INTERACTIVE
-    # REFUSES this render outright rather than silently falling back to a
-    # hardcoded slice name (AGENTS.md rule, restated in ciu's own
-    # governance.py `resolve_cgroup_parent` docstring).
-    cgroup_parent: "{{ env.CGROUP_PARENT_DEV_INTERACTIVE }}"
+    # AUTHORED here, not left to governance, and — as of RG-55 C5 (D-29,
+    # design amendment A1) — a hardcoded LITERAL, not an env-var template.
+    # This deliberately breaks the general AGENTS.md "no hardcoded slice
+    # name, always a render-time-refusing env-var expression" rule: the
+    # operator ruling (RW-30) is that the daemon is a HOST DEPLOYMENT, not
+    # dev load, so it ships its OWN top-level `cgprofile.slice` WITH this
+    # deployment (infra/cgprofile.slice, installed separately by the
+    # operator per infra/README.md) rather than living in any `dev-*` tier
+    # `$CGROUP_PARENT_DEV_INTERACTIVE` would resolve to — profiling the
+    # profiler's own noisy-neighbour dev tier would be exactly backwards,
+    # and D-29 is explicit that there is no environment variable and no
+    # fallback for this one value. `dev-infra.slice` /
+    # `CGROUP_PARENT_DEV_INFRA` (the earlier design's env-var-based answer
+    # to this same question) are WITHDRAWN. Governance still resolves its
+    # OWN `cgroup_parent` value unconditionally at render time (S15.3: an
+    # author-set key like this one is left untouched either way) — see
+    # ciu.global.defaults.toml.j2's `[governance]` table, which mirrors
+    # this same literal for the same reason.
+    cgroup_parent: "cgprofile.slice"
     mem_limit: "{{ cgprofile.hardening.mem_limit }}"
     memswap_limit: "{{ cgprofile.hardening.memswap_limit }}"
 
     volumes:
       - cgprofile-sessions:/var/lib/cgprofile
+      # The socket carrier (§8.1, D-30): the listener directory is bound to
+      # the SAME path on the host, so run-gate/`ciu gate` can speak the
+      # protocol without a docker socket. The DIRECTORY is mounted, never
+      # the socket file — `_bind()` unlinks and re-creates `ctl.sock` at
+      # every start, and a file bind-mount would pin the old inode. The
+      # host side is owned by mdt host-setup's `mdt-cgprofile.conf`
+      # (`d /run/cgprofile 0770 root docker -`); without it the directory
+      # is root:root and the socket ends up root-only — the daemon logs one
+      # INFO line and keeps serving over exec (RW-35(b), RW-37).
+      - {{ cgprofile.daemon.socket_dir }}:{{ cgprofile.daemon.socket_dir }}
       - type: bind
         source: /proc
         target: /hostproc
@@ -81,6 +110,16 @@ services:
       - type: bind
         source: /sys/fs/cgroup
         target: /sys/fs/cgroup
+        read_only: false
+        bind:
+          create_host_path: false
+      # Private PID namespaces make a host PID unaddressable to a direct
+      # cgroup.procs write.  Placement therefore asks host systemd's narrow
+      # AttachProcessesToUnit method to perform that one move; the daemon
+      # still never joins a host namespace or receives the Docker socket.
+      - type: bind
+        source: /run/dbus/system_bus_socket
+        target: /run/dbus/system_bus_socket
         read_only: true
         bind:
           create_host_path: false

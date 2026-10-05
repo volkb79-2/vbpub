@@ -1336,6 +1336,28 @@ def test_parse_args_accepts_explicit_existing_ssh_key_ids(install_host_mod, monk
     ).ssh_key_ids == [10, 20]
 
 
+def test_monitor_mode_mutex_refuses_before_loading_environment_or_settings(
+    install_host_mod, monkeypatch
+):
+    module = install_host_mod
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("conflicting monitor flags reached runtime configuration")
+
+    monkeypatch.setattr(module, "load_env_file", forbidden)
+    monkeypatch.setattr(module, "_load_runtime_settings", forbidden)
+    stdout, stderr = io.StringIO(), io.StringIO()
+
+    status = module.build_cli().run(
+        argv=["wizard", "--monitor", "--no-monitor"],
+        stdout=stdout,
+        stderr=stderr,
+    )
+
+    assert status == 2
+    assert "not allowed with argument" in stderr.getvalue()
+
+
 def test_parse_args_rejects_removed_poweroff_option(install_host_mod, monkeypatch):
     with pytest.raises(UsageError, match="unrecognized arguments"):
         install_host_mod.parse_args(["install", "--poweroff"])

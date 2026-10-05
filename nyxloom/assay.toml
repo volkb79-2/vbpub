@@ -101,11 +101,10 @@ artifact = "coverage.json"
 # session_extract code, so there is no reason to leave branch coverage
 # unmeasured here the way tester-unified's D-064-L2 migration had to.
 #
-# base = "3d27c67e": the reviewed boundary for this narrow follow-up lane.
-# Keep the R1/R2 diff anchored here, while source_roots limits the judged diff
-# and mutation targets to the session-extract implementation package. This
-# avoids folding later CLI-wide registry changes into this focused lane; those
-# are measured by tester-unified.
+# base = "126ccc39e151e33cc7bbcaa18bf765f9c9cd7dd1": the selected
+# current-main boundary for this integration. source_roots still limits the
+# judged diff and mutation targets to the session-extract implementation
+# package; the broader tester-unified lane covers the CLI registry changes.
 #
 # R0/R1/R2/R3 are all declared. A prior run exposed that the source root and
 # candidate cap had drifted from this lane's intended package scope; see the
@@ -120,6 +119,7 @@ argv = ["/opt/tester-venv/bin/python", "-m", "pytest",
   "tests/test_session_extract_reasonix.py",
   "tests/test_session_extract_classifier.py",
   "tests/test_session_extract_claude_code.py",
+  "tests/test_session_extract_cli_acceptance.py",
   "tests/test_session_extract_codex.py",
   "tests/test_session_extract_config_validation.py",
   "tests/test_session_extract_debug_diff.py",
@@ -142,14 +142,14 @@ argv = ["/opt/tester-venv/bin/python", "-m", "pytest",
   "tests/test_cli_help.py",
   "tests/test_cli.py::test_tick",
   "tests/test_cli.py::test_tick_project_id_passes_the_selector_to_daemon",
-  "-n", "auto", "-q", "--cov=src/nyxloom", "--cov-branch", "--cov-report=json:coverage-session-extract.json"]
+  "-n", "4", "--maxfail=1", "-q", "--cov=src/nyxloom", "--cov-branch", "--cov-report=json:coverage-session-extract.json"]
 env = { PYTHONPATH = "src:../libraries/cli-extended/src", PYTHONDONTWRITEBYTECODE = "1" }
 env_passthrough = ["HOME", "PATH", "TERM", "LANG"]
-# The package-scoped changed-line campaign has 599 candidates. At the declared
-# 120s per-candidate failsafe, the plan's serial upper bound is 19h58m; allow
-# 22h for the complete campaign plus baseline and verdict overhead. Keep the
-# mutation jobs serial on the shared production host.
-budget = "22h"
+# The final current-main diff has 43 eligible candidates, within the approved
+# 45-candidate cap. The source-backed plan estimates a 43m wall bound with two
+# mutation jobs and the declared 120s per-candidate failsafe; allow 2h for
+# baseline, scheduling, and verdict overhead.
+budget = "2h"
 allow_argv_append = false
 
 [lanes.session-extract.isolation]
@@ -166,24 +166,19 @@ source_roots = ["src/nyxloom/session_extract"]
 fail_under = 100.0
 allow_excluded = false
 require_branch = true
-base = "3d27c67e"
+base = "126ccc39e151e33cc7bbcaa18bf765f9c9cd7dd1"
 
 # R2: native python mutation, changed-lines-only -- resolve_mutation_targets
-# reuses R1's SAME base=3d27c67e diff, so this mutates exactly the lines
-# this session touched, not the whole package. jobs=1 (serial), NOT higher:
-# the argv already runs pytest -n auto (up to 8 xdist workers on this
-# host), so N concurrent mutation jobs would mean up to N*8 worker
-# processes on an 8-core host shared with a production game server
-# (host-shared-with-production-load-rule: load hit 85 doing exactly this
-# kind of unthrottled concurrency on 2026-09-02) -- serial mutants keep
-# concurrency bounded to the single already-accounted-for xdist fan-out.
-# The authoritative source-backed Assay plan, with a temporary 1000-candidate
-# discovery cap, found 599 candidates under this package root; this exact
-# finite cap prevents an unbounded campaign.
+# reuses R1's SAME current-main diff, so this mutates exactly the changed lines
+# under the session-extract source root, not the whole package. jobs=2 with
+# pytest -n 4 bounds total xdist fan-out to eight workers on this shared
+# 8-core host. The authoritative source-backed Assay plan at this selected
+# boundary found 43 candidates under the cap of 45; this finite cap prevents an
+# unbounded campaign.
 # budget_per_candidate remains 120s.
 [lanes.session-extract.judge.mutation]
-jobs = 1
-max_mutants = 599
+jobs = 2
+max_mutants = 45
 operators = ["python:compare-swap", "python:boolop-swap", "python:bool-const-flip", "python:falsy-swap"]
 budget_per_candidate = "120s"
 

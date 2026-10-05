@@ -63,6 +63,7 @@ def test_main_cleanup_build_output_and_discard_worktree_route_exact_targets(monk
     monkeypatch.setattr(cli, "_resolve_config", lambda _: tmp_path / "cmru.toml")
     monkeypatch.setattr(cli, "load_config", lambda _: _loaded(tmp_path))
     deleted = []
+    monkeypatch.setattr(transaction, "retained_build_output_identity", lambda *_args: object())
     monkeypatch.setattr(transaction, "delete_retained_build_output", lambda *args, **kwargs: deleted.append((args, kwargs)) or [tmp_path / "logs/id"])
     cli.main(["cleanup", "demo", "--dry-run", "--delete-build-output", "20240101T000000Z_" + "a" * 40, "--config", "x"])
     assert deleted and deleted[0][1]["dry_run"] is True
@@ -84,8 +85,8 @@ def test_main_release_child_dry_run_has_no_promotion_or_workspace_mutation(monke
     monkeypatch.setattr("cmru.version.release_cmd", lambda *args, **kwargs: calls.append((args, kwargs)))
     monkeypatch.setattr(cli, "_transaction_workspace_from_env", lambda _root: transaction.ReleaseWorkspace(tmp_path, tmp_path, "cmru/release/x", "a" * 40))
     monkeypatch.setattr(transaction, "write_release_scope", lambda *args: calls.append("scope"))
-    monkeypatch.setattr(transaction, "push_backup_branch", lambda *args: calls.append("backup"))
-    monkeypatch.setattr(cli.transaction, "is_transaction_child", lambda _root: True)
+    monkeypatch.setattr(transaction, "push_backup_branch", lambda *args, **kwargs: calls.append("backup"))
+    monkeypatch.setattr(cli.transaction, "is_transaction_child", lambda _root, **_kwargs: True)
     cli.main(["release", "--dry-run", "--config", "x"])
     assert calls[0][1]["dry_run"] is True
     assert "DRY RUN" in capsys.readouterr().out

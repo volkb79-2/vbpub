@@ -1362,3 +1362,208 @@ empty-index worktree (`20260917_043157-all-d5847937`), where a raw-git removal i
 hazardous.
 3. Decide whether a successful release should remove its own worktree at the end, and if a
    worktree is intentionally kept, why the release keeps it.
+
+### KI-36 — CMRU's resolved secret did not authenticate its Git transport — *fixed in source, pending release*
+
+**Reported:** 2026-10-01, during the `cmru release cmru` bootstrap.
+
+**Observed.** CMRU resolved the root `[github].token` for GitHub API publishing, but its own
+fetch, candidate-branch push, tag push, promotion, and cleanup still invoked Git without that
+credential. An HTTPS remote therefore fell through to an unrelated interactive Git helper even
+when `cmru.secret.toml` was present.
+
+**Wanted.** CMRU-owned Git operations should use the repository-root token only for the exact
+configured GitHub HTTPS origin, without putting it in a URL, argv, or persistent config. SSH and
+other-host remotes must retain their own authentication; project-local publisher overrides must
+not become repository-wide Git credentials.
+
+**Resolution.** CMRU now supplies the resolved repository credential through a temporary askpass
+helper, refuses prompts for other hosts, and disables local Git hooks for credential-bearing
+calls so the token cannot be inherited by a hook. The first release bootstrap caught invalid
+quoting in the generated helper; its test now compiles the generated Python before invoking it.
+Behavioral coverage is in `tests/test_git_auth.py`; README, DESIGN-GUIDE, CONSUMERS, and SPEC
+document the transport boundary. Included in the pending CMRU release.
+
+### KI-37 — Cleanup could widen beyond the confirmed target list — *fixed in source, pending release*
+
+**Reported:** 2026-10-01, Sol xhigh review of the unreleased CMRU changes.
+
+**Observed.** `cmru cleanup` previewed remote assets, asked for confirmation, then repeated the
+discovery pass before deletion. An asset appearing or becoming age-eligible while the prompt was
+open could be deleted without appearing in the confirmed preview.
+
+**Resolution.** Cleanup now captures an action plan before confirmation and applies those exact
+release IDs, package version IDs, tags, build records, and worktree identities. Age selection is
+computed once. Build-worktree discard rechecks the previewed branch, commit, and managed identity
+before removal. Regression coverage is in `tests/test_cleanup_deep_adversarial.py` and
+`tests/test_cli_extended_semantics.py`; the confirmation contract is in README, DESIGN-GUIDE,
+CONSUMERS, and SPEC. Included in the pending CMRU release.
+
+### KI-38 — `cmru abandon` could not load external multi-project policy — *fixed in source, pending release*
+
+**Reported:** 2026-10-01, Sol xhigh review of the unreleased CMRU changes.
+
+**Observed.** Abandonment reloaded only the config discovered from the current directory. When a
+retained transaction's scope came from an external orchestration file, valid projects were
+treated as unknown and CMRU refused the otherwise safe abandonment.
+
+**Resolution.** `cmru abandon --config PATH` now validates the recorded scope against the same
+external policy, while an empty candidate set returns without loading policy. Coverage is in
+`tests/test_cli_abandon.py`, and README, DESIGN-GUIDE, CONSUMERS, and SPEC document the option.
+Included in the pending CMRU release.
+
+### KI-39 — CMRU's Assay R1 baseline lagged its latest release — *fixed in source, pending release*
+
+**Reported:** 2026-10-01, Sol xhigh review of the unreleased CMRU changes.
+
+**Observed.** R1 used `cmru-v5.4.1` while the latest ancestor release tag was `cmru-v5.5.0`, so
+the changed-line gate included already-released source. The test checked only that the pin looked
+like a CMRU tag and matched the docs.
+
+**Resolution.** The baseline is now `cmru-v5.5.0`; the config test derives the latest prior tag
+from Git and requires the pin to match. DESIGN-GUIDE and SPEC document the current baseline.
+Included in the pending CMRU release.
+
+### KI-40 — Cleanup could commit caller edits with generated files — *fixed in source, pending release*
+
+**Reported:** 2026-10-01, Sol xhigh follow-up review of the unreleased CMRU changes.
+
+**Observed.** After a confirmed `steps.clean`, `cleanup_commit_deletions` staged the entire caller
+checkout. An unrelated file edited before confirmation could therefore be included in CMRU's
+cleanup commit. The same helper also skipped the clean-step commit when no release tags were
+selected, despite the confirmed plan promising generated-file cleanup.
+
+**Resolution.** CMRU snapshots dirty paths immediately before the clean step, stages only new
+literal pathspecs, and commits only those paths. Existing dirty paths remain outside the cleanup
+commit, and generated paths are committed even when no release tags were selected. Adversarial
+coverage and README, DESIGN-GUIDE, CONSUMERS, and SPEC updates accompany the fix. Included in the
+pending CMRU release.
+
+### KI-41 — Resuming a retained release could widen to the default project set — *fixed in source, pending release*
+
+**Reported:** 2026-10-01, while resuming the retained `cmru` release candidate.
+
+**Observed.** The failed candidate recorded scope `cmru`, but `cmru worktrees` printed a
+targetless `cmru release --resume PATH` command. A targetless release selects the configured
+default project set, so that command planned nine projects after unrelated mainline changes.
+The first selected project's gate then failed before CMRU could rewrite the transaction scope.
+
+**Resolution.** Resume now reads the exact scope from the candidate's shared sidecar before
+project-family selection, uses it when no target is given, and refuses an explicit target that
+widens or narrows the saved scope. It rechecks the metadata after acquiring the release lock.
+`cmru worktrees` shows the recorded scope and prints a matching command only when the scope is
+readable; JSON exposes that scope with `project_scope_state` (`recorded`, `missing`, or
+`unreadable`) so automation can make the same decision. Legacy candidates without metadata
+require an explicit target. Regression coverage and README, DESIGN-GUIDE, CONSUMERS, and SPEC
+updates accompany the fix.
+
+### KI-42 — `tester-gate` combined mutually exclusive Docker CPU controls — *fixed in source, pending release*
+
+**Reported:** 2026-10-01, when the CMRU resume gate launched CIU's required `tester-gate` step.
+
+**Observed.** The generated Docker argv included both `--cpus` and `--cpu-period`. Docker maps
+`--cpus` to `NanoCPUs` and rejects a HostConfig that also sets `CpuPeriod`, so the gate exited
+125 before starting its test container.
+
+**Resolution.** `tester-gate` now applies the validated CPU ceiling with `--cpus` alone. The
+minimum supported value remains `0.00001`; docs explain why CMRU does not send `--cpu-period`.
+The argv regression test asserts the accepted command shape. A live tester-gate acceptance
+probe is required before the release is considered complete.
+
+### KI-43 — Read-only handler validation crashed without `--dry-run` — *fixed in source, pending release*
+
+**Reported:** 2026-10-01, Sol xhigh follow-up review of the unreleased CMRU changes.
+
+**Observed.** `wheel-validate` and `tarball-validate` correctly omit the mutation-only
+`--dry-run` option, but their shared dispatcher read `args.dry_run` unconditionally. Both verbs
+raised `AttributeError` before reaching their read-only validation handler.
+
+**Resolution.** The dispatcher now treats an absent `dry_run` field as false. Regression coverage
+invokes both registered validation verbs without adding a meaningless dry-run option.
+
+### KI-44 — Plan status crashed because the read-only parser has no `dry_run` field — *fixed in source, pending release*
+
+**Reported:** 2026-10-01, Sol xhigh follow-up review of the unreleased CMRU changes.
+
+**Observed.** `cmru-controller status --plan PATH` is read-only and intentionally has no
+`--dry-run`, but `_build_engine` accessed `args.dry_run` directly. The parsed status command
+therefore crashed before querying the plan.
+
+**Resolution.** Engine construction now defaults an absent `dry_run` field to false. A parser-level
+regression test runs plan status with the actual read-only argument shape.
+
+### KI-45 — Local Git hooks could inherit publisher credentials — *fixed in source, pending release*
+
+**Reported:** 2026-10-01, Sol xhigh follow-up review of the unreleased CMRU changes.
+
+**Observed.** Release environment setup exports the project publisher credential. Raw local
+`git commit`, `git rebase`, and `git revert` processes inherited that environment, and any local
+hook they invoked received the same publisher credential.
+
+**Resolution.** CMRU routes hook-capable local Git operations through a helper that removes
+`GITHUB_PUSH_PAT`, `GITHUB_TOKEN`, and `CMRU_GIT_AUTH_TOKEN` from the child environment while
+preserving other environment values. Credential-bearing remote Git calls continue to disable
+hooks. The helper has direct environment regression coverage; README, DESIGN-GUIDE, CONSUMERS,
+and SPEC describe the distinction.
+
+### KI-46 — Worktree scope listing depended on path visibility and omitted JSON scope — *fixed in source, pending release*
+
+**Reported:** 2026-10-01, Sol xhigh follow-up review of the unreleased CMRU changes.
+
+**Observed.** `cmru worktrees` read release scope by statting each inventory path. A Git-reported
+worktree outside the current bind-mount namespace could therefore lose its readable scope. JSON
+records also omitted scope entirely, leaving automation unable to construct a safe resume.
+
+**Resolution.** Scope lookup now derives the sidecar from the shared Git directory and inventory
+branch without touching the listed path. Release JSON rows include `project_scope` and the closed
+`project_scope_state` values `recorded`, `missing`, and `unreadable`; non-recorded scopes are null.
+Text and JSON tests cover recorded, missing, unreadable, and invisible-path cases. README,
+DESIGN-GUIDE, CONSUMERS, and SPEC document the interface.
+
+### KI-47 — Legacy resume guidance omitted the original external config — *fixed in source, pending release*
+
+**Reported:** 2026-10-01, Sol xhigh follow-up review of the unreleased CMRU changes.
+
+**Observed.** When a retained candidate had no scope sidecar, `cmru worktrees` required an
+explicit target but did not tell the operator to repeat the external `--config PATH` used for the
+original release. The command could consequently load a different policy file.
+
+**Resolution.** Missing-scope guidance now requires candidate inspection, the explicit target,
+and the same original external config when one was used. The transaction does not claim to
+remember that path. README, DESIGN-GUIDE, CONSUMERS, and SPEC carry the same recovery rule.
+
+### KI-48 — Abandon ancestry probes inherited publisher credentials — *fixed in source, pending release*
+
+**Reported:** 2026-10-03, when the CMRU release gate exercised `cmru abandon` with publisher
+credentials present in the inherited process environment.
+
+**Observed.** Four local `git merge-base --is-ancestor` probes used `subprocess.run` directly,
+bypassing `run_local_git` and passing `GITHUB_PUSH_PAT`, `GITHUB_TOKEN`, and
+`CMRU_GIT_AUTH_TOKEN` to the Git child process.
+
+**Resolution.** All four ancestry probes now use `run_local_git`, preserving their return-code
+handling while removing publisher credential variables from the Git environment. The registered
+gate exercises the regression; README, DESIGN-GUIDE, CONSUMERS, and SPEC document the behavior.
+
+### KI-49 — `get.py enroll` runs unauthenticated as root: the installer is not verified before it executes, minisign is skipped without a key, and the install is not pinned to the requested release
+
+**Reported:** 2026-10-03, v8 round-4 third-party review (T4-05, T4-07), filed by the v8 spec writer (dstdns D-658). **Severity:** High (security: a root-level trust path). **Related:** KI-24 (the feature), ciu CIU-93/CIU-122/CIU-123, SPEC-V8 draft.9 S7.2.4 and `ciu/docs/CIU-HOST-ENROLLMENT-PROPOSAL.md` rev 4 §11 (the v8 contract).
+
+**Observed (source, `src/cmru/templates/get.py.tmpl`).**
+- `curl … | sudo python3 -` gives the downloaded bytes root execution authority. The SHA-256 sidecar and the optional minisign check run **inside** those bytes and cover the later bundle, not the verifier itself (`download_and_verify`, `:491-525`).
+- `--manifest-pubkey` absent → "skipping minisign verification" (`:522-524`): an unsigned install proceeds.
+- `--version` is optional; without it `resolve_latest_tag` runs (`:1195-1205`, `:1262`), so the printed version-pinned URL authenticates neither the selected wheel nor the installed result. `_install_wheels` installs into a private venv and the subcommand defines no stable launcher path.
+
+**Proposed contract.** `enroll` requires `--version`, and requires `--manifest-pubkey` and refuses an absent signature; the installer's own digest is verified by the caller **before** execution (trust root ruled in dstdns D-661: the controller's installed ciu wheel carries the digest of that version's committed `get.py` and the release's manifest public key in `ciu/enroll_trust.json`; so `cmru release` must render and hash `get.py` and record the digest and the manifest public key into the project's package data **before the wheel is built**, and the `[project.installer]` table must name the file it writes); the subcommand reports the absolute launcher path (`<install_dir_system>/bin/ciu`) that ciu's step 2 invokes; prerequisite failures are raised before any payload fetch.
+
+**Oracles.** `enroll` without `--version` or without a signature refuses and installs nothing; a tampered `get.py` fails the caller's digest check before `sudo python3` runs; a published newer release does not change the installed version; a controlled wrong implementation that resolves `latest` fails the third; the reported launcher path exists and reports the pinned version.
+
+### KI-50 — `get.py enroll` mutates root-trusted `authorized_keys` through attacker-controllable paths and an unvalidated `--from` pattern
+
+**Reported:** 2026-10-03, v8 round-4 third-party review (T4-08), filed by the v8 spec writer (dstdns D-658). **Severity:** High (security: root follows paths an existing user controls). **Related:** KI-24, KI-25, KI-49, ciu CIU-93, SPEC-V8 draft.9 S7.2.4.
+
+**Observed (source, `get.py.tmpl:1066-1135`).** The subcommand resolves the user, then `ssh_dir.mkdir(parents=True, exist_ok=True)`, `os.chmod(ssh_dir, 0o700)`, `os.chown(ssh_dir, …)`, reads `authorized_keys` as text and later `os.chmod`/`os.chown`s it. It does not validate the passwd record's home, shell or uid, does not open through directory descriptors or refuse symlinks, non-regular files or extra links, takes no lock against `sshd` or a concurrent enrollment, and rewrites the file without a verified atomic transaction. `--from PATTERN` is placed into an OpenSSH option string (`from="…"`, `:951-966`) with no accepted grammar and no refusal of quotes, backslashes or CR/LF. A pre-existing deploy user whose `~/.ssh/authorized_keys` is a symlink to `/root/.ssh/authorized_keys` has root's file chowned and appended to.
+
+**Proposed contract.** Resolve the user through the account database and validate home, uid/gid and shell; walk home, `.ssh` and `authorized_keys` with no-follow directory descriptors and require the expected owner, type and link count (refuse, never repair); lock a dedicated file in the verified `.ssh`, parse the records, write a complete temporary file preserving unrelated bytes, `fsync`, rename atomically, `fsync` the directory; append at most once under that lock; serialize the record, never concatenate; accept `--from` only against a closed grammar (addresses, CIDRs, label patterns with `*`/`?`, each optionally negated) and refuse quotes, backslashes, whitespace and CR/LF; shell-quote every printed argument.
+
+**Oracles.** A symlinked, hard-linked or FIFO `authorized_keys` and a foreign-owned `.ssh` are refused with the target untouched; a concurrent second enrollment leaves one key line; a pre-existing unrelated key and comment survive byte-for-byte; a `--from` value with a quote, CR or LF is refused before anything is written; a controlled wrong implementation that follows the symlink fails the first oracle.

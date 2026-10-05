@@ -11,8 +11,9 @@ land every ``interval_seconds`` with no gaps, which a caller reading
 cgroup, its slice, and the host, and feeds :class:`lib.summary.SummaryAccumulator`
 and :class:`lib.store.RunDir` so that ``ctl stop`` can answer within the
 contract's 30 s budget without ever recomputing from the on-disk series
-(§1.5 — the accumulator is already incremental; ``finalize()`` is O(1) in
-wall time).
+(§1.5 — each sample updates the accumulator; ``finalize()`` builds the
+fixed-size response and performs only a fixed number of O(log n) percentile
+lookups).
 
 **Two safety properties this module owns, both restated from the handoff:**
 
@@ -40,6 +41,7 @@ import secrets
 import shutil
 import signal
 import socket
+import struct
 import subprocess
 import sys
 import threading
@@ -48,21 +50,32 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional, Sequence, Set, Tuple
 
-from . import access, damon as damon_mod, metrics, sampler as sampler_mod
+from . import access, damon as damon_mod, events as events_mod, metrics, sampler as sampler_mod
 from . import store, subtree, summary, targets as targets_mod, util
+from . import limits as limits_mod, liveness as liveness_mod, placement as placement_mod
 from .version import runtime_version
 
 CONTRACT_VERSION = 1
-CGPROFILE_VERSION = runtime_version("1.0.0")
+CGPROFILE_VERSION = runtime_version("1.1.0")
 
 DEFAULT_SOCKET_PATH = "/run/cgprofile/ctl.sock"
 DEFAULT_SESSIONS_DIR = "/var/lib/cgprofile/sessions"
 DEFAULT_DAEMON_NAME = "cgprofile-host-daemon"
 DEFAULT_MAX_SESSIONS = 16
+# RG-55 C5 (contract §8.5, D-29): the gates slice is mdt's (dev-gates.slice
+# under dev.slice) -- its name is the one thing about it this daemon must be
+# told (`serve --gates-slice`), since C8's placement leaves live under it.
+# The daemon's OWN slice is never configurable: it ships its unit with this
+# EXACT name (infra/cgprofile.slice) and the compose template authors
+# `cgroup_parent: cgprofile.slice` to match, so there is nothing to resolve.
+DEFAULT_GATES_SLICE_NAME = "dev-gates.slice"
+DAEMON_SLICE_NAME = "cgprofile.slice"
 DEFAULT_KEEP_SESSIONS = 200
 DEFAULT_KEEP_DAYS = 14
 DEFAULT_INTERVAL = 1.0
 DISCOVERY_INTERVAL_SECONDS = 2.0
+REQUEST_LINE_TIMEOUT_SECONDS = 25.0
+MAX_REQUEST_LINE_BYTES = 1024 * 1024
 
 # RW-14 (C5): `ctl report` renders the REAL interactive HTML — `analyze.build`
 # + `report_html.render`, which need pandas/plotly. This module stays
@@ -85,6 +98,86 @@ _SESSION_ID_TS_FMT = "%Y%m%dT%H%M%SZ"
 _SESSION_ID_RE = re.compile(r"^s-\d{8}T\d{6}Z-[0-9a-f]{4}$")
 _TOKEN_RE = re.compile(r"^[A-Za-z0-9._-]{8,64}$")
 _CONTAINER_ID_RE = re.compile(r"^[0-9a-f]{64}$")
+
+# ── contract §8.1: the socket carrier ───────────────────────────────────
+# The ONLY top-level keys a request line may carry. Anything else is a
+# `bad-argument` (see `_dispatch`) — this is what makes "one shape, no
+# compatibility branch" checkable rather than a claim.
+_WIRE_KEYS = frozenset({"verb", "args", "contract"})
+# ── contract §8.2: the ONE streaming verb ───────────────────────────────
+# `watch` writes one object per line until the session ends, which is the
+# documented exception to §8.1's "one request per connection, one response,
+# then close" (see `_handle_connection` and `docs/PROTOCOL.md` §2). It never
+# goes through `_dispatch` — asked there (a caller that cannot stream) it is
+# §8.8's `not-streaming`.
+STREAMING_VERBS = frozenset({"watch"})
+# Asserted at every start on the directory the socket lives in and on the
+# socket itself (§8.1 "belt and braces to the host's tmpfiles.d entry",
+# RW-37: the host's own source of truth is mdt host-setup's
+# `mdt-cgprofile.conf`, NOT this daemon — the daemon only re-asserts).
+SOCKET_DIR_MODE = 0o770
+SOCKET_MODE = 0o660
+# Comma-separated uid allowlist (§8.1). Unset/empty = no uid restriction
+# beyond the socket's own group mode (docker-group trust, D-30).
+ALLOW_UIDS_ENV = "CGPROFILE_ALLOW_UIDS"
+
+
+def parse_allow_uids(raw: Optional[str]) -> Optional[List[int]]:
+    """Parse `CGPROFILE_ALLOW_UIDS` ("0,1000,1003") into a uid list.
+
+    `None`/empty/whitespace → `None`, meaning "no uid allowlist" (§8.1's
+    default: authorisation is the socket's group mode alone). A malformed
+    entry raises `ValueError` — `cgprofile serve` turns that into a refusal
+    to start, because silently ignoring a misspelled allowlist would widen
+    access exactly where the operator asked to narrow it.
+    """
+    if raw is None:
+        return None
+    text = raw.strip()
+    if not text:
+        return None
+    uids: List[int] = []
+    for part in text.split(","):
+        item = part.strip()
+        if not item:
+            raise ValueError(
+                f"{ALLOW_UIDS_ENV} must be a comma-separated list of uids; "
+                "empty entries are not allowed"
+            )
+        try:
+            uid = int(item, 10)
+        except ValueError:
+            raise ValueError(
+                f"{ALLOW_UIDS_ENV} must be a comma-separated list of uids, got {item!r}"
+            ) from None
+        if uid < 0:
+            raise ValueError(f"{ALLOW_UIDS_ENV} uid must not be negative, got {uid}")
+        if uid not in uids:
+            uids.append(uid)
+    return uids or None
+
+
+def _placement_block(sess: "_Session") -> Optional[Dict[str, Any]]:
+    """§8.3's `placement`, or `None` for a session that never asked to be
+    placed. One function because five documents carry the identical block
+    (`start`, `status`, `stop`'s Summary, every `watch` reading, §8.7)."""
+    return sess.placement.block() if sess.placement is not None else None
+
+
+def _expected_duration_seconds(meta: Dict[str, Any]) -> Optional[float]:
+    """``meta.expected.duration_s`` when the consumer declared one (§2.2) —
+    the input to `--ceiling auto` (§8.4: `3 x meta.expected.duration_s` when
+    known, else NO ceiling). `meta.expected` is explicitly nullable in the
+    contract's own fixture, and every other shape a consumer might send
+    (a string, a negative number) reads the same way as absent: unknown, so
+    no ceiling. A guessed ceiling kills real work."""
+    expected = meta.get("expected")
+    if not isinstance(expected, dict):
+        return None
+    value = expected.get("duration_s")
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value) if value > 0 else None
 
 
 class RequestError(Exception):
@@ -149,6 +242,30 @@ class _Session:
     no_token_pids: List[int] = field(default_factory=list)
     _prev_cpu_usage_usec: Optional[int] = None
     _prev_mono: Optional[float] = None
+    # CP-5: the collector's own `lib.events.Detector`, one instance per
+    # session (it is stateful/edge-triggered, exactly like `cmd_collect`'s),
+    # and the previous tick's full sample record it diffs against.
+    # `last_effective_limits` is the same detector's `limit_drift` input,
+    # refreshed on the discovery cadence (see `_on_session_sample`) rather
+    # than every tick — `lib.limits.effective()` walks the ancestor chain,
+    # and this daemon's interval can be as low as 0.25s.
+    detector: Optional["events_mod.Detector"] = None
+    _prev_record: Optional[Dict[str, Any]] = None
+    last_effective_limits: Optional["limits_mod.Effective"] = None
+    # CP-8 (C7, §8.4): the session's own watcher. Always present — a session
+    # started with no policy options at all still gets a tracker under the
+    # default policy (idle bound `auto`, `--on-stall report`), because §8.4's
+    # `liveness` block is per SESSION, not per policy: `status` reports it
+    # either way and nothing is ever killed unless `kill` was asked for.
+    # Mutated only on the session's own sampler thread, read under
+    # `sess.lock` by `status`/`stop`/the `watch` stream.
+    watch: Optional["liveness_mod.LivenessTracker"] = None
+    # CP-9 / D-31 (§8.3): the session's leaf under its delegated scope, or `None`
+    # when `--place` was never asked for. A REFUSED placement is still an
+    # object (it carries the `place-refused:*` code the caller must see);
+    # only "never asked" is `None`, which is what makes `placement: null`
+    # in a reading line mean exactly one thing (§8.2's own union).
+    placement: Optional["placement_mod.LanePlacement"] = None
     finished: bool = False
     ended_at: Optional[str] = None
     summary_doc: Optional[Dict[str, Any]] = None
@@ -165,6 +282,19 @@ class SessionServer:
     swap what a root resolves to (a symlink repointed between ticks) and the
     session picks up the new frame with no server-side support needed for
     that specifically.
+
+    ``host_proc_root`` is a SEPARATE seam (CP-10) for the host-wide reads in
+    :func:`lib.metrics.sample_host` (meminfo, loadavg, and — the one that
+    matters for liveness — ``pressure/memory``, §8.4's pause condition). It
+    defaults to ``proc_root`` when not given, so every existing caller (real
+    or test) is unaffected. A test that needs REAL ``/proc`` for subtree/pid
+    resolution (walking `/proc/<pid>/...` to find an actual subprocess) but
+    a CONTROLLED, low-pressure host reading — so its liveness assertions do
+    not depend on this host's ambient memory PSI at the moment it happens to
+    run — passes `proc_root="/proc"` and `host_proc_root=<a fake proc dir>`
+    separately. Conflating the two (one knob for both) is exactly what made
+    `TestRealSubtreeEnforcement` flake on real host memory pressure: see the
+    CP-10 backlog row and `cgprofile-P6-FOLLOWUPS-REPORT.md`.
     """
 
     def __init__(
@@ -178,18 +308,27 @@ class SessionServer:
         keep_days: int = DEFAULT_KEEP_DAYS,
         observe_slices: Sequence[str] = (),
         max_sessions: int = DEFAULT_MAX_SESSIONS,
+        gates_slice_name: str = DEFAULT_GATES_SLICE_NAME,
+        slice_unit_verifier: Optional[Callable[[str, str], bool]] = None,
+        allow_uids: Optional[Sequence[int]] = None,
         cgroup_root: str = access.CGROUP_ROOT,
         proc_root: str = access.PROC_ROOT,
+        host_proc_root: Optional[str] = None,
         daemon_name: str = DEFAULT_DAEMON_NAME,
         clock: Callable[[], float] = time.time,
         sampler_clock: Callable[[], float] = time.monotonic,
         sampler_sleep: Callable[[float], None] = time.sleep,
+        watch_wait: Optional[Callable[[threading.Event, float], Any]] = None,
         session_id_fn: Optional[Callable[[], str]] = None,
         damon_pool: Optional["damon_mod.KdamondPool"] = None,
         accept_timeout: float = 0.5,
+        request_line_timeout: float = REQUEST_LINE_TIMEOUT_SECONDS,
+        max_request_line_bytes: int = MAX_REQUEST_LINE_BYTES,
+        request_clock: Callable[[], float] = time.monotonic,
         report_python: Optional[str] = None,
         report_script: Optional[str] = None,
         report_timeout: float = DEFAULT_REPORT_TIMEOUT,
+        placement_factory: Optional[Callable[..., "placement_mod.LanePlacement"]] = None,
     ) -> None:
         if damon_default not in ("on", "off"):
             raise ValueError(f"damon_default must be 'on' or 'off', got {damon_default!r}")
@@ -201,13 +340,44 @@ class SessionServer:
         self.keep_days = keep_days
         self.observe_slices = list(observe_slices)
         self.max_sessions = max_sessions
+        self.gates_slice_name = gates_slice_name
+        self.slice_unit_verifier = slice_unit_verifier or access.verify_systemd_slice
+        self._gates_slice_verification: Optional[Tuple[float, bool]] = None
+        self._gates_slice_verify_lock = threading.Lock()
+        # §8.1/§8.6: `None` = no uid allowlist (docker-group trust via the
+        # socket mode); a list = SO_PEERCRED uid must be 0 or listed.
+        self.allow_uids: Optional[List[int]] = list(allow_uids) if allow_uids is not None else None
         self.cgroup_root = cgroup_root
         self.proc_root = proc_root
+        # CP-10: host-wide reads (meminfo/loadavg/pressure) default to
+        # `proc_root` — every real caller and every existing test that
+        # passes one root for both stays byte-identical. A test that must
+        # use the REAL `/proc` for pid/subtree resolution but wants a
+        # controlled host-pressure reading overrides this separately.
+        self.host_proc_root = host_proc_root if host_proc_root is not None else proc_root
         self.daemon_name = daemon_name
         self.clock = clock
         self.sampler_clock = sampler_clock
         self.sampler_sleep = sampler_sleep
+        # §8.2's inter-reading wait. The real one is the session's own stop
+        # event, so a `stop` ends every watch stream on it immediately
+        # instead of after up to `--watch-interval` (300 s at the clamp's
+        # top) of dead air. A test substitutes a wait that returns at once —
+        # the same seam `sampler_sleep` already is for the sampler, and the
+        # only way a streaming test can run in milliseconds when the
+        # contract's own floor for the interval is 5 s.
+        self.watch_wait: Callable[[threading.Event, float], Any] = (
+            watch_wait if watch_wait is not None
+            else (lambda event, timeout: event.wait(timeout))
+        )
         self.accept_timeout = accept_timeout
+        if request_line_timeout <= 0:
+            raise ValueError("request_line_timeout must be positive")
+        if max_request_line_bytes < 3:
+            raise ValueError("max_request_line_bytes must be at least 3")
+        self.request_line_timeout = request_line_timeout
+        self.max_request_line_bytes = max_request_line_bytes
+        self.request_clock = request_clock
         self._session_id_fn = session_id_fn or self._default_session_id
         self.damon_pool = damon_pool if damon_pool is not None else damon_mod.KdamondPool()
         # RW-14: resolved once at construction (a long-lived daemon's venv,
@@ -222,6 +392,13 @@ class SessionServer:
             self.report_python = None
         self.report_script = report_script or DEFAULT_REPORT_SCRIPT
         self.report_timeout = report_timeout
+        # CP-9: how a placement leaf is removed. `os.rmdir` on the real
+        # kernfs cgroup directory; a test pointing `cgroup_root` at a tmp
+        # tree replaces it, because a REAL directory holding the same
+        # interface files is ENOTEMPTY where a cgroup is not (see
+        # `lib.placement.LanePlacement`'s own note).
+        self.cgroup_rmdir: Callable[[str], None] = os.rmdir
+        self.placement_factory = placement_factory
 
         self._sessions: Dict[str, _Session] = {}
         self._by_target: Dict[Tuple[str, Optional[str]], str] = {}
@@ -289,16 +466,110 @@ class SessionServer:
             if not os.path.isdir(session_dir):
                 continue
             manifest_path = os.path.join(session_dir, "manifest.json")
-            if not os.path.isfile(manifest_path):
-                continue
-            try:
-                with open(manifest_path, "r", encoding="utf-8") as fh:
-                    manifest = json.load(fh)
-            except (OSError, json.JSONDecodeError):
+            manifest: Optional[Dict[str, Any]] = None
+            if os.path.isfile(manifest_path):
+                try:
+                    with open(manifest_path, "r", encoding="utf-8") as fh:
+                        candidate = json.load(fh)
+                    if isinstance(candidate, dict):
+                        manifest = candidate
+                except (OSError, json.JSONDecodeError) as exc:
+                    self._log(f"recovery: cannot read manifest for {name}: {exc}")
+            placement_path = os.path.join(session_dir, "placement-state.json")
+            if manifest is None:
+                # Placement journals are written before StartTransientUnit and
+                # before the live manifest. A daemon crash in that interval
+                # must still restore or preserve the exact scope; absence of
+                # a manifest is not evidence that no PID was moved.
+                if os.path.isfile(placement_path):
+                    error = self._recover_placement_file(name, placement_path)
+                    self._write_json_path(
+                        os.path.join(session_dir, "placement-recovery.json"),
+                        {
+                            "session": name,
+                            "status": "restored" if error is None else "failed",
+                            "error": error,
+                            "checked_at": self._iso(self.clock()),
+                        },
+                    )
+                    if error is not None:
+                        self._log(
+                            f"recovery: journal-only placement for {name} "
+                            f"requires operator attention: {error}"
+                        )
                 continue
             if manifest.get("status") != "live":
+                # A session may have been marked finished after lane cleanup
+                # failed. Its durable placement journal is still the only
+                # authority for restoring the PIDs or preserving the owned
+                # scope, so retry recovery on startup until the journal says
+                # complete. Do not finalize the already-finished session a
+                # second time, and do not revisit completed journals (the
+                # token may have since been reused by a later session).
+                if os.path.isfile(placement_path):
+                    try:
+                        with open(placement_path, "r", encoding="utf-8") as fh:
+                            journal = json.load(fh)
+                        needs_recovery = (
+                            not isinstance(journal, dict)
+                            or journal.get("state") != "complete"
+                        )
+                    except (OSError, json.JSONDecodeError):
+                        needs_recovery = True
+                    if needs_recovery:
+                        error = self._recover_placement_file(name, placement_path)
+                        manifest["placement_recovery"] = (
+                            {"status": "failed", "error": error}
+                            if error is not None else
+                            {"status": "restored", "error": None}
+                        )
+                        self._write_json_path(manifest_path, manifest)
+                        if error is not None:
+                            self._log(
+                                f"recovery: completed session {name} has an "
+                                f"incomplete placement requiring operator attention: {error}"
+                            )
                 continue
+            placement_recovery: Optional[str] = None
+            if os.path.exists(placement_path):
+                placement_recovery = self._recover_placement_file(name, placement_path)
+            elif (
+                isinstance(manifest.get("placement"), dict)
+                and manifest["placement"].get("requested") is True
+            ):
+                placement_recovery = placement_mod.REFUSED_STATE_UNAVAILABLE
+            if placement_recovery is not None:
+                manifest["placement_recovery"] = {
+                    "status": "failed", "error": placement_recovery,
+                }
+            elif os.path.exists(placement_path):
+                manifest["placement_recovery"] = {"status": "restored", "error": None}
             self._finalize_orphan(name, manifest)
+
+    def _recover_placement_file(self, session_id: str, path: str) -> Optional[str]:
+        """Run identity-checked placement recovery from one durable journal."""
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                journal = json.load(fh)
+            return placement_mod.recover_journal(
+                journal,
+                cgroup_root=self.cgroup_root,
+                gates_cgroup=targets_mod.slice_to_path(self.gates_slice_name),
+                proc_root=self.proc_root,
+                state_write=lambda state: self._write_json_path(path, state),
+                log=self._log,
+            )
+        except Exception as exc:  # noqa: BLE001 - corrupt recovery state is fail-closed
+            self._log(f"recovery: cannot read placement journal for {session_id}: {exc}")
+            return placement_mod.REFUSED_STATE_UNAVAILABLE
+
+    @staticmethod
+    def _write_json_path(path: str, value: Dict[str, Any]) -> None:
+        directory, filename = os.path.split(path)
+        rundir = store.RunDir(
+            os.path.dirname(directory), run_id=os.path.basename(directory), create=False
+        )
+        rundir.write_json(filename, value)
 
     def _finalize_orphan(self, session_id: str, manifest: Dict[str, Any]) -> None:
         rundir = store.RunDir(self.sessions_dir, run_id=session_id, create=False)
@@ -350,10 +621,26 @@ class SessionServer:
                 mono=sample.get("mono"),
             )
         manifest["status"] = "aborted"
-        manifest["aborted_reason"] = "daemon-restarted"
+        recovery_failed = manifest.get("placement_recovery", {}).get("status") == "failed"
+        manifest["aborted_reason"] = (
+            "daemon-restarted-placement-recovery-failed"
+            if recovery_failed else "daemon-restarted"
+        )
         manifest["ended_at"] = ended_at
         if acc.sample_count:
             summary_doc = acc.finalize(ended_at=ended_at)
+            if "placement_recovery" in manifest:
+                summary_doc["placement"] = {
+                    "requested": True,
+                    "leaf": None,
+                    "applied": {},
+                    "pids_moved": 0,
+                    "error": (
+                        manifest["placement_recovery"].get("error")
+                        if recovery_failed else None
+                    ),
+                }
+                summary_doc["placement_recovery"] = manifest["placement_recovery"]
             rundir.write_json("summary.json", summary_doc)
         rundir.write_manifest(manifest)
 
@@ -365,6 +652,13 @@ class SessionServer:
     def _manifest_for(self, sess: _Session, *, status: str) -> Dict[str, Any]:
         started_epoch = self._parse_iso_epoch(sess.started_at)
         ended_epoch = self._parse_iso_epoch(sess.ended_at) if sess.ended_at else None
+        # CP-7 (C3): lazy, mirroring `cgprofile.py`'s own `cmd_serve` lazy
+        # import of `lib.serve` — `cgprofile.py` is the top-level script
+        # (never imported at this module's top level, so this stays a
+        # one-directional dependency at call time only), and `_limits_snapshot`
+        # is its own helper (the exact shape `cmd_collect` already writes)
+        # rather than a duplicate reimplementation here.
+        import cgprofile as cg_module
         return {
             "session": sess.session_id,
             "status": status,
@@ -380,6 +674,7 @@ class SessionServer:
             "damon_kdamond": sess.damon_session.kdamond_idx if sess.damon_session else None,
             "damon_thresholds": sess.damon_session.thresholds if sess.damon_session else None,
             "damon_unavailable_reason": sess.damon_unavailable_reason,
+            "placement": _placement_block(sess),
             "meta": sess.meta,
             "aborted_reason": None,
             # RW-14: everything from here down is never read by an RG-55
@@ -390,10 +685,22 @@ class SessionServer:
             # the keys `lib.analyze.build`/`cgprofile.py`'s own collector
             # (`cmd_collect`) writes, so `handle_report`'s subprocess can
             # point the existing report tier straight at this session
-            # directory with no translation step. `limits` is deliberately
-            # `{}` (the daemon does not resolve effective cgroup limits —
-            # that is `cmd_collect`'s own job, out of scope for P1; filed as
-            # a backlog item, not silently reproduced here).
+            # directory with no translation step. `limits` (CP-7, C3): the
+            # session's own cgroup resolved once at `start` time by
+            # `_create_session_locked` (`limits_mod.effective()`, the same
+            # call CP-5's `Detector` construction already made and stored on
+            # `sess.last_effective_limits` for drift detection) — reused
+            # here rather than re-resolved, in `cgprofile.py`'s own
+            # `_limits_snapshot` shape (`{"resolved": {...}, "described":
+            # [...], "fingerprint": "..."}`) so `analyze.py`'s proposal
+            # checks (`_effective_limits`) see exactly the schema
+            # `cmd_collect` already produces. A daemon session only ever
+            # profiles ONE cgroup, so this table has exactly one entry — a
+            # structural fact worth naming: `_check_oversubscription` needs
+            # >= 2 sibling entries under a shared parent to fire at all, so
+            # it is permanently a no-op for a single-target daemon session
+            # regardless of this fix; single-cgroup checks like
+            # `_check_recursiveprot_gap` are the ones this actually unlocks.
             "run_id": sess.session_id,
             "started": started_epoch,
             "ended": ended_epoch,
@@ -411,14 +718,15 @@ class SessionServer:
                 "kind": "container", "role": "subject", "follow_children": False,
                 "container_id": sess.container_id, "pid": None,
             }],
-            "limits": {},
+            "limits": {sess.cgroup: cg_module._limits_snapshot(limits_mod, sess.last_effective_limits)}
+                       if sess.last_effective_limits is not None else {},
             "host": sess.host_snapshot,
             "config": {"interval": sess.interval},
         }
 
     # ── verb: version ────────────────────────────────────────────────────
 
-    def handle_version(self, req: Dict[str, Any]) -> Dict[str, Any]:
+    def handle_version(self, args: Dict[str, Any]) -> Dict[str, Any]:
         with self._lock:
             live = self._count_live()
         damon_state = "available" if damon_mod.available() else "unavailable:not available on this host"
@@ -434,17 +742,32 @@ class SessionServer:
                 "sessions_live": live,
                 "max_sessions": self.max_sessions,
             },
+            # §8.6, additive under `contract: 1`: which carriers this daemon
+            # answers on. `exec` is permanent (§8.1 rule 5) so it is a
+            # literal `True`, not a probe; the socket half reports the real
+            # listener state, the effective uid allowlist (`[]` = none
+            # configured, i.e. docker-group trust) and that SO_PEERCRED is
+            # enforced on every accepted connection.
+            "transports": {
+                "exec": True,
+                "socket": {
+                    "path": self.socket_path,
+                    "listening": self._sock is not None,
+                    "allow_uids": list(self.allow_uids or []),
+                    "peer_cred": True,
+                },
+            },
         }
 
     # ── verb: start ──────────────────────────────────────────────────────
 
-    def handle_start(self, req: Dict[str, Any]) -> Dict[str, Any]:
-        target_spec = req.get("target")
-        scope = req.get("scope")
-        token = req.get("token")
-        damon_req = req.get("damon") or self.damon_default
-        interval_req = req.get("interval")
-        meta = req.get("meta")
+    def handle_start(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        target_spec = args.get("target")
+        scope = args.get("scope")
+        token = args.get("token")
+        damon_req = args["damon"] if "damon" in args else self.damon_default
+        interval_req = args.get("interval")
+        meta = args.get("meta")
 
         if not isinstance(target_spec, str) or not target_spec.startswith("containerid:"):
             raise RequestError("bad-argument", "--target must be 'containerid:<64 hex>'")
@@ -455,7 +778,9 @@ class SessionServer:
             raise RequestError("bad-argument", "--scope must be 'container' or 'container-shared'")
         if damon_req not in ("on", "off"):
             raise RequestError("bad-argument", "--damon must be 'on' or 'off'")
-        if token is not None and not _TOKEN_RE.match(token):
+        if token is not None and (
+            not isinstance(token, str) or not _TOKEN_RE.fullmatch(token)
+        ):
             raise RequestError("bad-argument", "--token must match [A-Za-z0-9._-]{8,64}")
         if not isinstance(meta, dict):
             raise RequestError("bad-argument", "--meta must be a JSON object")
@@ -471,6 +796,37 @@ class SessionServer:
             if not math.isfinite(interval):
                 raise RequestError("bad-argument", "--interval must be a finite number")
         interval = util.clamp(interval, 0.25, 30.0)
+        # CP-8 (§8.4/§8.8): the stall policy is parsed BEFORE anything is
+        # created — `bad-policy` means exit 2 and NO session, never a session
+        # running under a policy the daemon had to guess at. Note this is
+        # outside the registry lock deliberately: a refusal must not be able
+        # to reuse an existing session either (the `reused: true` branch
+        # below would otherwise hand a caller a session under the OLD
+        # policy while it believes it authored a new one).
+        try:
+            policy = liveness_mod.parse_policy(args)
+        except liveness_mod.PolicyError as exc:
+            raise RequestError("bad-policy", str(exc)) from None
+        # CP-9 (§8.3): parsed in the same place and for the same reason. A
+        # cap value the CLIENT typed wrong is `bad-argument` (exit 2, no
+        # session) — §8.8's `place-refused:*` codes are reserved for what the
+        # HOST turned out to be, and those never fail `start`.
+        try:
+            place_request = placement_mod.parse_request(args)
+        except placement_mod.CapsError as exc:
+            raise RequestError("bad-argument", str(exc)) from None
+
+        if policy.on_stall == "kill" and scope == "container-shared":
+            if token is None:
+                raise RequestError(
+                    "bad-policy",
+                    "--on-stall kill for container-shared requires --token and --place",
+                )
+            if place_request is None:
+                raise RequestError(
+                    "bad-policy",
+                    "--on-stall kill for container-shared requires --place",
+                )
 
         with self._lock:
             if token is not None:
@@ -479,6 +835,24 @@ class SessionServer:
                 if existing_id is not None:
                     existing = self._sessions.get(existing_id)
                     if existing is not None and not existing.finished:
+                        if (
+                            existing.scope != scope
+                            or existing.watch is None
+                            or existing.watch.policy != policy
+                        ):
+                            raise RequestError(
+                                "bad-policy",
+                                "a live target/token session already uses a different scope or liveness policy",
+                            )
+                        if policy.on_stall == "kill" and scope == "container-shared" and (
+                            existing.placement is None
+                            or not existing.placement.placed
+                            or existing.placement.error is not None
+                        ):
+                            raise RequestError(
+                                "bad-policy",
+                                "the existing shared-scope session has no verified kill leaf",
+                            )
                         return self._start_response(existing, reused=True)
 
             if self._count_live() >= self.max_sessions:
@@ -492,32 +866,62 @@ class SessionServer:
                     "target-not-found", f"no cgroup for container {container_id[:12]}"
                 )
 
+            if policy.on_stall == "kill" and scope == "container":
+                target_killer = self._make_container_killer(
+                    container_id=container_id, cgroup=cgroup,
+                )
+                if (
+                    target_killer.target_abs is None
+                    or not os.path.isdir(target_killer.target_abs)
+                    or not self._gates_slice_is_verified(refresh=True)
+                ):
+                    raise RequestError(
+                        "bad-policy",
+                        "--on-stall kill for scope container requires the exact target cgroup "
+                        "under the verified, bounded dev-gates.slice",
+                    )
+
             sess = self._create_session_locked(
                 container_id=container_id, cgroup=cgroup, scope=scope, token=token,
-                interval=interval, damon_req=damon_req, meta=meta,
+                interval=interval, damon_req=damon_req, meta=meta, policy=policy,
+                place_request=place_request,
             )
+            try:
+                thread = threading.Thread(
+                    target=self._session_loop, args=(sess,), daemon=True,
+                    name=f"cgprofile-session-{sess.session_id}",
+                )
+                sess.thread = thread
+                thread.start()
+            except BaseException:
+                # A failed thread launch has not published a usable session.
+                # In particular, do not strand the kdamond acquired at start.
+                try:
+                    if sess.damon_session is not None:
+                        sess.damon_session.__exit__(None, None, None)
+                finally:
+                    self._remove_session_dir(sess.session_id)
+                raise
+
             self._sessions[sess.session_id] = sess
             if token is not None:
                 self._by_target[(container_id, token)] = sess.session_id
-
-            thread = threading.Thread(
-                target=self._session_loop, args=(sess,), daemon=True,
-                name=f"cgprofile-session-{sess.session_id}",
-            )
-            sess.thread = thread
-            thread.start()
 
             return self._start_response(sess, reused=False)
 
     def _create_session_locked(
         self, *, container_id: str, cgroup: str, scope: str, token: Optional[str],
         interval: float, damon_req: str, meta: Dict[str, Any],
+        policy: Optional["liveness_mod.Policy"] = None,
+        place_request: Optional["placement_mod.PlacementRequest"] = None,
     ) -> _Session:
         session_id = self._session_id_fn()
+        if session_id in self._sessions or os.path.lexists(
+            os.path.join(self.sessions_dir, session_id)
+        ):
+            raise OSError(f"session id collision: {session_id}")
         started_at = self._iso(self.clock())
         abs_target = os.path.join(self.cgroup_root, cgroup.lstrip("/"))
-        initial_target_metrics = summary.sample_target_cgroup(abs_target)
-        baseline = (initial_target_metrics.get("mem") or {}).get("current")
         # The token resolver below will resolve direct target-cgroup PIDs;
         # avoid doing the broader proc-to-cgroup map a second time here.
         pids_now = (
@@ -527,7 +931,7 @@ class SessionServer:
         # RW-14: sampled once, at session creation — the manifest's "host"
         # field mirrors `cmd_collect`'s own convention of a single snapshot
         # written into the manifest at start, not updated thereafter.
-        host_snapshot = metrics.sample_host(proc_root=self.proc_root)
+        host_snapshot = metrics.sample_host(proc_root=self.host_proc_root)
         sampler_origin_mono = self.sampler_clock()
 
         slice_cgroup = os.path.dirname(cgroup.rstrip("/")) or "/"
@@ -557,7 +961,87 @@ class SessionServer:
 
         rundir = store.RunDir(self.sessions_dir, run_id=session_id, create=True)
         with open(rundir.stream_path("events"), "a", encoding="utf-8"):
-            pass  # touch: see the module docstring — event detection is CP-4.
+            pass  # touch: the file exists from the first tick even if the
+            # session ends before any real row lands (CP-5, `_on_session_sample`
+            # is what appends real rows via `lib.events.Detector`).
+
+        # CP-9 (§8.3, D-20/D-25): the leaf, before the first sample — a lane
+        # placed after its first tick would have that tick's memory accounted
+        # to the devcontainer's scope, which is the number placement exists
+        # to stop reporting. Refusals never reach here as exceptions: they
+        # are `placement.error` on a session that starts anyway.
+        placement_obj: Optional[placement_mod.LanePlacement] = None
+        if place_request is not None:
+            placement_obj = self._make_placement(
+                token=token, origin_cgroup=cgroup, request=place_request, rundir=rundir,
+            )
+            placement_obj.apply(
+                list(subtree_resolver.current_pids) if subtree_resolver is not None else []
+            )
+            if subtree_resolver is not None:
+                if placement_obj.placed:
+                    if placement_obj.error is None:
+                        subtree_resolver.owned_cgroup = lambda: (
+                            placement_obj.leaf_cgroup if placement_obj.placed else None
+                        )
+            if placement_obj.error is not None:
+                self._log(
+                    f"start: placement refused for {session_id}: {placement_obj.error}"
+                )
+            if (
+                policy is not None and policy.on_stall == "kill"
+                and scope == "container-shared"
+                and (placement_obj.error is not None or not placement_obj.placed)
+            ):
+                placement_error = placement_obj.error or "place-refused:no-leaf"
+                placement_obj.release()
+                cleanup_error = (
+                    placement_obj.error if placement_obj.placed else None
+                )
+                refusal = {
+                    "session": session_id,
+                    "status": "rejected",
+                    "scope": scope,
+                    "container_id": container_id,
+                    "cgroup": cgroup,
+                    "token": token,
+                    "started_at": started_at,
+                    "ended_at": self._iso(self.clock()),
+                    "interval_seconds": interval,
+                    "aborted_reason": "required-stall-kill-placement-refused",
+                    "placement_error": placement_error,
+                    "placement_cleanup_error": cleanup_error,
+                }
+                try:
+                    rundir.write_manifest(refusal)
+                except OSError as exc:
+                    self._log(
+                        f"start: could not persist placement refusal for {session_id}: {exc}"
+                    )
+                detail = f"--on-stall kill requires a verified placement leaf ({placement_error})"
+                if cleanup_error is not None:
+                    detail += (
+                        f"; cleanup was incomplete ({cleanup_error}); "
+                        f"leaf {placement_obj.leaf_cgroup!r} remains"
+                    )
+                raise RequestError("bad-policy", detail)
+
+        # After successful placement, sample the profiler-owned leaf: its
+        # cgroup counters are the kernel's charges for pages attributed to
+        # this leaf since placement, not a claim about every process's total
+        # RSS or pages charged before migration. Keep `cgroup` as the logical
+        # target key in every stored record; only the source path changes.
+        initial_sample_target_abs = self._sample_source_abs(
+            cgroup, placement_obj,
+        )
+        initial_target_metrics = summary.sample_target_cgroup(initial_sample_target_abs)
+        baseline = (initial_target_metrics.get("mem") or {}).get("current")
+
+        limits_flags = limits_mod.mount_flags(proc_root=self.proc_root)
+        initial_effective_limits = limits_mod.effective(cgroup, self.cgroup_root, limits_flags)
+        detector = events_mod.Detector(
+            events_mod.DetectorConfig(), {cgroup: initial_effective_limits}, roles={cgroup: "subject"}
+        )
 
         damon_requested_on = damon_req == "on"
         damon_session_obj: Optional[damon_mod.DamonSession] = None
@@ -599,58 +1083,179 @@ class SessionServer:
                         damon_session_obj = candidate
                         damon_status = "on"
 
-        acc = summary.SummaryAccumulator(
-            session=session_id, daemon_name=self.daemon_name, daemon_version=CGPROFILE_VERSION,
-            scope=scope, started_at=started_at, interval_seconds=interval,
-            container_id=container_id, cgroup=cgroup, token=token, slice_name=slice_name,
-            damon_enabled=damon_requested_on,
-            damon_kdamond=damon_session_obj.kdamond_idx if damon_session_obj else None,
-            damon_thresholds=damon_session_obj.thresholds if damon_session_obj else None,
-        )
-        if damon_unavailable_reason is not None:
-            acc.mark_damon_unavailable(damon_unavailable_reason)
+        try:
+            acc = summary.SummaryAccumulator(
+                session=session_id, daemon_name=self.daemon_name, daemon_version=CGPROFILE_VERSION,
+                scope=scope, started_at=started_at, interval_seconds=interval,
+                container_id=container_id, cgroup=cgroup, token=token, slice_name=slice_name,
+                damon_enabled=damon_requested_on,
+                damon_kdamond=damon_session_obj.kdamond_idx if damon_session_obj else None,
+                damon_thresholds=damon_session_obj.thresholds if damon_session_obj else None,
+            )
+            if damon_unavailable_reason is not None:
+                acc.mark_damon_unavailable(damon_unavailable_reason)
 
-        initial_damon_bytes: Optional[Dict[str, int]] = None
-        if damon_session_obj is not None:
-            initial_damon_bytes = damon_session_obj.last_class_bytes
+            initial_damon_bytes: Optional[Dict[str, int]] = None
+            if damon_session_obj is not None:
+                initial_damon_bytes = damon_session_obj.last_class_bytes
 
-        sess = _Session(
-            session_id=session_id, scope=scope, container_id=container_id, cgroup=cgroup,
-            slice_name=slice_name, slice_cgroup=slice_cgroup, token=token, interval=interval,
-            meta=meta, started_at=started_at, baseline_memory_bytes=baseline,
-            pids_at_start=pids_at_start, host_snapshot=host_snapshot, rundir=rundir,
-            summary_acc=acc, subtree_resolver=subtree_resolver, damon_session=damon_session_obj,
-            damon_status=damon_status, damon_requested_on=damon_requested_on,
-            damon_unavailable_reason=damon_unavailable_reason,
-            sampler_origin_mono=sampler_origin_mono,
+            sess = _Session(
+                session_id=session_id, scope=scope, container_id=container_id, cgroup=cgroup,
+                slice_name=slice_name, slice_cgroup=slice_cgroup, token=token, interval=interval,
+                meta=meta, started_at=started_at, baseline_memory_bytes=baseline,
+                pids_at_start=pids_at_start, host_snapshot=host_snapshot, rundir=rundir,
+                summary_acc=acc, subtree_resolver=subtree_resolver, damon_session=damon_session_obj,
+                damon_status=damon_status, damon_requested_on=damon_requested_on,
+                damon_unavailable_reason=damon_unavailable_reason,
+                detector=detector, last_effective_limits=initial_effective_limits,
+                watch=liveness_mod.LivenessTracker(
+                    policy if policy is not None else liveness_mod.Policy(),
+                    started_at=started_at,
+                    expected_duration_seconds=_expected_duration_seconds(meta),
+                ),
+                placement=placement_obj,
+                sampler_origin_mono=sampler_origin_mono,
+            )
+            # Sample zero is the liveness baseline as well as the summary's
+            # initial sample, so status and later deltas share one observation.
+            self._observe_liveness(
+                sess, mono=0.0,
+                record={
+                    "seq": 0, "t": self._parse_iso_epoch(started_at), "mono": 0.0,
+                    "cg": {cgroup: initial_target_metrics}, "host": host_snapshot,
+                },
+                abs_target=initial_sample_target_abs, target_metrics=initial_target_metrics,
+                host_metrics=host_snapshot, pids=initial_pids,
+            )
+            # Sample zero is recorded as part of start, from the target/host/slice
+            # and PID reads that already established this session's baseline.
+            # Therefore an immediate stop has a populated, honest one-sample
+            # summary instead of taking a later replacement read.
+            acc.add_sample(
+                cgroup=initial_target_metrics, host=host_snapshot,
+                slice_cgroup=initial_slice_metrics, damon=initial_damon_bytes,
+                pids=initial_pids, mono=0.0,
+            )
+            sess.live_samples = 1
+            sess.last_mono = 0.0
+            sess.no_token_pids = list(pids_now)
+            target_mem = initial_target_metrics.get("mem") or {}
+            sess.live_memory_current_bytes = target_mem.get("current")
+            sess.live_memory_peak_bytes = target_mem.get("peak")
+            target_cpu = initial_target_metrics.get("cpu") or {}
+            sess._prev_cpu_usage_usec = target_cpu.get("usage_usec")
+            sess._prev_mono = 0.0
+            sess.rundir.append("samples", {
+                "seq": 0, "t": self._parse_iso_epoch(started_at), "mono": 0.0,
+                "cg": {sess.cgroup: initial_target_metrics}, "pids": initial_pids,
+            })
+            sess.rundir.append("host", {"host": host_snapshot, "slice": initial_slice_metrics})
+            if initial_damon_bytes is not None:
+                sess.rundir.append("damon", {"_seq": 0, **initial_damon_bytes})
+            rundir.write_manifest(self._manifest_for(sess, status="live"))
+            return sess
+        except BaseException:
+            # The session is not yet published. Release any owned kdamond
+            # even when storage or summary assembly fails after acquisition.
+            try:
+                if damon_session_obj is not None:
+                    damon_session_obj.__exit__(None, None, None)
+            finally:
+                self._remove_session_dir(session_id)
+            raise
+
+    def _make_placement(
+        self, *, token: Optional[str], origin_cgroup: str,
+        request: "placement_mod.PlacementRequest", rundir: "store.RunDir",
+    ) -> "placement_mod.LanePlacement":
+        """One lane's placement object, wired to this daemon's roots, its
+        gates slice and its `events.jsonl`.
+
+        D-25's "every cgroup write is an `events.jsonl` row" is the `on_write`
+        sink: a row per write, in the same file and the same
+        :class:`lib.model.Event` shape CP-5's detected events use, so
+        `ctl report` renders a cgroup write as a marker on the timeline
+        beside the `memory_high_breach` it was meant to prevent. `severity`
+        is `info` — the report's colour map has exactly four bands and a
+        deliberate write by this daemon is not a warning about the lane.
+        """
+        def on_write(relative_path: str, value: str) -> None:
+            rundir.append("events", events_mod.Event(
+                t=self.clock(), mono=0.0, kind="cgroup_write", severity="info",
+                target="/" + relative_path,
+                message=f"placement wrote {value!r} to /{relative_path}",
+                data={"file": "/" + relative_path, "value": value},
+            ).to_dict())
+
+        factory = self.placement_factory or placement_mod.LanePlacement
+        return factory(
+            cgroup_root=self.cgroup_root,
+            gates_cgroup=targets_mod.slice_to_path(self.gates_slice_name),
+            token=token, origin_cgroup=origin_cgroup, request=request,
+            on_write=on_write, log=self._log, sleep=self.sampler_sleep,
+            rmdir=self.cgroup_rmdir, proc_root=self.proc_root,
+            state_write=lambda state: rundir.write_json("placement-state.json", state),
+            slice_unit_verifier=self._verify_gates_slice_unit,
         )
-        # Sample zero is recorded as part of start, from the target/host/slice
-        # and PID reads that already established this session's baseline.
-        # Therefore an immediate stop has a populated, honest one-sample
-        # summary instead of taking a later replacement read.
-        acc.add_sample(
-            cgroup=initial_target_metrics, host=host_snapshot,
-            slice_cgroup=initial_slice_metrics, damon=initial_damon_bytes,
-            pids=initial_pids, mono=0.0,
+
+    def _make_container_killer(
+        self, *, container_id: str, cgroup: str,
+        rundir: Optional["store.RunDir"] = None,
+    ) -> "placement_mod.TargetContainerKill":
+        """Build the exact-target cgroup.kill writer for an ephemeral lane.
+
+        No Docker API, PID signal, or cgroup migration is involved: D-15
+        authorizes only one kill-file write on the runtime cgroup whose leaf
+        name proves this exact container ID beneath the verified gates slice.
+        """
+        on_write = None
+        if rundir is not None:
+            def on_write(relative_path: str, value: str) -> None:
+                rundir.append("events", events_mod.Event(
+                    t=self.clock(), mono=0.0, kind="cgroup_write", severity="info",
+                    target="/" + relative_path,
+                    message=f"container enforcement wrote {value!r} to /{relative_path}",
+                    data={"file": "/" + relative_path, "value": value},
+                ).to_dict())
+
+        return placement_mod.TargetContainerKill(
+            cgroup_root=self.cgroup_root,
+            gates_cgroup=targets_mod.slice_to_path(self.gates_slice_name),
+            container_cgroup=cgroup, container_id=container_id,
+            slice_unit_verifier=self._verify_gates_slice_unit,
+            on_write=on_write,
+            log=self._log,
         )
-        sess.live_samples = 1
-        sess.last_mono = 0.0
-        sess.no_token_pids = list(pids_now)
-        target_mem = initial_target_metrics.get("mem") or {}
-        sess.live_memory_current_bytes = target_mem.get("current")
-        sess.live_memory_peak_bytes = target_mem.get("peak")
-        target_cpu = initial_target_metrics.get("cpu") or {}
-        sess._prev_cpu_usage_usec = target_cpu.get("usage_usec")
-        sess._prev_mono = 0.0
-        sess.rundir.append("samples", {
-            "seq": 0, "t": self._parse_iso_epoch(started_at), "mono": 0.0,
-            "cg": {sess.cgroup: initial_target_metrics}, "pids": initial_pids,
-        })
-        sess.rundir.append("host", {"host": host_snapshot, "slice": initial_slice_metrics})
-        if initial_damon_bytes is not None:
-            sess.rundir.append("damon", {"_seq": 0, **initial_damon_bytes})
-        rundir.write_manifest(self._manifest_for(sess, status="live"))
-        return sess
+
+    def _verify_gates_slice_unit(self, unit_name: str, cgroup_path: str) -> bool:
+        expected_path = targets_mod.slice_to_path(self.gates_slice_name)
+        return (
+            unit_name == self.gates_slice_name
+            and cgroup_path == expected_path
+            and self.slice_unit_verifier(unit_name, cgroup_path)
+        )
+
+    def _gates_slice_is_verified(self, *, refresh: bool = False) -> bool:
+        """Require loaded-unit and finite-capacity proof for the gates slice.
+
+        The five-second cache keeps a one-second sampler from spawning
+        `systemctl` on every tick. Placement and public host snapshots refresh
+        before making a consequential decision or presence claim.
+        """
+        now = time.monotonic()
+        with self._gates_slice_verify_lock:
+            cached = self._gates_slice_verification
+            if not refresh and cached is not None and now - cached[0] < 5.0:
+                return cached[1]
+            cgroup_path = targets_mod.slice_to_path(self.gates_slice_name)
+            abs_path = os.path.join(self.cgroup_root, cgroup_path.lstrip("/"))
+            verified = (
+                os.path.isdir(abs_path)
+                and self._verify_gates_slice_unit(self.gates_slice_name, cgroup_path)
+                and placement_mod.bounded_slice_capacity(self.cgroup_root, cgroup_path)
+            )
+            self._gates_slice_verification = (now, verified)
+            return verified
 
     def _start_response(self, sess: _Session, *, reused: bool) -> Dict[str, Any]:
         return {
@@ -669,12 +1274,31 @@ class SessionServer:
                 "pids_at_start": sess.pids_at_start,
                 "token": sess.token,
             },
+            # §8.3, additive under `contract: 1`: the block when `--place`
+            # was asked for (refused or not), `null` when it was not — the
+            # same union §8.2's `reading` line publishes.
+            "placement": _placement_block(sess),
         }
 
     # ── per-session sampling thread ──────────────────────────────────────
 
+    def _sample_source_abs(
+        self, cgroup: str, placed: Optional["placement_mod.LanePlacement"],
+    ) -> str:
+        """The exact metric source, preserving the target's logical key.
+
+        Only a complete placement is a valid leaf accounting source. A
+        refused or partially completed placement continues to read the
+        original target cgroup and exposes the placement error separately.
+        """
+        if placed is not None and placed.placed and placed.error is None:
+            leaf_abs = placed.leaf_abs
+            if leaf_abs is not None:
+                return leaf_abs
+        return os.path.join(self.cgroup_root, cgroup.lstrip("/"))
+
     def _session_loop(self, sess: _Session) -> None:
-        abs_target = os.path.join(self.cgroup_root, sess.cgroup.lstrip("/"))
+        abs_target = self._sample_source_abs(sess.cgroup, sess.placement)
         abs_slice = (
             os.path.join(self.cgroup_root, sess.slice_cgroup.lstrip("/"))
             if sess.slice_cgroup else None
@@ -688,8 +1312,12 @@ class SessionServer:
 
         def sample_fn(_membership: targets_mod.Membership) -> Dict[str, Any]:
             return {
-                "cg": {sess.cgroup: summary.sample_target_cgroup(abs_target)},
-                "host": metrics.sample_host(proc_root=self.proc_root),
+                "cg": {
+                    sess.cgroup: summary.sample_target_cgroup(
+                        self._sample_source_abs(sess.cgroup, sess.placement)
+                    )
+                },
+                "host": metrics.sample_host(proc_root=self.host_proc_root),
             }
 
         config = sampler_mod.SamplerConfig(
@@ -781,6 +1409,31 @@ class SessionServer:
                 sess.no_token_pids = new_pids
             pids = sess.no_token_pids
 
+        # CP-9 (§8.3): "migrate every pid the token resolver discovers — also
+        # pids found later". The resolver keeps finding descendants for as
+        # long as the lane forks, and a pid left behind in the devcontainer's
+        # scope is a pid whose memory is not the lane's. Same discovery
+        # cadence as the resolution above (`migrate` skips what it already
+        # moved, so this is a set difference, not a re-write per tick).
+        if due and sess.placement is not None and sess.placement.placed:
+            sess.placement.migrate(pids)
+
+        # CP-5: limit_drift is the one Detector event kind observe() cannot
+        # produce on its own (it needs an old/new lib.limits.Effective pair,
+        # not a metrics sample) -- refreshed on the same discovery cadence as
+        # pid resolution above, not every tick, for the same "0.25s interval,
+        # ancestor-chain walk" reason RW-15 gives for the pid-cache split.
+        if due and sess.detector is not None:
+            limits_flags = limits_mod.mount_flags(proc_root=self.proc_root)
+            new_effective_limits = limits_mod.effective(sess.cgroup, self.cgroup_root, limits_flags)
+            if sess.last_effective_limits is not None:
+                drift_t = record.get("t") or time.time()
+                for event in sess.detector.limits_changed(
+                    sess.cgroup, sess.last_effective_limits, new_effective_limits, drift_t, mono,
+                ):
+                    sess.rundir.append("events", event.to_dict())
+            sess.last_effective_limits = new_effective_limits
+
         damon_bytes: Optional[Dict[str, int]] = None
         if sess.damon_session is not None:
             sess.damon_session.collect()
@@ -798,14 +1451,51 @@ class SessionServer:
             sess.live_memory_peak_bytes = mem.get("peak")
             cpu = target_metrics.get("cpu") or {}
             usage = cpu.get("usage_usec")
-            if sess._prev_cpu_usage_usec is not None and sess._prev_mono is not None:
-                dt = mono - sess._prev_mono
-                rate = util.rate(sess._prev_cpu_usage_usec, usage, dt)
+            # `dt_since_prev` is the elapsed-time gate for event detection --
+            # independent of whether `usage_usec` happened to be present this
+            # tick (the cpu-rate calc below has its own, narrower gate on
+            # `_prev_cpu_usage_usec`; tying event detection to that too would
+            # silently skip observe() on any tick where cpu accounting is
+            # unavailable, which is not the same condition).
+            dt_since_prev: Optional[float] = (
+                mono - sess._prev_mono if sess._prev_mono is not None else None
+            )
+            if sess._prev_cpu_usage_usec is not None and dt_since_prev is not None:
+                rate = util.rate(sess._prev_cpu_usage_usec, usage, dt_since_prev)
                 sess.live_cpu_cores_recent = None if rate is None else rate / 1_000_000.0
+            # CP-5: same detector cmd_collect's own `on_sample` closure uses
+            # (cgprofile.py), same call shape (`observe(prev, cur, dt)`) --
+            # `record` already carries the `{"cg": {cgroup: metrics}}` wrapper
+            # Detector.observe expects because `sample_fn` above builds it
+            # that way for `lib.analyze.to_frame` (RW-14). The Summary's own
+            # `events` counters (`summary_acc.add_sample` above) are computed
+            # independently of this -- this only ever appends to
+            # events.jsonl, never touches summary_acc.
+            detected_events: List["events_mod.Event"] = []
+            if sess.detector is not None and sess._prev_record is not None and dt_since_prev is not None and dt_since_prev > 0:
+                detected_events = sess.detector.observe(sess._prev_record, record, dt_since_prev)
             sess._prev_cpu_usage_usec = usage
             sess._prev_mono = mono
+            sess._prev_record = record
             if damon_bytes is not None:
                 sess.live_damon_hot_bytes_recent = damon_bytes.get("hot")
+
+        # CP-8 (§8.4): the watcher runs on the DISCOVERY cadence, not the
+        # sample cadence — it reads `/proc/<pid>/stat` for every pid of the
+        # subtree, `io.stat`, the gates slice's `memory.pressure` and (when
+        # a progress stream is authored) up to 64 KiB of it, and this
+        # daemon's sample interval can be as low as 0.25 s. Same reasoning,
+        # and the same `due` flag, as RW-15's pid re-discovery and CP-5's
+        # limit refresh above. The idle bounds it judges against start at
+        # 300 s, so a 2 s judging cadence loses nothing.
+        if due:
+            self._observe_liveness(
+                sess, mono=mono, record=record, abs_target=abs_target,
+                target_metrics=target_metrics, host_metrics=host_metrics, pids=pids,
+            )
+
+        for event in detected_events:
+            sess.rundir.append("events", event.to_dict())
 
         # RW-14: persisted keyed by cgroup path, one row per `mono` tick —
         # the same on-disk shape `cgprofile run`'s own collector writes
@@ -832,10 +1522,181 @@ class SessionServer:
                 # those synthetic records.
                 sess.rundir.append("damon", damon_bytes)
 
+    # ── CP-8: liveness, the watch state machine, enforcement (§8.4) ──────
+
+    def _observe_liveness(
+        self, sess: _Session, *, mono: float, record: Dict[str, Any], abs_target: str,
+        target_metrics: Dict[str, Any], host_metrics: Dict[str, Any], pids: List[int],
+    ) -> None:
+        """One tick of :class:`lib.liveness.LivenessTracker` for ``sess``,
+        and the enforcement `--on-stall kill` asks for."""
+        tracker = sess.watch
+        if tracker is None:  # pragma: no cover - every session gets one
+            return
+        # The daemon's OWN wall clock, not the sampler's `record["t"]`:
+        # every other timestamp a consumer reads (`status.at`, `started_at`,
+        # `ended_at`) comes from `self.clock()`, and `last_activity_at` is
+        # compared against those.
+        at = self._iso(self.clock())
+
+        stream_sample: Optional["liveness_mod.StreamSample"] = None
+        if tracker.policy.progress_stream is not None and pids:
+            # "read through `/proc/<first token pid>/root/<path>`" — the
+            # lowest pid of the subtree is the lane's own process (the
+            # resolver's owners are found before their descendants and pids
+            # are allocated in order), and any pid of the subtree would do:
+            # they share the lane's mount namespace, which is the only thing
+            # this path needs.
+            stream_sample = liveness_mod.read_progress_stream(
+                liveness_mod.resolve_stream_path(
+                    self.proc_root, min(pids), tracker.policy.progress_stream
+                ),
+                previous=tracker.stream,
+            )
+
+        if sess.token is not None:
+            # Scope `container-shared`: the cgroup is the whole devcontainer
+            # and is permanently busy, so its CPU says nothing about the
+            # LANE. The token subtree is the lane.
+            cpu_seconds = liveness_mod.subtree_cpu_seconds(pids, self.proc_root)
+        else:
+            usage_usec = (target_metrics.get("cpu") or {}).get("usage_usec")
+            cpu_seconds = None if usage_usec is None else float(usage_usec) / 1_000_000.0
+
+        host_psi = ((host_metrics.get("psi") or {}).get("memory") or {}).get("full_avg10")
+        # CP-9 wires C7's two waiting seams: §8.4's `throttled` is "the LEAF's
+        # memory.pressure full avg10 > 20 while memory.high is applied", so
+        # it is unreachable — correctly — for a session with no leaf. An
+        # unplaced session keeps the tracker's defaults (no leaf PSI, no
+        # `memory.high`), which is not "no pressure": it is "no per-lane
+        # pressure reading exists", and the tracker treats the two the same
+        # way because neither may produce a `throttled` verdict.
+        leaf = (
+            sess.placement.leaf_readings()
+            if sess.placement is not None and sess.placement.placed
+            else {"psi_full_avg10": None, "memory_high_applied": False}
+        )
+        sample = liveness_mod.LivenessSample(
+            mono=mono, at=at, elapsed_seconds=mono,
+            cpu_seconds_total=cpu_seconds,
+            io_bytes_total=liveness_mod.cgroup_io_bytes(abs_target),
+            stream=stream_sample,
+            host_psi_full_avg10=host_psi,
+            slice_psi_full_avg10=self._gates_slice_psi_full_avg10(),
+            subtree_alive=bool(pids),
+            leaf_psi_full_avg10=leaf["psi_full_avg10"],
+            leaf_memory_high_applied=leaf["memory_high_applied"],
+        )
+        with sess.lock:
+            tracker.observe(sample)
+            kill_now = tracker.kill_requested
+        if kill_now:
+            self._enforce_stall_kill(sess, pids)
+
+    def _gates_slice_psi_full_avg10(self) -> Optional[float]:
+        """The gates slice's own memory `full avg10` — half of §8.4's pause
+        condition (the other half is host PSI, already in every sample).
+        `None` when the slice does not exist on this host, which pauses
+        nothing: an absent capacity object is not pressure."""
+        if not self._gates_slice_is_verified():
+            return None
+        cgroup_path = targets_mod.slice_to_path(self.gates_slice_name)
+        abs_path = os.path.join(self.cgroup_root, cgroup_path.lstrip("/"))
+        return util.read_pressure(os.path.join(abs_path, "memory.pressure")).get("full_avg10")
+
+    @staticmethod
+    def _kill_targets(sess: _Session, pids: List[int]) -> Tuple[List[int], Optional[str]]:
+        """Whether the daemon has an exact cgroup boundary it may kill.
+
+        Private PID namespaces make host PIDs read through ``proc_root``
+        unsuitable as signal targets. A shared-scope token is killable only
+        after successful placement into its dedicated leaf; an unplaced
+        token never falls back to numeric PID signalling.
+        """
+        if sess.scope == "container":
+            return list(pids), None
+        if sess.token is None:
+            return [], "no-token-in-shared-scope"
+        if sess.placement is None or not sess.placement.placed:
+            return [], "unplaced-token-subtree"
+        if sess.placement.error is not None:
+            return [], "placement-incomplete"
+        return list(pids), None
+
+    def _enforce_stall_kill(self, sess: _Session, pids: List[int]) -> None:
+        def refused(reason: str) -> None:
+            with sess.lock:
+                sess.watch.record_kill_refused(reason)
+            self._log(
+                f"watch {sess.session_id}: --on-stall kill refused ({reason}); "
+                "no exact, verified lane cgroup was killable"
+            )
+
+        if sess.scope == "container":
+            killer = self._make_container_killer(
+                container_id=sess.container_id, cgroup=sess.cgroup, rundir=sess.rundir,
+            )
+            if not killer.kill():
+                refused(killer.refusal_reason or "target-container-kill-refused")
+                return
+            with sess.lock:
+                sess.watch.record_kill(
+                    pids, via=f"cgroup.kill applied to exact target {sess.cgroup}",
+                )
+            self._log(
+                f"watch {sess.session_id}: state {sess.watch.state}, cgroup.kill written "
+                f"to exact target {sess.cgroup}"
+            )
+            self._finalize_after_kill(sess)
+            return
+
+        targets, refusal = self._kill_targets(sess, pids)
+        if refusal is not None:
+            refused(refusal)
+            return
+        assert sess.placement is not None  # `_kill_targets` proved this boundary.
+        if not sess.placement.kill():
+            refused("lane-leaf-cgroup-kill-refused")
+            return
+        with sess.lock:
+            sess.watch.record_kill(
+                targets,
+                via=f"cgroup.kill applied to {sess.placement.leaf_cgroup}",
+            )
+        self._log(
+            f"watch {sess.session_id}: state {sess.watch.state}, cgroup.kill written "
+            f"to {sess.placement.leaf_cgroup}"
+        )
+        self._finalize_after_kill(sess)
+
+    def _finalize_after_kill(self, sess: _Session) -> None:
+        """CP-9/CP-8 (§8.2/§8.4): an ENFORCED kill (``sess.watch.verdict ==
+        VERDICT_KILLED``, set by ``record_kill`` just above — never by
+        ``record_kill_refused``, whose lane is still running) ends the
+        lane, so it ends the SESSION too: `--on-stall kill` with nothing
+        left to observe is not a reason to keep sampling a dead cgroup.
+        Before this, only `stop`/shutdown/a session-loop crash ever called
+        `_finalize_session_locked`, so an enforced kill left `sess.finished`
+        False forever — `_stream_watch`'s own `VERDICT_KILLED -> "killed"`
+        end-reason branch was unreachable, `watch`'s §8.2 "exactly one end,
+        last" promise never resolved (a real probe against the live daemon,
+        RG-55 P6 session 8, ran a killing on-stall session and read stalled
+        `reading` events for two more minutes with no `end`), and the
+        session held its slot forever. Called from `_enforce_stall_kill`,
+        which always runs on `sess`'s OWN sampler thread (`_session_loop`),
+        exactly like the session-loop's own crash-path call to
+        `_finalize_session_locked` — so the `sess.thread is not
+        threading.current_thread()` guard inside it already skips the
+        self-join; only the server-wide lock needs acquiring here."""
+        with self._lock:
+            if not sess.finished:
+                self._finalize_session_locked(sess, aborted_reason=None)
+        self._run_retention()
+
     # ── verb: status / host ──────────────────────────────────────────────
 
-    def handle_status(self, req: Dict[str, Any]) -> Dict[str, Any]:
-        session_id = req.get("session")
+    def handle_status(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        session_id = args.get("session")
         if session_id is None:
             with self._lock:
                 entries = [
@@ -855,7 +1716,8 @@ class SessionServer:
                 )
             entry = self._status_entry(sess)
         return {
-            "ok": True, "contract": CONTRACT_VERSION, "session": entry,
+            "ok": True, "contract": CONTRACT_VERSION, "at": self._iso(self.clock()),
+            "session": entry,
             "host": self._host_snapshot(),
         }
 
@@ -886,13 +1748,25 @@ class SessionServer:
                     "samples": sess.live_samples,
                     "damon": damon_live,
                 },
+                # CP-8, contract §8.4: additive under `contract: 1` and
+                # ALWAYS present (a session under the default policy still
+                # reports its liveness — that is what makes `status` an
+                # answer to "is the lane alive?" rather than "how much
+                # memory is it using?"). The v1 status golden is compared
+                # after stripping these two keys, the same treatment C5/C6
+                # gave `host`'s and `version`'s new blocks.
+                "liveness": sess.watch.liveness_block() if sess.watch else None,
+                "watch": sess.watch.watch_block() if sess.watch else None,
+                # CP-9, §8.3 — same additive treatment, same union (`null`
+                # when `--place` was never asked for).
+                "placement": _placement_block(sess),
             }
 
-    def handle_host(self, req: Dict[str, Any]) -> Dict[str, Any]:
+    def handle_host(self, args: Dict[str, Any]) -> Dict[str, Any]:
         return {"ok": True, "contract": CONTRACT_VERSION, "host": self._host_snapshot()}
 
     def _host_snapshot(self) -> Dict[str, Any]:
-        host = metrics.sample_host(proc_root=self.proc_root)
+        host = metrics.sample_host(proc_root=self.host_proc_root)
         meminfo = host.get("meminfo") or {}
         psi = host.get("psi") or {}
 
@@ -926,6 +1800,71 @@ class SessionServer:
                 "io": self._pressure_snapshot(psi.get("io") or {}),
             },
             "slices": slices,
+            # RG-55 C5 (contract §8.5, D-29) -- additive under contract: 1;
+            # existing consumers ignore the two new keys.
+            "gates_slice": self._gates_slice_snapshot(),
+            "daemon_slice": self._daemon_slice_snapshot(),
+        }
+
+    def _gates_slice_snapshot(self) -> Dict[str, Any]:
+        """mdt's `dev-gates.slice` (default; `serve --gates-slice` renames
+        it) -- the capacity object whose direct children are delegated
+        `rg-profile-*.scope` units, each holding a profiler-owned `rg-*` leaf.
+        `present: false` and nothing else when the slice does not
+        exist on this host at all (host-setup's P8 unit not installed and
+        nothing has ever rendered a child under it either) -- contract §8.5's
+        own two-shape union, so a consumer can branch on one key."""
+        cgroup_path = targets_mod.slice_to_path(self.gates_slice_name)
+        abs_path = os.path.join(self.cgroup_root, cgroup_path.lstrip("/"))
+        if not self._gates_slice_is_verified(refresh=True):
+            return {"name": self.gates_slice_name, "present": False}
+        leaves: List[str] = []
+        for scope_path in targets_mod.list_children(cgroup_path, root=self.cgroup_root):
+            scope_name = os.path.basename(scope_path)
+            if not scope_name.startswith("rg-profile-") or not scope_name.endswith(".scope"):
+                continue
+            leaves.extend(
+                os.path.basename(child)
+                for child in targets_mod.list_children(scope_path, root=self.cgroup_root)
+                if os.path.basename(child).startswith("rg-")
+            )
+        leaves.sort()
+        psi_mem = util.read_pressure(os.path.join(abs_path, "memory.pressure"))
+        return {
+            "name": self.gates_slice_name,
+            "cgroup": cgroup_path,
+            "present": True,
+            "memory_max_bytes": util.read_int(os.path.join(abs_path, "memory.max")),
+            "memory_high_bytes": util.read_int(os.path.join(abs_path, "memory.high")),
+            "memory_current_bytes": util.read_int(os.path.join(abs_path, "memory.current")),
+            "memory_swap_current_bytes": util.read_int(
+                os.path.join(abs_path, "memory.swap.current")
+            ),
+            "pressure": {"memory": self._pressure_snapshot(psi_mem)},
+            # `leaves` is read straight off disk, not from session bookkeeping.
+            # A direct rg-* child is invalid: the delegated scope owns the
+            # writable boundary between the systemd slice and profiler leaf.
+            "leaves": leaves,
+            "sessions_live": len(leaves),
+        }
+
+    def _daemon_slice_snapshot(self) -> Dict[str, Any]:
+        """The daemon's OWN top-level `cgprofile.slice` (D-29) -- a sibling
+        of `dev.slice`, never nested under it. Reports exactly what is on
+        disk; when `infra/cgprofile.slice` is not installed, systemd still
+        auto-vivifies the slice (any container naming it as `cgroup_parent`
+        forces that), just unbounded -- so `memory.min`/`memory.high` read
+        back as the cgroup v2 defaults (`0` / unset -> `None` via
+        `util.read_int`'s own `max`-is-None convention) rather than the
+        unit's authored values. There is no separate "installed" bit to
+        report (nothing in this container can see `/etc/systemd/system`) --
+        `ctl host`/`doctor` read "unbounded" straight off these numbers."""
+        cgroup_path = targets_mod.slice_to_path(DAEMON_SLICE_NAME)
+        abs_path = os.path.join(self.cgroup_root, cgroup_path.lstrip("/"))
+        return {
+            "cgroup": cgroup_path,
+            "memory_min_bytes": util.read_int(os.path.join(abs_path, "memory.min")),
+            "memory_high_bytes": util.read_int(os.path.join(abs_path, "memory.high")),
         }
 
     @staticmethod
@@ -964,8 +1903,8 @@ class SessionServer:
 
     # ── verb: stop ───────────────────────────────────────────────────────
 
-    def handle_stop(self, req: Dict[str, Any]) -> Dict[str, Any]:
-        session_id = req.get("session")
+    def handle_stop(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        session_id = args.get("session")
         if not isinstance(session_id, str) or not _SESSION_ID_RE.match(session_id):
             raise RequestError("unknown-session", f"no session {session_id!r} is live or on record")
         with self._lock:
@@ -1002,7 +1941,43 @@ class SessionServer:
             sess.thread.join(timeout=10.0)
         ended_at = self._iso(self.clock())
         with sess.lock:
+            if sess.summary_acc.sample_count == 0:
+                # Stopped before a single tick landed — contract §1.5 still
+                # promises a summary, so take one sample right now rather
+                # than let finalize() refuse an empty accumulator.
+                abs_target = self._sample_source_abs(sess.cgroup, sess.placement)
+                abs_slice = (
+                    os.path.join(self.cgroup_root, sess.slice_cgroup.lstrip("/"))
+                    if sess.slice_cgroup else None
+                )
+                sess.summary_acc.add_sample(
+                    cgroup=summary.sample_target_cgroup(abs_target),
+                    host=metrics.sample_host(proc_root=self.host_proc_root),
+                    slice_cgroup=summary.sample_slice_cgroup(abs_slice) if abs_slice else None,
+                    damon=None,
+                    pids=summary.read_cgroup_pids(abs_target),
+                )
             summary_doc = sess.summary_acc.finalize(ended_at=ended_at)
+            # §8.7: the Summary gains `liveness` and `watch` (schema 1,
+            # optional keys, additive). Injected HERE rather than inside
+            # `SummaryAccumulator.finalize` on purpose — the accumulator is
+            # the contract's §7 computation object, shared with `cgprofile
+            # run`/`attach`, which have no daemon watcher at all; making it
+            # carry a watch block would mean either a null key in every
+            # collector summary or a second code path inside it. `placement`
+            # (the third §8.7 key) lands with C8.
+            if sess.watch is not None:
+                summary_doc["liveness"] = sess.watch.liveness_block()
+                summary_doc["watch"] = sess.watch.watch_block()
+            # CP-9 (§8.3): survivors go back to the scope they came from and
+            # the leaf is removed BEFORE the block is read, so the Summary's
+            # `placement` is the final state (including a `write-failed` leaf
+            # that would not go) rather than a snapshot from mid-session.
+            # `release` is idempotent and never raises: a cleanup failure is
+            # reported, it does not cost the caller its Summary.
+            if sess.placement is not None:
+                sess.placement.release()
+                summary_doc["placement"] = sess.placement.block()
         if sess.damon_session is not None:
             sess.damon_session.__exit__(None, None, None)
         sess.ended_at = ended_at
@@ -1042,7 +2017,7 @@ class SessionServer:
 
     # ── verb: report ─────────────────────────────────────────────────────
 
-    def handle_report(self, req: Dict[str, Any]) -> Dict[str, Any]:
+    def handle_report(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """RW-14: renders the REAL interactive HTML report — `analyze.build`
         + `report_html.render`, exactly what `cgprofile report` already
         produces for a `cgprofile run`/`attach` session — never a hand-rolled
@@ -1056,7 +2031,7 @@ class SessionServer:
         itself) — the same system-python/venv split the `cgprofile` bash
         shim already makes between collector verbs and `report`.
         """
-        session_id = req.get("session")
+        session_id = args.get("session")
         if not isinstance(session_id, str) or not _SESSION_ID_RE.match(session_id):
             raise RequestError("unknown-session", f"no session {session_id!r} is live or on record")
         session_dir = os.path.join(self.sessions_dir, session_id)
@@ -1091,7 +2066,7 @@ class SessionServer:
 
     # ── verb: gc / retention ─────────────────────────────────────────────
 
-    def handle_gc(self, req: Dict[str, Any]) -> Dict[str, Any]:
+    def handle_gc(self, args: Dict[str, Any]) -> Dict[str, Any]:
         removed, kept = self._run_retention()
         return {"ok": True, "contract": CONTRACT_VERSION, "removed": removed, "kept": kept}
 
@@ -1142,7 +2117,32 @@ class SessionServer:
     # ── dispatch / socket loop ───────────────────────────────────────────
 
     def _dispatch(self, req: Dict[str, Any]) -> Dict[str, Any]:
-        verb = req.get("verb")
+        """Route ONE §8.1 request line to its handler.
+
+        `req` is the wire request exactly as contract §8.1 defines it —
+        `{"verb": …, "args": {…}, "contract": 1}` — and nothing else is
+        accepted: v1's flat shape (`{"verb": "stop", "session": …}`) is
+        REFUSED with `bad-argument` naming the offending key rather than
+        silently read as "stop with no session" (P6 C6 migrated the
+        in-image `ctl` client, the only producer of these lines, to the
+        §8.1 shape in the same commit — one shape on the wire, no
+        compatibility branch). Handlers receive the `args` object alone;
+        the long-option arg NAMES are documented per verb in
+        `docs/PROTOCOL.md`.
+        """
+        verb, args, wire_error = self._validate_wire(req)
+        if wire_error is not None:
+            return wire_error
+        if verb in STREAMING_VERBS:
+            # §8.8's `not-streaming`: the verb exists and the request is
+            # well formed, but this path answers exactly one object and the
+            # caller is waiting for exactly one. The streaming path is
+            # `_handle_connection`'s own (see STREAMING_VERBS).
+            return self._error_response(
+                "not-streaming",
+                f"{verb!r} streams one JSON object per line until the session ends "
+                f"(contract §8.2) and cannot be answered as a single response",
+            )
         handlers = {
             "version": self.handle_version,
             "start": self.handle_start,
@@ -1156,12 +2156,58 @@ class SessionServer:
         if handler is None:
             return self._error_response("bad-argument", f"unknown verb {verb!r}")
         try:
-            resp = handler(req)
+            resp = handler(args)
         except RequestError as exc:
             return self._error_response(exc.code, exc.message)
         if verb == "stop" and resp.get("ok"):
             resp["session_dir"] = os.path.join(self.sessions_dir, resp["session"])
         return resp
+
+    def _validate_wire(
+        self, req: Dict[str, Any]
+    ) -> Tuple[Optional[str], Dict[str, Any], Optional[Dict[str, Any]]]:
+        """``(verb, args, error_response)`` for ONE §8.1 request line.
+
+        Split out of :meth:`_dispatch` by C7 so the streaming verb gets the
+        IDENTICAL wire validation as every other verb (one shape, no second
+        parser) before `_handle_connection` hands its connection off.
+        """
+        if not isinstance(req, dict):
+            return None, {}, self._error_response("bad-argument", "request must be a JSON object")
+        if any(not isinstance(key, str) for key in req):
+            return None, {}, self._error_response(
+                "bad-argument", "request object keys must be strings"
+            )
+        unexpected = sorted(set(req) - _WIRE_KEYS)
+        if unexpected:
+            return None, {}, self._error_response(
+                "bad-argument",
+                f"unexpected request key(s) {unexpected!r}: a request is "
+                f"{{\"verb\", \"args\", \"contract\"}} (contract §8.1)",
+            )
+        contract = req.get("contract", CONTRACT_VERSION)
+        if (
+            isinstance(contract, bool)
+            or not isinstance(contract, int)
+            or contract != CONTRACT_VERSION
+        ):
+            return None, {}, self._error_response(
+                "bad-argument",
+                f"request contract {contract!r}, this daemon speaks contract {CONTRACT_VERSION}",
+            )
+        verb = req.get("verb")
+        if not isinstance(verb, str):
+            return None, {}, self._error_response(
+                "bad-argument", "request 'verb' must be a string"
+            )
+        args = req.get("args")
+        if args is None:
+            args = {}
+        if not isinstance(args, dict):
+            return None, {}, self._error_response(
+                "bad-argument", "request 'args' must be a JSON object"
+            )
+        return verb, args, None
 
     @staticmethod
     def _error_response(code: str, message: str) -> Dict[str, Any]:
@@ -1178,6 +2224,92 @@ class SessionServer:
         sock.listen(16)
         sock.settimeout(self.accept_timeout)
         self._sock = sock
+        self._assert_socket_permissions(socket_dir)
+
+    def _assert_socket_permissions(self, socket_dir: str) -> None:
+        """Re-assert §8.1's directory/socket permissions at every start.
+
+        The HOST is the source of truth for the directory's ownership: mdt
+        host-setup ships `mdt-cgprofile.conf` (`d /run/cgprofile 0770 root
+        docker -`, RW-37) and that tmpfiles.d entry decides WHICH group may
+        reach the carrier. This daemon only re-asserts, belt and braces:
+        mode `0770` on the directory, and on the socket owner `root` with
+        THE DIRECTORY'S OWN gid (RW-35(b) — never a hardcoded `docker`,
+        which does not exist inside this image and whose host gid varies
+        per host) at mode `0660`.
+
+        A `root:root` directory means host-setup is not installed yet: the
+        socket ends up root-only and ONE INFO line says so. That is not an
+        error — the exec carrier is unaffected and stays the default
+        (§8.1's carrier table), so the daemon keeps serving either way.
+        Every step is best-effort for the same reason: a permission failure
+        (the unprivileged daemon a test runs) must degrade the SOCKET
+        carrier, never take the daemon down.
+        """
+        dir_gid: Optional[int] = None
+        if socket_dir:
+            try:
+                os.chmod(socket_dir, SOCKET_DIR_MODE)
+            except OSError as exc:
+                self._log(f"could not chmod {socket_dir} to {SOCKET_DIR_MODE:04o}: {exc}")
+            try:
+                dir_gid = os.stat(socket_dir).st_gid
+            except OSError as exc:
+                self._log(f"could not stat {socket_dir}: {exc}")
+        if dir_gid is not None:
+            try:
+                os.chown(self.socket_path, 0, dir_gid)
+            except OSError as exc:
+                self._log(
+                    f"could not set {self.socket_path} owner root:gid={dir_gid}: {exc}"
+                )
+            if dir_gid == 0:
+                self._log(
+                    f"socket carrier root-only until host-setup is installed "
+                    f"({socket_dir} is root:root — mdt host-setup's "
+                    f"mdt-cgprofile.conf owns that directory); the exec "
+                    f"carrier is unaffected"
+                )
+        try:
+            os.chmod(self.socket_path, SOCKET_MODE)
+        except OSError as exc:
+            self._log(f"could not chmod {self.socket_path} to {SOCKET_MODE:04o}: {exc}")
+
+    @staticmethod
+    def _log(message: str) -> None:
+        """One INFO line on stderr (`docker logs` is where an operator reads
+        it; stdout belongs to `ctl`'s single JSON document, §1.2)."""
+        print(f"cgprofile: {message}", file=sys.stderr, flush=True)
+
+    def _peer_uid(self, conn: socket.socket) -> Optional[int]:
+        """The connecting process's uid via `SO_PEERCRED`, or `None` when
+        the kernel/socket cannot answer (a non-AF_UNIX test double)."""
+        try:
+            raw = conn.getsockopt(
+                socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("3i")
+            )
+        except (OSError, AttributeError):
+            return None
+        try:
+            _pid, uid, _gid = struct.unpack("3i", raw)
+        except struct.error:
+            return None
+        return uid
+
+    def _peer_allowed(self, uid: Optional[int]) -> bool:
+        """§8.1's authorisation rule. uid 0 is ALWAYS allowed (that is how
+        the exec carrier arrives — `docker exec` runs as root inside the
+        daemon, D-30). With no allowlist configured, everyone the socket
+        mode already let connect is allowed (docker-group trust). With an
+        allowlist, only those uids — and an unreadable peer credential is
+        REFUSED in that case, because failing open would quietly void the
+        one control the operator explicitly asked for.
+        """
+        if self.allow_uids is None:
+            return True
+        if uid is None:
+            return False
+        return uid == 0 or uid in self.allow_uids
 
     def _close_socket(self) -> None:
         if self._sock is not None:
@@ -1192,21 +2324,84 @@ class SessionServer:
                 pass
 
     def _handle_connection(self, conn: socket.socket) -> None:
+        handed_off = False
         try:
-            conn.settimeout(25.0)
-            data = b""
-            while not data.endswith(b"\n"):
-                chunk = conn.recv(65536)
-                if not chunk:
+            uid = self._peer_uid(conn)
+            peer_allowed = self._peer_allowed(uid)
+            data = bytearray()
+            deadline = self.request_clock() + self.request_line_timeout
+            while True:
+                if self.request_clock() >= deadline:
+                    return
+                newline = data.find(b"\n")
+                if newline >= 0:
+                    if newline + 1 > self.max_request_line_bytes:
+                        self._send_line(conn, self._error_response(
+                            "bad-argument",
+                            f"request line exceeds {self.max_request_line_bytes} bytes",
+                        ))
+                        return
                     break
-                data += chunk
+                if len(data) >= self.max_request_line_bytes:
+                    self._send_line(conn, self._error_response(
+                        "bad-argument",
+                        f"request line exceeds {self.max_request_line_bytes} bytes",
+                    ))
+                    return
+                remaining = deadline - self.request_clock()
+                if remaining <= 0:
+                    return
+                conn.settimeout(remaining)
+                try:
+                    chunk = conn.recv(min(
+                        65536, self.max_request_line_bytes + 1 - len(data)
+                    ))
+                except socket.timeout:
+                    # A partial line is not dispatched. Closing bounds both
+                    # the serial accept-loop occupancy and request memory.
+                    return
+                if not chunk:
+                    # EOF does not terminate a newline-delimited request.
+                    # Never turn an unterminated partial message into a
+                    # dispatched operation.
+                    return
+                data.extend(chunk)
+            if not peer_allowed:
+                # Wait for the bounded request line before replying. Closing
+                # with the peer's write still in flight can reset AF_UNIX and
+                # discard the promised peer-refused JSON. No denied request
+                # is parsed or dispatched; incomplete lines still time out.
+                named = "unavailable" if uid is None else str(uid)
+                resp = self._error_response(
+                    "peer-refused",
+                    f"peer uid {named} is not in {ALLOW_UIDS_ENV}",
+                )
+                conn.sendall((json.dumps(resp) + "\n").encode("utf-8"))
+                return
             if not data.strip():
                 return
             try:
-                req = json.loads(data.decode("utf-8"))
+                req = json.loads(bytes(data).decode("utf-8"))
             except (json.JSONDecodeError, UnicodeDecodeError):
                 resp = self._error_response("bad-argument", "request was not valid JSON")
             else:
+                # §8.2/§8.1 rule 4: the ONE streaming verb. The connection
+                # leaves this method alive, on its own thread, with NO
+                # socket timeout — a `watch` may legitimately say nothing
+                # for `--watch-interval` seconds and outlive any per-verb
+                # budget. It runs on its own thread because `_accept_loop`
+                # is deliberately serial: streaming inline would block every
+                # other verb (including the `stop` that ends the very
+                # session being watched) for the life of the stream.
+                verb, args, wire_error = self._validate_wire(req)
+                if wire_error is None and verb in STREAMING_VERBS:
+                    thread = threading.Thread(
+                        target=self._watch_connection, args=(conn, args), daemon=True,
+                        name=f"cgprofile-watch-{args.get('session')}",
+                    )
+                    handed_off = True
+                    thread.start()
+                    return
                 try:
                     resp = self._dispatch(req)
                 except Exception as exc:  # noqa: BLE001 - RG-55 live acceptance
@@ -1228,6 +2423,9 @@ class SessionServer:
                     # reply — the same client-visible shape an ordinary
                     # connection drop already has (contract §1.3: exit 3,
                     # "daemon fault"), just without the blast radius.
+                    # `_dispatch` rejects non-object requests and non-string
+                    # verbs before a handler can throw, so the log can retain
+                    # the useful verb without trusting malformed JSON shapes.
                     print(
                         f"cgprofile: unhandled error handling verb "
                         f"{req.get('verb')!r}: {type(exc).__name__}: {exc}",
@@ -1236,7 +2434,115 @@ class SessionServer:
                     return
             conn.sendall((json.dumps(resp) + "\n").encode("utf-8"))
         finally:
+            if not handed_off:
+                conn.close()
+
+    # ── verb: watch (§8.2, the streaming exception) ─────────────────────
+
+    @staticmethod
+    def _send_line(conn: socket.socket, doc: Dict[str, Any]) -> None:
+        conn.sendall((json.dumps(doc) + "\n").encode("utf-8"))
+
+    def _watch_connection(self, conn: socket.socket, args: Dict[str, Any]) -> None:
+        """One `watch` connection, on its own thread, start to `end`."""
+        try:
+            conn.settimeout(None)
+            try:
+                sess, interval = self._watch_prepare(args)
+            except RequestError as exc:
+                # §8.2: "unknown session → exit 2 `unknown-session` as a
+                # single line" — one error object, then close, exactly the
+                # shape every other refusal has.
+                self._send_line(conn, self._error_response(exc.code, exc.message))
+                return
+            self._stream_watch(conn, sess, interval)
+        except OSError:
+            pass  # the consumer stopped reading; nothing to report to it
+        except Exception as exc:  # noqa: BLE001 - same blast-radius rule as _handle_connection
+            print(
+                f"cgprofile: unhandled error streaming watch: {type(exc).__name__}: {exc}",
+                file=sys.stderr, flush=True,
+            )
+        finally:
             conn.close()
+
+    def _watch_prepare(self, args: Dict[str, Any]) -> Tuple[_Session, float]:
+        session_id = args.get("session")
+        if not isinstance(session_id, str) or not _SESSION_ID_RE.match(session_id):
+            raise RequestError("unknown-session", f"no session {session_id!r} is live")
+        try:
+            interval = liveness_mod.clamp_watch_interval(args.get("watch_interval"))
+        except ValueError as exc:
+            raise RequestError("bad-argument", str(exc)) from None
+        with self._lock:
+            sess = self._sessions.get(session_id)
+            if sess is None or sess.finished:
+                # A finished session has nothing left to stream: §8.2 streams
+                # "until the session ends", and its verdict is already in
+                # `stop`'s Summary.
+                raise RequestError("unknown-session", f"no session {session_id} is live")
+        return sess, interval
+
+    def _stream_watch(self, conn: socket.socket, sess: _Session, interval: float) -> None:
+        """§8.2's line protocol: a `reading` every ``interval``, a `verdict`
+        on every state CHANGE, exactly one `end`.
+
+        The last-state baseline is per STREAM, not per session, so a watcher
+        that attaches to an already-stalled session is told the state on its
+        first reading rather than waiting for the next transition — and two
+        watchers of one session each get their own complete picture.
+        """
+        last_state = liveness_mod.STATE_OK
+        while True:
+            reading, watch_block = self._watch_lines(sess)
+            self._send_line(conn, reading)
+            if watch_block["state"] != last_state:
+                last_state = watch_block["state"]
+                self._send_line(conn, {
+                    "contract": CONTRACT_VERSION, "event": "verdict",
+                    "session": sess.session_id, "at": self._iso(self.clock()),
+                    # §8.2 lists exactly these four keys on the wire; the
+                    # policy that produced them travels in `status`/`stop`/
+                    # the Summary (§8.7), not on every verdict line.
+                    "watch": {k: watch_block[k]
+                              for k in ("state", "verdict", "reason", "readings")},
+                })
+            # `stop_event` is set by `_finalize_session_locked` BEFORE it
+            # joins the sampler thread and flips `finished`, so a stream
+            # that woke in between must look at it too — otherwise it waits
+            # out a whole `--watch-interval` (up to 300 s) after the session
+            # it is watching has already been told to stop.
+            if sess.finished or sess.stop_event.is_set() or self._stopping:
+                break
+            self.watch_wait(sess.stop_event, interval)
+        if sess.watch is not None and sess.watch.verdict == liveness_mod.VERDICT_KILLED:
+            reason = "killed"
+        elif self._stopping:
+            reason = "daemon-shutdown"
+        else:
+            reason = "stopped"
+        self._send_line(conn, {
+            "contract": CONTRACT_VERSION, "event": "end", "session": sess.session_id,
+            "at": self._iso(self.clock()), "reason": reason,
+        })
+
+    def _watch_lines(self, sess: _Session) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+        """One `reading` line plus the watch block it was read with (one
+        lock acquisition for both, so a state change between them is
+        impossible)."""
+        entry = self._status_entry(sess)
+        return (
+            {
+                "contract": CONTRACT_VERSION, "event": "reading", "session": sess.session_id,
+                "at": self._iso(self.clock()), "elapsed_seconds": entry["elapsed_seconds"],
+                "live": entry["live"], "liveness": entry["liveness"],
+                # §8.3, read under the SAME lock acquisition as `live` and
+                # `liveness` (`_status_entry` built all three), so a reading
+                # line is one consistent frame rather than three.
+                "placement": entry["placement"],
+            },
+            entry["watch"],
+        )
 
     def request_shutdown(self) -> None:
         self._stopping = True

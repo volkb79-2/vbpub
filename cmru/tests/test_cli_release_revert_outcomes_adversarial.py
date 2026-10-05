@@ -1,4 +1,5 @@
 from contextlib import nullcontext
+from pathlib import Path
 
 import pytest
 
@@ -6,12 +7,26 @@ from cmru import cli, transaction
 
 
 @pytest.fixture(autouse=True)
-def fake_git_family(monkeypatch):
+def fake_release_preflight(monkeypatch):
     monkeypatch.setattr(
         cli.transaction,
         "project_git_family_groups",
         lambda root, projects: {root: list(projects)},
     )
+    monkeypatch.setattr(
+        cli, "_project_git_tag_policy_at_snapshot",
+        lambda _root, _base, project, **_kwargs: getattr(project, "git_tag", True),
+    )
+    monkeypatch.setattr(
+        cli, "_project_config_paths_at_snapshot",
+        lambda _root, _base, _config, _configs, names: {
+            name: Path(name) / "cmru.toml" for name in names
+        },
+    )
+    monkeypatch.setattr(cli, "_require_local_tag_inspection_support", lambda _root: None)
+    monkeypatch.setattr(cli, "_read_origin_tag_refs", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(cli.transaction, "write_release_tag_snapshot", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(cli.transaction, "clear_plan_refused", lambda *_args, **_kwargs: None)
 
 
 def _loaded(tmp_path):
@@ -31,10 +46,10 @@ def test_release_failure_retains_candidate_without_automatic_revert(monkeypatch,
     monkeypatch.setattr(cli, "apply_release_env", lambda *_: None)
     monkeypatch.setattr(cli.transaction, "release_lock", lambda _: nullcontext())
     monkeypatch.setattr(cli, "_uncommitted_release_paths", lambda *args: {})
-    monkeypatch.setattr(cli.transaction, "fetch_origin_main", lambda *_: "a" * 40)
+    monkeypatch.setattr(cli.transaction, "fetch_origin_main", lambda *_, **__: "a" * 40)
     monkeypatch.setattr(cli.transaction, "assert_local_main_not_ahead", lambda *_, **__: 0)
     monkeypatch.setattr(cli.transaction, "create_workspace", lambda *args, **kwargs: workspace)
-    monkeypatch.setattr(cli.transaction, "copy_secret_overlays", lambda *args: None)
+    monkeypatch.setattr(cli.transaction, "copy_secret_overlays", lambda *args, **kwargs: None)
     monkeypatch.setattr(cli.transaction, "run_child", lambda *args, **kwargs: 1)
     monkeypatch.setattr(cli.transaction, "plan_was_refused", lambda *args: False)
     calls = []
@@ -42,9 +57,9 @@ def test_release_failure_retains_candidate_without_automatic_revert(monkeypatch,
     monkeypatch.setattr(cli.transaction, "revert_promotion", lambda *args, **kwargs: calls.append("revert"))
     monkeypatch.setattr(
         cli.transaction, "_sync_local_main_result",
-        lambda *args: transaction._SyncLocalMainResult(True),
+        lambda *args, **kwargs: transaction._SyncLocalMainResult(True),
     )
-    monkeypatch.setattr(cli.transaction, "remove_workspace", lambda *args: (_ for _ in ()).throw(AssertionError("failed releases retain worktree")))
+    monkeypatch.setattr(cli.transaction, "remove_workspace", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("failed releases retain worktree")))
     exc = cli.main(["release", "alpha", "--config", str(tmp_path / "cmru.toml")])
     assert exc == 1
     captured = capsys.readouterr()

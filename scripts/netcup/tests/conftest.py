@@ -12,11 +12,24 @@ import types
 from pathlib import Path
 
 import pytest
+from cli_extended import assert_cli_case_tests, load_cli_review_catalog
 
 NETCUP_DIR = Path(__file__).resolve().parent.parent
 INSTALL_HOST_PATH = NETCUP_DIR / "install-host.py"
 MONITOR_TASK_PATH = NETCUP_DIR / "monitor-task.py"
 EXPLORE_PATH = NETCUP_DIR / "scp-api.py"
+CLI_REVIEW_PATH = NETCUP_DIR / "cli-review.toml"
+
+
+def pytest_configure(config):
+    config.addinivalue_line(
+        "markers", "cli_case(case_id): links a behavior test to a reviewed CLI case"
+    )
+
+
+def pytest_collection_finish(session):
+    catalog = load_cli_review_catalog(CLI_REVIEW_PATH)
+    assert_cli_case_tests(session.items, catalog)
 
 
 def _load_module(path: Path, name: str) -> types.ModuleType:

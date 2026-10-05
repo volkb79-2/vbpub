@@ -154,12 +154,12 @@ def test_transaction_retained_release_errors_are_explicit_and_listing_filters_un
 
 
 def test_version_change_detection_and_file_release_strategy_use_observable_paths(tmp_path):
+    root = repo(tmp_path)
     project = SimpleNamespace(prefix="demo-v", cwd="demo", paths=["demo"], version=SimpleNamespace(bump="patch"))
     with patch.object(version, "_git_log", return_value=[]), patch.object(version, "_latest_tag_for_prefix", return_value="demo-v1.0.0"):
-        assert version.detect_changed_projects(tmp_path, {"demo": project}) == []
-    assert version._git_has_changes(tmp_path, "HEAD", "demo") is False
+        assert version.detect_changed_projects(root, {"demo": project}) == []
+    assert version._git_has_changes(root, "HEAD", "demo") is False
 
-    root = repo(tmp_path)
     file_project = SimpleNamespace(prefix="demo-v", cwd="demo", version=SimpleNamespace(strategy="file:VERSION"), git_tag=True)
     with patch.object(version, "detect_changed_projects", return_value=[("demo", file_project, "demo-v1.0.0", "patch")]), patch.object(version, "_apply_strategy_file", return_value="demo-v1.1.0") as apply:
         assert version.release_cmd(root, {"demo": file_project}, project_filter="demo", dry_run=True) == ["demo-v1.1.0"]

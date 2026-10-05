@@ -15,8 +15,8 @@ def test_child_release_reports_nothing_built_when_sequential_result_is_empty(mon
     monkeypatch.setenv(transaction.BRANCH_ENV, "cmru/release/child")
     monkeypatch.setenv(transaction.BASE_ENV, "a" * 40)
     monkeypatch.setattr(transaction, "write_release_scope", lambda *args: None)
-    monkeypatch.setattr(transaction, "push_backup_branch", lambda *args: None)
+    monkeypatch.setattr(transaction, "push_backup_branch", lambda *args, **kwargs: None)
     monkeypatch.setattr(cli, "_release_projects_sequentially", lambda *args, **kwargs: [])
-    monkeypatch.setattr(cli.transaction, "is_transaction_child", lambda _root: True)
+    monkeypatch.setattr(cli.transaction, "is_transaction_child", lambda _root, **_kwargs: True)
     cli.main(["release", "--config", str(tmp_path / "cmru.toml")])
     assert "Nothing built or published (see per-project log above for why)." in capsys.readouterr().out

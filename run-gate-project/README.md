@@ -20,19 +20,28 @@ than the prose predicted (full rationale in `SPEC.md` §8 and the LOG):
    rejected) — **superseded by RG-16 (`R-22`)**: central `[lanes.*]` are
    legal shared lanes every consuming project inherits BY NAME. Project
    tables shadow a central name entirely (auditable override, no field
-   merging).
-2. **Config discovery:** the project config is found next to the INVOKED
-   script path WITHOUT resolving symlinks (a symlink's parent is the
-   project), CWD as fallback. CWD-first (the handoff's wording) breaks
-   `nyxloom/run-gate.py --list` from the repo root.
+   merging). Lookup stops at the project's Git toplevel, so a nested standalone
+   repository cannot inherit an enclosing repository's config.
+2. **Config discovery:** without `--worktree`, the project config is found
+   next to the INVOKED script path WITHOUT resolving symlinks (a symlink's
+   parent is the project), CWD as fallback. With `--worktree`, run-gate first
+   preserves that project's path relative to its Git toplevel, then reads
+   `run-gate.toml` and the nearest `run-gate.root.toml` within that Git tree.
+   A missing target `run-gate.toml` is an error; the invoking checkout's
+   lanes are never substituted (see the
+   [design rationale](docs/DESIGN-GUIDE.md#a-worktree-is-the-complete-judgment-boundary)).
+   CWD-first (the handoff's wording) breaks `nyxloom/run-gate.py --list` from
+   the repo root.
 3. **Slice policy (controller A3):** the repository root's central
    `[environments.tester-unified]` binds `cgroup_slice_env` to
    `$CGROUP_PARENT_DEV_GATES`, so every inheriting project uses the same
    host-provided gates tier. `cgroup_slice` remains available for an explicit
    per-environment override, and a project may use `cgroup_slice_env` when it
-   needs a different host variable; each resolved value is LoadState-verified
-   where systemd is reachable. nyxloom's dev gate migrated OFF its hardcoded
-   `nyxloom-gates.slice` literal (prod-instance intent).
+   needs a different host variable; where host systemd is reachable, run-gate
+   requires `LoadState=loaded` and a non-empty `FragmentPath`, so a transient
+   typo-created slice does not count as installed. In container contexts the
+   outer gate launcher verifies host placement. nyxloom's dev gate migrated
+   OFF its hardcoded `nyxloom-gates.slice` literal (prod-instance intent).
 4. **Lane schema final:** `memory` (docker `--memory`, per-lane RAM
    overrides; superseded by `resources.memory`), `resources` (`R-29`: a
    table — `memory`, `memory_swap`, `cpu_weight`/`io_weight` advisory,
@@ -41,8 +50,7 @@ than the prose predicted (full rationale in `SPEC.md` §8 and the LOG):
    `[environments.<e>.resources] cpus = …`), `clean_tree` (default TRUE —
    refusals are the doctrine; nyxloom adopts `false` explicitly until
    NL-1), `assay_command` optional (omit it for the selected worktree's
-   `assay/` source; supply it for an external immutable artifact), `budget`
-   advisory-only, `stall_timeout` (rev 34,
+   `assay/` source; supply it for an external immutable artifact), `budget` (hard wall-clock bound; assay state remains resumable), `stall_timeout` (rev 34,
    RG-36/`R-40c`: same `\d+[smh]` grammar as `budget` and read beside it,
    but it bounds SILENCE in the lane's liveness signal — an assay lane's
    progress file, or (RG-41, rev 36) a command lane's own log-stream
@@ -56,13 +64,102 @@ than the prose predicted (full rationale in `SPEC.md` §8 and the LOG):
    `R-43h`).
 
 ## Gate and evidence
+
+### Closed results and explicit runner modes
+
+run-gate retains the judge's raw exit code in the result and returns one of
+five process statuses: **PASS 0**, **FAIL 1**, **ERROR 2**, **NOT_RUN 3**, or
+**BUDGET_EXCEEDED 4**. A command's non-zero code is a FAIL, including pytest
+5 for an empty collection; an ERROR or NOT_RUN result names its reason. Use
+`--json` to read `verdict`, raw `exit_code`, `reason`, `log_path`, and assay
+outcome and admission as structured result fields. The full mapping is in
+[the CLI contract](SPEC.md#2-cli-contract).
+NOT_RUN reasons are closed: realness-mismatch, service-down,
+environment-down, environment-mismatch, env-missing, external-missing,
+external-down, dirty-tree, no-headroom, lock-busy, no-base, judge-floor,
+judge-digest, provenance-mismatch, and state-mount.
+
+Every `[environments.<name>]` declares `mode = "ephemeral"`, `"exec"`, or
+`"host"`. Names carry no behavior: `host` is an ordinary name and is a
+container only when its declaration says `mode = "ephemeral"`; `mode = "host"`
+runs on the invoking host. Existing configs can be migrated one at a
+time without losing comments:
+
+```console
+./run-gate.py migrate-modes run-gate.toml
+./run-gate.py migrate-modes run-gate.root.toml  # when this repo has one
+```
+
+The tool refuses a missing mode. Review the diff, then migrate wrapper
+assumptions separately. See the [mode rationale](docs/DESIGN-GUIDE.md#runner-modes-name-the-runtime-contract) and the
+[consumer migration steps](CONSUMERS.md#closed-results-and-runner-mode-migration).
+
+### Native sequences and imported assay lanes
+
+`kind = "sequence"` runs declared member lanes in order, records each member
+and the composite, and can stop at the first non-PASS result. A project can
+declare `[project].trunk` once: a merge commit at the trunk tip uses its first
+parent as the request base; a non-merge trunk tip returns NOT_RUN with
+`no-base`. A sequence resolves that base once and passes it only to members
+that request one. This replaces shell conjunctions that hide nested run-gate
+statuses. The user guide has a [native sequence example](CONSUMERS.md#native-sequences-and-trunk-bases);
+the [design guide](docs/DESIGN-GUIDE.md#sequences-own-the-whole-composite) explains
+the base and status contract.
+
+External Assay consumers can declare one pinned judge and import lane names
+from `assay lanes --json` with
+`import = { environment = "<e>", lanes = "all" | [<names>] }`. Imported
+lanes inherit the shared command and pin; a project lane with the same name
+overrides it. This is the v7 shape chosen to carry directly into CIU v8's
+`[testing.judge] import` contract. See the [consumer example](CONSUMERS.md#shared-assay-lane-imports).
+
+An assay lane can pass `--reuse-from PATH`, repeatable `--rejudge ID`, and
+`--rejudge-outcome BUCKET` to one selected Assay run. A command lane accepts
+arguments after `--` only when it declares `accepts_args = true`; sequences
+and composite commands refuse them. See [selective requests](CONSUMERS.md#selective-lane-requests)
+and the [request-scope rationale](docs/DESIGN-GUIDE.md#selective-requests-stay-with-the-selected-lane).
+
+Every assay lane receives `--resume`, a worktree-local progress file, and a
+durable `--state-dir` under the checkout that owns the shared Git directory.
+The default state root is `<checkout>/.run-gate`; container environments can
+declare `state_root` for a different durable mount. Before Assay starts,
+run-gate checks that root and the deepest existing directory on the keyed
+state path are writable as the lane user, and `doctor` reports the result
+per environment. An unavailable or unwritable state area is
+NOT_RUN/`state-mount`, not a test failure. The durable-state option requires
+Assay 5.2.0. Read the
+[state contract](CONSUMERS.md#resume-progress-and-durable-assay-state) and
+[mount rationale](docs/DESIGN-GUIDE.md#assay-resume-state-needs-an-environment-owned-mount)
+before removing an ephemeral worktree.
+
+### Daemon-wide count admission and failed evidence
+
+Count admission is an opt-in project switch backed by Docker-name tickets, so
+gates on one daemon share one compare-and-swap and one published count cap.
+It defaults off. Enabled runs, `admission set`, and `admission show` require a
+local Docker Unix endpoint so every client addresses that daemon. Operators
+publish and inspect the cap with
+`run-gate admission set|show`; enabled lanes record their ticket, wait in
+ticket order, and return NOT_RUN/`no-headroom` when the wait expires. The lane
+budget starts once its runner locks and admission ticket are held, so queue
+time is excluded. The [admission guide](CONSUMERS.md#daemon-wide-gate-admission) gives the config
+and operator commands; the [design rationale](docs/DESIGN-GUIDE.md#docker-names-order-daemon-wide-admission)
+covers the Docker object protocol.
+
+Failed Assay lanes print a compact failure digest and preserve their verdict
+and progress files under `.run-gate/failed/<lane>/<run_id>/` before a later
+run can overwrite them. The archive keeps the latest ten per lane. Footprint
+calibration can include completed profiled FAIL runs with `--include-failed`,
+and `footprint --write --lane <name>` merges selected lanes into an existing
+manifest. See [failure evidence and footprint updates](CONSUMERS.md#failure-evidence-and-selective-footprint-updates).
+
 ### Version probe
 
 The script accepts `./run-gate.py --version` and prints exactly one
 `run-gate rev N` identity line on stdout before exiting 0, with no stderr. Help,
 usage, missing-argument, unknown-argument, and configuration diagnostics begin
-with `RUN-GATE rev N — per-project gate entrypoint` as line 1. Normal lane
-output is unchanged. N is the script's `__revision__` copy-drift marker;
+with `RUN-GATE rev N — per-project gate entrypoint` as line 1. Lane runs now end with a one-line verdict summary; --json sends ordinary run output
+to stderr and prints one result object on stdout. N is the script's `__revision__` copy-drift marker;
 the wheel's SemVer remains a separate distribution identity.
 
 This project's own `run-gate.toml` declares five lanes (dogfooding — see
@@ -187,12 +284,17 @@ For projects that adopt **assay**, judgment (coverage floors, R-levels,
 changed-line policy, isolation snapshots) stays in `assay.toml`, and the
 `run-gate.toml` lane is a thin wrapper referencing the assay lane by name:
 
+<!-- run-gate-config -->
 ```toml
 schema_version = 1
 [lanes.ciu]
 kind = "assay"            # install selected ../assay + run the judge
 assay_lane = "ciu"        # judgment policy lives in assay.toml — one registry each
 environment = "tester-unified"
+
+[environments.tester-unified]
+mode = "ephemeral"
+image = "tester-unified:local"
 ```
 
 No duplicate lane registry: `run-gate.toml` = where/how it runs,
@@ -210,12 +312,14 @@ supplied with `./run-gate.py <lane> --base REF`). Neither becomes a
 the drift this design exists to remove.
 
 Asking has a price, stated rather than hidden: those questions are answered
-INSIDE the lane's environment, so `doctor`, `--check-env`, and any assay-lane
-invocation (`--dry-run` included) start short read-only probe containers —
-one inventory probe per environment+judge, plus one batched `command -v`
-probe per environment for the fitness check. They judge nothing, write
-nothing, and never start your judged lane; a project with no
-`kind = "assay"` lane starts none of them.
+INSIDE the lane's environment. `doctor` starts short read-only probes: one
+inventory probe per environment+judge, one batched `command -v` probe per
+environment for the fitness check, and one Assay state-root probe per assay
+environment. `--check-env` runs the first two probes only. An assay-lane
+invocation adds one state-root probe for its lane; `--dry-run` prints that
+probe without running it. They judge nothing, write nothing, and never start
+your judged lane; a project with no `kind = "assay"` lane starts none of
+them.
 
 ### Environment mechanics the tool must own (the hard-won list)
 
@@ -225,8 +329,9 @@ the tool's reason to exist and MUST be implemented + tested:
 - **Cgroup placement:** resolve the slice ONLY from
   `$CGROUP_PARENT_DEV_GATES` (no literal, no fallback — absent is a hard
   error, AGENTS §4.2a), pass it BOTH as `--cgroup-parent` AND `-e` into the
-  container (suites read it ambiently). LoadState pre-check ONLY where systemd
-  is reachable (`[ -d /run/systemd/system ]`) — containerized contexts skip it.
+  container (suites read it ambiently). Require `LoadState=loaded` plus a
+  non-empty `FragmentPath` where systemd is reachable; containerized contexts
+  rely on the outer gate launcher's host-side placement check.
 - **Path namespaces:** derive the physical repo root from
   `/proc/self/mountinfo` (the bind mount whose mount point contains the repo;
   cmru `tester-gate` precedent — never from `ciu.env`, whose generated values
@@ -256,12 +361,17 @@ the tool's reason to exist and MUST be implemented + tested:
   state is not evidence.
 - **Effective tree:** `--worktree` doesn't just redirect checks — the lane
   EXECUTES in the selected tree (assay cd, pin verification, artifacts,
-  host-lane cwd relocate; SPEC R-21). Judging checkout A while pointed at
-  worktree B is the silent false-PASS class this kills. The READ-ONLY verbs
-  follow the same rule: `doctor`/`--check-env --worktree B` report B's git
-  identity, host-lane view, and toolchain fitness, never the invoking
-  checkout's under B's name (SPEC `R-37`, RG-30 — the last instance
-  of the read-scope hazard RG-27 closed for `history`).
+  host-lane cwd relocate; SPEC R-21), and lane plus inherited configuration
+  are loaded from that same tree (RG-47/RG-65). The header prints
+  `run-gate: config: <path>`; run history stores the selected config path and
+  SHA-256, plus the nearest central config path and SHA when one was used.
+  Exec-mode runner selection follows the same tree boundary (see the
+  [design rationale](docs/DESIGN-GUIDE.md#the-runner-belongs-to-the-judged-worktree)).
+  Judging checkout A while pointed at worktree B is the silent false-PASS
+  class this kills. The READ-ONLY verbs follow the same config selection;
+  `doctor`/`--check-env --worktree B` report B's git identity, host-lane
+  view, and toolchain fitness, never the invoking checkout's under B's name
+  (SPEC `R-37`, RG-30).
 - **Run form:** detached container with Docker's init reaper + wait + logs
   (survives terminal loss and reaps orphaned descendants); the gate's exit
   status is the judged job's own — no wrapper/pipe masking.
@@ -270,8 +380,8 @@ the tool's reason to exist and MUST be implemented + tested:
   with exit 2 and starts nothing. It never treats “foreign” as “absent,” even
   with `--fresh`, because starting a replacement would overwrite the only
   recovery pointer to the still-owned runner (SPEC `R-39f`).
-  Tool-level refusals reserve exit 2 (configuration/refusal) vs 3
-  (infrastructure) so scripts never parse prose to tell them apart.
+  Run-gate uses ERROR 2 for configuration and infrastructure failures,
+  and NOT_RUN 3 when a precondition prevents the judge from starting.
 - **Gate-safe paths:** `{worktree}` is substituted textually into consumer
   shell strings, so a judged tree at a path with whitespace or shell
   metacharacters is refused up front (every lane kind) instead of

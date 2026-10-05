@@ -20,8 +20,9 @@
 # Two stages: `ruptures==1.1.9` (pyproject.toml's pin) ships no prebuilt
 # wheel for cp314 yet, so it compiles a C extension at `pip install` time —
 # needing gcc, which has no business in the RUNNING daemon's attack surface
-# (this image is privileged but uses private namespaces and explicit
-# read-only host proc/cgroup mounts; every package
+# (this image is privileged but uses private namespaces and explicit host
+# proc/cgroup mounts, with only proc read-only and placement writes guarded;
+# every package
 # not needed at runtime is one this daemon does not carry). The builder
 # stage installs build-essential and produces venv/; the final stage copies
 # only the finished venv, never the compiler that made it.
@@ -39,7 +40,15 @@ RUN apt-get update \
 
 FROM python:3.14-slim
 
-ARG CGPROFILE_VERSION=1.0.0
+# `busctl` is the stdlib-free transport for the one host-systemd placement
+# operation.  The daemon uses only AttachProcessesToUnit over the explicitly
+# mounted system bus; it does not run systemd as PID 1 and never joins a host
+# namespace.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends systemd \
+    && rm -rf /var/lib/apt/lists/*
+
+ARG CGPROFILE_VERSION=1.1.0
 ARG GIT_REVISION=unknown
 
 ENV CGPROFILE_VERSION="${CGPROFILE_VERSION}"

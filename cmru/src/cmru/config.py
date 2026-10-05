@@ -182,6 +182,7 @@ class InvocationContext:
     worktree_path: Optional[Path] = None
     physical_source_git_root: Optional[Path] = None
     physical_worktree_path: Optional[Path] = None
+    config_reference_path: Optional[Path] = None
 
 
 def _git_scope(path: Path) -> dict[str, Optional[Path]]:
@@ -585,7 +586,18 @@ def _expand_env_reference(value: str, where: str, key: str) -> str:
     )
 
 
-def _scalar_env(raw: object, where: str) -> dict[str, str]:
+_RESERVED_CREDENTIAL_ENV = frozenset({
+    "GITHUB_PUSH_PAT", "GITHUB_TOKEN", "CMRU_GIT_AUTH_TOKEN",
+})
+_RESERVED_CMRU_INTERNAL_ENV = frozenset({
+    "CMRU_INTERNAL_RELEASE_PREFLIGHT_FD",
+    "CMRU_RELEASE_PREFLIGHT_SNAPSHOT",
+})
+
+
+def _scalar_env(
+    raw: object, where: str, *, reject_credentials: bool = False,
+) -> dict[str, str]:
     if raw is None:
         return {}
     if not isinstance(raw, dict):
@@ -594,6 +606,17 @@ def _scalar_env(raw: object, where: str) -> dict[str, str]:
     for key, value in raw.items():
         if not isinstance(key, str) or not key or not isinstance(value, (str, int, float, bool)):
             _error(f"{where} must contain string keys and scalar values")
+        if reject_credentials and key in _RESERVED_CREDENTIAL_ENV:
+            _error(
+                f"{where}.{key} is reserved for resolved publisher credentials; "
+                "supply tokens through GITHUB_PUSH_PAT/GITHUB_TOKEN in the invoking "
+                "environment or the ignored cmru.secret.toml file"
+            )
+        if reject_credentials and key in _RESERVED_CMRU_INTERNAL_ENV:
+            _error(
+                f"{where}.{key} is reserved for CMRU internal launch state and "
+                "cannot be declared in project or orchestration configuration"
+            )
         result[key] = _expand_env_reference(str(value), where, key)
     return result
 
@@ -644,9 +667,13 @@ def _read_secret_document(secret_path: Path) -> dict:
         _error(f"{secret_path}: invalid TOML ({exc})")
     if not isinstance(raw, dict):
         _error(f"{secret_path}: TOML document must be a table")
-    _reject_unknown(raw, {"github"}, str(secret_path))
-    if set(raw) != {"github"}:
-        _error(f"{secret_path}: expected exactly [github]")
+    _reject_unknown(raw, {"github", "schema_version"}, str(secret_path))
+    if "schema_version" in raw and (
+        type(raw["schema_version"]) is not int or raw["schema_version"] != 1
+    ):
+        _error(f"{secret_path}: schema_version must be integer 1")
+    if "github" not in raw:
+        _error(f"{secret_path}: expected [github]")
     _secret_token(raw["github"], f"{secret_path}: github")
     return raw
 
@@ -748,7 +775,7 @@ def _validate_runner_steps(raw_steps: object) -> dict[str, dict]:
                 _error(f"{where}.{key} must be a non-empty string")
         if not isinstance(step.get("quiet"), bool):
             _error(f"{where}.quiet must be explicitly true or false")
-        _scalar_env(step.get("env", {}), f"{where}.env")
+        _scalar_env(step.get("env", {}), f"{where}.env", reject_credentials=True)
         login = step.get("login")
         if login is not None:
             if not isinstance(login, dict):
@@ -793,7 +820,7 @@ def _parse_project_document(
             )
         github = None
         targets = None
-    env = _scalar_env(raw.get("env", {}), "env")
+    env = _scalar_env(raw.get("env", {}), "env", reject_credentials=True)
     metadata = _scalar_env(raw.get("build_metadata", {}), "build_metadata")
     versions = _parse_versions(
         raw.get("versions"), f"{PROJECT_CONFIG_FILENAME} [versions]",
@@ -1002,7 +1029,9 @@ def _load_orchestration_config(config_path: Path) -> ForgeConfig:
     if not isinstance(defaults_raw, dict):
         _error("orchestration.defaults must be a table")
     _reject_unknown(defaults_raw, {"env"}, "orchestration.defaults")
-    shared_env = _scalar_env(defaults_raw.get("env"), "orchestration.defaults.env")
+    shared_env = _scalar_env(
+        defaults_raw.get("env"), "orchestration.defaults.env", reject_credentials=True,
+    )
     for project_id, entry in entries.items():
         where = f"orchestration.project.{project_id}"
         if project_id == "all":
@@ -1150,7 +1179,7 @@ def _nearest_file(cwd: Path, filename: str) -> Optional[Path]:
         if candidate.exists():
             if not candidate.is_file():
                 _error(f"{candidate}: expected a regular file")
-            return candidate.resolve()
+            return candidate
     return None
 
 
@@ -1202,13 +1231,17 @@ def resolve_invocation_context(
     current = (cwd or Path.cwd()).resolve()
     explicit = config_path is not None
     if config_path is not None:
-        selected = config_path.expanduser().resolve()
+        selected_reference = config_path.expanduser()
+        if not selected_reference.is_absolute():
+            selected_reference = Path.cwd() / selected_reference
+        selected = selected_reference.resolve()
     else:
-        selected = _nearest_file(current, ORCHESTRATION_CONFIG_FILENAME)
-        if selected is None:
-            selected = _nearest_file(current, PROJECT_CONFIG_FILENAME)
-        if selected is None:
-            selected = current / PROJECT_CONFIG_FILENAME
+        selected_reference = _nearest_file(current, ORCHESTRATION_CONFIG_FILENAME)
+        if selected_reference is None:
+            selected_reference = _nearest_file(current, PROJECT_CONFIG_FILENAME)
+        if selected_reference is None:
+            selected_reference = current / PROJECT_CONFIG_FILENAME
+        selected = selected_reference.resolve()
     if selected.name == ORCHESTRATION_CONFIG_FILENAME:
         forge = load_forge_config(selected, require_orchestration=True)
         _refuse_unregistered_project(forge, current)
@@ -1219,6 +1252,7 @@ def resolve_invocation_context(
         )
         return InvocationContext(
             config_path=selected,
+            config_reference_path=selected_reference,
             config_kind="orchestration",
             cmru_root=selected.parent.resolve(),
             project_name=project_name,
@@ -1233,6 +1267,7 @@ def resolve_invocation_context(
         git_scope = _git_scope(selected.parent)
         return InvocationContext(
             config_path=selected,
+            config_reference_path=selected_reference,
             config_kind="project",
             cmru_root=selected.parent.resolve(),
             project_name=project_name,

@@ -176,7 +176,7 @@ short `-h` alias is not accepted.
 | Program | Commands and target | Daemon required? |
 |---|---|---|
 | `nyxloom` | `init`, `onboard`, project-local `lint`, and `backlog *`; edits files in the current project checkout. | No |
-| `nyxloom-harness` | `extract`, `extract-lossless`, `extract-debug`, `extract-report`, and `extract-sessions`; reads AI-harness session files/stores. | No |
+| `nyxloom-harness` | `search`, `extract`, `extract-lossless`, `extract-debug`, `extract-report`, and `extract-sessions`; reads AI-harness session files/stores. | No |
 | `nyxloomctl` | Local host operations: `project`, host-wide `lint`, `doctor`, `status`, `resync`, workflow/intake/finding actions, `auth`, `route`, model catalogs, `migrate-store`, and `daemon`. This is a local operator tool, not a remote HTTP client. | Only `daemon` starts it; other commands run directly. |
 | `nyxloomd` | Direct service-manager entrypoint for the daemon lifecycle used by the existing container. | Starts the daemon |
 
@@ -216,8 +216,21 @@ resolve exactly one match; pass `--opencode-session ID` when a SQLite store
 contains several. Extraction does not need Nyxloom project registration or a
 running daemon.
 
+To locate sessions by remembered content, search the local stores. The best
+matches are listed first, and only identifiers and metadata are printed:
+
+```bash
+nyxloom-harness search 'cli-extended gate backlog'
+nyxloom-harness search 'cli-extended gate backlog' --sort-by date --client codex
+```
+
+See the [search design](DESIGN-GUIDE.md#local-session-search) for matching
+and ranking behavior and [the consumer recipe](CONSUMERS.md#search-local-session-history)
+for result fields and options.
+
 | Command | Purpose |
 |---|---|
+| `nyxloom-harness search WORD...` | Rank local Claude Code, Codex, and OpenCode sessions matching query words. |
 | `nyxloom-harness extract SESSION_LOG` | Produce a compact, classified brief with operator text, Q&A pairs, and selected checkpoints. |
 | `nyxloom-harness extract-lossless SESSION_LOG` | Dump every recoverable prose/thinking block, dropping only tool calls and harness bookkeeping. |
 | `nyxloom-harness extract-debug SESSION_LOG` | Compare the lossless dump with what `extract` keeps, including drop reasons. |

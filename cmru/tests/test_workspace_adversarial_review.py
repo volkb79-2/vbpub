@@ -23,6 +23,28 @@ def _fake_shared(*, discover=None, records=()):
     class SharedError(Exception):
         pass
 
+    discover = discover or (lambda path: (Path(path), Path("/common"), "main", "a" * 40))
+
+    def ensure_workspace(record, *, labels=None, metadata=None):
+        if metadata is not None:
+            record.metadata = dict(metadata)
+        if labels is not None:
+            record.labels = dict(labels)
+        return record
+
+    def adopt_workspace(source, target, *, purpose="workspace", labels=None, metadata=None, **_kwargs):
+        top, common, branch, head = discover(target)
+        return SimpleNamespace(
+            purpose=f"cmru-{purpose}" if purpose != "workspace" else purpose,
+            branch=branch,
+            worktree_path=Path(target),
+            source_git_root=Path(source),
+            workspace_id="seedid",
+            base_commit=head,
+            metadata=dict(metadata or {}),
+            labels=dict(labels or {}),
+        )
+
     return SimpleNamespace(
         WorkspaceError=SharedError,
         workspace_id_for_path=lambda path: "seedid",
@@ -30,12 +52,13 @@ def _fake_shared(*, discover=None, records=()):
             worktree_path=Path(args[1]), branch=kwargs["branch"], base_commit=kwargs["base"],
         ),
         remove_workspace=lambda *args, **kwargs: None,
-        discover_git_context=discover or (lambda path: (Path(path), Path("/common"), "main", "a" * 40)),
+        discover_git_context=discover,
         list_workspaces=lambda common: list(records),
         find_workspace=lambda _common, path: next(
             (record for record in records if record.worktree_path == path), None
         ),
-        ensure_workspace=lambda record: record,
+        ensure_workspace=ensure_workspace,
+        adopt_workspace=adopt_workspace,
     )
 
 
@@ -156,13 +179,24 @@ def test_resume_legacy_workspace_uses_git_fallback_when_shared_record_is_absent(
     path = root / ".worktrees" / "cmru-release-legacy"
     path.mkdir(parents=True)
     common = root / ".git"
-    shared = _fake_shared(discover=lambda value: (path, common, "cmru-release-legacy", "a" * 40))
+
+    def discover_git_context(value):
+        top = root if Path(value).resolve() == root.resolve() else path
+        return top, common, "cmru-release-legacy", "b" * 40
+
+    shared = _fake_shared(discover=discover_git_context)
     monkeypatch.setattr(transaction, "_shared_worktree", lambda: shared)
-    monkeypatch.setattr(transaction, "_common_git_dir", lambda _value: (_ for _ in ()).throw(RuntimeError("not git")))
+    monkeypatch.setattr(transaction, "_common_git_dir", lambda _value: common)
     monkeypatch.setattr(
         transaction,
         "_git",
         lambda _path, *args: "cmru-release-legacy" if args == ("branch", "--show-current") else "b" * 40,
+    )
+    monkeypatch.setattr(transaction, "read_release_progress", lambda *_args: "a" * 40)
+    monkeypatch.setattr(
+        transaction,
+        "run_local_git",
+        lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 0, stdout="", stderr=""),
     )
     fetched = []
     monkeypatch.setattr(
@@ -172,7 +206,93 @@ def test_resume_legacy_workspace_uses_git_fallback_when_shared_record_is_absent(
     )
     resumed = transaction.resume_workspace(root, path)
     assert resumed.branch == "cmru-release-legacy"
+    assert resumed.context.metadata[transaction._LEGACY_RESUME_METADATA_KEY] == (
+        transaction._LEGACY_RESUME_METADATA_VALUE
+    )
     assert fetched and fetched[0][0][:3] == ["git", "fetch", "--prune"]
+
+
+def test_resume_revalidates_leftover_legacy_removal_bridge_record(monkeypatch, tmp_path):
+    root = tmp_path / "repo"
+    path = root / ".worktrees" / "cmru-release-legacy"
+    path.mkdir(parents=True)
+    common = root / ".git"
+    record = SimpleNamespace(
+        purpose="cmru-legacy",
+        branch="cmru-release-legacy",
+        worktree_path=path,
+        source_git_root=root,
+        workspace_id="legacy-workspace",
+        base_commit="b" * 40,
+        metadata={},
+    )
+    shared = _fake_shared(
+        discover=lambda _value: (path, common, "cmru-release-legacy", "b" * 40),
+        records=(record,),
+    )
+    monkeypatch.setattr(transaction, "_shared_worktree", lambda: shared)
+    monkeypatch.setattr(transaction, "_common_git_dir", lambda _value: common)
+    monkeypatch.setattr(transaction, "read_release_progress", lambda *_args: "a" * 40)
+    monkeypatch.setattr(
+        transaction,
+        "run_local_git",
+        lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 0, stdout="", stderr=""),
+    )
+    fetches = []
+    monkeypatch.setattr(
+        transaction,
+        "run_remote_git",
+        lambda repo_root, *args, **kwargs: fetches.append((repo_root, args, kwargs))
+        or subprocess.CompletedProcess(["git", *args], 0, stdout="", stderr=""),
+    )
+
+    resumed = transaction.resume_workspace(root, path)
+
+    assert resumed.context is record
+    assert fetches == [
+        (path, ("fetch", "--prune", "origin", "main"), {"auth": None, "check": True}),
+    ]
+    assert record.metadata == {
+        transaction._LEGACY_RESUME_METADATA_KEY: transaction._LEGACY_RESUME_METADATA_VALUE,
+    }
+
+
+@pytest.mark.parametrize("progress,returncode", [(None, 0), ("a" * 40, 1)])
+def test_resume_refuses_leftover_legacy_record_without_usable_ancestor_progress(
+    monkeypatch, tmp_path, progress, returncode,
+):
+    root = tmp_path / "repo"
+    path = root / ".worktrees" / "cmru-release-legacy"
+    path.mkdir(parents=True)
+    common = root / ".git"
+    record = SimpleNamespace(
+        purpose="cmru-legacy",
+        branch="cmru-release-legacy",
+        worktree_path=path,
+        source_git_root=root,
+        workspace_id="legacy-workspace",
+        base_commit="b" * 40,
+        metadata={},
+    )
+    shared = _fake_shared(
+        discover=lambda _value: (path, common, "cmru-release-legacy", "b" * 40),
+        records=(record,),
+    )
+    monkeypatch.setattr(transaction, "_shared_worktree", lambda: shared)
+    monkeypatch.setattr(transaction, "_common_git_dir", lambda _value: common)
+    monkeypatch.setattr(transaction, "read_release_progress", lambda *_args: progress)
+    monkeypatch.setattr(
+        transaction,
+        "run_local_git",
+        lambda *args, **kwargs: subprocess.CompletedProcess(
+            args[0], returncode, stdout="", stderr="not an ancestor"
+        ),
+    )
+
+    message = "no valid CMRU release progress" if progress is None else "not an ancestor"
+    with pytest.raises(RuntimeError, match=message):
+        transaction.resume_workspace(root, path)
+    assert record.metadata == {}
 
 
 def test_resume_rejects_a_workspace_from_another_git_family(monkeypatch, tmp_path):
@@ -479,6 +599,10 @@ def test_resolve_invocation_context_keeps_project_git_scope(monkeypatch, tmp_pat
     project_config.parent.mkdir(parents=True)
     project_config.write_text(_project_document())
     orchestration = source / "cmru.orchestration.toml"
+    target = source / "cfg" / "cmru.orchestration.toml"
+    target.parent.mkdir(parents=True)
+    target.write_text("", encoding="utf-8")
+    orchestration.symlink_to("cfg/cmru.orchestration.toml")
     forge = _child_forge(source, project_config)
     monkeypatch.setattr(config, "load_forge_config", lambda _path, **_kwargs: forge)
     monkeypatch.setattr(config, "_refuse_unregistered_project", lambda *_args: None)
@@ -489,6 +613,9 @@ def test_resolve_invocation_context_keeps_project_git_scope(monkeypatch, tmp_pat
     context = config.resolve_invocation_context(orchestration, cwd=project_config.parent)
     assert context.project_name == "demo"
     assert context.source_git_root == project_config.parent
+    assert context.config_path == target.resolve()
+    assert context.config_reference_path == orchestration
+    assert cli._resolve_config(str(orchestration)) == orchestration
 
 
 def test_load_config_refuses_missing_or_escaping_child_project(monkeypatch, tmp_path):
@@ -613,6 +740,65 @@ def test_dispatch_does_not_split_a_single_project_and_uses_path_launcher(monkeyp
         original_target=None,
     ) == 0
     assert called[0][0] == "/found/cmru"
+
+
+def test_release_dispatch_passes_exact_preflight_snapshot_to_each_family(
+    monkeypatch, tmp_path,
+):
+    left = SimpleNamespace(name="left")
+    right = SimpleNamespace(name="right")
+    configs = {"left": left, "right": right}
+    roots = {tmp_path / "left": [left], tmp_path / "right": [right]}
+    snapshots = {
+        tmp_path / "left": "a" * 40,
+        tmp_path / "right": "b" * 40,
+    }
+    monkeypatch.setattr(transaction, "project_git_family_groups", lambda *_args: roots)
+    monkeypatch.setenv("CMRU_BIN", "/usr/bin/cmru")
+    seen = []
+
+    def fake_run(argv, **kwargs):
+        handoff = None
+        if cli._RELEASE_PREFLIGHT_SNAPSHOT_FD_ENV in kwargs["env"]:
+            fd = int(kwargs["env"][cli._RELEASE_PREFLIGHT_SNAPSHOT_FD_ENV])
+            assert fd in kwargs["pass_fds"]
+            handoff = os.read(fd, 4096).decode("utf-8")
+        seen.append((argv, kwargs["env"], handoff))
+        return subprocess.CompletedProcess(argv, 0)
+
+    monkeypatch.setattr(
+        cli.subprocess, "run", fake_run,
+    )
+
+    with pytest.raises(RuntimeError, match="do not match the selected release families"):
+        cli._dispatch_independent_git_families(
+            "release", [], tmp_path / "cmru.toml", tmp_path, configs,
+            ["left", "right"], original_target=None,
+            origin_main_snapshots={tmp_path / "left": "a" * 40},
+        )
+    with pytest.raises(RuntimeError, match="do not match the selected release families"):
+        cli._dispatch_independent_git_families(
+            "build", [], tmp_path / "cmru.toml", tmp_path, configs,
+            ["left", "right"], original_target=None,
+            origin_main_snapshots=snapshots,
+        )
+    assert seen == []
+
+    assert cli._dispatch_independent_git_families(
+        "release", [], tmp_path / "cmru.toml", tmp_path, configs,
+        ["left", "right"], original_target=None,
+        origin_main_snapshots=snapshots,
+    ) == 0
+    assert [
+        handoff for _argv, _env, handoff in seen
+    ] == [
+        f"{(tmp_path / 'left').resolve()}:{'a' * 40}",
+        f"{(tmp_path / 'right').resolve()}:{'b' * 40}",
+    ]
+    assert all(
+        "CMRU_RELEASE_PREFLIGHT_SNAPSHOT" not in env
+        for _argv, env, _handoff in seen
+    )
 
 
 def test_child_release_args_removes_only_the_first_original_target(tmp_path):

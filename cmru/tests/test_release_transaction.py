@@ -15,6 +15,10 @@ import pytest
 from cmru import cli, transaction
 from cmru import tester_gate
 
+_real_project_git_tag_policy_at_snapshot = cli._project_git_tag_policy_at_snapshot
+_real_project_config_paths_at_snapshot = cli._project_config_paths_at_snapshot
+_real_project_config_paths_in_candidate = cli._project_config_paths_in_candidate
+
 
 # ---------------------------------------------------------------------------
 # Real-repo harness for promotion_landed / revert_promotion / sync_local_main —
@@ -95,6 +99,12 @@ def _project(name: str, *, paths: list[str] | None = None, steps=None):
     )
 
 
+def _github_config():
+    return cli.GitHubConfig(
+        owner="octocat", repo="demo", token="test-credential", owner_type="user",
+    )
+
+
 @pytest.fixture(autouse=True)
 def mocked_invocation_context(monkeypatch):
     """Transaction tests replace the loader with a lightweight fake config."""
@@ -109,6 +119,17 @@ def mocked_invocation_context(monkeypatch):
         cli.transaction,
         "project_git_family_groups",
         lambda root, projects: {root: list(projects)},
+    )
+    monkeypatch.setattr(cli, "_read_origin_tag_refs", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(
+        cli, "_project_git_tag_policy_at_snapshot",
+        lambda _root, _base, project, **_kwargs: getattr(project, "git_tag", True),
+    )
+    monkeypatch.setattr(
+        cli, "_project_config_paths_at_snapshot",
+        lambda _root, _base, _config_path, _configs, names: {
+            name: Path(name) / "cmru.toml" for name in names
+        },
     )
 
 
@@ -141,6 +162,32 @@ def test_copy_secret_overlays_preserves_root_and_project_scoped_credentials(tmp_
     assert (workspace_path / "alpha" / "cmru.secret.toml").stat().st_mode & 0o777 == 0o600
 
 
+def test_copy_secret_overlay_uses_snapshot_config_path_after_project_move(tmp_path):
+    repo_root = tmp_path / "repo"
+    workspace_path = tmp_path / "workspace"
+    source_project = repo_root / "old" / "alpha"
+    source_project.mkdir(parents=True)
+    workspace_path.mkdir()
+    source_config = source_project / "cmru.toml"
+    source_config.write_text("schema_version = 1\n", encoding="utf-8")
+    (source_project / "cmru.secret.toml").write_text(
+        '[github]\ntoken = "project-test-token"\n', encoding="utf-8",
+    )
+    workspace = transaction.ReleaseWorkspace(
+        repo_root, workspace_path, "cmru/release/test", "a" * 40,
+    )
+
+    transaction.copy_secret_overlays(
+        repo_root, workspace, [source_config],
+        candidate_config_paths=[Path("new/alpha/cmru.toml")],
+    )
+
+    assert (workspace_path / "new/alpha/cmru.secret.toml").read_text(encoding="utf-8") == (
+        '[github]\ntoken = "project-test-token"\n'
+    )
+    assert not (workspace_path / "old/alpha/cmru.secret.toml").exists()
+
+
 def test_copy_secret_overlays_rejects_a_non_file_secret_path(tmp_path):
     repo_root = tmp_path / "repo"
     workspace_path = tmp_path / "workspace"
@@ -153,6 +200,39 @@ def test_copy_secret_overlays_rejects_a_non_file_secret_path(tmp_path):
 
     with pytest.raises(RuntimeError, match="not a regular file"):
         transaction.copy_secret_overlays(repo_root, workspace, [])
+
+
+@pytest.mark.parametrize("project_scoped", [False, True])
+def test_copy_secret_overlays_refuses_symlink_destinations_without_touching_targets(
+    tmp_path, project_scoped,
+):
+    repo_root = tmp_path / "repo"
+    workspace_path = tmp_path / "workspace"
+    secret_dir = repo_root / "alpha" if project_scoped else repo_root
+    target_dir = workspace_path / "alpha" if project_scoped else workspace_path
+    secret_dir.mkdir(parents=True)
+    target_dir.mkdir(parents=True)
+    source = secret_dir / "cmru.secret.toml"
+    source.write_text("publisher token\n", encoding="utf-8")
+    outside = tmp_path / "outside.txt"
+    outside.write_text("must remain unchanged\n", encoding="utf-8")
+    outside.chmod(0o644)
+    destination = target_dir / "cmru.secret.toml"
+    destination.symlink_to(outside)
+    project_config = repo_root / "alpha" / "cmru.toml"
+    project_config.parent.mkdir(parents=True, exist_ok=True)
+    project_config.write_text("schema_version = 1\n", encoding="utf-8")
+    workspace = transaction.ReleaseWorkspace(
+        repo_root, workspace_path, "cmru/release/test", "a" * 40,
+    )
+
+    project_configs = [project_config] if project_scoped else []
+    with pytest.raises(RuntimeError, match="destination is not a regular file"):
+        transaction.copy_secret_overlays(repo_root, workspace, project_configs)
+
+    assert destination.is_symlink()
+    assert outside.read_text(encoding="utf-8") == "must remain unchanged\n"
+    assert outside.stat().st_mode & 0o777 == 0o644
 
 
 def test_child_args_replaces_absolute_config_with_snapshot_relative_path(tmp_path):
@@ -281,7 +361,7 @@ def test_release_aborts_before_creating_a_workspace_when_a_released_project_is_d
 
         project = _project("alpha")
         loaded = (h.repo_root, {"alpha": project}, ["alpha"], ["alpha"], [], "project-first", {},
-                  SimpleNamespace(), SimpleNamespace(), SimpleNamespace())
+                  SimpleNamespace(), _github_config(), SimpleNamespace())
         calls: list[object] = []
 
         monkeypatch.setattr(cli, "load_config", lambda _path: loaded)
@@ -308,29 +388,68 @@ def test_release_proceeds_when_uncommitted_changes_are_explicitly_allowed(monkey
 
         project = _project("alpha")
         loaded = (h.repo_root, {"alpha": project}, ["alpha"], ["alpha"], [], "project-first", {},
-                  SimpleNamespace(), SimpleNamespace(), SimpleNamespace())
+                  SimpleNamespace(), _github_config(), SimpleNamespace())
         workspace = transaction.ReleaseWorkspace(h.repo_root, h.repo_root / "release", "cmru/release/x", "a" * 40)
         calls: list[object] = []
 
         monkeypatch.setattr(cli, "load_config", lambda _path: loaded)
         monkeypatch.setattr(cli, "apply_release_env", lambda *_args: None)
         monkeypatch.setattr(transaction, "release_lock", lambda _root: nullcontext())
-        monkeypatch.setattr(transaction, "fetch_origin_main", lambda _root: "a" * 40)
+        monkeypatch.setattr(transaction, "fetch_origin_main", lambda _root, **_kwargs: "a" * 40)
         monkeypatch.setattr(transaction, "assert_local_main_not_ahead", lambda _root, **_kw: 0)
         monkeypatch.setattr(transaction, "create_workspace", lambda _root, *, base, **_kw: workspace)
-        monkeypatch.setattr(transaction, "copy_secret_overlays", lambda *_args: None)
+        monkeypatch.setattr(transaction, "copy_secret_overlays", lambda *_args, **_kwargs: None)
         monkeypatch.setattr(transaction, "run_child", lambda _workspace, args, **kwargs: calls.append("ran-child") or 0)
         monkeypatch.setattr(transaction, "remove_workspace", lambda _w: None)
-        monkeypatch.setattr(transaction, "remove_backup_branch", lambda _w: None)
+        monkeypatch.setattr(transaction, "remove_backup_branch", lambda _w, **_kwargs: None)
         monkeypatch.setattr(
             transaction, "_sync_local_main_result",
-            lambda _root: transaction._SyncLocalMainResult(True),
+            lambda _root, **_kwargs: transaction._SyncLocalMainResult(True),
         )
 
         exc = cli.main(["release", "--config", str(config), "alpha", "--allow-uncommitted"])
 
         assert exc == 0
         assert "ran-child" in calls
+
+
+def test_release_refuses_unsupported_git_before_creating_candidate_or_running_child(
+    tmp_path, monkeypatch, capsys,
+):
+    config = tmp_path / "cmru.toml"
+    config.write_text("", encoding="utf-8")
+    project = _project("alpha")
+    loaded = (tmp_path, {"alpha": project}, ["alpha"], ["alpha"], [], "project-first", {},
+              SimpleNamespace(), _github_config(), SimpleNamespace())
+    calls = []
+    git_calls = []
+
+    monkeypatch.setattr(cli, "load_config", lambda _path: loaded)
+    monkeypatch.setattr(cli, "apply_release_env", lambda *_args: None)
+    monkeypatch.setattr(cli, "_uncommitted_release_paths", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(transaction, "release_lock", lambda _root: nullcontext())
+    monkeypatch.setattr(cli, "run_local_git", lambda _root, *args, **_kwargs: (
+        git_calls.append(args)
+        or SimpleNamespace(returncode=129, stdout="", stderr="unknown option: --exists")
+    ))
+    monkeypatch.setattr(
+        transaction, "fetch_origin_main", lambda *_args, **_kwargs: calls.append("fetch"),
+    )
+    monkeypatch.setattr(
+        transaction, "create_workspace", lambda *_args, **_kwargs: calls.append("workspace"),
+    )
+    monkeypatch.setattr(
+        transaction, "run_child", lambda *_args, **_kwargs: calls.append("child"),
+    )
+
+    result = cli.main(["release", "--config", str(config), "alpha"])
+
+    assert result == 1
+    assert calls == ["fetch"]
+    assert git_calls == [(
+        "show-ref", "--exists", "refs/tags/__cmru_tag_inspection_probe__",
+    )]
+    assert "requires Git 2.43 or newer" in capsys.readouterr().err
 
 
 def test_dry_run_is_not_blocked_by_uncommitted_release_path_changes(monkeypatch):
@@ -345,23 +464,23 @@ def test_dry_run_is_not_blocked_by_uncommitted_release_path_changes(monkeypatch)
 
         project = _project("alpha")
         loaded = (h.repo_root, {"alpha": project}, ["alpha"], ["alpha"], [], "project-first", {},
-                  SimpleNamespace(), SimpleNamespace(), SimpleNamespace())
+                  SimpleNamespace(), _github_config(), SimpleNamespace())
         workspace = transaction.ReleaseWorkspace(h.repo_root, h.repo_root / "release", "cmru/release/x", "a" * 40)
         calls: list[object] = []
 
         monkeypatch.setattr(cli, "load_config", lambda _path: loaded)
         monkeypatch.setattr(cli, "apply_release_env", lambda *_args: None)
         monkeypatch.setattr(transaction, "release_lock", lambda _root: nullcontext())
-        monkeypatch.setattr(transaction, "fetch_origin_main", lambda _root: "a" * 40)
+        monkeypatch.setattr(transaction, "fetch_origin_main", lambda _root, **_kwargs: "a" * 40)
         monkeypatch.setattr(transaction, "assert_local_main_not_ahead", lambda _root, **_kw: 0)
         monkeypatch.setattr(transaction, "create_workspace", lambda _root, *, base, **_kw: workspace)
-        monkeypatch.setattr(transaction, "copy_secret_overlays", lambda *_args: None)
+        monkeypatch.setattr(transaction, "copy_secret_overlays", lambda *_args, **_kwargs: None)
         monkeypatch.setattr(transaction, "run_child", lambda _workspace, args, **kwargs: calls.append("ran-child") or 0)
         monkeypatch.setattr(transaction, "remove_workspace", lambda _w: None)
-        monkeypatch.setattr(transaction, "remove_backup_branch", lambda _w: None)
+        monkeypatch.setattr(transaction, "remove_backup_branch", lambda _w, **_kwargs: None)
         monkeypatch.setattr(
             transaction, "_sync_local_main_result",
-            lambda _root: transaction._SyncLocalMainResult(True),
+            lambda _root, **_kwargs: transaction._SyncLocalMainResult(True),
         )
 
         exc = cli.main(["release", "--config", str(config), "alpha", "--dry-run"])
@@ -370,8 +489,9 @@ def test_dry_run_is_not_blocked_by_uncommitted_release_path_changes(monkeypatch)
         assert "ran-child" in calls  # never hit the exit(2) uncommitted-changes gate
 
 
-def test_parent_release_launches_isolated_child_and_never_runs_in_caller(
-    tmp_path, monkeypatch
+@pytest.mark.parametrize("use_internal_snapshot", [False, True])
+def test_release_ignores_ambient_snapshot_and_uses_only_launcher_handoff(
+    tmp_path, monkeypatch, use_internal_snapshot,
 ):
     config = tmp_path / "cmru.toml"
     config.write_text(
@@ -390,34 +510,79 @@ cwd = "alpha"
     )
     project = _project("alpha")
     loaded = (tmp_path, {"alpha": project}, ["alpha"], ["alpha"], [], "project-first", {},
-              SimpleNamespace(), SimpleNamespace(), SimpleNamespace())
+              SimpleNamespace(), _github_config(), SimpleNamespace())
     workspace = transaction.ReleaseWorkspace(tmp_path, tmp_path / "release", "cmru/release/x", "a" * 40)
     calls: list[object] = []
+    workspace_bases = []
 
     monkeypatch.setattr(cli, "load_config", lambda _path: loaded)
-    monkeypatch.setattr(cli, "apply_release_env", lambda *_args: None)
+    monkeypatch.setenv(
+        "CMRU_RELEASE_PREFLIGHT_SNAPSHOT", f"{tmp_path.resolve()}:{'c' * 40}",
+    )
+    monkeypatch.setattr(
+        cli, "apply_release_env",
+        lambda *_args: (
+            os.environ.__setitem__(
+                "CMRU_RELEASE_PREFLIGHT_SNAPSHOT", f"{tmp_path.resolve()}:{'d' * 40}",
+            ),
+            monkeypatch.setenv(cli._RELEASE_PREFLIGHT_SNAPSHOT_FD_ENV, "999999999"),
+        ),
+    )
     monkeypatch.setattr(cli, "_uncommitted_release_paths", lambda *_args, **_kwargs: {})
     monkeypatch.setattr(transaction, "release_lock", lambda _root: nullcontext())
-    monkeypatch.setattr(transaction, "fetch_origin_main", lambda _root: "a" * 40)
+    handoff_base = "a" * 40
+    fetched_base = handoff_base if use_internal_snapshot else "b" * 40
+    fetched = []
+    monkeypatch.setattr(
+        transaction, "fetch_origin_main",
+        lambda *_args, **_kwargs: fetched.append(True) or fetched_base,
+    )
+    monkeypatch.setattr(
+        cli, "_project_git_tag_policy_at_snapshot",
+        lambda *_args, **_kwargs: True,
+    )
+    monkeypatch.setattr(
+        cli, "run_local_git",
+        lambda *_args, **_kwargs: SimpleNamespace(returncode=0, stdout="", stderr=""),
+    )
     monkeypatch.setattr(transaction, "assert_local_main_not_ahead", lambda _root, **_kw: 0)
-    monkeypatch.setattr(transaction, "create_workspace", lambda _root, *, base, **_kw: workspace)
-    monkeypatch.setattr(transaction, "copy_secret_overlays", lambda *_args: calls.append("secret"))
+    monkeypatch.setattr(
+        cli, "_require_local_tag_inspection_support",
+        lambda _root: calls.append("tag-inspection-preflight"),
+    )
+    monkeypatch.setattr(
+        transaction, "create_workspace",
+        lambda _root, *, base, **_kw: workspace_bases.append(base) or calls.append("workspace") or workspace,
+    )
+    monkeypatch.setattr(transaction, "write_release_tag_snapshot", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(transaction, "clear_plan_refused", lambda *_args: None)
+    monkeypatch.setattr(transaction, "copy_secret_overlays", lambda *_args, **_kwargs: calls.append("secret"))
     monkeypatch.setattr(transaction, "run_child", lambda _workspace, args, **kwargs: calls.append(list(args)) or 0)
     monkeypatch.setattr(transaction, "remove_workspace", lambda _workspace: calls.append("removed"))
-    monkeypatch.setattr(transaction, "remove_backup_branch", lambda _workspace: calls.append("backup-removed"))
+    monkeypatch.setattr(transaction, "remove_backup_branch", lambda _workspace, **_kwargs: calls.append("backup-removed"))
     monkeypatch.setattr(transaction, "forget_release_scope", lambda _root, _w: None)
     monkeypatch.setattr(
         transaction, "_sync_local_main_result",
-        lambda _root: calls.append("synced") or transaction._SyncLocalMainResult(True),
+        lambda _root, **_kwargs: calls.append("synced") or transaction._SyncLocalMainResult(True),
     )
 
-    exc = cli.main([
+    argv = [
             "release", "--config", str(config), "alpha",
             "--discard-logs-on-release", "--discard-artifacts-on-release",
-        ])
+        ]
+    if use_internal_snapshot:
+        snapshot_fd, snapshot_writer = os.pipe()
+        payload = f"{tmp_path.resolve()}:{handoff_base}".encode("utf-8")
+        assert os.write(snapshot_writer, payload) == len(payload)
+        os.close(snapshot_writer)
+        monkeypatch.setenv(cli._RELEASE_PREFLIGHT_SNAPSHOT_FD_ENV, str(snapshot_fd))
+    exc = cli.main(argv)
 
     assert exc == 0
+    assert fetched == [True]
+    assert workspace_bases == [handoff_base if use_internal_snapshot else fetched_base]
     assert not any(isinstance(call, tuple) for call in calls)
+    assert calls.index("tag-inspection-preflight") < calls.index("workspace")
     assert [
         "alpha", "--discard-logs-on-release", "--discard-artifacts-on-release",
         "--config", "cmru.toml",
@@ -427,9 +592,875 @@ cwd = "alpha"
     assert "removed" in calls
 
 
+def test_multi_family_release_preflights_origin_policies_before_dispatch(
+    tmp_path, monkeypatch, capsys,
+):
+    config = tmp_path / "cmru.toml"
+    config.write_text("[project]\n", encoding="utf-8")
+    untagged = _project("untagged")
+    untagged.git_tag = False
+    tagged = _project("tagged")
+    tagged.git_tag = False  # caller checkout can lag behind origin/main policy
+    untagged_root = tmp_path / "untagged-repo"
+    tagged_root = tmp_path / "tagged-repo"
+    untagged.project_root = untagged_root / "untagged"
+    tagged.project_root = tagged_root / "tagged"
+    loaded = (
+        tmp_path,
+        {"untagged": untagged, "tagged": tagged},
+        ["untagged", "tagged"], ["untagged", "tagged"],
+        ["untagged", "tagged"], "project-first", {}, SimpleNamespace(),
+        _github_config(), SimpleNamespace(),
+    )
+    monkeypatch.setattr(cli, "load_config", lambda _path: loaded)
+    monkeypatch.setattr(cli, "apply_release_env", lambda *_args: None)
+    monkeypatch.setattr(
+        cli, "_project_git_tag_policy_at_snapshot",
+        _real_project_git_tag_policy_at_snapshot,
+    )
+    monkeypatch.setattr(
+        transaction, "project_git_family_groups",
+        lambda *_args: {untagged_root: [untagged], tagged_root: [tagged]},
+    )
+    fetched = []
+    monkeypatch.setattr(
+        transaction, "fetch_origin_main",
+        lambda root, **_kwargs: fetched.append(root) or "f" * 40,
+    )
+    origin_configs = {
+        untagged_root: (
+            '[project]\nid = "untagged"\nprefix = "untagged-v"\n'
+            "[project.release]\ngit_tag = false\n"
+        ),
+        tagged_root: (
+            '[project]\nid = "tagged"\nprefix = "tagged-v"\n'
+            "[project.release]\ngit_tag = true\n"
+        ),
+    }
+    monkeypatch.setattr(
+        cli, "_read_git_path_at_commit",
+        lambda root, *_args, **_kwargs: origin_configs[root],
+    )
+    monkeypatch.setattr(
+        cli, "_resolve_git_file_at_commit",
+        lambda root, _revision, path, **_kwargs: (path, origin_configs[root]),
+    )
+    checked = []
+
+    def refuse_tagged_family(root):
+        checked.append(root)
+        if root == tagged_root:
+            raise RuntimeError("local tag inspection requires Git 2.43 or newer")
+
+    monkeypatch.setattr(cli, "_require_local_tag_inspection_support", refuse_tagged_family)
+    monkeypatch.setattr(
+        cli, "_dispatch_independent_git_families",
+        lambda *_args, **_kwargs: pytest.fail("release family dispatched before full preflight"),
+    )
+
+    result = cli.main([
+        "release", "untagged,tagged", "--config", str(config),
+    ])
+
+    assert result == 1
+    assert fetched == [untagged_root, tagged_root]
+    assert checked == [tagged_root]
+    assert "local tag inspection requires Git 2.43 or newer" in capsys.readouterr().err
+
+
+def test_multi_family_release_with_untagged_origin_policies_needs_no_tag_support(
+    tmp_path, monkeypatch,
+):
+    config = tmp_path / "cmru.toml"
+    config.write_text("[project]\n", encoding="utf-8")
+    projects = [_project("left"), _project("right")]
+    roots = [tmp_path / "left-repo", tmp_path / "right-repo"]
+    for project, root in zip(projects, roots, strict=True):
+        project.git_tag = True  # caller checkout is stale; origin/main is untagged
+        project.project_root = root / project.name
+    loaded = (
+        tmp_path,
+        {project.name: project for project in projects},
+        [project.name for project in projects],
+        [project.name for project in projects],
+        [project.name for project in projects], "project-first", {}, SimpleNamespace(),
+        _github_config(), SimpleNamespace(),
+    )
+    monkeypatch.setattr(cli, "load_config", lambda _path: loaded)
+    monkeypatch.setattr(cli, "apply_release_env", lambda *_args: None)
+    monkeypatch.setattr(
+        cli, "_project_git_tag_policy_at_snapshot",
+        _real_project_git_tag_policy_at_snapshot,
+    )
+    monkeypatch.setattr(
+        transaction, "project_git_family_groups",
+        lambda *_args: {root: [project] for root, project in zip(roots, projects, strict=True)},
+    )
+    fetched = []
+    monkeypatch.setattr(
+        transaction, "fetch_origin_main",
+        lambda root, **_kwargs: fetched.append(root) or "f" * 40,
+    )
+    origin_configs = {
+        root: (
+            f'[project]\nid = "{project.name}"\n'
+            f'prefix = "{project.name}-v"\n'
+            "[project.release]\ngit_tag = false\n"
+        )
+        for root, project in zip(roots, projects, strict=True)
+    }
+    monkeypatch.setattr(
+        cli, "_read_git_path_at_commit",
+        lambda root, *_args, **_kwargs: origin_configs[root],
+    )
+    monkeypatch.setattr(
+        cli, "_resolve_git_file_at_commit",
+        lambda root, _revision, path, **_kwargs: (
+            path, origin_configs[root],
+        ),
+    )
+    monkeypatch.setattr(
+        cli, "_require_local_tag_inspection_support",
+        lambda _root: pytest.fail("untagged release required Git 2.43 tag support"),
+    )
+    dispatched = []
+    monkeypatch.setattr(
+        cli, "_dispatch_independent_git_families",
+        lambda *_args, **kwargs: dispatched.append(kwargs["origin_main_snapshots"]) or 0,
+    )
+
+    assert cli.main(["release", "left,right", "--config", str(config)]) == 0
+    assert fetched == roots
+    assert dispatched == [{root: "f" * 40 for root in roots}]
+
+
+def test_multi_family_preflight_fetch_failure_stops_before_dispatch(
+    tmp_path, monkeypatch, capsys,
+):
+    config = tmp_path / "cmru.toml"
+    config.write_text("[project]\n", encoding="utf-8")
+    projects = [_project("left"), _project("right")]
+    roots = [tmp_path / "left-repo", tmp_path / "right-repo"]
+    for project, root in zip(projects, roots, strict=True):
+        project.project_root = root / project.name
+    loaded = (
+        tmp_path,
+        {project.name: project for project in projects},
+        [project.name for project in projects],
+        [project.name for project in projects],
+        [project.name for project in projects], "project-first", {}, SimpleNamespace(),
+        _github_config(), SimpleNamespace(),
+    )
+    monkeypatch.setattr(cli, "load_config", lambda _path: loaded)
+    monkeypatch.setattr(cli, "apply_release_env", lambda *_args: None)
+    monkeypatch.setattr(
+        transaction, "project_git_family_groups",
+        lambda *_args: {root: [project] for root, project in zip(roots, projects, strict=True)},
+    )
+    fetched = []
+
+    def fail_second_fetch(root, **_kwargs):
+        fetched.append(root)
+        if root == roots[1]:
+            raise RuntimeError("origin/main fetch refused")
+        return "f" * 40
+
+    monkeypatch.setattr(transaction, "fetch_origin_main", fail_second_fetch)
+    monkeypatch.setattr(
+        cli, "_dispatch_independent_git_families",
+        lambda *_args, **_kwargs: pytest.fail("family dispatched after preflight fetch failure"),
+    )
+
+    assert cli.main(["release", "left,right", "--config", str(config)]) == 1
+    assert fetched == roots
+    assert "origin/main fetch refused" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    ("project_root", "stdout", "returncode", "expected_error"),
+    [
+        ("outside", "", 0, "outside Git family"),
+        ("inside", "", 1, "Failed to read demo release policy"),
+        ("inside", "invalid = [", 0, "Invalid project config"),
+        (
+            "inside", '[project]\nid = "demo"\nprefix = "demo-v"\n', 0,
+            "project.id, project.prefix, and project.release.git_tag are required",
+        ),
+        (
+            "inside",
+            '[project]\nid = "demo"\nprefix = "demo-v"\n'
+            "[project.release]\ngit_tag = 1\n",
+            0,
+            "git_tag must be explicitly true or false",
+        ),
+    ],
+)
+def test_snapshot_tag_policy_refuses_missing_or_invalid_facts(
+    tmp_path, monkeypatch, project_root, stdout, returncode, expected_error,
+):
+    repo_root = tmp_path / "repo"
+    selected_root = tmp_path / project_root if project_root == "outside" else repo_root / "demo"
+    project = SimpleNamespace(name="demo", project_root=selected_root)
+    monkeypatch.setattr(
+        cli, "_project_git_tag_policy_at_snapshot",
+        _real_project_git_tag_policy_at_snapshot,
+    )
+
+    def fake_read(*_args, **_kwargs):
+        if returncode:
+            raise RuntimeError("Failed to read demo release policy: snapshot read failed")
+        return stdout
+
+    monkeypatch.setattr(cli, "_read_git_path_at_commit", fake_read)
+
+    with pytest.raises(RuntimeError, match=expected_error):
+        cli._project_git_tag_policy_at_snapshot(repo_root, "f" * 40, project)
+
+
+def test_snapshot_tag_policy_requires_project_root(tmp_path, monkeypatch):
+    project = SimpleNamespace(name="demo", project_root=None)
+    monkeypatch.setattr(
+        cli, "_project_git_tag_policy_at_snapshot",
+        _real_project_git_tag_policy_at_snapshot,
+    )
+    monkeypatch.setattr(
+        cli, "run_local_git",
+        lambda *_args, **_kwargs: pytest.fail("read a policy without an authoritative project root"),
+    )
+
+    with pytest.raises(RuntimeError, match="project_root is required"):
+        cli._project_git_tag_policy_at_snapshot(tmp_path, "f" * 40, project)
+
+
+def test_snapshot_tag_policy_resolves_relative_project_root(tmp_path, monkeypatch):
+    project = SimpleNamespace(name="demo", project_root=Path("projects/demo"))
+    monkeypatch.setattr(
+        cli, "_project_git_tag_policy_at_snapshot",
+        _real_project_git_tag_policy_at_snapshot,
+    )
+    seen = []
+    monkeypatch.setattr(
+        cli, "_read_git_path_at_commit",
+        lambda root, revision, path, **_kwargs: seen.append((root, revision, path))
+        or '[project]\nid = "demo"\nprefix = "demo-v"\n'
+        "[project.release]\ngit_tag = false\n",
+    )
+
+    assert cli._project_git_tag_policy_at_snapshot(tmp_path, "f" * 40, project) is False
+    assert seen == [(tmp_path, "f" * 40, Path("projects/demo/cmru.toml"))]
+
+
+def test_snapshot_policy_path_comes_from_the_origin_orchestration_file(tmp_path, monkeypatch):
+    repo_root = tmp_path / "repo"
+    config_path = repo_root / "cmru.orchestration.toml"
+    base = "f" * 40
+    project = SimpleNamespace(name="demo", project_root=repo_root / "old/demo")
+    configs = {"demo": project}
+    read_paths = []
+    resolved_paths = []
+    monkeypatch.setattr(
+        cli, "_project_git_tag_policy_at_snapshot",
+        _real_project_git_tag_policy_at_snapshot,
+    )
+
+    def fake_read(_root, revision, path, **_kwargs):
+        read_paths.append(path)
+        assert revision == base
+        return (
+            '[project]\nid = "demo"\nprefix = "demo-v"\n'
+            "[project.release]\ngit_tag = true\n"
+        )
+
+    monkeypatch.setattr(cli, "_read_git_path_at_commit", fake_read)
+    monkeypatch.setattr(
+        cli, "_resolve_git_file_at_commit",
+        lambda _root, revision, path, **_kwargs: (
+            resolved_paths.append(path) or path,
+            '[orchestration.project.demo]\nconfig = "new/demo/cmru.toml"\n'
+            if path == Path("cmru.orchestration.toml")
+            else "[project.release]\ngit_tag = true\n",
+        ),
+    )
+    paths = _real_project_config_paths_at_snapshot(
+        repo_root, base, config_path, configs, ["demo"],
+    )
+
+    assert paths == {"demo": Path("new/demo/cmru.toml")}
+    assert cli._project_git_tag_policy_at_snapshot(
+        repo_root, base, project, project_config_rel=paths["demo"],
+    ) is True
+    assert read_paths == [Path("new/demo/cmru.toml")]
+    assert resolved_paths == [Path("cmru.orchestration.toml"), Path("new/demo/cmru.toml")]
+
+
+def test_snapshot_project_config_direct_file_uses_its_snapshot_path(tmp_path):
+    repo_root = tmp_path / "repo"
+    _init_repo(repo_root)
+    project_config = repo_root / "projects" / "demo" / "cmru.toml"
+    project_config.parent.mkdir(parents=True)
+    project_config.write_text("[project.release]\ngit_tag = true\n", encoding="utf-8")
+    _git("add", "projects/demo/cmru.toml", cwd=repo_root)
+    _git("commit", "-q", "-m", "add project config", cwd=repo_root)
+    revision = _git("rev-parse", "HEAD", cwd=repo_root)
+    project = SimpleNamespace(name="demo", project_root=repo_root / "old")
+    paths = _real_project_config_paths_at_snapshot(
+        repo_root, revision, project_config,
+        {"demo": project}, ["demo"],
+    )
+
+    assert paths == {"demo": Path("projects/demo/cmru.toml")}
+
+
+def test_snapshot_reader_resolves_project_config_symlinks_inside_git_tree(tmp_path):
+    repo_root = tmp_path / "repo"
+    _init_repo(repo_root)
+    shared = repo_root / "shared"
+    shared.mkdir()
+    (shared / "cmru.toml").write_text(
+        "[project.release]\ngit_tag = true\n", encoding="utf-8",
+    )
+    project = repo_root / "project"
+    project.mkdir()
+    (project / "cmru.toml").symlink_to("../shared/cmru.toml")
+    (repo_root / "alias").symlink_to("project")
+    (repo_root / "cmru.orchestration.toml").write_text(
+        '[orchestration.project.demo]\nconfig = "project/cmru.toml"\n',
+        encoding="utf-8",
+    )
+    _git(
+        "add", "shared/cmru.toml", "project/cmru.toml", "alias",
+        "cmru.orchestration.toml", cwd=repo_root,
+    )
+    _git("commit", "-q", "-m", "add symlinked project config", cwd=repo_root)
+    revision = _git("rev-parse", "HEAD", cwd=repo_root)
+
+    expected = "[project.release]\ngit_tag = true\n"
+    assert cli._read_git_path_at_commit(
+        repo_root, revision, Path("project/cmru.toml"), source_label="origin/main",
+    ) == expected
+    assert cli._read_git_path_at_commit(
+        repo_root, revision, Path("alias/cmru.toml"), source_label="origin/main",
+    ) == expected
+    assert _real_project_config_paths_at_snapshot(
+        repo_root, revision, repo_root / "cmru.orchestration.toml",
+        {"demo": SimpleNamespace(name="demo", project_root=repo_root / "old/demo")},
+        ["demo"],
+    ) == {"demo": Path("shared/cmru.toml")}
+
+
+def test_snapshot_and_candidate_follow_orchestration_link_selected_by_caller(tmp_path, monkeypatch):
+    source_root = tmp_path / "source"
+    _init_repo(source_root)
+    target_orchestration = source_root / "cfg" / "cmru.orchestration.toml"
+    target_project_config = source_root / "cfg" / "demo" / "cmru.toml"
+    old_orchestration = source_root / "cfg" / "old" / "cmru.orchestration.toml"
+    old_project_config = source_root / "cfg" / "old" / "demo" / "cmru.toml"
+    target_orchestration.parent.mkdir(parents=True)
+    target_project_config.parent.mkdir(parents=True)
+    old_orchestration.parent.mkdir(parents=True)
+    old_project_config.parent.mkdir(parents=True)
+    target_orchestration.write_text(
+        '[orchestration.project.demo]\nconfig = "demo/cmru.toml"\n',
+        encoding="utf-8",
+    )
+    target_project_config.write_text(
+        "[project.release]\ngit_tag = true\n", encoding="utf-8",
+    )
+    old_orchestration.write_text(
+        '[orchestration.project.demo]\nconfig = "demo/cmru.toml"\n',
+        encoding="utf-8",
+    )
+    old_project_config.write_text(
+        "[project.release]\ngit_tag = false\n", encoding="utf-8",
+    )
+    invocation_config = source_root / "cmru.orchestration.toml"
+    invocation_config.symlink_to("cfg/cmru.orchestration.toml")
+    _git(
+        "add", "cfg/cmru.orchestration.toml", "cfg/demo/cmru.toml",
+        "cfg/old/cmru.orchestration.toml", "cfg/old/demo/cmru.toml",
+        "cmru.orchestration.toml", cwd=source_root,
+    )
+    _git("commit", "-q", "-m", "add symlinked orchestration config", cwd=source_root)
+    revision = _git("rev-parse", "HEAD", cwd=source_root)
+
+    # The caller still resolves the link to the old target while the source
+    # snapshot and retained candidate resolve the same selected link to cfg/.
+    invocation_config.unlink()
+    invocation_config.symlink_to("cfg/old/cmru.orchestration.toml")
+    monkeypatch.setattr(
+        cli, "resolve_invocation_context",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            config_path=old_orchestration.resolve(),
+            config_reference_path=invocation_config,
+        ),
+    )
+    config_reference = cli._resolve_config(str(invocation_config))
+    candidate_root = tmp_path / "candidate"
+    _git("clone", "-q", str(source_root), str(candidate_root), cwd=tmp_path)
+    repo_alias = tmp_path / "repo-alias"
+    repo_alias.symlink_to(source_root, target_is_directory=True)
+    aliased_config_reference = repo_alias / "cmru.orchestration.toml"
+    configs = {
+        "demo": SimpleNamespace(name="demo", project_root=source_root / "old/demo"),
+    }
+
+    assert _real_project_config_paths_at_snapshot(
+        source_root, revision, config_reference, configs, ["demo"],
+    ) == {"demo": Path("cfg/demo/cmru.toml")}
+    assert _real_project_config_paths_in_candidate(
+        source_root, candidate_root, config_reference, configs, ["demo"],
+    ) == {"demo": Path("cfg/demo/cmru.toml")}
+    assert _real_project_config_paths_at_snapshot(
+        source_root, revision, aliased_config_reference, configs, ["demo"],
+    ) == {"demo": Path("cfg/demo/cmru.toml")}
+    assert _real_project_config_paths_in_candidate(
+        source_root, candidate_root, aliased_config_reference, configs, ["demo"],
+    ) == {"demo": Path("cfg/demo/cmru.toml")}
+
+
+def test_selected_config_link_can_have_alias_filename(tmp_path):
+    source_root = tmp_path / "source"
+    _init_repo(source_root)
+    target_orchestration = source_root / "cfg" / "cmru.orchestration.toml"
+    project_config = source_root / "cfg" / "demo" / "cmru.toml"
+    target_orchestration.parent.mkdir(parents=True)
+    project_config.parent.mkdir(parents=True)
+    target_orchestration.write_text(
+        '[orchestration.project.demo]\nconfig = "demo/cmru.toml"\n',
+        encoding="utf-8",
+    )
+    project_config.write_text("[project]\nid = \"demo\"\n", encoding="utf-8")
+    selected_link = source_root / "current.toml"
+    selected_link.symlink_to("cfg/cmru.orchestration.toml")
+    _git(
+        "add", "cfg/cmru.orchestration.toml", "cfg/demo/cmru.toml", "current.toml",
+        cwd=source_root,
+    )
+    _git("commit", "-q", "-m", "add aliased orchestration filename", cwd=source_root)
+    revision = _git("rev-parse", "HEAD", cwd=source_root)
+    candidate_root = tmp_path / "candidate"
+    _git("clone", "-q", str(source_root), str(candidate_root), cwd=tmp_path)
+    configs = {
+        "demo": SimpleNamespace(name="demo", project_root=source_root / "cfg/demo"),
+    }
+
+    expected = {"demo": Path("cfg/demo/cmru.toml")}
+    assert _real_project_config_paths_at_snapshot(
+        source_root, revision, selected_link, configs, ["demo"],
+    ) == expected
+    assert _real_project_config_paths_in_candidate(
+        source_root, candidate_root, selected_link, configs, ["demo"],
+    ) == expected
+    assert cli._child_release_args([], selected_link, source_root) == [
+        "--config", "current.toml",
+    ]
+
+
+def test_direct_project_config_path_resolves_snapshot_and_candidate_symlinks(tmp_path):
+    source_root = tmp_path / "source"
+    _init_repo(source_root)
+    shared_config = source_root / "shared" / "cmru.toml"
+    shared_config.parent.mkdir()
+    shared_config.write_text("[project.release]\ngit_tag = false\n", encoding="utf-8")
+    project_config = source_root / "demo" / "cmru.toml"
+    project_config.parent.mkdir()
+    project_config.symlink_to("../shared/cmru.toml")
+    _git("add", "shared/cmru.toml", "demo/cmru.toml", cwd=source_root)
+    _git("commit", "-q", "-m", "add symlinked project config", cwd=source_root)
+    revision = _git("rev-parse", "HEAD", cwd=source_root)
+
+    # Keep the caller's config path on the old regular file while snapshot/candidate
+    # contains the symlink, as happens when the caller checkout is behind origin.
+    project_config.unlink()
+    project_config.write_text("[project.release]\ngit_tag = true\n", encoding="utf-8")
+    candidate_root = tmp_path / "candidate"
+    _git("clone", "-q", str(source_root), str(candidate_root), cwd=tmp_path)
+    configs = {"demo": SimpleNamespace(name="demo", project_root=project_config.parent)}
+
+    assert _real_project_config_paths_at_snapshot(
+        source_root, revision, project_config, configs, ["demo"],
+    ) == {"demo": Path("shared/cmru.toml")}
+    assert _real_project_config_paths_in_candidate(
+        source_root, candidate_root, project_config, configs, ["demo"],
+    ) == {"demo": Path("shared/cmru.toml")}
+
+
+def test_project_config_symlink_target_must_match_loader_filename(tmp_path):
+    repo_root = tmp_path / "repo"
+    _init_repo(repo_root)
+    project_config = repo_root / "project" / "cmru.toml"
+    project_config.parent.mkdir(parents=True)
+    target = repo_root / "shared" / "policy.toml"
+    target.parent.mkdir()
+    target.write_text("[project.release]\ngit_tag = true\n", encoding="utf-8")
+    project_config.symlink_to("../shared/policy.toml")
+    orchestration = repo_root / "cmru.orchestration.toml"
+    orchestration.write_text(
+        '[orchestration.project.demo]\nconfig = "project/cmru.toml"\n',
+        encoding="utf-8",
+    )
+    _git("add", "project/cmru.toml", "shared/policy.toml", "cmru.orchestration.toml", cwd=repo_root)
+    _git("commit", "-q", "-m", "add config symlink with wrong target basename", cwd=repo_root)
+    revision = _git("rev-parse", "HEAD", cwd=repo_root)
+
+    with pytest.raises(RuntimeError, match="project config symlink target must be named cmru.toml"):
+        _real_project_config_paths_at_snapshot(
+            repo_root, revision, orchestration,
+            {"demo": SimpleNamespace(name="demo", project_root=repo_root / "project")},
+            ["demo"],
+        )
+
+
+def test_snapshot_reader_refuses_symlink_escape_from_git_tree(tmp_path):
+    repo_root = tmp_path / "repo"
+    _init_repo(repo_root)
+    project = repo_root / "project"
+    project.mkdir()
+    (project / "cmru.toml").symlink_to("../../outside/cmru.toml")
+    _git("add", "project/cmru.toml", cwd=repo_root)
+    _git("commit", "-q", "-m", "add escaping config symlink", cwd=repo_root)
+    revision = _git("rev-parse", "HEAD", cwd=repo_root)
+
+    with pytest.raises(RuntimeError, match="Symlink escapes the Git family"):
+        cli._read_git_path_at_commit(
+            repo_root, revision, Path("project/cmru.toml"), source_label="origin/main",
+        )
+
+
+def test_snapshot_config_path_refuses_unsupported_internal_config_name(tmp_path):
+    repo_root = tmp_path / "repo"
+    _init_repo(repo_root)
+    (repo_root / "other.toml").write_text("invalid = true\n", encoding="utf-8")
+    _git("add", "other.toml", cwd=repo_root)
+    _git("commit", "-q", "-m", "add unsupported config", cwd=repo_root)
+    revision = _git("rev-parse", "HEAD", cwd=repo_root)
+
+    with pytest.raises(RuntimeError, match="Unsupported CMRU config path in Git family"):
+        _real_project_config_paths_at_snapshot(
+            repo_root, revision, repo_root / "other.toml",
+            {"demo": SimpleNamespace(name="demo", project_root=repo_root / "demo")},
+            ["demo"],
+        )
+
+
+@pytest.mark.parametrize(
+    ("orchestration_text", "expected_error"),
+    [
+        ("invalid = [", "Invalid orchestration config"),
+        ("[orchestration.project.other]\nconfig='other/cmru.toml'\n", "has no config path"),
+        (
+            '[orchestration.project.demo]\nconfig = "../demo/cmru.toml"\n',
+            "must stay inside the family",
+        ),
+        (
+            '[orchestration.project.demo]\nconfig = "demo/other.toml"\n',
+            "must stay inside the family",
+        ),
+        ('[orchestration.project.demo]\nconfig = " "\n', "non-empty relative path"),
+    ],
+)
+def test_snapshot_orchestration_path_refuses_missing_or_unsafe_config_paths(
+    tmp_path, monkeypatch, orchestration_text, expected_error,
+):
+    repo_root = tmp_path / "repo"
+    config_path = repo_root / "cmru.orchestration.toml"
+    base = "f" * 40
+    monkeypatch.setattr(
+        cli, "_resolve_git_file_at_commit",
+        lambda _root, _revision, path, **_kwargs: (path, orchestration_text),
+    )
+
+    with pytest.raises(RuntimeError, match=expected_error):
+        _real_project_config_paths_at_snapshot(
+            repo_root, base, config_path,
+            {"demo": SimpleNamespace(name="demo", project_root=repo_root / "demo")},
+            ["demo"],
+        )
+
+
+def test_snapshot_orchestration_read_failure_stops_before_policy_lookup(tmp_path, monkeypatch):
+    repo_root = tmp_path / "repo"
+    monkeypatch.setattr(
+        cli, "_resolve_git_file_at_commit",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("Failed to read orchestration config from origin/main")
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="Failed to read orchestration config"):
+        _real_project_config_paths_at_snapshot(
+            repo_root, "f" * 40, repo_root / "cmru.orchestration.toml",
+            {"demo": SimpleNamespace(name="demo", project_root=repo_root / "demo")},
+            ["demo"],
+        )
+
+
+def test_candidate_orchestration_path_uses_retained_candidate_config(tmp_path):
+    source_root = tmp_path / "source"
+    candidate_root = tmp_path / "candidate"
+    _init_repo(candidate_root)
+    config_path = source_root / "cmru.orchestration.toml"
+    candidate_config = candidate_root / "cmru.orchestration.toml"
+    candidate_config.write_text(
+        '[orchestration.project.demo]\nconfig = "new/demo/cmru.toml"\n',
+        encoding="utf-8",
+    )
+    candidate_project_config = candidate_root / "new" / "demo" / "cmru.toml"
+    candidate_project_config.parent.mkdir(parents=True)
+    candidate_project_config.write_text(
+        "[project.release]\ngit_tag = true\n", encoding="utf-8",
+    )
+    _git("add", "cmru.orchestration.toml", "new/demo/cmru.toml", cwd=candidate_root)
+    _git("commit", "-q", "-m", "record candidate config", cwd=candidate_root)
+
+    paths = _real_project_config_paths_in_candidate(
+        source_root, candidate_root, config_path,
+        {"demo": SimpleNamespace(name="demo", project_root=source_root / "old/demo")},
+        ["demo"],
+    )
+
+    assert paths == {"demo": Path("new/demo/cmru.toml")}
+
+
+def test_candidate_direct_project_config_uses_recorded_project_path(tmp_path):
+    source_root = tmp_path / "source"
+    _init_repo(source_root)
+    config_path = source_root / "projects/demo/cmru.toml"
+    config_path.parent.mkdir(parents=True)
+    config_path.write_text("[project.release]\ngit_tag = false\n", encoding="utf-8")
+    _git("add", "projects/demo/cmru.toml", cwd=source_root)
+    _git("commit", "-q", "-m", "add project config", cwd=source_root)
+    paths = _real_project_config_paths_in_candidate(
+        source_root, source_root, config_path,
+        {"demo": SimpleNamespace(name="demo", project_root=source_root / "old/demo")},
+        ["demo"],
+    )
+
+    assert paths == {"demo": Path("projects/demo/cmru.toml")}
+
+
+def test_candidate_orchestration_read_failure_refuses_resume(tmp_path):
+    source_root = tmp_path / "source"
+    candidate_root = tmp_path / "candidate"
+    _init_repo(candidate_root)
+    (candidate_root / "README.md").write_text("candidate without config\n", encoding="utf-8")
+    _git("add", "README.md", cwd=candidate_root)
+    _git("commit", "-q", "-m", "candidate without config", cwd=candidate_root)
+    with pytest.raises(RuntimeError, match="Tracked path is missing from retained candidate"):
+        _real_project_config_paths_in_candidate(
+            source_root, candidate_root,
+            source_root / "cmru.orchestration.toml",
+            {"demo": SimpleNamespace(name="demo", project_root=source_root / "demo")},
+            ["demo"],
+        )
+
+
+@pytest.mark.parametrize(
+    ("content", "expected_error"),
+    [
+        ("invalid = [", "Invalid project config"),
+        (
+            '[project]\nid = "demo"\nprefix = "demo-v"\n'
+            "[project.release]\ngit_tag = 1\n",
+            "git_tag must be explicitly true or false",
+        ),
+    ],
+)
+def test_candidate_tag_policy_refuses_invalid_project_policy(
+    tmp_path, content, expected_error,
+):
+    candidate_root = tmp_path / "candidate"
+    _init_repo(candidate_root)
+    project_config_rel = Path("demo/cmru.toml")
+    candidate_config = candidate_root / project_config_rel
+    candidate_config.parent.mkdir(parents=True)
+    candidate_config.write_text(content, encoding="utf-8")
+    _git("add", project_config_rel.as_posix(), cwd=candidate_root)
+    _git("commit", "-q", "-m", "record candidate config", cwd=candidate_root)
+
+    with pytest.raises(RuntimeError, match=expected_error):
+        cli._project_git_tag_policy_in_candidate(
+            candidate_root, "demo", project_config_rel,
+        )
+
+
+def test_candidate_tag_policy_refuses_missing_project_config(tmp_path):
+    candidate_root = tmp_path / "candidate"
+    _init_repo(candidate_root)
+    (candidate_root / "README.md").write_text("candidate without config\n", encoding="utf-8")
+    _git("add", "README.md", cwd=candidate_root)
+    _git("commit", "-q", "-m", "candidate without config", cwd=candidate_root)
+    with pytest.raises(RuntimeError, match="Tracked path is missing from retained candidate"):
+        cli._project_git_tag_policy_in_candidate(
+            candidate_root, "demo", Path("demo/cmru.toml"),
+        )
+
+
+def test_resume_checks_tag_policy_from_committed_candidate_before_running_child(
+    tmp_path, monkeypatch,
+):
+    source_root = tmp_path / "source"
+    _init_repo(source_root)
+    candidate_root = tmp_path / "retained"
+    _init_repo(candidate_root)
+    config_path = tmp_path / "external" / "cmru.orchestration.toml"
+    project = cli.ProjectConfig(
+        "demo", {}, {}, project_root=source_root / "demo", git_tag=False,
+        github_token="token",
+    )
+    loaded = (
+        source_root, {"demo": project}, ["demo"], ["demo"], ["demo"],
+        "project-first", {}, SimpleNamespace(), _github_config(), SimpleNamespace(),
+    )
+    workspace = transaction.ReleaseWorkspace(
+        source_root, candidate_root, "cmru-release-test", "a" * 40,
+    )
+    candidate_config = candidate_root / "demo" / "cmru.toml"
+    candidate_config.parent.mkdir(parents=True)
+    candidate_config.write_text(
+        '[project]\nid = "demo"\nprefix = "demo-v"\n'
+        "[project.release]\ngit_tag = true\n",
+        encoding="utf-8",
+    )
+    _git("add", "demo/cmru.toml", cwd=candidate_root)
+    _git("commit", "-q", "-m", "record candidate config", cwd=candidate_root)
+    events = []
+
+    monkeypatch.setattr(cli, "_resolve_config", lambda _path: config_path)
+    monkeypatch.setattr(cli, "load_config", lambda _path: loaded)
+    monkeypatch.setattr(cli, "apply_release_env", lambda *_args: None)
+    monkeypatch.setattr(cli.transaction, "release_lock", lambda _root: nullcontext())
+    monkeypatch.setattr(cli, "_uncommitted_release_paths", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(
+        cli.transaction, "read_release_scope_for_path", lambda _path: ["demo"],
+    )
+    monkeypatch.setattr(
+        cli.transaction, "resume_workspace", lambda *_args, **_kwargs: workspace,
+    )
+    monkeypatch.setattr(
+        cli.transaction, "assert_resume_workspace_committed",
+        lambda _path: events.append("candidate-committed"),
+    )
+    monkeypatch.setattr(
+        cli, "_assert_resume_candidate_is_safe_to_replay",
+        lambda *_args, **_kwargs: events.append("candidate-safe"),
+    )
+    monkeypatch.setattr(
+        cli, "_require_local_tag_inspection_support",
+        lambda _root: events.append("tag-support"),
+    )
+    monkeypatch.setattr(cli.transaction, "copy_secret_overlays", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        cli.transaction, "run_child",
+        lambda *_args, **_kwargs: events.append("child") or 0,
+    )
+    monkeypatch.setattr(cli.transaction, "retain_success_outputs", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(cli.transaction, "remove_backup_branch", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(cli.transaction, "remove_workspace", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(cli.transaction, "forget_release_scope", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        cli.transaction, "_sync_local_main_result",
+        lambda *_args, **_kwargs: transaction._SyncLocalMainResult(True),
+    )
+
+    assert cli.main([
+        "release", "--resume", str(candidate_root), "--config", str(config_path),
+    ]) == 0
+    assert events == ["candidate-committed", "candidate-safe", "tag-support", "child"]
+
+
+@pytest.mark.parametrize("handoff_kind", ["malformed", "wrong-root", "bad-hash"])
+def test_snapshot_handoff_rejects_malformed_identity(tmp_path, monkeypatch, handoff_kind):
+    repo_root = tmp_path / "repo"
+    handoff = {
+        "malformed": "not-a-handoff",
+        "wrong-root": f"{tmp_path / 'other'}:{'a' * 40}",
+        "bad-hash": f"{repo_root}:{'z' * 40}",
+    }[handoff_kind]
+    with pytest.raises(RuntimeError, match="invalid CMRU preflighted origin/main snapshot handoff"):
+        cli._consume_release_snapshot_handoff(repo_root, handoff)
+
+
+def test_snapshot_handoff_refuses_commit_missing_from_family_object_store(tmp_path, monkeypatch):
+    repo_root = tmp_path / "repo"
+    monkeypatch.setattr(
+        cli, "run_local_git",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            returncode=1, stdout="", stderr="unknown commit",
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="preflighted origin/main commit is unavailable"):
+        cli._consume_release_snapshot_handoff(
+            repo_root, f"{repo_root.resolve()}:{'a' * 40}",
+        )
+
+
+def test_release_refuses_handoff_after_origin_main_moves(tmp_path, monkeypatch, capsys):
+    config = tmp_path / "cmru.toml"
+    config.write_text("", encoding="utf-8")
+    project = _project("alpha")
+    loaded = (
+        tmp_path, {"alpha": project}, ["alpha"], ["alpha"], [],
+        "project-first", {}, SimpleNamespace(), _github_config(), SimpleNamespace(),
+    )
+    read_fd, write_fd = os.pipe()
+    checked_base = "a" * 40
+    assert os.write(
+        write_fd, f"{tmp_path.resolve()}:{checked_base}".encode("utf-8"),
+    ) == len(f"{tmp_path.resolve()}:{checked_base}".encode("utf-8"))
+    os.close(write_fd)
+    monkeypatch.setenv(cli._RELEASE_PREFLIGHT_SNAPSHOT_FD_ENV, str(read_fd))
+    monkeypatch.setattr(cli, "load_config", lambda _path: loaded)
+    monkeypatch.setattr(cli, "apply_release_env", lambda *_args: None)
+    monkeypatch.setattr(transaction, "project_git_family_groups", lambda root, projects: {root: projects})
+    monkeypatch.setattr(transaction, "release_lock", lambda _root: nullcontext())
+    monkeypatch.setattr(
+        cli, "run_local_git",
+        lambda *_args, **_kwargs: SimpleNamespace(returncode=0, stdout="", stderr=""),
+    )
+    monkeypatch.setattr(transaction, "fetch_origin_main", lambda *_args, **_kwargs: "b" * 40)
+    monkeypatch.setattr(
+        transaction, "create_workspace",
+        lambda *_args, **_kwargs: pytest.fail("workspace created after origin/main moved"),
+    )
+
+    assert cli.main(["release", "alpha", "--config", str(config)]) == 1
+    assert "origin/main changed after the multi-family release preflight" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("fd_value", ["not-an-int", "0", "999999999"])
+def test_main_rejects_invalid_snapshot_pipe_descriptor(tmp_path, monkeypatch, fd_value, capsys):
+    monkeypatch.setenv(cli._RELEASE_PREFLIGHT_SNAPSHOT_FD_ENV, fd_value)
+
+    assert cli.main(["status", "--config", str(tmp_path / "cmru.toml")]) == 2
+    assert "invalid internal release snapshot pipe" in capsys.readouterr().err
+
+
+def test_main_rejects_regular_file_as_snapshot_pipe(tmp_path, monkeypatch, capsys):
+    data = tmp_path / "not-a-pipe"
+    data.write_text("payload", encoding="utf-8")
+    fd = os.open(data, os.O_RDONLY)
+    monkeypatch.setenv(cli._RELEASE_PREFLIGHT_SNAPSHOT_FD_ENV, str(fd))
+
+    assert cli.main(["status", "--config", str(tmp_path / "cmru.toml")]) == 2
+    assert "expected an inherited pipe descriptor" in capsys.readouterr().err
+
+
+def test_snapshot_pipe_refuses_oversized_payload(tmp_path, monkeypatch):
+    read_fd, write_fd = os.pipe()
+    os.close(write_fd)
+    monkeypatch.setenv(cli._RELEASE_PREFLIGHT_SNAPSHOT_FD_ENV, str(read_fd))
+    monkeypatch.setattr(cli.os, "read", lambda *_args: b"x" * 8193)
+
+    with pytest.raises(RuntimeError, match="snapshot handoff payload is too large"):
+        cli._read_release_snapshot_handoff_from_pipe()
+
+
 def test_parent_reverts_promotion_and_reports_sync_failure_on_child_failure(
     tmp_path, monkeypatch, capsys,
 ):
+    _init_repo(tmp_path)
     config = tmp_path / "cmru.toml"
     config.write_text(
         """
@@ -447,7 +1478,7 @@ cwd = "alpha"
     )
     project = _project("alpha")
     loaded = (tmp_path, {"alpha": project}, ["alpha"], ["alpha"], [], "project-first", {},
-              SimpleNamespace(), SimpleNamespace(), SimpleNamespace())
+              SimpleNamespace(), _github_config(), SimpleNamespace())
     workspace = transaction.ReleaseWorkspace(tmp_path, tmp_path / "release", "cmru/release/x", "a" * 40)
     calls: list[object] = []
 
@@ -455,10 +1486,12 @@ cwd = "alpha"
     monkeypatch.setattr(cli, "apply_release_env", lambda *_args: None)
     monkeypatch.setattr(cli, "_uncommitted_release_paths", lambda *_args, **_kwargs: {})
     monkeypatch.setattr(transaction, "release_lock", lambda _root: nullcontext())
-    monkeypatch.setattr(transaction, "fetch_origin_main", lambda _root: "a" * 40)
+    monkeypatch.setattr(cli, "_require_local_tag_inspection_support", lambda _root: None)
+    monkeypatch.setattr(transaction, "fetch_origin_main", lambda _root, **_kwargs: "a" * 40)
     monkeypatch.setattr(transaction, "assert_local_main_not_ahead", lambda _root, **_kw: 0)
     monkeypatch.setattr(transaction, "create_workspace", lambda _root, *, base, **_kw: workspace)
-    monkeypatch.setattr(transaction, "copy_secret_overlays", lambda *_args: calls.append("secret"))
+    monkeypatch.setattr(transaction, "write_release_tag_snapshot", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(transaction, "copy_secret_overlays", lambda *_args, **_kwargs: calls.append("secret"))
     # Child fails after the candidate cycle started; the new parent must never
     # infer that source history needs a compensating revert.
     monkeypatch.setattr(transaction, "run_child", lambda _workspace, args, **kwargs: calls.append(list(args)) or 1)
@@ -469,14 +1502,14 @@ cwd = "alpha"
     )
     monkeypatch.setattr(
         transaction, "_sync_local_main_result",
-        lambda _root: calls.append("synced") or transaction._SyncLocalMainResult(
+        lambda _root, **_kwargs: calls.append("synced") or transaction._SyncLocalMainResult(
             False,
             "Could not sync local main automatically: caller checkout is dirty; local main was left untouched.",
         ),
     )
     remove_calls: list[object] = []
     monkeypatch.setattr(transaction, "remove_workspace", lambda _w: remove_calls.append("removed"))
-    monkeypatch.setattr(transaction, "remove_backup_branch", lambda _w: remove_calls.append("backup-removed"))
+    monkeypatch.setattr(transaction, "remove_backup_branch", lambda _w, **_kwargs: remove_calls.append("backup-removed"))
 
     exc = cli.main(["release", "--config", str(config), "alpha"])
 
@@ -493,6 +1526,7 @@ cwd = "alpha"
 
 
 def test_parent_skips_revert_when_promotion_never_landed(tmp_path, monkeypatch):
+    _init_repo(tmp_path)
     config = tmp_path / "cmru.toml"
     config.write_text(
         """
@@ -510,7 +1544,7 @@ cwd = "alpha"
     )
     project = _project("alpha")
     loaded = (tmp_path, {"alpha": project}, ["alpha"], ["alpha"], [], "project-first", {},
-              SimpleNamespace(), SimpleNamespace(), SimpleNamespace())
+              SimpleNamespace(), _github_config(), SimpleNamespace())
     workspace = transaction.ReleaseWorkspace(tmp_path, tmp_path / "release", "cmru/release/x", "a" * 40)
     calls: list[object] = []
 
@@ -518,10 +1552,12 @@ cwd = "alpha"
     monkeypatch.setattr(cli, "apply_release_env", lambda *_args: None)
     monkeypatch.setattr(cli, "_uncommitted_release_paths", lambda *_args, **_kwargs: {})
     monkeypatch.setattr(transaction, "release_lock", lambda _root: nullcontext())
-    monkeypatch.setattr(transaction, "fetch_origin_main", lambda _root: "a" * 40)
+    monkeypatch.setattr(cli, "_require_local_tag_inspection_support", lambda _root: None)
+    monkeypatch.setattr(transaction, "fetch_origin_main", lambda _root, **_kwargs: "a" * 40)
     monkeypatch.setattr(transaction, "assert_local_main_not_ahead", lambda _root, **_kw: 0)
     monkeypatch.setattr(transaction, "create_workspace", lambda _root, *, base, **_kw: workspace)
-    monkeypatch.setattr(transaction, "copy_secret_overlays", lambda *_args: None)
+    monkeypatch.setattr(transaction, "write_release_tag_snapshot", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(transaction, "copy_secret_overlays", lambda *_args, **_kwargs: None)
     # Child fails before ever reaching promote_workspace (e.g. gates failed).
     monkeypatch.setattr(transaction, "run_child", lambda _workspace, args, **kwargs: 1)
     monkeypatch.setattr(transaction, "plan_was_refused", lambda _root, _w: False)
@@ -532,7 +1568,7 @@ cwd = "alpha"
     )
     monkeypatch.setattr(
         transaction, "_sync_local_main_result",
-        lambda _root: calls.append("synced") or transaction._SyncLocalMainResult(True),
+        lambda _root, **_kwargs: calls.append("synced") or transaction._SyncLocalMainResult(True),
     )
 
     exc = cli.main(["release", "--config", str(config), "alpha"])
@@ -594,7 +1630,7 @@ def test_tester_gate_uses_explicit_container_workdir_and_no_shell(monkeypatch, t
         "docker", "run", "--cgroup-parent=dev-gates.slice", "--rm",
         "--mount", "type=bind,src=/host/repo,dst=/worktree",
         "--workdir", "/worktree/cmru", "--memory", "3g", "--memory-swap", "16g",
-        "--cpus", "1.5", "--cpu-period", "100000",
+        "--cpus", "1.5",
         "tester-unified:test",
         "/opt/tester-venv/bin/python", "-m", "pytest", "tests", "-q",
     ]
@@ -1199,6 +2235,62 @@ def test_resume_rejects_worktree_from_another_repository(tmp_path, monkeypatch):
 
     with pytest.raises(RuntimeError, match="not a worktree"):
         transaction.resume_workspace(tmp_path, retained)
+
+
+def test_resume_adopts_only_a_validated_legacy_release_worktree():
+    with _OriginAndClone() as h:
+        branch = "cmru-release-20260928_120000-alpha-ab12cd"
+        retained = h.add_worktree(branch, path_name="legacy-release")
+        initial = _git("rev-parse", "HEAD", cwd=retained)
+        legacy = transaction.ReleaseWorkspace(
+            repo_root=h.repo_root, path=retained, branch=branch, base=initial,
+        )
+        transaction.write_release_progress(h.repo_root, legacy, initial)
+
+        resumed = transaction.resume_workspace(h.repo_root, retained)
+
+        assert resumed.context is not None
+        record = transaction._shared_worktree().find_workspace(
+            resumed.context.git_common_dir, resumed.context.worktree_path,
+        )
+        assert record is not None
+        assert record.purpose == "cmru-legacy"
+        assert resumed.context.namespace.labels["cmru.purpose"] == "release"
+        assert resumed.workspace_id == resumed.context.workspace_id
+        assert resumed.base == initial
+
+
+def test_resume_refuses_recordless_legacy_release_without_valid_progress():
+    with _OriginAndClone() as h:
+        branch = "cmru-release-20260928_120001-alpha-ab12cd"
+        retained = h.add_worktree(branch, path_name="legacy-release")
+
+        with pytest.raises(RuntimeError, match="no valid CMRU release progress record"):
+            transaction.resume_workspace(h.repo_root, retained)
+
+        _top, common, _branch, _head = transaction._shared_worktree().discover_git_context(retained)
+        assert transaction._shared_worktree().find_workspace(common, retained) is None
+
+
+def test_resume_refuses_legacy_progress_outside_the_candidate_history():
+    with _OriginAndClone() as h:
+        branch = "cmru-release-20260928_120002-alpha-ab12cd"
+        retained = h.add_worktree(branch, path_name="legacy-release")
+        _git("checkout", "-q", "-b", "unrelated", cwd=h.repo_root)
+        (h.repo_root / "README.md").write_text("unrelated commit\n")
+        _git("add", "README.md", cwd=h.repo_root)
+        _git("commit", "-q", "-m", "unrelated work", cwd=h.repo_root)
+        unrelated = _git("rev-parse", "HEAD", cwd=h.repo_root)
+        legacy = transaction.ReleaseWorkspace(
+            repo_root=h.repo_root, path=retained, branch=branch, base=unrelated,
+        )
+        transaction.write_release_progress(h.repo_root, legacy, unrelated)
+
+        with pytest.raises(RuntimeError, match="not an ancestor of the retained candidate"):
+            transaction.resume_workspace(h.repo_root, retained)
+
+        _top, common, _branch, _head = transaction._shared_worktree().discover_git_context(retained)
+        assert transaction._shared_worktree().find_workspace(common, retained) is None
 
 
 def test_push_backup_branch_force_pushes_under_its_own_name_and_records_it(tmp_path, monkeypatch):
@@ -1935,6 +3027,244 @@ def test_write_and_read_release_scope_round_trips():
         assert transaction.read_release_scope(h.repo_root, workspace) == ["ciu", "cmru"]
 
 
+def test_release_tag_snapshot_round_trips_is_immutable_and_is_forgotten():
+    with _OriginAndClone() as h:
+        workspace_path = h.clone_workspace("cmru/release/tag-snapshot")
+        base = _git("rev-parse", "HEAD", cwd=workspace_path)
+        workspace = transaction.ReleaseWorkspace(
+            h.repo_root, workspace_path, "cmru/release/tag-snapshot", base,
+        )
+        snapshot = {
+            "refs/tags/demo-v1": "a" * 40,
+            "refs/tags/demo-v2^{}": "b" * 40,
+        }
+
+        assert transaction.read_release_tag_snapshot(h.repo_root, workspace) is None
+        transaction.write_release_tag_snapshot(h.repo_root, workspace, snapshot)
+        assert transaction.read_release_tag_snapshot(h.repo_root, workspace) == snapshot
+        with pytest.raises(RuntimeError, match="release tag snapshot already exists"):
+            transaction.write_release_tag_snapshot(h.repo_root, workspace, {})
+
+        attempts = {"refs/tags/demo-v3": "c" * 40}
+        transaction.write_release_tag_attempts(h.repo_root, workspace, attempts)
+        assert transaction.read_release_tag_attempts(h.repo_root, workspace) == attempts
+        transaction.write_confirmed_absent_release_tag_attempts(
+            h.repo_root, workspace, attempts,
+        )
+        assert transaction.read_confirmed_absent_release_tag_attempts(
+            h.repo_root, workspace,
+        ) == attempts
+        transaction.write_release_tag_attempts(h.repo_root, workspace, attempts)
+        assert transaction.read_confirmed_absent_release_tag_attempts(
+            h.repo_root, workspace,
+        ) == {}
+        with pytest.raises(RuntimeError, match="changed after a prior push attempt"):
+            transaction.write_release_tag_attempts(
+                h.repo_root, workspace, {"refs/tags/demo-v3": "d" * 40},
+            )
+
+        transaction.forget_release_scope(h.repo_root, workspace)
+        assert transaction.read_release_tag_snapshot(h.repo_root, workspace) is None
+        assert transaction.read_release_tag_attempts(h.repo_root, workspace) is None
+        assert transaction.read_confirmed_absent_release_tag_attempts(
+            h.repo_root, workspace,
+        ) == {}
+
+
+def test_release_tag_attempt_can_rotate_after_exact_absence_confirmation():
+    with _OriginAndClone() as h:
+        workspace_path = h.clone_workspace("cmru/release/tag-retry")
+        base = _git("rev-parse", "HEAD", cwd=workspace_path)
+        workspace = transaction.ReleaseWorkspace(
+            h.repo_root, workspace_path, "cmru/release/tag-retry", base,
+        )
+        first = {"refs/tags/demo-v1": "c" * 40}
+        retry = {"refs/tags/demo-v1": "d" * 40}
+        transaction.write_release_tag_attempts(h.repo_root, workspace, first)
+        transaction.write_confirmed_absent_release_tag_attempts(
+            h.repo_root, workspace, first,
+        )
+
+        transaction.write_release_tag_attempts(h.repo_root, workspace, retry)
+
+        assert transaction.read_release_tag_attempts(h.repo_root, workspace) == retry
+        assert transaction.read_confirmed_absent_release_tag_attempts(
+            h.repo_root, workspace,
+        ) == {}
+
+
+@pytest.mark.parametrize(
+    "snapshot",
+    [
+        {"refs/heads/main": "a" * 40},
+        {"refs/tags/": "a" * 40},
+        {"refs/tags/demo tag": "a" * 40},
+        {"refs/tags/demo?name": "a" * 40},
+        {"refs/tags/demo-v1": "bad"},
+    ],
+)
+def test_write_release_tag_snapshot_rejects_invalid_ref_facts(snapshot):
+    with _OriginAndClone() as h:
+        workspace_path = h.clone_workspace("cmru/release/bad-tag-snapshot")
+        base = _git("rev-parse", "HEAD", cwd=workspace_path)
+        workspace = transaction.ReleaseWorkspace(
+            h.repo_root, workspace_path, "cmru/release/bad-tag-snapshot", base,
+        )
+        with pytest.raises(RuntimeError, match="origin tag snapshot contains a malformed ref record"):
+            transaction.write_release_tag_snapshot(h.repo_root, workspace, snapshot)
+
+
+@pytest.mark.parametrize(
+    "payload,message",
+    [
+        ("not-json", "cannot read release tag snapshot"),
+        ("[]", "release tag snapshot is malformed"),
+        ('{"refs/heads/main":"' + "a" * 40 + '"}', "release tag snapshot is malformed"),
+        ('{"refs/tags/demo-v1":"bad"}', "release tag snapshot is malformed"),
+        ('{"refs/tags/demo-v1":"' + "a" * 40 + '","refs/tags/demo-v1":"' + "b" * 40 + '"}', "cannot read release tag snapshot"),
+    ],
+)
+def test_read_release_tag_snapshot_refuses_corrupt_sidecars(payload, message):
+    with _OriginAndClone() as h:
+        workspace_path = h.clone_workspace("cmru/release/corrupt-tag-snapshot")
+        base = _git("rev-parse", "HEAD", cwd=workspace_path)
+        workspace = transaction.ReleaseWorkspace(
+            h.repo_root, workspace_path, "cmru/release/corrupt-tag-snapshot", base,
+        )
+        path = transaction._scope_dir(h.repo_root) / f"{transaction._release_token(workspace)}.tags.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(payload, encoding="utf-8")
+        with pytest.raises(RuntimeError, match=message):
+            transaction.read_release_tag_snapshot(h.repo_root, workspace)
+
+
+def test_read_release_tag_snapshot_refuses_nonregular_sidecar():
+    with _OriginAndClone() as h:
+        workspace_path = h.clone_workspace("cmru/release/nonregular-tag-snapshot")
+        base = _git("rev-parse", "HEAD", cwd=workspace_path)
+        workspace = transaction.ReleaseWorkspace(
+            h.repo_root, workspace_path, "cmru/release/nonregular-tag-snapshot", base,
+        )
+        path = transaction._scope_dir(h.repo_root) / f"{transaction._release_token(workspace)}.tags.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.mkdir()
+        with pytest.raises(RuntimeError, match="release tag snapshot is not a regular file"):
+            transaction.read_release_tag_snapshot(h.repo_root, workspace)
+
+
+def test_parse_ls_remote_refs_accepts_valid_rows_and_rejects_ambiguous_output():
+    assert transaction.parse_ls_remote_refs(
+        "\n" + "a" * 40 + "\trefs/tags/demo-v1\n"
+        + "b" * 40 + "\trefs/tags/demo-v2^{}\n",
+        namespace="refs/tags/", description="origin tag lookup",
+    ) == {
+        "refs/tags/demo-v1": "a" * 40,
+        "refs/tags/demo-v2^{}": "b" * 40,
+    }
+    assert transaction.parse_ls_remote_refs(
+        "c" * 40 + "\trefs/heads/main\n",
+        namespace="refs/heads/", description="origin branch lookup",
+    ) == {"refs/heads/main": "c" * 40}
+
+    for output, namespace in (
+        ("malformed row", "refs/heads/"),
+        ("bad\trefs/heads/main", "refs/heads/"),
+        ("a" * 40 + "\trefs/tags/demo-v1", "refs/heads/"),
+        ("a" * 40 + "\trefs/heads/main^{}", "refs/heads/"),
+        ("a" * 40 + "\trefs/tags/^{}", "refs/tags/"),
+        ("a" * 40 + "\trefs/tags/bad?name", "refs/tags/"),
+        ("a" * 40 + "\trefs/tags/name..part", "refs/tags/"),
+        ("a" * 40 + "\trefs/heads/main.lock", "refs/heads/"),
+        ("a" * 40 + "\trefs/tags/demo-v1\n" + "a" * 40 + "\trefs/tags/demo-v1", "refs/tags/"),
+    ):
+        with pytest.raises(RuntimeError, match="malformed ref record|duplicate ref record"):
+            transaction.parse_ls_remote_refs(
+                output, namespace=namespace, description="origin ref lookup",
+            )
+
+
+def test_read_release_scope_for_path_uses_the_candidate_git_family():
+    with _OriginAndClone() as h:
+        branch = "cmru-release-20260930_120000-demo-abcdef"
+        workspace_path = h.add_worktree(branch)
+        base = _git("rev-parse", "HEAD", cwd=workspace_path)
+        workspace = transaction.ReleaseWorkspace(h.repo_root, workspace_path, branch, base)
+
+        assert transaction.read_release_scope_for_path(workspace_path) is None
+        transaction.write_release_scope(h.repo_root, workspace, ["demo"])
+        assert transaction.read_release_scope_for_path(workspace_path) == ["demo"]
+
+
+def test_read_release_scope_for_workspace_never_needs_the_listed_path():
+    with _OriginAndClone() as h:
+        workspace = transaction.ReleaseWorkspace(
+            h.repo_root,
+            h.tmp / "host-namespace" / "not-mounted-here",
+            "cmru-release-20261001_120000-demo-abcdef",
+            "a" * 40,
+        )
+        transaction.write_release_scope(h.repo_root, workspace, ["demo"])
+
+        assert transaction.read_release_scope_for_workspace(h.repo_root, workspace) == ["demo"]
+
+
+def test_read_release_scope_for_workspace_rejects_corrupt_sidecar():
+    with _OriginAndClone() as h:
+        workspace = transaction.ReleaseWorkspace(
+            h.repo_root,
+            h.tmp / "host-namespace" / "not-mounted-here",
+            "cmru-release-20261001_120000-demo-abcdef",
+            "a" * 40,
+        )
+        scope_path = transaction._scope_dir(h.repo_root) / f"{transaction._release_token(workspace)}.json"
+        scope_path.parent.mkdir(parents=True, exist_ok=True)
+        scope_path.write_text("not-json", encoding="utf-8")
+
+        with pytest.raises(RuntimeError, match="cannot read recorded release scope"):
+            transaction.read_release_scope_for_workspace(h.repo_root, workspace)
+
+
+def test_read_release_scope_for_workspace_rejects_nonrelease_branch():
+    workspace = transaction.ReleaseWorkspace(Path("."), Path("missing"), "main", "a" * 40)
+    with pytest.raises(RuntimeError, match="not a retained CMRU release branch"):
+        transaction.read_release_scope_for_workspace(Path("."), workspace)
+
+
+def test_read_release_scope_for_workspace_refuses_scope_stat_errors(monkeypatch):
+    with _OriginAndClone() as h:
+        workspace = transaction.ReleaseWorkspace(
+            h.repo_root, h.tmp / "foreign" / "missing",
+            "cmru-release-20261001_120000-demo-abcdef", "a" * 40,
+        )
+        metadata = transaction._scope_dir(h.repo_root) / f"{transaction._release_token(workspace)}.json"
+        original_lstat = Path.lstat
+
+        def fail_scope_stat(path):
+            if path == metadata:
+                raise PermissionError("permission denied")
+            return original_lstat(path)
+
+        monkeypatch.setattr(Path, "lstat", fail_scope_stat)
+        with pytest.raises(RuntimeError, match="cannot inspect recorded release scope.*permission denied"):
+            transaction.read_release_scope_for_workspace(h.repo_root, workspace)
+
+
+@pytest.mark.parametrize(
+    "payload", [[], 7, ["demo", "demo"], [" demo"], [""], [1]],
+)
+def test_read_release_scope_for_workspace_rejects_malformed_scope_shapes(payload):
+    with _OriginAndClone() as h:
+        workspace = transaction.ReleaseWorkspace(
+            h.repo_root, h.tmp / "foreign" / "missing",
+            "cmru-release-20261001_120000-demo-abcdef", "a" * 40,
+        )
+        metadata = transaction._scope_dir(h.repo_root) / f"{transaction._release_token(workspace)}.json"
+        metadata.parent.mkdir(parents=True, exist_ok=True)
+        metadata.write_text(json.dumps(payload), encoding="utf-8")
+        with pytest.raises(RuntimeError, match="recorded release scope is malformed"):
+            transaction.read_release_scope_for_workspace(h.repo_root, workspace)
+
+
 def test_write_and_read_release_progress_round_trips():
     with _OriginAndClone() as h:
         workspace_path = h.clone_workspace("cmru/release/progress1")
@@ -2140,6 +3470,56 @@ def test_release_projects_sequentially_lets_a_later_project_see_an_earlier_ones_
         )
         assert beta_file.returncode == 0
         assert "alpha-v0.1.0" in _git("tag", "--list", "alpha-v*", cwd=h.origin)
+
+
+def test_release_stops_before_publisher_when_release_tag_push_fails(monkeypatch):
+    with _OriginAndClone() as h:
+        branch = "cmru/release/tag-push-failure"
+        workspace_path = h.clone_workspace(branch)
+        (workspace_path / "alpha").mkdir()
+        (workspace_path / "alpha" / "feature.txt").write_text("candidate\n")
+        _git("add", "alpha/feature.txt", cwd=workspace_path)
+        _git("commit", "-q", "-m", "feat: alpha candidate", cwd=workspace_path)
+        base = _git("rev-parse", "HEAD", cwd=workspace_path)
+        workspace = transaction.ReleaseWorkspace(h.repo_root, workspace_path, branch, base)
+        project = _seq_project(
+            "alpha", prefix="alpha-v", strategy="scm",
+            steps={
+                "run-tests": [cli.Command(label="gate", argv=["true"], cwd=".")],
+                "build": [cli.Command(label="build", argv=["true"], cwd=".")],
+                "push": [cli.Command(label="push", argv=["true"], cwd=".")],
+            },
+        )
+        step_calls = []
+        monkeypatch.setattr(
+            cli, "run_project_step",
+            lambda project, step, _root, _logs: step_calls.append((project.name, step)),
+        )
+
+        real_remote_git = cli.run_remote_git
+
+        def fail_tag_push(root, *args, **kwargs):
+            if args[:2] == ("push", "origin"):
+                assert args == ("push", "origin", "alpha-v0.1.0")
+                return SimpleNamespace(returncode=1, stdout="", stderr="transport failed")
+            return real_remote_git(root, *args, **kwargs)
+
+        monkeypatch.setattr(cli, "run_remote_git", fail_tag_push)
+        with pytest.raises(RuntimeError, match="stopped before build or publish"):
+            cli._release_projects_sequentially(
+                workspace_path,
+                {"alpha": project},
+                workspace,
+                ["alpha"],
+                github_config=_github_config(),
+                env_config=cli.ReleaseEnvConfig({}, None),
+            )
+
+        assert step_calls == [("alpha", "run-tests")]
+        assert _git("tag", "--list", "alpha-v0.1.0", cwd=workspace_path) == ""
+        remote_tags = _git("ls-remote", "--tags", "origin", "refs/tags/alpha-v0.1.0", cwd=workspace_path)
+        assert remote_tags == ""
+        assert _git("rev-parse", "main", cwd=h.origin) == _git("rev-parse", "main", cwd=h.repo_root)
 
 
 def test_release_projects_sequentially_checkpoints_only_up_to_the_last_success():
@@ -2371,8 +3751,47 @@ def test_discard_build_workspace_requires_exact_managed_build_worktree():
         assert preview.branch == "cmru/build/debug"
         assert path.is_dir()
 
-        transaction.discard_build_workspace(h.repo_root, path, dry_run=False)
+        stale_preview = transaction.ReleaseWorkspace(
+            repo_root=h.repo_root, path=path, branch=preview.branch, base="b" * 40,
+        )
+        with pytest.raises(RuntimeError, match="identity changed after cleanup preview"):
+            transaction.discard_build_workspace(
+                h.repo_root, path, dry_run=False, expected_workspace=stale_preview,
+            )
+        assert path.is_dir()
+
+        transaction.discard_build_workspace(
+            h.repo_root, path, dry_run=False, expected_workspace=preview,
+        )
         assert not path.exists()
+
+
+def test_discard_build_workspace_refuses_when_managed_record_disappears(monkeypatch):
+    with _OriginAndClone() as h:
+        parent = h.repo_root / ".worktrees"
+        parent.mkdir()
+        path = parent / "cmru-build-managed"
+        _git("worktree", "add", "-q", "-b", "cmru/build/managed", str(path), "main", cwd=h.repo_root)
+        shared = transaction._shared_worktree()
+        workspace_id = shared.workspace_id_for_path(path)
+        record = SimpleNamespace(purpose="cmru-build")
+        context = SimpleNamespace(workspace_id=workspace_id)
+        current_record = [record]
+        monkeypatch.setattr(
+            transaction, "_shared_workspace_record", lambda *_args: current_record[0],
+        )
+        monkeypatch.setattr(shared, "ensure_workspace", lambda _record: context)
+
+        preview = transaction.discard_build_workspace(h.repo_root, path, dry_run=True)
+        assert preview.context is context
+
+        current_record[0] = None
+        with pytest.raises(RuntimeError, match="identity changed after cleanup preview"):
+            transaction.discard_build_workspace(
+                h.repo_root, path, dry_run=False, expected_workspace=preview,
+            )
+        assert path.is_dir()
+        _git("worktree", "remove", "--force", str(path), cwd=h.repo_root)
 
 
 def test_parent_build_retains_successful_outputs_then_removes_worktree(tmp_path, monkeypatch):
@@ -2384,7 +3803,7 @@ def test_parent_build_retains_successful_outputs_then_removes_worktree(tmp_path,
     )
     loaded = (
         tmp_path, {"alpha": project}, ["alpha"], ["alpha"], [], "project-first", {},
-        SimpleNamespace(), SimpleNamespace(), SimpleNamespace(),
+        SimpleNamespace(), _github_config(), SimpleNamespace(),
     )
     calls: list[str] = []
 
@@ -2392,12 +3811,12 @@ def test_parent_build_retains_successful_outputs_then_removes_worktree(tmp_path,
     monkeypatch.setattr(cli, "apply_release_env", lambda *_args: None)
     monkeypatch.setattr(cli, "_uncommitted_release_paths", lambda *_args: {})
     monkeypatch.setattr(transaction, "release_lock", lambda _root: nullcontext())
-    monkeypatch.setattr(transaction, "fetch_origin_main", lambda _root: "a" * 40)
+    monkeypatch.setattr(transaction, "fetch_origin_main", lambda _root, **_kwargs: "a" * 40)
     monkeypatch.setattr(transaction, "assert_local_main_not_ahead", lambda _root, **_kw: 0)
     monkeypatch.setattr(
         transaction, "create_workspace", lambda _root, *, base, purpose, **_kw: workspace,
     )
-    monkeypatch.setattr(transaction, "copy_secret_overlays", lambda *_args: None)
+    monkeypatch.setattr(transaction, "copy_secret_overlays", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(transaction, "run_child", lambda *_args, **_kwargs: 0)
     monkeypatch.setattr(
         transaction,
@@ -2421,7 +3840,7 @@ def test_parent_build_failure_keeps_worktree_and_does_not_retain_outputs(tmp_pat
     )
     loaded = (
         tmp_path, {"alpha": project}, ["alpha"], ["alpha"], [], "project-first", {},
-        SimpleNamespace(), SimpleNamespace(), SimpleNamespace(),
+        SimpleNamespace(), _github_config(), SimpleNamespace(),
     )
     calls: list[str] = []
 
@@ -2429,12 +3848,12 @@ def test_parent_build_failure_keeps_worktree_and_does_not_retain_outputs(tmp_pat
     monkeypatch.setattr(cli, "apply_release_env", lambda *_args: None)
     monkeypatch.setattr(cli, "_uncommitted_release_paths", lambda *_args: {})
     monkeypatch.setattr(transaction, "release_lock", lambda _root: nullcontext())
-    monkeypatch.setattr(transaction, "fetch_origin_main", lambda _root: "a" * 40)
+    monkeypatch.setattr(transaction, "fetch_origin_main", lambda _root, **_kwargs: "a" * 40)
     monkeypatch.setattr(transaction, "assert_local_main_not_ahead", lambda _root, **_kw: 0)
     monkeypatch.setattr(
         transaction, "create_workspace", lambda _root, *, base, purpose, **_kw: workspace,
     )
-    monkeypatch.setattr(transaction, "copy_secret_overlays", lambda *_args: None)
+    monkeypatch.setattr(transaction, "copy_secret_overlays", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(transaction, "run_child", lambda *_args, **_kwargs: 1)
     monkeypatch.setattr(
         transaction, "retain_successful_build_outputs", lambda *_args: calls.append("retained"),
@@ -2464,6 +3883,36 @@ def test_abandon_workspace_removes_worktree_branch_backup_and_scope():
         assert transaction.read_release_scope(h.repo_root, workspace) is None
 
 
+def test_abandon_workspace_removes_only_recorded_local_release_tag_attempt():
+    with _OriginAndClone() as h:
+        workspace_path = h.add_worktree("cmru/release/local-tag-cleanup")
+        base = _git("rev-parse", "HEAD", cwd=workspace_path)
+        workspace = transaction.ReleaseWorkspace(
+            h.repo_root, workspace_path, "cmru/release/local-tag-cleanup", base,
+        )
+        tag_ref = "refs/tags/alpha-v9"
+        _git("tag", "alpha-v9", cwd=workspace_path)
+        tag_oid = _git("rev-parse", tag_ref, cwd=workspace_path)
+        transaction.write_release_scope(h.repo_root, workspace, ["alpha"])
+        transaction.write_release_tag_snapshot(h.repo_root, workspace, {})
+        transaction.write_release_tag_attempts(h.repo_root, workspace, {tag_ref: tag_oid})
+        transaction.push_backup_branch(workspace)
+
+        transaction.abandon_workspace(
+            h.repo_root,
+            workspace,
+            expected_remote_candidate_oid=_git("rev-parse", "HEAD", cwd=workspace_path),
+            expected_remote_tag_refs={},
+            release_tag_prefixes=("alpha-v",),
+            expected_local_tag_refs={tag_ref: tag_oid},
+            local_tags_to_remove={tag_ref: tag_oid},
+        )
+
+        assert _git("show-ref", "--verify", tag_ref, cwd=h.repo_root, check=False) == ""
+        assert not workspace_path.exists()
+        assert transaction.read_release_tag_attempts(h.repo_root, workspace) is None
+
+
 
 
 
@@ -2481,7 +3930,11 @@ def test_abandon_keeps_local_evidence_when_remote_candidate_deletion_fails(monke
         real_run = subprocess.run
 
         def reject_remote_delete(argv, *args, **kwargs):
-            if list(argv) == ["git", "push", "origin", "--delete", workspace.branch]:
+            if list(argv) == [
+                "git", "push",
+                f"--force-with-lease=refs/heads/{workspace.branch}:{base}",
+                "origin", f":refs/heads/{workspace.branch}",
+            ]:
                 return subprocess.CompletedProcess(argv, 1, "", "permission denied")
             return real_run(argv, *args, **kwargs)
 

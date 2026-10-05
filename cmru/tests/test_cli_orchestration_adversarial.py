@@ -123,9 +123,12 @@ def test_cleanup_release_tag_union_keeps_latest_and_deletes_tag_only(monkeypatch
     monkeypatch.setattr(cli, "list_releases", lambda *args: [
         {"tag_name": "demo-v1.0.0", "id": 1}, {"tag_name": "demo-latest", "id": 2},
     ])
-    monkeypatch.setattr(cli, "list_remote_tags_matching", lambda *args: ["demo-v1.0.0", "demo-v2.0.0"])
+    monkeypatch.setattr(
+        cli, "list_remote_tag_refs_matching",
+        lambda *args, **kwargs: {"demo-v1.0.0": "a" * 40, "demo-v2.0.0": "b" * 40},
+    )
     monkeypatch.setattr(cli, "delete_release", lambda *args, **kwargs: deleted.append(("release", args[3])))
-    monkeypatch.setattr(cli, "delete_git_tag_remote", lambda root, tag, dry_run: deleted.append(("remote", tag)))
+    monkeypatch.setattr(cli, "delete_git_tag_remote", lambda root, tag, dry_run, **kwargs: deleted.append(("remote", tag)))
     monkeypatch.setattr(cli, "delete_git_tag_local", lambda root, tag, dry_run: deleted.append(("local", tag)))
     result = cli.cleanup_project_releases_and_tags(tmp_path, "o", "r", "t", "demo", [], False)
     assert result == ["demo-v1.0.0", "demo-v2.0.0"]
@@ -135,7 +138,10 @@ def test_cleanup_release_tag_union_keeps_latest_and_deletes_tag_only(monkeypatch
 def test_cleanup_unmanaged_release_is_idempotent_and_preserves_tag(monkeypatch):
     monkeypatch.setattr(cli, "list_releases", lambda *args: [])
     assert cli.delete_unmanaged_release_tag("o", "r", "t", "old", dry_run=False) is False
-    monkeypatch.setattr(cli, "list_releases", lambda *args: [{"tag_name": "old", "id": 4}])
+    monkeypatch.setattr(
+        cli, "list_releases",
+        lambda *args: [{"tag_name": "old", "id": 4, "assets": []}],
+    )
     calls = []
     monkeypatch.setattr(cli, "delete_release", lambda *args, **kwargs: calls.append(args[3]))
     assert cli.delete_unmanaged_release_tag("o", "r", "t", "old", dry_run=True) is True

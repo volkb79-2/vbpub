@@ -18,6 +18,7 @@ def test_cleanup_previews_then_requires_confirmation_unless_yes(monkeypatch, tmp
     monkeypatch.setattr(cli, "_resolve_config", lambda _: tmp_path / "cmru.toml")
     monkeypatch.setattr(cli, "load_config", lambda _: _config(tmp_path, project))
     output_id = "20240101T000000Z_" + "a" * 40
+    monkeypatch.setattr(cli.transaction, "retained_build_output_identity", lambda *_args: object())
     actions = []
     monkeypatch.setattr(
         cli.transaction, "delete_retained_build_output",

@@ -26,6 +26,10 @@ def test_worktrees_json_dispatch_emits_machine_readable_records(monkeypatch, cap
     monkeypatch.setattr(cli, "_current_git_root", lambda: tmp_path)
     workspaces = [transaction.ReleaseWorkspace(tmp_path, tmp_path, "cmru/release/abc", "a" * 40)]
     monkeypatch.setattr(cli.transaction, "list_cmru_workspaces", lambda root: workspaces)
+    monkeypatch.setattr(
+        cli.transaction, "read_release_scope_for_workspace",
+        lambda _root, _workspace: ["demo"],
+    )
     cli.main(["worktrees", "--json"])
     record = json.loads(capsys.readouterr().out)
     assert record == [{
@@ -34,7 +38,37 @@ def test_worktrees_json_dispatch_emits_machine_readable_records(monkeypatch, cap
         "purpose": "release",
         "source_commit": "a" * 40,
         "prunable": False,
+        "project_scope": ["demo"],
+        "project_scope_state": "recorded",
     }]
+
+
+@pytest.mark.parametrize(
+    ("scope_state", "scope"),
+    [("missing", None), ("unreadable", RuntimeError("corrupt scope"))],
+)
+def test_worktrees_json_reports_unavailable_scope_without_guessing(
+    monkeypatch, capsys, tmp_path, scope_state, scope,
+):
+    monkeypatch.setattr(cli, "_current_git_root", lambda: tmp_path)
+    workspace = transaction.ReleaseWorkspace(
+        tmp_path, tmp_path / "foreign-namespace" / "missing",
+        "cmru-release-20261001_120000-demo-abcdef", "a" * 40,
+    )
+    monkeypatch.setattr(cli.transaction, "list_cmru_workspaces", lambda _root: [workspace])
+
+    def read_scope(_root, _workspace):
+        if isinstance(scope, Exception):
+            raise scope
+        return scope
+
+    monkeypatch.setattr(cli.transaction, "read_release_scope_for_workspace", read_scope)
+
+    cli.main(["worktrees", "--json"])
+
+    record = json.loads(capsys.readouterr().out)[0]
+    assert record["project_scope_state"] == scope_state
+    assert record["project_scope"] is None
 
 
 def test_dependencies_dispatch_writes_and_reports_config_errors(monkeypatch, capsys, tmp_path):

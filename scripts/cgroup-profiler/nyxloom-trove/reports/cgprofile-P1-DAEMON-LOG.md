@@ -1361,3 +1361,277 @@ candidate. No replacement R2 or full gate is complete. The operator now
 authorizes provisional merge after fresh review and short-gate acceptance;
 replacement R2/full gate proceed in a separate attached CIU worktree and
 remain mandatory for release/shipment. Backport and rejudge any fixes.
+
+### 30. Current candidate and attached-tree policy (2026-09-30)
+
+The review candidate is now based on current main `8730098d` at branch
+`rg55-p1-release-review-20260930`. Exact clean tree `80263df6` passed
+registered R0/R1 (1,391 tests; 100% line and branch coverage) and R3 (7/7
+canaries rejected); separate `.run-gate/history.json` rows record PASS/exit 0
+on that SHA. The current handoff/evidence commit changes the tree, so those
+receipts must be repeated after the checkpoint commit. The old 125/125-killed
+R2 on `4e5ff2d2` is stale for the current candidate. No full gate or current-
+tree R2 exists; both remain mandatory before release, but may follow a
+provisional merge under RW-381.
+
+Keep any CIU-managed checkout attached to its registered branch. For an
+exact-tree assay campaign, leave that branch pinned and quiet for the full
+run/resume; make repairs in a separate worktree. The detached P6 checkout
+`.worktrees/rg55-p6-r2-ciu` is clean at `aae66356`, while its recorded branch
+is free at `4392bece`; no matching run-gate/Assay process or P6 mutation
+container was found. Its reflog records a direct checkout to the SHA on
+2026-09-24, but cannot identify the invoking session. CIU's source contains no
+detach operation. Restore the recorded branch before the next CIU lifecycle
+command; do not edit the identity record.
+
+### 31. Round-4 B1 repair checkpoint (2026-10-01)
+
+Round 4 rejected candidate `148481e4af504fc416679ed2fd8dffe380709de6`.
+The merge-blocking B1 finding was that `SummaryAccumulator` retained raw
+sample dictionaries and synchronously rescanned them during `finalize()`.
+The controller's repair replaces those retained series with ingestion-time
+scalar projections, endpoint/reference state, extrema, drift/PID/host/slice
+reducers, adjacent CPU-rate state, and exact AVL order-statistic multisets for
+nearest-rank memory and DAMON percentiles. `finalize()` now assembles the
+fixed-shape response without scanning the session series. Exact percentile
+state grows with distinct values; the design guide explicitly does not claim
+constant memory. Durable raw samples remain separate for reports and
+restart-orphan recovery; replay after daemon restart is not the normal stop
+path.
+
+The new deterministic long-stream test feeds 3,601 samples, mutates each
+source object immediately after ingestion, then asserts exact summary fields
+and percentiles. AVL tests cover empty/singleton, ascending/descending,
+double rotations, duplicates, nulls, nearest ranks and invalid internal
+states. At this checkpoint the repair was uncommitted; it was committed as
+`2e130da3`. The focused local result on that code was
+`test_summary.py` + `test_serve.py`: 205 passed, 1 skipped in 19.24 s. That
+result predates the later single-tree DAMON optimization and main merge; no
+registered short gate has yet been rerun on the current candidate.
+
+Round-4 B2 remains open: the reviewer cannot prove current loaded host
+`dev-interactive.slice`/`dev-gates.slice` state from the cockpit without a
+permitted host-unit view. Prior read-only `systemctl` attempts from private
+containers could not connect to the host manager; no host namespace or
+host-escape was used. A newer attempt was deferred while host load average was
+above 8 and an unrelated R2 was active. B3 is also open because the former
+short-gate receipts do not cover the repair. The next review must be round 5
+from a fresh Sol session after commit and final registered short gates; seed
+it with review rounds 1–4, preserve the round-4 report, and do not claim P1
+accepted until B2 and all remaining live-evidence requirements are resolved.
+
+### 32. Reconcile P1 with main `126ccc39` (2026-10-01)
+
+Main advanced from `8730098d0a8205bb398e60028e799b4ef7b18835` to
+`126ccc39e151e33cc7bbcaa18bf765f9c9cd7dd1`. The only tracked difference is
+two new backlog lines in `run-gate-project/KNOWN_ISSUES_TODO_BACKLOG.md`.
+The P1 candidate was reconciled with `git merge --no-ff main`, producing
+`56c617d8c7762f6fb6d7a1a2b326285f7592941c`. This is now the required diff
+base for the next reviewer. No code changed in that merge. The follow-up
+optimization to share each DAMON class's p50/p90 order-statistic tree is an
+uncommitted source change and has not yet been tested. The focused result in
+section 31 predates it and the merge; no gate result is claimed for the
+current tree. At 00:41:21Z memory PSI full avg10 was 8.67, so no gate or
+additional diagnostic container was launched. Re-run tests and registered
+short lanes when the launch gate is clear.
+
+### 33. Exact summary candidate `c81b2837` (2026-10-01)
+
+The DAMON percentile-memory optimization described in section 32 is now
+committed as `c81b28372c16c065e0290355b576cd2d3e85d32f`. Each of the four
+classes stores one exact order-statistic tree, queried for both p50 and p90;
+this removes four duplicate trees without changing rank semantics. This
+commit has not yet been tested. The 205-pass focused result belongs to
+`2e130da3`, before this optimization and before latest-main reconciliation.
+No registered gate result applies to `c81b2837` or the current records tree.
+
+### 34. Host-unit read-only evidence and focused test on `db044d4d` (2026-10-01)
+
+At 00:55:53Z the operator supplied a direct-host read-only result for
+`systemctl show dev-interactive.slice dev-gates.slice --property=LoadState,ControlGroup,Delegate,CPUQuotaPerSecUSec,MemoryMax --no-pager`:
+
+* `dev-interactive.slice`: loaded, `/dev.slice/dev-interactive.slice`,
+  `Delegate=no`, `CPUQuotaPerSecUSec=5s`, `MemoryMax=8589934592`.
+* `dev-gates.slice`: loaded, `/dev.slice/dev-gates.slice`, `Delegate=no`,
+  `CPUQuotaPerSecUSec=5s`, `MemoryMax=1610612736`.
+
+This closes the current-unit-state part of round-4 B2 without a host
+namespace, host-escape, or cockpit system-bus mount. It does not itself prove
+the P1 daemon's live behavior or replace the reviewer-required live probes.
+The direct-host result was supplied by the operator; the fresh reviewer must
+read this record and use it as controller-provided preflight evidence.
+
+On exact tree `db044d4d37f017162976c78f624885ee5f595923`, serial focused
+`test_summary.py` + `test_serve.py` passed: 205 passed, 1 skipped in 15.70 s.
+This exercises the shared single-tree DAMON p50/p90 implementation after
+`c81b2837`; it is not a registered gate receipt. Registered R0/R1, R3,
+doctor, reviewer live probes, current-tree R2 and full gate remain open.
+P6 also needs a separate current `cgprofile.slice` unit read; it was requested
+but is not part of the result above.
+
+### 35. Current host-unit preflight, including `cgprofile.slice` (2026-10-01)
+
+At 01:00:34Z the operator supplied the result of running this read-only
+command directly on the host, not through `host-escape`:
+`systemctl show dev-interactive.slice dev-gates.slice cgprofile.slice --property=LoadState,ControlGroup,Delegate,CPUQuotaPerSecUSec,MemoryMax --no-pager`.
+The result confirms:
+
+* `dev-interactive.slice`: loaded, `/dev.slice/dev-interactive.slice`,
+  `Delegate=no`, `CPUQuotaPerSecUSec=5s`, `MemoryMax=8589934592`.
+* `dev-gates.slice`: loaded, `/dev.slice/dev-gates.slice`, `Delegate=no`,
+  `CPUQuotaPerSecUSec=5s`, `MemoryMax=1610612736`.
+* `cgprofile.slice`: loaded, `/cgprofile.slice`, `Delegate=no`,
+  `CPUQuotaPerSecUSec=infinity`, `MemoryMax=1073741824`.
+
+This closes P1 round-4 B2's missing current-unit-state observable and gives
+P6 its requested current `cgprofile.slice` fact. These parent-unit values do
+not prove P6's delegated transient-scope/owned-leaf lifecycle, nor do they
+substitute for P1's reviewer-owned daemon/placement/restoration probes. No
+host namespace, host-escape, cockpit bus mount, or host mutation was used.
+
+### 36. Port direct behavioral oracles for isolated R2 survivors (2026-10-01)
+
+The exact isolated R2 tree `450fe53d0baca81ec5d32432c6c47117862fa992`
+failed with all 121 candidates accounted for: 109 killed and 12 survived,
+with no other buckets. The twelve were genuine oracle gaps in
+`lib/targets.py`'s proc-identity parsers, not equivalents. A later isolated
+run on `1080ac2f` passed 125/125, but neither result transfers to this release
+candidate.
+
+The current P1 implementation already rejects those malformed facts; the
+direct parser tests from the isolated repair were missing in this branch.
+Added behavioral coverage for missing/empty/malformed/non-positive `NSpid`,
+valid namespace numbers, missing/empty/truncated/non-numeric stat, wrong PID
+or delimiter, the malformed delimiter-at-record-start case, and valid zero
+start-time handling in both the parser and helper resolver. The helper
+combined-axis test keeps all other proc identity facts matching while the
+stat record is malformed. On content committed as
+`01912a917d7a6f0a417550f9c4319557a4c165ed`, serial focused
+`test_targets.py` + `test_helper_pid_target.py` passed: **167 passed in 6.50
+s**. This is focused evidence only; new exact-tip R0/R1, R3, R2, full gate,
+and final Sol review are still required.
+
+### 37. Reconcile with current main; resource-gated test window (2026-10-01)
+
+Main advanced from `126ccc39e151e33cc7bbcaa18bf765f9c9cd7dd1` to
+`2ba90c10f00c67f7786ed0f63747c284867ba0be`. The 21 intervening commits
+touch only `nyxloom/`, so they do not overlap the P1 product files. The clean
+P1 branch was reconciled with current main in merge commit
+`e76657b69b39a7462988edfcdf797639f6ceb2a2`. This is now the base for the
+fresh P1 review; the prior `126ccc39...` base is superseded.
+
+At 01:28:37Z, memory PSI `full avg10=5.03` exceeded the 5.0 launch threshold
+and host load average was 13.91. The read-only check found unrelated active
+containers `run-gate-vbpub-session-extract-51644-1790817645` and
+`run-gate-vbpub-r2-4124646-1790814775`. No P1 gate or local pytest was
+launched; no existing container was modified. The next progress observation
+is no earlier than 01:53:37Z unless an earlier completion/error signal
+arrives. Exact-tip R0/R1, R3 and doctor remain outstanding; do not reuse
+older receipts as evidence for the current candidate.
+
+### Session 34 — 2026-10-01 02:00:00Z — current-main reconcile; R0/R1 pre-checkpoint PASS
+
+Main advanced from `2ba90c10f00c67f7786ed0f63747c284867ba0be` to
+`6ee297a4cb6412b1c66250367a1eb2ecf39e9446`, with two commits changing only
+Nyxloom's Claude Code session adapter and tests. The clean P1 branch was
+reconciled without conflict in merge commit
+`55d0812299e84083143613a7de1585bd2f8f7fcc`; no P1 product path overlapped.
+
+Registered `r0-r1` ran from this project's `run-gate.py` on that exact clean
+commit and passed: 1,421 tests, 5,140/5,140 statements, 1,780/1,780 branch
+arcs, four `os.fork()` deprecation warnings, exit 0, duration 107.163 s. The
+test container `cgprofile-gate-123229-1790819789` read back
+`NanoCpus=3000000000` and `CgroupParent=dev-gates.slice`. The daemon was not
+running; R-36h therefore used coarse `rusage-maxrss` profiling and did not
+change the functional verdict. The initial detached invocation produced no
+process, container, or output and was not counted; the successful run used a
+persistent job handle. This result predates the handoff/report checkpoint
+commit, so the final candidate must rerun R0/R1, R3, and doctor before review.
+R2 and the registered full gate remain pending; the unrelated assay mutation
+campaign was left untouched.
+
+### Session 35 — 2026-10-01 02:12:39Z — latest-main reconciliation
+
+Main advanced from `6ee297a4cb6412b1c66250367a1eb2ecf39e9446` to
+`6617c44e117ee1ceab222ce4c51ff82f30f3d0d0` in two Nyxloom-only commits
+(assay config and P113 report). The clean P1 candidate merged current main
+without conflict as `7194c9be7012759e2627cc80cb251485c9fa6248`; neither path
+overlaps P1 product files. On the immediately preceding candidate
+`a617f87632bd35ea56595156979d041dc33a6213`, registered R0/R1 and R3 both
+passed with full line/branch coverage and 7/7 canaries rejected, and doctor
+reported zero failures. These receipts do not transfer across the latest-main
+merge. The final candidate must rerun R0/R1, R3, and doctor before review.
+
+### Session 36 — 2026-10-01 02:19:55Z — latest-main reconciliation supersedes short-gate receipts
+
+Main advanced from `6617c44e117ee1ceab222ce4c51ff82f30f3d0d0` to
+`8df26ed143925c882e65a1fe673d1447055bd754`; the single new commit changes
+only Nyxloom's P113 report and Claude Code adapter test. P1 reconciled main
+without conflict in merge `0485d82e475930fcbf74040a0138268b437b30b6`.
+Registered R0/R1, R3, and doctor had passed on `bd915d7f` immediately before
+this merge, but those exact-tree receipts do not transfer. Repeat all three
+on the current post-checkpoint candidate before review.
+
+### Session 37 — 2026-10-02 00:37:27Z — current-tree R2 result and survivor oracles
+
+The isolated current-tree R2 on `10a344e2f4685ac033f586fcb846b99e5fc2c8d5`
+ended at `2026-10-02T00:24:29.142187Z`. Its separately read verdict is
+`FAIL/MUTANTS_SURVIVED`: 193/193 accounted, 182 killed, 11 survived, and no
+equivalent, budget-exceeded, crash, or hang bucket. The exact container and
+PID were gone at the scheduled 00:28Z check; the progress stream's terminal
+event and verdict file prove completion. The exact tree is
+`9c084d1f29783c6a61b24d186befdb132813f7fa`, identical to the pre-repair P1
+candidate tree, and remains preserved in its isolated worktree.
+
+The survivor-by-survivor disposition and evidence are in the P1 REPORT's
+current-tree addendum. Four are contract-equivalent alternate equal-height
+rotations or equal-value assignments. Seven exposed missing oracles: two
+AVL-balance threshold cases, duplicate-count compression, two later-invalid
+CPU-delta cases, and empty `/proc` comm parsing. Added those regressions on
+the release-candidate branch. Load-niced focused `test_summary.py` and
+`test_targets.py` passed 176 tests at memory full PSI avg10 0.45%;
+`git diff --check` passed. This is local focused evidence only. Exact-tree
+R2, registered short/full gates, fresh final review, and release remain
+pending; no gate container was launched in this session.
+
+### Session 38 — 2026-10-02 01:03:22Z — reconcile P1 oracle candidate with current main
+
+The P1 worktree was attached to its recorded branch and clean at
+`38e383499a016b5bf9e7efacc2af682ee9a08c4a`. Current main had advanced to
+`665246456ef2f503949b9d4449747e5f90b62f42`; it was merged into the P1
+branch without conflict as `e0ce67dc0ab360ed083dd479d7c49da85f678018`.
+This brings the candidate through the intervening P6 and workspace changes;
+the old R2 judged tree and its evidence were left untouched.
+
+The reconciled branch is clean. Its effective tree delta from current main is
+limited to the P1 survivor report/log and the `test_summary.py` and
+`test_targets.py` oracle additions; no daemon implementation, deployment,
+contract, or configuration delta remains. The focused and registered short
+gates reported on `38e38349` predate this reconciliation and are not exact-tip
+evidence. Run fresh short gates and doctor after the supplemental review
+artifact is committed. The 10a344e2 R2 remains a historical failure, not a
+result for the reconciled tree. No gate, review, merge to main, or release was
+started after the reconciliation.
+
+### Session 39 — 2026-10-02 01:06:31Z — supersede stale numbered-review handoff
+
+Updated the P1 review handoff to mark the numbered series complete at round 6
+ACCEPT and explicitly scope the next independent review to the supplemental
+R2 survivor-test/evidence delta; it is not a new round 7 or a full daemon
+review. The note refers to the reconciliation merge `e0ce67dc` and the
+documentation checkpoint `d97ecae4`, while the exact current review HEAD will
+be recorded by the controller at dispatch. This documentation-only update
+does not change daemon code or make prior gate results transferable. No gate
+or review has run on the resulting tip.
+
+### Session 40 — 2026-10-02 01:15:00Z — write scoped Sol review packet
+
+Added `cgprofile-P1-R2-SURVIVOR-SUPPLEMENTAL-REVIEW-HANDOFF.md` as the
+authoritative, narrow review packet and linked it from the historical P1
+review handoff. It names the exact files/sections, survivor oracles, Assay
+equivalence-policy check, live-evidence boundary, no-touch paths, and
+mechanical BLOCKED condition. The packet distinguishes prior exact-tree
+evidence from the current candidate and directs the reviewer not to open
+numbered round 7. It does not authorize a merge, release, install, or long
+gate; those remain controller actions after review. No review or gate has yet
+run on this packet's candidate.

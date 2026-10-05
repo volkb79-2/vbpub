@@ -39,25 +39,25 @@ def _git_tags(monkeypatch, *, stdout: str = "", returncode: int = 0, stderr: str
 
 def test_runtime_version_uses_source_fallback_when_environment_is_absent(monkeypatch):
     monkeypatch.delenv(version.VERSION_ENV, raising=False)
-    assert version.runtime_version("1.0.0") == "1.0.0"
+    assert version.runtime_version("1.1.0") == "1.1.0"
 
 
-def test_runtime_version_refuses_empty_embedded_identity(monkeypatch):
+def test_runtime_version_refuses_present_but_empty_environment(monkeypatch):
     monkeypatch.setenv(version.VERSION_ENV, "  ")
     with pytest.raises(RuntimeError, match="CGPROFILE_VERSION must be a semantic version"):
-        version.runtime_version("1.0.0")
+        version.runtime_version("1.1.0")
 
 
 def test_runtime_version_uses_embedded_release_identity(monkeypatch):
-    monkeypatch.setenv(version.VERSION_ENV, " 1.1.0 ")
-    assert version.runtime_version("1.0.0") == "1.1.0"
+    monkeypatch.setenv(version.VERSION_ENV, " 1.2.0 ")
+    assert version.runtime_version("1.1.0") == "1.2.0"
 
 
 @pytest.mark.parametrize("bad", ["latest", "1.1.0-01"])
 def test_runtime_version_refuses_invalid_embedded_identity(monkeypatch, bad):
     monkeypatch.setenv(version.VERSION_ENV, bad)
     with pytest.raises(RuntimeError, match="CGPROFILE_VERSION must be a semantic version"):
-        version.runtime_version("1.0.0")
+        version.runtime_version("1.1.0")
 
 
 def test_exact_release_tag_is_authoritative_over_stale_environment(tmp_path, monkeypatch):
@@ -182,12 +182,12 @@ def test_daemon_version_uses_embedded_release_identity_in_fresh_process():
     import os
     import sys
 
-    env = dict(os.environ, CGPROFILE_VERSION="1.1.0")
+    env = dict(os.environ, CGPROFILE_VERSION="1.2.0")
     result = subprocess.run(
         [sys.executable, "-c", "from lib.serve import CGPROFILE_VERSION; print(CGPROFILE_VERSION)"],
         cwd=Path(__file__).resolve().parents[1], capture_output=True, text=True,
         check=False, env=env,
     )
     assert result.returncode == 0
-    assert result.stdout == "1.1.0\n"
+    assert result.stdout == "1.2.0\n"
     assert result.stderr == ""

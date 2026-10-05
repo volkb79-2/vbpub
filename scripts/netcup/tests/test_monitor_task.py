@@ -60,14 +60,28 @@ def _stub_api(monkeypatch, mod, responses):
 
     class FakeClient:
         def __init__(self, access_token, refresh_token=None):
-            self.responses = iter(responses)
+            self.responses = list(responses)
+            self.calls = []
 
         def get(self, endpoint):
-            return next(self.responses)
+            self.calls.append(endpoint)
+            return self.responses.pop(0)
 
     monkeypatch.setattr(mod, "NetcupSCPClient", FakeClient)
 
 
+@pytest.mark.cli_case(
+    "case:route:entrypoint:monitor-task/show/argument-shape/argument:route:entrypoint:monitor-task/show/task_uuid"
+)
+@pytest.mark.cli_case(
+    "case:route:entrypoint:monitor-task/show/interaction:show-poll-refusal/foreign-watch-poll"
+)
+@pytest.mark.cli_case(
+    "case:route:entrypoint:monitor-task/watch/interaction:watch-json-refusal/show-json"
+)
+@pytest.mark.cli_case(
+    "case:route:entrypoint:monitor-task/watch/argument-shape/argument:route:entrypoint:monitor-task/watch/task_uuid"
+)
 def test_real_executable_obeys_help_version_and_parse_contract(tmp_path):
     identity = CliIdentity(
         name="NETCUP SCP",
@@ -82,13 +96,17 @@ def test_real_executable_obeys_help_version_and_parse_contract(tmp_path):
         ("show", "watch"),
         invalid_invocations={
             "missing show task UUID": ("show",),
+            "malformed show task UUID": ("show", "not-a-uuid"),
             "malformed task UUID": ("watch", "not-a-uuid"),
             "poll interval is watch-only": ("show", TASK_UUID, "--poll", "1"),
+            "JSON output is show-only": ("watch", TASK_UUID, "--json"),
         },
         known_verb_errors={
             "missing show task UUID": "show",
+            "malformed show task UUID": "show",
             "malformed task UUID": "watch",
             "poll interval is watch-only": "show",
+            "JSON output is show-only": "watch",
         },
     )
 
@@ -118,6 +136,15 @@ def test_generated_help_groups_actions_and_watch_options(monitor_task_mod):
     assert "--debug-raw" in result.stdout
 
 
+@pytest.mark.cli_case(
+    "case:route:entrypoint:monitor-task/show/option-spelling/option:route:entrypoint:monitor-task/show/--json/--json"
+)
+@pytest.mark.cli_case(
+    "case:route:entrypoint:monitor-task/show/option-spelling/option:route:entrypoint:monitor-task/show/--debug-raw/--debug-raw"
+)
+@pytest.mark.cli_case(
+    "case:route:entrypoint:monitor-task/show/interaction:raw-json-opt-out/json-and-debug-raw"
+)
 def test_show_json_redacts_sensitive_fields_and_debug_raw_disables_redaction(
     monitor_task_mod, monkeypatch
 ):
@@ -141,6 +168,27 @@ def test_show_json_redacts_sensitive_fields_and_debug_raw_disables_redaction(
     assert "--debug-raw is active" in raw.stderr
 
 
+@pytest.mark.cli_case("case:route:entrypoint:monitor-task/show/minimum")
+def test_show_fetches_one_snapshot_without_polling(monitor_task_mod, monkeypatch):
+    mod = monitor_task_mod
+    _stub_api(monkeypatch, mod, [{"state": "FINISHED", "name": "build task"}])
+    created = []
+    create_client = mod._create_client
+
+    def recording_client(runtime):
+        client = create_client(runtime)
+        created.append(client)
+        return client
+
+    monkeypatch.setattr(mod, "_create_client", recording_client)
+    result = _invoke_app(mod.build_cli(), ["show", TASK_UUID])
+
+    assert result.returncode == 0
+    assert "Task state: FINISHED — build task" in result.stderr
+    assert len(created) == 1
+    assert created[0].calls == [f"/api/v1/tasks/{TASK_UUID}"]
+
+
 def test_show_rejects_non_object_api_response_without_traceback(
     monitor_task_mod, monkeypatch
 ):
@@ -159,6 +207,7 @@ def test_watch_stops_on_missing_task_state(monitor_task_mod, monkeypatch):
     assert "Traceback" not in result.stderr
 
 
+@pytest.mark.cli_case("case:route:entrypoint:monitor-task/watch/minimum")
 def test_watch_polls_changes_until_terminal_and_reads_default_interval(
     monitor_task_mod, monkeypatch, tmp_path
 ):
@@ -184,20 +233,73 @@ def test_watch_polls_changes_until_terminal_and_reads_default_interval(
     assert "Task finished: FINISHED" in result.stderr
 
 
-def test_watch_rejects_invalid_poll_interval_before_authentication(
+@pytest.mark.cli_case(
+    "case:route:entrypoint:monitor-task/watch/option-spelling/option:route:entrypoint:monitor-task/watch/--poll/--poll"
+)
+@pytest.mark.cli_case(
+    "case:route:entrypoint:monitor-task/watch/option-spelling/option:route:entrypoint:monitor-task/watch/--debug-raw/--debug-raw"
+)
+def test_watch_accepts_explicit_poll_and_debug_raw(monitor_task_mod, monkeypatch):
+    mod = monitor_task_mod
+    _stub_api(
+        monkeypatch,
+        mod,
+        [
+            {"state": "RUNNING"},
+            {"state": "ERROR", "responseError": {"rootPassword": "root-secret"}},
+        ],
+    )
+    sleeps = []
+    monkeypatch.setattr(mod.time, "sleep", lambda seconds: sleeps.append(seconds))
+
+    result = _invoke_app(
+        mod.build_cli(),
+        ["watch", TASK_UUID, "--poll", "0.25", "--debug-raw"],
+    )
+
+    assert result.returncode == 0
+    assert sleeps == [0.25]
+    assert "root-secret" in result.stderr
+    assert "Task finished: ERROR" in result.stderr
+
+
+@pytest.mark.cli_case(
+    "case:route:entrypoint:monitor-task/watch/interaction:poll-validation/refuse-invalid"
+)
+def test_watch_rejects_nonpositive_or_nonfinite_poll_before_authentication(
     monitor_task_mod, monkeypatch
 ):
     def forbidden(*args, **kwargs):
         pytest.fail("invalid poll interval must be refused before API setup")
 
     monkeypatch.setattr(monitor_task_mod, "_create_client", forbidden)
+    for raw in ("nan", "0", "-1"):
+        result = _invoke_app(
+            monitor_task_mod.build_cli(),
+            ["watch", TASK_UUID, "--poll", raw],
+        )
+        assert result.returncode == 2
+        assert "finite number greater than zero" in result.stderr
+        assert "usage:" in result.stderr
+        assert "Traceback" not in result.stderr
+
+
+@pytest.mark.cli_case(
+    "case:route:entrypoint:monitor-task/watch/interaction:poll-repeat/repeated-poll-last-wins"
+)
+def test_watch_repeated_poll_uses_last_interval(monitor_task_mod, monkeypatch):
+    mod = monitor_task_mod
+    _stub_api(monkeypatch, mod, [{"state": "RUNNING"}, {"state": "FINISHED"}])
+    sleeps = []
+    monkeypatch.setattr(mod.time, "sleep", lambda seconds: sleeps.append(seconds))
+
     result = _invoke_app(
-        monitor_task_mod.build_cli(), ["watch", TASK_UUID, "--poll", "nan"]
+        mod.build_cli(),
+        ["watch", TASK_UUID, "--poll", "9", "--poll", "0.25"],
     )
-    assert result.returncode == 2
-    assert "finite number greater than zero" in result.stderr
-    assert "usage:" in result.stderr
-    assert "Traceback" not in result.stderr
+
+    assert result.returncode == 0
+    assert sleeps == [0.25]
 
 
 def test_watch_rejects_nonfinite_config_interval_without_authentication(

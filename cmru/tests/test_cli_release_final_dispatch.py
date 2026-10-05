@@ -32,10 +32,12 @@ def test_cleanup_delete_build_output_and_discard_worktree_dispatch_exact_targets
     monkeypatch.setattr(cli, "load_config", lambda _: _config(tmp_path, project))
     build_targets = [tmp_path / "demo" / "logs" / "id", tmp_path / "demo" / "artifacts" / "id"]
     seen = []
+    expected_identity = object()
+    monkeypatch.setattr(transaction, "retained_build_output_identity", lambda *_args: expected_identity)
     monkeypatch.setattr(transaction, "delete_retained_build_output", lambda *args, **kwargs: seen.append((args, kwargs)) or build_targets)
     cli.main(["cleanup", "--delete-build-output", "id", "demo", "--dry-run"])
     assert seen[0][0][1:] == (project, "demo", "id")
-    assert seen[0][1] == {"dry_run": True}
+    assert seen[0][1] == {"dry_run": True, "expected_identity": expected_identity}
     assert "Would delete retained local build output" in capsys.readouterr().out
 
     workspace = transaction.ReleaseWorkspace(tmp_path, tmp_path / "failed", "cmru/build/x", "a" * 40)
@@ -45,6 +47,32 @@ def test_cleanup_delete_build_output_and_discard_worktree_dispatch_exact_targets
     assert seen[0][0][1] == workspace.path
     assert seen[0][1] == {"dry_run": True}
     assert "Would discard retained build worktree" in capsys.readouterr().out
+
+
+def test_cleanup_discard_revalidates_the_previewed_worktree(monkeypatch, tmp_path):
+    project = cli.ProjectConfig("demo", {}, {}, project_root=tmp_path / "demo")
+    monkeypatch.setattr(cli, "_resolve_config", lambda _: tmp_path / "cmru.toml")
+    monkeypatch.setattr(cli, "load_config", lambda _: _config(tmp_path, project))
+    workspace = transaction.ReleaseWorkspace(
+        tmp_path, tmp_path / ".worktrees" / "cmru-build-x", "cmru/build/x", "a" * 40,
+    )
+    calls = []
+
+    def discard(root, path, *, dry_run, expected_workspace=None):
+        calls.append((root, path, dry_run, expected_workspace))
+        return workspace
+
+    monkeypatch.setattr(transaction, "discard_build_workspace", discard)
+
+    result = cli.main([
+        "cleanup", "--discard-build-worktree", str(workspace.path), "--yes",
+    ])
+
+    assert result == 0
+    assert calls == [
+        (tmp_path, workspace.path, True, None),
+        (tmp_path, workspace.path, False, workspace),
+    ]
 
 
 def test_release_dry_run_reports_no_changed_projects_without_transaction_side_effect(monkeypatch, tmp_path, capsys):

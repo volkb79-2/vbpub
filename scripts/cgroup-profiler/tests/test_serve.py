@@ -40,11 +40,15 @@ from typing import Any, Callable, Dict, List, Optional
 import pytest
 
 import cgprofile as cg
+from lib import damon as damon_mod, limits as limits_mod, serve, summary, targets as targets_mod
 from lib import damon as damon_mod, serve, store, summary, targets as targets_mod
 from tests.conftest import cgroup_files, write_cgroup
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "contract"
 FRAMES_DIR = FIXTURES / "frames"
+# RG-55 v1.1 (P6 C5 onward): contract §8's own goldens, kept separate from
+# the v1 `fixtures/contract/` tree per the P6 handoff's naming.
+RG55_FIXTURES = Path(__file__).resolve().parent / "fixtures" / "rg55"
 _CGPROFILE_PY = str(Path(__file__).resolve().parents[1] / "cgprofile.py")
 _HAS_REPORT_DEPS = (
     importlib.util.find_spec("pandas") is not None
@@ -208,6 +212,21 @@ def simple_server(tmp_path, simple_root, simple_proc):
     )
 
 
+def _wire(verb: str, **args) -> Dict[str, Any]:
+    """One §8.1 request line: `{"verb", "args", "contract"}` and nothing
+    else. Every `_dispatch` call in this suite goes through here, so the
+    tests exercise the SAME shape the socket carries — a flat v1-style
+    request is now a `bad-argument` (see
+    `test_dispatch_refuses_the_v1_flat_request_shape`)."""
+    return {"verb": verb, "args": args, "contract": 1}
+
+
+def _wire_bytes(verb: str, **args) -> bytes:
+    """The same §8.1 request as :func:`_wire`, as the newline-terminated
+    bytes a socket-carrier client actually writes."""
+    return (json.dumps(_wire(verb, **args)) + "\n").encode("utf-8")
+
+
 @pytest.fixture(autouse=True)
 def _stop_leaked_session_threads(monkeypatch):
     """RW-48: every ``SessionServer`` this test constructs (via the
@@ -245,8 +264,7 @@ def _stop_leaked_session_threads(monkeypatch):
 
 
 def _start_req(**overrides) -> Dict[str, Any]:
-    req = {
-        "verb": "start",
+    args = {
         "target": f"containerid:{SIMPLE_CONTAINER_ID}",
         "scope": "container-shared",
         "token": None,
@@ -255,8 +273,8 @@ def _start_req(**overrides) -> Dict[str, Any]:
         "meta": {"lane": "x", "project": "p", "worktree": "w", "commit": None,
                  "run_gate_revision": 1, "kind": "command", "expected": None},
     }
-    req.update(overrides)
-    return req
+    args.update(overrides)
+    return _wire("start", **args)
 
 
 class TestStartRegistry:
@@ -277,6 +295,12 @@ class TestStartRegistry:
     def test_bad_damon(self, simple_server):
         resp = simple_server._dispatch(_start_req(damon="maybe"))
         assert resp["error"]["code"] == "bad-argument"
+
+    def test_explicit_null_damon_is_rejected_not_defaulted(self, simple_server):
+        response = simple_server._dispatch(_start_req(damon=None))
+        assert response["ok"] is False
+        assert response["error"]["code"] == "bad-argument"
+        assert simple_server._sessions == {}
 
     def test_bad_token(self, simple_server):
         resp = simple_server._dispatch(_start_req(token="short"))
@@ -307,7 +331,7 @@ class TestStartRegistry:
         # (1.0) -- this is the one test that omits it, exercising the
         # `interval_req is None` branch every other test's fixed 1.0 masks.
         req = _start_req()
-        del req["interval"]
+        del req["args"]["interval"]
         resp = simple_server._dispatch(req)
         assert resp["ok"] is True
         assert resp["interval_seconds"] == simple_server.default_interval
@@ -334,7 +358,7 @@ class TestStartRegistry:
         assert sess.thread.daemon is True
         sess.stop_event.set()
         sess.thread.join(timeout=5.0)
-        stop_resp = simple_server._dispatch({"verb": "stop", "session": SESSION_ID})
+        stop_resp = simple_server._dispatch(_wire("stop", session=SESSION_ID))
         assert stop_resp["ok"] is True
         assert stop_resp["summary"]["samples"] >= 1
 
@@ -379,9 +403,11 @@ class TestStartRegistry:
         sess = simple_server._sessions[first["session"]]
         sess.stop_event.set()
         sess.thread.join(timeout=5.0)
-        simple_server._dispatch({"verb": "stop", "session": first["session"]})
+        simple_server._dispatch(_wire("stop", session=first["session"]))
+        simple_server._session_id_fn = lambda: "s-20260912T101500Z-9f02"
         second = simple_server._dispatch(_start_req(token="a-finished-token1"))
         assert second["reused"] is False
+        assert second["session"] != first["session"]
         second_sess = simple_server._sessions[second["session"]]
         second_sess.stop_event.set()
         second_sess.thread.join(timeout=5.0)
@@ -392,7 +418,7 @@ class TestStartRegistry:
         assert resp["error"]["code"] == "too-many-sessions"
 
     def test_unknown_verb(self, simple_server):
-        resp = simple_server._dispatch({"verb": "frobnicate"})
+        resp = simple_server._dispatch(_wire("frobnicate"))
         assert resp["error"]["code"] == "bad-argument"
 
 
@@ -402,7 +428,7 @@ class TestStatusStopReport:
         sess = simple_server._sessions[start_resp["session"]]
         sess.stop_event.set()
         sess.thread.join(timeout=5.0)
-        stop_resp = simple_server._dispatch({"verb": "stop", "session": start_resp["session"]})
+        stop_resp = simple_server._dispatch(_wire("stop", session=start_resp["session"]))
         assert stop_resp["series"]["damon"] is None
 
         # A real persisted record is the positive case; an enabled-but-empty
@@ -461,7 +487,7 @@ class TestStatusStopReport:
         assert sess.summary_doc["memory"]["baseline_bytes"] == 500 * 1024 * 1024
         assert sess.summary_doc["memory"]["p90_bytes"] == 500 * 1024 * 1024
     def test_status_unknown_malformed_id(self, simple_server):
-        resp = simple_server._dispatch({"verb": "status", "session": "not-a-session-id"})
+        resp = simple_server._dispatch(_wire("status", session="not-a-session-id"))
         assert resp["error"]["code"] == "unknown-session"
         # A malformed (non-matching-regex but string) id must be rejected by
         # the FIRST guard (`isinstance(...) or not _SESSION_ID_RE.match`),
@@ -472,24 +498,34 @@ class TestStatusStopReport:
         assert resp["error"]["message"] == "no session 'not-a-session-id' is live or on record"
 
     def test_status_unknown_wellformed_id(self, simple_server):
-        resp = simple_server._dispatch({"verb": "status", "session": "s-20260101T000000Z-abcd"})
+        resp = simple_server._dispatch(_wire("status", session="s-20260101T000000Z-abcd"))
         assert resp["error"]["code"] == "unknown-session"
+
+    def test_status_specific_live_session_is_successful(self, simple_server):
+        start_resp = simple_server._dispatch(_start_req())
+        session_id = start_resp["session"]
+        status = simple_server._dispatch(_wire("status", session=session_id))
+        assert status["ok"] is True
+        assert status["session"]["session"] == session_id
+        simple_server._sessions[session_id].stop_event.set()
+        simple_server._sessions[session_id].thread.join(timeout=5.0)
+        simple_server._dispatch(_wire("stop", session=session_id))
 
     def test_status_no_session_lists_only_live(self, simple_server):
         start_resp = simple_server._dispatch(_start_req())
         sess = simple_server._sessions[start_resp["session"]]
-        listing = simple_server._dispatch({"verb": "status"})
+        listing = simple_server._dispatch(_wire("status"))
         assert listing["ok"] is True
         assert [s["session"] for s in listing["sessions"]] == [start_resp["session"]]
         assert listing["sessions"][0]["live"]["damon"] is None
         sess.stop_event.set()
         sess.thread.join(timeout=5.0)
-        simple_server._dispatch({"verb": "stop", "session": start_resp["session"]})
-        after_stop = simple_server._dispatch({"verb": "status"})
+        simple_server._dispatch(_wire("stop", session=start_resp["session"]))
+        after_stop = simple_server._dispatch(_wire("status"))
         assert after_stop["sessions"] == []
 
     def test_stop_unknown_session(self, simple_server):
-        resp = simple_server._dispatch({"verb": "stop", "session": "s-20260101T000000Z-abcd"})
+        resp = simple_server._dispatch(_wire("stop", session="s-20260101T000000Z-abcd"))
         assert resp["error"]["code"] == "unknown-session"
 
     def test_stop_is_idempotent(self, simple_server):
@@ -497,8 +533,8 @@ class TestStatusStopReport:
         sess = simple_server._sessions[start_resp["session"]]
         sess.stop_event.set()
         sess.thread.join(timeout=5.0)
-        first = simple_server._dispatch({"verb": "stop", "session": start_resp["session"]})
-        second = simple_server._dispatch({"verb": "stop", "session": start_resp["session"]})
+        first = simple_server._dispatch(_wire("stop", session=start_resp["session"]))
+        second = simple_server._dispatch(_wire("stop", session=start_resp["session"]))
         assert first["already_stopped"] is False
         assert second["already_stopped"] is True
         assert second["summary"] == first["summary"]
@@ -509,14 +545,14 @@ class TestStatusStopReport:
         sess = simple_server._sessions[session_id]
         sess.stop_event.set()
         sess.thread.join(timeout=5.0)
-        simple_server._dispatch({"verb": "stop", "session": session_id})
+        simple_server._dispatch(_wire("stop", session=session_id))
         del simple_server._sessions[session_id]
-        resp = simple_server._dispatch({"verb": "stop", "session": session_id})
+        resp = simple_server._dispatch(_wire("stop", session=session_id))
         assert resp["already_stopped"] is True
         assert resp["summary"]["session"] == session_id
 
     def test_report_unknown_session(self, simple_server):
-        resp = simple_server._dispatch({"verb": "report", "session": "s-20260101T000000Z-abcd"})
+        resp = simple_server._dispatch(_wire("report", session="s-20260101T000000Z-abcd"))
         assert resp["error"]["code"] == "unknown-session"
 
     def test_report_is_unavailable_with_no_report_python(self, simple_server):
@@ -531,13 +567,13 @@ class TestStatusStopReport:
         sess = simple_server._sessions[session_id]
         sess.stop_event.set()
         sess.thread.join(timeout=5.0)
-        simple_server._dispatch({"verb": "stop", "session": session_id})
-        resp = simple_server._dispatch({"verb": "report", "session": session_id})
+        simple_server._dispatch(_wire("stop", session=session_id))
+        resp = simple_server._dispatch(_wire("report", session=session_id))
         assert resp["ok"] is False
         assert resp["error"]["code"] == "report-unavailable"
 
     def test_version_shape(self, simple_server):
-        resp = simple_server._dispatch({"verb": "version"})
+        resp = simple_server._dispatch(_wire("version"))
         assert resp["ok"] is True
         assert resp["contract"] == 1
         assert resp["daemon"]["name"] == serve.DEFAULT_DAEMON_NAME
@@ -588,7 +624,7 @@ class TestHandleReportRealRender:
         sess = server._sessions[session_id]
         sess.stop_event.set()
         sess.thread.join(timeout=5.0)
-        server._dispatch({"verb": "stop", "session": session_id})
+        server._dispatch(_wire("stop", session=session_id))
         return server, session_id
 
     def test_report_script_explicit_arg_is_used_as_is(self, tmp_path):
@@ -636,7 +672,7 @@ class TestHandleReportRealRender:
         server, session_id = self._stopped_session(
             tmp_path, report_python=sys.executable, report_script=_CGPROFILE_PY,
         )
-        resp = server._dispatch({"verb": "report", "session": session_id})
+        resp = server._dispatch(_wire("report", session=session_id))
         assert resp["ok"] is True, resp
         html = Path(resp["path"]).read_text()
         # A real render, never the old hand-rolled stub: plotly's own figure
@@ -658,7 +694,7 @@ class TestHandleReportRealRender:
             )
 
         monkeypatch.setattr(serve.subprocess, "run", fake_run)
-        resp = server._dispatch({"verb": "report", "session": session_id})
+        resp = server._dispatch(_wire("report", session=session_id))
         assert resp["ok"] is False
         assert resp["error"]["code"] == "report-failed"
         assert resp["error"]["message"] == "last line"
@@ -687,7 +723,7 @@ class TestHandleReportRealRender:
             )
 
         monkeypatch.setattr(serve.subprocess, "run", fake_run)
-        resp = server._dispatch({"verb": "report", "session": session_id})
+        resp = server._dispatch(_wire("report", session=session_id))
         assert resp["error"]["code"] == "report-failed"
         assert resp["error"]["message"] == "last stdout line"
 
@@ -700,7 +736,7 @@ class TestHandleReportRealRender:
             return subprocess.CompletedProcess(command, returncode=7, stdout="", stderr="")
 
         monkeypatch.setattr(serve.subprocess, "run", fake_run)
-        resp = server._dispatch({"verb": "report", "session": session_id})
+        resp = server._dispatch(_wire("report", session=session_id))
         assert resp["error"]["code"] == "report-failed"
         assert resp["error"]["message"] == "report subprocess exited 7"
 
@@ -713,7 +749,7 @@ class TestHandleReportRealRender:
             return subprocess.CompletedProcess(command, returncode=0, stdout="", stderr="")
 
         monkeypatch.setattr(serve.subprocess, "run", fake_run)
-        resp = server._dispatch({"verb": "report", "session": session_id})
+        resp = server._dispatch(_wire("report", session=session_id))
         assert resp["ok"] is False
         assert resp["error"]["code"] == "report-failed"
 
@@ -727,7 +763,7 @@ class TestHandleReportRealRender:
             raise subprocess.TimeoutExpired(cmd=command, timeout=kwargs.get("timeout", 0.01))
 
         monkeypatch.setattr(serve.subprocess, "run", fake_run)
-        resp = server._dispatch({"verb": "report", "session": session_id})
+        resp = server._dispatch(_wire("report", session=session_id))
         assert resp["ok"] is False
         assert resp["error"]["code"] == "report-failed"
         assert "timed out" in resp["error"]["message"]
@@ -743,9 +779,246 @@ def test_host_snapshot_matches_host_v1(tmp_path):
         proc_root=str(frame4 / "proc"),
         clock=lambda: EPOCH_END,
     )
-    resp = server._dispatch({"verb": "host"})
+    resp = server._dispatch(_wire("host"))
+    # RG-55 C5 (contract §8.5): frame4 ships neither `dev-gates.slice` nor
+    # `cgprofile.slice`, so both new blocks report their "absent" shape --
+    # asserted explicitly here, then stripped before the byte-identical v1
+    # comparison below. The v1 golden FILE itself is untouched (contract §8's
+    # own "the existing goldens stay byte-identical"); what changed is that
+    # the live response now carries two more keys the v1 golden never had.
+    assert resp["host"]["gates_slice"] == {"name": "dev-gates.slice", "present": False}
+    assert resp["host"]["daemon_slice"] == {
+        "cgroup": "/cgprofile.slice", "memory_min_bytes": None, "memory_high_bytes": None,
+    }
+    v1_resp = dict(resp)
+    v1_resp["host"] = {
+        k: v for k, v in resp["host"].items() if k not in ("gates_slice", "daemon_slice")
+    }
     golden = json.loads((FIXTURES / "host-v1.json").read_text())
+    assert v1_resp == golden
+
+
+# ── RG-55 C5: `gates_slice` / `daemon_slice` (contract §8.5, D-29) ─────────
+
+def _build_gates_and_daemon_tree(tmp_path: Path) -> Path:
+    """`fixtures/contract/frames/4` PLUS two delegated scope/leaf pairs under
+    `dev-gates.slice` and one non-profiler scope that must be filtered out, and
+    a populated top-level `cgprofile.slice` -- exactly the tree
+    `tests/fixtures/rg55/host-v1.1.json` was generated from, so a change to
+    either the fixture-building code here or `_gates_slice_snapshot`/
+    `_daemon_slice_snapshot` shows up as a diff against a real golden, not
+    just a shape check."""
+    frame4 = FRAMES_DIR / "4"
+    root = tmp_path / "cgroup"
+    shutil.copytree(frame4, root)
+    write_cgroup(root, "dev.slice/dev-gates.slice", cgroup_files(
+        memory_current=2147483648, memory_max="6442450944", memory_high="4294967296",
+        cpu_max="500000 100000", swap_current=0,
+    ))
+    gates = "dev.slice/dev-gates.slice"
+    for token in ("04d8e2aa", "b7f3a1c9"):
+        scope = f"{gates}/rg-profile-{token}.scope"
+        write_cgroup(root, scope, cgroup_files())
+        write_cgroup(root, f"{scope}/rg-{token}", cgroup_files())
+    # NOT a profiler-owned scope -- proves the scope-name filter in
+    # _gates_slice_snapshot, not just that list_children works.
+    unrelated_scope = f"{gates}/some-container.scope"
+    write_cgroup(root, unrelated_scope, cgroup_files())
+    write_cgroup(root, f"{unrelated_scope}/rg-not-owned", cgroup_files())
+    write_cgroup(root, "cgprofile.slice", cgroup_files(
+        memory_min="134217728", memory_high="805306368",
+    ))
+    return root
+
+
+def test_gates_and_daemon_slice_present_match_host_v1_1(tmp_path):
+    root = _build_gates_and_daemon_tree(tmp_path)
+    server = serve.SessionServer(
+        sessions_dir=str(tmp_path / "sessions"),
+        cgroup_root=str(root), proc_root=str(root / "proc"),
+        clock=lambda: EPOCH_END,
+        slice_unit_verifier=lambda _unit, _cgroup: True,
+    )
+    resp = server._dispatch(_wire("host"))
+
+    # Oracle assertions first (specific expected values, not just "it has
+    # the right keys") -- these are what a planted mutant has to survive.
+    gates = resp["host"]["gates_slice"]
+    assert gates["name"] == "dev-gates.slice"
+    assert gates["present"] is True
+    assert gates["cgroup"] == "/dev.slice/dev-gates.slice"
+    assert gates["memory_max_bytes"] == 6442450944
+    assert gates["memory_high_bytes"] == 4294967296
+    assert gates["memory_current_bytes"] == 2147483648
+    assert gates["memory_swap_current_bytes"] == 0
+    # sorted, and "some-container.scope" is excluded -- both are load-bearing.
+    assert gates["leaves"] == ["rg-04d8e2aa", "rg-b7f3a1c9"]
+    assert gates["sessions_live"] == 2
+
+    daemon = resp["host"]["daemon_slice"]
+    assert daemon == {
+        "cgroup": "/cgprofile.slice",
+        "memory_min_bytes": 134217728,
+        "memory_high_bytes": 805306368,
+    }
+
+    golden = json.loads((RG55_FIXTURES / "host-v1.1.json").read_text())
     assert resp == golden
+
+
+@pytest.mark.parametrize(("memory_max", "cpu_max"), [
+    ("max", "500000 100000"),
+    ("6442450944", "max 100000"),
+])
+def test_gates_slice_directory_without_finite_capacity_reports_absent(
+    tmp_path, memory_max, cpu_max,
+):
+    root = _build_gates_and_daemon_tree(tmp_path)
+    gates = root / "dev.slice" / "dev-gates.slice"
+    (gates / "memory.max").write_text(memory_max)
+    (gates / "cpu.max").write_text(cpu_max)
+    server = serve.SessionServer(
+        sessions_dir=str(tmp_path / "sessions"),
+        cgroup_root=str(root), proc_root=str(root / "proc"),
+        slice_unit_verifier=lambda _unit, _cgroup: True,
+    )
+
+    assert server._gates_slice_snapshot() == {
+        "name": "dev-gates.slice", "present": False,
+    }
+
+
+def test_gates_slice_absent_when_directory_does_not_exist(tmp_path):
+    # No `dev.slice` at all in this tree -- the "present: false" branch,
+    # isolated from the v1-golden test above (which reuses frame4, where
+    # dev.slice EXISTS but dev-gates.slice specifically does not).
+    root = tmp_path / "cgroup"
+    write_cgroup(root, "", cgroup_files())
+    proc = tmp_path / "proc"
+    proc.mkdir()
+    (proc / "loadavg").write_text("1 1 1 1/1 1\n")
+    (proc / "meminfo").write_text("MemTotal: 1 kB\n")
+    pressure = proc / "pressure"
+    pressure.mkdir()
+    for name in ("cpu", "memory", "io"):
+        (pressure / name).write_text(
+            "some avg10=0 avg60=0 avg300=0 total=0\nfull avg10=0 avg60=0 avg300=0 total=0\n"
+        )
+    server = serve.SessionServer(
+        sessions_dir=str(tmp_path / "sessions"), cgroup_root=str(root), proc_root=str(proc),
+    )
+    snapshot = server._host_snapshot()
+    assert snapshot["gates_slice"] == {"name": "dev-gates.slice", "present": False}
+    # A missing daemon slice reads the same as an unbounded one -- no
+    # separate "present" bit for it (contract §8.5's own shape has none).
+    assert snapshot["daemon_slice"] == {
+        "cgroup": "/cgprofile.slice", "memory_min_bytes": None, "memory_high_bytes": None,
+    }
+
+
+def test_gates_slice_verification_is_cached_but_presence_snapshots_refresh(tmp_path):
+    root = _build_gates_and_daemon_tree(tmp_path)
+    calls = []
+    server = serve.SessionServer(
+        sessions_dir=str(tmp_path / "sessions"),
+        cgroup_root=str(root),
+        proc_root=str(root / "proc"),
+        slice_unit_verifier=lambda unit, path: calls.append((unit, path)) or True,
+    )
+
+    assert server._gates_slice_is_verified() is True
+    assert server._gates_slice_is_verified() is True
+    assert len(calls) == 1
+
+    server.slice_unit_verifier = lambda _unit, _path: False
+    snapshot = server._gates_slice_snapshot()
+    assert snapshot == {"name": "dev-gates.slice", "present": False}
+    assert len(calls) == 1
+
+
+def test_gates_slice_unit_verification_requires_both_exact_identities(tmp_path):
+    server = serve.SessionServer(sessions_dir=str(tmp_path / "sessions"))
+    expected = "/dev.slice/dev-gates.slice"
+    calls = []
+    server.slice_unit_verifier = lambda unit, path: calls.append((unit, path)) or True
+
+    assert server._verify_gates_slice_unit("other.slice", expected) is False
+    assert server._verify_gates_slice_unit("dev-gates.slice", "/dev.slice/other.slice") is False
+    assert server._verify_gates_slice_unit("dev-gates.slice", expected) is True
+    assert calls == [("dev-gates.slice", expected)]
+
+
+def test_gates_slice_name_is_configurable(tmp_path):
+    root = tmp_path / "cgroup"
+    write_cgroup(root, "", cgroup_files())
+    write_cgroup(root, "dev.slice", cgroup_files())
+    # A second hyphen segment ("dev-gates-custom") would nest a level
+    # DEEPER (`slice_to_path`'s own systemd-hierarchy encoding puts it
+    # under `dev-gates.slice`) -- picking a name with exactly one hyphen
+    # keeps this test's own tree shape (`dev.slice/<name>`) the one
+    # `--gates-slice` actually resolves to.
+    write_cgroup(
+        root, "dev.slice/dev-altgates.slice",
+        cgroup_files(memory_max="6442450944", cpu_max="500000 100000"),
+    )
+    proc = tmp_path / "proc"
+    proc.mkdir()
+    (proc / "loadavg").write_text("1 1 1 1/1 1\n")
+    (proc / "meminfo").write_text("MemTotal: 1 kB\n")
+    pressure = proc / "pressure"
+    pressure.mkdir()
+    for name in ("cpu", "memory", "io"):
+        (pressure / name).write_text(
+            "some avg10=0 avg60=0 avg300=0 total=0\nfull avg10=0 avg60=0 avg300=0 total=0\n"
+        )
+    server = serve.SessionServer(
+        sessions_dir=str(tmp_path / "sessions"), cgroup_root=str(root), proc_root=str(proc),
+        gates_slice_name="dev-altgates.slice",
+        slice_unit_verifier=lambda _unit, _cgroup: True,
+    )
+    snapshot = server._host_snapshot()
+    assert snapshot["gates_slice"]["name"] == "dev-altgates.slice"
+    assert snapshot["gates_slice"]["present"] is True
+    assert snapshot["gates_slice"]["cgroup"] == "/dev.slice/dev-altgates.slice"
+
+
+def test_cli_serve_gates_slice_flag_reaches_session_server(monkeypatch):
+    # cmd_serve's own plumbing (cgprofile.py) -- proves the CLI flag is not
+    # dead: a mismatch here is invisible to every _host_snapshot-level test
+    # above, which all construct SessionServer directly.
+    captured: Dict[str, Any] = {}
+
+    class _FakeServer:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+        def serve_forever(self):
+            return None
+
+    monkeypatch.setattr(serve, "SessionServer", _FakeServer)
+    monkeypatch.setattr("lib.access.have_host_cgroup_view", lambda root: True)
+    monkeypatch.setattr("lib.access.have_host_proc_view", lambda root: True)
+    rc = cg.main(["serve", "--gates-slice", "dev-gates-from-cli.slice"])
+    assert rc == 0
+    assert captured["gates_slice_name"] == "dev-gates-from-cli.slice"
+
+
+def test_cli_serve_gates_slice_defaults_to_dev_gates(monkeypatch):
+    captured: Dict[str, Any] = {}
+
+    class _FakeServer:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+        def serve_forever(self):
+            return None
+
+    monkeypatch.setattr(serve, "SessionServer", _FakeServer)
+    monkeypatch.setattr("lib.access.have_host_cgroup_view", lambda root: True)
+    monkeypatch.setattr("lib.access.have_host_proc_view", lambda root: True)
+    rc = cg.main(["serve"])
+    assert rc == 0
+    assert captured["gates_slice_name"] == "dev-gates.slice"
 
 
 # ── restart recovery ─────────────────────────────────────────────────────
@@ -922,6 +1195,26 @@ class TestRestartRecovery:
         serve.SessionServer(sessions_dir=str(sessions_dir), clock=lambda: EPOCH_END)
         assert str(session_dir) not in calls
 
+    def test_recovery_json_write_opens_only_an_existing_run_directory(
+        self, tmp_path, monkeypatch,
+    ):
+        sessions_dir = tmp_path / "sessions"
+        session_dir = sessions_dir / "s-20260101T000000Z-aaaa"
+        session_dir.mkdir(parents=True)
+        real_run_dir = serve.store.RunDir
+        calls = []
+
+        def record_create(base, *, run_id, create=True):
+            calls.append(create)
+            return real_run_dir(base, run_id=run_id, create=create)
+
+        monkeypatch.setattr(serve.store, "RunDir", record_create)
+        path = session_dir / "placement-recovery.json"
+        serve.SessionServer._write_json_path(str(path), {"status": "restored"})
+
+        assert calls == [False]
+        assert json.loads(path.read_text()) == {"status": "restored"}
+
     def test_a_live_orphan_with_a_damon_unavailable_reason_carries_it_into_the_summary(self, tmp_path):
         sessions_dir = tmp_path / "sessions"
         session_dir = sessions_dir / "s-20260101T000000Z-aaaa"
@@ -946,6 +1239,33 @@ class TestRestartRecovery:
             serve.os, "listdir", lambda p: (_ for _ in ()).throw(OSError("boom"))
         )
         server._recover_orphans()  # must not raise
+
+    def test_placement_recovery_logs_only_real_failures(self, tmp_path):
+        for with_manifest, error in (
+            (False, serve.placement_mod.REFUSED_STATE_UNAVAILABLE),
+            (False, None),
+            (True, serve.placement_mod.REFUSED_STATE_UNAVAILABLE),
+            (True, None),
+        ):
+            sessions_dir = tmp_path / f"sessions-{with_manifest}-{error is None}"
+            server = serve.SessionServer(sessions_dir=str(sessions_dir))
+            session_dir = sessions_dir / "s-20260101T000000Z-aaaa"
+            if with_manifest:
+                self._write_manifest(session_dir, status="finished")
+            else:
+                session_dir.mkdir(parents=True, exist_ok=True)
+            (session_dir / "placement-state.json").write_text(
+                json.dumps({"schema": 1, "state": "recovering"})
+            )
+            logs = []
+            server._recover_placement_file = lambda *_args, **_kwargs: error
+            server._log = logs.append
+
+            server._recover_orphans()
+
+            assert bool(logs) is (error is not None)
+            if error is not None:
+                assert "operator attention" in logs[0] or "requiring operator attention" in logs[0]
 
 
 # ── gc / retention ───────────────────────────────────────────────────────
@@ -1041,7 +1361,7 @@ class TestRetention:
             sessions_dir=str(sessions_dir), keep_sessions=0, keep_days=3650,
             clock=lambda: EPOCH_START,
         )
-        resp = server._dispatch({"verb": "gc"})
+        resp = server._dispatch(_wire("gc"))
         assert resp == {"ok": True, "contract": 1, "removed": ["s-20260101T000000Z-aaaa"], "kept": 0}
 
     def test_retention_with_no_sessions_dir_yet(self, tmp_path):
@@ -1180,7 +1500,7 @@ def _run_full_lifecycle(scope: str, monkeypatch, tmp_path) -> Dict[str, Any]:
         session_id_fn=lambda: SESSION_ID,
     )
 
-    # Built via _create_session_locked directly, NOT server._dispatch({"verb":
+    # Built via _create_session_locked directly, NOT server._dispatch(_wire(
     # "start", ...}) / handle_start — handle_start spawns a real background
     # thread running _session_loop(sess) for this same session, which would
     # race against the synchronous _session_loop(sess) call below (two
@@ -1206,7 +1526,7 @@ def _run_full_lifecycle(scope: str, monkeypatch, tmp_path) -> Dict[str, Any]:
     server._session_loop(sess)  # runs synchronously: no real thread involved
 
     clock_box["t"] = EPOCH_END
-    stop_resp = server._dispatch({"verb": "stop", "session": sess.session_id})
+    stop_resp = server._dispatch(_wire("stop", session=sess.session_id))
     assert stop_resp["ok"] is True
     return stop_resp["summary"]
 
@@ -1215,16 +1535,168 @@ def _canon(doc: Dict[str, Any]) -> str:
     return json.dumps(doc, sort_keys=True, indent=2)
 
 
+RG55_REGEN_ENV = "CGPROFILE_REGEN_RG55_GOLDENS"
+
+
+def _check_rg55_golden(name: str, doc: Any) -> None:
+    """Freeze one v1.1 document under `fixtures/rg55/` byte-for-byte.
+
+    The v1.1 goldens are the SAME documents as their v1 counterparts plus
+    §8's additive keys — which is why each caller also asserts that
+    stripping those keys reproduces the untouched v1 golden. That pair of
+    assertions is the machine-checkable form of contract §8's promise
+    ("additive ... the existing goldens stay byte-identical")."""
+    path = RG55_FIXTURES / name
+    text = json.dumps(doc, indent=2) + "\n"
+    if os.environ.get(RG55_REGEN_ENV) == "1":  # pragma: no cover - maintenance path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text)
+        return
+    assert path.is_file(), f"missing golden {path} (regenerate with {RG55_REGEN_ENV}=1)"
+    assert path.read_text() == text, f"{path} differs from the live document"
+
+
+def _strip_v1_1_summary_keys(summary_doc: Dict[str, Any]) -> Dict[str, Any]:
+    """RG-55 C7 (§8.7): every daemon Summary now carries `liveness` and
+    `watch`. Asserted for what they are by the caller, then stripped so the
+    v1 goldens stay BYTE-identical (contract §8's own "the existing goldens
+    stay byte-identical") — the same treatment C5 gave `host`'s two new
+    keys and C6 gave `version.transports`."""
+    return {k: v for k, v in summary_doc.items() if k not in ("liveness", "watch")}
+
+
 class TestFullLifecycleGoldenReproduction:
     def test_container_shared_scope_matches_summary_v1(self, monkeypatch, tmp_path):
         result = _run_full_lifecycle("container-shared", monkeypatch, tmp_path)
+        # The lifecycle authors no policy at all, so the defaults are what a
+        # v1 consumer's session gets: `auto` idle bound with no stream (the
+        # 300 s floor), no ceiling (this fixture's `meta.expected` is null),
+        # and `report` — nothing can be killed by a session nobody asked to
+        # have killed.
+        watch = result["watch"]
+        assert watch["state"] == "ok" and watch["verdict"] == "none" and watch["reason"] is None
+        assert watch["policy"] == {"idle_bound_s": 300.0, "ceiling_s": None,
+                                   "on_stall": "report", "progress_stream": None}
+        # `readings` is NOT pinned here: the watcher runs on the discovery
+        # cadence (2 s of the SAMPLER's clock), and this harness drives its
+        # five frames as fast as the host allows, so how many of them are
+        # "due" is a property of the machine, not of the contract. The
+        # byte-frozen v1.1 Summary lives in `test_serve_socket_carrier.py`,
+        # where the clocks are fully injected.
+        assert watch["readings"] >= 1
+        assert result["liveness"]["stream"] is None
+        assert result["liveness"]["pause_reason"] is None
+        # The v1 golden is still byte-identical underneath the new keys.
         golden = json.loads((FIXTURES / "summary-v1.json").read_text())
-        assert _canon(result) == _canon(golden)
+        assert _canon(_strip_v1_1_summary_keys(result)) == _canon(golden)
 
     def test_container_scope_matches_summary_container_v1(self, monkeypatch, tmp_path):
         result = _run_full_lifecycle("container", monkeypatch, tmp_path)
+        assert result["watch"]["state"] == "ok"
+        assert result["watch"]["verdict"] == "none"
         golden = json.loads((FIXTURES / "summary-container-v1.json").read_text())
-        assert _canon(result) == _canon(golden)
+        assert _canon(_strip_v1_1_summary_keys(result)) == _canon(golden)
+
+
+# ── CP-6 (C4): the DAMON series actually reaches the rendered report ────
+
+@pytest.mark.skipif(not _HAS_REPORT_DEPS, reason="lib.analyze/report_html need pandas/numpy/plotly")
+class TestDamonSeriesInReport:
+    """`_run_full_lifecycle` already drives a real daemon session through
+    all 5 contract frames with DAMON "on" (`_FrameDamonSession.collect`
+    reads each frame's own `damon.json`), so `damon.jsonl` on disk after it
+    returns carries exactly the 5 frames' hot/warm/cold/idle bytes in
+    order. This proves CP-6's own oracle: not just that `analyze.build`
+    "read" the file, but that the rendered HTML's embedded plotly figure
+    actually carries a "hot" trace with those exact byte values.
+    """
+
+    _HOT_BYTES = [157286400, 188743680, 230686720, 199229440, 178257920]
+
+    def test_analysis_series_carries_the_exact_frame_hot_bytes(self, monkeypatch, tmp_path):
+        from lib import analyze, store as store_mod
+
+        _run_full_lifecycle("container-shared", monkeypatch, tmp_path)
+        rundir = store_mod.RunDir(str(tmp_path / "sessions"), run_id=SESSION_ID, create=False)
+        analysis = analyze.build(rundir)
+
+        damon_series = {s.key: s for s in analysis.series_in("damon")}
+        assert set(damon_series) == {
+            "damon.hot_bytes", "damon.warm_bytes", "damon.cold_bytes", "damon.idle_bytes",
+        }
+        assert damon_series["damon.hot_bytes"].v == self._HOT_BYTES
+        assert "damon" in analysis.groups()
+
+    def test_damon_rows_with_an_empty_time_index_produce_no_series(self, tmp_path):
+        """`_damon_series`' second early return: `damon.jsonl` HAS rows but
+        the sample frame has none, so there is no time axis to plot them
+        against (`n == 0`). The file is not evidence of a series on its own
+        — a run whose samples were all dropped must render no DAMON figure
+        rather than one with an empty x-axis. Unproven until the first
+        `r0-r1` lane this package ever ran named it as the one uncovered
+        line in `lib/analyze.py`."""
+        import pandas as pd
+        from lib import analyze, store as store_mod
+
+        rundir = store_mod.RunDir(str(tmp_path / "sessions"), run_id="s-x", create=True)
+        rundir.append("damon", {"hot": 1, "warm": 2, "cold": 3, "idle": 4})
+        assert analyze._damon_series(rundir, pd.TimedeltaIndex([]), "/some/cgroup") == []
+
+    def test_absent_damon_jsonl_yields_no_damon_series_and_no_error(self, monkeypatch, tmp_path):
+        # damon="off" -> _create_session_locked never touches damon.jsonl
+        # at all (`if damon_bytes is not None` in `_on_session_sample`) --
+        # the CP-6 backlog's own "absent file -> no figure, no error" case.
+        from lib import analyze, store as store_mod
+
+        root = tmp_path / "cgroup"
+        write_cgroup(root, "", cgroup_files())
+        write_cgroup(root, "dev.slice", cgroup_files())
+        write_cgroup(root, "dev.slice/dev-background.slice", cgroup_files())
+        write_cgroup(
+            root, f"dev.slice/dev-background.slice/docker-{SIMPLE_CONTAINER_ID}.scope",
+            cgroup_files(memory_current=500 * 1024 * 1024),
+        )
+        proc = tmp_path / "proc"
+        proc.mkdir()
+        (proc / "loadavg").write_text("1.0 1.0 1.0 1/100 999\n")
+        (proc / "meminfo").write_text("MemTotal:  1000 kB\nMemAvailable: 500 kB\n")
+        pressure = proc / "pressure"
+        pressure.mkdir()
+        for name in ("cpu", "memory", "io"):
+            (pressure / name).write_text(
+                "some avg10=0.00 avg60=0.00 avg300=0.00 total=0\n"
+                "full avg10=0.00 avg60=0.00 avg300=0.00 total=0\n"
+            )
+        server = serve.SessionServer(
+            sessions_dir=str(tmp_path / "sessions"), cgroup_root=str(root),
+            proc_root=str(proc), clock=lambda: EPOCH_START, session_id_fn=lambda: SESSION_ID,
+        )
+        resp = server._dispatch(_start_req(damon="off"))
+        sess = server._sessions[resp["session"]]
+        sess.stop_event.set()
+        sess.thread.join(timeout=5.0)
+        server._dispatch(_wire("stop", session=resp["session"]))
+
+        rundir = store_mod.RunDir(str(tmp_path / "sessions"), run_id=SESSION_ID, create=False)
+        analysis = analyze.build(rundir)  # must not raise
+        assert analysis.series_in("damon") == []
+        assert "damon" not in analysis.groups()
+
+    def test_rendered_html_figure_json_carries_the_hot_trace_values(self, monkeypatch, tmp_path):
+        from lib import analyze, report_html, store as store_mod
+
+        _run_full_lifecycle("container-shared", monkeypatch, tmp_path)
+        rundir = store_mod.RunDir(str(tmp_path / "sessions"), run_id=SESSION_ID, create=False)
+        analysis = analyze.build(rundir)
+        out_path = tmp_path / "report.html"
+        report_html.render(analysis, str(out_path))
+        html = out_path.read_text()
+
+        assert "cgp-figure" in html
+        assert "Plotly.newPlot" in html
+        assert "DAMON hot bytes" in html
+        for value in self._HOT_BYTES:
+            assert str(value) in html
 
 
 # ── a session-loop crash is caught, not left live forever ───────────────
@@ -1271,6 +1743,115 @@ def test_manifest_target_follow_children_is_false(simple_server):
     sess = simple_server._sessions[session_id]
     sess.stop_event.set()
     sess.thread.join(timeout=5.0)
+
+
+# ── CP-7 (C3): manifest limits table is real, not `{}` ──────────────────
+
+class TestManifestLimitsTable:
+    """`_manifest_for`'s ``limits`` key was ``{}`` unconditionally (RW-14's
+    own deliberate P1 scoping decision, filed as backlog CP-7): every
+    ``analyze.py`` proposal check that reads ``Analysis.limits`` was a
+    permanent no-op for a daemon-collected report. C3 reuses the
+    `limits_mod.effective()` call C2 (CP-5) already made once at session
+    start (`sess.last_effective_limits`) rather than resolving it a second
+    time, and writes it in `cgprofile.py`'s own `_limits_snapshot` shape —
+    the exact schema `cmd_collect`/`analyze.py` already agree on.
+    """
+
+    def test_manifest_limits_keyed_by_cgroup_matches_limits_snapshot_shape(self, simple_server):
+        resp = simple_server._dispatch(_start_req())
+        session_id = resp["session"]
+        sess = simple_server._sessions[session_id]
+        manifest = json.loads(
+            (Path(simple_server.sessions_dir) / session_id / "manifest.json").read_text()
+        )
+        # Independently recomputed (not read back off `sess`) so a mutant
+        # that made `_manifest_for` write a stale/cached value would still
+        # be caught by this assertion.
+        expected = cg._limits_snapshot(limits_mod, limits_mod.effective(
+            sess.cgroup, simple_server.cgroup_root, limits_mod.mount_flags(
+                proc_root=simple_server.proc_root
+            ),
+        ))
+        assert manifest["limits"] == {sess.cgroup: expected}
+        assert manifest["limits"][sess.cgroup]["resolved"]["protection_mode"] == "strict"
+        sess.stop_event.set()
+        sess.thread.join(timeout=5.0)
+
+    def test_manifest_limits_is_empty_dict_when_no_effective_limits_were_resolved(
+        self, simple_server, monkeypatch,
+    ):
+        # A session whose `last_effective_limits` is somehow `None` (never
+        # happens on the real `_create_session_locked` path today, but
+        # `_manifest_for` is also called from the crash-finalize path,
+        # RW-14) must degrade to `{}`, never raise or write a null entry.
+        resp = simple_server._dispatch(_start_req())
+        session_id = resp["session"]
+        sess = simple_server._sessions[session_id]
+        sess.stop_event.set()
+        sess.thread.join(timeout=5.0)
+        sess.last_effective_limits = None
+        manifest = simple_server._manifest_for(sess, status="live")
+        assert manifest["limits"] == {}
+
+    @pytest.mark.skipif(not _HAS_REPORT_DEPS, reason="lib.analyze needs pandas/numpy/ruptures")
+    def test_daemon_session_manifest_unlocks_recursiveprot_gap_proposal(self, tmp_path):
+        # `_check_oversubscription` needs >= 2 sibling cgroup entries under
+        # one shared parent to fire at all (lib/analyze.py's own docstring
+        # on that check) -- a daemon session profiles exactly ONE cgroup, so
+        # that specific check is structurally a permanent no-op here
+        # regardless of this fix (documented in `_manifest_for`'s own
+        # comment). `_check_recursiveprot_gap` needs only the ONE cgroup
+        # this fix now actually populates, so it is the real oracle for a
+        # single-target daemon session: an ancestor slice declares a
+        # nonzero `memory.min` the leaf itself does not restate, which is
+        # discarded under strict mode (this suite's `simple_proc` fixture
+        # has no `/proc/mounts`, so `mount_flags()` returns `set()` and
+        # `effective()` resolves `protection_mode="strict"`, matching this
+        # estate's real default per the `soulmask-memory-pressure-findings`
+        # memory note).
+        from lib import analyze
+
+        root = tmp_path / "cgroup"
+        write_cgroup(root, "", cgroup_files())
+        write_cgroup(root, "dev.slice", cgroup_files())
+        write_cgroup(
+            root, "dev.slice/dev-background.slice",
+            cgroup_files(memory_min=str(100 * 1024 * 1024)),
+        )
+        write_cgroup(
+            root, f"dev.slice/dev-background.slice/docker-{SIMPLE_CONTAINER_ID}.scope",
+            cgroup_files(memory_current=500 * 1024 * 1024),  # memory_min defaults to "0"
+        )
+        proc = tmp_path / "proc"
+        proc.mkdir()
+        (proc / "loadavg").write_text("1.0 1.0 1.0 1/100 999\n")
+        (proc / "meminfo").write_text("MemTotal:  1000 kB\nMemAvailable: 500 kB\n")
+        pressure = proc / "pressure"
+        pressure.mkdir()
+        for name in ("cpu", "memory", "io"):
+            (pressure / name).write_text(
+                "some avg10=0.00 avg60=0.00 avg300=0.00 total=0\n"
+                "full avg10=0.00 avg60=0.00 avg300=0.00 total=0\n"
+            )
+
+        server = serve.SessionServer(
+            sessions_dir=str(tmp_path / "sessions"), cgroup_root=str(root),
+            proc_root=str(proc), clock=lambda: EPOCH_START,
+            session_id_fn=lambda: SESSION_ID,
+        )
+        resp = server._dispatch(_start_req())
+        session_id = resp["session"]
+        sess = server._sessions[session_id]
+        sess.stop_event.set()
+        sess.thread.join(timeout=5.0)
+        server._dispatch(_wire("stop", session=session_id))
+
+        analysis = analyze.build(sess.rundir)
+        gap_ids = {p.id for p in analysis.proposals if p.id.startswith("recursiveprot-gap:")}
+        assert gap_ids == {f"recursiveprot-gap:{sess.cgroup}"}
+        oversub_ids = {p.id for p in analysis.proposals if p.id.startswith("oversubscribed:")}
+        assert oversub_ids == set()  # structurally impossible, see docstring above
 
 
 def test_finalize_session_locked_never_joins_its_own_thread(simple_server):
@@ -1333,6 +1914,100 @@ def test_serve_forever_installs_signal_handlers_that_request_shutdown(tmp_path, 
 
 # ── _create_session_locked edge cases (slice/DAMON branches) ────────────
 
+@pytest.mark.parametrize("failure", ["manifest", "thread"])
+@pytest.mark.parametrize("damon_choice", ["off", "on"])
+def test_failed_start_releases_owned_damon_and_permits_clean_retry(
+    simple_server, monkeypatch, failure, damon_choice,
+):
+    owned: set[int] = set()
+
+    class OwnedDamonSession:
+        kdamond_idx = 7
+        thresholds = {"hot_rate_pct": 50, "warm_rate_pct": 5,
+                      "cold_age_s": 30, "idle_age_s": 120}
+        last_class_bytes = {"hot": 0, "warm": 0, "cold": 0, "idle": 0}
+
+        def __init__(self, targets, **kwargs):
+            self.targets = targets
+
+        def __enter__(self):
+            if owned:
+                raise AssertionError("previous DAMON owner was not released")
+            owned.add(self.kdamond_idx)
+            return self
+
+        def __exit__(self, *exc):
+            owned.remove(self.kdamond_idx)
+
+        def collect(self):
+            return None
+
+        def recommit_targets(self, pids):
+            return None
+
+    monkeypatch.setattr(targets_mod, "pids_in_cgroup", lambda *_args: [123])
+    monkeypatch.setattr(damon_mod, "DamonSession", OwnedDamonSession)
+
+    if failure == "manifest":
+        original = store.RunDir.write_manifest
+
+        def fail_once(rundir, document):
+            monkeypatch.setattr(store.RunDir, "write_manifest", original)
+            raise OSError("sessions volume full")
+
+        monkeypatch.setattr(store.RunDir, "write_manifest", fail_once)
+    else:
+        original = threading.Thread.start
+
+        def fail_once(thread):
+            monkeypatch.setattr(threading.Thread, "start", original)
+            raise OSError("thread launch failed")
+
+        monkeypatch.setattr(threading.Thread, "start", fail_once)
+
+    with pytest.raises(OSError):
+        simple_server._dispatch(_start_req(damon=damon_choice))
+    assert not owned
+    assert simple_server._sessions == {}
+    assert not (Path(simple_server.sessions_dir) / SESSION_ID).exists()
+
+    # The same generated ID must now be safe to use: failure did not leave
+    # a hidden DAMON owner, partial series, or registry entry behind.
+    started = simple_server._dispatch(_start_req(damon=damon_choice))
+    assert started["ok"] is True
+    assert started["session"] == SESSION_ID
+    if damon_choice == "on":
+        assert owned == {7}
+    stopped = simple_server._dispatch(_wire("stop", session=SESSION_ID))
+    assert stopped["ok"] is True
+    assert not owned
+
+
+def test_session_id_collision_preserves_first_live_session_and_its_series(simple_server):
+    first = simple_server._dispatch(_start_req())
+    assert first["ok"] is True
+    owner = simple_server._sessions[SESSION_ID]
+    with pytest.raises(OSError, match="session id collision"):
+        simple_server._dispatch(_start_req())
+    assert simple_server._sessions[SESSION_ID] is owner
+    assert len(list(owner.rundir.read("samples"))) == 1
+    stopped = simple_server._dispatch(_wire("stop", session=SESSION_ID))
+    assert stopped["ok"] is True
+    assert stopped["summary"]["samples"] == 1
+
+
+def test_session_id_collision_with_retained_disk_record_does_not_mix_series(simple_server):
+    retained = Path(simple_server.sessions_dir) / SESSION_ID
+    retained.mkdir()
+    (retained / "manifest.json").write_text('{"status":"finished"}\n')
+
+    with pytest.raises(OSError, match="session id collision"):
+        simple_server._dispatch(_start_req())
+
+    assert (retained / "manifest.json").read_text() == '{"status":"finished"}\n'
+    assert simple_server._sessions == {}
+
+
 def test_create_session_with_no_slice_ancestor_leaves_slice_cgroup_none(simple_server):
     with simple_server._lock:
         sess = simple_server._create_session_locked(
@@ -1363,7 +2038,7 @@ def test_damon_unavailable_reason_reaches_the_stopped_summary(simple_server):
     sess = simple_server._sessions[session_id]
     sess.stop_event.set()
     sess.thread.join(timeout=5.0)
-    stop_resp = simple_server._dispatch({"verb": "stop", "session": session_id})
+    stop_resp = simple_server._dispatch(_wire("stop", session=session_id))
     assert stop_resp["summary"]["damon"]["status"] == "unavailable"
     assert stop_resp["summary"]["damon"]["reason"] == "no pids to monitor yet"
 
@@ -1412,7 +2087,7 @@ def test_damon_collect_failure_degrades_only_that_session(simple_server, monkeyp
     sess = simple_server._sessions[start_resp["session"]]
     sess.stop_event.set()
     sess.thread.join(timeout=5.0)
-    stop_resp = simple_server._dispatch({"verb": "stop", "session": sess.session_id})
+    stop_resp = simple_server._dispatch(_wire("stop", session=sess.session_id))
     assert stop_resp["summary"]["damon"]["status"] == "unavailable"
     assert stop_resp["series"]["damon"] is None
     assert closed == [True]
@@ -1475,7 +2150,7 @@ class _StubDamonSession:
         return {"hot_rate_pct": 5, "warm_rate_pct": 1, "cold_age_s": 30, "idle_age_s": 120}
 
 
-def test_on_session_sample_discovery_due_and_not_due_and_status_damon_on(simple_server):
+def test_on_session_sample_discovery_due_and_not_due_and_status_damon_on(simple_server, monkeypatch):
     resolved = targets_mod.find_container_cgroup(SIMPLE_CONTAINER_ID, root=simple_server.cgroup_root)
     with simple_server._lock:
         sess = simple_server._create_session_locked(
@@ -1489,6 +2164,14 @@ def test_on_session_sample_discovery_due_and_not_due_and_status_damon_on(simple_
     stub = _StubDamonSession()
     sess.damon_session = stub
     abs_target = os.path.join(simple_server.cgroup_root, sess.cgroup.lstrip("/"))
+    real_effective = serve.limits_mod.effective
+    effective_calls = []
+
+    def tracked_effective(*args, **kwargs):
+        effective_calls.append(args)
+        return real_effective(*args, **kwargs)
+
+    monkeypatch.setattr(serve.limits_mod, "effective", tracked_effective)
 
     simple_server._on_session_sample(
         sess, {"mono": 0.0, "cg": {sess.cgroup: {}}, "host": {}}, abs_target, None
@@ -1508,7 +2191,7 @@ def test_on_session_sample_discovery_due_and_not_due_and_status_damon_on(simple_
     assert sess.last_discovery_mono == 3.0  # due again (delta 3.0 >= 2.0)
     assert len(stub.recommit_calls) == 2
 
-    status_resp = simple_server._dispatch({"verb": "status", "session": sess.session_id})
+    status_resp = simple_server._dispatch(_wire("status", session=sess.session_id))
     assert status_resp["ok"] is True
     assert status_resp["session"]["live"]["damon"] == {"status": "on", "hot_bytes_recent": 1}
 
@@ -1519,6 +2202,7 @@ def test_on_session_sample_discovery_due_and_not_due_and_status_damon_on(simple_
         sess, {"mono": 6.0, "cg": {sess.cgroup: {}}, "host": {}}, abs_target, None
     )
     assert sess.last_discovery_mono == 6.0
+    assert len(effective_calls) == 3  # mono 0, 3 and 6; never the mono=1 sample
 
     # `sess.rundir.append("damon", damon_bytes)` is guarded by the same
     # `damon_bytes is not None` shape -- one real entry per tick where a
@@ -1528,6 +2212,39 @@ def test_on_session_sample_discovery_due_and_not_due_and_status_damon_on(simple_
     # for the damon-off tick, and skip every real one).
     damon_records = list(sess.rundir.read("damon"))
     assert damon_records == [stub.last_class_bytes] * 3
+
+
+def test_a_session_with_no_resolved_limits_yet_detects_no_drift(simple_server):
+    """C2's `if sess.last_effective_limits is not None` guard, from the
+    other side. `limits_mod.effective()` is Optional by signature, so a
+    session can reach a discovery-due tick with nothing to diff against —
+    it must refresh the baseline and emit NO `limit_drift` row, rather than
+    compare against `None` (a crash) or invent a drift event from nothing
+    (a false event in every consumer's `events.jsonl`). Found unproven by
+    the first `r0-r1` lane this package ever ran: it was the only partial
+    branch left in `lib/serve.py`."""
+    resolved = targets_mod.find_container_cgroup(
+        SIMPLE_CONTAINER_ID, root=simple_server.cgroup_root
+    )
+    with simple_server._lock:
+        sess = simple_server._create_session_locked(
+            container_id=SIMPLE_CONTAINER_ID, cgroup=resolved, scope="container-shared",
+            token="a-real-token-99", interval=1.0, damon_req="off",
+            meta={"lane": "x", "project": "p", "worktree": "w", "commit": None,
+                  "run_gate_revision": 1, "kind": "command", "expected": None},
+        )
+        simple_server._sessions[sess.session_id] = sess
+    abs_target = os.path.join(simple_server.cgroup_root, sess.cgroup.lstrip("/"))
+    sess.last_effective_limits = None
+    sess.last_discovery_mono = None
+
+    simple_server._on_session_sample(
+        sess, {"mono": 0.0, "cg": {sess.cgroup: {}}, "host": {}}, abs_target, None
+    )
+
+    assert list(sess.rundir.read("events")) == []
+    # The baseline IS refreshed, so the NEXT tick can detect drift.
+    assert sess.last_effective_limits is not None
 
 
 def test_on_session_sample_discovery_due_at_the_exact_interval_boundary(simple_server):
@@ -1556,6 +2273,134 @@ def test_on_session_sample_discovery_due_at_the_exact_interval_boundary(simple_s
         abs_target, None,
     )
     assert sess.last_discovery_mono == serve.DISCOVERY_INTERVAL_SECONDS  # due exactly AT the boundary
+
+
+def test_on_session_sample_appends_real_events_jsonl_rows(simple_server, monkeypatch):
+    """CP-5 oracle: a session whose target's ``memory.high`` changes mid-run
+    must produce AT LEAST one ``events.jsonl`` row naming that transition
+    (a ``limit_drift`` row) -- not just the Summary's own ``events.limit_drift``
+    counter. A wrong implementation that wires ``lib.events.Detector`` in but
+    never actually appends to ``events.jsonl`` (or never refreshes effective
+    limits so ``limits_changed`` has anything to compare) would leave this
+    file empty forever, exactly the CP-5 backlog row's own bug description --
+    this test is written to fail red against that implementation.
+
+    Also covers a plain per-tick ``memory_high_breach`` (``observe()``, no
+    limits change involved) between the same two ticks, proving both of
+    CP-5's Detector entry points (``observe`` and ``limits_changed``) are
+    wired, not just one.
+    """
+    resolved = targets_mod.find_container_cgroup(SIMPLE_CONTAINER_ID, root=simple_server.cgroup_root)
+    monkeypatch.setattr(serve.time, "time", lambda: 9_999_999.0)
+    scope_rel = f"dev.slice/dev-background.slice/docker-{SIMPLE_CONTAINER_ID}.scope"
+    with simple_server._lock:
+        sess = simple_server._create_session_locked(
+            container_id=SIMPLE_CONTAINER_ID, cgroup=resolved, scope="container-shared",
+            token=None, interval=1.0, damon_req="off",
+            meta={"lane": "x", "project": "p", "worktree": "w", "commit": None,
+                  "run_gate_revision": 1, "kind": "command", "expected": None},
+        )
+        simple_server._sessions[sess.session_id] = sess
+    abs_target = os.path.join(simple_server.cgroup_root, sess.cgroup.lstrip("/"))
+
+    # Tick 1 (mono=0.0, discovery due -- first tick always is): establishes
+    # the discovery cadence and the pre-change effective limits baseline.
+    # No prior sample yet, so observe() has nothing to diff against.
+    simple_server._on_session_sample(
+        sess,
+        {"mono": 0.0, "t": 1_754_325_600.0, "cg": {sess.cgroup: {"mem": {}, "cpu": {}, "memev": {"high": 0}}},
+         "host": {}},
+        abs_target, None,
+    )
+    assert list(sess.rundir.read("events")) == []  # nothing to detect on the first tick
+
+    # Change memory.high on disk -- the CP-5 oracle's own scenario.
+    write_cgroup(
+        Path(simple_server.cgroup_root), scope_rel,
+        cgroup_files(memory_current=500 * 1024 * 1024, memory_high=str(6 * 1024**3)),
+    )
+
+    # Tick 2 (mono=3.0, delta 3.0 >= DISCOVERY_INTERVAL_SECONDS -- due again):
+    # a memory.high breach counter bump (observe()) AND the limits refresh
+    # (limits_changed()) both land on this tick.
+    simple_server._on_session_sample(
+        sess,
+        {"mono": 3.0, "t": 1_754_325_603.0,
+         "cg": {sess.cgroup: {"mem": {}, "cpu": {}, "memev": {"high": 1}}}, "host": {}},
+        abs_target, None,
+    )
+
+    events = list(sess.rundir.read("events"))
+    kinds = {e["kind"] for e in events}
+    assert "limit_drift" in kinds, events
+    assert "memory_high_breach" in kinds, events
+    drift = next(e for e in events if e["kind"] == "limit_drift")
+    assert "memory_high" in drift["data"]["changed"]
+    assert drift["target"] == sess.cgroup
+    assert drift["t"] == 1_754_325_603.0
+
+
+def test_first_valid_cpu_sample_does_not_rate_against_missing_monotonic_time(simple_server):
+    resolved = targets_mod.find_container_cgroup(SIMPLE_CONTAINER_ID, root=simple_server.cgroup_root)
+    with simple_server._lock:
+        sess = simple_server._create_session_locked(
+            container_id=SIMPLE_CONTAINER_ID, cgroup=resolved, scope="container",
+            token=None, interval=1.0, damon_req="off",
+            meta={"lane": "x", "project": "p", "worktree": "w", "commit": None,
+                  "run_gate_revision": 1, "kind": "command", "expected": None},
+        )
+        simple_server._sessions[sess.session_id] = sess
+    abs_target = os.path.join(simple_server.cgroup_root, sess.cgroup.lstrip("/"))
+    simple_server._on_session_sample(
+        sess,
+        {"mono": 0.0, "cg": {sess.cgroup: {"cpu": {"usage_usec": 1_000_000}}}, "host": {}},
+        abs_target, None,
+    )
+    assert sess.live_cpu_cores_recent is None
+    assert sess._prev_cpu_usage_usec == 1_000_000
+
+
+class _ObserveSpy:
+    def __init__(self):
+        self.calls = []
+
+    def observe(self, *args):
+        self.calls.append(args)
+        return []
+
+
+@pytest.mark.parametrize("missing", ["detector", "previous", "delta", "zero-delta"])
+def test_detector_observation_requires_each_independent_precondition(simple_server, missing):
+    resolved = targets_mod.find_container_cgroup(SIMPLE_CONTAINER_ID, root=simple_server.cgroup_root)
+    with simple_server._lock:
+        sess = simple_server._create_session_locked(
+            container_id=SIMPLE_CONTAINER_ID, cgroup=resolved, scope="container",
+            token=None, interval=1.0, damon_req="off",
+            meta={"lane": "x", "project": "p", "worktree": "w", "commit": None,
+                  "run_gate_revision": 1, "kind": "command", "expected": None},
+        )
+        simple_server._sessions[sess.session_id] = sess
+    abs_target = os.path.join(simple_server.cgroup_root, sess.cgroup.lstrip("/"))
+    spy = _ObserveSpy()
+    sess.last_discovery_mono = 0.0  # keep the limit refresh off this sample
+    sess.detector = spy
+    sess._prev_record = {"cg": {sess.cgroup: {}}}
+    sess._prev_mono = 0.0
+    if missing == "detector":
+        sess.detector = None
+    elif missing == "previous":
+        sess._prev_record = None
+    else:
+        if missing == "delta":
+            sess._prev_mono = None
+
+    simple_server._on_session_sample(
+        sess,
+        {"mono": 0.0 if missing == "zero-delta" else 1.0,
+         "cg": {sess.cgroup: {}}, "host": {}},
+        abs_target, None,
+    )
+    assert spy.calls == []
 
 
 def test_on_session_sample_no_token_path_recommits_only_on_pid_set_change(simple_server):
@@ -1633,10 +2478,17 @@ def test_on_session_sample_no_token_path_recommits_only_on_pid_set_change(simple
     assert sess.no_token_pids == [100, 200, 300]
 
 
-def test_on_session_sample_treats_a_partial_cpu_baseline_as_unreadable(simple_server):
-    # The two previous CPU fields are a pair.  If an interrupted or restored
-    # session has only the counter but no timestamp, it is not a usable rate
-    # baseline and must be carried forward without attempting `mono - None`.
+@pytest.mark.parametrize(
+    ("previous_usage_usec", "previous_mono"),
+    [(None, 0.0), (1_000_000, None)],
+    ids=["missing-previous-counter", "missing-previous-time"],
+)
+def test_on_session_sample_skips_rate_without_a_complete_cpu_baseline(
+    simple_server, monkeypatch, previous_usage_usec, previous_mono,
+):
+    # A rate needs both the previous counter and its monotonic timestamp.  A
+    # partial/restored baseline must leave the last valid rate alone and must
+    # not call util.rate with missing input (which can clear the value or fail).
     resolved = targets_mod.find_container_cgroup(SIMPLE_CONTAINER_ID, root=simple_server.cgroup_root)
     with simple_server._lock:
         sess = simple_server._create_session_locked(
@@ -1646,15 +2498,23 @@ def test_on_session_sample_treats_a_partial_cpu_baseline_as_unreadable(simple_se
                   "run_gate_revision": 1, "kind": "command", "expected": None},
         )
         simple_server._sessions[sess.session_id] = sess
-    sess._prev_cpu_usage_usec = 1_000_000
-    sess._prev_mono = None
+    sess._prev_cpu_usage_usec = previous_usage_usec
+    sess._prev_mono = previous_mono
+    sess.live_cpu_cores_recent = 0.5
     abs_target = os.path.join(simple_server.cgroup_root, sess.cgroup.lstrip("/"))
 
+    def reject_incomplete_rate(*args):
+        pytest.fail(f"util.rate must not receive an incomplete baseline: {args!r}")
+
+    monkeypatch.setattr(serve.util, "rate", reject_incomplete_rate)
+
     simple_server._on_session_sample(
-        sess, {"mono": 1.0, "cg": {sess.cgroup: {}}, "host": {}}, abs_target, None
+        sess,
+        {"mono": 1.0, "cg": {sess.cgroup: {"cpu": {"usage_usec": 2_000_000}}}, "host": {}},
+        abs_target, None,
     )
 
-    assert sess.live_cpu_cores_recent is None
+    assert sess.live_cpu_cores_recent == 0.5
 
 # ── host snapshot: observe_slices and non-slice children ─────────────────
 
@@ -1691,7 +2551,7 @@ def test_host_snapshot_includes_observe_slices_and_skips_non_slice_children(tmp_
 # ── malformed session ids on stop/report ──────────────────────────────────
 
 def test_stop_with_a_malformed_session_id(simple_server):
-    resp = simple_server._dispatch({"verb": "stop", "session": "not-a-session-id"})
+    resp = simple_server._dispatch(_wire("stop", session="not-a-session-id"))
     assert resp["error"]["code"] == "unknown-session"
     # Same shape as the status test above: must be rejected by the first
     # (regex) guard, not fall through to the second (`on_disk is None`) --
@@ -1701,7 +2561,7 @@ def test_stop_with_a_malformed_session_id(simple_server):
 
 
 def test_report_with_a_malformed_session_id(simple_server):
-    resp = simple_server._dispatch({"verb": "report", "session": "not-a-session-id"})
+    resp = simple_server._dispatch(_wire("report", session="not-a-session-id"))
     assert resp["error"]["code"] == "unknown-session"
     # handle_report's fallback message is worded entirely differently
     # ("no finished session ... on record", no "is live or", no repr) --
@@ -1766,14 +2626,12 @@ class _FakeConn:
         self.closed = True
 
 
-def test_handle_connection_breaks_on_a_short_read_with_no_trailing_newline(tmp_path):
+def test_handle_connection_closes_partial_request_at_eof_without_response(tmp_path):
     server = serve.SessionServer(sessions_dir=str(tmp_path / "sessions"))
     conn = _FakeConn([b"not json, no newline"])
     server._handle_connection(conn)
     assert conn.closed is True
-    assert len(conn.sent) == 1
-    resp = json.loads(conn.sent[0].decode("utf-8"))
-    assert resp["error"]["code"] == "bad-argument"
+    assert conn.sent == []
 
 
 def test_handle_connection_survives_an_unhandled_dispatch_exception(tmp_path, monkeypatch, capsys):
@@ -1792,7 +2650,7 @@ def test_handle_connection_survives_an_unhandled_dispatch_exception(tmp_path, mo
         raise ValueError("synthetic unanticipated handler bug")
 
     monkeypatch.setattr(server, "_dispatch", _boom)
-    conn = _FakeConn([b'{"verb": "version"}\n'])
+    conn = _FakeConn([_wire_bytes("version")])
     server._handle_connection(conn)
     assert conn.closed is True
     assert conn.sent == []  # no reply at all — never a malformed one
@@ -1847,8 +2705,8 @@ def test_accept_loop_survives_a_handler_bug_and_keeps_serving(tmp_path, monkeypa
     monkeypatch.setattr(server, "_dispatch", _flaky)
 
     conns = [
-        _FakeConn([b'{"verb": "version"}\n']),
-        _FakeConn([b'{"verb": "version"}\n']),
+        _FakeConn([_wire_bytes("version")]),
+        _FakeConn([_wire_bytes("version")]),
     ]
 
     class _FakeSock:
@@ -1905,7 +2763,7 @@ def test_real_socket_round_trip_version_and_bad_request(tmp_path):
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
             client.settimeout(5.0)
             client.connect(socket_path)
-            client.sendall(b'{"verb": "version"}\n')
+            client.sendall(_wire_bytes("version"))
             data = client.recv(65536)
         resp = json.loads(data.decode("utf-8"))
         assert resp["ok"] is True
@@ -1946,6 +2804,197 @@ def test_real_socket_round_trip_version_and_bad_request(tmp_path):
         server.request_shutdown()
         thread.join(timeout=5.0)
         assert not os.path.exists(socket_path)
+
+
+def _start_ready_socket_server(server):
+    """Start the real accept loop after publishing its bind as a sync point."""
+    ready = threading.Event()
+    bind = server._bind
+
+    def bind_and_signal():
+        bind()
+        ready.set()
+
+    server._bind = bind_and_signal
+    thread = threading.Thread(target=server._accept_loop, daemon=True)
+    thread.start()
+    assert ready.wait(timeout=60.0)  # failsafe if bind itself cannot complete
+    return thread
+
+
+def test_real_socket_rejects_wrong_json_shapes_without_losing_daemon(tmp_path):
+    socket_path = str(tmp_path / "ctl.sock")
+    server = serve.SessionServer(
+        sessions_dir=str(tmp_path / "sessions"), socket_path=socket_path,
+        accept_timeout=0.05,
+    )
+    thread = _start_ready_socket_server(server)
+    try:
+        malformed = [
+            [],
+            None,
+            {"verb": []},
+            {
+                "verb": "start", "target": f"containerid:{SIMPLE_CONTAINER_ID}",
+                "scope": "container", "token": 7, "damon": "off", "meta": {},
+            },
+            {
+                "verb": "start", "target": f"containerid:{SIMPLE_CONTAINER_ID}",
+                "scope": "container", "damon": "", "meta": {},
+            },
+            {
+                "verb": "start", "target": f"containerid:{SIMPLE_CONTAINER_ID}",
+                "scope": "container", "damon": None, "meta": {},
+            },
+        ]
+        for request in malformed:
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+                client.settimeout(60.0)
+                client.connect(socket_path)
+                client.sendall((json.dumps(request) + "\n").encode("utf-8"))
+                response = json.loads(client.recv(65536).decode("utf-8"))
+            assert response["ok"] is False
+            assert response["contract"] == 1
+            assert response["error"]["code"] == "bad-argument"
+
+            # A malformed peer must not consume the accept loop.
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+                client.settimeout(60.0)
+                client.connect(socket_path)
+                client.sendall(b'{"verb":"version"}\n')
+                version = json.loads(client.recv(65536).decode("utf-8"))
+            assert version["ok"] is True
+            assert version["contract"] == 1
+    finally:
+        server.request_shutdown()
+        thread.join(timeout=60.0)
+        assert not thread.is_alive()
+
+
+def test_real_socket_does_not_dispatch_unterminated_start_request(
+    simple_server, tmp_path, monkeypatch,
+):
+    socket_path = str(tmp_path / "ctl.sock")
+    simple_server.socket_path = socket_path
+    simple_server.accept_timeout = 0.05
+    dispatches = []
+    monkeypatch.setattr(
+        simple_server, "handle_start",
+        lambda args: (dispatches.append(args) or {"ok": True, "contract": 1}),
+    )
+    thread = threading.Thread(target=simple_server._accept_loop, daemon=True)
+    thread.start()
+    try:
+        deadline = time.monotonic() + 5.0
+        while not os.path.exists(socket_path) and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert os.path.exists(socket_path)
+
+        request = {
+            "verb": "start",
+            "args": {
+                "target": f"containerid:{SIMPLE_CONTAINER_ID}",
+                "scope": "container",
+                "meta": {},
+            },
+            "contract": 1,
+        }
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+            client.settimeout(2.0)
+            client.connect(socket_path)
+            client.sendall(json.dumps(request).encode("utf-8"))
+            client.shutdown(socket.SHUT_WR)
+            assert client.recv(65536) == b""
+
+        assert dispatches == []
+        assert simple_server._sessions == {}
+
+        # EOF on a malformed request must not consume the accept loop.
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+            client.settimeout(2.0)
+            client.connect(socket_path)
+            client.sendall(b'{"verb":"version","args":{},"contract":1}\n')
+            response = json.loads(client.recv(65536).decode("utf-8"))
+        assert response["ok"] is True
+        assert response["contract"] == 1
+    finally:
+        simple_server.request_shutdown()
+        thread.join(timeout=5.0)
+        assert not thread.is_alive()
+
+
+@pytest.mark.parametrize(
+    ("daemon_default", "damon_option"),
+    [("off", []), ("on", ["--damon", "off"])],
+    ids=["omitted-uses-daemon-default", "explicit-choice-overrides-default"],
+)
+def test_ctl_start_optional_damon_round_trips_over_real_socket(
+    simple_server, tmp_path, capsys, daemon_default, damon_option,
+):
+    socket_path = str(tmp_path / "ctl.sock")
+    simple_server.socket_path = socket_path
+    simple_server.accept_timeout = 0.05
+    simple_server.damon_default = daemon_default
+    argv = [
+        "ctl", "start", "--socket", socket_path,
+        "--target", f"containerid:{SIMPLE_CONTAINER_ID}",
+        "--scope", "container", *damon_option, "--meta", "{}",
+    ]
+    thread = _start_ready_socket_server(simple_server)
+    try:
+        assert cg.main(argv) == 0
+        output = capsys.readouterr().out.splitlines()
+        assert len(output) == 1
+        response = json.loads(output[0])
+        assert response["ok"] is True
+        assert response["contract"] == 1
+        assert response["damon"] == "off"
+        assert response["reused"] is False
+        assert cg.main(["ctl", "stop", response["session"], "--socket", socket_path]) == 0
+    finally:
+        simple_server.request_shutdown()
+        thread.join(timeout=60.0)
+        assert not thread.is_alive()
+
+
+def test_real_socket_distinguishes_absent_target_from_unreadable_cgroup_tree(
+    tmp_path, capsys,
+):
+    complete_root = tmp_path / "complete-empty-cgroups"
+    complete_root.mkdir()
+    missing_root = tmp_path / "missing-cgroup-mount"
+    socket_path = str(tmp_path / "ctl.sock")
+    server = serve.SessionServer(
+        sessions_dir=str(tmp_path / "sessions"), socket_path=socket_path,
+        cgroup_root=str(complete_root), damon_default="off", accept_timeout=0.05,
+    )
+    argv = [
+        "ctl", "start", "--socket", socket_path,
+        "--target", f"containerid:{SIMPLE_CONTAINER_ID}",
+        "--scope", "container", "--meta", "{}",
+    ]
+    thread = _start_ready_socket_server(server)
+    try:
+        assert cg.main(argv) == 2
+        absent = capsys.readouterr()
+        absent_response = json.loads(absent.out)
+        assert absent_response["contract"] == 1
+        assert absent_response["error"]["code"] == "target-not-found"
+
+        server.cgroup_root = str(missing_root)
+        assert cg.main(argv) == 3
+        indeterminate = capsys.readouterr()
+        assert indeterminate.out == ""
+        assert "could not reach the daemon" in indeterminate.err
+        assert "cannot search container cgroups" in indeterminate.err
+
+        assert cg.main(["ctl", "version", "--socket", socket_path]) == 0
+        healthy = capsys.readouterr()
+        assert json.loads(healthy.out)["contract"] == 1
+    finally:
+        server.request_shutdown()
+        thread.join(timeout=60.0)
+        assert not thread.is_alive()
 
 
 @pytest.mark.parametrize("reply", [
@@ -2324,6 +3373,14 @@ def test_cli_golden_round_trip_version_start_status_stop(monkeypatch, tmp_path, 
         ])
         start_out = json.loads(capsys.readouterr().out)
         assert rc == 0
+        # RG-55 C8 (§8.3): `start` gained `placement`. This lifecycle never
+        # passes `--place`, so the value is the union's OTHER arm — `null`,
+        # "never asked", distinct from a refusal block carrying a
+        # `place-refused:*` code. Asserted, then stripped so the v1 golden
+        # stays byte-identical (§8's own promise), the same treatment C5/C6/C7
+        # gave `host`, `version.transports` and `liveness`/`watch`.
+        assert start_out["placement"] is None
+        start_out.pop("placement")
         assert _canon(start_out) == _canon(json.loads((FIXTURES / "start-v1.json").read_text()))
 
         lockstep.sess = server._sessions[SESSION_ID]
@@ -2332,6 +3389,18 @@ def test_cli_golden_round_trip_version_start_status_stop(monkeypatch, tmp_path, 
         rc = cg.main(["ctl", "--socket", socket_path, "version"])
         version_out = json.loads(capsys.readouterr().out)
         assert rc == 0
+        # RG-55 C6: `version` gained §8.6's `transports` block. Same
+        # "assert the new key exactly, strip it, then compare the rest
+        # byte-identically to the UNTOUCHED v1 golden" treatment C5 gave
+        # `host`'s two new keys (§8's own "the existing goldens stay
+        # byte-identical"). `listening` is true here because this test
+        # reached the daemon over that very socket.
+        assert version_out["transports"] == {
+            "exec": True,
+            "socket": {"path": socket_path, "listening": True,
+                       "allow_uids": [], "peer_cred": True},
+        }
+        version_out.pop("transports")
         assert _canon(version_out) == _canon(json.loads((FIXTURES / "version-v1.json").read_text()))
 
         # -- status, paused mid-session at frame 2 --
@@ -2340,6 +3409,37 @@ def test_cli_golden_round_trip_version_start_status_stop(monkeypatch, tmp_path, 
         rc = cg.main(["ctl", "--socket", socket_path, "status"])
         status_out = json.loads(capsys.readouterr().out)
         assert rc == 0
+        # RG-55 C5: `handle_status`'s own embedded "host" block is the SAME
+        # `_host_snapshot()` the "host" verb returns, so it gains the same
+        # two keys -- none of these frames ship `dev-gates.slice` or
+        # `cgprofile.slice`, so both read "absent", same as test_host_
+        # snapshot_matches_host_v1 above.
+        assert status_out["host"]["gates_slice"] == {"name": "dev-gates.slice", "present": False}
+        assert status_out["host"]["daemon_slice"] == {
+            "cgroup": "/cgprofile.slice", "memory_min_bytes": None, "memory_high_bytes": None,
+        }
+        # The WHOLE v1.1 document is frozen first — host's two C5 keys and
+        # the session's two C7 keys together — because that is what a v1.1
+        # consumer actually receives; the strips below are only how the v1
+        # golden stays byte-identical underneath it.
+        entry = status_out["sessions"][0]
+        assert entry["watch"]["state"] == "ok"
+        assert entry["watch"]["policy"]["on_stall"] == "report"
+        assert entry["liveness"]["stream"] is None
+        assert entry["placement"] is None  # C8: `--place` was not asked for
+        _check_rg55_golden("status-v1.1.json", status_out)
+        status_out["host"] = {
+            k: v for k, v in status_out["host"].items()
+            if k not in ("gates_slice", "daemon_slice")
+        }
+        # RG-55 C7 (§8.4): the session entry gained `liveness` and `watch`.
+        # Same treatment again — assert them, then strip for the untouched
+        # v1 golden. `readings` is 1 because the liveness tick runs on the
+        # DISCOVERY cadence and this lockstep harness is paused after frame 2.
+        status_out["sessions"] = [
+            {k: v for k, v in one.items() if k not in ("liveness", "watch", "placement")}
+            for one in status_out["sessions"]
+        ]
         assert _canon(status_out) == _canon(json.loads((FIXTURES / "status-v1.json").read_text()))
         lockstep.resume.set()
 
@@ -2358,6 +3458,9 @@ def test_cli_golden_round_trip_version_start_status_stop(monkeypatch, tmp_path, 
         expected_dir = os.path.join(str(tmp_path / "sessions"), SESSION_ID)
         assert stop_out["session_dir"] == expected_dir
         stop_out["session_dir"] = golden_stop["session_dir"]
+        # C7 (§8.7): the Summary inside `stop` carries the two new keys too.
+        assert stop_out["summary"]["watch"]["state"] == "ok"
+        stop_out["summary"] = _strip_v1_1_summary_keys(stop_out["summary"])
         assert _canon(stop_out) == _canon(golden_stop)
     finally:
         server.request_shutdown()
@@ -2397,6 +3500,14 @@ def test_cli_host_v1(tmp_path, capsys):
         rc = cg.main(["ctl", "--socket", socket_path, "host"])
         out = json.loads(capsys.readouterr().out)
         assert rc == 0
+        # RG-55 C5: same "strip the two new v1.1 keys, compare the rest
+        # byte-identically to the untouched v1 golden" treatment as
+        # test_host_snapshot_matches_host_v1 above (this test drives the
+        # same verb through the CLI/socket carrier instead of `_dispatch`
+        # directly -- both must agree on the exact same v1 subset).
+        out["host"] = {
+            k: v for k, v in out["host"].items() if k not in ("gates_slice", "daemon_slice")
+        }
         assert _canon(out) == _canon(json.loads((FIXTURES / "host-v1.json").read_text()))
     finally:
         server.request_shutdown()

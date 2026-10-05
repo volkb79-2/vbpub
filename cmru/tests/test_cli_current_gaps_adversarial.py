@@ -35,13 +35,35 @@ def test_package_delete_unexpected_http_failure_is_not_silently_ignored(monkeypa
 
 
 def test_tag_deletion_success_reports_real_mutation(monkeypatch, tmp_path, capsys):
-    seen = []
-    monkeypatch.setattr(cli.subprocess, "run", lambda argv, **kwargs: seen.append(argv) or SimpleNamespace(returncode=0))
+    remote_calls = []
+    local_calls = []
+    oid = "a" * 40
+
+    def remote(_root, *args, **kwargs):
+        remote_calls.append(args)
+        if args[0] == "ls-remote":
+            return SimpleNamespace(returncode=0, stdout=f"{oid}\trefs/tags/demo-v1\n", stderr="")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    def local(_root, *args, **kwargs):
+        local_calls.append(args)
+        stdout = oid if args[:2] == ("show-ref", "--hash") else ""
+        return SimpleNamespace(returncode=0, stdout=stdout, stderr="")
+
+    monkeypatch.setattr(cli, "run_remote_git", remote)
+    monkeypatch.setattr(cli, "run_local_git", local)
     cli.delete_git_tag_remote(tmp_path, "demo-v1", False)
     cli.delete_git_tag_local(tmp_path, "demo-v1", False)
-    assert seen == [
-        ["git", "-C", str(tmp_path), "push", "origin", ":refs/tags/demo-v1"],
-        ["git", "-C", str(tmp_path), "tag", "-d", "demo-v1"],
+    assert [call[0] for call in remote_calls] == ["ls-remote", "push"]
+    assert remote_calls[-1] == (
+        "push", f"--force-with-lease=refs/tags/demo-v1:{oid}",
+        "origin", ":refs/tags/demo-v1",
+    )
+    assert local_calls == [
+        ("check-ref-format", "refs/tags/demo-v1"),
+        ("show-ref", "--exists", "refs/tags/demo-v1"),
+        ("show-ref", "--hash", "--verify", "refs/tags/demo-v1"),
+        ("update-ref", "-d", "refs/tags/demo-v1", oid),
     ]
     output = capsys.readouterr().out
     assert "Deleted remote tag demo-v1" in output

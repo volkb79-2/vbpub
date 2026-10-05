@@ -1,5 +1,6 @@
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -68,7 +69,7 @@ def test_package_deletion_failures_are_safe_and_dry_run_has_no_http(monkeypatch,
 
     monkeypatch.setattr(cli, "http_request", lambda *args: (404, "gone", {}))
     cli.delete_package("o", "p", "t", "org", False)
-    assert "not found" in capsys.readouterr().out
+    assert "the package may be absent or inaccessible, so deletion was not confirmed" in capsys.readouterr().out
     monkeypatch.setattr(cli, "http_request", lambda *args: (500, "bad", {}))
     with pytest.raises(RuntimeError, match="Failed to delete p version 9"):
         cli.delete_package_version("o", "p", "t", 9, "org", False)
@@ -85,8 +86,14 @@ def test_cleanup_ghcr_applies_cutoff_and_explicit_package_delete(monkeypatch):
     ])
     deleted_versions = []
     deleted_packages = []
+    monkeypatch.setattr(
+        cli, "get_container_package",
+        lambda _owner, package, *_: {"id": 17, "name": package, "package_type": "container"},
+    )
     monkeypatch.setattr(cli, "delete_package_version", lambda *a: deleted_versions.append(a[3]))
-    monkeypatch.setattr(cli, "delete_package", lambda *a: deleted_packages.append(a[1]))
+    monkeypatch.setattr(
+        cli, "delete_package", lambda *a, **_kw: deleted_packages.append(a[1]),
+    )
     cli.cleanup_ghcr("o", "t", "user", datetime(2021, 1, 1, tzinfo=timezone.utc), False,
                      cleanup(ghcr_packages=["pkg", "whole"], ghcr_delete_packages=["whole"]))
     assert deleted_versions == [1]
@@ -94,19 +101,40 @@ def test_cleanup_ghcr_applies_cutoff_and_explicit_package_delete(monkeypatch):
 
 
 def test_tag_helpers_are_idempotent_and_parse_annotated_refs(monkeypatch, tmp_path, capsys):
-    calls = []
-    class Result:
-        returncode = 1
-        stdout = "abc\trefs/tags/v1\ndef\trefs/tags/v1^{}\n"
-    monkeypatch.setattr(cli.subprocess, "run", lambda argv, **kwargs: calls.append(argv) or Result())
+    remote_calls = []
+    local_calls = []
+
+    def remote(_root, *args, **kwargs):
+        remote_calls.append(args)
+        if args[0] == "ls-remote":
+            return SimpleNamespace(
+                returncode=0,
+                stdout="a" * 40 + "\trefs/tags/v1\n" + "b" * 40 + "\trefs/tags/v1^{}\n",
+                stderr="",
+            )
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    def local(_root, *args, **kwargs):
+        local_calls.append(args)
+        stdout = "c" * 40 if args[:2] == ("show-ref", "--hash") else ""
+        return SimpleNamespace(returncode=0, stdout=stdout, stderr="")
+
+    monkeypatch.setattr(cli, "run_remote_git", remote)
+    monkeypatch.setattr(cli, "run_local_git", local)
     cli.delete_git_tag_remote(tmp_path, "v1", True)
     cli.delete_git_tag_local(tmp_path, "v1", True)
-    assert calls == []
+    assert remote_calls == [] and local_calls == []
     assert cli.list_remote_tags_matching(tmp_path, "v*") == ["v1"]
     cli.delete_git_tag_remote(tmp_path, "v1", False)
     cli.delete_git_tag_local(tmp_path, "v1", False)
-    assert len(calls) == 3
-    assert "skipping" in capsys.readouterr().out.lower()
+    assert [call[0] for call in remote_calls] == ["ls-remote", "ls-remote", "push"]
+    assert [call for call in local_calls if call[0] == "check-ref-format"] == [
+        ("check-ref-format", "refs/tags/v1"),
+    ] * 4
+    assert [call[0] for call in local_calls if call[0] != "check-ref-format"] == [
+        "show-ref", "show-ref", "update-ref",
+    ]
+    assert "deleted remote tag" in capsys.readouterr().out.lower()
 
 
 def test_unmanaged_release_is_idempotent_and_rejects_ambiguous_records(monkeypatch):

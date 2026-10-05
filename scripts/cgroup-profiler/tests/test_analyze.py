@@ -595,6 +595,54 @@ class TestBuildEndToEnd:
         assert isinstance(analysis.proposals, list)
 
 
+class TestDamonSeriesSubjectSelection:
+    """CP-6 survivor oracles: DAMON rows are attributable only to a real
+    subject, and raw booleans remain unreadable rather than becoming numbers.
+
+    These go through ``build()`` so the manifest selection and DAMON series
+    construction are exercised together, not just the private row helper.
+    """
+
+    def _run(self, tmp_path: Path, targets, damon_rows):
+        run = tmp_path / "run-damon-selection"
+        run.mkdir()
+        samples = [make_sample(0, 0.0, cgroups={SUBJECT: cg_metrics(current=1, usage_usec=0)})]
+        (run / "samples.jsonl").write_text("".join(json.dumps(row) + "\n" for row in samples))
+        (run / "damon.jsonl").write_text("".join(json.dumps(row) + "\n" for row in damon_rows))
+        (run / "manifest.json").write_text(json.dumps({
+            "run_id": "run-damon-selection", "started": 1_754_325_600.0,
+            "ended": 1_754_325_600.0, "targets": targets, "host": {}, "limits": {},
+        }))
+        return FakeRunDir(run)
+
+    def test_nonempty_damon_rows_without_a_subject_return_no_damon_series(self, tmp_path):
+        analysis = analyze.build(self._run(
+            tmp_path, [], [{"hot": 1, "warm": 2, "cold": 3, "idle": 4}],
+        ))
+        assert analysis.series_in("damon") == []
+
+    def test_boolean_damon_values_are_unreadable_not_one_or_zero(self, tmp_path):
+        analysis = analyze.build(self._run(
+            tmp_path,
+            [{"key": "gate", "cgroup": SUBJECT, "role": "subject"}],
+            [{"hot": True, "warm": False, "cold": 3, "idle": 4}],
+        ))
+        damon = {series.key: series for series in analysis.series_in("damon")}
+        assert damon["damon.hot_bytes"].v == [None]
+        assert damon["damon.warm_bytes"].v == [None]
+
+    def test_observer_cgroup_is_not_a_damon_subject(self, tmp_path):
+        analysis = analyze.build(self._run(
+            tmp_path,
+            [
+                {"key": "observer", "cgroup": OBSERVER, "role": "observer"},
+                {"key": "subject", "role": "subject"},
+            ],
+            [{"hot": 1, "warm": 2, "cold": 3, "idle": 4}],
+        ))
+        assert analysis.series_in("damon") == []
+
+
 class TestBuildResamplesBeforeStats:
     """Regression test for _ANALYSIS_RESAMPLE_STEP: build() must resample
     onto a fixed grid before per_target/per_phase/correlations, not feed

@@ -3,8 +3,9 @@
 
 Usage:
   python3 build-push.py --build   # docker buildx bake --load -> cgprofile:local
-                                   #   + ghcr.io/volkb79-2/cgprofile:<ver>
-  python3 build-push.py --push    # docker buildx bake --push, same two tags
+                                   #   (the local-only development target)
+  python3 build-push.py --push    # docker buildx bake --push -> the versioned
+                                   #   ghcr.io/volkb79-2/cgprofile:<ver> target
 
 Simpler than pwmcp/build-push.py on purpose: cgprofile has exactly one
 externally-resolved coordinate (its own release version, `scm` strategy —
@@ -96,7 +97,10 @@ def do_push() -> None:
     env["CGPROFILE_VERSION"] = version
     env["GIT_REVISION"] = git_revision()
     log(f"Pushing ghcr.io/volkb79-2/cgprofile:{version}")
-    run(["docker", "buildx", "bake", *_FS_ALLOW, "all", "--push"], env=env)
+    # The local alias is a separate Bake target and must never be included in
+    # a registry export: an unqualified `cgprofile:local` name resolves to
+    # Docker Hub, not to a private local-only namespace.
+    run(["docker", "buildx", "bake", *_FS_ALLOW, "cgprofile-release", "--push"], env=env)
     log("Push complete.")
 
 

@@ -11,16 +11,17 @@ reproduce ``summary-v1.json`` (scope ``container-shared``) and
 implementation detail, so these tests only ever go through
 ``add_sample``/``finalize``, never a `_`-prefixed helper.
 
-**Hand mutants.** ``test_hand_mutants.py`` (sibling file) runs the ten
-required mutation probes against this same golden path — kept separate so a
-reviewer can see the golden test and the mutant list without one screen of
-noise drowning the other.
+**Hand mutants.** The P1 REPORT and review records list the temporary
+mutation probes run against this same golden path. They stay outside the
+committed suite; this file holds the behavioral oracles the probes must
+make fail.
 """
 
 from __future__ import annotations
 
 import filecmp
 import json
+from math import ceil, log2
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -59,7 +60,7 @@ def _new_accumulator(scope: str, *, damon_enabled: bool = True, token=None) -> s
     return summary.SummaryAccumulator(
         session="s-20260912T101500Z-9f01",
         daemon_name="cgprofile-host-daemon",
-        daemon_version="1.0.0",
+        daemon_version="1.1.0",
         scope=scope,
         started_at="2026-09-12T10:15:00Z",
         interval_seconds=1.0,
@@ -180,6 +181,41 @@ class TestLastReadSkipsUnreadableTrailingSample:
         result = acc.finalize(ended_at="2026-09-12T10:15:00Z")
         assert result["memory"]["peak_bytes"] is None
         assert result["pids"]["peak"] is None
+
+    def test_container_cumulative_counters_keep_last_successful_read(self):
+        acc = _new_accumulator("container", damon_enabled=False)
+        first = {
+            "cpu": {"usage_usec": 1_000_000, "throttled_usec": 200_000,
+                    "nr_throttled": 2},
+            "psi_mem": {"some_total": 300_000},
+            "memstat": {"pgmajfault": 3},
+            "memev": {"oom_kill": 1, "high": 4},
+        }
+        second = {
+            "cpu": {"usage_usec": 2_500_000, "throttled_usec": 500_000,
+                    "nr_throttled": 5},
+            "psi_mem": {"some_total": 750_000},
+            "memstat": {"pgmajfault": 7},
+            "memev": {"oom_kill": 2, "high": 9},
+        }
+        unreadable = {
+            "cpu": {"usage_usec": None, "throttled_usec": None,
+                    "nr_throttled": None},
+            "psi_mem": {"some_total": None},
+            "memstat": {"pgmajfault": None},
+            "memev": {"oom_kill": None, "high": None},
+        }
+        for tick, cgroup in enumerate((first, second, unreadable)):
+            acc.add_sample(cgroup=cgroup, host={}, mono=float(tick))
+
+        result = acc.finalize(ended_at="2026-09-12T10:15:02Z")
+        assert result["cpu"]["seconds"] == 2.5
+        assert result["cpu"]["throttled_seconds"] == 0.5
+        assert result["cpu"]["nr_throttled"] == 5
+        assert result["pressure"]["memory_some_stall_seconds"] == 0.75
+        assert result["faults"]["pgmajfault"] == 7
+        assert result["events"]["oom_kill"] == 2
+        assert result["events"]["memory_high_breach"] == 9
 
 
 # ── branch coverage: absent data, no slice, no damon, unavailable damon ────
@@ -321,6 +357,24 @@ class TestAbsentInputsStayNull:
         result = acc.finalize(ended_at="2026-09-12T10:15:01Z")
         assert result["cpu"]["cores_max"] is None
 
+    def test_unreadable_usage_delta_invalidates_an_earlier_cores_max(self):
+        acc = _new_accumulator("container-shared", damon_enabled=False)
+        acc.add_sample(cgroup={"cpu": {"usage_usec": 0}}, host={}, mono=0.0)
+        acc.add_sample(cgroup={"cpu": {"usage_usec": 1_000_000}}, host={}, mono=1.0)
+        # A valid first pair must not mask a later pair whose usage delta is
+        # unavailable: the aggregate maximum is unknown for the whole stream.
+        acc.add_sample(cgroup={}, host={}, mono=2.0)
+        result = acc.finalize(ended_at="2026-09-12T10:15:02Z")
+        assert result["cpu"]["cores_max"] is None
+
+    def test_non_positive_timestamp_delta_invalidates_an_earlier_cores_max(self):
+        acc = _new_accumulator("container-shared", damon_enabled=False)
+        acc.add_sample(cgroup={"cpu": {"usage_usec": 0}}, host={}, mono=0.0)
+        acc.add_sample(cgroup={"cpu": {"usage_usec": 1_000_000}}, host={}, mono=1.0)
+        acc.add_sample(cgroup={"cpu": {"usage_usec": 2_000_000}}, host={}, mono=1.0)
+        result = acc.finalize(ended_at="2026-09-12T10:15:02Z")
+        assert result["cpu"]["cores_max"] is None
+
     def test_unparsable_timestamps_leave_duration_and_cores_avg_null(self):
         acc = _new_accumulator("container-shared", damon_enabled=False)
         acc.started_at = "not-a-timestamp"
@@ -358,6 +412,22 @@ class TestAbsentInputsStayNull:
         # this fixture deliberately has none, so drift is 0, not None (mem_max/
         # mem_high WERE readable at least once, so this is a real "unchanged
         # across the pairs we could compare", never an absence).
+        assert result["events"]["limit_drift"] == 0
+
+    def test_a_one_sided_unreadable_limit_pair_is_skipped_independently(self):
+        acc = _new_accumulator("container-shared", damon_enabled=False)
+        target, slice_dir, proc = _frame_paths(FRAMES_DIR, 0)
+        base_cgroup = summary.sample_target_cgroup(str(target))
+        host = metrics.sample_host(proc_root=str(proc))
+        acc.add_sample(
+            cgroup=dict(base_cgroup, mem_max=1000, mem_high=500),
+            slice_cgroup=summary.sample_slice_cgroup(str(slice_dir)), host=host,
+        )
+        acc.add_sample(
+            cgroup=dict(base_cgroup, mem_max=None, mem_high=500),
+            slice_cgroup=summary.sample_slice_cgroup(str(slice_dir)), host=host,
+        )
+        result = acc.finalize(ended_at="2026-09-12T10:15:01Z")
         assert result["events"]["limit_drift"] == 0
 
     def test_limit_drift_ignores_pair_with_only_memory_high_missing(self):
@@ -413,6 +483,43 @@ class TestAbsentInputsStayNull:
         result = acc.finalize(ended_at="2026-09-12T10:15:00Z")
         assert result["damon"] is None
 
+    def test_memory_peak_and_baseline_delta_follow_scope_contract(self):
+        # `container` reads the cgroup's exact memory.peak, while
+        # `container-shared` uses sampled memory.current and computes the
+        # delta from its first sample. Keeping both observations in one test
+        # prevents either scope branch from becoming an untested default.
+        container = _new_accumulator("container", damon_enabled=False)
+        container.add_sample(
+            cgroup={"mem": {"current": 10, "peak": 90}}, host={})
+        container_result = container.finalize(ended_at="2026-09-12T10:15:00Z")
+        assert container_result["memory"]["peak_bytes"] == 90
+        assert container_result["memory"]["source"] == "memory.peak"
+        assert container_result["memory"]["peak_over_baseline_bytes"] is None
+
+        shared = _new_accumulator("container-shared", damon_enabled=False)
+        shared.add_sample(cgroup={"mem": {"current": 10}}, host={})
+        shared.add_sample(cgroup={"mem": {"current": 30}}, host={})
+        shared_result = shared.finalize(ended_at="2026-09-12T10:15:01Z")
+        assert shared_result["memory"]["peak_bytes"] == 30
+        assert shared_result["memory"]["source"] == "sampled-max"
+        assert shared_result["memory"]["peak_over_baseline_bytes"] == 20
+
+    def test_pressure_delta_reports_a_readable_counter_pair(self):
+        acc = _new_accumulator("container-shared", damon_enabled=False)
+        acc.add_sample(
+            cgroup={"psi_mem": {"some_total": 1_000_000,
+                                  "full_total": 500_000}},
+            host={},
+        )
+        acc.add_sample(
+            cgroup={"psi_mem": {"some_total": 3_000_000,
+                                  "full_total": 1_500_000}},
+            host={},
+        )
+        result = acc.finalize(ended_at="2026-09-12T10:15:01Z")
+        assert result["pressure"]["memory_some_stall_seconds"] == 2.0
+        assert result["pressure"]["memory_full_stall_seconds"] == 1.0
+
     def test_peak_over_baseline_is_always_null_in_container_scope(self):
         # RW-21 / contract §3's nullability note: in scope "container" the
         # profiled cgroup IS the lane, so "peak over what it started at" is
@@ -435,12 +542,12 @@ class TestAbsentInputsStayNull:
         assert result["memory"]["peak_bytes"] == 500 * 1024 * 1024
         assert result["memory"]["peak_over_baseline_bytes"] is None
 
-    def test_peak_over_baseline_still_floors_at_zero_in_container_shared_scope(self):
-        # container-shared scope is UNAFFECTED by RW-21 -- still computes
-        # peak_over_baseline_bytes the original way (max(0, peak -
-        # baseline)). Two samples so peak (a max() over sampled
-        # memory.current) can independently differ from baseline (the
-        # FIRST sample's current) without the max() trivially including it.
+    def test_shared_peak_includes_baseline_when_later_current_falls(self):
+        # A shared-scope peak is the max of all readable memory.current
+        # samples, including sample zero. A later fall therefore leaves the
+        # peak at the baseline and the over-baseline value at zero. The
+        # defensive max(0, peak - baseline) floor cannot be distinguished
+        # from direct subtraction by this or any valid sample sequence.
         acc = _new_accumulator("container-shared", damon_enabled=False)
         target, slice_dir, proc = _frame_paths(FRAMES_DIR, 0)
         host = metrics.sample_host(proc_root=str(proc))
@@ -494,3 +601,246 @@ class TestSamplingHelpers:
     def test_read_cgroup_pids_discards_private_namespace_zero_placeholders(self, tmp_path):
         (tmp_path / "cgroup.procs").write_text("0\n111\n0\n")
         assert summary.read_cgroup_pids(str(tmp_path)) == [111]
+
+
+class TestStreamingSummaryState:
+    @pytest.mark.parametrize(
+        "values",
+        [
+            [],
+            [7],
+            [1, 2, 3, 4, 5, 6],
+            [6, 5, 4, 3, 2, 1],
+            [3, 1, 2],
+            [1, 3, 2],
+            [4, 4, 4, 2, 2, 9, 1],
+            [None, 10, None, -2, 7, 7, 100],
+        ],
+    )
+    def test_order_statistic_tree_matches_nearest_rank(self, values):
+        tree = summary._OrderStatisticMultiset()
+        tree.add(None)
+        for value in values:
+            tree.add(value)
+
+        ordered = sorted(value for value in values if value is not None)
+        for percentile in (0, 50, 90, 100):
+            if not ordered:
+                expected = None
+            else:
+                rank = ceil(percentile / 100 * len(ordered))
+                rank = max(1, min(len(ordered), rank))
+                expected = ordered[rank - 1]
+            assert tree.nearest_rank(percentile) == expected
+
+    def test_repeated_observations_are_counted_in_one_node(self):
+        tree = summary._OrderStatisticMultiset()
+        for _ in range(256):
+            tree.add(7)
+
+        assert tree._root is not None
+        assert tree._root.count == 256
+        assert tree._root.size == 256
+        assert tree._root.left is None
+        assert tree._root.right is None
+        assert tree.nearest_rank(50) == 7
+
+    def test_monotone_and_zigzag_insertions_preserve_avl_balance_and_cached_sizes(self):
+        def assert_valid(node):
+            if node is None:
+                return 0, 0
+            left_height, left_size = assert_valid(node.left)
+            right_height, right_size = assert_valid(node.right)
+            assert abs(left_height - right_height) <= 1
+            expected_height = 1 + max(left_height, right_height)
+            expected_size = node.count + left_size + right_size
+            assert node.height == expected_height
+            assert node.size == expected_size
+            return expected_height, expected_size
+
+        # Monotone inputs exercise deep growth. These mirrored zigzags also
+        # expose premature rotations at balance +1 and -1: either one can
+        # leave a descendant two levels out of balance while ranks still work.
+        zigzag = (25, 21, 2, 1, 0, 28, 4, 6, 9, 12, 20, 11, 3, 7, 10,
+                  19, 23, 17, 8, 24, 22, 18, 14, 5, 27, 26, 16, 13, 15)
+        for values in (range(128), range(127, -1, -1), zigzag,
+                       tuple(28 - value for value in zigzag)):
+            tree = summary._OrderStatisticMultiset()
+            expected_size = 0
+            for value in values:
+                tree.add(value)
+                expected_size += 1
+                height, size = assert_valid(tree._root)
+                assert size == expected_size
+                assert height <= 2 * ceil(log2(size + 1))
+
+    def test_long_session_summary_is_snapshotted_as_samples_arrive(self):
+        """A long stream is reduced at ingestion; later input mutation cannot
+        change the final summary as it could when finalize rescanned samples.
+        """
+        acc = _new_accumulator("container-shared", damon_enabled=True)
+        sample_total = 3601
+        for index in range(sample_total):
+            cgroup = {
+                "mem": {
+                    "current": index,
+                    "peak": index,
+                    "swap_current": index * 2,
+                },
+                "memstat": {
+                    "anon": index * 3,
+                    "file": index * 4,
+                    "pgmajfault": index,
+                    "workingset_refault_anon": index * 2,
+                    "workingset_refault_file": index * 3,
+                },
+                "cpu": {
+                    "usage_usec": index * 1_000_000,
+                    "throttled_usec": index * 100_000,
+                    "nr_throttled": index * 2,
+                },
+                "psi_mem": {
+                    "some_total": index * 10_000,
+                    "full_total": index * 20_000,
+                },
+                "psi_cpu": {"some_total": index * 30_000},
+                "psi_io": {
+                    "some_total": index * 40_000,
+                    "full_total": index * 50_000,
+                },
+                "memev": {
+                    "oom_kill": index // 1200,
+                    "high": index // 300,
+                },
+                "mem_max": 1024 + index // 1200,
+                "mem_high": 512,
+                "pids": {"peak": index},
+            }
+            host = {
+                "loadavg": [float(index), 0.0, 0.0],
+                "psi": {
+                    "memory": {
+                        "some_avg10": float(index),
+                        "full_avg10": float(index),
+                        "some_avg60": float(index),
+                        "full_avg60": float(index),
+                        "some_total": index * 1000,
+                        "full_total": index * 2000,
+                    },
+                    "cpu": {
+                        "some_avg10": 0.0,
+                        "full_avg10": 0.0,
+                        "some_avg60": 0.0,
+                        "full_avg60": 0.0,
+                    },
+                },
+            }
+            slice_cgroup = {
+                "mem": {"current": index + 100},
+                "psi_mem": {"full_total": index * 3000},
+            }
+            damon = {
+                "hot": index,
+                "warm": index * 2,
+                "cold": index * 3,
+                "idle": index * 4,
+            }
+            pids = [index + 10000]
+            acc.add_sample(
+                cgroup=cgroup,
+                host=host,
+                slice_cgroup=slice_cgroup,
+                damon=damon,
+                pids=pids,
+                mono=float(index),
+            )
+            cgroup.clear()
+            host.clear()
+            slice_cgroup.clear()
+            damon.clear()
+            pids.clear()
+
+        result = acc.finalize(ended_at="2026-09-12T11:15:00Z")
+        assert result["samples"] == sample_total
+        assert result["memory"] == {
+            "peak_bytes": 3600,
+            "source": "sampled-max",
+            "baseline_bytes": 0,
+            "peak_over_baseline_bytes": 3600,
+            "p90_bytes": 3240,
+            "median_bytes": 1800,
+            "swap_peak_bytes": 7200,
+            "anon_peak_bytes": 10800,
+            "file_peak_bytes": 14400,
+        }
+        assert result["cpu"] == {
+            "seconds": 3600.0,
+            "cores_avg": 1.0,
+            "cores_max": 1.0,
+            "throttled_seconds": 360.0,
+            "nr_throttled": 7200,
+        }
+        assert result["pressure"] == {
+            "memory_some_stall_seconds": 36.0,
+            "memory_full_stall_seconds": 72.0,
+            "cpu_some_stall_seconds": 108.0,
+            "io_some_stall_seconds": 144.0,
+            "io_full_stall_seconds": 180.0,
+        }
+        assert result["faults"] == {
+            "pgmajfault": 3600,
+            "workingset_refault_anon": 7200,
+            "workingset_refault_file": 10800,
+        }
+        assert result["events"] == {
+            "oom_kill": 3,
+            "limit_drift": 3,
+            "memory_high_breach": 12,
+        }
+        assert result["pids"]["peak"] == 3600
+        assert result["target"]["targets_seen"] == 3601
+        assert result["damon"]["samples"] == 3601
+        assert result["damon"]["hot_bytes"] == {
+            "peak": 3600, "p90": 3240, "median": 1800,
+        }
+        assert result["damon"]["idle_bytes"] == {
+            "peak": 14400, "p90": 12960, "median": 7200,
+        }
+        assert result["host"]["start"]["loadavg1"] == 0.0
+        assert result["host"]["end"]["loadavg1"] == 3600.0
+        assert result["host"]["memory_some_stall_seconds"] == 3.6
+        assert result["host"]["memory_full_stall_seconds"] == 7.2
+        assert result["host"]["slice"] == {
+            "name": "dev-background.slice",
+            "memory_full_stall_seconds": 10.8,
+            "memory_peak_bytes": 3700,
+        }
+
+    def test_order_tree_and_host_state_fail_loudly_on_invalid_internal_state(self):
+        with pytest.raises(AssertionError, match="left rotation"):
+            summary._tree_rotate_left(summary._OrderNode(1))
+        with pytest.raises(AssertionError, match="right rotation"):
+            summary._tree_rotate_right(summary._OrderNode(1))
+        with pytest.raises(AssertionError, match="rank selection"):
+            summary._tree_select(None, 0)
+        with pytest.raises(AssertionError, match="host endpoints"):
+            _new_accumulator("container-shared", damon_enabled=False)._host_block()
+        missing_end = _new_accumulator("container-shared", damon_enabled=False)
+        missing_end.add_sample(cgroup={}, host={})
+        missing_end._host_end = None
+        with pytest.raises(AssertionError, match="host endpoints"):
+            missing_end._host_block()
+
+    def test_damon_partial_and_non_increasing_samples_keep_exact_online_stats(self):
+        acc = _new_accumulator("container-shared", damon_enabled=True)
+        for hot in (5, 3, 5):
+            acc.add_sample(cgroup={}, host={}, damon={"hot": hot})
+        result = acc.finalize(ended_at="2026-09-12T10:15:02Z")
+        assert result["damon"]["samples"] == 3
+        assert result["damon"]["hot_bytes"] == {
+            "peak": 5, "p90": 5, "median": 5,
+        }
+        for name in ("warm_bytes", "cold_bytes", "idle_bytes"):
+            assert result["damon"][name] == {
+                "peak": None, "p90": None, "median": None,
+            }

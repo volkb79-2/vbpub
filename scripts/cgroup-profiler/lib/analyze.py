@@ -671,6 +671,52 @@ def _read_safe(run: Any, name: str) -> List[Dict[str, Any]]:
         return []
 
 
+# ── DAMON series (CP-6) ──────────────────────────────────────────────────
+# `damon.jsonl` rows carry no timestamp of their own -- one flat
+# `{"hot": bytes, "warm": bytes, "cold": bytes, "idle": bytes}` object per
+# row (`fixtures/rg55/`'s own per-frame `damon.json`, `lib.damon.DamonSession
+# .last_class_bytes`'s exact shape). `lib.serve`'s `_on_session_sample`
+# appends one damon.jsonl row in the SAME call, right after the matching
+# samples.jsonl row, whenever DAMON is enabled at all (`last_class_bytes`
+# never returns None -- only zeros before the first real aggregation
+# window closes), so row i of damon.jsonl is tick i of the session's own
+# order by construction; `cgprofile.py`'s collector-tier writer follows the
+# identical one-row-per-tick discipline. Paired here against the SAME raw
+# (native-resolution) index `build_series` reads, truncated to the shorter
+# of the two lengths from the front -- the honest degrade if the two
+# streams were ever to fall out of lockstep (a producer bug, not a shape
+# this reader should silently paper over further).
+_DAMON_CLASSES: Tuple[str, ...] = ("hot", "warm", "cold", "idle")
+
+
+def _damon_series(run: Any, index: "pd.Index", target: Optional[str]) -> List[Series]:
+    """One :class:`Series` per DAMON class, or ``[]`` when the run has no
+    ``damon.jsonl`` (DAMON was off, or this run predates CP-6 — absent is
+    not an error, per this module's own §1.7 convention) or no subject
+    target to attribute the bytes to.
+    """
+    rows = _read_safe(run, "damon.jsonl")
+    if not rows or target is None:
+        return []
+    n = min(len(rows), len(index))
+    if n == 0:
+        return []
+    t = index.total_seconds().tolist()[:n]
+    out: List[Series] = []
+    for cls in _DAMON_CLASSES:
+        v: List[Optional[float]] = []
+        for i in range(n):
+            raw = rows[i].get(cls)
+            v.append(float(raw) if isinstance(raw, (int, float)) and not isinstance(raw, bool) else None)
+        out.append(Series(
+            key=f"damon.{cls}_bytes", target=target,
+            label=f"{util.short_label(target)} DAMON {cls} bytes",
+            unit="bytes", group="damon", t=t, v=v, role="subject",
+            meta={"metric_label": f"DAMON {cls} bytes", "cgroup": target},
+        ))
+    return out
+
+
 def _remap_targets(df: pd.DataFrame, by_cgroup: Dict[str, Dict[str, Any]]) -> pd.DataFrame:
     """Cgroup path -> target key on the column index, once the manifest is
     available to say what the key is. Everything before this point in the
@@ -719,7 +765,17 @@ def build(run: Any) -> Analysis:
     targets_meta = manifest.get("targets") or []
     by_cgroup = {t["cgroup"]: t for t in targets_meta if t.get("cgroup")}
 
-    series = build_series(df)
+    # CP-6: attribute DAMON's classified-byte series to the run's first
+    # SUBJECT target (an observer is instrumented for correlation, not the
+    # thing DAMON is classifying) -- a daemon session's manifest always has
+    # exactly one target (CP-7's own `_manifest_for` comment), a collector
+    # run may have several, in which case DAMON is understood to describe
+    # whichever one the daemon/collector actually attached DAMON's pids to.
+    damon_subject = next(
+        (t["cgroup"] for t in targets_meta if t.get("role") != "observer" and t.get("cgroup")),
+        None,
+    )
+    series = build_series(df) + _damon_series(run, df.index, damon_subject)
     for s in series:
         meta = by_cgroup.get(s.target)
         if not meta:

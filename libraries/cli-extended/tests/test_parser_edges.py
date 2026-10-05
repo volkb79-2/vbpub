@@ -303,6 +303,12 @@ def test_run_cli_converts_noninteger_system_exit_codes(code, expected):
         assert "stopped" in stderr.getvalue()
 
 
+def test_run_cli_normalizes_none_handler_result_to_success():
+    app = _simple_cli(lambda _args, _runtime: None)
+
+    assert app.run(argv=["run"], stderr=io.StringIO()) == 0
+
+
 def test_help_catalog_is_not_used_by_a_non_top_level_parser():
     catalog = HelpCatalog(
         IDENTITY,
@@ -413,6 +419,17 @@ def test_registry_defaults_to_usage_instead_of_a_no_argument_action():
     assert app.run(argv=[], stdout=stdout, stderr=io.StringIO()) == 0
     assert stdout.getvalue().startswith(IDENTITY.headline)
     assert invoked == []
+
+
+def test_registered_cli_defaults_to_multiverb_and_disallows_abbreviations():
+    app = parser_module.RegisteredCli(
+        identity=IDENTITY,
+        parser=ExtendedArgumentParser(prog="tool", identity=IDENTITY),
+        handlers={},
+        command_parsers={},
+    )
+    assert app.single_command is False
+    assert app.allow_abbrev is False
 
 
 def test_unknown_verb_never_falls_through_to_a_default_handler():

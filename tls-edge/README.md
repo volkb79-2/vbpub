@@ -394,6 +394,10 @@ source-first transaction: isolated worktree, generated history, gate, `VERSION`
 commit, tag, tarball build, checksum publication, and cleanup. It does not carry
 a second tag/build/publish implementation.
 
+The build retains `dist/VERSION` beside the tarball. CMRU uses that retained
+copy when publishing a completed local build, so publication reads the version
+from the exact build record after its worktree has been removed.
+
 CMRU resolves credentials from `GITHUB_PUSH_PAT`/`GITHUB_TOKEN` or this project's
 ignored `cmru.secret.toml [github].token`; a committed credential is rejected.
 

@@ -69,7 +69,7 @@ CLI only), invoking `docker exec cgprofile-host-daemon cgprofile ctl <verb>
 ### 2.1 `cgprofile ctl version --json`
 
 ```json
-{"ok": true, "contract": 1, "cgprofile": "1.0.0",
+{"ok": true, "contract": 1, "cgprofile": "1.1.0",
  "daemon": {"name": "cgprofile-host-daemon", "started_at": "2026-09-12T10:00:00Z",
             "damon": "available", "damon_default": "on",
             "sessions_live": 2, "max_sessions": 16}}
@@ -178,7 +178,7 @@ measurement.
 ```json
 {
  "schema": 1,
- "session": "s-…", "daemon": {"name": "cgprofile-host-daemon", "version": "1.0.0"},
+ "session": "s-…", "daemon": {"name": "cgprofile-host-daemon", "version": "1.1.0"},
  "scope": "container" | "container-shared",
  "method": "daemon",
  "started_at": "…", "ended_at": "…", "duration_seconds": 316.204,
@@ -325,19 +325,23 @@ and the `footprint` manifest.
 
 ## 5. Daemon safety (D-15, restated for both parties)
 
-The daemon never mutates the host: `serve` refuses `--cap` and never
-instantiates `TempCaps`; every host mount except the sessions volume is
-read-only from the container's point of view except the DAMON sysfs
-directory, which it writes only to create/commit/stop its own kdamonds;
-`--network none`; no docker socket inside the daemon (that is why targets
-are `containerid:` and the consumer resolves ids). run-gate never passes
-`--cgroupns=host` or `--pid=host` to anything.
+The daemon refuses `--cap` and never instantiates `TempCaps`. Its host
+mutation is limited to its own DAMON kdamonds and the opt-in placement writes
+enumerated in §8.3; each placement cgroup write is checked by the D-25
+whitelist and recorded. Host `/proc` is
+read-only. The host cgroup bind is writable because placement must create a
+leaf and migrate lane processes; the program-level whitelist, not a
+read-only mount, is the boundary for those writes. `--network none`; no
+docker socket inside the daemon (that is why targets are `containerid:` and
+the consumer resolves ids). run-gate never passes `--cgroupns=host` or
+`--pid=host` to anything.
 
 The daemon's PID and cgroup namespaces remain private. Host observation is
 provided by explicit binds: host `/proc` is read-only at `/hostproc`, selected
-by `CGPROFILE_PROC_ROOT`, and host cgroup v2 is read-only at
-`/sys/fs/cgroup`. `serve` refuses unless PID 1 in the configured proc view
-belongs to a PID namespace distinct from the daemon's. `/proc/<pid>/cgroup`
+by `CGPROFILE_PROC_ROOT`, and host cgroup v2 is mounted at `/sys/fs/cgroup`
+for observation and the guarded §8.3 placement operations. `serve` refuses
+unless PID 1 in the configured proc view belongs to a PID namespace distinct
+from the daemon's. `/proc/<pid>/cgroup`
 paths are relative to the reader's cgroup-namespace root. The daemon derives
 that root by locating its own namespace-local PID in the mounted host cgroup
 tree (host tasks outside its private PID namespace appear as PID 0 in
@@ -348,10 +352,14 @@ when the caller and target share a cgroup namespace. An unverifiable mapping
 is refused. No RG-55 container uses a host PID, cgroup, or network namespace.
 A private-PID daemon uses the read-only host system bus only as a namespace-
 safe placement bridge: when a direct `cgroup.procs` write returns `ESRCH`, it
-calls systemd's `AttachProcessesToUnit` for the verified gates slice and its
-`rg-<token>` subcgroup, then verifies the PID's host-proc cgroup path. The
-bridge does not join a host namespace and is not a general systemd control
-surface.
+requires a verified host-proc view and calls systemd's
+`AttachProcessesToUnit` for the verified gates slice and its `rg-<token>`
+subcgroup on placement, or the nearest systemd unit and relative subgroup of
+the original scope on stop. It verifies the PID's resulting host-proc cgroup
+path and records each successful move in `events.jsonl`. If it cannot
+enumerate or restore a survivor, it retains the leaf and reports the original
+scope's `cgroup.procs` path. The bridge does not join a host namespace and is
+not a general systemd control surface.
 
 ## 6. Test fixtures shared by both packages
 
@@ -458,9 +466,17 @@ IDENTICAL on both carriers — a consumer may diff them; (2) `args` on the
 socket carrier are the long-option names without dashes (`scope`, `token`,
 `damon`, `interval`, `meta` as a JSON object not a string, `place`,
 `memory_high`, …); the in-image `ctl` client is the reference translator;
+(2a) on `start`, omitting `damon` selects the daemon's configured
+`damon_default`; if the key is present its value must be `on` or `off`, and
+`null` is refused with `bad-argument`;
 (3) timeouts are per verb (§1.5), not per carrier; on the socket the
-consumer applies the same numbers as socket timeouts; (4) the daemon's
-server-side connection timeout is 25 s for non-streaming verbs; (5) the
+consumer applies the same numbers as socket timeouts; (4) each initial
+request line, including `watch`'s request, is at most 1,048,576 bytes
+including the newline and must arrive within an absolute 25 s deadline from
+accept (trickle bytes do not extend it); an oversized line receives
+`bad-argument`, an incomplete line at deadline or EOF is closed without
+dispatch, and the accepted `watch` stream itself has no server-side timeout;
+(5) the
 exec carrier is permanent — a producer MUST keep it; a consumer's
 `transport = "auto"` means "socket if the path exists AND `version`
 answers on it within 5 s, else exec", `"socket"` means socket only (its
@@ -486,34 +502,74 @@ consumer reads line by line (no per-verb timeout; the consumer applies an
 idle timeout of `3 × watch-interval` and re-attaches on expiry). Unknown
 session → exit 2 `unknown-session` as a single line.
 
-### 8.3 Placement (D-20, D-25) — `start` options and the `placement` block
+### 8.3 Placement (D-20, D-25, D-31) — `start` options and the `placement` block
 
 New `start` options (all optional, all ignored without `--place`):
 
 | option | meaning |
 |---|---|
-| `--place` | create a leaf `<gates slice>/rg-<token>/` and migrate the token's pid subtree into it as the resolver discovers pids (§4.3); requires `--token`; refused (`place-refused:no-token`) without one |
-| `--memory-high <bytes>` | `memory.high` on the leaf (throttle point; the lane's request) |
-| `--memory-max <bytes>` | `memory.max` on the leaf (hard ceiling); refused when `> gates_slice.memory_max_bytes` (`place-refused:over-slice`) |
+| `--place` | ask systemd to create a delegated transient scope directly under the verified gates slice, then create a profiler-owned leaf `<scope>/rg-<token>/` and migrate the token's pid subtree into it as the resolver discovers pids (§4.3); requires `--token`; refused (`place-refused:no-token`) without one. A scope-name collision or failed/mismatched systemd scope is refused and never adopted. |
+| `--memory-high <bytes>` | `memory.high` on the leaf (throttle point for memory charges attributed to that leaf) |
+| `--memory-max <bytes>` | `memory.max` on the leaf (ceiling for charges attributed to that leaf); refused when `> gates_slice.memory_max_bytes` (`place-refused:over-slice`). It is not a total-RSS cap for pages charged before placement. |
 | `--cpu-weight <1..10000>` | `cpu.weight` on the leaf |
+
+At start, the daemon journals the initial token PID identities and their
+original units, asks systemd to create the transient scope with those PIDs,
+and reads the resulting scope path and delegation properties back from the
+manager. It creates the leaf only below that verified scope, moves each
+validated PID into it through systemd, and enables controllers only after the
+scope root is empty. Later descendants follow the same identity-checked path.
+The gates slice and scope remain systemd-owned; cgprofile creates/removes only
+its exact leaf. On stop, surviving processes are restored to their recorded
+origins before the leaf is removed and the empty scope is stopped. Failed or
+indeterminate restoration preserves the scope, leaf, and recovery record.
 
 `start` response gains
 ```json
-"placement": {"requested": true, "leaf": "/dev.slice/dev-gates.slice/rg-<token>",
+"placement": {"requested": true, "leaf": "/dev.slice/dev-gates.slice/rg-profile-<token>.scope/rg-<token>",
               "applied": {"memory.high": 805306368, "memory.max": 1073741824, "cpu.weight": 100},
               "pids_moved": 0, "error": null}
 ```
 `applied` holds the values READ BACK from the leaf after writing (never the
-requested numbers); a refused placement is `placement.error =
-"place-refused:<why>"` with `leaf: null` and the session still starts
-(placement never fails `start`). The gates slice is discovered from the
+requested numbers); an ordinary refused placement is `placement.error =
+"place-refused:<why>"` with `leaf: null` and the session still starts.
+Explicit `--on-stall kill` is the exception: shared-scope kill requires a
+token and `--place`, and a successful verified leaf; if placement is refused,
+the request is rejected as `bad-policy` before a live session is created.
+Container-scope kill similarly requires its exact runtime cgroup to be beneath
+the verified, bounded gates slice; at enforcement, `cgroup.events` must
+confirm `populated 1` (including descendants). The gates slice is discovered from the
 daemon's `--gates-slice` (default `dev-gates.slice` under `dev.slice`);
 when it does not exist on the host the answer is `place-refused:no-gates-slice`.
-Daemon safety (D-25): the leaf is the ONLY cgroup the daemon writes; the
-whitelist is `cgroup.procs`, `memory.high`, `memory.max`, `cpu.weight`,
-`cgroup.kill` on `<gates slice>/rg-*` and `rmdir` of that leaf; `stop`
-moves survivors back to the container's scope and removes the leaf; the
-daemon never writes to any other cgroup file.
+Daemon safety (D-15/D-25, amended by RW-35(a), RW-379, RW-380 and RW-386):
+systemd owns the gates slice and each transient scope boundary. The daemon
+uses systemd's manager API only to create the exact token-derived scope,
+query and verify its properties, move validated PIDs into its exact child,
+restore them to their recorded origins, and stop that exact scope after it
+is empty. The cgroup write whitelist is `+memory +cpu +pids` to the delegated
+scope's `cgroup.subtree_control`; `memory.high`, `memory.max`, `cpu.weight`,
+and `cgroup.kill` on that session's `rg-<token>` leaf; `cgroup.kill` on the
+exact container runtime cgroup only when its leaf name proves the requested
+64-hex container ID and the resolved path is beneath the verified, bounded
+gates slice; and each recorded origin's `cgroup.procs` solely to restore the
+matching PID. Leaf creation/removal is limited to that exact child. The
+daemon never writes the gates slice's `cgroup.subtree_control` or creates a
+lane child directly under that slice. No sibling, ancestor, Docker
+membership, or unrelated resource-limit write is authorized. Any other
+cgroup write is refused before opening the path. Writes and successful
+systemd-mediated moves are recorded in `events.jsonl`. Placement refusal
+does not normally fail `start`; the explicit kill-policy exception above is
+`bad-policy`. At `stop`, the daemon restores survivors to their per-process
+recorded origins, verifies restoration and scope/leaf emptiness, removes the
+leaf, then retires the exact scope. Failed verification preserves the scope,
+leaf, and recovery record rather than claiming cleanup.
+
+When placement succeeds, the leaf is the physical measurement source while
+the original target cgroup remains the logical sample key. CPU, I/O, PID,
+and pressure values come from the leaf. Cgroup memory counters and
+`memory.high`/`memory.max` are charge-based: cgroup v2 does not transfer
+pre-existing page charges when a process moves. These fields are not total
+process RSS or a hard cap on all memory already resident in the lane.
 
 ### 8.4 Liveness and policy (D-17, D-22, D-27)
 
@@ -532,7 +588,7 @@ New `start` options (policy authored by the consumer):
 | `--progress-stream <path>` | the lane's own progress NDJSON path AS THE LANE SEES IT; the daemon reads it through `/proc/<lane pid>/root/<path>` — no extra mount. The stream's `plan` event field `expect_next_event_within_s` (assay B091) is the cadence hint |
 | `--idle-bound auto\|<seconds>` | `auto` = `max(300, 3 × cadence_hint)` (D-22); the stall clock PAUSES while gates-slice or host memory `full avg10 > 5` |
 | `--ceiling auto\|<seconds>` | `auto` = `3 × meta.expected.duration_s` when known, else none; a session over its ceiling is `over_ceiling` |
-| `--on-stall kill\|report` | `kill` = `cgroup.kill` on the leaf (placed) or SIGKILL to the token's pid subtree, then verdict `killed`; `report` = verdict `reported`, nothing killed; default `report` |
+| `--on-stall kill\|report` | `kill` = `cgroup.kill` on the exact, populated target container cgroup (`scope=container`), or on the verified token leaf (`scope=container-shared`, requiring token + explicit successful placement); no PID signals or fallback; a runtime refusal is `reported`; `report` = verdict `reported`, nothing killed; default `report` |
 
 States: `ok`; `stalled` (idle bound exceeded with no stream event and no
 CPU growth ≥ 1 s over the trailing 30 s); `hung` (the stream reported
@@ -552,6 +608,13 @@ killed, reported); `over_ceiling`.
                 "pressure": {"memory": {…}}, "leaves": ["rg-<token>", …],
                 "sessions_live": 1} | {"name": "dev-gates.slice", "present": false}
 ```
+`leaves` enumerates profiler-owned leaf names found below verified
+`rg-profile-*.scope` units; a direct `rg-*` directory below the slice is not
+a valid placement. `sessions_live` counts those leaves. `present: true`
+requires systemd to report the expected slice as loaded from
+a non-transient unit, with the expected `ControlGroup` and finite positive
+`memory.max` and `cpu.max`. A directory created for an unknown slice is
+reported as absent and cannot be used for placement.
 and the daemon reports its OWN slice as `"daemon_slice": {"cgroup": "…",
 "memory_min_bytes": …, "memory_high_bytes": …}` (null leaves when the unit
 is not installed — `ctl host` and run-gate `doctor` say "unbounded").
@@ -574,8 +637,14 @@ ceiling_s, on_stall, progress_stream}}`). run-gate copies them into
 
 `peer-refused` (socket carrier), `place-refused:no-token`,
 `place-refused:over-slice`, `place-refused:no-gates-slice`,
-`place-refused:write-failed:<file>`, `bad-policy` (an unparsable policy
-option — exit 2, the session is NOT started), `not-streaming` (`watch`
+`place-refused:write-failed:<file>`, `place-refused:scope-unavailable`
+(systemd refused or could not verify the delegated scope),
+`place-refused:no-target-pids`, `place-refused:no-host-proc-view`,
+`place-refused:identity-unavailable`, `place-refused:recovery-state-unavailable`,
+`place-refused:parent-not-gates-slice` (scope path or ownership failed
+verification), `bad-policy` (an unparsable policy
+option, or a requested kill that cannot be safely enforced — exit 2, the
+session is NOT started), `not-streaming` (`watch`
 requested over a carrier state that cannot stream — never expected, kept
 for completeness).
 
@@ -586,8 +655,14 @@ for completeness).
 2. Every lane with a daemon session opens ONE `watch` (thread or long
    exec), consumes readings, maps the verdict: `killed` → the lane's stall
    exit path (R-40) with the daemon's reason in the record; `reported` →
-   a WARNING line and no verdict change (R-36h). Without a daemon the
-   in-process ProgressWatch (D-22) is the fallback and says so once.
+   a WARNING line and no verdict change (R-36h). For `scope=container-shared`,
+   request `kill` only when the lane's already-derived resource plan requests
+   placement and the daemon confirms the verified leaf; otherwise request
+   `report` and keep the lane-local watchdog as verdict authority. Do not add
+   placement just to enable kill. For `scope=container`, kill is confined to
+   the exact container cgroup under the gates slice and leaves its existing
+   Docker limits unchanged. Without a daemon the in-process ProgressWatch
+   (D-22) is the fallback and says so once.
 3. Placement requests only for exec and bare-host lanes (D-20); ephemeral
    containers stay docker-capped; requested numbers are disclosed as
    `resources.memory`/manifest-derived (`× 1.5`, "derived").

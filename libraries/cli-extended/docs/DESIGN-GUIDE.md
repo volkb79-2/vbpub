@@ -77,8 +77,25 @@ positional/option help, groups, and argparse attributes. A command marked
 `confirmation_required` can state whether that acknowledgement is required
 without changing the mutation label. Its default preserves current behavior;
 the legacy `include_confirmation` spelling remains accepted for existing
-consumers. `OptionSpec.hidden` keeps internal options parseable without
-advertising them in user help or generated Markdown.
+consumers. `OptionSpec.hidden` keeps internal options parseable while hiding
+them from operator help. The generated semantic surface still includes and
+labels hidden options so the product review can account for them.
+
+The shared handler boundary treats `None` as success and returns process
+status `0`. Consumers can use that default instead of repeating `return 0` in
+every successful handler; an integer return remains available when a product
+has a deliberate status contract. Keep that normalization at one boundary so
+each handler does not reimplement shell status plumbing.
+
+Mutation and generic confirmation answer different questions. `mutating`
+describes the command's effect; `confirmation_required` says whether the
+shared `--yes` acknowledgement is part of its consent contract. An application
+may already require a specific `--apply` choice, role check, reviewed state
+transition, or other operation-specific authorization. Preserve that domain
+guard and disable generic confirmation only when it would be redundant or
+misleading. Tests must show both that the generic option is unavailable and
+that the product guard still refuses an unauthorized mutation. `--yes` is not
+a substitute for the product's authorization rules.
 
 The top-level catalog may need a shorter line than command-specific help.
 `VerbSpec.summary_description` supplies that concise discovery label without
@@ -106,6 +123,25 @@ line, then the normal product identity and complete command help. This gives
 operators the reason before the longer discovery content without weakening
 the required identity header on help/version output.
 
+## Keep service startup behind argument handling
+
+A CLI entrypoint may also be the command a service manager runs. Keep module
+imports and registry construction free of service startup, state writes,
+credential reads, and network connections. Put daemon construction in the
+selected handler so `--help`, `--version`, and malformed arguments can return
+before service work begins. If the documented operation is intentionally a
+no-argument service action, `single_command=True` with
+`no_args_action=True` expresses that contract while preserving the normal
+help/version paths.
+
+The library cannot undo work the consumer performs before calling
+`app.run()`. A Nyxloom service launcher initially started the daemon before
+processing `--help`; its fix moved argument handling before daemon and registry
+imports. Keep the handler lazy and test the installed executable with a
+startup sentinel: help, version, and invalid syntax must not set it, while the
+valid no-argument service invocation must reach the handler. See the
+[command ownership guidance](../../../nyxloom/docs/CLI-REFERENCE.md#command-ownership).
+
 The consumer still decides the public vocabulary, behavior labels, examples,
 argument constraints, and mutation policy. A registry is a source of truth for
 the interface, not a source of domain truth. `configure(parser)` remains an
@@ -126,6 +162,235 @@ has distinct operator actions, explicit verbs make those differences
 discoverable and testable rather than hiding them behind a positional UUID or
 mode flag.
 
+## A registry is not the product contract
+
+One registry can make parser constraints, help text, and dispatch agree. It
+cannot determine whether the product has the right verbs, whether a group
+matches the operator's workflow, what omission means, or whether an option's
+help matches its side effects. Those are product decisions, so adoption should
+revisit the public workflow instead of preserving every old spelling by
+default.
+
+Keep the product's semantic CLI inventory beside its normative specification
+and update it with every interface change. That record should state each
+verb's caller and purpose, accepted selectors and defaults, option
+interactions, refused combinations, effects, dry-run and confirmation
+boundaries, and output/status contract. Generated help and a registry
+inventory test prove that the declared grammar is synchronized; behavior
+oracles must still prove that each accepted option does what it claims.
+
+This boundary is especially useful for mixed operations. A syntax library can
+express choices, required values, and mutually exclusive options, but a rule
+such as “preview is meaningful only when an update was selected” is an
+application contract. The consumer must refuse a meaningless combination and
+test the refusal before any side effect. Likewise, the library can provide a
+default-no confirmation prompt, but only the product can build the complete
+plan, validate it, describe it, and ensure `--yes` authorizes exactly that
+plan.
+
+An adoption review should also enumerate all distributed callers before
+removing an interface. Installed console scripts, active module adapters,
+bootstrap and project-step commands, Python libraries, and generated
+standalone tools can have different availability and support contracts. CMRU's
+review kept its active handler adapter and library APIs, removed unused module
+CLI aliases, and retained standalone `get.py` parsing because it runs without
+the CMRU wheel.
+
+## Keep a generated surface and a human semantic record
+
+A single full TOML/JSON CLI definition would still need Python handlers and
+custom parser callbacks. It would introduce a second executable grammar and
+force adopters to prove that the registry and external file stay synchronized.
+Keep `CliRegistry` as the source for parser registration, help, and dispatch.
+Export its built argparse tree after callbacks have run so callback-added
+syntax is visible, and mark fields the exporter cannot enumerate as
+incomplete. An ordinary callback can add inspectable argparse actions. A
+callback or parser subclass that replaces token-parsing methods, changes
+parser-level defaults that are not represented by built actions, or corrupts the option to
+action lookup makes the surface incomplete because an action listing alone
+would no longer describe what the parser accepts. Delegated global options are
+checked against the parent action's parsing and value shape, including
+mutually-exclusive group membership and requiredness. Custom converter and
+action objects must be identical at runtime; import labels can collide and do
+not prove that two parser layers handle a token the same way.
+
+Syntax alone does not say whether `--dry-run` without a selector is meaningful,
+what a command will read or change, or whether an output mode is valid during a
+refresh. Keep those decisions in a small product-owned TOML review catalog.
+The consumer's canonical CLI specification is the readable publication: the
+library replaces only a clearly marked generated region containing the live
+surface and decision/test table. The adjacent JSON manifest makes parser
+changes easy to diff mechanically. The catalog remains human-edited, so reruns
+cannot erase rationale, expected effects, or test links.
+Sync and check also require the catalog, manifest, and spec to resolve to
+distinct files, preventing a destination typo from overwriting the decision
+source.
+
+Some consumers declare their registry in a hyphenated, single-file script
+instead of an importable package module. Let `surface_cli` load that file
+directly, add its parent directory so sibling imports work as they do for a
+direct script invocation, and expose the resulting `build_cli()` without an
+adapter module. The generated module name must depend on the script name, not
+the checkout's absolute path: custom converter labels are part of the manifest
+and should not change when a worktree moves. Register the module before
+execution so `dataclasses` and other runtime introspection see a normal module.
+This is a factory-loading convenience; the Python registry remains the one
+grammar definition.
+
+The Markdown view must expose the parser facts a reviewer needs without
+opening implementation code: the entrypoint's empty-argv result and each
+route's invocation mode. Only the entrypoint and single-command routes have an
+empty-argument action to report; a command route parses its remaining tokens,
+a route prefix selects a nested command, and a delegated group passes its
+remaining tokens to the child CLI. Do not describe every multi-command leaf as
+showing help when invoked without a remainder: the leaf parser may dispatch or
+reject based on its required syntax.
+
+The generated route inventory also records
+mutation and confirmation policy, parser settings, delegated command metadata,
+callback inventory and opaque fields;
+for each argument and option, its description, token shape, argparse action,
+converter, const, choices, defaults, exclusive-group rule, placement, and
+hidden status. Optional-value options also record whether this stock argparse
+runtime checks an omitted `const` against `choices`. The exporter probes
+separate representative constants for `None`, `bool`, `float`, `int`, and
+`str`, then records the result for the action's exact built-in const type in the
+generated spec and candidate signature. A runtime change is visible for
+review. Route invocation-mode flags are required manifest facts: rendering
+refuses missing flags instead of silently claiming the route uses the false
+case. This keeps the canonical spec useful to an operator reviewing
+the whole call surface while the JSON manifest remains the stable input for
+diffs and tools.
+
+Argparse converts a token before comparing it with an action's choices. The
+review checker models only the exact built-in `str`, `int`, `float`, and
+`bool` converters recorded in the surface; it reports known conversion
+failures even when no choices are declared and never executes consumer-defined
+converter code. This keeps ordinary typed choices mechanically checkable
+without running arbitrary product code during a static review. Built-in
+converters are recognized by runtime object identity rather than import label,
+since a custom callable can expose a colliding label. Custom
+converters and custom actions remain opaque and their accepted values must be
+proven by linked tests that call the real CLI. Stock choice-checking actions
+are recognized by exact class identity so a custom class cannot borrow a
+built-in label. Any non-default parser
+type-registry mapping makes the surface incomplete because argparse resolves
+registered types by dictionary equality. Checking only key identity could
+miss a distinct key that compares equal to an action's type and changes its
+converter. Choice enumeration supports only exact built-in list, tuple, set,
+and frozenset containers with exact built-in scalar members. Container
+subclasses and custom collections may override membership, so they are marked
+incomplete along with non-scalar choice objects whose `.value` or display text
+could change argparse's equality result. Argparse does not check choices for a
+flag-only action, so the surface marks that registration incomplete. Consumers
+can expose the actual command-line scalar choices when their handler maps
+those strings to richer internal types.
+
+A non-callable `type` reference on a value-taking action is also incomplete.
+Argparse accepts a string type name only when the parser's type registry
+resolves it; the exporter marks any non-default registry incomplete because
+its converter behavior cannot be safely inferred from the action alone.
+An omitted value for an option with `nargs="?"` selects `const`. Argparse
+converts it only when it is a string. Whether the runtime then checks
+`choices` is probed and recorded rather than assumed from a Python version.
+The checker follows that result without running consumer code. An omitted
+optional positional uses its default rather than the option's `const`; the
+checker does not apply option-const rules to positional arguments. A
+non-scalar option constant makes the surface incomplete because its value
+cannot be represented safely.
+Argparse checks choices only for the first converted value of
+`nargs=argparse.PARSER` and skips choice membership for `nargs=argparse.REMAINDER`.
+The surface marks choices declared on a remainder action incomplete so they
+cannot look like a parser-enforced restriction.
+
+Whether the top-level executable shows help before parsing or passes empty
+argv to the single-command parser is part of the call contract. Parsing may
+still reject required syntax; the surface records the mode without claiming
+the handler always runs. This can change while parser actions stay the same,
+so the surface shows it and includes it in review signatures.
+
+Argparse's negative-number rule also affects whether a token such as `-1` is
+an option value or a positional argument. The exporter records that rule and
+the parser's negative-number-like options, and the checker uses those live
+values. A customized or uninspectable rule makes the inventory incomplete
+instead of guessing from the token's spelling.
+
+The candidate generator is deliberately bounded and symbolic. It covers
+minimum syntax, positional shapes and choices, option aliases and choices,
+mutually exclusive alternatives/conflicts, parser subcommand aliases, and
+explicit product interaction groups. It does not fabricate resource names,
+predict acceptance, or try every subset of every option. Option names and help
+copy are not evidence for behavior. Relevant syntax changes alter candidate
+signatures and request a new decision; removed records stay stale until an
+owner explicitly retires them with a reason. Every candidate signature also
+includes the route's required positional, option, and exclusive-group
+baseline. That makes a change to an action needed to reach the reviewed
+dimension trigger re-review, and the checker requires the baseline on every
+candidate kind. A required group needs one selected member; repeats of that
+member remain valid when the parser accepts them, with product-specific repeat
+semantics recorded as explicit interactions. It also reports bare positional tokens that do not map to a
+declared action, so unrelated extra values cannot hide an invocation that
+would fail before reaching the reviewed option.
+
+An interaction may name an option owned by a different route. This lets the
+consumer record both the target command and the foreign option shape in one
+stable case, such as passing watch-only `--poll` to `show`. The checker requires
+each named target option and the target's required baseline syntax, and it
+requires the foreign option to remain unknown on the target parser. It checks
+declared value counts and enumerable choices on every occurrence; a valid first
+`--tag` cannot hide a malformed second occurrence. For a foreign option,
+option-like tokens mark value boundaries, and a flag-only option cannot carry
+an inline value. Choice checks model exact built-in conversions; custom
+converters and handlers remain the consumer behavior test's responsibility.
+That test proves the declared outcome and exact value or repetition rules.
+The consumer owns the outcome; the checker does not infer it from route
+ownership. For example, `show --poll` should be recorded as a
+refusal when the product's `show` route rejects the watch-only option. The
+checker also refuses undeclared unknown options so a typo cannot be folded into
+the same reviewed case.
+
+The generator does not guess whether a product cares about an optional value
+being present or about an option being repeated. Consumers declare separate
+named interactions for distinct forms such as `--color` versus
+`--color VALUE`, or one `--tag` versus two `--tag` occurrences. The catalog and
+generated spec retain those exact argv examples and test links; check mode
+validates route, option presence, declared value counts, and enumerable choices,
+while the behavior test asserts converter behavior and exact values and
+repetition rules. This keeps generic enumeration bounded and makes the product's
+reason for testing each form explicit.
+
+When a route or option named by an interaction is removed, sync must still let
+the adopter review the new grammar. It omits only that unresolved generated
+candidate, lists the stale catalog reference, and keeps the previous semantic
+row visible as stale; it does not rewrite the TOML. The owner can update the
+interaction and case or explicitly retire that case. This makes regeneration
+useful during a breaking CLI change without converting lost references into
+lost product decisions.
+
+The shared sync/check/template command means adopters do not implement parser
+walkers, a candidate enumerator, a Markdown table renderer, or merge logic.
+The companion pytest assertion confirms that active catalog records point to
+collected node IDs carrying their `cli_case` markers. That check proves
+collection/linkage only. The product test must still invoke its real registered
+CLI and assert output, exit status, validation timing, and filesystem/state/
+network/credential effects; the normal gate proves that test passes.
+The catalog checker only sanity-checks argv structure, including recognized
+option arity and scope, parser-depth `--` terminators, and parent positionals
+before nested commands. For positional candidates, it assigns supplied values
+to the named action at the matching parser depth; another positional using the
+same text does not satisfy it. It also rejects an inline value on a flag-only
+option. It records `allow_abbrev` at each parser depth and uses that parser's
+setting when recognizing options. A callback that changes `prefix_chars` or
+enables `fromfile_prefix_chars` makes the inventory incomplete until the
+structural checker can model that token syntax. It deliberately does not call
+`parse_args`, custom converters/actions, or handlers, because a documentation
+check must not execute consumer behavior. The linked test is the oracle for
+parser acceptance and product semantics.
+Each generated file is replaced atomically. A stop between the two output
+replacements is visible as drift on the next check.
+This boundary makes semantic review auditable without asking a generic library
+to invent product truth.
+
 ## Prove the shared contract at each rigor level
 
 The package gate separates ordinary behavior and coverage (R0/R1), mutation
@@ -143,6 +408,13 @@ through `run-gate.py`; it does not pin a stale zipapp. All three lanes execute
 inside `tester-unified`. The project gate is reproducible from the same source
 and environment used for adoption, while remaining outside the interactive
 development cockpit.
+
+Assay's hard mutation budget is 150 minutes. A registered 60-minute campaign
+on the earlier committed revision recorded 490 of 919 candidates before the
+hard cap and archived its partial state; it did not produce a mutation verdict.
+The longer budget is based on that measured throughput and preserves enough
+headroom to finish the full campaign. The combined gate budget is 180 minutes
+to include lane startup and the R0/R1 and R3 steps.
 
 ## Make long operations automation-safe
 

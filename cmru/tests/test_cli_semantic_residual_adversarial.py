@@ -29,7 +29,7 @@ def test_build_refuses_uncommitted_snapshot_before_fetch_or_workspace(monkeypatc
     monkeypatch.setattr(cli, "apply_release_env", lambda *_: None)
     monkeypatch.setattr(cli.transaction, "release_lock", lambda _: nullcontext())
     monkeypatch.setattr(cli, "_uncommitted_release_paths", lambda *args: {"demo": ["demo/input.py"]})
-    monkeypatch.setattr(cli.transaction, "fetch_origin_main", lambda *_: (_ for _ in ()).throw(AssertionError("fetch")))
+    monkeypatch.setattr(cli.transaction, "fetch_origin_main", lambda *_, **__: (_ for _ in ()).throw(AssertionError("fetch")))
     exc = cli.main(["build", "--config", str(tmp_path / "cmru.toml"), "demo"])
     assert exc == 1
 
@@ -45,10 +45,16 @@ def test_build_success_runs_child_retains_outputs_and_reports_cleanup_command(mo
     workspace = transaction.ReleaseWorkspace(tmp_path, tmp_path / "child", "cmru/build/abc", "a" * 40)
     calls = []
     overlays = []
-    monkeypatch.setattr(cli.transaction, "fetch_origin_main", lambda *_: "b" * 40)
-    monkeypatch.setattr(cli.transaction, "assert_local_main_not_ahead", lambda *_: 0)
+    monkeypatch.setattr(cli.transaction, "fetch_origin_main", lambda *_, **__: "b" * 40)
+    monkeypatch.setattr(
+        cli, "_project_config_paths_at_snapshot",
+        lambda _root, _base, _config, _configs, names: {
+            name: Path(name) / "cmru.toml" for name in names
+        },
+    )
+    monkeypatch.setattr(cli.transaction, "assert_local_main_not_ahead", lambda *_, **__: 0)
     monkeypatch.setattr(cli.transaction, "create_workspace", lambda *args, **kwargs: workspace)
-    monkeypatch.setattr(cli.transaction, "copy_secret_overlays", lambda *args: overlays.append(args[-1]))
+    monkeypatch.setattr(cli.transaction, "copy_secret_overlays", lambda *args, **kwargs: overlays.append(args[-1]))
     monkeypatch.setattr(cli.transaction, "run_child", lambda w, args, **kwargs: calls.append((w, args, kwargs)) or 0)
     retained = [tmp_path / "demo" / "artifacts" / "build-1"]
     monkeypatch.setattr(cli.transaction, "retain_successful_build_outputs", lambda *args: retained)
@@ -91,3 +97,62 @@ def test_worktrees_dispatch_reports_empty_and_prunable_records(monkeypatch, caps
     cli.main(["worktrees"])
     output = capsys.readouterr().out
     assert "action: withheld" in output
+
+    workspace = transaction.ReleaseWorkspace(
+        Path("/repo"), Path("/repo/.worktrees/cmru-release-demo"),
+        "cmru-release-demo", "a" * 40,
+    )
+    monkeypatch.setattr(cli.transaction, "list_cmru_workspaces", lambda _: [workspace])
+    monkeypatch.setattr(
+        cli.transaction, "read_release_scope_for_workspace",
+        lambda _root, _workspace: ["demo"],
+    )
+    cli.main(["worktrees"])
+    output = capsys.readouterr().out
+    assert "project scope: demo" in output
+    assert "resume: cmru release demo" in output
+    assert "repeat the same --config PATH" in output
+
+
+def test_worktrees_legacy_scope_advice_requires_target_and_external_config(monkeypatch, tmp_path, capsys):
+    workspace = transaction.ReleaseWorkspace(
+        tmp_path, tmp_path / "foreign-namespace" / "missing",
+        "cmru-release-20261001_000000-demo-abcdef", "a" * 40,
+    )
+    monkeypatch.setattr(cli, "_current_git_root", lambda: tmp_path)
+    monkeypatch.setattr(cli.transaction, "list_cmru_workspaces", lambda _root: [workspace])
+    monkeypatch.setattr(
+        cli.transaction, "read_release_scope_for_workspace",
+        lambda _root, _workspace: None,
+    )
+    monkeypatch.setattr(
+        cli.transaction, "read_release_scope_for_path",
+        lambda _path: (_ for _ in ()).throw(AssertionError("must not inspect listed path")),
+    )
+
+    cli.main(["worktrees"])
+
+    output = capsys.readouterr().out
+    assert "project scope: missing" in output
+    assert "pass its explicit target" in output
+    assert "repeat the original external --config PATH" in output
+    assert "resume: cmru release" not in output
+
+
+def test_worktrees_unreadable_scope_withholds_resume(monkeypatch, tmp_path, capsys):
+    workspace = transaction.ReleaseWorkspace(
+        tmp_path, tmp_path / "foreign-namespace" / "missing",
+        "cmru-release-20261001_000000-demo-abcdef", "a" * 40,
+    )
+    monkeypatch.setattr(cli, "_current_git_root", lambda: tmp_path)
+    monkeypatch.setattr(cli.transaction, "list_cmru_workspaces", lambda _root: [workspace])
+    monkeypatch.setattr(
+        cli.transaction, "read_release_scope_for_workspace",
+        lambda _root, _workspace: (_ for _ in ()).throw(RuntimeError("unreadable")),
+    )
+
+    cli.main(["worktrees"])
+
+    output = capsys.readouterr().out
+    assert "project scope: unreadable" in output
+    assert "resume: withheld" in output

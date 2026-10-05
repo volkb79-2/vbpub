@@ -1,7 +1,7 @@
 # V8 provisioning model — the realization graph
 
-**Status:** design note (revision 2, 2026-09-02), feeding `CIU-V8-TESTING-GATE-PROPOSAL.md` §4.1.6/§4.3.4
-**Session:** dstdns/vbpub joint design discussion, 2026-08-26; preface added 2026-09-02
+**Status:** design note (revision 5, 2026-10-03 — a v8.2 preface follows D-666; revision 4 was the admission preface of D-661; revision 3 was 2026-10-03; revision 2 was 2026-09-02), feeding `CIU-V8-TESTING-GATE-PROPOSAL.md` §4.1.6/§4.3.4 and `SPEC-V8.md` S8
+**Session:** dstdns/vbpub joint design discussion, 2026-08-26; prefaces added 2026-09-02 and 2026-10-03
 
 > **Reading this note against proposal rev 3.0 / SPEC-V8 draft.3 (2026-09-02).** The
 > entity split this note argues for — a consumer depends on a *logical* name, never on
@@ -24,6 +24,58 @@
 >
 > The five-wave dstdns trace, the two races (D-210, D-212) and their lessons are unchanged
 > and remain the acceptance narrative for V8-7 (the graph package).
+>
+> ## Reading this note against proposal rev 4.6 / SPEC-V8 draft.9 (2026-10-03, dstdns D-656, D-658)
+>
+> The two prefaces compose: the table above maps the 2026-08-26 notation to the rev 3.0 notation, and
+> the rest of this preface maps what the 2026-10 reconciliation (D-647, D-651..D-655) changed around it.
+> The graph itself (logical services, realizations, derived edges, waves, gates) is unchanged by every
+> one of those decisions. The authoritative texts are `SPEC-V8.md` S5 and S8 (the graph), S14.4 (locks)
+> and S16.6 (admission).
+>
+> - **Where the graph lives in the build plan.** The mechanism is proposal §4.4 V8-3 (registry, logical
+>   services, derived contract), V8-7 (init graph, waves, gates, this note's acceptance narrative), V8-8
+>   (realness and joins) and V8-32 (join presets, tenant namespaces), all in checkpoint B, after
+>   checkpoint A (files, inheritance, identity, locks, check). The gate port (V8-12, checkpoint D) does
+>   not touch the graph.
+> - **Identity (D-651 Q10, D-647 #5).** This note names no instance id and no owner token, so nothing
+>   here is stale. A stack's container names come from the one derivation (SPEC-V8 S4), over 7.15.1's
+>   path-derived id.
+> - **Joins (D-651 Q9).** A worktree instance borrows only what a committed join preset names, and a
+>   service is shareable only when it declares a tenant namespace. This note's `external` and realness
+>   rows are unaffected; a `joined` realization is the one new kind (SPEC-V8 S9.5).
+> - **Admission (count mode 8.0, byte budget v8.1; D-647 #4, D-653 Q4, D-655, D-658, D-661).** The waves
+>   above are ordering only and the graph, waves and gates neither need nor mention admission. Every
+>   admission setting is grouped under the name `admission` (SPEC-V8 S21.1: participant-scoped
+>   `[admission] enabled`, default `false`, and host-scoped `[hosts.<h>.admission]`). **8.0** has the
+>   count mode on the `gates` tier only: gap-free name tickets, a published `max_concurrent`, deadline
+>   and group reaping (S21.4); a stack start (`ciu up`, `ciu dev`) takes no ticket and a stack has no
+>   count, so the realization order, the checkpoint-B build order and the five-wave trace are unchanged.
+>   **v8.1** adds the byte budget: with it enabled, a stack start is one **placeholder ticket per `up`**
+>   carrying the sum of the warm charges of every container `ciu up` would start across all waves; each
+>   wave's containers group under it by label, so a later wave's containers need not exist before its
+>   wave runs (S21.4.4). In the proposal's build plan the count mode is V8-38 in checkpoint D (8.0) and
+>   V8-30/V8-31 are checkpoint F (v8.1).
+> - **Remote deployment (v8.2; D-666).** The graph above is the **8.0** graph and is unchanged. Remote
+> deployment — releases, the activation state machine, the activation-bound receipt and host enrollment
+> — is the v8.2 annex that follows v8.1 (SPEC-V8 S17.0, S17.7, Appendix F; proposal §4.4 checkpoint G,
+> V8-23, V8-29). What it changes here: in 8.0 a provider on another host is *probed* and its facts need
+> `--allow-assumed` (S8.5.3: no evidence crosses hosts), so a multi-host trace is one wave graph per host
+> joined by reachability edges only; `ciu activate apply` running hosts serially in layout order and a
+> receipt checked against an activation manifest (S17.4) are v8.2. The one remote-adjacent piece that
+> stays in 8.0 is the receipt of one `up` (S8.5.6), the evidence a `joined` reference gives its joiner.
+> The multi-host transport-readiness callout at the end of this note is unaffected.
+> - **v7 local state in the trace.** The swimlane below describes v7 and is kept as history: secrets
+>   materialize to `<stack>/.ciu/secrets/<name>` and Vault's init state goes to `infra/vault/ciu.toml
+>   [state]`. In v8 the `.ciu/` directory is gone (V8-10, SPEC-V8 S2.3.2): a service's secret copies are
+>   the per-service directories `ciu.secret-copy.<svc>/` (S10.7), every secret value (Vault's root token
+>   and unseal key included) lives in the one store `ciu.secrets.toml` in the state root (V8-9, S10.6,
+>   S2.6), reached by a hook through its `secrets` output, and a hook's non-secret state is
+>   `ciu.state.toml` (S6.10; a `[state]` table in a stack file is an error). The waves and the D-210/D-212
+>   lessons are unaffected.
+> - **Not touched.** The gate (Phase A on the v7 track, RG-78's exit table, `ciu gate`), cmru calling
+>   `ciu gate`, and the atomic per-repo cutover (D-652 Q3, Q13; D-654) concern the testing gate, which
+>   has no node in this graph.
 **Problem this resolves:** §3.1's worked examples nest a service's realness
 variants inside the stack that happens to run it today
 (`service.our_db_stack.postgres.live`). That is an addressing scheme, not an
@@ -382,6 +434,8 @@ to ship at all.
 
 ## Resolved / open
 
+> **Historical (marked 2026-10-03, dstdns D-658).** This section is the 2026-08-26 state. The items it lists as open are closed in v8: contract conformance at config time is `ciu check` stage 5 (SPEC-V8 S5.3, S15.3), the `pg:schema/*` ref kind exists (S5.6), and the preface's table maps the rest. Read it for the reasoning, not for what is still open.
+
 **Resolved this session:**
 - `realized_by`, not `realizes` — the pointer reads from the abstract side toward the concrete side.
 - No `fulfills` field. A realization never references the logical name above it — one-directional pointing only, so re-pointing `realized_by` can never leave a stale back-reference.
@@ -396,7 +450,7 @@ to ship at all.
 - **Reversed, not just resolved:** vault-liveness and schema-completion are NOT ciu limitations — both already expressible via shipped `stack:*:healthy|completed` probes, live-verified, now applied in dstdns's own config (dstdns@d1688765). Filed instead: CIU-63 (the static lint's blindness to how `stack:*` actually resolves), CIU-64 (`ciu check` should run automatically before `ciu up`), CIU-65 (`validate_config` findings need WARN/ERROR severity, reusing `warn_policy.py`'s existing `exit_on` vocabulary) — all three in `KNOWN_ISSUES_TODO_BACKLOG.md`.
 - **Found and fixed, not just theorized:** the health-gate timing race described above (D-212) — a real, reproduced-live failure of the exact mechanism this document's own worked example relies on. Filed as CIU-67 (`deploy.health.timeout`'s dual-purpose conflation) and CIU-68 (the S7.7 gate not being part of `ciu up`'s default action sequence, and the one-shot `stack:*` probe's zero retry).
 
-**Still open:**
+**Still open (as of 2026-08-26; closed in v8, see the note above):**
 - **Contract conformance at config time** — checked the current proposal and both backlog files: **not planned anywhere yet**. Should be an explicit addition; the natural home is extending ciu's existing `validate_config()` static preflight (S9.5) from per-hook checks to the graph itself — does a realization's aggregate `init_provides` actually cover its logical service's `contract`, checked without a live probe. This is also the actual prerequisite for §4.3 dropping `[deploy.phases]` — see the section above.
 - **`pg:schema/*` ref kind** — `stack:infra/db-init:completed` is a working substitute for dstdns's specific case, but the underlying ref kind still doesn't exist; a stack whose completion doesn't map 1:1 to "the fact I actually care about" (e.g. a job that produces two independent facts at different points in its own run) still can't express the finer-grained dependency.
 - **Credential rotation — settled as OUT of scope, not open (operator directive, 2026-08-26):** rotation is an app-level concern, handled through Consul (a service watches its own KV path live and picks up a rotated value without a restart) — not a mechanism ciu is meant to build. What remains a real thing to verify (not design): whether ciu's own secret-delivery shape (`expose_env` baking a value into an environment variable at container start — inherently restart-required) is ever chosen by default for a secret that will need live rotation later, when a Consul-KV-backed delivery would have been rotation-friendly. Not a ciu gap; a dstdns authoring-clarity question.

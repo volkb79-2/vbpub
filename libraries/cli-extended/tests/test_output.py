@@ -107,6 +107,26 @@ def test_tty_probe_oserror_is_treated_as_noninteractive():
     assert not output.is_interactive
 
 
+def test_public_color_policy_is_stream_specific_and_honors_explicit_switches(monkeypatch):
+    class TTY(io.StringIO):
+        def isatty(self):
+            return True
+
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    tty = TTY()
+    redirected = io.StringIO()
+    output = CliOutput(IDENTITY, stdout=tty, stderr=redirected)
+
+    assert output.color_enabled(tty) is True
+    assert output.color_enabled(redirected) is False
+    assert output.color_enabled() is False
+
+    monkeypatch.setenv("NO_COLOR", "")
+    assert output.color_enabled(tty) is False
+    assert CliOutput(IDENTITY, color=True).color_enabled(redirected) is True
+    assert CliOutput(IDENTITY, color=False).color_enabled(tty) is False
+
+
 def test_help_redacts_tokens_and_uses_destination_stream_for_auto_color(monkeypatch):
     class TTY(io.StringIO):
         def isatty(self):

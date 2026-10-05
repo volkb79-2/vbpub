@@ -143,3 +143,31 @@ without the existing plan/apply/readback/rollback path. See
 `scripts/debian-install-v2/IO-BENCHMARK-DESIGN.md`.
 
 _Captured 2026-09-27 after a live runtime-path audit._
+
+## Feature request: ship `run-gate` (and the estate CLI set) in the image the way `ciu` is shipped
+
+Filed 2026-10-03 from dstdns (tooling-boundary pass,
+`dstdns/docs/proposals/TOOLING-BOUNDARY-2026-10.md` Q3). Status: OPEN.
+
+**Observed:**
+- The image bakes the ciu wheel from an immutable release (`Dockerfile:87-94`, `CIU_WHEEL_*`). It does not bake `run-gate`, which the estate's AGENTS doctrine makes the only sanctioned gate entry point.
+- Every consumer therefore installs it by hand in its own finalize hook. dstdns: `env-workspace-setup-generate.sh:87-108` `ensure_estate_tools`, called from `.devcontainer/finalize.post.d/10-dstdns-ciu.sh:24`. It `pip install`s from a sibling checkout path (`$REPO_ROOT/../vbpub/run-gate-project`, `:100`) and only warns when that path is absent (`:106`), e.g. in CI or a fresh worktree.
+- Consequences:
+  - A devcontainer rebuild silently drops run-gate until the hook runs (dstdns memory `feedback-devcontainer-rebuild-drops-run-gate`).
+  - The installed revision is whatever the sibling checkout's working tree holds, not a released, pinned artifact.
+  - Each consumer re-implements the same install-if-missing logic.
+
+**Why mdt owns it:** mdt already owns "which estate CLIs are present, at which released version" for ciu. run-gate is the same kind of dependency. It is a stdlib single-file tool with a wheel (run-gate RG-14), so the no-hard-dependency principle at the top of this file is unaffected: shipping it does not force its use.
+
+**Proposed contract:**
+- `RUN_GATE_WHEEL_{TAG,URL,SHA256}` build args, mirroring `CIU_WHEEL_*`, verified by sha256 and installed into the image's tool venv.
+- `mdt version --json` (or the image label set) reports the shipped run-gate revision beside ciu's.
+- A consumer that needs a newer revision than the image ships pins it in its own `requirements` and the finalize hook only upgrades. Install-from-sibling-checkout is never the default.
+
+**Oracles:**
+- A fresh container from the image, with no finalize hook run, has `run-gate --version` on PATH, matching the build arg.
+- A wrong sha256 build arg fails the build.
+- Controlled wrong implementation: installing from a sibling checkout path must fail the first oracle in an image built without vbpub present.
+
+**dstdns deletes on ship:** `ensure_estate_tools`'s run-gate branch (`env-workspace-setup-generate.sh:95-107`) and the "reinstall run-gate after rebuild" doctrine.
+

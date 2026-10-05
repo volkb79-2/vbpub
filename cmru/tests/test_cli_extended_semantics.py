@@ -350,6 +350,26 @@ def test_project_handler_dry_run_uses_registered_cli_and_skips_handler(
     assert "path is disabled" in capsys.readouterr().err
 
 
+@pytest.mark.parametrize(
+    ("handler_name", "argv"),
+    [
+        ("cmd_wheel_validate", ["wheel-validate", "--prefix", "demo"]),
+        ("cmd_tarball_validate", ["tarball-validate", "--prefix", "demo"]),
+    ],
+)
+def test_read_only_handlers_do_not_require_dry_run_argument(
+    monkeypatch, handler_name, argv,
+):
+    called = []
+    monkeypatch.setattr(
+        handlers, handler_name,
+        lambda args: called.append((args.prefix, getattr(args, "dry_run", None))) or 0,
+    )
+
+    assert handlers.main(argv) == 0
+    assert called == [("demo", None)]
+
+
 def test_init_dry_run_validates_generated_contract_without_writing(
     monkeypatch, tmp_path, capsys,
 ):
@@ -457,6 +477,7 @@ def test_cleanup_declined_confirmation_keeps_the_previewed_target_untouched(
     project = cli.ProjectConfig("demo", {}, {}, project_root=tmp_path / "demo")
     monkeypatch.setattr(cli, "_resolve_config", lambda _path: tmp_path / "cmru.toml")
     monkeypatch.setattr(cli, "load_config", lambda _path: _loaded(tmp_path, {"demo": project}))
+    monkeypatch.setattr(transaction, "retained_build_output_identity", lambda *_args: object())
     prompts = []
     monkeypatch.setattr(CliRuntime, "confirm", lambda _runtime, prompt: prompts.append(prompt) or False)
     calls = []
@@ -473,6 +494,35 @@ def test_cleanup_declined_confirmation_keeps_the_previewed_target_untouched(
     assert calls == [True]
     capsys.readouterr()
     assert prompts == ["Apply the cleanup actions listed above?"]
+
+
+def test_cleanup_applies_the_captured_preview_action_without_rediscovery(
+    monkeypatch, tmp_path, capsys,
+):
+    project = cli.ProjectConfig("demo", {}, {}, project_root=tmp_path / "demo")
+    monkeypatch.setattr(cli, "_resolve_config", lambda _path: tmp_path / "cmru.toml")
+    monkeypatch.setattr(cli, "load_config", lambda _path: _loaded(tmp_path, {"demo": project}))
+    expected_identity = object()
+    monkeypatch.setattr(transaction, "retained_build_output_identity", lambda *_args: expected_identity)
+    calls = []
+
+    def delete_retained(_root, _project, _name, ident, *, dry_run, expected_identity):
+        calls.append((ident, dry_run, expected_identity))
+        return [tmp_path / "artifact"]
+
+    monkeypatch.setattr(transaction, "delete_retained_build_output", delete_retained)
+
+    result = cli.main([
+        "cleanup", "demo", "--delete-build-output", "20240101T000000Z_" + "b" * 40,
+        "--config", "x", "--yes",
+    ])
+
+    assert result == 0
+    assert calls == [
+        ("20240101T000000Z_" + "b" * 40, True, expected_identity),
+        ("20240101T000000Z_" + "b" * 40, False, expected_identity),
+    ]
+    assert "Applying confirmed cleanup action" in capsys.readouterr().out
 
 
 @pytest.mark.parametrize("enable_docker", [False, True])
@@ -568,6 +618,40 @@ def test_abandon_workspace_refuses_when_remote_state_cannot_be_read(monkeypatch,
         transaction.abandon_workspace(tmp_path, workspace)
 
 
+@pytest.mark.parametrize("changed", ["candidate", "tags"])
+def test_abandon_workspace_rechecks_inspected_remote_facts_before_deleting(
+    monkeypatch, tmp_path, changed,
+):
+    workspace = SimpleNamespace(branch="cmru-release-candidate", context=None)
+
+    def run(argv, **_kwargs):
+        if argv[:3] == ["git", "ls-remote", "--heads"]:
+            oid = "b" * 40 if changed == "candidate" else "a" * 40
+            return SimpleNamespace(
+                returncode=0, stdout=oid + "\trefs/heads/" + workspace.branch + "\n", stderr="",
+            )
+        if argv[:3] == ["git", "ls-remote", "--tags"]:
+            oid = "d" * 40 if changed == "tags" else "c" * 40
+            return SimpleNamespace(
+                returncode=0, stdout=oid + "\trefs/tags/demo-v1\n", stderr="",
+            )
+        if argv[:2] == ["git", "push"]:
+            pytest.fail("changed remote facts must block deletion")
+        raise AssertionError(argv)
+
+    monkeypatch.setattr(transaction.subprocess, "run", run)
+    monkeypatch.setattr(transaction, "backup_was_pushed", lambda *_: True)
+    monkeypatch.setattr(transaction, "backup_was_removed", lambda *_: False)
+    monkeypatch.setattr(transaction, "remove_workspace", lambda *_: pytest.fail("removed local state"))
+
+    with pytest.raises(RuntimeError, match="changed after abandonment inspection"):
+        transaction.abandon_workspace(
+            tmp_path, workspace,
+            expected_remote_candidate_oid="a" * 40,
+            expected_remote_tag_refs={"refs/tags/demo-v1": "c" * 40},
+        )
+
+
 @pytest.mark.parametrize("verification", ["deleted", "still-present", "unknown", "delete-failed"])
 def test_abandon_workspace_deletes_remote_ref_then_verifies_before_local_cleanup(
     monkeypatch, tmp_path, verification,
@@ -596,7 +680,7 @@ def test_abandon_workspace_deletes_remote_ref_then_verifies_before_local_cleanup
                     stderr="",
                 )
             return SimpleNamespace(returncode=0, stdout="", stderr="")
-        if argv[:3] == ["git", "push", "origin"]:
+        if argv[:2] == ["git", "push"]:
             return SimpleNamespace(
                 returncode=3 if verification == "delete-failed" else 0,
                 stdout="", stderr="delete refused",
@@ -613,7 +697,11 @@ def test_abandon_workspace_deletes_remote_ref_then_verifies_before_local_cleanup
     if verification == "deleted":
         transaction.abandon_workspace(tmp_path, workspace)
         assert removed_marker == [True] and removed_local == [True] and forgotten == [True]
-        assert calls[1][0:4] == ["git", "push", "origin", "--delete"]
+        assert calls[1] == [
+            "git", "push",
+            f"--force-with-lease=refs/heads/{workspace.branch}:" + "a" * 40,
+            "origin", f":refs/heads/{workspace.branch}",
+        ]
     else:
         with pytest.raises(RuntimeError):
             transaction.abandon_workspace(tmp_path, workspace)
@@ -638,7 +726,11 @@ def _minimal_transaction_context(monkeypatch, tmp_path, *, record=None, common=N
     if record is None:
         record = SimpleNamespace(
             purpose="cmru-legacy", branch="cmru-release-child", worktree_path=child,
-            source_git_root=source, workspace_id="workspace-1",
+            source_git_root=source, workspace_id="workspace-1", base_commit="a" * 40,
+            metadata={
+                transaction._LEGACY_RESUME_METADATA_KEY:
+                    transaction._LEGACY_RESUME_METADATA_VALUE,
+            },
         )
 
     class Shared:
@@ -658,14 +750,20 @@ def _minimal_transaction_context(monkeypatch, tmp_path, *, record=None, common=N
     monkeypatch.setenv("CMRU_WORKSPACE_PATH", str(child))
     monkeypatch.setenv("CMRU_SOURCE_GIT_ROOT", str(source))
     monkeypatch.setenv(transaction.BRANCH_ENV, "cmru-release-child")
+    monkeypatch.setenv(transaction.BASE_ENV, "a" * 40)
     monkeypatch.setenv("CMRU_WORKSPACE_ID", "workspace-1")
     return source, child
 
 
-def test_transaction_child_accepts_legacy_record_and_rejects_source_root_mismatch(
+def test_transaction_child_accepts_validated_legacy_record_and_rejects_source_root_mismatch(
     monkeypatch, tmp_path,
 ):
     source, child = _minimal_transaction_context(monkeypatch, tmp_path)
+    monkeypatch.setattr(transaction, "read_release_progress", lambda *_args: "a" * 40)
+    monkeypatch.setattr(
+        transaction, "run_local_git",
+        lambda *_args, **_kwargs: SimpleNamespace(returncode=0, stdout="", stderr=""),
+    )
     assert transaction.is_transaction_child(child) is True
 
     wrong = tmp_path / "other-source"
@@ -674,6 +772,11 @@ def test_transaction_child_accepts_legacy_record_and_rejects_source_root_mismatc
         monkeypatch, tmp_path, record=SimpleNamespace(
             purpose="cmru-legacy", branch="cmru-release-child",
             worktree_path=child, source_git_root=wrong, workspace_id="workspace-1",
+            base_commit="a" * 40,
+            metadata={
+                transaction._LEGACY_RESUME_METADATA_KEY:
+                    transaction._LEGACY_RESUME_METADATA_VALUE,
+            },
         ),
     )
     with pytest.raises(RuntimeError, match="shared transaction record has a different source root"):

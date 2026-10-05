@@ -28,6 +28,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from cmru.config_names import PROJECT_CONFIG_FILENAME
+from cmru.git_auth import GitHubGitAuth, run_local_git, run_remote_git
 
 
 # ---------------------------------------------------------------------------
@@ -71,7 +72,19 @@ def _git_log(repo_root: Path, since_ref: str, *paths: str, end_ref: str = "HEAD"
     cmd = ["git", "log", f"{since_ref}..{end_ref}", "--format=%s"]
     if paths:
         cmd += ["--"] + list(paths) + list(_RELEASE_CONTROL_EXCLUDES)
-    result = subprocess.run(cmd, cwd=repo_root, capture_output=True, text=True)
+    try:
+        result = subprocess.run(cmd, cwd=repo_root, capture_output=True, text=True)
+    except OSError as exc:
+        raise ReleasePlanRefused(
+            f"cannot inspect commit history since {since_ref!r}: "
+            f"git log could not start: {exc}"
+        ) from exc
+    if result.returncode != 0:
+        detail = result.stderr.strip() or result.stdout.strip() or "no diagnostic output"
+        raise ReleasePlanRefused(
+            f"cannot inspect commit history since {since_ref!r}: "
+            f"git log failed ({result.returncode}): {detail}"
+        )
     return [line for line in result.stdout.splitlines() if line.strip()]
 
 
@@ -89,7 +102,9 @@ class ReleasePlanRefused(RuntimeError):
     genuine mid-release failure, which must be retained for inspection."""
 
 
-def _tag_pushed_to_origin(repo_root: Path, tag: str) -> bool:
+def _tag_pushed_to_origin(
+    repo_root: Path, tag: str, *, git_auth: GitHubGitAuth | None = None,
+) -> bool:
     """True if ``tag`` exists on ``origin`` right now AND points at the exact
     same commit locally and remotely (S12.2a / KI-12a).
 
@@ -110,10 +125,10 @@ def _tag_pushed_to_origin(repo_root: Path, tag: str) -> bool:
     naming both SHAs -- that is not "absent", so it must not be reported
     with the "push it" remedy that implies nothing exists there yet.
     """
-    result = subprocess.run(
-        ["git", "ls-remote", "--exit-code", "--tags", "origin",
-         f"refs/tags/{tag}", f"refs/tags/{tag}^{{}}"],
-        cwd=repo_root, capture_output=True, text=True,
+    result = run_remote_git(
+        repo_root, "ls-remote", "--exit-code", "--tags", "origin",
+        f"refs/tags/{tag}", f"refs/tags/{tag}^{{}}",
+        auth=git_auth, capture_output=True, text=True,
     )
     if result.returncode == 2:
         return False
@@ -151,7 +166,10 @@ def _tag_pushed_to_origin(repo_root: Path, tag: str) -> bool:
     return True
 
 
-def _highest_remote_tag_for_prefix(repo_root: Path, prefix: str, tag_key) -> Optional[str]:
+def _highest_remote_tag_for_prefix(
+    repo_root: Path, prefix: str, tag_key, *,
+    git_auth: GitHubGitAuth | None = None,
+) -> Optional[str]:
     """The highest-semver tag NAME matching ``prefix*`` that exists on
     ``origin`` right now, or None (S12.2a / KI-12a).
 
@@ -163,9 +181,9 @@ def _highest_remote_tag_for_prefix(repo_root: Path, prefix: str, tag_key) -> Opt
     ``tag_key`` is the caller's own ``_semver_key``-based ordering (over the
     same ``prefix``), so remote and local candidates are compared identically.
     """
-    result = subprocess.run(
-        ["git", "ls-remote", "--tags", "origin", f"refs/tags/{prefix}*"],
-        cwd=repo_root, capture_output=True, text=True,
+    result = run_remote_git(
+        repo_root, "ls-remote", "--tags", "origin", f"refs/tags/{prefix}*",
+        auth=git_auth, capture_output=True, text=True,
     )
     if result.returncode != 0:
         raise ReleasePlanRefused(
@@ -188,6 +206,7 @@ def _highest_remote_tag_for_prefix(repo_root: Path, prefix: str, tag_key) -> Opt
 
 def _latest_tag_for_prefix(
     repo_root: Path, prefix: str, *, require_pushed: bool = False,
+    git_auth: GitHubGitAuth | None = None,
 ) -> Optional[str]:
     """Return the most recent tag matching prefix* by semver order, or None.
 
@@ -222,7 +241,9 @@ def _latest_tag_for_prefix(
     candidate = max(tags, key=_tag_key) if tags else None
 
     if require_pushed:
-        remote_candidate = _highest_remote_tag_for_prefix(repo_root, prefix, _tag_key)
+        remote_candidate = _highest_remote_tag_for_prefix(
+            repo_root, prefix, _tag_key, git_auth=git_auth,
+        )
         if remote_candidate is not None and (
             candidate is None or _tag_key(remote_candidate) > _tag_key(candidate)
         ):
@@ -232,7 +253,9 @@ def _latest_tag_for_prefix(
                 "baseline must reflect the pushed repository (S12.2a); fetch tags and "
                 "re-run: git fetch --tags origin"
             )
-        if candidate is not None and not _tag_pushed_to_origin(repo_root, candidate):
+        if candidate is not None and not _tag_pushed_to_origin(
+            repo_root, candidate, git_auth=git_auth,
+        ):
             raise ReleasePlanRefused(
                 f"latest local tag {candidate!r} (prefix {prefix!r}) is not present on origin. "
                 "A release baseline must reflect the pushed repository (S12.2a), not local-only "
@@ -335,9 +358,8 @@ def _apply_strategy_scm(
     if dry_run:
         print(f"[DRY] Would tag: {tag}")
         return tag
-    rc = subprocess.run(
-        ["git", "tag", "-a", tag, "-m", f"Release {tag}"],
-        cwd=repo_root,
+    rc = run_local_git(
+        repo_root, "tag", "-a", tag, "-m", f"Release {tag}",
     ).returncode
     if rc != 0:
         print(f"[ERROR] git tag {tag} failed (exit {rc})", file=sys.stderr)
@@ -368,15 +390,14 @@ def _apply_strategy_file(
         ["git", "diff", "--cached", "--quiet", "--", str(vfile)], cwd=repo_root
     ).returncode != 0
     if has_staged:
-        subprocess.run(
-            ["git", "commit", "-m", f"chore: bump {prefix} to {next_version}"],
-            cwd=repo_root, check=True,
+        run_local_git(
+            repo_root, "commit", "-m", f"chore: bump {prefix} to {next_version}",
+            check=True,
         )
     else:
         print(f"[INFO] {version_file} already {next_version} — tagging current HEAD.")
-    rc = subprocess.run(
-        ["git", "tag", "-a", tag, "-m", f"Release {tag}"],
-        cwd=repo_root,
+    rc = run_local_git(
+        repo_root, "tag", "-a", tag, "-m", f"Release {tag}",
     ).returncode
     if rc != 0:
         print(f"[ERROR] git tag {tag} failed (exit {rc})", file=sys.stderr)
@@ -397,9 +418,8 @@ def _apply_strategy_counter(
     if dry_run:
         print(f"[DRY] Would tag: {tag}")
         return tag
-    rc = subprocess.run(
-        ["git", "tag", "-a", tag, "-m", f"Release {tag}"],
-        cwd=repo_root,
+    rc = run_local_git(
+        repo_root, "tag", "-a", tag, "-m", f"Release {tag}",
     ).returncode
     if rc != 0:
         print(f"[ERROR] git tag {tag} failed (exit {rc})", file=sys.stderr)
@@ -504,6 +524,7 @@ def detect_changed_projects(
     check_tag_at_head: bool = False,
     allow_tag_ahead_of_head: bool = False,
     end_ref: str = "HEAD",
+    git_auth: GitHubGitAuth | None = None,
 ) -> List[Tuple[str, Any, Optional[str], str]]:
     """Return [(name, config, last_tag_or_None, bump)] for projects with changes.
 
@@ -549,7 +570,10 @@ def detect_changed_projects(
     for name, proj in projects.items():
         prefix = getattr(proj, "prefix", None) or f"{name}-v"
         paths = getattr(proj, "paths", None) or [getattr(proj, "cwd", None) or name]
-        last_tag = _latest_tag_for_prefix(repo_root, prefix, require_pushed=require_pushed_baseline)
+        last_tag = _latest_tag_for_prefix(
+            repo_root, prefix, require_pushed=require_pushed_baseline,
+            git_auth=git_auth,
+        )
         if last_tag:
             messages = _git_log(repo_root, last_tag, *paths, end_ref=end_ref)
             if not messages:

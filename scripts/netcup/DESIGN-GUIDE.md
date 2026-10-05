@@ -154,6 +154,30 @@ field interpretation, request semantics, and terminal-state meaning.
 `--debug-raw` is deliberately conspicuous because both JSON output and shared
 client diagnostics can expose secret-bearing task data.
 
+### Why monitor-task has a generated semantic catalog
+
+The registered parser is the grammar source; a TOML catalog records the
+product decisions that argparse cannot express by itself. The canonical
+[`monitor-task CLI specification`](CLI-SPEC.md) embeds the generated inventory
+and accepted/refused invocation table. Its JSON manifest makes parser changes
+reviewable; synchronization cannot rewrite the human-owned decision catalog
+or the surrounding spec text.
+
+Netcup is the first real adopter of the library's surface workflow. Its command
+is a hyphenated script with sibling imports, so the path-based factory loads
+`monitor-task.py:build_cli` directly. The stable generated module name avoids
+checkout-root churn in callable labels, and the loader keeps the script
+directory importable without a consumer shim. The workflow links behavior
+tests for important combinations: `show --poll` and `watch --json` refuse,
+`show --json --debug-raw` deliberately exposes raw data with a warning, and
+repeated `watch --poll` uses the last value. Product tests assert the resulting
+status and effects; collection markers only prove the test exists under the
+expected case ID.
+
+The installer also declares `--monitor` and `--no-monitor` as a shared parser
+mutex. Argparse rejects the invalid combination before `.env` or runtime
+settings load, so the product no longer needs a later duplicate check.
+
 ## Account-wide API exploration
 
 The SCP API makes most inventory endpoints server-scoped: there is no

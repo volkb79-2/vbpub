@@ -4390,3 +4390,308 @@ proceed with this integration.
 ## CIU-112
 
 `worktree lacks ciu instance identity so ciu won't clean them` - if people now start using `ciu worktree` to create a worktree: does it work when there is no riu root in the repo? and does the tear down/removal work? both should be possible. removal might give a warning, i do not see a reason to refuse?
+
+## CIU-113 — Add a consumer onboarding recipe for a project-owned inspection stack
+
+**Status: OPEN — documentation candidate.**
+
+A consumer project needed a disposable CIU stack to inspect a legacy database
+without adding runtime packages to the devcontainer. The useful workflow was
+spread across CIU behavior and project-specific Docker commands, so the
+consumer had to discover several steps: initialize the project CIU root,
+generate and export its environment with `eval "$(ciu env print)"`, start a
+stack under a non-root directory with `ciu up --dir`, mount source data
+read-only and generated output separately, and run a one-shot command inside
+the CIU-managed service. The devcontainer also needed to join the project's
+network so it could inspect the generated output or later reach an internal
+service.
+
+Add a copy-pasteable `docs/CONSUMERS.md` example for this non-worktree project
+workflow. It should name which directory is the CIU root and which is the
+stack root; show the minimum config and `ciu init`/`ciu up` sequence; use the
+generated environment export; demonstrate read-only input and writable output
+mounts; and explain how to find and run a command in the selected service.
+Clarify the boundary between a normal project bridge with no published ports
+and Docker's stricter `--internal` network mode. If ordinary stacks need a
+supported stack-scoped one-shot `exec` command, record that as a separate
+product/API decision rather than making consumers depend on Docker labels.
+
+The gap surfaced while preparing an MDB inspection stack in
+`mh-access-to-web`; the workflow succeeded using CIU 7.15.0 and a small
+project wrapper, but the consumer guide's practical examples focus on managed
+worktrees and did not cover this first-project adoption path.
+
+Additional finding while splitting that consumer into independent CIU roots
+(2026-10-02): this Docker daemon's default address pools are exhausted, so
+`ciu env generate` cannot create the newly generated project network even
+though the root and stack configuration are valid. CIU has no consumer-facing
+way to request a free explicit subnet for that identity network. The onboarding
+recipe should explain how to diagnose this without pruning networks owned by
+other projects, and CIU should consider a supported per-root subnet/IPAM setting
+whose network remains identity-scoped and cleanable by CIU. This is a separate
+provisioning concern from Docker's `--internal` egress-isolation flag.
+
+The consumer wrapper also initially tried to pre-build with a bare `docker
+compose -f <stack-compose> build`; the stack's root-relative `build.context =
+"."` then resolved against the compose-file directory and failed. `ciu up`
+already builds and starts the declared service with the right project root, so
+the wrapper now lets CIU perform that work. Include this in the recipe's
+"ordinary CIU build vs direct Compose" guidance.
+
+`ciu init --wizard` could enter questionaire for setup. 
+
+## CIU-114 adopt `cli-extended` 
+for CLI grammer, usage(), wizard, ... 
+
+## CIU-115 a pre-schema-2 `ciu.instance.generated.toml` (CIU's OWN regenerable artifact) fail-closes teardown and unrelated stacks' `ciu up`
+
+Severity: Medium. Type: bugfix. Spec owner: S3.1c, S16, S16.3. Filed 2026-10-02 from dstdns
+(controller session, devcontainer rebuild picked up ciu 7.15.1).
+
+**Observed (live, ciu 7.15.1).** `vbpub@20236e437` (2026-09-22) made `schema_version = 2`
+mandatory on read (`workspace_env.py:1356` `_require_generated_schema_version`). Every checkout
+whose file was written by an older ciu now carries `schema_version=None`, and:
+1. `ciu up --dir <stack>` in the MAIN checkout refuses at STEP 1 (`[S3.1c] ... has
+   schema_version=None; expected 2`) — expected, and `ciu env generate` repairs it.
+2. **`ciu up --dir infra/schema-gate-pg` in the main checkout, AFTER main was regenerated,
+   still refused at STEP 16** (`[S16.3] could not read/parse
+   .worktrees/p214-b3-env-impl/ciu.instance.generated.toml: ... schema_version=None`) — the
+   S16.3 sibling budget scan turns one stale SIBLING into a refusal of an unrelated instance.
+3. **`ciu worktree rm <name> -y` refuses** (`[S16] could not read <wt>: [S3.1c] ...`, rc=2) for
+   every such worktree (10 of 15 in dstdns). Teardown — the operation an operator reaches for to
+   get RID of a stale checkout — is blocked by the stale checkout's own CIU-written file.
+   Workaround used: `ciu env generate --root-folder <wt>` then `ciu worktree rm` (rc=0 ×10).
+   That workaround has a side effect: generate CREATES a docker network for an instance about
+   to be deleted.
+
+No CHANGES.md entry for 20236e437 tells consumers to regenerate every worktree's identity file;
+combined with `vbpub@d1eb98770`'s base36 id scheme (identity changed `98535c`→`hox0ju` on
+regenerate), the upgrade is a silent breaking change for any checkout with live worktrees.
+
+**Why ciu owns it.** The file is CIU-owned, "rewritten in full by every `ciu env generate`; hand
+edits are silently overwritten" — no consumer can author or migrate it.
+
+**Operator ruling (2026-10-02): leaving a stale record alone is itself the bug.**
+`_seed_identity_or_repair` (`workspace_env.py:1495`) deliberately repairs only an ABSENT record and
+treats a PRESENT-but-outdated one as "loud rather than overwritten" (S3.1c clause 4). A pre-schema-2
+record is not ambiguous user data: it is CIU's own artifact in an older format, and the identity it
+encodes is DERIVABLE (a hash of the physical path). Refusing to rewrite it only converts a ciu
+upgrade into a manual chore in every checkout and worktree. Scope of the ruling: an OUTDATED-FORMAT
+record (missing/older `schema_version`) is regenerated in place; a record that is CORRUPT at the
+current schema (unparseable TOML, wrong types) may still refuse — that one could hide a real fault.
+
+**Proposed contract.**
+- EVERY verb that reads the record (runtime-start, read-only, teardown) regenerates an
+  outdated-format record in place with a WARN naming the file and the old/new `instance_id` (the
+  id can change when the derivation changed, e.g. vbpub@d1eb98770's base36 scheme), then proceeds.
+- `ciu worktree rm`/`clean` never refuses to delete on an outdated record.
+- S16.3 sibling scan: a stale sibling is counted (conservative) with a WARN, not a refusal of the
+  current instance. Never fold "unreadable" into "absent" (cf. CIU-62's S6.4a rule) — count it.
+- CHANGES.md gains the missing consumer-action note for 20236e437 + d1eb98770 (instance ids change;
+  regenerate every worktree; anything literal on the old id goes stale).
+
+**Oracles.** (1) a worktree whose generated file lacks `schema_version` is removed by
+`ciu worktree rm -y` with rc=0 and no network left behind; (2) with one such sibling present,
+`ciu up` on another instance proceeds and the S16.3 count includes the sibling; (3) controlled
+wrong implementation: treating the stale sibling as absent fails oracle (2)'s count assertion;
+(4) `ciu up` on a pre-schema-2 file regenerates it, WARNs with old→new instance_id, and deploys;
+(5) a current-schema file with a corrupt value still refuses (the repair is format migration, not a
+blanket overwrite) — controlled wrong implementation: an unconditional overwrite passes (4) but
+fails (5).
+
+**Amendment (2026-10-03, dstdns D-666; reviewed against SPEC-V8 draft.11 and proposal rev 4.9):** v8 absorbs this as S4.1.2 (repair in place) with `ciu clean --identity` (S14.1.5; proposal N25), and the operator's 2026-10-02 ruling stands. One ordering to carry into the v7 build so the two lines do not diverge: SPEC-V8 repairs in place **only when no live container, network or volume carries the old id**; when some do, it refuses first, naming `ciu clean --identity <old>` (the derivation changed under this checkout) or `--move`/`--fresh` (another path), because Docker labels are immutable and a silently regenerated id orphans the old resources, which is exactly the D-645 fallout the Observed section cites. The proposed contract's "regenerates ... then proceeds" is amended to that ordering: regenerate and proceed when nothing is live under the old id; with live old-id resources WARN, refuse, and name the `clean --identity` remedy (`ciu worktree rm` still never refuses on an outdated record). The third bullet (the S16.3 sibling scan counts a stale sibling instead of refusing) is a **v7-only** fix: v8 has no instance count and no sibling scan (`max_concurrent_instances` is dropped, S14.6; D-647 #4). The id itself is unchanged by the cutover (the derivation is 7.15.1's, over the **physical** path, S4.1.1).
+
+## CIU-116 — which infra a worktree instance reuses is a per-invocation CLI flag group, not a committed consumer declaration
+
+Severity: Medium. Type: feature. Spec owner: S16.1, S16.1a (v8: S9.5 joins). Filed 2026-10-03 from dstdns (tooling-boundary pass, `dstdns/docs/proposals/TOOLING-BOUNDARY-2026-10.md` Q1).
+
+**Observed (ciu 7.15.1).**
+- Reusing a reference instance's infra from a new worktree takes four all-or-nothing flags on every `ciu worktree create`: `--shared-infra REF --shared-infra-services ... --shared-infra-ref-projects ... [--shared-infra-ref-services A=S]`, at `src/ciu/cli.py:1514-1521`, S16.1. The intent is then recorded per instance under `[ciu.instance.shared_infra]`.
+- The answer to "which of my services may a worktree borrow, from which reference, under which compose project" is a property of the PROJECT. It is the same for every worktree of a given purpose. It is not a per-invocation choice.
+- In dstdns it was never used. dstdns GUIDE §3.4b still leaves `--shared-infra-ref-projects <TBD>` "not filled in on purpose", because nobody could state the compose project name with confidence at the moment of typing a command.
+- Instead dstdns runs Mode A, where worktrees are judged in main's runner (consumer workaround, D-362), and Mode B, where each worktree gets its own full infra (2-3 stacks host cap). Both are worse than declared reuse.
+
+**Why ciu owns it.** ciu derives every name the flags ask the operator to type (compose project, container name, network). A committed declaration lets ciu validate the reuse graph once, at `ciu check`, instead of trusting a hand-typed string at create time.
+
+**Proposed contract.**
+- A committed table in the project's global defaults. Reference: an instance label or `primary`, the git family's primary checkout. Stack names, not compose project names: ciu derives the project.
+
+```toml
+[ciu.worktree.reuse.<preset>]
+reference = "primary"
+services  = ["vault", "consul", "redis"]
+ref_services = { vault = "vault" }
+```
+
+- `ciu worktree create NAME --reuse <preset>` applies it. An optional `[ciu.worktree] default_reuse = "<preset>"` makes it the default, with `--no-reuse` to opt out. The four flags stay as an override that `ciu check` validates against the same graph.
+- Liveness, the post-up join and rollback stay exactly as S16.1 specifies.
+
+**Oracles.**
+1. With a preset declared, `ciu worktree create w --reuse gate --json` records the same `[ciu.instance.shared_infra]` the four flags would have recorded. The ref projects are derived, never typed.
+2. A preset naming a service the reference does not run refuses at create time, before any side effect.
+3. `ciu check` on the primary reports a preset whose `services` are not provided by any reference stack.
+4. Controlled wrong implementation: deriving the ref project from the stack directory basename instead of `engine.compose_project_name` must fail oracle 1 against dstdns's `infra/vault`.
+
+**v8: absorb.** SPEC-V8 S9.5 moves joins into the operator-authored, per-instance `ciu.instance.toml` (`ciu instance add --join`). That is still per instance. v8 needs the project-level preset as well, e.g. `[instances.join_presets.<p>]` in `ciu.toml`, consumed by `instance init --join-preset`.
+
+**Amendment (2026-10-03, dstdns D-666; reviewed against SPEC-V8 draft.11 and proposal rev 4.9):** the **v8: absorb** paragraph above is superseded: draft.8+ specifies the project-level preset. SPEC-V8 S9.5.1: `[ciu.instances.join_presets.<p>]` in `ciu.toml` with `reference` (`primary` or an instance label) and `services` (LogicalServices), `[ciu.instances] default_join_preset`, `ciu instance init --join-preset P | --no-join`; `ciu instance add --join` is withdrawn (S9.5.5, number retired). Differences from the v7 shape proposed here, to keep in view when building it: v8 has no `ref_services` alias map (a preset names LogicalServices and `ciu check` stage 12 refuses a name the reference does not provide, S9.5.9), and every preset service must declare `share` with a `tenant` hook so a joiner gets **its own namespace** inside the shared service (S5.2.5, S9.5.8–S9.5.10; D-651 Q9), which the v7 build, being v7 S16.1, does not have. The Observed section's "Mode A / Mode B" are the dstdns terms of that date: since D-666 a worktree runs its **own** test-runner (CIU-125) and borrows only what a preset names (vault), so Mode A, judging in main's runner, is retired. The v8.2 split (remote deployment) does not touch joins.
+
+## CIU-117 — a linked worktree's `ciu bake`/`up` builds the SHARED image tag; isolation is a consumer render-layer edit
+
+Severity: Medium. Type: feature. Spec owner: S8.x (bake), S17 (provenance). v8: S6.2, S17.6.1. Filed 2026-10-03 from dstdns.
+
+**Observed.**
+- Project-built images carry one tag for every instance of a project (dstdns: `image_tag = "latest"`, e.g. `tools/test-runner/ciu.defaults.toml.j2:17-19`).
+- A linked worktree that changes app code or the runner's dependency closure, and bakes, overwrites the tag the primary instance runs. Main's next restart then picks up unreviewed code.
+- dstdns's only defence is prose: GUIDE §3.2 "Images" says "override `image_tag` to `<handoff-id>` in the render-input layer". A Mode-B agent violated it despite the handoff forbidding it (dstdns memory `feedback-mode-b-agent-can-violate-own-tag-oracle`).
+- This also blocks the "worktree may change its own test runtime" use case: a worktree cannot get its own runner image without a hand edit to tracked templates.
+
+**Why ciu owns it.** ciu knows whether the checkout is the primary or a linked worktree (S16 records) and owns the tag at render and bake time. A consumer cannot express "the tag depends on the instance" except through Jinja on `ciu.instance_id`, which every consumer would re-invent.
+
+**Proposed contract.**
+- For project-built images (`build` declared), a linked worktree instance renders `image_tag` as `<declared>-<instance_id>` by default. Opt out per project with `[ciu.worktree] shared_image_tags = true`.
+- `ciu bake` from a linked worktree refuses to write a tag that the primary's rendered config names, unless `--allow-shared-tag` is given.
+- Pulled (vendor) images are untouched.
+- `ciu status --json` reports each service's image reference, so a gate (run-gate RG-73 `image_from_ciu`) can follow it.
+
+**Oracles.**
+1. In a linked worktree, `ciu render` gives `dstdns/test-runner:latest-<id>`, and the primary still renders `:latest`.
+2. `ciu bake` in the worktree leaves the image id of `:latest` unchanged.
+3. With the opt-out set, the tags are equal and bake proceeds.
+4. Controlled wrong implementation: suffixing pulled images too must fail a test that `postgres:16` is unchanged.
+
+**v8: absorb.** No instance-scoping rule for project-built tags was found in SPEC-V8 draft.7 S6.2 or S17.6.1 (grep). The image map is per reference, so two instances building one reference collide exactly as in v7.
+
+**Amendment (2026-10-03, dstdns D-666; reviewed against SPEC-V8 draft.11 and proposal rev 4.9):** the **v8: absorb** paragraph above is superseded: draft.8+ specifies it (proposal V8-35, N26). SPEC-V8 S6.2 and S17.6.1: a linked worktree's project-built reference is tagged `<declared tag>-<instance_id>`, the compose `image:` is injected with it, `image_from` names it (S16.4, S16.11.6), and `ciu build` refuses to tag, retag or push a tag the primary's image map names (`[S17.6] refusing to overwrite dstdns/test-runner:latest, which the primary names`). S17.6 stays in **8.0** under the v8.2 split (only releases and activation moved). Two differences, stated so the v7 build does not read as a disagreement: v8 has **no opt-out** (no `shared_image_tags`, no `--allow-shared-tag`; greenfield, AGENTS §4.1), so the opt-out of the proposed contract is a v7-line safety valve for existing adopters only; and `ciu status --json`'s image reference is, in v8, `ciu resolve --json` (S4.4.3). With D-666 this is also how a worktree changes its **own** runner's runtime without touching main's `:latest`.
+
+## CIU-118 — no supported way to name or exec into a service of ANY instance (the primary included); consumers re-derive container names from the rendered file
+
+Severity: Medium. Type: feature. Spec owner: S16.6, S16.7 (v8: S4.4, S14.6.3). Related: CIU-113's "stack-scoped one-shot `exec`" product question; run-gate RG-70. Filed 2026-10-03 from dstdns.
+
+**Observed.**
+- `ciu worktree exec LOGICAL --target ALIAS` (S16.7) resolves a declared container and proves its mount. It works only for a `ready` managed worktree record and only for targets in `[ciu.worktree.exec_targets]`. Nothing covers the primary checkout, or a one-off "which container is service X of this instance".
+- dstdns therefore carries its own copies:
+  - `scripts/config_helper.py` (572 lines, 333 references): `container`/`containers`/`network`/`prefix`/`port`/`env` subcommands, rebuilding `{project_name}-{environment_tag}-{svc}` at `:151,180`. The `env` subcommand hardcodes `DOCKER_GATEWAY_IP=172.17.0.1` (`:557`).
+  - Four more test-runner-name derivations (`scripts/schema-gate.sh:214-219`, the p1xx assay-schema scripts, `fresh-landscape-gate.sh:144-153`).
+  - `scripts/admin-debug-exec.sh:29`, which still calls the retired `scripts/container-exec.py` and is broken.
+  - `.vscode/{connect-devcontainer-network,collect-core-logs,otel-tail,show-otel-*}.sh`.
+- Every copy breaks when ciu's naming or identity changes. ciu 7.15's base36 instance id (vbpub@d1eb98770) silently invalidated `p129-assay-schema.sh:34-39`, which re-implements the id hash.
+
+**Why ciu owns it.** It is the only component that forms these names (S7.7/S7.8). A query surface makes the derivation a data contract instead of an algorithm consumers copy.
+
+**Proposed contract.**
+- `ciu resolve [--root-folder P] [--stack S] [--service X] --json` returns `container_name`, `compose_project`, `network`, `image`, `internal_host`/`port` for one or all services of THIS instance, from the rendered config. Read-only, with no docker call unless `--live` (which adds state and health).
+- `ciu exec [--root-folder P] <stack>[:<service>] -- ARGV...` runs in that one running container. It follows S16.7's rules (exact labels, exactly one container, no implicit `up`, mount proof when the declared target requires it) for every instance, the primary included.
+- `ciu network attach-self` replaces hand-rolled devcontainer network joins, generalizing `_connect_devcontainer_to_network`.
+
+**Oracles.**
+1. `ciu resolve --service test_runner --json` in dstdns main returns the same container name `docker ps` shows. After a ciu identity change it still matches with no consumer edit.
+2. `ciu exec tools/test-runner -- true` returns 0 in the primary and in a worktree, each hitting its own container.
+3. Zero or two matching containers refuse.
+4. Controlled wrong implementation: resolving by name substring must fail a fixture with `test-runner` and `test-runner-ui`.
+
+**v8: absorb.** v8 makes identities data (`[resolved.identities]`, S4.4), which settles naming. `ciu instance exec --env` (S14.6.3) covers gate environments only, so a generic service exec is still missing.
+
+**Amendment (2026-10-03, dstdns D-666; reviewed against SPEC-V8 draft.11 and proposal rev 4.9):** the **v8: absorb** paragraph above is superseded: draft.8+ specifies both verbs (proposal V8-34, N26). `ciu resolve [--realization r] [--service s] [--live] --json` (identities as data, S4.4.3, and the two lock keys, S14.4.7) and `ciu exec <realization>[:<svc>] -- <cmd>` (the primary included, after the mount proof S16.4.3) are S18; the v7 `--stack S` / `<stack>[:<service>]` selectors are v8's realization names. `ciu instance exec --env` is **withdrawn** (S14.6.3), replaced by `ciu gate exec [--env E] -- <cmd>`; the "covers gate environments only" gap is closed. `ciu network attach-self` has no v8 verb: S14.1.4 and `[ciu] auto_connect_network` (S3.4.7) cover CIU's own container; a devcontainer joining an instance network by hand stays an open v8 question. The v8.2 split does not touch these verbs.
+
+## CIU-119 — the instance-id derivation changed in 7.15 while SPEC-V8 still specifies the old one, and consumers that re-derive it break silently
+
+Severity: Medium. Type: spec correction. Spec owner: S3.1c (v7), SPEC-V8 S4.1.1. Related: CIU-115 (repair-in-place of outdated records), CIU-105 (the operator's 8-hex note). Filed 2026-10-03 from dstdns (D-645).
+
+**Observed.**
+- vbpub@d1eb98770 (7.15.x) moved the id to a base36 derivation: dstdns main went from `98535c` to `hox0ju`.
+- SPEC-V8 draft.7 S4.1.1 still says "the first 6 hex characters of SHA-256 over the checkout's physical absolute path". The proposal (§4.1.4), the demo and the spec examples all use `dstdns-98535c-*`. SPEC-V8's own consumer-input table (line ~840) records an operator note proposing 8 hex.
+- Unless v8 adopts the v7.15 derivation verbatim, the v7→v8 cutover changes every instance id a second time. Every literal or re-derived id goes stale, and every named volume orphans (v8 S4.1.2: named volumes cannot follow an id change). This is the D-645 fallout again: 32 stopped containers and 3 volumes of the retired identity had to be removed with raw `docker rm`, because `ciu clean` cannot address a retired identity.
+- dstdns found one consumer re-derivation: `scripts/p129-assay-schema.sh:34-39` (`sha256(path)[:6]`), now wrong.
+
+**Proposed contract.**
+- (1) Decide the derivation once and state it in both specs. Recommended: v8 adopts v7.15's derivation unchanged, so the cutover is identity-neutral.
+- (2) State in both specs that the derivation is NOT a consumer contract. Consumers read the record (`ciu env print`, CIU-118's `ciu resolve`).
+- (3) Any future derivation change ships with CIU-115's repair-in-place plus a `ciu clean --identity <old-id>` path that can remove the resources of a retired identity by label.
+- (4) Replace the `98535c` examples in the v8 set.
+
+**Oracles.**
+1. A v8 `instance init` in a checkout whose v7.15 record says `hox0ju` derives `hox0ju`.
+2. After a derivation change, `ciu clean --identity <old>` removes only resources labelled with the old id.
+3. Controlled wrong implementation: a v8 using SHA-256 hex must fail oracle 1.
+
+**v8: absorb** (spec correction, S4.1.1).
+
+**Amendment (2026-10-03, dstdns D-666; reviewed against SPEC-V8 draft.11 and proposal rev 4.9):** the spec correction asked for here is **done in SPEC-V8**: S4.1.1 adopts 7.15.1's `workspace_id_for_path` verbatim over the **physical** path (the path the Docker daemon sees, proven by S4.1.4's sentinel), so the cutover is identity-neutral (Appendix A step 1) and contract (1) holds; S4.1.1 states that the derivation is not a consumer contract and points consumers at `ciu env print` and `ciu resolve --json` ((2), CIU-118); S14.1.5 is `ciu clean --identity <old>` ((3), proposal N25); the examples use `<instance_id>` ((4)); oracles 1-3 are acceptance rows. What remains open is the **v7 half** of (3) (`ciu clean --identity` on ciu 7), tracked by N25. The v8.2 split does not touch identity: the release halves of S4.1.2/S4.1.4 moved, the checkout derivation did not.
+
+## CIU-122 — `ciu host enroll --replace` destroys the active key before the new one is proven, the enrollment key aliases the S14.3a host-secret store, and concurrent enrollments lose each other's writes
+
+Severity: High (credential loss; silent aliasing of a secret path). Type: bugfix. Spec owner: `docs/SPEC.md` S14.7 (v7), S14.3a; v8 form SPEC-V8 S7.2.4. Filed 2026-10-03 from the v8 round-4 third-party review (T4-06) by the v8 spec writer (dstdns D-658). Related: CIU-93 (the feature), CIU-99, cmru KI-24. v8: the rewritten contract is SPEC-V8 draft.9 S7.2.4 and `docs/CIU-HOST-ENROLLMENT-PROPOSAL.md` rev 3 §11; this entry is the **v7 line's** shipped defect.
+
+**Observed (source, `src/ciu/host_enroll.py`).**
+- `enroll_step1` with `replace=True` calls `generate_key_pair(repo_root, name, …)` at the same `key_paths(repo_root, name)` as the active key (`:221`). The old private key is overwritten at step 1. If the admin's console command is mistyped or never run, the old public key stays authorized on the target and the only private key that could log in is gone; `--abort` then removes the new pair as well.
+- The key lives at `<repo>/.ciu/secrets/hosts/<name>/ssh_key` (`KEY_ENTRY`, `:52-64`), exactly the path S14.3a assigns to a host-scoped secret entry named `ssh_key` (`ssh_key = "GEN_LOCAL:…"`). A project already using that valid S14 path has its secret bytes overwritten by an OpenSSH private key, and the converse.
+- Nothing serializes two enrollments: the inventory read-modify-write and the key generation take no lock, so two controllers (or two shells) enrolling different names concurrently can drop one row.
+
+**Why ciu owns it.** The verb, the key path and the inventory writer are ciu's.
+
+**Proposed contract.**
+- Every attempt creates a random **pending generation** under an enrollment-specific directory outside the S14.3a store namespace; the active key and row stay untouched until target authorization and an exact-version proof (CIU-123) succeed, then one atomic switch; `--abort` removes only the named pending generation; the old generation is retained until an explicit `--revoke-old`.
+- A no-follow file lock around key-generation state and the inventory update; temp file, `fsync`, atomic rename, generation compare.
+
+**Oracles.** A failed step 2 leaves the active key and row byte-identical; `--abort` removes only the named pending generation; an existing `ssh_key` host secret is not touched by enrollment; two concurrent enrollments of different names both rows present; a controlled wrong implementation that regenerates at the active path fails the first oracle.
+
+**Amendment (2026-10-03, dstdns D-666; reviewed against SPEC-V8 draft.11 and proposal rev 4.9):** scheduling, not design: the v8 form of this contract (SPEC-V8 S7.2.4, proposal V8-29) is part of **v8.2**, after v8.1 admission (D-666), so this entry describes the **v7 line's shipped defect**, which matters for repos that have not cut over: after a repo's 8.0 cutover remote deployment and enrollment are unavailable until v8.2 and there is no `ciu7` bridge (dstdns D-667); the references above to "draft.9 S7.2.4" and "enrollment proposal rev 3 §11" are draft.11 S7.2.4 (tagged v8.2) and rev 4 §11. The proposed contract is unchanged and matches draft.11 (pending generations, atomic promotion, `--revoke-old`, no-follow locks).
+
+## CIU-123 — `ciu host enroll` step 2 proves only that *some* `ciu version` exits zero; the printed command does not pin the installed release; the `known_host` grammar contradicts the transport; the no-fingerprint path trusts the scan
+
+Severity: High (the trust path of a root-level install). Type: bugfix. Spec owner: `docs/SPEC.md` S14.7 (v7); v8 SPEC-V8 S7.2.4. Filed 2026-10-03 from the v8 round-4 third-party review (T4-05, T4-07 host half, T4-10) by the v8 spec writer (dstdns D-658). Related: CIU-93, CIU-99 (asset resolution; a different defect), cmru KI-49/KI-50.
+
+**Observed (source).**
+- `host_enroll.py:411` runs `exec_fn(host_cfg, ["ciu", "version"], …)` and accepts any zero exit: a stale, newer, PATH-shadowing or different `ciu` satisfies step 2, and no version, line or API is compared.
+- The printed one-liner pins the `get.py` URL but not the installed release: cmru's `get.py` resolves `latest` when `--version` does not reach the install path (`get.py.tmpl:1195-1205`, `:1262`), so a release published between printing and running is installed.
+- `known_host`: v7 S14.4c says the entry must contain `[host]:port`, while `transport_ssh._known_hosts_file` (`:77-88`) prepends the host token itself; following both yields two host tokens and a failed pin.
+- Step 2 without `--fingerprint` asks a TTY to confirm fingerprints produced by the same unauthenticated network path (no second channel).
+
+**Proposed contract.** The printed command carries `--version ciu-v<version>` and a mode-0600 download whose SHA-256 is checked before it runs, the digest and the manifest key being printed by ciu from the wheel's own `ciu/enroll_trust.json` (dstdns D-661; the operator supplies neither); step 2 invokes the installer-reported **absolute** launcher with `version --json` and compares exact version, line and API versions (a wrong-version and a PATH-shadow binary must fail); `known_host` is the key only, a value carrying a host token is refused; `--fingerprint` is required and typed, scan-and-confirm only under `CIU_SSH_INSECURE_TOFU=1`, labelled "no second channel".
+
+**Oracles.** A controlled wrong-version `ciu` and a PATH-shadowing `ciu` both fail step 2; a printed command without `--version` fails a lint test; a `known_host` with a host token is refused; step 2 without `--fingerprint` and without the env opt-in is refused.
+
+**Amendment (2026-10-03, dstdns D-666; reviewed against SPEC-V8 draft.11 and proposal rev 4.9):** scheduling only (see CIU-122): the v8 form is v8.2; this is the v7 line's defect and its contract names the D-661 trust root (the controller's wheel, `ciu/enroll_trust.json`), which draft.11 S7.2.4 states identically. cmru KI-49 must record the installer digest and manifest key into package data before any ciu release carries an enrollment trust entry; a release whose `get.py enroll` is unverified has no entry (R3-07).
+
+## CIU-124 — `ciu up --dir <stack>` rejects `--deploy`/`--healthcheck`, though `ciu up --help` lists them as actions of every `ciu up`
+
+Severity: Medium (the documented form fails with a usage error; consumers' docs and CI copy it). Type: bugfix. Spec owner: `docs/SPEC.md` S10.2 (actions) / single-stack mode. Filed 2026-10-03 from dstdns P237 (implementer escalation; controller verified on ciu 7.15.1). Related: CIU-68 (auto health gate).
+
+**Observed.** `ciu up --dir tools/admin-debug --deploy --healthcheck -y` → `ciu: error: unrecognized arguments: --deploy --healthcheck`; same for either flag alone. `ciu up --help` (7.15.1) presents "Actions (S10.2) — with none of these, `ciu up` runs --deploy: --deploy / --healthcheck / --check" above the mode-specific sections, so a reader takes them as valid in every mode. The actions are defined only on the profile/multi-stack parser (`deploy.py:4749-4792`); single-stack mode routes to the engine parser, which has neither. dstdns `AGENTS.md` §5 carried `ciu up --dir applications/controller --deploy --healthcheck` as its one-service example for weeks — evidence the help text misleads.
+
+**Proposed contract.** Either (a) single-stack mode accepts `--deploy` (no-op: deploying is its only action) and `--healthcheck` (runs the S7.7 gate for that one stack after start), or (b) the help text moves the Actions block under profile mode and single-stack mode refuses them with a message naming the valid form. (a) is preferred: the same command line works in both modes and the health gate is useful per stack.
+
+**Oracles.** `ciu up --dir <stack> --deploy --healthcheck --dry-run -y` exits 0 and, without `--dry-run`, runs the health gate for that stack (a stack whose healthcheck fails makes the command fail); a controlled wrong implementation that accepts and ignores `--healthcheck` is caught by the failing-health row; `ciu up --help` lists only flags each mode accepts (a test parses the help and the parsers and compares).
+**Amendment (2026-10-03, dstdns D-666; reviewed against SPEC-V8 draft.11 and proposal rev 4.9):** v8 has no such defect: `ciu up` has one action (the deploy, whose wave gates and acceptance are S8.5; `ciu check` runs automatically before it, S15), so there is no `--deploy`/`--healthcheck`/`--check`, and one Realization is selected with the global flag `--realization r` (S18), not `--dir`. The entry is therefore a **v7-line** fix, with (a) preferred as written. dstdns's per-worktree recipe (D-666, P241) starts a worktree's own runner with `ciu up --dir tools/test-runner` and must spell it without the action flags until this lands.
+
+## CIU-125 — `ciu worktree create` prepares an instance but never starts the project's own test environment, and `ciu worktree up` can only start the whole default deploy set: which stacks a worktree brings up is a hand-typed command, not a committed declaration
+
+Severity: Medium. Type: feature. Spec owner: v7 S16 (worktree lifecycle, S16.1 `create`, `worktree up`); v8 S14.6 / S18 (`instance init`; proposed addition, below). Filed 2026-10-03 from dstdns D-666. Checked first: CIU-116 (a committed *reuse* preset; this is the committed *own-environment* declaration), CIU-124 (`ciu up --dir` flags), SPEC-V8 draft.11 S9.5, S14.6, S18, and ciu's CHANGES.md (no `--up`, no `up` list).
+
+**Why now.** D-666: a worktree contains its own test-runner and **ciu has to start it there**; `ciu worktree` creates a unique instance id for exactly that purpose, and there is no reason to judge a worktree in main's runner (the retired Mode A). dstdns GUIDE §3.4 prescribes `ciu worktree create`, then `ciu up --dir tools/test-runner` inside the worktree, then `run-gate <lane> --worktree <wt>`, then teardown. The middle step is a command an agent types from prose in three documents.
+
+**Observed (ciu 7.15.1; source).**
+- `worktree.create` is documented as "Deploy is deliberately NOT performed: `create` prepares an instance" (`worktree.py` ~3651). `emit_record` prints `next: cd <ciu root> && ciu up`.
+- `ciu worktree up LOGICAL` (`up_instance`, `worktree.py` ~3162) runs `ciu up` in the instance's CIU root: the project's **whole default deploy set**. It takes no stack and no profile (`cli.py` `p_up` has only `logical_name`), though `ciu up --dir <stack>` single-stack mode exists. A project whose worktree needs one stack (dstdns: `tools/test-runner`) cannot say so, and starting the full stack in every worktree is what the host cap (2-3 stacks) forbids.
+- The create-time kwarg `profile` exists on `create` but has no CLI flag, and nothing commits it.
+
+**Checked against v8: a gap in both lines.** SPEC-V8 `ciu instance init [--layout L] [--bundles …] [--join-preset P | --no-join]` (S14.1.1, S18) initializes an *existing* checkout; it writes the instance file and does not deploy. `bundles` in `ciu.instance.toml` is the operator's, per instance, never committed, so what a fresh worktree instance brings up is again typed. Join presets (S9.5.1) cover *borrowing* another instance's infrastructure (with a tenant namespace each), not *starting one's own*. `ciu up --bundles test` starts a declared bundle only if the operator types it. And no v8 verb **creates** the linked worktree: S18 keeps `ciu worktree …` only as an alias for one release. The v8.2 split (remote deployment) does not touch any of this.
+
+**Proposed contract (v7), as ruled (D-667): the bundles are declared in v7 config.** v7's word for a set of stacks that deploy together is a profile (`[deploy.profiles]`, which `ciu migrate` turns into v8 bundles, Appendix A step 2).
+- A committed list in the project's global defaults: `[ciu.worktree] up = ["<profile>", …]` (profile names), validated by `ciu check` (each must exist), started in the profiles' own dependency order.
+- `ciu worktree create NAME --up` runs, after the instance is created, the new `worktree up` below. `ciu worktree up LOGICAL` starts the **declared** profiles when `[ciu.worktree] up` is set (`ciu up --profile <p> --deploy --healthcheck` per profile; a profile may be one stack, e.g. the test-runner), else the whole default deploy set as today; `--all` forces the whole set. Without `--up`, `create` deploys nothing (unchanged). This avoids `ciu up --dir` and so CIU-124.
+- `ciu worktree rm` tears down what `up` started (unchanged: it removes by label).
+
+**v8 mapping (ruled D-667: in 8.0).** SPEC-V8 S14.1.6 (applies to **linked worktrees only**: the primary checkout keeps its full default set, as the setting is the worktree's own environment; the v7 `[ciu.worktree] up` likewise applies to worktree creation only): `[ciu.instances] default_bundles` (closed key, S14.6; the profiles above become bundles) is written into `[ciu.instance] bundles` of a new instance file when `--bundles` is not given, and `ciu instance init --up` runs `ciu up` for the selection after init has released the instance lock (an `up` failure keeps the instance); stage 4 refuses an undeclared bundle name; Appendix E `instances_keys`; proposal V8-39 and N30. v8 specifies no verb that creates the linked worktree (S18 keeps `ciu worktree …` only as a one-release alias), so in v8 `instance init --up` is the single step in a worktree created by git or nyxloom.
+
+**Oracles.**
+1. With `[ciu.worktree] up = ["test"]` (a profile holding the test-runner), `ciu worktree create w --up` leaves exactly that profile's containers running, every one labelled with w's own `ciu.instance`, and no other stack's.
+2. Without `--up`, nothing runs (today's behaviour).
+3. An `up` entry that is not a declared profile refuses at `ciu check` before any side effect.
+4. A failing health gate makes `create --up` exit non-zero but keeps the worktree, and the error names `ciu worktree up`.
+5. `ciu worktree up w` with the list declared starts only the list; with `--all` the whole default set.
+6. Controlled wrong implementation: starting the whole default deploy set whenever `--up` is given fails oracle 1.
+7. v8 (SPEC-V8 S14.1.6): `ciu instance init --up` in a fresh worktree with `default_bundles = ["test"]` starts the `test` bundle's services and nothing else; `--bundles all` overrides it; an undeclared name fails stage 4.
+
+**Related:** CIU-116, CIU-124, run-gate RG-79 (the refusal that tells an agent to run this), RG-80, dstdns P241 (the validated end-to-end recipe), proposal row N30.

@@ -42,9 +42,13 @@ def test_run_cleanup_deletes_declared_ghcr_packages_and_dry_run_is_non_mutating(
     monkeypatch.setattr(cli, "resolve_versions_from_git", lambda *_: None)
     monkeypatch.setattr(cli, "apply_project_release_env", lambda *_: None)
     monkeypatch.setattr(cli, "github_for_project", lambda github, project: github)
-    monkeypatch.setattr(cli, "cleanup_project_releases_and_tags", lambda *args: [])
+    monkeypatch.setattr(cli, "cleanup_project_releases_and_tags", lambda *args, **kwargs: [])
     monkeypatch.setattr(cli, "_latest_version_for_prefix", lambda *args: "")
-    monkeypatch.setattr(cli, "cleanup_project_step", lambda *args: False)
+    monkeypatch.setattr(cli, "cleanup_project_step", lambda *args, **kwargs: False)
+    monkeypatch.setattr(
+        cli, "get_container_package",
+        lambda _owner, package, *_: {"id": 17, "name": package, "package_type": "container"},
+    )
     monkeypatch.setattr(cli, "delete_package", lambda *args, **kwargs: calls.append(args))
     calls = []
     cli.run_cleanup_verb(tmp_path, {"noprefix": project}, ["noprefix"], _cleanup(packages=["one", "two"]), _github(), _env(), None, False)

@@ -3,11 +3,13 @@ kind: backlog-entry
 schema_version: 1
 id: CP-7
 title: "daemon session manifest's limits table is always {} -- effective cgroup limits are never resolved, so every analyze.py proposal check is a permanent no-op for a daemon-collected report"
-status: open
+status: fixed
 type: "feature"
 severity: "low"
 provenance: "RG-55 wave, cgprofile-P1-DAEMON C5 (RW-14), 2026-09-12"
 filed_date: "2026-09-12"
+closed_date: "2026-09-12"
+closed_reason: "manifest limits table resolves real effective limits, 907ddd50"
 ---
 
 ## Observed mechanism and reproduction

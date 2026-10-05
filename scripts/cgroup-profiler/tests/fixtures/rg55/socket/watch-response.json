@@ -1,0 +1,71 @@
+[
+  {
+    "contract": 1,
+    "event": "reading",
+    "session": "s-20260912T101500Z-9f01",
+    "at": "2026-09-12T10:15:00Z",
+    "elapsed_seconds": 0.0,
+    "live": {
+      "memory_current_bytes": 524288000,
+      "memory_peak_bytes": 524288000,
+      "cpu_cores_recent": null,
+      "samples": 1,
+      "damon": null
+    },
+    "liveness": {
+      "last_activity_at": "2026-09-12T10:15:00Z",
+      "idle_for_seconds": 0.0,
+      "cpu_seconds": 0.0,
+      "cpu_seconds_recent": 0.0,
+      "io_bytes": 3145728,
+      "stream": null,
+      "paused_for_seconds": 0.0,
+      "pause_reason": null
+    },
+    "placement": null
+  },
+  {
+    "contract": 1,
+    "event": "reading",
+    "session": "s-20260912T101500Z-9f01",
+    "at": "2026-09-12T10:15:00Z",
+    "elapsed_seconds": 0.0,
+    "live": {
+      "memory_current_bytes": 524288000,
+      "memory_peak_bytes": 524288000,
+      "cpu_cores_recent": null,
+      "samples": 1,
+      "damon": null
+    },
+    "liveness": {
+      "last_activity_at": "2026-09-12T10:15:00Z",
+      "idle_for_seconds": 10000.0,
+      "cpu_seconds": 0.0,
+      "cpu_seconds_recent": 0.0,
+      "io_bytes": 3145728,
+      "stream": null,
+      "paused_for_seconds": 0.0,
+      "pause_reason": null
+    },
+    "placement": null
+  },
+  {
+    "contract": 1,
+    "event": "verdict",
+    "session": "s-20260912T101500Z-9f01",
+    "at": "2026-09-12T10:15:00Z",
+    "watch": {
+      "state": "stalled",
+      "verdict": "reported",
+      "reason": "no activity for 10000.0s (idle bound 300.0s); cpu grew 0.0s over the trailing 30s; last stream event None",
+      "readings": 3
+    }
+  },
+  {
+    "contract": 1,
+    "event": "end",
+    "session": "s-20260912T101500Z-9f01",
+    "at": "2026-09-12T10:15:00Z",
+    "reason": "stopped"
+  }
+]

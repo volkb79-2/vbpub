@@ -27,6 +27,193 @@ def fake_completed(returncode: int = 0, stdout: str = "", stderr: str = "") -> s
     return subprocess.CompletedProcess(args=["docker"], returncode=returncode, stdout=stdout, stderr=stderr)
 
 
+class TestVerifySystemdSlice:
+    @staticmethod
+    def bus_reply(argv, values):
+        if "GetUnit" in argv:
+            return subprocess.CompletedProcess(
+                argv, 0, 'o "/org/freedesktop/systemd1/unit/dev_2dgates_2eslice"\n', ""
+            )
+        return subprocess.CompletedProcess(argv, 0, f's "{values[argv[-1]]}"\n', "")
+
+    def test_requires_loaded_authored_unit_at_expected_cgroup(self, monkeypatch):
+        monkeypatch.setattr(access.shutil, "which", lambda name: "/usr/bin/busctl")
+        values = {
+            "LoadState": "loaded",
+            "FragmentPath": "/etc/systemd/system/dev-gates.slice",
+            "ControlGroup": "/dev.slice/dev-gates.slice",
+        }
+        calls = []
+
+        def run(argv, **kwargs):
+            calls.append((argv, kwargs))
+            result = self.bus_reply(argv, values)
+            if not kwargs["capture_output"]:
+                result.stdout = None
+                result.stderr = None
+            elif not kwargs["text"]:
+                result.stdout = result.stdout.encode()
+                result.stderr = result.stderr.encode()
+            return result
+
+        assert access.verify_systemd_slice(
+            "dev-gates.slice", "/dev.slice/dev-gates.slice", run=run
+        ) is True
+        assert len(calls) == 4
+        assert all(kwargs["timeout"] == 5 and kwargs["check"] is False for _, kwargs in calls)
+        assert all(kwargs["capture_output"] and kwargs["text"] for _, kwargs in calls)
+        assert all(argv[:2] == ["/usr/bin/busctl", "--system"] for argv, _ in calls)
+        assert calls[0][0][-3:] == ["GetUnit", "s", "dev-gates.slice"]
+        assert calls[-1][0][-2:] == ["org.freedesktop.systemd1.Slice", "ControlGroup"]
+
+    @pytest.mark.parametrize(("property_name", "value"), [
+        ("LoadState", "not-found"),
+        ("FragmentPath", "/run/systemd/transient/dev-gates.slice"),
+        ("FragmentPath", "/run/systemd/generator.late/dev-gates.slice"),
+        ("FragmentPath", "/run/systemd/generator.early/dev-gates.slice"),
+        ("ControlGroup", "/dev.slice/unrelated.slice"),
+    ])
+    def test_rejects_unloaded_transient_or_wrong_path(self, monkeypatch, property_name, value):
+        monkeypatch.setattr(access.shutil, "which", lambda name: "/usr/bin/busctl")
+        values = {
+            "LoadState": "loaded",
+            "FragmentPath": "/etc/systemd/system/dev-gates.slice",
+            "ControlGroup": "/dev.slice/dev-gates.slice",
+        }
+        values[property_name] = value
+
+        def run(argv, **_kwargs):
+            return self.bus_reply(argv, values)
+
+        assert access.verify_systemd_slice(
+            "dev-gates.slice", "/dev.slice/dev-gates.slice", run=run
+        ) is False
+
+    def test_missing_or_failed_host_bus_is_unverified(self, monkeypatch):
+        monkeypatch.setattr(access.shutil, "which", lambda _name: None)
+        assert access.verify_systemd_slice("dev-gates.slice", "/dev.slice/dev-gates.slice") is False
+        monkeypatch.setattr(access.shutil, "which", lambda _name: "/usr/bin/busctl")
+        assert access.verify_systemd_slice(
+            "dev-gates.slice", "/dev.slice/dev-gates.slice",
+            run=lambda *_args, **_kwargs: fake_completed(returncode=1),
+        ) is False
+
+    def test_nonzero_bus_exit_is_not_overridden_by_well_formed_stdout(self, monkeypatch):
+        monkeypatch.setattr(access.shutil, "which", lambda _name: "/usr/bin/busctl")
+        values = {
+            "LoadState": "loaded",
+            "FragmentPath": "/etc/systemd/system/dev-gates.slice",
+            "ControlGroup": "/dev.slice/dev-gates.slice",
+        }
+
+        def run(argv, **_kwargs):
+            if "GetUnit" in argv:
+                return subprocess.CompletedProcess(
+                    argv, 1, 'o "/org/freedesktop/systemd1/unit/dev_2dgates_2eslice"\n',
+                    "systemd query failed",
+                )
+            return self.bus_reply(argv, values)
+
+        assert access.verify_systemd_slice(
+            "dev-gates.slice", "/dev.slice/dev-gates.slice", run=run,
+        ) is False
+
+    @pytest.mark.parametrize("failure", [
+        OSError("host bus unavailable"),
+        ValueError("invalid process arguments"),
+        subprocess.TimeoutExpired(cmd="busctl", timeout=5),
+    ])
+    def test_query_errors_fail_closed(self, monkeypatch, failure):
+        monkeypatch.setattr(access.shutil, "which", lambda _name: "/usr/bin/busctl")
+
+        def run(*_args, **_kwargs):
+            raise failure
+
+        assert access.verify_systemd_slice(
+            "dev-gates.slice", "/dev.slice/dev-gates.slice", run=run
+        ) is False
+
+    def test_malformed_property_output_fails_closed(self, monkeypatch):
+        monkeypatch.setattr(access.shutil, "which", lambda _name: "/usr/bin/busctl")
+        assert access.verify_systemd_slice(
+            "dev-gates.slice", "/dev.slice/dev-gates.slice",
+            run=lambda *_args, **_kwargs: SimpleNamespace(returncode=0, stdout=None),
+        ) is False
+
+    @pytest.mark.parametrize("output", [
+        'o "/wrong/object"\n',
+        'o "/org/freedesktop/systemd1/unit/dev_2dgates_2eslice" extra\n',
+        'o "unterminated\n',
+        's "/org/freedesktop/systemd1/unit/dev_2dgates_2eslice"\n',
+    ])
+    def test_malformed_unit_lookup_fails_closed(self, monkeypatch, output):
+        monkeypatch.setattr(access.shutil, "which", lambda _name: "/usr/bin/busctl")
+        assert access.verify_systemd_slice(
+            "dev-gates.slice", "/dev.slice/dev-gates.slice",
+            run=lambda argv, **_kwargs: subprocess.CompletedProcess(argv, 0, output, ""),
+        ) is False
+
+    @pytest.mark.parametrize("output", [
+        's "/org/freedesktop/systemd1/unit/dev_2dgates_2eslice"',
+        'o "/org/freedesktop/systemd1/unit/dev_2dgates_2eslice" extra',
+    ])
+    def test_invalid_unit_lookup_stops_before_property_queries(
+        self, monkeypatch, output,
+    ):
+        monkeypatch.setattr(access.shutil, "which", lambda _name: "/usr/bin/busctl")
+        calls = []
+
+        def run(argv, **_kwargs):
+            calls.append(argv)
+            if "GetUnit" not in argv:
+                pytest.fail("invalid manager reply was used as a property object path")
+            return subprocess.CompletedProcess(argv, 0, output, "")
+
+        assert access.verify_systemd_slice(
+            "dev-gates.slice", "/dev.slice/dev-gates.slice", run=run,
+        ) is False
+        assert len(calls) == 1
+
+    def test_successful_bus_exit_with_non_text_stdout_is_unverified(self, monkeypatch):
+        monkeypatch.setattr(access.shutil, "which", lambda _name: "/usr/bin/busctl")
+
+        def run(argv, **_kwargs):
+            return subprocess.CompletedProcess(argv, 0, None, "")
+
+        assert access.verify_systemd_slice(
+            "dev-gates.slice", "/dev.slice/dev-gates.slice", run=run,
+        ) is False
+
+    @pytest.mark.parametrize(("unit", "path"), [
+        (None, "/dev.slice/dev-gates.slice"),
+        (123, "/dev.slice/dev-gates.slice"),
+        ("", "/dev.slice/dev-gates.slice"),
+        ("dev-gates", "/dev.slice/dev-gates"),
+        ("dev-gates.slice", None),
+        ("dev-gates.slice", 123),
+        ("-bad.slice", "/dev.slice/-bad.slice"),
+        ("bad\x00.slice", "/dev.slice/bad.slice"),
+        ("bad\x01.slice", "/dev.slice/bad.slice"),
+        ("bad\x1f.slice", "/dev.slice/bad.slice"),
+        ("bad\x7f.slice", "/dev.slice/bad.slice"),
+        ("bad slice.slice", "/dev.slice/bad.slice"),
+        ("bad\u2003.slice", "/dev.slice/bad.slice"),
+        ("dev-gates.slice", "relative"),
+        ("dev-gates.slice", "/dev.slice/bad\x00.slice"),
+        ("dev-gates.slice", "/dev.slice/bad\x01.slice"),
+        ("dev-gates.slice", "/dev.slice/bad\x1f.slice"),
+        ("dev-gates.slice", "/dev.slice/bad\x7f.slice"),
+        ("dev-gates.slice", "/dev.slice/bad\n.slice"),
+        ("dev-gates.slice", "/dev.slice/bad\u2003.slice"),
+        ("dev-gates.slice", "/dev.slice//bad.slice"),
+        ("dev-gates.slice", "/dev.slice/../bad.slice"),
+        ("dev/child.slice", "/dev.slice/dev-child.slice"),
+    ])
+    def test_rejects_invalid_names_and_paths_without_querying(self, monkeypatch, unit, path):
+        monkeypatch.setattr(access.shutil, "which", lambda _name: pytest.fail("unexpected query"))
+        assert access.verify_systemd_slice(unit, path) is False
+
+
 # ── have_host_cgroup_view ────────────────────────────────────────────────────
 
 class TestHaveHostCgroupView:

@@ -82,9 +82,18 @@ than a huge negative spike. Nothing downstream may reintroduce that spike.
   scipy/numpy underneath. Do not hand-roll any of that.
 
 **A third mode, RG-55: the always-on daemon.** `cgprofile serve` is a
-privileged, long-lived process with private PID/cgroup namespaces and
-explicit read-only host proc/cgroup mounts, that run-gate talks to over a Unix socket
-per lane instead of spawning a collector each time —
+privileged, long-lived process with private PID/cgroup namespaces, read-only
+host `/proc`, a writable host cgroupfs bind for opt-in placement, and the host
+system bus mounted only into the daemon. D-25's cgroup path whitelist is an
+application-level guard on ordinary operations, not an OS boundary against
+arbitrary code execution in the privileged daemon. D-31 asks systemd to create
+one delegated scope beneath the verified gates slice per placed lane; the
+daemon owns only its `rg-<token>` leaf beneath that scope, never a child of the
+systemd-owned slice. D-32 deliberately keeps this single-operator,
+rootful-Docker deployment broker-free; see `docs/DESIGN-GUIDE.md` and the
+RG-55 design record for the honest threat boundary and deferred broker option.
+run-gate talks to this daemon over a Unix socket per lane instead of spawning
+a collector each time —
 `RG55-INTERFACE-CONTRACT.md` is the full wire contract, and it is STILL
 collector-tier: `lib/serve.py` never imports pandas, even for `ctl report`
 (§4.13 below explains how that verb still renders the real interactive
@@ -113,7 +122,7 @@ scripts/cgroup-profiler/
                           | serve | ctl  (RG-55)
   Dockerfile              RG-55: the cgprofile-host-daemon image (2-stage build)
   build-push.py           RG-55: docker buildx bake --build/--push
-  docker-bake.hcl         RG-55: bake targets (cgprofile:local + ghcr.io/…)
+  docker-bake.hcl         RG-55: separate local-only and versioned GHCR targets
   .dockerignore           RG-55
   cmru.toml               RG-55: release contract (scm versioning, oci-image)
   ciu.global.defaults.toml.j2  RG-55: standalone ciu root, host-singleton identity
@@ -306,7 +315,7 @@ options as a set.
 ### 4.3 `store.py` (agent C)
 
 ```python
-def new_run_id(prefix: str = "run", when: Optional[float] = None) -> str   # run-YYYYmmdd-HHMMSS-xxxx
+def new_run_id(prefix: str = "run", when: Optional[float] = None) -> str   # run-YYYYmmdd-HHMMSS-xxxxxxxx
 class RunDir:
     def __init__(self, base: str, run_id: Optional[str] = None, create: bool = True)
     path: str; run_id: str
@@ -680,9 +689,69 @@ every session directory this module writes is ALSO a valid
 `run_id`/`started`/`ended`/`duration`/`targets`/`host`/`config` alongside
 the RG-55 registry fields, and `_on_session_sample` persists `samples`
 keyed by cgroup path (`{"cg": {cgroup: entry}, "mono": …}`), the same
-shape `cmd_collect`'s own collector writes. `limits` is deliberately
-always `{}` (CP-7) and `damon.jsonl` is not read by `analyze.py` at all
-(CP-6) — both recorded as backlog, not silently reproduced as if solved.
+shape `cmd_collect`'s own collector writes. `limits` was `{}` and `damon.jsonl` unread by `analyze.py` at P1's close
+(CP-7/CP-6, both filed as backlog then) — the RG-55 P6 follow-ups below
+closed both.
+
+### 4.15a RG-55 P6 follow-ups (D-27..D-32) — watch, delegated placement,
+the socket carrier, `cgprofile.slice`
+
+Full rationale is the design doc of record on `main`,
+`run-gate-project/nyxloom-trove/DESIGN-2026-09-12-liveness-placement-
+admission.md` §A1 (D-27..D-29), §A2 (D-30), A3 (D-31), and A4 (D-32); the wire shapes are
+`RG55-INTERFACE-CONTRACT.md` §8 and this project's own
+`docs/PROTOCOL.md`. Summary, for a reader of this file alone:
+
+- **D-27 — the watcher is a singleton, and it is the daemon.** Every OTHER
+  process that might judge a lane's liveness (run-gate's own in-process
+  stall watcher, chief among them) dies with that process; the daemon
+  outlives any one consumer AND already reads the lane's cgroup on a fixed
+  cadence through explicit host `/proc` and cgroup binds, while keeping
+  private PID and cgroup namespaces. Host PID translation is resolved from
+  the mounted `/hostproc` view rather than a host-namespace shortcut.
+  Implemented as `lib/liveness.py`'s `LivenessTracker` (the state machine:
+  `ok`/`stalled`/`hung`/`runaway`/`throttled`/`over_ceiling`, the idle
+  clock's pause condition, §8.4) wired into `lib/serve.py`'s discovery
+  cadence (`_observe_liveness`) and the streaming `ctl watch` verb (§8.2).
+  CP-8.
+- **D-28 — the run-gate client is disposable.** A consumer authors POLICY
+  at `start` (`--progress-stream`/`--idle-bound`/`--ceiling`/`--on-stall`)
+  and never re-implements the judgement itself; §8.9's consumer obligation
+  (one `watch` per lane, `killed` → the lane's own stall-exit path,
+  `reported` → a warning line) is the whole of what a caller owes.
+- **D-29 — `cgprofile.slice`, the daemon's own containment.** A REFERENCE
+  systemd unit (`infra/cgprofile.slice`) the operator installs once per
+  host, never software the daemon writes itself (see `infra/README.md`);
+  `ctl host`'s `daemon_slice`/`gates_slice` blocks (§8.5) report presence
+  either way rather than assuming installation happened.
+- **D-30 — the socket carrier, host-visible.** `/run/cgprofile/ctl.sock`
+  is bind-mounted to the host, `SO_PEERCRED`-gated
+  (`CGPROFILE_ALLOW_UIDS`), so a consumer that should not or cannot use
+  `docker exec` can still speak the protocol directly — exactly the same
+  request/response shapes as the exec carrier (`docs/PROTOCOL.md` §1,
+  parity proven by one test that runs every verb through both). CP-2.
+- **D-31 — systemd owns the gates slice and delegated per-lane scope.**
+  `--place` asks the host manager to create a token-derived transient scope
+  directly beneath the verified gates slice. After reading its actual
+  `ControlGroup` and delegation properties back, cgprofile creates and owns
+  only `rg-<token>` below that scope. It moves verified PIDs through the
+  systemd manager bridge, reads back leaf controls, and restores only
+  same-identity survivors to their recorded origins before removing the leaf
+  and stopping the empty scope. The durable journal supports fail-closed
+  restart recovery. Direct placement under the non-delegated slice is
+  rejected. The ownership rationale and lifecycle are in
+  [`docs/DESIGN-GUIDE.md`](docs/DESIGN-GUIDE.md#why-placement-uses-a-delegated-scope).
+- **Memory accounting is charge-based.** Leaf memory counters and
+  `memory.high`/`memory.max` constrain charges attributed to the leaf, not
+  total RSS; pre-existing page charges do not migrate with a process. See
+  [`docs/CONSUMERS.md`](docs/CONSUMERS.md#resource-accounting-with-placement).
+- **D-32 — no broker for the current trust boundary.** The privileged daemon
+  retains direct system-bus and writable-cgroupfs authority. Its application
+  guard does not contain arbitrary code execution; the current rootful Docker
+  operator already has host-administrator authority. A future confined broker
+  may reduce blast radius only if every daemon bypass, including system-bus,
+  cgroupfs, and DAMON access, is removed. Full tradeoffs are in the RG-55
+  design record and `docs/DESIGN-GUIDE.md`.
 
 ---
 
@@ -721,9 +790,13 @@ number.
 ## 6. Environment facts (verified on this host — do not re-derive)
 
 - Host: 16 GiB RAM, ~70 GiB swap, zswap `zstd` at 25 % pool, KSM on.
-- cgroup v2 at `/sys/fs/cgroup`, mounted **without `memory_recursiveprot`**.
-- Devcontainer runs in `dev-interactive.slice`; gates run in
-  `dev-background.slice` (`$CGROUP_PARENT_DEV_BACKGROUND`).
+- cgroup v2 at `/sys/fs/cgroup`, mounted with `nsdelegate`,
+  `memory_recursiveprot`, and `memory_hugetlb_accounting` (host `findmnt`,
+  rechecked 2026-09-30).
+- Devcontainer runs in `dev-interactive.slice`; gate/lane containers and
+  placed `rg-*` leaves run in `dev-gates.slice`
+  (`$CGROUP_PARENT_DEV_GATES`). `dev-background.slice` remains for
+  long-running application stacks.
 - Workspace bind: host `/home/vb/volkb79-2/vbpub` → `/workspaces/vbpub`.
 - Python 3.14.6 in both the devcontainer and the helper image. The
   devcontainer's own interpreter is itself a venv (`/home/vscode/.venv`), so

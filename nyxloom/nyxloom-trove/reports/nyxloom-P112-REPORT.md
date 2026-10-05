@@ -1,9 +1,11 @@
 # P112 report: adopt cli-extended across Nyxloom's command surfaces
 
-Date: 2026-09-28  
+Date: 2026-09-28 (controller follow-up 2026-09-29)
 Result: **DONE** — all seven handoff oracles pass after the review corrections.
-The corrected implementation and gate are on `nyxloom-cli-adoption`; no merge
-to `main` was performed.
+The P112 implementation commit is now an ancestor of local `main` at
+`f26f93cc`. No push to `origin/main` or release-tag change was made. The
+separately requested session-extract R2 follow-up failed; its result and
+triage are recorded below and do not replace the declared P112 gate evidence.
 
 ## Summary
 
@@ -142,5 +144,47 @@ the P112 log records each reason. No unrelated project behavior was changed.
 
 The requested Codex review found three actionable issues; all three were fixed
 and the corrected implementation passed the declared gate. No open findings
-remain from that review. The separate `session-extract` lane's R2/R3 campaign
-was not run; P112 declares only `tester-unified` (R0/R1) as its required gate.
+remain from that review. P112 declares `tester-unified` (R0/R1) as its required
+gate; the additional user-requested session-extract R2/R3 result is recorded
+below.
+
+## User-requested session-extract R2 follow-up — 2026-09-29
+
+This additional campaign ran against exact commit
+`d3d5a5d024af2586bb257be87d4af23257f354e5`:
+
+```text
+command: ./run-gate.py --worktree /workspaces/vbpub/.worktrees/nyxloom-cli-adoption session-extract
+start: 2026-09-28T21:04:47Z
+end: 2026-09-29T00:19:45Z
+container: run-gate-vbpub-session-extract-3351574-1790629480
+run-gate: FAIL/UNCOVERED_LINES, exit 1
+R1: FAIL — 2,510/2,511 lines and 921/922 branches; missing line 416 and branch at line 415 in src/nyxloom/session_extract/follow.py
+R2: 599 candidates; 522 killed, 77 survived, 0 equivalent, 0 crashed
+R3: INCONCLUSIVE/CANARY_INCONCLUSIVE because R1 did not pass
+```
+
+The wrapper log is `/tmp/nyxloom-session-extract-r2-final-20260928.log`; the
+raw gate log is
+`/tmp/run-gate/run-gate-vbpub-session-extract-3351574-1790629480.log`; the
+machine verdict is `.assay/verdict-session-extract.json`. The test container
+was removed after the run. This result is **not green**.
+
+Two focused coverage cases were added after inspecting the result. The follow
+test appends non-conversation Codex metadata after the initial cursor, covering
+the missed incremental-filter path. A Claude Code case verifies that a
+sidechain-only session preserves a structured question and its answer in the
+expected `INTERVIEW`/`OPERATOR` prose. Both passed locally with the devcontainer
+venv; no test container was started for that diagnostic run.
+
+The R2 survivor at `claude_code.py:786` (`And->Or`, candidate
+`b089d16650fba3f2539d24fcc27b2635b1c55abbe94195b51d841a15677807fb`) was
+probed with the exact mutation in a disposable worktree. The focused
+sidechain-question test still passed under that mutation, so it does not kill
+the candidate. Inspection shows `parse()` later walks the complete record
+stream through `parse_record()`, which registers each question before its
+answer; the earlier pre-pass duplicates state registration for normally
+ordered sessions. A malformed out-of-order result could differ, so this is
+recorded as a likely redundant candidate, **not** as an assay-adjudicated
+equivalent. The probe worktree was removed. No production-code change was made
+from this R2 triage.
