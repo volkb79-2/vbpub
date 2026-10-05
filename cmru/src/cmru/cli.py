@@ -691,7 +691,7 @@ def load_config(
         repo_root,
         projects,
         [name for name in orchestration.project_order if name in projects],
-        [name for name in orchestration.default_projects if name in projects],
+        [],  # reserved slot: orchestration.default_projects was never read (CLI-04)
         orchestration.default_steps,
         orchestration.execution_mode,
         {},
@@ -2207,10 +2207,10 @@ def _orchestrate(args=None) -> None:
         repo_root,
         configs,
         project_order,
-        default_projects,
+        _default_projects,
         default_steps,
         execution_mode,
-        step_project_order,
+        _step_project_order,
         cleanup,
         github_config,
         env_config,
@@ -2245,13 +2245,7 @@ def _orchestrate(args=None) -> None:
         if execution_mode == "project-first":
             plan = [(project, step_name) for project in selected for step_name in steps]
         else:
-            for step_name in steps:
-                ordered_names = step_project_order.get(step_name) or selected_names
-                for project_name in ordered_names:
-                    if project_name not in configs:
-                        raise ValueError(f"Unknown project in step_project_order: {project_name}")
-                    if project_name in selected_names:
-                        plan.append((configs[project_name], step_name))
+            plan = [(project, step_name) for step_name in steps for project in selected]
         from cmru.runner import render_step_plan
         for project, step_name in plan:
             step = (project.runner_steps or {}).get(step_name)
@@ -2282,13 +2276,7 @@ def _orchestrate(args=None) -> None:
                 run_project_step(project, step, repo_root, log_dir)
     else:
         for step in steps:
-            ordered_names = step_project_order.get(step) or selected_names
-            for project_name in ordered_names:
-                if project_name not in configs:
-                    raise ValueError(f"Unknown project in step_project_order: {project_name}")
-                if project_name not in selected_names:
-                    continue
-                project = configs[project_name]
+            for project in selected:
                 apply_project_release_env(github_config, env_config, project)
                 run_project_step(project, step, repo_root, log_dir)
 
@@ -5034,7 +5022,10 @@ def _dispatch(args, runtime):
                         ),
                 )
         elif vargs.remove_assets:
-            # Explicit age-based cleanup mode.
+            # Explicit age-based cleanup mode. It applies the estate-wide [cleanup]
+            # policy, so a project target would be silently ignored (CLI-05).
+            if vargs.target:
+                _usage_error("--remove-assets applies estate-wide [cleanup] policy; omit the target")
             action = lambda dry_run: remove_assets(
                 vargs.remove_assets, dry_run, cleanup, github_config, env_config,
                 plan=plan,
@@ -5491,7 +5482,7 @@ def _build_cli():
     )
     direct = lambda: (lambda args, runtime: _dispatch(args, runtime))
     target = ArgumentSpec(
-        "target", "project target; omitted selects the current project or estate default",
+        "target", "project target; omitted: the current project, or every orchestrated project at the estate root",
         metavar="[all|PROJECT[,PROJECT...]]", parser_kwargs={"nargs": "?", "default": None},
     )
     config_opt = OptionSpec(("--config",), f"path to {PROJECT_CONFIG_FILENAME} or {ORCHESTRATION_CONFIG_FILENAME}", metavar="PATH", parser_kwargs={"default": None})
@@ -5575,7 +5566,7 @@ def _build_cli():
     registry.register(VerbSpec("release", description="Release selected projects from an isolated origin/main snapshot.", group=VerbGroup.MIXED.value, arguments=common_target, options=release_options, mutating=True, include_confirmation=False, include_json=False, include_progress=False, handler=direct()))
     registry.register(VerbSpec("status", description="Preview changed projects and their next versions.", group=VerbGroup.EXPLORATION.value, arguments=common_target, options=status_options, include_json=False, include_progress=False, handler=direct()))
     cleanup_options = (
-        OptionSpec(("--remove-assets",), "age-based remote Releases and GHCR cleanup", metavar="AGE", parser_kwargs={"default": None}, mutually_exclusive_group="cleanup-mode"),
+        OptionSpec(("--remove-assets",), "age-based remote Releases and GHCR cleanup (estate-wide; takes no project target)", metavar="AGE", parser_kwargs={"default": None}, mutually_exclusive_group="cleanup-mode"),
         OptionSpec(("--delete-unmanaged-release-tag",), "delete one exact non-CMRU GitHub Release, never its Git tag", metavar="TAG", parser_kwargs={"default": None}, mutually_exclusive_group="cleanup-mode"),
         OptionSpec(("--delete-build-output",), "delete one exact local build record", metavar="ID", parser_kwargs={"default": None}, mutually_exclusive_group="cleanup-mode"),
         OptionSpec(("--discard-build-worktree",), "discard one exact failed build worktree", metavar="PATH", parser_kwargs={"default": None}, mutually_exclusive_group="cleanup-mode"),

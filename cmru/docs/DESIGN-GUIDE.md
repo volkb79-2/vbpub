@@ -90,16 +90,15 @@ surface for scripts that probe every first-party estate CLI in the same way; it
 does not create a second version source or change verb dispatch.
 
 The same identity is the first line of every help, usage, and configuration
-document emitted by the installed `cmru`, `cmru-agent`, and `cmru-controller`
-dispatchers, including nested verbs. CMRU configuration diagnostics put the
+document emitted by the installed `cmru`
+dispatcher, including nested verbs. CMRU configuration diagnostics put the
 identity first; `cli-extended` usage/refusal diagnostics put the actionable
 message first and then render the matching generated help. Normal command output
 is unchanged.
 
 ## One declared CLI grammar
 
-The CMRU wheel installs three operator CLIs: `cmru`, `cmru-agent`, and
-`cmru-controller`. Each uses `cli-extended` registrations as the source for
+The CMRU wheel installs one operator CLI, `cmru`. It uses `cli-extended` registrations as the source for
 argument parsing, option constraints, help, and dispatch. Root `cmru --help`
 stays a short command catalog, while `cmru help VERB` and `cmru VERB --help`
 show that verb's complete grammar. Nested commands delegate their remaining
@@ -117,8 +116,7 @@ rewrite argv before dispatch.
 testing, and compatibility surface without adding a use case. The same review
 removed numeric `init --layout` spellings and the deprecated tag option alias.
 The `handler` verb is the supported route to the project's explicit step
-handlers; `cmru-agent` and `cmru-controller` are separate installed commands,
-not hidden subcommands of `cmru`. The [canonical CLI grammar and semantic
+handlers. The [canonical CLI grammar and semantic
 audit](SPEC.md#s-cli9-canonical-cli-grammar-and-semantic-audit) inventories their complete option surfaces
 and is updated with every product grammar change.
 
@@ -235,9 +233,9 @@ data and a missing bundled `cli-extended` import.
 ### Operator commands, adapters, and libraries have separate jobs
 
 Installed console scripts and their registered verbs are the operator
-interface: `cmru`, `cmru-agent`, and `cmru-controller`. They use
+interface: `cmru`. It uses
 `cli-extended` to define grammar, options, help, and dispatch. CMRU does not
-maintain parallel hand-written parsers for those commands.
+maintain parallel hand-written parsers for that command.
 
 `python -m cmru.handlers` is the one supported component CLI. Project step
 contracts use it to invoke registered artifact handlers, and

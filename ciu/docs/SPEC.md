@@ -2591,8 +2591,9 @@ CIU provides an **optional SSH transport** for two complementary surfaces:
 an operator/agent **access plane** (`ciu ssh`) and a **push-deploy** mode
 (`ciu up/down/health/render --host`). The transport lives in the `ciu` package
 so every consuming repo gets it identically; each repo supplies only its own
-host inventory. SSH is a **bootstrap and repair** path; the pull-based
-convergence model (SPEC G/H) remains the steady-state loop.
+host inventory. Push over SSH is the **only** multi-host deployment model: the
+pull-based convergence model (cmru-agent / cmru-controller, SPEC G/H) was retired on
+2026-10-05 (dstdns D-097; v8.2 S17 continues the push model).
 
 ### S14.1 — `ciu ssh <host> [--admin] [-- <cmd...>]`
 

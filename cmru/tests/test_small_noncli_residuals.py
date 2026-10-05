@@ -12,44 +12,6 @@ from types import SimpleNamespace
 import pytest
 
 from cmru import ghcr, release, standards
-from cmru.agent import cli as agent_cli, protocol
-from cmru.controller.planner import PlanStep
-from cmru.controller.rollout import RolloutEngine
-
-
-def _step(**overrides):
-    values = dict(plan_id="p", wave_name="w", phase=1, wave_type="canary", nodes=["n"],
-                  profiles=[], release_tag="demo-v1", manifest_url="u", manifest_sha256="a" * 64,
-                  config_hash="h", step_id="s", required=True, requires_approval=False)
-    values.update(overrides)
-    return PlanStep(**values)
-
-
-def test_rollout_wait_barrier_ignores_malformed_observed_then_times_out(monkeypatch):
-    backend = SimpleNamespace(read_observed=lambda *_: "not-json")
-    engine = RolloutEngine(backend, "land", poll_interval=0, wave_timeout=1)
-    ticks = iter([0, 0, 2])
-    monkeypatch.setattr("cmru.controller.rollout.time.monotonic", lambda: next(ticks))
-    monkeypatch.setattr("cmru.controller.rollout.time.sleep", lambda _: None)
-    assert engine._wait_for_wave("p", _step()) is False
-    empty_backend = SimpleNamespace(read_observed=lambda *_: None)
-    empty_engine = RolloutEngine(empty_backend, "land", poll_interval=0, wave_timeout=1)
-    ticks = iter([0, 0, 2])
-    monkeypatch.setattr("cmru.controller.rollout.time.monotonic", lambda: next(ticks))
-    assert empty_engine._wait_for_wave("p", _step()) is False
-
-    degraded = json.dumps({"health": "degraded", "applied_generation": 101})
-    engine = RolloutEngine(SimpleNamespace(read_observed=lambda *_: degraded), "land", poll_interval=0, wave_timeout=1)
-    ticks = iter([0, 0, 2])
-    monkeypatch.setattr("cmru.controller.rollout.time.monotonic", lambda: next(ticks))
-    assert engine._wait_for_wave("p", _step()) is False
-
-
-def test_rollout_wait_barrier_stops_on_matching_failed_node():
-    observed = json.dumps({"health": "failed", "applied_generation": 101})
-    backend = SimpleNamespace(read_observed=lambda *_: observed)
-    engine = RolloutEngine(backend, "land", generation_base=1, poll_interval=0, wave_timeout=1)
-    assert engine._wait_for_wave("p", _step()) is False
 
 
 def test_standards_assessment_reports_disabled_history_and_manual_projects():
@@ -80,21 +42,6 @@ def test_standards_atomic_write_cleans_temporary_file_after_replace_failure(monk
     with pytest.raises(OSError, match="replace failed"):
         standards._atomic_write(path, "contents")
     assert not path.exists() and not path.with_name(".cmru.toml.cmru-tmp").exists()
-
-
-def test_agent_cli_main_dispatch_fallback_is_explicit(monkeypatch, capsys):
-    assert agent_cli.main(["unknown"]) == 2
-    assert "invalid choice" in capsys.readouterr().err
-
-
-def test_agent_cli_module_guard_refuses_removed_alias(monkeypatch, capsys):
-    monkeypatch.setattr(sys, "argv", ["cmru-agent", "status"])
-    with pytest.raises(SystemExit) as error:
-        runpy.run_path(str(Path(agent_cli.__file__)), run_name="__main__")
-    assert str(error.value) == (
-        "Use the installed 'cmru-agent' command; its module alias is not supported."
-    )
-    assert capsys.readouterr().out == ""
 
 
 def test_ghcr_request_http_error_and_repository_failure_are_explicit(monkeypatch):

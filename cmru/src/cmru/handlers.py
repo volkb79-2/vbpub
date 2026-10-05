@@ -537,21 +537,8 @@ def cmd_tarball_validate(args: argparse.Namespace) -> None:
 
 # ─── OCI image commands ───────────────────────────────────────────────────────
 
-_OCI_REPACK_DISABLED = (
-    "cmru OCI repack is experimental and not production-ready; "
-    "the path is disabled until its production-equivalence requirements are met"
-)
-
-
-def _reject_experimental_repack(repack: bool) -> None:
-    """Fail closed before auth, Docker, or filesystem state can be mutated."""
-    if not repack:
-        return
-    from cmru import exit_codes
-
-    print(f"[ERROR] {_OCI_REPACK_DISABLED}", file=sys.stderr)
-    raise SystemExit(exit_codes.CONFIG_ERROR)
-
+# OCI repack (`--repack`) was removed from the handler grammar: it always
+# failed closed while KI-02 is open. The option returns when KI-02 is fixed.
 
 def _check_prerequisites() -> None:
     """Check that required CLI tools are available. Exit 3 (PREREQ_MISSING) if not."""
@@ -586,16 +573,13 @@ def _docker_login() -> None:
 
 
 def cmd_oci_image_build(args: argparse.Namespace) -> None:
-    """Build an OCI image using docker buildx bake; repack fails closed."""
+    """Build an OCI image using docker buildx bake."""
     cwd = Path(args.cwd).resolve()
     bake_file = args.bake_file
     target = args.target
-    repack = args.repack
-
-    _reject_experimental_repack(repack)
 
     print(f"[INFO] cmru handler: building OCI image in {cwd}")
-    print(f"[INFO]   bake_file={bake_file}  target={target}  repack={repack}")
+    print(f"[INFO]   bake_file={bake_file}  target={target}")
 
     _check_prerequisites()
     _docker_login()
@@ -613,8 +597,6 @@ def cmd_oci_image_push(args: argparse.Namespace) -> None:
     cwd = Path(args.cwd).resolve()
     bake_file = args.bake_file
     target = args.target
-
-    _reject_experimental_repack(args.repack)
 
     print(f"[INFO] cmru handler: pushing OCI image in {cwd}")
     _docker_login()
@@ -674,13 +656,11 @@ def handlers_cli():
             required_path("--cwd", "project directory (holds bake file)"),
             required_path("--bake-file", "path to bake HCL file"),
             required_name("--target", "bake target name", "NAME"),
-            OptionSpec(("--repack",), "enable OCI repack", parser_kwargs={"action": "store_true", "default": False}),
         )),
         ("oci-image-push", "Push an OCI image to its registry.", cmd_oci_image_push, (
             required_path("--cwd", "project directory (holds bake file)"),
             required_path("--bake-file", "path to bake HCL file"),
             required_name("--target", "bake target name", "NAME"),
-            OptionSpec(("--repack",), "repack mode (push already happened during build)", parser_kwargs={"action": "store_true", "default": False}),
         )),
     )
     for name, description, handler, options in commands:
@@ -693,8 +673,6 @@ def handlers_cli():
 
         def dispatch(args, _runtime, fn=handler, command=name):
             if getattr(args, "dry_run", False):
-                if getattr(args, "repack", False):
-                    _reject_experimental_repack(True)
                 details = {
                     key: value for key, value in vars(args).items()
                     if key != "dry_run" and "token" not in key.lower()

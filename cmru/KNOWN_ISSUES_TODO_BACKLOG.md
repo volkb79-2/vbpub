@@ -231,8 +231,9 @@ MDT’s OCI layout/digest contract; do not promise a universal resume mechanism 
 **Status:** resolved. Every runner step writes a line-flushed project-local
 `<project>/logs/cmru/<step>.log`, overwriting by default and inserting `\n---\n` with
 `--log-append`. In a transaction that path is inside the retained worktree, so a failed
-release or build is self-contained for debugging. Successful releases remove it with the
-worktree unless `--retain-logs-on-release` moves it project-side. A successful normal
+release or build is self-contained for debugging. A successful release moves it project-side
+before the worktree is removed, unless `--discard-logs-on-release` is given (an earlier version
+of this entry named a nonexistent `--retain-logs-on-release`; corrected by CLI-D5). A successful normal
 `cmru build` instead copies it into its commit-addressed local output record before removing its
 worktree; a failed build retains the worktree and prints the exact path. The root wrapper also
 creates/overwrites the full `cmru.release.log`; `--show-run-details` restores raw console flow
@@ -1287,7 +1288,9 @@ The old reproduction and failed workaround attempts above are retained as
 historical evidence; they describe the pre-fix code and do not represent current
 behavior.
 
-### KI-32 — controller rollback tag can disagree with its manifest identity — *resolved*
+### KI-32 — controller rollback tag can disagree with its manifest identity — *resolved; obsolete (retired 2026-10-05)*
+
+> `cmru-controller` was retired and deleted on 2026-10-05 (operator decision O5); kept as history only.
 
 **Decision:** keep controller rollback and remove `--to`. Rollback always uses
 the first wave's complete release coordinate from the plan: tag, manifest URL,
@@ -1481,7 +1484,9 @@ raised `AttributeError` before reaching their read-only validation handler.
 **Resolution.** The dispatcher now treats an absent `dry_run` field as false. Regression coverage
 invokes both registered validation verbs without adding a meaningless dry-run option.
 
-### KI-44 — Plan status crashed because the read-only parser has no `dry_run` field — *fixed in source, pending release*
+### KI-44 — Plan status crashed because the read-only parser has no `dry_run` field — *obsolete (retired 2026-10-05)*
+
+> `cmru-controller` and its `status --plan` verb were deleted on 2026-10-05 (operator decision O5); kept as history only.
 
 **Reported:** 2026-10-01, Sol xhigh follow-up review of the unreleased CMRU changes.
 
@@ -1577,9 +1582,9 @@ gate exercises the regression; README, DESIGN-GUIDE, CONSUMERS, and SPEC documen
 - Vendoring (AC-24, CX-D1): `pyproject.toml:28` adds `../libraries/cli-extended/src` to `packages.find` and `:32` maps `cli_extended = "../libraries/cli-extended/src/cli_extended"` through `[tool.setuptools.package-dir]` (`:30`). `dependencies = []` at `:14`; no `cli-extended` requirement. `README.md:64` tells readers to use installed console scripts because of the vendored libraries.
 - Library path hacks (AC-25): none toward `libraries/cli-extended` in `src/` (the `sys.path.insert` calls at `src/cmru/config.py:206` and `src/cmru/transaction.py:248` point at `libraries/worktree/src`, a different shared library with the same shape; they are out of this entry's scope but should be tracked with the worktree library's own adoption). Gate lanes carry the library checkout on `PYTHONPATH`: `assay.toml:41`, `run-gate.toml:58,116,171` (`PYTHONPATH=src:../libraries/cli-extended/src:../libraries/worktree/src`), plus `tools/run_release_gate.py:49` and `tools/project_fixture.py:15` copying `libraries/cli-extended` into release-gate fixtures. Under CX-D3 a gate lane may keep the worktree source for the revision under test; decide per lane in the carve.
 - Version reader (AC-01): `src/cmru/cli.py:2345-2358` (`_cmru_version`: `_source_tree_version()`, then `importlib.metadata.version("cmru")`, then the literal `"dev"`), and `src/cmru/cli_support.py:20-33` (a second reader that calls it and falls back to `importlib.metadata` and then `"dev"`, with a `pragma`-marked bootstrap branch). `src/cmru/manifest.py:134-146` reads the installed cmru version again for the release manifest. `cmru_identity` at `cli_support.py:35` builds `CliIdentity(...)` from that string. `CliIdentity.resolve` replaces all three, removing the literal fallback; the manifest reader needs a decision (it must not hide a missing version).
-- Exception wrapper (AC-10, AC-11): no `unexpected_exceptions=`/`expected_exceptions=` and no `--traceback` anywhere in `src/`. `except Exception as exc:` handlers: 17 in `src/cmru/cli.py`, 8 in `src/cmru/controller/cli.py` (lines 81-185), 1 in `src/cmru/agent/cli.py:109`. Each must be classified: domain error to `CliFailure`/`expected_exceptions`, or boundary to `unexpected_exceptions="report"`.
-- Registries (AC-03): `CliRegistry(` is constructed at 12 sites, not the 5 groups the program table names: `src/cmru/cli.py:5484`, `controller/cli.py:212`, `agent/cli.py:246`, `handlers.py:592`, `tester_gate.py:636`, `runner.py:627`, `tool_deps.py:572`, `scaffold.py:403`, `getpy.py:185`, `resolve.py:102`, `versions.py:2053`, `standards.py:168`. Consolidate into one registry (cli, agent, controller, handlers, tester plus the seven per-feature ones) so one surface manifest and one skills/doctor registration cover cmru.
-- `--dry-run` copies (AC-05, AC-12): hand-declared `OptionSpec(("--dry-run",), ...)` at `runner.py:652`, `tool_deps.py:609`, `standards.py:202`, `handlers.py:648`, `scaffold.py:428`, `getpy.py:222`, `versions.py:2068`, `tester_gate.py:675`, `agent/cli.py:262` and `:272`; a `--yes` literal is passed to a delegated tool at `delegated.py:55` (not a CLI option). These collide with the library-owned `--dry-run` and become `VerbSpec(dry_run=True)` on mutating verbs; the carve must check each verb against KI-43/KI-44 (read-only parsers whose handlers read `args.dry_run`), because `--dry-run` on a verb without `dry_run=True` is refused with exit 2.
+- Exception wrapper (AC-10, AC-11): no `unexpected_exceptions=`/`expected_exceptions=` and no `--traceback` anywhere in `src/`. `except Exception as exc:` handlers: 17 in `src/cmru/cli.py` (~~8 in `src/cmru/controller/cli.py` and 1 in `src/cmru/agent/cli.py:109`~~: retired 2026-10-05). Each must be classified: domain error to `CliFailure`/`expected_exceptions`, or boundary to `unexpected_exceptions="report"`.
+- Registries (AC-03): `CliRegistry(` is constructed at 12 sites, not the 5 groups the program table names: `src/cmru/cli.py:5484`, ~~`controller/cli.py:212`, `agent/cli.py:246`~~ (retired 2026-10-05: 10 sites remain), `handlers.py:592`, `tester_gate.py:636`, `runner.py:627`, `tool_deps.py:572`, `scaffold.py:403`, `getpy.py:185`, `resolve.py:102`, `versions.py:2053`, `standards.py:168`. Consolidate into one registry (cli, agent, controller, handlers, tester plus the seven per-feature ones) so one surface manifest and one skills/doctor registration cover cmru.
+- `--dry-run` copies (AC-05, AC-12): hand-declared `OptionSpec(("--dry-run",), ...)` at `runner.py:652`, `tool_deps.py:609`, `standards.py:202`, `handlers.py:648`, `scaffold.py:428`, `getpy.py:222`, `versions.py:2068`, `tester_gate.py:675`, ~~`agent/cli.py:262` and `:272`~~ (retired); a `--yes` literal is passed to a delegated tool at `delegated.py:55` (not a CLI option). These collide with the library-owned `--dry-run` and become `VerbSpec(dry_run=True)` on mutating verbs; the carve must check each verb against KI-43/KI-44 (read-only parsers whose handlers read `args.dry_run`), because `--dry-run` on a verb without `dry_run=True` is refused with exit 2.
 - `parse_target_names` (AC-09): `src/cmru/cli_support.py:82-98` (empty name, duplicate, exclusive `all`, raising `TargetSelectionError`) is the reference semantics for `SelectorList` (W2 documents any intentional difference); `select_target_names` at `:101` stays as the registry-resolving layer.
 - Surface lifecycle (AC-16..AC-18): S-CLI.9's audit is hand-maintained (`docs/SPEC.md:373`, `docs/reviews/cli-extended-adoption-review.md`); it becomes `cli-extended surface sync/check` with a review catalog and findings file.
 - Skills (AC-19): `.claude/skills/cmru-cli/SKILL.md` is the source tree; `pyproject.toml:47-48` package-data lists only `templates/*`. Move the skill to package data and call `register_skills_verbs`.

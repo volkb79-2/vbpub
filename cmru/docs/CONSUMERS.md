@@ -18,7 +18,7 @@ with this pasteable probe:
     cmru --version
 
 It prints one `cmru <version>` line on stdout and exits 0. The equivalent native
-verb is `cmru version`. Help from `cmru`, `cmru-agent`, and `cmru-controller`,
+verb is `cmru version`. Help from `cmru`,
 including nested verbs, begins with the generated CMRU identity. CMRU
 configuration diagnostics put that identity on line 1; shared
 `cli-extended` usage/refusal diagnostics put the actionable error first and
@@ -166,7 +166,6 @@ registry = ["ghcr.io"]
 
 [orchestration]
 project_order    = ["example-wheel"]
-default_projects = ["example-wheel"]
 default_steps    = ["run-tests", "build", "push"]
 execution_mode   = "project-first"
 
@@ -208,8 +207,7 @@ adopter can render an installer from any working directory after installing CMRU
 cmru get-py example-wheel --config /path/to/cmru.orchestration.toml --output ./get.py
 ```
 
-The wheel also installs `cmru-agent` and `cmru-controller`; those are independent companion
-CLIs with their own registered verbs. `cmru --help` lists top-level CMRU commands, while
+`cmru --help` lists top-level CMRU commands, while
 `cmru help get-py` or `cmru get-py --help` prints the exact delegated grammar.
 
 ## Using the wheel and component interfaces
@@ -230,8 +228,7 @@ python3 -m venv .venv-cmru
 Use installed console scripts for operator workflows. `python -m cmru.handlers`
 is the supported component CLI because project contracts and the first-wheel
 bootstrap need it. `cmru.bundle` and `cmru.runner` are library modules; they do
-not expose module commands. The `cmru.cli`, `cmru.agent.cli`, and
-`cmru.controller.cli` module aliases are retired. Use `cmru run-step` for
+not expose module commands. The `cmru.cli` module alias is retired. Use `cmru run-step` for
 direct single-step CLI work, and use the documented Python functions to compose
 bundle or runner behavior:
 
@@ -263,8 +260,7 @@ archive = run_bundle(Path("bundle.toml"))
 
 Prefer the declared project-step commands or these documented entrypoints over
 copying CMRU implementation code. Do not import private helpers as an API. For
-operator commands, use the installed `cmru`, `cmru-agent`, or `cmru-controller`
-script. The bundle module is a library, and the runner module's supported CLI
+operator commands, use the installed `cmru` script. The bundle module is a library, and the runner module's supported CLI
 is `cmru run-step`.
 
 A real `wheel-build` handler invocation requires a Git worktree and a configured

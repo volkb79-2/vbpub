@@ -2414,10 +2414,10 @@ def test_project_selection_declarations_and_recorded_fallbacks(monkeypatch, tmp_
     ))
     assert versions._selected_projects(forge, ctx_project, None) == ["p1", "p2"]
     assert selected_calls[-1][0][2] == ["p1", "p2"]
-    assert selected_calls[-1][1]["estate_scope"] is False
+    assert selected_calls[-1][1] == {"context_project": "p1"}
     assert versions._selected_projects(forge, ctx_estate, None) == ["p2", "p1"]
     assert selected_calls[-1][0][2] == ["p2", "p1"]
-    assert selected_calls[-1][1]["estate_scope"] is True
+    assert selected_calls[-1][1] == {"context_project": None}
     forge.orchestration = None
     standalone_context = types.SimpleNamespace(config_kind="standalone", project_name="p1", scope="project")
     assert versions._selected_projects(forge, standalone_context, None) == ["p1", "p2"]

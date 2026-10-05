@@ -443,16 +443,6 @@ name = "dstdns-docker-stats-exporter"
 rules = """
 key_prefix "dstdns/__LANDSCAPE_ID__/services/docker-stats-exporter/" { policy = "write" }
 """
-[registry.consul.policies.cmru_node]
-name = "dstdns-cmru-node"
-rules = """
-key_prefix "cmru/landscapes/__LANDSCAPE_ID__/" { policy = "read" }
-"""
-[registry.consul.policies.cmru_controller]
-name = "dstdns-cmru-controller"
-rules = """
-key_prefix "cmru/landscapes/__LANDSCAPE_ID__/" { policy = "write" }
-"""
 [registry.consul.policies.cmru_viewer]
 name = "dstdns-cmru-viewer"
 rules = """

@@ -1,5 +1,12 @@
 # SPEC G — CMRU Agent + Controller
 
+> **RETIRED 2026-10-05.** `cmru-agent` and `cmru-controller` were deleted from cmru in the
+> 2026-10 program (operator decision O5): no consumer (dstdns D-097 declined them), superseded
+> by push over SSH (ciu SPEC S14; v8.2 S17), and the code did not work as designed. This
+> document is kept as design history only (the implementation is in git history, commit
+> `ffe7eb8b0`); dstdns decisions link here. Do not implement from it. If a pull model is ever
+> wanted it belongs in ciu as a reconciler of ciu's own activation manifest (v8 S17.4).
+
 > **Consumer status (dstdns, 2026-08-19):** dstdns decided NOT to adopt `cmru-agent` /
 > `cmru-controller` — updates are push-only via `ciu ssh` / `ciu up --host` (SPEC J); the
 > pull loop's per-host Consul client + `auto_config` + signed desired-state is more than its

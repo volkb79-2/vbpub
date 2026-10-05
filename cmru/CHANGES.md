@@ -14,10 +14,18 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 - Add configurable shipped/all dependency discovery, explicitly selected Python extras, and project-local requirements manifests.
 - Add opt-in rolling OCI tag checks that record manifest digests and detect moved tags.
 
+### Removed
+- **Breaking:** retire `cmru-agent` and `cmru-controller` (operator decision O5; no consumer, superseded by push over SSH): the two console scripts, `cmru.agent`, `cmru.controller`, `packaging/cmru-agent.service` and their SPEC/README/CONSUMERS/DESIGN-GUIDE rows are deleted. `docs/spec-cmru-agent-controller.md` is kept with a RETIRED banner.
+- Remove the `--repack` option from `cmru handler oci-image-build` / `oci-image-push` (CLI-14): it only ever failed while KI-02 is open. It returns when KI-02 is fixed.
+- Delete the byte-identical duplicate `templates/get.py.tmpl`; the package resource `src/cmru/templates/get.py.tmpl` is the only copy (CLI-18).
+
 ### Changed
+- Deprecate `orchestration.default_projects` (CLI-04): it is no longer required, is accepted with a one-line warning that it is ignored, and will be removed. Help text for the project target now says "omitted: the current project, or every orchestrated project at the estate root"; the dead `estate_scope` parameter and `step_project_order` handling are gone.
+- `cmru cleanup PROJECT --remove-assets AGE` now refuses the target (exit 2) instead of silently pruning estate-wide (CLI-05).
 - Extend strict root/project config with `[versions]`; project overlays resolve and store state project-side, while root targets retain root policy/state.
 
 ### Fixed
+- The ready-to-copy `templates/cmru.toml.tmpl` and `templates/cmru.orchestration.toml.tmpl` now load through the real config loader (missing `[runtime]` and central `[github]`/`[targets]`); a test loads every shipped template (CLI-18).
 - Mount the git worktree root in the wheel-builder container (not just the project's parent) so projects nested below the top level resolve their git version, and forward `SOURCE_DATE_EPOCH` / `SETUPTOOLS_SCM_PRETEND_VERSION_FOR_*` by name into the build (KI-53).
 - Add the monorepo's sibling `cli-extended` and `worktree` source roots to
   bound CMRU subprocesses, so system-Python release scripts can import the

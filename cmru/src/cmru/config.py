@@ -138,7 +138,6 @@ class ProjectS2Config:
 @dataclass(frozen=True)
 class OrchestrationConfig:
     project_order: List[str]
-    default_projects: List[str]
     default_steps: List[str]
     execution_mode: str
     project_configs: Mapping[str, Path] = field(default_factory=dict)
@@ -975,7 +974,7 @@ def _load_project_config(config_path: Path) -> ForgeConfig:
         token=root_token or None,
     )
     orchestration = OrchestrationConfig(
-        project_order=[project.name], default_projects=[project.name],
+        project_order=[project.name],
         default_steps=["run-tests", "build", "push"], execution_mode="project-first",
         project_configs={project.name: config_path}, dependencies={project.name: []},
     )
@@ -1014,8 +1013,20 @@ def _load_orchestration_config(config_path: Path) -> ForgeConfig:
         {"project_order", "default_projects", "default_steps", "execution_mode", "defaults", "project"},
         "orchestration",
     )
-    for key in ("project_order", "default_projects", "default_steps"):
+    for key in ("project_order", "default_steps"):
         _string_list(_require(orch_raw, key, "orchestration"), f"orchestration.{key}")
+    if "default_projects" in orch_raw:
+        # CLI-04: the key was required and validated but never read (an omitted
+        # target selects the current project, or every orchestrated project at
+        # the estate root). Accept it for one release, warn, ignore.
+        import sys
+
+        print(
+            "[WARN] orchestration.default_projects is ignored and will be removed; "
+            "an omitted target selects the current project or every orchestrated "
+            "project at the estate root",
+            file=sys.stderr,
+        )
     execution_mode = _require(orch_raw, "execution_mode", "orchestration")
     if execution_mode not in {"project-first", "step-first"}:
         _error("orchestration.execution_mode must be 'project-first' or 'step-first'")
@@ -1083,10 +1094,9 @@ def _load_orchestration_config(config_path: Path) -> ForgeConfig:
     }
     known = set(docs)
     root_token, project_tokens = _load_repository_secrets(config_path.parent, paths)
-    for field_name, values in (("project_order", orch_raw["project_order"]), ("default_projects", orch_raw["default_projects"])):
-        unknown = sorted(set(values) - known)
-        if unknown:
-            _error(f"orchestration.{field_name} names unknown project(s): {unknown}")
+    unknown = sorted(set(orch_raw["project_order"]) - known)
+    if unknown:
+        _error(f"orchestration.project_order names unknown project(s): {unknown}")
     for project_id, deps in dependencies.items():
         unknown = sorted(set(deps) - known)
         if unknown:
@@ -1118,7 +1128,6 @@ def _load_orchestration_config(config_path: Path) -> ForgeConfig:
         github=github, targets=targets,
         orchestration=OrchestrationConfig(
             project_order=list(orch_raw["project_order"]),
-            default_projects=list(orch_raw["default_projects"]),
             default_steps=list(orch_raw["default_steps"]), execution_mode=str(execution_mode),
             project_configs=paths, dependencies=dependencies,
         ),

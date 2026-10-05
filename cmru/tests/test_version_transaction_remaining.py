@@ -1,4 +1,4 @@
-"""Remaining version, release, transaction and controller outcome witnesses."""
+"""Remaining version, release and transaction outcome witnesses."""
 from __future__ import annotations
 
 import json
@@ -10,8 +10,6 @@ from unittest.mock import patch
 import pytest
 
 from cmru import release, transaction, version
-from cmru.controller import cli as controller_cli
-from cmru.controller.rollout import RolloutEngine
 
 
 def git(root: Path, *args: str) -> str:
@@ -87,29 +85,3 @@ def test_transaction_sync_non_main_with_unrelated_local_main_returns_false(tmp_p
         assert transaction.sync_local_main(root) is False
     assert not any(argv[:2] == ["git", "branch"] and "-f" in argv for argv in calls)
     assert not any(argv[:2] == ["git", "checkout"] for argv in calls)
-
-
-def test_controller_cli_reports_missing_plan_and_engine_failure(tmp_path, capsys, monkeypatch):
-    args = SimpleNamespace(plan=str(tmp_path / "missing.toml"), landscape=None)
-    assert controller_cli.cmd_publish(args) == 2
-    plan = tmp_path / "plan.toml"
-    plan.write_text("[plan]\nid='p'\nlandscape='prod'\nrelease_tag='r'\nmanifest_url='u'\nmanifest_sha256='s'\n[[plan.waves]]\nphase=1\nname='c'\ntype='canary'\nnodes=['n']\nprofiles=['p']\n")
-    args.plan = str(plan)
-    monkeypatch.setattr(controller_cli, "_build_engine", lambda *_: SimpleNamespace(publish=lambda _p: (_ for _ in ()).throw(RuntimeError("broken"))))
-    assert controller_cli.cmd_publish(args) == 1
-    assert "Publish failed" in capsys.readouterr().err
-
-
-def test_controller_approve_hold_argument_refusal_without_backend():
-    assert controller_cli.cmd_approve(SimpleNamespace(plan=None, landscape=None)) == 2
-    assert controller_cli.cmd_hold(SimpleNamespace(plan="", landscape=None)) == 2
-
-
-def test_rollout_write_wave_surfaces_backend_status_without_mutating_plan():
-    class Backend:
-        def __init__(self): self.calls=[]
-        def _put(self, key, body): self.calls.append((key, body)); return (500, "no")
-    from cmru.controller.planner import PlanStep
-    step = PlanStep("p", "c", 1, "canary", ["n"], ["x"], "r", "u", "s", "h", "p.c")
-    backend = Backend(); RolloutEngine(backend, "prod")._write_wave(step)
-    assert backend.calls and b'"generation": 101' in backend.calls[0][1]
