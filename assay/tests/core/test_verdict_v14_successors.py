@@ -9,6 +9,7 @@ invent the B106 candidate provenance that a v12 mutation artifact lacks.
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 
 from conftest import PROJECT_ROOT
@@ -39,6 +40,13 @@ def _load_v14_control(name: str) -> dict:
     document["env_passthrough"] = [
         name for name in document.get("env_effective", {}) if name not in fixed
     ]
+    document["env_effective_passthrough_sha256"] = {}
+    for name in document["env_passthrough"]:
+        value = document["env_effective"][name]
+        document["env_effective_passthrough_sha256"][name] = hashlib.sha256(
+            value.encode("utf-8", errors="surrogateescape")
+        ).hexdigest()
+        document["env_effective"][name] = "<passthrough>"
     return document
 
 

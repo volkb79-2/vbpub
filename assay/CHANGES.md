@@ -8,6 +8,11 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 - feat(assay): explicit project-level `[defaults].env_passthrough`, ordered
   union with lane lists, and exact-file `source_roots`; verdict schema v14
   records the effective allowlist (B140, B141)
+- fix(assay): redact every effective passthrough value in verdict JSON and
+  mask exact echoes before tail truncation in command tails, crash-resume
+  records, failed probe diagnostics and Go helper refusals; record each
+  present value's per-name SHA-256 fingerprint for cross-verdict comparison
+  and mutation resume identity (B142)
 - feat(assay): `assay plan` names its lane and reports why ingested R2
   candidate enumeration is unsupported; first-run budget sizing for Stryker
   is documented without inventing an estimate (B137)

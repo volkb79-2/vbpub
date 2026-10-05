@@ -344,7 +344,10 @@ run-gate does not forward or reinterpret it as assay's flag.
 In a monorepo, a lane can own a single file when a neighboring package's
 changed lines need different tests. `source_roots` is relative to the
 directory containing `assay.toml`; an existing file selects only that exact
-path, so siblings stay out of this lane's changed-line measurement.
+declared path, so sibling files and sibling symlinks pointing to it stay out
+of R1 and native R2 changed-line selection. An ingested R2 report must name
+that same lexical file path too; resolving a sibling symlink onto the file
+does not make the sibling part of the lane's evidence.
 
 ```toml
 schema_version = 2
@@ -803,14 +806,12 @@ mutant was never re-executed against the assertion that kills it.
 * **the lane's declared `env`, by name and value** — committed
   configuration, so a different declared `PYTHONPATH` really is a different
   judge, and the value is the same on every invocation;
-* **the NAMES — never the values — of everything else in the resolved
-  environment**: the `env_passthrough` names that were actually present, and
-  any `infrastructure` fact injected at plan resolution. Those values are
-  per-invocation by design (a worktree's own host path, a per-instance DSN,
-  `TERM`), so folding them by value would make resume impossible across
-  exactly the ephemeral-checkout case `--state-dir` exists for. If a
-  passed-through value genuinely must be part of the identity, declare it in
-  `env` instead;
+* **ambient environment identity**: every present `env_passthrough` name and
+  a SHA-256 fingerprint of its value are folded in; B142 emits the same
+  fingerprint in the verdict without exposing the value. A changed DSN,
+  credential, worktree path or `TERM` therefore makes saved candidate results
+  stale and they run again. Infrastructure facts remain name-only under
+  B088's existing rule;
 * **`cwd` and the project prefix** — which decide what the relative paths in
   `argv` resolve to;
 * **the declared `link_paths`** — declaring, dropping or re-pointing one
@@ -821,16 +822,16 @@ mutant was never re-executed against the assertion that kills it.
 
 Three consequences worth planning around:
 
-* **Resume is per-tree, not per-commit.** Two commits with identical trees
+* **Resume is per-tree and per-passthrough-value, not per-commit.** Two commits with identical trees
   (an amended message, a rebase that moved nothing) share one identity and
   resume each other. A commit that changed *any* file in the judged tree
   re-executes every candidate, including ones it cannot have affected. That
   is deliberate: an unnecessary re-execution costs time, a wrongly trusted
   verdict costs the whole point of running mutation testing. The uses
-  `--state-dir` exists for are unaffected — several worktrees of **one
-  commit**, budget-capped retries, and `--shard` fan-out all judge the same
-  tree with the same command, and a per-instance passthrough value does not
-  break them.
+  `--state-dir` exists for still apply when those worktrees use the same
+  passthrough values: cross-worktree retries, budget-capped retries, and
+  `--shard` fan-out can reuse records only when tree, command and environment
+  fingerprints all match.
 * **An assay upgrade re-executes.** Records produced by an earlier version
   are not replayed by a later one.
 * **A `link_paths` directory's contents are still outside the identity.**
@@ -3106,8 +3107,66 @@ project names precede lane names in the effective ordered, deduplicated list.
 
 Each resolved verdict now carries `env_passthrough`, the effective list of
 allowed names, even when a name was absent from the invoking environment.
-`env_effective` still contains only values that were present. This preserves
-the difference between permission to inherit a name and an observed value.
+`env_effective` still contains only environment inputs that were present.
+Under B142, a present passthrough value is represented there by
+`"<passthrough>"`; its
+full SHA-256 appears in `env_effective_passthrough_sha256`. Fixed `env` values
+and infrastructure facts remain verbatim. Update consumers that previously
+read a passthrough value from `env_effective`.
+
+### Keep passthrough secrets out of verdicts (B142)
+
+Given two verdicts, compare a passthrough fingerprint without loading or
+printing the underlying value:
+
+```python
+import json
+from pathlib import Path
+
+name = "SCHEMA_GATE_DSN"
+before = json.loads(Path("before.json").read_text(encoding="utf-8"))
+after = json.loads(Path("after.json").read_text(encoding="utf-8"))
+old = before["env_effective_passthrough_sha256"].get(name)
+new = after["env_effective_passthrough_sha256"].get(name)
+if old is None or new is None:
+    raise SystemExit(f"{name} was absent from one verdict")
+if old != new:
+    raise SystemExit(f"{name} changed between runs")
+```
+
+The verifier validates that passthrough names carry the marker and that digest
+keys and values have the right shape. It cannot compare a saved verdict with
+the environment that produced it; compare fingerprints from separate verdicts
+when checking for a changed input. These are unkeyed SHA-256 fingerprints, so
+guessable values can be tested against them. They are not an authentication
+mechanism or a password hash. Fixed `env` values remain verbatim in verdicts;
+keep secrets in `env_passthrough`, not in the committed lane declaration.
+If stdout or stderr contains an exact passthrough value, Assay masks it before
+truncating the retained tail. This protects secrets that cross the tail
+boundary, where truncating first would hide the full value from the redactor.
+The same pre-truncation masking applies to crashed-candidate resume records,
+failed `environment_command` diagnostics, and the Go statement-position
+helper's stderr refusal. Records written by older Assay versions are not
+rewritten; inspect or remove old mutation-state files before sharing or
+archiving them if their commands may have echoed a credential.
+
+## Migration notes (v12 to v13)
+
+Verdict schema v13 was a **hard cut**. `assay verify` refuses a v12 verdict by
+schema version; it does not upgrade saved artifacts. Repin Assay before
+verifying archived v13-era artifacts, and regenerate any archived v12 verdict
+that still needs to pass `assay verify`.
+
+For `--reuse-from`, a v12 verdict is a cold start: it supplies no reusable
+mutation witness, so the current candidate runs in full. You may keep a v12
+artifact as historical evidence, but it cannot save candidate work. The v13
+cut did not change lane schema v2 or require a lane-file edit. When upgrading
+directly to v14, also apply the separate [v13-to-v14 migration
+notes](#migration-notes-v13-to-v14).
+
+Adopt in this order: repin Assay, regenerate any archived verdicts that must
+verify under the new pin, then compare or reuse current-run evidence. No lane
+configuration change is needed for the v12-to-v13 cut.
 
 ## Migration notes (v11 → v12)
 

@@ -354,6 +354,7 @@ def test_a_real_r1_lane_passes_through_the_installed_wheel(
         "env_declared": {"PYTHONDONTWRITEBYTECODE": "1"},
         "env_effective": {"PYTHONDONTWRITEBYTECODE": "1"},
         "env_passthrough": [],
+        "env_effective_passthrough_sha256": {},
         "scope": "S1",
         "enforcement": "gate",
         "judgment": {
@@ -718,6 +719,7 @@ def _expected_r2_artifact(
         "env_declared": {"PATH": "/usr/bin:/bin"},
         "env_effective": {"PATH": "/usr/bin:/bin"},
         "env_passthrough": [],
+        "env_effective_passthrough_sha256": {},
         "scope": "S1",
         "enforcement": "gate",
         # wave-1 §6 (A-269): declared_rigor names R2, a higher-rigor level,
@@ -1244,6 +1246,7 @@ def _expected_r3_artifact(
         "env_declared": env,
         "env_effective": env,
         "env_passthrough": [],
+        "env_effective_passthrough_sha256": {},
         "scope": "S1",
         "enforcement": "gate",
         # P33/V5-1 + A-223a: an R0,R3 lane records language and source roots
@@ -1614,6 +1617,7 @@ def _r1_r3_expected(
         "env_declared": env,
         "env_effective": env,
         "env_passthrough": [],
+        "env_effective_passthrough_sha256": {},
         "scope": "S1",
         "enforcement": "gate",
         "judgment": {

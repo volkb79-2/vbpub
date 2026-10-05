@@ -33,6 +33,7 @@
     "MOCK_MODE": "true"
   },
   "env_passthrough": [],
+  "env_effective_passthrough_sha256": {},
   "scope": "S1",
   "enforcement": "gate",
   "judgment": {

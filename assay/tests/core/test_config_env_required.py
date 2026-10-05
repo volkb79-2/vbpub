@@ -8,8 +8,8 @@ dropped:
         if name in source:
             env_effective[name] = source[name]
 
-A lane that passes an identity through in order to RECORD it in
-``env_effective`` — a container image revision, a ciu instance id — therefore
+A lane that passes an identity through in order to record its presence and
+fingerprint — a container image revision, a ciu instance id — therefore
 produces a clean PASS carrying no identity at all when the variable is missing,
 with nothing anywhere saying so. Driven before the fix: a lane declaring
 ``env_passthrough = ["CIU_IMAGE_REVISION", "CIU_INSTANCE_ID"]`` with neither set
@@ -27,7 +27,9 @@ name that is simply unset is an environment fact (caught at run).
 
 from __future__ import annotations
 
+import hashlib
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -216,12 +218,10 @@ def test_a_partially_satisfied_requirement_still_refuses(
     assert document["reason_code"] == ReasonCode.BAD_LANE_CONFIG.value
 
 
-def test_satisfied_requirements_pass_and_record_both_values_verbatim(
+def test_satisfied_requirements_pass_and_fingerprint_both_passthrough_values(
     git_repo: GitRepo, tmp_path: Path, monkeypatch
 ):
-    """The positive, and the thing a consumer actually wants: the identities are
-    in the artifact, byte-for-byte, so "which instance produced this verdict" is
-    answerable FROM the artifact rather than asserted by whoever ran it."""
+    """The positive: names and digests are recorded without exposing values."""
     repo = _repo(git_repo, required=["CIU_IMAGE_REVISION", "CIU_INSTANCE_ID"])
     code, document = _run(
         repo, tmp_path / "v.json",
@@ -230,8 +230,17 @@ def test_satisfied_requirements_pass_and_record_both_values_verbatim(
     )
     assert code == 0
     assert document["outcome"] == "PASS"
-    assert document["env_effective"]["CIU_IMAGE_REVISION"] == "1b369e23"
-    assert document["env_effective"]["CIU_INSTANCE_ID"] == "dstdns-pkgP96"
+    assert document["env_effective"]["CIU_IMAGE_REVISION"] == "<passthrough>"
+    assert document["env_effective"]["CIU_INSTANCE_ID"] == "<passthrough>"
+    expected_digests = {
+        "CIU_IMAGE_REVISION": hashlib.sha256(b"1b369e23").hexdigest(),
+        "CIU_INSTANCE_ID": hashlib.sha256(b"dstdns-pkgP96").hexdigest(),
+    }
+    if "PATH" in os.environ:
+        expected_digests["PATH"] = hashlib.sha256(
+            os.environ["PATH"].encode("utf-8", errors="surrogateescape")
+        ).hexdigest()
+    assert document["env_effective_passthrough_sha256"] == expected_digests
     assert document["env_passthrough"] == [
         "PATH", "CIU_IMAGE_REVISION", "CIU_INSTANCE_ID"
     ]
@@ -264,7 +273,10 @@ def test_a_project_default_is_recorded_in_the_run_verdict(
 
     assert code == 0
     assert document["env_passthrough"] == ["BUILD_VERSION", "PATH"]
-    assert document["env_effective"]["BUILD_VERSION"] == "release-42"
+    assert document["env_effective"]["BUILD_VERSION"] == "<passthrough>"
+    assert document["env_effective_passthrough_sha256"]["BUILD_VERSION"] == (
+        hashlib.sha256(b"release-42").hexdigest()
+    )
     assert verify_document(document) == []
 
 

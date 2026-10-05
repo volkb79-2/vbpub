@@ -95,6 +95,14 @@
         "minLength": 1
       }
     },
+    "env_effective_passthrough_sha256": {
+      "description": "B142/schema v14: unkeyed SHA-256 fingerprints for the effective passthrough values; keys exactly match present passthrough names in env_effective.",
+      "type": "object",
+      "additionalProperties": {
+        "type": "string",
+        "pattern": "^[0-9a-f]{64}$"
+      }
+    },
     "env_effective_incomplete": {
       "description": "(B025) True exactly when env_effective is NOT the real resolved environment -- a refusal whose own infrastructure declaration was itself unresolvable falls back to the lane's fixed env alone rather than leaving the whole refusal an uncaught exception with no artifact. Omitted (never false) in every other case, matching how every other optional field in this document is represented.",
       "type": "boolean",
@@ -205,7 +213,8 @@
       "env_effective",
       "env_passthrough",
       "scope",
-      "enforcement"
+      "enforcement",
+      "env_effective_passthrough_sha256"
     ],
     "declared_evidence": [
       "declared_rigor",
@@ -217,7 +226,8 @@
       "env_effective",
       "env_passthrough",
       "scope",
-      "enforcement"
+      "enforcement",
+      "env_effective_passthrough_sha256"
     ],
     "argv_declared": [
       "declared_rigor",
@@ -229,7 +239,8 @@
       "env_effective",
       "env_passthrough",
       "scope",
-      "enforcement"
+      "enforcement",
+      "env_effective_passthrough_sha256"
     ],
     "argv_appended": [
       "declared_rigor",
@@ -241,7 +252,8 @@
       "env_effective",
       "env_passthrough",
       "scope",
-      "enforcement"
+      "enforcement",
+      "env_effective_passthrough_sha256"
     ],
     "argv_effective": [
       "declared_rigor",
@@ -253,7 +265,8 @@
       "env_effective",
       "env_passthrough",
       "scope",
-      "enforcement"
+      "enforcement",
+      "env_effective_passthrough_sha256"
     ],
     "argv_modified": [
       "declared_rigor",
@@ -265,7 +278,8 @@
       "env_effective",
       "env_passthrough",
       "scope",
-      "enforcement"
+      "enforcement",
+      "env_effective_passthrough_sha256"
     ],
     "env_declared": [
       "declared_rigor",
@@ -277,7 +291,8 @@
       "env_effective",
       "env_passthrough",
       "scope",
-      "enforcement"
+      "enforcement",
+      "env_effective_passthrough_sha256"
     ],
     "env_effective": [
       "declared_rigor",
@@ -289,7 +304,8 @@
       "env_declared",
       "env_passthrough",
       "scope",
-      "enforcement"
+      "enforcement",
+      "env_effective_passthrough_sha256"
     ],
     "scope": [
       "declared_rigor",
@@ -301,7 +317,8 @@
       "env_declared",
       "env_effective",
       "env_passthrough",
-      "enforcement"
+      "enforcement",
+      "env_effective_passthrough_sha256"
     ],
     "enforcement": [
       "declared_rigor",
@@ -313,7 +330,8 @@
       "env_declared",
       "env_effective",
       "env_passthrough",
-      "scope"
+      "scope",
+      "env_effective_passthrough_sha256"
     ],
     "env_effective_incomplete": [
       "declared_rigor",
@@ -326,7 +344,8 @@
       "env_effective",
       "env_passthrough",
       "scope",
-      "enforcement"
+      "enforcement",
+      "env_effective_passthrough_sha256"
     ],
     "env_passthrough": [
       "declared_rigor",
@@ -337,6 +356,20 @@
       "argv_modified",
       "env_declared",
       "env_effective",
+      "scope",
+      "enforcement",
+      "env_effective_passthrough_sha256"
+    ],
+    "env_effective_passthrough_sha256": [
+      "declared_rigor",
+      "declared_evidence",
+      "argv_declared",
+      "argv_appended",
+      "argv_effective",
+      "argv_modified",
+      "env_declared",
+      "env_effective",
+      "env_passthrough",
       "scope",
       "enforcement"
     ]

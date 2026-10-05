@@ -459,6 +459,7 @@
   "env_effective": {
     "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
   },
+  "env_effective_passthrough_sha256": {},
   "env_passthrough": [],
   "evidence": [],
   "exit_code": 1,

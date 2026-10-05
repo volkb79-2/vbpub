@@ -182,8 +182,8 @@ assay exists to close that gap mechanically, not by policy:
   `judge_sha256`. The key is optional and native-R2-only: omission preserves the
   legacy whole-tree identity exactly, while an explicit empty list is a distinct
   filtered identity domain. `argv`, declared environment names and values,
-  ambient environment names, cwd, links, project prefix, and assay version
-  remain identity inputs. See the
+  infrastructure names, passthrough value fingerprints, cwd, links, project
+  prefix, and assay version remain identity inputs. See the
   [B092 design rationale](docs/DESIGN-GUIDE.md#filtered-native-r2-judge-identity-b092).
 - **Native R2 can selectively replay verified kill witnesses after a fresh
   baseline.** `assay plan --reuse-from` previews candidate classifications;
@@ -200,6 +200,15 @@ assay exists to close that gap mechanically, not by policy:
   state remains `ERROR`/`UNREADABLE_ARTIFACT`. See the
   [refusal design](docs/DESIGN-GUIDE.md#git-dubious-ownership-and-safe-directory-b081)
   and [consumer pitfall](docs/CONSUMERS.md#b081-ownership-remedy).
+- **Passthrough environment values stay out of verdict JSON (B142).** A
+  resolved verdict retains each present variable's name and a fixed marker,
+  with a SHA-256 fingerprint for comparing runs. Exact echoes are masked
+  before tail truncation in command output, crash-resume records, failed probe
+  diagnostics and Go helper refusals. Changed passthrough fingerprints also
+  invalidate mutation resume state. This covers credentials such as a
+  database DSN even when its name does not contain `PASSWORD`. See the
+  [redaction rule](docs/DESIGN-GUIDE.md#redacting-passthrough-environment-values-b142)
+  and [consumer example](docs/CONSUMERS.md#keep-passthrough-secrets-out-of-verdicts-b142).
 - **Zero runtime dependencies.** assay imports nothing but the Python
   standard library. It consumes the *output* of tools like `coverage.py`; it
   never imports them. Adoption risk is close to zero — there is no
@@ -226,6 +235,12 @@ and bump `schema_version` **in the same commit** — see
 for why the order matters and what breaks if you split it across two commits.
 For the verdict-field addition and the effect on old verdicts and reuse, see
 the [v13-to-v14 migration notes](docs/CONSUMERS.md#migration-notes-v13-to-v14).
+The previous cut has its own [v12-to-v13 migration notes](docs/CONSUMERS.md#migration-notes-v12-to-v13).
+In v14, present `env_passthrough` values appear in `env_effective` as
+`"<passthrough>"`; their full SHA-256 fingerprints are in
+`env_effective_passthrough_sha256`. Fixed `env` values and infrastructure facts
+remain recorded as before. The digest is unkeyed and may be guessable for a
+low-entropy value; it supports comparison, not secrecy or authentication.
 
 ## What assay is, and is not
 
@@ -540,10 +555,12 @@ Why the oracle is a subprocess rather than a Python rule:
 
 ### JavaScript/TypeScript coverage and mutation ingestion
 
-`judge.language = "javascript"` resolves at **R1 only** — changed-line
-coverage over `.js`, `.jsx`, `.ts` and `.tsx`. One language name covers all
-four: TypeScript is JavaScript's own superset, JSX/TSX are syntax extensions
-of the two, and every coverage tool in the ecosystem measures them into one
+`judge.language = "javascript"` resolves at **R1 and R2 by ingestion**.
+R1 measures changed-line coverage over `.js`, `.jsx`, `.ts` and `.tsx`; R2
+judges a Stryker report produced by the lane's own command (B046). Assay does
+not generate native JavaScript mutants. One language name covers all four:
+TypeScript is JavaScript's own superset, JSX/TSX are syntax extensions of the
+two, and every coverage tool in the ecosystem measures them into one
 undifferentiated artifact, so splitting them would force a lane touching one
 `.ts` and one `.tsx` file to declare two languages for one measurement.
 
@@ -958,12 +975,12 @@ Two more CLI verbs round out the surface:
 - `assay plan <mutation-lane>` discovers candidates through a private commit
   snapshot, reports total/per-file/per-operator counts and deterministic IDs,
   and estimates runtime without running the lane command or any mutant. Native
-  candidate discovery is required; an ingested R2 lane returns an `unsupported`
-  result with a reason because the foreign report does not expose Assay's
-  candidate inventory. Its JSON carries the lane, `commit` and `tree` it was
-  made at, and the estimate is the declared budget (a placeholder when none is
-  numeric), not a measurement; save
-  the JSON and pass it to `assay analyze plan-estimate` for a measured
+  candidate discovery is required. An ingested R2 lane returns an `unsupported`
+  result because the foreign report does not expose Assay's candidate
+  inventory; it cannot be used with `plan-estimate`. A successful native plan
+  carries the lane, `commit` and `tree` it was made at, and its estimate is the
+  declared budget (a placeholder when none is numeric), not a measurement; save
+  that JSON and pass it to `assay analyze plan-estimate` for a measured
   projection. The B105 R2 driver plans first and its checker refuses a report
   whose campaign is not exactly that complete, unsharded plan at the expected
   commit and tree.

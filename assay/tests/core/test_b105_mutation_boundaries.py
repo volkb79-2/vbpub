@@ -361,6 +361,7 @@ def test_report_paths_refuse_absolute_and_parent_relative_keys(tmp_path, key):
             run_cwd=tmp_path / "repo" / "app",
             repo_top=tmp_path / "repo",
             source_root_paths=(tmp_path / "repo" / "app" / "src",),
+            source_root_files=(),
         )
     assert caught.value.reason_code is ReasonCode.UNREADABLE_ARTIFACT
 
@@ -382,6 +383,7 @@ def test_report_path_outside_repository_is_refused_even_under_a_source_root(
             run_cwd=run_cwd,
             repo_top=repo_top,
             source_root_paths=(outside_sources,),
+            source_root_files=(),
         )
 
     assert caught.value.reason_code is ReasonCode.UNREADABLE_ARTIFACT

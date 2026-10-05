@@ -143,6 +143,7 @@ from .verdict import (
     MutantOutcome,
     MutationProducerTool,
     SourcePosition,
+    _redact_passthrough_text,
     iso_utc,
 )
 from .vocabulary import MUTATION_OPERATORS
@@ -228,7 +229,7 @@ MUTATION_STATE_SCHEMA_VERSION = 1
 #: (B088) The serialization label folded into :func:`judge_sha256`, so a
 #: future change to WHAT the judge identity covers yields visibly different
 #: digests instead of silently comparable ones.
-_JUDGE_DIGEST_LABEL = "assay-judge-identity/2"
+_JUDGE_DIGEST_LABEL = "assay-judge-identity/3"
 
 #: (B088) Returned by :func:`_load_validated_state_record` when a record was
 #: FOUND, is well-formed, and is still not evidence about this run -- its
@@ -506,6 +507,7 @@ def resolve_mutation_targets(
     *,
     repo_top: Path,
     source_root_paths: Sequence[Path],
+    source_root_files: Sequence[str] = (),
     adapter: LanguageAdapter,
     read_source_text: Callable[[str], str],
 ) -> tuple[MutationTarget, ...]:
@@ -520,7 +522,8 @@ def resolve_mutation_targets(
     A changed file becomes a candidate target under the identical gates
     :func:`assay.evaluate.evaluate_coverage`'s own (private)
     ``_is_considered`` already applies for R1 -- under a declared source
-    root, not inside one of the adapter's own excluded directories, and
+    root (directory containment or exact lexical file path), not inside one
+    of the adapter's own excluded directories, and
     matching one of the adapter's own ``source_globs`` -- plus the
     adapter's own :meth:`~assay.adapters.base.LanguageAdapter.is_test_path`
     exclusion. Deliberately a SEPARATE, duplicated copy of that check
@@ -545,7 +548,15 @@ def resolve_mutation_targets(
     for path in sorted(added.by_file):
         lines = added.by_file[path]
         abs_path = (repo_top / path).resolve()
-        if not any(abs_path.is_relative_to(root) for root in source_root_paths):
+        in_directory = any(
+            not root.is_file() and abs_path.is_relative_to(root)
+            for root in source_root_paths
+        )
+        lexical_path = (repo_top / path).absolute()
+        in_file = path in source_root_files or any(
+            root.is_file() and lexical_path == root for root in source_root_paths
+        )
+        if not (in_directory or in_file):
             continue
         if any(part in adapter.excluded_dir_names for part in Path(path).parts[:-1]):
             continue
@@ -1094,20 +1105,18 @@ def judge_sha256(
       value. It is committed configuration, so a verdict produced under a
       different declared ``PYTHONPATH`` really is evidence about a different
       judge, and the value is reproducible across invocations;
-    * the NAMES, but never the values, of everything else in
-      ``plan.env_effective`` -- the ``env_passthrough`` names that were
-      actually present, and any B013 infrastructure fact injected at plan
-      resolution. Folding those VALUES was the first version of this
-      function and it was wrong (round-1 review finding 1, reproduced with a
-      real two-run probe): those values are per-invocation by design --
-      dstdns' ``P165_PHYSICAL_REPO_ROOT`` is literally the worktree's host
-      path, ``SCHEMA_GATE_DSN`` is a per-instance DSN, and nyxloom's
-      ``session-extract`` passes ``TERM``, whose mere presence differs
-      between an interactive run and a wrapped one. Folding them by value
-      made resume IMPOSSIBLE across exactly the ephemeral-checkout case
-      B066/RG-38 built ``--state-dir`` for, silently and permanently. The
-      name set still moves when a lane starts or stops passing something
-      through, which is the part a lane actually declares;
+    * the NAMES of everything else in ``plan.env_effective`` -- the
+      ``env_passthrough`` names that were actually present, and any B013
+      infrastructure fact injected at plan resolution. For a present
+      ``env_passthrough`` name, its SHA-256 value fingerprint is folded in
+      too. B142 makes those values explicit verifier evidence, and mutation
+      resume must not combine candidate outcomes judged under one DSN or
+      credential with a verdict describing another. The fingerprint keeps
+      the value itself out of state identity material, while retaining the
+      same low-entropy guessing limit documented for verdict fingerprints.
+      Changed per-worktree paths and interactive ``TERM`` values therefore
+      cause a safe cache miss. Infrastructure values remain name-only under
+      B088's existing rule;
     * ``plan.cwd_declared`` and ``plan.project_prefix`` -- WHERE it runs,
       which decides what relative paths in argv even resolve to;
     * *link_paths* -- the lane's declared ``[isolation] link_paths``
@@ -1130,9 +1139,9 @@ def judge_sha256(
       widen an existing guarantee: CONSUMERS.md already states that a lane
       declaring ``link_paths`` is only as reproducible as the linked
       directory;
-    * the VALUES of passthrough/infrastructure names, per the above -- a
-      lane that genuinely needs a passed-through value to be part of the
-      identity should declare it in ``env`` instead, where it is folded;
+    * the VALUES of B013 infrastructure names remain outside this identity
+      under B088's existing rule. A lane whose judgment depends on one of
+      those facts still needs a future explicit identity policy;
     * the per-candidate budget is not folded in. Raising a budget and
       resuming still replays a stale ``budget_exceeded``; that is a real,
       separate defect of the same family, noted as a residual on B088 rather
@@ -1156,7 +1165,16 @@ def judge_sha256(
         parts.extend((netstring(name), netstring(value)))
     ambient = sorted(set(plan.env_effective) - set(plan.env_declared))
     parts.append(str(len(ambient)))
-    parts.extend(netstring(name) for name in ambient)
+    passthrough = set(plan.env_passthrough)
+    for name in ambient:
+        parts.append(netstring(name))
+        if name in passthrough:
+            value_sha256 = hashlib.sha256(
+                plan.env_effective[name].encode("utf-8", errors="surrogateescape")
+            ).hexdigest()
+            parts.extend((netstring("passthrough-value"), netstring(value_sha256)))
+        else:
+            parts.append(netstring("name-only"))
     parts.append(netstring("" if plan.cwd_declared is None else str(plan.cwd_declared)))
     parts.append(
         netstring("" if plan.project_prefix is None else str(plan.project_prefix))
@@ -1239,16 +1257,25 @@ def _crash_diagnostic_tails(
 
     This file is diagnostic state, NOT a verified artifact: nothing about
     ``assay verify``, the verdict wire format, or resume validation changes.
-    ``_load_validated_state_record`` checks named keys and tolerates extra
-    ones, so an older record without these fields resumes exactly as before.
+    Exact present passthrough values are masked before the record is written,
+    while older records without these fields still resume exactly as before.
     """
     if outcome_bucket != "crashed":
         return {}
     tails: dict[str, str] = {}
+    passthrough_values = tuple(
+        result.plan.env_effective[name]
+        for name in result.plan.env_passthrough
+        if name in result.plan.env_effective
+    )
     if result.stdout_tail is not None:
-        tails["result_stdout_tail"] = result.stdout_tail
+        tails["result_stdout_tail"] = _redact_passthrough_text(
+            result.stdout_tail, passthrough_values
+        )
     if result.stderr_tail is not None:
-        tails["result_stderr_tail"] = result.stderr_tail
+        tails["result_stderr_tail"] = _redact_passthrough_text(
+            result.stderr_tail, passthrough_values
+        )
     return tails
 
 
@@ -3484,6 +3511,7 @@ def ingest_mutation_report(
     run_cwd: Path,
     repo_top: Path,
     source_root_paths: Sequence[Path],
+    source_root_files: Sequence[str],
     mode: str,
     added: AddedLines | None,
     targets: Sequence[str] | None,
@@ -3535,7 +3563,11 @@ def ingest_mutation_report(
 
     _check_report_project_root(report, run_cwd=run_cwd)
     wire_paths = _resolve_report_paths(
-        report, run_cwd=run_cwd, repo_top=repo_top, source_root_paths=source_root_paths
+        report,
+        run_cwd=run_cwd,
+        repo_top=repo_top,
+        source_root_paths=source_root_paths,
+        source_root_files=source_root_files,
     )
     # (B052/DA-D5) Tier three, CONTENT, in tier order and before a single
     # mutant is bucketed. It runs third because it depends on the second: the
@@ -3697,9 +3729,13 @@ def _resolve_report_paths(
     run_cwd: Path,
     repo_top: Path,
     source_root_paths: Sequence[Path],
+    source_root_files: Sequence[str],
 ) -> Mapping[str, str]:
-    """B046 non-repudiation (iii), second half: every ``files`` key resolves
-    under a declared source root, and to its repo-top-relative wire spelling.
+    """B046 non-repudiation (iii), second half: every ``files`` key belongs
+    to a declared source root, and resolves to its repo-top-relative wire
+    spelling. Directory roots use resolved containment; exact-file roots
+    compare the report's lexical path before following symlinks, so a sibling
+    alias cannot widen the declared file.
 
     A key that does not is ``ERROR``/``UNREADABLE_ARTIFACT`` -- "an artifact
     from elsewhere" -- rather than a file quietly skipped. The distinction is
@@ -3716,10 +3752,27 @@ def _resolve_report_paths(
                 outcome=Outcome.ERROR,
                 reason_code=ReasonCode.UNREADABLE_ARTIFACT,
             )
-        absolute = (run_cwd / key).resolve()
-        if not any(
-            absolute.is_relative_to(Path(root).resolve()) for root in source_root_paths
-        ):
+        lexical_absolute = (run_cwd / key).absolute()
+        absolute = lexical_absolute.resolve()
+        try:
+            lexical_repo_path = lexical_absolute.relative_to(
+                Path(repo_top).absolute()
+            ).as_posix()
+        except ValueError:
+            lexical_repo_path = None
+        under_declared_file = (
+            lexical_repo_path in source_root_files
+            or any(
+                Path(root).is_file() and lexical_absolute == Path(root)
+                for root in source_root_paths
+            )
+        )
+        under_declared_directory = any(
+            not Path(root).is_file()
+            and absolute.is_relative_to(Path(root).resolve())
+            for root in source_root_paths
+        )
+        if not (under_declared_file or under_declared_directory):
             raise AssayError(
                 f"mutation report names file {key!r}, which resolves to "
                 f"{absolute} -- not under any declared judge.source_roots "

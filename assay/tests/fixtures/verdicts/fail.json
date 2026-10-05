@@ -40,9 +40,10 @@
   },
   "env_effective": {
     "TZ": "UTC",
-    "PATH": "/usr/bin"
+    "PATH": "<passthrough>"
   },
   "env_passthrough": ["PATH"],
+  "env_effective_passthrough_sha256": {"PATH":"33629c0e654360bfd8ab5089302a26e27dce5044d624b22f51fcbc66f1e0d19c"},
   "scope": "S1",
   "enforcement": "gate",
   "judgment": {

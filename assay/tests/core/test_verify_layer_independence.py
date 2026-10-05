@@ -125,6 +125,7 @@ def _r2_document(*, bucket: str, operator: str) -> dict:
         "env_declared": {},
         "env_effective": {},
         "env_passthrough": [],
+        "env_effective_passthrough_sha256": {},
         "scope": "S1",
         "enforcement": "gate",
         "snapshot_policy": {"selection": "repository"},
@@ -530,6 +531,7 @@ def _sql_r2_document(*, language: str = "sql", **overrides) -> dict:
         "env_declared": {},
         "env_effective": {},
         "env_passthrough": [],
+        "env_effective_passthrough_sha256": {},
         "scope": "S1",
         "enforcement": "gate",
         "snapshot_policy": {"selection": "repository"},
@@ -903,6 +905,27 @@ def test_verify_document_accepts_a_real_env_effective_incomplete_value():
     document = _sql_r2_document()
     document["env_effective_incomplete"] = True
     assert verify.verify_document(document) == []
+
+
+def test_raw_lane_group_requires_redacted_passthrough_values_and_matching_digests():
+    document = _sql_r2_document()
+    document["env_passthrough"] = ["SCHEMA_GATE_DSN"]
+    document["env_effective"] = {"SCHEMA_GATE_DSN": "<passthrough>"}
+    document["env_effective_passthrough_sha256"] = {
+        "SCHEMA_GATE_DSN": "a" * 64
+    }
+    assert _raw(verify._check_lane_resolved_group, document) == []
+    assert verify.verify_document(document) == []
+
+    leaked = copy.deepcopy(document)
+    leaked["env_effective"]["SCHEMA_GATE_DSN"] = "postgresql://u:p@db/schema"
+    failures = _raw(verify._check_lane_resolved_group, leaked)
+    assert failures and any("must be '<passthrough>'" in item for item in failures)
+
+    malformed = copy.deepcopy(document)
+    malformed["env_effective_passthrough_sha256"]["SCHEMA_GATE_DSN"] = "A" * 64
+    failures = _raw(verify._check_lane_resolved_group, malformed)
+    assert failures and any("64 lowercase hexadecimal" in item for item in failures)
 
 
 def test_raw_layer_clause_equivalent_entries_require_a_declared_artifact():

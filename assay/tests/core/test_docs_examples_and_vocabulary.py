@@ -49,7 +49,11 @@ from assay.config import (
     load_lane_file,
 )
 from assay.coverage import FORMAT_REGISTRY
-from assay.verdict import JUDGE_ARTIFACT_KINDS, ReasonCode
+from assay.verdict import (
+    JUDGE_ARTIFACT_KINDS,
+    ReasonCode,
+    VERDICT_SCHEMA_VERSION,
+)
 from assay.vocabulary import (
     COVERAGE_PRODUCERS_BY_FORMAT,
     COVERAGE_PRODUCER_REQUIRED_FORMATS,
@@ -63,6 +67,113 @@ README = REPO_ROOT / "README.md"
 CONSUMERS = REPO_ROOT / "docs" / "CONSUMERS.md"
 DESIGN_GUIDE = REPO_ROOT / "docs" / "DESIGN-GUIDE.md"
 DOCS = (README, CONSUMERS, DESIGN_GUIDE)
+ASSAY_CLI_SKILL = REPO_ROOT / ".claude" / "skills" / "assay-cli" / "SKILL.md"
+
+_LANGUAGE_DISPLAY_NAMES = {
+    "python": "Python",
+    "javascript": "JavaScript",
+    "go": "Go",
+    "sql": "SQL",
+}
+_INGESTED_ONLY_SKILL_CAPABILITIES = {("javascript", "R2")}
+
+
+def _required_cli_skill_capabilities() -> set[str]:
+    """Derive native pairs from the same registry the CLI run path uses.
+
+    R0 is adapter-free. JavaScript R2 is admitted by that registry only for
+    B046's ingested Stryker report path, so the skill must preserve that
+    qualifier rather than imply a native JavaScript mutation engine.
+    """
+    required = {"R0"}
+    for language, entry in _built_in_registry().entries.items():
+        display = _LANGUAGE_DISPLAY_NAMES[language]
+        for level in entry.rigor:
+            label = f"{display} {level}"
+            if (language, level) in _INGESTED_ONLY_SKILL_CAPABILITIES:
+                label += " (ingested Stryker report, B046)"
+            required.add(label)
+    return required
+
+
+def _assert_cli_skill_capability_items(items: set[str]) -> None:
+    expected = _required_cli_skill_capabilities()
+    assert items == expected, (
+        "assay-cli SKILL.md capability list differs from the CLI registry; "
+        f"missing={sorted(expected - items)}, unexpected={sorted(items - expected)}"
+    )
+
+
+def _cli_skill_capability_items(text: str) -> set[str]:
+    section = text.split("## What this build evaluates", 1)[1]
+    match = re.search(r"\n\n(?P<items>.*?)\.", section, re.DOTALL)
+    assert match, "assay-cli SKILL.md has no capability sentence"
+    return set(re.sub(r"\s+", " ", match.group("items")).split(", "))
+
+
+def _assert_recent_verdict_migrations_are_documented(
+    consumer_text: str, current_version: int
+) -> None:
+    expected = {
+        (old_version, old_version + 1)
+        for old_version in range(current_version - 2, current_version)
+    }
+    documented = {
+        (int(before), int(after))
+        for before, after in re.findall(
+            r"^## (?:Historical )?Migration notes \(v(\d+)\s*(?:to|→|->)\s*v(\d+)\)$",
+            consumer_text,
+            re.MULTILINE,
+        )
+    }
+    missing = sorted(expected - documented)
+    assert not missing, (
+        "CONSUMERS.md is missing migration notes for recent verdict schema "
+        f"cut(s): {missing}"
+    )
+
+
+def test_consumers_covers_the_latest_two_verdict_schema_cuts():
+    changes = (REPO_ROOT / "CHANGES.md").read_text(encoding="utf-8")
+    unreleased = changes.split("## [Unreleased]", 1)[1].split("## [", 1)[0]
+    assert f"verdict schema v{VERDICT_SCHEMA_VERSION}" in unreleased
+    consumer_text = CONSUMERS.read_text(encoding="utf-8")
+    _assert_recent_verdict_migrations_are_documented(
+        consumer_text, VERDICT_SCHEMA_VERSION
+    )
+
+
+def test_consumers_migration_check_detects_a_missing_recent_cut():
+    consumer_text = CONSUMERS.read_text(encoding="utf-8")
+    broken = consumer_text.replace("## Migration notes (v12 to v13)\n", "", 1)
+    with pytest.raises(AssertionError, match=r"\(12, 13\)"):
+        _assert_recent_verdict_migrations_are_documented(
+            broken, VERDICT_SCHEMA_VERSION
+        )
+
+
+def test_assay_cli_skill_capabilities_match_the_current_registry():
+    skill = ASSAY_CLI_SKILL.read_text(encoding="utf-8")
+    items = _cli_skill_capability_items(skill)
+    _assert_cli_skill_capability_items(items)
+    assert "CONSUMERS" in skill
+    readme = README.read_text(encoding="utf-8")
+    assert "JavaScript/TypeScript is supported at **R1 and R2 by ingestion**" in readme
+    assert (
+        '`judge.language = "javascript"` resolves at **R1 and R2 by ingestion**.'
+        in readme
+    )
+    design = DESIGN_GUIDE.read_text(encoding="utf-8")
+    assert "`javascript` | R1, R2 by ingestion only (B046)" in design
+    assert "`go` | R1 only (A-394)" in design
+
+
+def test_assay_cli_skill_capability_check_detects_a_missing_ingested_pair():
+    skill = ASSAY_CLI_SKILL.read_text(encoding="utf-8")
+    items = _cli_skill_capability_items(skill)
+    items.discard("JavaScript R2 (ingested Stryker report, B046)")
+    with pytest.raises(AssertionError, match="missing=.*JavaScript R2"):
+        _assert_cli_skill_capability_items(items)
 
 
 def test_operator_language_is_absent_without_a_nonempty_prefix():

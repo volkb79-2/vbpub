@@ -9632,9 +9632,9 @@ in B021 (silently re-execute, not `MutationStateError`) — it is a routine
 the existing identity fields: a digest of the **content of the judged
 commit's tree** (`isolation._manifest_sha256` — every leaf's path, file mode
 and Git object id, plus the declared unsafe-symlink omissions) together with
-the **resolved `argv`, the lane's declared `env` by value, the NAMES (never
-the values) of whatever else the resolved environment carried, `cwd`, the
-project prefix, the declared `link_paths` and assay's own version**
+the **resolved `argv`, the lane's declared `env` by value, the names plus
+value fingerprints of present `env_passthrough` values, infrastructure names,
+`cwd`, the project prefix, the declared `link_paths` and assay's own version**
 (`mutation.judge_sha256`). `_load_validated_state_record`
 checks it LAST, after every identity-vs-filename check, so a routine test
 edit can never launder a hand-edited state file into a silent rerun; a
@@ -9656,9 +9656,8 @@ per-TREE, not per-commit — identical trees at different commits still resume
 each other (also pinned by a test, because a commit id would have been the
 cheap identity and would have silently broken that) — and the uses
 `--state-dir` exists for (several worktrees of one commit, budget-capped
-retries, `--shard` fan-out) judge the same tree with the same command and
-keep resuming, including when a per-instance passthrough value differs
-between the runs.
+retries, `--shard` fan-out) still apply when the tree, command and passthrough
+values match. A changed passthrough value now causes a safe cache miss (A-482).
 
 **Round-1 independent adversarial review found four confirmed defects in the
 first cut; all four are fixed, and its two suspected findings were adopted
@@ -9731,13 +9730,12 @@ source byte-identical. Gate-verified: `run-gate.py tester-unified`, R0 PASS.
    fold. This does not widen an existing guarantee — CONSUMERS.md already
    states a lane declaring `link_paths` is only as reproducible as the
    linked directory — but it is a real blind spot for such lanes.
-4. **The VALUES of passthrough/`infrastructure` names are not folded in**,
-   per round-1 finding 1 above. A lane whose judgment genuinely depends on a
-   passed-through value (a DSN pointing at a different database with
-   different fixture data) can still replay a verdict produced against the
-   other one. The declared-vs-ambient split is the best available line — a
-   lane that needs such a value in the identity should declare it in `env`
-   — but the residual is real and should be named rather than assumed away.
+4. **The VALUES of passthrough/`infrastructure` names were not folded in**,
+   per round-1 finding 1 above. B142/A-482 resolves the passthrough half:
+   the judge digest now includes a per-name fingerprint, so a DSN pointing at
+   different fixture data cannot reuse the other campaign's candidate
+   outcomes. B013 infrastructure values remain name-only under that older
+   ruling and are still a residual.
 5. **A shard summary carries no judge identity.** `_SHARD_REQUIRED_KEYS`
    refuses unknown keys, so a fan-out merge still proves only lane + commit
    + exact coverage: shards produced under different judging environments
@@ -11784,17 +11782,17 @@ Fix: add both names in pytest's own precedence order, and check the order agains
 
 **Proposed contract:** add "Migration notes (v12 -> v13)" listing: what `assay verify` now refuses, what archived verdicts need regenerating, what reuse does on a v12 prior, any lane-file changes, and the order of consumer steps. Note: B125 (latest schema only) may intend to prune historical notes; decide whether the most recent cut is exempt.
 
-**Oracle:** a docs test or checklist that every `schema_version` bump in CHANGES has a matching CONSUMERS migration heading.
+**Oracle:** a docs regression check derives the latest two schema cuts from the shipped schema version and requires a matching CONSUMERS migration heading for each; its must-fail control removes the v12-to-v13 heading.
 
 ## B139 — the assay-cli skill omits JavaScript R2 by Stryker ingestion
 
 **Status: OPEN (filed 2026-09-30 from dstdns).**
 
-**Observed:** the canonical `assay/.claude/skills/assay-cli/SKILL.md` section "What this build evaluates" (l.97-102) lists "R0, Python R1, Python R2, Python R3, JavaScript R1, Go R1, SQL R2". CONSUMERS.md (l.1267-1273, B046 section l.1887) documents JavaScript R2 by ingestion of the lane's own StrykerJS report. An agent following the skill concludes JS R2 is a capability gap and may route around it, which the same paragraph tells it not to do.
+**Observed:** the canonical `assay/.claude/skills/assay-cli/SKILL.md` section "What this build evaluates" (l.97-102) lists "R0, Python R1, Python R2, Python R3, JavaScript R1, Go R1, SQL R2". CONSUMERS.md (B046 section) documents JavaScript R2 by ingestion of the lane's own StrykerJS report, while the README's JavaScript section and DESIGN-GUIDE's adapter table still say R1 only. An agent following any of those copies can conclude JS R2 is a capability gap or miss that it is ingestion-only.
 
-**Proposed fix:** add "JavaScript R2 (ingested Stryker report, B046)" and point at CONSUMERS. Do not edit dstdns's vendored copy; it syncs from the canonical skill.
+**Proposed fix:** synchronize the canonical skill, README and DESIGN-GUIDE with the closed registry and the B046 ingestion boundary. Do not edit dstdns's vendored copy; it syncs from the canonical skill.
 
-**Oracle:** a test that derives the skill's capability list from `assay lanes --json` capability output or from the registry and compares it, so the list cannot drift again (controlled wrong: remove an entry and see it fail).
+**Oracle:** a test derives the skill's capability list from the CLI registry, compares it including the JavaScript R2 ingestion qualifier, checks the README and DESIGN-GUIDE's current JavaScript/Go capability statements, and has a controlled missing-entry failure.
 
 ## B140 — no project-level default for `env_passthrough`
 
@@ -11820,11 +11818,11 @@ Fix: add both names in pytest's own precedence order, and check the order agains
 
 **Proposed fix direction:** (a) allow `judge.source_roots` entries that name a regular file (same containment and existence checks; `is_relative_to` becomes equality for a file root), or (b) for `judge.mode = "changed_lines"` accept `judge.targets` as a filter on the changed-line set (intersection with source_roots), refusing a target outside the roots. Either must keep the typo guard (A-016/A-035: a root matching nothing must not yield 0/0 PASS).
 
-**Oracles:** a file-level root excludes a changed sibling file in the same directory from judgment; a directory root behaves unchanged; a root naming a missing file refuses by name; a controlled wrong implementation that treats a file root as its parent directory must fail the sibling-exclusion oracle.
+**Oracles:** a file-level root excludes a changed sibling file in the same directory and a changed sibling symlink pointing to the declared file from both R1 and R2; a directory root behaves unchanged; a root naming a missing file refuses by name; a controlled wrong implementation that treats a file root as its parent directory or resolves a changed sibling before exact-path comparison must fail the exclusion oracle.
 
 **Found in:** dstdns 2026-09-30, R2 campaign package P214 (changed-lines lanes), decision D-577.
 
-## B142 — verdict JSON writes `env_passthrough` values verbatim: secrets (database passwords, DSNs with credentials) land in plain text in every verdict file
+## B142 — passthrough secrets and command-output echoes land in verdict JSON
 
 **Status: OPEN (filed 2026-10-04 from dstdns, P241 gate diagnosis; source-grounded; assay 7.2.0).**
 
@@ -11832,13 +11830,15 @@ Fix: add both names in pytest's own precedence order, and check the order agains
 
 **Why assay owns it:** the verdict schema and its writer are assay's. A consumer cannot keep a credential out of `env_effective` without also keeping it out of the lane's environment, which breaks the lane.
 
-**Proposed contract:** the verdict records `env_effective` NAMES with their provenance (declared / infrastructure / passthrough), never passthrough VALUES. Either (a) every passthrough value becomes a fixed marker (`"<passthrough>"`) plus a SHA-256 prefix for identity comparison, or (b) values are kept only for a lane-declared `env_record_values = [...]` allowlist (default empty). Declared `env` values (committed in `assay.toml`, so not secret by construction) and infrastructure facts stay as they are. `assay verify` compares markers/digests, not values. The verdict schema version bumps; CHANGES carries the consumer note.
+**Chosen contract (A-481, amended by A-482):** producer execution keeps the raw environment, while serialization replaces every present `env_passthrough` value in `env_effective` with `"<passthrough>"` and adds `env_effective_passthrough_sha256`, a full unkeyed SHA-256 map keyed by exactly the present passthrough names. Exact occurrences of present passthrough values are masked with same-byte-width asterisks **before output-tail truncation** in verdict stdout/stderr, crashed-candidate mutation-state tails, failed environment-probe diagnostics, and the Go statement-position helper's stderr refusal. Allowed but absent names remain in `env_passthrough` and have neither an effective marker nor a digest. Declared `env` values and infrastructure facts stay as they are. Native mutation `judge_sha256` includes a SHA-256 fingerprint for each present passthrough value (identity label `/3`), so a candidate outcome from one DSN cannot be resumed into a verdict for another. This trades reuse across changed worktree paths or interactive `TERM` values for judge-state agreement; equal values across worktrees still resume. Infrastructure values remain name-only under B088. The new verdict field ships in the existing, not-yet-released v14 shape; consumers compare its digest values across verdicts. `assay verify` validates marker, keys and digest format but cannot compare a saved digest with an ambient value it cannot see. SHA-256 is useful for equality/change comparison, not secrecy or authentication, and may expose guessable low-entropy values.
 
 **Oracles:**
-- a lane passing through `X_PASSWORD=s3cr3t` produces a verdict whose bytes do not contain `s3cr3t`, on PASS, FAIL, BUDGET_EXCEEDED and refusal outcomes alike;
-- the name `X_PASSWORD` and its provenance are still present;
-- a declared `env` value is still recorded verbatim;
-- `assay verify` on such a verdict still passes, and fails when the passthrough value changed (digest mismatch);
+- on PASS, FAIL, BUDGET_EXCEEDED, NO_MEASUREMENT and resolved refusal outcomes, `env_effective` contains no raw passthrough value and exact command-tail echoes of either `X_PASSWORD=s3cr3t` or `SCHEMA_GATE_DSN=postgresql://u:p@h/db` are masked;
+- command stdout/stderr tails, including a secret crossing the retained-tail cutoff, crashed-candidate mutation-state tails, failing environment-probe diagnostics, and Go statement-position helper stderr refusals that echo either exact value are masked while retaining the existing bounds;
+- two native resume plans that differ only in a present passthrough value have different `judge_sha256`; equal values across plans keep the same identity;
+- each present passthrough name has the fixed marker and a matching digest entry; declared `env` values remain verbatim;
+- `assay verify` accepts a well-formed redacted verdict and rejects a leaked passthrough value, a mismatched digest-key set or malformed digest;
+- changing a passthrough value before a second run changes its digest, detectable by comparing the two verdicts;
 - controlled wrong implementation: redacting only names matching `*PASSWORD*` must fail a test that passes through `SCHEMA_GATE_DSN=postgresql://u:p@h/db`.
 
 **Found in:** dstdns 2026-10-04, P241 composite `assay` lane diagnosis (`.assay/verdict-mock.json`); decision record D-670.

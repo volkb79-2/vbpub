@@ -23,9 +23,10 @@ re-run of the exact byte-range mutation — to read text ``execute_command``
 had already captured during the original run.
 
 Scope, per the wave's ruling: the ``crashed`` bucket only, and the
-mutation-state record only. ``write_progress``'s payload is deliberately
-untouched, and ``killed``/``survived``/``budget_exceeded`` records keep
-exactly the shape and size they had.
+mutation-state record only. B142 additionally masks exact passthrough values
+from the saved tails. ``write_progress``'s payload is deliberately untouched,
+and ``killed``/``survived``/``budget_exceeded`` records keep exactly the
+shape and size they had.
 """
 
 from __future__ import annotations
@@ -34,6 +35,7 @@ import json
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 from conftest import GitRepo, make_deadline, make_lane, make_plan, prepared_snapshot
 
@@ -94,13 +96,20 @@ def _run(
     state_root: Path,
     process_runner,
     equivalence: bool,
+    passthrough_source: dict[str, str] | None = None,
 ):
     scratch = tmp_path / "scratch"
     scratch.mkdir(parents=True, exist_ok=True)
     state_root.mkdir(parents=True, exist_ok=True)
+    source = {} if passthrough_source is None else passthrough_source
+    lane = make_lane(
+        argv=("pytest", "-q"),
+        env_passthrough=tuple(source),
+    )
     baseline = execute_command(
-        make_lane(argv=("pytest", "-q")),
+        lane,
         cwd=repo.path,
+        passthrough_source=source,
         process_runner=lambda argv, *, env, cwd, timeout: subprocess.CompletedProcess(
             list(argv), returncode=0
         ),
@@ -118,7 +127,7 @@ def _run(
         return run_mutation(
             baseline=baseline,
             prepared=prepared,
-            plan=make_plan(make_lane(argv=("pytest", "-q"))),
+            plan=make_plan(lane, passthrough_source=source),
             deadline=make_deadline(),
             targets=_TARGETS,
             adapter=PythonAdapter(),
@@ -172,6 +181,39 @@ def test_a_crashed_candidates_record_carries_the_stderr_that_explains_it(
         assert "no unique constraint matching given keys" in record["result_stderr_tail"]
         assert "work_units" in record["result_stderr_tail"]
         assert record["result_stdout_tail"] == "applying 03c-create-workflow-core.sql\n"
+
+
+def test_a_crashed_state_record_masks_exact_passthrough_values(tmp_path: Path):
+    repo = _repo(tmp_path)
+    state_root = tmp_path / "state"
+    secret = "postgresql://dstdns:dsn-secret@db/schema"
+
+    def echo_dsn_then_fail(argv, *, env, cwd, timeout):
+        return subprocess.CompletedProcess(
+            list(argv),
+            returncode=1,
+            stdout=f"connecting {secret}\n",
+            stderr=f"{_REAL_STDERR}dsn={secret}\n",
+        )
+
+    result = _run(
+        repo,
+        tmp_path,
+        state_root=state_root,
+        process_runner=echo_dsn_then_fail,
+        equivalence=True,
+        passthrough_source={"SCHEMA_GATE_DSN": secret},
+    )
+
+    assert not isinstance(result, str)
+    assert len(result.crashed) == result.total > 0
+    records = _records(state_root)
+    assert records
+    for record in records:
+        encoded = json.dumps(record)
+        assert secret not in encoded
+        assert "connecting " + "*" * len(secret) in record["result_stdout_tail"]
+        assert "dsn=" + "*" * len(secret) in record["result_stderr_tail"]
 
 
 def test_a_killed_candidates_record_is_unaffected_in_shape_and_size(tmp_path: Path):
@@ -267,6 +309,27 @@ def test_a_crashed_record_still_resumes(tmp_path: Path):
     assert len(resumed.crashed) == first.total
 
 
+def _bare_command_result(
+    stdout_tail: str | None,
+    stderr_tail: str | None,
+    *,
+    env_effective: dict[str, str] | None = None,
+    env_passthrough: tuple[str, ...] = (),
+) -> CommandResult:
+    result = CommandResult.__new__(CommandResult)
+    object.__setattr__(
+        result,
+        "plan",
+        SimpleNamespace(
+            env_effective={} if env_effective is None else env_effective,
+            env_passthrough=env_passthrough,
+        ),
+    )
+    object.__setattr__(result, "stdout_tail", stdout_tail)
+    object.__setattr__(result, "stderr_tail", stderr_tail)
+    return result
+
+
 # --- the size argument, pinned rather than left as arithmetic ------------------
 
 
@@ -283,9 +346,7 @@ def test_two_maximal_tails_still_fit_the_readers_own_record_limit():
     from assay import mutation
 
     worst = "\x7f" * COMMAND_TAIL_BYTES  # 1 byte encoded, 6 bytes as 
-    result = CommandResult.__new__(CommandResult)
-    object.__setattr__(result, "stdout_tail", worst)
-    object.__setattr__(result, "stderr_tail", worst)
+    result = _bare_command_result(worst, worst)
 
     tails = mutation._crash_diagnostic_tails("crashed", result)
     payload = {
@@ -307,9 +368,7 @@ def test_two_maximal_tails_still_fit_the_readers_own_record_limit():
 def test_the_helper_emits_nothing_for_every_non_crashed_bucket():
     from assay import mutation
 
-    result = CommandResult.__new__(CommandResult)
-    object.__setattr__(result, "stdout_tail", "out")
-    object.__setattr__(result, "stderr_tail", "err")
+    result = _bare_command_result("out", "err")
     for bucket in ("killed", "survived", "budget_exceeded", "equivalent"):
         assert mutation._crash_diagnostic_tails(bucket, result) == {}
 
@@ -320,9 +379,7 @@ def test_an_empty_stream_is_recorded_as_empty_not_omitted():
     all."""
     from assay import mutation
 
-    result = CommandResult.__new__(CommandResult)
-    object.__setattr__(result, "stdout_tail", "")
-    object.__setattr__(result, "stderr_tail", "boom\n")
+    result = _bare_command_result("", "boom\n")
     assert mutation._crash_diagnostic_tails("crashed", result) == {
         "result_stdout_tail": "",
         "result_stderr_tail": "boom\n",
@@ -332,7 +389,5 @@ def test_an_empty_stream_is_recorded_as_empty_not_omitted():
 def test_absent_tails_are_omitted_rather_than_written_as_null():
     from assay import mutation
 
-    result = CommandResult.__new__(CommandResult)
-    object.__setattr__(result, "stdout_tail", None)
-    object.__setattr__(result, "stderr_tail", None)
+    result = _bare_command_result(None, None)
     assert mutation._crash_diagnostic_tails("crashed", result) == {}

@@ -1248,6 +1248,7 @@ def test_verify_skips_r2_rederivation_when_a_payload_less_claim_has_no_r0_siblin
         "env_declared": {},
         "env_effective": {},
         "env_passthrough": [],
+        "env_effective_passthrough_sha256": {},
         "scope": "S1",
         "enforcement": "gate",
         "snapshot_policy": {"selection": "repository"},
@@ -1375,7 +1376,7 @@ def test_verify_refuses_every_non_current_schema_version_with_one_diagnostic(ver
 #: Carries forward the retired W9 gate phase's
 #: `test_shipped_schema_is_byte_identical_to_the_locked_v14_asset`.
 _VERDICT_SCHEMA_SHA256 = {
-    14: "eb725bbd87be7fac77436d59c3588dc37b9761c7930ffe744939fb2b9cdfa3d3",
+    14: "6f5a7862885a191aeab5052e335599e95da92d6ecda12d0885fe7c60b94084a9",
 }
 
 

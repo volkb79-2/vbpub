@@ -33,6 +33,7 @@ def _evaluate(
     source_texts=None,
     allow_excluded=False,
     source_root_paths=None,
+    source_root_files=(),
 ):
     texts = source_texts or {}
 
@@ -50,6 +51,7 @@ def _evaluate(
             if source_root_paths is None
             else tuple(source_root_paths)
         ),
+        source_root_files=source_root_files,
         fail_under=100.0,
         allow_excluded=allow_excluded,
         read_source_text=read_source_text,
@@ -204,12 +206,52 @@ def test_a_file_source_root_excludes_changed_sibling_files_from_judgment():
         profile,
         adapter,
         source_root_paths=(REPO_TOP / "pkg" / "owned.zzz",),
+        source_root_files=("pkg/owned.zzz",),
     )
 
     assert result.considered == 1
     assert result.executable == 1
     assert result.missing_lines == {"pkg/owned.zzz": frozenset({1})}
     assert result.outcome is Outcome.FAIL
+
+
+def test_a_changed_symlink_sibling_to_a_file_root_stays_outside_r1(tmp_path: Path):
+    repo_top = tmp_path / "repo"
+    package = repo_top / "pkg"
+    package.mkdir(parents=True)
+    owned = package / "owned.zzz"
+    owned.write_text("owned\n", encoding="utf-8")
+    (package / "alias.zzz").symlink_to(owned.name)
+    paths = ("pkg/owned.zzz", "pkg/alias.zzz")
+    added = AddedLines(
+        by_file=MappingProxyType({path: frozenset({1}) for path in paths})
+    )
+    profile = CoverageProfile(
+        files=MappingProxyType(
+            {
+                path: FileCoverage(
+                    executed=frozenset(), missing=frozenset({1}), excluded=frozenset()
+                )
+                for path in paths
+            }
+        )
+    )
+
+    result = evaluate_coverage(
+        added=added,
+        profile=profile,
+        adapter=FakeAdapter(),
+        repo_top=repo_top,
+        project_root=repo_top,
+        source_root_paths=(owned.resolve(),),
+        source_root_files=("pkg/owned.zzz",),
+        fail_under=100.0,
+        allow_excluded=False,
+        read_source_text=lambda path: (repo_top / path).read_text(encoding="utf-8"),
+    )
+
+    assert result.considered == 1
+    assert result.missing_lines == {"pkg/owned.zzz": frozenset({1})}
 
 
 def test_normalize_coverage_key_reconciles_a_language_specific_prefix():

@@ -24,8 +24,8 @@ reading ``pct`` and ignoring ``outcome`` must find nothing to read. When no lane
 ever resolved there is no ``argv_declared``, not an empty one: ``[]`` asserts
 *"the lane declared no argv"*, which is false. So the lane-resolved group
 (``declared_rigor``, ``declared_evidence``, the three ``argv_*``,
-``argv_modified`` and the two ``env_*``) is all-present or all-absent, and
-:class:`Verdict` refuses a mixture.
+``argv_modified`` and the effective-environment fields) is all-present or
+all-absent, and :class:`Verdict` refuses a mixture.
 
 **One entry per declared rigor level, not a flat verdict** (A-024). A lane
 declaring ``["R0","R1","R2"]`` can pass R0, pass R1 and be ``INCONCLUSIVE`` on
@@ -55,13 +55,14 @@ cherry-picks keys. assay carries its own names.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from .records import record
 from datetime import datetime, timezone
 from importlib.resources import files
 from types import MappingProxyType
-from typing import Any, ClassVar, Iterable, Mapping
+from typing import Any, ClassVar, Iterable, Mapping, Sequence
 
 from .config import (
     ENFORCEMENTS,
@@ -359,12 +360,13 @@ __all__ = [
 #: and current node IDs. ``assay verify`` refuses v12 and v13. ``--reuse-from``
 #: recognizes those envelopes only as unproven full-run cold starts.
 #:
-#: **Bumped 13 -> 14 (B140, effective environment passthrough provenance).**
-#: Every resolved lane now records the effective, stable union of explicit
-#: project-level `[defaults].env_passthrough` and its lane-level list. This is
-#: separate from `env_effective`, which records values actually present in the
-#: invoking environment: the new list also preserves allowed names that were
-#: absent at run time. Producers emit v14, and `assay verify` refuses v13.
+#: **Bumped 13 -> 14 (B140, B142, effective environment provenance).** Every
+#: resolved lane records the effective, stable union of explicit project-level
+#: `[defaults].env_passthrough` and its lane-level list, including allowed
+#: names absent at run time. Present passthrough values are redacted in
+#: `env_effective` and fingerprinted in `env_effective_passthrough_sha256`.
+#: These v14 additions shipped together before the first v14 release; `assay
+#: verify` refuses v13.
 VERDICT_SCHEMA_VERSION = 14
 
 #: (P21/A-183) the closed R1 exclusion-capability vocabulary, restoring A-008's
@@ -497,9 +499,47 @@ LANE_RESOLVED_FIELDS: tuple[str, ...] = (
     "env_declared",
     "env_effective",
     "env_passthrough",
+    "env_effective_passthrough_sha256",
     "scope",
     "enforcement",
 )
+
+#: B142: passthrough values are present only in the child process environment.
+#: Verdict artifacts retain the name with this fixed marker and an unkeyed
+#: SHA-256 fingerprint for comparing separate verdicts.
+PASSTHROUGH_ENV_VALUE_MARKER = "<passthrough>"
+
+
+def _redact_passthrough_text(text: str, values: Sequence[str]) -> str:
+    """Mask exact passthrough values in a bounded command-output tail.
+
+    Replacement keeps the UTF-8 byte width unchanged, so serialization cannot
+    make a previously bounded tail exceed its artifact limit or change its
+    dropped-byte accounting. Marking every character covered by a match also
+    handles overlapping values without leaving a suffix behind.
+    """
+    covered = bytearray(len(text))
+    candidates = {
+        value.encode("utf-8", errors="surrogateescape").decode(
+            "utf-8", errors="replace"
+        )
+        for value in values
+        if value
+    }
+    for candidate in candidates:
+        offset = 0
+        while True:
+            start = text.find(candidate, offset)
+            if start < 0:
+                break
+            covered[start : start + len(candidate)] = b"\x01" * len(candidate)
+            offset = start + 1
+    if not any(covered):
+        return text
+    return "".join(
+        "*" * len(character.encode("utf-8")) if covered[index] else character
+        for index, character in enumerate(text)
+    )
 
 #: B014: the maximum retained UTF-8 byte length of each command-output tail.
 #: Duplicated deliberately from :mod:`assay.runner`: this module owns artifact
@@ -4386,6 +4426,11 @@ class Verdict:
     #: explicit project defaults with this lane's own declaration. Empty is
     #: known-and-empty; absent means no lane resolved.
     env_passthrough: tuple[str, ...] | None = None
+    #: (B142/schema v14) Optional at construction because producer-side
+    #: Verdicts derive it from the live environment immediately before
+    #: serialization. Reconstructed artifacts provide it explicitly and are
+    #: checked against the redacted names and digest grammar below.
+    env_effective_passthrough_sha256: Mapping[str, str] | None = None
     #: (B025) True exactly when `env_effective` above is NOT the real
     #: resolved environment -- a refusal whose own infrastructure
     #: declaration was itself unresolvable falls back to `lane.env` alone
@@ -4491,6 +4536,19 @@ class Verdict:
                 "env_effective_incomplete requires the lane-resolved group "
                 "(declared_rigor and friends) to be present"
             )
+        for field_name in ("env_declared", "env_effective"):
+            environment = getattr(self, field_name)
+            if environment is None:
+                continue
+            if not isinstance(environment, Mapping):
+                raise ValueError(f"{field_name} must be a mapping when present")
+            for name, value in environment.items():
+                if not is_nonempty_str(name):
+                    raise ValueError(f"{field_name} contains an empty or invalid name")
+                if not isinstance(value, str):
+                    raise ValueError(
+                        f"{field_name}[{name!r}] must be a string, got {value!r}"
+                    )
         if self.env_passthrough is not None:
             if not isinstance(self.env_passthrough, tuple):
                 raise ValueError("env_passthrough must be a tuple when present")
@@ -4505,6 +4563,31 @@ class Verdict:
                     f"env_passthrough names {collisions} collide with fixed "
                     f"env_declared names"
                 )
+        if self.env_effective_passthrough_sha256 is not None:
+            recorded = self.env_effective_passthrough_sha256
+            if not isinstance(recorded, Mapping):
+                raise ValueError(
+                    "env_effective_passthrough_sha256 must be a mapping when present"
+                )
+            effective = self.env_effective or {}
+            passthrough_names = set(self.env_passthrough or ())
+            expected_names = set(effective) & passthrough_names
+            if set(recorded) != expected_names:
+                raise ValueError(
+                    "env_effective_passthrough_sha256 names must match the "
+                    "present env_effective passthrough names"
+                )
+            for name, digest in recorded.items():
+                if effective.get(name) != PASSTHROUGH_ENV_VALUE_MARKER:
+                    raise ValueError(
+                        f"env_effective[{name!r}] must be "
+                        f"{PASSTHROUGH_ENV_VALUE_MARKER!r} when its digest is recorded"
+                    )
+                if not is_sha256_hex(digest):
+                    raise ValueError(
+                        f"env_effective_passthrough_sha256[{name!r}] must be "
+                        "64 lowercase hexadecimal characters"
+                    )
         if self.scope is not None and self.scope not in SCOPES:
             raise ValueError(f"scope must be one of {sorted(SCOPES)}, got {self.scope!r}")
         if self.enforcement is not None and self.enforcement not in ENFORCEMENTS:
@@ -4660,12 +4743,23 @@ class Verdict:
 
     def _check_lane_resolved_group(self) -> None:
         """All present or all absent — absent means the lane never resolved."""
+        # Producers may omit this one constructor argument: it is derived
+        # from env_effective immediately before serialization. A parsed wire
+        # document is independently required to carry it by the schema and
+        # raw verifier.
+        constructor_derived_fields = {"env_effective_passthrough_sha256"}
         present = [
             name
             for name in LANE_RESOLVED_FIELDS
-            if name != "argv_modified" and getattr(self, name) is not None
+            if name != "argv_modified"
+            and name not in constructor_derived_fields
+            and getattr(self, name) is not None
         ]
-        expected = [name for name in LANE_RESOLVED_FIELDS if name != "argv_modified"]
+        expected = [
+            name
+            for name in LANE_RESOLVED_FIELDS
+            if name != "argv_modified" and name not in constructor_derived_fields
+        ]
         if present and len(present) != len(expected):
             missing = sorted(set(expected) - set(present))
             raise ValueError(
@@ -4675,6 +4769,10 @@ class Verdict:
                 f"would assert that the lane declared no argv, which is false"
             )
         if not present:
+            if self.env_effective_passthrough_sha256 is not None:
+                raise ValueError(
+                    "env_effective_passthrough_sha256 is present but no lane resolved"
+                )
             if self.claims or self.evidence:
                 raise ValueError(
                     "claims or evidence were rendered but no lane resolved; "
@@ -5435,6 +5533,7 @@ class Verdict:
 
     def to_dict(self) -> dict[str, Any]:
         """The artifact, as plain JSON types."""
+        passthrough_values_to_redact: tuple[str, ...] = ()
         payload: dict[str, Any] = {
             "schema_version": self.schema_version,
             "assay_version": self.assay_version,
@@ -5461,8 +5560,28 @@ class Verdict:
             payload["argv_effective"] = list(self.argv_effective or ())
             payload["argv_modified"] = bool(self.argv_modified)
             payload["env_declared"] = dict(self.env_declared or {})
-            payload["env_effective"] = dict(self.env_effective or {})
+            env_effective = dict(self.env_effective or {})
             payload["env_passthrough"] = list(self.env_passthrough or ())
+            if self.env_effective_passthrough_sha256 is None:
+                passthrough_digests: dict[str, str] = {}
+                passthrough_values_to_redact = tuple(
+                    env_effective[name]
+                    for name in self.env_passthrough or ()
+                    if name in env_effective
+                )
+                for name in self.env_passthrough or ():
+                    if name in env_effective:
+                        value = env_effective[name]
+                        passthrough_digests[name] = hashlib.sha256(
+                            value.encode("utf-8", errors="surrogateescape")
+                        ).hexdigest()
+                        env_effective[name] = PASSTHROUGH_ENV_VALUE_MARKER
+            else:
+                passthrough_digests = dict(
+                    self.env_effective_passthrough_sha256
+                )
+            payload["env_effective"] = env_effective
+            payload["env_effective_passthrough_sha256"] = passthrough_digests
             if self.env_effective_incomplete:
                 payload["env_effective_incomplete"] = True
             payload["scope"] = self.scope
@@ -5479,12 +5598,16 @@ class Verdict:
         if self.worktree_integrity is not None:
             payload["worktree_integrity"] = self.worktree_integrity.to_dict()
         if self.result_stdout_tail is not None:
-            payload["result_stdout_tail"] = self.result_stdout_tail
+            payload["result_stdout_tail"] = _redact_passthrough_text(
+                self.result_stdout_tail, passthrough_values_to_redact
+            )
             payload["result_stdout_dropped_bytes"] = (
                 self.result_stdout_dropped_bytes
             )
         if self.result_stderr_tail is not None:
-            payload["result_stderr_tail"] = self.result_stderr_tail
+            payload["result_stderr_tail"] = _redact_passthrough_text(
+                self.result_stderr_tail, passthrough_values_to_redact
+            )
             payload["result_stderr_dropped_bytes"] = (
                 self.result_stderr_dropped_bytes
             )

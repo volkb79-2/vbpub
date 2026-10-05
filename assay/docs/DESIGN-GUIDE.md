@@ -26,6 +26,12 @@ At every nested parser depth, help, usage, and configuration diagnostics begin
 with `ASSAY <version> — declared-lane judge` as line 1, before argparse usage
 text. Normal command output is unchanged.
 
+Verdict schema versions name exact evidence contracts. A hard cut has no
+upgrade-in-place path because an older artifact cannot acquire provenance it
+never recorded; consumers regenerate evidence they need verified under a new
+schema. Keep the current and immediately preceding cut's adoption steps in
+CONSUMERS so a skipped release still has a concrete upgrade path.
+
 ## 1. What assay is, in one paragraph
 
 assay answers **HOW TO JUDGE** a change. It reads a project's declared lanes,
@@ -273,8 +279,15 @@ project's layout: `default="src/nyxloom"`, `default="topos/src/topos"`,
 no changed file, so the gate returns 0/0 PASS forever. That is a laundering
 gate, and none of the four copies guards it. Each entry may name an existing
 directory or one existing regular file. A file entry selects exactly that
-path; its sibling files are outside scope. Both forms resolve under the project
-root, and an absent path or a path escaping through `..` or a symlink refuses.
+declared path; sibling files and sibling symlinks pointing to it are outside
+scope. Directory containment still uses resolved paths, while file selection
+keeps the lexical diff path so following a sibling symlink cannot widen an
+exact root. Both forms resolve under the project root, and an absent path or a
+path escaping through `..` or a symlink refuses.
+
+The ingested R2 path applies the same boundary to report keys before resolving
+them: a report naming a sibling symlink cannot turn the resolved target into
+evidence for an exact-file root.
 
 **Coverage format is READ and cross-checked by DERIVATION.** The lane declares
 it (it is a fact of the lane's own argv: `--cov-report=json` vs `lcov`), and
@@ -344,17 +357,47 @@ budget = "20m"
 allow_argv_append = false
 ```
 
-Both names then appear verbatim in the artifact's `env_effective` on **every**
-outcome where the lane resolved, refusals included (A-036), so *which
-environment produced this verdict* is answerable from the artifact instead of
-asserted by whoever ran it. Two caveats that matter:
+### Redacting passthrough environment values (B142)
 
-* **`env_effective` is recorded, not verified.** assay copies the value; it does
-  not compare it against anything. It is transparency, not a claim — see §3 on
-  what makes something evidence.
-* **Pass identities through, never secrets.** Everything in `env_passthrough`
-  that is present lands in the artifact in cleartext. That is the point for an
-  instance id and a disaster for a token.
+On every outcome where the lane resolved, including refusals (A-036),
+`env_effective` keeps each present passthrough name with the fixed value
+`"<passthrough>"`. The sibling
+`env_effective_passthrough_sha256` maps exactly those present names to the
+full SHA-256 of the value's original environment bytes. On POSIX, UTF-8
+`surrogateescape` preserves bytes that are not valid UTF-8. Names allowed but
+absent remain in `env_passthrough`, but have no `env_effective` or digest
+entry. Fixed `env` values and infrastructure facts remain recorded as before.
+The child process still receives the original environment value; output is
+redacted before it is retained or serialized. If stdout or stderr contains an
+exact passthrough value, masking happens before the tail is truncated or serialized.
+This prevents a command that echoes a DSN across the tail boundary from
+leaving its remaining credential characters in the verdict. The same
+pre-truncation masking applies to crashed-candidate tails saved in mutation
+resume state, failed environment-probe diagnostics, and the Go
+statement-position helper's stderr refusal.
+
+This is a recorded fingerprint, not verification of the environment. A
+subsequent run with a different value produces a different digest, which a
+consumer can compare across verdicts. `assay verify` checks the artifact's
+marker, key set and digest format; it does not have the live environment and
+cannot tell whether a digest matches the original process input. The hash is
+unkeyed SHA-256, so a low-entropy or guessable secret may be recovered by
+trying candidate values. It is for equality/change comparison, not secrecy or
+authentication; do not treat it as a password-hashing scheme.
+
+The digest field was added before the first v14 release. Because the schema is
+still v14, no released v14 consumer has to interpret the earlier draft shape.
+
+Two caveats that matter:
+
+* **`env_effective` is recorded, not verified.** The marker and digest say
+  what value the producer read, but assay does not compare it with an external
+  expected identity. This is transparency, not a claim — see §3 on what makes
+  something evidence.
+* **Never put raw secrets in declared `env`.** Those values are committed in
+  the lane file and remain verbatim in verdicts; only values arriving through
+  `env_passthrough` receive the marker and fingerprint. Exact echoes of those
+  passthrough values in command-output tails are masked as well.
 * **(B025) One exception, flagged rather than silent.** A refusal whose OWN
   cause is an unresolvable infrastructure declaration cannot safely record
   the real `env_effective` — neither the infrastructure fact nor any
@@ -1065,9 +1108,8 @@ routine format bump never fails the whole lane the way a genuinely tampered
 record does. **A record also carries `judge_sha256` (B088): the identity of
 what JUDGED the candidate** — the content digest of the judged commit's own
 tree, plus the resolved argv, the lane's declared `env` by value, the NAMES
-of whatever else the resolved environment carried (passthrough and
-infrastructure values are per-invocation by design and folding them by value
-would defeat a shared `--state-dir`), the cwd, the project prefix, the
+of infrastructure facts and the names plus SHA-256 value fingerprints of
+present `env_passthrough` values (B142), the cwd, the project prefix, the
 declared `link_paths` and assay's own version. The
 candidate digest answers "is this the same mutation", which is the right
 question for skipping re-generation and the wrong one for skipping
@@ -1116,8 +1158,9 @@ candidate snapshot: missing or repeated node, setup/teardown failure, changed
 candidate ID, malformed receipt, unsupported command, xdist, custom loop,
 untrusted lifecycle hook, or mismatched status. Survivors, crashes, hangs,
 timeouts, equivalents, and candidates absent from the prior plan always run
-fully. The v12 exception reads only a bounded JSON envelope and its version;
-it is a cold start, and v12 remains rejected by `assay verify`.
+fully. A v12 or v13 prior verdict is read only as a bounded JSON envelope
+and version; either is a cold start, and both remain rejected by
+`assay verify`.
 
 The narrower alternatives fail in opposite ways. Reusing a kill because
 mutated bytes match ignores the new tests and command. Deselecting all tests
@@ -2307,8 +2350,8 @@ build actually wires it to (§7 — an adapter existing is not a capability):
 |---|---|---|
 | `python` | R1, R2, R3 | the reference adapter; `requires_span_attribution = True` (coverage.py's multi-line-statement gap, recovered by a real AST walk) |
 | `sql` | R2 only | a stdlib lexer over DDL; no coverage tool exists for it, so no R1, and A-192 forbids R3 without R1 |
-| `javascript` | R1 only | `.js`/`.jsx`/`.ts`/`.tsx` under one name (A-340). R2 waits on B037's native-vs-ingest ruling, so `generate_mutation_sites` is unconditionally `UNSUPPORTED`; R3 is an unwired fast-follow |
-| `go` | nothing | ships and is tested, but no producer path is wired at any level (A-172/A-217) |
+| `javascript` | R1, R2 by ingestion only (B046) | `.js`/`.jsx`/`.ts`/`.tsx` under one name (A-340). The lane runs Stryker and Assay judges its report; native `generate_mutation_sites` remains `UNSUPPORTED`. R3 is not registered |
+| `go` | R1 only (A-394) | requires the real Go toolchain for source-derived statement positions (A-217); R2 and R3 have no producer path and are not registered |
 
 **`javascript` needs no span attribution, and that too was measured rather
 than assumed (A-342).** Istanbul's `statementMap` carries each statement's own

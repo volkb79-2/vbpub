@@ -58,6 +58,7 @@ from typing import Iterator, Mapping, Sequence
 from ..errors import AssayError, Outcome, ReasonCode
 from ..guards import is_strict_int
 from ..statement_attribution import StatementBlock
+from ..verdict import _redact_passthrough_text
 from .base import HelperInvocation, Remaining, StatementBlockReport
 
 __all__ = [
@@ -177,6 +178,7 @@ def derive_statement_blocks(
     *,
     remaining: Remaining | None = None,
     helper_dir: Path | None = None,
+    sensitive_values: Sequence[str] = (),
 ) -> StatementBlockReport:
     """Run the oracle over *rel_paths* (repo-relative, resolved against
     *repo_top*) and return their blocks plus the toolchain's own identity.
@@ -194,7 +196,9 @@ def derive_statement_blocks(
     # true independently of both, and reporting it as a stale profile or a
     # missing `go` would name a cause that belongs to the caller's machine.
     with _staged_helper(helper_dir) as source_dir:
-        return _derive(repo_top, rel_paths, remaining, source_dir)
+        return _derive(
+            repo_top, rel_paths, remaining, source_dir, sensitive_values
+        )
 
 
 def _derive(
@@ -202,6 +206,7 @@ def _derive(
     rel_paths: Sequence[str],
     remaining: Remaining | None,
     source_dir: Path,
+    sensitive_values: Sequence[str],
 ) -> StatementBlockReport:
     """The body of :func:`derive_statement_blocks`, with the oracle's sources
     already materialised at *source_dir*. Split out only so the staging
@@ -273,7 +278,8 @@ def _derive(
     if completed.returncode != 0:
         raise _refuse(
             f"the Go statement-position oracle exited "
-            f"{completed.returncode}: {_tail(completed.stderr)}"
+            f"{completed.returncode}: "
+            f"{_tail(completed.stderr, sensitive_values=sensitive_values)}"
         )
 
     return _read_document(completed.stdout, abs_by_arg, go_executable)
@@ -422,8 +428,12 @@ def _int(raw: Mapping[str, object], field: str, rel_path: str) -> int:
     return value
 
 
-def _tail(stderr: bytes, limit: int = 400) -> str:
-    text = stderr.decode("utf-8", errors="replace").strip()
+def _tail(
+    stderr: bytes, limit: int = 400, *, sensitive_values: Sequence[str] = ()
+) -> str:
+    text = _redact_passthrough_text(
+        stderr.decode("utf-8", errors="replace"), sensitive_values
+    ).strip()
     if not text:
         return "(no stderr)"
     return text[-limit:]

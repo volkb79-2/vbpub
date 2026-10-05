@@ -31,6 +31,7 @@
     "MOCK_MODE": "false"
   },
   "env_passthrough": [],
+  "env_effective_passthrough_sha256": {},
   "scope": "S1",
   "enforcement": "gate",
   "claims": [

@@ -132,7 +132,7 @@ from .verdict import (
 
 __all__ = ["build_verify_parser", "cmd_verify", "verify_document", "verify_text"]
 
-#: The eleven-field lane-resolved group, exactly `verdict.LANE_RESOLVED_FIELDS`
+#: The twelve-field lane-resolved group, exactly `verdict.LANE_RESOLVED_FIELDS`
 #: minus the derived `argv_modified` — transcribed by hand rather than
 #: imported, the same independence `tests/core/test_errors.py` already applies to
 #: the outcome/reason_code tables (A-092's house style).
@@ -145,6 +145,7 @@ _LANE_RESOLVED_FIELDS: tuple[str, ...] = (
     "env_declared",
     "env_effective",
     "env_passthrough",
+    "env_effective_passthrough_sha256",
     "scope",
     "enforcement",
 )
@@ -258,6 +259,39 @@ def _check_lane_resolved_group(document: dict, failures: list[str]) -> None:
             failures.append(
                 f"env_passthrough names {collisions!r} collide with env_declared"
             )
+
+    effective_env = document["env_effective"]
+    digests = document["env_effective_passthrough_sha256"]
+    if not isinstance(digests, dict):
+        failures.append("env_effective_passthrough_sha256 must be an object")
+    if (
+        isinstance(effective_env, dict)
+        and isinstance(passthrough, list)
+        and all(isinstance(name, str) for name in passthrough)
+        and isinstance(digests, dict)
+    ):
+        present_passthrough = set(effective_env) & set(passthrough)
+        if set(digests) != present_passthrough:
+            failures.append(
+                "env_effective_passthrough_sha256 names must match the present "
+                "env_effective passthrough names"
+            )
+        for name, digest in digests.items():
+            if not (
+                isinstance(digest, str)
+                and len(digest) == 64
+                and all(character in "0123456789abcdef" for character in digest)
+            ):
+                failures.append(
+                    f"env_effective_passthrough_sha256[{name!r}] must be 64 "
+                    "lowercase hexadecimal characters"
+                )
+        for name in present_passthrough:
+            if effective_env[name] != "<passthrough>":
+                failures.append(
+                    f"env_effective[{name!r}] must be '<passthrough>' for a "
+                    "passthrough value"
+                )
 
     expected_modified = bool(appended)
     if "argv_modified" not in document:
@@ -2356,6 +2390,13 @@ def _reconstruct_verdict(document: dict) -> Verdict:
             env_declared=MappingProxyType(dict(document["env_declared"])),
             env_effective=MappingProxyType(dict(document["env_effective"])),
             env_passthrough=tuple(document["env_passthrough"]),
+            env_effective_passthrough_sha256=MappingProxyType(
+                dict(
+                    document["env_effective_passthrough_sha256"]
+                    if isinstance(document["env_effective_passthrough_sha256"], dict)
+                    else {}
+                )
+            ),
             scope=document["scope"],
             enforcement=document["enforcement"],
         )

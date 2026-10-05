@@ -153,6 +153,7 @@ from .verdict import (
     SnapshotPolicy,
     WorktreeIntegrity,
     Verdict,
+    _redact_passthrough_text,
     claim_carries,
     claim_for,
     iso_utc,
@@ -629,12 +630,18 @@ def _report_probe_refusal(
     # of `detail` for the same reason (A-439): the wire carries the ONE
     # line's message, never the context lines under it.
     if diagnostics is not None:
+        passthrough_values = tuple(
+            probe_result.plan.env_effective[name]
+            for name in probe_result.plan.env_passthrough
+            if name in probe_result.plan.env_effective
+        )
         for label, tail in (
             ("stderr", probe_result.stderr_tail),
             ("stdout", probe_result.stdout_tail),
         ):
             if tail:
-                print(f"  probe {label}: {tail.rstrip()}", file=diagnostics)
+                safe_tail = _redact_passthrough_text(tail, passthrough_values)
+                print(f"  probe {label}: {safe_tail.rstrip()}", file=diagnostics)
     return detail
 
 
@@ -651,21 +658,30 @@ def _decode_timeout_stream(raw: str | bytes | None) -> str | None:
     return raw
 
 
-def _bounded_tail(raw: str | None) -> tuple[str, int]:
-    """Keep the final *COMMAND_TAIL_BYTES* of captured text.
+def _bounded_tail(
+    raw: str | None,
+    *,
+    sensitive_values: Sequence[str] = (),
+    limit: int = COMMAND_TAIL_BYTES,
+) -> tuple[str, int]:
+    """Redact exact sensitive values, then keep the final *limit* bytes.
 
     The input is decoded by ``subprocess`` under ``text=True``, so the byte
     count is measured on its UTF-8 encoding: the same currency as the
     process's output and the artifact's stated bound. Undecodable child bytes
     have already become U+FFFD at that boundary; re-encoding them preserves
     the replacement character without inventing a second decode policy.
+    Redaction happens before truncation because a secret can cross the tail
+    boundary: masking only the retained suffix would then miss the complete
+    value and expose its remaining characters.
     """
     if raw is None or raw == "":
         return "", 0
-    encoded = raw.encode("utf-8")
-    if len(encoded) <= COMMAND_TAIL_BYTES:
-        return raw, 0
-    cutoff = len(encoded) - COMMAND_TAIL_BYTES
+    safe = _redact_passthrough_text(raw, sensitive_values)
+    encoded = safe.encode("utf-8")
+    if len(encoded) <= limit:
+        return safe, 0
+    cutoff = len(encoded) - limit
     while cutoff < len(encoded) and (encoded[cutoff] & 0xC0) == 0x80:
         cutoff += 1
     return encoded[cutoff:].decode("utf-8"), cutoff
@@ -730,6 +746,15 @@ class CommandPlan:
     #: command), and it gets that behaviour by construction rather than by
     #: remembering to opt out.
     cwd_declared: str | None = None
+
+
+def _plan_passthrough_values(plan: CommandPlan) -> tuple[str, ...]:
+    """Present raw values explicitly allowed through by *plan*."""
+    return tuple(
+        plan.env_effective[name]
+        for name in plan.env_passthrough
+        if name in plan.env_effective
+    )
 
 
 @record
@@ -1236,8 +1261,13 @@ def _execute_plan_inner(
         # is documented and typed to receive an already-decoded `str`; decode
         # here, at the one call site that actually receives `bytes`, so its
         # contract stays accurate everywhere else.
-        stdout_tail, stdout_dropped_bytes = _bounded_tail(_decode_timeout_stream(exc.stdout))
-        stderr_tail, stderr_dropped_bytes = _bounded_tail(_decode_timeout_stream(exc.stderr))
+        sensitive_values = _plan_passthrough_values(plan)
+        stdout_tail, stdout_dropped_bytes = _bounded_tail(
+            _decode_timeout_stream(exc.stdout), sensitive_values=sensitive_values
+        )
+        stderr_tail, stderr_dropped_bytes = _bounded_tail(
+            _decode_timeout_stream(exc.stderr), sensitive_values=sensitive_values
+        )
         # (B091/RW-33, P7 A3) `LivenessRunner`'s monitoring loop raises its
         # own `liveness.LivenessHungExpired` -- a `subprocess.TimeoutExpired`
         # subclass -- ONLY for an idle-stall kill, never for a genuine
@@ -1325,8 +1355,13 @@ def _execute_plan_inner(
     # target (A-131), which is why they sit adjacent with no comment between
     # them: that test collapses this conditional pair to its PASS arm to prove
     # `assay verify` alone cannot catch a universal-PASS producer bug.
-    stdout_tail, stdout_dropped_bytes = _bounded_tail(proc.stdout)
-    stderr_tail, stderr_dropped_bytes = _bounded_tail(proc.stderr)
+    sensitive_values = _plan_passthrough_values(plan)
+    stdout_tail, stdout_dropped_bytes = _bounded_tail(
+        proc.stdout, sensitive_values=sensitive_values
+    )
+    stderr_tail, stderr_dropped_bytes = _bounded_tail(
+        proc.stderr, sensitive_values=sensitive_values
+    )
     return CommandResult(
         plan=plan,
         outcome=Outcome.PASS if passed else Outcome.FAIL,
@@ -1526,6 +1561,7 @@ def _attribute_statements_for_lane(
     repo_top: Path,
     project_root: Path,
     remaining: git.Remaining | None,
+    sensitive_values: Sequence[str] = (),
     on_helper_invoked: Callable[[HelperInvocation], None] | None = None,
 ) -> CoverageProfile:
     """*profile* with its block-based records resolved to statement-granular
@@ -1642,7 +1678,12 @@ def _attribute_statements_for_lane(
         return attribute_statements(profile, {})
 
     rel_paths = [repo_path_by_raw_key[raw_key] for raw_key in to_attribute]
-    report = adapter.statement_blocks(repo_top, rel_paths, remaining=remaining)
+    report = adapter.statement_blocks(
+        repo_top,
+        rel_paths,
+        remaining=remaining,
+        sensitive_values=sensitive_values,
+    )
     if report is None:
         raise AssayError(
             f"the {adapter.name!r} adapter declares "
@@ -1680,6 +1721,31 @@ def _attribute_statements_for_lane(
             )
         blocks_by_key[raw_key] = blocks
     return attribute_statements(profile, blocks_by_key)
+
+
+def _source_root_file_keys(
+    source_roots: Sequence[str] | None,
+    *,
+    repo_top: Path,
+    project_root: Path,
+) -> tuple[str, ...]:
+    """Exact repo-relative spellings for declared roots that name files.
+
+    Resolved roots alone cannot distinguish a changed symlink sibling from
+    the file it points to. Preserve the declaration's lexical path for
+    exact-file selection while directory roots use resolved containment.
+    """
+    if source_roots is None:
+        return ()
+    prefix = PurePosixPath(project_root.relative_to(repo_top).as_posix())
+    file_keys: list[str] = []
+    for raw in source_roots:
+        if (project_root / raw).is_file():
+            normalized = PurePosixPath(
+                os.path.normpath(raw).replace(os.sep, "/")
+            )
+            file_keys.append((prefix / normalized).as_posix())
+    return tuple(file_keys)
 
 
 def _record_statement_position_helper(
@@ -1728,6 +1794,7 @@ def evaluate_r1(
     on_added_resolved: Callable[[diff.AddedLines], None] | None = None,
     profile: CoverageProfile | None = None,
     remaining: git.Remaining | None = None,
+    sensitive_values: Sequence[str] = (),
     on_helper_invoked: Callable[[HelperInvocation], None] | None = None,
     diagnostics: "TextIO | None" = None,
 ) -> Claim:
@@ -1909,6 +1976,7 @@ def evaluate_r1(
                 repo_top=repo_top,
                 project_root=project_root,
                 remaining=remaining,
+                sensitive_values=sensitive_values,
                 on_helper_invoked=on_helper_invoked,
             )
 
@@ -1951,6 +2019,11 @@ def evaluate_r1(
                 repo_top=repo_top,
                 project_root=project_root,
                 source_root_paths=judge.source_root_paths,
+                source_root_files=_source_root_file_keys(
+                    judge.source_roots,
+                    repo_top=repo_top,
+                    project_root=project_root,
+                ),
                 fail_under=judge.fail_under,
                 allow_excluded=judge.allow_excluded,
                 read_source_text=read_source_text,
@@ -3249,6 +3322,7 @@ def _mutation_targets_from_diff(
     adapter: LanguageAdapter,
     snapshot_repo_top: Path,
     source_root_paths: Sequence[Path],
+    source_root_files: Sequence[str] = (),
 ) -> tuple[mutation.MutationTarget, ...]:
     """R2's per-file candidate list, from P18's own landed
     :func:`~assay.mutation.resolve_mutation_targets` -- the SAME four gates
@@ -3291,6 +3365,7 @@ def _mutation_targets_from_diff(
         added,
         repo_top=snapshot_repo_top,
         source_root_paths=source_root_paths,
+        source_root_files=source_root_files,
         adapter=adapter,
         read_source_text=read_source_text,
     )
@@ -3955,6 +4030,7 @@ def _run_prepared_lane(
                     resolved_base=resolved_base,
                     profile=unit.profile,
                     diagnostics=diagnostics,
+                    sensitive_values=_plan_passthrough_values(plan),
                     on_base_resolved=resolved_base_holder.append,
                     on_added_resolved=added_holder.append,
                     remaining=deadline.remaining,
@@ -4225,6 +4301,11 @@ def _run_prepared_lane(
                         adapter=adapter,
                         snapshot_repo_top=baseline_snapshot.root,
                         source_root_paths=relocated_lane_r2.judge.source_root_paths,
+                        source_root_files=_source_root_file_keys(
+                            relocated_lane_r2.judge.source_roots,
+                            repo_top=baseline_snapshot.root,
+                            project_root=baseline_snapshot.project_root,
+                        ),
                     )
                 except AssayError as exc:
                     detail = announce_refusal(exc, diagnostics=diagnostics)
@@ -4916,6 +4997,11 @@ def _ingest_r2_report(
         run_cwd=run_cwd,
         repo_top=snapshot.root,
         source_root_paths=relocated_lane.judge.source_root_paths,
+        source_root_files=_source_root_file_keys(
+            relocated_lane.judge.source_roots,
+            repo_top=snapshot.root,
+            project_root=snapshot.project_root,
+        ),
         mode=lane.judge.mode or "changed_lines",
         added=added,
         targets=declared_targets,

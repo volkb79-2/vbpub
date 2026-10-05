@@ -70,6 +70,7 @@ LANE_RESOLVED_KEYS = (
     "env_declared",
     "env_effective",
     "env_passthrough",
+    "env_effective_passthrough_sha256",
     "scope",
     "enforcement",
 )

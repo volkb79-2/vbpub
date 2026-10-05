@@ -318,17 +318,10 @@ def test_a_different_declared_environment_is_a_different_judge():
     ) != judge_sha256(tree_sha256="a" * 64, plan=_plan(env={"PYTHONPATH": "lib"}))
 
 
-def test_a_passthrough_value_that_differs_between_invocations_still_resumes():
-    """Round-1 review finding 1, the confirmed regression, pinned.
-
-    The first version of this function folded `env_effective` by VALUE, which
-    includes every `env_passthrough` name that was present and every B013
-    infrastructure fact. Those values are per-invocation BY DESIGN -- dstdns'
-    `P165_PHYSICAL_REPO_ROOT` is literally the worktree's host path,
-    `SCHEMA_GATE_DSN` is a per-instance DSN -- so the identity changed
-    between two runs that judged byte-identically, and resume became
-    impossible across exactly the ephemeral-checkout case B066/RG-38 built
-    `--state-dir` for. Silently, and forever.
+def test_a_changed_passthrough_value_is_a_different_judge():
+    """B142 review repair: a resumed candidate cannot be certified under a
+    different credential/DSN than the one that produced its saved outcome.
+    Only the value fingerprint enters the identity; the raw value does not.
     """
     first = _plan(passthrough=("P165_PHYSICAL_REPO_ROOT",))
     second = make_plan(
@@ -336,6 +329,32 @@ def test_a_passthrough_value_that_differs_between_invocations_still_resumes():
         passthrough_source={"P165_PHYSICAL_REPO_ROOT": "/a/completely/different/worktree"},
     )
     assert first.env_effective != second.env_effective, "the fixture must differ by value"
+    assert judge_sha256(tree_sha256="a" * 64, plan=first) != judge_sha256(
+        tree_sha256="a" * 64, plan=second
+    )
+
+
+def test_surrogateescaped_passthrough_bytes_have_a_stable_judge_identity():
+    """POSIX environment values can carry non-UTF-8 bytes, represented by
+    Python's surrogateescape range. Hash their original bytes rather than
+    crashing while constructing an R2 resume identity."""
+    value = "dsn-\udcff-value"
+    lane = make_lane(argv=("pytest",), env={}, env_passthrough=("DSN",))
+    first = make_plan(lane, passthrough_source={"DSN": value})
+    same = make_plan(lane, passthrough_source={"DSN": value})
+    other = make_plan(lane, passthrough_source={"DSN": "dsn-\udcfe-value"})
+
+    digest = judge_sha256(tree_sha256="a" * 64, plan=first)
+    assert digest == judge_sha256(tree_sha256="a" * 64, plan=same)
+    assert digest != judge_sha256(tree_sha256="a" * 64, plan=other)
+
+
+def test_an_identical_passthrough_value_still_resumes_across_plans():
+    first = _plan(passthrough=("SCHEMA_GATE_DSN",))
+    second = make_plan(
+        make_lane(argv=("pytest", "tests"), env={}, env_passthrough=("SCHEMA_GATE_DSN",)),
+        passthrough_source={"SCHEMA_GATE_DSN": "value-of-SCHEMA_GATE_DSN"},
+    )
     assert judge_sha256(tree_sha256="a" * 64, plan=first) == judge_sha256(
         tree_sha256="a" * 64, plan=second
     )
@@ -1407,18 +1426,15 @@ _INSTANCE_LANE = _LANE.replace(
 )
 
 
-def test_two_instances_with_different_passthrough_values_still_resume(
+def test_two_instances_with_different_passthrough_values_do_not_resume(
     git_repo: GitRepo, tmp_path: Path, monkeypatch
 ):
-    """Round-1 review finding 1 and 11, end to end.
+    """B142's resume identity binds each present passthrough value.
 
-    `test_two_worktrees_of_one_commit_still_share_one_state_dir` cannot see
-    this: both its runs share one `os.environ`. This one varies a real
-    passed-through value BETWEEN the two runs, which is precisely what two
-    ciu worktrees or two Mode-B instances do -- dstdns'
-    `P165_PHYSICAL_REPO_ROOT` is the worktree's own host path. Under the
-    by-value folding this test fails with nothing resumed, and the feature
-    `--state-dir` exists for is dead with no diagnostic.
+    `test_two_worktrees_of_one_commit_still_share_one_state_dir` retains the
+    same value and still resumes. Two instances with different worktree-root
+    values must execute again rather than reuse an outcome judged under the
+    other instance's environment.
     """
     _seed(git_repo, _BLIND_JUDGE)
     git_repo.write("assay.toml", _INSTANCE_LANE)
@@ -1431,8 +1447,8 @@ def test_two_instances_with_different_passthrough_values_still_resume(
 
     monkeypatch.setenv("INSTANCE_ROOT", "/workspaces/instance-b")
     second = _run(git_repo, state_dir, tmp_path / "second.jsonl")
-    assert _resumed(second) == 1, "a per-instance passthrough VALUE must not break resume"
-    assert _candidates(second) == []
+    assert _resumed(second) == 0, "changed passthrough values must invalidate resume"
+    assert len(_candidates(second)) == 1
 
 
 def test_dropping_a_passthrough_declaration_re_executes(
@@ -1490,6 +1506,7 @@ def test_the_worst_case_record_still_fits_the_readers_own_limit():
 
     worst = "\x7f" * COMMAND_TAIL_BYTES
     result = CommandResult.__new__(CommandResult)
+    object.__setattr__(result, "plan", make_plan(make_lane()))
     object.__setattr__(result, "stdout_tail", worst)
     object.__setattr__(result, "stderr_tail", worst)
     payload = {
