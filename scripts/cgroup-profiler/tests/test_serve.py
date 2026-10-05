@@ -2288,6 +2288,10 @@ def test_on_session_sample_discovery_due_and_not_due_and_status_damon_on(simple_
 
     stub = _StubDamonSession()
     sess.damon_session = stub
+    assert sess.subtree_resolver is not None
+    discovered = iter(({10, 20}, {10, 20}, {11}))
+    monkeypatch.setattr(sess.subtree_resolver, "_token_owners", lambda: next(discovered))
+    monkeypatch.setattr(sess.subtree_resolver, "_descendants", lambda owners: set())
     abs_target = os.path.join(simple_server.cgroup_root, sess.cgroup.lstrip("/"))
     real_effective = serve.limits_mod.effective
     effective_calls = []
@@ -2302,7 +2306,7 @@ def test_on_session_sample_discovery_due_and_not_due_and_status_damon_on(simple_
         sess, {"mono": 0.0, "cg": {sess.cgroup: {}}, "host": {}}, abs_target, None
     )
     assert sess.last_discovery_mono == 0.0
-    assert stub.recommit_calls == [[]]
+    assert stub.recommit_calls == [[10, 20]]
 
     simple_server._on_session_sample(
         sess, {"mono": 1.0, "cg": {sess.cgroup: {}}, "host": {}}, abs_target, None
@@ -2314,7 +2318,7 @@ def test_on_session_sample_discovery_due_and_not_due_and_status_damon_on(simple_
         sess, {"mono": 3.0, "cg": {sess.cgroup: {}}, "host": {}}, abs_target, None
     )
     assert sess.last_discovery_mono == 3.0  # due again (delta 3.0 >= 2.0)
-    assert len(stub.recommit_calls) == 2
+    assert len(stub.recommit_calls) == 1  # changed set guard skips identical discovery
 
     status_resp = simple_server._dispatch(_wire("status", session=sess.session_id))
     assert status_resp["ok"] is True

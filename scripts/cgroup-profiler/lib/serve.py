@@ -1379,9 +1379,13 @@ class SessionServer:
                 or (mono - sess.last_discovery_mono) >= DISCOVERY_INTERVAL_SECONDS
             )
             if due:
+                previous_pids = set(sess.subtree_resolver.current_pids)
                 pids = list(sess.subtree_resolver.refresh())
                 sess.last_discovery_mono = mono
-                if sess.damon_session is not None:
+                if (
+                    sess.damon_session is not None
+                    and set(pids) != previous_pids
+                ):
                     try:
                         sess.damon_session.recommit_targets(pids)
                     except Exception as exc:  # noqa: BLE001 - profiling is best-effort
