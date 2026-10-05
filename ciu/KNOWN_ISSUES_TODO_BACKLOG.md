@@ -4855,7 +4855,10 @@ demoted to `recovery-required` before refusal, so an unverified record is never
 left certified as ready. (7) A stale lease-mirror read cannot erase root
 entries written concurrently to the shared record. (8) If `rev-parse` fails or
 returns a non-SHA during create, creation refuses and leaves a
-`recovery-required` record; it never degrades to a false `ready` result.
+`recovery-required` record; it never degrades to a false `ready` result. (9)
+Repairing an incomplete historical `ready` record with its recorded network
+still present succeeds for that same identity while sibling identity checks
+remain active; a `True -> False` mutation of the repair allowance is killed.
 
 **v8: absorb the readiness ordering.** SPEC-V8 S14.1.1 writes generated and
 host facts and establishes the instance file before writing the linked

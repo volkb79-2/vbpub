@@ -39,7 +39,11 @@ fails, the record remains attributable as `recovery-required`; `ensure` repeats
 the missing work. This ordering avoids a false-ready window and lets recovery
 repair records written by older code. Discovery uses the allocated commit
 rather than resolving a symbolic base such as `main` again, since that name can
-move after checkout creation. v8 already writes generated and host facts plus
+move after checkout creation. Repairing a historical `ready` record preserves
+its recorded identity and tolerates its network remaining present; sibling
+identity collisions are still checked. This lets `ensure` restore generated
+facts without first tearing down a stack the record already identifies. v8
+already writes generated and host facts plus
 the instance file before its linked-worktree record (SPEC-V8 S14.1.1 and
 S14.7.1); it has no v7 multi-root aggregate list to persist. For old records
 without a fork-point SHA, CIU accepts the neutral record's base commit only if

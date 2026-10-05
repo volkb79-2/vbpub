@@ -321,6 +321,34 @@ class TestManagedIdentityLifecycle:
         assert ensured == created
         assert created.record_path.read_bytes() == before
 
+    def test_ensure_repairs_ready_record_while_its_network_exists(
+        self, tmp_repo, fake_generate_env, monkeypatch
+    ):
+        monkeypatch.setattr(worktree, "_docker_network_exists", lambda _network: False)
+        created = worktree.create(tmp_repo, "logical-one")
+        context = worktree._ensure_shared_record(tmp_repo, created)
+        shared = worktree._shared_worktree()
+        shared_record = shared.read_record(context.record_path)
+        shared.write_record(replace(
+            shared_record,
+            metadata={**dict(shared_record.metadata), "root_entries": []},
+        ))
+        facts = created.ciu_root / "ciu.instance.generated.toml"
+        facts.unlink()
+
+        existing_networks = {created.network}
+        network_is_present = lambda network: network in existing_networks
+        assert network_is_present(created.network)
+        monkeypatch.setattr(worktree, "_docker_network_exists", network_is_present)
+
+        repaired = worktree.ensure(tmp_repo, "logical-one")
+
+        assert repaired.state == "ready"
+        assert repaired.instance_id == created.instance_id
+        assert repaired.network == created.network
+        assert facts.is_file()
+        assert shared.read_record(context.record_path).metadata["root_entries"]
+
     def test_ensure_constraint_mismatch_fails_closed(self, tmp_repo, fake_generate_env):
         worktree.create(tmp_repo, "logical-one", display_name="visible-one")
         with pytest.raises(worktree.WorktreeError, match="ensure mismatch"):

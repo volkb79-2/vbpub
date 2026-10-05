@@ -75,7 +75,9 @@ $ ciu worktree ensure pkg-under-test --json
 `ensure` regenerates missing root facts and metadata before returning `ready`.
 It also checks older ready records against their discovered roots, repairing
 ones that were interrupted before the ready-ordering fix when their allocation
-commit is still provable. Resume uses the saved fork point or full-SHA target;
+commit is still provable. Repair keeps the recorded identity and can proceed
+while that instance's network remains present; it does not ask you to tear down
+the stack first. Resume uses the saved fork point or full-SHA target;
 for older records with only a symbolic base, it uses the neutral workspace's
 `base_commit` only while checkout HEAD still equals it. If a no-fork-point
 checkout moved or the allocation target cannot be proven, `ensure` marks the
