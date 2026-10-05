@@ -6852,3 +6852,17 @@ ruling changes the controller log in the judged worktree, that commit-bound
 receipt no longer qualifies the new tree; after committing this ruling, rerun
 the required short gates and then request Sol fix verification. R3 is still
 pending.
+
+### RW-452 — 2026-10-05 17:19:33 UTC — post-record R0/R1 and R3 pass
+
+After RW-451 was committed, the resulting clean candidate tip
+`332aeec196d23bcf7e5dab2641b81382f4aa40c3` passed the registered short gates:
+`r0-r1` run `0487492e11fa801cc918a48200a2cd1f` (2,348 tests, 100% lines and
+branches, 128.22 seconds) and `r3` run `188612adefc0c9253f84e3cb31b2de1b`
+(7/7 canaries rejected, 10.705 seconds). Separate run-gate history records
+both PASS, exit 0, `dirty:false`, and `history_eligible:true` on that same
+commit. This ruling itself changes the worktree tree, so rerun both short
+gates on its committed successor before requesting the same Sol reviewer for
+fix verification. The previously observed no-daemon warning means the runner
+used its registered coarse rusage profile; it does not affect the test or
+canary verdicts. No gate containers remain active.
