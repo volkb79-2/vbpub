@@ -563,6 +563,10 @@ def test_w8b_template_refuses_broken_interaction_references(tmp_path, monkeypatc
     assert "interaction group 'mode-and-dry-run/both' names an unknown route" in err
     # the tolerant views of the same catalog still succeed
     assert _run(capsys, "surface", "report")[0] == 0
+    code, out, err = _run(capsys, "surface", "pack")
+    assert (code, err) == (0, "")
+    assert out.startswith("# cli-extended review rubric")
+    assert "## Cases to review" in out
 
 
 # ---- O5: pack --------------------------------------------------------------
