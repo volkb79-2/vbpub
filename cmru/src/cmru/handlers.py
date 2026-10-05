@@ -315,6 +315,46 @@ def _wheel_builder_git_mount_args(
     return ["-v", f"{host_common_dir}:{common_dir}"]
 
 
+def _git_toplevel(cwd: Path) -> Optional[Path]:
+    """The worktree root containing ``cwd`` (``git rev-parse --show-toplevel``)."""
+    from cmru.transaction import _shared_worktree
+
+    shared = _shared_worktree()
+    try:
+        return Path(shared.discover_git_root(cwd)[0])
+    except shared.WorkspaceError:
+        return None
+
+
+def _wheel_builder_mount_root(cwd: Path) -> Path:
+    """Directory bind-mounted into the wheel-builder container.
+
+    Normally ``cwd.parent`` (``-w`` must exist). A project nested deeper than
+    one level (``libraries/pkg`` with ``root = "../.."``) needs the whole
+    worktree root so git discovery and setuptools-scm see the repository; the
+    top-level is mounted whenever it contains ``cwd.parent``."""
+    top = _git_toplevel(cwd)
+    if top is None or top == cwd:
+        return cwd.parent
+    try:
+        cwd.parent.relative_to(top)
+    except ValueError:
+        return cwd.parent
+    return top
+
+
+def _wheel_builder_env_args() -> list[str]:
+    """Name-only ``-e`` forwards for reproducible-build and pretend-version vars."""
+    names = sorted(
+        name for name in os.environ
+        if name == "SOURCE_DATE_EPOCH" or name.startswith("SETUPTOOLS_SCM_PRETEND_VERSION")
+    )
+    args: list[str] = []
+    for name in names:
+        args += ["-e", name]
+    return args
+
+
 def cmd_wheel_build(args: argparse.Namespace) -> None:
     """Clean stale wheels + `python -m build --wheel --outdir dist` in the project."""
     _check_build_prerequisites()
@@ -341,12 +381,14 @@ def cmd_wheel_build(args: argparse.Namespace) -> None:
     cgroup_parent = _docker_cgroup_parent()
     # Run from the parent directory with the project dir as positional source;
     # the image's venv replaces the retired local-Python build path.
-    host_parent = _host_bind_source(cwd.parent)
+    mount_root = _wheel_builder_mount_root(cwd)
+    host_mount = _host_bind_source(mount_root)
     subprocess.run(
         [
             "docker", "run", "--rm", "--cgroup-parent", cgroup_parent,
-            "-v", f"{host_parent}:{cwd.parent}",
-            *_wheel_builder_git_mount_args(cwd, mount_root=cwd.parent),
+            "-v", f"{host_mount}:{mount_root}",
+            *_wheel_builder_git_mount_args(cwd, mount_root=mount_root),
+            *_wheel_builder_env_args(),
             "-w", str(cwd.parent),
             image,
             "/opt/wheel-builder-venv/bin/python", "-m", "build",
