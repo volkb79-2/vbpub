@@ -926,6 +926,9 @@ CASES = [
     ("reserved prefix only", "alpha",
      FM + "name: alpha\ndescription: d\nmetadata:\n  a: 1\n  cli-extended-zzz: x\n---\n", 6, "reserved"),
     ("no closing", "alpha", FM + "name: alpha\ndescription: d\n", 4, "no closing '---'"),
+    ("indented line before any metadata key", "alpha",
+     FM + "  foo: bar\nname: alpha\ndescription: d\n---\n", 2,
+     "unsupported frontmatter syntax"),
 ]
 
 
