@@ -1304,6 +1304,16 @@ class TestRG78ClosedExitTable:
             source_commit=selected_commit, expected_source_commit=None)
         assert missing_source.verdict == "ERROR"
         assert missing_source.reason == "missing-or-invalid-source-identity"
+        # The source version is an independent part of the identity contract:
+        # valid matching commit hashes must not mask a missing or blank version.
+        for source_version in (None, "", "   "):
+            invalid_source_version = run_gate.assay_lane_result(
+                0, "PASS", source_mode=True, source_version=source_version,
+                source_commit=selected_commit,
+                expected_source_commit=selected_commit)
+            assert invalid_source_version.verdict == "ERROR"
+            assert invalid_source_version.reason == \
+                "missing-or-invalid-source-identity"
         mismatch = run_gate.assay_lane_result(
             0, "PASS", source_mode=True, source_version="8.0.0.dev1",
             source_commit="c" * 40, expected_source_commit=selected_commit)
@@ -11914,6 +11924,15 @@ class TestHistoryDegradedInputs:
             lambda *_args, **_kwargs: SimpleNamespace(
                 returncode=0, stdout=oid))
         assert run_gate.head_commit(tmp_path) == oid
+
+    def test_head_commit_requires_success_even_with_sha_stdout(
+            self, tmp_path, monkeypatch):
+        oid = "a" * 40
+        monkeypatch.setattr(
+            run_gate.subprocess, "run",
+            lambda *_args, **_kwargs: SimpleNamespace(
+                returncode=1, stdout=oid))
+        assert run_gate.head_commit(tmp_path) is None
 
     def test_history_table_must_be_a_table(self, tmp_path):
         _, proj = make_history_repo(
@@ -24027,6 +24046,48 @@ def test_unknown_schema_foreign_runner_names_its_lifecycle_owner(
                        match="names runner 'exec'.*lifecycle owner"):
         run_gate.load_inflight_record(path)
 
+    assert path.exists()
+
+
+def test_unknown_schema_is_not_fresh_by_default(tmp_path):
+    path = tmp_path / "inflight.json"
+    record = {"schema": 99, "container": "runner", "runner": "container"}
+    path.write_text(json.dumps(record))
+
+    with pytest.raises(run_gate.GateError, match="declares schema 99"):
+        run_gate.load_inflight_record(path)
+
+    assert json.loads(path.read_text()) == record
+
+
+def test_unknown_schema_default_names_supported_fresh_remedy(tmp_path):
+    path = tmp_path / "inflight.json"
+    path.write_text(json.dumps({
+        "schema": 99, "container": "runner", "runner": "container",
+    }))
+
+    with pytest.raises(run_gate.GateError) as exc:
+        run_gate.load_inflight_record(path, fresh=False)
+
+    assert "re-run with --fresh" in str(exc.value)
+    assert path.exists()
+
+
+@pytest.mark.parametrize("runner", [None, "container"])
+def test_unknown_schema_fresh_can_read_its_own_container_runner(
+        tmp_path, runner):
+    path = tmp_path / "inflight.json"
+    path.write_text(json.dumps({
+        "schema": 99, "container": "runner", "runner": runner,
+        "started_at": "2026-10-05T00:00:00Z",
+    }))
+
+    pending = run_gate.load_inflight_record(path, fresh=True)
+
+    assert pending == {
+        "schema": 99, "container": "runner",
+        "started_at": "2026-10-05T00:00:00Z",
+    }
     assert path.exists()
 
 
