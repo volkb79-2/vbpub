@@ -480,7 +480,7 @@ def test_finish_allocation_accepts_a_generic_git_worktree_without_ciu_marker(mon
     monkeypatch.setattr(worktree, "_write_instance_record", lambda value: written.append(value))
     workspace_context = SimpleNamespace(
         record_path=tmp_path / "neutral.json", physical_worktree_path=tmp_path,
-        git_common_dir=tmp_path / ".git",
+        git_common_dir=tmp_path / ".git", base_commit="a" * 40,
     )
     ready = worktree._finish_allocation(
         tmp_path, record, checkout_required=False,
@@ -503,6 +503,7 @@ def _create_setup(monkeypatch, tmp_path, *, roots, materialize=True, failure=Non
     generic = SimpleNamespace(
         workspace_id="generic", physical_worktree_path=target,
         record_path=tmp_path / "generic.json", git_common_dir=tmp_path / ".git",
+        base_commit="a" * 40,
     )
     from worktree.core import WorkspaceRecord
     shared_record = WorkspaceRecord(
@@ -646,6 +647,45 @@ def test_create_records_all_nested_roots_before_returning_ready(monkeypatch, tmp
     assert [entry["offset"] for entry in entries] == [".", "nested"]
 
 
+def test_legacy_root_discovery_uses_saved_commit_and_refuses_a_moved_checkout(
+    monkeypatch, tmp_path
+):
+    primary, target, _shared = _create_setup(
+        monkeypatch, tmp_path, roots=[tmp_path / "primary" / "nested"]
+    )
+    context = SimpleNamespace(
+        physical_worktree_path=target, record_path=tmp_path / "generic.json",
+        git_common_dir=tmp_path / ".git", base_commit="a" * 40,
+    )
+    record = _record(target, state="ready")
+    resolved_bases = []
+    monkeypatch.setattr(
+        workspace, "discover_committed_roots",
+        lambda _root, *, base: resolved_bases.append(base) or (
+            tmp_path / "primary" / "nested",
+        ),
+    )
+
+    worktree._committed_root_entries(
+        primary, record, context, prepare=False, persist=False
+    )
+    assert resolved_bases == ["a" * 40]
+
+    exact_target_mismatch = replace(record, base_ref="b" * 40)
+    with pytest.raises(worktree.WorktreeError, match="target disagrees with the shared workspace"):
+        worktree._allocation_commit(
+            exact_target_mismatch, context, require_current_head=False
+        )
+
+    monkeypatch.setattr(worktree, "_git", lambda *_args, **_kwargs: SimpleNamespace(
+        returncode=0, stdout="b" * 40, stderr=""
+    ))
+    with pytest.raises(worktree.WorktreeError, match="HEAD moved from recorded allocation commit"):
+        worktree._committed_root_entries(
+            primary, record, context, prepare=False, persist=False
+        )
+
+
 def test_finish_allocation_requires_shared_context_to_certify_ready(tmp_path):
     record = worktree.WorktreeInstanceRecord(
         logical_name="demo", display_name="demo", branch="demo",
@@ -775,6 +815,9 @@ def test_ensure_does_not_reset_a_checkout_after_fork_point_was_recorded(
         worktree, "_ensure_shared_record",
         lambda *_args: SimpleNamespace(physical_worktree_path=tmp_path),
     )
+    monkeypatch.setattr(worktree, "_git", lambda *_args, **_kwargs: SimpleNamespace(
+        returncode=0, stdout="a" * 40, stderr=""
+    ))
     monkeypatch.setattr(
         worktree, "_finish_allocation",
         lambda _root, _record, **kwargs: calls.update(kwargs) or record,
@@ -838,7 +881,7 @@ def test_generic_root_stays_non_ready_during_nested_preparation_and_ensure_retri
     monkeypatch.setattr(worktree, "_current_git_facts", lambda *_args: {})
     shared_record = SimpleNamespace(context=lambda: SimpleNamespace(
         physical_worktree_path=target, record_path=tmp_path / "generic.json",
-        git_common_dir=tmp_path / ".git",
+        git_common_dir=tmp_path / ".git", base_commit="a" * 40,
     ))
     monkeypatch.setattr(
         worktree, "_ensure_shared_record", lambda *_args: shared_record
@@ -885,7 +928,7 @@ def test_ensure_repairs_a_legacy_ready_record_missing_nested_facts(monkeypatch, 
     monkeypatch.setattr(worktree, "_current_git_facts", lambda *_args: {})
     shared_record = SimpleNamespace(context=lambda: SimpleNamespace(
         physical_worktree_path=target, record_path=tmp_path / "generic.json",
-        git_common_dir=tmp_path / ".git",
+        git_common_dir=tmp_path / ".git", base_commit="a" * 40,
     ))
     monkeypatch.setattr(
         worktree, "_ensure_shared_record", lambda *_args: shared_record

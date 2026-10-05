@@ -133,12 +133,15 @@ lease-mirror writer uses the same lock and re-reads under it. Atomic file
 replacement alone would not serialize these read-modify-write operations and
 could silently discard a concurrent lease or opaque metadata field.
 
-Root discovery uses the allocated checkout's resolved `HEAD` commit rather
-than re-reading a symbolic base such as `main` in the primary checkout. The
-base name can move between checkout and discovery; resolving the exact
-allocated tree keeps the marker set, materialized checkout, and generated
-root metadata about one snapshot. This adds no runtime identity to a generic
-family root and requires no record-schema change.
+Root discovery uses the allocated checkout's recorded commit rather than
+re-reading a symbolic base such as `main` in the primary checkout. New CIU
+records use their `fork_point_sha`; older or adopted checkouts use the shared
+workspace record's `base_commit` only while the checkout still points there.
+If that target cannot be confirmed, `ensure` refuses instead of selecting a
+root set from a later `HEAD`. Resume never runs `git reset --hard` on an
+existing checkout: an interrupted adopt may contain operator commits, and a
+fresh ref resolution is not authority to discard them. This adds no runtime
+identity to a generic family root and requires no record-schema change.
 
 The writer already emits this generic shape when the exact root marker is
 absent. The old reader then contradicted it by demanding a complete runtime

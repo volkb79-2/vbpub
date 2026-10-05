@@ -4486,17 +4486,23 @@ path is “no marker”; a present path must resolve to a regular file, and a
 directory, dangling symlink, or unreadable entry is refused.
 
 For `create`, `adopt`, and resumed `ensure`, `ready` additionally means that
-every committed CIU root discovered from the allocated checkout's exact
-`HEAD` has readable generated facts and that the corresponding root-entry list
-has been persisted in the shared workspace record. The CIU instance record
+every committed CIU root discovered at the allocation's exact commit has
+readable generated facts and that the corresponding root-entry list has been
+persisted in the shared workspace record. Use `fork_point_sha` when present.
+For a legacy record without it, the shared workspace record's `base_commit` is
+usable only while the checkout's `HEAD` still equals that commit; otherwise
+the allocation commit is unknowable and `ensure` refuses rather than choosing
+a new root set. The CIU instance record
 MUST remain `allocating` while those roots or their metadata are being
 prepared; a recoverable preparation failure MUST leave it
 `recovery-required` with `recovery_status: "env-generation-failed"`. `ensure`
 MUST repeat incomplete preparation before returning `ready`, and MUST NOT
 fast-return an older ready record unless its discovered roots, generated
 facts, and recorded root entries agree. Root discovery uses the allocated
-checkout's resolved commit, not a mutable base-ref name in the primary
-checkout. Root-entry updates MUST re-read and merge the neutral workspace
+checkout's recorded commit, not a mutable base-ref name in the primary
+checkout. On resume, `ensure` MUST compare `HEAD` with the recorded allocation
+commit and refuse if they differ; it MUST NOT reset the existing checkout.
+Root-entry updates MUST re-read and merge the neutral workspace
 record under its Git-family workspace lock, preserving unrelated metadata and
 lease fields; CIU's lease mirror MUST use that same lock for its own
 read-modify-write. No runtime identity is invented for an aggregate root.

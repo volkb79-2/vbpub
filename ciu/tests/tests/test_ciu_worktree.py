@@ -624,14 +624,7 @@ class TestForkPointProvenance:
     def test_a_partial_ADOPT_never_resumes_into_a_checkout(
         self, tmp_repo, fake_generate_env, monkeypatch
     ):
-        """Regression (round-5 review): `adopt` wrote its record and THEN
-        called `_write_worktree_overlay` unguarded. `ensure` decides
-        `checkout_required` from `recovery_status in (None,
-        "checkout-incomplete")`, and that record carries `None` — so a failed
-        overlay write left a record whose resume did `git reset --hard <the
-        adopted HEAD>` in the operator's own checkout, DESTROYING anything
-        committed there since, and (CIU-106) stamped a `fork_point_sha` onto
-        an adopt-shaped record the docs promise never carries one."""
+        """A moved adopted checkout refuses resume and keeps operator commits."""
         wt_path = tmp_repo.parent / "adopted"
         assert _git(["worktree", "add", "-b", "adopted", str(wt_path), "main"],
                     tmp_repo).returncode == 0
@@ -648,6 +641,10 @@ class TestForkPointProvenance:
         assert partial is not None
         assert partial.recovery_status == "env-generation-failed"
         assert partial.fork_point_sha is None
+        # Model a hard interruption after the initial record write, before
+        # adopt could persist its recoverable failure state.
+        partial = worktree.replace(partial, state="allocating", recovery_status=None)
+        worktree._write_instance_record(partial)
 
         # The operator keeps working in their own checkout before resuming.
         (wt_path / "mine.txt").write_text("do not lose this\n", encoding="utf-8")
@@ -656,14 +653,32 @@ class TestForkPointProvenance:
         work = _git(["rev-parse", "HEAD"], wt_path).stdout.strip()
         assert work != adopted_head
 
-        resumed = worktree.ensure(tmp_repo, "adopted-one")
-        assert resumed.state == "ready"
-        # not reset back to the adopted HEAD, and still no fork point
+        with pytest.raises(worktree.WorktreeError, match="HEAD moved from recorded allocation commit"):
+            worktree.ensure(tmp_repo, "adopted-one")
         assert _git(["rev-parse", "HEAD"], wt_path).stdout.strip() == work
         assert (wt_path / "mine.txt").exists()
-        assert resumed.fork_point_sha is None
-        stored = json.loads(resumed.record_path.read_text(encoding="utf-8"))
+        stored = json.loads(partial.record_path.read_text(encoding="utf-8"))
         assert "fork_point_sha" not in stored
+
+    def test_a_partial_ADOPT_resumes_when_HEAD_still_matches_its_recorded_target(
+        self, tmp_repo, fake_generate_env, monkeypatch
+    ):
+        wt_path = tmp_repo.parent / "adopted"
+        assert _git(["worktree", "add", "-b", "adopted", str(wt_path), "main"],
+                    tmp_repo).returncode == 0
+        adopted_head = _git(["rev-parse", "HEAD"], wt_path).stdout.strip()
+
+        def boom(*args, **kwargs):
+            raise OSError("no space left on device")
+
+        monkeypatch.setattr(worktree, "_write_worktree_overlay", boom)
+        with pytest.raises(OSError):
+            worktree.adopt(tmp_repo, "adopted-one", str(wt_path))
+
+        resumed = worktree.ensure(tmp_repo, "adopted-one")
+        assert resumed.state == "ready"
+        assert _git(["rev-parse", "HEAD"], wt_path).stdout.strip() == adopted_head
+        assert resumed.fork_point_sha is None
 
     def test_a_record_without_the_field_stays_readable(self, tmp_path):
         """Every record written before CIU-106 lacks the key. Absence is

@@ -4164,37 +4164,18 @@ Found 2026-09-11 by round-5 adversarial review of CIU-106, and reproduced:
 a partial adopt, one real commit in the adopted checkout, then
 `ensure` — `HEAD` came back at the adopt-time SHA and the commit was gone.
 
-### Status — PARTIALLY MITIGATED 2026-09-11, root cause OPEN
+### Status — implementation and oracles added 2026-10-05; gate pending with CIU-128
 
-The reachable-by-exception half is closed as part of CIU-106: `adopt`'s
-`_write_worktree_overlay` call is now wrapped (`WorktreeError` and
-`OSError` — it writes a file, so ENOSPC and a read-only mount are real)
-and marks `env-generation-failed`, which resumes with
-`checkout_required=False`, adopt's own normal shape. A regression test
-covers it, red-proven against the unwrapped code.
-
-What remains OPEN is the structural half, which no `try`/`except` can
-reach: a SIGKILL, a power loss, or a `^C` at the wrong microsecond between
-`_write_instance_record` and the marker leaves exactly the same
-`None`-status adopt record. The fix has to be a fact IN the record rather
-than a marker written afterwards — the record already knows everything
-needed (an adopt record's `base_ref` is a raw object name, a create
-record's is a ref name), but inferring intent from the shape of a field is
-the kind of cleverness this file exists to avoid. Directions:
-
-- Give the record an explicit provenance field (`origin: "create" |
-  "adopt"`) and have `ensure` consult THAT, never `recovery_status`, for
-  the checkout decision. Additive and optional-on-read, the same shape
-  CIU-106 used.
-- Or refuse to reset at all when the resume would move HEAD: compare the
-  worktree's current HEAD against `base_ref` first and require the
-  operator to say so explicitly. Narrower, and it also protects the
-  `create` path against a future caller that gets `base_ref` wrong.
-
-Either way this is a worktree-lifecycle decision with its own blast
-radius (`ensure` is on the resume path of every managed worktree), not
-something to fold into a consumer-driven provenance change, which is why
-CIU-106 shipped the wrapper and filed the rest.
+`ensure` no longer runs `git reset --hard` on an existing checkout. Before
+repairing a partial record it compares the checkout's current `HEAD` with its
+recorded allocation target: `fork_point_sha` when present, otherwise the
+shared workspace record's `base_commit`. A mismatch refuses with the current
+and expected commits, preserving the operator's work. A legacy allocation
+without `fork_point_sha` is usable only while `HEAD` still equals the shared
+`base_commit`; CIU does not resolve a mutable symbolic base to invent a new
+target. Regression oracles cover both the moved-adopt refusal and the
+unchanged-adopt recovery. This also closes CIU-128's readiness-repair path,
+which uses the same saved commit to discover nested roots.
 
 ## CIU-108 — `[deployment.resources]` covers cgroup CPU shares and OOM-kill preference, not OS-scheduler nice value, so a consumer on a shared host reinvented it as a local script cluster
 

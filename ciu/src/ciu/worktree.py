@@ -3601,6 +3601,50 @@ def _mark_recovery(record: WorktreeInstanceRecord, status: str) -> WorktreeInsta
     return failed
 
 
+def _allocation_commit(
+    record: WorktreeInstanceRecord,
+    workspace_context: object | None,
+    *,
+    require_current_head: bool,
+) -> str:
+    """Return the saved allocation commit, refusing to infer a moved target.
+
+    New CIU-created records carry their post-reset fork point. Older records
+    and adopted checkouts use the neutral workspace record's ``base_commit``;
+    that fact remains usable only while the checkout still points at it.
+    """
+    commit = record.fork_point_sha
+    if commit is None:
+        commit = getattr(workspace_context, "base_commit", None)
+        if not isinstance(commit, str) or not _FULL_SHA_RE.fullmatch(commit):
+            raise WorktreeError(
+                "[S16] allocation commit is unavailable from both the CIU "
+                "record and shared workspace record"
+            )
+        if (
+            _FULL_SHA_RE.fullmatch(record.base_ref)
+            and record.base_ref != commit
+        ):
+            raise WorktreeError(
+                "[S16] CIU record target disagrees with the shared workspace "
+                "allocation commit; refusing to infer roots or reset the checkout"
+            )
+
+    if require_current_head or record.fork_point_sha is None:
+        head = _git(
+            ["rev-parse", "--verify", "--quiet", "HEAD^{commit}"],
+            record.git_worktree_path,
+        )
+        current = head.stdout.strip() if head.returncode == 0 else ""
+        if not _FULL_SHA_RE.fullmatch(current) or current != commit:
+            raise WorktreeError(
+                f"[S16] worktree HEAD moved from recorded allocation commit "
+                f"{commit!r} (current HEAD is {current or 'unreadable'}); "
+                "refusing to infer roots or reset the checkout"
+            )
+    return commit
+
+
 def _committed_root_entries(
     repo_root: Path,
     record: WorktreeInstanceRecord,
@@ -3609,12 +3653,13 @@ def _committed_root_entries(
     prepare: bool,
     persist: bool,
 ) -> list[dict[str, Any]]:
-    """Read or prepare every CIU root committed at this checkout's exact HEAD.
+    """Read or prepare every CIU root committed at this allocation's exact commit.
 
     The CIU instance record is the readiness signal consumed by callers. Keep
     its state non-ready until these root facts and the neutral workspace's
     ``root_entries`` metadata agree. Resolve roots from the allocated checkout
-    HEAD, not from the mutable base name in the primary checkout.
+    commit recorded by CIU or the shared workspace, not from a mutable base
+    name in the primary checkout.
     """
     from . import workspace as workspace_adapter
     from .workspace_env import generate_ciu_env, read_generated_facts
@@ -3624,16 +3669,9 @@ def _committed_root_entries(
             "[S16] cannot certify worktree readiness without its shared "
             "workspace record for committed-root metadata"
         )
-    head = _git(
-        ["rev-parse", "HEAD^{commit}"],
-        record.git_worktree_path,
+    commit = _allocation_commit(
+        record, workspace_context, require_current_head=False
     )
-    commit = head.stdout.strip() if head.returncode == 0 else ""
-    if not _FULL_SHA_RE.fullmatch(commit):
-        raise WorktreeError(
-            f"[S16] could not determine the allocated worktree commit at "
-            f"{record.git_worktree_path}: {(head.stderr or head.stdout).strip()}"
-        )
 
     primary = primary_worktree_root(repo_root).resolve()
     discovered_roots = workspace_adapter.discover_committed_roots(primary, base=commit)
@@ -4082,30 +4120,28 @@ def ensure(
             if record.state == "ready":
                 if _ready_roots_are_complete(repo_root, record, workspace_context):
                     return record
+                _allocation_commit(
+                    record, workspace_context, require_current_head=True
+                )
                 # Older writers exposed ready before nested-root metadata was
                 # committed. Demote such records and repair them through the
                 # same non-ready lifecycle as a fresh allocation.
                 record = replace(record, state="allocating", recovery_status=None)
                 _write_instance_record(record)
-                checkout_required = False
                 allow_existing_network = True
             else:
-                # Once CIU recorded the exact post-reset fork point, a hard
-                # interruption during root preparation must resume in place.
-                # Re-resolving base_ref here could move a partially prepared
-                # worktree to a later main and discard work made during repair.
-                checkout_required = (
-                    record.recovery_status == "checkout-incomplete"
-                    or (
-                        record.recovery_status is None
-                        and record.fork_point_sha is None
-                    )
+                # ensure() is a resume path. Verify the exact allocation target
+                # and continue in place; a partial adopt may contain operator
+                # commits since its record was written, so it must never be
+                # reset to base_ref.
+                _allocation_commit(
+                    record, workspace_context, require_current_head=True
                 )
                 allow_existing_network = (
                     record.recovery_status == "env-generation-failed"
                 )
             return _finish_allocation(
-                repo_root, record, checkout_required=checkout_required,
+                repo_root, record, checkout_required=False,
                 allow_existing_network=allow_existing_network,
                 workspace_context=workspace_context,
             )

@@ -53,11 +53,13 @@ exact root marker: only a genuinely absent marker path permits null/null.
 The marker must resolve to a regular file; a directory, dangling symlink, or
 unreadable marker is refused, as are partial identities.
 `ready` is written only after every committed root at the allocated checkout's
-exact `HEAD` has readable generated facts and its root entry is recorded in
-the shared workspace metadata. Until then inspection reports `allocating`; a
-recoverable preparation failure reports `recovery-required`. The
+recorded allocation commit has readable generated facts and its root entry is
+recorded in the shared workspace metadata. Until then inspection reports
+`allocating`; a recoverable preparation failure reports `recovery-required`. The
 `ciu worktree ensure` command retries incomplete preparation and checks older
-ready records for the same evidence before returning them.
+ready records for the same evidence before returning them. If a partial
+checkout's `HEAD` moved from its saved target, `ensure` refuses and preserves
+it; it never hard-resets an existing worktree during resume.
 See the [aggregate-record rationale](docs/DESIGN-GUIDE.md#aggregate-family-records-and-runtime-identity)
 and [consumer example](docs/CONSUMERS.md#2-create-a-managed-workspace).
 

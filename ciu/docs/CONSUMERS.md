@@ -55,7 +55,10 @@ $ ciu worktree ensure pkg-under-test --json
 `ensure` regenerates missing root facts and metadata before returning `ready`.
 It also verifies the recorded root set for an older ready record, so a
 worktree interrupted by an earlier CIU release is repaired instead of being
-accepted on its stale status alone.
+accepted on its stale status alone. It uses the recorded allocation commit
+(`fork_point_sha`, or the shared workspace's `base_commit` for older records).
+If a partial worktree's `HEAD` moved from that target, `ensure` refuses and
+preserves the checkout; it never resets an existing worktree during resume.
 
 If the Git worktree root itself has no `ciu.global.defaults.toml.j2`, its
 aggregate `ready` record correctly has
