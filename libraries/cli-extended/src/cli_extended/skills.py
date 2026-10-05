@@ -15,7 +15,6 @@ import os
 import re
 import secrets
 import shutil
-import tempfile
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from enum import Enum
@@ -149,8 +148,15 @@ def validate_skill_source(name: str, files: Mapping[str, bytes]) -> None:
         raise _fail(name, f"directory has no {SKILL_FILE}")
     if STAMP_FILE in files:
         raise _fail(name, f"source must not contain {STAMP_FILE}")
+    raw = files[SKILL_FILE]
+    if not raw:
+        raise _fail(name, f"{SKILL_FILE} is empty")
+    if raw.startswith(b"\xef\xbb\xbf"):
+        raise _fail(name, f"{SKILL_FILE} starts with a UTF-8 BOM; remove it")
+    if b"\r\n" in raw:
+        raise _fail(name, f"{SKILL_FILE} uses CRLF line endings; convert to LF")
     try:
-        text = files[SKILL_FILE].decode("utf-8")
+        text = raw.decode("utf-8")
     except UnicodeDecodeError as exc:
         raise _fail(name, f"{SKILL_FILE} is not valid UTF-8: {exc}") from exc
     front = _parse_frontmatter(name, text)
@@ -211,7 +217,7 @@ def _load_sources(package: str, resource_dir: str) -> dict[str, dict[str, bytes]
         )
     sources: dict[str, dict[str, bytes]] = {}
     for child in sorted(root.iterdir(), key=lambda item: item.name):
-        if not child.is_dir():
+        if not child.is_dir() or child.name.startswith((".", "_")):
             continue
         files = _walk(child)
         validate_skill_source(child.name, files)
@@ -325,7 +331,7 @@ def _inspect(
 
     if not os.path.lexists(target):
         return SkillState.ABSENT, {}
-    if not target.is_dir():
+    if target.is_symlink() or not target.is_dir():
         return SkillState.UNMANAGED, {}
     tree = _read_tree(target)
     stamp = _load_stamp(tree)
@@ -367,6 +373,28 @@ def _collect(
     return rows
 
 
+_LEFTOVER_RE = re.compile(r"\.(.+)\.cli-extended-(?:tmp|old)-[0-9a-z]+")
+
+
+def _leftovers(destination: Path) -> list[Path]:
+    """Hidden temp/backup siblings left behind by an interrupted install."""
+
+    if not destination.is_dir():
+        return []
+    return [
+        child
+        for child in sorted(destination.iterdir(), key=lambda item: item.name)
+        if _LEFTOVER_RE.fullmatch(child.name)
+    ]
+
+
+def _remove_path(path: Path) -> None:
+    if path.is_dir() and not path.is_symlink():
+        shutil.rmtree(path)
+    else:
+        path.unlink()
+
+
 def skill_states(
     *,
     package: str,
@@ -406,9 +434,10 @@ def _destinations(harness: str | None, dest: str | None) -> list[Path]:
 
 def _write_atomic(destination: Path, name: str, tree: Mapping[str, bytes]) -> None:
     target = destination / name
-    staging = Path(tempfile.mkdtemp(prefix=f".{name}.cli-extended-tmp-", dir=destination))
-    backup = destination / f".{name}.cli-extended-old-{secrets.token_hex(4)}"
+    staging = destination / f".{name}.cli-extended-tmp-{secrets.token_hex(8)}"
+    backup = destination / f".{name}.cli-extended-old-{secrets.token_hex(8)}"
     try:
+        staging.mkdir()  # not mkdtemp: the umask must decide the mode
         for relative, data in tree.items():
             path = staging / relative
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -537,9 +566,22 @@ def _make_handler(package: str, resource_dir: str, mode: str):
             raise CliFailure(str(exc)) from exc
         rows = _collect(sources, tool, version, destinations)
         if mode in ("check", "list"):
-            return _report(rows, runtime, tool, version, mode)
+            leftovers = [path for dest in destinations for path in _leftovers(dest)]
+            return _report(rows, leftovers, runtime, tool, version, mode)
         overwrite = bool(args.overwrite_modified)
         refused = 0
+        if mode == "install":
+            processed = {(row.destination, row.name) for row in rows}
+            for destination in destinations:
+                for leftover in _leftovers(destination):
+                    owner = _LEFTOVER_RE.fullmatch(leftover.name).group(1)  # type: ignore[union-attr]
+                    if (destination, owner) not in processed:
+                        continue
+                    if runtime.dry_run:
+                        runtime.output.primary(f"would remove leftover {leftover}")
+                    else:
+                        _remove_path(leftover)
+                        runtime.output.primary(f"removed leftover {leftover}")
         for row in rows:
             rendered = (
                 _render(row.name, sources[row.name], tool, version)
@@ -563,7 +605,12 @@ def _make_handler(package: str, resource_dir: str, mode: str):
 
 
 def _report(
-    rows: Sequence[_Row], runtime: CliRuntime, tool: str, version: str, mode: str
+    rows: Sequence[_Row],
+    leftovers: Sequence[Path],
+    runtime: CliRuntime,
+    tool: str,
+    version: str,
+    mode: str,
 ) -> int:
     ordered = sorted(rows, key=lambda row: (str(row.destination), row.name))
     entries = [
@@ -571,12 +618,19 @@ def _report(
         for row in ordered
     ]
     if runtime.json_mode:
-        runtime.output.primary({"tool": tool, "version": version, "skills": entries})
+        runtime.output.primary({
+            "tool": tool,
+            "version": version,
+            "skills": entries,
+            "leftovers": [str(path) for path in leftovers],
+        })
     else:
         for entry in entries:
             runtime.output.primary(
                 f"{entry['state']:<10} {entry['name']}  {entry['destination']}"
             )
+        for path in leftovers:
+            runtime.output.primary(f"leftover {path}")
     if mode == "list":
         return 0
     bad = [row for row in rows if row.state is not SkillState.CURRENT]
@@ -585,8 +639,12 @@ def _report(
             f"{len(bad)} skill(s) are not current",
             hint=f"run `{tool} skills install` (see `{tool} skills list`)",
         )
-        return 1
-    return 0
+    if leftovers:
+        runtime.output.error(
+            f"{len(leftovers)} leftover temporary path(s) from an interrupted install",
+            hint=f"run `{tool} skills install` to clean them up",
+        )
+    return 1 if bad or leftovers else 0
 
 
 def _target_options() -> tuple[OptionSpec, ...]:

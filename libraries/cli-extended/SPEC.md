@@ -1024,7 +1024,10 @@ tool name is `identity.command_name` and the version is `identity.version`.
    `importlib.resources`, so wheels, editable installs and zipapps behave the
    same. A child directory without `SKILL.md`, a missing resource directory, or
    a missing package is a `SkillError`; loose files next to the skill
-   directories are ignored.
+   directories are ignored, and so is any entry whose name starts with `.` or
+   `_` (for example `__pycache__`). `SKILL.md` MUST be non-empty, LF-terminated
+   (CRLF is rejected as "uses CRLF line endings") and without a UTF-8 BOM
+   (rejected as "starts with a UTF-8 BOM").
 2. **Source schema.** The frontmatter is the first `---` line through the next
    `---` line. It MAY contain only single-line `key: value` scalars (plain, or
    wrapped in matching single or double quotes), blank lines, and one optional
@@ -1056,7 +1059,8 @@ tool name is `identity.command_name` and the version is `identity.version`.
    is exactly `DIR` and is mutually exclusive with `--harness` (usage error,
    exit 2). `install` creates a missing destination including parents.
 7. **States.** Per skill and destination: `absent` (no directory); `unmanaged`
-   (directory without a valid sidecar, or not a directory); `foreign` (sidecar
+   (directory without a valid sidecar, not a directory, or any symlink, which
+   is never followed, overwritten or removed); `foreign` (sidecar
    names another tool); `modified` (an installed file's hash differs from the
    sidecar, or a file was added or removed); `stale` (unmodified but version or
    source hash differs from the packaged skill); `current`; `orphaned`
@@ -1069,7 +1073,11 @@ tool name is `identity.command_name` and the version is `identity.version`.
    installed; `stale` is updated; `current` is rewritten only when the rendered
    bytes differ from the installed bytes, otherwise `unchanged` (no file is
    touched); orphans are removed. Writes go to a temporary sibling directory
-   renamed into place, with the previous tree restored if the swap fails.
+   renamed into place, with the previous tree restored if the swap fails. The
+   staging directory is created with the process umask (never a private
+   `mkdtemp` mode), so installed modes are the umask's. Hidden
+   `.<skill>.cli-extended-(tmp|old)-*` leftovers of an interrupted install are
+   removed for every skill processed (`removed leftover <path>`).
    `modified` is refused unless `--overwrite-modified` is given. `foreign` and
    `unmanaged` are always refused and never touched, even with
    `--overwrite-modified`. A refusal is an `[ERROR]` naming skill and
@@ -1086,10 +1094,12 @@ tool name is `identity.command_name` and the version is `identity.version`.
 11. **`check`** (read-only, `--json`). Prints `<state> <skill> <dest>` per row.
     Exit 0 only when every packaged skill is `current` in every selected
     destination and there is no orphan or modified leftover; otherwise exit 1.
+    Interrupted-install leftovers are listed one per line as `leftover <path>`
+    and also make `check` exit 1.
 12. **`list`** (read-only, `--json`). Same rows as `check`; always exit 0.
     With `--json` both verbs print
-    `{"tool", "version", "skills": [{"name", "destination", "state"}]}` sorted
-    by `(destination, name)`.
+    `{"tool", "version", "skills": [{"name", "destination", "state"}],
+    "leftovers": [path]}` with `skills` sorted by `(destination, name)`.
 13. **Exit codes.** 0 success; 1 any refusal, failed check or source error
     (`SkillError` is reported as a clean `[ERROR]`); 2 usage error.
 14. **Registration.** `register_skills_verbs` adds one `skills` verb (group

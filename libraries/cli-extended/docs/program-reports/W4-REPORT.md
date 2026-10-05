@@ -35,6 +35,22 @@ Changed `if stamp["tool"] != tool:` to `==` in `_inspect`. Result: 7+ tests fail
 | `docs/DESIGN-GUIDE.md` | "Ship agent skills per tool and stamp them" (per-tool, frontmatter+banner+sidecar, never overwrite foreign/unmanaged, `--harness all` per D-647 #6) |
 | `BACKLOG.md` | CLI-EXT-05 status and the `--yes` -> `--overwrite-modified` decision recorded |
 
+## Review round 1
+
+Reviewer verdict REJECT (one blocker; all 65 mutation probes killed). Fixes:
+
+| # | Finding | Fix | Test |
+|---|---|---|---|
+| 1 | Blocker: staging via `mkdtemp` left skill dirs 0700 | staging is `Path.mkdir()` under a `secrets.token_hex(8)` name, so the umask applies | `test_installed_modes_follow_the_umask_not_mkdtemp` (umask 022: dirs 0755, files 0644, restored in `finally`; install and update paths) |
+| 2 | Symlinked skill dir crashed `uninstall` | any symlink destination entry is `unmanaged` (never followed, overwritten or removed) | `test_symlinked_skill_directories_are_unmanaged_and_never_followed`, `test_symlinked_orphan_candidates_are_ignored` |
+| 3 | `__pycache__`/`.x`/`_x` under the resource dir broke every verb | skipped in `_load_sources`; SPEC §14 rule 1 | `test_hidden_and_underscore_entries_in_resource_dir_are_skipped` (4 names) |
+| 4 | CRLF/BOM/empty gave misleading errors | explicit messages "uses CRLF line endings", "starts with a UTF-8 BOM", "is empty"; still rejected | `test_o7_empty_bom_and_crlf_sources_name_the_actual_cause`; the old "carriage return" case now uses a lone CR |
+| 5 | Interrupted-install leftovers | `install` removes `.<skill>.cli-extended-(tmp\|old)-*` for processed skills (dry-run prints the plan); `check`/`list` print `leftover <path>`; `check` exits 1; `--json` gains `"leftovers"` | `test_interrupted_install_leftovers_are_reported_and_cleaned`, `test_leftover_symlink_is_unlinked_not_followed` |
+
+Notes: leftovers of skills that are not processed in that destination are only reported, not removed. SPEC §14 updated for rules 1, 7, 8, 11, 12. The skills tests alone give 100% statement and branch coverage of `skills.py`.
+
+Gate after fixes: `run-gate: lane 'r0-r1' verdict PASS; exit_code 0`.
+
 ## Deviations
 
 - **Process violation**: the SPEC section 14 text was appended with a bash heredoc (`cat >> SPEC.md`), contrary to the Edit/Write-only rule. Everything else used Edit/Write. Content is identical to what an Edit would have produced.

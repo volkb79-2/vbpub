@@ -695,6 +695,7 @@ def test_check_and_list_json_are_sorted_by_destination_then_name(pkg, tmp_path, 
     assert payload == {
         "tool": "mytool",
         "version": "1.0.0",
+        "leftovers": [],
         "skills": [
             {"name": "alpha", "destination": agents, "state": "current"},
             {"name": "beta", "destination": agents, "state": "current"},
@@ -901,7 +902,7 @@ CASES = [
      FM + "name: alpha\nmetadata:\n  a: b\ndescription: d\n  c: x\n---\n", 6,
      "unsupported frontmatter syntax"),
     ("tab", "alpha", FM + "name: alpha\ndescription:\td\n---\n", 3, "unsupported frontmatter syntax"),
-    ("carriage return", "alpha", FM + "name: alpha\r\ndescription: d\n---\n", 2, "unsupported frontmatter syntax"),
+    ("lone carriage return", "alpha", FM + "name: alpha\rx\ndescription: d\n---\n", 2, "unsupported frontmatter syntax"),
     ("no space after colon", "alpha", FM + "name:alpha\ndescription: d\n---\n", 2, "unsupported frontmatter syntax"),
     ("metadata with value", "alpha", FM + "name: alpha\ndescription: d\nmetadata: x\n---\n", 4,
      "unsupported frontmatter syntax"),
@@ -998,3 +999,154 @@ def test_nested_source_directories_hash_by_posix_relpath(tmp_path, monkeypatch):
     side = json.loads((dest / "n" / STAMP).read_text())
     assert side["source_hash"] == source_hash(skill)
     assert sorted(side["files"]) == ["SKILL.md", "a.txt", "a/b/c.txt"]
+
+
+# ----------------------------------------------------- review round 1
+
+
+def test_installed_modes_follow_the_umask_not_mkdtemp(tmp_path, monkeypatch):
+    package = make_pkg(tmp_path, monkeypatch, {
+        "m": {"SKILL.md": md("m"), "sub/deep/f.txt": "x"},
+    })
+    dest = tmp_path / "dest"
+    old = os.umask(0o022)
+    try:
+        assert run(package, "install", "--dest", str(dest))[0] == 0
+        assert run(package, "install", "--dest", str(dest), version="2.0")[0] == 0
+    finally:
+        os.umask(old)
+    assert (dest / "m").stat().st_mode & 0o777 == 0o755
+    seen = 0
+    for path in (dest / "m").rglob("*"):
+        expected = 0o755 if path.is_dir() else 0o644
+        assert path.stat().st_mode & 0o777 == expected, path
+        seen += 1
+    assert seen >= 5
+
+
+def test_symlinked_skill_directories_are_unmanaged_and_never_followed(pkg, tmp_path):
+    dest = tmp_path / "dest"
+    real = tmp_path / "elsewhere"
+    run(pkg, "install", "--dest", str(real))
+    dest.mkdir()
+    (dest / "alpha").symlink_to(real / "alpha", target_is_directory=True)
+    (dest / "beta").symlink_to(tmp_path / "dangling")
+    before = snapshot(real)
+    assert states(run(pkg, "list", "--dest", str(dest))[1]) == ["unmanaged", "unmanaged"]
+    code, out, err = run(pkg, "install", "--dest", str(dest))
+    assert (code, out) == (1, "")
+    assert "without a cli-extended stamp" in err
+    code, out, err = run(pkg, "uninstall", "--dest", str(dest))
+    assert (code, err) == (0, "")
+    assert out.splitlines() == [
+        f"skipped alpha -> {dest} (unmanaged)",
+        f"skipped beta -> {dest} (unmanaged)",
+    ]
+    assert (dest / "alpha").is_symlink() and (dest / "beta").is_symlink()
+    assert snapshot(real) == before
+
+
+def test_symlinked_orphan_candidates_are_ignored(pkg, tmp_path):
+    dest = tmp_path / "dest"
+    real = tmp_path / "elsewhere"
+    run(pkg, "install", "--dest", str(real))
+    (real / "alpha").rename(real / "ghost")
+    dest.mkdir()
+    (dest / "ghost").symlink_to(real / "ghost", target_is_directory=True)
+    rows = skill_states(package=pkg, resource_dir="skills", tool="mytool",
+                        version="1.0.0", destinations=[dest])
+    assert [r[0] for r in rows] == ["alpha", "beta"]
+    assert run(pkg, "uninstall", "--dest", str(dest))[0] == 0
+    assert (real / "ghost" / "SKILL.md").is_file()
+
+
+@pytest.mark.parametrize("hidden", ["__pycache__", ".git", "_private", ".hidden"])
+def test_hidden_and_underscore_entries_in_resource_dir_are_skipped(tmp_path, monkeypatch, hidden):
+    package = make_pkg(tmp_path, monkeypatch, {
+        "ok": {"SKILL.md": md("ok")}, hidden: {"mod.pyc": b"\x00junk"},
+    })
+    dest = tmp_path / "dest"
+    code, out, err = run(package, "install", "--dest", str(dest))
+    assert (code, err) == (0, "")
+    assert out.splitlines() == [f"installed ok -> {dest}"]
+    assert sorted(p.name for p in dest.iterdir()) == ["ok"]
+
+
+def test_o7_empty_bom_and_crlf_sources_name_the_actual_cause():
+    good = md("alpha")
+    with pytest.raises(SkillError, match=r"SKILL\.md is empty"):
+        validate_skill_source("alpha", {"SKILL.md": b""})
+    with pytest.raises(SkillError, match="starts with a UTF-8 BOM"):
+        validate_skill_source("alpha", {"SKILL.md": b"\xef\xbb\xbf" + good.encode()})
+    with pytest.raises(SkillError, match="uses CRLF line endings"):
+        validate_skill_source("alpha", {"SKILL.md": good.replace("\n", "\r\n").encode()})
+    # a CRLF only in the body is still rejected: the file must be LF throughout
+    with pytest.raises(SkillError, match="uses CRLF line endings"):
+        validate_skill_source("alpha", {"SKILL.md": good.encode() + b"x\r\ny\n"})
+    assert validate_skill_source("alpha", {"SKILL.md": good.encode()}) is None
+
+
+def test_interrupted_install_leftovers_are_reported_and_cleaned(pkg, tmp_path):
+    dest = tmp_path / "dest"
+    run(pkg, "install", "--dest", str(dest))
+    tmp_dir = dest / ".alpha.cli-extended-tmp-0123abcd"
+    old_dir = dest / ".beta.cli-extended-old-ffee0011"
+    old_file = dest / ".alpha.cli-extended-old-aa"
+    unrelated = dest / ".other.cli-extended-tmp-99"
+    plain = dest / ".alpha.notes"
+    write_tree(tmp_dir, {"SKILL.md": "half"})
+    write_tree(old_dir, {"SKILL.md": "old"})
+    old_file.write_text("f")
+    write_tree(unrelated, {"x": "y"})
+    plain.write_text("keep")
+
+    code, out, err = run(pkg, "check", "--dest", str(dest))
+    assert code == 1
+    assert out.splitlines() == [
+        f"{'current':<10} alpha  {dest}",
+        f"{'current':<10} beta  {dest}",
+        f"leftover {old_file}",
+        f"leftover {tmp_dir}",
+        f"leftover {old_dir}",
+        f"leftover {unrelated}",
+    ]
+    assert "4 leftover temporary path(s) from an interrupted install" in err
+    assert "skill(s) are not current" not in err
+    code, out, _ = run(pkg, "list", "--dest", str(dest))
+    assert code == 0 and out.count("leftover ") == 4
+    code, out, _ = run(pkg, "check", "--dest", str(dest), "--json")
+    payload = json.loads(out)
+    assert code == 1
+    assert payload["leftovers"] == [str(p) for p in (old_file, tmp_dir, old_dir, unrelated)]
+    assert [s["state"] for s in payload["skills"]] == ["current", "current"]
+
+    code, out, _ = run(pkg, "install", "--dest", str(dest), "--dry-run")
+    assert code == 0
+    assert out.splitlines()[:3] == [
+        f"would remove leftover {old_file}",
+        f"would remove leftover {tmp_dir}",
+        f"would remove leftover {old_dir}",
+    ]
+    assert tmp_dir.exists()
+    code, out, _ = run(pkg, "install", "--dest", str(dest))
+    assert code == 0
+    assert out.splitlines()[:3] == [
+        f"removed leftover {old_file}",
+        f"removed leftover {tmp_dir}",
+        f"removed leftover {old_dir}",
+    ]
+    assert not (tmp_dir.exists() or old_dir.exists() or old_file.exists())
+    assert unrelated.is_dir() and plain.read_text() == "keep"
+    assert run(pkg, "check", "--dest", str(dest))[0] == 1  # unrelated one remains reported
+
+
+def test_leftover_symlink_is_unlinked_not_followed(pkg, tmp_path):
+    dest = tmp_path / "dest"
+    keep = tmp_path / "keep"
+    write_tree(keep, {"f": "x"})
+    dest.mkdir()
+    link = dest / ".alpha.cli-extended-tmp-1"
+    link.symlink_to(keep, target_is_directory=True)
+    assert run(pkg, "install", "--dest", str(dest))[0] == 0
+    assert not link.is_symlink()
+    assert (keep / "f").read_text() == "x"
