@@ -4126,7 +4126,10 @@ def _read_inflight_status(project_dir: Path, proc_root: Path
         info = directory.lstat()
         if not stat.S_ISDIR(info.st_mode):
             raise OSError("not a directory")
-        paths = sorted(directory.glob("*.json"))
+        with os.scandir(directory) as entries:
+            paths = sorted((Path(entry.path) for entry in entries
+                            if entry.name.endswith(".json")),
+                           key=lambda path: path.name)
     except FileNotFoundError:
         return [], []
     except OSError as exc:
@@ -4221,7 +4224,11 @@ def _read_exec_lock_status(lock_dir: Path, proc_root: Path
         return [], [f"cannot read {proc_root / 'locks'}: {exc}"]
     rows = _parse_proc_lock_rows(proc_locks)
     try:
-        entries = sorted(lock_dir.glob("run-gate-exec-*.lock"))
+        with os.scandir(lock_dir) as directory_entries:
+            entries = sorted((Path(entry.path) for entry in directory_entries
+                              if entry.name.startswith("run-gate-exec-")
+                              and entry.name.endswith(".lock")),
+                             key=lambda path: path.name)
     except OSError as exc:
         return [], [f"cannot list exec lock directory {lock_dir}: {exc}"]
     locks: list[dict] = []

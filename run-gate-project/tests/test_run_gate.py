@@ -5642,6 +5642,42 @@ def test_status_does_not_call_an_invisible_lock_pid_dead(tmp_path):
     assert run_gate._status_pid_liveness(123456789, tmp_path) == "unknown"
 
 
+def test_status_reports_unreadable_exec_lock_directory(tmp_path, monkeypatch):
+    lock_dir = tmp_path / "locks"
+    lock_dir.mkdir()
+    proc_root = tmp_path / "proc"
+    proc_root.mkdir()
+    (proc_root / "locks").write_text("")
+
+    def denied(_path):
+        raise PermissionError("directory scan denied")
+
+    monkeypatch.setattr(run_gate.os, "scandir", denied)
+    locks, errors = run_gate._read_exec_lock_status(lock_dir, proc_root)
+
+    assert locks == []
+    assert len(errors) == 1
+    assert "cannot list exec lock directory" in errors[0]
+    assert "directory scan denied" in errors[0]
+
+
+def test_status_reports_unreadable_inflight_directory(tmp_path, monkeypatch):
+    project = tmp_path / "project"
+    directory = project / ".run-gate" / "inflight"
+    directory.mkdir(parents=True)
+
+    def denied(_path):
+        raise PermissionError("directory scan denied")
+
+    monkeypatch.setattr(run_gate.os, "scandir", denied)
+    records, errors = run_gate._read_inflight_status(project, tmp_path)
+
+    assert records == []
+    assert len(errors) == 1
+    assert "cannot list inflight directory" in errors[0]
+    assert "directory scan denied" in errors[0]
+
+
 def test_status_worktree_selects_its_config_and_inflight_scope(
         tmp_path, monkeypatch, capsys):
     repo = make_repo(tmp_path)
