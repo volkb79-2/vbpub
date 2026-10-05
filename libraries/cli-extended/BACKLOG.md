@@ -34,7 +34,7 @@ cli-extended's existing TTY/`NO_COLOR` policy.
 ## CLI-EXT-02 — evaluate declarative conditional option constraints
 
 **Status:** Reopened 2026-10-05 — scheduled as program package W2 (operator
-decision CX-D10, [unified-adoption program](docs/PROGRAM-2026-10-UNIFIED-ADOPTION.md#w2--declarative-constraints-and-selector-type-cli-ext-02-cli-ext-12)).
+decision CX-D10, [unified-adoption program](docs/PROGRAM-2026-10-UNIFIED-ADOPTION.md#w2-declarative-constraints-and-selector-type-cli-ext-02-cli-ext-12)).
 The evidence gate below is superseded: every vbpub CLI now adopts the
 library, and CMRU and nyxloom `validate=` callbacks already supply the shapes.
 
@@ -251,7 +251,7 @@ remain outside this library pilot.
 ## CLI-EXT-05 — a shared `skills` verb group: install a tool's packaged agent skills into each harness
 
 **Status:** Scheduled — program package W4 (CX-D9); design pinned in
-[the program](docs/PROGRAM-2026-10-UNIFIED-ADOPTION.md#w4--packaged-agent-skills-cli-ext-05-new-skillspy).
+[the program](docs/PROGRAM-2026-10-UNIFIED-ADOPTION.md#w4-packaged-agent-skills-cli-ext-05-new-skillspy).
 The stamp also goes into the SKILL.md frontmatter `metadata` and a visible
 banner (operator choice), with an integrity sidecar for modified-state
 detection; there is no global cross-tool sync.  
