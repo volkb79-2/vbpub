@@ -70,7 +70,8 @@ def _status(callable_) -> Any:
 
 
 def run_install_host(
-    mod, argv, *, tmp_path, monkeypatch, capsys, fake_client, scenario, monitor_calls=None
+    mod, argv, *, tmp_path, monkeypatch, capsys, fake_client, scenario, monitor_calls=None,
+    create_inputs=True,
 ):
     """Replay one install-host invocation.
 
@@ -119,7 +120,7 @@ def run_install_host(
         ("--ssh-identity-file", "not a real private key\n"),
         ("--custom-script-file", "echo from-custom-script-file\n"),
     ):
-        if flag in argv:
+        if create_inputs and flag in argv:
             (tmp_path / argv[list(argv).index(flag) + 1]).write_text(content)
     monkeypatch.setattr(
         mod,

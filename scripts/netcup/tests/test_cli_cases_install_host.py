@@ -284,8 +284,11 @@ def _assert_effects_are_observed(row, run, args, tmp_path):
         return
     if "--dry-run" not in invocation or status != 0:
         return
-    # A dry-run plan only ever reads, and writes no config file of its own.
+    # A dry-run plan only ever reads, starts no SSH follower and no task polling,
+    # and writes no config file of its own.
     assert set(run.methods) <= {"get", "get_user_info"}
+    assert run.followers == []
+    assert not any("/tasks" in str(call[1]) for call in run.calls if len(call) > 1)
     written = {p.name for p in tmp_path.glob("*.jsonc")}
     assert written <= ({"target-host.jsonc"} if route == "install" else set())
     for dest, expected in args.items():
@@ -366,6 +369,8 @@ def test_yes_is_the_only_consent_in_a_non_interactive_run(
     )
     _assert_catalog_outcome(row, accepted)
     assert accepted.methods.count("post") == 1
+    # wizard and configure save the reviewed config before the single POST.
+    assert (accepted_dir / "target-host.jsonc").exists() is (route != "install" or scenario == "file")
     # Contrast: without --yes and without a terminal the run refuses and never POSTs.
     bare = [token for token in row["invocation"] if token != "--yes"]
     _, refused = _replay(
@@ -578,3 +583,25 @@ def test_dry_run_plan_shows_the_ssh_target_a_live_run_would_use(
     )
     assert "[dry-run] SSH target: ops@192.0.2.10:22" in named.out
     assert "203.0.113.5:22" not in named.out
+
+
+@pytest.mark.parametrize(
+    ("route", "scenario"), [("attach", "none"), ("wizard", "gather"), ("install", "file")]
+)
+def test_missing_identity_file_is_refused_not_generated(
+    route, scenario, install_host_mod, tmp_path, monkeypatch, capsys, fake_client
+):
+    argv = [route, "--ssh-identity-file", "missing-key"]
+    if route == "attach":
+        argv += ["--ssh-host", "192.0.2.10"]
+    else:
+        argv += ["--dry-run", "--yes"]
+    run = run_install_host(
+        install_host_mod, argv, tmp_path=tmp_path, monkeypatch=monkeypatch, capsys=capsys,
+        fake_client=fake_client, scenario=scenario, create_inputs=False,
+    )
+    assert run.status == 2
+    assert "SSH identity file does not exist" in run.err
+    assert "post" not in run.methods
+    assert not (tmp_path / "missing-key").exists()
+    assert not (tmp_path / "missing-key.pub").exists()
