@@ -3709,7 +3709,10 @@ def _resolve_source_root(raw: str, where: str, project_root: Path) -> Path:
     symlink inside the project root can point anywhere on disk regardless of
     what *raw* spells. ``Path.resolve()`` collapses BOTH ``..`` components
     and symlinks to their real final target, so comparing the two resolved
-    paths catches either escape route the same way.
+    paths catches either escape route the same way. File roots additionally
+    must be reachable without traversing a symlink: Git diffs name the link
+    and its target as different paths, while exact-file selection needs one
+    unambiguous tracked spelling.
     """
     if not raw:
         raise LaneConfigError(f"{where}: 'judge.source_roots' contains an empty path")
@@ -3737,6 +3740,18 @@ def _resolve_source_root(raw: str, where: str, project_root: Path) -> Path:
             f"'..' or a symlink) -- a lane must not be able to measure a "
             f"tree outside the project it declares"
         )
+    if resolved.is_file():
+        traversed = project_root
+        for part in candidate.parts:
+            if part == "..":
+                traversed = traversed.parent
+                continue
+            traversed = traversed / part
+            if traversed.is_symlink():
+                raise LaneConfigError(
+                    f"{where}: file source root {raw!r} resolves through a "
+                    f"symlink; declare the resolved in-project file path directly"
+                )
     return resolved
 
 

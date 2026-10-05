@@ -420,13 +420,6 @@ def test_report_path_through_symlink_file_root_requires_declared_lexical_key(
         )
 
     assert caught.value.reason_code is ReasonCode.UNREADABLE_ARTIFACT
-    assert mutation._resolve_report_paths(
-        SimpleNamespace(sources={"declared.py": object()}),
-        run_cwd=run_cwd,
-        repo_top=repo_top,
-        source_root_paths=(declared.resolve(),),
-        source_root_files=("app/declared.py",),
-    ) == {"declared.py": "app/target.py"}
 
 
 def test_mutation_worker_propagates_non_timeout_post_execution_git_failure(

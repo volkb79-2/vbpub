@@ -180,6 +180,31 @@ def test_a_file_source_root_selects_only_that_exact_file(layout: Layout):
     assert not sibling.resolve().is_relative_to(judge.source_root_paths[0])
 
 
+@pytest.mark.parametrize("alias_kind", ["directory", "file"])
+def test_a_file_root_reached_through_a_symlink_is_rejected(
+    layout: Layout, alias_kind: str
+):
+    source = layout.project_root / "src" / "owned.py"
+    source.write_text("def owned(): return 1\n", encoding="utf-8")
+    if alias_kind == "directory":
+        alias = layout.project_root / "src_alias"
+        alias.symlink_to(source.parent, target_is_directory=True)
+        declared_root = "src_alias/owned.py"
+    else:
+        alias = source.parent / "owned_alias.py"
+        alias.symlink_to(source.name)
+        declared_root = "src/owned_alias.py"
+
+    with pytest.raises(
+        LaneConfigError,
+        match=(
+            "resolves through a symlink.*declare the resolved in-project "
+            "file path directly"
+        ),
+    ):
+        load_lane_file(layout.write(declared_root))
+
+
 def test_a_missing_file_source_root_is_rejected_by_name(layout: Layout):
     with pytest.raises(LaneConfigError, match="src/missing.py.*must name an existing"):
         load_lane_file(layout.write("src/missing.py"))

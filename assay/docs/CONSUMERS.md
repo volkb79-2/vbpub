@@ -358,11 +358,14 @@ run-gate does not forward or reinterpret it as assay's flag.
 
 In a monorepo, a lane can own a single file when a neighboring package's
 changed lines need different tests. `source_roots` is relative to the
-directory containing `assay.toml`; an existing file selects only that exact
-declared path, so sibling files and sibling symlinks pointing to it stay out
-of R1 and native R2 changed-line selection. An ingested R2 report must name
-that same lexical file path too; resolving a sibling symlink onto the file
-does not make the sibling part of the lane's evidence.
+directory containing `assay.toml`; an existing regular file selects only that
+exact declared path, and the path must reach it without traversing a symlink.
+If the file is aliased, declare its resolved in-project path directly. Sibling
+files and sibling symlinks pointing to it stay out of R1 and native R2
+changed-line selection. An ingested R2 report must name that same lexical file
+path too; resolving a sibling symlink onto the file does not make the sibling
+part of the lane's evidence. Directory roots can still use an in-project
+directory symlink because their containment is checked after resolution.
 
 ```toml
 schema_version = 2
@@ -395,8 +398,9 @@ format = "coverage-py-json"
 artifact = "coverage.json"
 ```
 
-The gate refuses a missing file, an absolute path, or a path resolving outside
-the project root. A directory continues to select its descendants as before.
+The gate refuses a missing file, an absolute path, a file path traversing a
+symlink, or a path resolving outside the project root. A directory continues
+to select its descendants as before.
 See the [design rule](DESIGN-GUIDE.md#file-scoped-source-roots) for exact
 membership and containment behavior.
 

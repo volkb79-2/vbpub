@@ -279,11 +279,13 @@ project's layout: `default="src/nyxloom"`, `default="topos/src/topos"`,
 no changed file, so the gate returns 0/0 PASS forever. That is a laundering
 gate, and none of the four copies guards it. Each entry may name an existing
 directory or one existing regular file. A file entry selects exactly that
-declared path; sibling files and sibling symlinks pointing to it are outside
-scope. Directory containment still uses resolved paths, while file selection
-keeps the lexical diff path so following a sibling symlink cannot widen an
-exact root. Both forms resolve under the project root, and an absent path or a
-path escaping through `..` or a symlink refuses.
+declared path and must reach it without traversing a symlink; declare its
+resolved in-project path directly. This keeps the Git diff spelling aligned
+with exact-file selection. Sibling files and sibling symlinks pointing to it
+stay outside scope. Directory containment uses resolved paths, so an
+in-project directory symlink can still name a directory root. Both forms
+resolve under the project root, and an absent path or a path escaping through
+`..` or a symlink refuses.
 
 The ingested R2 path applies the same boundary to report keys before resolving
 them: a report naming a sibling symlink cannot turn the resolved target into
