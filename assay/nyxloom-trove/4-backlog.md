@@ -141,6 +141,7 @@ items:
   - {id: B139, title: "assay-cli SKILL.md 'What this build evaluates' omits JavaScript R2 by Stryker-report ingestion (B046)", type: bugfix, component: docs, context_estimate: small}
   - {id: B140, title: "no project-level default for a lane's env_passthrough: every new lane must repeat the project's common names, and a missing one fails the lane's first run COMMAND_FAILED", type: feature, component: config, context_estimate: small}
   - {id: B141, title: "changed-lines lanes cannot scope to files: judge.source_roots must be directories, so a later-HEAD run judges other packages' changed lines with the wrong tests", type: feature, component: config, context_estimate: small}
+  - {id: B143, title: "Adopt cli-extended (unified adoption, order 6 of 8): real wheel dependency, zipapp bundles cli_extended, A-005 reworded", type: feature, component: cli, context_estimate: large}
 ---
 
 # assay — backlog
@@ -187,6 +188,7 @@ the per-entry evidence table, WIP-branch findings, and ID collisions.
 - B087 — JavaScript/TypeScript canary (R3) has no CLI producer path — OPEN (JS/R3 wave)
 - B078 — R0 trusts only the wrapped target's exit code — PARTIAL (checkpoints 2/3: pytest, go test)
 - B103 — execution-interruption boundary (reserved stub; ID collision with an unmerged branch's own B099/A-448 only) — OPEN (owned by the RG-55 continuation)
+- B143 — adopt cli-extended (unified adoption, order 6 of 8; A-005 reworded) — PLANNED (filed 2026-10-05; requires cli-extended 0.2.0 released)
 - B105 — full-source R0-R3 Assay self-qualification — OPEN (next package after the single Wave C release; required before M7; pre-release Wave C gate remains R0-only; full gate must meet B110's 8-hour ceiling; suite scope amended by A-468; equivalents only via the A-465 ledger)
 
 **Filed after the 2026-09-23 triage**
@@ -11842,3 +11844,42 @@ Fix: add both names in pytest's own precedence order, and check the order agains
 - controlled wrong implementation: redacting only names matching `*PASSWORD*` must fail a test that passes through `SCHEMA_GATE_DSN=postgresql://u:p@h/db`.
 
 **Found in:** dstdns 2026-10-04, P241 composite `assay` lane diagnosis (`.assay/verdict-mock.json`); decision record D-670.
+
+## B143 — Adopt cli-extended (unified adoption, order 6 of 8)
+
+**Status: PLANNED (filed 2026-10-05 by cli-extended unified-adoption W10; adoption order 6 of 8; assay 7.2.0 observed).**
+
+**Source documents.** `libraries/cli-extended/docs/PROGRAM-2026-10-UNIFIED-ADOPTION.md` (decisions CX-D1..CX-D12; section "W10 - planned adoptions") and `libraries/cli-extended/docs/ADOPTION-CHECKLIST.md` (AC-01..AC-25). **Dependency:** cli-extended 0.2.0 released first (W8, the controller). Not executed in the program's session.
+
+**Path correction and A-005.** The W10 table names `assay/nyxloom-trove/4-backlog.md` (correct) and says "reword A-005". A-005 is a decision row in `nyxloom-trove/decisions.md`, not a backlog item; there is no cli-extended entry in this file and no `A-005` text in it. A-005 was therefore reworded in place in `decisions.md` on 2026-10-05 (CX-D1: "no third-party runtime dependencies"; the original is quoted in the row) and this entry is the single backlog item for the adoption. Still to update when B143 ships (not done by W10): the `pyproject.toml` comment block above `dependencies = []` ("ZERO RUNTIME DEPENDENCIES (decision A-005)", ending at line 23) and the declaration at `:24`, `nyxloom-trove/1-north-star.md:66` ("Zero runtime dependencies, stdlib only (A-005)"), `README.md` and `docs/CONSUMERS.md` statements of the standalone claim, and the test below.
+
+**Observed mechanism (verified in source).**
+
+- Mechanical A-005 enforcement that must change (AC-24): `gate/tests/test_dependency_purity.py:177-178` asserts `load_pyproject()["project"]["dependencies"] == []`; `:228-241` walks the wheel metadata asserting every `Requires-Dist` is extra-guarded and reports "assay declares runtime dependencies"; the module's AST walk (`:70-75`, `scan_package`) rejects any third-party import. `gate/tests/test_standalone.py:7` and `:2051` restate "zero `Requires-Dist`". The adoption must replace "empty" with "exactly `cli-extended>=0.2.0` and nothing else", keep the AST walk meaningful (allow only stdlib, `assay`, `assay_analysis`, `cli_extended`), and keep the scratch-venv offline test (`gate/tests/test_standalone.py`, the `standalone` fixture) green with the library supplied from a local wheel.
+- Zipapp build (CX-D1: "the assay zipapp build bundles the pure-stdlib `cli_extended`"): `gate/distribution/build_release.py:349` `build_zipapp` stages the assay wheel with `pip install --no-index --no-deps --target <staging> <wheel>` (`:374`), so a declared dependency would NOT be pulled into the `.pyz`; the staging step must also install the pinned cli-extended wheel from the hash-checked closure. The wheel build itself is `pip wheel --no-index --no-build-isolation --no-deps` (`:264-267`), unchanged. The build closure is hash-pinned (`gate/distribution/build-requirements.txt`, `build-wheelhouse/`, `build-wheelhouse-manifest.json`); cli-extended joins it as a sixth wheel with its sha256 (CX-D2). The `.pyz` must stay byte-reproducible (B003); verify that after bundling.
+- Version reader (AC-01): `src/assay/__init__.py:19,41-45` reads `importlib.metadata.version("assay")` and falls back to the literal `"0+unknown"`; `gate/distribution/build_release.py` already treats that fallback as an error for the zipapp (module docstring item 1, lines 29-35). `src/assay/cli.py:73` imports `__version__` for `--version` (`:218`) and for the verdict's `assay_version` (`:1340, 1424, 1465, 1503, 1556, 2102`); `CliIdentity.resolve` replaces the reader, keeping verdict provenance identical.
+- Parser (AC-03, AC-04, AC-07): `src/assay/cli.py` is 2189 lines. `AssayArgumentParser(argparse.ArgumentParser)` at `:106-122`, `build_parser()` at `:213` with `add_subparsers` (`:219`, four `add_parser` call sites), `_add_request_base_argument` (`:165`), and a separate analysis entrypoint reached by `_run_analyze` for `raw[:1] == ["analyze"]` (`:477-478`) with its own parser in `assay_analysis`. Argument appending is split by hand (`_split_appended_argv`, `:479`): lane argv after `--` must keep its exact semantics.
+- Injected streams (AC-21): `main(argv, *, stdin, stdout, stderr)` at `:463-473` is the contract tests rely on; the library runtime must keep that injectability (or the library must offer an equivalent) without changing exit codes. Many tests drive it in-process (`tests/core/*` define local `_run` helpers, e.g. `test_runner_run_lane.py`, `test_environment_preflight.py`, `test_runner_ingested_r2.py`).
+- Exception boundary (AC-10, AC-11): no `except Exception` and no `--traceback` in `src/assay/cli.py`; assay's refusals are verdict outcomes with closed reason codes and exit codes, not generic errors. Decide per path which become `CliFailure` and which stay verdict-owned; `unexpected_exceptions="report"` must not rewrite a verdict-bearing failure.
+- `--dry-run` / `--yes` (AC-05, AC-12): none found in `src/assay/cli.py`.
+- `sys.path` / `PYTHONPATH` (AC-25): none found toward `libraries/cli-extended`. Existing path edits are assay's own: `gate/python/qualify_sql.py:75` and `:491` (`sys.path.insert` of assay's own `src`), `gate/distribution/build_release.py:503` (its own directory), and `tools/tester-unified-gate.sh:402,448,486-487` (`PYTHONPATH` management for the standalone proof; the gate's source-backed lane will need the library on the path or in the venv, per CX-D3, decided in the carve).
+- `package-dir` (AC-24): `pyproject.toml:48` is `package-dir = {"" = "src"}` plus `packages.find where = ["src", "analysis/src"]`; there is no `cli_extended` vendoring to remove.
+- Skills (AC-19): `assay/.claude/skills/assay-cli/SKILL.md` is the only source tree (the README and `B139` already track drift in its text). Move to package data via `register_skills_verbs`.
+- Doctor (AC-20): no `doctor` verb found in `cli.py`; assay has external prerequisites (git, coverage tool outputs, Node/Go toolchains for adapters), so decide whether the shared `doctor` applies.
+
+**Common shape (tick each, cite the AC row).**
+
+- [ ] Declare `cli-extended>=0.2.0` in `[project].dependencies`; update `test_dependency_purity.py`/`test_standalone.py` (AC-24).
+- [ ] Zipapp bundles `cli_extended`; `.pyz` still byte-reproducible and pip-less runnable (CX-D1); wheel/zipapp release assets unchanged otherwise.
+- [ ] No library checkout on `sys.path`/`PYTHONPATH` in project sources; gate-lane path per CX-D3 (AC-25).
+- [ ] `CliIdentity.resolve(...)` (AC-01, AC-02); `unexpected_exceptions="report"` without swallowing verdict-owned failures (AC-10, AC-11).
+- [ ] Re-register the grammar (verbs, `analyze` family, lane-argv `--` appending) with `CliRegistry`; delete `AssayArgumentParser` (AC-03, AC-04, AC-07); constraints/`SelectorList` where the handlers do their own checks (AC-06, AC-09).
+- [ ] Surface lifecycle: review/manifest/spec configured, `surface sync`, catalog and findings, `surface check` (AC-16, AC-17, AC-18).
+- [ ] Skills via `register_skills_verbs` (AC-19); `doctor` decision (AC-20).
+- [ ] Tests: `assert_cli_contract` (AC-21), plugin if a catalog exists (AC-22), `invoke_script` for subprocess tests (AC-23).
+
+**Acceptance.** `cli-extended audit` reports no `fail`; `cli-extended surface check` passes; assay's own registered gate passes (tester-unified, per `run-gate.toml`); a released assay version is deployed (merge + cmru release with wheel and `.pyz` + devcontainer install + dstdns release notification via `.assay-inbox/release.json`, per the estate's "shipped" definition). Verdict-schema output for an unchanged lane must be byte-identical apart from `assay_version`.
+
+**Oracles for the carver.** A scratch venv with only the assay wheel and the cli-extended wheel runs `assay lanes`; the `.pyz` runs `assay --version` on a Python with no pip and no site-packages; a controlled wrong implementation that omits `cli_extended` from the `.pyz` staging fails the pip-less run; `gate/tests/test_dependency_purity.py` fails if a second third-party dependency is added.
+
+**Why assay owns it.** The change is to assay's packaging, release build, tests and CLI; the program only supplies the library and the decision (CX-D1, CX-D11).
