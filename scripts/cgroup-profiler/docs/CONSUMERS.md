@@ -9,24 +9,26 @@ The supported operator front door is the repository shell shim:
 
 The probe prints one identity line and exits 0. In a source checkout it uses
 `pyproject.toml`; a built image reports the CMRU release version embedded as
-`CGPROFILE_VERSION` (for example, `1.1.0`). The shim routes `--version`
-directly to `cgprofile.py`, so this check does not require the analysis/reporting
-venv. Help, usage, and configuration diagnostics at every subcommand depth
+`CGPROFILE_VERSION` (for example, the combined RG-55 first release, `1.0.0`).
+The shim routes `--version` directly to `cgprofile.py`, so this check does not
+require the analysis/reporting venv. Help, usage, and configuration diagnostics at every subcommand depth
 begin with the matching CGPROFILE headline as line 1; normal profiling output
 is unchanged. Use
 `ATTACH-GUIDE.md` for the complete gate integration recipe.
 
 ## Build or publish the daemon image
 
-After the required cgprofile 1.0.0 release, preview and release this 1.1.0
-follow-up from the repository root:
+P1 and P6 were developed as separate work tranches, but RW-434 settles their
+combined tree as cgprofile's first 1.0.0 release. After that tree is merged and
+its required review and gates pass, preview and release it from the repository
+root:
 
 ```bash
-cmru status cgroup-profiler --config cmru.orchestration.toml --set-version 1.1.0
-cmru release cgroup-profiler --config cmru.orchestration.toml --set-version 1.1.0
+cmru status cgroup-profiler --config cmru.orchestration.toml --set-version 1.0.0
+cmru release cgroup-profiler --config cmru.orchestration.toml --set-version 1.0.0
 ```
 
-The first 1.0.0 release used an explicit override because there was no prior
+The first 1.0.0 release uses an explicit override because there is no prior
 cgprofile tag. CMRU creates the release tag
 before image build. `build-push.py` reads that exact tag to set the OCI
 tag/label and embedded runtime version, so CMRU releases need no manual
@@ -60,7 +62,7 @@ waiting or racing; ordinary profiling proceeds.
 ## Deploy a published daemon image with CIU
 
 The default CIU image coordinates intentionally select the local development
-image. To deploy the RG-55 v1.1.0 daemon release, put this complete
+image. To deploy the combined RG-55 v1.0.0 daemon release, put this complete
 override in the tracked sparse `ciu.toml.j2` at the cgprofile CIU root:
 
 ```toml
@@ -68,10 +70,10 @@ override in the tracked sparse `ciu.toml.j2` at the cgprofile CIU root:
 registry = "ghcr.io"
 namespace = "volkb79-2"
 name = "cgprofile"
-tag = "1.1.0"
+tag = "1.0.0"
 ```
 
-The complete coordinates resolve to `ghcr.io/volkb79-2/cgprofile:1.1.0`;
+The complete coordinates resolve to `ghcr.io/volkb79-2/cgprofile:1.0.0`;
 changing only `tag` while leaving the default empty registry and namespace
 would still select a local image. Use the normal CIU bring-up and verify the
 runtime identity before attaching consumers:
@@ -132,8 +134,8 @@ data under `/var/lib/cgprofile/sessions` and its own DAMON kdamonds under
 sysfs during normal operation. Grant daemon control only to operators already
 trusted with host-administrator Docker access. The privileged container's
 mounts and Python checks do not confine a compromised daemon; see the
-[trust boundary](DESIGN-GUIDE.md#daemon-safety-and-placement). Keep any v1.1
-host system-bus mount daemon-side, never in the cockpit.
+[trust boundary](DESIGN-GUIDE.md#daemon-safety-and-placement). Keep the host
+system-bus mount daemon-side, never in the cockpit.
 
 Before relying on `host.gates_slice` or requesting `start --place`, install
 the host's authored `dev-gates.slice` unit. The daemon verifies the loaded,
@@ -185,7 +187,7 @@ The version response has the current wire shape:
 {
   "ok": true,
   "contract": 1,
-  "cgprofile": "1.1.0",
+  "cgprofile": "1.0.0",
   "daemon": {
     "name": "cgprofile-host-daemon",
     "started_at": "2026-09-12T10:15:00Z",

@@ -14,6 +14,10 @@ the release gate runs. Normative daemon behavior lives in `DESIGN.md` and
   public summary values and schema are unchanged (RG-55 P1 survivor disposition)
 
 ### Fixed
+- fix(cgprofile): accept an already-correct daemon-created shared DAMON lock
+  without caller-side chown/chmod, and continue helper-mode profiling without
+  optional DAMON when lock preparation is unavailable; close one-shot identity
+  pins during teardown (RG-55 P1 R4-1)
 - fix(cgprofile): initialize DAMON from complete sysfs inputs before `state=on`,
   and rebuild the exact target array on startup and online updates so reused
   slots or shrinking subtrees cannot retain former lane PIDs; late DAMON
@@ -45,6 +49,6 @@ the release gate runs. Normative daemon behavior lives in `DESIGN.md` and
 - feat(cgprofile): CP-9 -- placement (D-20/D-25, §8.3): `--place`/`--memory-high`/`--memory-max`/`--cpu-weight`, a profiler-owned leaf under a systemd-delegated per-lane scope below the gates slice, migrate-on-discovery, `cgroup.kill`, D-15 application write-guard whitelist extension (a654bd5d; physical ownership corrected by D-31)
 
 ### Documentation
-- docs(cgprofile): `docs/PROTOCOL.md` (already complete as of C8), README "Running the daemon", `ATTACH-GUIDE.md` lane section, `DESIGN.md` D-27..D-30 summary, version `1.0.0` -> `1.1.0` sweep, backlog rows CP-2/CP-4..CP-10 -> FIXED, CP-11 filed (478f1443, RG-55 P6 C9 close-out)
+- docs(cgprofile): `docs/PROTOCOL.md` (already complete as of C8), README "Running the daemon", `ATTACH-GUIDE.md` lane section, `DESIGN.md` D-27..D-30 summary, the historical `1.0.0` -> `1.1.0` documentation sweep (superseded as a release boundary by RW-434's combined first `1.0.0` decision), backlog rows CP-2/CP-4..CP-10 -> FIXED, CP-11 filed (478f1443, RG-55 P6 C9 close-out)
 
 <!-- cmru: release history -->

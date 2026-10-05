@@ -6817,3 +6817,22 @@ exit 0; log `/tmp/run-gate/lanes/r0-r1/97446e632ab9c9b1d6d7d6d44ef74047.log`).
 The judged checkout was dirty, so the run is not commit-bound evidence and
 did not enter eligible history. Commit the reviewed source/tests/docs, merge
 current main, and rerun gates on the final clean merge tip.
+
+### RW-450 — 2026-10-05 17:01:20 UTC — repair round-4 DAMON lock and release-boundary blockers
+
+Sol's P1 round-4 review rejected candidate `afc32966b9fc2723e82e582c4fd45f1225283f26`
+for two blockers: a non-root caller attempted `fchown`/`fchmod` on the
+already-correct root-created `/run/cgprofile/damon.lock`, preventing helper
+launch; and README/CONSUMERS/DESIGN-GUIDE described an unchosen separate
+1.1.0 release despite RW-434 settling the combined P1+P6 tree as the first
+1.0.0. The candidate now skips owner-only mutations when the lock's group and
+mode already match, degrades helper-mode DAMON to off if optional lock
+preparation fails, and tests that `cgprofile run` still executes its wrapped
+command and preserves its exit status. It also closes the one-shot DAMON
+identity fd at teardown and aligns all three human-facing docs plus the
+historical CHANGES note to RW-434. These edits are not yet gated or reviewed;
+the round-4 report remains preserved in the candidate worktree. At this
+ruling's preflight, memory PSI full avg10 was 0.00 and two pre-existing tester
+containers were running; they were inspected only and left untouched. Run the
+registered package gates on a committed exact tip, then ask the same Sol
+reviewer for fix verification.

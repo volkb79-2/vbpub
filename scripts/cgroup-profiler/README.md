@@ -24,8 +24,9 @@ while observing a victim is a first-class mode, not a workaround.
 `./cgprofile --version` is the documented operator identity probe. In a source
 checkout it uses the `pyproject.toml` version; a built image embeds the exact
 CMRU release version as `CGPROFILE_VERSION`, so the CLI and daemon identify
-the same release (for example, `1.1.0`). An untagged local image is explicitly
-identified as `0.0.0-dev`. Help, usage, missing-argument, unknown-argument,
+the same release (for example, the combined RG-55 first release, `1.0.0`).
+An untagged local image is explicitly identified as `0.0.0-dev`. Help, usage,
+missing-argument, unknown-argument,
 and configuration diagnostics at every subcommand depth begin with the
 matching `CGPROFILE <version> — cgroup resource profiler` headline. Normal
 profiling output is unchanged. The shell shim and `cgprofile.py` therefore
@@ -152,8 +153,8 @@ RG-55 added a second, always-on mode: a host daemon that run-gate (or anyone
 else) talks to over a Unix socket instead of spawning a collector per lane.
 It keeps PID/cgroup namespaces private and receives a read-only host `/proc`
 view plus an explicitly writable host cgroup-v2 view for opt-in P6 placement.
-The v1.1 daemon also mounts the host system-bus socket read-only; that mount
-does not make systemd RPCs read-only. It uses the manager's
+The daemon also mounts the host system-bus socket read-only; that mount does
+not make systemd RPCs read-only. It uses the manager's
 `AttachProcessesToUnit` operation for identity-checked placement and survivor
 restoration because host PIDs cannot be written directly from its private PID
 namespace. `CgroupWriteGuard` limits intended cgroupfs writes to the placement
@@ -185,7 +186,7 @@ The daemon's version response is contract major 1:
 {
   "ok": true,
   "contract": 1,
-  "cgprofile": "1.1.0",
+  "cgprofile": "1.0.0",
   "daemon": {
     "name": "cgprofile-host-daemon",
     "started_at": "2026-09-12T10:15:00Z",
@@ -366,11 +367,13 @@ mean the kernel accepted a configured monitoring context. Check each session's
   operational authority path, not a sandbox against daemon compromise; the
   rationale and deferred broker option are in the
   [RG-55 placement design](../../run-gate-project/nyxloom-trove/DESIGN-2026-09-12-liveness-placement-admission.md#a3-placement-ownership-correction-delegated-scope-below-dev-gatesslice-2026-09-30).
-  Version 1.0.0 was the read-only observer release; v1.1.0 adds the writable
-  cgroup view and system-bus manager bridge needed for opt-in placement. These
-  are operational authority paths, not kernel-enforced containment. The
-  daemon and helper keep private PID/cgroup namespaces, and `ciu up` remains
-  the managed lifecycle with no host-namespace fallback.
+  P1 and P6 were implemented in separate work tranches, but RW-434 settles
+  their combined tree as the first 1.0.0 release; there is no planned separate
+  1.1.0 release for these already-merged capabilities. Any future version
+  increment requires genuine post-1.0.0 changes. These are operational
+  authority paths, not kernel-enforced containment. The daemon and helper
+  keep private PID/cgroup namespaces, and `ciu up` remains the managed
+  lifecycle with no host-namespace fallback.
 
 ## Relationship to the neighbours
 

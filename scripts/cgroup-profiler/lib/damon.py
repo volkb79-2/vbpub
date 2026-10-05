@@ -214,10 +214,23 @@ def prepare_registry_lock_file() -> str:
 
 
 def _set_registry_lock_permissions(fd: int, path: str) -> None:
-    """Make the shared file usable by the host daemon and docker-group caller."""
+    """Make the shared file usable by the host daemon and docker-group caller.
+
+    A daemon-created lock already has the directory's group and 0660 mode. A
+    non-root caller must validate that state without trying to chown/chmod a
+    file owned by root; only repair permissions when they actually differ.
+    """
     directory = os.stat(os.path.dirname(path))
-    os.fchown(fd, -1, directory.st_gid)
-    os.fchmod(fd, 0o660)
+    current = os.fstat(fd)
+    if current.st_gid != directory.st_gid:
+        os.fchown(fd, -1, directory.st_gid)
+    if stat.S_IMODE(os.fstat(fd).st_mode) != 0o660:
+        os.fchmod(fd, 0o660)
+    verified = os.fstat(fd)
+    if verified.st_gid != directory.st_gid or stat.S_IMODE(verified.st_mode) != 0o660:
+        raise DamonSessionError(
+            f"shared DAMON lock has unusable group or mode: {path}"
+        )
 
 
 # ── signal handling: identical contract to caps.TempCaps ───────────────────
@@ -1011,6 +1024,14 @@ class DamonSession:
                         off_confirmed = _read_nr_kdamonds() == prev
                 except Exception:
                     pass
+        identity, self._solo_identity = self._solo_identity, None
+        if identity is not None:
+            try:
+                identity.close()
+            except OSError:
+                # Closing the identity pin is best-effort cleanup. The DAMON
+                # ownership decision above has already been made using it.
+                pass
         self._cleanup_confirmed = off_confirmed
         if self._registry_lock is not None:
             try:

@@ -587,13 +587,23 @@ def _launch_helper(run_path: str, collect_args: List[str],
                    cgroup_parent: Optional[str] = None,
                    damon: bool = False) -> subprocess.Popen:
     spec_args = {}
+    helper_collect_args = list(collect_args)
     if damon:
         from lib import damon as damon_mod
 
-        spec_args = {
-            "damon_lock_host_path": damon_mod.prepare_registry_lock_file(),
-            "damon_lock_container_path": damon_mod.DAMON_HELPER_LOCK_PATH,
-        }
+        try:
+            lock_path = damon_mod.prepare_registry_lock_file()
+        except damon_mod.DamonSessionError as exc:
+            _note(
+                "DAMON lock unavailable; continuing without optional DAMON: "
+                f"{exc}"
+            )
+            helper_collect_args = [arg for arg in helper_collect_args if arg != "--damon"]
+        else:
+            spec_args = {
+                "damon_lock_host_path": lock_path,
+                "damon_lock_container_path": damon_mod.DAMON_HELPER_LOCK_PATH,
+            }
     spec = access.build_helper_spec(
         HERE, os.path.dirname(run_path), image, cgroup_parent, **spec_args,
     )
@@ -607,7 +617,7 @@ def _launch_helper(run_path: str, collect_args: List[str],
         "python3",
         os.path.join(HERE, "cgprofile.py"),
         "_collect",
-        *collect_args,
+        *helper_collect_args,
     ]
     return _start_named_helper(
         command, helper_name, spec.image, stdout=sys.stderr, stderr=sys.stderr,

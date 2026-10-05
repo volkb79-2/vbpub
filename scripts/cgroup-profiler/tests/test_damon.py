@@ -273,9 +273,64 @@ def test_registry_lock_rejects_nonregular_file(fake_damon, monkeypatch):
 
 
 def test_prepare_registry_lock_file_sets_shared_permissions(fake_damon):
-    path = Path(damon.prepare_registry_lock_file())
+    # Model a caller creating the lock first under a restrictive umask. The
+    # host directory's group is inherited in deployment via its setgid bit;
+    # the caller must widen only the file mode to the shared 0660 contract.
+    old_umask = damon.os.umask(0o077)
+    try:
+        path = Path(damon.prepare_registry_lock_file())
+    finally:
+        damon.os.umask(old_umask)
     assert path.is_file()
     assert path.stat().st_mode & 0o777 == 0o660
+    assert path.stat().st_gid == path.parent.stat().st_gid
+
+
+def test_prepare_registry_lock_file_accepts_daemon_first_shared_file(
+    fake_damon, monkeypatch,
+):
+    path = Path(damon.DAMON_REGISTRY_LOCK_PATH)
+    path.touch()
+    path.chmod(0o660)
+
+    def caller_cannot_mutate_daemon_owned_file(*_args):
+        raise PermissionError("daemon owns the already-correct shared lock")
+
+    monkeypatch.setattr(damon.os, "fchown", caller_cannot_mutate_daemon_owned_file)
+    monkeypatch.setattr(damon.os, "fchmod", caller_cannot_mutate_daemon_owned_file)
+
+    assert damon.prepare_registry_lock_file() == str(path)
+    assert path.stat().st_mode & 0o777 == 0o660
+    assert path.stat().st_gid == path.parent.stat().st_gid
+
+
+def test_prepare_registry_lock_file_fails_closed_when_group_cannot_be_repaired(
+    fake_damon, monkeypatch,
+):
+    path = Path(damon.DAMON_REGISTRY_LOCK_PATH)
+    path.touch()
+    path.chmod(0o660)
+    actual_directory_gid = path.parent.stat().st_gid
+    requested_gid = actual_directory_gid + 1
+    attempted = {}
+
+    directory_stat = type("DirectoryStat", (), {"st_gid": requested_gid})()
+    real_stat = damon.os.stat
+
+    def fake_stat(candidate, *args, **kwargs):
+        if str(candidate) == str(path.parent):
+            return directory_stat
+        return real_stat(candidate, *args, **kwargs)
+
+    monkeypatch.setattr(damon.os, "stat", fake_stat)
+    monkeypatch.setattr(
+        damon.os, "fchown",
+        lambda fd, uid, gid: attempted.update(fd=fd, uid=uid, gid=gid),
+    )
+    with pytest.raises(damon.DamonSessionError, match="unusable group or mode"):
+        damon.prepare_registry_lock_file()
+    assert attempted["uid"] == -1
+    assert attempted["gid"] == requested_gid
 
 
 def test_prepare_registry_lock_file_rejects_nonregular_file(fake_damon, monkeypatch):
@@ -285,10 +340,14 @@ def test_prepare_registry_lock_file_rejects_nonregular_file(fake_damon, monkeypa
 
 
 def test_prepare_registry_lock_file_wraps_permission_failures(fake_damon, monkeypatch):
-    def deny_group_change(*_args):
+    path = Path(damon.DAMON_REGISTRY_LOCK_PATH)
+    path.touch()
+    path.chmod(0o600)
+
+    def deny_mode_change(*_args):
         raise PermissionError("denied")
 
-    monkeypatch.setattr(damon.os, "fchown", deny_group_change)
+    monkeypatch.setattr(damon.os, "fchmod", deny_mode_change)
     with pytest.raises(damon.DamonSessionError, match="cannot prepare shared DAMON lock"):
         damon.prepare_registry_lock_file()
 
@@ -464,6 +523,25 @@ def test_normal_exit_tears_down_and_restores_nr_kdamonds(fake_damon):
         assert fake_damon.nr_kdamonds() == 1
         assert fake_damon.state_of(0) == "on"
     assert not (fake_damon.root / "0").exists()
+    assert fake_damon.nr_kdamonds() == 0
+
+
+def test_solo_teardown_closes_identity_pin_even_if_close_reports_error(fake_damon):
+    class FailingIdentity:
+        def matches(self, _idx):
+            return True
+
+        def close(self):
+            raise OSError("synthetic close failure")
+
+    session = damon.DamonSession([make_target()])
+    session.__enter__()
+    session._solo_identity.close()
+    session._solo_identity = FailingIdentity()
+
+    session.__exit__(None, None, None)
+    assert session._solo_identity is None
+    assert session.cleanup_confirmed
     assert fake_damon.nr_kdamonds() == 0
 
 

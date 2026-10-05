@@ -1374,6 +1374,61 @@ class TestLaunchHelper:
         assert f"CGPROFILE_DAMON_LOCK_PATH={damon_mod.DAMON_HELPER_LOCK_PATH}" in command
         assert not any("ctl.sock" in item for item in command)
 
+    def test_damon_lock_preflight_failure_still_runs_wrapped_command(
+        self, monkeypatch, tmp_path: Path, capsys,
+    ):
+        from lib import damon as damon_mod
+
+        spec = access.HelperSpec(
+            image="cgprofile-self:local", repo_host_path="/host/repo",
+            repo_mount_path=cg.HERE, out_host_path="/host/out",
+            out_mount_path=str(tmp_path), cgroup_parent="dev-interactive.slice",
+        )
+        captured = {}
+
+        def unavailable_lock():
+            raise damon_mod.DamonSessionError(
+                "permission denied on daemon-created lock"
+            )
+
+        monkeypatch.setattr(damon_mod, "prepare_registry_lock_file", unavailable_lock)
+        def build_spec(repo, out, image, cgroup_parent=None, **kwargs):
+            captured["spec_kwargs"] = kwargs
+            return spec
+
+        monkeypatch.setattr(access, "build_helper_spec", build_spec)
+        monkeypatch.setattr(access, "choose_mode", lambda requested: "helper")
+        monkeypatch.setattr(access, "docker_bin", lambda: "/usr/bin/docker")
+        monkeypatch.setattr(cg, "_start_log_tailers", lambda *_args: [])
+        monkeypatch.setattr(
+            cg.subprocess, "run",
+            lambda command, **kwargs: subprocess.CompletedProcess(
+                command, returncode=23
+            ),
+        )
+
+        def start_helper(command, helper_name, helper_image, **kwargs):
+            captured["command"] = command
+            run_path = command[command.index("--run-dir") + 1]
+            Path(run_path, cg.READY_FILE).touch()
+            return FakePopen(command)
+
+        monkeypatch.setattr(cg, "_start_named_helper", start_helper)
+        args = run_args(
+            ["synthetic-command"], target=["cgroup:/dev.slice"],
+            out_dir=str(tmp_path), run_id="run-no-damon-lock", mode="helper",
+            damon=True, helper_image="cgprofile-self:local", no_report=True,
+        )
+
+        assert cg.cmd_run(args) == 23
+        assert captured["spec_kwargs"] == {}
+        assert "--damon" not in captured["command"]
+        assert not any(
+            "damon.lock" in value or "ctl.sock" in value
+            for value in captured["command"]
+        )
+        assert "continuing without optional DAMON" in capsys.readouterr().err
+
     def test_builds_the_docker_command_and_notes_the_image(self, monkeypatch, tmp_path: Path, capsys):
         spec = access.HelperSpec(
             image="cgprofile-self:local", repo_host_path="/host/repo", repo_mount_path=cg.HERE,
