@@ -238,6 +238,50 @@ def test_resolve_does_not_repair_identity_that_appears_during_query(
         deploy.resolve_identities(repo)
 
 
+def test_resolve_refuses_preexisting_outdated_identity_without_repair(
+    resolvable_repo, monkeypatch,
+):
+    from ciu import workspace_env
+
+    repo, _stack, _global = resolvable_repo
+    facts = {
+        "repo_name": "demo",
+        "instance_id": "ab12cd",
+        "network": "demo-ab12cd-network",
+        "physical_repo_root": str(repo),
+        "repo_root": str(repo),
+        "public_fqdn": "demo.test",
+    }
+    facts_path = workspace_env.generated_facts_path(repo)
+    facts_path.write_text(
+        "\n".join(
+            line for line in workspace_env.render_generated_facts_block(facts)
+            if not line.startswith("schema_version = ")
+        ) + "\n",
+        encoding="utf-8",
+    )
+    before = facts_path.read_bytes()
+    docker_calls = []
+
+    def docker(argv, **kwargs):
+        docker_calls.append((argv, kwargs))
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(deploy.procutil, "docker", docker)
+    monkeypatch.setattr(
+        workspace_env, "generate_ciu_env",
+        lambda *_a, **_kw: pytest.fail("resolve must not repair an outdated identity"),
+    )
+    with pytest.raises(
+        workspace_env.WorkspaceEnvError,
+        match="read-only operation will not repair",
+    ):
+        deploy.resolve_identities(repo)
+
+    assert facts_path.read_bytes() == before
+    assert docker_calls == []
+
+
 def test_resolve_uses_generated_facts_network_when_global_has_none(resolvable_repo):
     from ciu import workspace_env
 
@@ -399,7 +443,10 @@ def test_live_identity_state_captures_both_docker_responses(monkeypatch):
 def test_live_identity_state_wraps_docker_errors_and_prefers_stderr(
     monkeypatch, phase, stdout, stderr, chosen, ignored,
 ):
+    calls = []
+
     def run(argv, **kwargs):
+        calls.append((argv, kwargs))
         if argv[1] == "ps":
             if phase == "query":
                 return subprocess.CompletedProcess(
@@ -415,6 +462,7 @@ def test_live_identity_state_wraps_docker_errors_and_prefers_stderr(
     assert chosen in message
     if ignored is not None:
         assert ignored not in message
+    assert calls
 
 
 def test_exec_selector_and_selection_refusals(resolvable_repo, monkeypatch):
