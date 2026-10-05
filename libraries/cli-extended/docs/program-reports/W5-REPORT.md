@@ -23,19 +23,31 @@ Branch `cli-ext-w5-doctor`. New `src/cli_extended/doctor.py`; exports `DoctorChe
 - O5 validation: `test_result_validation`, `test_check_validation`, `test_duplicate_names_rejected`,
   `test_double_registration_rejected`, `test_skills_named_check_rejected_when_skills_registered`,
   `test_skills_named_check_allowed_without_skills_registered`.
-- O6: `run-gate: lane 'r0-r1' verdict PASS; exit_code 0` (log
-  `/tmp/run-gate/lanes/r0-r1/73a3cd5eb40c94e6ca591844d8315189.log`), which includes 100% coverage and `test_docs.py`.
+- O6: r0-r1 re-run after the last edit of the revision (including 100% coverage and `test_docs.py`);
+  the verdict line is in the hand-back message (the first run, before the revision, also passed).
 
 Planted mutation: `return 1 if counts["fail"] else 0` changed to `counts["warn"]`; 10+ tests failed
 (e.g. `test_fail_exits_one_with_remedy_line - assert 0 == 1`,
 `test_json_warn_only_exit_zero - assert 1 == 0`). Reverted; tests green again.
 
-## skills.py change (the single allowed change)
+## skills.py changes (two public helpers allowed)
 
-Added public `skill_leftovers(*, tool, destinations) -> list[Path]` (wraps existing `_leftovers`).
-The doctor also imports W4's private `_destinations` and public `skill_states`/`SkillState`; the
-`skills check` condition is reproduced as: any non-`current` row (orphans are non-current) or any leftover.
+1. `skill_leftovers(*, tool, destinations) -> list[Path]` (wraps existing `_leftovers`).
+2. `default_skill_destinations() -> list[Path]` (the `--harness all` destinations; wraps `_destinations(None, None)`).
+
+The doctor no longer imports any private `skills` name; it uses these plus public `skill_states`/`SkillState`.
+The `skills check` condition is reproduced as: any non-`current` row (orphans are non-current) or any leftover.
 The `skills` handler itself was left untouched.
+
+## Coordinator revision: options and check signature (API gap closed)
+
+- `register_doctor(..., options: Sequence[OptionSpec] = ())`; flags equal to `--check`, `-h` or any flag in
+  `common_control_table()` raise `ValueError` (`test_option_shadowing_check_or_library_control_rejected`,
+  `test_shadowing_alias_among_several_flags_rejected`).
+- `DoctorCheck.run` is `Callable[[CliRuntime, argparse.Namespace], CheckResult]`; the built-in skills check uses it.
+  `test_check_reads_consumer_option_from_args` reads `--helper-image IMAGE` (given, defaulted, shown in help).
+- CONSUMERS mapping notes updated: cgprofile `--helper-image`/`--helper-cgroup-parent` and nyxloomctl
+  `--project-id`/`--rebuild`/`--write`/`--liveness`/`--no-probe` now fit as `options` read from `args`.
 
 ## Docs disposition
 
@@ -50,11 +62,10 @@ The `skills` handler itself was left untouched.
 
 - cgprofile `cmd_doctor`: free-form sections (access key/values, venv state, resolved mode),
   options `--helper-image`/`--helper-cgroup-parent`, exit 1 only if the helper spec fails.
-  Expressible as three checks. Gap: extra options cannot reach checks.
+  Expressible as three checks; its options fit via `options=` (gap closed).
 - nyxloomctl `doctor` (findings table, severities critical/error/warn, options `--project-id`,
   `--rebuild`, `--write`, `--liveness`) and `route doctor` (`--no-probe`, route table).
-  Expressible as checks mapping critical/error to fail; the extra options are not supported by
-  `register_doctor` (only `--check`), a gap recorded for the consumer adoption packages.
+  Expressible as checks mapping critical/error to fail; the extra options fit via `options=`.
 
 ## Deviations / notes
 

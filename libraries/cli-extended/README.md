@@ -496,7 +496,7 @@ identity = CliIdentity("EXAMPLE", "1.2.3", "Example Operator Tool", "example")
 registry = CliRegistry(identity, prog="example", description="Example tool.")
 register_doctor(registry, [
     DoctorCheck("config", "configuration file is readable",
-                lambda runtime: CheckResult("ok", "config found")),
+                lambda runtime, args: CheckResult("ok", "config found")),
 ])
 app = registry.build()
 ```

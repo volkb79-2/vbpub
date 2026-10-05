@@ -8,6 +8,7 @@ at run time, whichever registration happened first.
 
 from __future__ import annotations
 
+import argparse
 import json
 import re
 from collections.abc import Callable, Mapping, Sequence
@@ -22,7 +23,13 @@ from .parser import (
     VerbGroup,
     VerbSpec,
 )
-from .skills import SkillState, _destinations, skill_leftovers, skill_states
+from .contract import common_control_table
+from .skills import (
+    SkillState,
+    default_skill_destinations,
+    skill_leftovers,
+    skill_states,
+)
 
 STATUSES = ("ok", "warn", "fail", "skip")
 SKILLS_CHECK = "skills"
@@ -59,7 +66,7 @@ class DoctorCheck:
 
     name: str
     description: str
-    run: Callable[[CliRuntime], CheckResult]
+    run: Callable[[CliRuntime, argparse.Namespace], CheckResult]
 
     def __post_init__(self) -> None:
         if not isinstance(self.name, str) or not _NAME_RE.fullmatch(self.name):
@@ -71,9 +78,9 @@ class DoctorCheck:
 
 
 def _skills_check(package: str, resource_dir: str) -> DoctorCheck:
-    def run(runtime: CliRuntime) -> CheckResult:
+    def run(runtime: CliRuntime, args: argparse.Namespace) -> CheckResult:
         tool = runtime.identity.command_name
-        destinations = _destinations(None, None)
+        destinations = default_skill_destinations()
         rows = skill_states(
             package=package,
             resource_dir=resource_dir,
@@ -107,9 +114,11 @@ def _skills_check(package: str, resource_dir: str) -> DoctorCheck:
     return DoctorCheck(SKILLS_CHECK, "packaged agent skills are installed and current", run)
 
 
-def _execute(check: DoctorCheck, runtime: CliRuntime) -> CheckResult:
+def _execute(
+    check: DoctorCheck, runtime: CliRuntime, args: argparse.Namespace
+) -> CheckResult:
     try:
-        result = check.run(runtime)
+        result = check.run(runtime, args)
         if not isinstance(result, CheckResult):
             raise TypeError(f"returned {type(result).__name__}, not CheckResult")
     except Exception as exc:
@@ -144,7 +153,7 @@ def _make_handler(registry: CliRegistry, checks: tuple[DoctorCheck, ...]):
             selected = [check for check in available if check.name in chosen]
         else:
             selected = available
-        results = [(check.name, _execute(check, runtime)) for check in selected]
+        results = [(check.name, _execute(check, runtime, args)) for check in selected]
         counts = {
             status: sum(1 for _, result in results if result.status == status)
             for status in STATUSES
@@ -186,8 +195,13 @@ def register_doctor(
     checks: Sequence[DoctorCheck],
     *,
     description: str = "check this tool's environment and report problems",
+    options: Sequence[OptionSpec] = (),
 ) -> None:
-    """Register the read-only ``doctor`` verb with ``--check NAME`` and ``--json``."""
+    """Register the read-only ``doctor`` verb with ``--check NAME`` and ``--json``.
+
+    ``options`` are extra consumer options on the verb; checks read them from
+    the ``args`` namespace.  They may not reuse ``--check`` or a library flag.
+    """
 
     if hasattr(registry, "_cli_extended_doctor"):
         raise ValueError("doctor is already registered on this registry")
@@ -201,6 +215,15 @@ def register_doctor(
             raise ValueError(
                 "doctor check name 'skills' is reserved for the built-in skills check"
             )
+    reserved = {"--check", "-h"}
+    for entry in common_control_table().values():
+        reserved.update(entry["flags"])
+    for option in options:
+        for flag in option.flags:
+            if flag in reserved:
+                raise ValueError(
+                    f"doctor option {flag!r} shadows --check or a library control"
+                )
     registry.register(VerbSpec(
         "doctor",
         description=description,
@@ -214,6 +237,7 @@ def register_doctor(
                 metavar="NAME",
                 parser_kwargs={"action": "append", "default": None},
             ),
+            *options,
         ),
         handler=_make_handler(registry, ordered),
     ))

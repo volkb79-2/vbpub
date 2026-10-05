@@ -391,6 +391,12 @@ def _leftovers(destination: Path, tool: str) -> list[Path]:
     ]
 
 
+def default_skill_destinations() -> list[Path]:
+    """Return the ``--harness all`` skill destinations for the current HOME."""
+
+    return _destinations(None, None)
+
+
 def skill_leftovers(*, tool: str, destinations: Sequence[Path]) -> list[Path]:
     """Return this tool's interrupted-install leftovers across ``destinations``."""
 

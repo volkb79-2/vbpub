@@ -1183,8 +1183,13 @@ tool name is `identity.command_name` and the version is `identity.version`.
 
 A tool reports on its own environment through the shared `doctor` verb
 registered by `register_doctor(registry, checks, *, description=...)` with
-`DoctorCheck(name, description, run)` objects. `run(runtime)` returns a
-`CheckResult(status, summary, remedy=None, details={})`.
+`DoctorCheck(name, description, run)` objects. `run(runtime, args)` receives
+the `CliRuntime` and the parsed `argparse.Namespace` (so it can read
+consumer options) and returns a
+`CheckResult(status, summary, remedy=None, details={})`. `register_doctor`
+also takes `options: Sequence[OptionSpec] = ()`, added to the `doctor` verb;
+an option flag equal to `--check`, `-h` or any library-owned control flag
+raises `ValueError`.
 
 1. **Result.** `status` is one of `ok`, `warn`, `fail`, `skip`; anything else
    raises `ValueError`. `summary` is a non-empty single line. `details` MUST be
@@ -1216,8 +1221,8 @@ registered by `register_doctor(registry, checks, *, description=...)` with
 8. **Automatic `skills` check.** At run time, not registration time, so the
    order of `register_skills_verbs` and `register_doctor` does not matter, a
    registry carrying `_cli_extended_skills` gets a built-in check `skills`
-   appended. It evaluates the default destinations (`--harness all`) with
-   `skill_states` and `skill_leftovers`, exactly the `skills check` condition:
+   appended. It evaluates the default destinations (`--harness all`,
+   `default_skill_destinations()`) with `skill_states` and `skill_leftovers`, exactly the `skills check` condition:
    `ok` (`all skills current`) when every skill is `current` and there is no
    orphan and no leftover of this tool; otherwise `fail` with summary
    `N skill(s) not current` (plus `; M leftover path(s)` when leftovers exist,

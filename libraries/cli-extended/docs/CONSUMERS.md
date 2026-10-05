@@ -958,14 +958,14 @@ from cli_extended import (
 )
 
 
-def docker_check(runtime) -> CheckResult:
+def docker_check(runtime, args) -> CheckResult:
     if shutil.which("docker") is None:
         return CheckResult("fail", "docker not found on PATH",
                            remedy="install docker or add it to PATH")
     return CheckResult("ok", "docker found", details={"path": shutil.which("docker")})
 
 
-def cache_check(runtime) -> CheckResult:
+def cache_check(runtime, args) -> CheckResult:
     return CheckResult("warn", "cache is empty", remedy="run 'example warm'")
 
 
@@ -979,6 +979,11 @@ register_doctor(registry, [
 register_skills_verbs(registry, package="example_tool")
 ```
 
+A check can read its own options. Pass them with
+`register_doctor(registry, checks, options=[OptionSpec(("--helper-image",),
+"helper image", metavar="IMAGE")])` and use `args.helper_image` inside
+`run(runtime, args)`.
+
 `example doctor`, `example doctor --check docker --json` and CI use the same
 exit code (1 only for `fail`). Do not name a check `skills`.
 
@@ -991,16 +996,19 @@ Mapping the existing doctors:
   "present but this interpreter lacks the libraries", `fail` for missing with
   remedy `run ./setup.sh`) and `mode` (`fail` on `AccessError`, helper image and
   mounts in `details`). Its `--helper-image` and `--helper-cgroup-parent`
-  options cannot be passed to a check, so read them from the environment or keep
-  them out of the doctor.
+  options now fit: pass them as `options=[OptionSpec(("--helper-image",), ...),
+  OptionSpec(("--helper-cgroup-parent",), ...)]` and read
+  `args.helper_image` / `args.helper_cgroup_parent` in the `mode` check.
 - **nyxloomctl** (`cli_registry.py` `doctor` and `route doctor`): the project
   doctor yields findings with severities `critical`, `error`, `warn`. Map
   `critical`/`error` to `fail` and the rest to `warn`, one check per finding
   kind or per project, and put the finding rows in `details`. Its options
   (`--project-id`, `--rebuild`, `--write`, `--liveness`) and the `route doctor`
-  `--no-probe` are not expressible, because `register_doctor` adds only
-  `--check`. Keep those as separate verbs, or use `--check` names such as
-  `liveness`. `route doctor` can be registered once on its own sub-registry.
+  `--no-probe` are passed as `options=[...]` and read from `args`; a
+  `--liveness` flag is read by the checks that should run only in that mode
+  (return `skip` otherwise), or use `--check liveness`. `route doctor` is
+  registered on its own sub-registry with `--no-probe`. Option flags may not
+  reuse `--check` or a library control such as `--json` (`ValueError`).
 
 ## Consumer responsibilities
 

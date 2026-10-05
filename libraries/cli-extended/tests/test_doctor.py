@@ -16,6 +16,7 @@ from cli_extended import (
     CliIdentity,
     CliRegistry,
     DoctorCheck,
+    OptionSpec,
     register_doctor,
     register_skills_verbs,
 )
@@ -59,7 +60,7 @@ def ok(summary="fine", **kwargs):
 
 
 def check(name, result=None, *, run=None):
-    return DoctorCheck(name, f"checks {name}", run or (lambda runtime: result))
+    return DoctorCheck(name, f"checks {name}", run or (lambda runtime, args: result))
 
 
 def registry():
@@ -173,7 +174,7 @@ def test_custom_description():
 
 
 def test_crashing_check_becomes_fail_and_others_run():
-    def boom(runtime):
+    def boom(runtime, args):
         raise RuntimeError("kaput")
 
     reg = doctor_registry(
@@ -192,7 +193,7 @@ def test_crashing_check_becomes_fail_and_others_run():
 
 
 def test_keyboard_interrupt_propagates():
-    def stop(runtime):
+    def stop(runtime, args):
         raise KeyboardInterrupt
 
     reg = doctor_registry(check("stop", run=stop))
@@ -202,7 +203,7 @@ def test_keyboard_interrupt_propagates():
 
 
 def test_wrong_return_type_is_crash_fail():
-    reg = doctor_registry(check("odd", run=lambda runtime: "ok"))
+    reg = doctor_registry(check("odd", run=lambda runtime, args: "ok"))
     code, out, _ = invoke(reg)
     assert code == 1
     assert "[FAIL] odd: check crashed: TypeError: returned str, not CheckResult\n" in out
@@ -233,7 +234,7 @@ def test_check_filter_runs_only_selected_in_declared_order():
     ran = []
 
     def make(name):
-        def run(runtime):
+        def run(runtime, args):
             ran.append(name)
             return ok(name)
 
@@ -258,7 +259,7 @@ def test_unknown_check_is_usage_error_with_help():
 
 def test_unknown_check_stops_before_running_anything():
     ran = []
-    reg = doctor_registry(check("a", run=lambda runtime: ran.append(1) or ok()))
+    reg = doctor_registry(check("a", run=lambda runtime, args: ran.append(1) or ok()))
     code, _, _ = invoke(reg, "--check", "a", "--check", "zzz")
     assert code == 2
     assert ran == []
@@ -456,10 +457,55 @@ def test_result_validation():
 def test_check_validation():
     for name in ("Bad", "", "a b", "a--b", "-a", "a-", "a_b"):
         with pytest.raises(ValueError, match="must be lowercase tokens"):
-            DoctorCheck(name, "d", lambda runtime: ok())
+            DoctorCheck(name, "d", lambda runtime, args: ok())
     with pytest.raises(ValueError, match="must define a description"):
-        DoctorCheck("a", "", lambda runtime: ok())
-    assert DoctorCheck("a1-b2", "d", lambda runtime: ok()).name == "a1-b2"
+        DoctorCheck("a", "", lambda runtime, args: ok())
+    assert DoctorCheck("a1-b2", "d", lambda runtime, args: ok()).name == "a1-b2"
+
+
+def test_check_reads_consumer_option_from_args():
+    seen = []
+
+    def run(runtime, args):
+        seen.append(args.helper_image)
+        return ok(f"image {args.helper_image}")
+
+    reg = registry()
+    register_doctor(
+        reg,
+        [check("helper", run=run)],
+        options=[
+            OptionSpec(
+                ("--helper-image",), "helper image", metavar="IMAGE",
+                parser_kwargs={"default": "none"},
+            )
+        ],
+    )
+    code, out, _ = invoke(reg, "--helper-image", "img:1")
+    assert code == 0
+    assert seen == ["img:1"]
+    assert out.startswith("[OK] helper: image img:1\n")
+    _, out, _ = invoke(reg)
+    assert seen == ["img:1", "none"]
+    _, out, _ = invoke(reg, "--help")
+    assert "--helper-image IMAGE" in out
+
+
+@pytest.mark.parametrize("flag", ["--check", "-h", "--help", "--json", "--yes", "--log-level"])
+def test_option_shadowing_check_or_library_control_rejected(flag):
+    reg = registry()
+    with pytest.raises(ValueError, match="shadows --check or a library control"):
+        register_doctor(
+            reg, [check("a", ok())], options=[OptionSpec((flag,), "dup")]
+        )
+    assert not hasattr(reg, "_cli_extended_doctor")
+
+
+def test_shadowing_alias_among_several_flags_rejected():
+    with pytest.raises(ValueError, match="'--check'"):
+        register_doctor(
+            registry(), [], options=[OptionSpec(("--mine", "--check"), "dup")]
+        )
 
 
 def test_duplicate_names_rejected():
