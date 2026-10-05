@@ -11,7 +11,6 @@ from cli_extended import (
     CliIdentity,
     CliRegistry,
     OptionSpec,
-    Requires,
     VerbGroup,
     VerbSpec,
 )
@@ -465,15 +464,17 @@ def build_cli():
                 *configuration,
                 OptionSpec(
                     ("--repo-url",),
-                    "repository containing bootstrap-remote.py (default: the canonical vbpub repository; requires --bootstrap-url)",
+                    "repository containing bootstrap-remote.py",
                     group="BOOTSTRAP SOURCE",
                     metavar="URL",
+                    parser_kwargs={"default": "https://github.com/volkb79-2/vbpub"},
                 ),
                 OptionSpec(
                     ("--repo-branch",),
-                    "branch fetched by bootstrap-remote.py (default: main)",
+                    "branch fetched by bootstrap-remote.py",
                     group="BOOTSTRAP SOURCE",
                     metavar="BRANCH",
+                    parser_kwargs={"default": "main"},
                 ),
                 OptionSpec(
                     ("--bootstrap-url",),
@@ -486,13 +487,6 @@ def build_cli():
                     "emit {{CONTROLLER_SSH_PUBKEY}} for a provider to replace at install time",
                     group="SSH KEY INTEGRATION",
                     parser_kwargs={"action": "store_true", "default": False},
-                ),
-            ),
-            constraints=(
-                Requires(
-                    "--repo-url",
-                    ("--bootstrap-url",),
-                    "a custom repository needs its own bootstrap-remote.py URL",
                 ),
             ),
             handler=_build_customscript,

@@ -445,7 +445,6 @@ def test_bootstrap_url_alone_overrides_only_the_fetched_script(tmp_path, capsys)
     assert f"url = {CUSTOM_BOOTSTRAP!r}\n" in launcher
 
 
-@pytest.mark.cli_case(f"case:{ROUTE}/build-customscript/constraint-requires/1")
 def test_custom_repository_without_a_bootstrap_url_is_refused_with_help(tmp_path, capsys):
     path, _ = write_config(tmp_path)
     code, out, err = run(
@@ -454,10 +453,19 @@ def test_custom_repository_without_a_bootstrap_url_is_refused_with_help(tmp_path
     assert code == 2
     assert out == ""
     assert err.startswith(
-        "[ERROR] --repo-url requires --bootstrap-url: "
-        "a custom repository needs its own bootstrap-remote.py URL\n"
+        "[ERROR] bootstrap_url is required when repo_url is not the canonical vbpub repository\n"
     )
-    assert "CONSTRAINTS" in err
+    assert "usage:" in err
+
+
+def test_explicit_canonical_repo_url_needs_no_bootstrap_url(tmp_path, capsys):
+    result = bundle(capsys, tmp_path, "--repo-url", "https://github.com/volkb79-2/vbpub")
+    environment, launcher = script_parts(result)
+    assert environment["REPO_URL"] == "https://github.com/volkb79-2/vbpub"
+    assert (
+        "url = 'https://raw.githubusercontent.com/volkb79-2/vbpub/main/"
+        "scripts/debian-install-v2/bootstrap-remote.py'\n"
+    ) in launcher
 
 
 @pytest.mark.cli_case(case_spelling("build-customscript", "--repo-branch"))

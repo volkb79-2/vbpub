@@ -170,3 +170,37 @@ def test_a_stray_non_matching_wheel_is_ignored(install_dir, tmp_path, no_site_py
     result = run_isolated(install_dir / "debian-install-v2.py", ["--version"], tmp_path, no_site_python)
     assert result.returncode == 2
     assert result.stderr == NOT_INSTALLED
+
+
+def test_one_real_wheel_plus_a_stray_other_wheel_runs_normally(install_dir, tmp_path, no_site_python):
+    build_wheel(install_dir)
+    (install_dir / "other_tool-1.0-py3-none-any.whl").write_bytes(b"not for us")
+    result = run_isolated(install_dir / "debian-install-v2.py", ["--version"], tmp_path, no_site_python)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "debian-install-v2 2.0.0\n"
+    assert result.stderr == ""
+
+
+def test_wheels_created_in_reverse_name_order_are_listed_sorted(install_dir, tmp_path, no_site_python):
+    names = [
+        "cli_extended-0.0.2-py3-none-any.whl",
+        "cli_extended-0.0.1-py3-none-any.whl",
+        "cli_extended-0.0.0-py3-none-any.whl",
+    ]
+    for name in names:
+        build_wheel(install_dir, name)
+    result = run_isolated(install_dir / "debian-install-v2.py", ["--version"], tmp_path, no_site_python)
+    assert result.returncode == 2
+    assert result.stderr.endswith("keep exactly one: " + ", ".join(sorted(names)) + "\n")
+
+
+def test_the_wheel_is_first_on_sys_path_ahead_of_a_decoy_beside_the_script(
+    install_dir, tmp_path, no_site_python
+):
+    wheel = build_wheel(install_dir)
+    decoy = install_dir / "cli_extended"
+    decoy.mkdir()
+    (decoy / "__init__.py").write_text("raise ImportError('decoy beat the wheel')\n", encoding="utf-8")
+    result = probe(install_dir, tmp_path, no_site_python)
+    assert result.returncode == 0, result.stderr
+    assert f"CLI_EXTENDED_FILE={wheel}/cli_extended/__init__.py\n" in result.stdout

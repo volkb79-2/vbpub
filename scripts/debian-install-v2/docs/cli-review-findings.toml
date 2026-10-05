@@ -43,13 +43,13 @@ remedy = "Make Installer.verify return per-check results, set include_json=True 
 
 [[findings]]
 id = "F-005"
-status = "wontfix"
+status = "fixed"
 severity = "minor"
 category = "grammar"
 route = "route:entrypoint:debian-install-v2/build-customscript"
-summary = "Requires(--repo-url, --bootstrap-url) also refuses the canonical repository URL given explicitly without --bootstrap-url"
-remedy = "A constraint cannot express 'differs from the default'; the handler would have to re-check the value"
-rationale = "Giving the canonical URL explicitly has no purpose (it is the default), so the stricter parse-time rule costs nothing and the refusal is visible in help and the surface."
+summary = "Requires(--repo-url, --bootstrap-url) also refused the canonical repository URL given explicitly without --bootstrap-url"
+remedy = "Reverted to the previous behaviour: --repo-url defaults to the canonical URL again, the constraint is removed, and customscript.resolve_bootstrap_url enforces 'a custom repository needs --bootstrap-url'. A constraint on a defaulted option is tracked as cli-extended CLI-EXT-20."
+# Linked test: test_cli_review_cases.py::test_explicit_canonical_repo_url_needs_no_bootstrap_url
 
 [[findings]]
 id = "F-006"

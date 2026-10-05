@@ -74,7 +74,7 @@ kind = "command"
 environment = "tester-unified"
 argv = [
     "bash", "-c",
-    "export PYTHONPATH={worktree}/assay/src && cd {worktree}/scripts/debian-install-v2 && mkdir -p .assay && exec /opt/tester-venv/bin/python3 -m assay.cli run r2 --resume --progress .assay/r2-progress.jsonl --verdict-json .assay/verdict-r2.json",
+    "export PYTHONPATH={worktree}/assay/src:{worktree}/libraries/cli-extended/src && cd {worktree}/scripts/debian-install-v2 && mkdir -p .assay && exec /opt/tester-venv/bin/python3 -m assay.cli run r2 --resume --progress .assay/r2-progress.jsonl --verdict-json .assay/verdict-r2.json",
 ]
 clean_tree = false
 budget = "30m"

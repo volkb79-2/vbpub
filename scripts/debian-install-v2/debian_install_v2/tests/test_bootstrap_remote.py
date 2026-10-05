@@ -241,8 +241,12 @@ def test_remote_invocation_dispatches_install_verb_with_explicit_acceptance(
         lambda *, debug: events.append("resolve") or ("https://example.test/cli_extended-9.9.9-py3-none-any.whl", "0" * 64),
     )
     monkeypatch.setattr(
-        mod, "install_wheel",
-        lambda url, sha256, target, *, debug: events.append(("install", url, sha256, target)),
+        mod, "download_wheel",
+        lambda url, sha256, *, debug: events.append(("download", url, sha256)) or ("cli_extended-9.9.9-py3-none-any.whl", b"data"),
+    )
+    monkeypatch.setattr(
+        mod, "write_wheel",
+        lambda name, data, target, *, debug: events.append(("write", name, data, target)),
     )
     captured = {}
 
@@ -258,8 +262,9 @@ def test_remote_invocation_dispatches_install_verb_with_explicit_acceptance(
     assert mod.main() == 0
     assert events == [
         "resolve",
+        ("download", "https://example.test/cli_extended-9.9.9-py3-none-any.whl", "0" * 64),
         "fetch",
-        ("install", "https://example.test/cli_extended-9.9.9-py3-none-any.whl", "0" * 64, install_dir),
+        ("write", "cli_extended-9.9.9-py3-none-any.whl", b"data", install_dir),
     ]
     assert captured["argv"][2:4] == ["install", "--config"]
     assert captured["argv"][-1] == "--yes"
@@ -507,7 +512,7 @@ def test_debug_mode_narrates_the_wheel_steps_on_stderr(mod, net, tmp_path, capsy
     assert captured.out == ""
     assert f"[bootstrap-remote] reading release manifest {mod.LATEST_URL_DEFAULT}\n" in captured.err
     assert f"[bootstrap-remote] downloading {WHEEL_URL}\n" in captured.err
-    assert f"[bootstrap-remote] wrote {tmp_path / 'install' / WHEEL_NAME} ({sha256})\n" in captured.err
+    assert f"[bootstrap-remote] wrote {tmp_path / 'install' / WHEEL_NAME}\n" in captured.err
 
 
 def test_main_fetches_tree_and_released_wheel_end_to_end_with_faked_urllib(
@@ -530,7 +535,200 @@ def test_main_fetches_tree_and_released_wheel_end_to_end_with_faked_urllib(
     assert mod.main() == 7
     assert [call[0] for call in fake.calls] == [
         mod.LATEST_URL_DEFAULT,
-        "https://github.com/volkb79-2/vbpub/archive/refs/heads/main.tar.gz",
         WHEEL_URL,
+        "https://github.com/volkb79-2/vbpub/archive/refs/heads/main.tar.gz",
     ]
     assert sorted(path.name for path in install_dir.iterdir()) == [WHEEL_NAME, "debian-install-v2.py"]
+
+
+def test_main_with_a_bad_wheel_digest_writes_nothing_to_the_install_dir(
+    mod, monkeypatch, net, tmp_path
+):
+    data = _wheel_bytes()
+    tarball = _fake_tarball({"scripts/debian-install-v2/debian-install-v2.py": b"# entrypoint\n"})
+    fake = net({
+        "https://github.com/volkb79-2/vbpub/archive/refs/heads/main.tar.gz": tarball,
+        mod.LATEST_URL_DEFAULT: _manifest(sha256="0" * 64),
+        WHEEL_URL: data,
+    })
+    install_dir = tmp_path / "install"
+    monkeypatch.setenv("INSTALL_DIR", str(install_dir))
+    for name in ("DRY_RUN", "DEBUG_MODE", "REPO_URL", "REPO_BRANCH"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(mod.os, "geteuid", lambda: 0)
+    with pytest.raises(SystemExit, match="sha256 mismatch"):
+        mod.main()
+    assert [call[0] for call in fake.calls] == [mod.LATEST_URL_DEFAULT, WHEEL_URL]
+    assert not install_dir.exists()
+
+
+# --- https only ------------------------------------------------------------
+
+
+@pytest.mark.parametrize("scheme", ["http", "file", "ftp", "HTTP", ""])
+def test_pinned_wheel_url_must_be_https(mod, monkeypatch, net, scheme):
+    fake = net({})
+    url = f"{scheme}://example.test/{WHEEL_NAME}" if scheme else f"/tmp/{WHEEL_NAME}"
+    monkeypatch.setenv("CLI_EXTENDED_WHEEL_URL", url)
+    monkeypatch.setenv("CLI_EXTENDED_WHEEL_SHA256", "a" * 64)
+    with pytest.raises(SystemExit) as raised:
+        mod.resolve_wheel()
+    assert str(raised.value) == f"bootstrap-remote: CLI_EXTENDED_WHEEL_URL {url!r} must be an https:// URL"
+    assert fake.calls == []
+
+
+@pytest.mark.parametrize("scheme", ["http", "file"])
+def test_latest_pointer_url_must_be_https(mod, monkeypatch, net, scheme):
+    fake = net({})
+    url = f"{scheme}://example.test/latest.json"
+    monkeypatch.setenv("CLI_EXTENDED_LATEST_URL", url)
+    with pytest.raises(SystemExit, match="CLI_EXTENDED_LATEST_URL .* must be an https:// URL"):
+        mod.resolve_wheel()
+    assert fake.calls == []
+
+
+@pytest.mark.parametrize("scheme", ["http", "file"])
+def test_manifest_url_field_must_be_https(mod, net, scheme):
+    fake = net({mod.LATEST_URL_DEFAULT: _manifest(url=f"{scheme}://example.test/{WHEEL_NAME}")})
+    with pytest.raises(SystemExit, match="the 'url' field of release manifest .* must be an https:// URL"):
+        mod.resolve_wheel()
+    assert [call[0] for call in fake.calls] == [mod.LATEST_URL_DEFAULT]
+
+
+def test_https_scheme_check_accepts_an_https_pin(mod, monkeypatch, net):
+    net({})
+    monkeypatch.setenv("CLI_EXTENDED_WHEEL_URL", WHEEL_URL)
+    monkeypatch.setenv("CLI_EXTENDED_WHEEL_SHA256", "a" * 64)
+    assert mod.resolve_wheel() == (WHEEL_URL, "a" * 64)
+
+
+# --- size caps and truncated reads ------------------------------------------
+
+
+def test_wheel_at_the_cap_is_accepted_and_one_byte_more_is_refused(mod, net, monkeypatch, tmp_path):
+    wheel = _wheel_bytes()
+    net({WHEEL_URL: wheel})
+    monkeypatch.setattr(mod, "WHEEL_MAX_BYTES", len(wheel))
+    assert mod.download_wheel(WHEEL_URL, _sha(wheel), debug=False) == (WHEEL_NAME, wheel)
+    monkeypatch.setattr(mod, "WHEEL_MAX_BYTES", len(wheel) - 1)
+    with pytest.raises(SystemExit) as raised:
+        mod.download_wheel(WHEEL_URL, _sha(wheel), debug=False)
+    assert str(raised.value) == (
+        f"bootstrap-remote: the cli-extended wheel {WHEEL_URL} is larger than the "
+        f"{len(wheel) - 1}-byte cap"
+    )
+
+
+def test_manifest_over_the_cap_is_refused(mod, net, monkeypatch):
+    assert mod.WHEEL_MAX_BYTES == 16 * 1024 * 1024
+    assert mod.MANIFEST_MAX_BYTES == 1024 * 1024
+    monkeypatch.setattr(mod, "MANIFEST_MAX_BYTES", 100)
+    body = _manifest()
+    assert len(body) > 100
+    net({mod.LATEST_URL_DEFAULT: body})
+    with pytest.raises(SystemExit) as raised:
+        mod.resolve_wheel()
+    assert str(raised.value) == (
+        f"bootstrap-remote: the cli-extended release manifest {mod.LATEST_URL_DEFAULT} "
+        "is larger than the 100-byte cap"
+    )
+
+
+def test_download_reads_at_most_cap_plus_one_byte(mod, monkeypatch):
+    seen = []
+
+    class _Recorder(io.BytesIO):
+        def read(self, size=-1):
+            seen.append(size)
+            return super().read(size)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc_info):
+            self.close()
+
+    monkeypatch.setattr(mod.urllib.request, "urlopen", lambda *a, **k: _Recorder(b"abc"))
+    assert mod._download("https://example.test/x", "thing", 10) == b"abc"
+    assert seen == [11]
+
+
+def test_incomplete_read_is_a_bootstrap_error(mod, net):
+    import http.client
+
+    net({WHEEL_URL: http.client.IncompleteRead(b"par", 100)})
+    with pytest.raises(SystemExit, match="could not fetch the cli-extended wheel .*IncompleteRead"):
+        mod.download_wheel(WHEEL_URL, "0" * 64, debug=False)
+
+
+def test_a_truncated_body_raised_during_read_is_a_bootstrap_error(mod, monkeypatch):
+    import http.client
+
+    class _Broken:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc_info):
+            return False
+
+        def read(self, size=-1):
+            raise http.client.IncompleteRead(b"par", 100)
+
+    monkeypatch.setattr(mod.urllib.request, "urlopen", lambda *a, **k: _Broken())
+    with pytest.raises(SystemExit, match="could not fetch thing https://example.test/x"):
+        mod._download("https://example.test/x", "thing", 10)
+
+
+# --- ordering, atomicity, directories ---------------------------------------
+
+
+def test_wheel_is_replaced_atomically_before_other_wheels_are_deleted(mod, monkeypatch, tmp_path):
+    install_dir = tmp_path / "install"
+    install_dir.mkdir()
+    older = install_dir / "cli_extended-0.1.0-py3-none-any.whl"
+    older.write_bytes(b"older")
+    replaced = []
+
+    def failing_replace(source, destination):
+        replaced.append((Path(source).name, Path(destination).name))
+        raise OSError("disk full")
+
+    monkeypatch.setattr(mod.os, "replace", failing_replace)
+    with pytest.raises(OSError, match="disk full"):
+        mod.write_wheel(WHEEL_NAME, b"new", install_dir, debug=False)
+    assert replaced == [(WHEEL_NAME + ".tmp", WHEEL_NAME)]
+    assert older.read_bytes() == b"older"
+
+
+def test_write_wheel_goes_through_a_temp_sibling_and_keeps_only_the_new_wheel(mod, tmp_path):
+    install_dir = tmp_path / "install"
+    install_dir.mkdir()
+    (install_dir / "cli_extended-0.1.0-py3-none-any.whl").write_bytes(b"older")
+    target = mod.write_wheel(WHEEL_NAME, b"new", install_dir, debug=False)
+    assert target == install_dir / WHEEL_NAME
+    assert target.read_bytes() == b"new"
+    assert [path.name for path in install_dir.iterdir()] == [WHEEL_NAME]
+
+
+def test_a_directory_matching_the_wheel_glob_is_refused_and_nothing_changes(mod, tmp_path):
+    install_dir = tmp_path / "install"
+    install_dir.mkdir()
+    older = install_dir / "cli_extended-0.1.0-py3-none-any.whl"
+    older.write_bytes(b"older")
+    (install_dir / "cli_extended-0.0.1-py3-none-any.whl").mkdir()
+    with pytest.raises(SystemExit) as raised:
+        mod.write_wheel(WHEEL_NAME, b"new", install_dir, debug=False)
+    assert str(raised.value) == (
+        "bootstrap-remote: refusing to replace cli-extended wheel(s) that are directories: "
+        f"{install_dir / 'cli_extended-0.0.1-py3-none-any.whl'}"
+    )
+    assert older.read_bytes() == b"older"
+    assert not (install_dir / WHEEL_NAME).exists()
+    assert not (install_dir / (WHEEL_NAME + ".tmp")).exists()
+
+
+def test_a_directory_with_the_new_wheels_own_name_is_refused(mod, tmp_path):
+    install_dir = tmp_path / "install"
+    (install_dir / WHEEL_NAME).mkdir(parents=True)
+    with pytest.raises(SystemExit, match="that are directories"):
+        mod.write_wheel(WHEEL_NAME, b"new", install_dir, debug=False)

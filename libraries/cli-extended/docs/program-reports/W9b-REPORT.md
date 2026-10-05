@@ -103,4 +103,31 @@ The manifest was exported with the library revision of this branch; it was produ
 6. The library-owned `--dry-run` help is one generic sentence for every verb (F-007); a per-verb sentence on `VerbSpec(dry_run=...)` would help.
 7. Authoring cost: each settings-consuming verb produces five generated cases for `--config`/`--config-json` (member x2, spelling x2, conflict), so 8 verbs gave 62 catalog rows. Sharing one case across identical option declarations on several verbs would cut the review load without losing coverage.
 8. Audit heuristics gave two false positives that I fixed by rewording tests: AC-01 flags any file containing `CliIdentity(` plus `re.` plus `VERSION` (a test that built a pinned identity), and AC-25 flags a comment that mentions `libraries/cli-extended` next to `sys.path`.
-9. `CliIdentity.resolve` plus the wheel/zipimport path worked unchanged under `python -S` with the wheel on `sys.path`; skills resources inside a zip were not exercised (this tool registers no skills).
+## Review round 1 (REJECT, all items addressed)
+
+All edits through Edit/Write only; no heredocs, sed or scripts touched repository files. (A throwaway probe under the scratchpad was used to explore output before writing the real test; it is not in the repo.)
+
+1. **Exception boundary** (`test_exception_boundary.py`, real `debian-install-v2.py` through `invoke_script`, tmp HOME, a probe script patches `Installer.__init__` in the child):
+   - `OSError` -> exit 1, exactly `[ERROR] disk gone`, no hint, no traceback.
+   - `InstallerError` -> exit 1, plain `[ERROR] bad`, also with `--traceback`.
+   - unexpected `RuntimeError` -> exit 1, `[ERROR] unexpected RuntimeError: boom` plus `Hint: rerun with --traceback to see the stack`; with `--traceback` the traceback is re-raised and no `[ERROR]` line is printed.
+   - Deviation from the brief: an unreadable `--config` is wrapped by the config loader as a `ConfigError`, so it exits 2 (one plain `[ERROR] invalid installation configuration: ...` line), not 1; tested as such for `--config` and `--config-json`. The `OSError` -> exit 1 case needs the probe seam. No catalog case matches these paths, so there are no `cli_case` links.
+   - Mutations, both killed: `"report"` -> `"raise"` (3 tests failed); `OSError` removed from `DOMAIN_ERRORS` (`test_an_oserror_is_a_domain_error_with_one_plain_error_line` failed). Both restored.
+2. **HTTPS only**: `_require_https` on `CLI_EXTENDED_LATEST_URL`, `CLI_EXTENDED_WHEEL_URL` and the manifest `url`; `http`, `HTTP`, `file`, `ftp` and a scheme-less path are refused. Tests: `test_pinned_wheel_url_must_be_https`, `test_latest_pointer_url_must_be_https`, `test_manifest_url_field_must_be_https`. README documents it.
+3. **F-005 reverted**: `--repo-url`/`--repo-branch` have their previous defaults again, the `Requires` constraint is gone, the retired catalog row records why, the 11 changed signatures were re-reviewed and updated, F-005 is `fixed` (constraint on a defaulted option tracked as cli-extended CLI-EXT-20). `test_explicit_canonical_repo_url_needs_no_bootstrap_url` passes; the custom-repo refusal now comes from `customscript.resolve_bootstrap_url`.
+4. **Ordering**: `main()` resolves, downloads and verifies the wheel before `fetch_subtree` (`test_main_with_a_bad_wheel_digest_writes_nothing_to_the_install_dir`: install dir does not exist afterwards). `write_wheel` refuses a directory matching the glob before writing, writes `<name>.tmp` then `os.replace`, and only then deletes the other wheels (`test_wheel_is_replaced_atomically_before_other_wheels_are_deleted` makes `os.replace` fail and checks the old wheel survives).
+5. **Caps**: `WHEEL_MAX_BYTES` 16 MiB, `MANIFEST_MAX_BYTES` 1 MiB, read of cap+1; error names the URL and the cap; `http.client.HTTPException` (incl. `IncompleteRead`, also raised mid-`read`) is a `BootstrapError`. Tests: at-cap accepted / cap+1 refused (wheel), manifest over cap, `read` called with cap+1, both IncompleteRead paths.
+6. **Equivalent mutants**: `if pinned_url:` and the `stale.name != name` condition are gone (replaced by write-then-delete-others, skipping the new file by path equality, which `test_write_wheel_goes_through_a_temp_sibling_and_keeps_only_the_new_wheel` kills).
+7. **Entrypoint pins**: one real wheel plus a stray wheel runs normally; three wheels created in reverse order are listed sorted; a decoy `cli_extended/` package beside the script loses to the wheel. Mutations killed by hand: `insert(0, ...)` -> `insert(1, ...)` (decoy test failed) and `sorted(...)` -> `list(...)` (reverse-order test failed). Restored.
+8. **R2 lane import**: `assay.toml` drops `PYTHONPATH` from `env` and adds it to `env_passthrough` (assay accepts any name there; the only refusals are collisions with `env` or `infrastructure`). `run-gate.toml` `[lanes.r2]` now exports `PYTHONPATH={worktree}/assay/src:{worktree}/libraries/cli-extended/src`. `python -m assay.cli lanes --file assay.toml` loads the lane (read-only). r2 was not run. The library path appears only in `run-gate.toml`; the audit's `no-path-hacks` is PASS.
+
+Round 1 verdicts (each lane through the flock, read separately):
+```
+run-gate: lane 'r0-r1' verdict PASS; exit_code 0   (490 passed, 11 skipped)
+run-gate: lane 'fake-integration' verdict PASS; exit_code 0
+run-gate: lane 'r3' verdict PASS; exit_code 0       (canaries: 3 rejected, 0 survived)
+surface check: passed.  audit: 12 pass, 0 warn, 0 fail, 3 manual.
+```
+`r1-vm-real-commit`, `gate` and `r2` not run.
+
+Library friction item 9 (belongs to the list above): `CliIdentity.resolve` plus the wheel/zipimport path worked unchanged under `python -S` with the wheel on `sys.path`; skills resources inside a zip were not exercised (this tool registers no skills).

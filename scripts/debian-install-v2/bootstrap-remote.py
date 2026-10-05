@@ -97,6 +97,7 @@ no.
 from __future__ import annotations
 
 import hashlib
+import http.client
 import io
 import json
 import os
@@ -121,6 +122,8 @@ WHEEL_GLOB = "cli_extended-*.whl"
 WHEEL_MARKER = "cli_extended/__init__.py"
 USER_AGENT = "vbpub-bootstrap-remote"
 _SHA256 = re.compile(r"[0-9a-f]{64}")
+WHEEL_MAX_BYTES = 16 * 1024 * 1024
+MANIFEST_MAX_BYTES = 1024 * 1024
 
 _TRUE = {"yes", "true", "1", "on"}
 _FALSE = {"no", "false", "0", "off"}
@@ -296,15 +299,26 @@ def fetch_subtree(repo_url: str, branch: str, install_dir: Path, *, debug: bool)
         )
 
 
-def _download(url: str, what: str) -> bytes:
+def _require_https(url: str, what: str) -> str:
+    """Refuse every scheme but https (http, file, ftp, ...): no exceptions."""
+    if urllib.parse.urlparse(url).scheme.lower() != "https":
+        raise BootstrapError(f"{what} {url!r} must be an https:// URL")
+    return url
+
+
+def _download(url: str, what: str, max_bytes: int) -> bytes:
     request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
     try:
         with urllib.request.urlopen(request, timeout=60) as response:
-            return response.read()
-    except OSError as exc:
+            data = response.read(max_bytes + 1)
+    except (OSError, http.client.HTTPException) as exc:
         # URLError and HTTPError are OSError subclasses, and so is a socket
-        # timeout -- all are "could not fetch", one diagnostic.
-        raise BootstrapError(f"could not fetch {what} {url}: {exc}") from None
+        # timeout; IncompleteRead is an HTTPException -- all are "could not
+        # fetch", one diagnostic.
+        raise BootstrapError(f"could not fetch {what} {url}: {exc!r}") from None
+    if len(data) > max_bytes:
+        raise BootstrapError(f"{what} {url} is larger than the {max_bytes}-byte cap")
+    return data
 
 
 def _manifest_field(manifest: dict, name: str, url: str) -> str:
@@ -327,20 +341,26 @@ def resolve_wheel(*, debug: bool = False) -> tuple[str, str]:
             "CLI_EXTENDED_WHEEL_URL and CLI_EXTENDED_WHEEL_SHA256 must be set together "
             "(or both unset to use the latest release)"
         )
-    if pinned_url and pinned_sha:
-        url, sha256 = pinned_url, pinned_sha
+    if pinned_url:
+        url, sha256 = _require_https(pinned_url, "CLI_EXTENDED_WHEEL_URL"), pinned_sha
     else:
-        latest_url = os.environ.get("CLI_EXTENDED_LATEST_URL") or LATEST_URL_DEFAULT
+        latest_url = _require_https(
+            os.environ.get("CLI_EXTENDED_LATEST_URL") or LATEST_URL_DEFAULT,
+            "CLI_EXTENDED_LATEST_URL",
+        )
         if debug:
             print(f"[bootstrap-remote] reading release manifest {latest_url}", file=sys.stderr)
-        raw = _download(latest_url, "the cli-extended release manifest")
+        raw = _download(latest_url, "the cli-extended release manifest", MANIFEST_MAX_BYTES)
         try:
             manifest = json.loads(raw)
         except ValueError as exc:
             raise BootstrapError(f"release manifest {latest_url} is not valid JSON: {exc}") from None
         if not isinstance(manifest, dict):
             raise BootstrapError(f"release manifest {latest_url} must be a JSON object")
-        url = _manifest_field(manifest, "url", latest_url)
+        url = _require_https(
+            _manifest_field(manifest, "url", latest_url),
+            f"the 'url' field of release manifest {latest_url}",
+        )
         sha256 = _manifest_field(manifest, "sha256", latest_url)
     sha256 = sha256.strip().lower()
     if not _SHA256.fullmatch(sha256):
@@ -348,8 +368,8 @@ def resolve_wheel(*, debug: bool = False) -> tuple[str, str]:
     return url, sha256
 
 
-def install_wheel(url: str, sha256: str, install_dir: Path, *, debug: bool) -> Path:
-    """Download, verify and write the wheel; keep it as the only cli_extended wheel."""
+def download_wheel(url: str, sha256: str, *, debug: bool) -> tuple[str, bytes]:
+    """Download and fully verify the wheel in memory; writes nothing."""
     name = urllib.parse.unquote(urllib.parse.urlparse(url).path.rsplit("/", 1)[-1])
     if not (name.startswith("cli_extended-") and name.endswith(".whl")) or "/" in name:
         raise BootstrapError(
@@ -357,7 +377,7 @@ def install_wheel(url: str, sha256: str, install_dir: Path, *, debug: bool) -> P
         )
     if debug:
         print(f"[bootstrap-remote] downloading {url}", file=sys.stderr)
-    data = _download(url, "the cli-extended wheel")
+    data = _download(url, "the cli-extended wheel", WHEEL_MAX_BYTES)
     actual = hashlib.sha256(data).hexdigest()
     if actual != sha256:
         raise BootstrapError(
@@ -370,15 +390,34 @@ def install_wheel(url: str, sha256: str, install_dir: Path, *, debug: bool) -> P
         raise BootstrapError(f"cli-extended wheel {url} is not a zip archive") from None
     if WHEEL_MARKER not in members:
         raise BootstrapError(f"cli-extended wheel {url} does not contain {WHEEL_MARKER}")
+    return name, data
+
+
+def write_wheel(name: str, data: bytes, install_dir: Path, *, debug: bool) -> Path:
+    """Write the verified wheel atomically, then drop every other cli_extended wheel."""
     install_dir.mkdir(parents=True, exist_ok=True)
-    for stale in install_dir.glob(WHEEL_GLOB):
-        if stale.name != name:
-            stale.unlink()
+    matches = sorted(install_dir.glob(WHEEL_GLOB))
+    directories = [str(path) for path in matches if path.is_dir()]
+    if directories:
+        raise BootstrapError(
+            f"refusing to replace cli-extended wheel(s) that are directories: {', '.join(directories)}"
+        )
     target = install_dir / name
-    target.write_bytes(data)
+    temporary = install_dir / f"{name}.tmp"
+    temporary.write_bytes(data)
+    os.replace(temporary, target)
+    for other in matches:
+        if other != target:
+            other.unlink()
     if debug:
-        print(f"[bootstrap-remote] wrote {target} ({actual})", file=sys.stderr)
+        print(f"[bootstrap-remote] wrote {target}", file=sys.stderr)
     return target
+
+
+def install_wheel(url: str, sha256: str, install_dir: Path, *, debug: bool) -> Path:
+    """Download, verify and write the wheel; keep it as the only cli_extended wheel."""
+    name, data = download_wheel(url, sha256, debug=debug)
+    return write_wheel(name, data, install_dir, debug=debug)
 
 
 def main() -> int:
@@ -391,8 +430,11 @@ def main() -> int:
         raise BootstrapError("must run as root")
 
     wheel_url, wheel_sha256 = resolve_wheel(debug=debug)
+    # The wheel is resolved, downloaded and verified before anything is
+    # written to the install dir; a bad pin or digest leaves it untouched.
+    wheel_name, wheel_data = download_wheel(wheel_url, wheel_sha256, debug=debug)
     fetch_subtree(repo_url, branch, install_dir, debug=debug)
-    install_wheel(wheel_url, wheel_sha256, install_dir, debug=debug)
+    write_wheel(wheel_name, wheel_data, install_dir, debug=debug)
 
     entrypoint = install_dir / "debian-install-v2.py"
     if not entrypoint.is_file():

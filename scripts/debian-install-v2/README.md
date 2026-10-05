@@ -58,9 +58,14 @@ used as a fallback. The product version is the single line in
 | `CLI_EXTENDED_LATEST_URL` | read that release pointer instead |
 | `CLI_EXTENDED_WHEEL_URL` + `CLI_EXTENDED_WHEEL_SHA256` | pin one exact wheel (set both or neither; the URL must end in a `cli_extended-*.whl` filename) |
 
-A digest mismatch, a non-zip payload or a wheel without `cli_extended/__init__.py`
-aborts before anything is written; any other `cli_extended-*.whl` in the install
-directory is removed so only one remains. See
+Every one of those URLs (the pointer, a pinned wheel, and the `url` field inside
+the pointer) must be `https`; `http:`, `file:` and every other scheme are refused
+with no override. The wheel is capped at 16 MiB and the pointer at 1 MiB. The
+wheel is resolved, downloaded and verified (sha256, zip, `cli_extended/__init__.py`)
+before the installer tree is written, so a bad pin or digest leaves the install
+directory untouched. The wheel is then written atomically (temp file and rename)
+and only afterwards is every other `cli_extended-*.whl` removed, so only one
+remains; a directory with such a name is refused. See
 [docs/DESIGN-GUIDE.md](docs/DESIGN-GUIDE.md#remote-bootstrap-stays-self-contained)
 for the rationale and [docs/CLI-SPEC.md](docs/CLI-SPEC.md) for the reviewed CLI
 surface and its semantic decisions.
