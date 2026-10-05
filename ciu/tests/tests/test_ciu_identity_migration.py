@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -329,6 +330,66 @@ def test_identity_label_scan_keeps_stdout_error_detail(monkeypatch):
     assert "label scan detail" in str(exc_info.value)
 
 
+def test_identity_label_scan_captures_resource_rows(monkeypatch):
+    def run(argv, **kwargs):
+        output = "cid\t/physical/repo\tproject-a\n" if kwargs["capture_output"] else None
+        return subprocess.CompletedProcess(argv, 0, stdout=output, stderr="")
+
+    monkeypatch.setattr(procutil.subprocess, "run", run)
+    resources = workspace_env._identity_labeled_resources("ab12cd")
+    assert resources == {
+        "container": ["cid"],
+        "volume": ["cid"],
+        "network": ["cid"],
+        "project": ["project-a"],
+    }
+
+
+@pytest.mark.parametrize(
+    ("stdout", "stderr", "chosen"),
+    [
+        ("stdout detail", "stderr detail", "stderr detail"),
+        ("", "", "Docker query failed"),
+    ],
+)
+def test_identity_label_scan_keeps_error_stream_precedence(
+    monkeypatch, stdout, stderr, chosen,
+):
+    def run(argv, **_kwargs):
+        return subprocess.CompletedProcess(argv, 17, stdout=stdout, stderr=stderr)
+
+    monkeypatch.setattr(procutil.subprocess, "run", run)
+    with pytest.raises(workspace_env.WorkspaceEnvError) as exc_info:
+        workspace_env._identity_labeled_resources("ab12cd")
+    assert chosen in str(exc_info.value)
+    if stdout and stderr:
+        assert stdout not in str(exc_info.value)
+
+
+@pytest.mark.parametrize(
+    ("row", "expected"),
+    [
+        ("cid-only\n", None),
+        ("cid\t/physical/repo\n", {
+            "container": ["cid"], "volume": ["cid"], "network": ["cid"],
+            "project": [],
+        }),
+    ],
+)
+def test_identity_label_scan_handles_short_docker_format_rows(monkeypatch, row, expected):
+    monkeypatch.setattr(
+        procutil, "docker",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            returncode=0, stdout=row, stderr=""
+        ),
+    )
+    if expected is None:
+        with pytest.raises(workspace_env.WorkspaceEnvError, match="no ciu.repo-root"):
+            workspace_env._identity_labeled_resources("ab12cd")
+    else:
+        assert workspace_env._identity_labeled_resources("ab12cd") == expected
+
+
 def test_identity_project_labels_include_exact_old_prefix_and_owned_labels(monkeypatch):
     calls = []
 
@@ -392,6 +453,45 @@ def test_identity_project_label_scan_keeps_stdout_error_detail(monkeypatch):
     assert "daemon query detail" in str(exc_info.value)
 
 
+def test_identity_project_label_scan_captures_project_labels(monkeypatch):
+    monkeypatch.setattr(
+        workspace_env, "_identity_labeled_resources",
+        lambda *_a, **_kw: {"project": []},
+    )
+
+    def run(argv, **kwargs):
+        output = "repo-ab12cd-stack\n" if kwargs["capture_output"] else None
+        return subprocess.CompletedProcess(argv, 0, stdout=output, stderr="")
+
+    monkeypatch.setattr(procutil.subprocess, "run", run)
+    assert workspace_env._identity_project_labels("ab12cd", "repo") == {
+        "repo-ab12cd-stack"
+    }
+
+
+@pytest.mark.parametrize(
+    ("stdout", "stderr", "chosen"),
+    [
+        ("stdout detail", "stderr detail", "stderr detail"),
+        ("", "", "Docker query failed"),
+    ],
+)
+def test_identity_project_label_scan_keeps_error_stream_precedence(
+    monkeypatch, stdout, stderr, chosen,
+):
+    monkeypatch.setattr(
+        procutil.subprocess, "run",
+        lambda argv, **_kwargs: subprocess.CompletedProcess(
+            argv, 17, stdout=stdout, stderr=stderr
+        ),
+    )
+    with pytest.raises(workspace_env.WorkspaceEnvError) as exc_info:
+        workspace_env._identity_project_labels("ab12cd", "repo")
+    assert chosen in str(exc_info.value)
+    if stdout and stderr:
+        assert stdout not in str(exc_info.value)
+
+
 def test_old_identity_resource_check_covers_network_labels_projects_and_errors(monkeypatch):
     facts = {**OLD_FACTS}
     monkeypatch.setattr(
@@ -429,6 +529,38 @@ def test_old_identity_network_scan_keeps_stdout_error_detail(monkeypatch):
     with pytest.raises(workspace_env.WorkspaceEnvError) as exc_info:
         workspace_env._old_identity_resources_exist(facts)
     assert "network query detail" in str(exc_info.value)
+
+
+def test_old_identity_network_scan_captures_exact_network_name(monkeypatch):
+    network = OLD_FACTS["network"]
+
+    def run(argv, **kwargs):
+        output = f"{network}\n" if kwargs["capture_output"] else None
+        return subprocess.CompletedProcess(argv, 0, stdout=output, stderr="")
+
+    monkeypatch.setattr(procutil.subprocess, "run", run)
+    assert workspace_env._old_identity_resources_exist(OLD_FACTS)
+
+
+@pytest.mark.parametrize(
+    ("stdout", "stderr", "chosen"),
+    [
+        ("stdout detail", "stderr detail", "stderr detail"),
+        ("", "", "Docker query failed"),
+    ],
+)
+def test_old_identity_network_scan_keeps_error_stream_precedence(
+    monkeypatch, stdout, stderr, chosen,
+):
+    def run(argv, **_kwargs):
+        return subprocess.CompletedProcess(argv, 17, stdout=stdout, stderr=stderr)
+
+    monkeypatch.setattr(procutil.subprocess, "run", run)
+    with pytest.raises(workspace_env.WorkspaceEnvError) as exc_info:
+        workspace_env._old_identity_resources_exist(OLD_FACTS)
+    assert chosen in str(exc_info.value)
+    if stdout and stderr:
+        assert stdout not in str(exc_info.value)
 
 
 def test_old_identity_network_check_requires_captured_docker_output(monkeypatch):
@@ -807,3 +939,72 @@ def test_clean_identity_reports_docker_network_list_exception(tmp_path, monkeypa
     captured = capsys.readouterr()
     output = captured.out + captured.err
     assert "daemon gone" in output
+
+
+@pytest.mark.parametrize(
+    "failure_site",
+    [
+        "labelled-remove",
+        "legacy-list",
+        "legacy-remove",
+        "network-list",
+        "network-remove",
+    ],
+)
+@pytest.mark.parametrize("stderr_text", ["", "stderr diagnostic"])
+def test_clean_identity_preserves_docker_diagnostic_precedence(
+    tmp_path, monkeypatch, capsys, failure_site, stderr_text,
+):
+    repo_name = tmp_path.name.lower()
+    project = f"{repo_name}-ab12cd-stack"
+    network = f"{repo_name}-ab12cd-network"
+    labelled = (
+        {"container": ["label-cid"], "volume": [], "network": []}
+        if failure_site == "labelled-remove"
+        else {"container": [], "volume": [], "network": []}
+    )
+    projects = [project] if failure_site.startswith("legacy-") else []
+    _clean_identity_helpers(
+        monkeypatch, labelled=labelled, projects=projects,
+    )
+
+    def failure():
+        return SimpleNamespace(
+            returncode=17,
+            stdout="stdout diagnostic",
+            stderr=stderr_text,
+        )
+
+    def docker(args, **_kwargs):
+        if failure_site == "labelled-remove" and args == ["rm", "-f", "label-cid"]:
+            return failure()
+        if failure_site == "legacy-list" and args[:2] == ["ps", "-aq"]:
+            return failure()
+        if failure_site == "legacy-remove" and args == ["rm", "-f", "legacy-cid"]:
+            return failure()
+        if failure_site == "legacy-remove" and args[:2] == ["ps", "-aq"]:
+            return SimpleNamespace(returncode=0, stdout="legacy-cid\n", stderr="")
+        if failure_site == "network-list" and args == [
+            "network", "ls", "--format", "{{.Name}}",
+        ]:
+            return failure()
+        if failure_site == "network-remove" and args == [
+            "network", "rm", network,
+        ]:
+            return failure()
+        if failure_site == "network-remove" and args == [
+            "network", "ls", "--format", "{{.Name}}",
+        ]:
+            return SimpleNamespace(returncode=0, stdout=f"{network}\n", stderr="")
+        return _docker_empty()
+
+    monkeypatch.setattr(procutil, "docker", docker)
+    assert deploy.action_clean_identity(tmp_path, "ab12cd", yes=True) == 1
+    captured = capsys.readouterr()
+    output = captured.out + captured.err
+    # A real stderr message wins when both streams contain text; stdout is
+    # the fallback when stderr is empty.
+    chosen = stderr_text or "stdout diagnostic"
+    assert chosen in output
+    if stderr_text:
+        assert "stdout diagnostic" not in output

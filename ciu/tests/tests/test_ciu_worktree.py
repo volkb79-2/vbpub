@@ -7,19 +7,23 @@ without Docker, a network, or the wall clock.
 """
 from __future__ import annotations
 
-import hashlib
-import json
 import builtins
+import hashlib
+import io
+import json
 import subprocess
 import sys
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
 from ciu import worktree  # noqa: E402
+from ciu.config_constants import GLOBAL_CONFIG_RENDERED  # noqa: E402
 
 
 def create_path(*args, **kwargs):
@@ -70,6 +74,16 @@ def rootless_repo(tmp_path: Path) -> Path:
 
 def _instance_id_for(path: Path) -> str:
     return hashlib.sha256(str(path.resolve()).encode("utf-8")).hexdigest()[:6]
+
+
+class _FlushRecordingStream(io.StringIO):
+    def __init__(self):
+        super().__init__()
+        self.flush_count = 0
+
+    def flush(self):
+        self.flush_count += 1
+        return super().flush()
 
 
 @pytest.fixture
@@ -271,6 +285,28 @@ class TestManagedIdentityLifecycle:
         assert second.display_name == "ciu-20260817_123456-exact-exec-2"
         assert first.branch == first.git_worktree_path.name == first.display_name
         assert second.branch == second.git_worktree_path.name == second.display_name
+
+    @pytest.mark.parametrize("explicit", ["branch", "path"])
+    def test_generated_create_checks_explicit_target_against_corrupt_sibling(
+        self, tmp_repo, fake_generate_env, monkeypatch, explicit,
+    ):
+        monkeypatch.setattr(worktree, "_utc_now", lambda: self.FIXED_NOW)
+        first = worktree.create(
+            tmp_repo, "first-generated", prefix="ciu", feature="collision"
+        )
+        raw = json.loads(first.record_path.read_text(encoding="utf-8"))
+        raw.pop("branch")
+        first.record_path.write_text(json.dumps(raw), encoding="utf-8")
+
+        target_value = (
+            first.branch if explicit == "branch" else first.git_worktree_path
+        )
+        kwargs = {explicit: target_value}
+        with pytest.raises(worktree.WorktreeError, match="requested checkout path"):
+            worktree.create(
+                tmp_repo, "second-generated", prefix="ciu", feature="collision",
+                **kwargs,
+            )
 
     def test_ready_ensure_has_no_side_effects(
         self, tmp_repo, fake_generate_env, monkeypatch
@@ -710,8 +746,9 @@ class TestForkPointProvenance:
         work = _git(["rev-parse", "HEAD"], wt_path).stdout.strip()
         assert work != adopted_head
 
-        with pytest.raises(worktree.WorktreeError, match=r"\[CIU-107\].*HEAD moved"):
+        with pytest.raises(worktree.WorktreeError, match=r"\[CIU-107\].*HEAD moved") as refusal:
             worktree.ensure(tmp_repo, "adopted-one")
+        assert f"HEAD is {work}" in str(refusal.value)
         # The new commit remains exactly where the operator made it; resume
         # never attempts a hard reset against the recorded adoption target.
         assert _git(["rev-parse", "HEAD"], wt_path).stdout.strip() == work
@@ -2103,6 +2140,7 @@ class TestExactWorktreeControl:
         assert argv == [sys.executable, "-m", "ciu.cli", "up"]
         assert kwargs["cwd"] == record.ciu_root
         assert kwargs["env"]["REPO_ROOT"] == str(record.ciu_root)
+        assert not (record.ciu_root / GLOBAL_CONFIG_RENDERED).exists()
 
     def test_up_propagates_exact_child_exit_code(self, ready, monkeypatch, capsys):
         repo_root, record = ready
@@ -2540,3 +2578,200 @@ requires_worktree_mount = false
         assert worktree._workdir_within("/workspace/sub dir", "/workspace") is True
         assert worktree._workdir_within("/workspaceX", "/workspace") is False
         assert worktree._workdir_within("/other", "/workspace") is False
+
+
+def test_registry_warning_flushes_each_diagnostic(monkeypatch, tmp_path):
+    stream = _FlushRecordingStream()
+    monkeypatch.setattr(worktree.sys, "stderr", stream)
+    problem = worktree._InstanceRecordProblem(
+        record_path=tmp_path / "bad-record.json",
+        worktree_path=tmp_path / "checkout",
+        logical_name="broken",
+        detail="invalid shape",
+    )
+
+    worktree._warn_registry_problems((problem,))
+
+    assert "continuing with the readable records" in stream.getvalue()
+    assert str(problem.record_path) in stream.getvalue()
+    assert "invalid shape" in stream.getvalue()
+    assert stream.flush_count == 2
+
+
+def test_record_logical_name_hint_ignores_truthy_non_string_names(tmp_path):
+    path = tmp_path / "record.json"
+    path.write_text('{"logical_name": 17}', encoding="utf-8")
+    assert worktree._record_logical_name_hint(path) is None
+
+    path.write_text('{"logical_name": ""}', encoding="utf-8")
+    assert worktree._record_logical_name_hint(path) is None
+
+
+def test_worktree_up_profiles_reject_whitespace_only_names():
+    with pytest.raises(worktree.WorktreeError, match="non-empty array"):
+        worktree._validate_worktree_table({"up": ["   "]})
+
+
+@pytest.mark.parametrize(
+    ("head", "base_commit", "expected_parts"),
+    [
+        (
+            SimpleNamespace(returncode=128, stdout="stdout detail", stderr="stderr detail"),
+            "different-base",
+            ("stderr detail",),
+        ),
+        (
+            SimpleNamespace(returncode=128, stdout="", stderr=""),
+            "",
+            ("workspace base=missing", "current HEAD=unreadable"),
+        ),
+    ],
+)
+def test_allocated_commit_refusal_preserves_complete_provenance(
+    monkeypatch, tmp_path, head, base_commit, expected_parts,
+):
+    record = SimpleNamespace(
+        fork_point_sha=None,
+        base_ref="not-a-commit-ref",
+        git_worktree_path=tmp_path,
+    )
+    monkeypatch.setattr(worktree, "_git", lambda *_a, **_kw: head)
+    with pytest.raises(worktree.WorktreeError) as exc_info:
+        worktree._allocated_commit_sha(
+            record, SimpleNamespace(base_commit=base_commit)
+        )
+    message = str(exc_info.value)
+    for expected in expected_parts:
+        assert expected in message
+
+
+def test_allocated_commit_error_prefers_git_error_over_workspace_fallback(
+    monkeypatch, tmp_path,
+):
+    workspace_base = "a" * 40
+    record = SimpleNamespace(
+        fork_point_sha=None,
+        base_ref="not-a-commit-ref",
+        git_worktree_path=tmp_path,
+    )
+    monkeypatch.setattr(
+        worktree, "_git",
+        lambda *_a, **_kw: SimpleNamespace(
+            returncode=128, stdout="secondary output", stderr="primary git error"
+        ),
+    )
+    with pytest.raises(worktree.WorktreeError) as exc_info:
+        worktree._allocated_commit_sha(
+            record, SimpleNamespace(base_commit=workspace_base)
+        )
+    assert "primary git error" in str(exc_info.value)
+    assert "secondary output" not in str(exc_info.value)
+
+
+def test_generated_allocation_recovery_does_not_apply_adopt_head_guard(
+    tmp_repo, fake_generate_env, monkeypatch,
+):
+    base_sha = _git(["rev-parse", "HEAD"], tmp_repo).stdout.strip()
+    attempts = 0
+
+    def fail_first_generation(path, *, identity_only=False):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            return 1
+        return fake_generate_env(path, identity_only=identity_only)
+
+    monkeypatch.setattr(worktree, "_generate_env_in", fail_first_generation)
+    with pytest.raises(worktree.WorktreeError, match="ciu env generate.*failed"):
+        worktree.create(tmp_repo, "full-sha-base", base=base_sha)
+
+    partial = worktree.find_instance_record(tmp_repo, "full-sha-base")
+    assert partial is not None
+    assert partial.base_ref == base_sha
+    assert partial.fork_point_sha == base_sha
+
+    (partial.git_worktree_path / "operator-work.txt").write_text(
+        "keep this resumed commit\n", encoding="utf-8"
+    )
+    assert _git(["add", "operator-work.txt"], partial.git_worktree_path).returncode == 0
+    assert _git(["commit", "-m", "operator work"], partial.git_worktree_path).returncode == 0
+    operator_head = _git(
+        ["rev-parse", "HEAD"], partial.git_worktree_path
+    ).stdout.strip()
+    assert operator_head != base_sha
+
+    resumed = worktree.ensure(tmp_repo, "full-sha-base")
+    assert resumed.state == "ready"
+    assert _git(["rev-parse", "HEAD"], partial.git_worktree_path).stdout.strip() == operator_head
+    assert (partial.git_worktree_path / "operator-work.txt").is_file()
+
+
+@pytest.mark.parametrize(
+    ("recovery_status", "fork_point", "base_ref"),
+    [
+        ("checkout-incomplete", None, "full-sha"),
+        ("env-generation-failed", "full-sha", "full-sha"),
+        ("env-generation-failed", None, "main"),
+    ],
+)
+def test_only_adopt_shaped_recovery_records_keep_the_no_reset_marker(
+    tmp_repo, fake_generate_env, monkeypatch,
+    recovery_status, fork_point, base_ref,
+):
+    base_sha = _git(["rev-parse", "HEAD"], tmp_repo).stdout.strip()
+    record = worktree.create(tmp_repo, "recovery-shape", base=base_sha)
+    edited = replace(
+        record,
+        state="recovery-required",
+        recovery_status=recovery_status,
+        fork_point_sha=(base_sha if fork_point == "full-sha" else None),
+        base_ref=(base_sha if base_ref == "full-sha" else base_ref),
+    )
+    worktree._write_instance_record(edited)
+
+    real_write = worktree._write_instance_record
+    attempted = []
+
+    def interrupt_after_transition(candidate):
+        real_write(candidate)
+        attempted.append(candidate)
+        raise KeyboardInterrupt("pause after recovery classification")
+
+    monkeypatch.setattr(worktree, "_write_instance_record", interrupt_after_transition)
+    with pytest.raises(KeyboardInterrupt, match="recovery classification"):
+        worktree.ensure(tmp_repo, "recovery-shape")
+
+    assert attempted
+    assert attempted[0].state == "allocating"
+    assert attempted[0].recovery_status is None
+
+
+@pytest.mark.parametrize("resume", [False, True])
+def test_adopt_allows_an_existing_network_for_its_own_checkout(
+    tmp_repo, fake_generate_env, monkeypatch, resume,
+):
+    target = tmp_repo.parent / f"adopted-network-{resume}"
+    assert _git(
+        ["worktree", "add", "-b", target.name, str(target), "main"], tmp_repo
+    ).returncode == 0
+    expected_network = f"repo-{_instance_id_for(target)}-network"
+    monkeypatch.setattr(
+        worktree, "_docker_network_exists",
+        lambda network: network == expected_network,
+    )
+
+    if resume:
+        write_overlay = worktree._write_worktree_overlay
+        monkeypatch.setattr(
+            worktree, "_write_worktree_overlay",
+            lambda *_a, **_kw: (_ for _ in ()).throw(OSError("interrupted overlay")),
+        )
+        with pytest.raises(OSError, match="interrupted overlay"):
+            worktree.adopt(tmp_repo, target.name, str(target))
+        monkeypatch.setattr(worktree, "_write_worktree_overlay", write_overlay)
+        ready = worktree.ensure(tmp_repo, target.name)
+    else:
+        ready = worktree.adopt(tmp_repo, target.name, str(target))
+
+    assert ready.state == "ready"
+    assert ready.network == expected_network
