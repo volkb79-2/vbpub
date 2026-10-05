@@ -595,6 +595,15 @@ def test_manifest_url_field_must_be_https(mod, net, scheme):
     assert [call[0] for call in fake.calls] == [mod.LATEST_URL_DEFAULT]
 
 
+def test_an_uppercase_https_scheme_is_accepted_for_the_pointer_url(mod, monkeypatch, net):
+    # urlparse normalizes the scheme to lowercase, so no explicit .lower() is needed.
+    url = "HTTPS://mirror.example.test/latest.json"
+    fake = net({url: _manifest()})
+    monkeypatch.setenv("CLI_EXTENDED_LATEST_URL", url)
+    assert mod.resolve_wheel() == (WHEEL_URL, "a" * 64)
+    assert [call[0] for call in fake.calls] == [url]
+
+
 def test_https_scheme_check_accepts_an_https_pin(mod, monkeypatch, net):
     net({})
     monkeypatch.setenv("CLI_EXTENDED_WHEEL_URL", WHEEL_URL)

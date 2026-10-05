@@ -301,7 +301,7 @@ def fetch_subtree(repo_url: str, branch: str, install_dir: Path, *, debug: bool)
 
 def _require_https(url: str, what: str) -> str:
     """Refuse every scheme but https (http, file, ftp, ...): no exceptions."""
-    if urllib.parse.urlparse(url).scheme.lower() != "https":
+    if urllib.parse.urlparse(url).scheme != "https":
         raise BootstrapError(f"{what} {url!r} must be an https:// URL")
     return url
 

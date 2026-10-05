@@ -175,8 +175,10 @@ def test_a_stray_non_matching_wheel_is_ignored(install_dir, tmp_path, no_site_py
 def test_one_real_wheel_plus_a_stray_other_wheel_runs_normally(install_dir, tmp_path, no_site_python):
     build_wheel(install_dir)
     (install_dir / "other_tool-1.0-py3-none-any.whl").write_bytes(b"not for us")
+    (install_dir / "cli_extended_extra-1.0-py3-none-any.whl").write_bytes(b"not for us either")
     result = run_isolated(install_dir / "debian-install-v2.py", ["--version"], tmp_path, no_site_python)
     assert result.returncode == 0, result.stderr
+    assert "more than one" not in result.stderr
     assert result.stdout == "debian-install-v2 2.0.0\n"
     assert result.stderr == ""
 
