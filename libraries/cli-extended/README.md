@@ -431,23 +431,32 @@ Use `python.module:build_cli` for an importable module, or
 `path/to/hyphenated-script.py:build_cli` when the registry lives in a
 single-file script. The path loader imports the file for the workflow and adds
 its parent directory for sibling imports, so consumers do not need an adapter
-module just to expose the registry. Then run:
+module just to expose the registry. Declare the CLI once in
+`[tool.cli-extended]` of `pyproject.toml` (or a standalone `cli-extended.toml`)
+and run the `cli-extended` console script:
 
 ```bash
-python -m cli_extended.surface_cli \
-  --factory example.cli:build_cli \
-  --review docs/cli-review.toml \
-  --manifest docs/cli-surface.json \
-  --spec docs/SPEC.md sync
-
-python -m cli_extended.surface_cli \
-  --factory example.cli:build_cli \
-  --review docs/cli-review.toml \
-  --manifest docs/cli-surface.json \
-  --spec docs/SPEC.md check
+cli-extended surface sync
+cli-extended surface check
 ```
 
-Use the `template` action to print missing case rows and instructions for
+The review workflow, in six steps (the `cli-extended-review` skill drives it):
+
+1. Locate the project config (`--config PATH`, or found by walking up).
+2. `cli-extended surface sync` refreshes the generated manifest and spec region.
+3. `cli-extended surface pack --output FILE` writes the rubric, every route's
+   help and every case awaiting review as one Markdown bundle.
+4. Judge the bundle and edit the review catalog and the findings file by hand.
+5. `cli-extended surface sync`, then `surface check`: an open `blocker` or
+   `major` finding fails it.
+6. `cli-extended surface report` lists what is still open.
+
+`python -m cli_extended.surface_cli` keeps its old flags but is deprecated. The
+[design guide](docs/DESIGN-GUIDE.md#review-the-surface-with-the-agent-harness-and-keep-findings-separate)
+explains why the harness runs the review and why the library never edits your
+catalog.
+
+Use the `surface template` command to print missing case rows and instructions for
 changed decisions. Sync never edits the TOML or content outside the marked
 spec region. Candidates are review prompts, not guessed executable commands or
 predicted outcomes. The shared [consumer workflow](docs/CONSUMERS.md#adopt-the-generator)

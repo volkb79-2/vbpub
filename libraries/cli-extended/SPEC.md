@@ -1073,6 +1073,58 @@ Contract version `1` covers these controls: `--help`, `--version`,
 when the registry uses `unexpected_exceptions="report"`; the other controls are
 always present.
 
+### Project configuration, findings and the `cli-extended` command
+
+1. **Config schema.** `[tool.cli-extended]` in `pyproject.toml`, or the same
+   keys at the top level of a standalone `cli-extended.toml`: `schema_version`
+   (integer, MUST be `1`) and one or more `[[clis]]` tables with `id` and
+   `factory` (required) and `review`, `manifest`, `spec`, `findings`
+   (optional; `manifest` and `spec` MUST be given together). An unknown key at
+   any level, a duplicate `id`, or a wrong `schema_version` is a `ConfigError`
+   naming the key and the file. Relative paths resolve against the config
+   file's directory.
+2. **Discovery.** `--config PATH` loads exactly that file (a file named
+   `pyproject.toml` MUST have the `tool.cli-extended` table; any other name
+   uses the standalone schema). Otherwise discovery walks up from the current
+   directory; the first directory holding `cli-extended.toml` or a
+   `pyproject.toml` with the table wins. Both in one directory is an error;
+   none found is an error listing the searched directories. `--cli ID` is
+   required when several CLIs are configured, and `id` MUST equal the registered
+   executable name.
+3. **Findings file.** `schema_version = 1`, `cli_id`, and `[[findings]]` with a
+   unique `id` (`[A-Za-z0-9][A-Za-z0-9._-]*`), `status` (`open`, `fixed`,
+   `wontfix`), `severity` (`blocker`, `major`, `minor`, `note`), `category`
+   (`grammar`, `help`, `semantics`, `consistency`, `adoption`), `summary`, an
+   optional `route` ID, `remedy` (required when `open`) and `rationale`
+   (required when `wontfix`). Unknown keys or values are a `FindingsError`.
+4. **Check semantics.** With a findings file, `cli_id` MUST match the
+   executable. A finding (any status) whose `route` is not a current route ID
+   is `stale finding <id>: route <r> no longer exists`. Each open `blocker` or
+   `major` is `open <severity> finding <id>: <summary>` and fails the check;
+   open `minor`/`note` findings are returned in `SurfaceReport.notes` and do
+   not fail it. `sync` renders `### Open review findings` at the end of the
+   marked region (severity order blocker to note, then id; `None.` when none)
+   and omits it when no findings file is configured.
+5. **Commands.** `cli-extended surface sync|check|template|pack|report` and
+   `cli-extended skills ...`, each surface verb taking `--config` and `--cli`
+   (`sync`/`check`/`template` also `--max-candidates N`, `N >= 1`). Exit
+   status: `sync` 0, `check` 0 or 1, `template` 0, any config, catalog,
+   findings, surface or import error 2. Findings print as `[REVIEW] ...` and
+   non-failing notes as `[NOTE] ...` on stderr.
+6. **Report.** `surface report` prints Markdown: `# CLI review report: <id>`,
+   then `## Open findings`, `## Cases awaiting review` (new, pending, changed,
+   reappeared), `## Stale cases` and `## Incomplete syntax`, each `None.` when
+   empty.
+7. **Pack.** `surface pack [--output FILE]` writes one deterministic Markdown
+   bundle: the packaged rubric verbatim, `## CLI` (identity, contract version,
+   surface schema version), `## Help` (the plain `help` output of the root and
+   every route), `## Cases to review` (id, kind, shape and current catalog row
+   of every awaiting and stale case), `## Open findings` and `## Your task`.
+   Two runs over the same inputs MUST produce identical bytes.
+8. **Deprecation.** `python -m cli_extended.surface_cli` keeps its flags and
+   behaviour, writes `[WARN] ... is deprecated` to stderr first, and is
+   removed in a later release.
+
 ## 14. Packaged agent skills
 
 A tool that ships agent skills (`SKILL.md` trees read by Claude Code and by

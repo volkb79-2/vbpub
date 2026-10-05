@@ -254,24 +254,24 @@ compare the documented grammar to the live registered parsers. Its owner can
 adopt the shared catalog/generator separately after assessing the generated
 surface against the full CMRU interface.
 
-The first-party pilot uses the script-path factory form directly:
+The first-party pilot declares its CLI in a standalone `cli-extended.toml`
+(it has no pyproject) that uses the script-path factory form, and runs the
+shared command from that directory:
 
 ```bash
-PYTHONPATH=libraries/cli-extended/src${PYTHONPATH:+:$PYTHONPATH} \
-python -m cli_extended.surface_cli \
-  --factory scripts/netcup/monitor-task.py:build_cli \
-  --review scripts/netcup/cli-review.toml \
-  --manifest scripts/netcup/cli-surface.json \
-  --spec scripts/netcup/CLI-SPEC.md check
+cd scripts/netcup
+PYTHONPATH=../../libraries/cli-extended/src${PYTHONPATH:+:$PYTHONPATH} \
+python -m cli_extended.cli surface check
 ```
 
-When a registry changes, run `template` to discover new or stale review rows,
-review their invocations and effects, and edit the TOML decisions. Run `sync`
-to refresh only the manifest and marked Markdown region, then link collected
-behavior tests with `cli_case` markers. The consumer's gate checks both catalog
-coverage at collection and behavior by executing the tests. Finish with
-read-only `check` and review its diff. The marker proves linkage only; each
-referenced test must assert the promised output, status, and effects.
+When a registry changes, run `surface template` to discover new or stale review
+rows, review their invocations and effects, and edit the TOML decisions. Run
+`surface sync` to refresh only the manifest and marked Markdown region, then
+link collected behavior tests with `cli_case` markers. The consumer's gate
+checks both catalog coverage at collection and behavior by executing the tests.
+Finish with read-only `surface check` and review its diff. The marker proves
+linkage only; each referenced test must assert the promised output, status, and
+effects.
 
 Surface export and test helpers start from the built registry and
 publish a stable interface for verbs, delegated command paths, positional
@@ -308,26 +308,89 @@ not call `app.run()` while being imported. A dotted `python.module:callable`
 factory works for importable modules. For a single-file command that is not an
 importable Python module (for example a hyphenated script), use
 `path/to/command.py:callable`; the loader makes the script's sibling directory
-available for imports, matching direct script execution. Then use the shared
-command from the project root:
+available for imports, matching direct script execution.
+
+Declare the CLI once in the project configuration. A project with a
+`pyproject.toml` puts it under `[tool.cli-extended]`; a project without one
+(like the Netcup scripts) uses a standalone `cli-extended.toml` with the same
+keys at the top level. Relative paths resolve against the config file's
+directory, `id` must equal the registered executable name, and `manifest` and
+`spec` are given together.
+
+```toml
+# pyproject.toml
+[tool.cli-extended]
+schema_version = 1
+
+[[tool.cli-extended.clis]]
+id = "example"
+factory = "example.cli:build_cli"
+review = "docs/cli-review.toml"
+manifest = "docs/cli-surface.json"
+spec = "docs/SPEC.md"
+findings = "docs/cli-review-findings.toml"
+```
+
+```toml
+# cli-extended.toml (projects without a pyproject)
+schema_version = 1
+
+[[clis]]
+id = "monitor-task"
+factory = "monitor-task.py:build_cli"
+review = "cli-review.toml"
+manifest = "cli-surface.json"
+spec = "CLI-SPEC.md"
+```
+
+The `findings` file is optional. Discovery walks up from the current directory
+to the first directory holding either file (both in one directory is an error);
+`--config PATH` names one explicitly, and `--cli ID` picks a CLI when several
+are configured. Then run the shared command from anywhere inside the project:
 
 ```bash
-python -m cli_extended.surface_cli \
-  --factory example.cli:build_cli \
-  --review docs/cli-review.toml \
-  --manifest docs/cli-surface.json \
-  --spec docs/SPEC.md sync
-
-python -m cli_extended.surface_cli \
-  --factory example.cli:build_cli \
-  --review docs/cli-review.toml template
-
-python -m cli_extended.surface_cli \
-  --factory example.cli:build_cli \
-  --review docs/cli-review.toml \
-  --manifest docs/cli-surface.json \
-  --spec docs/SPEC.md check
+cli-extended surface sync
+cli-extended surface template
+cli-extended surface check
+cli-extended surface report
 ```
+
+`python -m cli_extended.surface_cli --factory ... --review ... --manifest ...
+--spec ... {sync,check,template}` still works with its old flags, but prints a
+deprecation warning; move to the config file.
+
+#### The review loop
+
+An agent (or a person) reviews the surface by a fixed loop, packaged as the
+`cli-extended-review` skill (install it with `cli-extended skills install`):
+
+1. `cli-extended surface sync` refreshes the generated manifest and spec region.
+2. `cli-extended surface pack --output /tmp/review-bundle.md` writes one
+   Markdown bundle: the rubric, every route's plain help, and every pending,
+   changed, reappeared and stale case with its shape and current catalog row.
+3. The reviewer judges each case and help block against the rubric and edits the
+   catalog rows and the findings file by hand. The library never rewrites them.
+4. `cli-extended surface sync`, then `surface check` (an open `blocker` or
+   `major` finding, or a finding naming a route that no longer exists, fails it),
+   then `surface report` for what is still open.
+
+A findings file records what is wrong, with a concrete remedy:
+
+```toml
+schema_version = 1
+cli_id = "example"
+
+[[findings]]
+id = "F-001"
+status = "open"            # open | fixed | wontfix
+severity = "major"         # blocker | major | minor | note
+category = "semantics"     # grammar | help | semantics | consistency | adoption
+route = "route:entrypoint:example/purge"
+summary = "purge deletes without confirmation or --dry-run"
+remedy = "declare mutating=True with dry_run=True"
+```
+
+A `wontfix` finding needs a `rationale`; an `open` one needs a `remedy`.
 
 The catalog has two closed vocabularies. `state` is `pending` while a generated
 case awaits review, `active` once its decision and test evidence match the
