@@ -459,6 +459,12 @@ class DamonSession:
             SysfsInterface.set_intervals(
                 self.kdamond_idx, self._ctx_idx, self.sample_us, self.aggr_us, self.update_us
             )
+            # `create_target()` is deliberately grow-only. A pooled index may
+            # have been used by a prior session, so rebuild this session's
+            # exact sysfs input array before writing any target data.
+            SysfsInterface.set_nr_targets(
+                self.kdamond_idx, self._ctx_idx, len(self.targets)
+            )
             for index, target in enumerate(self.targets):
                 SysfsInterface.create_target(self.kdamond_idx, self._ctx_idx, index)
                 if target.kind == "vaddr":
@@ -524,19 +530,13 @@ class DamonSession:
         set without tearing the kdamond down, for a subtree
         (``lib.subtree.SubtreeResolver``) whose membership changes mid-session.
 
-        A no-op when ``pids`` is empty: an empty target list is not valid
-        DAMON input (construction itself refuses it), and a momentary gap in
-        a fast-moving subtree — a process forking, its parent already gone —
-        is exactly the transient this must ride out rather than tear
-        monitoring down over. Growing the target count re-uses
-        ``create_target``'s own idempotent grow-only behaviour (the same
-        pattern ``nr_kdamonds`` uses); a target count that shrinks leaves the
-        now-unused higher-indexed target dirs in place rather than attempt
-        to shrink ``nr_targets`` — by the same "shrinking tears down every
-        dir above the new count" reasoning ``nr_kdamonds`` documents, and
-        there is no shrink primitive exposed for it in any case. A stale
-        higher target simply stops accumulating meaningful accesses once its
-        pid exits; it never produces wrong data for the pids still current.
+        A no-op when ``pids`` is empty: an empty discovery can be a transient
+        gap in a fast-moving subtree (for example, a parent exits between
+        fork and discovery), and stopping monitoring for that observation
+        would discard a still-valid session. For a non-empty changed set,
+        rebuild the exact staged target array before committing. The count
+        write recreates the input directories, so both a shrinking subtree
+        and a reused pooled index stop carrying departed PIDs forward.
         """
         if not self._entered:
             raise DamonSessionError(
@@ -546,12 +546,24 @@ class DamonSession:
             raise DamonSessionError("recommit_targets() only applies to vaddr sessions")
         if not pids:
             return
-        for index, pid in enumerate(pids):
+        new_pids = sorted(set(pids))
+        current_pids = [target.pid for target in self.targets]
+        if len(new_pids) == len(current_pids) and set(new_pids) == set(current_pids):
+            return
+
+        # Recreate exactly the staged array before committing. The kernel
+        # updates targets from this source list and removes live targets that
+        # have no corresponding source entry; grow-only setup would keep
+        # monitoring PIDs which left the lane's subtree.
+        SysfsInterface.set_nr_targets(
+            self.kdamond_idx, self._ctx_idx, len(new_pids)
+        )
+        for index, pid in enumerate(new_pids):
             SysfsInterface.create_target(self.kdamond_idx, self._ctx_idx, index)
             SysfsInterface.set_pid_target(self.kdamond_idx, self._ctx_idx, index, pid)
         SysfsInterface.kdamond_commit(self.kdamond_idx)
         self.targets = [
-            DamonTarget(kind="vaddr", pid=pid, label=str(pid)) for pid in pids
+            DamonTarget(kind="vaddr", pid=pid, label=str(pid)) for pid in new_pids
         ]
 
     def _teardown(self) -> None:

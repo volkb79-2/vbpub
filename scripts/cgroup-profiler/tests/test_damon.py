@@ -31,12 +31,16 @@ class FakeSysfsInterface:
     root: Path
     calls: List[tuple]
     fail_on: Optional[str]
+    target_inputs: Dict[tuple, List[Optional[int]]]
+    running_targets: Dict[int, List[Optional[int]]]
 
     @classmethod
     def configure(cls, root: Path) -> None:
         cls.root = root
         cls.calls = []
         cls.fail_on = None
+        cls.target_inputs = {}
+        cls.running_targets = {}
         cls.root.mkdir(parents=True, exist_ok=True)
         (cls.root / "nr_kdamonds").write_text("0")
 
@@ -81,9 +85,16 @@ class FakeSysfsInterface:
         cls._maybe_fail("create_target")
 
     @classmethod
+    def set_nr_targets(cls, kdamond_idx, ctx_idx, nr_targets: int) -> None:
+        cls.calls.append(("set_nr_targets", kdamond_idx, ctx_idx, nr_targets))
+        cls._maybe_fail("set_nr_targets")
+        cls.target_inputs[(kdamond_idx, ctx_idx)] = [None] * nr_targets
+
+    @classmethod
     def set_pid_target(cls, kdamond_idx, ctx_idx, target_idx, pid) -> None:
         cls.calls.append(("set_pid_target", kdamond_idx, ctx_idx, target_idx, pid))
         cls._maybe_fail("set_pid_target")
+        cls.target_inputs[(kdamond_idx, ctx_idx)][target_idx] = pid
 
     @classmethod
     def create_scheme(cls, kdamond_idx, ctx_idx, scheme_idx: int = 0) -> None:
@@ -109,11 +120,13 @@ class FakeSysfsInterface:
         # have been written. Model the observed off-state EINVAL here.
         if cls.state_of(idx) != "on":
             raise OSError(errno.EINVAL, "commit requires a running kdamond")
+        cls.running_targets[idx] = list(cls.target_inputs[(idx, 0)])
 
     @classmethod
     def kdamond_on(cls, idx: int = 0) -> None:
         cls.calls.append(("kdamond_on", idx))
         cls._maybe_fail("kdamond_on")
+        cls.running_targets[idx] = list(cls.target_inputs.get((idx, 0), []))
         (cls.root / str(idx) / "state").write_text("on")
 
     @classmethod
@@ -357,6 +370,8 @@ def test_enter_wires_the_vaddr_target_correctly(fake_damon):
         assert ops_call[-1] == "vaddr"
         pid_call = next(c for c in fake_damon.calls if c[0] == "set_pid_target")
         assert pid_call[-1] == 999
+        assert fake_damon.target_inputs[(0, 0)] == [999]
+        assert fake_damon.running_targets[0] == [999]
         intervals_call = next(c for c in fake_damon.calls if c[0] == "set_intervals")
         assert intervals_call[3:5] == (50_000, 1_000_000)
         action_call = next(c for c in fake_damon.calls if c[0] == "set_scheme_action")
@@ -732,7 +747,9 @@ def test_pool_stopping_the_low_index_while_the_high_one_lives_writes_no_nr_kdamo
 
 def test_pool_a_third_session_reuses_the_freed_index_0(fake_damon):
     pool = damon.KdamondPool()
-    s0 = damon.DamonSession([make_target(pid=100)], pool=pool)
+    s0 = damon.DamonSession(
+        [make_target(pid=100), make_target(pid=101), make_target(pid=102)], pool=pool,
+    )
     s1 = damon.DamonSession([make_target(pid=200)], pool=pool)
     s0.__enter__()
     s1.__enter__()
@@ -741,6 +758,8 @@ def test_pool_a_third_session_reuses_the_freed_index_0(fake_damon):
     s2.__enter__()
     assert s2.kdamond_idx == 0
     assert fake_damon.nr_kdamonds() == 2
+    assert fake_damon.running_targets[0] == [300]
+    assert fake_damon.running_targets[1] == [200]
     s2.__exit__(None, None, None)
     s1.__exit__(None, None, None)
 
@@ -1146,14 +1165,27 @@ def test_recommit_targets_refuses_on_a_paddr_session(fake_damon):
             session.recommit_targets([1])
 
 
-def test_recommit_targets_fewer_pids_leaves_higher_target_dirs_but_updates_kept_ones(fake_damon):
+def test_recommit_targets_shrinks_the_live_target_array(fake_damon):
     with damon.DamonSession([make_target(pid=1)]) as session:
         session.recommit_targets([10, 20, 30])
+        assert fake_damon.running_targets[0] == [10, 20, 30]
         fake_damon.calls.clear()
         session.recommit_targets([11])   # shrink to one pid
     assert session.targets == [damon.DamonTarget(kind="vaddr", pid=11, label="11")]
+    assert fake_damon.target_inputs[(0, 0)] == [11]
+    assert fake_damon.running_targets[0] == [11]
     create_calls = [c for c in fake_damon.calls if c[0] == "create_target"]
     assert create_calls == [("create_target", 0, 0, 0)]   # only index 0 touched
+
+
+def test_recommit_targets_same_pid_set_is_a_noop_even_if_order_differs(fake_damon):
+    with damon.DamonSession([make_target(pid=10), make_target(pid=20)]) as session:
+        fake_damon.calls.clear()
+
+        session.recommit_targets([20, 10])
+
+        assert fake_damon.running_targets[0] == [10, 20]
+        assert fake_damon.calls == []
 
 
 # ── nested with caps.TempCaps ────────────────────────────────────────────────

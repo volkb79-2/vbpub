@@ -14,9 +14,11 @@ the release gate runs. Normative daemon behavior lives in `DESIGN.md` and
   public summary values and schema are unchanged (RG-55 P1 survivor disposition)
 
 ### Fixed
-- fix(cgprofile): initial DAMON setup starts with `state=on`; reserve
-  `state=commit` for online target updates, avoiding `EINVAL` before first
-  start (RG-55 P3)
+- fix(cgprofile): initialize DAMON from complete sysfs inputs before `state=on`,
+  and rebuild the exact target array on startup and online updates so reused
+  slots or shrinking subtrees cannot retain former lane PIDs; late DAMON
+  recommit/collection failures now disable only DAMON and preserve profiling
+  samples and verdict neutrality (RG-55 P3, R-36h)
 - fix(cgprofile): D-31 placement ownership — create a systemd-delegated transient scope under the verified gates slice, keep the leaf below it, journal PID identity/origins for safe stop and restart recovery, and document that leaf memory limits/counters are cgroup charges rather than total RSS
 - fix(cgprofile): CP-11 — retry identity-checked placement recovery for journal-only startup crashes and finished manifests with incomplete cleanup; retain unknown scopes/leaves for operator attention
 - fix(cgprofile): fail closed on non-ESRCH lane-PID migration write errors; refuse placement and remove an empty leaf instead of reporting successful placement

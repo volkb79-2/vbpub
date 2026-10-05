@@ -2145,9 +2145,134 @@ class _StubDamonSession:
     def recommit_targets(self, pids: List[int]) -> None:
         self.recommit_calls.append(list(pids))
 
+    def __exit__(self, *exc) -> None:
+        self.close_calls = getattr(self, "close_calls", 0) + 1
+
     @property
     def thresholds(self) -> Dict[str, Any]:
         return {"hot_rate_pct": 5, "warm_rate_pct": 1, "cold_age_s": 30, "idle_age_s": 120}
+
+
+@pytest.mark.parametrize(
+    "failure,cleanup_fails,token_path",
+    [
+        ("recommit", False, True),
+        ("recommit", False, False),
+        ("collect", False, False),
+        ("recommit", True, True),
+    ],
+)
+def test_runtime_damon_failure_keeps_profiling_session_alive(
+    simple_server, monkeypatch, failure, cleanup_fails, token_path, capsys,
+):
+    discovered = 0
+
+    def pids_in_cgroup(*args, **kwargs):
+        nonlocal discovered
+        discovered += 1
+        return [123] if discovered == 1 else [123, 456]
+
+    if not token_path:
+        monkeypatch.setattr(targets_mod, "pids_in_cgroup", pids_in_cgroup)
+
+    class FailingRuntimeDamonSession:
+        def __init__(self, targets, **kwargs):
+            self.targets = list(targets)
+            self.kdamond_idx = 7
+            self.thresholds = {
+                "hot_rate_pct": 50, "warm_rate_pct": 5,
+                "cold_age_s": 30, "idle_age_s": 120,
+            }
+            self.collect_calls = 0
+            self.close_calls = 0
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            self.close_calls += 1
+            if cleanup_fails:
+                raise RuntimeError("synthetic cleanup failure")
+
+        def collect(self):
+            self.collect_calls += 1
+            if failure == "collect" and self.collect_calls > 1:
+                raise RuntimeError("late collect failure")
+            return []
+
+        def recommit_targets(self, pids):
+            if failure == "recommit":
+                raise RuntimeError("late recommit failure")
+            self.targets = list(pids)
+
+        @property
+        def last_class_bytes(self):
+            return {"hot": 1, "warm": 1, "cold": 1, "idle": 1}
+
+    monkeypatch.setattr(damon_mod, "DamonSession", FailingRuntimeDamonSession)
+    resolved = targets_mod.find_container_cgroup(
+        SIMPLE_CONTAINER_ID, root=simple_server.cgroup_root,
+    )
+    with simple_server._lock:
+        sess = simple_server._create_session_locked(
+            container_id=SIMPLE_CONTAINER_ID, cgroup=resolved, scope="container",
+            token="a-real-token-99" if token_path else None,
+            interval=1.0, damon_req="on",
+            meta={"lane": "x", "project": "p", "worktree": "w", "commit": None,
+                  "run_gate_revision": 1, "kind": "command", "expected": None},
+        )
+        simple_server._sessions[sess.session_id] = sess
+
+    if token_path:
+        assert sess.subtree_resolver is not None
+        monkeypatch.setattr(sess.subtree_resolver, "refresh", lambda: [123, 456])
+        # Start had no token PIDs, so DAMON was correctly unavailable then.
+        # Attach a synthetic running session to exercise the later discovery
+        # transition without touching the kernel's shared DAMON facility.
+        sess.damon_session = FailingRuntimeDamonSession([
+            damon_mod.DamonTarget(kind="vaddr", pid=123, label="123"),
+        ])
+        sess.damon_status = "on"
+        sess.damon_unavailable_reason = None
+
+    damon_session = sess.damon_session
+    assert damon_session is not None
+    abs_target = os.path.join(simple_server.cgroup_root, sess.cgroup.lstrip("/"))
+    simple_server._on_session_sample(
+        sess,
+        {"seq": 1, "mono": 2.0, "t": EPOCH_START + 2,
+         "cg": {sess.cgroup: {}}, "host": {}},
+        abs_target,
+        None,
+    )
+
+    assert sess.finished is False
+    assert sess.live_samples == 2
+    assert sess.summary_acc.sample_count == 2
+    assert sess.damon_session is None
+    assert sess.damon_status == f"unavailable:RuntimeError: late {failure} failure"
+    assert sess.damon_unavailable_reason == f"RuntimeError: late {failure} failure"
+    assert damon_session.close_calls == 1
+    # A duplicate degradation attempt is inert; the closed session is neither
+    # overwritten nor torn down twice.
+    simple_server._disable_damon_for_session(sess, RuntimeError("second failure"))
+    assert sess.damon_unavailable_reason == f"RuntimeError: late {failure} failure"
+    assert damon_session.close_calls == 1
+    if cleanup_fails:
+        assert "DAMON cleanup also failed" in capsys.readouterr().err
+    assert simple_server._status_entry(sess)["live"]["damon"] == {
+        "status": "unavailable", "hot_bytes_recent": None,
+    }
+    # The failure tick remains part of the ordinary sample series; no partial
+    # DAMON row is fabricated for it. The token-path scenario starts without
+    # token PIDs, so it has no pre-failure DAMON row either.
+    assert len(list(sess.rundir.read("samples"))) == 2
+    assert len(list(sess.rundir.read("damon"))) == (0 if token_path else 1)
+
+    stop_resp = simple_server._dispatch(_wire("stop", session=sess.session_id))
+    assert stop_resp["summary"]["damon"]["status"] == "unavailable"
+    assert stop_resp["summary"]["damon"]["reason"] == f"RuntimeError: late {failure} failure"
+    assert sess.error is None
 
 
 def test_on_session_sample_discovery_due_and_not_due_and_status_damon_on(simple_server, monkeypatch):

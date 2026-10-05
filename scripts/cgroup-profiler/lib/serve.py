@@ -1382,7 +1382,10 @@ class SessionServer:
                 pids = list(sess.subtree_resolver.refresh())
                 sess.last_discovery_mono = mono
                 if sess.damon_session is not None:
-                    sess.damon_session.recommit_targets(pids)
+                    try:
+                        sess.damon_session.recommit_targets(pids)
+                    except Exception as exc:  # noqa: BLE001 - profiling is best-effort
+                        self._disable_damon_for_session(sess, exc)
             else:
                 pids = list(sess.subtree_resolver.current_pids)
         else:
@@ -1405,7 +1408,10 @@ class SessionServer:
                 )
                 sess.last_discovery_mono = mono
                 if sess.damon_session is not None and set(new_pids) != set(sess.no_token_pids):
-                    sess.damon_session.recommit_targets(new_pids)
+                    try:
+                        sess.damon_session.recommit_targets(new_pids)
+                    except Exception as exc:  # noqa: BLE001 - profiling is best-effort
+                        self._disable_damon_for_session(sess, exc)
                 sess.no_token_pids = new_pids
             pids = sess.no_token_pids
 
@@ -1436,8 +1442,12 @@ class SessionServer:
 
         damon_bytes: Optional[Dict[str, int]] = None
         if sess.damon_session is not None:
-            sess.damon_session.collect()
-            damon_bytes = sess.damon_session.last_class_bytes
+            damon_session = sess.damon_session
+            try:
+                damon_session.collect()
+                damon_bytes = damon_session.last_class_bytes
+            except Exception as exc:  # noqa: BLE001 - profiling is best-effort
+                self._disable_damon_for_session(sess, exc)
 
         with sess.lock:
             sess.summary_acc.add_sample(
@@ -1521,6 +1531,35 @@ class SessionServer:
                 # sampler sequence; retain the historical flat shape for
                 # those synthetic records.
                 sess.rundir.append("damon", damon_bytes)
+
+    def _disable_damon_for_session(self, sess: _Session, exc: Exception) -> None:
+        """Stop only DAMON after a runtime profiling failure.
+
+        DAMON is optional evidence, not part of the measured program's
+        verdict. A late sysfs error (for example, a PID disappearing during
+        an online target commit) must therefore leave cgroup, CPU, memory,
+        and liveness sampling active. Detach the session before teardown so
+        finalization cannot close it twice, and persist the unavailable
+        reason in the eventual summary/manifest.
+        """
+        reason = f"{type(exc).__name__}: {exc}"
+        with sess.lock:
+            damon_session = sess.damon_session
+            if damon_session is None:
+                return
+            sess.damon_session = None
+            sess.damon_status = f"unavailable:{reason}"
+            sess.damon_unavailable_reason = reason
+            sess.summary_acc.mark_damon_unavailable(reason)
+
+        try:
+            damon_session.__exit__(None, None, None)
+        except Exception as cleanup_exc:  # noqa: BLE001 - cleanup cannot affect verdict
+            self._log(
+                f"session {sess.session_id}: DAMON cleanup also failed after "
+                f"{reason}: {type(cleanup_exc).__name__}: {cleanup_exc}"
+            )
+        self._log(f"session {sess.session_id}: DAMON disabled after runtime failure: {reason}")
 
     # ── CP-8: liveness, the watch state machine, enforcement (§8.4) ──────
 

@@ -195,6 +195,26 @@ class SysfsInterface:
         return SysfsInterface._target_dir(kdamond_idx, ctx_idx, target_idx)
 
     @staticmethod
+    def set_nr_targets(kdamond_idx: int, ctx_idx: int,
+                       nr_targets: int) -> None:
+        """Rebuild the sysfs target input array to exactly ``nr_targets``.
+
+        Unlike :meth:`create_target`, this does not only grow the array:
+        DAMON's ``nr_targets`` sysfs file recreates all child target
+        directories, clearing their staged PID/obsolete values. Callers must
+        repopulate the desired target inputs after this operation and, for a
+        running kdamond, apply them with ``state=commit``.
+        """
+        if isinstance(nr_targets, bool) or not isinstance(nr_targets, int):
+            raise TypeError('nr_targets must be an integer')
+        if nr_targets < 0:
+            raise ValueError('nr_targets must be non-negative')
+        nr_path = os.path.join(
+            SysfsInterface._context_dir(kdamond_idx, ctx_idx),
+            'targets', 'nr_targets')
+        SysfsInterface._write_int(nr_path, nr_targets)
+
+    @staticmethod
     def set_pid_target(kdamond_idx: int, ctx_idx: int,
                        target_idx: int, pid: int) -> None:
         SysfsInterface._write_int(

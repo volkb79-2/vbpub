@@ -212,7 +212,10 @@ be read, acquisition refuses; index zero is never a placeholder default.
 The same rule applies to a bare session: it must prove that its requested
 index is the first slot beyond the observed count before it configures or turns
 the kdamond on. This keeps a pre-existing monitor on even when a new session
-fails part-way through setup.
+fails part-way through setup. Before `state=on`, startup writes the exact
+`nr_targets` count and then every target PID. DAMON's sysfs count write
+recreates the input directories; this is required because a pooled kdamond
+index can carry the previous session's target array even after it is stopped.
 
 ### DAMON availability is not session readiness
 
@@ -220,10 +223,16 @@ The `damon` field in `ctl version` answers a narrow capability question:
 cgprofile loaded its DAMON analysis library and can see the admin sysfs
 interface. It does not create a kdamond, configure an operation, or prove that
 the kernel accepts a monitoring context. Initial configuration is written
-while the kdamond is off, then `state=on` creates and starts it. `state=commit`
-is an online update for an already-running kdamond; issuing it before the
-first `on` returns `EINVAL`. Recommit is used only for target changes after
-startup. See the
+while the kdamond is off, including an exact target count and every target PID,
+then `state=on` creates and starts it. `state=commit` is an online update for
+an already-running kdamond; issuing it before the first `on` returns `EINVAL`.
+When the discovered PID set changes, cgprofile rebuilds the sysfs target input
+array to the exact new count, writes every PID, then commits. DAMON maps that
+source array onto the live target list and removes live targets with no source
+entry; this prevents a shrinking subtree or reused pool slot from continuing
+to monitor departed lane PIDs. An unchanged set does not recommit, and a
+temporary empty discovery remains a no-op rather than stopping monitoring.
+See the
 [kernel DAMON usage documentation](https://docs.kernel.org/6.19/admin-guide/mm/damon/usage.html)
 for the interface and commit semantics. The kernel's
 [`damon_sysfs_commit_input()`](https://github.com/torvalds/linux/blob/master/mm/damon/sysfs.c#L2008-L2024)
@@ -231,11 +240,16 @@ explicitly refuses a stopped kdamond; its
 [`state=on` path](https://github.com/torvalds/linux/blob/master/mm/damon/sysfs.c#L2113-L2142)
 builds and starts the context from those initial inputs.
 
-Starting DAMON is best-effort for profiling: inspect the session's `start`
-response for `damon: "on"` versus `unavailable:<reason>`, and treat a
-persisted `damon.jsonl` series as the evidence that samples were collected.
-Neither `ctl version` reporting `available` nor a request with `--damon on`
-proves that DAMON ran. In particular, do not report a DAMON overhead
+DAMON remains optional profiling evidence throughout the session, not just at
+startup. If a later target recommit or collector read fails, cgprofile stops
+and releases only that DAMON session, records `unavailable:<reason>` in the
+summary and manifest, and continues the ordinary cgroup/CPU/memory/liveness
+samples. That runtime failure must not abort the profiling session or affect
+the measured program's verdict (R-36h). Inspect the session's `start` response
+for `damon: "on"` versus `unavailable:<reason>`, then inspect the final summary
+and persisted `damon.jsonl` series to establish whether DAMON samples were
+actually collected. Neither `ctl version` reporting `available` nor a request
+with `--damon on` proves that DAMON ran. Do not report a DAMON overhead
 measurement unless the compared run actually produced DAMON samples.
 
 ## Session identity and start semantics

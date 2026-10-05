@@ -49,8 +49,13 @@ prove that.
   `EINVAL`, matching the kernel behavior observed in the live probe.
 - The initial session test succeeds, records `kdamond_on` as the final
   startup operation, and asserts no `kdamond_commit` was issued.
-- `recommit_targets()` continues to issue commit for an already-running
-  kdamond; its focused regression must remain green.
+- `recommit_targets()` issues commit only for a changed, non-empty PID set on
+  an already-running kdamond. It first stages exactly the new number of target
+  slots and every PID; the observable committed target list must have no
+  departed PID, including after a reused pooled index.
+- A runtime recommit or collect error closes only the DAMON session, marks
+  DAMON unavailable in the final summary, and still records ordinary samples;
+  the profiling session completes normally (R-36h).
 - Live acceptance starts a real daemon session on the host and records at
   least one DAMON sample. The RG-55 report records session duration and the
   measured daemon-on versus daemon-off overhead; this remains pending.
@@ -62,6 +67,13 @@ P3 live-probe report.
 
 ## Updates
 
-**2026-10-04** — Fix in isolated worktree removes the pre-start commit and
-keeps online recommit unchanged. Focused `tests/test_damon.py`: 83 passed.
-Entry remains open until the final gates and live sample/overhead probe pass.
+**2026-10-04** — Initial fix removed the pre-start commit. Focused
+`tests/test_damon.py`: 83 passed.
+
+**2026-10-05** — Sol's supplemental review found that grow-only target setup
+could retain PIDs from a reused pool index and online shrink could leave
+departed targets active. The fix now rebuilds the exact target array at startup
+and before online commit, and the stateful fake observes the kernel-facing PID
+list. Follow-up tests also inject late commit/collector errors and require the
+profiler to keep recording without DAMON. Entry remains open until final gates
+and live sample/overhead probes pass.
