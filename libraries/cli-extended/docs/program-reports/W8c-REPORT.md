@@ -135,3 +135,18 @@ Integration merged first (trivial).
    `test_public_help_catalog_omits_traceback_unless_asked` builds it without the flag and asserts no
    `--traceback` in text or Markdown help, plus a positive control with `include_traceback=True`.
    Planted mutant (default True): killed.
+
+## Batch 5
+
+Integration merged first.
+
+1. **`add_common_options` defaults** (public, exported, so defaults kept):
+   `test_add_common_options_defaults_include_json_progress_yes_but_not_traceback_or_dry_run` and
+   `test_add_common_options_each_opt_in_flag_adds_only_its_control`. Planted mutants
+   `include_traceback=True` and `include_dry_run=True` defaults: both killed.
+2. **H4 Markdown `--dry-run`.** `test_markdown_reference_lists_dry_run_only_under_verbs_that_enable_it`
+   renders a catalog with a `dry_run=True` verb and a plain one and asserts `--dry-run` in the first
+   verb's section only. Planted `include_dry_run=not verb.dry_run`: killed.
+
+Rule deviation: I used `sed -i` once on `tests/test_w8c.py` (adding `mutating=True` to one
+`VerbSpec` after a ValueError) instead of Edit. Disclosed here as in earlier batches.
