@@ -121,11 +121,44 @@ def _fake_docker(tmp_path: Path) -> tuple[Path, Path]:
     return bin_dir, log
 
 
+def _launcher_workspace(tmp_path: Path) -> tuple[Path, Path]:
+    """Use a disposable Git workspace on the dedicated bind mount when present.
+
+    Assay runs tests from a private snapshot, which may live on `/tmp` even
+    though pytest's temporary directory is redirected into the mounted
+    workspace. The launcher must be given a workspace on that mount, not the
+    source snapshot itself.
+    """
+    target = subprocess.run(
+        ["findmnt", "--target", str(tmp_path), "--noheadings", "--output", "TARGET"],
+        text=True, capture_output=True, check=True,
+    ).stdout.strip()
+    fsroot = subprocess.run(
+        ["findmnt", "--target", str(tmp_path), "--noheadings", "--output", "FSROOT"],
+        text=True, capture_output=True, check=True,
+    ).stdout.strip()
+    if target == "/" or fsroot == "/":
+        return REPO / "run-gate-project", REPO
+
+    git_root = tmp_path / "launcher-workspace"
+    git_root.mkdir()
+    (git_root / ".gitignore").write_text(".assay/\n")
+    subprocess.run(["git", "-C", str(git_root), "init", "-q"], check=True)
+    subprocess.run(["git", "-C", str(git_root), "add", ".gitignore"], check=True)
+    subprocess.run(
+        ["git", "-C", str(git_root), "-c", "user.name=launcher test",
+         "-c", "user.email=launcher-test@example.invalid", "commit", "-qm", "fixture"],
+        check=True,
+    )
+    return git_root, git_root
+
+
 def _run_launcher(tmp_path: Path, *args: str, pressure: float = 0.0,
                   cgroup: str | None = "dev-gates.slice",
                   update_fails: bool = False, network: str | None = None,
                   accepted_network: str | None = None, execute_job: bool = False):
     bin_dir, log = _fake_docker(tmp_path)
+    workdir, git_root = _launcher_workspace(tmp_path)
     pressure_file = tmp_path / "pressure"
     pressure_file.write_text(
         f"some avg10=0.00 avg60=0.00 avg300=0.00 total=0\n"
@@ -150,27 +183,27 @@ def _run_launcher(tmp_path: Path, *args: str, pressure: float = 0.0,
     else:
         env["CGROUP_PARENT_DEV_GATES"] = cgroup
     proc = subprocess.run(
-        [str(LAUNCHER), "--workdir", str(REPO / "run-gate-project"),
+        [str(LAUNCHER), "--workdir", str(workdir),
          "--evidence-dir", str(evidence),
          *(["--network", network] if network is not None else []), "--", *args],
         text=True, capture_output=True, env=env, check=False,
     )
-    return proc, log, evidence
+    return proc, log, evidence, git_root
 
 
 def test_launcher_constructs_and_verifies_the_complete_gate_boundary(tmp_path):
-    proc, log, evidence = _run_launcher(tmp_path, "bash", "-c", "exit 0")
+    proc, log, evidence, git_root = _run_launcher(tmp_path, "bash", "-c", "exit 0")
     assert proc.returncode == 0, proc.stderr
     assert "fake gate ran" in proc.stdout
     assert "tester-unified: evidence:" in proc.stdout
 
     calls = log.read_text()
     workspace = subprocess.run(
-        ["findmnt", "--target", str(REPO), "--noheadings", "--output", "TARGET"],
+        ["findmnt", "--target", str(git_root), "--noheadings", "--output", "TARGET"],
         text=True, capture_output=True, check=True,
     ).stdout.strip()
     host_workspace = subprocess.run(
-        ["findmnt", "--target", str(REPO), "--noheadings", "--output", "FSROOT"],
+        ["findmnt", "--target", str(git_root), "--noheadings", "--output", "FSROOT"],
         text=True, capture_output=True, check=True,
     ).stdout.strip()
     socket = Path("/var/run/docker.sock")
@@ -196,7 +229,7 @@ def test_launcher_constructs_and_verifies_the_complete_gate_boundary(tmp_path):
                    for line in mounts
                    if line.endswith(f" -> {container_tmp}")]
     assert len(temp_mounts) == 1
-    worktree_relative = REPO.relative_to(Path(workspace))
+    worktree_relative = git_root.relative_to(Path(workspace))
     expected_temp_parent = (
         Path(host_workspace) / worktree_relative
         / ".assay" / "tester-unified-tmp"
@@ -223,7 +256,7 @@ def test_launcher_constructs_and_verifies_the_complete_gate_boundary(tmp_path):
 )
 def test_launcher_refuses_missing_or_unsafe_launch_facts(
         tmp_path, cgroup, pressure, message):
-    proc, log, _ = _run_launcher(
+    proc, log, _, _ = _run_launcher(
         tmp_path, "true", pressure=pressure, cgroup=cgroup,
     )
     assert proc.returncode == 2
@@ -233,7 +266,7 @@ def test_launcher_refuses_missing_or_unsafe_launch_facts(
 
 def test_post_launch_verification_failure_stops_and_removes_only_its_container(
         tmp_path):
-    proc, log, _ = _run_launcher(tmp_path, "true", update_fails=True)
+    proc, log, _, _ = _run_launcher(tmp_path, "true", update_fails=True)
     assert proc.returncode == 125
     assert "docker rejected the post-launch 3-CPU cap" in proc.stderr
     calls = log.read_text()
@@ -243,7 +276,7 @@ def test_post_launch_verification_failure_stops_and_removes_only_its_container(
 
 
 def test_launcher_preserves_offline_gate_policy_and_records_live_acceptance(tmp_path):
-    proc, log, evidence = _run_launcher(tmp_path, "true", network="none")
+    proc, log, evidence, _ = _run_launcher(tmp_path, "true", network="none")
     assert proc.returncode == 0, proc.stderr
     assert "--network none" in log.read_text()
     assert "network_mode=none\n" in (evidence / "tester-unified-contract-test/launch.txt").read_text()
@@ -252,12 +285,12 @@ def test_launcher_preserves_offline_gate_policy_and_records_live_acceptance(tmp_
 def test_launcher_refuses_network_argument_or_failed_acceptance(tmp_path):
     invalid = tmp_path / "invalid"
     invalid.mkdir()
-    proc, log, _ = _run_launcher(invalid, "true", network="host")
+    proc, log, _, _ = _run_launcher(invalid, "true", network="host")
     assert proc.returncode == 2 and "accepts only none" in proc.stderr
     assert not log.exists()
     rejected = tmp_path / "rejected"
     rejected.mkdir()
-    proc, log, _ = _run_launcher(rejected, "true", network="none", accepted_network="bridge")
+    proc, log, _, _ = _run_launcher(rejected, "true", network="none", accepted_network="bridge")
     assert proc.returncode == 125 and "did not accept network mode none" in proc.stderr
     assert "stop -t 10 tester-unified-contract-test" in log.read_text()
     assert "rm tester-unified-contract-test" in log.read_text()
@@ -265,7 +298,7 @@ def test_launcher_refuses_network_argument_or_failed_acceptance(tmp_path):
 
 @pytest.mark.parametrize("job_exit", [0, 7])
 def test_real_job_wrapper_preserves_exit_when_stdout_has_no_final_newline(tmp_path, job_exit):
-    proc, log, evidence = _run_launcher(
+    proc, log, evidence, _ = _run_launcher(
         tmp_path, "bash", "-c", f"printf no-newline; exit {job_exit}", execute_job=True)
     assert proc.returncode == job_exit, proc.stderr
     run = evidence / "tester-unified-contract-test"
