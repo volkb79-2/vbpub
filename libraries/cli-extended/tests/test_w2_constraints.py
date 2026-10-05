@@ -469,7 +469,7 @@ def test_build_accepts_none_false_and_empty_sequence_defaults():
             _flag("--a", action="store_true"),
             _flag("--b"),
             _flag("--c", action="append", default=[]),
-            _flag("--d", nargs="*", default=()),
+            _flag("--d", default=()),
             _flag("--e", action="store_true", default=False),
         ),
         constraints=(Conflicts(("--a", "--b", "--c", "--d", "--e"), "r"),),
@@ -712,10 +712,195 @@ def test_checker_accepts_constraint_violating_invocations_and_never_evaluates():
     assert _findings(surface, choice, ["sync", "--turbo", "--mode", "slow"]) == []
     # A case that satisfies the rule is just as valid: nothing is evaluated.
     assert _findings(surface, requires, ["sync", "--dry-run", "--update"]) == []
-    assert _findings(surface, conflict, ["sync"]) == []
+    assert _findings(surface, conflict, ["sync", "--refresh"]) == []
+    assert _findings(surface, conflict, ["sync", "--json"]) == []
+    assert _findings(surface, choice, ["sync", "--turbo", "--mode", "fast"]) == []
     # Syntax of the options that are present is still checked.
     bad = _findings(surface, choice, ["sync", "--turbo", "--mode", "bad"])
     assert any("supplies an invalid value for option" in item for item in bad)
+
+
+def test_checker_requires_the_trigger_so_cases_are_not_hollow():
+    surface = _surface()
+    requires = _by_id(surface, f"case:{SYNC}/constraint-requires/1")
+    conflict = _by_id(surface, f"case:{SYNC}/constraint-conflict/2")
+    choice = _by_id(surface, f"case:{SYNC}/constraint-choice/3")
+    miss = "does not exercise its constraint"
+
+    def hollow(candidate, invocation):
+        found = _findings(surface, candidate, invocation)
+        return [item for item in found if miss in item]
+
+    expected = lambda candidate: [  # noqa: E731
+        f"invocation for {candidate['id']} {miss}"
+    ]
+    # Plain invocation never exercises any rule.
+    for candidate in (requires, conflict, choice):
+        assert hollow(candidate, ["sync"]) == expected(candidate)
+    # Only a non-trigger member present: still hollow for requires and choice.
+    assert hollow(requires, ["sync", "--update"]) == expected(requires)
+    assert hollow(requires, ["sync", "--write", "--refresh"]) == expected(requires)
+    assert hollow(choice, ["sync", "--mode", "fast"]) == expected(choice)
+    # The trigger alone exercises it; for a conflict any one member does.
+    assert hollow(requires, ["sync", "--dry-run"]) == []
+    assert hollow(choice, ["sync", "--turbo"]) == []
+    assert hollow(conflict, ["sync", "--refresh"]) == []
+    assert hollow(conflict, ["sync", "--json"]) == []
+    assert hollow(conflict, ["sync", "--update"]) == expected(conflict)
+
+
+def test_library_alias_is_recorded_canonically_and_enforced_by_spelling():
+    verb = _plain(
+        name="sync",
+        options=(_flag("--update", action="store_true"),),
+        constraints=(Requires("--verbose", ("--update",), "verbose needs update"),),
+    )
+    cli = _cli([verb])
+    code, _, err = _run(cli, ["sync", "--verbose"])
+    assert code == 2
+    assert err.startswith("[ERROR] --verbose requires --update: verbose needs update\n")
+    assert _run(cli, ["sync", "--verbose", "--update"])[0] == 0
+    surface = export_cli_surface(cli)
+    (record,) = next(r for r in surface["routes"] if r["id"] == SYNC)["constraints"]
+    assert record["option"] == "--debug"
+    candidate = _by_id(surface, f"case:{SYNC}/constraint-requires/1")
+    assert candidate["members"] == [f"option:{SYNC}/--debug", f"option:{SYNC}/--update"]
+
+
+def test_member_resolution_prefers_the_verb_parsers_option_over_a_nested_one():
+    def configure(parser):
+        parser.add_argument("--alpha", action="store_true")
+        parser.add_argument("--beta", action="store_true")
+        nested = parser.add_subparsers(dest="leaf_name", required=True)
+        leaf = nested.add_parser("leaf", help="leaf")
+        leaf.add_argument("--alpha", dest="leaf_alpha", action="store_true")
+
+    verb = VerbSpec(
+        "tree",
+        description="Tree.",
+        configure=configure,
+        handler=lambda a, r: 0,
+        constraints=(Conflicts(("--alpha", "--beta"), "one at a time"),),
+    )
+    surface = export_cli_surface(_cli([verb]))
+    tree = "route:entrypoint:tool/tree"
+    candidate = _by_id(surface, f"case:{tree}/leaf/constraint-conflict/1")
+    assert candidate["members"] == [
+        f"option:{tree}/leaf/parser:tree/--alpha",
+        f"option:{tree}/leaf/parser:tree/--beta",
+    ]
+
+
+def test_build_refuses_options_that_share_a_destination():
+    shared = "whose destination {!r} is shared with another option"
+    # Library pair: --color and --no-color write the same destination.
+    for flag in ("--no-color", "--color"):
+        message = _build_error(
+            _plain(
+                options=(_flag("--a", action="store_true"),),
+                constraints=(Requires("--a", (flag,), "r"),),
+            )
+        )
+        assert message == (
+            f"verb 'v' constraint references {flag}, " + shared.format("color")
+        )
+    # Consumer pair: store_true / store_false on one dest.
+    pair = (
+        _flag("--on", action="store_true", dest="power"),
+        _flag("--off", action="store_false", dest="power", default=None),
+        _flag("--a", action="store_true"),
+    )
+    for flag in ("--on", "--off"):
+        message = _build_error(
+            _plain(options=pair, constraints=(Requires("--a", (flag,), "r"),))
+        )
+        assert message == (
+            f"verb 'v' constraint references {flag}, " + shared.format("power")
+        )
+    # Aliases of ONE action are not a shared destination.
+    ok = _plain(
+        constraints=(Conflicts(("--debug", "--verbose"), "r"),),
+    )
+    assert _run(_cli([ok]), ["v"])[0] == 0
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    (
+        {"nargs": "*"},
+        {"nargs": "*", "default": []},
+        {"nargs": "?"},
+        {"nargs": "?", "const": None},
+    ),
+)
+def test_build_refuses_options_whose_presence_is_undetectable(kwargs):
+    verb = _plain(
+        options=(_flag("--opt", **kwargs),),
+        constraints=(Requires("--opt", ("--json",), "r"),),
+    )
+    assert _build_error(verb) == (
+        "verb 'v' constraint references --opt, whose presence cannot be "
+        "detected from its value"
+    )
+
+
+def test_optional_value_option_with_a_distinct_const_is_detectable():
+    seen: list = []
+    verb = _plain(
+        handler=lambda a, r: seen.append(a) or 0,
+        options=(_flag("--opt", nargs="?", const="on"),),
+        constraints=(Requires("--opt", ("--json",), "needs json"),),
+    )
+    cli = _cli([verb])
+    assert _run(cli, ["v"])[0] == 0
+    code, _, err = _run(cli, ["v", "--opt"])
+    assert code == 2 and err.startswith("[ERROR] --opt requires --json: needs json\n")
+    assert _run(cli, ["v", "--opt", "--json"])[0] == 0
+    assert seen[-1].opt == "on"
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    (
+        {"action": "append", "choices": ["a", "b"]},
+        {"action": "extend", "nargs": "+", "choices": ["a", "b"]},
+        {"nargs": 2, "choices": ["a", "b"]},
+        {"nargs": "+", "choices": ["a", "b"]},
+    ),
+)
+def test_build_refuses_a_list_valued_requires_choice_target(kwargs):
+    verb = _plain(
+        options=(_flag("--turbo", action="store_true"), _flag("--mode", **kwargs)),
+        constraints=(RequiresChoice("--turbo", "--mode", ("a",), "r"),),
+    )
+    assert _build_error(verb) == "verb 'v' constraint target --mode is list-valued"
+
+
+def test_requires_choice_target_may_take_an_optional_value():
+    verb = _plain(
+        options=(
+            _flag("--turbo", action="store_true"),
+            _flag("--mode", nargs="?", const="a", choices=["a", "b"]),
+        ),
+        constraints=(RequiresChoice("--turbo", "--mode", ("a",), "r"),),
+    )
+    cli = _cli([verb])
+    assert _run(cli, ["v", "--turbo", "--mode"])[0] == 0
+    assert _run(cli, ["v", "--turbo", "--mode", "b"])[0] == 2
+
+
+def test_requires_choice_values_match_choices_by_equality_not_substring():
+    options = (
+        _flag("--turbo", action="store_true"),
+        _flag("--mode", choices=["fast", "slow"]),
+    )
+    verb = _plain(
+        options=options,
+        constraints=(RequiresChoice("--turbo", "--mode", ("fa",), "r"),),
+    )
+    assert _build_error(verb) == (
+        "verb 'v' constraint value 'fa' is not a choice of --mode"
+    )
 
 
 def test_markdown_lists_constraints_per_route_only_when_declared():

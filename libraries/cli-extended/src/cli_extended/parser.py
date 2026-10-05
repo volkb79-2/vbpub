@@ -1544,11 +1544,6 @@ class CliRegistry:
             catalog=catalog,
             top_level=not self.single_command,
             allow_abbrev=self.allow_abbrev,
-            epilog=(
-                help_epilog(self._verbs[0].constraints)
-                if self.single_command
-                else None
-            ),
         )
         add_common_options(
             parser,
@@ -1583,6 +1578,7 @@ class CliRegistry:
             self._add_option_specs(parser, verb.options)
             if verb.configure is not None:
                 verb.configure(parser)
+            parser.epilog = help_epilog(verb.constraints)
             parser._cli_constraints = resolve_constraints(
                 verb.constraints, verb=verb.name, parser=parser, root=parser
             )

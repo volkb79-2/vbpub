@@ -854,7 +854,7 @@ def _verb_metadata(spec: VerbSpec) -> dict[str, Any]:
 
 
 def _constraint_records(
-    constraints: Sequence[Constraint], common_controls: set[str]
+    constraints: Sequence[Constraint],
 ) -> list[dict[str, Any]]:
     """Describe declared constraints, naming library controls canonically.
 
@@ -865,7 +865,6 @@ def _constraint_records(
     canonical = {
         flag: name
         for name, entry in contract.common_control_table().items()
-        if name in common_controls
         for flag in entry["flags"]
     }
     records = []
@@ -1138,7 +1137,7 @@ def _describe_parser(
         "actions": actions,
         "common_controls": sorted(common_controls),
         "constraints": _constraint_records(
-            verb_specs[0].constraints if verb_specs else (), common_controls
+            verb_specs[0].constraints if verb_specs else ()
         ),
         "opaque_fields": opaque,
         "syntax_complete": not local_incomplete,
@@ -1624,12 +1623,14 @@ def _constraint_member_id(
 ) -> str:
     """Resolve a constraint's flag to the route-local ID of its option.
 
-    Consumer options match by any spelling (the deepest declaration wins);
-    library controls match by canonical flag only.
+    Consumer options match by any spelling; the shallowest declaration wins,
+    which is the verb parser's own option that ``build()`` validated, not a
+    same-named option of a nested parser. Library controls match by
+    canonical flag only.
     """
 
-    for action in reversed(route.get("actions", ())):
-        if action.get("kind") == "option" and flag in action.get("flags", ()):
+    for action in route.get("actions", ()):
+        if flag in action.get("flags", ()):
             return str(action["id"])
     for control in controls:
         if control["canonical"] == flag:

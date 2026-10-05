@@ -190,8 +190,6 @@ def _default_is_supported(default: Any) -> bool:
 def _is_present(value: Any, default: Any) -> bool:
     if default is None:
         return value is not None
-    if default is False:
-        return value is not False
     return bool(value)
 
 
@@ -230,9 +228,33 @@ def resolve_constraints(
                     f"verb {verb!r} constraint references {flag}, whose default "
                     f"{default!r} is not None, False or an empty list/tuple"
                 )
+            if any(
+                other is not action and other.dest == action.dest
+                for other in parser._actions
+            ):
+                raise ValueError(
+                    f"verb {verb!r} constraint references {flag}, whose destination "
+                    f"{action.dest!r} is shared with another option"
+                )
+            if action.nargs == "*" or (
+                action.nargs == "?" and action.const == default
+            ):
+                raise ValueError(
+                    f"verb {verb!r} constraint references {flag}, whose presence "
+                    "cannot be detected from its value"
+                )
             slots[flag] = (action.dest, default)
         if isinstance(constraint, RequiresChoice):
-            choices = parser._option_string_actions[constraint.target].choices
+            target = parser._option_string_actions[constraint.target]
+            if isinstance(target, argparse._AppendAction) or target.nargs not in (
+                None,
+                "?",
+            ):
+                raise ValueError(
+                    f"verb {verb!r} constraint target {constraint.target} is "
+                    "list-valued"
+                )
+            choices = target.choices
             if choices is None:
                 raise ValueError(
                     f"verb {verb!r} constraint target {constraint.target} declares "

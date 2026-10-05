@@ -454,7 +454,13 @@ reason)` (exported from `cli_extended`; `Constraint` names the union).
    control such as `--json`, `--dry-run`, `--yes`); when a referenced action's
    default is not `None`, `False`, or an empty list or tuple; when a
    `RequiresChoice` target declares no `choices`; or when a `RequiresChoice`
-   value is not equal to one of the target's `choices`.
+   value is not equal to one of the target's `choices`. It MUST also raise
+   when presence of a referenced option cannot be read from its value: its
+   `dest` is shared with a different action of that parser (for example
+   `--color`/`--no-color`, or a consumer `store_true`/`store_false` pair);
+   its `nargs` is `"*"`; or its `nargs` is `"?"` and its `const` equals its
+   default. A `RequiresChoice` target that is list-valued (`append`/`extend`
+   action, or `nargs` other than none or `"?"`) MUST also raise.
 3. **Presence.** An option is *present* when its parsed value differs from the
    action's default: not `None` for a `None` default, not `False` for a
    `False` default, non-empty for an empty list or tuple default. A value left

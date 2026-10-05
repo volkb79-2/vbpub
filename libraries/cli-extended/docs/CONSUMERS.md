@@ -159,7 +159,21 @@ covers "this option applies only in that mode". Leave rules that read loaded
 configuration or runtime state in the handler. Run `cli-extended surface sync`
 afterwards: each constraint is a new review candidate
 (`constraint-requires`, `constraint-conflict`, `constraint-choice`), and the
-catalog records the product decision and a test for each refusal.
+catalog records the product decision and a test for each refusal. A case must
+include the rule's trigger (the `option` of a requires/choice rule, any member
+of a conflict) or check reports it as not exercising its constraint.
+
+Referenced options must have a readable presence: `build()` also refuses an
+option that shares its `dest` with another option (`--color`/`--no-color`, a
+`store_true`/`store_false` pair), `nargs="*"`, `nargs="?"` whose `const`
+equals its default, and a `RequiresChoice` target that is list-valued
+(`append`, `extend`, or `nargs` other than none or `"?"`).
+
+**One-time re-sync.** Every route in the manifest now carries a
+`"constraints"` key (empty when none), so every committed manifest and
+generated spec region is stale until it is re-synced. Do that once, together
+with the schema-7 re-sync, with `cli-extended surface sync`; unconstrained
+routes keep their existing signatures.
 
 **Selector lists.** CMRU parsed `all`, one name, or `a,b` with
 `parse_target_names` and resolved it later in `select_target_names`. Register

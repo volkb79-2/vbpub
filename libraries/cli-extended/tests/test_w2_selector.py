@@ -87,6 +87,27 @@ def test_rejections_use_exact_messages():
     assert _reject(selector, "all,,all") == "empty selector item in 'all,,all'"
 
 
+def test_matching_is_case_sensitive():
+    selector = SelectorList(NAMES)
+    for text in ("ALL", "All", "aLL"):
+        assert _reject(selector, text) == (
+            f"unknown selector {text!r}; choose from alpha, beta, gamma or all"
+        )
+        assert SelectorList()(text) == (text,)
+    assert SelectorList()("ALL,All") == ("ALL", "All")
+    assert _reject(SelectorList(("a", "b")), "A") == (
+        "unknown selector 'A'; choose from a, b or all"
+    )
+    assert _reject(SelectorList(("a", "b")), "a,B") == (
+        "unknown selector 'B'; choose from a, b or all"
+    )
+    assert SelectorList(("a", "A"))("A,a") == ("A", "a")
+    assert SelectorList(("A",), all_token="All")("All") == ("A",)
+    assert _reject(SelectorList(("A",), all_token="All"), "all") == (
+        "unknown selector 'all'; choose from A or All"
+    )
+
+
 def test_constructor_exposes_normalized_fields():
     selector = SelectorList(["a", "b"], all_token="*", separator=";")
     assert (selector.choices, selector.all_token, selector.separator) == (

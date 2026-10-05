@@ -118,9 +118,10 @@ def _converted_action_values(
     )
     if not isinstance(converter_label, str):
         return "opaque", ()
-    converter = _BUILTIN_VALUE_CONVERTERS.get(converter_label)
-    if converter is None and converter_label == SELECTOR_LIST_LABEL:
+    if converter_label == SELECTOR_LIST_LABEL:
         converter = _selector_converter(type_spec)
+    else:
+        converter = _BUILTIN_VALUE_CONVERTERS.get(converter_label)
     if converter is None:
         return "opaque", ()
     try:
@@ -1834,6 +1835,17 @@ def _review_findings(
                         f"valid value shape for out-of-route option "
                         f"{external_option.get('id')}"
                     )
+        if candidate_kind.startswith("constraint-"):
+            # The case must exercise its rule: the trigger option (or, for a
+            # conflict, any member) has to appear. Nothing is evaluated.
+            members = [str(member) for member in candidate["members"]]
+            triggers = (
+                members if candidate_kind == "constraint-conflict" else members[:1]
+            )
+            if not any(option_occurrences.get(member, ()) for member in triggers):
+                findings.append(
+                    f"invocation for {case_id} does not exercise its constraint"
+                )
         if candidate_kind == "route-alias":
             alias = str(candidate.get("shape", {}).get("alias", ""))
             if (
