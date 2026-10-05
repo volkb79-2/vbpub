@@ -6,7 +6,7 @@
 |---|---|
 | Backlog | B119, plan package P9 |
 | Branch | `assay-b110-p9-distributed`, cut from the integration line (`assay-b110-integration`, per plan §11.1 / C18) after these have merged: `assay-b110-v14` (P3a–P3d), P6, P7 + P7b, P8 and P1. **P10c and P9's gate arms go in either order** (plan §11.6, round-2 N-1): whichever merges second rebases onto the other's `self-qualification-gate.sh` / `run-gate.toml` / `tests/test_self_lane.py` edits. P9 never waits on P10c. |
-| Depends on | **P3b**: judge identity `/3` over A-470's canonical list: the cold policy, the transform id, the R2 collection digest, the R2 hook and runtime fingerprints, and the coverage hook and runtime fingerprints (7 facts), plus the ledger sha when declared. The hook-fingerprint paths must be normalized relative to site-packages/purelib and plugin tokens must be id-free (P3B-4); otherwise resumed evidence fails verification across venvs. **P6**: the campaign deadline file, and state records carrying `campaign_deadline_sha256` when written under `--campaign-deadline` (C8). **P7**: pilot runs write the `PILOT-STATE` sentinel into their state dir and record `selection_sha256`. P7's C5 test asserts the pilot state dir through `glob("*.json")` (C27), which tolerates P9's `.lock` and `CAMPAIGN-IDENTITY`. **P8**: `cli.plan_jobs()`, whose plan rows carry `source_sha256`/`mutated_file_sha256` (C13), and `campaign.py`'s local record-shape checks, which P9 replaces with the shared validator. **P1**: the `tests/zz_slow/` tier. **Plan §11.2**: D7 defaults to **NO** until the operator answers (C8). A "yes" **also requires a P6 change**: P6's loader rejects records without `campaign_deadline_sha256` under `--campaign-deadline --resume`, so an unbound record imported with `--accept-unbound-records` would still be rejected and re-executed at consolidation (P9R2-8, N-8). |
+| Depends on | **P3b**: combined-v14 judge identity `/4` over A-470's canonical list: the cold policy, the transform id, the R2 collection digest, the R2 hook and runtime fingerprints, and the coverage hook and runtime fingerprints (7 facts), plus the ledger sha when declared and the A-482 passthrough-value fingerprints. B145 also requires each native candidate record to carry the cgroup event evidence. The hook-fingerprint paths must be normalized relative to site-packages/purelib and plugin tokens must be id-free (P3B-4); otherwise resumed evidence fails verification across venvs. **P6**: the campaign deadline file, and state records carrying `campaign_deadline_sha256` when written under `--campaign-deadline` (C8). **P7**: pilot runs write the `PILOT-STATE` sentinel into their state dir and record `selection_sha256`. P7's C5 test asserts the pilot state dir through `glob("*.json")` (C27), which tolerates P9's `.lock` and `CAMPAIGN-IDENTITY`. **P8**: `cli.plan_jobs()`, whose plan rows carry `source_sha256`/`mutated_file_sha256` (C13), and `campaign.py`'s local record-shape checks, which P9 replaces with the shared validator. **P1**: the `tests/zz_slow/` tier. **Plan §11.2**: D7 defaults to **NO** until the operator answers (C8). A "yes" **also requires a P6 change**: P6's loader rejects records without `campaign_deadline_sha256` under `--campaign-deadline --resume`, so an unbound record imported with `--accept-unbound-records` would still be rejected and re-executed at consolidation (P9R2-8, N-8). |
 | Contract class | 2a→2b. The design choices are enumerated below, each with the carver's chosen option. Once the controller accepts them at dispatch, the package executes as 2b. |
 | Implementer | Opus |
 | Decisions | A-471 (plan D7; C8 default NO); A-473 (P6 deadline); A-474 (pilot state is never imported); A-464 (shards are scheduling, not proof; time never classifies); A-462 as amended by A-467 |
@@ -61,7 +61,7 @@ This package adds:
 
 Paths are relative to `assay/` at HEAD `db85f747`. Line numbers move with P3, P4, P6, P7 and P8, so locate code by symbol.
 
-1. `nyxloom-trove/reports/assay-B110-PLAN-2026-09-28.md`: §3 D7 and D10; §5 (the judge identity inputs, `runtime_fingerprint_sha256`, label `assay-judge-identity/3`); §6 (the P9 contract); §9.3; §11.2 and §11.6.
+1. `nyxloom-trove/reports/assay-B110-PLAN-2026-09-28.md`: §3 D7 and D10; §5 (the judge identity inputs, `runtime_fingerprint_sha256`, label `assay-judge-identity/4`); §6 (the P9 contract); §9.3; §11.2 and §11.6.
 2. `nyxloom-trove/reports/b110/REVIEW-2026-09-28-round1.md`: C7, C8, C12, C13.
 3. `src/assay/mutation.py`:
    - `judge_sha256` **1137-1156** (construction; its docstring starts at 1052);
@@ -173,7 +173,7 @@ def validate_state_record_shape(payload: object, *, stem: str, plan_row: Mapping
 **`judge_identity_inputs`:**
 - **The keyword set and names are exactly P3b's `judge_sha256` signature above**, and A-470 is the authority. This brief deliberately fixes no other shape. If P3b's signature as merged differs from it, stop: `BLOCKED: P9 identity keys differ from P3b/A-470` (P9R2-1).
 - The inputs dict is JSON-safe with exactly these keys:
-  - `label` (`"assay-judge-identity/3"`);
+  - `label` (`"assay-judge-identity/4"`);
   - `tree_sha256`;
   - `tool_version` (`""` for None);
   - `argv_effective` (list);

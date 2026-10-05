@@ -58,7 +58,7 @@ from typing import Iterator, Mapping, Sequence
 from ..errors import AssayError, Outcome, ReasonCode
 from ..guards import is_strict_int
 from ..statement_attribution import StatementBlock
-from ..verdict import _redact_passthrough_text
+from ..redaction import redact_passthrough_text as _redact_passthrough_text
 from .base import HelperInvocation, Remaining, StatementBlockReport
 
 __all__ = [

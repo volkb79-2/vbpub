@@ -37,7 +37,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
-from conftest import GitRepo, make_deadline, make_lane, make_plan, prepared_snapshot
+from conftest import (
+    GitRepo,
+    make_deadline,
+    make_lane,
+    make_plan,
+    prepared_snapshot,
+    zero_resource_limit_evidence_dict,
+)
 
 from assay.adapters.python import PythonAdapter
 from assay.errors import Outcome
@@ -359,6 +366,7 @@ def test_two_maximal_tails_still_fit_the_readers_own_record_limit():
         "lineno": 189,
         "description": "UNIQUE -> CHECK (true)",
         "outcome_bucket": "crashed",
+        "resource_limit_evidence": zero_resource_limit_evidence_dict(),
         **tails,
     }
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")

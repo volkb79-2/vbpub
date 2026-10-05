@@ -143,8 +143,14 @@ from .verdict import (
     MutantOutcome,
     MutationProducerTool,
     SourcePosition,
-    _redact_passthrough_text,
     iso_utc,
+)
+from .redaction import redact_passthrough_text as _redact_passthrough_text
+from .resource_limits import (
+    ResourceLimitCounters,
+    ResourceLimitEvidence,
+    ResourceLimitObservationError,
+    read_current_cgroup_counters,
 )
 from .vocabulary import MUTATION_OPERATORS
 
@@ -229,7 +235,7 @@ MUTATION_STATE_SCHEMA_VERSION = 1
 #: (B088) The serialization label folded into :func:`judge_sha256`, so a
 #: future change to WHAT the judge identity covers yields visibly different
 #: digests instead of silently comparable ones.
-_JUDGE_DIGEST_LABEL = "assay-judge-identity/3"
+_JUDGE_DIGEST_LABEL = "assay-judge-identity/4"
 
 #: (B088) Returned by :func:`_load_validated_state_record` when a record was
 #: FOUND, is well-formed, and is still not evidence about this run -- its
@@ -1632,6 +1638,21 @@ def _load_validated_state_record(
         # source_sha256 specifically) would discard exactly the evidence
         # this check exists to surface.
         raise MutationStateError(f"mutation-state record {identity} has stale {key}")
+    resource_limit_evidence: ResourceLimitEvidence | None = None
+    if "resource_limit_evidence" in payload:
+        raw_resource_evidence = payload["resource_limit_evidence"]
+        if not isinstance(raw_resource_evidence, Mapping):
+            raise MutationStateError(
+                f"mutation-state record {identity} resource_limit_evidence must be an object"
+            )
+        try:
+            resource_limit_evidence = ResourceLimitEvidence.from_dict(
+                raw_resource_evidence
+            )
+        except (TypeError, ValueError) as exc:
+            raise MutationStateError(
+                f"mutation-state record {identity} has invalid resource-limit evidence: {exc}"
+            ) from exc
     if "outcome_bucket" not in payload:
         raise MutationStateError(f"mutation-state record {identity} is missing outcome_bucket")
     if payload["outcome_bucket"] not in MUTATION_BUCKETS:
@@ -1683,6 +1704,8 @@ def _load_validated_state_record(
     stored = payload.get("judge_sha256")
     if not isinstance(stored, str) or stored != judge:
         return _RECORD_REJECTED
+    if resource_limit_evidence is None or resource_limit_evidence.limit_hit:
+        return _RECORD_REJECTED
     if payload["outcome_bucket"] == "hung" and not _valid_hung_resource_evidence(
         payload.get("liveness_resource_evidence")
     ):
@@ -1730,6 +1753,9 @@ def _outcome_from_record(record: Mapping[str, Any]) -> MutantOutcome:
             source_sha256=record["source_sha256"],
             mutated_file_sha256=record["mutated_file_sha256"],
             execution=_execution_from_state_record(record),
+            resource_limit_evidence=ResourceLimitEvidence.from_dict(
+                record["resource_limit_evidence"]
+            ),
         )
     except (KeyError, TypeError, ValueError) as exc:
         raise MutationStateError(f"invalid resumed mutation record field: {exc}") from exc
@@ -1966,6 +1992,26 @@ class _MutantRun:
     phase_seconds: Mapping[str, float] | None = None
     startup_seconds: Mapping[str, float | None] | None = None
     execution: MutationExecution = MutationExecution(mode="full")
+    resource_limit_evidence: ResourceLimitEvidence | None = None
+
+
+def _read_candidate_resource_counters() -> ResourceLimitCounters:
+    """Fail closed when the lane cannot expose exact cgroup v2 counters."""
+    try:
+        return read_current_cgroup_counters()
+    except ResourceLimitObservationError as exc:
+        raise AssayError(
+            "cannot observe cgroup v2 pids.events and memory.events for native "
+            f"R2 candidate execution: {exc}",
+            outcome=Outcome.ERROR,
+            reason_code=ReasonCode.EXEC_FAILED,
+        ) from exc
+
+
+def _zero_window_resource_limit_evidence() -> ResourceLimitEvidence:
+    """Record a zero-duration sample for a candidate that never started."""
+    sample = _read_candidate_resource_counters()
+    return ResourceLimitEvidence.between(sample, sample)
 
 
 def _measured_resources(
@@ -2071,6 +2117,15 @@ def _classify_mutant_result_with_equivalence(
     return "crashed"  # Outcome.ERROR -- unchanged.
 
 
+def _resource_limit_bucket(
+    bucket: str, evidence: ResourceLimitEvidence | None
+) -> str:
+    """A cgroup limit event makes the candidate infrastructure-affected."""
+    if evidence is not None and evidence.limit_hit:
+        return "crashed"
+    return bucket
+
+
 def _arm_artifact_reservation(
     project_root: Path, artifact: str, *, limit: int
 ) -> safeio.OutputReservation:
@@ -2128,6 +2183,7 @@ def _read_kill_signal(reservation: safeio.OutputReservation) -> str | None:
 def _outcome_of(
     job: MutantJob,
     *,
+    resource_limit_evidence: ResourceLimitEvidence,
     kill_signal: str | None = None,
     execution: MutationExecution | None = None,
 ) -> MutantOutcome:
@@ -2165,6 +2221,7 @@ def _outcome_of(
         source_sha256=source_sha256,
         mutated_file_sha256=mutated_file_sha256,
         execution=execution or MutationExecution(mode="full"),
+        resource_limit_evidence=resource_limit_evidence,
     )
 
 
@@ -2936,6 +2993,9 @@ def _execute_mutation_jobs(
     reuse_witnesses: Mapping[str, tuple[str, str]] | None = None,
 ) -> Mutation:
 
+    if job_list:
+        _read_candidate_resource_counters()
+
     witness_supported = supports_sequential_pytest(
         plan.argv_effective,
         env=plan.env_effective,
@@ -2969,6 +3029,7 @@ def _execute_mutation_jobs(
                 equivalence_bytes=run.equivalence_bytes,
                 baseline_equivalence=baseline_equivalence,
             )
+        bucket = _resource_limit_bucket(bucket, run.resource_limit_evidence)
         if (
             bucket == "killed"
             and kill_signal_artifact is not None
@@ -3047,12 +3108,16 @@ def _execute_mutation_jobs(
             ):
                 command_deadline = budget_per_candidate_seconds
             command_started_monotonic = time.monotonic()
+            resource_limits_before = _read_candidate_resource_counters()
             result = execute_plan(
                 attempt_plan,
                 cwd=snapshot.project_root,
                 timeout=command_deadline,
                 process_runner=process_runner,
                 clock=clock,
+            )
+            resource_limit_evidence = ResourceLimitEvidence.between(
+                resource_limits_before, _read_candidate_resource_counters()
             )
             command_finished_monotonic = time.monotonic()
             elapsed_seconds = max(0.0, time.monotonic() - started_monotonic)
@@ -3167,6 +3232,7 @@ def _execute_mutation_jobs(
                 "teardown": teardown_finished_monotonic - integrity_finished_monotonic,
             },
             startup_seconds=startup_seconds,
+            resource_limit_evidence=resource_limit_evidence,
         )
         receipt = (
             _read_witness_receipt(receipt_path)
@@ -3221,6 +3287,15 @@ def _execute_mutation_jobs(
                 prior_verdict_sha256=prior_verdict_sha256,
                 attempt_name="replay",
             )
+            if (
+                replay is not None
+                and replay.resource_limit_evidence is not None
+                and replay.resource_limit_evidence.limit_hit
+            ):
+                return _dataclass_replace(
+                    replay,
+                    elapsed_seconds=max(0.0, time.monotonic() - started_total),
+                )
             if replay is not None and _classified_bucket(replay) == "killed":
                 return _dataclass_replace(
                     replay,
@@ -3299,6 +3374,8 @@ def _execute_mutation_jobs(
                         dict(run.startup_seconds) if run.startup_seconds is not None else None
                     ),
                 }
+                resource_limit_evidence = run.resource_limit_evidence
+                assert resource_limit_evidence is not None
                 if write_progress is not None:
                     write_progress(
                         {
@@ -3324,6 +3401,7 @@ def _execute_mutation_jobs(
                             # through from `_run_one`.
                             "tests_completed": run.tests_completed,
                             **resources,
+                            "resource_limit_evidence": resource_limit_evidence.to_dict(),
                             **(
                                 {"liveness_resource_evidence": run.liveness_resource_evidence}
                                 if run.liveness_resource_evidence is not None
@@ -3363,6 +3441,7 @@ def _execute_mutation_jobs(
                                 "outcome_bucket": outcome_bucket,
                                 "execution": run.execution.to_dict(),
                                 "resources": resources,
+                                "resource_limit_evidence": resource_limit_evidence.to_dict(),
                                 **(
                                     {
                                         "liveness_resource_evidence": run.liveness_resource_evidence
@@ -3393,6 +3472,11 @@ def _execute_mutation_jobs(
     # literal missing the sixth (`hung`) bucket entirely, which would have
     # KeyError'd the moment `_classify_mutant_result` returned it.
     buckets: dict[str, list[MutantOutcome]] = {name: [] for name in MUTATION_BUCKETS}
+    unattempted_evidence = (
+        _zero_window_resource_limit_evidence()
+        if any(budget_exceeded_mask)
+        else None
+    )
     for position, job in enumerate(job_list):
         # Results are consumed POSITION-ALIGNED with the submitted job list,
         # and `collect_mutation_sites` guarantees that list is
@@ -3401,7 +3485,13 @@ def _execute_mutation_jobs(
         # `path`) -- appending in that order leaves every bucket
         # identity-ordered without a second sort.
         if budget_exceeded_mask[position]:
-            buckets["budget_exceeded"].append(_outcome_of(job))
+            assert unattempted_evidence is not None
+            buckets["budget_exceeded"].append(
+                _outcome_of(
+                    job,
+                    resource_limit_evidence=unattempted_evidence,
+                )
+            )
             continue
         run = results[position]
         assert run is not None
@@ -3409,9 +3499,15 @@ def _execute_mutation_jobs(
         # no equivalence artifact is declared, and applies the declared
         # artifact/signal rules on the extended path.
         bucket = _classified_bucket(run)
+        assert run.resource_limit_evidence is not None
         kill_signal = run.kill_signal if bucket == "killed" else None
         buckets[bucket].append(
-            _outcome_of(job, kill_signal=kill_signal, execution=run.execution)
+            _outcome_of(
+                job,
+                kill_signal=kill_signal,
+                execution=run.execution,
+                resource_limit_evidence=run.resource_limit_evidence,
+            )
         )
 
     return Mutation(

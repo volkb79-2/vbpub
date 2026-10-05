@@ -598,6 +598,28 @@ feed the CPU-growth or hang decision. The values are measured once, are
 `judge_sha256` inputs; they exist so a campaign can be sized from measurement
 rather than from the declared budget.
 
+#### Native R2 cgroup resource-limit events (B145)
+
+A candidate that reaches the lane's process or memory limit has not shown that
+the test suite caught a mutant. Before native R2 starts candidates, Assay
+requires readable cgroup v2 counters. It samples `pids.events.max`,
+`memory.events.oom_kill`, and `memory.events.oom_group_kill` immediately around
+each candidate command and records each counter's before, after, and delta in
+the candidate verdict and resume record. The counters belong to the lane's
+cgroup, so overlapping candidate windows can conservatively mark more than
+one candidate as affected; a positive delta never certifies a kill or a
+survivor. Such a candidate is `crashed`, making the R2 result
+`ERROR/EXEC_FAILED`. Missing, malformed, or unreadable counters refuse the
+native R2 run before its candidate sweep.
+
+`assay verify` independently checks the evidence shape, subtraction, and
+bucket. Resume state with a positive counter delta is rejected for reuse, and
+the judge identity advances to `/4`, so pre-B145 candidate records are cold
+starts. The mutation-state schema number does not change: this is a change in
+what the judge identity covers, not the record's outer shape. The v14 verdict
+shape adds the evidence only to native outcomes; ingested mutation reports do
+not claim local execution counters.
+
 #### Liveness process-group cleanup
 
 Each native R2 candidate is launched in its own session/process group. The

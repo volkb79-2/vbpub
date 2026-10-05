@@ -97,7 +97,7 @@ actually re-running the lane when correctness itself is in question.
 ## What this build evaluates
 
 R0, Python R1, Python R2, Python R3, JavaScript R1, JavaScript R2 (ingested
-Stryker report, B046), Go R1, SQL R2. See the JavaScript/TypeScript section in
+Stryker report; B046), Go R1, SQL R2. See the JavaScript/TypeScript section in
 CONSUMERS for the ingested R2 workflow. If a lane's declared rigor tier isn't
 in this list for its language, that's a real capability gap to check `assay
 lanes --json` for (the "which rigor levels THIS build reaches" field), not

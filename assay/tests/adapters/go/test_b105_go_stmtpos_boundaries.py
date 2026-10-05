@@ -81,7 +81,7 @@ def test_missing_go_tool_is_a_no_measurement_terminal(tmp_path: Path, monkeypatc
     monkeypatch.setattr(go_stmtpos.shutil, "which", lambda _name: None)
 
     with pytest.raises(AssayError, match="needs `go` on PATH") as caught:
-        go_stmtpos._derive(tmp_path, ["a.go"], None, helper)
+        go_stmtpos._derive(tmp_path, ["a.go"], None, helper, ())
 
     assert caught.value.outcome is Outcome.NO_MEASUREMENT
     assert caught.value.reason_code is ReasonCode.MISSING_EXTERNAL_TOOL
@@ -106,7 +106,7 @@ def test_invocation_pins_its_environment_and_parses_the_helper_output(
         return subprocess.CompletedProcess(argv, 0, stdout=_output(argv[-1]), stderr=b"")
 
     monkeypatch.setattr(go_stmtpos.subprocess, "run", run)
-    report = go_stmtpos._derive(tmp_path, ["a.go"], remaining, helper)
+    report = go_stmtpos._derive(tmp_path, ["a.go"], remaining, helper, ())
 
     assert report.blocks_by_path == {"a.go": ()}
     assert report.helper.identity == "go version go1.25.14"
@@ -123,7 +123,7 @@ def test_a_go_timeout_is_preserved_as_the_lane_timeout(
 
     monkeypatch.setattr(go_stmtpos.subprocess, "run", timeout)
     with pytest.raises(AssayError, match="did not finish") as caught:
-        go_stmtpos._derive(tmp_path, ["a.go"], lambda: 0.1, helper)
+        go_stmtpos._derive(tmp_path, ["a.go"], lambda: 0.1, helper, ())
     assert caught.value.outcome is Outcome.BUDGET_EXCEEDED
     assert caught.value.reason_code is ReasonCode.LANE_TIMEOUT
 
@@ -139,7 +139,7 @@ def test_a_go_launch_oserror_is_an_oracle_refusal(
 
     monkeypatch.setattr(go_stmtpos.subprocess, "run", launch_error)
     with pytest.raises(AssayError, match="could not run the Go") as caught:
-        go_stmtpos._derive(tmp_path, ["a.go"], None, helper)
+        go_stmtpos._derive(tmp_path, ["a.go"], None, helper, ())
     assert caught.value.reason_code is ReasonCode.UNREADABLE_ARTIFACT
 
 
@@ -157,7 +157,7 @@ def test_nonzero_go_exit_uses_a_bounded_stderr_tail(
     )
 
     with pytest.raises(AssayError, match="exited 2.*compiler failed"):
-        go_stmtpos._derive(tmp_path, ["a.go"], None, helper)
+        go_stmtpos._derive(tmp_path, ["a.go"], None, helper, ())
 
 
 @pytest.mark.parametrize(

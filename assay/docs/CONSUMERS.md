@@ -120,6 +120,21 @@ cd assay
 A red preflight is a verified failure report and stops the full gate before
 mutation begins.
 
+### Native R2 resource-limit observation (B145)
+
+Native R2 requires the running process to read its cgroup v2
+`pids.events.max`, `memory.events.oom_kill`, and
+`memory.events.oom_group_kill` counters. There is no Assay config switch for
+this: the counters must be exposed by the environment that runs the lane.
+Assay refuses the candidate sweep with `ERROR/EXEC_FAILED` if it cannot read
+them. If a counter increases during a candidate command, that candidate is
+recorded as `crashed` and the R2 result is an infrastructure error, even if a
+test command also failed. Fix the runner's cgroup visibility or process/memory
+limit pressure, then rerun; pre-B145 resume records are automatically cold
+starts under the new judge identity. Ingested third-party R2 reports have no
+local candidate process and do not carry these counters. See the
+[design rationale](DESIGN-GUIDE.md#native-r2-cgroup-resource-limit-events-b145).
+
 From a clean Assay worktree, capture the gate output under `.assay/` so it does
 not dirty the judged tree:
 

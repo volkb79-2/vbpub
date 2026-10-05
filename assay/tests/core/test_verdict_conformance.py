@@ -64,7 +64,7 @@ import json
 from pathlib import Path
 
 import pytest
-from conftest import PROJECT_ROOT, why_invalid
+from conftest import PROJECT_ROOT, why_invalid, zero_resource_limit_evidence_dict
 from jsonschema import Draft202012Validator
 
 from assay.cli import main
@@ -1376,7 +1376,7 @@ def test_verify_refuses_every_non_current_schema_version_with_one_diagnostic(ver
 #: Carries forward the retired W9 gate phase's
 #: `test_shipped_schema_is_byte_identical_to_the_locked_v14_asset`.
 _VERDICT_SCHEMA_SHA256 = {
-    14: "6f5a7862885a191aeab5052e335599e95da92d6ecda12d0885fe7c60b94084a9",
+    14: "c8b2d22fe4cb3cfb710666b048d65a2fea32c3869303e4a27df274a50f898d6f",
 }
 
 
@@ -1457,6 +1457,7 @@ def test_verify_rejects_an_r2_status_that_ignores_bucket_precedence(
             "source_sha256": source_digest,
             "mutated_file_sha256": mutated_digest,
             "execution": {"mode": "full"},
+            "resource_limit_evidence": zero_resource_limit_evidence_dict(),
         }
     )
     claim["mutation"][bucket] = [survivor]

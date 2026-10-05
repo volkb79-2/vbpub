@@ -36,7 +36,7 @@ import sys
 from pathlib import Path, PurePosixPath
 
 import pytest
-from conftest import GitRepo, make_lane, make_plan
+from conftest import GitRepo, make_lane, make_plan, zero_resource_limit_evidence_dict
 
 from assay import isolation, mutation
 from assay.cli import main
@@ -520,6 +520,7 @@ def _record(job, *, judge: str, **overrides) -> dict:
         "source_sha256": hashlib.sha256(job.original_text.encode("utf-8")).hexdigest(),
         "judge_sha256": judge,
         "outcome_bucket": "survived",
+        "resource_limit_evidence": zero_resource_limit_evidence_dict(),
     }
     payload.update(overrides)
     return payload
@@ -1032,6 +1033,44 @@ def test_a_matching_judge_resumes_the_record(tmp_path: Path):
     root = _store(tmp_path, job, _record(job, judge="j" * 64))
     loaded = mutation._load_validated_state_record(root, job, judge="j" * 64)
     assert loaded is not None and loaded["outcome_bucket"] == "survived"
+
+
+def test_a_resource_limited_candidate_record_is_never_reused(tmp_path: Path):
+    job = _job()
+    evidence = {
+        "cgroup_version": 2,
+        "pids_events": {"max": {"before": 0, "after": 1, "delta": 1}},
+        "memory_events": {
+            "oom_kill": {"before": 0, "after": 0, "delta": 0},
+            "oom_group_kill": {"before": 0, "after": 0, "delta": 0},
+        },
+    }
+    root = _store(
+        tmp_path,
+        job,
+        _record(job, judge="j" * 64, resource_limit_evidence=evidence),
+    )
+
+    assert (
+        mutation._load_validated_state_record(root, job, judge="j" * 64)
+        is mutation._RECORD_REJECTED
+    )
+
+
+def test_a_current_judge_record_without_b145_evidence_is_rejected(tmp_path: Path):
+    job = _job()
+    payload = _record(job, judge="j" * 64)
+    del payload["resource_limit_evidence"]
+    root = _store(tmp_path, job, payload)
+
+    assert (
+        mutation._load_validated_state_record(root, job, judge="j" * 64)
+        is mutation._RECORD_REJECTED
+    )
+
+
+def test_b145_advances_the_judge_identity_label():
+    assert mutation._JUDGE_DIGEST_LABEL == "assay-judge-identity/4"
 
 
 def test_a_different_judge_is_rejected_not_treated_as_tampering(tmp_path: Path):

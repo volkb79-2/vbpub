@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import copy
 import json
-from conftest import TESTS_ROOT
+from conftest import TESTS_ROOT, zero_resource_limit_evidence_dict
 
 from assay.verify import verify_document
 
@@ -72,6 +72,7 @@ def test_a_hung_entry_verifies_clean_and_counts_toward_total() -> None:
         "source_sha256": "4d6ae68c084958848c0f45ca958aeca0ebd5089d71b0e4d8aa27e70f20001298",
         "mutated_file_sha256": "93174d3ddf91258398d19c1009184df60c239e33654425191ca696960ac83dc0",
         "execution": {"mode": "full"},
+        "resource_limit_evidence": zero_resource_limit_evidence_dict(),
     }
     mutation["hung"] = [hung_entry]
     mutation["candidate_count"] = 3
@@ -106,6 +107,7 @@ def test_a_hung_entry_uncounted_in_total_is_refused() -> None:
             "source_sha256": "4d6ae68c084958848c0f45ca958aeca0ebd5089d71b0e4d8aa27e70f20001298",
             "mutated_file_sha256": "93174d3ddf91258398d19c1009184df60c239e33654425191ca696960ac83dc0",
             "execution": {"mode": "full"},
+            "resource_limit_evidence": zero_resource_limit_evidence_dict(),
         }
     ]
     # `total`/`candidate_count` deliberately left at their ORIGINAL 2 --

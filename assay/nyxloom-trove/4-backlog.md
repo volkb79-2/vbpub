@@ -141,6 +141,8 @@ items:
   - {id: B139, title: "assay-cli SKILL.md 'What this build evaluates' omits JavaScript R2 by Stryker-report ingestion (B046)", type: bugfix, component: docs, context_estimate: small}
   - {id: B140, title: "no project-level default for a lane's env_passthrough: every new lane must repeat the project's common names, and a missing one fails the lane's first run COMMAND_FAILED", type: feature, component: config, context_estimate: small}
   - {id: B141, title: "changed-lines lanes cannot scope to files: judge.source_roots must be directories, so a later-HEAD run judges other packages' changed lines with the wrong tests", type: feature, component: config, context_estimate: small}
+  - {id: B142, title: "passthrough secrets and command-output echoes land in verdict JSON", type: bugfix, component: security, context_estimate: medium}
+  - {id: B145, title: "fork exhaustion (pids.max) is classified as killed: detect cgroup pids.events and memory.events and classify affected candidates as unresolved", type: bugfix, component: mutation, context_estimate: medium}
 ---
 
 # assay — backlog
@@ -11842,3 +11844,17 @@ Fix: add both names in pytest's own precedence order, and check the order agains
 - controlled wrong implementation: redacting only names matching `*PASSWORD*` must fail a test that passes through `SCHEMA_GATE_DSN=postgresql://u:p@h/db`.
 
 **Found in:** dstdns 2026-10-04, P241 composite `assay` lane diagnosis (`.assay/verdict-mock.json`); decision record D-670.
+
+## B145 — fork exhaustion is classified as `killed`: a lane at `pids.max` can produce false R2 kills
+
+**Status: OPEN, critical (filed 2026-10-05 from a live `assay-r2` campaign; post-limit results are invalid).** A false kill certifies tests that catch nothing and violates Assay's rule that host pressure cannot decide a mutation result.
+
+**Observed:** `run-gate-project`'s `assay-r2` campaign ran in a CMRU tester-gate container without init. Git's detached maintenance left enough zombies to reach `pids.current=19,115` of `pids.max=19,117` at 03:11Z. The campaign had 18 candidates before the limit: 13 killed after a median of 155 tests and 5 survived. Afterward it recorded 192/192 killed, median 2 tests, with 91 killed at the first test. The final campaign verdict is not usable.
+
+**Expected:** a process-limit refusal or OOM during a candidate's test command is infrastructure evidence, never a kill or survivor. The affected R2 lane cannot pass. If the cgroup counters are unavailable, Assay refuses the native R2 run before starting candidates.
+
+**Chosen contract:** sample cgroup v2 `pids.events.max`, `memory.events.oom_kill`, and `memory.events.oom_group_kill` immediately before and after each native candidate command. The verdict and resume record carry before/after/delta evidence for every native candidate. Any positive delta classifies that candidate as `crashed`, making R2 `ERROR/EXEC_FAILED`; `assay verify` re-derives each delta and rejects a positive one on any other bucket. A record with a positive delta is never reused. The judge-identity label advances to `/4` so pre-B145 state is rejected and re-executed. The R2 path fails closed if the kernel does not expose all required counters.
+
+**Oracles:** a live low-`--pids-limit` container creates a real `pids.events.max` delta and proves the command's failure cannot become `killed`; a real command failure with unchanged counters remains `killed`; OOM counter deltas receive the same infrastructure classification; a controlled wrong implementation that ignores counter changes fails; `assay verify` rejects malformed deltas, arithmetic mismatch, or resource-limited outcomes listed under `killed`.
+
+**Related:** CMRU KI-52, run-gate RG-83, Assay B107/B108, and dstdns D-670 TEST-RUNNER-INIT.

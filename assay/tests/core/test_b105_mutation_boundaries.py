@@ -13,7 +13,14 @@ from types import SimpleNamespace
 import pytest
 
 from assay import mutation
-from conftest import GitRepo, make_deadline, make_lane, make_plan, prepared_snapshot
+from conftest import (
+    GitRepo,
+    make_deadline,
+    make_lane,
+    make_plan,
+    prepared_snapshot,
+    zero_resource_limit_evidence_dict,
+)
 from assay.adapters.python import PythonAdapter
 from assay import runner
 from assay.errors import AssayError, Outcome, ReasonCode
@@ -53,6 +60,7 @@ def _record(job=None):
         "end_byte": job.site.end_byte,
         "description": job.site.description,
         "mutated_file_sha256": hashlib.sha256(mutated).hexdigest(),
+        "resource_limit_evidence": zero_resource_limit_evidence_dict(),
     }
 
 

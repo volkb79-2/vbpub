@@ -72,6 +72,8 @@ from .config import (
     SNAPSHOT_SELECTIONS,
 )
 from .errors import EXIT_CODES, REASON_CODES, Outcome, ReasonCode
+from .redaction import redact_passthrough_text as _redact_passthrough_text
+from .resource_limits import ResourceLimitEvidence
 from .guards import (
     is_aware,
     is_finite_positive,
@@ -144,6 +146,7 @@ __all__ = [
     "MutationWitnessReceipt",
     "MutantOutcome",
     "MutationProducerTool",
+    "ResourceLimitEvidence",
     "SnapshotPolicy",
     "WorktreeIntegrity",
     "SourcePosition",
@@ -360,13 +363,14 @@ __all__ = [
 #: and current node IDs. ``assay verify`` refuses v12 and v13. ``--reuse-from``
 #: recognizes those envelopes only as unproven full-run cold starts.
 #:
-#: **Bumped 13 -> 14 (B140, B142, effective environment provenance).** Every
+#: **Bumped 13 -> 14 (B140, B142, B145).** Every
 #: resolved lane records the effective, stable union of explicit project-level
 #: `[defaults].env_passthrough` and its lane-level list, including allowed
 #: names absent at run time. Present passthrough values are redacted in
 #: `env_effective` and fingerprinted in `env_effective_passthrough_sha256`.
-#: These v14 additions shipped together before the first v14 release; `assay
-#: verify` refuses v13.
+#: Native R2 outcomes also carry cgroup v2 process-limit and OOM event deltas;
+#: any positive delta must be classified as `crashed`. These v14 additions
+#: ship together before the first v14 release; `assay verify` refuses v13.
 VERDICT_SCHEMA_VERSION = 14
 
 #: (P21/A-183) the closed R1 exclusion-capability vocabulary, restoring A-008's
@@ -509,37 +513,6 @@ LANE_RESOLVED_FIELDS: tuple[str, ...] = (
 #: SHA-256 fingerprint for comparing separate verdicts.
 PASSTHROUGH_ENV_VALUE_MARKER = "<passthrough>"
 
-
-def _redact_passthrough_text(text: str, values: Sequence[str]) -> str:
-    """Mask exact passthrough values in a bounded command-output tail.
-
-    Replacement keeps the UTF-8 byte width unchanged, so serialization cannot
-    make a previously bounded tail exceed its artifact limit or change its
-    dropped-byte accounting. Marking every character covered by a match also
-    handles overlapping values without leaving a suffix behind.
-    """
-    covered = bytearray(len(text))
-    candidates = {
-        value.encode("utf-8", errors="surrogateescape").decode(
-            "utf-8", errors="replace"
-        )
-        for value in values
-        if value
-    }
-    for candidate in candidates:
-        offset = 0
-        while True:
-            start = text.find(candidate, offset)
-            if start < 0:
-                break
-            covered[start : start + len(candidate)] = b"\x01" * len(candidate)
-            offset = start + 1
-    if not any(covered):
-        return text
-    return "".join(
-        "*" * len(character.encode("utf-8")) if covered[index] else character
-        for index, character in enumerate(text)
-    )
 
 #: B014: the maximum retained UTF-8 byte length of each command-output tail.
 #: Duplicated deliberately from :mod:`assay.runner`: this module owns artifact
@@ -1690,6 +1663,13 @@ class MutantOutcome:
     source_sha256: str | None = None
     mutated_file_sha256: str | None = None
     execution: MutationExecution | None = None
+    #: (B145/schema v14) Exact cgroup v2 process-limit and OOM counter
+    #: deltas across this native candidate's test command. Native outcomes
+    #: always carry this object, including zero deltas; a positive delta
+    #: means the result is infrastructure-affected and may only be recorded
+    #: in `crashed`. Ingested outcomes have no per-candidate execution and
+    #: therefore cannot carry this field.
+    resource_limit_evidence: ResourceLimitEvidence | None = None
 
     def __post_init__(self) -> None:
         _check_wire_path(self.path, "MutantOutcome.path")
@@ -1746,6 +1726,10 @@ class MutantOutcome:
                 f"MutantOutcome.discard_reason must be one of "
                 f"{list(DISCARD_REASONS)}, got {self.discard_reason!r}"
             )
+        if self.resource_limit_evidence is not None and not isinstance(
+            self.resource_limit_evidence, ResourceLimitEvidence
+        ):
+            raise ValueError("MutantOutcome.resource_limit_evidence has the wrong type")
         b106_values = (
             self.candidate_id,
             self.source_sha256,
@@ -1779,6 +1763,14 @@ class MutantOutcome:
                     "MutantOutcome.candidate_id does not match its recorded "
                     "identity inputs"
                 )
+            if self.resource_limit_evidence is None:
+                raise ValueError(
+                    "native MutantOutcome requires resource_limit_evidence"
+                )
+        elif self.resource_limit_evidence is not None:
+            raise ValueError(
+                "ingested MutantOutcome cannot carry resource_limit_evidence"
+            )
 
     @property
     def identity(self) -> tuple[str, int, int, str, str]:
@@ -1814,6 +1806,8 @@ class MutantOutcome:
             payload["mutated_file_sha256"] = self.mutated_file_sha256
             assert self.execution is not None
             payload["execution"] = self.execution.to_dict()
+            assert self.resource_limit_evidence is not None
+            payload["resource_limit_evidence"] = self.resource_limit_evidence.to_dict()
         return payload
 
 
@@ -1958,6 +1952,15 @@ class Mutation:
             )
         for name in MUTATION_BUCKETS:
             _check_mutant_outcome_tuple(getattr(self, name), f"mutation.{name}")
+            for item in getattr(self, name):
+                if (
+                    item.resource_limit_evidence is not None
+                    and item.resource_limit_evidence.limit_hit
+                    and name != "crashed"
+                ):
+                    raise ValueError(
+                        "resource-limit-affected mutation outcomes must be in crashed"
+                    )
         if self.candidate_ids is not None:
             if len(self.candidate_ids) != len(set(self.candidate_ids)):
                 raise ValueError("mutation.candidate_ids contains a duplicate")

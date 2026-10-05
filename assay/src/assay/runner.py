@@ -153,7 +153,6 @@ from .verdict import (
     SnapshotPolicy,
     WorktreeIntegrity,
     Verdict,
-    _redact_passthrough_text,
     claim_carries,
     claim_for,
     iso_utc,
@@ -161,6 +160,7 @@ from .verdict import (
     rollup,
     supported_helper_roles,
 )
+from .redaction import redact_passthrough_text as _redact_passthrough_text
 
 __all__ = [
     "CommandPlan",

@@ -36,7 +36,7 @@ import json
 from pathlib import Path
 
 import pytest
-from conftest import TESTS_ROOT, GitRepo
+from conftest import TESTS_ROOT, GitRepo, zero_resource_limit_evidence_dict
 
 from assay import verify
 from assay.candidate_identity import candidate_id_from_fields
@@ -77,6 +77,7 @@ def _mutant(operator: str = "python:compare-swap", start: int = 25) -> dict:
             "source_sha256": source_sha256,
             "mutated_file_sha256": mutated_file_sha256,
             "execution": {"mode": "full"},
+            "resource_limit_evidence": zero_resource_limit_evidence_dict(),
         }
     )
     return item
@@ -511,6 +512,7 @@ def _sql_r2_document(*, language: str = "sql", **overrides) -> dict:
             "source_sha256": source_sha256,
             "mutated_file_sha256": mutated_file_sha256,
             "execution": {"mode": "full"},
+            "resource_limit_evidence": zero_resource_limit_evidence_dict(),
         }
     )
     document = {

@@ -292,7 +292,7 @@ A teardown failure after the stop still sets `_AUXILIARY_FAILURE` before `_write
 
 **`src/assay/mutation.py` (owner)**
 - `judge_sha256(*, tree_sha256, plan, link_paths=(), tool_version=None, cold_witness_kills: bool = False, r2_transform: str | None = None, r2_collection_sha256: str | None = None, r2_hook_fingerprint_sha256: str | None = None, runtime_fingerprint_sha256: str | None = None, coverage_hook_fingerprint_sha256: str | None = None, coverage_runtime_fingerprint_sha256: str | None = None, equivalence_ledger_sha256: str | None = None) -> str`.
-  - The label becomes `"assay-judge-identity/3"`.
+  - The label is `"assay-judge-identity/4"` (A-483/B145 already advanced it to invalidate pre-resource-monitor state).
   - After the existing link section, append in this order: `netstring("1" if cold_witness_kills else "0")`, then `netstring("" if x is None else x)` for each of the **seven** optional values in the signature order above.
   - **Why the hook and coverage facts are folded in (P3B-4).** X5 and X6 compare resumed or imported `evidence` against the **current** invocation's baselines. If a baseline fact the verifier compares against were outside the identity, a changed hook set would leave resumable records that the verifier then rejects. Folding every compared fact into the identity turns that into a judge mismatch, i.e. re-execution, which is the existing safe path. The facts are: the R2 collection sha, the R2 hook sha, the coverage hook sha, and both runtime fingerprints. The coverage collection sha equals the R2 one by the baseline equality refusal.
   - The docstring at 223-225 already says a label bump is the invalidation mechanism.
@@ -538,7 +538,7 @@ _execute_mutation_jobs plugin dir     (its own, 2609-2613; receipts named f"{ind
 | `--r2-manifest` (P3B-8, round-2 P3B2-9) | cli/runner | without `--cold-witness` → **pre-run `LaneConfigError`**: exit 2, **no verdict file written**, 0 `process_runner` calls; a tracked visible path → the same pre-run refusal; a gitignored path → the file equals the sidecar byte for byte; an unwritable destination directory at write time → whole-lane `ERROR/OUTPUT_WRITE_FAILED` that verifies `[]` | same | write non-atomically / skip the visibility check / emit a verdict for the argument refusal → red |
 | `--cold-witness` + `--shard` (P3B-8) | runner | `--shard 0/2 --cold-witness` → in-shard kills are `witness-cold` with `evidence`, and the verdict verifies | same | refuse the combination → red |
 | A6 recorded R0 (P3B-8) | runner | with `--cold-witness`, the verdict's top-level `argv_appended` contains `-p assay_mutation_witness_plugin`, `env_effective` shows the witness plugin dir on `PYTHONPATH`, and the verdict verifies | same | inject into a copy that R0 never records → red |
-| judge identity | mutation | the digest changes when any of `cold_witness_kills`, the transform id, `r2_collection_sha256`, `r2_hook_fingerprint_sha256`, `runtime_fingerprint_sha256`, `coverage_hook_fingerprint_sha256`, `coverage_runtime_fingerprint_sha256` or the ledger sha changes, and the label is `/3`. The existing equality tests (`tests/test_mutation_judge_identity.py:272-462`) stay green | `tests/test_mutation_judge_identity.py` | omit the hook sha (P3B-4) → a changed hook set leaves resumable records → red |
+| judge identity | mutation | the digest changes when any of `cold_witness_kills`, the transform id, `r2_collection_sha256`, `r2_hook_fingerprint_sha256`, `runtime_fingerprint_sha256`, `coverage_hook_fingerprint_sha256`, `coverage_runtime_fingerprint_sha256` or the ledger sha changes, and the combined v14 label is `/4` (A-482 passthrough fingerprints and A-483 resource-evidence compatibility are included in that version). The existing equality tests (`tests/test_mutation_judge_identity.py:272-462`) stay green | `tests/test_mutation_judge_identity.py` | omit the hook sha (P3B-4) → a changed hook set leaves resumable records → red |
 | state/resume | mutation | a cold campaign resumed with `--resume` re-reads `witness-cold` + evidence and does not re-execute (count 0). A record with the `evidence` key deleted, or with a 5-key evidence object, raises **`MutationStateError`** (P3B-3; like `tests/test_b105_mutation_boundaries.py:225-240`). A record from a non-cold campaign is judge-rejected and re-executes | `tests/test_b105_mutation_boundaries.py`-style | route shape errors to "rejected → re-execute" → the corruption is silently re-run → red |
 | resume across a relocated venv (P3B-4) | plugin + mutation | combined axis: `--resume` with `sysconfig` paths relocated between the two invocations **and** an unnamed conftest plugin **and** a declared survivor → count 0 re-executions, and the consolidated verdict verifies `[]` | same | absolute site-packages paths → every record judge-mismatches (or the verdict fails X6) → red |
 | A8 order | `_run_one` | `--reuse-from` (a v14 prior) + `--cold-witness`: an eligible prior kill replays (1 attempt, `witness-prefix`); an ineligible one goes cold | `tests/zz_slow/test_b110_cold_witness_real_runs.py` (a real run). P1's exact-name pin forbids adding it to `zz_slow/test_b106_witness_real_runs.py`. | — |
@@ -608,7 +608,7 @@ The following are **not** yours to change: receipt keys, the evidence shape, the
 5. **`cold_shape_refusal`** with its table.
 6. **mutation.py:**
    - `R2CommandProofError`, `R2ManifestWriteError` and `R2BaselineTimeoutError` beside `InvalidRejudgeIdError`;
-   - the judge identity `/3` plus the seven new optional inputs;
+   - the judge identity `/4` plus the seven new optional inputs; native candidate records also carry B145 cgroup event evidence;
    - `run_mutation` kwargs and validation;
    - `survivor_proof_ok`, and row S (C2) in the attempt classification;
    - the two injections;
@@ -788,7 +788,7 @@ Verify each anchor with `grep -n`.
   - `MUTATION_STATE_SCHEMA_VERSION`;
   - the `ReasonCode` enum;
   - lane schema keys;
-  - any change to non-cold behaviour other than the judge-identity label (label `/3` applies to all lanes; resumed v2-label records are re-executed, which is the intended invalidation). Row S (C2) is cold-mode only.
+  - any change to non-cold behaviour other than the judge-identity label (label `/4` applies to all lanes; resumed older-label records are re-executed, which is the intended invalidation). Row S (C2) is cold-mode only.
   - P6's unclassified-attempt logic in `_run_attempt` (C3): route through it, do not re-implement or bypass it.
   - `verify.py`'s terminal sets (C1).
 

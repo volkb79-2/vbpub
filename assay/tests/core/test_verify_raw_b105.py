@@ -8,7 +8,7 @@ reachable and reviewable.
 from __future__ import annotations
 
 import json
-from conftest import TESTS_ROOT
+from conftest import TESTS_ROOT, zero_resource_limit_evidence_dict
 from types import SimpleNamespace
 
 from assay import verify as raw_verify
@@ -70,6 +70,7 @@ def test_raw_b106_identity_reconstruction_refuses_malformed_identity_inputs():
         "source_sha256": "b" * 64,
         "mutated_file_sha256": "c" * 64,
         "execution": {"mode": "full"},
+        "resource_limit_evidence": zero_resource_limit_evidence_dict(),
     }
     document = {
         "claims": [{

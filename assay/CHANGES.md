@@ -36,6 +36,11 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   private judge names the analysis package used to reach. No existing verdict,
   progress or plan key changes meaning; no schema version changes
 
+### Fixed
+- fix(assay): prevent cgroup process-limit or OOM events from becoming native
+  R2 kills or survivors; persist exact cgroup v2 counter deltas, reject affected
+  resume records, and advance the judge identity to `/4` (B145)
+
 ### Changed
 - refactor(assay): repeated judge rules now live once: `assay.records` (the
   frozen/keyword-only record decorators), `assay.guards` (strict-int, finite,

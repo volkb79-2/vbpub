@@ -10,7 +10,15 @@ from dataclasses import replace
 from pathlib import Path
 
 import pytest
-from conftest import GitRepo, TESTS_ROOT, make_lane, make_r2_judge, native_mutation, native_outcome
+from conftest import (
+    GitRepo,
+    TESTS_ROOT,
+    make_lane,
+    make_r2_judge,
+    native_mutation,
+    native_outcome,
+    zero_resource_limit_evidence_dict,
+)
 
 from assay import candidate_identity, mutation, runner, verdict
 from assay.adapters.python import PythonAdapter
@@ -52,6 +60,7 @@ def _v14_killed_source() -> dict:
                 "candidate_id": candidate,
                 "source_sha256": source_digest,
                 "mutated_file_sha256": mutated_digest,
+                "resource_limit_evidence": zero_resource_limit_evidence_dict(),
                 "execution": {
                     "mode": "full",
                     "witness": {

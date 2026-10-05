@@ -209,6 +209,12 @@ assay exists to close that gap mechanically, not by policy:
   database DSN even when its name does not contain `PASSWORD`. See the
   [redaction rule](docs/DESIGN-GUIDE.md#redacting-passthrough-environment-values-b142)
   and [consumer example](docs/CONSUMERS.md#keep-passthrough-secrets-out-of-verdicts-b142).
+- **Native R2 cannot count a resource-limited candidate as a kill (B145).**
+  Assay records cgroup v2 process-limit and out-of-memory event deltas around
+  each candidate command. A positive delta makes the candidate `crashed` and
+  R2 `ERROR/EXEC_FAILED`; missing counters refuse the run. See the
+  [design rationale](docs/DESIGN-GUIDE.md#native-r2-cgroup-resource-limit-events-b145)
+  and [consumer requirements](docs/CONSUMERS.md#native-r2-resource-limit-observation-b145).
 - **Zero runtime dependencies.** assay imports nothing but the Python
   standard library. It consumes the *output* of tools like `coverage.py`; it
   never imports them. Adoption risk is close to zero — there is no

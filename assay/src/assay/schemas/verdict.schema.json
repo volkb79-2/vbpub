@@ -1388,6 +1388,40 @@
         }
       ]
     },
+    "resource_counter_delta": {
+      "type": "object",
+      "required": ["before", "after", "delta"],
+      "properties": {
+        "before": {"type": "integer", "minimum": 0},
+        "after": {"type": "integer", "minimum": 0},
+        "delta": {"type": "integer", "minimum": 0}
+      },
+      "additionalProperties": false
+    },
+    "resource_limit_evidence": {
+      "description": "B145: exact cgroup v2 process-limit and OOM event counter samples around one candidate command. The model and independent verifier require each delta to equal after minus before and any positive delta to be classified as crashed.",
+      "type": "object",
+      "required": ["cgroup_version", "pids_events", "memory_events"],
+      "properties": {
+        "cgroup_version": {"type": "integer", "const": 2},
+        "pids_events": {
+          "type": "object",
+          "required": ["max"],
+          "properties": {"max": {"$ref": "#/$defs/resource_counter_delta"}},
+          "additionalProperties": false
+        },
+        "memory_events": {
+          "type": "object",
+          "required": ["oom_kill", "oom_group_kill"],
+          "properties": {
+            "oom_kill": {"$ref": "#/$defs/resource_counter_delta"},
+            "oom_group_kill": {"$ref": "#/$defs/resource_counter_delta"}
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
     "mutant_outcome": {
       "description": "One attempted mutant's SITE identity (A-180): (path, start_byte, end_byte, replacement_sha256, operator). Byte offsets are zero-based half-open UTF-8 offsets into the source at the recorded commit; the hash covers the replacement bytes ONLY and is built from the validated site, never by diffing two full texts. lineno and description are diagnosis, never identity. Deliberately WITHOUT the full mutated text -- retaining one per candidate is exactly what made the cap untrue. NOTE: start_byte < end_byte relates two fields and therefore lives in the model and the raw verifier, not here.",
       "type": "object",
@@ -1442,8 +1476,16 @@
         "candidate_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
         "source_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
         "mutated_file_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
-        "execution": {"$ref": "#/$defs/mutation_execution"}
+        "execution": {"$ref": "#/$defs/mutation_execution"},
+        "resource_limit_evidence": {"$ref": "#/$defs/resource_limit_evidence"}
       },
+      "allOf": [
+        {
+          "if": {"required": ["candidate_id"]},
+          "then": {"required": ["resource_limit_evidence"]},
+          "else": {"not": {"required": ["resource_limit_evidence"]}}
+        }
+      ],
       "additionalProperties": false
     },
     "mutation": {

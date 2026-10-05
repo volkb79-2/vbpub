@@ -9,12 +9,12 @@
 | Depends on | P10a's ledger wire shape. Either P10a is accepted, or you finish under the documented **BLOCKED-PARTIAL** escape: anchor validated by length only, with P10b adding the grammar later. Either way the rest of this package is dispatchable. |
 | Contract class | **2b**. Public shapes are fixed below; the private construction is yours. |
 | Implementer | Opus (fresh session) |
-| Decisions | A-470 (D6, v14 cold-witness contract, A1–A9), A-465 (ledger wire fields), A-469 (D5 liveness disclosure fields), A-471 (runtime fingerprint field) |
+| Decisions | A-470 (D6, v14 cold-witness contract, A1–A9), A-465 (ledger wire fields), A-469 (D5 liveness disclosure fields), A-471 (runtime fingerprint field), A-483 (B145 native resource-limit evidence and judge identity `/4`) |
 | Size | L. This is a hard cut: ~50 fixtures, carve assets W10, gate markers, and about 15 test files with version literals. |
 
-**What this package is.** It is the consumer side of v14, meaning the model, the JSON schema, the independent raw verifier, reconstruction and version plumbing. It has **no producer behaviour**:
+**What this package is.** It is the consumer side of v14, meaning the model, the JSON schema, the independent raw verifier, reconstruction and version plumbing. P3a itself has **no producer behaviour**:
 - `run_mutation` never emits `witness-cold`, `ledger` or `evidence` here;
-- the native producer emits only `cold_witness_kills: false`, `r2_command: null`, `equivalence_ledger: null`, and the liveness defaults.
+- the B110 native producer emits only `cold_witness_kills: false`, `r2_command: null`, `equivalence_ledger: null`, and the liveness defaults; the combined v14 implementation also includes A-483/B145's separate native cgroup evidence contract below.
 
 P3b produces cold evidence, P3c produces the liveness values, and P10b produces the ledger.
 
@@ -27,13 +27,30 @@ P3b produces cold evidence, P3c produces the liveness values, and P10b produces 
 
 ---
 
+### A-483/B145 amendment to the combined v14 contract
+
+This is required alongside the original P3a packet. Every native `MutantOutcome`
+has a required `resource_limit_evidence` object with cgroup v2 deltas for
+`pids.events.max`, `memory.events.oom_kill`, and
+`memory.events.oom_group_kill`; ingested outcomes forbid the field. Each delta
+contains non-negative integer `before`, `after`, and `delta` values, with
+`after >= before` and `delta == after - before`. The schema declares the exact
+shape; the producer model and independent raw verifier both enforce arithmetic
+and the rule that any positive delta is allowed only in the `crashed` bucket.
+Native R2 fails `ERROR/EXEC_FAILED` before candidate execution if the counters
+cannot be read. The mutation state and progress records carry the same evidence;
+positive-delta records are not reused. `_JUDGE_DIGEST_LABEL` is
+`assay-judge-identity/4`, invalidating pre-B145 state. This is a hard-cut
+compatibility change within the planned v14/8.0.0 wave, not another schema
+version.
+
 ## Context to read first
 
 Paths are relative to `assay/`. Line numbers are verified at `db85f747`; re-anchor by symbol if they drift.
 
 **Plan and decisions:**
 - `nyxloom-trove/reports/assay-B110-PLAN-2026-09-28.md` §3 (D6 A1–A9) and §5 (**the wire contract; this brief implements it exactly**).
-- `nyxloom-trove/decisions.md`, rows A-461 (the v13 precedent), A-465, A-469, A-470, A-471.
+- `nyxloom-trove/decisions.md`, rows A-461 (the v13 precedent), A-465, A-469, A-470, A-471, A-483.
 
 **`src/assay/verdict.py`:**
 - 337-350: the version history paragraph and `VERDICT_SCHEMA_VERSION = 13`.
@@ -462,9 +479,9 @@ Its expected verify result is `[]`.
    - Then bump `VERDICT_SCHEMA_VERSION = 14` and add a "Bumped 13 → 14 (B110)" history paragraph after 337-349, naming A-470/A-465/A-469/A-471.
 5. **Update the schema (`verdict.schema.json`):**
    - `$id` `urn:assay:schema:verdict:14`; const 14;
-   - new `$defs`: `r2_baseline_facts`, `r2_command`, `equivalence_ledger`, `mutant_evidence`;
+   - new `$defs`: `r2_baseline_facts`, `r2_command`, `equivalence_ledger`, `mutant_evidence`, plus A-483's `resource_counter_delta` and `resource_limit_evidence`;
    - two new `mutation_execution` `oneOf` branches (`witness-cold` requires `mode`+`witness`; `ledger` requires `mode`+`anchor`; both `additionalProperties:false`);
-   - `mutant_outcome.evidence`;
+   - `mutant_outcome.evidence` and native-only `resource_limit_evidence`; native requires it, ingested forbids it;
    - `judgment_r2` properties;
    - the native `required` list (1876-1880) gains `cold_witness_kills`, `r2_command`, `equivalence_ledger`;
    - the ingested `not required` list (**1900–1907**) gains all three;
@@ -472,7 +489,7 @@ Its expected verify result is `[]`.
    - an optional top-level `campaign` property (`$defs/campaign_binding`).
 
    The schema cannot express X5–X11; the model and verify own those, the same layering as today.
-6. **Update `verify.py`** per the "Required flow (verify)" steps 2–6, including reconstruction in the same commit.
+6. **Update `verify.py`** per the "Required flow (verify)" steps 2–6, including reconstruction in the same commit. A-483's raw verifier independently validates the resource-evidence fields, non-negative integer counters, subtraction and bucket rule; do not call the producer parser from this layer.
 7. **Producer defaults** (no new behaviour). In `runner._build_judgment_r2` (runner.py:4964-5041):
    - pass `cold_witness_kills=False`, `r2_command=None`, `equivalence_ledger=None`;
    - extend the liveness dict with `cpu_window_s=30.0, idle_floor_s=15.0` when active, and `None` when inactive.

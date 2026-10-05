@@ -117,6 +117,7 @@ from .verdict import (
     Mutation,
     MutationExecution,
     MutationWitnessReceipt,
+    ResourceLimitEvidence,
     MutationProducerTool,
     Outcome,
     ReasonCode,
@@ -1749,6 +1750,7 @@ def _check_b106_mutation_provenance(document: dict, failures: list[str]) -> None
                     "recorded identity inputs"
                 )
         _check_b106_execution(bucket, entry.get("execution"), failures)
+        _check_b145_resource_limit_evidence(bucket, entry, failures)
 
     if len(outcome_ids) != len(set(outcome_ids)):
         failures.append("native mutation outcomes contain a duplicate candidate ID")
@@ -1808,6 +1810,78 @@ def _check_b106_execution(bucket: str, execution: Any, failures: list[str]) -> N
     ):
         failures.append(
             "witness-prefix prior, current and receipt node IDs must be identical"
+        )
+
+
+def _check_b145_resource_limit_evidence(
+    bucket: str, entry: dict[str, Any], failures: list[str]
+) -> None:
+    raw = entry.get("resource_limit_evidence")
+    if not isinstance(raw, dict):
+        failures.append(
+            f"native mutation.{bucket} entry requires resource_limit_evidence"
+        )
+        return
+    if set(raw) != {"cgroup_version", "pids_events", "memory_events"}:
+        failures.append(
+            f"native mutation.{bucket} entry has invalid resource_limit_evidence fields"
+        )
+        return
+    if type(raw["cgroup_version"]) is not int or raw["cgroup_version"] != 2:
+        failures.append(
+            f"native mutation.{bucket} entry resource_limit_evidence requires cgroup v2"
+        )
+        return
+    pids = raw["pids_events"]
+    memory = raw["memory_events"]
+    if not isinstance(pids, dict) or set(pids) != {"max"}:
+        failures.append(
+            f"native mutation.{bucket} entry has invalid pids_events evidence"
+        )
+        return
+    if not isinstance(memory, dict) or set(memory) != {
+        "oom_kill",
+        "oom_group_kill",
+    }:
+        failures.append(
+            f"native mutation.{bucket} entry has invalid memory_events evidence"
+        )
+        return
+
+    positive_delta = False
+    for name, raw_delta in (
+        ("pids_events.max", pids["max"]),
+        ("memory_events.oom_kill", memory["oom_kill"]),
+        ("memory_events.oom_group_kill", memory["oom_group_kill"]),
+    ):
+        if not isinstance(raw_delta, dict) or set(raw_delta) != {
+            "before", "after", "delta"
+        }:
+            failures.append(
+                f"native mutation.{bucket} entry has invalid {name} counter evidence"
+            )
+            continue
+        before = raw_delta["before"]
+        after = raw_delta["after"]
+        delta = raw_delta["delta"]
+        if any(
+            type(value) is not int or value < 0
+            for value in (before, after, delta)
+        ):
+            failures.append(
+                f"native mutation.{bucket} entry has invalid non-negative integer {name} counters"
+            )
+            continue
+        if after < before or delta != after - before:
+            failures.append(
+                f"native mutation.{bucket} entry has inconsistent {name} counter arithmetic"
+            )
+            continue
+        positive_delta = positive_delta or delta > 0
+    if positive_delta and bucket != "crashed":
+        failures.append(
+            f"native mutation.{bucket} entry has a positive cgroup resource-limit "
+            "counter delta; it cannot be classified as a test kill or survival"
         )
 
 
@@ -2248,6 +2322,11 @@ def _reconstruct_mutant_outcome(raw: dict) -> MutantOutcome:
         source_sha256=raw.get("source_sha256"),
         mutated_file_sha256=raw.get("mutated_file_sha256"),
         execution=execution,
+        resource_limit_evidence=(
+            ResourceLimitEvidence.from_dict(raw["resource_limit_evidence"])
+            if isinstance(raw.get("resource_limit_evidence"), dict)
+            else None
+        ),
     )
     _reject_unknown_keys(raw, item.to_dict(), "mutant outcome")
     return item

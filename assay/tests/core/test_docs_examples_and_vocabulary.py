@@ -91,7 +91,7 @@ def _required_cli_skill_capabilities() -> set[str]:
         for level in entry.rigor:
             label = f"{display} {level}"
             if (language, level) in _INGESTED_ONLY_SKILL_CAPABILITIES:
-                label += " (ingested Stryker report, B046)"
+                label += " (ingested Stryker report; B046)"
             required.add(label)
     return required
 
@@ -171,7 +171,7 @@ def test_assay_cli_skill_capabilities_match_the_current_registry():
 def test_assay_cli_skill_capability_check_detects_a_missing_ingested_pair():
     skill = ASSAY_CLI_SKILL.read_text(encoding="utf-8")
     items = _cli_skill_capability_items(skill)
-    items.discard("JavaScript R2 (ingested Stryker report, B046)")
+    items.discard("JavaScript R2 (ingested Stryker report; B046)")
     with pytest.raises(AssertionError, match="missing=.*JavaScript R2"):
         _assert_cli_skill_capability_items(items)
 
