@@ -22901,6 +22901,15 @@ class TestUserDocumentationOracles:
             missing = sorted(value for value in values if value not in corpus)
             assert not missing, f"docs omit {name} values: {missing}"
 
+    def test_worktree_runner_remedy_documents_ciu_version_floor(self):
+        documents = (*self.DOCS, RUN_GATE_DIR / "SPEC.md",
+                     RUN_GATE_DIR / "CHANGES.md")
+        for path in documents:
+            assert "CIU 7.15.2 or newer" in path.read_text(), (
+                f"{path.relative_to(RUN_GATE_DIR)} omits the CIU floor for "
+                "the worktree-runner remedy"
+            )
+
     def test_cross_document_anchors_resolve(self):
         for source in self.DOCS:
             prose = self._markdown_without_fences(source)

@@ -29,7 +29,10 @@ tool. In a multi-instance workflow, the runner's name, network, and rendered
 environment belong to the selected worktree. run-gate derives the name only
 from that worktree's rendered `ciu.global.toml`. If the file is missing, the
 worktree has no known runner identity, so run-gate refuses and directs the
-operator to start that worktree's test-runner with CIU. Before `docker exec`,
+operator to start that worktree's test-runner with CIU. The prescribed
+`ciu up --dir <test-runner stack> --deploy --healthcheck` remedy requires
+CIU 7.15.2 or newer (CIU-124), which added those actions to `--dir` mode.
+Before `docker exec`,
 run-gate checks `docker ps`; a stopped runner receives the same worktree-local
 remedy.
 

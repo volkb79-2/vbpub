@@ -1517,8 +1517,9 @@ judged worktree's rendered `<worktree>/ciu.global.toml`. If your worktrees
 get their own isolated stacks (`ciu worktree create` — each with its own
 rendered config, network and `test-runner`), a missing file refuses with a
 remedy to start that worktree's runner using
-`ciu up --dir <test-runner stack> --deploy --healthcheck`. A stopped runner
-gets the same remedy before `docker exec`. run-gate never falls back to
+`ciu up --dir <test-runner stack> --deploy --healthcheck`. This remedy
+requires CIU 7.15.2 or newer (CIU-124). A stopped runner gets the same remedy
+before `docker exec`. run-gate never falls back to
 `<repo>/ciu.global.toml`, because that file names the main checkout's
 landscape. Do NOT work around a wrong container by pinning `container_name`
 in the tracked `run-gate.toml`: that literal is correct for exactly one

@@ -92,7 +92,8 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
   provenance when present. CIU-derived exec runner names now come only from
   the judged worktree's `ciu.global.toml`; missing config or a stopped runner
   names the worktree-local
-  `ciu up --dir <test-runner stack> --deploy --healthcheck` remedy.
+  `ciu up --dir <test-runner stack> --deploy --healthcheck` remedy, which
+  requires CIU 7.15.2 or newer (CIU-124).
 
 - **Dedicated gate placement.** Container lanes now require and forward
   `CGROUP_PARENT_DEV_GATES`; the background tier is reserved for a stack a
