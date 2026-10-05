@@ -101,8 +101,7 @@ SPEC §9.
 | RG-81 | internal source-backed Assay lanes fail because editable installs omit artifact `judge_provenance`; verify selected source, bind the verdict commit, and preserve source/artifact mode across re-attachment | Major | IN PROGRESS (rev 54; Review #11 findings addressed, package gate pending) |
 | RG-82 | Adopt cli-extended (unified adoption, order 7 of 8): full grammar re-registration of the 11k-line single-module launcher, real wheel dependency (CX-D1, CX-D12) | Enhancement | OPEN — planned (filed 2026-10-05 as RG-81, renumbered at the merge with main's RG-81; requires cli-extended 0.2.0) |
 | RG-83 | `tests/test_run_gate.py`'s `install_fake_assay` writes its fake `assay`/`assay.real` into the FIRST ENTRY OF THE REAL `$PATH` (the operator's `~/.local/bin`) when a test has not already prepended a tmp shim dir | Major | OPEN (filed 2026-10-05 as RG-82, renumbered at merge; leaked files observed 2026-10-04 14:36, not deleted) |
-| RG-84 | run-gate runs as an unreaping PID 1 (no init) and keeps reporting lane verdicts after the container hits `pids.max`; refuse PID 1, and treat `pids.events`/`memory.events` increments as infrastructure errors | Major | OPEN (filed 2026-10-05 as RG-83, renumbered at merge; 19,108 zombies, 192 false kills observed) |
-
+| RG-84 | run-gate runs as an unreaping PID 1 (no init) and keeps reporting lane verdicts after the container hits `pids.max`; refuse PID 1, and treat `pids.events`/`memory.events` increments as infrastructure errors | Major | IN PROGRESS (rev 55; PID 1 and low-pids live acceptance PASS; registered selftest pending; contaminated R2 outcomes discarded) |
 ---
 
 ## RG-1 — conjunction lanes silently drop `--worktree` and `--allow-dirty`
@@ -5639,6 +5638,7 @@ commit. Run-Gate accepts full 40-hex SHA-1 and 64-hex SHA-256 IDs at this
 identity boundary; Assay's P22 snapshot source still requires SHA-1 object
 storage for high-rigor snapshot lanes. External explicit-command mode
 continues to require full artifact `judge_provenance`; no artifact digest is
+
 synthesized for editable source. Integer inflight schema 2 stores `source` or
 `artifact`, and re-attachment uses that launch-time mode. Schema 2 requires
 the mode key; Assay records also require non-empty verdict and progress paths,
@@ -5758,14 +5758,14 @@ return a closed recovery refusal before inventory or admission.
 
 ## RG-84 — run-gate runs happily as an unreaping PID 1 and reports lane verdicts from a container that can no longer fork
 
-**Status:** OPEN (filed 2026-10-05 as RG-83, renumbered RG-84 at the merge with main; severity major — it let a false-green R2 campaign continue; investigated read-only with `host-escape`).
+**Status:** IN PROGRESS (filed 2026-10-05 as RG-83, renumbered RG-84 at the merge with main; rev 55 implementation is present; live PID 1 and low-pids acceptance passed; registered selftest remains pending). See the [live acceptance report](nyxloom-trove/reports/run-gate-RG84-live-acceptance-2026-10-05.md).
 
-**Observed.** `cmru tester-gate` started `tester-unified:local` without `--init` (cmru KI-52), so `./run-gate.py --base main assay-r2` ran as PID 1 of container `pedantic_antonelli`. git's detached auto-maintenance orphaned one `git` per commit to that PID 1, which never reaps; 19,108 zombies filled `pids.max` (19,115/19,117) at 03:11Z. run-gate kept supervising the `assay-r2` lane; the campaign inside recorded 192/192 false kills after that point (assay B145). run-gate's own `docker run` launches already pass `--init` (`run-gate.py:5873`, `:9856` at filing time); the gap is run-gate *being* PID 1 under someone else's launcher.
+**Observed.** `cmru tester-gate` started `tester-unified:local` without `--init` (cmru KI-52), so `./run-gate.py --base main assay-r2` ran as PID 1 of container `pedantic_antonelli`. git's detached auto-maintenance orphaned one `git` per commit to that PID 1, which never reaps; 19,108 zombies filled `pids.max` (19,115/19,117) at 03:11Z. The operator's contamination notice requires discarding the campaign's Assay state and progress and invalidates all post-03:11Z candidate outcomes and its final verdict; none are evidence for this entry. run-gate's own `docker run` launches already pass `--init` (`run-gate.py:5873`, `:9856` at filing time); the gap is run-gate *being* PID 1 under someone else's launcher.
 
 **Expected / fix.**
-- (a) At start-up, when `os.getpid() == 1`, refuse with an infrastructure error naming the remedy ("run-gate is PID 1 with no init: start the container with `--init` (docker) or `init: true` (compose)"). An explicit opt-out is acceptable only if documented, but defaults-are-hazards argues for refusal: an unreaping PID 1 is never correct for a supervisor of process-heavy lanes.
-- (b) After each lane, read the lane cgroup's `pids.events` (`max`) and `memory.events` (`oom_kill`); any increment during the lane makes the lane verdict an infrastructure error regardless of the tool's exit code (generic guard; assay B145 is the in-judge guard).
+- (a) At start-up, when `os.getpid() == 1`, refuse with an infrastructure error naming the remedy ("run-gate is PID 1 with no init: start the container with `--init` (docker) or `init: true` (compose)"). An explicit opt-out is not provided: an unreaping PID 1 is not a safe supervisor for process-heavy lanes.
+- (b) Before and after each real lane, read `pids.events` (`max`) and `memory.events` (`oom_kill`) from the cgroup containing run-gate. Any increase makes the lane verdict an infrastructure error regardless of its raw exit status (generic guard; assay B145 is the in-judge guard). Missing, malformed, moved, or unreadable cgroup data is also an infrastructure error; dry runs do not sample counters.
 
-**Oracles.** run-gate started as PID 1 in a no-init container refuses with the remedy text (a controlled wrong implementation that only warns fails); a lane run with a deliberately low `--pids-limit` whose command forks past it yields an infrastructure verdict even if the command exits 0; a normal lane is unaffected.
+**Oracles.** The live PID 1 refusal and low-`--pids-limit` checks passed in a detached `tester-unified` container; the latter's command returned zero while `pids.events:max` increased, and run-gate returned ERROR with raw `exit_code: 0` retained. Tests cover a changed `memory.events:oom_kill` counter, unchanged counters, unreadable files, moved cgroups, and raw-status preservation. The registered `selftest` lane with 100% changed-line coverage remains pending.
 
 **Related:** cmru KI-52 (launcher without `--init`; git `maintenance.autoDetach` mechanism and image hardening), assay B145, dstdns D-670 TEST-RUNNER-INIT (same mechanism under a `sleep infinity` runner).

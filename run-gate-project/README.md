@@ -94,6 +94,18 @@ The tool refuses a missing mode. Review the diff, then migrate wrapper
 assumptions separately. See the [mode rationale](docs/DESIGN-GUIDE.md#runner-modes-name-the-runtime-contract) and the
 [consumer migration steps](CONSUMERS.md#closed-results-and-runner-mode-migration).
 
+### PID 1 and cgroup resource failures
+
+run-gate refuses to start as container PID 1, where orphaned lane processes
+would accumulate instead of being reaped. Start Docker containers with
+`--init` or set `init: true` on the Compose service. During each real lane,
+run-gate samples its cgroup v2 `pids.events` and `memory.events` counters. A
+refused fork or OOM kill forces ERROR/2 even if the lane reports success. Any
+raw status already known remains in the result, including when the post-lane
+counters are unavailable or cannot be compared safely. The standalone
+`--version` operation remains available. See the [design rationale](docs/DESIGN-GUIDE.md#pid-1-and-cgroup-resource-events)
+and the [consumer setup](CONSUMERS.md#init-reaping-and-resource-events).
+
 ### Native sequences and imported assay lanes
 
 `kind = "sequence"` runs declared member lanes in order, records each member

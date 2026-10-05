@@ -192,7 +192,7 @@ the per-entry evidence table, WIP-branch findings, and ID collisions.
 - B103 — execution-interruption boundary (reserved stub; ID collision with an unmerged branch's own B099/A-448 only) — OPEN (owned by the RG-55 continuation)
 - B143 — adopt cli-extended (unified adoption, order 6 of 8; A-005 reworded) — PLANNED (filed 2026-10-05; requires cli-extended 0.2.0 released)
 - B144 — per-candidate covering-test selection for qualifying Python R2 (covering tests first, full suite on survival) — OPEN, decision-gated against B110 D3/A-467 (filed 2026-10-05 from the cli-extended 0.2.0 wave; measured on a real campaign)
-- B145 — fork exhaustion classified as `killed` (false kills at `pids.max`) — OPEN, critical (filed 2026-10-05; 192/192 false kills observed on run-gate-project's assay-r2 campaign)
+- B145 — fork exhaustion classified as `killed` (false kills at `pids.max`) — OPEN, critical (filed 2026-10-05; the contaminated run-gate-project R2 state, progress, post-03:11Z outcomes, and final verdict were discarded)
 - B105 — full-source R0-R3 Assay self-qualification — OPEN (next package after the single Wave C release; required before M7; pre-release Wave C gate remains R0-only; full gate must meet B110's 8-hour ceiling; suite scope amended by A-468; equivalents only via the A-465 ledger)
 
 **Filed after the 2026-09-23 triage**
@@ -11942,10 +11942,7 @@ Fix: add both names in pytest's own precedence order, and check the order agains
 
 **Status: OPEN, severity critical (filed 2026-10-05; observed on a live campaign, investigated read-only with `host-escape`).** A false kill is the worst R2 error: it certifies tests that catch nothing. This violates the estate's contention-agnostic rule — a pressure-affected run is infrastructure/inconclusive, never a product verdict.
 
-**Observed.** Lane `assay-r2` of `run-gate-project` (worktree `.worktrees/run-gate-r2-assay-venv-20261005`, progress `run-gate-project/.assay/progress-r2.jsonl`, state `.run-gate/assay-state/run-gate-project/`), running in a `cmru tester-gate` container without an init (cmru KI-52). git's detached auto-maintenance leaked one zombie per commit until the container's `pids.current` reached 19,115 of `pids.max` 19,117 at 03:11:18Z; from then on, no process could be forked reliably (`docker exec … sh -c true` → `procReady not received`).
-- Before 03:11Z: 18 candidates — 13 killed (median **155** tests completed before the kill), 5 survived.
-- After 03:11Z: **192 candidates — 192 killed, 0 survived; median 2 tests to the kill; 91 killed at the first test.**
-- The state records carry `execution.mode: "full"`, `outcome_bucket: "killed"`, and no stderr, so nothing in the verdict distinguishes these from real kills.
+**Observed.** Lane `assay-r2` of `run-gate-project` ran in a `cmru tester-gate` container without an init (cmru KI-52). git's detached auto-maintenance leaked one zombie per commit until the container's `pids.current` reached 19,115 of `pids.max` 19,117 at 03:11:18Z; from then on, no process could be forked reliably (`docker exec … sh -c true` → `procReady not received`). Per the operator's 2026-10-05 contamination notice, the campaign's state and progress were discarded; all post-03:11Z candidate outcomes and its final verdict are invalid and are not used as evidence here.
 
 **Expected.** A candidate whose execution hit a resource limit outside the mutant's control is never `killed`: it is unresolved (retried, or reported as an infrastructure outcome) and the lane cannot pass on it.
 
@@ -11954,7 +11951,7 @@ Fix: add both names in pytest's own precedence order, and check the order agains
 2. **`memory.events` `oom_kill`/`oom_group_kill`** (same pattern; relates to B107's liveness evidence) — an OOM-killed test process must not count as a kill either.
 3. **Lane-level pre-flight per candidate:** `pids.max - pids.current` below a floor (e.g. fewer than the baseline's peak process count) → do not start the candidate; refuse the lane infrastructure-red with the numbers.
 4. **Failure-signature heuristic (secondary only):** the failing test's error is `BlockingIOError`/`OSError(EAGAIN)`/"Resource temporarily unavailable" → unresolved. Secondary because the error text may not be retained (it was not here).
-5. **Statistical tripwire (reporting only):** a sudden shift in the median tests-to-kill (155 → 2 here) at the same tree is flagged in the campaign summary (B108) as a suspected infrastructure change.
+5. **Statistical tripwire (reporting only):** a sudden shift in tests-to-kill at the same tree is flagged in the campaign summary (B108) as a suspected infrastructure change; it never resolves a candidate's outcome by itself.
 
 **Oracles.** In a test container with a low `--pids-limit`, a suite that forks per test produces `unresolved`/infrastructure outcomes, not kills, and the lane does not pass; a controlled wrong implementation that ignores `pids.events` reports kills and fails the oracle; a real kill with an unchanged `pids.events` stays `killed`; the verdict records the counter deltas as evidence and `assay verify` checks them.
 

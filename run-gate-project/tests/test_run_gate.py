@@ -21493,6 +21493,24 @@ class TestRG72FailureEvidenceEdges:
         assert lane_root.stat().st_mode & 0o777 == 0o700
         assert len(list(lane_root.iterdir())) == run_gate.FAILED_EVIDENCE_KEEP
 
+    def test_infrastructure_error_digest_archives_assay_evidence(
+            self, tmp_path, capsys):
+        repo = make_repo(tmp_path)
+        project = repo / "proj"
+        project.mkdir()
+        progress, verdict = self._sources(repo, project)
+        record = {"run_id": "resource-event",
+                  "_progress_path": str(progress),
+                  "_verdict_path": str(verdict)}
+        run_gate._report_failed_assay(
+            "unit", record, project, repo, {"assay_lane": "unit"}, "ERROR")
+        output = capsys.readouterr().out
+        assert "assay failure digest: verdict=ERROR" in output
+        assert record["failed_evidence_verdict"] == "ERROR"
+        evidence = Path(record["failed_evidence_path"])
+        assert (evidence / "progress.jsonl").read_bytes() == progress.read_bytes()
+        assert (evidence / "verdict.json").read_bytes() == verdict.read_bytes()
+
     def test_archive_removes_partial_copy_after_io_failure(self, tmp_path,
                                                            monkeypatch, capsys):
         repo = make_repo(tmp_path)
@@ -22190,6 +22208,26 @@ class TestDispatchAssayEvidenceAndAdmissionOracles:
         assert "case::bad (AssertionError)" in capsys.readouterr().out
         archive = Path(record["failed_evidence_path"])
         assert archive.is_relative_to(repo / ".run-gate" / "failed")
+        assert (archive / "progress.jsonl").read_bytes() == progress.read_bytes()
+
+    def test_cgroup_resource_error_keeps_raw_status_and_assay_evidence(
+            self, tmp_path, monkeypatch, capsys):
+        _repo, _project, record, _verdict, progress = self._project(
+            tmp_path, monkeypatch)
+
+        def resource_error(*_args, **_kwargs):
+            raise run_gate.LaneCgroupEventError(
+                0, "pids.events max +1; verdict forced to ERROR")
+
+        monkeypatch.setattr(run_gate, "run_lane_with_cgroup_event_guard",
+                            resource_error)
+        result = run_gate._dispatch(["unit", "--allow-dirty"])
+        assert result.verdict == "ERROR"
+        assert result.exit_code == 0
+        assert "verdict forced to ERROR" in result.reason
+        assert "assay failure digest: verdict=ERROR" in capsys.readouterr().out
+        archive = Path(record["failed_evidence_path"])
+        assert record["failed_evidence_verdict"] == "ERROR"
         assert (archive / "progress.jsonl").read_bytes() == progress.read_bytes()
 
     def test_missing_verdict_is_error_but_still_prints_available_progress(
@@ -24182,3 +24220,275 @@ def test_sequence_fresh_refuses_when_members_are_not_ephemeral(
             SimpleNamespace(help=False, list=False, check_env=False,
                             lane="suite", fresh=True),
             {"lanes": lanes}, {}, {}, tmp_path)
+
+
+def _cgroup_event_fixture(tmp_path, *, cgroup_path="/worker"):
+    proc = tmp_path / "proc" / "self" / "cgroup"
+    proc.parent.mkdir(parents=True)
+    proc.write_text(f"0::{cgroup_path}\n")
+    root = tmp_path / "sys" / "fs" / "cgroup"
+    current = root.joinpath(*Path(cgroup_path).parts[1:])
+    current.mkdir(parents=True)
+    (current / "pids.events").write_text("max 0\n")
+    (current / "memory.events").write_text(
+        "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\n")
+    return proc, root, current
+
+
+def test_cgroup_event_guard_turns_zero_exit_into_infrastructure_error(
+        tmp_path):
+    proc, root, current = _cgroup_event_fixture(tmp_path)
+
+    def fork_limited_lane():
+        (current / "pids.events").write_text("max 1\n")
+        return 0
+
+    with pytest.raises(run_gate.LaneCgroupEventError) as caught:
+        run_gate.run_lane_with_cgroup_event_guard(
+            "fork-limited", fork_limited_lane,
+            proc_cgroup=proc, cgroup_root=root)
+    assert caught.value.lane_exit_code == 0
+    assert "pids.events max +1" in str(caught.value)
+    assert "verdict forced to ERROR" in str(caught.value)
+
+
+def test_cgroup_event_guard_detects_oom_kill_and_keeps_normal_lane(
+        tmp_path):
+    proc, root, current = _cgroup_event_fixture(tmp_path)
+    assert run_gate.run_lane_with_cgroup_event_guard(
+        "normal", lambda: 0, proc_cgroup=proc, cgroup_root=root) == 0
+
+    def oom_killed_lane():
+        (current / "memory.events").write_text(
+            "low 0\nhigh 0\nmax 0\noom 1\noom_kill 1\n")
+        (current / "pids.events").write_text("max 1\n")
+        return 0
+
+    with pytest.raises(run_gate.LaneCgroupEventError) as caught:
+        run_gate.run_lane_with_cgroup_event_guard(
+            "oom-killed", oom_killed_lane,
+            proc_cgroup=proc, cgroup_root=root)
+    assert caught.value.lane_exit_code == 0
+    assert "memory.events oom_kill +1" in str(caught.value)
+    assert "pids.events max +1" in str(caught.value)
+
+
+def test_cgroup_event_guard_refuses_unreadable_counters_before_lane(
+        tmp_path):
+    proc, root, current = _cgroup_event_fixture(tmp_path)
+    (current / "memory.events").write_text("oom 0\n")
+    started = False
+
+    def lane():
+        nonlocal started
+        started = True
+        return 0
+
+    with pytest.raises(run_gate.GateInfraError,
+                       match="does not report 'oom_kill'"):
+        run_gate.run_lane_with_cgroup_event_guard(
+            "unobservable", lane, proc_cgroup=proc, cgroup_root=root)
+    assert not started
+
+
+def test_cgroup_event_reader_accepts_private_namespace_root(tmp_path):
+    proc, root, current = _cgroup_event_fixture(tmp_path, cgroup_path="/")
+    snapshot = run_gate.read_current_cgroup_events(proc, root)
+    assert snapshot.cgroup == "/"
+    assert snapshot.pids_max == 0
+    assert snapshot.oom_kill == 0
+    assert current == root
+
+
+@pytest.mark.parametrize("contents", [
+    "", "0::/worker\n0::/other\n", "0::relative\n", "0::/../escape\n",
+])
+def test_cgroup_event_reader_refuses_ambiguous_or_invalid_proc_paths(
+        tmp_path, contents):
+    proc, root, _current = _cgroup_event_fixture(tmp_path)
+    proc.write_text(contents)
+    with pytest.raises(run_gate.GateInfraError):
+        run_gate.read_current_cgroup_events(proc, root)
+
+
+def test_cgroup_event_reader_refuses_cgroup_symlink_escape(tmp_path):
+    proc, root, current = _cgroup_event_fixture(tmp_path)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (current / "pids.events").unlink()
+    (current / "memory.events").unlink()
+    current.rmdir()
+    current.symlink_to(outside, target_is_directory=True)
+    with pytest.raises(run_gate.GateInfraError, match="cannot map"):
+        run_gate.read_current_cgroup_events(proc, root)
+
+
+def test_cgroup_event_reader_rejects_malformed_and_duplicate_keys(tmp_path):
+    proc, root, current = _cgroup_event_fixture(tmp_path)
+    for contents in ("max nope\n", "max 0 extra\n", "max 0\nmax 0\n"):
+        (current / "pids.events").write_text(contents)
+        with pytest.raises(run_gate.GateInfraError, match="malformed"):
+            run_gate.read_current_cgroup_events(proc, root)
+
+
+def test_cgroup_event_reader_reports_missing_event_file(tmp_path):
+    proc, root, current = _cgroup_event_fixture(tmp_path)
+    (current / "pids.events").unlink()
+    with pytest.raises(run_gate.GateInfraError, match="cannot read cgroup event"):
+        run_gate.read_current_cgroup_events(proc, root)
+
+
+def test_cgroup_event_reader_reports_unreadable_proc_cgroup(tmp_path):
+    root = tmp_path / "sys" / "fs" / "cgroup"
+    root.mkdir(parents=True)
+    with pytest.raises(run_gate.GateInfraError,
+                       match="cannot identify run-gate's cgroup"):
+        run_gate.read_current_cgroup_events(
+            tmp_path / "missing" / "proc-cgroup", root)
+
+
+def test_cgroup_event_guard_detects_moved_and_decreasing_counters(tmp_path):
+    proc, root, current = _cgroup_event_fixture(tmp_path)
+    moved = root / "other"
+    moved.mkdir()
+    (moved / "pids.events").write_text("max 0\n")
+    (moved / "memory.events").write_text("oom_kill 0\n")
+
+    def move_cgroup():
+        proc.write_text("0::/other\n")
+        return 0
+
+    with pytest.raises(run_gate.LaneCgroupEventError,
+                       match="moved from cgroup") as moved_error:
+        run_gate.run_lane_with_cgroup_event_guard(
+            "moved", move_cgroup, proc_cgroup=proc, cgroup_root=root)
+    assert moved_error.value.lane_exit_code == 0
+
+    proc.write_text("0::/worker\n")
+    (current / "pids.events").write_text("max 2\n")
+
+    def decrease_counter():
+        (current / "pids.events").write_text("max 1\n")
+        return 0
+
+    with pytest.raises(run_gate.LaneCgroupEventError,
+                       match="moved backwards") as backwards_error:
+        run_gate.run_lane_with_cgroup_event_guard(
+            "decreased", decrease_counter,
+            proc_cgroup=proc, cgroup_root=root)
+    assert backwards_error.value.lane_exit_code == 0
+
+
+def test_cgroup_event_guard_preserves_raw_status_when_after_read_fails(
+        tmp_path):
+    proc, root, current = _cgroup_event_fixture(tmp_path)
+
+    def lane_removes_event_file():
+        (current / "memory.events").unlink()
+        return 0
+
+    with pytest.raises(run_gate.LaneCgroupEventError,
+                       match="events could not be read after execution") as caught:
+        run_gate.run_lane_with_cgroup_event_guard(
+            "unreadable-after", lane_removes_event_file,
+            proc_cgroup=proc, cgroup_root=root)
+    assert caught.value.lane_exit_code == 0
+
+
+def test_cgroup_event_guard_overrides_lane_error_but_preserves_raw_code(
+        tmp_path):
+    proc, root, current = _cgroup_event_fixture(tmp_path)
+
+    def budget_limited_lane():
+        (current / "pids.events").write_text("max 1\n")
+        raise run_gate.GateBudgetExceeded(7)
+
+    with pytest.raises(run_gate.LaneCgroupEventError) as caught:
+        run_gate.run_lane_with_cgroup_event_guard(
+            "fork-limited", budget_limited_lane,
+            proc_cgroup=proc, cgroup_root=root)
+    assert caught.value.lane_exit_code == 7
+
+
+def test_cgroup_event_guard_preserves_lane_exception_without_resource_event(
+        tmp_path):
+    proc, root, _current = _cgroup_event_fixture(tmp_path)
+
+    def failed_lane():
+        raise RuntimeError("lane failure")
+
+    with pytest.raises(RuntimeError, match="lane failure"):
+        run_gate.run_lane_with_cgroup_event_guard(
+            "ordinary-error", failed_lane,
+            proc_cgroup=proc, cgroup_root=root)
+
+
+def test_cgroup_event_guard_disabled_does_not_read_cgroup(tmp_path):
+    proc = tmp_path / "missing" / "cgroup"
+    assert run_gate.run_lane_with_cgroup_event_guard(
+        "dry-run", lambda: 0, enabled=False, proc_cgroup=proc) == 0
+
+
+def test_main_refuses_pid1_without_init_before_dispatch(
+        monkeypatch, capsys):
+    called = False
+
+    def dispatch(_argv):
+        nonlocal called
+        called = True
+        return run_gate.LaneResult("PASS")
+
+    monkeypatch.setattr(run_gate, "is_pid1_without_init", lambda: True)
+    monkeypatch.setattr(run_gate, "_dispatch", dispatch)
+    assert run_gate.main(["assay-r2"]) == 2
+    assert not called
+    assert "run-gate is PID 1 with no init" in capsys.readouterr().err
+
+
+def test_main_does_not_treat_lane_args_as_pid1_exemptions(
+        monkeypatch, capsys):
+    called = False
+
+    def dispatch(_argv):
+        nonlocal called
+        called = True
+        return run_gate.LaneResult("PASS")
+
+    monkeypatch.setattr(run_gate, "is_pid1_without_init", lambda: True)
+    monkeypatch.setattr(run_gate, "_dispatch", dispatch)
+    assert run_gate.main(["assay-r2", "--", "--version"]) == 2
+    assert not called
+    captured = capsys.readouterr()
+    assert "run-gate is PID 1 with no init" in captured.err
+    assert captured.out == ""
+
+
+def test_main_does_not_enable_json_from_lane_args_at_pid1(
+        monkeypatch, capsys):
+    monkeypatch.setattr(run_gate, "is_pid1_without_init", lambda: True)
+    assert run_gate.main(["assay-r2", "--", "--json"]) == 2
+    captured = capsys.readouterr()
+    assert "run-gate is PID 1 with no init" in captured.err
+    assert captured.out == ""
+
+
+def test_main_pid1_refusal_keeps_json_on_stdout(monkeypatch, capsys):
+    monkeypatch.setattr(run_gate, "is_pid1_without_init", lambda: True)
+    assert run_gate.main(["--json", "assay-r2"]) == 2
+    captured = capsys.readouterr()
+    assert "`--init` (Docker) or `init: true` (Compose)" in captured.err
+    assert json.loads(captured.out) == {
+        "admission": None, "assay_outcome": None, "exit_code": None,
+        "log_path": None, "members": None, "reason": "pid1-without-init",
+        "verdict": "ERROR"}
+
+
+def test_main_version_keeps_no_config_contract_when_pid1(monkeypatch, capsys):
+    monkeypatch.setattr(run_gate, "is_pid1_without_init", lambda: True)
+    assert run_gate.main(["--version"]) == 0
+    assert capsys.readouterr().out == f"run-gate rev {run_gate.__revision__}\n"
+
+
+def test_pid1_detection_uses_current_process_id(monkeypatch):
+    monkeypatch.setattr(run_gate.os, "getpid", lambda: 1)
+    assert run_gate.is_pid1_without_init()
