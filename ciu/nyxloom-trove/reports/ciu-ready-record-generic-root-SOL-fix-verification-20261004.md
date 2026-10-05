@@ -69,3 +69,22 @@ tests reported 221 passed. The live probe inspected
 `rg55-p6-r2-ciu` as `ready` through candidate source. I did not rerun tests,
 gates, Docker, or the live probe during this review. These results do not
 exercise R1-01's nested-root failure and retry path.
+
+## Follow-up on 2026-10-05
+
+The R1-01 blocker above was implemented after this report: the aggregate CIU
+record stays `allocating` until every root at the saved allocation commit has
+readable facts and the shared root-entry list is persisted. The failure/retry
+and concurrent-inspection oracles are in
+`tests/tests/test_ciu_workspace_adversarial_review.py`.
+
+Reviewing the recovery path then exposed the adjacent CIU-107 case: an
+interrupted adopt with no failure status could still reach `git reset --hard`,
+and legacy root discovery could use a moved checkout's `HEAD`. Commit
+`84f286967` compares resumed worktrees with `fork_point_sha` or, for older
+records, the shared workspace's `base_commit`; a mismatch refuses without
+resetting. Added a real-Git regression that preserves a commit made after an
+interrupted adopt, plus a same-target recovery case and legacy-root commit
+oracles. `py_compile` and `git diff --check` pass on that commit. Its registered
+gate is still pending; the 2026-10-04 gate evidence above is not evidence for
+the updated tree.
