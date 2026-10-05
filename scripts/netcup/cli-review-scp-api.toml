@@ -1,0 +1,2055 @@
+schema_version = 1
+cli_id = "scp-api"
+
+# Every row replays its invocation through the real main() in
+# tests/test_cli_cases_scp_api.py (fake SCP client, HOME and cwd under tmp_path).
+# The library controls --json/--debug-raw/--yes carry one parametrised test per
+# control, with one cli_case marker per route (CLI-EXT-18 is the future
+# library fix that would let one row stand for the control on every route).
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/attach-iso/argument-shape/argument:route:entrypoint:scp-api/attach-iso/server_id"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:f09ec351a4ad00b32bcbfc46c11d67836400dae1729a13a0b93e3c0deede3b39"
+rationale = "The server id is the one required positional and must be an integer: a typo such as 'not-an-id' is refused by the parser before any request, so the provider never sees a malformed path."
+invocation = ["attach-iso", "42", "--iso-id", "1234", "--yes"]
+expected_exit_status = 0
+expected_stdout_contains = "attach requested"
+expected_stderr_contains = "Confirmation accepted via --yes"
+effects = ["Sends one POST /api/v1/servers/42/iso with isoId 1234 after the --yes consent."]
+test_ids = [
+  "tests/test_cli_cases_scp_api.py::test_replayed_case_matches_catalog[attach-iso-shape-server-id]",
+  "tests/test_cli_cases_scp_api.py::test_invalid_argument_is_refused[attach-iso-server-id]",
+]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/attach-iso/exclusive-conflict/iso-source/option:route:entrypoint:scp-api/attach-iso/--iso-id/option:route:entrypoint:scp-api/attach-iso/--user-iso-name"
+state = "active"
+decision = "refuse"
+reviewed_signature = "sha256:b0f1ebf94fc2a2c0287f073103dd864684f3c0180a7a45de4e95b0ee87a03fd7"
+rationale = "A provider ISO id and an uploaded user ISO name name two different images; accepting both would silently pick one, so the parser refuses the pair."
+invocation = ["attach-iso", "42", "--iso-id", "1234", "--user-iso-name", "a.iso"]
+expected_exit_status = 2
+expected_stdout_contains = ""
+expected_stderr_contains = "not allowed with argument --iso-id"
+effects = ["Refuses at parse time; makes no request."]
+test_ids = ["tests/test_cli_cases_scp_api.py::test_replayed_case_matches_catalog[attach-iso-conflict-iso]"]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/attach-iso/exclusive-member/iso-source/option:route:entrypoint:scp-api/attach-iso/--iso-id"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:bb8d4977620864e52b8736269bf21724f1b5072926838b774176d338623c2690"
+rationale = "Selecting the provider-catalogue image by numeric id is one of the two accepted ways to name the ISO."
+invocation = ["attach-iso", "42", "--iso-id", "1234", "--yes"]
+expected_exit_status = 0
+expected_stdout_contains = "attach requested"
+expected_stderr_contains = "Confirmation accepted via --yes"
+effects = ["Sends one POST /api/v1/servers/42/iso with only isoId 1234."]
+test_ids = ["tests/test_cli_cases_scp_api.py::test_replayed_case_matches_catalog[attach-iso-member-iso-id]"]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/attach-iso/exclusive-member/iso-source/option:route:entrypoint:scp-api/attach-iso/--user-iso-name"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:f93f345720cc99b745c0dc923e85db17ad34ed030afa7adf311d67ddec667b44"
+rationale = "Selecting an ISO the operator uploaded earlier by its name is the other accepted way to name the image."
+invocation = ["attach-iso", "42", "--user-iso-name", "custom.iso", "--yes"]
+expected_exit_status = 0
+expected_stdout_contains = "attach requested"
+expected_stderr_contains = "Confirmation accepted via --yes"
+effects = ["Sends one POST /api/v1/servers/42/iso with only userIsoName custom.iso."]
+test_ids = ["tests/test_cli_cases_scp_api.py::test_replayed_case_matches_catalog[attach-iso-member-user-iso-name]"]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/attach-iso/minimum"
+state = "active"
+decision = "refuse"
+reviewed_signature = "sha256:1eac32fcdc2455be95c7ec7da33a8a55e931d54a8567a615cafb37a25ca23a5a"
+rationale = "The smallest parse-valid call (server id plus one image option) is still a mutation without consent: with no terminal and no --yes the run refuses rather than attach an ISO unattended. Omitting the image option entirely is refused by the parser (one of --iso-id/--user-iso-name is required)."
+invocation = ["attach-iso", "42", "--iso-id", "1234"]
+expected_exit_status = 2
+expected_stdout_contains = ""
+expected_stderr_contains = "confirmation is required, but stdin is not interactive"
+effects = ["Refuses before sending anything; the server is untouched."]
+test_ids = ["tests/test_cli_cases_scp_api.py::test_replayed_case_matches_catalog[attach-iso-minimum]"]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/attach-iso/option-spelling/option:route:entrypoint:scp-api/attach-iso/--change-boot-device-to-cdrom/--change-boot-device-to-cdrom"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:668077da32986d0b6a4b06f95b3d165d1028e5e0086e796aa3a97757e8ccd93f"
+rationale = "Opt-in flag so the guest boots from the attached ISO; off by default so a plain attach never changes the boot order."
+invocation = ["attach-iso", "42", "--iso-id", "1234", "--change-boot-device-to-cdrom", "--yes"]
+expected_exit_status = 0
+expected_stdout_contains = "attach requested"
+expected_stderr_contains = "Confirmation accepted via --yes"
+effects = ["Sends one POST /api/v1/servers/42/iso with isoId 1234 and changeBootDeviceToCdrom true."]
+test_ids = ["tests/test_cli_cases_scp_api.py::test_replayed_case_matches_catalog[attach-iso-change-boot]"]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/attach-iso/option-spelling/option:route:entrypoint:scp-api/attach-iso/--debug-raw/--debug-raw"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:19b30bced643836aa3e4dcdfef95fd7a412f87b3541442ba1a8f88c12219791b"
+rationale = "Library debugging control: turns redaction of diagnostic output off and warns that secrets may be exposed; it never changes which requests are made."
+invocation = ["attach-iso", "42", "--iso-id", "1234", "--debug-raw", "--yes"]
+expected_exit_status = 0
+expected_stdout_contains = "attach requested"
+expected_stderr_contains = "--debug-raw is active"
+effects = ["Prints the secrets-exposure warning on stderr, then sends the same single POST as without the flag."]
+test_ids = ["tests/test_cli_cases_scp_api.py::test_debug_raw_warns_and_is_off_by_default[attach-iso]"]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/attach-iso/option-spelling/option:route:entrypoint:scp-api/attach-iso/--iso-id/--iso-id"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:246e6aaeba4de446bdfa3f8e7b9415796bcb28d896e9bac0525b527818e2664b"
+rationale = "The numeric provider image id; it must be an integer so a mistyped value is refused before the request."
+invocation = ["attach-iso", "42", "--iso-id", "1234", "--yes"]
+expected_exit_status = 0
+expected_stdout_contains = "attach requested"
+expected_stderr_contains = "Confirmation accepted via --yes"
+effects = ["Sends one POST /api/v1/servers/42/iso with isoId 1234."]
+test_ids = ["tests/test_cli_cases_scp_api.py::test_replayed_case_matches_catalog[attach-iso-iso-id]"]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/attach-iso/option-spelling/option:route:entrypoint:scp-api/attach-iso/--json/--json"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:55160902da60e9697384a22a1622b79466437f25360b62d149d9e60addadf987"
+rationale = "Library output control: prints the API result as JSON on stdout for scripting instead of the human message; the request sent is identical."
+invocation = ["attach-iso", "42", "--iso-id", "1234", "--json", "--yes"]
+expected_exit_status = 0
+expected_stdout_contains = "{}"
+expected_stderr_contains = "Confirmation accepted via --yes"
+effects = ["Sends the same single POST as without the flag and prints the (here empty) JSON result on stdout."]
+test_ids = ["tests/test_cli_cases_scp_api.py::test_json_output_is_machine_readable[attach-iso]"]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/attach-iso/option-spelling/option:route:entrypoint:scp-api/attach-iso/--user-iso-name/--user-iso-name"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:f0cd3c6cfd97ddca23c273af7e155ec78925cb5c3a62aee30a554f4e5918296d"
+rationale = "Names a previously uploaded ISO as the provider stores it; free text, validated server-side."
+invocation = ["attach-iso", "42", "--user-iso-name", "custom.iso", "--yes"]
+expected_exit_status = 0
+expected_stdout_contains = "attach requested"
+expected_stderr_contains = "Confirmation accepted via --yes"
+effects = ["Sends one POST /api/v1/servers/42/iso with userIsoName custom.iso."]
+test_ids = ["tests/test_cli_cases_scp_api.py::test_replayed_case_matches_catalog[attach-iso-user-iso-name]"]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/attach-iso/option-spelling/option:route:entrypoint:scp-api/attach-iso/--yes/--yes"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:9733da97f2ded79a55523f5366d7e2c3402d779d49b4e86e2428207a88fd7010"
+rationale = "Library consent control: in a non-interactive run it is the only consent for the mutation; without it the run refuses with exit 2 before any request."
+invocation = ["attach-iso", "42", "--iso-id", "1234", "--yes"]
+expected_exit_status = 0
+expected_stdout_contains = "attach requested"
+expected_stderr_contains = "Confirmation accepted via --yes"
+effects = ["Skips the confirmation prompt and sends the single attach POST; without it nothing is sent."]
+test_ids = ["tests/test_cli_cases_scp_api.py::test_yes_is_the_only_consent_in_a_non_interactive_run[attach-iso]"]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/disks/argument-choice/argument:route:entrypoint:scp-api/disks/action/d7e3e586da"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:ee374681e5ad450103b6142e57ade87f3c5a4cb36669516de946155ea5699738"
+rationale = "'supported-drivers' is the one action: it lists the storage drivers the server supports (a read)."
+invocation = ["disks", "42", "supported-drivers"]
+expected_exit_status = 0
+expected_stdout_contains = "VIRTIO, SATA"
+expected_stderr_contains = ""
+effects = ["Reads GET /api/v1/servers/42/disks/supported-drivers; no mutation."]
+test_ids = ["tests/test_cli_cases_scp_api.py::test_replayed_case_matches_catalog[disks-choice-supported-drivers]"]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/disks/argument-shape/argument:route:entrypoint:scp-api/disks/action"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:53df7da055e767b0cdeede4f3d3257ea22f33a0f8d4bf454d15e123a4c544166"
+rationale = "The optional action positional accepts only the declared choice; any other word is refused by the parser instead of being treated as a different read."
+invocation = ["disks", "42", "supported-drivers"]
+expected_exit_status = 0
+expected_stdout_contains = "VIRTIO, SATA"
+expected_stderr_contains = ""
+effects = ["Reads GET /api/v1/servers/42/disks/supported-drivers; no mutation."]
+test_ids = [
+  "tests/test_cli_cases_scp_api.py::test_replayed_case_matches_catalog[disks-shape-action]",
+  "tests/test_cli_cases_scp_api.py::test_invalid_argument_is_refused[disks-action]",
+]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/disks/argument-shape/argument:route:entrypoint:scp-api/disks/server_id"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:d1db5e6a50b3aa9ed02e6e788b1aba26125b4aa80e06a3cd3844c2f2b5788331"
+rationale = "The optional server id must be an integer; omitting it lists disks for every server, a non-integer is refused before any request."
+invocation = ["disks", "42"]
+expected_exit_status = 0
+expected_stdout_contains = "capacityInMiB"
+expected_stderr_contains = ""
+effects = ["Reads GET /api/v1/servers/42/disks only; no mutation."]
+test_ids = [
+  "tests/test_cli_cases_scp_api.py::test_replayed_case_matches_catalog[disks-shape-server-id]",
+  "tests/test_cli_cases_scp_api.py::test_invalid_argument_is_refused[disks-server-id]",
+]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/disks/minimum"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:3d46259653b7ced66a8fd4ef3c8a91efb9374834369274f4f2674e8591a1e83b"
+rationale = "A bare 'disks' is a safe read of every server's disks; nothing is required."
+invocation = ["disks"]
+expected_exit_status = 0
+expected_stdout_contains = "serverName"
+expected_stderr_contains = ""
+effects = ["Reads GET /api/v1/servers and each server's /disks; no mutation."]
+test_ids = ["tests/test_cli_cases_scp_api.py::test_replayed_case_matches_catalog[disks-minimum]"]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/disks/option-spelling/option:route:entrypoint:scp-api/disks/--debug-raw/--debug-raw"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:4fcda2caa19f2312bf3538dc13388031538f900d4bea7a42e9a7612218ebec32"
+rationale = "Library debugging control: turns redaction of diagnostic output off and warns that secrets may be exposed; it never changes which requests are made."
+invocation = ["disks", "42", "--debug-raw"]
+expected_exit_status = 0
+expected_stdout_contains = "capacityInMiB"
+expected_stderr_contains = "--debug-raw is active"
+effects = ["Prints the secrets-exposure warning on stderr, then performs the same read as without the flag."]
+test_ids = ["tests/test_cli_cases_scp_api.py::test_debug_raw_warns_and_is_off_by_default[disks]"]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/disks/option-spelling/option:route:entrypoint:scp-api/disks/--json/--json"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:4cdced5f5411bb41f3189a97ad979372f60dab15954c104bf69289adebc2b27f"
+rationale = "Library output control: prints the disk list as JSON on stdout for scripting instead of a table."
+invocation = ["disks", "42", "--json"]
+expected_exit_status = 0
+expected_stdout_contains = "VIRTIO"
+expected_stderr_contains = ""
+effects = ["Performs the same read as without the flag and prints the JSON list."]
+test_ids = ["tests/test_cli_cases_scp_api.py::test_json_output_is_machine_readable[disks]"]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/firewall-policies/argument-choice/argument:route:entrypoint:scp-api/firewall-policies/action/5498a731a1"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:757617408b6afabec0c8aa3ebac8c79e8d46b503988df563a3f9c7002029e189"
+rationale = "'create' adds a new policy from --policy-json or --policy-file; it is a mutation and needs consent."
+invocation = ["firewall-policies", "create", "--policy-json", '{"name": "ssh-in", "rules": []}', "--yes"]
+expected_exit_status = 0
+expected_stdout_contains = "firewall policy request accepted"
+expected_stderr_contains = "policy contains no rules"
+effects = ["Sends one POST /api/v1/users/1/firewall-policies with the parsed policy after --yes; warns that an empty rule list matches no traffic."]
+test_ids = ["tests/test_cli_cases_scp_api.py::test_replayed_case_matches_catalog[firewall-policies-choice-create]"]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/firewall-policies/argument-choice/argument:route:entrypoint:scp-api/firewall-policies/action/904a70f064"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:a43f03dd05d80ce95cb5e570aaaaacf988092865b5ee15b3f245567cb9381b1e"
+rationale = "'put' replaces an existing policy identified by policy_id; it is a mutation and needs consent."
+invocation = ["firewall-policies", "put", "12", "--policy-file", "policy.json", "--yes"]
+expected_exit_status = 0
+expected_stdout_contains = "firewall policy request accepted"
+expected_stderr_contains = "policy contains no rules"
+effects = ["Sends one PUT /api/v1/users/1/firewall-policies/12 with the policy read from the file after --yes."]
+test_ids = ["tests/test_cli_cases_scp_api.py::test_replayed_case_matches_catalog[firewall-policies-choice-put]"]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/firewall-policies/argument-shape/argument:route:entrypoint:scp-api/firewall-policies/action"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:6a8f0aa94a0d4f891767c9cc7ece5ac760436e4769168e9200ee7fd774528bd2"
+rationale = "The optional action accepts only create or put; any other word is refused by the parser, so a typo can never fall through to the list read."
+invocation = ["firewall-policies", "create", "--policy-json", '{"name": "ssh-in", "rules": []}', "--yes"]
+expected_exit_status = 0
+expected_stdout_contains = "firewall policy request accepted"
+expected_stderr_contains = "policy contains no rules"
+effects = ["Sends one POST /api/v1/users/1/firewall-policies after --yes."]
+test_ids = [
+  "tests/test_cli_cases_scp_api.py::test_replayed_case_matches_catalog[firewall-policies-shape-action]",
+  "tests/test_cli_cases_scp_api.py::test_invalid_argument_is_refused[firewall-policies-action]",
+]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/firewall-policies/argument-shape/argument:route:entrypoint:scp-api/firewall-policies/policy_id"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:7d168e6be20bde088616519a4354b87fc89ff921cf15a91f8b8cdecc561bbd5e"
+rationale = "The policy id used by 'put' must be an integer; a non-integer is refused before any request."
+invocation = ["firewall-policies", "put", "12", "--policy-file", "policy.json", "--yes"]
+expected_exit_status = 0
+expected_stdout_contains = "firewall policy request accepted"
+expected_stderr_contains = "policy contains no rules"
+effects = ["Sends one PUT /api/v1/users/1/firewall-policies/12 after --yes."]
+test_ids = [
+  "tests/test_cli_cases_scp_api.py::test_replayed_case_matches_catalog[firewall-policies-shape-policy-id]",
+  "tests/test_cli_cases_scp_api.py::test_invalid_argument_is_refused[firewall-policies-policy-id]",
+]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/firewall-policies/exclusive-conflict/parser-exclusive-680f7b6ad777/option:route:entrypoint:scp-api/firewall-policies/--policy-file/option:route:entrypoint:scp-api/firewall-policies/--policy-json"
+state = "active"
+decision = "refuse"
+reviewed_signature = "sha256:54bcae5f1db7449e14bedd9f6cf336e1d24259f727382939d8b7a947d799502f"
+rationale = "The policy body comes from inline JSON or from a file, never both; giving both is ambiguous so the parser refuses it."
+invocation = ["firewall-policies", "create", "--policy-json", "{}", "--policy-file", "policy.json"]
+expected_exit_status = 2
+expected_stdout_contains = ""
+expected_stderr_contains = "not allowed with argument --policy-json"
+effects = ["Refuses at parse time; makes no request."]
+test_ids = ["tests/test_cli_cases_scp_api.py::test_replayed_case_matches_catalog[firewall-policies-conflict-policy]"]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/firewall-policies/exclusive-member/parser-exclusive-680f7b6ad777/option:route:entrypoint:scp-api/firewall-policies/--policy-file"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:69ece2a253330743c412b60a1fba09cb9d3c2eeb15ebd2387b87b2eed8fb265c"
+rationale = "Reading the policy body from a file is the accepted way to submit a long policy."
+invocation = ["firewall-policies", "put", "12", "--policy-file", "policy.json", "--yes"]
+expected_exit_status = 0
+expected_stdout_contains = "firewall policy request accepted"
+expected_stderr_contains = "policy contains no rules"
+effects = ["Sends one PUT with the body parsed from policy.json."]
+test_ids = ["tests/test_cli_cases_scp_api.py::test_replayed_case_matches_catalog[firewall-policies-member-policy-file]"]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/firewall-policies/exclusive-member/parser-exclusive-680f7b6ad777/option:route:entrypoint:scp-api/firewall-policies/--policy-json"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:1960ad5234c7709c8e28f1ba5a81165cbd011aba44700e7b1c9431281db4b9fd"
+rationale = "Passing the policy body inline is the accepted way to submit a short policy."
+invocation = ["firewall-policies", "create", "--policy-json", '{"name": "ssh-in", "rules": []}', "--yes"]
+expected_exit_status = 0
+expected_stdout_contains = "firewall policy request accepted"
+expected_stderr_contains = "policy contains no rules"
+effects = ["Sends one POST with the inline body."]
+test_ids = ["tests/test_cli_cases_scp_api.py::test_replayed_case_matches_catalog[firewall-policies-member-policy-json]"]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/firewall-policies/minimum"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:70ed521d2c5ef776ba17f3d61ae6e26256fd7316621fa114c76802c308f91ff0"
+rationale = "A bare 'firewall-policies' is a safe read that lists the account's policies; nothing is required."
+invocation = ["firewall-policies"]
+expected_exit_status = 0
+expected_stdout_contains = "ssh-in"
+expected_stderr_contains = ""
+effects = ["Reads the user id and GET /api/v1/users/1/firewall-policies; no mutation."]
+test_ids = ["tests/test_cli_cases_scp_api.py::test_replayed_case_matches_catalog[firewall-policies-minimum]"]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/firewall-policies/option-spelling/option:route:entrypoint:scp-api/firewall-policies/--debug-raw/--debug-raw"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:444e2a99498934a46ca14d31c7f1c4fff3b7e2710213fc19abb7ca1ee1cc3ab7"
+rationale = "Library debugging control: turns redaction of diagnostic output off and warns that secrets may be exposed; it never changes which requests are made."
+invocation = ["firewall-policies", "--debug-raw"]
+expected_exit_status = 0
+expected_stdout_contains = "ssh-in"
+expected_stderr_contains = "--debug-raw is active"
+effects = ["Prints the secrets-exposure warning on stderr, then performs the same read as without the flag."]
+test_ids = ["tests/test_cli_cases_scp_api.py::test_debug_raw_warns_and_is_off_by_default[firewall-policies]"]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/firewall-policies/option-spelling/option:route:entrypoint:scp-api/firewall-policies/--json/--json"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:1f8e100a9b134e6f7b01457f01eb1a887ee67d2f0631d434feeaf2349dbb9f3e"
+rationale = "Library output control: prints the policy list as JSON on stdout for scripting instead of a table."
+invocation = ["firewall-policies", "--json"]
+expected_exit_status = 0
+expected_stdout_contains = "ssh-in"
+expected_stderr_contains = ""
+effects = ["Performs the same read as without the flag and prints the JSON list."]
+test_ids = ["tests/test_cli_cases_scp_api.py::test_json_output_is_machine_readable[firewall-policies]"]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/firewall-policies/option-spelling/option:route:entrypoint:scp-api/firewall-policies/--limit/--limit"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:72dd0edf876b15fc0c0f5868725fd6d44c03b99f2ba316a7fb0ad062ab9fb976"
+rationale = "Caps the number of policies the server returns; sent as the limit query parameter and unset by default."
+invocation = ["firewall-policies", "--limit", "5"]
+expected_exit_status = 0
+expected_stdout_contains = "ssh-in"
+expected_stderr_contains = ""
+effects = ["Reads GET /api/v1/users/1/firewall-policies with limit=5; no mutation."]
+test_ids = ["tests/test_cli_cases_scp_api.py::test_replayed_case_matches_catalog[firewall-policies-limit]"]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/firewall-policies/option-spelling/option:route:entrypoint:scp-api/firewall-policies/--offset/--offset"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:3e125080f6b28a55d2e95cdd61e6e29d12a14eeb0bcebd360cfbfd3108b71a70"
+rationale = "Skips the first N policies for paging; sent as the offset query parameter and unset by default."
+invocation = ["firewall-policies", "--offset", "2"]
+expected_exit_status = 0
+expected_stdout_contains = "ssh-in"
+expected_stderr_contains = ""
+effects = ["Reads GET /api/v1/users/1/firewall-policies with offset=2; no mutation."]
+test_ids = ["tests/test_cli_cases_scp_api.py::test_replayed_case_matches_catalog[firewall-policies-offset]"]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/firewall-policies/option-spelling/option:route:entrypoint:scp-api/firewall-policies/--policy-file/--policy-file"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:a48287320af2c9c7c4e320efad760c3fa6b9b971b6b01936c3d87aaa96fbdd90"
+rationale = "Path of a JSON policy file for create or put; the file is read and parsed before consent is requested."
+invocation = ["firewall-policies", "put", "12", "--policy-file", "policy.json", "--yes"]
+expected_exit_status = 0
+expected_stdout_contains = "firewall policy request accepted"
+expected_stderr_contains = "policy contains no rules"
+effects = ["Sends one PUT with the body parsed from the file."]
+test_ids = ["tests/test_cli_cases_scp_api.py::test_replayed_case_matches_catalog[firewall-policies-policy-file]"]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/firewall-policies/option-spelling/option:route:entrypoint:scp-api/firewall-policies/--policy-json/--policy-json"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:da6708e42fc7b050e9f6e49afd28553e1213d6d59c0e0937fa76f11a5ec69b9b"
+rationale = "Inline JSON policy for create or put; parsed before consent is requested."
+invocation = ["firewall-policies", "create", "--policy-json", '{"name": "ssh-in", "rules": []}', "--yes"]
+expected_exit_status = 0
+expected_stdout_contains = "firewall policy request accepted"
+expected_stderr_contains = "policy contains no rules"
+effects = ["Sends one POST with the inline body."]
+test_ids = ["tests/test_cli_cases_scp_api.py::test_replayed_case_matches_catalog[firewall-policies-policy-json]"]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/firewall-policies/option-spelling/option:route:entrypoint:scp-api/firewall-policies/--query/--filter"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:56bbd1ece6e2de105b9ba70d845a908291b65535acf514abe698ebab802474cb"
+rationale = "--filter is the alias of --query: a free-text search sent as the q parameter."
+invocation = ["firewall-policies", "--filter", "ssh"]
+expected_exit_status = 0
+expected_stdout_contains = "ssh-in"
+expected_stderr_contains = ""
+effects = ["Reads GET /api/v1/users/1/firewall-policies with q=ssh; no mutation."]
+test_ids = ["tests/test_cli_cases_scp_api.py::test_replayed_case_matches_catalog[firewall-policies-filter]"]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/firewall-policies/option-spelling/option:route:entrypoint:scp-api/firewall-policies/--query/--query"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:698b0824b8875ea52f6a9ceaaaaa840356d842f24b6189ffa405347a335e3c68"
+rationale = "Free-text search over the policy list, sent as the q query parameter."
+invocation = ["firewall-policies", "--query", "ssh"]
+expected_exit_status = 0
+expected_stdout_contains = "ssh-in"
+expected_stderr_contains = ""
+effects = ["Reads GET /api/v1/users/1/firewall-policies with q=ssh; no mutation."]
+test_ids = ["tests/test_cli_cases_scp_api.py::test_replayed_case_matches_catalog[firewall-policies-query]"]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/firewall-policies/option-spelling/option:route:entrypoint:scp-api/firewall-policies/--yes/--yes"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:a437250c8a2196e70fc86caf4c6106b050fa269ba85e75d788fd35c63316d5eb"
+rationale = "Library consent control: in a non-interactive run it is the only consent for create/put; without it the run refuses with exit 2 before any mutation."
+invocation = ["firewall-policies", "create", "--policy-json", '{"name": "ssh-in", "rules": []}', "--yes"]
+expected_exit_status = 0
+expected_stdout_contains = "firewall policy request accepted"
+expected_stderr_contains = "Confirmation accepted via --yes"
+effects = ["Skips the confirmation prompt and sends the single POST; without it nothing is sent."]
+test_ids = ["tests/test_cli_cases_scp_api.py::test_yes_is_the_only_consent_in_a_non_interactive_run[firewall-policies]"]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/firewall/argument-choice/argument:route:entrypoint:scp-api/firewall/action/306bcefe52"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:fbe41712ecd2b8a5671e8edcbe4b66c15b8289ff32213db255277a5834d96dc6"
+rationale = "'get' reads the firewall state of the server's interface; it is the default behaviour made explicit and a safe read."
+invocation = ["firewall", "42", "aa:bb:cc:dd:ee:ff", "get"]
+expected_exit_status = 0
+expected_stdout_contains = "active: yes"
+expected_stderr_contains = ""
+effects = ["Reads the named interface's firewall directly (the MAC is given, so the server record is not read first); no mutation."]
+test_ids = ["tests/test_cli_cases_scp_api.py::test_replayed_case_matches_catalog[firewall-choice-get]"]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/firewall/argument-choice/argument:route:entrypoint:scp-api/firewall/action/c7f5814b92"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:4ee08077fb97f634c5f2cb9be2d602207627770343b1d6d9381b504499f55728"
+rationale = "'set' changes the interface firewall (active flag and policy attachments); it is a mutation, needs --active or --inactive and consent."
+invocation = ["firewall", "42", "aa:bb:cc:dd:ee:ff", "set", "--active", "--yes"]
+expected_exit_status = 0
+expected_stdout_contains = "firewall update requested"
+expected_stderr_contains = "Confirmation accepted via --yes"
+effects = ["Sends one PUT to the named interface's firewall with active true and no policies after --yes."]
+test_ids = ["tests/test_cli_cases_scp_api.py::test_replayed_case_matches_catalog[firewall-choice-set]"]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/firewall/argument-shape/argument:route:entrypoint:scp-api/firewall/action"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:8e31ee24fddf5e6949c2ed1e26cc78f522a78b869b6346cd282eedfc20be1178"
+rationale = "The optional action accepts only get or set; any other word is refused by the parser. The handler swaps the optional mac and action positionals, so both orders work."
+invocation = ["firewall", "42", "aa:bb:cc:dd:ee:ff", "get"]
+expected_exit_status = 0
+expected_stdout_contains = "active: yes"
+expected_stderr_contains = ""
+effects = ["Reads the named interface's firewall; no mutation."]
+test_ids = [
+  "tests/test_cli_cases_scp_api.py::test_replayed_case_matches_catalog[firewall-shape-action]",
+  "tests/test_cli_cases_scp_api.py::test_invalid_argument_is_refused[firewall-action]",
+]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/firewall/argument-shape/argument:route:entrypoint:scp-api/firewall/mac"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:414c51b709b197829745915c297a78569102f20d12ea84a3856952dbdb99aeaf"
+rationale = "The optional interface MAC must look like aa:bb:cc:dd:ee:ff; anything else is refused before any request. Without it the first interface of the server is used."
+invocation = ["firewall", "42", "aa:bb:cc:dd:ee:ff", "get"]
+expected_exit_status = 0
+expected_stdout_contains = "active: yes"
+expected_stderr_contains = ""
+effects = ["Reads the named interface's firewall directly; no mutation."]
+test_ids = [
+  "tests/test_cli_cases_scp_api.py::test_replayed_case_matches_catalog[firewall-shape-mac]",
+  "tests/test_cli_cases_scp_api.py::test_invalid_argument_is_refused[firewall-mac]",
+]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/firewall/argument-shape/argument:route:entrypoint:scp-api/firewall/server_id"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:9a3c92a716887bac01464d48be2ed7164d578e6d8b70e11b218f20b116aaeb06"
+rationale = "The server id is the one required positional and must be an integer; a non-integer is refused before any request."
+invocation = ["firewall", "42", "get"]
+expected_exit_status = 0
+expected_stdout_contains = "active: yes"
+expected_stderr_contains = ""
+effects = ["Reads the server and its interface firewall; no mutation."]
+test_ids = [
+  "tests/test_cli_cases_scp_api.py::test_replayed_case_matches_catalog[firewall-shape-server-id]",
+  "tests/test_cli_cases_scp_api.py::test_invalid_argument_is_refused[firewall-server-id]",
+]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/firewall/exclusive-conflict/parser-exclusive-f2a32d4e9855/option:route:entrypoint:scp-api/firewall/--active/option:route:entrypoint:scp-api/firewall/--inactive"
+state = "active"
+decision = "refuse"
+reviewed_signature = "sha256:833eca8f9544617700e03fa445396929d002388732dd3616a6ba3b95413eb328"
+rationale = "A firewall cannot be switched on and off in one request; the parser refuses the contradictory pair."
+invocation = ["firewall", "42", "set", "--active", "--inactive", "--yes"]
+expected_exit_status = 2
+expected_stdout_contains = ""
+expected_stderr_contains = "--inactive: not allowed with argument --active"
+effects = ["Refuses at parse time; makes no request."]
+test_ids = ["tests/test_cli_cases_scp_api.py::test_replayed_case_matches_catalog[firewall-conflict-active]"]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/firewall/exclusive-member/parser-exclusive-f2a32d4e9855/option:route:entrypoint:scp-api/firewall/--active"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:ee6a15192d5658a16091bf34af54251e4f096430356bffb7a3919e994ad629b8"
+rationale = "Switches the interface firewall on; one of the two accepted states for 'set'."
+invocation = ["firewall", "42", "set", "--active", "--yes"]
+expected_exit_status = 0
+expected_stdout_contains = "firewall update requested"
+expected_stderr_contains = "Confirmation accepted via --yes"
+effects = ["Sends one PUT to the interface firewall with active true."]
+test_ids = ["tests/test_cli_cases_scp_api.py::test_replayed_case_matches_catalog[firewall-member-active]"]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/firewall/exclusive-member/parser-exclusive-f2a32d4e9855/option:route:entrypoint:scp-api/firewall/--inactive"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:c502cd88c3a1abc9c7955609a65e2e3fa6e1bc6e40fe019a7fa61058ad6b2cde"
+rationale = "Switches the interface firewall off; the other accepted state for 'set'."
+invocation = ["firewall", "42", "set", "--inactive", "--yes"]
+expected_exit_status = 0
+expected_stdout_contains = "firewall update requested"
+expected_stderr_contains = "Confirmation accepted via --yes"
+effects = ["Sends one PUT to the interface firewall with active false."]
+test_ids = ["tests/test_cli_cases_scp_api.py::test_replayed_case_matches_catalog[firewall-member-inactive]"]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/firewall/minimum"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:ec3c8657d6581f0b2d5af96ae82ceb36d923ca11970ef7276cbb5a9941bffb79"
+rationale = "Only the server id is required; the default action is a safe read of the first interface's firewall."
+invocation = ["firewall", "42"]
+expected_exit_status = 0
+expected_stdout_contains = "active: yes"
+expected_stderr_contains = ""
+effects = ["Reads the server and its first interface's firewall; no mutation."]
+test_ids = ["tests/test_cli_cases_scp_api.py::test_replayed_case_matches_catalog[firewall-minimum]"]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/firewall/option-spelling/option:route:entrypoint:scp-api/firewall/--active/--active"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:761cd51e6ff6c4be1f391e300589ba715214da40a994be1c44c3036fe5ddc4ad"
+rationale = "Spelling of the switch-on flag; only meaningful with 'set'."
+invocation = ["firewall", "42", "set", "--active", "--yes"]
+expected_exit_status = 0
+expected_stdout_contains = "firewall update requested"
+expected_stderr_contains = "Confirmation accepted via --yes"
+effects = ["Sends one PUT to the interface firewall with active true."]
+test_ids = ["tests/test_cli_cases_scp_api.py::test_replayed_case_matches_catalog[firewall-active]"]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/firewall/option-spelling/option:route:entrypoint:scp-api/firewall/--consistency-check/--consistency-check"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:53ff5fca64c5887de350e52583b87c88651b4b9370a08434d853b44a8f68b145"
+rationale = "Asks the provider to verify the firewall's consistency while reading it; only meaningful with 'get' and off by default."
+invocation = ["firewall", "42", "aa:bb:cc:dd:ee:ff", "get", "--consistency-check"]
+expected_exit_status = 0
+expected_stdout_contains = "active: yes"
+expected_stderr_contains = ""
+effects = ["Reads the interface firewall with consistencyCheck=true; no mutation."]
+test_ids = ["tests/test_cli_cases_scp_api.py::test_replayed_case_matches_catalog[firewall-consistency-check]"]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/firewall/option-spelling/option:route:entrypoint:scp-api/firewall/--copied-policy-id/--copied-policy-id"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:32fd02d2eb87b3525d7ecd364eee2e457bfad98fad3dc1a79725b660eb731967"
+rationale = "Attaches a copied policy by integer id when setting the firewall; only meaningful with 'set'."
+invocation = ["firewall", "42", "set", "--copied-policy-id", "3", "--active", "--yes"]
+expected_exit_status = 0
+expected_stdout_contains = "firewall update requested"
+expected_stderr_contains = "Confirmation accepted via --yes"
+effects = ["Sends one PUT with copiedPolicies [{id: 3}]."]
+test_ids = ["tests/test_cli_cases_scp_api.py::test_replayed_case_matches_catalog[firewall-copied-policy-id]"]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/firewall/option-spelling/option:route:entrypoint:scp-api/firewall/--debug-raw/--debug-raw"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:94aa1463eb1700dbb9e92f426b7daabf082666a3f03b755ff67d57c9109dd473"
+rationale = "Library debugging control: turns redaction of diagnostic output off and warns that secrets may be exposed; it never changes which requests are made."
+invocation = ["firewall", "42", "--debug-raw"]
+expected_exit_status = 0
+expected_stdout_contains = "active: yes"
+expected_stderr_contains = "--debug-raw is active"
+effects = ["Prints the secrets-exposure warning on stderr, then performs the same read as without the flag."]
+test_ids = ["tests/test_cli_cases_scp_api.py::test_debug_raw_warns_and_is_off_by_default[firewall]"]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/firewall/option-spelling/option:route:entrypoint:scp-api/firewall/--inactive/--inactive"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:580bea7f998e250dbac0645572057a1f1d129c3caf7fe85c8831313ed70f5672"
+rationale = "Spelling of the switch-off flag; only meaningful with 'set'."
+invocation = ["firewall", "42", "set", "--inactive", "--yes"]
+expected_exit_status = 0
+expected_stdout_contains = "firewall update requested"
+expected_stderr_contains = "Confirmation accepted via --yes"
+effects = ["Sends one PUT to the interface firewall with active false."]
+test_ids = ["tests/test_cli_cases_scp_api.py::test_replayed_case_matches_catalog[firewall-inactive]"]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/firewall/option-spelling/option:route:entrypoint:scp-api/firewall/--json/--json"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:b0ed1d438a57bb2c10add67d6e234ddc05ba6d10b73500642b879e9a77884155"
+rationale = "Library output control: prints the firewall state as JSON on stdout for scripting."
+invocation = ["firewall", "42", "--json"]
+expected_exit_status = 0
+expected_stdout_contains = "active"
+expected_stderr_contains = ""
+effects = ["Performs the same read as without the flag and prints the JSON object."]
+test_ids = ["tests/test_cli_cases_scp_api.py::test_json_output_is_machine_readable[firewall]"]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/firewall/option-spelling/option:route:entrypoint:scp-api/firewall/--user-policy-id/--user-policy-id"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:c45436cbac2f9eb618725b9c385d01efee87354d256c3b2aee37939e3de54618"
+rationale = "Attaches one of the account's own policies by integer id when setting the firewall; only meaningful with 'set'."
+invocation = ["firewall", "42", "set", "--user-policy-id", "4", "--active", "--yes"]
+expected_exit_status = 0
+expected_stdout_contains = "firewall update requested"
+expected_stderr_contains = "Confirmation accepted via --yes"
+effects = ["Sends one PUT with userPolicies [{id: 4}]."]
+test_ids = ["tests/test_cli_cases_scp_api.py::test_replayed_case_matches_catalog[firewall-user-policy-id]"]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/firewall/option-spelling/option:route:entrypoint:scp-api/firewall/--yes/--yes"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:5956ebc1ff767f82dbe4462572bb388ed63b099c11874e9638eeb24892b28150"
+rationale = "Library consent control: in a non-interactive run it is the only consent for 'set'; without it the run refuses with exit 2 before any mutation."
+invocation = ["firewall", "42", "set", "--active", "--yes"]
+expected_exit_status = 0
+expected_stdout_contains = "firewall update requested"
+expected_stderr_contains = "Confirmation accepted via --yes"
+effects = ["Skips the confirmation prompt and sends the single PUT; without it nothing is sent."]
+test_ids = ["tests/test_cli_cases_scp_api.py::test_yes_is_the_only_consent_in_a_non_interactive_run[firewall]"]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/guest-agent-status/argument-shape/argument:route:entrypoint:scp-api/guest-agent-status/server_id"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:e8ed24aa90959483cc1e9ea227867410e6805e4607b90e1b68b9eb577e8e34ca"
+rationale = "The server id is required and must be an integer; a non-integer is refused before any request."
+invocation = ["guest-agent-status", "42"]
+expected_exit_status = 0
+expected_stdout_contains = "available: yes"
+expected_stderr_contains = ""
+effects = ["Reads GET /api/v1/servers/42/guest-agent/status; no mutation."]
+test_ids = [
+  "tests/test_cli_cases_scp_api.py::test_replayed_case_matches_catalog[guest-agent-status-shape-server-id]",
+  "tests/test_cli_cases_scp_api.py::test_invalid_argument_is_refused[guest-agent-status-server-id]",
+]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/guest-agent-status/minimum"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:83cbffa8344600253401308c39d51764793cc4f50d61867a200bf97a79245f82"
+rationale = "The server id is the only requirement and the command is a pure read."
+invocation = ["guest-agent-status", "42"]
+expected_exit_status = 0
+expected_stdout_contains = "available: yes"
+expected_stderr_contains = ""
+effects = ["Reads GET /api/v1/servers/42/guest-agent/status; no mutation."]
+test_ids = ["tests/test_cli_cases_scp_api.py::test_replayed_case_matches_catalog[guest-agent-status-minimum]"]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/guest-agent-status/option-spelling/option:route:entrypoint:scp-api/guest-agent-status/--debug-raw/--debug-raw"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:0a70088ef22ee27f7e9a8189eaff3630fd1091b337487c71ef661fdf2dd4da90"
+rationale = "Library debugging control: turns redaction of diagnostic output off and warns that secrets may be exposed; it never changes which requests are made."
+invocation = ["guest-agent-status", "42", "--debug-raw"]
+expected_exit_status = 0
+expected_stdout_contains = "available: yes"
+expected_stderr_contains = "--debug-raw is active"
+effects = ["Prints the secrets-exposure warning on stderr, then performs the same read as without the flag."]
+test_ids = ["tests/test_cli_cases_scp_api.py::test_debug_raw_warns_and_is_off_by_default[guest-agent-status]"]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/guest-agent-status/option-spelling/option:route:entrypoint:scp-api/guest-agent-status/--json/--json"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:b16568a56635180697dc9777d7b8ed5dbf9109a135b1380457d20a2109f56279"
+rationale = "Library output control: prints the agent status as JSON on stdout for scripting."
+invocation = ["guest-agent-status", "42", "--json"]
+expected_exit_status = 0
+expected_stdout_contains = "available"
+expected_stderr_contains = ""
+effects = ["Performs the same read as without the flag and prints the JSON object."]
+test_ids = ["tests/test_cli_cases_scp_api.py::test_json_output_is_machine_readable[guest-agent-status]"]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/imageflavours/argument-shape/argument:route:entrypoint:scp-api/imageflavours/server_id"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:6c9c30d5300ae1f65462edfb7fff320044cba637112682458e54d17a77681479"
+rationale = "The optional server id must be an integer; omitting it lists flavours for every server, a non-integer is refused before any request."
+invocation = ["imageflavours", "42"]
+expected_exit_status = 0
+expected_stdout_contains = "Debian 13"
+expected_stderr_contains = ""
+effects = ["Reads GET /api/v1/servers/42/imageflavours only; no mutation."]
+test_ids = [
+  "tests/test_cli_cases_scp_api.py::test_replayed_case_matches_catalog[imageflavours-shape-server-id]",
+  "tests/test_cli_cases_scp_api.py::test_invalid_argument_is_refused[imageflavours-server-id]",
+]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/imageflavours/minimum"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:da0e9d1abdcf530649e383e1c8a43bcb71a64b759e2c1e3fb26d2ef965746a70"
+rationale = "A bare 'imageflavours' is a safe read of every server's flavours; nothing is required."
+invocation = ["imageflavours"]
+expected_exit_status = 0
+expected_stdout_contains = "serverName"
+expected_stderr_contains = ""
+effects = ["Reads GET /api/v1/servers and each server's imageflavours; no mutation."]
+test_ids = ["tests/test_cli_cases_scp_api.py::test_replayed_case_matches_catalog[imageflavours-minimum]"]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/imageflavours/option-spelling/option:route:entrypoint:scp-api/imageflavours/--debug-raw/--debug-raw"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:a5c8ebe9b944f23470aaf910b19ddcac4787b75095f0c1d619cf9253f52769b4"
+rationale = "Library debugging control: turns redaction of diagnostic output off and warns that secrets may be exposed; it never changes which requests are made."
+invocation = ["imageflavours", "42", "--debug-raw"]
+expected_exit_status = 0
+expected_stdout_contains = "Debian 13"
+expected_stderr_contains = "--debug-raw is active"
+effects = ["Prints the secrets-exposure warning on stderr, then performs the same read as without the flag."]
+test_ids = ["tests/test_cli_cases_scp_api.py::test_debug_raw_warns_and_is_off_by_default[imageflavours]"]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/imageflavours/option-spelling/option:route:entrypoint:scp-api/imageflavours/--filter/--filter"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:e75ececbd1afedcc1b02714f8aff5089f8b17986615cd25415fa41d3b95b0d16"
+rationale = "Client-side text filter over the returned flavours; it narrows the printed rows and sends nothing extra to the API."
+invocation = ["imageflavours", "42", "--filter", "debian"]
+expected_exit_status = 0
+expected_stdout_contains = "Debian 13"
+expected_stderr_contains = ""
+effects = ["Reads GET /api/v1/servers/42/imageflavours and prints only rows matching 'debian'."]
+test_ids = ["tests/test_cli_cases_scp_api.py::test_replayed_case_matches_catalog[imageflavours-filter]", "tests/test_cli_cases_scp_api.py::test_client_side_filter_keeps_only_matching_rows[imageflavours]"]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/imageflavours/option-spelling/option:route:entrypoint:scp-api/imageflavours/--json/--json"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:0f29f84f7be5fa14ae9933689f85de8e879100c8f2351f76570ce4ac5c894d89"
+rationale = "Library output control: prints the flavour list as JSON on stdout for scripting instead of a table."
+invocation = ["imageflavours", "42", "--json"]
+expected_exit_status = 0
+expected_stdout_contains = "Debian 13"
+expected_stderr_contains = ""
+effects = ["Performs the same read as without the flag and prints the JSON list."]
+test_ids = ["tests/test_cli_cases_scp_api.py::test_json_output_is_machine_readable[imageflavours]"]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/iso-attached/argument-choice/argument:route:entrypoint:scp-api/iso-attached/action/e5bdbdba96"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:93f0ed7b756cd7cb7eda2d881cf4e036753015262cf65793edadf1eb542e645c"
+rationale = "'detach' removes the attached ISO; it is a mutation and needs consent."
+invocation = ["iso-attached", "42", "detach", "--yes"]
+expected_exit_status = 0
+expected_stdout_contains = "detached"
+expected_stderr_contains = "Confirmation accepted via --yes"
+effects = ["Sends one DELETE /api/v1/servers/42/iso after --yes."]
+test_ids = ["tests/test_cli_cases_scp_api.py::test_replayed_case_matches_catalog[iso-attached-choice-detach]"]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/iso-attached/argument-shape/argument:route:entrypoint:scp-api/iso-attached/action"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:4c5908f718694f825deff53e304d1fb05138e592291cc75e0014d8a8ec373ad2"
+rationale = "The optional action accepts only 'detach'; any other word is refused by the parser, so a typo can never fall through to the read."
+invocation = ["iso-attached", "42", "detach", "--yes"]
+expected_exit_status = 0
+expected_stdout_contains = "detached"
+expected_stderr_contains = "Confirmation accepted via --yes"
+effects = ["Sends one DELETE /api/v1/servers/42/iso after --yes."]
+test_ids = [
+  "tests/test_cli_cases_scp_api.py::test_replayed_case_matches_catalog[iso-attached-shape-action]",
+  "tests/test_cli_cases_scp_api.py::test_invalid_argument_is_refused[iso-attached-action]",
+]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/iso-attached/argument-shape/argument:route:entrypoint:scp-api/iso-attached/server_id"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:ce217c173e74d9ca73c2127fa9283deb8aab76927ab6bb0f1ac896550bf41c31"
+rationale = "The optional server id must be an integer; omitting it reports every server, a non-integer is refused before any request."
+invocation = ["iso-attached", "42"]
+expected_exit_status = 0
+expected_stdout_contains = "isoAttached: no"
+expected_stderr_contains = ""
+effects = ["Reads GET /api/v1/servers/42/iso only; no mutation."]
+test_ids = [
+  "tests/test_cli_cases_scp_api.py::test_replayed_case_matches_catalog[iso-attached-shape-server-id]",
+  "tests/test_cli_cases_scp_api.py::test_invalid_argument_is_refused[iso-attached-server-id]",
+]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/iso-attached/minimum"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:2a2df9a999077ad93efdebce7c379b838ccd8d090e9b7c293ac18d309128aa7c"
+rationale = "A bare 'iso-attached' is a safe read of every server's ISO state; nothing is required."
+invocation = ["iso-attached"]
+expected_exit_status = 0
+expected_stdout_contains = "serverName"
+expected_stderr_contains = ""
+effects = ["Reads GET /api/v1/servers and each server's iso state; no mutation."]
+test_ids = ["tests/test_cli_cases_scp_api.py::test_replayed_case_matches_catalog[iso-attached-minimum]"]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/iso-attached/option-spelling/option:route:entrypoint:scp-api/iso-attached/--debug-raw/--debug-raw"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:520a18e5d3c24bdf2f6ad0368bc2f94c46e7ffdedb7386dd84bc7cfe83438008"
+rationale = "Library debugging control: turns redaction of diagnostic output off and warns that secrets may be exposed; it never changes which requests are made."
+invocation = ["iso-attached", "42", "--debug-raw"]
+expected_exit_status = 0
+expected_stdout_contains = "isoAttached: no"
+expected_stderr_contains = "--debug-raw is active"
+effects = ["Prints the secrets-exposure warning on stderr, then performs the same read as without the flag."]
+test_ids = ["tests/test_cli_cases_scp_api.py::test_debug_raw_warns_and_is_off_by_default[iso-attached]"]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/iso-attached/option-spelling/option:route:entrypoint:scp-api/iso-attached/--json/--json"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:bde6ba6c1ec7110a80cbc526366e197c0bcd2494fd55d94bdf96480881f6f50c"
+rationale = "Library output control: prints the ISO state as JSON on stdout for scripting."
+invocation = ["iso-attached", "42", "--json"]
+expected_exit_status = 0
+expected_stdout_contains = "isoAttached"
+expected_stderr_contains = ""
+effects = ["Performs the same read as without the flag and prints the JSON object."]
+test_ids = ["tests/test_cli_cases_scp_api.py::test_json_output_is_machine_readable[iso-attached]"]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/iso-attached/option-spelling/option:route:entrypoint:scp-api/iso-attached/--yes/--yes"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:6b755f2f734d7b7f02f1e4c7665fe5b6283d3a2b0743809583b131220324d989"
+rationale = "Library consent control: in a non-interactive run it is the only consent for 'detach'; without it the run refuses with exit 2 before any mutation."
+invocation = ["iso-attached", "42", "detach", "--yes"]
+expected_exit_status = 0
+expected_stdout_contains = "detached"
+expected_stderr_contains = "Confirmation accepted via --yes"
+effects = ["Skips the confirmation prompt and sends the single DELETE; without it nothing is sent."]
+test_ids = ["tests/test_cli_cases_scp_api.py::test_yes_is_the_only_consent_in_a_non_interactive_run[iso-attached]"]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/iso-bootable/argument-shape/argument:route:entrypoint:scp-api/iso-bootable/server_id"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:a3fabb1be51c06e9316a34c6614b86f00446cf1cdefc4701e9a9635679c20c10"
+rationale = "The optional server id must be an integer; omitting it lists bootable ISOs for every server, a non-integer is refused before any request."
+invocation = ["iso-bootable", "42"]
+expected_exit_status = 0
+expected_stdout_contains = "rescue"
+expected_stderr_contains = ""
+effects = ["Reads GET /api/v1/servers/42/isoimages only; no mutation."]
+test_ids = [
+  "tests/test_cli_cases_scp_api.py::test_replayed_case_matches_catalog[iso-bootable-shape-server-id]",
+  "tests/test_cli_cases_scp_api.py::test_invalid_argument_is_refused[iso-bootable-server-id]",
+]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/iso-bootable/minimum"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:d8f510ffa1db79243f7776af85cd080b996d5d9cd9d930bb710ace4e6694b0f6"
+rationale = "A bare 'iso-bootable' is a safe read of every server's bootable ISOs; nothing is required."
+invocation = ["iso-bootable"]
+expected_exit_status = 0
+expected_stdout_contains = "serverName"
+expected_stderr_contains = ""
+effects = ["Reads GET /api/v1/servers and each server's isoimages; no mutation."]
+test_ids = ["tests/test_cli_cases_scp_api.py::test_replayed_case_matches_catalog[iso-bootable-minimum]"]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/iso-bootable/option-spelling/option:route:entrypoint:scp-api/iso-bootable/--debug-raw/--debug-raw"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:ecddb04fd85942ea1e85079ec508080dc70ddf2563df40338cf04e3b4d18fc90"
+rationale = "Library debugging control: turns redaction of diagnostic output off and warns that secrets may be exposed; it never changes which requests are made."
+invocation = ["iso-bootable", "42", "--debug-raw"]
+expected_exit_status = 0
+expected_stdout_contains = "rescue"
+expected_stderr_contains = "--debug-raw is active"
+effects = ["Prints the secrets-exposure warning on stderr, then performs the same read as without the flag."]
+test_ids = ["tests/test_cli_cases_scp_api.py::test_debug_raw_warns_and_is_off_by_default[iso-bootable]"]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/iso-bootable/option-spelling/option:route:entrypoint:scp-api/iso-bootable/--filter/--filter"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:7ed896131f4848d7b6d96d4734b1b7a988532a0d83b5eac7d02775d69f29ec15"
+rationale = "Client-side text filter over the returned ISOs; it narrows the printed rows and sends nothing extra to the API."
+invocation = ["iso-bootable", "42", "--filter", "rescue"]
+expected_exit_status = 0
+expected_stdout_contains = "rescue"
+expected_stderr_contains = ""
+effects = ["Reads GET /api/v1/servers/42/isoimages and prints only rows matching 'rescue'."]
+test_ids = ["tests/test_cli_cases_scp_api.py::test_replayed_case_matches_catalog[iso-bootable-filter]", "tests/test_cli_cases_scp_api.py::test_client_side_filter_keeps_only_matching_rows[iso-bootable]"]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/iso-bootable/option-spelling/option:route:entrypoint:scp-api/iso-bootable/--json/--json"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:bcf6e28cdc06b5bb378c016e6ec977416b87ab78a74d092f471df99b31f769e4"
+rationale = "Library output control: prints the ISO list as JSON on stdout for scripting instead of a table."
+invocation = ["iso-bootable", "42", "--json"]
+expected_exit_status = 0
+expected_stdout_contains = "rescue"
+expected_stderr_contains = ""
+effects = ["Performs the same read as without the flag and prints the JSON list."]
+test_ids = ["tests/test_cli_cases_scp_api.py::test_json_output_is_machine_readable[iso-bootable]"]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/login/minimum"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:c827690fbc8b45b3806b3d28ca9ea6fbba71707eefe4ab28e79176ef35f1bcf4"
+rationale = "'login' needs no arguments: it runs the device-code login and stores the refresh token; with no terminal it skips the interactive protected-server selection and says so."
+invocation = ["login"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = "Login succeeded. Protected-server selection was skipped"
+effects = ["Runs the (here stubbed) device-code login, then reads the server list for the selection step; sends no mutation."]
+test_ids = ["tests/test_cli_cases_scp_api.py::test_replayed_case_matches_catalog[login-minimum]"]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/login/option-spelling/option:route:entrypoint:scp-api/login/--debug-raw/--debug-raw"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:5cf104c1441f9f55c3a1dd05ed928f678559018e28b0cb649e438b66672e2696"
+rationale = "Library debugging control: turns redaction of diagnostic output off and warns that secrets may be exposed; for login this matters most because the output can carry tokens."
+invocation = ["login", "--debug-raw"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = "--debug-raw is active"
+effects = ["Prints the secrets-exposure warning on stderr, then runs the same login as without the flag."]
+test_ids = ["tests/test_cli_cases_scp_api.py::test_debug_raw_warns_and_is_off_by_default[login]"]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/metrics/argument-choice/argument:route:entrypoint:scp-api/metrics/metric/57b8970d2b"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:d874b8d19f1968b1b75912f15ff0ef8ace2dd60bbb41d08fcdc8824ed55e0ac4"
+rationale = "'network' selects the network-throughput series; a safe read."
+invocation = ["metrics", "42", "network"]
+expected_exit_status = 0
+expected_stdout_contains = "network"
+expected_stderr_contains = ""
+effects = ["Reads GET /api/v1/servers/42/metrics/network; no mutation."]
+test_ids = ["tests/test_cli_cases_scp_api.py::test_replayed_case_matches_catalog[metrics-choice-network]"]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/metrics/argument-choice/argument:route:entrypoint:scp-api/metrics/metric/a3d67b9b2b"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:907f95a3899e63842df6a25edb4e8f24699a1e28102115308f9e0407f927a96c"
+rationale = "'disk' selects the disk I/O series; a safe read."
+invocation = ["metrics", "42", "disk"]
+expected_exit_status = 0
+expected_stdout_contains = "disk"
+expected_stderr_contains = ""
+effects = ["Reads GET /api/v1/servers/42/metrics/disk; no mutation."]
+test_ids = ["tests/test_cli_cases_scp_api.py::test_replayed_case_matches_catalog[metrics-choice-disk]"]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/metrics/argument-choice/argument:route:entrypoint:scp-api/metrics/metric/c4fc787d1d"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:def6854ec1f1c422a6e8e2412fd2bbb30f933be02b6a48e7c505f66b0d369f67"
+rationale = "'cpu' selects the CPU utilisation series; a safe read."
+invocation = ["metrics", "42", "cpu"]
+expected_exit_status = 0
+expected_stdout_contains = "cpu"
+expected_stderr_contains = ""
+effects = ["Reads GET /api/v1/servers/42/metrics/cpu; no mutation."]
+test_ids = ["tests/test_cli_cases_scp_api.py::test_replayed_case_matches_catalog[metrics-choice-cpu]"]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/metrics/argument-choice/argument:route:entrypoint:scp-api/metrics/metric/ced17b2ab6"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:bce3655a187d0660d6878b1ff8ee9f48383b8a566f434b5e419a39ff7e65ee7b"
+rationale = "'network-packet' selects the packet-rate series, which the API serves under the nested /network/packet path; a safe read."
+invocation = ["metrics", "42", "network-packet"]
+expected_exit_status = 0
+expected_stdout_contains = "packet"
+expected_stderr_contains = ""
+effects = ["Reads GET /api/v1/servers/42/metrics/network/packet; no mutation."]
+test_ids = ["tests/test_cli_cases_scp_api.py::test_replayed_case_matches_catalog[metrics-choice-network-packet]"]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/metrics/argument-shape/argument:route:entrypoint:scp-api/metrics/metric"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:c4ac659678a8646dc1aad757d78c9a8be4cea423c6937e74367da3bae90ee424"
+rationale = "The metric is required and restricted to the four known series; an unknown word is refused by the parser before any request."
+invocation = ["metrics", "42", "cpu"]
+expected_exit_status = 0
+expected_stdout_contains = "cpu"
+expected_stderr_contains = ""
+effects = ["Reads GET /api/v1/servers/42/metrics/cpu; no mutation."]
+test_ids = [
+  "tests/test_cli_cases_scp_api.py::test_replayed_case_matches_catalog[metrics-shape-metric]",
+  "tests/test_cli_cases_scp_api.py::test_invalid_argument_is_refused[metrics-metric]",
+]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/metrics/argument-shape/argument:route:entrypoint:scp-api/metrics/server_id"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:51a078d588d315770f3f72bddc012978b24ef7e3231ace72ea325b0754b5513f"
+rationale = "The server id is required and must be an integer; a non-integer is refused before any request."
+invocation = ["metrics", "42", "cpu"]
+expected_exit_status = 0
+expected_stdout_contains = "cpu"
+expected_stderr_contains = ""
+effects = ["Reads GET /api/v1/servers/42/metrics/cpu; no mutation."]
+test_ids = [
+  "tests/test_cli_cases_scp_api.py::test_replayed_case_matches_catalog[metrics-shape-server-id]",
+  "tests/test_cli_cases_scp_api.py::test_invalid_argument_is_refused[metrics-server-id]",
+]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/metrics/minimum"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:35221298cdd31186ae8b96ddca637dddf8cc8f04689cfd78f027ce26e60209eb"
+rationale = "A server id and a metric are the only requirements; the read uses the API's default window."
+invocation = ["metrics", "42", "cpu"]
+expected_exit_status = 0
+expected_stdout_contains = "cpu"
+expected_stderr_contains = ""
+effects = ["Reads GET /api/v1/servers/42/metrics/cpu without an hours parameter; no mutation."]
+test_ids = ["tests/test_cli_cases_scp_api.py::test_replayed_case_matches_catalog[metrics-minimum]"]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/metrics/option-spelling/option:route:entrypoint:scp-api/metrics/--debug-raw/--debug-raw"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:2b36217e557473c535366f3326b9eb3104b7bcb7163a91876ae3edfecca0ad34"
+rationale = "Library debugging control: turns redaction of diagnostic output off and warns that secrets may be exposed; it never changes which requests are made."
+invocation = ["metrics", "42", "cpu", "--debug-raw"]
+expected_exit_status = 0
+expected_stdout_contains = "cpu"
+expected_stderr_contains = "--debug-raw is active"
+effects = ["Prints the secrets-exposure warning on stderr, then performs the same read as without the flag."]
+test_ids = ["tests/test_cli_cases_scp_api.py::test_debug_raw_warns_and_is_off_by_default[metrics]"]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/metrics/option-spelling/option:route:entrypoint:scp-api/metrics/--hours/--hours"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:64b937efa3fea39bc0d5a5c7c3a2d048cf09324b50a86bf542fd690044059370"
+rationale = "Window length in hours, bounded to 1..1440 by the parser so an absurd value never reaches the API; unset by default."
+invocation = ["metrics", "42", "disk", "--hours", "24"]
+expected_exit_status = 0
+expected_stdout_contains = "disk"
+expected_stderr_contains = ""
+effects = ["Reads GET /api/v1/servers/42/metrics/disk with hours=24; no mutation."]
+test_ids = [
+  "tests/test_cli_cases_scp_api.py::test_replayed_case_matches_catalog[metrics-hours]",
+  "tests/test_cli_cases_scp_api.py::test_invalid_argument_is_refused[metrics-hours]",
+]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/metrics/option-spelling/option:route:entrypoint:scp-api/metrics/--json/--json"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:0d9cbbdb158d989a21f649d1f1868139d182d18892e0f3fd74dfed6611ae53c9"
+rationale = "Library output control; metrics already prints JSON by default (the series is not tabular), so the flag is accepted and the output is identical."
+invocation = ["metrics", "42", "cpu", "--json"]
+expected_exit_status = 0
+expected_stdout_contains = "cpu"
+expected_stderr_contains = ""
+effects = ["Performs the same read as without the flag; the printed JSON is unchanged."]
+test_ids = ["tests/test_cli_cases_scp_api.py::test_json_output_is_machine_readable[metrics]"]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/power/argument-choice/argument:route:entrypoint:scp-api/power/action/1c7a197350"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:61b176461b3b6bfd061d3df3e69a40d7945bfb437823c7c3f0f05af82a07d5d9"
+rationale = "'reset' hard-resets the guest (state ON with stateOption RESET); a disruptive mutation that needs consent."
+invocation = ["power", "reset", "42", "--yes"]
+expected_exit_status = 0
+expected_stdout_contains = "reset requested"
+expected_stderr_contains = "Confirmation accepted via --yes"
+effects = ["Sends one PATCH /api/v1/servers/42 with state ON and stateOption RESET after --yes."]
+test_ids = ["tests/test_cli_cases_scp_api.py::test_replayed_case_matches_catalog[power-choice-reset]"]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/power/argument-choice/argument:route:entrypoint:scp-api/power/action/990c23868b"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:12e8083ba306c1c779b0ba630304574a88ace0010c96b5726f5e9d0f365f0317"
+rationale = "'on' powers the server on; a mutation that needs consent."
+invocation = ["power", "on", "42", "--yes"]
+expected_exit_status = 0
+expected_stdout_contains = "power on requested"
+expected_stderr_contains = "Confirmation accepted via --yes"
+effects = ["Sends one PATCH /api/v1/servers/42 with state ON after --yes."]
+test_ids = ["tests/test_cli_cases_scp_api.py::test_replayed_case_matches_catalog[power-choice-on]"]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/power/argument-choice/argument:route:entrypoint:scp-api/power/action/9f3becba6e"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:31c44e160531cf3a8ff0fd25749fd77e630da93beb518c247691c117f1025761"
+rationale = "'off' powers the server off (state OFF with stateOption POWEROFF); a disruptive mutation that needs consent."
+invocation = ["power", "off", "42", "--yes"]
+expected_exit_status = 0
+expected_stdout_contains = "power off requested"
+expected_stderr_contains = "Confirmation accepted via --yes"
+effects = ["Sends one PATCH /api/v1/servers/42 with state OFF and stateOption POWEROFF after --yes."]
+test_ids = ["tests/test_cli_cases_scp_api.py::test_replayed_case_matches_catalog[power-choice-off]"]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/power/argument-choice/argument:route:entrypoint:scp-api/power/action/c1876cd5bc"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:e86f975d18769b90c03db304c50791d3d7315d270a3a24e5bef7e2c30df92831"
+rationale = "'cycle' power-cycles the server (state ON with stateOption POWERCYCLE); a disruptive mutation that needs consent."
+invocation = ["power", "cycle", "42", "--yes"]
+expected_exit_status = 0
+expected_stdout_contains = "power-cycle requested"
+expected_stderr_contains = "Confirmation accepted via --yes"
+effects = ["Sends one PATCH /api/v1/servers/42 with state ON and stateOption POWERCYCLE after --yes."]
+test_ids = ["tests/test_cli_cases_scp_api.py::test_replayed_case_matches_catalog[power-choice-cycle]"]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/power/argument-shape/argument:route:entrypoint:scp-api/power/action"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:576e1bab1f903235b2958f10bde979a53c39c1decd3426f02204dd239256cb33"
+rationale = "The action is required and restricted to on, off, cycle and reset; any other word is refused by the parser before any request."
+invocation = ["power", "on", "42", "--yes"]
+expected_exit_status = 0
+expected_stdout_contains = "power on requested"
+expected_stderr_contains = "Confirmation accepted via --yes"
+effects = ["Sends one PATCH /api/v1/servers/42 with state ON after --yes."]
+test_ids = [
+  "tests/test_cli_cases_scp_api.py::test_replayed_case_matches_catalog[power-shape-action]",
+  "tests/test_cli_cases_scp_api.py::test_invalid_argument_is_refused[power-action]",
+]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/power/argument-shape/argument:route:entrypoint:scp-api/power/server_id"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:cce6ee69e5a6c84864f5733c3499ae021504754ac5fa2e6327409c13054aa041"
+rationale = "The server id is required and must be an integer; a non-integer is refused before any request."
+invocation = ["power", "on", "42", "--yes"]
+expected_exit_status = 0
+expected_stdout_contains = "power on requested"
+expected_stderr_contains = "Confirmation accepted via --yes"
+effects = ["Sends one PATCH /api/v1/servers/42 with state ON after --yes."]
+test_ids = [
+  "tests/test_cli_cases_scp_api.py::test_replayed_case_matches_catalog[power-shape-server-id]",
+  "tests/test_cli_cases_scp_api.py::test_invalid_argument_is_refused[power-server-id]",
+]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/power/minimum"
+state = "active"
+decision = "refuse"
+reviewed_signature = "sha256:ef65631f0d2710a3593bc4409d70909b8c409b19928a17c973374e01e2c7e182"
+rationale = "Action and server id alone are a mutation without consent: with no terminal and no --yes the run refuses rather than power-cycle a machine unattended."
+invocation = ["power", "on", "42"]
+expected_exit_status = 2
+expected_stdout_contains = ""
+expected_stderr_contains = "confirmation is required, but stdin is not interactive"
+effects = ["Refuses before sending anything; the server is untouched."]
+test_ids = ["tests/test_cli_cases_scp_api.py::test_replayed_case_matches_catalog[power-minimum]"]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/power/option-spelling/option:route:entrypoint:scp-api/power/--debug-raw/--debug-raw"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:dff6e2194c51c5c51ed8d6d1563d730c273c7f5316b89c7ed09025ecd60648b5"
+rationale = "Library debugging control: turns redaction of diagnostic output off and warns that secrets may be exposed; it never changes which requests are made."
+invocation = ["power", "on", "42", "--debug-raw", "--yes"]
+expected_exit_status = 0
+expected_stdout_contains = "power on requested"
+expected_stderr_contains = "--debug-raw is active"
+effects = ["Prints the secrets-exposure warning on stderr, then sends the same single PATCH as without the flag."]
+test_ids = ["tests/test_cli_cases_scp_api.py::test_debug_raw_warns_and_is_off_by_default[power]"]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/power/option-spelling/option:route:entrypoint:scp-api/power/--json/--json"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:200918d05f44183d021114ca9d3ace71e535057f188312ea45e3e0ad63d0a34f"
+rationale = "Library output control: prints the API result as JSON on stdout for scripting instead of the human message; the request sent is identical."
+invocation = ["power", "on", "42", "--json", "--yes"]
+expected_exit_status = 0
+expected_stdout_contains = "{}"
+expected_stderr_contains = "Confirmation accepted via --yes"
+effects = ["Sends the same single PATCH as without the flag and prints the (here empty) JSON result."]
+test_ids = ["tests/test_cli_cases_scp_api.py::test_json_output_is_machine_readable[power]"]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/power/option-spelling/option:route:entrypoint:scp-api/power/--yes/--yes"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:f3d81607c14d77c2d5053f27179be16ddf49912d4b1c9d2b55e962bf2ce4e570"
+rationale = "Library consent control: in a non-interactive run it is the only consent for a power change; without it the run refuses with exit 2 before any request."
+invocation = ["power", "on", "42", "--yes"]
+expected_exit_status = 0
+expected_stdout_contains = "power on requested"
+expected_stderr_contains = "Confirmation accepted via --yes"
+effects = ["Skips the confirmation prompt and sends the single PATCH; without it nothing is sent."]
+test_ids = ["tests/test_cli_cases_scp_api.py::test_yes_is_the_only_consent_in_a_non_interactive_run[power]"]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/rescuesystem/argument-choice/argument:route:entrypoint:scp-api/rescuesystem/action/509e597e13"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:70f838d6801c7e7648a02a582f202cc0476e00eb33ff33caeded0576c527fc75"
+rationale = "'deactivate' switches the rescue system off; a mutation that needs consent."
+invocation = ["rescuesystem", "42", "deactivate", "--yes"]
+expected_exit_status = 0
+expected_stdout_contains = "deactivated"
+expected_stderr_contains = "Confirmation accepted via --yes"
+effects = ["Sends one DELETE /api/v1/servers/42/rescuesystem after --yes."]
+test_ids = ["tests/test_cli_cases_scp_api.py::test_replayed_case_matches_catalog[rescuesystem-choice-deactivate]"]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/rescuesystem/argument-shape/argument:route:entrypoint:scp-api/rescuesystem/action"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:0b9ce4493fffbc33ba82647ee711ddc9ade4aca9e01bfbeb9005aa623d36a58b"
+rationale = "The optional action accepts only 'deactivate'; any other word is refused by the parser, so a typo can never fall through to the read."
+invocation = ["rescuesystem", "42", "deactivate", "--yes"]
+expected_exit_status = 0
+expected_stdout_contains = "deactivated"
+expected_stderr_contains = "Confirmation accepted via --yes"
+effects = ["Sends one DELETE /api/v1/servers/42/rescuesystem after --yes."]
+test_ids = [
+  "tests/test_cli_cases_scp_api.py::test_replayed_case_matches_catalog[rescuesystem-shape-action]",
+  "tests/test_cli_cases_scp_api.py::test_invalid_argument_is_refused[rescuesystem-action]",
+]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/rescuesystem/argument-shape/argument:route:entrypoint:scp-api/rescuesystem/server_id"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:70c24cccab38016c7014ce22a8d9e72f2ef75c66bd709ba9d916603c35bd248e"
+rationale = "The optional server id must be an integer; omitting it reports every server, a non-integer is refused before any request."
+invocation = ["rescuesystem", "42"]
+expected_exit_status = 0
+expected_stdout_contains = "active: no"
+expected_stderr_contains = ""
+effects = ["Reads GET /api/v1/servers/42/rescuesystem only; no mutation."]
+test_ids = [
+  "tests/test_cli_cases_scp_api.py::test_replayed_case_matches_catalog[rescuesystem-shape-server-id]",
+  "tests/test_cli_cases_scp_api.py::test_invalid_argument_is_refused[rescuesystem-server-id]",
+]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/rescuesystem/minimum"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:8f39f44fb8edccc427d426660ac97d6124bd5a287489f885eb345032d9792a2c"
+rationale = "A bare 'rescuesystem' is a safe read of every server's rescue state; nothing is required."
+invocation = ["rescuesystem"]
+expected_exit_status = 0
+expected_stdout_contains = "serverName"
+expected_stderr_contains = ""
+effects = ["Reads GET /api/v1/servers and each server's rescuesystem; no mutation."]
+test_ids = ["tests/test_cli_cases_scp_api.py::test_replayed_case_matches_catalog[rescuesystem-minimum]"]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/rescuesystem/option-spelling/option:route:entrypoint:scp-api/rescuesystem/--debug-raw/--debug-raw"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:a9f6b0359c0eccda628b16fa51b2051072aa023849df37804926da4fbbebf6c6"
+rationale = "Library debugging control: turns redaction of diagnostic output off and warns that secrets may be exposed; it never changes which requests are made."
+invocation = ["rescuesystem", "42", "--debug-raw"]
+expected_exit_status = 0
+expected_stdout_contains = "active: no"
+expected_stderr_contains = "--debug-raw is active"
+effects = ["Prints the secrets-exposure warning on stderr, then performs the same read as without the flag."]
+test_ids = ["tests/test_cli_cases_scp_api.py::test_debug_raw_warns_and_is_off_by_default[rescuesystem]"]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/rescuesystem/option-spelling/option:route:entrypoint:scp-api/rescuesystem/--json/--json"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:e4c75cd290f7446849ff3b0aa426a35bc183f289daa2e4a98a45806b0a8bfb9d"
+rationale = "Library output control: prints the rescue state as JSON on stdout for scripting."
+invocation = ["rescuesystem", "42", "--json"]
+expected_exit_status = 0
+expected_stdout_contains = "active"
+expected_stderr_contains = ""
+effects = ["Performs the same read as without the flag and prints the JSON object."]
+test_ids = ["tests/test_cli_cases_scp_api.py::test_json_output_is_machine_readable[rescuesystem]"]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/rescuesystem/option-spelling/option:route:entrypoint:scp-api/rescuesystem/--yes/--yes"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:4d40f3d6935b2c8cc1450eda4c9b261d743e7054282e867e8a2e8154d42e821c"
+rationale = "Library consent control: in a non-interactive run it is the only consent for 'deactivate'; without it the run refuses with exit 2 before any request."
+invocation = ["rescuesystem", "42", "deactivate", "--yes"]
+expected_exit_status = 0
+expected_stdout_contains = "deactivated"
+expected_stderr_contains = "Confirmation accepted via --yes"
+effects = ["Skips the confirmation prompt and sends the single DELETE; without it nothing is sent."]
+test_ids = ["tests/test_cli_cases_scp_api.py::test_yes_is_the_only_consent_in_a_non_interactive_run[rescuesystem]"]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/server-details/argument-shape/argument:route:entrypoint:scp-api/server-details/server_id"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:a55ce41fda1f0e643adcf8078de9187e8134c8f9fb1ddb4c7e92db57f6cbdae3"
+rationale = "The server id is required and must be an integer; a non-integer is refused before any request."
+invocation = ["server-details", "42"]
+expected_exit_status = 0
+expected_stdout_contains = "hostname: h42.example"
+expected_stderr_contains = ""
+effects = ["Reads GET /api/v1/servers/42; no mutation."]
+test_ids = [
+  "tests/test_cli_cases_scp_api.py::test_replayed_case_matches_catalog[server-details-shape-server-id]",
+  "tests/test_cli_cases_scp_api.py::test_invalid_argument_is_refused[server-details-server-id]",
+]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/server-details/minimum"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:02433449e78fae78ef75c05f3dc3e76ef041d9ed7468e1f5e9595eefa2b361fc"
+rationale = "The server id is the only requirement and the command is a pure read."
+invocation = ["server-details", "42"]
+expected_exit_status = 0
+expected_stdout_contains = "hostname: h42.example"
+expected_stderr_contains = ""
+effects = ["Reads GET /api/v1/servers/42; no mutation."]
+test_ids = ["tests/test_cli_cases_scp_api.py::test_replayed_case_matches_catalog[server-details-minimum]"]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/server-details/option-spelling/option:route:entrypoint:scp-api/server-details/--debug-raw/--debug-raw"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:91c14fbf369d70781a02e9f2ad8eabb095f6d29c7c27dec1e0ccbcd5c8ed2d49"
+rationale = "Library debugging control: turns redaction of diagnostic output off and warns that secrets may be exposed; it never changes which requests are made."
+invocation = ["server-details", "42", "--debug-raw"]
+expected_exit_status = 0
+expected_stdout_contains = "hostname: h42.example"
+expected_stderr_contains = "--debug-raw is active"
+effects = ["Prints the secrets-exposure warning on stderr, then performs the same read as without the flag."]
+test_ids = ["tests/test_cli_cases_scp_api.py::test_debug_raw_warns_and_is_off_by_default[server-details]"]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/server-details/option-spelling/option:route:entrypoint:scp-api/server-details/--json/--json"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:36a4d2d66a2433cc7e465e127be4206c7d63ed0a7b14b9888d0e95fc8c4e8d1a"
+rationale = "Library output control: prints the server record as JSON on stdout for scripting."
+invocation = ["server-details", "42", "--json"]
+expected_exit_status = 0
+expected_stdout_contains = "h42.example"
+expected_stderr_contains = ""
+effects = ["Performs the same read as without the flag and prints the JSON object."]
+test_ids = ["tests/test_cli_cases_scp_api.py::test_json_output_is_machine_readable[server-details]"]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/servers/minimum"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:d3e50301bed4afa460e9500eeaf7cfdb7077fd3955aa3075d203870c7425d27e"
+rationale = "'servers' takes no arguments and is a pure read of the account's server list."
+invocation = ["servers"]
+expected_exit_status = 0
+expected_stdout_contains = "h42.example"
+expected_stderr_contains = ""
+effects = ["Reads GET /api/v1/servers; no mutation."]
+test_ids = ["tests/test_cli_cases_scp_api.py::test_replayed_case_matches_catalog[servers-minimum]"]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/servers/option-spelling/option:route:entrypoint:scp-api/servers/--debug-raw/--debug-raw"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:9981bfabf19ad64a90c18fed7e7a8ce6e2a4707c792de321c9c9aec2bbe02eb8"
+rationale = "Library debugging control: turns redaction of diagnostic output off and warns that secrets may be exposed; it never changes which requests are made."
+invocation = ["servers", "--debug-raw"]
+expected_exit_status = 0
+expected_stdout_contains = "h42.example"
+expected_stderr_contains = "--debug-raw is active"
+effects = ["Prints the secrets-exposure warning on stderr, then performs the same read as without the flag."]
+test_ids = ["tests/test_cli_cases_scp_api.py::test_debug_raw_warns_and_is_off_by_default[servers]"]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/servers/option-spelling/option:route:entrypoint:scp-api/servers/--json/--json"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:d6332d795f6d722d0b919e91f8902cf7b22780a8fb6c9acc48b18f46e6fe3202"
+rationale = "Library output control: prints the server list as JSON on stdout for scripting instead of a table."
+invocation = ["servers", "--json"]
+expected_exit_status = 0
+expected_stdout_contains = "h42.example"
+expected_stderr_contains = ""
+effects = ["Performs the same read as without the flag and prints the JSON list."]
+test_ids = ["tests/test_cli_cases_scp_api.py::test_json_output_is_machine_readable[servers]"]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/snapshots/argument-choice/argument:route:entrypoint:scp-api/snapshots/action/2b53b6eb1a"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:992bfcafafeda85446182bb7e3a631787002f988b07f3919f1a8d26db6270275"
+rationale = "'dryrun' asks the provider whether a snapshot could be created; it is a POST to a check endpoint that creates nothing, so it needs no consent."
+invocation = ["snapshots", "42", "dryrun"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Sends one POST /api/v1/servers/42/snapshots:dryrun with an empty body; no snapshot is created."]
+test_ids = ["tests/test_cli_cases_scp_api.py::test_replayed_case_matches_catalog[snapshots-choice-dryrun]"]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/snapshots/argument-choice/argument:route:entrypoint:scp-api/snapshots/action/5498a731a1"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:61798a2f46e11c403ae7898f00fb63aa913c73438488a10f23d46256cc50ca46"
+rationale = "'create' makes a snapshot; a mutation that needs consent and, without --name, gets a timestamped name so the API's required name field is never empty."
+invocation = ["snapshots", "42", "create", "--yes"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = "Confirmation accepted via --yes"
+effects = ["Sends one POST /api/v1/servers/42/snapshots with a generated vbpub-<timestamp> name after --yes."]
+test_ids = ["tests/test_cli_cases_scp_api.py::test_replayed_case_matches_catalog[snapshots-choice-create]"]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/snapshots/argument-shape/argument:route:entrypoint:scp-api/snapshots/action"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:596abcaa9fa7cafe717b60c645ec7040dcefd43c62bb9946e98357759a557b7b"
+rationale = "The optional action accepts only create or dryrun; any other word is refused by the parser, so a typo can never fall through to the list read."
+invocation = ["snapshots", "42", "dryrun"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Sends one POST /api/v1/servers/42/snapshots:dryrun; creates nothing."]
+test_ids = [
+  "tests/test_cli_cases_scp_api.py::test_replayed_case_matches_catalog[snapshots-shape-action]",
+  "tests/test_cli_cases_scp_api.py::test_invalid_argument_is_refused[snapshots-action]",
+]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/snapshots/argument-shape/argument:route:entrypoint:scp-api/snapshots/server_id"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:7f1f1f40e6dfa4e83713985c212daa33925a08dce1557914fcc90e3691895adf"
+rationale = "The optional server id must be an integer; omitting it lists every server's snapshots, a non-integer is refused before any request."
+invocation = ["snapshots", "42", "dryrun"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Sends one POST /api/v1/servers/42/snapshots:dryrun; creates nothing."]
+test_ids = [
+  "tests/test_cli_cases_scp_api.py::test_replayed_case_matches_catalog[snapshots-shape-server-id]",
+  "tests/test_cli_cases_scp_api.py::test_invalid_argument_is_refused[snapshots-server-id]",
+]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/snapshots/minimum"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:9ee9fd3d3f7a395d79da842c2c104320f75b77a415633e3080dc551b2e7a0045"
+rationale = "A bare 'snapshots' is a safe read of every server's snapshots; nothing is required."
+invocation = ["snapshots"]
+expected_exit_status = 0
+expected_stdout_contains = "serverName"
+expected_stderr_contains = ""
+effects = ["Reads GET /api/v1/servers and each server's snapshots; no mutation."]
+test_ids = ["tests/test_cli_cases_scp_api.py::test_replayed_case_matches_catalog[snapshots-minimum]"]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/snapshots/option-spelling/option:route:entrypoint:scp-api/snapshots/--debug-raw/--debug-raw"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:c3edce81fe91732f2e01185b1db97ebe9956e25b6dc4271300b558b9a94f0e99"
+rationale = "Library debugging control: turns redaction of diagnostic output off and warns that secrets may be exposed; it never changes which requests are made."
+invocation = ["snapshots", "--debug-raw"]
+expected_exit_status = 0
+expected_stdout_contains = "serverName"
+expected_stderr_contains = "--debug-raw is active"
+effects = ["Prints the secrets-exposure warning on stderr, then performs the same read as without the flag."]
+test_ids = ["tests/test_cli_cases_scp_api.py::test_debug_raw_warns_and_is_off_by_default[snapshots]"]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/snapshots/option-spelling/option:route:entrypoint:scp-api/snapshots/--json/--json"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:8fe5da20348b69faf93dc51c5b554c396cd2eba4105950d2b085365fbe7a99f7"
+rationale = "Library output control: prints the snapshot list as JSON on stdout for scripting instead of a table."
+invocation = ["snapshots", "--json"]
+expected_exit_status = 0
+expected_stdout_contains = "snap-1"
+expected_stderr_contains = ""
+effects = ["Performs the same read as without the flag and prints the JSON list."]
+test_ids = ["tests/test_cli_cases_scp_api.py::test_json_output_is_machine_readable[snapshots]"]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/snapshots/option-spelling/option:route:entrypoint:scp-api/snapshots/--name/--name"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:aee3d09800ee83eaa652fef7cf8eeb5c1b3c9d7aac357df982cb6a4032120040"
+rationale = "Names the snapshot being created; free text, and only meaningful with 'create' (without it a timestamped name is used)."
+invocation = ["snapshots", "42", "create", "--name", "before-upgrade", "--yes"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = "Confirmation accepted via --yes"
+effects = ["Sends one POST /api/v1/servers/42/snapshots with name before-upgrade after --yes."]
+test_ids = ["tests/test_cli_cases_scp_api.py::test_replayed_case_matches_catalog[snapshots-name]"]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/snapshots/option-spelling/option:route:entrypoint:scp-api/snapshots/--yes/--yes"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:3aa3c095faac3ceeaac021585f7e2dd9f4ec38fce0a109246dce7b1b3f28ea3c"
+rationale = "Library consent control: in a non-interactive run it is the only consent for 'create'; without it the run refuses with exit 2 before any request."
+invocation = ["snapshots", "42", "create", "--yes"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = "Confirmation accepted via --yes"
+effects = ["Skips the confirmation prompt and sends the single snapshot POST; without it nothing is sent."]
+test_ids = ["tests/test_cli_cases_scp_api.py::test_yes_is_the_only_consent_in_a_non_interactive_run[snapshots]"]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/status/argument-shape/argument:route:entrypoint:scp-api/status/server_id"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:896a77681abae0ee2235b02e4cb37a8c3890182bc751b399587ea4dff9e0123e"
+rationale = "The optional server id must be an integer; omitting it reports every server, a non-integer is refused before any request."
+invocation = ["status", "42"]
+expected_exit_status = 0
+expected_stdout_contains = "vname"
+expected_stderr_contains = ""
+effects = ["Reads GET /api/v1/servers/42 and probes SSH reachability (stubbed in the test); no mutation."]
+test_ids = [
+  "tests/test_cli_cases_scp_api.py::test_replayed_case_matches_catalog[status-shape-server-id]",
+  "tests/test_cli_cases_scp_api.py::test_invalid_argument_is_refused[status-server-id]",
+]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/status/minimum"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:357f2969f70e1d254e66600c50184e060fa7301f38bf7b4ffd338dca6e954f76"
+rationale = "A bare 'status' is a safe read-only overview of every server with the default SSH timeout; nothing is required."
+invocation = ["status"]
+expected_exit_status = 0
+expected_stdout_contains = "vname"
+expected_stderr_contains = ""
+effects = ["Reads GET /api/v1/servers and each server's record and probes SSH reachability (stubbed in the test); no mutation."]
+test_ids = ["tests/test_cli_cases_scp_api.py::test_replayed_case_matches_catalog[status-minimum]"]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/status/option-spelling/option:route:entrypoint:scp-api/status/--debug-raw/--debug-raw"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:9f3642d8b56d39f11c98e6f44e595f54f4632480a2acdfd8ba48147eafa4350e"
+rationale = "Library debugging control: turns redaction of diagnostic output off and warns that secrets may be exposed; it never changes which requests are made."
+invocation = ["status", "--debug-raw"]
+expected_exit_status = 0
+expected_stdout_contains = "vname"
+expected_stderr_contains = "--debug-raw is active"
+effects = ["Prints the secrets-exposure warning on stderr, then performs the same reads as without the flag."]
+test_ids = ["tests/test_cli_cases_scp_api.py::test_debug_raw_warns_and_is_off_by_default[status]"]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/status/option-spelling/option:route:entrypoint:scp-api/status/--json/--json"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:6a852ce3f54274c44604ecb6e5db853f0954d90218a9175be3b72168bd229746"
+rationale = "Library output control: prints the status rows as JSON on stdout for scripting instead of a table."
+invocation = ["status", "--json"]
+expected_exit_status = 0
+expected_stdout_contains = "h42.example"
+expected_stderr_contains = ""
+effects = ["Performs the same reads as without the flag and prints the JSON list."]
+test_ids = ["tests/test_cli_cases_scp_api.py::test_json_output_is_machine_readable[status]"]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/status/option-spelling/option:route:entrypoint:scp-api/status/--ssh-timeout/--ssh-timeout"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:d4b6a777868efbf08bdb58c9bf3e58b3db05e8e04d0f2691181c04653dc4a365"
+rationale = "Seconds to wait for each SSH reachability probe, with a default; it only bounds the probe and changes no request to the API."
+invocation = ["status", "42", "--ssh-timeout", "3"]
+expected_exit_status = 0
+expected_stdout_contains = "vname"
+expected_stderr_contains = ""
+effects = ["Reads GET /api/v1/servers/42 and probes SSH with a 3 second bound (stubbed in the test); no mutation."]
+test_ids = ["tests/test_cli_cases_scp_api.py::test_replayed_case_matches_catalog[status-ssh-timeout]"]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/tasks/argument-choice/argument:route:entrypoint:scp-api/tasks/action/5a83111e44"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:753ab1a4c3942deb5f22f5b9e927691be194d16e26027d5bdfcbcd9f4faba918"
+rationale = "'cancel' asks the provider to cancel the named task; a mutation that needs consent."
+invocation = ["tasks", "3a27fe8e-e747-4f3b-80b0-f930c0d0db3f", "cancel", "--yes"]
+expected_exit_status = 0
+expected_stdout_contains = "cancel requested"
+expected_stderr_contains = "Confirmation accepted via --yes"
+effects = ["Sends one PUT /api/v1/tasks/<uuid>:cancel after --yes."]
+test_ids = ["tests/test_cli_cases_scp_api.py::test_replayed_case_matches_catalog[tasks-choice-cancel]"]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/tasks/argument-shape/argument:route:entrypoint:scp-api/tasks/action"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:9301ad14e3e4cc0f021c6e2bd828a443f5d241f9f3d5de0b49663d810ce32924"
+rationale = "The optional action accepts only 'cancel'; any other word is refused by the parser, so a typo can never fall through to the read."
+invocation = ["tasks", "3a27fe8e-e747-4f3b-80b0-f930c0d0db3f", "cancel", "--yes"]
+expected_exit_status = 0
+expected_stdout_contains = "cancel requested"
+expected_stderr_contains = "Confirmation accepted via --yes"
+effects = ["Sends one PUT /api/v1/tasks/<uuid>:cancel after --yes."]
+test_ids = [
+  "tests/test_cli_cases_scp_api.py::test_replayed_case_matches_catalog[tasks-shape-action]",
+  "tests/test_cli_cases_scp_api.py::test_invalid_argument_is_refused[tasks-action]",
+]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/tasks/argument-shape/argument:route:entrypoint:scp-api/tasks/uuid"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:451d52afd71c12ed5d698d48777d3fff0040787380912fde4bb7d02149e45cdc"
+rationale = "The optional task uuid selects one task to show; omitting it lists tasks."
+invocation = ["tasks", "3a27fe8e-e747-4f3b-80b0-f930c0d0db3f"]
+expected_exit_status = 0
+expected_stdout_contains = "state: FINISHED"
+expected_stderr_contains = ""
+effects = ["Reads GET /api/v1/tasks/<uuid>; no mutation."]
+test_ids = ["tests/test_cli_cases_scp_api.py::test_replayed_case_matches_catalog[tasks-shape-uuid]"]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/tasks/minimum"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:f1f2829ff075b7e7287242700f3ba3c527e4c912334457e6eae0c685591e7375"
+rationale = "A bare 'tasks' is a safe read that lists the account's tasks; nothing is required."
+invocation = ["tasks"]
+expected_exit_status = 0
+expected_stdout_contains = "installImage"
+expected_stderr_contains = ""
+effects = ["Reads GET /api/v1/tasks; no mutation."]
+test_ids = ["tests/test_cli_cases_scp_api.py::test_replayed_case_matches_catalog[tasks-minimum]"]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/tasks/option-choice/option:route:entrypoint:scp-api/tasks/--state/20e8d2fc8d"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:3d4426b4bc01d8ab17b6b8e5138c195a30590d77eb350885d4f679b51edfe122"
+rationale = "WAITING_FOR_CANCEL is one of the six task states the API defines; it filters the list server-side."
+invocation = ["tasks", "--state", "WAITING_FOR_CANCEL"]
+expected_exit_status = 0
+expected_stdout_contains = "installImage"
+expected_stderr_contains = ""
+effects = ["Reads GET /api/v1/tasks with state=WAITING_FOR_CANCEL; no mutation."]
+test_ids = ["tests/test_cli_cases_scp_api.py::test_replayed_case_matches_catalog[tasks-state-waiting-for-cancel]"]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/tasks/option-choice/option:route:entrypoint:scp-api/tasks/--state/294bdbf9fe"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:66272a01f56ace2d11c557f3a7ac54ad69682162a8f9d4c1c66c9769249352b8"
+rationale = "RUNNING is one of the six task states the API defines; it filters the list server-side."
+invocation = ["tasks", "--state", "RUNNING"]
+expected_exit_status = 0
+expected_stdout_contains = "installImage"
+expected_stderr_contains = ""
+effects = ["Reads GET /api/v1/tasks with state=RUNNING; no mutation."]
+test_ids = ["tests/test_cli_cases_scp_api.py::test_replayed_case_matches_catalog[tasks-state-running]"]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/tasks/option-choice/option:route:entrypoint:scp-api/tasks/--state/33e202c61f"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:a50a036f5f33425b3a866ab96757d609e4de64f7263cbc6e065b5a8b37e261e3"
+rationale = "FINISHED is one of the six task states the API defines; it filters the list server-side."
+invocation = ["tasks", "--state", "FINISHED"]
+expected_exit_status = 0
+expected_stdout_contains = "installImage"
+expected_stderr_contains = ""
+effects = ["Reads GET /api/v1/tasks with state=FINISHED; no mutation."]
+test_ids = ["tests/test_cli_cases_scp_api.py::test_replayed_case_matches_catalog[tasks-state-finished]"]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/tasks/option-choice/option:route:entrypoint:scp-api/tasks/--state/78e030487c"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:6c8e8b3766f9839014c5a829defb5889ca404a0197a3b550949f10d8ea4db6cd"
+rationale = "CANCELED is one of the six task states the API defines; it filters the list server-side."
+invocation = ["tasks", "--state", "CANCELED"]
+expected_exit_status = 0
+expected_stdout_contains = "installImage"
+expected_stderr_contains = ""
+effects = ["Reads GET /api/v1/tasks with state=CANCELED; no mutation."]
+test_ids = ["tests/test_cli_cases_scp_api.py::test_replayed_case_matches_catalog[tasks-state-canceled]"]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/tasks/option-choice/option:route:entrypoint:scp-api/tasks/--state/b11db31f9f"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:e8fbbd017a34131c1f5fc8f67512f4564bfa1fdadb3ee62c92c05b364fced74c"
+rationale = "PENDING is one of the six task states the API defines; it filters the list server-side."
+invocation = ["tasks", "--state", "PENDING"]
+expected_exit_status = 0
+expected_stdout_contains = "installImage"
+expected_stderr_contains = ""
+effects = ["Reads GET /api/v1/tasks with state=PENDING; no mutation."]
+test_ids = ["tests/test_cli_cases_scp_api.py::test_replayed_case_matches_catalog[tasks-state-pending]"]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/tasks/option-choice/option:route:entrypoint:scp-api/tasks/--state/f717e7d817"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:017155825df4cec133f1e8344fdaac4af3f8bf3a317e6880940dc708a8307cd1"
+rationale = "ERROR is one of the six task states the API defines; it filters the list server-side."
+invocation = ["tasks", "--state", "ERROR"]
+expected_exit_status = 0
+expected_stdout_contains = "installImage"
+expected_stderr_contains = ""
+effects = ["Reads GET /api/v1/tasks with state=ERROR; no mutation."]
+test_ids = ["tests/test_cli_cases_scp_api.py::test_replayed_case_matches_catalog[tasks-state-error]"]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/tasks/option-spelling/option:route:entrypoint:scp-api/tasks/--debug-raw/--debug-raw"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:26ec2951149b8cb252f533c8f5d53124c21a6eda6e20e79e1429e1c00e3d6a83"
+rationale = "Library debugging control: turns redaction of diagnostic output off and warns that secrets may be exposed; it never changes which requests are made."
+invocation = ["tasks", "--debug-raw"]
+expected_exit_status = 0
+expected_stdout_contains = "installImage"
+expected_stderr_contains = "--debug-raw is active"
+effects = ["Prints the secrets-exposure warning on stderr, then performs the same read as without the flag."]
+test_ids = ["tests/test_cli_cases_scp_api.py::test_debug_raw_warns_and_is_off_by_default[tasks]"]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/tasks/option-spelling/option:route:entrypoint:scp-api/tasks/--json/--json"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:cecf289362b28b177f876cb67641ff220bf739fdf60b6fd0749ff0db4932d33b"
+rationale = "Library output control: prints the task list as JSON on stdout for scripting instead of a table."
+invocation = ["tasks", "--json"]
+expected_exit_status = 0
+expected_stdout_contains = "installImage"
+expected_stderr_contains = ""
+effects = ["Performs the same read as without the flag and prints the JSON list."]
+test_ids = ["tests/test_cli_cases_scp_api.py::test_json_output_is_machine_readable[tasks]"]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/tasks/option-spelling/option:route:entrypoint:scp-api/tasks/--limit/--limit"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:f366276420d1353bbf4dd20e4da2edff8b51c308c76da2562dae20b44fdbca1b"
+rationale = "Caps the number of tasks the server returns; sent as the limit query parameter and unset by default."
+invocation = ["tasks", "--limit", "5"]
+expected_exit_status = 0
+expected_stdout_contains = "installImage"
+expected_stderr_contains = ""
+effects = ["Reads GET /api/v1/tasks with limit=5; no mutation."]
+test_ids = ["tests/test_cli_cases_scp_api.py::test_replayed_case_matches_catalog[tasks-limit]"]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/tasks/option-spelling/option:route:entrypoint:scp-api/tasks/--offset/--offset"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:d83925f8295cb001c07ff4f2feecba749552f9937254592cf63e1256cc93da2f"
+rationale = "Skips the first N tasks for paging; sent as the offset query parameter and unset by default."
+invocation = ["tasks", "--offset", "1"]
+expected_exit_status = 0
+expected_stdout_contains = "installImage"
+expected_stderr_contains = ""
+effects = ["Reads GET /api/v1/tasks with offset=1; no mutation."]
+test_ids = ["tests/test_cli_cases_scp_api.py::test_replayed_case_matches_catalog[tasks-offset]"]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/tasks/option-spelling/option:route:entrypoint:scp-api/tasks/--query/--filter"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:43cee043ca3b1559db4cb68ed3239ceacf7908604af8d6a805b838c555aa208a"
+rationale = "--filter is the alias of --query: a free-text search sent as the q parameter."
+invocation = ["tasks", "--filter", "install"]
+expected_exit_status = 0
+expected_stdout_contains = "installImage"
+expected_stderr_contains = ""
+effects = ["Reads GET /api/v1/tasks with q=install; no mutation."]
+test_ids = ["tests/test_cli_cases_scp_api.py::test_replayed_case_matches_catalog[tasks-filter]"]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/tasks/option-spelling/option:route:entrypoint:scp-api/tasks/--query/--query"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:659297f8e81b080ff106235b4d4ff2e3888f6b72653750a70b181bc45bc8be27"
+rationale = "Free-text search over the task list, sent as the q query parameter."
+invocation = ["tasks", "--query", "install"]
+expected_exit_status = 0
+expected_stdout_contains = "installImage"
+expected_stderr_contains = ""
+effects = ["Reads GET /api/v1/tasks with q=install; no mutation."]
+test_ids = ["tests/test_cli_cases_scp_api.py::test_replayed_case_matches_catalog[tasks-query]"]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/tasks/option-spelling/option:route:entrypoint:scp-api/tasks/--server-id/--server-id"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:e9a1a68e25c98c313d1bc75dc19bfabe0738a8224bf64eee2447a2d3503a4a66"
+rationale = "Restricts the task list to one server by integer id, sent as the serverId parameter; unset by default."
+invocation = ["tasks", "--server-id", "42"]
+expected_exit_status = 0
+expected_stdout_contains = "installImage"
+expected_stderr_contains = ""
+effects = ["Reads GET /api/v1/tasks with serverId=42; no mutation."]
+test_ids = ["tests/test_cli_cases_scp_api.py::test_replayed_case_matches_catalog[tasks-server-id]"]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/tasks/option-spelling/option:route:entrypoint:scp-api/tasks/--state/--state"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:3a7cc9af0107de5e3d2498e1cd4cfa7e6a0f05f6ea90e072f131febb3fa865b7"
+rationale = "Filters tasks by state; restricted to the six API states so an unknown state is refused by the parser instead of returning an empty list."
+invocation = ["tasks", "--state", "RUNNING"]
+expected_exit_status = 0
+expected_stdout_contains = "installImage"
+expected_stderr_contains = ""
+effects = ["Reads GET /api/v1/tasks with state=RUNNING; no mutation."]
+test_ids = [
+  "tests/test_cli_cases_scp_api.py::test_replayed_case_matches_catalog[tasks-state]",
+  "tests/test_cli_cases_scp_api.py::test_invalid_argument_is_refused[tasks-state]",
+]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/tasks/option-spelling/option:route:entrypoint:scp-api/tasks/--yes/--yes"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:fcddf0f023e7216ed71c095b8c65e332fa258add7fd3a0f04ebd33b23b963b42"
+rationale = "Library consent control: in a non-interactive run it is the only consent for 'cancel'; without it the run refuses with exit 2 before any request."
+invocation = ["tasks", "3a27fe8e-e747-4f3b-80b0-f930c0d0db3f", "cancel", "--yes"]
+expected_exit_status = 0
+expected_stdout_contains = "cancel requested"
+expected_stderr_contains = "Confirmation accepted via --yes"
+effects = ["Skips the confirmation prompt and sends the single cancel PUT; without it nothing is sent."]
+test_ids = ["tests/test_cli_cases_scp_api.py::test_yes_is_the_only_consent_in_a_non_interactive_run[tasks]"]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/user-iso/argument-choice/argument:route:entrypoint:scp-api/user-iso/action/ca46c99db8"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:66416ef4f030a5e7f1e21129b25dfc14ba58d50dcea011c58bdd0902baec2045"
+rationale = "'upload' stores a local ISO file in the account's ISO storage; a mutation that needs consent."
+invocation = ["user-iso", "upload", "custom.iso", "--yes"]
+expected_exit_status = 0
+expected_stdout_contains = "key: custom.iso"
+expected_stderr_contains = "Confirmation accepted via --yes"
+effects = ["Reads the user id, creates the upload (POST users/1/isos/custom.iso) and uploads the file body to the returned URL after --yes."]
+test_ids = ["tests/test_cli_cases_scp_api.py::test_replayed_case_matches_catalog[user-iso-choice-upload]"]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/user-iso/argument-shape/argument:route:entrypoint:scp-api/user-iso/action"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:82a23bbdbf4a7a853c29bc7cf7268a421f44803b2815bf9a83f17c958d3211a3"
+rationale = "The optional action accepts only 'upload'; any other word is refused by the parser, so a typo can never fall through to the list read."
+invocation = ["user-iso", "upload", "custom.iso", "--yes"]
+expected_exit_status = 0
+expected_stdout_contains = "key: custom.iso"
+expected_stderr_contains = "Confirmation accepted via --yes"
+effects = ["Creates the upload and sends the file after --yes."]
+test_ids = [
+  "tests/test_cli_cases_scp_api.py::test_replayed_case_matches_catalog[user-iso-shape-action]",
+  "tests/test_cli_cases_scp_api.py::test_invalid_argument_is_refused[user-iso-action]",
+]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/user-iso/argument-shape/argument:route:entrypoint:scp-api/user-iso/file"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:02fa8bc04701c1de4945919ef5ff15df26a309143b588c5791ccb60a27327654"
+rationale = "The optional file is the local ISO to upload; it must be an existing regular file, checked before any request, and it is required by 'upload'."
+invocation = ["user-iso", "upload", "custom.iso", "--yes"]
+expected_exit_status = 0
+expected_stdout_contains = "key: custom.iso"
+expected_stderr_contains = "Confirmation accepted via --yes"
+effects = ["Creates the upload and sends the file after --yes."]
+test_ids = [
+  "tests/test_cli_cases_scp_api.py::test_replayed_case_matches_catalog[user-iso-shape-file]",
+  "tests/test_cli_cases_scp_api.py::test_invalid_argument_is_refused[user-iso-file]",
+]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/user-iso/minimum"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:dae266997b62c47aa41395fb563ad64a461c678c12b5a446d1d681e7b72cb77c"
+rationale = "A bare 'user-iso' is a safe read that lists the account's uploaded ISOs; nothing is required."
+invocation = ["user-iso"]
+expected_exit_status = 0
+expected_stdout_contains = "custom.iso"
+expected_stderr_contains = ""
+effects = ["Reads the user id and GET /api/v1/users/1/isos; no mutation."]
+test_ids = ["tests/test_cli_cases_scp_api.py::test_replayed_case_matches_catalog[user-iso-minimum]"]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/user-iso/option-spelling/option:route:entrypoint:scp-api/user-iso/--debug-raw/--debug-raw"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:c218187a7b81ed92a73687b3e24f094ff2ffd979689cc242ac6b38c3cca7d564"
+rationale = "Library debugging control: turns redaction of diagnostic output off and warns that secrets may be exposed; it never changes which requests are made."
+invocation = ["user-iso", "--debug-raw"]
+expected_exit_status = 0
+expected_stdout_contains = "custom.iso"
+expected_stderr_contains = "--debug-raw is active"
+effects = ["Prints the secrets-exposure warning on stderr, then performs the same read as without the flag."]
+test_ids = ["tests/test_cli_cases_scp_api.py::test_debug_raw_warns_and_is_off_by_default[user-iso]"]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/user-iso/option-spelling/option:route:entrypoint:scp-api/user-iso/--json/--json"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:ea1abdf68ed2c6d57f9ca43aaf7e7c293a5d3ee291b873974b17ea4466eee702"
+rationale = "Library output control: prints the ISO list as JSON on stdout for scripting instead of a table."
+invocation = ["user-iso", "--json"]
+expected_exit_status = 0
+expected_stdout_contains = "custom.iso"
+expected_stderr_contains = ""
+effects = ["Performs the same read as without the flag and prints the JSON list."]
+test_ids = ["tests/test_cli_cases_scp_api.py::test_json_output_is_machine_readable[user-iso]"]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/user-iso/option-spelling/option:route:entrypoint:scp-api/user-iso/--multipart/--multipart"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:583e1d2d1cca50801933b67ffb6bfaf21ddc938dfa76fbcbde9c11e0537d32e1"
+rationale = "Uploads in presigned parts instead of one request, for large ISOs; off by default."
+invocation = ["user-iso", "upload", "custom.iso", "--multipart", "--yes"]
+expected_exit_status = 0
+expected_stdout_contains = "key: custom.iso"
+expected_stderr_contains = "Confirmation accepted via --yes"
+effects = ["Creates a multipart upload, uploads the part(s) to presigned URLs and completes it after --yes."]
+test_ids = ["tests/test_cli_cases_scp_api.py::test_replayed_case_matches_catalog[user-iso-multipart]"]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/user-iso/option-spelling/option:route:entrypoint:scp-api/user-iso/--name/--name"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:a59d20e4440d5f5ba8ab8bd1acd280771237ac1ebb974e7e80491205d9fb59a7"
+rationale = "Stores the ISO under a different name than the local file; free text, and the default is the file's own name."
+invocation = ["user-iso", "upload", "custom.iso", "--name", "renamed.iso", "--yes"]
+expected_exit_status = 0
+expected_stdout_contains = "key: renamed.iso"
+expected_stderr_contains = "Confirmation accepted via --yes"
+effects = ["Creates the upload under the key renamed.iso and sends the local file after --yes."]
+test_ids = ["tests/test_cli_cases_scp_api.py::test_replayed_case_matches_catalog[user-iso-name]"]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/user-iso/option-spelling/option:route:entrypoint:scp-api/user-iso/--part-size-mib/--part-size-mib"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:5f40e65d5e1c82ededd43d36eea3365c2d6800775fcb48b73247c62642ccaf4a"
+rationale = "Part size for a multipart upload in MiB; only meaningful with --multipart and defaulted by the command."
+invocation = ["user-iso", "upload", "custom.iso", "--multipart", "--part-size-mib", "5", "--yes"]
+expected_exit_status = 0
+expected_stdout_contains = "key: custom.iso"
+expected_stderr_contains = "Confirmation accepted via --yes"
+effects = ["Creates a multipart upload with 5 MiB parts and sends the file in parts after --yes."]
+test_ids = ["tests/test_cli_cases_scp_api.py::test_replayed_case_matches_catalog[user-iso-part-size-mib]", "tests/test_cli_cases_scp_api.py::test_part_size_changes_how_a_large_iso_is_split"]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/user-iso/option-spelling/option:route:entrypoint:scp-api/user-iso/--yes/--yes"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:13753882c15edfc7e0dfa5c07eecdffb3c859c9930bb10bbf8e654afd6565dda"
+rationale = "Library consent control: in a non-interactive run it is the only consent for 'upload'; without it the run refuses with exit 2 before any request."
+invocation = ["user-iso", "upload", "custom.iso", "--yes"]
+expected_exit_status = 0
+expected_stdout_contains = "key: custom.iso"
+expected_stderr_contains = "Confirmation accepted via --yes"
+effects = ["Skips the confirmation prompt and uploads the file; without it nothing is sent."]
+test_ids = ["tests/test_cli_cases_scp_api.py::test_yes_is_the_only_consent_in_a_non_interactive_run[user-iso]"]
