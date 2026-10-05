@@ -1024,3 +1024,11 @@ class TestWalk:
 
     def test_find_container_cgroup_missing(self, cgroup_root: Path):
         assert t.find_container_cgroup("f" * 64, str(cgroup_root)) is None
+
+    def test_find_container_cgroup_rejects_scope_name_with_trailing_newline(
+        self, tmp_path: Path,
+    ):
+        container_id = "b" * 64
+        (tmp_path / f"docker-{container_id}.scope\n").mkdir()
+
+        assert t.find_container_cgroup(container_id, str(tmp_path)) is None
