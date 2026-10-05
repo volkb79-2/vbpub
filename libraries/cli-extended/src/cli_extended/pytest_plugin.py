@@ -55,13 +55,37 @@ def pytest_collection_finish(session: Any) -> None:
             if configured
             else load_project_config(start=root)
         )
-        for cli in project.clis:
-            if cli.review is None:
-                continue
+        catalogs = [
+            (cli.id, load_cli_review_catalog(cli.review))
+            for cli in project.clis
+            if cli.review is not None
+        ]
+    except (ConfigError, ReviewCatalogError) as exc:
+        raise pytest.UsageError(f"cli-extended: {exc}") from exc
+    owners: dict[str, str] = {}
+    for cli_id, catalog in catalogs:
+        for case in catalog.cases:
+            other = owners.setdefault(case.case_id, cli_id)
+            if other != cli_id:
+                raise pytest.UsageError(
+                    f"cli-extended: case ID {case.case_id!r} appears in the review "
+                    f"catalogs of both {other!r} and {cli_id!r}"
+                )
+    errors: list[str] = []
+    for cli_id, catalog in catalogs:
+        mine = {case.case_id for case in catalog.cases}
+        try:
             assert_cli_case_tests(
                 session.items,
-                load_cli_review_catalog(cli.review),
+                catalog,
                 partial=config.getoption("cli_case_partial"),
+                foreign_case_ids=set(owners) - mine,
             )
-    except (ConfigError, ReviewCatalogError, AssertionError) as exc:
-        raise pytest.UsageError(f"cli-extended: {exc}") from exc
+        except AssertionError as exc:
+            for line in str(exc).splitlines()[1:]:
+                if line not in errors:
+                    errors.append(line)
+    if errors:
+        raise pytest.UsageError(
+            "cli-extended: CLI case test coverage failed:\n" + "\n".join(errors)
+        )

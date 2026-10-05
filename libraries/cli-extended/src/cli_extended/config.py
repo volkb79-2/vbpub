@@ -267,8 +267,11 @@ def load_cli(cli: CliConfig) -> RegisteredCli:
 
     try:
         app = load_factory(cli.factory, root=cli.root)
-    except (AttributeError, TypeError, ValueError) as exc:
-        raise ConfigError(f"cannot load factory {cli.factory!r} for {cli.id!r}: {exc}") from exc
+    except Exception as exc:
+        raise ConfigError(
+            f"cannot load CLI factory {cli.factory!r} for {cli.id!r}: "
+            f"{type(exc).__name__}: {exc}"
+        ) from exc
     if app.identity.command_name != cli.id:
         raise ConfigError(
             f"configured CLI id {cli.id!r} does not match the registered "

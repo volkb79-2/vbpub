@@ -203,22 +203,22 @@ W1 and W3a can run in parallel because their files are disjoint (`identity.py`/`
   - `install` is mutating and `dry_run=True`, and uses `confirmation_required=False` except as below.
     - Absent, stale and current skills are written atomically (temp sibling, then rename). Current skills are rewritten as a no-op, and byte equality is verified.
     - Orphans are removed.
-    - `modified` is refused unless `--yes` is given.
+    - `modified` is refused unless `--overwrite-modified` is given (as built; the plan said `--yes`, see BACKLOG CLI-EXT-05).
     - `foreign` and `unmanaged` are always refused and never overwritten.
-  - `uninstall` removes only skills stamped by this tool; `modified` needs `--yes`.
+  - `uninstall` removes only skills stamped by this tool; `modified` needs `--overwrite-modified`.
   - `check` exits 1 when any skill is not `current` (including orphans) and supports `--json`.
   - `list` prints skill × harness → state and supports `--json`.
 - **Backlog oracles (all mandatory):**
   - Installing twice is idempotent.
   - An upgraded version makes the skill stale, and installing refreshes it.
-  - A local edit makes it modified, and it is not overwritten without `--yes`.
+  - A local edit makes it modified, and it is not overwritten without `--overwrite-modified`.
   - A foreign skill is refused.
   - A controlled wrong implementation that copies without stamping fails the foreign-refusal oracle.
 
 ### W5 — shared doctor (new `doctor.py`)
 
 - **API:**
-  - `DoctorCheck(name, description, run)` where `run(runtime) -> CheckResult`.
+  - `DoctorCheck(name, description, run)` where `run(runtime, args) -> CheckResult` (as built; the plan said `run(runtime)`).
   - `CheckResult(status, summary, remedy=None, details={})`, with `status` one of `ok`, `warn`, `fail`, `skip`.
   - `register_doctor(registry, checks, *, description=...)` registers a read-only `doctor` verb with `--check NAME` (repeatable; an unknown name is a usage error) and `--json`.
 - **Behavior:**

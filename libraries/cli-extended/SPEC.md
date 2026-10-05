@@ -1214,7 +1214,11 @@ always present.
    `cli-extended skills ...`, each surface verb taking `--config` and `--cli`
    (`sync`/`check`/`template` also `--max-candidates N`, `N >= 1`). Exit
    status: `sync` 0, `check` 0 or 1, `template` 0, any config, catalog,
-   findings, surface or import error 2. Findings print as `[REVIEW] ...` and
+   findings, surface or import error 2. A failure while importing or calling
+   the configured factory (any exception, whatever its type) is a configuration
+   error, exit 2:
+   `cannot load CLI factory '<factory>' for '<id>': <ExcType>: <message>`; a
+   missing factory file names the file in the message. Findings print as `[REVIEW] ...` and
    non-failing notes as `[NOTE] ...` on stderr.
 6. **Report.** `surface report` prints Markdown: `# CLI review report: <id>`,
    then `## Open findings`, `## Cases awaiting review` (new, pending, changed,
@@ -1259,10 +1263,14 @@ always present.
    as a `pytest11` entry point; importing it does not require pytest. It
    registers the `cli_case(case_id)` marker and the ini option
    `cli_extended_config` (path relative to the rootdir; default is discovery
-   upward from the rootdir). At collection finish it calls
-   `assert_cli_case_tests` for every configured CLI with a `review` catalog and
-   turns a config, catalog or assertion error into a pytest usage error (exit
-   4). It is strict by default; CI and gate runs MUST use strict mode. `--cli-case-partial` passes `partial=True`,
+   upward from the rootdir). At collection finish it loads every configured
+   CLI's `review` catalog, refuses a case ID present in two catalogs (usage
+   error naming both CLI IDs), then calls `assert_cli_case_tests` per catalog
+   with `foreign_case_ids` set to the union of the other catalogs' case IDs
+   (such markers are skipped for that catalog; a marker known to no catalog is
+   still an error). Errors from all catalogs are collected, deduplicated in
+   order and raised as one pytest usage error (exit 4), as is any config or
+   catalog error. It is strict by default; CI and gate runs MUST use strict mode. `--cli-case-partial` passes `partial=True`,
    which skips only the "test not collected" and "no collected marked test"
    errors; every error about a collected item still applies. A config with no
    `review` is a no-op.
@@ -1382,6 +1390,12 @@ tool name is `identity.command_name` and the version is `identity.version`.
    `unmanaged` are always refused and never touched, even with
    `--overwrite-modified`. A refusal is an `[ERROR]` naming skill and
    destination with a hint; the remaining skills are still processed.
+   A filesystem failure while writing or removing (`OSError` from creating the
+   destination, writing the staged copy, or removing a skill or leftover) is a
+   domain failure, not an unexpected exception: one `[ERROR] <skill> -> <dest>:
+   <os error>` line, exit 1, and processing stops (a leftover is named by its
+   directory name). Dry run and listing order is the `list` order: destination
+   path, then skill name.
 9. **`uninstall`** (mutating, `--dry-run`). Removes only directories whose sidecar
    names this tool (packaged skills and orphans). `modified` needs
    `--overwrite-modified`, otherwise it is refused like in `install`.
@@ -1457,11 +1471,16 @@ raises `ValueError`.
    order of `register_skills_verbs` and `register_doctor` does not matter, a
    registry carrying `_cli_extended_skills` gets a built-in check `skills`
    appended. It evaluates the default destinations (`--harness all`,
-   `default_skill_destinations()`) with `skill_states` and `skill_leftovers`, exactly the `skills check` condition:
+   `default_skill_destinations()`) with `skill_states` and `skill_leftovers`:
    `ok` (`all skills current`) when every skill is `current` and there is no
-   orphan and no leftover of this tool; otherwise `fail` with summary
+   orphan and no leftover of this tool; `warn` with summary
+   `N skill(s) not installed` when the only departures are `absent` rows (a
+   tool whose skills were never installed is not broken); otherwise `fail`
+   (any `stale`, `modified`, `foreign`, `unmanaged` or `orphaned` row, or any
+   leftover) with summary
    `N skill(s) not current` (plus `; M leftover path(s)` when leftovers exist,
-   or just `M leftover path(s)`), remedy `run '<tool> skills install'` and
+   or just `M leftover path(s)`; N counts every non-`current` row, absent ones
+   included), remedy `run '<tool> skills install'` and
    details `{"skills": [{"name", "destination", "state"}], "leftovers": [path]}`.
    A user check named `skills` is refused at registration in either order:
    `register_doctor` raises `ValueError` when the skills verbs are already

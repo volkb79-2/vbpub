@@ -10,7 +10,7 @@ import shlex
 import stat
 import tempfile
 import tomllib
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -2225,9 +2225,16 @@ def render_cli_review_template(
 
 
 def assert_cli_case_tests(
-    collected_items: Sequence[Any], catalog: ReviewCatalog, *, partial: bool = False
+    collected_items: Sequence[Any],
+    catalog: ReviewCatalog,
+    *,
+    partial: bool = False,
+    foreign_case_ids: Collection[str] = (),
 ) -> None:
     """Assert active review cases reference collected, correctly marked tests.
+
+    A marker whose case ID is in ``foreign_case_ids`` (cases of another CLI's
+    catalog) is skipped for this catalog; any other unknown ID is an error.
 
     With ``partial=True`` (a focused run that collected only some tests) the
     "node not collected" and "no collected marked test" errors are not raised;
@@ -2259,6 +2266,8 @@ def assert_cli_case_tests(
                 errors.append(f"test {nodeid!r} has an empty or malformed cli_case marker")
                 continue
             case_id = marker_args[0]
+            if case_id not in known_cases and case_id in foreign_case_ids:
+                continue
             if case_id not in known_cases:
                 errors.append(f"test {nodeid!r} references unknown CLI case {case_id!r}")
                 continue

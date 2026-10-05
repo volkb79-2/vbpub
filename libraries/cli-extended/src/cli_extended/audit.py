@@ -258,8 +258,13 @@ def _synopsis_overrides(_c: CliConfig, app: RegisteredCli, _p: ProjectConfig) ->
         return _item(
             "synopsis-overrides",
             "warn",
-            f"{len(redundant)} redundant synopsis override(s)",
-            tuple(redundant + overrides),
+            f"{len(redundant)} redundant synopsis override(s)"
+            + (
+                f", {len(overrides)} other override(s) need a justification"
+                if overrides
+                else ""
+            ),
+            tuple(redundant),
             "Delete the synopsis= argument; the library derives it.",
         )
     if overrides:

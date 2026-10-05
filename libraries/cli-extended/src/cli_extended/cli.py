@@ -300,7 +300,7 @@ def _require(cli: CliConfig, verb: str, *names: str) -> list[Path]:
 
 
 def _guarded(function):
-    def handler(args: argparse.Namespace, runtime: CliRuntime) -> int:
+    def handler(args: argparse.Namespace, runtime: CliRuntime) -> int | None:
         try:
             return function(args, runtime)
         except _EXPECTED as exc:
@@ -312,7 +312,7 @@ def _guarded(function):
 def _sync_or_check(mode: str):
     operation = sync_cli_surface if mode == "sync" else check_cli_surface
 
-    def handler(args: argparse.Namespace, runtime: CliRuntime) -> int:
+    def handler(args: argparse.Namespace, runtime: CliRuntime) -> int | None:
         cli, app = _context(args)
         review, manifest, spec = _require(cli, mode, "review", "manifest", "spec")
         report = operation(
@@ -329,36 +329,34 @@ def _sync_or_check(mode: str):
             print(f"[NOTE] {note}", file=runtime.output.stderr)
         if mode == "sync":
             runtime.output.primary("CLI surface files synchronized.")
-            return 0
+            return
         if report.passed:
             runtime.output.primary("CLI surface check passed.")
-            return 0
+            return
         print("CLI surface check failed.", file=runtime.output.stderr)
         return 1
 
     return _guarded(handler)
 
 
-def _template(args: argparse.Namespace, runtime: CliRuntime) -> int:
+def _template(args: argparse.Namespace, runtime: CliRuntime) -> int | None:
     cli, app = _context(args)
     (review,) = _require(cli, "template", "review")
     runtime.output.stdout.write(template_text(app, review, args.max_candidates))
-    return 0
 
 
 def _findings(cli: CliConfig, app: RegisteredCli) -> FindingsFile | None:
     return _load_findings_file(app, cli.findings)
 
 
-def _report(args: argparse.Namespace, runtime: CliRuntime) -> int:
+def _report(args: argparse.Namespace, runtime: CliRuntime) -> int | None:
     cli, app = _context(args)
     (review,) = _require(cli, "report", "review")
     catalog, surface = _view(app, review, None, tolerate=True)
     runtime.output.stdout.write(render_report(cli.id, surface, catalog, _findings(cli, app)))
-    return 0
 
 
-def _pack(args: argparse.Namespace, runtime: CliRuntime) -> int:
+def _pack(args: argparse.Namespace, runtime: CliRuntime) -> int | None:
     cli, app = _context(args)
     (review,) = _require(cli, "pack", "review")
     catalog, surface = _view(app, review, None, tolerate=True)
@@ -367,7 +365,6 @@ def _pack(args: argparse.Namespace, runtime: CliRuntime) -> int:
         runtime.output.stdout.write(text)
     else:
         args.output.write_bytes(text.encode("utf-8"))
-    return 0
 
 
 def _audit_lines(items: Sequence[AuditItem], counts: Mapping[str, int]) -> list[str]:
@@ -386,7 +383,7 @@ def _audit_lines(items: Sequence[AuditItem], counts: Mapping[str, int]) -> list[
     return lines
 
 
-def _audit(args: argparse.Namespace, runtime: CliRuntime) -> int:
+def _audit(args: argparse.Namespace, runtime: CliRuntime) -> int | None:
     project = load_project_config(args.config)
     cli = project.select(args.cli)
     items = run_audit(cli, project)

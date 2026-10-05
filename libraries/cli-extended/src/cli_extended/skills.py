@@ -321,6 +321,12 @@ class _Row:
     tree: Mapping[str, bytes]
 
 
+def _row_key(row: _Row) -> tuple[str, str]:
+    """The single ordering of skill rows: destination path, then skill name."""
+
+    return (str(row.destination), row.name)
+
+
 def _inspect(
     target: Path,
     tool: str,
@@ -553,12 +559,17 @@ def _execute(
     if runtime.dry_run:
         runtime.output.primary(f"would {action.kind} {line}")
         return
-    if action.kind in ("install", "update"):
-        assert rendered is not None
-        row.destination.mkdir(parents=True, exist_ok=True)
-        _write_atomic(row.destination, row.name, rendered, runtime.identity.command_name)
-    elif action.kind == "remove":
-        shutil.rmtree(row.destination / row.name)
+    try:
+        if action.kind in ("install", "update"):
+            assert rendered is not None
+            row.destination.mkdir(parents=True, exist_ok=True)
+            _write_atomic(
+                row.destination, row.name, rendered, runtime.identity.command_name
+            )
+        elif action.kind == "remove":
+            shutil.rmtree(row.destination / row.name)
+    except OSError as exc:
+        raise CliFailure(f"{row.name} -> {row.destination}: {exc}") from exc
     if action.note == "unchanged":
         runtime.output.primary(f"unchanged {row.name} -> {row.destination}")
     else:
@@ -592,9 +603,14 @@ def _make_handler(package: str, resource_dir: str, mode: str):
                 if runtime.dry_run:
                     runtime.output.primary(f"would remove leftover {leftover}")
                 else:
-                    _remove_path(leftover)
+                    try:
+                        _remove_path(leftover)
+                    except OSError as exc:
+                        raise CliFailure(
+                            f"{leftover.name} -> {destination}: {exc}"
+                        ) from exc
                     runtime.output.primary(f"removed leftover {leftover}")
-        for row in rows:
+        for row in sorted(rows, key=_row_key):
             rendered = (
                 _render(row.name, sources[row.name], tool, version)
                 if row.packaged
@@ -623,8 +639,8 @@ def _report(
     tool: str,
     version: str,
     mode: str,
-) -> int:
-    ordered = sorted(rows, key=lambda row: (str(row.destination), row.name))
+) -> int | None:
+    ordered = sorted(rows, key=_row_key)
     entries = [
         {"name": row.name, "destination": str(row.destination), "state": row.state.value}
         for row in ordered
@@ -644,7 +660,7 @@ def _report(
         for path in leftovers:
             runtime.output.primary(f"leftover {path}")
     if mode == "list":
-        return 0
+        return
     bad = [row for row in rows if row.state is not SkillState.CURRENT]
     if bad:
         runtime.output.error(

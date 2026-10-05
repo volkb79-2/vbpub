@@ -549,6 +549,26 @@ def test_o6_report_tolerates_broken_interaction_references(tmp_path, monkeypatch
     assert "## Stale cases" in out
 
 
+def test_w8b_template_refuses_broken_interaction_references(tmp_path, monkeypatch, capsys):
+    root = _project(tmp_path, monkeypatch)
+    text = (root / "cli-review.toml").read_text(encoding="utf-8")
+    broken = text.replace(
+        f'route_id = "{ROUTE_ID}"', 'route_id = "route:entrypoint:audit-tool/gone"'
+    )
+    assert broken != text
+    (root / "cli-review.toml").write_text(broken, encoding="utf-8")
+    code, out, err = _run(capsys, "surface", "template")
+    assert (code, out) == (2, "")
+    assert "[ERROR]" in err
+    assert "interaction group 'mode-and-dry-run/both' names an unknown route" in err
+    # the tolerant views of the same catalog still succeed
+    assert _run(capsys, "surface", "report")[0] == 0
+    code, out, err = _run(capsys, "surface", "pack")
+    assert (code, err) == (0, "")
+    assert out.startswith("# cli-extended review rubric")
+    assert "## Cases to review" in out
+
+
 # ---- O5: pack --------------------------------------------------------------
 
 
@@ -618,6 +638,37 @@ def test_o5_pack_shows_catalog_rows_stale_cases_and_open_findings(tmp_path):
     assert "- kind: stale\n" in stale
     assert 'rationale = "was here"' in stale
     assert "## Open findings\n\n- **major** `a` [help] (route: none): S a Remedy: R a\n" in text
+
+
+def test_w8b_pack_keeps_non_ascii_literal_in_catalog_rows_and_shapes(tmp_path):
+    extra = [
+        "[[cases]]", 'id = "case:gone"', 'state = "pending"',
+        'rationale = "für — é"', 'invocation = ["ü", "—"]',
+    ]
+    def mutate(text):
+        head, blocks = _split_cases(text)
+        blocks[0] = blocks[0].replace('state = "active"', 'state = "pending"', 1)
+        return _rejoin(head, blocks)
+
+    app, surface, catalog = _surface_and_catalog(tmp_path, mutate, extra)
+    surface = json.loads(json.dumps(surface))
+    surface["candidates"][0]["shape"] = {"label": "größe — ü"}
+    text = render_pack(app, surface, catalog, None)
+    assert 'rationale = "für — é"' in text
+    assert 'invocation = ["ü", "—"]' in text
+    assert '"label": "größe — ü"' in text
+    assert "\\u00" not in text and "\\u20" not in text
+
+
+@pytest.mark.parametrize("verb", ["sync", "check"])
+def test_w8b_sync_and_passing_check_exit_zero(tmp_path, monkeypatch, capsys, verb):
+    _project(tmp_path, monkeypatch)
+    assert _run(capsys, "surface", "sync")[0] == 0
+    code, out, err = _run(capsys, "surface", verb)
+    assert (code, err) == (0, "")
+    assert out.strip() in (
+        "CLI surface files synchronized.", "CLI surface check passed.",
+    )
 
 
 def test_o5_pack_with_no_cases_to_review_says_none(tmp_path):

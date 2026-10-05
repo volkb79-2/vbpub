@@ -22,7 +22,7 @@ edit both by hand.
    every case awaiting review.
 4. Judge each case and each help block with the rubric. For every case decide
    `accept` or `refuse` and why.
-5. Edit `cli-review.toml` rows by hand: `state`, `decision`, `rationale`,
+5. Edit the rows of the CLI's configured `review` catalog by hand: `state`, `decision`, `rationale`,
    `reviewed_signature` (copy the signature from the bundle), `invocation`,
    `expected_exit_status`, `effects` and `test_ids`. Edit the findings file by hand
    for every problem the rubric turned up.

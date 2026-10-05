@@ -354,7 +354,7 @@ The library exposes a stable machine-readable CLI manifest and a merge-aware
 specification generator alongside Markdown help. Generated help is not a
 substitute for the semantic audit. The live catalog pilot is Netcup's
 [`monitor-task.py` CLI spec](../../../scripts/netcup/CLI-SPEC.md), with its
-[`cli-review.toml`](../../../scripts/netcup/cli-review.toml), generated JSON
+[`cli-review-monitor-task.toml`](../../../scripts/netcup/cli-review-monitor-task.toml), generated JSON
 manifest, and pytest collection hook. It demonstrates regeneration and test
 linkage on a real hyphenated script. CMRU's
 [`S-CLI.9`](../../../cmru/docs/SPEC.md#s-cli9-canonical-cli-grammar-and-semantic-audit)
@@ -365,12 +365,13 @@ surface against the full CMRU interface.
 
 The first-party pilot declares its CLI in a standalone `cli-extended.toml`
 (it has no pyproject) that uses the script-path factory form, and runs the
-shared command from that directory:
+shared command from that directory with the installed `cli-extended` console
+script (from a library worktree, see
+[Running the cli-extended CLI from a source checkout](#running-the-cli-extended-cli-from-a-source-checkout)):
 
 ```bash
 cd scripts/netcup
-PYTHONPATH=../../libraries/cli-extended/src${PYTHONPATH:+:$PYTHONPATH} \
-python -m cli_extended.cli surface check
+cli-extended surface check
 ```
 
 When a registry changes, run `surface template` to discover new or stale review
@@ -462,6 +463,7 @@ are configured. Then run the shared command from anywhere inside the project:
 ```bash
 cli-extended surface sync
 cli-extended surface template
+cli-extended surface pack
 cli-extended surface check
 cli-extended surface report
 ```
@@ -654,6 +656,41 @@ Re-sync like this:
 A manifest written before contract versions existed (no `library_contract`
 record) is treated as an ordinary stale manifest: `check` reports
 `generated CLI manifest is stale`; run `sync` once.
+
+### A project with several CLIs
+
+List every executable as its own `[[clis]]` entry (the key is `clis`, in
+`cli-extended.toml` or `[[tool.cli-extended.clis]]`):
+
+```toml
+# cli-extended.toml
+schema_version = 1
+
+[[clis]]
+id = "scp-api"
+factory = "scp-api.py:build_cli"
+review = "cli-review-scp-api.toml"
+manifest = "cli-surface-scp-api.json"
+spec = "CLI-SPEC-scp-api.md"
+findings = "cli-findings-scp-api.toml"
+
+[[clis]]
+id = "monitor-task"
+factory = "monitor-task.py:build_cli"
+review = "cli-review-monitor-task.toml"
+manifest = "cli-surface-monitor-task.json"
+spec = "CLI-SPEC-monitor-task.md"
+findings = "cli-findings-monitor-task.toml"
+```
+
+Keep one spec file per CLI: `surface sync` owns exactly one generated region
+(the marker pair) per spec file, so two CLIs cannot share one. An optional
+hand-written index spec may link the per-CLI specs; it carries no markers and
+is not listed in the config. Each CLI also has its own review catalog (its
+`cli_id` must equal that executable) and its own findings file. Address one
+CLI with `--cli ID` (`cli-extended surface sync --cli scp-api`); it is required
+when several are configured. A single `pytest_plugins =
+["cli_extended.pytest_plugin"]` line covers them all (see below).
 
 ## Review cross-route and arity interactions
 
@@ -1159,7 +1196,10 @@ A check can read its own options. Pass them with
 `run(runtime, args)`.
 
 `example doctor`, `example doctor --check docker --json` and CI use the same
-exit code (1 only for `fail`). Do not name a check `skills`.
+exit code (1 only for `fail`). Do not name a check `skills`. The automatic
+`skills` check is a `warn` when the skills were never installed and a `fail`
+when any installed skill is stale, modified, foreign or orphaned, or an
+interrupted install left files behind.
 
 Mapping the existing doctors:
 
@@ -1244,6 +1284,11 @@ stderr. When `--json` owns stdout, `--progress=rawjson` is intentionally muted;
 `runtime.progress()` redact the secrets passed to `app.run()` unless
 `--debug-raw` was explicitly requested. Consumers still own the JSON schema
 and must not print ad-hoc progress directly to stdout.
+
+`--debug-raw` is never silent: it writes a `[WARN] --debug-raw is active ...`
+line and enables `[DEBUG]` diagnostics on stderr. A test asserting that
+`--debug-raw` leaves output unchanged compares stdout, or filters those stderr
+lines first.
 
 ## Tests required for an adoption
 
@@ -1348,6 +1393,28 @@ can check or an agent can judge from the
     `[FAIL] AC-05 shadowed-controls: 1 consumer option(s) shadow library controls`,
     followed by indented `evidence:` and `remedy:` lines.
 
+### Running the cli-extended CLI from a source checkout
+
+The `cli-extended` command takes its identity from installed distribution
+metadata and deliberately refuses to run without it; there is no literal
+fallback version. From a checkout or worktree, install it editable into a
+scratch virtual environment:
+
+```bash
+python3 -m venv /tmp/cx-venv
+/tmp/cx-venv/bin/pip install --no-deps -e libraries/cli-extended
+/tmp/cx-venv/bin/cli-extended --version
+```
+
+setuptools_scm derives the version from the `cli-extended-v*` tags. Before the
+first such tag exists (or in a checkout without tags), set a pretend version
+for the install:
+
+```bash
+SETUPTOOLS_SCM_PRETEND_VERSION_FOR_CLI_EXTENDED=0.2.0 \
+  /tmp/cx-venv/bin/pip install --no-deps -e libraries/cli-extended
+```
+
 ## Test helpers and review-case linking
 
 ### Test helpers: invoke_script
@@ -1411,7 +1478,22 @@ cli_extended_config = "cli-extended.toml"
 The plugin registers the `cli_case` marker and, for every CLI in the project
 config that has a `review` catalog, runs `assert_cli_case_tests` after
 collection. It is strict: an active case whose test is not collected fails the
-run (exit status 4). CI and gate runs must use strict mode;
-`--cli-case-partial` is only for focused local runs. For a focused local run use `pytest --cli-case-partial
-tests/test_one.py`, which still rejects unknown, inactive, unlisted or unmarked
+run (exit status 4). The gate lane that runs the whole suite must use strict
+mode, so every active case is proven linked somewhere. A lane that by design
+collects a subset (a fake-integration lane, a canary that runs one test, a
+focused local run) passes `--cli-case-partial`, e.g. `pytest --cli-case-partial
+tests/test_one.py`; that still rejects unknown, inactive, unlisted or unmarked
 cases among the collected tests. A config where no CLI has `review` is a no-op.
+
+Catalog `test_ids` are pytest node IDs, which are relative to the pytest
+rootdir. Give the project a `pytest.ini` (or `[tool.pytest.ini_options]`) at
+the directory the IDs are written against; without one the rootdir, and
+therefore every node ID, can change with the arguments pytest is invoked with.
+
+Several reviewed CLIs in one project work with the same single line. The
+plugin loads every reviewed catalog first and refuses a case ID that appears
+in two catalogs (naming both CLI IDs). It then checks each catalog while
+ignoring markers that belong to the other catalogs (`foreign_case_ids`), so a
+test marked for `monitor-task` is not "unknown" to `scp-api`. A marker that no
+catalog knows is still an error, and all errors from all catalogs are
+collected, deduplicated and reported in one failure.
