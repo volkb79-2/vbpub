@@ -576,7 +576,7 @@ Last reconciled: 2026-08-17, automation-safe worktree lifecycle milestone.
 | CIU-125 | Worktree create cannot start a committed worktree-specific environment | Medium | FIXED 2026-10-04 |
 | CIU-126 | CIU rejects its own valid rootless worktree record and siblings can block lifecycle verbs | Medium | FIXED 2026-10-04 |
 | CIU-127 | `ciu down` cannot stop one stack without targeting the whole project | Medium | FIXED 2026-10-04 |
-| CIU-128 | Worktree reports `ready` before committed nested roots are prepared | High | IN PROGRESS — implementation and regression oracle pending gate |
+| CIU-128 | Worktree reports `ready` before committed nested roots are prepared | High | FIXED 2026-10-05 |
 
 
 The approved milestone decisions and serial package order are in
@@ -4867,4 +4867,4 @@ initialize-before-record contract. The v7 aggregate `root_entries` list is
 specific to a generic Git worktree containing multiple CIU roots; v8 has one
 instance per checkout, so that aggregate metadata detail is not applicable.
 
-**Disposition (2026-10-05): IMPLEMENTATION AND REGRESSION ORACLES COMMITTED; REGISTERED CIU GATE PENDING.** The ready transition now follows nested-root fact generation and locked shared metadata persistence. `ensure` verifies historical readiness and derives the original allocation commit from saved facts. A partial allocation with a recorded fork point repairs against that commit without resetting later work; an older no-fork-point record whose checkout moved is demoted to `recovery-required` and refused. The registered CIU gate remains the final acceptance step.
+**Disposition (2026-10-05): FIXED.** The ready transition now follows nested-root fact generation and locked shared metadata persistence. `ensure` verifies historical readiness and derives the original allocation commit from saved facts. A partial allocation with a recorded fork point repairs against that commit without resetting later work; an older no-fork-point record whose checkout moved is demoted to `recovery-required` and refused. The registered CIU gate passed on implementation commit `b588cd96ecf0f9e0fb2fa8f47654906e911def9a` (run `195b964ff850afc73eff9c6e708babb8`, 2026-10-05): R0/R1/R2/R3 PASS, 100% branch coverage, 28/28 mutation candidates killed, no budget overruns, and the import-break canary detected. The final gate covers this backlog disposition update.
