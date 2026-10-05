@@ -62,9 +62,11 @@ Every assay lane is invoked with `--resume --progress
 .assay/progress-<assay_lane>.jsonl --state-dir <checkout>/.run-gate/assay-state/<project-path>`.
 The first two options require Assay 2.4.1; durable `--state-dir` requires
 Assay 5.2.0. Keep `.run-gate/assay-state/` across retries so mutation resume
-data survives deletion of an ephemeral worktree. RG-49's repair for
-root-owned parents in partial-bind containers remains open; the current
-consumer contract is documented in
+data survives deletion of an ephemeral worktree. Before Assay starts,
+run-gate checks that the state root exists and is writable as the lane user;
+a missing mount is NOT_RUN/`state-mount`. Container environments can declare
+`state_root` when the durable mount has another in-container path. Use
+`run-gate doctor` to check it per assay environment. The consumer contract is documented in
 [`CONSUMERS.md`](../../../CONSUMERS.md#resume-progress-and-durable-assay-state).
 
 ## Pre-flight, history, resource footprint (RG-9/RG-27/RG-55) — the known-gap subcommands

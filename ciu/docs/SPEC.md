@@ -383,15 +383,24 @@ requirements are marked *(withdrawn)*.
      so a stdout notice there lands ahead of the JSON document and breaks
      every machine consumer's parse. The interactive `ciu env generate` verb
      keeps announcing on stdout.
-  4. **Reader semantics — absence and indeterminacy stay distinct.** An
-     ABSENT `ciu.instance.generated.toml`, or one carrying no such table, is
-     an incomplete workspace fact and MUST refuse wherever identity is needed;
-     a runtime-start verb may explicitly regenerate it. A PRESENT record that
-     cannot be read — an `OSError` (including a directory where the file
-     belongs), a non-UTF-8 byte, malformed TOML, wrong schema version, unknown
-     key, or non-string value — is INDETERMINATE and MUST refuse, never
-     collapse into "no facts" (the absence-for-emptiness anti-pattern). Each
-     read validates the shipped schema exactly.
+  4. **Reader semantics — absence, old format, and corruption stay distinct.**
+     An ABSENT `ciu.instance.generated.toml`, or one carrying no such table,
+     is an incomplete workspace fact and MUST refuse wherever identity is
+     needed; a runtime-start verb may explicitly regenerate it. A recognized
+     older CIU-owned format (a missing or lower positive integer
+     `schema_version`, with complete, correctly typed identity and any
+     machine-facts table validated against that old shape) is migratable, but
+     MUST NOT be rewritten until CIU checks the old network and exact Docker
+     ownership labels for the old `instance_id`. If any old resource remains,
+     refuse and name `ciu clean --identity <old-id>`; after successful
+     label-scoped cleanup, retry generation. If no resource remains, regenerate
+     in place, warn with the old-to-new id, and continue. A read-only query
+     MUST refuse the outdated record without repairing it. A PRESENT record
+     that cannot be read — an `OSError` (including a directory where the file
+     belongs), a non-UTF-8 byte, malformed TOML, an invalid version type,
+     unknown key, or a wrong-typed current-schema value — is corrupt or
+     indeterminate and MUST refuse, never collapse into "no facts" or be
+     overwritten as a format migration.
   5. **The read is a whole-file plain-TOML parse.** `ciu.instance.generated.
      toml` is not a template and contains nothing but the CIU-owned table, so
      the read is an ordinary `tomllib` parse of the entire file — no scan for
@@ -1557,8 +1566,9 @@ build-tool-agnostically; CIU carries no npm/Vite/uvicorn specifics (CIU-5).
   hook that needs a secret value reads its store file (S9.3) — v1's single
   pre-compose point could not serve both needs. Hooks precede configfile
   rendering so `apply_to_config` updates are visible to configfile
-  templates. `--render-toml` stops after step 3; `--dry-run` stops before
-  step 16 (everything else runs, including the leak scan).
+  templates. `--render-toml` stops after step 3. `--dry-run` completes the
+  render and preparation steps, including the leak scan, skips the Compose up
+  at step 16, and applies S9.6 to `post_compose` at step 17.
 
   Step 17 runs **immediately** after `compose up` (step 16) — CIU does not
   implicitly block the whole step on a global health gate. A service-touching
@@ -1798,13 +1808,21 @@ build-tool-agnostically; CIU carries no npm/Vite/uvicorn specifics (CIU-5).
   - Defining it is entirely optional. A hook without one is skipped by the
     preflight stage — that is a note, not an error.
 
+- **S9.6 (CIU-103)** During `ciu up --dry-run`, `pre_secrets` and
+  `pre_compose` keep their existing behavior. A `post_compose` hook runs only
+  when its source contains a literal module-level `DRY_RUN_SAFE = True`
+  assignment. CIU inspects the source without importing it; an unmarked hook
+  is skipped before import, with a notice naming the declaration that opts it
+  in. The flag does not make dry-run generally side-effect-free: hostdir and
+  pre-hook behavior remains as specified by S8.3.
+
 ## S10 — CLI surface (delta to v1)
 
 - **S10.1** `ciu` exposes only the verb dispatcher documented by `ciu --help`:
   `version`, `init`, `env`, `render`, `profiles`, `up`, `down`, `clean`,
   `health`, `layouts`, `diagnose`, `bake`, `ksm`, `dev`, `secrets`, `check`,
   `graph`, `ssh`, `iops-baseline`, `worktree`, `capabilities`, `host-secrets`,
-  and `provenance`. `ciu --version` and `ciu version` are equivalent
+  `provenance`, `resolve`, and `exec`. `ciu --version` and `ciu version` are equivalent
   public version queries. Both print `ciu <version>` to stdout and exit 0;
   `--version` is retained as the estate-wide compatibility spelling.
   `--version` is one identity line on stdout with exit 0 and no stderr; all
@@ -1812,8 +1830,11 @@ build-tool-agnostically; CIU carries no npm/Vite/uvicorn specifics (CIU-5).
   with the CIU headline as line 1. Normal command output is unchanged.
   Single-stack execution is `ciu up --dir PATH`; this public form forwards the
   remaining single-stack engine flags (for example `--render-toml`, `--reset`,
-  and `--print-context`). Profile-based orchestration is `ciu up --profile
-  NAME`; environment generation is `ciu env generate`. Flat `ciu -d …` forms
+  and `--print-context`) and the shared `--deploy`/`--healthcheck` actions.
+  `--deploy` is a no-op spelling for its default action; `--healthcheck` runs
+  S7.7 for that one stack after a successful real start and does not gate a
+  dry-run. Profile-based orchestration is `ciu up --profile NAME`; environment
+  generation is `ciu env generate`. Flat `ciu -d …` forms
   are not a public surface. `ciu env print` (CIU-60) is the read-only
   companion to `ciu env generate`: it prints the ALREADY-WRITTEN `ciu.env` as
   shell `export KEY='value'` lines for `eval "$(ciu env print)"`, generates
@@ -1823,8 +1844,22 @@ build-tool-agnostically; CIU carries no npm/Vite/uvicorn specifics (CIU-5).
   cannot mutate its parent shell's environment, and naming it that way would
   document a capability that cannot exist.
 - **S10.2** Profile selection is `ciu up --profile <name>` (S7.5); `--groups`
-  does not exist (S7.5, greenfield). Per-service `shipped = true` (S8.6)
-  routes a stack through its pre-shipped `docker-compose.yml`.
+  does not exist (S7.5, greenfield). `--deploy` and `--healthcheck` are
+  declared by one shared parser parent and accepted by both profile/multi-stack
+  and `--dir` single-stack modes. In profile mode, the health gate runs after
+  each phase when explicitly requested; in single-stack mode it runs once,
+  after that stack starts. A dry-run never invokes the live health gate.
+  `--check` remains a profile/multi-stack action. Per-service `shipped = true`
+  (S8.6) routes a stack through its pre-shipped `docker-compose.yml`.
+- **S10.2a** `ciu down --dir PATH [--profile NAME ...] [--root-folder PATH]`
+  stops only the running containers of the one selected stack, preserving
+  volumes. CIU resolves `PATH` below the selected CIU root to one exact
+  `compose_project`, lists containers by the exact
+  `com.docker.compose.project` label, then stops the returned IDs. A Docker
+  query failure is an error; it is never treated as an empty result. When the
+  stack is optional, callers pass the profile that declares it. Profile-mode
+  `ciu down` remains project-wide. In v8, independently stoppable stacks map
+  to separate Realizations and `ciu down --realization R` (SPEC-V8 S18).
 - **S10.3** Exit codes: `0` success · `1` runtime failure (compose, health,
   hooks, vault I/O) · `2` configuration/validation error (S3/S4/S7 static
   checks, argparse) · `3` environment/bootstrap error (S1/S2: missing env
@@ -1835,7 +1870,8 @@ build-tool-agnostically; CIU carries no npm/Vite/uvicorn specifics (CIU-5).
   `profiles`, `layouts` (S7.5c), `up`, `down`, `clean`, `health`, `bake`,
   `dev` (S5a), `secrets`, `capabilities` (S16.5), `host-secrets` (S14.3a),
   `check` (S13), `graph` (S13), `ssh` (S14), `iops-baseline` (S15.9), `ksm`
-  (S15.17), `worktree` (S16), `provenance` (S17), and `init` (S19).
+  (S15.17), `worktree` (S16), `provenance` (S17), `resolve`, `exec`, and
+  `init` (S19).
   The global modifier `--host <name>`
   (S14) is accepted on `up`, `down`, `health`, and `render`; `--thin`
   (with `--host`) selects the docker-optional push→activate path on `up` and
@@ -1890,6 +1926,31 @@ build-tool-agnostically; CIU carries no npm/Vite/uvicorn specifics (CIU-5).
   Resolution order: config declaration → `$CIU_EXIT_ON` env var → default
   `"ERROR"`. An explicit config declaration ALWAYS wins over the env variable.
   Invalid values are a configuration error naming the key and vocabulary.
+
+- **S10.7 (CIU-118)** `ciu profiles` is a read-only listing: it MUST render
+  configuration in memory and MUST NOT write `ciu.global.toml` or other
+  generated files. `ciu resolve [--root-folder P] [--profile NAME ...]
+  [--stack S] [--service X] [--live] --json` reports resolved service identities grouped by exact
+  repo-relative stack path and Compose service key. It reads rendered config
+  in memory, contacts no Docker daemon unless `--live`, and never repairs an
+  outdated identity record. Repeated `--profile` options select and compose
+  deployment profiles; without them, the ordinary configured/ambient
+  selection applies. This lets an exact `--stack` name a stack that belongs
+  only to an optional profile without silently changing selection. Its
+  versioned document uses `schema_version: 1`
+  and `resolved.identities`; each service contains its container name,
+  hostname, Compose key/project, network, image, and configured internal
+  host/port. `--live` adds state and health read from exact Compose
+  project/service labels.
+
+  `ciu exec [--root-folder P] [--profile NAME ...]
+  <stack>[:<service>] -- ARGV...` resolves the same identity facts, selects one already-running container by exact Compose
+  project/service/network labels, and refuses zero or multiple matches. It
+  never starts a service. The command after `--` is passed as argv without a
+  shell and its exact exit code is returned. When both stdin and stdout are
+  terminals, CIU requests Docker's interactive terminal; piped and scripted
+  calls remain non-interactive. A matching declared S16.7 exec
+  target also requires its selected-checkout mount proof.
 
   The previous boolean `ciu.fail_fast` and env `CIU_WARNINGS_AS_ERRORS`
   are withdrawn. Existing consumers using `fail_fast = true` should migrate
@@ -2221,9 +2282,10 @@ both checks are bypassed entirely.
 It creates no hostdir, materializes no secret, writes no rendered
 compose/overlay/configfile, executes no hook `run()`, writes no `__pycache__`
 beside an imported hook, and never contacts Docker. This is what makes it a
-substitute for using `ciu up --dry-run` as a validation tool: **`--dry-run`
-still creates hostdirs and still runs `pre_secrets`/`pre_compose`/
-`post_compose` hooks for real**, skipping only `docker compose up`.
+substitute for using `ciu up --dry-run` as a validation tool: `--dry-run`
+still creates hostdirs and runs `pre_secrets`/`pre_compose`; it skips an
+unmarked `post_compose` hook before import and runs one only under S9.6's
+literal `DRY_RUN_SAFE = True` opt-in. Compose up is skipped too.
 
 Stages, in order, each reusing the same function the real pipeline
 (`engine.main_execution`) calls at the corresponding step:
@@ -4101,25 +4163,49 @@ checkout path, so a second checkout gets its own network, container prefix and
 volumes. `ciu worktree` is the verb that composes what CIU already knows into
 one operation.
 
+An interrupted `adopt` is resumable only while the checkout's current HEAD
+still equals the target recorded when adoption began. `ensure` MUST compare the
+fresh HEAD before preparing the environment; if it moved or cannot be read,
+CIU refuses and preserves the checkout and its commits. It MUST NOT reset an
+adopted checkout during resume.
+
 - **`worktree create LOGICAL [--name DISPLAY | --prefix PREFIX --feature FEATURE] [--branch BRANCH] [--path PATH] [...]`** — creates a new managed checkout and prepares every committed CIU root in it.
   Generated names are UTC `<prefix>-<YYYYMMDD_HHMMSS>-<feature>`; generated
   branch and directory basename are identical, with a suffix only on an actual
   same-second collision under the Git-family allocation lock.
-- **`worktree ensure LOGICAL [...]`** — returns an exact ready match without
-  rewriting it, creates when absent, or resumes only a mechanically recognized
-  CIU-owned partial allocation. Any requested identity mismatch refuses.
+- **`worktree ensure LOGICAL [...]`** — verifies the committed-root evidence
+  before returning an exact ready match without rewriting it; it creates when
+  absent, or resumes only a mechanically recognized CIU-owned partial
+  allocation. Any requested identity mismatch refuses.
 - **`worktree adopt LOGICAL PATH [...]`** — the sole operation allowed to take
   ownership of a registered unmanaged linked checkout.
 - There is no `worktree add` alias. `create` is the sole allocation verb; it
-  does NOT deploy. A create operation discovers CIU roots from committed
+  does NOT deploy unless `--up` is explicitly supplied. A create operation
+  discovers CIU roots from committed
   `ciu.global.defaults.toml.j2` markers at the selected Git base and prepares
   all of them. An ignored or uncommitted marker is never enough to create a
-  runtime root.
+  runtime root. A Git family with no committed CIU root is still a valid
+  generic worktree family: its ready lifecycle record has no runtime identity,
+  and no CIU root is fabricated.
+- **`[ciu.worktree].up = ["profile", ...]`** is the project's committed list
+  of host profiles that a linked worktree starts as its own environment.
+  `ciu check` refuses a malformed list, duplicate name or undeclared profile
+  before deployment. `worktree up LOGICAL` invokes all listed profiles in one
+  `ciu up --profile ... --deploy --healthcheck` process, preserving
+  cross-profile preflights and the S7.7 gate's complete selection. With no
+  list it keeps the default deploy selection; `--all` explicitly ignores the
+  list and starts that selection. `worktree create LOGICAL --up` runs
+  `worktree up` after allocation; a failure returns the child's status and
+  retains the checkout for retry. The primary checkout does not consume this
+  linked-worktree setting.
 - **`worktree rm NAME [-y] [--force]`** — runs `ciu clean` INSIDE the worktree
   under that worktree's own identity — its `[ciu.instance.generated]` facts
   overlaid on an ambient environment (S3.1c clauses 1/7; its `ciu.env` before
-  CIU-75), and a checkout whose table carries no identity is REFUSED rather
-  than cleaned blind — and only then `git worktree remove`.
+  CIU-75), and only then `git worktree remove`. A rootless generic record is
+  the explicit exception: when its own root marker is absent and both runtime
+  identity values are null, there is no CIU state to clean, so CIU skips clean
+  and removes the Git worktree through the shared lifecycle adapter. A CIU-root
+  record with missing identity remains a refusal.
   **The order is normative.** `ciu down` preserves
   volumes, so it strands `vol-*` dirs owned by image UIDs that an unprivileged
   `rm -rf` cannot delete; and removing the checkout first destroys the rendered
@@ -4143,14 +4229,42 @@ and `ciu.env` is the shell-export rendering of those facts.
 Create/adopt admission rejects an occupied path, branch, or six-character
 identity collision before allocation. The shared allocator holds one blocking
 Git-family lock, refuses any existing target path (empty or not), records the
-allocation atomically, and runs adapter cleanup before removal. After the
-allocated checkout's exact `HEAD` is established, CIU discovers every
+allocation atomically, and runs adapter cleanup before removal. Once the
+allocated checkout's exact commit is established, CIU discovers every
 committed root from that commit, acquires per-root locks in stable offset
 order, and prepares each root's generated facts and runtime names. The CIU
-instance record remains `allocating` until root facts and shared root-entry
-metadata are complete, then transitions to `ready`. A partial preparation
-remains attributable and is reported as recovery-required; no missing or
-malformed generated-facts file is silently treated as a fresh identity.
+instance record MUST remain `allocating` until root facts and shared
+`root_entries` metadata are complete; only then may it transition to `ready`.
+A partial preparation remains attributable and is reported as
+`recovery-required`; `ensure` MUST retry incomplete preparation before
+returning `ready`. It MUST verify the discovered roots, generated facts, and
+recorded root entries before fast-returning a historical ready record. Root
+discovery uses the allocated checkout's saved commit, not a mutable base
+reference re-read in the primary checkout. No missing or malformed
+generated-facts file is silently treated as a fresh identity. A full-SHA
+recorded target is used directly; when a legacy record has only a symbolic
+base and no fork-point SHA, the neutral workspace's `base_commit` may stand in
+only while checkout HEAD still equals it. `ensure` MUST never reset an existing
+checkout during resume. If an older `ready` claim cannot be verified, CIU
+first demotes it to `recovery-required`. A partial record with a saved
+fork-point SHA resumes against that exact commit while preserving later
+checkout commits; when no fork point exists, a moved HEAD makes the target
+unprovable, so CIU refuses rather than leaving a false `ready` status.
+Root-entry persistence and lease mirroring MUST re-read and merge the shared
+workspace record under its Git-family lock so concurrent updates preserve both
+metadata fields.
+
+The CIU record reader accepts a ready record with both runtime identity values
+null only when the record checkout itself has no CIU root marker on disk.
+This preserves the format written for a generic Git worktree and derives its
+meaning from the filesystem; a CIU-root ready record with a null identity is
+still invalid. Family registry scans parse and cross-check each sibling
+independently. Unreadable or inconsistent siblings are counted and warned
+about, while readable records remain usable. An action refuses only when its
+requested logical identity or checkout path is implicated. Branch hygiene
+protects an unreadable checkout as managed until CIU can prove otherwise.
+Reap reports unreadable records as findings and does not treat a valid
+rootless record as a possible owner of CIU-labelled resources.
 
 Environment generation and clean run as subprocesses at the exact target CIU
 root (which may be nested below the Git worktree root). `--root-folder` selects
@@ -4411,9 +4525,12 @@ value-qualified filter, never a bare label-presence check. This is load
 bearing against S16.1's shared-infra join: a joined child container may list
 the reference instance's network too, but it always carries the CHILD's own
 project label, never the reference's, so it can never make the reference
-candidate appear deployed. Docker unavailable or non-zero, a malformed
-eligible identity record, or a duplicate `network` across
-candidates is a loud `[S16.3]` error, never an empty/zero count. Containers
+candidate appear deployed. Docker unavailable or non-zero, or a duplicate
+`network` across candidates is a loud `[S16.3]` error, never an empty/zero
+count. An unreadable or outdated generated-identity sibling is warned about
+and counted as a possible active instance, not treated as absent and not
+allowed to block an unrelated deploy. A valid record with a duplicate network
+remains a loud refusal. Containers
 of a worktree no longer registered with git do not count (stale-orphan
 reaping is CIU-25's job, not this one's).
 
@@ -4471,44 +4588,6 @@ persisted instance record is nested under `instance`
 (`WorktreeInstanceRecord.to_dict()` — v1, or v2 with a `lease` key per
 S16.9); current Git facts are nested under `git`.
 
-The persisted `runtime` object carries the pair `instance_id` and `network`.
-The pair MUST be either two non-empty strings or two JSON `null` values;
-partial identity is malformed in every lifecycle state. A `ready` record
-whose exact `ciu_root` contains a regular `ciu.global.defaults.toml.j2`
-marker MUST carry both strings and MUST have `recovery_status: null`. A
-`ready` aggregate Git-family record whose exact root has no such marker MAY
-carry both values as `null`: it describes the checkout, not a runtime at that
-root, and nested CIU roots are initialized separately. Failure to determine
-whether the marker exists is a refusal, not evidence that the root is
-generic. This rule matches allocation's root classification; it does not
-invent an identity or change the record schema. Only a truly absent marker
-path is “no marker”; a present path must resolve to a regular file, and a
-directory, dangling symlink, or unreadable entry is refused.
-
-For `create`, `adopt`, and resumed `ensure`, `ready` additionally means that
-every committed CIU root discovered at the allocation's exact commit has
-readable generated facts and that the corresponding root-entry list has been
-persisted in the shared workspace record. Use `fork_point_sha` when present.
-For a legacy record without it, the shared workspace record's `base_commit` is
-usable only while the checkout's `HEAD` still equals that commit; otherwise
-the allocation commit is unknowable and `ensure` refuses rather than choosing
-a new root set. The CIU instance record
-MUST remain `allocating` while those roots or their metadata are being
-prepared; a recoverable preparation failure MUST leave it
-`recovery-required` with `recovery_status: "env-generation-failed"`. `ensure`
-MUST repeat incomplete preparation before returning `ready`, and MUST NOT
-fast-return an older ready record unless its discovered roots, generated
-facts, and recorded root entries agree. Root discovery uses the allocated
-checkout's recorded commit, not a mutable base-ref name in the primary
-checkout. On resume, `ensure` MUST compare `HEAD` with the recorded allocation
-commit and refuse if they differ; it MUST NOT reset the existing checkout.
-If an older `ready` record cannot be verified, `ensure` MUST first demote it
-to `allocating` and then record `recovery-required` if the allocation commit
-cannot be established. Root-entry updates MUST re-read and merge the neutral
-workspace record under its Git-family workspace lock, preserving unrelated
-metadata and lease fields; CIU's lease mirror MUST use that same lock for its
-own read-modify-write. No runtime identity is invented for an aggregate root.
-
 Git facts are freshly read from Git, never inferred from a name or a stale
 record: `git.registered` (the record's checkout is a current registered
 worktree), `git.path`, `git.branch` (or `(detached)`), `git.detached`,
@@ -4556,8 +4635,12 @@ the selected record/root: a missing key, a `REPO_ROOT` other than the record's
 CIU root, or an `INSTANCE_ID`/network differing from the record is a refusal,
 never a fallback and never a sibling's value.
 
-`worktree up` invokes CIU's existing up entry point as a subprocess in
-`record.ciu_root` under that environment; `worktree exec` runs the exact argv
+`worktree up` reads the target root's `[ciu.worktree].up` without writing
+rendered config and invokes CIU's existing up entry point as a subprocess in
+`record.ciu_root` under that environment. A declared list becomes one child
+invocation with repeated `--profile` options followed by `--deploy
+--healthcheck`; `--all` omits the declared list. With no list, the existing
+default selection is used. `worktree exec` runs the exact argv
 (after a mandatory `--` separator) with no shell in that root. Both propagate
 the child's exact exit code — never a wrapper-masked value. `exec` never
 starts, cleans, or renders anything implicitly; the presence of `--` and of at
@@ -4633,7 +4716,8 @@ vocabulary:
   containers/volumes/networks and stranding root-owned `vol-*` directories no
   unprivileged operator can delete (ciu-P28; the exact hazard S16.4's
   clean-then-remove ordering exists to prevent). The survey's hint names the
-  disposal command, `ciu worktree rm NAME`, which runs `ciu clean` first.
+  disposal command, `ciu worktree rm NAME`, which cleans CIU-root instances
+  first and skips clean for the explicit rootless record form (S16).
 - **`prunable`** — Git PROVES nothing would be lost: zero commits not in
   base (`rev-list --count base...branch`), and either no checkout or a CLEAN,
   non-primary, non-invoking, unmanaged one. Only this category is ever
@@ -4982,9 +5066,13 @@ the record nor from its generated table — makes the survey `identity_complete:
 false`. While that holds, the `orphaned` category is DISARMED: an id that
 looks unclaimed may simply be the one that could not be read, and a corrupted
 record on a live instance must never make that instance's own labelled
-resources look reapable. The refusal is loud (that group lands in `failed`,
-status `partial`, exit 1), never a silent skip. Only `orphaned` is disarmed —
-the record-backed categories never depended on that premise.
+resources look reapable. A ready record with both runtime values null and no
+CIU root marker is the explicit generic-worktree case (S16); it cannot own
+CIU-labelled resources and does not make the survey incomplete. An unreadable
+record, or a record with no identity whose checkout does have a CIU root,
+still makes the survey incomplete. The refusal is loud (that group lands in
+`failed`, status `partial`, exit 1), never a silent skip. Only `orphaned` is
+disarmed — the record-backed categories never depended on that premise.
 
 #### Document and exit codes
 

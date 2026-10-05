@@ -30,6 +30,8 @@ import threading
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional
 
+from . import util
+
 # The reuse library lives in a sibling top-level script package, not a
 # dependency of this one — see the module docstring. The checkout might
 # simply not be present (a partial clone, a differently-laid-out host), so
@@ -205,7 +207,7 @@ def _write_nr_kdamonds(value: int) -> None:
     """
     path = os.path.join(KDAMONDS_DIR, "nr_kdamonds")
     admin_root = os.path.realpath(os.path.dirname(KDAMONDS_DIR))
-    if not os.path.realpath(path).startswith(admin_root + os.sep):
+    if not util.realpath_is_within(path, admin_root, allow_root=False):
         raise HostWriteError(
             f"refusing to write outside the DAMON admin root ({admin_root!r}): {path!r}"
         )

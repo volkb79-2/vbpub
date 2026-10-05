@@ -17,6 +17,32 @@ from typing import Dict, Iterable, List, Optional, Tuple
 # "max" in a limit file means "no limit". We model it as None so that
 # min()-style tightest-wins resolution can simply skip it.
 MAX = "max"
+CONTAINER_ID_PATTERN = r"[0-9a-f]{64}"
+_CONTAINER_ID_RE = re.compile(CONTAINER_ID_PATTERN)
+
+
+def is_container_id(value: object) -> bool:
+    """Whether *value* is a canonical, full-length lowercase container ID."""
+    return isinstance(value, str) and _CONTAINER_ID_RE.fullmatch(value) is not None
+
+
+def realpath_is_within(path: str, root: str, *, allow_root: bool) -> bool:
+    """Whether *path* resolves beneath *root*, with root equality explicit.
+
+    Both inputs are resolved before comparison so a symlink cannot escape the
+    intended tree. ``commonpath`` avoids string-prefix mistakes such as
+    treating ``/allowed-sibling`` as a child of ``/allowed``. Different path
+    roots are a refusal, not an error or an implicit containment result.
+    """
+    real_path = os.path.realpath(path)
+    real_root = os.path.realpath(root)
+    try:
+        common = os.path.commonpath((real_root, real_path))
+    except ValueError:
+        return False
+    if common != real_root:
+        return False
+    return allow_root or real_path != real_root
 
 _SUFFIXES = {
     "": 1,

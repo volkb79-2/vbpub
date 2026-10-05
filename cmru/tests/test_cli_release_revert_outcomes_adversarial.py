@@ -26,6 +26,7 @@ def fake_release_preflight(monkeypatch):
     monkeypatch.setattr(cli, "_require_local_tag_inspection_support", lambda _root: None)
     monkeypatch.setattr(cli, "_read_origin_tag_refs", lambda *_args, **_kwargs: {})
     monkeypatch.setattr(cli.transaction, "write_release_tag_snapshot", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(cli.transaction, "clear_plan_refused", lambda *_args, **_kwargs: None)
 
 
 def _loaded(tmp_path):

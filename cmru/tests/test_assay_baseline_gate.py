@@ -121,7 +121,15 @@ def _divergent_release_merge(root: Path) -> tuple[Path, str, str]:
     )
     (root / "first-parent.md").write_text("first parent\n", encoding="utf-8")
     _git(root, "add", "cmru/assay.toml", "first-parent.md")
-    _git(root, "commit", "--quiet", "-m", "first-parent release")
+    # Make the older-version first-parent tag win Git's traversal tie; the
+    # checker must still select the higher published version on the other parent.
+    _git(
+        root, "commit", "--quiet", "-m", "first-parent release",
+        env={
+            "GIT_AUTHOR_DATE": "2099-01-01T00:00:00+0000",
+            "GIT_COMMITTER_DATE": "2099-01-01T00:00:00+0000",
+        },
+    )
     first_parent = _git(root, "rev-parse", "HEAD").stdout.strip()
     _git(
         root,
@@ -131,7 +139,7 @@ def _divergent_release_merge(root: Path) -> tuple[Path, str, str]:
         "--message",
         "first-parent release",
         "cmru-v1.0.0",
-        env={"GIT_COMMITTER_DATE": "2001-01-01T00:00:00+0000"},
+        env={"GIT_COMMITTER_DATE": "2099-01-01T00:00:00+0000"},
     )
 
     _git(root, "checkout", "--quiet", "-B", "tagged-merge-second", common)
@@ -141,7 +149,13 @@ def _divergent_release_merge(root: Path) -> tuple[Path, str, str]:
     )
     (root / "second-parent.md").write_text("second parent\n", encoding="utf-8")
     _git(root, "add", "cmru/assay.toml", "second-parent.md")
-    _git(root, "commit", "--quiet", "-m", "second-parent release")
+    _git(
+        root, "commit", "--quiet", "-m", "second-parent release",
+        env={
+            "GIT_AUTHOR_DATE": "2098-01-01T00:00:00+0000",
+            "GIT_COMMITTER_DATE": "2098-01-01T00:00:00+0000",
+        },
+    )
     second_parent = _git(root, "rev-parse", "HEAD").stdout.strip()
     _git(
         root,
@@ -151,7 +165,7 @@ def _divergent_release_merge(root: Path) -> tuple[Path, str, str]:
         "--message",
         "second-parent release",
         "cmru-v1.1.0",
-        env={"GIT_COMMITTER_DATE": "2000-01-01T00:00:00+0000"},
+        env={"GIT_COMMITTER_DATE": "2098-01-01T00:00:00+0000"},
     )
 
     _git(root, "checkout", "--quiet", "tagged-merge-first")

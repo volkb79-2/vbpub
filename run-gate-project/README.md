@@ -74,6 +74,10 @@ five process statuses: **PASS 0**, **FAIL 1**, **ERROR 2**, **NOT_RUN 3**, or
 `--json` to read `verdict`, raw `exit_code`, `reason`, `log_path`, and assay
 outcome and admission as structured result fields. The full mapping is in
 [the CLI contract](SPEC.md#2-cli-contract).
+NOT_RUN reasons are closed: realness-mismatch, service-down,
+environment-down, environment-mismatch, env-missing, external-missing,
+external-down, dirty-tree, no-headroom, lock-busy, no-base, judge-floor,
+judge-digest, provenance-mismatch, and state-mount.
 
 Every `[environments.<name>]` declares `mode = "ephemeral"`, `"exec"`, or
 `"host"`. Names carry no behavior: `host` is an ordinary name and is a
@@ -89,6 +93,18 @@ time without losing comments:
 The tool refuses a missing mode. Review the diff, then migrate wrapper
 assumptions separately. See the [mode rationale](docs/DESIGN-GUIDE.md#runner-modes-name-the-runtime-contract) and the
 [consumer migration steps](CONSUMERS.md#closed-results-and-runner-mode-migration).
+
+### PID 1 and cgroup resource failures
+
+run-gate refuses to start as container PID 1, where orphaned lane processes
+would accumulate instead of being reaped. Start Docker containers with
+`--init` or set `init: true` on the Compose service. During each real lane,
+run-gate samples its cgroup v2 `pids.events` and `memory.events` counters. A
+refused fork or OOM kill forces ERROR/2 even if the lane reports success. Any
+raw status already known remains in the result, including when the post-lane
+counters are unavailable or cannot be compared safely. The standalone
+`--version` operation remains available. See the [design rationale](docs/DESIGN-GUIDE.md#pid-1-and-cgroup-resource-events)
+and the [consumer setup](CONSUMERS.md#init-reaping-and-resource-events).
 
 ### Native sequences and imported assay lanes
 
@@ -117,8 +133,31 @@ and the [request-scope rationale](docs/DESIGN-GUIDE.md#selective-requests-stay-w
 
 Every assay lane receives `--resume`, a worktree-local progress file, and a
 durable `--state-dir` under the checkout that owns the shared Git directory.
-The durable-state option requires Assay 5.2.0. Read the [state contract](CONSUMERS.md#resume-progress-and-durable-assay-state)
+The default state root is `<checkout>/.run-gate`; container environments can
+declare `state_root` for a different durable mount. Before Assay starts,
+run-gate checks that root and the deepest existing directory on the keyed
+state path are writable as the lane user, and `doctor` reports the result
+per environment. An unavailable or unwritable state area is
+NOT_RUN/`state-mount`, not a test failure. The durable-state option requires
+Assay 5.2.0. Read the
+[state contract](CONSUMERS.md#resume-progress-and-durable-assay-state) and
+[mount rationale](docs/DESIGN-GUIDE.md#assay-resume-state-needs-an-environment-owned-mount)
 before removing an ephemeral worktree.
+
+Projects inside the checkout keep their relative path key. A project outside
+the checkout uses a separate `assay-state-external/<sha256>` path based on its
+resolved absolute path, avoiding aliases between paths that sanitize to the
+same string.
+
+In internal source mode, run-gate checks and invokes Assay with the same
+isolated Python interpreter and selected worktree source. It rejects regular
+project-local shadow modules without executing them and ignores `PYTHONPATH`
+shadows. It also checks that the verdict's `assay_version` and commit identify
+the recorded run. External artifact mode continues to require complete
+`judge_provenance`. An inflight Assay record keeps the launch-time identity
+mode, so re-attachment does not reinterpret an old verdict after config
+changes or pass it as a command result if the lane kind changed. See the [source identity rationale](docs/DESIGN-GUIDE.md#source-backed-assay-identifies-code-as-source)
+and [Assay adoption and recovery](CONSUMERS.md#assay-lanes-projects-that-adopt-assay-the-quality-partnership).
 
 ### Daemon-wide count admission and failed evidence
 
@@ -133,6 +172,16 @@ budget starts once its runner locks and admission ticket are held, so queue
 time is excluded. The [admission guide](CONSUMERS.md#daemon-wide-gate-admission) gives the config
 and operator commands; the [design rationale](docs/DESIGN-GUIDE.md#docker-names-order-daemon-wide-admission)
 covers the Docker object protocol.
+
+`run-gate status [--worktree PATH] [--json]` reports the selected project's
+inflight records, run-gate's host-wide exec-runner lock holders and waiters,
+and the daemon's published admission cap, tickets, and tombstones. It only
+reads those sources. A missing or unreadable source is reported as ERROR 2
+with the available partial results. `doctor` checks an enabled admission
+config's local ticket image, published object, and readable positive cap;
+the image check uses `docker image inspect` and does not start a ticket
+container. See the [status and doctor guide](CONSUMERS.md#runner-occupancy-status)
+and [scope rationale](docs/DESIGN-GUIDE.md#status-uses-the-authoritative-host-signals).
 
 Failed Assay lanes print a compact failure digest and preserve their verdict
 and progress files under `.run-gate/failed/<lane>/<run_id>/` before a later
@@ -300,12 +349,18 @@ supplied with `./run-gate.py <lane> --base REF`). Neither becomes a
 the drift this design exists to remove.
 
 Asking has a price, stated rather than hidden: those questions are answered
-INSIDE the lane's environment, so `doctor`, `--check-env`, and any assay-lane
-invocation (`--dry-run` included) start short read-only probe containers —
-one inventory probe per environment+judge, plus one batched `command -v`
-probe per environment for the fitness check. They judge nothing, write
-nothing, and never start your judged lane; a project with no
-`kind = "assay"` lane starts none of them.
+INSIDE the lane's environment. `doctor` starts short read-only probes: one
+inventory probe per environment+judge, one batched `command -v` probe per
+environment for the fitness check, and one Assay state-root probe per assay
+environment. `--check-env` runs the first two probes only. An assay-lane
+invocation adds one state-root probe for its lane; `--dry-run` prints that
+probe without running it. They judge nothing, write nothing, and never start
+your judged lane; a project with no `kind = "assay"` lane starts none of
+them.
+
+For ephemeral environments, these probes receive the configured container
+user and RUN_GATE_EXTRA_MOUNTS just like the judged lane, so the preflight
+sees the same mounted tools and access permissions.
 
 ### Environment mechanics the tool must own (the hard-won list)
 
@@ -331,7 +386,10 @@ the tool's reason to exist and MUST be implemented + tested:
 - **Assay source or artifact:** internal lanes omit `assay_command` and
   `pins`; run-gate installs `assay/` from the selected worktree in the lane
   environment and the resulting verdict records the runtime version and
-  source commit. External consumers may supply `assay_command` plus sha256/
+  source commit. Run-gate matches full SHA-1 or SHA-256 commit IDs; Assay's
+  P22 snapshot source, used by high-rigor snapshot lanes, still requires
+  SHA-1 object storage. External
+  consumers may supply `assay_command` plus sha256/
   version pins; those are verified from the pin file's directory and the
   declared version is checked in-lane.
 - **Env forwarding is declared, never implicit (RG-23):** a container/exec
@@ -366,6 +424,17 @@ the tool's reason to exist and MUST be implemented + tested:
   with exit 2 and starts nothing. It never treats “foreign” as “absent,” even
   with `--fresh`, because starting a replacement would overwrite the only
   recovery pointer to the still-owned runner (SPEC `R-39f`).
+  `--fresh` is available only for ephemeral-container lanes; host and exec
+  lanes require the named runner's lifecycle owner to confirm the run has
+  stopped before its stale recovery record can be removed.
+  Before imported Assay inventory or sequence admission, Run-Gate checks the
+  requested lane's recovery record and every sequence node and member. A
+  record left under a lane now configured as a sequence, or owned by a foreign
+  runner, refuses before members start.
+  A container-runner record left after the lane changes to host or exec mode
+  also refuses before inventory or execution; the prior container's
+  lifecycle owner must confirm it has stopped before the recovery record is
+  removed.
   Run-gate uses ERROR 2 for configuration and infrastructure failures,
   and NOT_RUN 3 when a precondition prevents the judge from starting.
 - **Gate-safe paths:** `{worktree}` is substituted textually into consumer

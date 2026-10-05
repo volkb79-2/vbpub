@@ -63,9 +63,33 @@ Rev 12 (run-gate rev 49): RG-66 selective assay requests; RG-68 completed FAIL
 footprints; RG-69 merged lane manifest updates; RG-71 declared command args;
 RG-72 failure digests and retained artifacts; RG-74 trunk bases and native
 sequences; RG-76 v8-shaped assay inventory imports; RG-77 documents the
-existing durable state-dir contract (RG-49's parent repair remains open);
-RG-78's closed result table and explicit modes; RG-80's off-by-default
-Docker-name count admission, owner tuple, deadlines, and janitor.
+existing durable state-dir contract; RG-78's closed result table and explicit
+modes; RG-80's off-by-default Docker-name count admission, owner tuple,
+deadlines, and janitor.
+Rev 13 (run-gate rev 50): RG-49 state-root preflight and declarable durable
+mount; an unavailable root is NOT_RUN/`state-mount` before Assay.
+Rev 14 (run-gate rev 51): RG-64 `status` reads internal exec locks, selected
+tree inflight records, and RG-80 admission state; `doctor` checks enabled
+admission image and published count policy.
+Rev 15 (run-gate rev 52): RG-81 verifies source imports without executing a
+project-local shadow package, compares full SHA-1/SHA-256 IDs at Run-Gate's
+source-identity boundary (Assay P22 snapshots still require SHA-1), and
+records the Assay identity mode in inflight schema 2 so re-attachment uses the
+launch-time verdict contract; external artifact mode retains `judge_provenance`.
+Recovery preflight checks the requested lane, sequence nodes, and all sequence
+members before imported Assay inventory or admission; foreign-runner records
+and records left under a lane now configured as a sequence refuse there too.
+Rev 16 (run-gate rev 53): RG-81 recovery also refuses container records when a
+leaf's current mode changed to host or exec, applies lane mounts and user to
+ephemeral Assay inventory probes, and returns a closed refusal for malformed
+sequence-record identity values.
+Rev 17 (run-gate rev 54): RG-49 hashes an external project's resolved path for
+its durable Assay state key; project paths inside the checkout keep their
+existing relative layout.
+Rev 18 (run-gate rev 55): RG-84 refuses to run as container PID 1 and compares
+the run-gate cgroup's `pids.events:max` and `memory.events:oom_kill` around
+each real lane; any resource event or unreadable comparison returns
+infrastructure ERROR with the raw lane status retained.
 Distilled from `README.md` (design
 authority), `CONSUMERS.md` (adoption contract), `HANDOFF-P01` (build contract)
 and the controller's session amendments (§8). Requirement IDs (`R-xx`) are the
@@ -132,7 +156,10 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   `footprint --include-failed` admits completed profiled FAIL measurements;
   repeatable `footprint --write --lane NAME` merges selected entries (RG-68/69).
   `admission set|show`, `--admission-wait`, and `--override-admission` are
-  the RG-80 daemon-wide count-cap interface.
+  the RG-80 daemon-wide count-cap interface. `status [--worktree PATH]
+  [--json]` reports selected-tree inflight records plus host-wide internal
+  exec locks and Docker admission tickets/tombstones (RG-64/RG-80); it is a
+  reserved lane name.
 - `R-02` `--worktree PATH` overrides the judged worktree (daemon substitutes
   its attempt path textually before invoking) AND the source of every config
   read. First discover the invoking project as usual, then preserve its path
@@ -140,7 +167,7 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   `<worktree>/<project-relative-to-toplevel>`. Load that project's
   `run-gate.toml` and the nearest ancestor `run-gate.root.toml` inside the
   selected tree before resolving lanes, including for `--help`, `--list`,
-  `doctor`, `history`, `footprint`, and `--check-env`. A missing selected
+  `doctor`, `history`, `footprint`, `status`, and `--check-env`. A missing selected
   `run-gate.toml` is a configuration refusal naming the path; never fall back
   to the invoking checkout's project or central config. This preserves
   monorepo project layout while making CWD irrelevant to the judged policy.
@@ -169,7 +196,7 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   `realness-mismatch`, `service-down`, `environment-down`,
   `environment-mismatch`, `env-missing`, `external-missing`, `external-down`,
   `dirty-tree`, `no-headroom`, `lock-busy`, `no-base`, `judge-floor`,
-  `judge-digest`, or `provenance-mismatch`. `no-headroom` is reserved for the
+  `judge-digest`, `provenance-mismatch`, or `state-mount`. `no-headroom` is reserved for the
   RG-80 count cap: it is returned when an enabled wait expires or unreadable
   policy is `refuse`.
 - `R-04b` A command lane's raw code maps to PASS only at zero and FAIL at
@@ -183,6 +210,18 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   `log_path`, `assay_outcome`, and `admission`. The human lane summary names
   verdict, raw code when present, reason when present, and log path when one
   exists.
+- `R-04c` run-gate refuses to start as PID 1, because no init process exists
+  to reap orphaned lane processes. The one `--version` operation remains
+  available without configuration; other invocations return ERROR with the
+  remedy to start Docker containers with `--init` or Compose services with
+  `init: true`. Before and after every real lane execution, run-gate reads
+  `pids.events` (`max`) and `memory.events` (`oom_kill`) from the cgroup
+  containing this run-gate process, resolving its cgroup v2 path from
+  `/proc/self/cgroup`. An increment in either counter forces ERROR regardless
+  of the lane's raw status, retaining that status as `exit_code`. If the
+  post-lane counters cannot be read, the cgroup changes, or either counter
+  moves backwards, run-gate returns infrastructure ERROR and retains the raw
+  status when it was available. Dry runs do not sample counters.
 - `R-05` The tool prints, before executing: the selected project config path
   (`run-gate: config: <path>`), revision, lane name, environment source,
   resolved slice + its source (on exec lanes this is naming-only disclosure
@@ -217,7 +256,9 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   `ciu.global.toml`; declaring it on an ephemeral environment is legal but
   inert), `forward_env` (optional, unique list of valid environment-variable
   names; values are forwarded to container lanes only when set),
-  `resources` (RG-48, rev 10: a table accepting `cpus` ONLY — `R-29`'s
+  `state_root` (optional canonical absolute in-container path for durable
+  Assay state; unavailable for host mode; see `R-38`), `resources`
+  (RG-48, rev 10: a table accepting `cpus` ONLY — `R-29`'s
   environment-level fallback for a lane's own `resources.cpus`). Redefining
   a config without `mode` → error naming the environment and file.
 - `R-08` `[lanes.<name>]` keys: `kind` (`"command"`|`"assay"`|`"sequence"`), `environment`
@@ -587,6 +628,32 @@ disagree, §8 amendments win, then README, then CONSUMERS.
     contract. The object names, ticket labels, owner grammar, and count
     semantics are the CIU v8 S21 port surface.
 
+- `R-51` **Runner occupancy status (RG-64/RG-80).** `status
+  [--worktree PATH] [--json]` is read-only and returns one result using the
+  closed exit table. Its project-scoped source is the selected project's
+  `.run-gate/inflight/*.json`; its host-wide sources are run-gate's
+  `/tmp/run-gate-exec-<container>.lock` files plus `/proc/locks`, and the
+  local Docker daemon's published `ciu-admission-<g>` object, ticket labels,
+  run markers, and tombstones. The lock files contain no owner metadata, so
+  status joins their device/inode identities to `FLOCK` records in the
+  configured proc root. It reports holder and waiter PIDs and liveness; a
+  lane name comes from a matching inflight record or process argv when
+  readable. Missing PID visibility is `unknown`, not an empty or dead owner.
+  Inflight and admission owners are dead only when the reader proves the same
+  boot and PID namespace and the pid is absent, a zombie, or has different
+  start ticks. Docker status reads labels through the RG-80 shared grammar;
+  it never calls `reap`, `create`, `start`, `stop`, or `rm`. No source error is
+  treated as an empty list: JSON reports partial sources, `verdict = ERROR`,
+  and exit code 2. `--worktree` changes the config and inflight scope, not the
+  host lock or Docker daemon scope. `doctor`, only when `[admission]
+  enabled = true`, checks the configured `ticket_image` with `docker image
+  inspect`, requires a valid published object, and requires a readable
+  positive `max_concurrent`; the image check does not run a container. Each
+  failed check names a safe local repair when one exists. If a visible
+  publication has unreadable identity labels, doctor names it and says that
+  `admission set` refuses to replace it rather than prescribing that command
+  as a false repair.
+
 - `R-19a` **safe.directory scope:** both ephemeral and exec inner commands set
   `GIT_CONFIG_GLOBAL=/tmp/run-gate-gitconfig` before running `git config
   --global --replace-all safe.directory '*'`. This avoids writing to
@@ -800,11 +867,14 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   footprint manifest yet"); exit 2
   iff any FAIL. Doctor judges nothing and writes nothing, but since `R-34`
   it **does start containers**: short-lived read-only probes, bounded at ONE
-  inventory probe per (environment, judge identity) plus ONE batched
-  `command -v` probe per environment — never one per lane, and none at all
-  for a project with no `kind = "assay"` lane. That count is a claim, so a
-  test owns it (`test_probe_cost_is_one_inventory_plus_one_tool_probe_per_
-  environment`): a cost stated in the spec and not measured is a cost that
+  inventory probe per (environment, judge identity), ONE batched
+  `command -v` probe per environment, and ONE Assay state-root probe per
+  assay environment — never one per lane, and none at all for a project with
+  no `kind = "assay"` lane. `--check-env` runs only the inventory and tool
+  probes; an assay-lane invocation adds one state-root probe for that lane.
+  That count is a claim, so a test owns it
+  (`test_doctor_probe_cost_is_inventory_tools_and_state_root_per_environment`):
+  a cost stated in the spec and not measured is a cost that
   drifts. The probes are also why the summary now reports SKIPs — "could not
   determine" must be visible, not absorbed into silence. Doctor must itself
   survive a broken host: a
@@ -1449,9 +1519,13 @@ disagree, §8 amendments win, then README, then CONSUMERS.
     plus the effective project path relative to that checkout. Thus a
     removed CIU-managed worktree can be recreated without losing resumable
     candidate state, and nested projects with the same basename stay
-    separate. When the effective project is outside that checkout, the key
-    is derived from its sanitized resolved path. The same helper builds the
-    argv and the disclosed state-directory line.
+    separate. When the effective project is outside that checkout, it uses
+    `assay-state-external/<sha256>` keyed by the resolved absolute path. This
+    separate namespace avoids both separator collisions and aliases with
+    in-checkout project keys. An environment may declare
+    `state_root` to name the in-container mount point when it differs from
+    `<repo>/.run-gate`; the same helper builds the argv and disclosed
+    state-directory line.
   - **Judge floor, refused by name.** `--resume` shipped in assay 2.4.0,
     `--progress` in 2.4.1, and `--state-dir` in 5.2.0. A pin whose declared
     `version` is below **5.2.0**
@@ -1461,10 +1535,20 @@ disagree, §8 amendments win, then README, then CONSUMERS.
     never wrote. A pin that declares no version is not checked (there is no
     claim to hold it to); an older judge then fails the lane loudly with
     assay's own `unrecognized arguments` line, never silently.
-    The current implementation creates the state directory as the lane's
-    execution user. A root-owned synthetic parent in a partial-bind worktree
-    mount can prevent that; RG-49 remains open for the parent repair, and
-    run-gate does not claim to chown or otherwise repair that path.
+  - **State mount preflight (RG-49).** Before an assay lane starts, run-gate
+    checks that the selected state root exists and is writable as the lane
+    user, and that the deepest existing directory on the keyed state path is
+    writable. The default is `<checkout-owning-shared-.git>/.run-gate`; a
+    container environment may declare `[environments.<name>].state_root` when
+    its durable mount uses another in-container path. An unavailable state
+    area refuses before Assay with NOT_RUN/`state-mount` and names the mount
+    remedy. `doctor` checks once per assay environment. `--dry-run` prints
+    the planned probe. run-gate never creates or chowns the root inside an
+    exec runner: CIU (or the environment owner) must mount the durable host
+    directory read-write. The inner command creates only per-project
+    descendants beneath this checked root. An unknown probe result is ERROR,
+    never a writable-root certification. For `doctor`, a confirmed missing
+    or unwritable root is FAIL and an indeterminate probe is SKIP.
 
 - `R-39` **Re-attach: a lane's container outlives its client, and is found
   again (RG-35).** A container lane runs detached (`R-15`) and is removed by

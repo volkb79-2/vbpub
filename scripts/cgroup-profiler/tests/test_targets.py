@@ -61,6 +61,19 @@ def test_proc_start_time_ticks_rejects_stat_for_a_different_pid(tmp_path):
     assert t.proc_start_time_ticks(42, str(proc)) is None
 
 
+@pytest.mark.parametrize(
+    "pid",
+    [
+        pytest.param("42", id="string"),
+        pytest.param(True, id="boolean-is-not-a-pid"),
+        pytest.param(0, id="zero"),
+        pytest.param(-42, id="negative"),
+    ],
+)
+def test_proc_start_time_ticks_rejects_invalid_pid_arguments(pid, tmp_path):
+    assert t.proc_start_time_ticks(pid, str(tmp_path / "proc")) is None
+
+
 class TestProcIdentityParsing:
     @pytest.mark.parametrize(
         "status_contents",
@@ -1024,3 +1037,11 @@ class TestWalk:
 
     def test_find_container_cgroup_missing(self, cgroup_root: Path):
         assert t.find_container_cgroup("f" * 64, str(cgroup_root)) is None
+
+    def test_find_container_cgroup_rejects_scope_name_with_trailing_newline(
+        self, tmp_path: Path,
+    ):
+        container_id = "b" * 64
+        (tmp_path / f"docker-{container_id}.scope\n").mkdir()
+
+        assert t.find_container_cgroup(container_id, str(tmp_path)) is None

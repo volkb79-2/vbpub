@@ -240,6 +240,8 @@ def render_compose(
     template_path: Path | str,
     guarded_config: dict,
     ciu_context: dict | None = None,
+    *,
+    environ: Mapping[str, str] | None = None,
 ) -> str:
     """Render the compose template with the *guarded* config.
 
@@ -274,7 +276,10 @@ def render_compose(
 
     template_path = Path(template_path)
     raw = template_path.read_text(encoding="utf-8")
-    context = {**guarded_config, "env": dict(os.environ)}
+    context = {
+        **guarded_config,
+        "env": dict(os.environ if environ is None else environ),
+    }
     if ciu_context is not None:
         # S3.12: MERGE into the config's own [ciu] table (never replace it —
         # workspace switches like auto_connect_network live there); CIU's own

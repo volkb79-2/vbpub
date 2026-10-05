@@ -7,7 +7,41 @@ moves. Normative behavior lives in SPEC.md; entry-by-entry rationale lives in
 KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 
 ## [Unreleased]
-<!-- This unreleased block describes source rev 49. At release, fold these entries into the generated dated section by hand; the release generator does not clear this block. -->
+<!-- This unreleased block describes source rev 55. At release, fold these entries into the generated dated section by hand; the release generator does not clear this block. -->
+
+- **Init and cgroup resource-event guard (RG-84, filed as RG-83, rev 55).** run-gate refuses
+  to start as PID 1 without an init reaper. Each real lane compares the
+  current cgroup's `pids.events:max` and `memory.events:oom_kill` counters;
+  an increase forces ERROR while retaining the raw lane status. Missing or
+  inconsistent event data is an infrastructure error.
+
+- **Runner occupancy and admission preflight (RG-64/RG-80, rev 51).**
+  `run-gate status [--worktree PATH] [--json]` joins selected-tree inflight
+  records, host-wide exec-lock holders/waiters, and read-only Docker
+  admission tickets and tombstones. An unreadable source returns partial
+  output with ERROR/2. `doctor` checks an enabled admission image, published
+  object, and readable positive cap without running the ticket image.
+
+- **Durable Assay state mount preflight (RG-49, rev 50).** Every assay lane
+  checks that its durable state root and deepest existing state directory
+  are writable as the lane user before starting Assay. An unavailable or
+  unwritable state area is NOT_RUN/`state-mount`;
+  `[environments.<name>].state_root` names a different container mount point,
+  `doctor` checks once per assay environment, and `--dry-run` prints the probe.
+  run-gate leaves durable-root creation and mounting to the environment owner.
+
+- **RG-81 recovery and inventory follow-up (rev 53).** Container-runner
+  records left after a lane changes to host or exec mode refuse before
+  imported inventory, admission, or execution. Ephemeral inventory probes use
+  the lane's configured user and extra mounts. Malformed sequence identity
+  values produce a recovery-safe refusal.
+
+- **Collision-resistant Assay state keys (RG-49, rev 54).** In-repository
+  project paths keep their existing relative state layout. External worktree
+  project paths use a SHA-256 key so distinct resolved paths cannot collapse
+  to the same directory after slash replacement.
+
+- **Source-backed Assay identity and recovery (RG-81, rev 54; introduced in rev 50 and corrected in rev 53).** Internal editable installs use isolated Python to verify the selected worktree package and bind the verdict to its commit. Inflight schema 2 preserves source/artifact mode and exact verdict/progress paths across re-attachment. Older schemas refuse rather than being guessed or overwritten; recover with `--fresh` only for an ephemeral-container lane after confirming the run is no longer live. Host and exec records require the lifecycle owner's confirmation before removal. Recovery checks sequence records, members, and foreign runners before imported inventory or admission. External artifact lanes continue to require `judge_provenance`.
 
 - **Closed results and explicit environment modes (RG-78, rev 49).** All
   normal CLI outcomes now pass through `finish(LaneResult)` and the closed
@@ -41,9 +75,8 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
   `--include-failed`; repeatable `footprint --write --lane NAME` merges only
   selected lanes; `accepts_args = true` permits arguments after `--` on one
   command lane.
-- **Remaining compatibility boundary.** RG-49's root-owned-parent repair
-  remains OPEN. RG-70 is absorbed into ciu CIU-118's `ciu exec` work and is
-  not a separate run-gate v7 implementation.
+- **Remaining compatibility boundary.** RG-70 is absorbed into ciu CIU-118's
+  `ciu exec` work and is not a separate run-gate v7 implementation.
 
 - **Source-backed Assay consumers.** Internal lanes may omit
   `assay_command` and `pins`; run-gate installs `assay/` from the selected
@@ -366,6 +399,26 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
   the default SKIPPED exit-0/stdout behavior and the opt-in refusal).
 
 <!-- cmru: release history -->
+
+### Adoption / Migration Notes
+
+- Declare an explicit environment `mode`: `ephemeral`, `exec`, or `host`.
+  The name `bare-host` is still only a name; declare `mode = "host"` for it.
+- With `--worktree PATH`, put `run-gate.toml` at the project path inside the
+  selected worktree and keep shared settings in its nearest
+  `run-gate.root.toml`. A missing selected config is a refusal.
+- Container environments must resolve `cgroup_slice_env` to
+  `CGROUP_PARENT_DEV_GATES`; the host must provide the loaded gates slice.
+- Admission remains off unless `[admission] enabled = true`. Enabled projects
+  must set `max_concurrent` and a locally available `ticket_image`.
+- Replace shell conjunctions with `kind = "sequence"`; declare
+  `[project].trunk` for first-parent merge-base behavior.
+- To import external Assay lanes, keep `[assay].command` and `[assay].pins`
+  and add `import = { environment = "...", lanes = [...] }`.
+- Container environments that run Assay must mount a writable durable
+  `state_root`; run-gate checks the mount before starting Assay.
+- `run-gate status [--worktree PATH] [--json]` provides a read-only view of
+  runner occupancy, inflight runs, and admission tickets.
 
 ## [23.9.1] - 2026-09-18
 <!-- cmru: generated -->

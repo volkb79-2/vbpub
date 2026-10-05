@@ -30,6 +30,7 @@ dispatch, `--yes` availability, and Markdown reference generation:
 
 ```python
 import argparse
+from pathlib import Path
 
 from cli_extended import (
     ArgumentSpec,
@@ -40,10 +41,13 @@ from cli_extended import (
     VerbSpec,
 )
 
-identity = CliIdentity.from_distribution(
+# Installed distribution and/or a checked-in VERSION file (absolute path);
+# when both exist they must agree, and there is never a fallback version.
+identity = CliIdentity.resolve(
     name="EXAMPLE",
     command="example",
     distribution="example-tool",  # replace with this CLI's installed distribution
+    version_file=Path(__file__).resolve().parent / "VERSION",
     long_name="Example Operator Tool",
 )
 
@@ -55,6 +59,8 @@ def status(args: argparse.Namespace, runtime) -> None:
 
 def apply(args: argparse.Namespace, runtime) -> None:
     # A real handler loads and validates its complete change before consent.
+    # With --dry-run, confirm() prints "Dry run: no changes made." and returns
+    # False without prompting, so this gate makes the handler dry-run-safe.
     if not runtime.confirm(f"Apply {args.path} to production?"):
         return
     # A real handler performs exactly the confirmed domain mutation here.
@@ -67,6 +73,7 @@ cli = CliRegistry(
     description="Inspect state and apply reviewed changes.",
     getting_started=("example status",),
     logging_logger="example",
+    unexpected_exceptions="report",  # bugs become "[ERROR] unexpected ..."; --traceback re-raises
 )
 cli.register(
     VerbSpec(
@@ -99,6 +106,7 @@ cli.register(
         description="apply a validated change",
         group=VerbGroup.MODIFICATION.value,
         mutating=True,
+        dry_run=True,
         examples=("example apply reviewed-change.json",),
         arguments=(ArgumentSpec("path", "change file", metavar="FILE"),),
         handler=apply,
@@ -124,6 +132,13 @@ The default `None` keeps the existing rule that mutating verbs require
 confirmation. `True` explicitly requires confirmation and is valid only on a
 mutating verb. Existing consumers may continue using `include_confirmation`;
 when both fields are set, they must agree.
+`VerbSpec(mutating=True, dry_run=True)` adds a library-owned `--dry-run`: it
+sets `runtime.dry_run`, and `runtime.confirm()` then declines without prompting
+(see the `apply` handler above). `CliIdentity.resolve()` checks an installed
+distribution and a version file against each other, and
+`unexpected_exceptions="report"` turns unexpected exceptions into a one-line
+error with a `--traceback` escape hatch. The reasons are in the
+[design guide](docs/DESIGN-GUIDE.md#version-sources-must-agree-and-failures-must-be-explicit).
 Handlers may return `None` for success; `RegisteredCli.run()` converts that to
 process status `0`. Prefer this shared behavior over repeating `return 0` in
 each successful handler. Return a status explicitly only when the command has
@@ -232,6 +247,45 @@ Bare invocation still prints help by default. Only a truly intentional
 no-argument action may opt in with `single_command=True, no_args_action=True`;
 `--help` remains side-effect free.
 
+## Declared option constraints and selector lists
+
+Structural relationships between a verb's options are declared, not hand-coded
+in the handler. `Requires`, `Conflicts` and `RequiresChoice` go in
+`VerbSpec.constraints`; the registry refuses a violating invocation with exit
+`2` and the verb's help, lists the rules under a `CONSTRAINTS` help section and
+in the Markdown reference, and exports them to the surface manifest with one
+review candidate per rule. See the
+[design guide](docs/DESIGN-GUIDE.md#declare-option-constraints-structurally)
+for why presence means "differs from the default" and why only structural
+rules belong here.
+
+```python
+VerbSpec(
+    "sync", description="Sync projects.", mutating=True, dry_run=True,
+    handler=sync,
+    options=(
+        OptionSpec(("--update",), "update", parser_kwargs={"action": "store_true"}),
+        OptionSpec(("--refresh",), "refresh", parser_kwargs={"action": "store_true"}),
+    ),
+    constraints=(
+        Requires("--dry-run", ("--update", "--refresh"), "a dry run needs work to preview"),
+        Conflicts(("--refresh", "--json"), "refresh has no JSON form"),
+    ),
+)
+# tool sync --dry-run   ->  [ERROR] --dry-run requires --update or --refresh: a dry run needs work to preview
+```
+
+`SelectorList` is an argparse `type` for "`all`, or these names":
+`SelectorList(("alpha", "beta"))("beta,alpha")` returns `("beta", "alpha")`,
+`"all"` returns every choice (or `SelectorList.ALL` when no choices are
+declared), and an empty, duplicate, unknown or `all`-mixed item is a normal
+argparse usage error.
+
+```python
+OptionSpec(("--only",), "projects to process",
+           parser_kwargs={"type": SelectorList(("alpha", "beta"))})
+```
+
 ## Generated documentation and contract tests
 
 The generated catalog is available as `app.catalog`. Full Markdown reference
@@ -302,6 +356,16 @@ for the design rationale; and [`BACKLOG.md`](BACKLOG.md) for open library
 follow-ups.
 
 ## Keep the canonical CLI spec in sync
+
+The generated surface names the library's own common controls per route
+(`Common controls: ...`) and records one integer
+contract version, stated once in the region header, instead of signing their syntax, so a library upgrade leaves
+your manifest and review signatures untouched unless the contract version
+changes; then `check` reports a single finding telling you to read the contract
+notes and re-run `sync`. See
+[Version the library's own controls](docs/DESIGN-GUIDE.md#version-the-librarys-own-controls-dont-sign-them)
+and
+[What a library upgrade does to your surface](docs/CONSUMERS.md#what-a-library-upgrade-does-to-your-surface).
 
 `RegisteredCli` can export its built parser tree as stable JSON and generate a
 bounded semantic-review checklist. Its generated Markdown shows each route's
@@ -406,23 +470,32 @@ Use `python.module:build_cli` for an importable module, or
 `path/to/hyphenated-script.py:build_cli` when the registry lives in a
 single-file script. The path loader imports the file for the workflow and adds
 its parent directory for sibling imports, so consumers do not need an adapter
-module just to expose the registry. Then run:
+module just to expose the registry. Declare the CLI once in
+`[tool.cli-extended]` of `pyproject.toml` (or a standalone `cli-extended.toml`)
+and run the `cli-extended` console script:
 
 ```bash
-python -m cli_extended.surface_cli \
-  --factory example.cli:build_cli \
-  --review docs/cli-review.toml \
-  --manifest docs/cli-surface.json \
-  --spec docs/SPEC.md sync
-
-python -m cli_extended.surface_cli \
-  --factory example.cli:build_cli \
-  --review docs/cli-review.toml \
-  --manifest docs/cli-surface.json \
-  --spec docs/SPEC.md check
+cli-extended surface sync
+cli-extended surface check
 ```
 
-Use the `template` action to print missing case rows and instructions for
+The review workflow, in six steps (the `cli-extended-review` skill drives it):
+
+1. Locate the project config (`--config PATH`, or found by walking up).
+2. `cli-extended surface sync` refreshes the generated manifest and spec region.
+3. `cli-extended surface pack --output FILE` writes the rubric, every route's
+   help and every case awaiting review as one Markdown bundle.
+4. Judge the bundle and edit the review catalog and the findings file by hand.
+5. `cli-extended surface sync`, then `surface check`: an open `blocker` or
+   `major` finding fails it.
+6. `cli-extended surface report` lists what is still open.
+
+`python -m cli_extended.surface_cli` keeps its old flags but is deprecated. The
+[design guide](docs/DESIGN-GUIDE.md#review-the-surface-with-the-agent-harness-and-keep-findings-separate)
+explains why the harness runs the review and why the library never edits your
+catalog.
+
+Use the `surface template` command to print missing case rows and instructions for
 changed decisions. Sync never edits the TOML or content outside the marked
 spec region. Candidates are review prompts, not guessed executable commands or
 predicted outcomes. The shared [consumer workflow](docs/CONSUMERS.md#adopt-the-generator)
@@ -432,6 +505,99 @@ Keep the review catalog, manifest, and spec at distinct file paths; sync and
 check reject equal paths and symlink or hard-link aliases.
 Each generated file is replaced atomically; a stop between the manifest and
 spec updates leaves a detectable mismatch for `check`, not a half-written file.
+
+## Audit your adoption
+
+`cli-extended audit` inspects the configured CLI, the project configuration and
+a text scan of the project sources against the
+[adoption checklist](docs/ADOPTION-CHECKLIST.md). Each item reports `pass`,
+`warn`, `fail` or `manual` with evidence and a remedy, and the command exits 1
+only on `fail`. Mechanical checks stay mechanical; judgement items are left to
+the packaged `cli-extended-adoption` skill, which records its decisions as
+`adoption` findings. The [consumer guide](docs/CONSUMERS.md#adopting-cli-extended-end-to-end)
+orders the steps; the [design guide](docs/DESIGN-GUIDE.md#audit-mechanically-judge-with-a-skill)
+explains the split and the contract is [SPEC §13](SPEC.md#project-configuration-findings-and-the-cli-extended-command).
+
+```bash
+cli-extended audit            # text report
+cli-extended audit --json     # machine-readable items and summary
+```
+
+### Project, audit and findings API
+
+All importable from `cli_extended`; the contract is
+[SPEC §13](SPEC.md#project-configuration-findings-and-the-cli-extended-command)
+and worked examples are in the
+[consumer guide](docs/CONSUMERS.md#adopting-cli-extended-end-to-end).
+
+- `load_project_config(path)` returns a `ProjectConfig` from `cli-extended.toml`
+  or the `[tool.cli-extended]` table of `pyproject.toml`.
+- `ProjectConfig` holds the configured CLIs; `select(cli_id)` picks one.
+- `CliConfig` is one `[[clis]]` entry: `id`, `factory`, and the optional
+  `review`, `manifest`, `spec` and `findings` paths.
+- `run_audit(cli, project)` returns the list of `AuditItem` results, one per
+  mechanical checklist row.
+- `AuditItem` is one immutable audit result: `check`, `checklist_id`, `status`,
+  `summary`, `evidence` and `remedy`.
+- `load_review_findings(path)` reads and validates a findings file into a
+  `FindingsFile`.
+- `FindingsFile` is the validated findings file (`cli_id` plus its findings).
+- `Finding` is one entry: `id`, `status`, `severity`, `category`, `summary`,
+  and the optional `route`, `remedy` and `rationale`.
+
+## Ship agent skills with your tool
+
+A tool that carries agent skills (`SKILL.md` trees for Claude Code and the
+`~/.agents` harnesses) packages them as package data and registers one shared
+`skills` verb group: `<tool> skills install|uninstall|check|list`. Installed
+copies are stamped, so a version bump is reported `stale`, a local edit
+`modified`, and a directory of another tool or without a stamp is never
+overwritten. The [design guide](docs/DESIGN-GUIDE.md#ship-agent-skills-per-tool-and-stamp-them)
+explains the choices; the contract is [SPEC §14](SPEC.md#14-packaged-agent-skills).
+
+```python
+from cli_extended import CliIdentity, CliRegistry, register_skills_verbs
+
+identity = CliIdentity("EXAMPLE", "1.2.3", "Example Operator Tool", "example")
+registry = CliRegistry(identity, prog="example", description="Example tool.")
+# ... register your own verbs ...
+register_skills_verbs(registry, package="example_tool")  # <pkg>/skills/<name>/SKILL.md
+app = registry.build()
+```
+
+## Report environment problems with `doctor`
+
+`register_doctor(registry, [DoctorCheck(...)])` adds one shared read-only
+`<tool> doctor` verb. Each check returns `ok`, `warn`, `fail` or `skip` with a
+summary and optional remedy and JSON details; a crashing check is reported as
+`fail`, never swallowed. It supports `--check NAME` and `--json`, and exits 1
+only when a check failed. A registry that also ships agent skills gets a
+`skills` check automatically: `warn` when the skills are merely not installed,
+`fail` when any is stale, modified, foreign, orphaned or left over. The
+[design guide](docs/DESIGN-GUIDE.md#one-doctor-verb-crashes-are-failures)
+explains the choices; the contract is [SPEC §15](SPEC.md#15-doctor).
+
+```python
+from cli_extended import CheckResult, CliIdentity, CliRegistry, DoctorCheck, register_doctor
+
+identity = CliIdentity("EXAMPLE", "1.2.3", "Example Operator Tool", "example")
+registry = CliRegistry(identity, prog="example", description="Example tool.")
+register_doctor(registry, [
+    DoctorCheck("config", "configuration file is readable",
+                lambda runtime, args: CheckResult("ok", "config found")),
+])
+app = registry.build()
+```
+
+## Consumer test helpers
+
+`invoke_script`, `invoke_module` and `make_invoker` run a real executable with
+a hermetic environment (required `home`, `XDG_*`, `NO_COLOR`, the tested
+library first on `PYTHONPATH`), and `cli_extended.pytest_plugin` (one
+`pytest_plugins` line) registers the `cli_case` marker and checks reviewed
+cases at collection; `--cli-case-partial` relaxes it for focused runs. See the
+[consumer guide](docs/CONSUMERS.md#test-helpers-invoke_script) and the
+[design guide](docs/DESIGN-GUIDE.md#keep-consumer-tests-hermetic-and-the-plugin-opt-in).
 
 ## Test and gate
 

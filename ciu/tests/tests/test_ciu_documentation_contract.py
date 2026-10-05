@@ -21,7 +21,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
-from ciu import config_model, worktree  # noqa: E402
+from ciu import config_model, worktree, workspace_env  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -54,6 +54,8 @@ CLOSED_PUBLIC_VALUES = {
     "adopt",
     # exec-target config vocabulary (S16.7)
     "exec_targets",
+    "up",
+    "DRY_RUN_SAFE",
     "requires_worktree_mount",
     "stack",
     "service",
@@ -110,7 +112,18 @@ def _toml_blocks(path: Path) -> list[str]:
 def test_every_toml_example_parses_with_the_shipped_loader():
     for doc in DOCS:
         for block in _toml_blocks(doc):
-            config_model.parse_toml_string(block, str(doc))
+            parsed = config_model.parse_toml_string(block, str(doc))
+            ciu_table = parsed.get("ciu", {})
+            instance = ciu_table.get("instance", {}) if isinstance(ciu_table, dict) else {}
+            if not isinstance(instance, dict):
+                continue
+            for table_name in ("generated", "machine"):
+                table = instance.get(table_name)
+                if table is not None:
+                    assert isinstance(table, dict)
+                    assert table.get("schema_version") == (
+                        workspace_env.GENERATED_FACTS_SCHEMA_VERSION
+                    )
 
 
 def test_governance_resource_examples_parse_and_document_explicit_policy():
@@ -176,6 +189,48 @@ def test_every_closed_public_value_appears_in_the_documents():
     corpus = "\n".join(doc.read_text(encoding="utf-8") for doc in DOCS)
     missing = sorted(v for v in CLOSED_PUBLIC_VALUES if v not in corpus)
     assert missing == []
+
+
+def test_new_v7_workflows_are_explained_in_all_three_user_documents():
+    readme, design, consumers = (
+        doc.read_text(encoding="utf-8") for doc in DOCS
+    )
+    assert "[ciu.worktree].up" in readme and "--up" in readme
+    assert "docs/DESIGN-GUIDE.md#why-worktree-startup-is-one-declared-combined-deploy" in readme
+    assert "DRY_RUN_SAFE = True" in readme
+    assert "ciu resolve" in readme and "ciu exec" in readme
+    assert "ciu down --dir <stack>" in readme
+    assert "stop-one-stack-without-stopping-its-neighbors" in readme
+
+    assert "DRY_RUN_SAFE = True" in design
+    assert "resolved.identities" in design
+    assert "ciu clean --identity <old-id>" in design
+    assert "resumes only if HEAD still matches" in design
+    assert "ciu down --dir" in design
+    assert "com.docker.compose.project" in design
+
+    assert "[ciu.worktree]" in consumers and 'up = ["core", "db", "test"]' in consumers
+    assert "DRY_RUN_SAFE = True" in consumers
+    assert "ciu resolve --stack" in consumers
+    assert "ciu exec --profile test tools/test-runner:test-runner" in consumers
+    assert "ciu down --dir tools/admin-debug" in consumers
+    assert "ciu clean --identity OLD_ID" in consumers
+
+
+def test_worktree_startup_consumer_example_uses_the_shipped_profile_loader():
+    consumers = (REPO_ROOT / "docs" / "CONSUMERS.md").read_text(encoding="utf-8")
+    blocks = [
+        block for block in _toml_blocks(REPO_ROOT / "docs" / "CONSUMERS.md")
+        if "[ciu.worktree]" in block and 'up = ["core", "db", "test"]' in block
+    ]
+    assert len(blocks) == 1
+    parsed = config_model.parse_toml_string(blocks[0], "worktree startup consumer example")
+    assert worktree.resolve_worktree_up_profiles(parsed) == ("core", "db", "test")
+    assert "tools/test-runner" in blocks[0]
+    assert "why-worktree-startup-is-one-declared-combined-deploy" in consumers
+
+    readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    assert "docs/DESIGN-GUIDE.md#why-worktree-startup-is-one-declared-combined-deploy" in readme
 
 
 def test_every_cross_document_anchor_resolves():

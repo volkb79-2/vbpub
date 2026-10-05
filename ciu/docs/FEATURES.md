@@ -67,7 +67,7 @@ failure · `2` config/validation error · `3` environment/bootstrap error (S10.3
 | `ciu profiles` | List host profiles | — |
 | `ciu layouts` | List declared deploy layouts (S7.5c) — shows what is DECLARED; `up --layout` validates | — |
 | `ciu up` | Render + materialise secrets + `compose up` | `--profile NAME` \| `--dir PATH`, `--phases N,M`, `--dry-run`, `-y`, `--ignore-errors`, `--no-preflight`; `--host NAME` push-deploys to a remote host (S14.2); `--thin` docker-optional push→activate (S14.6), `--bootstrap`/`--rollback` select activation verbs |
-| `ciu down` | Stop containers (volumes preserved) | `--profile NAME`, `--host NAME` |
+| `ciu down` | Stop selected containers and preserve volumes | `--profile NAME`, `--host NAME`; `--dir PATH` stops one stack |
 | `ciu clean` | **Complete** teardown: containers (any state) + volumes + `vol-*` + rendered; enforces post-clean invariant (exit 1 on survivors) | `--profile NAME`, `-y`, `--ignore-errors` |
 | `ciu health` | Health gate over the selection | `--profile NAME`, `--host NAME` |
 | `ciu health --preflight` | Probe images for missing healthcheck tools | `--strict` |

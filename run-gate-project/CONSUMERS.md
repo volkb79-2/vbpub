@@ -217,6 +217,30 @@ statuses map to PASS only at zero, and pytest 5 is FAIL with reason
 outcomes are FAIL. Use verdict plus the raw code; never infer that run-gate
 itself returned an ERROR from a raw lane code of 2.
 
+### Init reaping and resource events
+
+When another tool starts run-gate inside a container, give it an init reaper.
+Without one, run-gate refuses to start as PID 1. A Docker launcher adds
+`--init` to its existing `docker run` options. In Compose, add `init: true`
+to the existing service while keeping its mounts and cgroup placement:
+
+```yaml
+services:
+  test-runner:
+    image: tester-unified:local
+    init: true
+    # Keep the service's existing cgroup_parent, mounts and command here.
+```
+
+For each real lane, run-gate compares the `pids.events` `max` and
+`memory.events` `oom_kill` counters in the cgroup containing the run-gate
+process. A counter increase forces ERROR/2 even when the raw lane command
+returns zero; `--json` retains that raw status in `exit_code`. If the cgroup
+path or counters cannot be read, run-gate returns an infrastructure ERROR
+instead of certifying an unobserved run, retaining any raw status already
+known. `--dry-run` does not read or change these counters. The read-only
+`--version` operation remains available when run-gate is PID 1.
+
 An older config can be migrated without reserializing its TOML or dropping
 comments:
 
@@ -330,7 +354,7 @@ regex, so a parse failure is never silently reported as "nothing found".
 **A clean sweep is evidence, not a certificate** — it stays advisory (always
 exit 0 for drift); `required_env` is the mechanism that actually refuses.
 
-### `kind = "assay"` — projects that adopt assay (the quality partnership)
+### Assay lanes — projects that adopt assay (the quality partnership)
 
 run-gate.py does the ORCHESTRATION (environment, mounts, cgroup, optional
 artifact verification, clean `--init` detached run), then invokes assay; **assay
@@ -374,8 +398,60 @@ sha256 = "tools/assay/assay-<version>.pyz.sha256"
 
 The internal source mode is selected by omitting both fields. The source is
 installed with `--no-deps` from the selected tree, so no registry or ambient
-Assay installation is consulted. The resulting Assay verdict records its
-actual `assay_version`; the selected tree's commit is the source identity.
+Assay installation is consulted. Run-gate uses Python isolated mode (`-I`)
+for both the source check and the actual `assay.cli` command, so `PYTHONPATH`
+does not select another package. Before the lane runs, it inspects the
+consumer directory without executing its contents: a regular local `assay`
+module or package is rejected, while a namespace-only `assay/` directory is
+allowed. It then resolves the installed package spec to the selected tree's
+`assay/src/assay/__init__.py`. Afterward it requires a non-empty
+`assay_version` and a full Git `commit` in the verdict that matches the run
+record's selected commit. Missing identity or a different commit makes the
+lane ERROR. This is source identity, not an artifact digest; external
+immutable mode continues to require `judge_provenance`. Run-Gate accepts full
+SHA-1 and SHA-256 commit IDs here; Assay's P22 snapshot source still requires
+SHA-1 object storage for high-rigor snapshot lanes.
+
+An inflight Assay record stores whether that run launched in source or
+artifact mode. Re-attachment uses the recorded mode even if `run-gate.toml`
+has changed since launch; it does not reinterpret an old verdict under the
+current config. If the lane has changed from Assay to another kind, it also
+refuses rather than treating the old Assay result as a command result.
+Inflight schema 2 adds this field, so an older schema is
+refused instead of guessed. For a container-runner record, a missing or
+invalid mode, or an Assay artifact path that differs from the lane's derived
+verdict/progress paths, is refused before the Assay inventory Docker probe
+or admission, and the record is preserved. An Assay artifact path on a
+non-Assay record is also refused. A
+lost container's old mode does not carry over to its fresh
+replacement. A promoted follower retains the launch-time mode until its
+caller parses the verdict; the history record and parsed result do not expose
+that private field. For an ephemeral-container lane, after confirming the old
+container has stopped, `./run-gate.py <lane> --fresh` discards that record and
+starts under the current config. Host and exec lanes cannot use `--fresh`; ask
+the named runner's lifecycle owner to confirm it has stopped, then remove the
+stale recovery record at the path named in the refusal. On an older-schema
+record marked with a non-container `runner` (such as `exec`), `--fresh` also
+refuses; use that runner's lifecycle owner to confirm the run is over before
+removing the record.
+Before imported Assay inventory or sequence admission, Run-Gate checks the
+requested lane's recovery record and every sequence node and member. If a
+lane was changed to `kind = "sequence"` while its old Assay or command
+container record remains, Run-Gate refuses before starting members. Ask the
+prior runner's lifecycle owner to confirm it has stopped, then remove the
+record at the path named in the refusal. A record owned by `exec` is also
+refused before inventory or admission, including when `--fresh` was requested.
+
+If a lane changes from an ephemeral container to host or exec while its old
+container record remains, Run-Gate refuses before imported Assay inventory or
+lane execution. The current mode cannot safely re-attach to or replace that
+container; ask its prior lifecycle owner to confirm it has stopped, then
+remove the recovery record named in the refusal.
+
+Assay inventory and toolchain probes in ephemeral environments receive the
+same configured container user and RUN_GATE_EXTRA_MOUNTS as the judged lane.
+An imported command or tool mounted there can therefore be checked before the
+lane starts, under the permissions it will actually have.
 
 Division of labor, spelled out:
 
@@ -401,17 +477,46 @@ judged worktree so a deleted or recreated worktree can resume:
 
 For a nested project, the key includes its path relative to the checkout, so
 two projects named `backend` do not share state. A project outside that
-checkout uses a sanitized resolved path key. Pin versions below **5.2.0** are
-refused before the lane starts because that is the first Assay release with
-`--state-dir` (the other two flags require only 2.4.1). The run header names
-the state directory.
+checkout uses the separate `assay-state-external/<sha256>` namespace, keyed
+by its resolved absolute path. By default the state root is
+`<checkout owning the shared .git>/.run-gate`. A container environment whose
+durable mount is at another in-container path declares that exact path as
+`state_root` in its `[environments.<name>]` table. The runner owner must mount
+the corresponding durable host directory read-write before the gate runs;
+run-gate never creates a root-owned directory in an exec runner's disposable
+container layer. For example, if the runner mounts the checkout's `.run-gate`
+at `/workspace/project/.run-gate`, declare:
 
-The current implementation creates the directory as the lane's execution
-user. A Mode-B partial bind mount can expose a root-owned synthetic parent;
-that creation can then fail inside the runner. RG-49 tracks the root-owned
-parent repair separately. run-gate does not claim to repair or chown that
-path today; check that the test-runner user can write the selected checkout's
-`.run-gate/assay-state/` parent when using that mount layout.
+<!-- run-gate-config -->
+```toml
+schema_version = 1
+
+[environments.test-runner]
+mode = "exec"
+image = "yourproj/test-runner:local"
+container_name = "yourproj-test-runner"
+state_root = "/workspace/project/.run-gate"
+```
+
+For a host environment, run-gate uses the default checkout path directly;
+`state_root` is only meaningful for container environments. For a bare-host
+lane, create `<checkout>/.run-gate` on the host and make it writable by the
+lane user before the first assay run; run-gate does not synthesize this root
+as a preflight side effect. Before Assay runs, run-gate checks that the
+selected root exists and is writable by the lane user, then checks the
+deepest existing directory along that lane's keyed state path. This catches
+an old state directory owned by a different user before Assay starts. A
+missing or unwritable root or ancestor is refused
+before the assay command with NOT_RUN/`state-mount`, naming the path and
+applicable remedy; it is never reported as an assay FAIL. The `doctor`
+command checks once per assay environment, and `--dry-run` prints the planned
+probe. `state_root` is a container path, so
+run-gate does not stat it in the host namespace. Pin versions below **5.2.0**
+are refused before the lane starts because that is the first Assay release
+with `--state-dir` (the other two flags require only 2.4.1). The run header
+names the resolved state directory. See the
+[mount rationale](docs/DESIGN-GUIDE.md#assay-resume-state-needs-an-environment-owned-mount)
+for why run-gate does not create this root inside a runner.
 
 ### Shared assay lane imports
 
@@ -429,6 +534,7 @@ schema_version = 1
 mode = "exec"
 image = "yourproj/test-runner:local"
 container_name = "yourproj-test-runner"
+state_root = "/workspace/project/.run-gate"
 
 [assay]
 command = ["/opt/tester-venv/bin/python", "tools/assay/assay-7.2.0.pyz"]
@@ -543,16 +649,21 @@ treated as "nothing needed".
 
 > **`doctor` and `--check-env` START CONTAINERS for this check.** Fitness
 > cannot be read, only observed, so the inventory question and the
-> `command -v` checks execute inside the lane's own environment. They are
+> `command -v` checks execute inside the lane's own environment. `doctor`
+> also probes Assay's durable state root once per assay environment, as the
+> lane user; a live assay invocation probes it once per lane. `--check-env`
+> does not run the state-root check. These probes are
 > short-lived and read-only (`assay lanes` runs nothing; `command -v` is a
 > shell builtin), they judge nothing and write nothing into your tree, and
 > ephemeral ones carry `--cgroup-parent` like every container run-gate
-> starts. The cost is bounded: **one inventory probe per (environment,
-> judge identity) plus one batched `command -v` probe per environment** —
-> not per lane. A project with no `kind = "assay"` lane starts nothing at
-> all, and neither verb ever starts your judged lane. If you run `doctor` in
-> a context where starting a container is unacceptable, that is the check to
-> know about.
+> starts. The cost is bounded: `doctor` runs **one inventory probe per
+> (environment, judge identity), one batched `command -v` probe per
+> environment, and one state-root probe per assay environment**;
+> `--check-env` runs only the first two; a live assay invocation adds one
+> state-root probe for its lane. A project with no `kind = "assay"` lane
+> starts none of these probes, and neither verb ever starts your judged
+> lane. If you run `doctor` in a context where starting a container is
+> unacceptable, that is the check to know about.
 
 ### Lanes that take their comparison base from the gate (RG-26)
 
@@ -972,6 +1083,46 @@ Admission is local to one daemon. A remote Docker context is refused for
 `admission set`; do not publish a cap on a different daemon and expect this
 client to use it. Resource limits and cgroup placement continue to apply
 independently of the admission switch.
+
+### Runner occupancy status
+
+Use `status` when a gate appears to be waiting and you need to see who owns
+or is queued for the runner:
+
+```console
+./run-gate.py status
+./run-gate.py status --worktree .worktrees/feature
+./run-gate.py status --json
+```
+
+The selected project's `.run-gate/inflight/` records follow `--worktree` and
+the config path shown in the report. The exec-lock and Docker admission views
+are host-wide: run-gate maps its `/tmp/run-gate-exec-<container>.lock` files
+to Linux `/proc/locks` entries, then reports holder and waiter PIDs and their
+local liveness. That internal lock is authoritative for run-gate access to
+the runner; a project's own wrapper lock cannot reveal runs that did not use
+that wrapper. Docker admission output includes the published
+`ciu-admission-<generation>` cap, decoded tickets and owner labels, queued or
+running state, and exited tombstones.
+
+The command does not start, stop, or remove containers. Its Docker reads are
+limited to the admission objects, tickets, and ticket run markers. It does
+not repair inflight records or reap tickets. If one source cannot be
+read, human output names the failure and JSON returns the available partial
+data with `verdict = "ERROR"`, `exit_code = 2` (the closed result table's
+ERROR code). It never presents an unreadable source as an empty queue.
+
+When `[admission] enabled = true`, `doctor` also checks that
+`ticket_image` exists on the local daemon, a valid published admission object
+exists, and its positive `max_concurrent` value is readable. This preflight
+uses `docker image inspect` only; it does not run the image. Its remedies are
+specific: load the configured image or name a local one, publish a cap with
+`run-gate admission set --max-concurrent <desired-N>`, or republish an
+unreadable cap with `--replace`. If Docker shows an admission object whose
+identity labels are unreadable, doctor names that object and reports that
+`admission set` refuses to replace it. Resolve that exact object with the
+daemon owner before publishing another cap; doctor will not suggest a
+command that cannot succeed safely.
 
 ### Consumer timeouts must not cut lanes short
 

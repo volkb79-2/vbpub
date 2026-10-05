@@ -439,7 +439,8 @@ class TestBaselineSearchOrder:
         monkeypatch.setattr(gov, "resolve_device", lambda configured: ("/dev/vda", "explicit"))
         configured = self._touch(tmp_path / "stack-baseline.env", 900)
         cfg = gov.resolve_config({
-            "enabled": True, "read_iops": 0, "baseline_path": str(configured), "cgroup_parent": "dev-background.slice",
+            "enabled": True, "read_iops": 0,
+            "baseline_path": str(configured), "cgroup_parent": "dev-background.slice",
         })
         injections, _ = gov.build_injections({"redis": {"image": "redis"}}, cfg)
         rate = injections["redis"]["blkio_config"]["device_read_iops"][0]["rate"]
@@ -909,9 +910,9 @@ class TestBuildInjections:
         assert injections["redis"]["blkio_config"] == {"weight": 500}
 
     def test_io_weight_zero_omits_weight_key(self) -> None:
-        cfg = self._cfg(device="/dev/vda", read_iops=100, io_weight=0)
+        cfg = self._cfg(device="/dev/vda", io_weight=0)
         injections, _ = gov.build_injections({"redis": {"image": "redis"}}, cfg)
-        assert "weight" not in injections["redis"]["blkio_config"]
+        assert "blkio_config" not in injections["redis"]
 
     def test_io_weight_and_device_iops_coexist_in_one_blkio_config(self) -> None:
         cfg = self._cfg(device="/dev/vda", io_weight=800, read_iops=100, write_iops=400)

@@ -198,6 +198,98 @@ def test_owner_validation_rejects_pid_zero():
     assert admission.validate_owner(admission.compact_json(owner)) is None
 
 
+def test_oversized_admission_owner_is_unreadable_and_cannot_be_replaced():
+    fake, clock = FakeDocker(), Clock()
+    manager = make_manager(fake, clock)
+    digits = "9" * 5000
+    fake._add("ciu-admission-1", {
+        "ciu.admission.generation": "1",
+        "ciu.admission.owner":
+            '{"ciu_version":"test","host":"host","time":' + digits
+            + ',"user":"runner"}',
+        "ciu.admission.tiers.gates.max_concurrent": "1",
+        "ciu.admission.unreadable_policy": "refuse",
+    })
+
+    assert manager.read_limit()[0] is None
+    with pytest.raises(admission.AdmissionError,
+                       match="refusing to replace unreadable admission object"):
+        manager.publish("ticket:local", 1, owner_version="test",
+                        unreadable_policy="refuse", replace=True)
+
+
+def test_status_snapshot_decodes_running_queued_dead_owner_and_tombstone_read_only():
+    fake, clock = FakeDocker(), Clock()
+    manager = make_manager(fake, clock)
+    publish(manager, 1)
+
+    running_owner = admission.owner_tuple("schema", "run-running")
+    add_ticket(fake, "ciu-res-gates-1", running_owner, 1_800_000_300)
+    add_ticket(fake, "ciu-run-ciu-res-gates-1", running_owner,
+               1_800_003_600, kind="marker", group="ciu-res-gates-1")
+
+    queued_owner = admission.owner_tuple("unit", "run-queued")
+    add_ticket(fake, "ciu-res-gates-2", queued_owner, 1_800_000_300)
+
+    dead_owner = admission.owner_tuple("mutation", "run-dead")
+    dead_owner["pid"] = 2_000_000_000
+    add_ticket(fake, "ciu-res-gates-3", dead_owner, 1_800_000_300)
+
+    tombstone_owner = admission.owner_tuple("old", "run-old")
+    add_ticket(fake, "ciu-res-gates-4", tombstone_owner,
+               1_800_000_300, status="exited")
+    fake.calls.clear()
+
+    snapshot = manager.status_snapshot()
+
+    assert snapshot["published"]["max_concurrent"] == 1
+    tickets = {ticket["name"]: ticket for ticket in snapshot["tickets"]}
+    assert tickets["ciu-res-gates-1"]["state"] == "running"
+    assert tickets["ciu-res-gates-1"]["owner"]["lane"] == "schema"
+    assert tickets["ciu-res-gates-2"]["state"] == "queued"
+    assert tickets["ciu-res-gates-2"]["deadline"] == 1_800_000_300
+    assert tickets["ciu-res-gates-3"]["state"] == "dead-owner"
+    assert tickets["ciu-res-gates-4"]["state"] == "tombstone"
+    assert all(call[1] not in {"create", "start", "stop", "rm"}
+               for call in fake.calls)
+
+
+def test_status_snapshot_keeps_oversized_external_labels_visible():
+    fake, clock = FakeDocker(), Clock()
+    manager = make_manager(fake, clock)
+    publish(manager, 1)
+    digits = "9" * 5000
+    fake.objects["ciu-admission-1"]["Config"]["Labels"].update({
+        "ciu.admission.owner":
+            '{"ciu_version":"test","host":"host","time":' + digits
+            + ',"user":"runner"}',
+        "ciu.admission.tiers.gates.max_concurrent": digits,
+    })
+    fake._add("ciu-res-gates-1", {
+        "ciu.reservation.deadline": digits,
+        "ciu.reservation.group": "ciu-res-gates-1",
+        "ciu.reservation.kind": "lane",
+        "ciu.reservation.owner":
+            '{"boot_id":"boot","host":"host","lane":"schema",'
+            '"pid":' + digits + ',"pid_ns":"1","run_id":"r1",'
+            '"start_ticks":1}',
+        "ciu.reservation.scheme": "ticket",
+        "ciu.reservation.tier": "gates",
+    })
+    fake.calls.clear()
+
+    snapshot = manager.status_snapshot()
+
+    assert snapshot["published"] is None
+    assert snapshot["visible_admission_objects"][0]["identity_readable"] is False
+    ticket = snapshot["tickets"][0]
+    assert ticket["name"] == "ciu-res-gates-1"
+    assert ticket["state"] == "unreadable-live"
+    assert ticket["deadline"] is None
+    assert all(call[1] not in {"create", "start", "stop", "rm"}
+               for call in fake.calls)
+
+
 def test_ticket_tombstone_preserves_monotone_numbers_and_reaps_lower_tombstone():
     fake, clock = FakeDocker(), Clock()
     manager = make_manager(fake, clock)
@@ -535,6 +627,17 @@ def test_local_image_probe_is_bounded_and_placed_in_the_gates_slice():
     assert probe[1:] == ["run", "--rm", "--pull=never", "--network=none",
                          "--cgroup-parent", "dev-gates.slice", "--entrypoint",
                          "/bin/true", "ticket:local"]
+
+
+def test_image_inspect_error_is_not_misreported_as_missing_image():
+    def invalid_reference(argv, **_kwargs):
+        return subprocess.CompletedProcess(
+            argv, 1, "", "invalid reference format")
+
+    manager = admission.DockerAdmission(run=invalid_reference)
+    with pytest.raises(admission.AdmissionError,
+                       match="invalid reference format"):
+        manager.image_present("invalid ref")
 
 
 def test_missing_policy_uses_local_unreadable_policy_without_taking_a_ticket():

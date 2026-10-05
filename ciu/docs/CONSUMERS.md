@@ -15,13 +15,28 @@ surface reads:
 ```toml
 [ciu.worktree]
 max_concurrent_instances = 3
+up = ["core", "db", "test"]
 
 [deploy]
 project_name = "myapp"
 environment_tag = "dev"
 network_name = "$DOCKER_NETWORK_INTERNAL"
 landscape_id = "prod-eu"
+
+[deploy.profiles.core]
+stacks = ["infra/vault", "infra/consul-server", "infra/redis-core"]
+
+[deploy.profiles.db]
+stacks = ["infra/db-core", "infra/db-init"]
+
+[deploy.profiles.test]
+stacks = ["infra/seeded-targets", "infra/pwmcp", "tools/test-runner"]
 ```
+
+This dstdns-shaped example keeps the database profile's `core` prerequisite
+inside the same deployment selection and includes the profile that starts
+`tools/test-runner`. CIU starts all three profiles in one `ciu up` process;
+see [why the startup is one combined deploy](DESIGN-GUIDE.md#why-worktree-startup-is-one-declared-combined-deploy).
 
 `landscape_id` is opt-in [S3.11](SPEC.md#s3--configuration-model): a
 DNS-label-safe slug (`^[a-z][a-z0-9-]{0,62}$`) that a consumer renders its
@@ -34,45 +49,44 @@ $ ciu worktree create pkg-under-test --base "$(git rev-parse HEAD)" --json
 {"schema_version": 1, "operation": "create", "status": "ready", "instance": {...}}
 ```
 
-Creation discovers every committed `ciu.global.defaults.toml.j2` in the base
-commit as resolved in the allocated checkout and prepares each root. A
-`ready` response means every discovered root has readable generated facts and
-the shared workspace record contains the corresponding root-entry list; CIU
-does not emit `ready` while nested preparation is in progress. The optional
-ignored `ciu.global.instance.toml.j2` overlay is not a discovery marker.
-Every lifecycle verb (`create`, `ensure`, `adopt`) with `--json` emits the
-same envelope. `status` is one of `allocating`, `ready`,
+Creation discovers every committed `ciu.global.defaults.toml.j2` from the
+allocated checkout's exact commit and prepares each root. A `ready` response
+means every discovered root has readable generated facts and the shared
+workspace record contains the matching root-entry list. CIU does not report
+`ready` while nested-root preparation is in progress. The optional ignored
+`ciu.global.instance.toml.j2` overlay is not a discovery marker. Every
+lifecycle verb (`create`, `ensure`, `adopt`) with `--json` emits the same
+envelope. `status` is one of `allocating`, `ready`,
 `recovery-required`; a `recovery-required` instance carries a closed
 `recovery_status` of `checkout-incomplete`, `env-generation-failed`, or
 `runtime-collision`. Resume a partial allocation with `ensure`.
 
-If preparation fails, keep the checkout and retry through the lifecycle verb:
+If root preparation fails, keep the checkout and retry through CIU:
 
 ```console
 $ ciu worktree ensure pkg-under-test --json
 ```
 
 `ensure` regenerates missing root facts and metadata before returning `ready`.
-It also verifies the recorded root set for an older ready record, so a
-worktree interrupted by an earlier CIU release is repaired instead of being
-accepted on its stale status alone. It uses the recorded allocation commit
-(`fork_point_sha`, or the shared workspace's `base_commit` for older records).
-If a partial worktree's `HEAD` moved from that target, `ensure` refuses and
-preserves the checkout; it never resets an existing worktree during resume.
-An older `ready` record that cannot be verified is demoted to
-`recovery-required` before CIU refuses, so inspection does not keep certifying
-an unverified allocation.
+It also checks older ready records against their discovered roots, repairing
+ones that were interrupted before the ready-ordering fix when their allocation
+commit is still provable. Resume uses the saved fork point or full-SHA target;
+for older records with only a symbolic base, it uses the neutral workspace's
+`base_commit` only while checkout HEAD still equals it. If a no-fork-point
+checkout moved or the allocation target cannot be proven, `ensure` marks the
+record `recovery-required` and refuses. If a fork point was saved before the
+interruption, `ensure` repairs against that exact commit and preserves later
+commits. It never resets an existing checkout during resume.
 
-If the Git worktree root itself has no `ciu.global.defaults.toml.j2`, its
-aggregate `ready` record correctly has
-`"runtime": {"instance_id": null, "network": null}`: there is no CIU runtime
-at that root. CIU still initializes every discovered nested root and writes
-that root's own `ciu.instance.generated.toml`. This null/null pair is valid
-only for a root with no marker. A CIU-root record needs both runtime strings;
-a partial pair is always refused. “No marker” means the marker path is truly
-absent: a directory, dangling symlink, or unreadable marker is refused rather
-than treated as a generic root. Do not fill in or infer the aggregate
-record's identity.
+A Git family with no committed `ciu.global.defaults.toml.j2` is also valid.
+CIU records the Git worktree as ready with null runtime identity, because no
+CIU root or runtime exists there. Removal skips `ciu clean` for that exact
+rootless case and removes the Git checkout through the shared lifecycle
+adapter. A null identity is accepted only while the checkout's own root marker
+is absent; a CIU-root record with missing identity still refuses. An unreadable
+unrelated sibling is warned about and counted, but does not block this
+worktree's create, list, lease, branch survey, reap survey, or removal. An
+unreadable record at the requested name or checkout path still refuses.
 
 For a root-specific operation, enter that root (or pass `--dir`) and use the
 ordinary stack verb. The canonical explicit selector is:
@@ -80,6 +94,36 @@ ordinary stack verb. The canonical explicit selector is:
 ```console
 $ ciu up --dir services/api --root-folder services/api
 ```
+
+To stop just one stack, preserve its volumes, and leave other profile stacks
+running, select its rendered Compose project:
+
+```console
+$ ROOT="$(git rev-parse --show-toplevel)"
+$ ciu down --dir tools/admin-debug --profile admin --root-folder "$ROOT"
+```
+
+`--profile` is required when the stack is optional. CIU uses the exact Compose
+project label from that selected stack and refuses a failed Docker query rather
+than treating it as an empty stack. See [why shutdown is scoped this way](DESIGN-GUIDE.md#stop-one-stack-without-stopping-its-neighbors).
+
+To start a worktree's committed test environment as part of creation, put its
+host profiles in `[ciu.worktree].up` (each profile can contribute one or more
+stacks) and run:
+
+```console
+$ ciu worktree create pkg-under-test --base main --up
+$ ciu worktree up pkg-under-test
+$ ciu worktree up pkg-under-test --all
+```
+
+`--up` and `worktree up` run all declared profiles in one `ciu up` process, so
+cross-profile dependency checks see the full selection. [The design guide
+explains why splitting profiles into separate deploys is incorrect](DESIGN-GUIDE.md#why-worktree-startup-is-one-declared-combined-deploy).
+`--all` explicitly
+selects the default deploy set. Without `create --up`, creation remains
+prepare-only. If startup fails, CIU keeps the created worktree and tells you
+to retry with `ciu worktree up pkg-under-test`.
 
 Do not source another checkout's `ciu.env` to select a root. `REPO_ROOT` is
 export-only; CIU derives the nearest marker and refuses when no marker exists.
@@ -472,12 +516,11 @@ Allowlist the identifiers you depend on.
 
 ## Failure vocabulary, one place
 
-`allocating` — allocation in progress; `ready` — a structurally complete
-allocation (with a runtime identity when its exact root is a CIU root, or a
-null/null runtime pair for a generic aggregate root); `recovery-required` —
-an interrupted allocation with a closed `recovery_status`; `removed` — the
-terminal removal state. Every JSON document carries `schema_version: 1` and a
-closed `operation`. Unknown shapes fail fast.
+`allocating` — allocation in progress; `ready` — a complete, closed runtime
+identity; `recovery-required` — an interrupted allocation with a closed
+`recovery_status`; `removed` — the terminal removal state. Every JSON document
+carries `schema_version: 1` and a closed `operation`. Unknown shapes fail
+fast.
 
 ## 10. Derive feature flags from the selected profile set (S3.12, CIU-44)
 
@@ -992,16 +1035,33 @@ found nothing running" — the two must never be confused.
 `ciu check` walks the whole config pipeline **in memory**. It creates no
 hostdir, materializes no secret, writes no rendered compose/overlay/configfile
 (not even a `__pycache__` beside a hook it imports), executes no hook `run()`,
-and never contacts Docker. Use it instead of `ciu up --dry-run` as a
-validation tool: **`--dry-run` still creates hostdirs and still runs your
-`pre_secrets`/`pre_compose`/`post_compose` hooks for real** — it only skips
-`docker compose up`.
+and never contacts Docker. Use it for read-only validation. `ciu up --dry-run`
+still creates hostdirs and runs `pre_secrets`/`pre_compose`; it skips each
+`post_compose` hook unless that hook declares itself safe for dry-run with a
+literal module-level `DRY_RUN_SAFE = True`. An unsafe hook is skipped before
+import, so import-time code does not run either. The opt-in is an assertion by
+the hook author that the hook is safe to run against the currently live stack
+even though Compose was not updated.
 
 ```console
 $ ciu check --profile core          # prose, per stage
 $ ciu check --profile core --json   # one versioned object
 $ ciu check --profile core --live   # ALSO probe live provisioning state
 ```
+
+For a dry-run-safe `post_compose` hook, put the declaration at module scope:
+
+```python
+DRY_RUN_SAFE = True
+
+def run(ctx):
+    # This hook must be safe against the already-running stack.
+    return None
+```
+
+The declaration must be a literal `True`; computed values and function-local
+assignments do not opt in. `ciu profiles` is a read-only listing too: it renders
+in memory and does not create or update `ciu.global.toml`.
 
 Exit codes are S13.4's: `0` clean, `2` any static configuration error
 (including every stage below), `1` **only** a `--live` probe failure. A static
@@ -1731,3 +1791,65 @@ were `mem_limit = "1g"`, `mem_swap_limit = "17g"`,
 `mem_reservation = "256m"`, baseline-derived `read_iops = 0`, and
 `write_iops = 400`. CIU does not migrate them into consumer config
 automatically.
+
+## 22. Query identities and run a command in one service (CIU-118)
+
+Ask CIU for resolved service data instead of rebuilding a Compose name or
+instance id in a script. `ciu resolve` requires JSON output and does not write
+rendered files or contact Docker unless `--live` is supplied:
+
+```console
+$ ciu resolve --stack tools/test-runner --service test-runner --json
+$ ciu resolve --profile test --stack tools/test-runner --service test-runner --json
+$ ciu resolve --stack tools/test-runner --live --json
+```
+
+The response groups service identities under `resolved.identities`, keyed by
+repo-relative stack path and exact Compose service key. Pass `--profile` once
+per profile when the exact stack is declared only in an optional profile. The
+profiles compose in order, just as they do for `ciu up`; with no explicit
+profile, CIU uses the configured or ambient default selection. It includes the
+container name, Compose project, network, image, and any configured internal
+host and port. `--live` adds current Docker state and health.
+
+Run an exact command in one already-running service:
+
+```console
+$ ciu exec --profile test tools/test-runner:test-runner -- python --version
+```
+
+`exec` uses exact Compose project/service/network labels, refuses zero or
+multiple matches, never starts the service, and returns the command's exit
+status. Arguments after `--` are passed without a shell. A declared worktree
+exec target also gets the selected-checkout mount proof from S16.7. When both
+stdin and stdout are terminals, `ciu exec` allocates a Docker terminal so an
+interactive shell works; scripted and piped calls stay non-interactive.
+
+## 23. Migrate an outdated generated identity safely (CIU-115 / CIU-119)
+
+CIU reads the old generated format and checks Docker before rewriting it. When
+no network or exact `ciu.instance` ownership label carries the old id, CIU
+regenerates the file and reports the old-to-new id. If old resources remain,
+the read refuses with a `ciu clean --identity <old-id>` remedy so resources do
+not become orphaned under an id the checkout no longer knows.
+
+Review and remove only the retired identity's labeled resources, then rerun
+identity generation:
+
+```console
+$ ciu clean --identity OLD_ID --root-folder /path/to/checkout
+$ ciu env generate --root-folder /path/to/checkout
+```
+
+`clean --identity` does not load the stale rendered config; it uses exact
+identity labels and the recorded physical checkout to avoid cleaning a
+different checkout. Current-format corruption remains a refusal and is not
+overwritten as a migration.
+
+## 24. Resume an interrupted adopt without resetting the checkout (CIU-107)
+
+CIU records the adopted checkout's HEAD before preparing its environment. If
+`ensure` resumes after an interruption, it compares the live HEAD with that
+recorded target and continues only when they match. If HEAD moved, the command
+refuses and preserves the commits. Review the checkout before deciding how to
+continue; do not reset it to make the record match.

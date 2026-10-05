@@ -53,3 +53,18 @@ class CiuArgumentParser(argparse.ArgumentParser):
         self._print_message(argparse.ArgumentParser.format_usage(self), sys.stderr)
         self._print_message(f"{self.prog}: error: {message}\n", sys.stderr)
         self.exit(2)
+
+
+def build_up_action_parent() -> CiuArgumentParser:
+    """The actions shared by profile and single-stack ``ciu up`` modes."""
+    parser = CiuArgumentParser(add_help=False)
+    actions = parser.add_argument_group("Actions")
+    actions.add_argument(
+        "--deploy", action="store_true",
+        help="Deploy selected stack(s) (the default action)",
+    )
+    actions.add_argument(
+        "--healthcheck", action="store_true",
+        help="Run the S7.7 health gate after deployment",
+    )
+    return parser

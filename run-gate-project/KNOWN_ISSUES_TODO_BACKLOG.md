@@ -62,12 +62,11 @@ SPEC §9.
 | RG-38 | resume state lives under the JUDGED project root, so a fresh worktree per run (cmru release transaction, Mode-B instances) loses it and a retry restarts from mutant #1 despite `--resume` | Medium | FIXED 2026-09-08 (rev 37, run-gate-P05) — assay B066 (`--state-dir`) shipped in assay-v5.2.0, unblocking this; every assay-kind lane on all three runners (container, exec, bare-host) now passes `--state-dir <repo>/.run-gate/assay-state/<project>/`, `repo` (the checkout owning the shared `.git`) being durable by construction even when the judged worktree is not; an older pin refuses by name (R-38's own floor extended to 5.2.0). Verified via the real, executed judge argv (fake-assay end-to-end test); the resume mechanics themselves are assay's own, already covered by assay's suite |
 | RG-44 | `GONE_SIGNALS` matches docker's "gone" stderr case-sensitively; this docker version emits lowercase and the container-truly-gone case is never recognized | Major | FIXED 2026-09-08 (rev 37, run-gate-P05) — case-folded the match (`signal.lower() in stderr.lower()`); a genuinely gone container on this host's docker no longer wedges the lane with a stale inflight record. Red-first proven with a regression test reproducing the exact reported wording |
 | RG-45 | a `vitest`-backed lane (`kind = "command"` or `kind = "assay"` coverage) can exit non-zero purely from vitest's own internal worker/main RPC heartbeat (birpc, hardcoded 60s timeout, no config path in any pool type) tripping under HOST-WIDE multi-tenant CPU contention across DIFFERENT repos' containers — RG-39's exec lock only serializes SAME-container access within one tool, it does not bound the SUM of concurrently-active gate containers' CPU quotas against the host's real core count | Major | OPEN 2026-09-08 — reproduced 5/5 identical (dstdns P176, `frontend-unit`+`ui_unit`, all real tests green every time); NOT run-gate's to fix — traced to assay's own R0 exit-code-only evaluation, moved to assay as B078 (design: `assay/nyxloom-trove/R0-STRUCTURED-REPORT-DESIGN.md`), see disposition in prose section below |
-| RG-49 | RG-38's `--state-dir` `mkdir -p`s under `<repo>/.run-gate` inside the lane container; a worktree-owned runner (the dstdns default since D-666) mounts only the worktree and `.git`, so the parent is a root-owned placeholder and every assay-kind lane fails, reported as exit 1 (a lane failure) instead of a refusal | Major | OPEN 2026-09-09 — four hits (P175, P93, P234, P239); Amendment 2026-10-04: preflight refusal + declarable `state_root`, container-layer `mkdir` rejected (loses RG-38 durability); dstdns carries a `WORKAROUND(RG-49)` mount until it ships |
 | RG-46 | a FOLLOWER (a client re-attaching to a lane whose inflight record names a still-alive owner) performs no independent stall detection of its own — `follow_container` arms neither `ProgressWatch` nor `LogStreamWatch`, by design (RW-14: "does NOT remove the container... all three belong to the client that started the run"), so if the OWNER is killed before its own `stall_timeout` fires, the follower just blocks on `docker wait`/`docker logs -f` forever, with nothing left to notice the container is silent | Minor | OPEN 2026-09-08 — found during RG-41's round-2 adversarial review; pre-existing (the same gap already applied to any assay lane declaring `stall_timeout` — `follow_container` has never armed a watch), RG-41 only widens exposure by lane COUNT (5 command lanes vs 3 assay lanes, RG-41's own backlog count). Not fixed as part of RG-41: a follower deciding to act on a stall it detects independently is a real design question (does it save evidence and `rm -f` a container it does not own? at minimum it would need the SAME owner-liveness re-check `promote_follower` already does before acting) that deserves its own scoped decision, not a silent addition to an unrelated item |
 | RG-39 | run-gate has no internal mutual exclusion around the `docker exec`/`docker run` it performs into a resolved container, so every consumer must remember to wrap each invocation in its own `flock` (dstdns `GUIDE.md` §1) or two lanes racing the SAME container silently contaminate each other's evidence — but `resolve_container_name()` (the same function RG-37 tracks) already computes the exact container identity BEFORE that exec, every single call, so the tool already has everything it needs to serialize itself | Medium | FIXED 2026-09-03 (rev 35, SPEC `R-41`) — refinements (1) and (2) below, built exactly as specified; refinement (3) deliberately NOT built (RG-37, the v8 `ciu.resolved.toml` container-identity path, doesn't exist yet). New `acquire_exec_lock()` takes `/tmp/run-gate-exec-<container>.lock` (RG-20's `_open_lockfile()` discipline, now factored into a shared helper) on the container name `resolve_container_name()` resolves — resolved ONCE in `main()`, threaded into `run_exec_lane()` (no longer re-derived there) so the lock key and the `docker exec` target can never drift apart. Acquired strictly after `acquire_shared_locks()`'s locks in `main()`'s dispatch, released from the SAME `finally` (`exec_lock_fd`, closed before the shared-infra fds — LIFO, not load-bearing). `LOCK_EX` blocking with a `waiting for container '<name>' — another gate holds <path>` line; `--dry-run` prints the planned lock (name + path) and never blocks. Five new tests in `TestExecModeMutex`: same-container serialization (thread-raced, proven genuinely red pre-fix — a leaked lock fd on that test's own assertion failure path self-deadlocked the NEXT test via flock()'s per-open-file-description semantics, fixed with a try/finally, unrelated to the shipped fix itself), isolated containers never contend, `--dry-run` never blocks, the lock releases even when the lane raises (finally path), and a direct ordering assertion (shared-infra locks acquired before the exec lock); a sixth test (added after the first `selftest` run below caught it uncovered) exercises `acquire_exec_lock()`'s OSError branch, in-process (a `run_tool()` subprocess, RG-20's own precedent's pattern, is invisible to this suite's coverage instrumentation). Red-first proven: a scoped `git stash` of `run-gate.py` alone (fix reverted, tests kept) reproduced 3/5 new tests failing for the expected reasons before the fix, restored clean after. `./run-gate.py selftest` green (post-commit `2c6b2bbc` + a same-day coverage follow-up): 495 passed, 2 skipped, diff-coverage 25/25 = 100.0% (≥ 100.0% floor), exit 0. Originally filed from dstdns (D-321/D-339/D-321-correction): acquire an internal `flock` keyed by the resolved container name (or `${project_name}-${environment_tag}`, the same pair `resolve_container_name()` already reads) around the exec/run call itself, so a caller-side `flock` is no longer required for correctness, only for pre-emptive scheduling (e.g. a caller who wants to skip a busy container rather than block). A genuinely independent container (different `project_name`/`environment_tag`, including a Mode-B instance) naturally gets a distinct lock name and runs unblocked; two consumers that resolve to the SAME container (main's shared instance, or ciu's `--shared-infra-ref-services`) naturally serialize correctly with no caller coordination needed. Cross-reference RG-37: whichever container-identity resolution path RG-37 adds for `ciu.resolved.toml` (v8) should feed the SAME lock key, not a second scheme. **2026-09-03 (ciu v8 design, SPEC-V8 draft.5 / proposal rev 3.2 §4.11 N22): buildable as described, with three refinements.** (1) Exec mode only — an ephemeral `docker run` container is per invocation, there is nothing to serialize. (2) Take the lock AFTER `acquire_shared_locks()`' sorted shared-infra locks and release it in the same `finally` — a fixed global order (shared-infra, then the exec target) so no ABBA with RG-20 is possible; `/tmp/run-gate-exec-<container>.lock` with RG-20's 0600+O_NOFOLLOW discipline, LOCK_EX blocking with a "waiting for container X — another gate holds …" line, dry runs plan but never block (`acquire_shared_locks` is the pattern to copy); hold across the whole `run_exec_lane()` including evidence collection, and keep `flush_run_record` outside it (RG-27). (3) Alignment with v8: once RG-37 reads `ciu.resolved.toml`, key the lock on the owning Realization's **stack directory** (`[realization.<R>] location` of the container's owner, `flock` on the directory) instead of a name — draft.5 S14.4.7 declares the checkout root and the stack directory the ONLY canonical lock keys, `ciu gate` exec lanes take that same directory lock (S16.5.7) and `ciu lease acquire --realization` exposes it, so v7 run-gate and v8 ciu serialize against each other during the cutover; the name-keyed `/tmp` file is the v7-only form. The caller-side `flock` of dstdns GUIDE §1 stays valid as an outer lock (always acquired first → consistent order) and becomes optional for correctness |
 | RG-47 | `--worktree` selected the judged files but not `run-gate.toml`, so main's lanes could judge a worktree and hide lanes that existed only there | Major | FIXED 2026-10-04 (rev 47): project and inherited config resolve from the selected worktree, including monorepo-relative projects; missing project config refuses; path and SHA-256 are printed/recorded. Merged duplicate RG-65 here |
 | RG-48 | lane worker count could disagree with the environment CPU cap when `resources.cpus` was absent | Major | FIXED 2026-09-12 — `doctor` names the missing cap; environment-level `resources.cpus` now supplies the shared limit |
-| RG-49 | `--state-dir` setup fails against root-owned parents in partial-bind worktree containers | Major | OPEN 2026-09-09 |
+| RG-49 | `--state-dir` setup fails against root-owned parents in partial-bind worktree containers | Major | FIXED 2026-10-04 (rev 50), collision follow-up rev 54: read-only state-root preflight and durable mount; external project keys use SHA-256 to avoid path-separator collisions |
 | RG-50 | B065's first-candidate rate calculation produced a negative rate from Assay's `-1` baseline | Minor | FIXED 2026-09-10 |
 | RG-51 | delegated lanes could derive their default comparison base from stale upstream state | Major | FIXED 2026-09-11 (rev 40), with ciu CIU-106 |
 | RG-52 | composite-lane base substitution used unquoted shell text | Major | FIXED 2026-09-11 (rev 40) |
@@ -82,7 +81,7 @@ SPEC §9.
 | RG-61 | RG-55 wave left documentation drift | Minor | FIXED 2026-09-12 |
 | RG-62 | two order-/timing-sensitive selftest flakes were found live | Minor | OPEN |
 | RG-63 | assay lane budget included time queued on the exec lock | Major | FIXED 2026-10-04 (rev 49): budget starts after admission and runner locks |
-| RG-64 | caller-side lock checks could not reliably diagnose actual container occupancy | Minor | OPEN — internal run-gate exec lock is authoritative; first-class status query is unresolved |
+| RG-64 | caller-side lock checks could not reliably diagnose actual container occupancy | Minor | FIXED 2026-10-04 (rev 51): `status` reads internal exec-lock holders/waiters, selected-tree inflight records, and daemon-wide admission state |
 | RG-65 | duplicate of RG-47: worktree-only lanes were hidden by invoking-CWD config resolution | Major | MERGED INTO RG-47 2026-10-04 (rev 47) |
 | RG-66 | no way to pass assay's `--reuse-from` / `--rejudge` through `run-gate <lane>`, so assay 7.1+ provenance-safe selective R2 reruns cannot be used via the gate | Minor | FIXED 2026-10-04 (rev 49): assay-only selective flags are forwarded |
 | RG-67 | no per-environment (per-runner-container) invocation limit, and a composite lane does not declare which runners its members use, so consumers hand-hold whole-invocation flocks and the composite over-holds a second runner — **(a) WITHDRAWN 2026-10-03 (D-667); (b) remains** | Minor | FIXED 2026-10-04 (rev 49): (a) remains withdrawn; (b) uses native serial sequences |
@@ -95,11 +94,14 @@ SPEC §9.
 | RG-74 | post-merge trunk base (`HEAD^1`) and composite-member base propagation are consumer scripts (dstdns `gate-base.sh`), not run-gate derivations | Minor | FIXED 2026-10-04 (rev 49): `[project].trunk` and native sequence base propagation |
 | RG-75 | no lane-scoped throwaway service (database): schema/mutation lanes hand-provision and tear down their own Postgres | Major | OPEN 2026-10-03 |
 | RG-76 | external-assay consumers restate judge command, pin and one lane block per assay lane (dstdns: 118 identical pin blocks); import lanes from `assay lanes --json` | Minor | FIXED 2026-10-04 (rev 49): v8-shaped `{ environment, lanes }` import |
-| RG-77 | the per-assay-lane `--state-dir` contract (RG-38) and its root-owned-parent repair (RG-49) are in no SPEC rule or skill, so consumers restate them in their own instruction files | Minor | FIXED 2026-10-04 (rev 49): shipped state contract documented; RG-49 repair remains separately OPEN |
+| RG-77 | the per-assay-lane `--state-dir` contract (RG-38) and its root-owned-parent repair (RG-49) are in no SPEC rule or skill, so consumers restate them in their own instruction files | Minor | FIXED 2026-10-04 (rev 49): shipped state contract documented; RG-49 implementation is tracked separately |
 | RG-78 | adopt the ciu v8 closed exit table and explicit environment modes in run-gate now (backport, operator ruling D-654): lane exit passthrough overlaps the 2/3 refusal codes, and the built-in `host` environment is a container | Major | FIXED 2026-10-04 (rev 49): single finish path, AST guard, byte-status lane oracle |
 | RG-79 | exec-mode resolution **silently falls back to main's runner** when the judged worktree has no rendered ciu config (a shadowing default, AGENTS §4.2a); the worktree's own test-runner is the design (D-647 #2, D-666), so run-gate must refuse and name "start this worktree's own test-runner" (reframed 2026-10-03; originally filed as a stray-render defect) | Major | FIXED 2026-10-04 (rev 47; same implementation as RG-47) |
-| RG-80 | no daemon-wide cap on concurrent gates: the cross-worktree cap is a consumer flock wrapper (dstdns `gate-slot.sh`); build SPEC-V8 S21's count mode (Docker-name tickets, tombstones, deadlines, run marker, published `ciu-admission-<g>` object) behind an off-by-default switch, so the wrapper retires before v8 | Major | FIXED 2026-10-04 (rev 49): ticket/publish and owner/reaping packages |
-
+| RG-80 | no daemon-wide cap on concurrent gates: the cross-worktree cap is a consumer flock wrapper (dstdns `gate-slot.sh`); build SPEC-V8 S21's count mode (Docker-name tickets, tombstones, deadlines, run marker, published `ciu-admission-<g>` object) behind an off-by-default switch, so the wrapper retires before v8 | Major | FIXED 2026-10-04 (rev 49; operability rev 51): ticket/publish and owner/reaping packages; read-only status view and enabled-policy doctor checks |
+| RG-81 | internal source-backed Assay lanes fail because editable installs omit artifact `judge_provenance`; verify selected source, bind the verdict commit, and preserve source/artifact mode across re-attachment | Major | IN PROGRESS (rev 54; Review #11 findings addressed, package gate pending) |
+| RG-82 | Adopt cli-extended (unified adoption, order 7 of 8): full grammar re-registration of the 11k-line single-module launcher, real wheel dependency (CX-D1, CX-D12) | Enhancement | OPEN — planned (filed 2026-10-05 as RG-81, renumbered at the merge with main's RG-81; requires cli-extended 0.2.0) |
+| RG-83 | `tests/test_run_gate.py`'s `install_fake_assay` writes its fake `assay`/`assay.real` into the FIRST ENTRY OF THE REAL `$PATH` (the operator's `~/.local/bin`) when a test has not already prepended a tmp shim dir | Major | OPEN (filed 2026-10-05 as RG-82, renumbered at merge; leaked files observed 2026-10-04 14:36, not deleted) |
+| RG-84 | run-gate runs as an unreaping PID 1 (no init) and keeps reporting lane verdicts after the container hits `pids.max`; refuse PID 1, and treat `pids.events`/`memory.events` increments as infrastructure errors | Major | IN PROGRESS (rev 55; PID 1 and low-pids live acceptance PASS; registered selftest pending; contaminated R2 outcomes discarded) |
 ---
 
 ## RG-1 — conjunction lanes silently drop `--worktree` and `--allow-dirty`
@@ -2001,7 +2003,7 @@ decorative. This is a `R-04`-class defect (a config value indistinguishable
 from a real setting through normal reading, silently doing nothing) rather
 than a cosmetic nit.
 
-### Proposed fix
+### Initial proposed fixes (superseded by the D-666 amendment below)
 
 Either (a) `_validate_lane` rejects an unrecognized `budget` key under
 `[lanes.*.pins.assay]` outright (a `kind = "assay"` lane's budget, if
@@ -3577,40 +3579,15 @@ edited — not a fix, a pre-flight): `docker exec -u root` pre-created
 per-worktree, per-run step today; nothing in `ciu`'s Mode-B compose
 generation or run-gate's `--state-dir` construction does it automatically.
 
-### Proposed fix
+### Status — FIXED 2026-10-04 (run-gate rev 50; originally filed 2026-09-09)
 
-One of, not yet decided which is more correct for the ownership boundary
-run-gate vs. ciu are meant to hold:
-
-1. **run-gate side:** before the unconditional `mkdir -p
-   <state-dir>`, `mkdir -p`+`chown` as root (or `install -d -o -g`) rather
-   than relying on the app user's own privileges — the container already
-   runs a `git config --global safe.directory` step as part of the same
-   inner script (see RG-22), so a root-context setup step ahead of the
-   app-user command is a precedented shape here.
-2. **ciu side:** Mode-B's `tools/test-runner/ciu.compose.yml` generation
-   pre-creates and chowns the synthetic `/workspaces/dstdns` parent (and
-   `.run-gate/` under it) at container startup, the same way it already
-   must handle `.worktrees/<branch>` and `.git`'s own ownership — so every
-   consumer that assumes a writable repo-root subdirectory (not just
-   `--state-dir`) is covered by construction, not per-consumer.
-
-Filed here (run-gate) rather than ciu because the concrete symptom is
-`--state-dir`'s own `mkdir -p`; if the ciu-side shape is chosen instead,
-this entry should be mirrored or moved to `ciu/KNOWN_ISSUES_TODO_BACKLOG.md`.
-
-### Acceptance
-
-- [ ] a fresh Mode-B worktree's FIRST assay-kind lane run (no manual
-      pre-chown) creates and writes `.run-gate/assay-state/...` successfully;
-- [ ] a regression test exercises a container with only sub-paths bind-mounted
-      at the repo root (not the repo root itself), reproducing this entry's
-      exact `Permission denied` without the fix and passing with it;
-- [ ] RG-38's own two-full-tree-worktree acceptance criteria still pass
-      unchanged (no regression for the Mode-A / persistent-worktree case
-      RG-38 was built and verified against).
-
-### Status — OPEN 2026-09-09
+The preflight now runs in the lane's own environment before Assay. It checks
+the durable root and deepest existing keyed-state ancestor as the lane user;
+an unavailable root is NOT_RUN/`state-mount`, while an indeterminate probe is
+an infrastructure ERROR. The registered `tester-unified` selftest passed
+(`1530 passed, 1 skipped`; changed-line coverage `198/198` and branches
+`86/86`). A fresh Dstdns worktree's own test-runner then passed its first
+`assay` lane without manual setup (exit 0, 618.365 s).
 
 **Recurrence 2026-10-03 (dstdns-P234, PRIORITY EVIDENCE — third independent hit).**
 Installed run-gate `23.9.2.dev1126+g998a43552` (latest vbpub main at the time). A Mode-B worktree
@@ -3640,17 +3617,19 @@ inside the lane's inner script, so run-gate reports exit 1, the code of a lane t
 A reader (or wrapper) sees a red test lane, not a missing environment precondition. Together with
 the stale verdict file left behind, this reads as "the tests failed" (cf. RG-72, RG-78).
 
-*Why both earlier fix options are wrong.* Options 1 (a root-context `mkdir`+`chown` in the inner
-script) and 2 (ciu chowning the synthetic parent at container start) both create the directory in
-the CONTAINER's writable layer. The resume state then dies with the runner, which is exactly the
-durability RG-38 was built for ("`repo` ... durable by construction even when the judged worktree
-is not"). A root step also widens what every lane's inner script runs as.
+*Why the earlier proposals are rejected.* The root-context `mkdir`/`chown` and
+container-start `chown` proposals create the directory in the CONTAINER's
+writable layer. The resume state then dies with the runner, which is exactly
+the durability RG-38 was built for ("`repo` ... durable by construction even
+when the judged worktree is not"). A root step also widens what every lane's
+inner script runs as.
 
-*Proposed contract (replaces "Proposed fix").*
+*Amended contract (dstdns D-666; replaces "Proposed fix").*
 1. **Preflight, not mid-lane failure.** Before executing an assay-kind lane, run-gate probes, in the
-   lane's own environment, that the state-dir parent exists and is writable by the lane user. If not,
-   it refuses before execution: exit 2 today (configuration refusal, RG-11), NOT_RUN once RG-78
-   lands. The message names the path, the container and the remedy: "mount `<repo>/.run-gate` into
+   lane's own environment, that the durable state root exists and is writable, and that the deepest
+   existing directory on the keyed state path is writable by the lane user. If not,
+   it refuses before execution with NOT_RUN 3/`state-mount` (RG-78). The message names the path, the
+   container and the remedy: "mount `<repo>/.run-gate` into
    this environment, or declare `state_root`". `--dry-run` shows the probe.
 2. **The state root is declarable.** `[environments.<e>] state_root = "<container path>"`, default
    `<repo>/.run-gate` (today's RG-38 value, unchanged for full-tree mounts). A consumer whose runner
@@ -3659,22 +3638,41 @@ is not"). A root step also widens what every lane's inner script runs as.
    for exec environments. It documents that an exec runner must mount `<repo>/.run-gate` (or the
    declared root) read-write, and `doctor` checks it per environment (R-37 per-tree scope).
 
-*Consumer workaround in force (dstdns, marked for removal).* dstdns P241 repair r2 (2026-10-04)
-mounts main's `<repo>/.run-gate` read-write into every worktree runner
-(`tools/test-runner/ciu.compose.yml.j2`, worktree branch, source derived like the `.git` mount, no
-literal path). The mount is tagged `WORKAROUND(RG-49)`. Removal condition: when this entry ships,
-dstdns re-checks the mount against contract item 3 and either keeps it as the documented required
-mount (dropping the tag) or replaces it with a declared `state_root`. The `docker exec -u root mkdir`
-pre-flights used in P175/P93/P234/P239 are testing-only and are not the workflow.
+*Consumer decision and live acceptance (dstdns D-666).* A fresh CIU-managed
+worktree (`run-gate-rg49-live-20261004`) mounted main's `<repo>/.run-gate`
+read-write into its own `test-runner`. The first `assay` lane passed and wrote
+the keyed state directory without manual in-container setup. Dstdns keeps this
+mount as its required durable root: it matches run-gate's default
+`state_root` path, and the per-worktree key keeps resume state isolated while
+the common root survives runner recreation. Dstdns documents the required
+mount and removed the obsolete workaround/shortcoming label in
+`dstdns@305d8519`. The `docker exec -u root mkdir` pre-flights used in
+P175/P93/P234/P239 remain testing-only, not the workflow.
 
-*Additional acceptance (extends the list above).*
-- [ ] an assay-kind lane in an environment whose state-dir parent is not writable refuses BEFORE
-      execution with exit 2 (NOT_RUN after RG-78), and never exits 1;
-- [ ] the refusal text names the path and the mount remedy; `doctor` reports the same per environment;
-- [ ] with `state_root` declared, the argv's `--state-dir` sits under it, and `--dry-run` shows it;
-- [ ] controlled wrong implementation: a root `mkdir` into the container layer passes the first
-      acceptance item but fails a test that recreates the runner and expects the resume state to
-      survive (RG-38's durability).
+*Acceptance (replaces the superseded pre-amendment list).*
+- [x] A fresh Dstdns worktree runner with the durable root mounted read-write
+      ran its first assay-kind lane without manual setup; run-gate reported
+      `/workspaces/dstdns/.run-gate/assay-state/.worktrees/run-gate-rg49-live-20261004`
+      as its state directory and the lane passed (exit 0).
+- [x] Unavailable or unwritable roots/ancestors refuse before Assay as NOT_RUN
+      3/`state-mount`, without creating or chowning the root or descendants.
+      Oracles: `test_state_root_probe_is_read_only_and_checks_directory_and_write_access`,
+      `test_state_root_probe_does_not_create_missing_root_or_state_descendants`,
+      `test_missing_state_root_under_synthetic_readonly_repo_refuses_without_mkdir`,
+      and `test_state_root_preflight_refuses_before_assay_and_uses_exact_runner`.
+- [x] Refusals name the environment, container-visible path, and mount remedy;
+      `doctor` reports once per assay environment. Oracles:
+      `test_state_mount_refusal_names_ephemeral_or_host_runner` and
+      `test_doctor_checks_state_root_once_per_assay_environment`.
+- [x] A declared `state_root` replaces the default mount root in state-dir argv,
+      and `--dry-run` discloses its probe and resulting path. Oracles:
+      `test_declared_state_root_replaces_only_the_mount_root` and
+      `test_state_root_dry_run_discloses_probe_without_running_it`.
+- [x] The durability oracle recreates the runner while preserving the declared
+      mount and observes resume state; its container-layer control loses state
+      after recreation: `test_resume_state_survives_runner_recreation_not_container_layer`.
+- [x] RG-38's two-full-tree-worktree behavior remains covered by the registered
+      selftest; all 1530 tests passed, with 1 skipped.
 
 ---
 
@@ -4953,9 +4951,15 @@ does not participate in that same convention.
   item, tracked in that project's own controller record.
 
 
-### Status — OPEN
+### Status — FIXED 2026-10-04 (rev 51)
 
-A first-class run-gate query for the internal exec lock remains unresolved.
+`run-gate status [--worktree PATH] [--json]` reads the selected project's
+inflight records, maps `/tmp/run-gate-exec-<container>.lock` device/inode
+pairs to `/proc/locks` holders and waiters, and reads the shared Docker
+admission object, live tickets, owner/deadline labels, and tombstones. A
+controlled regression oracle holds only the internal exec lock; status reports
+its holder without creating a caller-side wrapper lock. Unreadable sources
+produce a partial JSON document and ERROR/2, never an empty result.
 
 ## RG-63 — an assay lane's `LANE_TIMEOUT` budget appears to include exec-lock queue-wait time under multi-package contention, not just execution time
 
@@ -5421,14 +5425,14 @@ this entry is not marked FIXED until that work lands.
 
 **Observed:**
 - SPEC `R-38` documents the unconditional `--resume --progress .assay/progress-<lane>.jsonl` (RG-33). But it never mentions `--state-dir <repo>/.run-gate/assay-state/<project-relative-path>/`, which RG-38 added to every assay-kind lane on all three runner kinds. `grep -c state-dir SPEC.md README.md CONSUMERS.md LANE-AUTHORING.md` gives 0 for each file. Only CHANGES.md and this backlog carry it.
-- RG-49's repair (prove containment, then `chown` a root-owned synthetic parent in a partial-bind-mount worktree container) is likewise only in CHANGES.md and backlog prose.
+- At filing, RG-49's proposed repair (prove containment, then `chown` a root-owned synthetic parent in a partial-bind-mount worktree container) was likewise only in CHANGES.md and backlog prose. D-666 superseded that repair on 2026-10-04 with a read-only preflight and a declared durable mount root; container-layer `chown` is rejected because it loses resume state when the runner is recreated.
 - The `run-gate-cli` skill mentions none of resume, progress or state-dir.
 - dstdns therefore had to carry two paragraphs restating this in its own AGENTS.md §6.1, including "a fresh worktree keeps resume state" and "a permission error under `.run-gate/assay-state/` means check the run-gate version first". P235 cut them to a pointer (D-648 "cut now, file gaps"). That pointer currently lands on the skill and CHANGES.md, so a consumer can learn the behavior only from the changelog.
 
 **Why run-gate owns it:** run-gate constructs the argv, so the state-dir location, its keying (the checkout owning the shared `.git`, plus the project-relative path) and its durability across throwaway worktrees are run-gate's contract, not the consumer's.
 
-**Proposed contract:**
-- Extend SPEC `R-38` (or add a sibling rule) to state the `--state-dir` argument and its location derivation. It should also say why that location survives a deleted worktree, state the RG-49 containment-then-chown behavior, and name the exact refusal a failure produces.
+**Initial proposed contract (superseded by the D-666 amendment below):**
+- Extend SPEC `R-38` (or add a sibling rule) to state the `--state-dir` argument and its location derivation. It should also say why that location survives a deleted worktree, state the initial containment-then-chown proposal, and name the exact refusal a failure produces.
 - Add a "Resume and progress" section to the `run-gate-cli` skill covering the three flags, where to tail progress, and the version floor.
 - Add a one-paragraph mention to CONSUMERS.md.
 
@@ -5440,7 +5444,14 @@ this entry is not marked FIXED until that work lands.
 
 **v8: absorb** (the v8 gate inherits the argv builder, so the same drift test belongs there).
 
-### Status — FIXED 2026-10-04 (rev 49) for the shipped documentation contract: SPEC, skill, and CONSUMERS now name `--resume`, `--progress`, `--state-dir`, the 5.2.0 floor, and the durable state path. RG-49 parent repair remains OPEN and is explicitly not described as shipped.
+**Amendment (2026-10-04, D-666):** RG-49 now uses a read-only preflight in the lane's environment, `[environments.<name>].state_root` for a durable mount at another container path, and NOT_RUN/`state-mount` when the root or deepest existing state ancestor is unavailable or unwritable. The environment owner provides the durable read-write mount; run-gate creates only the per-project descendants beneath it. An indeterminate probe is ERROR, never evidence that the root is writable.
+
+### Status — FIXED 2026-10-04 (rev 50): SPEC, skill, README, DESIGN-GUIDE, and CONSUMERS document `--resume`, `--progress`, `--state-dir`, the 5.2.0 floor, durable path, `state_root`, and preflight result. RG-49 implementation, registered gate, and fresh Dstdns worktree-runner acceptance are complete.
+
+**Revision 54 correction:** project paths inside the checkout keep their
+existing relative state key. For an external project path, run-gate hashes the
+resolved absolute path with SHA-256 rather than replacing slashes with hyphens;
+the latter collided for distinct paths such as `/a-b/c` and `/a/b-c`.
 
 ## RG-78 — adopt v8's closed exit table and explicit environment modes now, not at the ciu8 cutover
 
@@ -5586,3 +5597,175 @@ A declared literal `container_name` remains the explicit shared-runner choice.
 **v8: absorb.** This is ciu8's V8-38 (checkpoint D, `gate/admission.py`); the oracles above are its parity tests. Proposal row N28 (`CIU-V8-TESTING-GATE-PROPOSAL.md` §4.11). Related: RG-67 (Amendment 4), RG-78 (the `no-headroom` reason), RG-79.
 
 ### Status — FIXED 2026-10-04 (rev 49) in two implementation packages: (1) Docker-name CAS ticket allocation/release, published generations, disabled-by-default switch and budget start at admission; (2) owner PID-namespace proof, wait/run deadlines, group reaping, tombstone cleanup and the shared v8 label fixture. Byte admission, stack tickets and v8.1 policy stay out of scope.
+
+### Amendment 1 (2026-10-04): operator status and doctor preflight
+
+`status` provides a read-only view of the local Docker daemon's published
+count cap and ticket queue, alongside run-gate's internal exec locks and the
+selected project's inflight records. It decodes live tickets and tombstones
+with the shared label grammar; it never calls the janitor or any Docker
+mutation. `doctor`, when `[admission] enabled = true`, verifies that the
+configured ticket image is local using image inspect only, that a valid
+`ciu-admission-<g>` object is published, and that `max_concurrent` is a
+readable positive integer. Each ordinary setup failure names its repair
+command or exact config field. If a visible object's identity labels are
+unreadable, doctor names that object and reports that `admission set` refuses
+to replace it; the daemon owner must resolve that specific object before
+publishing another cap.
+
+**Status — FIXED 2026-10-04 (rev 51).** The `status` JSON fixture covers one
+running ticket, one queued ticket, and one dead-owner ticket; doctor oracles
+cover missing image, missing publication, and unreadable cap. The shared
+module remains independent of run-gate globals for direct CIU v8 porting.
+
+## RG-81 — source-backed Assay lanes reject the verdict shape of an editable install
+
+**Observed:** internal vbpub lanes omit `assay_command` and pins, then install
+Assay from the selected worktree with `pip install -e`. Assay intentionally
+omits `judge_provenance` for a source checkout because there is no built
+artifact to hash. Run-gate nevertheless required artifact provenance for every
+Assay verdict, so healthy internal source lanes failed after the judge ran.
+
+**Contract:** a fresh attempt clears its previous verdict before setup begins.
+Source mode uses isolated Python to reject a consumer-local `assay` module or
+package without executing it, while allowing a namespace-only directory,
+then checks that the installed package spec resolves to the selected tree's
+`assay/src/assay/__init__.py`. Both the check and actual `assay.cli` invocation
+use `-I`, so a `PYTHONPATH` shadow cannot replace the verified package. The
+source command invokes `assay.cli` through that same interpreter and requires
+a non-empty `assay_version` plus a Git `commit` matching the selected run
+commit. Run-Gate accepts full 40-hex SHA-1 and 64-hex SHA-256 IDs at this
+identity boundary; Assay's P22 snapshot source still requires SHA-1 object
+storage for high-rigor snapshot lanes. External explicit-command mode
+continues to require full artifact `judge_provenance`; no artifact digest is
+
+synthesized for editable source. Integer inflight schema 2 stores `source` or
+`artifact`, and re-attachment uses that launch-time mode. Schema 2 requires
+the mode key; Assay records also require non-empty verdict and progress paths,
+while non-Assay records cannot carry Assay artifact paths. On container-runner
+records, corrupted mode or path combinations, including artifact paths other
+than the exact derived lane paths, refuse before inventory Docker probes and
+admission. A command lane with a null mode and an Assay verdict path refuses
+as well. The launch mode is attached to the run
+record only after the recorded container is proven to be followed, re-attached,
+or collected, so a lost artifact-mode container cannot override the source
+mode of its fresh replacement. If a follower is promoted, the private mode
+stays on the run record until `_dispatch` parses the verdict; `finish()` then
+records the parsed outcome without that private field. `--fresh`
+discards the old result only after its container is confirmed stopped. For an
+older-schema record marked with a non-container runner, `--fresh` refuses as
+well; its lifecycle owner must confirm the run is over before the recovery
+record is removed. If the current lane kind changed away from Assay, its
+recorded mode also refuses reinterpretation as a command result. Private mode
+state does not enter history or the parsed public record.
+
+For recovery safety, a container-runner record left after an Assay lane
+changes to host or exec mode refuses before imported inventory, admission, or
+execution. Ephemeral inventory probes use the configured user and extra
+mounts. Sequence-name records with malformed identity modes fail closed with
+recovery guidance.
+
+**Oracles:** a matching internal source verdict maps all six closed Assay
+outcomes; missing identity and a verdict for a different commit are ERROR; a
+same-commit previous PASS is deleted before a fresh attempt; external
+artifact mode without judge provenance stays ERROR; a local `assay` shadow
+that forges `__file__` is rejected without running its marker; a local
+`pip.py` cannot replace pip; and an `assay` executable on `PATH` cannot
+replace the checked Python module. A malicious `PYTHONPATH` package cannot
+replace the verified module or execute its marker; a namespace-only consumer
+directory passes, while a regular local package refuses without execution.
+The source identity path accepts the 64-hex commit read from a real
+SHA-256-format Git repository; this does not claim Assay high-rigor snapshot
+support for SHA-256. Re-attachment follows the recorded identity mode after
+config changes and refuses missing mode, substituted/NUL artifact paths, or a
+changed lane kind before Docker access; a command record with a null mode and
+Assay path refuses before Docker too. Imported-lane contract validation
+refuses before the inventory Docker probe. Lost-container recovery
+keeps today's mode, and promoted-follower parsing succeeds with the recorded
+mode while history/public state omit it. An older-schema exec-runner record
+refuses `--fresh` without touching the runner. Unknown-schema recovery advice
+offers `--fresh` only for ephemeral-container lanes; host and exec lanes name
+the lifecycle-owner confirmation and recovery-record removal path instead.
+Sequence nodes and all members are checked before imported Assay inventory or
+admission; an old record under a lane now configured as a sequence refuses.
+Foreign-runner records refuse even when `--fresh` is requested. The source
+identity construction assertion now matches the `PathFinder` implementation,
+and `CHANGES.md` names rev 53 and the schema-1 recovery requirement. Null and
+floating-point schema versions refuse as malformed.
+
+**Rev 53 oracles:** a container-runner Assay record surviving a switch to
+host or exec mode refuses before imported inventory and remains on disk until
+the prior container's lifecycle owner confirms it stopped. Ephemeral inventory
+probe argv includes every configured extra mount and the lane's configured
+container user. Sequence-root records with list or object identity-mode values
+return a closed recovery refusal before inventory or admission.
+
+**Files:** `run-gate.py`, `tests/test_run_gate.py`, `SPEC.md`, `README.md`,
+`docs/DESIGN-GUIDE.md`, `CONSUMERS.md`, `CHANGES.md`, and this backlog entry.
+
+### Status — IN PROGRESS (rev 54; Review #11 findings addressed, package gate pending)
+
+## RG-82 — Adopt cli-extended (unified adoption, order 7 of 8)
+
+**Status: OPEN — planned (filed 2026-10-05 by the cli-extended unified-adoption program, W10, as RG-81; renumbered RG-82 when merged with main, whose RG-81 is the source-backed Assay lane entry above).**
+
+**Source documents.** [`libraries/cli-extended/docs/PROGRAM-2026-10-UNIFIED-ADOPTION.md`](../libraries/cli-extended/docs/PROGRAM-2026-10-UNIFIED-ADOPTION.md) (decisions CX-D1..CX-D12, section "W10 - planned adoptions"; CX-D12: run-gate fully adopts, independent of the v8 merge into ciu) and [`libraries/cli-extended/docs/ADOPTION-CHECKLIST.md`](../libraries/cli-extended/docs/ADOPTION-CHECKLIST.md) (AC-01..AC-25). **Dependency:** cli-extended 0.2.0 released first (W8, the controller). Not executed in the program's session.
+
+**Observed mechanism (verified in source).** `run-gate.py` is one 11302-line module (`run_gate.py` is a committed symlink to it, `pyproject.toml` `py-modules = ["run_gate", "run_gate_admission"]`, console script `run-gate = "run_gate:main"`, `dependencies = []` at `:34` with the comment "stdlib-only is the design win"). The same file is the gate entrypoint of other projects through committed symlinks: `assay/run-gate.py`, `ciu/run-gate.py` and `pwmcp/run-gate.py` all point at `../run-gate-project/run-gate.py`. It contains no `cli_extended` reference. (Line numbers below were taken at filing time, before main's rev 51–54 changes; re-locate by content.)
+
+- Grammar and parser (AC-03, AC-04, AC-07): `RunGateArgumentParser(argparse.ArgumentParser)` at `run-gate.py:311`; one `_dispatch` builds `RunGateArgumentParser(add_help=False, prog=PROG)` at `:10468` with an overloaded positional `lane` (and `target`) that also selects the sub-commands `validate-pointers` (`:10646`) and `doctor` (`:10722`), 25 `add_argument(` calls, and flag-style modes (`--version`, `--list`, `--check-env`, `admission set|show`, `status`, ...). CX-D12 requires the whole grammar re-registered (real verbs/arguments/options), not wrapped.
+- Version (AC-01): `--version` is a `store_true` flag (`:10473`) printing `run-gate rev <__revision__>` (`:10550-10551`) where `__revision__` is a hand-bumped integer (`:17`); the wheel's version comes from setuptools-scm (`pyproject.toml` `dynamic = ["version"]`, tag regex `run-gate-v*`). The library's resolver requires a semver string from installed metadata and/or a VERSION file and has no literal fallback; the carve must decide how the integer revision (used in provenance and docs, e.g. "rev 49") coexists with it (library change request against cli-extended if it cannot).
+- Exception boundary (AC-10, AC-11): `main()` at `:11261` installs a SIGTERM-as-exit handler and wraps `_dispatch` in its own try/except around `SystemExit`/`KeyboardInterrupt` (five `SystemExit` mentions); the module has 16 `except Exception` sites (e.g. `:1901, :1936, :2314, :2549, :2574, :3936, :7018, :8432, :8518, :9210, :9424, :9539, :9557, :9666, :9750, :9810`), most of them deliberate lane-isolation guards that must be classified one by one. The closed exit-code table (RG-78, "closed exit mapping" in the module docstring) must survive: `unexpected_exceptions="report"` exits 1, so the carve must map the table to `CliFailure` exit codes explicitly. No `--traceback` exists.
+- `--json` (AC-05): `main()` decides on the literal test `"--json" not in arguments` (`:11273`) before parsing; this is a hand-rolled copy of a library-owned control.
+- `--dry-run` / `--yes` (AC-05, AC-12): own `--dry-run` at `:10527` (RG-8 resolved argv/mounts/slice without executing); no `--yes` found. Becomes `VerbSpec(dry_run=True)` with the same output.
+- `sys.path` (AC-25): `run-gate.py:148-151` inserts its own module directory (to import `run_gate_admission` when loaded as a console script); none toward `libraries/cli-extended`. The zero-install property is a documented design requirement (the RG-51 comment near the top of the file states the launcher "must run on a fresh clone with zero installs"): a real wheel dependency (CX-D1) and the symlinked copies in assay/ciu/pwmcp mean the carve must say how a bare checkout obtains `cli_extended` (CX-D3: installed library for scripts, zipimport from the verified release wheel where no pip exists), without weakening the existing zero-install guarantee silently.
+- Skills (AC-19): `.claude/skills/run-gate-cli/SKILL.md` is the source tree; move to package data and register `skills`.
+- Doctor (AC-20): `run-gate doctor` exists (RG-9, handler dispatched at `:10722`); it becomes the shared `doctor` verb with its per-lane/toolchain checks as named checks.
+- Tests (AC-23): `tests/test_run_gate.py:474` (`run_tool`), `:725` and `tests/test_run_gate_admission.py:655` each call `subprocess.run([sys.executable, <run-gate.py or symlink>, ...])`, with the module-level symlink fixture at `tests/test_run_gate.py:54-56`; these are the candidates for `invoke_script(home=..., ...)`. See RG-83: the same suite already leaked into the real home once.
+
+**Common shape (tick each, cite the AC row).**
+
+- [ ] `[project].dependencies` gains `cli-extended>=0.2.0` (currently `[]`); no vendoring; `py-modules` unchanged unless the carve splits the module (AC-24).
+- [ ] Resolve the zero-install question for the script and its three symlinked copies (CX-D3); no `sys.path`/`PYTHONPATH` onto the library in project sources (AC-25).
+- [ ] `CliIdentity.resolve(...)` and an explicit story for `__revision__` (AC-01, AC-02).
+- [ ] Re-register the full grammar (CX-D12): lane/target arguments, `doctor`, `validate-pointers`, `admission`, `status`, `--list`, `--check-env`, `--json`, `--dry-run`, ... as verbs and options; delete `RunGateArgumentParser` (AC-03, AC-04, AC-05, AC-06, AC-07).
+- [ ] `unexpected_exceptions="report"` with the closed exit table preserved; classify the 16 `except Exception` sites (AC-10, AC-11).
+- [ ] Surface lifecycle: review/manifest/spec, `surface check` (AC-16, AC-17, AC-18).
+- [ ] Skills via `register_skills_verbs` (AC-19); `doctor` as the shared verb (AC-20).
+- [ ] Tests: `assert_cli_contract`, `invoke_script` (fixing RG-83), plugin if a catalog exists (AC-21, AC-22, AC-23).
+
+**Acceptance.** `cli-extended audit` reports no `fail`; `cli-extended surface check` passes; run-gate's own registered gate passes (`run-gate.toml`; read the verdict in a separate step); a released run-gate version is deployed (merge + `cmru release` + devcontainer install; remember "two same-project releases leave two artifact dirs"). The assay, ciu and pwmcp symlinks keep working from a fresh clone.
+
+**Oracles.** For every existing lane in the estate, `run-gate <lane> --dry-run` output is byte-identical before and after (golden); every refusal keeps its exit code from the RG-78 table; a controlled wrong implementation that maps an unexpected exception to exit 1 where the table says another code fails the exit-table test; `python3 assay/run-gate.py --version` (through the symlink) works in a checkout with no installed `cli_extended`, or the documented CX-D3 bootstrap is the only extra step.
+
+## RG-83 — `install_fake_assay` writes its fake `assay` and `assay.real` into the first entry of the real `$PATH` (the operator's `~/.local/bin`) in tests that have not isolated PATH
+
+**Status: OPEN (filed 2026-10-05 by the cli-extended unified-adoption program, W10, as RG-82; renumbered RG-83 at the merge with main; severity Major: a test run replaces or shadows the operator's real tool on the host).**
+
+**Observed (source and filesystem; line numbers at filing time).**
+
+- `tests/test_run_gate.py:355` is `path = shim_dir_of(monkeypatch) / name` inside `install_fake_assay` (def at `:348`), and `shim_dir_of` (`:418-419`) is `return Path(os.environ["PATH"].split(":")[0])`: the first `$PATH` entry, whatever it is. `:360` writes `<name>.real` and `:362` writes the wrapper `<name>` there, both with `chmod +x`. Nothing in `install_fake_assay` creates an isolated directory or sets `PATH`.
+- The first entry is only a throwaway directory when a test has already called a fake-docker fixture, which does `monkeypatch.setenv("PATH", f"{shim_dir}:{os.environ['PATH']}")` (`:280`). Two call sites do not: `TestRG76AssayLaneImports._project` (class at `:8411`, `def _project` at `:8424`) calls `install_fake_assay(...)` at `:8455` with no prior PATH isolation, and `test_import_all_drops_a_lane_removed_from_inventory` calls it again at `:8504`. In the devcontainer `$PATH` starts with `/home/vscode/.local/bin`, so those tests write there. `_judge` (`:6509`) has eleven or more callers (e.g. `:6517, :6533, :7825`); the ones read (`:6513-6517`) call `fake_docker_executing` first, so they are safe only by call order, and the remaining callers were not individually audited when this was filed.
+- On 2026-10-04 14:36 the real directory held `~/.local/bin/assay` (633 bytes, mode 755, the wrapper that begins `if [ "$1" != "run" ]; then exec "$0.real" "$@"; fi`) and `~/.local/bin/assay.real` (391 bytes, mode 744), whose body is the `INVENTORY` JSON of `TestRG76AssayLaneImports` (lanes `alpha`, `beta`, `gamma`, `assay_version` 7.2.0), exactly what `:8455` writes. Both were still present when this entry was filed. They were NOT deleted (operator instruction); the operator decides.
+
+**Why it matters.** Any shell on the host that resolves `assay` through `~/.local/bin` runs the fake (it prints a three-lane inventory for `lanes --json` and fabricates a PASS/FAIL verdict file for `run`), and a genuine `assay` installed at that path would have been overwritten (not determined: whether one existed). A gate that calls `assay` could therefore be judged by a stub.
+
+**Proposed fix direction.** `install_fake_assay` must never write into an inherited directory: create `tmp_path / "bin"` (or take the directory as a required argument), prepend it with `monkeypatch.setenv("PATH", ...)`, and point `HOME`/`XDG_*` at `tmp_path`. This is what `cli_extended.testing.invoke_script(..., home=...)` already enforces for subprocess tests (AC-23); the in-process variant needs the same guarantee. Add a suite-level guard (an autouse fixture or `conftest` check) that fails the session if `$HOME/.local/bin` gains or changes any file during the run.
+
+**Oracles.** After the full `tests/test_run_gate.py` run with a sentinel `HOME`, `$HOME/.local/bin` is byte-for-byte unchanged (compare a before/after listing with hashes); the guard fixture fails a deliberately wrong test that still writes to `PATH.split(":")[0]` without isolating `PATH`; the existing 28 `install_fake_assay` call sites (29 text matches including its `def`) still pass; controlled wrong implementation: isolating only `HOME` while leaving `PATH` untouched fails the first oracle.
+
+**Related:** RG-82 (the cli-extended `invoke_script(home=...)` adoption), the cli-extended program's oracle rule B ("never write to the real `$HOME`; a run-gate test leaked a fake `assay` into the real `~/.local/bin` on 2026-10-04").
+
+## RG-84 — run-gate runs happily as an unreaping PID 1 and reports lane verdicts from a container that can no longer fork
+
+**Status:** IN PROGRESS (filed 2026-10-05 as RG-83, renumbered RG-84 at the merge with main; rev 55 implementation is present; live PID 1 and low-pids acceptance passed; registered selftest remains pending). See the [live acceptance report](nyxloom-trove/reports/run-gate-RG84-live-acceptance-2026-10-05.md).
+
+**Observed.** `cmru tester-gate` started `tester-unified:local` without `--init` (cmru KI-52), so `./run-gate.py --base main assay-r2` ran as PID 1 of container `pedantic_antonelli`. git's detached auto-maintenance orphaned one `git` per commit to that PID 1, which never reaps; 19,108 zombies filled `pids.max` (19,115/19,117) at 03:11Z. The operator's contamination notice requires discarding the campaign's Assay state and progress and invalidates all post-03:11Z candidate outcomes and its final verdict; none are evidence for this entry. run-gate's own `docker run` launches already pass `--init` (`run-gate.py:5873`, `:9856` at filing time); the gap is run-gate *being* PID 1 under someone else's launcher.
+
+**Expected / fix.**
+- (a) At start-up, when `os.getpid() == 1`, refuse with an infrastructure error naming the remedy ("run-gate is PID 1 with no init: start the container with `--init` (docker) or `init: true` (compose)"). An explicit opt-out is not provided: an unreaping PID 1 is not a safe supervisor for process-heavy lanes.
+- (b) Before and after each real lane, read `pids.events` (`max`) and `memory.events` (`oom_kill`) from the cgroup containing run-gate. Any increase makes the lane verdict an infrastructure error regardless of its raw exit status (generic guard; assay B145 is the in-judge guard). Missing, malformed, moved, or unreadable cgroup data is also an infrastructure error; dry runs do not sample counters.
+
+**Oracles.** The live PID 1 refusal and low-`--pids-limit` checks passed in a detached `tester-unified` container; the latter's command returned zero while `pids.events:max` increased, and run-gate returned ERROR with raw `exit_code: 0` retained. Tests cover a changed `memory.events:oom_kill` counter, unchanged counters, unreadable files, moved cgroups, and raw-status preservation. The registered `selftest` lane with 100% changed-line coverage remains pending.
+
+**Related:** cmru KI-52 (launcher without `--init`; git `maintenance.autoDetach` mechanism and image hardening), assay B145, dstdns D-670 TEST-RUNNER-INIT (same mechanism under a `sleep infinity` runner).

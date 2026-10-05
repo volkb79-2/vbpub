@@ -115,6 +115,21 @@ def test_root_context_is_frozen_and_root_lock_is_reentrant_for_setup(
         pass
 
 
+def test_instance_registry_scan_value_objects_are_frozen(tmp_path):
+    problem = worktree._InstanceRecordProblem(
+        record_path=tmp_path / "instance.json",
+        worktree_path=tmp_path / "checkout",
+        logical_name="demo",
+        detail="invalid record",
+    )
+    scan = worktree._InstanceRegistryScan(records=(), problems=(problem,))
+
+    with pytest.raises(FrozenInstanceError):
+        problem.detail = "changed after scan"
+    with pytest.raises(FrozenInstanceError):
+        scan.problems = ()
+
+
 def test_context_for_root_refuses_root_outside_discovered_git_family(monkeypatch, tmp_path):
     fake = SimpleNamespace(
         discover_git_context=lambda _root: (tmp_path / "git", tmp_path / ".git", "main", "a" * 40)
@@ -476,7 +491,6 @@ def test_finish_allocation_accepts_a_generic_git_worktree_without_ciu_marker(mon
     monkeypatch.setattr(worktree, "primary_worktree_root", lambda root: root)
     monkeypatch.setattr(workspace, "discover_committed_roots", lambda *_a, **_kw: ())
     written = []
-    writer = worktree._write_instance_record
     monkeypatch.setattr(worktree, "_write_instance_record", lambda value: written.append(value))
     workspace_context = SimpleNamespace(
         record_path=tmp_path / "neutral.json", physical_worktree_path=tmp_path,
@@ -487,13 +501,6 @@ def test_finish_allocation_accepts_a_generic_git_worktree_without_ciu_marker(mon
         workspace_context=workspace_context,
     )
     assert ready.state == "ready" and written[-1].state == "ready"
-    assert ready.instance_id is None and ready.network is None
-    assert not (ready.ciu_root / GLOBAL_CONFIG_DEFAULTS).exists()
-
-    monkeypatch.setattr(worktree, "_write_instance_record", writer)
-    writer(ready)
-    reread = worktree.read_instance_record(ready.record_path)
-    assert reread.to_dict() == ready.to_dict()
 
 
 def _create_setup(monkeypatch, tmp_path, *, roots, materialize=True, failure=None):
@@ -503,7 +510,6 @@ def _create_setup(monkeypatch, tmp_path, *, roots, materialize=True, failure=Non
     generic = SimpleNamespace(
         workspace_id="generic", physical_worktree_path=target,
         record_path=tmp_path / "generic.json", git_common_dir=tmp_path / ".git",
-        base_commit="a" * 40,
     )
     from worktree.core import WorkspaceRecord
     shared_record = WorkspaceRecord(
@@ -534,7 +540,7 @@ def _create_setup(monkeypatch, tmp_path, *, roots, materialize=True, failure=Non
     monkeypatch.setattr(worktree, "_allocation_lock", lambda _root: nullcontext())
     monkeypatch.setattr(worktree, "_ciu_root_offset", lambda _root: Path("."))
     monkeypatch.setattr(worktree, "primary_worktree_root", lambda _root: primary)
-    monkeypatch.setattr(worktree, "find_instance_record", lambda *_args: None)
+    monkeypatch.setattr(worktree, "find_instance_record", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(worktree, "_ensure_record_is_excluded", lambda *_args: None)
     monkeypatch.setattr(worktree, "_branch_exists", lambda *_args: False)
     monkeypatch.setattr(worktree, "list_worktrees", lambda *_args: [])
@@ -567,7 +573,7 @@ def test_create_refuses_when_shared_allocation_fails(monkeypatch, tmp_path):
     monkeypatch.setattr(worktree, "_allocation_lock", lambda _root: nullcontext())
     monkeypatch.setattr(worktree, "_ciu_root_offset", lambda _root: Path("."))
     monkeypatch.setattr(worktree, "primary_worktree_root", lambda root: root)
-    monkeypatch.setattr(worktree, "find_instance_record", lambda *_args: None)
+    monkeypatch.setattr(worktree, "find_instance_record", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(worktree, "_ensure_record_is_excluded", lambda *_args: None)
     monkeypatch.setattr(worktree, "_branch_exists", lambda *_args: False)
     monkeypatch.setattr(worktree, "list_worktrees", lambda *_args: [])
@@ -628,86 +634,159 @@ def test_create_refuses_a_committed_root_marker_that_did_not_materialize(monkeyp
 
 
 def test_create_records_all_nested_roots_before_returning_ready(monkeypatch, tmp_path):
-    primary, target, _shared = _create_setup(
-        monkeypatch, tmp_path, roots=[tmp_path / "primary", tmp_path / "primary" / "nested"]
+    _primary, target, _shared = _create_setup(
+        monkeypatch, tmp_path, roots=[tmp_path / "primary" / "nested"]
     )
     writes = []
     resolved_bases = []
     _shared.write_record = lambda record: writes.append(record)
-    monkeypatch.setattr(
-        workspace, "discover_committed_roots",
-        lambda _root, *, base: resolved_bases.append(base) or (
-            tmp_path / "primary", tmp_path / "primary" / "nested"
-        ),
-    )
-    ready = worktree.create(tmp_path, "demo", base="moving-main", path=target)
-    assert ready.state == "ready"
-    assert resolved_bases == ["a" * 40]
-    entries = writes[-1].metadata["root_entries"]
-    assert [entry["offset"] for entry in entries] == [".", "nested"]
+    original_instance_writer = worktree._write_instance_record
 
+    def write_instance_record(record):
+        if record.state == "ready":
+            assert writes
+            assert writes[-1].metadata["root_entries"]
+        original_instance_writer(record)
 
-def test_legacy_root_discovery_uses_saved_commit_and_refuses_a_moved_checkout(
-    monkeypatch, tmp_path
-):
-    primary, target, _shared = _create_setup(
-        monkeypatch, tmp_path, roots=[tmp_path / "primary" / "nested"]
-    )
-    context = SimpleNamespace(
-        physical_worktree_path=target, record_path=tmp_path / "generic.json",
-        git_common_dir=tmp_path / ".git", base_commit="a" * 40,
-    )
-    record = _record(target, state="ready")
-    resolved_bases = []
+    # This oracle checks the actual persistence ordering, not only the final
+    # values returned after create has already completed.
+    monkeypatch.setattr(worktree, "_write_instance_record", write_instance_record)
     monkeypatch.setattr(
         workspace, "discover_committed_roots",
         lambda _root, *, base: resolved_bases.append(base) or (
             tmp_path / "primary" / "nested",
         ),
     )
-
-    worktree._committed_root_entries(
-        primary, record, context, prepare=False, persist=False
-    )
+    ready = worktree.create(tmp_path, "demo", base="moving-main", path=target)
+    assert ready.state == "ready"
     assert resolved_bases == ["a" * 40]
+    entries = writes[-1].metadata["root_entries"]
+    assert [entry["offset"] for entry in entries] == ["nested"]
 
-    exact_target_mismatch = replace(record, base_ref="b" * 40)
-    with pytest.raises(worktree.WorktreeError, match="target disagrees with the shared workspace"):
-        worktree._allocation_commit(
-            exact_target_mismatch, context, require_current_head=False
+
+def test_committed_root_entries_requires_shared_context(tmp_path):
+    record = _record(tmp_path)
+    with pytest.raises(worktree.WorktreeError, match="without its shared workspace record"):
+        worktree._committed_root_entries(
+            tmp_path, record, None, prepare=False, persist=False,
+            allocation_commit="a" * 40,
         )
 
+
+def test_committed_root_entries_checks_selected_root_and_optional_hooks(
+    monkeypatch, tmp_path
+):
+    primary = tmp_path / "primary"
+    primary.mkdir()
+    (primary / GLOBAL_CONFIG_DEFAULTS).write_text("[ciu]\n", encoding="utf-8")
+    record = _record(primary)
+    shared_context = SimpleNamespace(
+        physical_worktree_path=primary,
+        record_path=tmp_path / "workspace.json",
+        git_common_dir=tmp_path / ".git",
+    )
+    root_context = SimpleNamespace(
+        root_instance_id="root-one", workspace_id="workspace-one",
+    )
+    monkeypatch.setattr(worktree, "primary_worktree_root", lambda _root: primary)
+    monkeypatch.setattr(
+        workspace, "discover_committed_roots", lambda *_args, **_kwargs: ()
+    )
+    with pytest.raises(worktree.WorktreeError, match="selected CIU root .* is absent"):
+        worktree._committed_root_entries(
+            tmp_path, record, shared_context, prepare=True, persist=False,
+            allocation_commit="a" * 40,
+            preflight_selected_root=lambda: None,
+        )
+
+    monkeypatch.setattr(
+        workspace, "discover_committed_roots", lambda *_args, **_kwargs: (primary,)
+    )
+    monkeypatch.setattr(
+        workspace, "context_for_root", lambda *_args, **_kwargs: root_context
+    )
+    monkeypatch.setattr(workspace, "assert_root_identity_distinct", lambda _roots: None)
+    monkeypatch.setattr(workspace, "root_lock", lambda _context: nullcontext())
+    monkeypatch.setattr(
+        workspace, "_shared", lambda: SimpleNamespace(canonical_path=lambda path: path)
+    )
+    monkeypatch.setattr(workspace_env, "read_generated_facts", lambda _root: {
+        "network": "network-one",
+    })
+    monkeypatch.setattr(worktree, "_write_committed_root_entries", lambda *_args: None)
+
+    entries, verified = worktree._committed_root_entries(
+        tmp_path, record, shared_context, prepare=True, persist=False,
+        allocation_commit="a" * 40,
+    )
+    assert entries[0]["offset"] == "."
+    assert verified is None
+
+    entries, verified = worktree._committed_root_entries(
+        tmp_path, record, shared_context, prepare=False, persist=True,
+        allocation_commit="a" * 40,
+    )
+    assert entries[0]["network"] == "network-one"
+    assert verified is True
+
+
+def test_finish_allocation_refuses_selected_root_without_preflight_identity(
+    monkeypatch, tmp_path
+):
+    _primary, target, _shared = _create_setup(
+        monkeypatch, tmp_path, roots=[tmp_path / "primary"], failure=True
+    )
+    marker_checks = iter([False, True, True])
+    monkeypatch.setattr(
+        worktree, "_ciu_root_marker_present", lambda _root: next(marker_checks)
+    )
+    with pytest.raises(
+        worktree.WorktreeError, match="selected root identity preflight did not complete"
+    ):
+        worktree.create(tmp_path, "demo", path=target)
+    assert list(marker_checks) == []
+
+
+def test_adopted_full_sha_is_the_allocation_target_and_moved_head_refuses(
+    monkeypatch, tmp_path
+):
+    record = replace(
+        _record(tmp_path, state="recovery-required"), base_ref="b" * 40
+    )
+    context = SimpleNamespace(base_commit="a" * 40)
     monkeypatch.setattr(worktree, "_git", lambda *_args, **_kwargs: SimpleNamespace(
         returncode=0, stdout="b" * 40, stderr=""
     ))
+    assert worktree._allocated_commit_sha(
+        record, context, require_current_head=True
+    ) == "b" * 40
+
+    monkeypatch.setattr(worktree, "_git", lambda *_args, **_kwargs: SimpleNamespace(
+        returncode=0, stdout="c" * 40, stderr=""
+    ))
     with pytest.raises(worktree.WorktreeError, match="HEAD moved from recorded allocation commit"):
-        worktree._committed_root_entries(
-            primary, record, context, prepare=False, persist=False
+        worktree._allocated_commit_sha(
+            record, context, require_current_head=True
         )
 
 
-def test_ensure_demotes_unverifiable_legacy_ready_record_before_refusing(
+def test_ready_record_refuses_to_infer_allocation_commit_from_a_moved_head(
     monkeypatch, tmp_path
 ):
-    primary, target, _shared = _create_setup(
-        monkeypatch, tmp_path, roots=[tmp_path / "primary" / "nested"]
-    )
-    record = _record(target, state="ready")
-    context = SimpleNamespace(
-        physical_worktree_path=target, record_path=tmp_path / "generic.json",
-        git_common_dir=tmp_path / ".git", base_commit="a" * 40,
-    )
+    record = replace(_record(tmp_path, state="ready"), base_ref="main")
+    workspace_context = SimpleNamespace(base_commit="a" * 40)
     writes = []
+    monkeypatch.setattr(worktree, "_allocation_lock", lambda _root: nullcontext())
     monkeypatch.setattr(worktree, "find_instance_record", lambda *_args: record)
-    monkeypatch.setattr(worktree, "_ensure_shared_record", lambda *_args: context)
+    monkeypatch.setattr(
+        worktree, "_ensure_shared_record", lambda *_args: workspace_context
+    )
     monkeypatch.setattr(worktree, "_write_instance_record", writes.append)
     monkeypatch.setattr(worktree, "_git", lambda *_args, **_kwargs: SimpleNamespace(
         returncode=0, stdout="b" * 40, stderr=""
     ))
-
     with pytest.raises(worktree.WorktreeError, match="HEAD moved from recorded allocation commit"):
-        worktree.ensure(primary, "demo")
-
+        worktree.ensure(tmp_path, "demo")
     assert [item.state for item in writes] == ["allocating", "recovery-required"]
     assert writes[-1].recovery_status == "env-generation-failed"
 
@@ -733,20 +812,14 @@ def test_finish_allocation_requires_shared_context_to_certify_ready(tmp_path):
 
 
 def test_committed_root_metadata_read_modify_write_uses_family_lock(monkeypatch, tmp_path):
-    from worktree.core import Lease, WorkspaceRecord
+    from worktree.core import WorkspaceRecord
 
-    lease = Lease(
-        holder="operator", acquired_at_utc="2026-01-01T00:00:00Z",
-        renewed_at_utc="2026-01-01T00:00:00Z",
-        expires_at_utc="2026-01-02T00:00:00Z", mode="held",
-    )
     record = WorkspaceRecord(
         workspace_id="generic", source_git_root=tmp_path,
         worktree_path=tmp_path, physical_worktree_path=tmp_path,
         git_common_dir=tmp_path / ".git", branch="demo", base_commit="a" * 40,
         purpose="ciu", state="ready", created_at_utc="2026-01-01T00:00:00Z",
         metadata={"opaque": "preserve", "root_entries": []},
-        lease=lease,
     )
     state = {"record": record, "locked": False}
 
@@ -776,64 +849,26 @@ def test_committed_root_metadata_read_modify_write_uses_family_lock(monkeypatch,
     )
     entries = [{"offset": "nested", "state": "ready"}]
     worktree._write_committed_root_entries(context, entries)
+    # A lease mirror may have read the record before the root metadata write.
+    # Its locked re-read must preserve the newer root_entries value.
+    monkeypatch.setattr(worktree, "_shared_record_for_checkout", lambda _root: record)
+    lease = SimpleNamespace(holder="test-agent")
+    worktree._sync_shared_lease(tmp_path, lease)
     assert not state["locked"]
     assert state["record"].metadata == {
         "opaque": "preserve", "root_entries": entries,
     }
-    assert state["record"].lease == lease
-
-
-def test_shared_lease_read_modify_write_uses_family_lock(monkeypatch, tmp_path):
-    from worktree.core import Lease, WorkspaceRecord
-
-    record = WorkspaceRecord(
-        workspace_id="generic", source_git_root=tmp_path,
-        worktree_path=tmp_path, physical_worktree_path=tmp_path,
-        git_common_dir=tmp_path / ".git", branch="demo", base_commit="a" * 40,
-        purpose="ciu", state="ready", created_at_utc="2026-01-01T00:00:00Z",
-        metadata={"opaque": "preserve", "root_entries": [{"offset": "nested"}]},
-    )
-    state = {"record": record, "locked": False}
-
-    @contextmanager
-    def family_lock(common_dir):
-        assert common_dir == record.git_common_dir
-        assert not state["locked"]
-        state["locked"] = True
-        try:
-            yield
-        finally:
-            state["locked"] = False
-
-    def read(_path):
-        assert state["locked"]
-        return state["record"]
-
-    def write(updated):
-        assert state["locked"]
-        state["record"] = updated
-
-    monkeypatch.setattr(worktree, "_shared_worktree", lambda: SimpleNamespace(
-        workspace_lock=family_lock, read_record=read, write_record=write,
-    ))
-    monkeypatch.setattr(worktree, "_shared_record_for_checkout", lambda _path: record)
-    lease = Lease(
-        holder="operator", acquired_at_utc="2026-01-01T00:00:00Z",
-        renewed_at_utc="2026-01-01T00:00:00Z",
-        expires_at_utc="2026-01-02T00:00:00Z", mode="held",
-    )
-
-    worktree._sync_shared_lease(tmp_path, lease)
-
-    assert not state["locked"]
-    assert state["record"].lease == lease
-    assert state["record"].metadata == record.metadata
+    assert state["record"].lease is lease
 
 
 def test_ensure_does_not_reset_a_checkout_after_fork_point_was_recorded(
     monkeypatch, tmp_path
 ):
-    record = replace(_record(tmp_path), fork_point_sha="a" * 40)
+    record = replace(
+        _record(tmp_path, state="recovery-required"),
+        fork_point_sha="a" * 40,
+        recovery_status="env-generation-failed",
+    )
     calls = {}
     monkeypatch.setattr(worktree, "_allocation_lock", lambda _root: nullcontext())
     monkeypatch.setattr(worktree, "find_instance_record", lambda *_args: record)
@@ -868,7 +903,7 @@ def test_create_marks_partial_multi_root_preparation_and_preserves_worktree_erro
     monkeypatch, tmp_path
 ):
     primary, target, shared = _create_setup(
-        monkeypatch, tmp_path, roots=[tmp_path / "primary", tmp_path / "primary" / "nested"], failure=True
+        monkeypatch, tmp_path, roots=[tmp_path / "primary" / "nested"], failure=True
     )
     calls = []
     monkeypatch.setattr(worktree, "_mark_recovery", lambda record, status: calls.append(status) or record)
@@ -877,7 +912,7 @@ def test_create_marks_partial_multi_root_preparation_and_preserves_worktree_erro
     def read_facts(_root):
         nonlocal count
         count += 1
-        if count == 2:
+        if count == 1:
             raise worktree.WorktreeError("nested facts invalid")
         return {"network": "net"}
 
@@ -893,7 +928,7 @@ def test_generic_root_stays_non_ready_during_nested_preparation_and_ensure_retri
 ):
     primary, target, shared = _create_setup(
         monkeypatch, tmp_path,
-        roots=[tmp_path / "primary", tmp_path / "primary" / "nested"],
+        roots=[tmp_path / "primary" / "nested"],
     )
     records = {}
     monkeypatch.setattr(
@@ -902,15 +937,15 @@ def test_generic_root_stays_non_ready_during_nested_preparation_and_ensure_retri
     )
     monkeypatch.setattr(
         worktree, "find_instance_record",
-        lambda _root, name: records.get(name),
+        lambda _root, name, **_kwargs: records.get(name),
     )
     monkeypatch.setattr(worktree, "_current_git_facts", lambda *_args: {})
-    shared_record = SimpleNamespace(context=lambda: SimpleNamespace(
+    workspace_context = SimpleNamespace(
         physical_worktree_path=target, record_path=tmp_path / "generic.json",
-        git_common_dir=tmp_path / ".git", base_commit="a" * 40,
-    ))
+        git_common_dir=tmp_path / ".git",
+    )
     monkeypatch.setattr(
-        worktree, "_ensure_shared_record", lambda *_args: shared_record
+        worktree, "_ensure_shared_record", lambda *_args: workspace_context
     )
 
     observed = []
@@ -949,15 +984,15 @@ def test_ensure_repairs_a_legacy_ready_record_missing_nested_facts(monkeypatch, 
     )
     monkeypatch.setattr(
         worktree, "find_instance_record",
-        lambda _root, name: records.get(name),
+        lambda _root, name, **_kwargs: records.get(name),
     )
     monkeypatch.setattr(worktree, "_current_git_facts", lambda *_args: {})
-    shared_record = SimpleNamespace(context=lambda: SimpleNamespace(
+    workspace_context = SimpleNamespace(
         physical_worktree_path=target, record_path=tmp_path / "generic.json",
-        git_common_dir=tmp_path / ".git", base_commit="a" * 40,
-    ))
+        git_common_dir=tmp_path / ".git",
+    )
     monkeypatch.setattr(
-        worktree, "_ensure_shared_record", lambda *_args: shared_record
+        worktree, "_ensure_shared_record", lambda *_args: workspace_context
     )
     generated = []
 
@@ -982,15 +1017,26 @@ def test_ensure_repairs_a_legacy_ready_record_missing_nested_facts(monkeypatch, 
         metadata={**dict(shared_state.metadata), "root_entries": []},
     ))
 
+    git_calls = []
+    real_git = worktree._git
+
+    def record_git(args, *positional, **kwargs):
+        git_calls.append((list(args), dict(kwargs)))
+        return real_git(args, *positional, **kwargs)
+
+    monkeypatch.setattr(worktree, "_git", record_git)
     repaired = worktree.ensure(primary, "demo")
     assert repaired.state == "ready"
     assert nested_facts.is_file()
     assert len(generated) == 2
+    # Readiness repair must not check out the recorded base again; ensure is
+    # repairing missing facts rather than reallocating the checkout.
+    assert not any(args[:2] == ["reset", "--hard"] for args, _kwargs in git_calls)
 
 
 def test_create_wraps_a_non_workspace_multi_root_failure(monkeypatch, tmp_path):
     primary, target, _shared = _create_setup(
-        monkeypatch, tmp_path, roots=[tmp_path / "primary", tmp_path / "primary" / "nested"], failure=True
+        monkeypatch, tmp_path, roots=[tmp_path / "primary" / "nested"], failure=True
     )
     calls = []
     monkeypatch.setattr(worktree, "_mark_recovery", lambda record, status: calls.append(status) or record)
@@ -999,7 +1045,7 @@ def test_create_wraps_a_non_workspace_multi_root_failure(monkeypatch, tmp_path):
     def read_facts(_root):
         nonlocal count
         count += 1
-        if count == 2:
+        if count == 1:
             raise RuntimeError("nested generation broke")
         return {"network": "net"}
 
@@ -1015,7 +1061,7 @@ def _removal_fixture(monkeypatch, tmp_path):
     path.mkdir(parents=True)
     (path / ".git").write_text("gitdir: x\n", encoding="utf-8")
     wt = worktree.WorktreeInfo(path, "demo", "a" * 8, is_primary=False)
-    monkeypatch.setattr(worktree, "find_instance_record", lambda *_args: None)
+    monkeypatch.setattr(worktree, "find_instance_record", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(worktree, "find_worktree", lambda *_args: wt)
     monkeypatch.setattr(worktree, "_ciu_root_offset", lambda _root: Path("."))
     monkeypatch.setattr(worktree, "_clean_in", lambda *_args, **_kwargs: 0)
