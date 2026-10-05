@@ -247,6 +247,45 @@ Bare invocation still prints help by default. Only a truly intentional
 no-argument action may opt in with `single_command=True, no_args_action=True`;
 `--help` remains side-effect free.
 
+## Declared option constraints and selector lists
+
+Structural relationships between a verb's options are declared, not hand-coded
+in the handler. `Requires`, `Conflicts` and `RequiresChoice` go in
+`VerbSpec.constraints`; the registry refuses a violating invocation with exit
+`2` and the verb's help, lists the rules under a `CONSTRAINTS` help section and
+in the Markdown reference, and exports them to the surface manifest with one
+review candidate per rule. See the
+[design guide](docs/DESIGN-GUIDE.md#declare-option-constraints-structurally)
+for why presence means "differs from the default" and why only structural
+rules belong here.
+
+```python
+VerbSpec(
+    "sync", description="Sync projects.", mutating=True, dry_run=True,
+    handler=sync,
+    options=(
+        OptionSpec(("--update",), "update", parser_kwargs={"action": "store_true"}),
+        OptionSpec(("--refresh",), "refresh", parser_kwargs={"action": "store_true"}),
+    ),
+    constraints=(
+        Requires("--dry-run", ("--update", "--refresh"), "a dry run needs work to preview"),
+        Conflicts(("--refresh", "--json"), "refresh has no JSON form"),
+    ),
+)
+# tool sync --dry-run   ->  [ERROR] --dry-run requires --update or --refresh: a dry run needs work to preview
+```
+
+`SelectorList` is an argparse `type` for "`all`, or these names":
+`SelectorList(("alpha", "beta"))("beta,alpha")` returns `("beta", "alpha")`,
+`"all"` returns every choice (or `SelectorList.ALL` when no choices are
+declared), and an empty, duplicate, unknown or `all`-mixed item is a normal
+argparse usage error.
+
+```python
+OptionSpec(("--only",), "projects to process",
+           parser_kwargs={"type": SelectorList(("alpha", "beta"))})
+```
+
 ## Generated documentation and contract tests
 
 The generated catalog is available as `app.catalog`. Full Markdown reference

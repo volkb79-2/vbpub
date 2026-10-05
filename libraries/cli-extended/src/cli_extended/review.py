@@ -16,8 +16,10 @@ from pathlib import Path
 from typing import Any
 
 from . import contract
+from .constraints import rule_text
 from .surface import (
     DEFAULT_MAX_CANDIDATES,
+    SELECTOR_LIST_LABEL,
     SurfaceError,
     _ARGPARSE_CHOICE_ACTION_LABELS,
     _BUILTIN_TYPE_LABELS,
@@ -29,6 +31,7 @@ from .surface import (
     render_cli_surface_json,
 )
 from .parser import RegisteredCli
+from .values import SelectorList
 
 REVIEW_SCHEMA_VERSION = 1
 _REVIEW_CASE_STATES = ("pending", "active", "retired")
@@ -116,12 +119,27 @@ def _converted_action_values(
     if not isinstance(converter_label, str):
         return "opaque", ()
     converter = _BUILTIN_VALUE_CONVERTERS.get(converter_label)
+    if converter is None and converter_label == SELECTOR_LIST_LABEL:
+        converter = _selector_converter(type_spec)
     if converter is None:
         return "opaque", ()
     try:
         return "modeled", tuple(converter(value) for value in values)
-    except (OverflowError, TypeError, ValueError):
+    except (OverflowError, TypeError, ValueError, argparse.ArgumentTypeError):
         return "invalid", ()
+
+
+def _selector_converter(type_spec: Mapping[str, Any]) -> SelectorList | None:
+    """Rebuild the recorded ``SelectorList`` so the checker applies its exact rules."""
+
+    try:
+        return SelectorList(
+            type_spec["choices"],
+            all_token=type_spec["all_token"],
+            separator=type_spec["separator"],
+        )
+    except (KeyError, TypeError, ValueError):
+        return None
 
 
 def _choice_values_accept(
@@ -718,6 +736,17 @@ def render_cli_surface_markdown(
             f"- `{route['id']}`: Common controls: "
             + (", ".join(route.get("common_controls", ())) or "none")
         )
+    constrained_routes = [
+        route for route in surface["routes"] if route.get("constraints")
+    ]
+    if constrained_routes:
+        lines.extend(("", "### Constraints", ""))
+        for route in constrained_routes:
+            lines.append(f"- `{route['id']}`:")
+            lines.extend(
+                f"  - {rule_text(constraint)}"
+                for constraint in route["constraints"]
+            )
     cases = catalog.cases_by_id
     lines.extend(
         (
@@ -1913,10 +1942,15 @@ def _review_findings(
             )
             if matched_action is None:
                 continue
-            if candidate_kind == "interaction":
+            if candidate_kind == "interaction" or candidate_kind.startswith(
+                "constraint-"
+            ):
                 # Local interaction options were checked in the interaction
                 # branch above, where foreign and local option records are
-                # handled through the same value-shape contract.
+                # handled through the same value-shape contract. A constraint
+                # case deliberately violates its rule, so its members need not
+                # all appear; present options were checked by the general
+                # occurrence pass, and constraints are never evaluated here.
                 continue
             if matched_action["kind"] == "option":
                 if candidate_kind == "minimum" and not matched_action.get("required"):

@@ -12,6 +12,13 @@ from shutil import get_terminal_size
 from textwrap import TextWrapper
 from typing import Any, TextIO
 
+from .constraints import (
+    Constraint,
+    first_violation,
+    help_epilog,
+    resolve_constraints,
+    rule_lines,
+)
 from .identity import CliIdentity
 from .output import CliOutput, LogLevel, logging_context
 from .progress import ProgressMode, ProgressRenderer
@@ -322,8 +329,21 @@ class VerbSpec:
     confirmation_required: bool | None = None
     surface_id: str | None = None
     dry_run: bool = False
+    constraints: tuple[Constraint, ...] = ()
 
     def __post_init__(self) -> None:
+        if not isinstance(self.constraints, tuple) or not all(
+            isinstance(item, Constraint) for item in self.constraints
+        ):
+            raise TypeError(
+                "constraints must be a tuple of Requires, Conflicts or "
+                "RequiresChoice"
+            )
+        if self.constraints and self.delegate is not None:
+            raise ValueError(
+                f"verb {self.name!r} delegates to another CLI; declare constraints "
+                "on the delegated CLI's own verbs"
+            )
         if not self.name or self.name.startswith("-"):
             raise ValueError("a verb needs a non-empty name without a leading dash")
         if not self.description:
@@ -824,6 +844,10 @@ class HelpCatalog:
                             lines.append(
                                 f"| `{_markdown_cell(option.display)}` | {_markdown_cell(option.markdown_description)} |"
                             )
+                    lines.append("")
+                if verb.constraints:
+                    lines.extend(("#### Constraints", ""))
+                    lines.extend(f"- {line}" for line in rule_lines(verb.constraints))
                     lines.append("")
             lines.append("")
 
@@ -1520,6 +1544,11 @@ class CliRegistry:
             catalog=catalog,
             top_level=not self.single_command,
             allow_abbrev=self.allow_abbrev,
+            epilog=(
+                help_epilog(self._verbs[0].constraints)
+                if self.single_command
+                else None
+            ),
         )
         add_common_options(
             parser,
@@ -1554,6 +1583,9 @@ class CliRegistry:
             self._add_option_specs(parser, verb.options)
             if verb.configure is not None:
                 verb.configure(parser)
+            parser._cli_constraints = resolve_constraints(
+                verb.constraints, verb=verb.name, parser=parser, root=parser
+            )
             default_handler = verb.handler  # type: ignore[assignment]
         else:
             subparsers = parser.add_subparsers(
@@ -1565,6 +1597,7 @@ class CliRegistry:
                     help=verb.summary,
                     description=verb.command_description,
                     formatter_class=WideRawDescriptionHelpFormatter,
+                    epilog=help_epilog(verb.constraints),
                 )
                 add_common_options(
                     command_parser,
@@ -1601,6 +1634,12 @@ class CliRegistry:
                 )
                 if verb.configure is not None:
                     verb.configure(command_parser)
+                command_parser._cli_constraints = resolve_constraints(
+                    verb.constraints,
+                    verb=verb.name,
+                    parser=command_parser,
+                    root=parser,
+                )
                 command_parsers[verb.name] = command_parser
                 if verb.delegate is not None:
                     delegates[verb.name] = verb.delegate
@@ -1965,6 +2004,16 @@ def run_cli(
                     exit_code=2,
                     show_help=True,
                 )
+        violation = first_violation(
+            getattr(
+                command_parser if command_parser is not None else parser,
+                "_cli_constraints",
+                (),
+            ),
+            args,
+        )
+        if violation is not None:
+            raise CliFailure(violation, exit_code=2, show_help=True)
         runtime = _runtime_from_args(
             args,
             identity,

@@ -432,6 +432,78 @@ on both sides of a verb, validation must span the whole invocation: mutually
 exclusive controls such as `--quiet` and `--debug` must not become
 last-one-wins merely because they were parsed by different command levels.
 
+### Declared option constraints
+
+A verb MAY declare structural relationships between its options in
+`VerbSpec.constraints`, a tuple of `Requires(option, any_of, reason)`,
+`Conflicts(options, reason)` and `RequiresChoice(option, target, values,
+reason)` (exported from `cli_extended`; `Constraint` names the union).
+
+1. **Shape.** Every flag is a string starting with `--`. `reason` is a
+   non-empty single line owned by the consumer. `Requires.any_of` has at least
+   one flag, `Conflicts.options` at least two, `RequiresChoice.values` is a
+   non-empty tuple of strings; no flag list repeats a flag and `option` never
+   appears in its own lists (`RequiresChoice.option` differs from `target`).
+   A violation raises `ValueError` when the constraint is constructed.
+   `VerbSpec.constraints` that is not a tuple of constraints raises
+   `TypeError`; a verb that delegates to another CLI MUST NOT declare
+   constraints (`ValueError`): the child CLI carries its own.
+2. **Registration-time validation.** `CliRegistry.build()` MUST raise
+   `ValueError` naming the verb and the flag when a referenced flag is not
+   accepted by that verb's parser (verb-local, global, or an enabled library
+   control such as `--json`, `--dry-run`, `--yes`); when a referenced action's
+   default is not `None`, `False`, or an empty list or tuple; when a
+   `RequiresChoice` target declares no `choices`; or when a `RequiresChoice`
+   value is not equal to one of the target's `choices`.
+3. **Presence.** An option is *present* when its parsed value differs from the
+   action's default: not `None` for a `None` default, not `False` for a
+   `False` default, non-empty for an empty list or tuple default. A value left
+   at a suppressed default (a repeated global or library control) is absent.
+   Rule 2 exists so presence cannot be misdetected.
+4. **Enforcement.** After argparse succeeds and after the refusals for
+   unsupported `--json`, `--dry-run` and `--progress`, and before the runtime
+   is built or the handler runs, the first violated constraint in declaration
+   order MUST be refused with exit status `2` and the verb's help (a
+   `CliFailure(exit_code=2, show_help=True)`). A global option behaves the same
+   before and after the verb. Constraints are evaluated once per invocation and
+   never read configuration or runtime state.
+5. **Refusal text.** The first stderr line is `[ERROR] ` followed by exactly:
+   - `Requires`: `<option> requires <any_of joined by " or ">: <reason>`
+   - `Conflicts`: `<present options in declared order joined by " and "> cannot
+     be used together: <reason>`
+   - `RequiresChoice`: `<option> requires <target> <values joined by "|">:
+     <reason>`
+6. **Help and reference.** Command help MUST gain a `CONSTRAINTS` section
+   after the options, one line per constraint in declaration order, using the
+   same three templates (a `Conflicts` line lists all of its options). The
+   Markdown reference renders the same lines under a `Constraints` heading for
+   that verb.
+7. **Scope.** Constraints are structural. A rule that depends on loaded
+   configuration, runtime state, or domain data stays in the handler. See
+   [the design guide](docs/DESIGN-GUIDE.md#declare-option-constraints-structurally).
+
+### Selector lists
+
+`SelectorList(choices=None, *, all_token="all", separator=",")` is a callable
+argparse `type` for "all, or these names".
+
+1. `text.strip() == all_token` returns `tuple(choices)` when `choices` is set,
+   otherwise the sentinel `SelectorList.ALL` (`repr` is `SelectorList.ALL`).
+2. Otherwise the text is split on `separator` and each item stripped. In this
+   order: an empty item raises `ArgumentTypeError("empty selector item in
+   '<text>'")`; `all_token` among several items raises `"'<all_token>' cannot be
+   combined with other names"`; a repeated name raises `"duplicate selector
+   '<name>'"`; with `choices`, an unknown name raises `"unknown selector
+   '<name>'; choose from <choices joined by ', '> or <all_token>"`.
+3. The result is a tuple of the names in the order given.
+4. The constructor raises `ValueError` unless `choices` is `None` or a
+   non-empty sequence of unique non-empty strings without surrounding
+   whitespace, not equal to `all_token` and not containing `separator`;
+   `separator` is a single non-space character; `all_token` is a non-empty
+   string without surrounding whitespace or the separator.
+5. Because it raises `ArgumentTypeError`, a bad value is an ordinary argparse
+   usage error: exit `2` and the verb's help.
+
 ## 6. Errors, exceptions, and cancellation
 
 The CLI distinguishes expected operator errors from programming failures.
@@ -1072,3 +1144,39 @@ Contract version `1` covers these controls: `--help`, `--version`,
 `--dry-run` follows its verb registration, and `--traceback` is present only
 when the registry uses `unexpected_exceptions="report"`; the other controls are
 always present.
+
+### Constraints and selector lists in the surface
+
+1. **Route records.** Each route MUST carry a `constraints` list (empty when
+   none) of the verb's declared constraints in declaration order. A record is
+   `{"kind": "requires", "option", "any_of", "reason"}`,
+   `{"kind": "conflicts", "options", "reason"}`, or
+   `{"kind": "requires-choice", "option", "target", "values", "reason"}`. A
+   nested route inherits its verb's constraints. A library control is named by
+   its canonical flag only, never its library syntax (CX-D5). Surface schema
+   stays `7`.
+2. **Candidates.** Each constraint of an invocable route produces one
+   candidate, kind `constraint-requires`, `constraint-conflict` or
+   `constraint-choice`, id `case:<route>/<kind>/<n>` with `<n>` the 1-based
+   declaration index. Its members are the route-local IDs of the referenced
+   options in the order of the record and its shape is the record. A flag that
+   resolves to no option of the route makes generation fail with
+   `SurfaceError`. Constraints are consumer-declared grammar, so a non-empty
+   `constraints` list is part of the signed route context of every candidate of
+   that route; an empty list is omitted so unconstrained routes keep their
+   signatures.
+3. **Checker.** Check mode MUST treat an invocation that violates a declared
+   constraint as syntactically valid and MUST NOT evaluate constraints. It
+   still checks the arity, conversion and choices of each option present, and
+   does not require a constraint candidate's members to appear, because the
+   case may break the rule on purpose.
+4. **Markdown.** When any route declares constraints, the region MUST contain
+   a `### Constraints` list: one bullet per such route, with one nested line
+   per constraint using the help wording of the declared-constraints rules.
+5. **Selector converter.** An action whose `type` is exactly `SelectorList`
+   MUST be recorded as `{"callable": "cli_extended.SelectorList", "choices":
+   <list or null>, "all_token", "separator"}` and MUST NOT be opaque. A
+   subclass, or another callable whose import label collides, stays opaque. The
+   checker MUST apply the same accept and reject rules as the class to every
+   value of such an option or positional; a record that cannot rebuild a valid
+   `SelectorList` is treated as an opaque converter.
