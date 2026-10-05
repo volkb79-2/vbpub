@@ -9,7 +9,7 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 ## [Unreleased]
 <!-- This unreleased block describes source rev 55. At release, fold these entries into the generated dated section by hand; the release generator does not clear this block. -->
 
-- **Init and cgroup resource-event guard (RG-83, rev 55).** run-gate refuses
+- **Init and cgroup resource-event guard (RG-84, filed as RG-83, rev 55).** run-gate refuses
   to start as PID 1 without an init reaper. Each real lane compares the
   current cgroup's `pids.events:max` and `memory.events:oom_kill` counters;
   an increase forces ERROR while retaining the raw lane status. Missing or

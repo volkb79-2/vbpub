@@ -33,7 +33,12 @@ cli-extended's existing TTY/`NO_COLOR` policy.
 
 ## CLI-EXT-02 — evaluate declarative conditional option constraints
 
-**Status:** Open — evidence gap
+**Status:** Implemented (W2) — see [the design guide](docs/DESIGN-GUIDE.md#declare-option-constraints-structurally)
+and [SPEC declared option constraints](SPEC.md#declared-option-constraints).
+Reopened 2026-10-05 as program package W2 (operator
+decision CX-D10, [unified-adoption program](docs/PROGRAM-2026-10-UNIFIED-ADOPTION.md#w2-declarative-constraints-and-selector-type-cli-ext-02-cli-ext-12)).
+The evidence gate below is superseded: every vbpub CLI now adopts the
+library, and CMRU and nyxloom `validate=` callbacks already supply the shapes.
 
 **Type:** Feature investigation
 
@@ -247,7 +252,17 @@ remain outside this library pilot.
 **Related:** CLI-EXT-02 — declarative conditional option constraints.
 ## CLI-EXT-05 — a shared `skills` verb group: install a tool's packaged agent skills into each harness
 
-**Status:** Open  
+**Status:** Implemented in program package W4 (CX-D9), pending integration and
+release; design pinned in
+[the program](docs/PROGRAM-2026-10-UNIFIED-ADOPTION.md#w4-packaged-agent-skills-cli-ext-05-new-skillspy);
+normative rules in [SPEC §14](SPEC.md#14-packaged-agent-skills).
+The stamp also goes into the SKILL.md frontmatter `metadata` and a visible
+banner (operator choice), with an integrity sidecar for modified-state
+detection; there is no global cross-tool sync. Controller decision during W4:
+overwriting a locally modified skill uses its own `--overwrite-modified` flag,
+not `--yes`, because the library's `--yes` is generic consent and must not
+also carry a destructive-overwrite meaning (the oracle text below that says
+`--yes` is superseded).  
 **Type:** Feature  
 **Area:** Command registration (shared verbs)
 
@@ -281,7 +296,7 @@ Oracles:
 - Installing twice changes nothing on the second run.
 - An upgraded wheel makes `check` report stale and `install` refresh the skill.
 - A locally edited skill is reported as modified and not overwritten without
-  `--yes`.
+  `--overwrite-modified` (was `--yes`; see Status).
 - A skill stamped by another tool is refused.
 - A controlled wrong implementation that copies without stamping must fail
   the foreign-tool refusal oracle.
@@ -289,3 +304,36 @@ Oracles:
 **Provenance:** dstdns, 2026-10-03: D-647 #6, and the D-651 v8 interview,
 where the operator chose `<tool> skills install` provided through
 cli-extended for DRY. Per-tool adoption entries follow once this exists.
+
+## CLI-EXT-06 … CLI-EXT-22 — unified-adoption program (2026-10-05)
+
+**Status:** Scheduled. Operator interview 2026-10-04/05 decided that every
+vbpub Python CLI adopts cli-extended as a real wheel dependency. The library
+first absorbs the boilerplate consumers hand-roll today. Each item's full
+design and oracles are in
+[`docs/PROGRAM-2026-10-UNIFIED-ADOPTION.md`](docs/PROGRAM-2026-10-UNIFIED-ADOPTION.md).
+This list is the index:
+
+| ID | Item | Package | Replaces (evidence) |
+|---|---|---|---|
+| CLI-EXT-06 | `CliIdentity.resolve` version resolver | W1 | Netcup VERSION regex ×3; cmru/nyxloom metadata lookups with invented fallbacks |
+| CLI-EXT-07 | `unexpected_exceptions="report"` + `--traceback`; registry-level `expected_exceptions` | W1 | nyxloom `_invoke`; per-`main` exception tuples |
+| CLI-EXT-08 | `VerbSpec.dry_run` + dry-run-safe `confirm()` | W1 | Netcup hand-added `--dry-run` and ~10 `getattr(args, "dry_run")` sites |
+| CLI-EXT-09 | Library `contract_version`; consumer signatures exclude library-owned controls | W3a | A library upgrade would otherwise re-sign every consumer surface (CX-D5) |
+| CLI-EXT-10 | `[tool.cli-extended]` / `cli-extended.toml` config + `cli-extended` console script | W3b | Four repeated `surface_cli` flags; no CLI to install the library's own skills |
+| CLI-EXT-11 | `surface pack`/`report`, findings file, `cli-extended-review` skill | W3b | No supported LLM-review step or actionable-items output |
+| CLI-EXT-12 | `SelectorList` value type | W2 | cmru `parse_target_names` |
+| CLI-EXT-13 | Shared `doctor` verb | W5 | nyxloom, cgprofile, planned ciu doctors |
+| CLI-EXT-14 | `invoke_script`/`invoke_module` + opt-in pytest plugin | W6 | Netcup's two `_invoke` helpers; conftest marker wiring |
+| CLI-EXT-15 | `ADOPTION-CHECKLIST.md`, `cli-extended audit`, `cli-extended-adoption` skill | W7 | No way for a consumer to verify complete, correct adoption |
+| CLI-EXT-16 | Wheel release via cmru, GitHub Releases + `--no-index` resolution | W8 | Four incompatible import mechanisms; PyPI dependency-confusion risk (CX-D2) |
+| CLI-EXT-17 | Constraints conditioned on a positional's value (e.g. `When("action", equals="set", then=RequiresChoice(...))`) plus declarable optional "action" positionals, so scp-api's ten `configure` callbacks and its handler-side `mac`/`action` swap can go (status: planned) | W9a Netcup adoption | scp-api hand-rolled conditional checks and `configure` callbacks |
+| CLI-EXT-18 | Shared review decision for the library-reviewed common controls (`--json`, `--yes`, `--debug-raw`, `--dry-run`) across routes: one rationale/effects block plus one parametrized linked test covering N route cases (status: planned) | W9a Netcup adoption | scp-api yields 151 cases, mostly these controls; W9b: every `--config`/`--config-json` verb adds five identical cases (62 rows for 8 verbs) — share one case across identical option declarations too |
+| CLI-EXT-19 | `invoke_script`/`invoke_module` take `python_args` (e.g. `-S`, `-I`) or an `isolated=True` switch that also drops the inherited `PYTHONPATH` for an explicit interpreter (status: planned) | W9b debian-install-v2 adoption | Wrapper scripts and `env={"PYTHONPATH": None}` to prove "library not installed" |
+| CLI-EXT-20 | `Requires`/`Conflicts` on an option that has a default ("differs from its default"), so a defaulted option need not drop its argparse default (status: planned) | W9b debian-install-v2 adoption | `--repo-url` lost its default to be constrainable (F-005) |
+| CLI-EXT-21 | Per-verb `--dry-run` help sentence on `VerbSpec(dry_run=...)` (status: planned) | W9b debian-install-v2 adoption | One generic sentence for every verb (F-007) |
+| CLI-EXT-22 | Audit heuristic precision: AC-01 `version-source` ignores test files that build a pinned `CliIdentity(...)`; AC-25 `no-path-hacks` ignores comments (status: planned) | W9b debian-install-v2 adoption | Two false positives fixed by rewording tests, not code |
+
+**Provenance:** controller survey 2026-10-04 of cmru, nyxloom, Netcup,
+debian-install-v2 and the five non-adopting CLIs (ciu, assay, run-gate,
+pwmcp, cgprofile).

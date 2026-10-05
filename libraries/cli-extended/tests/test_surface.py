@@ -1447,13 +1447,15 @@ def test_surface_action_scope_defaults_and_custom_action_are_described():
     assert _effective_default(suppressed, scope="custom", global_options=(), single_command=True) == (False, argparse.SUPPRESS)
     assert _effective_default(global_action, scope="global", global_options=(global_spec,), single_command=False) == (False, argparse.SUPPRESS)
     assert _effective_default(global_action, scope="global", global_options=(), single_command=False) == (False, argparse.SUPPRESS)
-    assert _effective_default(common_action, scope="common", global_options=(), single_command=False) == (True, None)
+    # A consumer action spelled like a library control is consumer grammar
+    # (only the creation marker makes an action library-owned).
+    assert _effective_default(common_action, scope="custom", global_options=(), single_command=False) == (False, argparse.SUPPRESS)
     assert _effective_default(suppressed, scope="custom", global_options=(), single_command=False) == (False, argparse.SUPPRESS)
 
     assert _scope(global_action, option_specs=(), global_options=(global_spec,), single_command=False)[0] == "global"
-    assert _scope(common_action, option_specs=(), global_options=(), single_command=False)[0] == "common"
+    assert _scope(common_action, option_specs=(), global_options=(), single_command=False)[0] == "custom"
     for action in (json_action, progress_action, confirmation_action):
-        assert _scope(action, option_specs=(), global_options=(), single_command=False)[0] == "common"
+        assert _scope(action, option_specs=(), global_options=(), single_command=False)[0] == "custom"
     assert _scope(local_action, option_specs=(local_spec,), global_options=(), single_command=False)[0] == "verb-local"
     assert _scope(custom_unregistered, option_specs=(), global_options=(), single_command=True)[0] == "custom"
 
@@ -2245,10 +2247,10 @@ def test_surface_ids_delegates_missing_registry_metadata_and_parser_routes():
     assert any(route["path"] == ["inspect"] for route in fallback_routes)
     assert fallback_routes[0]["confirmation"] is False
     assert fallback_routes[0]["parser_configured_by_callback"] is False
-    assert any(
-        action.get("scope") == "common"
-        and action["placement"]["single_command_invocation"] is False
-        for action in fallback_routes[0]["actions"]
+    assert "--json" in fallback_routes[0]["common_controls"]
+    assert fallback_routes[0]["single_command"] is False
+    assert not any(
+        action.get("scope") == "common" for action in fallback_routes[0]["actions"]
     )
 
     missing_parser = _complex_cli()

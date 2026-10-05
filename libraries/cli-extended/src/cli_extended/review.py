@@ -10,22 +10,34 @@ import shlex
 import stat
 import tempfile
 import tomllib
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from . import contract
+from .constraints import rule_text
 from .surface import (
     DEFAULT_MAX_CANDIDATES,
+    SELECTOR_LIST_LABEL,
     SurfaceError,
     _ARGPARSE_CHOICE_ACTION_LABELS,
     _BUILTIN_TYPE_LABELS,
     _minimum_values,
+    _route_common_actions,
     _route_required_baseline,
+    _routes_by_path,
     export_cli_surface,
     render_cli_surface_json,
 )
+from .findings import (
+    BLOCKING_SEVERITIES,
+    FindingsError,
+    FindingsFile,
+    load_review_findings,
+)
 from .parser import RegisteredCli
+from .values import SelectorList
 
 REVIEW_SCHEMA_VERSION = 1
 _REVIEW_CASE_STATES = ("pending", "active", "retired")
@@ -80,6 +92,7 @@ class ReviewCatalog:
 @dataclass(frozen=True)
 class SurfaceReport:
     findings: tuple[str, ...] = ()
+    notes: tuple[str, ...] = ()
 
     @property
     def passed(self) -> bool:
@@ -112,13 +125,29 @@ def _converted_action_values(
     )
     if not isinstance(converter_label, str):
         return "opaque", ()
-    converter = _BUILTIN_VALUE_CONVERTERS.get(converter_label)
+    if converter_label == SELECTOR_LIST_LABEL:
+        converter = _selector_converter(type_spec)
+    else:
+        converter = _BUILTIN_VALUE_CONVERTERS.get(converter_label)
     if converter is None:
         return "opaque", ()
     try:
         return "modeled", tuple(converter(value) for value in values)
-    except (OverflowError, TypeError, ValueError):
+    except (OverflowError, TypeError, ValueError, argparse.ArgumentTypeError):
         return "invalid", ()
+
+
+def _selector_converter(type_spec: Mapping[str, Any]) -> SelectorList | None:
+    """Rebuild the recorded ``SelectorList`` so the checker applies its exact rules."""
+
+    try:
+        return SelectorList(
+            type_spec["choices"],
+            all_token=type_spec["all_token"],
+            separator=type_spec["separator"],
+        )
+    except (KeyError, TypeError, ValueError):
+        return None
 
 
 def _choice_values_accept(
@@ -505,10 +534,19 @@ def _case_status(
 
 
 def render_cli_surface_markdown(
-    surface: Mapping[str, Any], catalog: ReviewCatalog
+    surface: Mapping[str, Any],
+    catalog: ReviewCatalog,
+    findings: FindingsFile | None = None,
 ) -> str:
     """Render the generated part of a consumer-owned CLI specification."""
 
+    library_contract = surface.get("library_contract")
+    if (
+        not isinstance(library_contract, Mapping)
+        or not isinstance(library_contract.get("name"), str)
+        or type(library_contract.get("version")) is not int
+    ):
+        raise SurfaceSpecError("surface is missing its library_contract record")
     for route in surface["routes"]:
         for field in ("single_command", "no_args_action"):
             if type(route.get(field)) is not bool:
@@ -539,7 +577,12 @@ def render_cli_surface_markdown(
             )
         ),
         "",
-        f"Surface schema: `{surface['schema_version']}`; review catalog schema: `{REVIEW_SCHEMA_VERSION}`.",
+        (
+            f"Surface schema: `{surface['schema_version']}`; review catalog schema: "
+            f"`{REVIEW_SCHEMA_VERSION}`; library contract: "
+            f"`{surface['library_contract']['name']}` v"
+            f"{surface['library_contract']['version']}."
+        ),
         "",
         "The manifest records registered syntax. The review catalog owns expected behavior, effects, rationale, and test references.",
         "",
@@ -697,6 +740,23 @@ def render_cli_surface_markdown(
                     )
                 ) + " |"
             )
+    lines.extend(("", "### Library common controls", ""))
+    for route in surface["routes"]:
+        lines.append(
+            f"- `{route['id']}`: Common controls: "
+            + (", ".join(route.get("common_controls", ())) or "none")
+        )
+    constrained_routes = [
+        route for route in surface["routes"] if route.get("constraints")
+    ]
+    if constrained_routes:
+        lines.extend(("", "### Constraints", ""))
+        for route in constrained_routes:
+            lines.append(f"- `{route['id']}`:")
+            lines.extend(
+                f"  - {rule_text(constraint)}"
+                for constraint in route["constraints"]
+            )
     cases = catalog.cases_by_id
     lines.extend(
         (
@@ -812,6 +872,16 @@ def render_cli_surface_markdown(
     if not surface.get("syntax_complete", False):
         lines.extend(("", "**Surface inventory is incomplete:**", ""))
         lines.extend(f"- `{_markdown_cell(reason)}`" for reason in surface.get("incomplete", []))
+    if findings is not None:
+        lines.extend(("", "### Open review findings", ""))
+        open_items = findings.open_findings()
+        if not open_items:
+            lines.append("None.")
+        for item in open_items:
+            lines.append(
+                f"- **{item.severity}** `{item.id}` (route: {item.route or 'none'}): "
+                f"{' '.join(item.summary.split())} Remedy: {' '.join(item.remedy.split())}"
+            )
     return "\n".join(lines).rstrip() + "\n"
 
 
@@ -915,6 +985,7 @@ def _prepare(
     manifest_path: str | Path,
     spec_path: str | Path,
     max_candidates: int | None,
+    findings_file: FindingsFile | None = None,
 ) -> tuple[ReviewCatalog, dict[str, Any], str, str, list[str]]:
     if not isinstance(app, RegisteredCli):
         raise TypeError("app must be a RegisteredCli built by CliRegistry")
@@ -933,7 +1004,7 @@ def _prepare(
         _tolerate_invalid_interactions=True,
     )
     manifest_text = render_cli_surface_json(surface)
-    markdown = render_cli_surface_markdown(surface, catalog)
+    markdown = render_cli_surface_markdown(surface, catalog, findings_file)
     spec_text = _read_text_preserving_newlines(spec_path)
     new_spec_text = _replace_generated_region(spec_text, markdown)
     findings = _review_findings(surface, catalog)
@@ -943,6 +1014,23 @@ def _prepare(
 def _review_findings(
     surface: Mapping[str, Any], catalog: ReviewCatalog
 ) -> list[str]:
+    # The manifest names library controls only; rebuild their option records
+    # from the contract table so invocations that use them check as before.
+    paths = _routes_by_path(surface["routes"])
+    surface = {
+        **surface,
+        "routes": [
+            {
+                **route,
+                "actions": [
+                    *route.get("actions", ()),
+                    *_route_common_actions(route, paths),
+                ],
+            }
+            for route in surface["routes"]
+        ],
+    }
+
     def is_negative_number(
         token: str, route: Mapping[str, Any], depth: int
     ) -> bool:
@@ -1086,6 +1174,27 @@ def _review_findings(
             return len(argv)
         return index + 1
 
+    def external_option_flags(external_option: Mapping[str, Any]) -> tuple[str, ...]:
+        """Spellings of a foreign option.
+
+        A library-owned control is signed by its canonical name only, so its
+        spellings come from the owner route's rebuilt record.
+        """
+
+        owner_route = routes_by_id.get(str(external_option.get("route_id")))
+        owner_action = next(
+            (
+                action
+                for action in (owner_route or {}).get("actions", ())
+                if action.get("id") == external_option.get("id")
+                and action.get("library_control")
+            ),
+            None,
+        )
+        if owner_action is not None:
+            return tuple(owner_action["flags"])
+        return tuple(external_option.get("flags", ()))
+
     def invocation_parts(
         argv: Sequence[str],
         route: Mapping[str, Any],
@@ -1112,7 +1221,7 @@ def _review_findings(
                 None,
             )
             if external_action is not None:
-                for flag in external_option.get("flags", ()):
+                for flag in external_option_flags(external_option):
                     external_by_flag[str(flag)] = external_action
         path_depth = 0
         options_enabled = {0: True}
@@ -1403,7 +1512,7 @@ def _review_findings(
         external_flags = {
             str(flag)
             for external_option in external_options
-            for flag in external_option.get("flags", ())
+            for flag in external_option_flags(external_option)
         }
         non_command_positions, option_occurrences, unknown_options = invocation_parts(
             case.invocation,
@@ -1686,7 +1795,7 @@ def _review_findings(
                         f"valid value shape for participating option {option_id}"
                     )
             for external_option in shape.get("external_options", ()):
-                flags = set(external_option.get("flags", ()))
+                flags = set(external_option_flags(external_option))
                 matching_occurrences = [
                     occurrence
                     for occurrence in unknown_options
@@ -1746,6 +1855,17 @@ def _review_findings(
                         f"valid value shape for out-of-route option "
                         f"{external_option.get('id')}"
                     )
+        if candidate_kind.startswith("constraint-"):
+            # The case must exercise its rule: the trigger option (or, for a
+            # conflict, any member) has to appear. Nothing is evaluated.
+            members = [str(member) for member in candidate["members"]]
+            triggers = (
+                members if candidate_kind == "constraint-conflict" else members[:1]
+            )
+            if not any(option_occurrences.get(member, ()) for member in triggers):
+                findings.append(
+                    f"invocation for {case_id} does not exercise its constraint"
+                )
         if candidate_kind == "route-alias":
             alias = str(candidate.get("shape", {}).get("alias", ""))
             if (
@@ -1854,10 +1974,15 @@ def _review_findings(
             )
             if matched_action is None:
                 continue
-            if candidate_kind == "interaction":
+            if candidate_kind == "interaction" or candidate_kind.startswith(
+                "constraint-"
+            ):
                 # Local interaction options were checked in the interaction
                 # branch above, where foreign and local option records are
-                # handled through the same value-shape contract.
+                # handled through the same value-shape contract. A constraint
+                # case deliberately violates its rule, so its members need not
+                # all appear; present options were checked by the general
+                # occurrence pass, and constraints are never evaluated here.
                 continue
             if matched_action["kind"] == "option":
                 if candidate_kind == "minimum" and not matched_action.get("required"):
@@ -1916,6 +2041,43 @@ def _review_findings(
     return findings
 
 
+def _load_findings_file(
+    app: Any, findings_path: str | Path | None
+) -> FindingsFile | None:
+    if findings_path is None:
+        return None
+    if not isinstance(app, RegisteredCli):
+        raise TypeError("app must be a RegisteredCli built by CliRegistry")
+    loaded = load_review_findings(findings_path)
+    if loaded.cli_id != app.identity.command_name:
+        raise FindingsError(
+            f"findings file cli_id {loaded.cli_id!r} does not match "
+            f"registered executable {app.identity.command_name!r}"
+        )
+    return loaded
+
+
+def _findings_results(
+    findings_file: FindingsFile | None, surface: Mapping[str, Any]
+) -> tuple[list[str], list[str]]:
+    """Check findings (stale route, open blocker/major) and non-failing notes."""
+
+    failures: list[str] = []
+    notes: list[str] = []
+    if findings_file is None:
+        return failures, notes
+    route_ids = {route["id"] for route in surface["routes"]}
+    for item in sorted(findings_file.findings, key=lambda entry: entry.id):
+        if item.route and item.route not in route_ids:
+            failures.append(
+                f"stale finding {item.id}: route {item.route} no longer exists"
+            )
+    for item in findings_file.open_findings():
+        text = f"open {item.severity} finding {item.id}: {item.summary}"
+        (failures if item.severity in BLOCKING_SEVERITIES else notes).append(text)
+    return failures, notes
+
+
 def sync_cli_surface(
     app: Any,
     *,
@@ -1923,22 +2085,44 @@ def sync_cli_surface(
     manifest_path: str | Path,
     spec_path: str | Path,
     max_candidates: int | None = None,
+    findings_path: str | Path | None = None,
 ) -> SurfaceReport:
     """Write only the generated manifest and the marked spec block.
 
     The review catalog is never written or reserialized.
     """
 
-    _, _, manifest_text, spec_text, findings = _prepare(
+    findings_file = _load_findings_file(app, findings_path)
+    _, surface, manifest_text, spec_text, findings = _prepare(
         app,
         review_path=review_path,
         manifest_path=manifest_path,
         spec_path=spec_path,
         max_candidates=max_candidates,
+        findings_file=findings_file,
     )
     _atomic_write_text(manifest_path, manifest_text, newline="")
     _write_text_preserving_newlines(spec_path, spec_text)
-    return SurfaceReport(tuple(findings))
+    failures, notes = _findings_results(findings_file, surface)
+    return SurfaceReport(tuple(findings + failures), tuple(notes))
+
+
+def _committed_contract_version(manifest_text: str | None) -> int | None:
+    """Return the library contract version a committed manifest records.
+
+    A missing, unreadable, or malformed record yields ``None`` and falls
+    through to the ordinary stale-manifest comparison.
+    """
+
+    if manifest_text is None:
+        return None
+    try:
+        manifest = json.loads(manifest_text)
+    except ValueError:
+        return None
+    library = manifest.get("library_contract") if isinstance(manifest, dict) else None
+    version = library.get("version") if isinstance(library, dict) else None
+    return version if type(version) is int else None
 
 
 def check_cli_surface(
@@ -1948,20 +2132,34 @@ def check_cli_surface(
     manifest_path: str | Path,
     spec_path: str | Path,
     max_candidates: int | None = None,
+    findings_path: str | Path | None = None,
 ) -> SurfaceReport:
     """Compare current registry output with committed manifest and spec text."""
 
-    _, _, manifest_text, expected_spec, findings = _prepare(
+    findings_file = _load_findings_file(app, findings_path)
+    _, surface, manifest_text, expected_spec, findings = _prepare(
         app,
         review_path=review_path,
         manifest_path=manifest_path,
         spec_path=spec_path,
         max_candidates=max_candidates,
+        findings_file=findings_file,
     )
     try:
         committed_manifest = _read_text_preserving_newlines(manifest_path)
     except OSError:
         committed_manifest = None
+    committed_version = _committed_contract_version(committed_manifest)
+    if committed_version is not None and committed_version != contract.CONTRACT_VERSION:
+        # One actionable finding. Per-case signature and stale-file noise that
+        # stems from the contract change would only bury it.
+        return SurfaceReport(
+            (
+                f"cli-extended contract changed v{committed_version} → "
+                f"v{contract.CONTRACT_VERSION}; read cli-extended CHANGES.md "
+                "contract notes, then run sync",
+            )
+        )
     if committed_manifest != manifest_text:
         findings.append("generated CLI manifest is stale")
     try:
@@ -1971,7 +2169,8 @@ def check_cli_surface(
     else:
         if committed_spec != expected_spec:
             findings.append("generated CLI spec block is stale")
-    return SurfaceReport(tuple(findings))
+    failures, notes = _findings_results(findings_file, surface)
+    return SurfaceReport(tuple(findings + failures), tuple(notes))
 
 
 def render_cli_review_template(
@@ -2025,8 +2224,22 @@ def render_cli_review_template(
     return "\n".join(lines)
 
 
-def assert_cli_case_tests(collected_items: Sequence[Any], catalog: ReviewCatalog) -> None:
-    """Assert active review cases reference collected, correctly marked tests."""
+def assert_cli_case_tests(
+    collected_items: Sequence[Any],
+    catalog: ReviewCatalog,
+    *,
+    partial: bool = False,
+    foreign_case_ids: Collection[str] = (),
+) -> None:
+    """Assert active review cases reference collected, correctly marked tests.
+
+    A marker whose case ID is in ``foreign_case_ids`` (cases of another CLI's
+    catalog) is skipped for this catalog; any other unknown ID is an error.
+
+    With ``partial=True`` (a focused run that collected only some tests) the
+    "node not collected" and "no collected marked test" errors are not raised;
+    every error about a collected item is still enforced.
+    """
 
     by_nodeid = {
         getattr(item, "nodeid", None): item
@@ -2053,6 +2266,8 @@ def assert_cli_case_tests(collected_items: Sequence[Any], catalog: ReviewCatalog
                 errors.append(f"test {nodeid!r} has an empty or malformed cli_case marker")
                 continue
             case_id = marker_args[0]
+            if case_id not in known_cases and case_id in foreign_case_ids:
+                continue
             if case_id not in known_cases:
                 errors.append(f"test {nodeid!r} references unknown CLI case {case_id!r}")
                 continue
@@ -2073,13 +2288,14 @@ def assert_cli_case_tests(collected_items: Sequence[Any], catalog: ReviewCatalog
         for nodeid in case.test_ids:
             item = by_nodeid.get(nodeid)
             if item is None:
-                errors.append(f"CLI case {case_id!r} references uncollected test {nodeid!r}")
+                if not partial:
+                    errors.append(f"CLI case {case_id!r} references uncollected test {nodeid!r}")
                 continue
             if nodeid not in marked.get(case_id, set()):
                 errors.append(f"test {nodeid!r} lacks cli_case({case_id!r}) marker")
             if _statically_skipped(item):
                 errors.append(f"CLI case {case_id!r} references a statically skipped test {nodeid!r}")
-        if not marked.get(case_id):
+        if not partial and not marked.get(case_id):
             errors.append(f"active CLI case {case_id!r} has no collected marked test")
     if errors:
         raise AssertionError("CLI case test coverage failed:\n- " + "\n- ".join(errors))

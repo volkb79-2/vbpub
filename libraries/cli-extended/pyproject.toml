@@ -1,23 +1,49 @@
 [build-system]
-requires = ["setuptools==82.0.1", "wheel==0.47.0"]
+requires = ["setuptools==82.0.1", "wheel==0.47.0", "setuptools_scm==10.0.5"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "cli-extended"
-version = "0.1.0"
 description = "Shared contract helpers for vbpub user-facing Python CLIs"
 readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
 authors = [{name = "Volker Badziong"}]
+# Stdlib-only at runtime by design: every vbpub CLI depends on this wheel
+# (unified-adoption program CX-D1), including tools whose own contract is
+# "no third-party runtime dependencies" (assay A-005) and a zipapp bundle.
 dependencies = []
+dynamic = ["version"]
 
 [project.optional-dependencies]
-interactive = ["questionary==2.1.1"]
+# Floor 2.1.1: the version prompts.py was verified against. It calls
+# questionary.text/password/confirm/select/checkbox with the `input=` and
+# `output=` stream keywords and dict checkbox choices carrying `checked`.
+interactive = ["questionary>=2.1.1"]
 test = ["pytest>=8", "pytest-cov>=6"]
+
+[project.scripts]
+cli-extended = "cli_extended.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+# Non-Python files read at run time through importlib.resources: the packaged
+# agent skills (`cli-extended skills install`) and the semantic-review rubric
+# bundled by `cli-extended surface pack`.
+[tool.setuptools.package-data]
+cli_extended = ["review_rubric.md", "skills/*/*", "skills/*/**/*"]
+
+# Version comes from the git tag `cli-extended-vX.Y.Z` minted by the cmru
+# release transaction, resolved against the enclosing checkout (this project
+# lives two levels below the repository root). `--match` keeps the other
+# projects' tags out of the derivation. No fallback_version: a build without
+# git metadata and without cmru's pretend-version must fail rather than ship
+# a placeholder version (AGENTS.md "Defaults and fallbacks are hazards").
+[tool.setuptools_scm]
+root = "../.."
+tag_regex = "^cli-extended-v(?P<version>[0-9].*)$"
+git_describe_command = ["git", "describe", "--dirty", "--tags", "--long", "--match", "cli-extended-v*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

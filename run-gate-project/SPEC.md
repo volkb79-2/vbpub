@@ -86,7 +86,7 @@ sequence-record identity values.
 Rev 17 (run-gate rev 54): RG-49 hashes an external project's resolved path for
 its durable Assay state key; project paths inside the checkout keep their
 existing relative layout.
-Rev 18 (run-gate rev 55): RG-83 refuses to run as container PID 1 and compares
+Rev 18 (run-gate rev 55): RG-84 refuses to run as container PID 1 and compares
 the run-gate cgroup's `pids.events:max` and `memory.events:oom_kill` around
 each real lane; any resource event or unreadable comparison returns
 infrastructure ERROR with the raw lane status retained.

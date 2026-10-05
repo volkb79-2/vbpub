@@ -45,7 +45,7 @@ from cli_extended.review import (
     _value_count_problem,
     _value_shape_accepts,
 )
-from cli_extended.surface_cli import _load_factory
+from cli_extended.surface import _route_common_actions, _routes_by_path
 
 IDENTITY = CliIdentity("AUDIT", "1.0", "Audit Tool", command="audit-tool")
 ROUTE_ID = "route:entrypoint:audit-tool/inspect"
@@ -140,7 +140,13 @@ def _option_argv(action, spelling=None):
 
 def _candidate_argv(candidate, surface):
     route = next(route for route in surface["routes"] if route["id"] == candidate["route_id"])
-    actions = {action["id"]: action for action in route["actions"]}
+    # Library-owned controls are named in the manifest only; the contract
+    # table supplies their arity for generated argv.
+    paths = _routes_by_path(surface["routes"])
+    actions = {
+        action["id"]: action
+        for action in (*route["actions"], *_route_common_actions(route, paths))
+    }
     argv = list(route["path"])
     kind = candidate["kind"]
     candidate_argument_id = (
@@ -1392,6 +1398,7 @@ def test_surface_markdown_exposes_nested_routes_stale_rows_and_incomplete_invent
     )
     surface = {
         "schema_version": 1,
+        "library_contract": {"name": "cli-extended", "version": 1},
         "entrypoint": {
             "command": "audit-tool",
             "prog": "audit-tool",
@@ -1626,7 +1633,8 @@ def test_surface_markdown_lists_delegated_group_children():
     group_id = "route:entrypoint:audit-tool/plugins"
     child_id = f"{group_id}/inspect"
     surface = {
-        "schema_version": 6,
+        "schema_version": 7,
+        "library_contract": {"name": "cli-extended", "version": 1},
         "entrypoint": {
             "command": "audit-tool",
             "prog": "audit-tool",
@@ -1784,6 +1792,7 @@ def test_empty_single_command_invocation_is_valid_when_no_argument_is_required()
 def test_surface_markdown_rejects_unknown_action_kinds():
     surface = {
         "schema_version": 1,
+        "library_contract": {"name": "cli-extended", "version": 1},
         "entrypoint": {
             "command": "audit-tool",
             "prog": "audit-tool",
@@ -1917,7 +1926,8 @@ def test_render_route_invocation_modes_describe_the_parser_receiving_argv():
         },
     ]
     surface = {
-        "schema_version": 6,
+        "schema_version": 7,
+        "library_contract": {"name": "cli-extended", "version": 1},
         "entrypoint": {
             "command": "audit-tool",
             "prog": "audit-tool",
@@ -5160,7 +5170,7 @@ def test_sync_is_idempotent_preserves_outside_bytes_and_never_rewrites_catalog(t
     assert synced.endswith(suffix)
     assert b"\r\nAfter\r\n" in synced
     assert review.read_bytes() == original_review
-    assert json.loads(manifest.read_text(encoding="utf-8"))["schema_version"] == 6
+    assert json.loads(manifest.read_text(encoding="utf-8"))["schema_version"] == 7
     assert SURFACE_START_MARKER.encode() in synced
     assert SURFACE_END_MARKER.encode() in synced
 
@@ -5510,7 +5520,7 @@ def test_surface_cli_uses_the_same_workflow_and_reports_check_status(tmp_path, m
     import cli_extended.surface_cli as surface_cli
 
     app, _surface, review, manifest, spec = _make_files(tmp_path, active=True)
-    monkeypatch.setattr(surface_cli, "_load_factory", lambda _name: app)
+    monkeypatch.setattr(surface_cli, "load_factory", lambda _name: app)
     args = [
         "--factory", "consumer.cli:build_cli",
         "--review", str(review),
@@ -5535,7 +5545,7 @@ def test_surface_cli_converts_configuration_failures_to_status_two(tmp_path, mon
     import cli_extended.surface_cli as surface_cli
 
     app, _surface, review, manifest, spec = _make_files(tmp_path, active=True)
-    monkeypatch.setattr(surface_cli, "_load_factory", lambda _name: object())
+    monkeypatch.setattr(surface_cli, "load_factory", lambda _name: object())
     args = [
         "--factory", "consumer.cli:build_cli",
         "--review", str(review),
@@ -5546,7 +5556,7 @@ def test_surface_cli_converts_configuration_failures_to_status_two(tmp_path, mon
     assert surface_cli.main(args) == 2
     assert "RegisteredCli" in capsys.readouterr().err
 
-    monkeypatch.setattr(surface_cli, "_load_factory", lambda _name: app)
+    monkeypatch.setattr(surface_cli, "load_factory", lambda _name: app)
     review.write_text(
         review.read_text(encoding="utf-8").replace('cli_id = "audit-tool"', 'cli_id = "other-tool"'),
         encoding="utf-8",
@@ -5561,150 +5571,13 @@ def test_surface_cli_converts_configuration_failures_to_status_two(tmp_path, mon
         encoding="utf-8",
     )
 
-    monkeypatch.setattr(surface_cli, "_load_factory", lambda _name: app)
+    monkeypatch.setattr(surface_cli, "load_factory", lambda _name: app)
     args[args.index("check")] = "unknown"
     with pytest.raises(SystemExit):
         surface_cli.main(args)
 
     with pytest.raises(SystemExit):
         surface_cli.main(["--factory", "consumer.cli:build_cli", "--review", str(review), "sync"])
-
-
-def test_surface_cli_factory_loader_validates_and_calls_imported_target(monkeypatch):
-    import types
-
-    import cli_extended.surface_cli as surface_cli
-
-    app = _build_cli()
-    module = types.SimpleNamespace(build_cli=lambda: app, value=1)
-    monkeypatch.setattr(surface_cli.importlib, "import_module", lambda _name: module)
-
-    assert surface_cli._load_factory("consumer.cli:build_cli") is app
-    with pytest.raises(ValueError, match="module:callable"):
-        surface_cli._load_factory("not-a-factory")
-    with pytest.raises(TypeError, match="not callable"):
-        surface_cli._load_factory("consumer.cli:value")
-    with pytest.raises(TypeError, match="did not return"):
-        module.build_cli = lambda: object()
-        surface_cli._load_factory("consumer.cli:build_cli")
-    module.build_cli = lambda: app
-    monkeypatch.setattr(
-        surface_cli.importlib,
-        "import_module",
-        lambda _name: (_ for _ in ()).throw(ImportError("missing module")),
-    )
-    with pytest.raises(ImportError, match="missing module"):
-        surface_cli._load_factory("consumer.cli:build_cli")
-
-
-def test_surface_cli_factory_loader_supports_hyphenated_script_and_sibling_imports(
-    tmp_path, monkeypatch,
-):
-    module_name = "_cli_extended_surface_monitor_task"
-    monkeypatch.setattr(sys, "path", list(sys.path))
-    monkeypatch.delitem(sys.modules, module_name, raising=False)
-    script_dir = tmp_path / "consumer"
-    script_dir.mkdir()
-    (script_dir / "consumer_support.py").write_text(
-        "VALUE = 'loaded from sibling'\n", encoding="utf-8"
-    )
-    script = script_dir / "monitor-task.py"
-    script.write_text(
-        "from __future__ import annotations\n"
-        "from dataclasses import dataclass\n"
-        "from consumer_support import VALUE\n"
-        "from cli_extended import ArgumentSpec, CliIdentity, CliRegistry, VerbSpec\n"
-        "@dataclass\n"
-        "class FactoryState:\n"
-        "    value: str = VALUE\n"
-        "def parse_target(value):\n"
-        "    return value\n"
-        "def build_cli():\n"
-        "    assert FactoryState().value == 'loaded from sibling'\n"
-        "    registry = CliRegistry(\n"
-        "        CliIdentity('AUDIT', '1.0', 'Audit Tool', command='audit-tool'),\n"
-        "        prog='audit-tool', description='Audit resources.')\n"
-        "    registry.register(VerbSpec(\n"
-        "        'inspect', description='inspect resources', group='READ',\n"
-        "        handler=lambda _args: None,\n"
-        "        arguments=(ArgumentSpec('target', 'target', parser_kwargs={'type': parse_target}),)))\n"
-        "    return registry.build()\n",
-        encoding="utf-8",
-    )
-
-    app = _load_factory(f"{script}:build_cli")
-    surface = export_cli_surface(app)
-    target = next(
-        action
-        for action in surface["routes"][0]["actions"]
-        if action["kind"] == "argument"
-    )
-
-    assert app.identity.command_name == "audit-tool"
-    assert "inspect" in app.command_parsers
-    assert target["type"] == {
-        "callable": "_cli_extended_surface_monitor_task.parse_target"
-    }
-
-    # A second load finds the script directory already on sys.path; it still
-    # rebuilds the same registry under the same manifest-visible module name.
-    again = _load_factory(f"{script}:build_cli")
-    assert again.identity.command_name == app.identity.command_name
-
-    loaded_module = sys.modules[module_name]
-    script.write_text("raise RuntimeError('factory import failed')\n", encoding="utf-8")
-    with pytest.raises(RuntimeError, match="factory import failed"):
-        _load_factory(f"{script}:build_cli")
-    assert sys.modules[module_name] is loaded_module
-
-    broken_script = script_dir / "broken-cli.py"
-    broken_script.write_text("raise RuntimeError('broken factory')\n", encoding="utf-8")
-    with pytest.raises(RuntimeError, match="broken factory"):
-        _load_factory(f"{broken_script}:build_cli")
-    assert "_cli_extended_surface_broken_cli" not in sys.modules
-
-
-def test_surface_cli_factory_loader_rejects_a_directory_path(tmp_path):
-    with pytest.raises(ValueError, match="is not a file"):
-        _load_factory(f"{tmp_path}:build_cli")
-
-
-def test_surface_cli_factory_loader_preserves_missing_path_error(tmp_path):
-    missing_script = tmp_path / "missing-factory.py"
-
-    with pytest.raises(FileNotFoundError):
-        _load_factory(f"{missing_script}:build_cli")
-
-
-@pytest.mark.parametrize(
-    "invalid_spec",
-    (None, pytest.param(types.SimpleNamespace(loader=None), id="no-loader")),
-)
-def test_surface_cli_factory_loader_rejects_unloadable_script_specs(
-    tmp_path, monkeypatch, invalid_spec
-):
-    import cli_extended.surface_cli as surface_cli
-
-    script = tmp_path / "factory.py"
-    script.write_text("def build_cli(): pass\n", encoding="utf-8")
-    monkeypatch.setattr(
-        surface_cli.importlib.util,
-        "spec_from_file_location",
-        lambda *_args: invalid_spec,
-    )
-
-    with pytest.raises(ImportError, match="cannot load factory module"):
-        surface_cli._load_factory(f"{script}:build_cli")
-
-
-@pytest.mark.parametrize("specification", ("module", ":build_cli", "module:"))
-def test_surface_cli_factory_loader_rejects_each_incomplete_factory_component(
-    specification,
-):
-    import cli_extended.surface_cli as surface_cli
-
-    with pytest.raises(ValueError, match="module:callable"):
-        surface_cli._load_factory(specification)
 
 
 def test_surface_cli_requires_factory_review_manifest_and_spec(tmp_path, monkeypatch):
@@ -5716,7 +5589,7 @@ def test_surface_cli_requires_factory_review_manifest_and_spec(tmp_path, monkeyp
     with pytest.raises(SystemExit):
         surface_cli._argument_parser().parse_args(["--factory", "consumer.cli:build", "template"])
 
-    monkeypatch.setattr(surface_cli, "_load_factory", lambda _name: app)
+    monkeypatch.setattr(surface_cli, "load_factory", lambda _name: app)
     common = ["--factory", "consumer.cli:build", "--review", str(review)]
     with pytest.raises(SystemExit):
         surface_cli.main([*common, "--manifest", str(manifest), "check"])
@@ -6241,6 +6114,7 @@ def test_distinct_surface_path_validation_refuses_a_missing_parent(tmp_path):
 def test_markdown_marks_positional_actions_as_outside_exclusive_groups():
     surface = {
         "schema_version": 5,
+        "library_contract": {"name": "cli-extended", "version": 1},
         "entrypoint": {
             "command": "audit-tool",
             "prog": "audit-tool",

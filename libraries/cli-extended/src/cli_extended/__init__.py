@@ -1,5 +1,10 @@
 """Reusable command-line contract helpers for vbpub projects."""
 
+from .audit import AuditItem, run_audit
+from .config import CliConfig, ConfigError, ProjectConfig, load_project_config
+from .constraints import Conflicts, Constraint, Requires, RequiresChoice
+from .contract import CONTRACT_VERSION
+from .findings import Finding, FindingsError, FindingsFile, load_review_findings
 from .identity import CliIdentity, VersionLookupError
 from .output import (
     CliLoggingHandler,
@@ -52,16 +57,38 @@ from .surface import (
     export_cli_surface,
     render_cli_surface_json,
 )
-from .testing import assert_cli_contract
+from .doctor import CheckResult, DoctorCheck, register_doctor
+from .skills import (
+    SkillError,
+    SkillState,
+    register_skills_verbs,
+    skill_states,
+    validate_skill_source,
+)
+from .testing import assert_cli_contract, invoke_module, invoke_script, make_invoker
+from .values import SelectorList
 
 __all__ = [
+    "CONTRACT_VERSION",
     "ArgumentSpec",
+    "AuditItem",
+    "CheckResult",
+    "CliConfig",
     "CliFailure",
     "CliIdentity",
+    "ConfigError",
+    "Finding",
+    "FindingsError",
+    "FindingsFile",
+    "ProjectConfig",
+    "load_project_config",
+    "load_review_findings",
     "CliLoggingHandler",
     "CliOutput",
     "CliRegistry",
     "CliRuntime",
+    "Conflicts",
+    "Constraint",
     "ExtendedArgumentParser",
     "HelpCatalog",
     "HelpFormat",
@@ -73,11 +100,17 @@ __all__ = [
     "PromptDriver",
     "REVIEW_SCHEMA_VERSION",
     "RegisteredCli",
+    "Requires",
+    "RequiresChoice",
     "ReviewCatalog",
     "ReviewCatalogError",
     "ReviewCase",
     "DEFAULT_MAX_CANDIDATES",
+    "DoctorCheck",
     "SURFACE_SCHEMA_VERSION",
+    "SelectorList",
+    "SkillError",
+    "SkillState",
     "SurfaceError",
     "SurfaceLimitError",
     "SurfaceReport",
@@ -92,14 +125,22 @@ __all__ = [
     "check_cli_surface",
     "discover_command_parsers",
     "install_logging",
+    "invoke_module",
+    "invoke_script",
+    "make_invoker",
     "load_cli_review_catalog",
     "logging_context",
     "redact_text",
     "redact_value",
+    "register_doctor",
+    "register_skills_verbs",
     "render_cli_review_template",
     "render_cli_surface_json",
     "render_cli_surface_markdown",
+    "run_audit",
     "run_cli",
+    "skill_states",
     "sync_cli_surface",
     "uninstall_logging",
+    "validate_skill_source",
 ]

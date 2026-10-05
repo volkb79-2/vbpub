@@ -14,7 +14,7 @@ Judgment policy is NOT here: assay lanes reference assay.toml by name.
 See run-gate-project/README.md (design authority) and CONSUMERS.md (adoption).
 """
 # stdlib only — this launcher must run on a fresh clone with zero installs.
-__revision__ = 55  # rev 55: RG-83 PID 1 and cgroup resource-event guard
+__revision__ = 55  # rev 55: RG-84 (filed RG-83) PID 1 and cgroup resource-event guard
 # selective assay and command requests; failed-assay evidence; completed-fail
 # and partial footprint manifests; native sequences with trunk bases; shared
 # assay inventory import; documented durable --state-dir; closed results,
