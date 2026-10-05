@@ -7492,6 +7492,8 @@ class TestShippedGateFullDeclaration:
                 == "/opt/tester-venv/bin/python"
             assert cfg["lanes"][name]["env"]["TMPDIR"] \
                 == "/worktree/.run-gate"
+            assert cfg["lanes"][name]["env"]["GIT_CEILING_DIRECTORIES"] \
+                == "/worktree/.run-gate"
 
     def test_gate_full_forwards_base_only_to_assay_r1_in_order(self):
         cfg_path = RUN_GATE_DIR / "run-gate.toml"

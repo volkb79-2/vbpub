@@ -23,7 +23,8 @@ schema_version = 2
 # The tests invoke run-gate in child processes and exercise its real
 # /proc/self/mountinfo mapping. Assay snapshots live under private `/tmp`, so
 # send pytest's own temporary repositories through the selected worktree's
-# bind-mounted, writable state root instead.
+# bind-mounted, writable state root instead. Set Git's ceiling there too so
+# fixtures intentionally outside a repo do not discover the checkout above.
 #
 # This is a monorepo lane: assay's snapshot walks the whole resolved commit,
 # not just this project's own source roots, so a tracked hostile symlink
@@ -39,7 +40,7 @@ rigor = ["R0", "R1"]
 enforcement = "gate"
 argv = ["/opt/tester-venv/bin/python", "-m", "pytest", "tests", "-q", "--cov=.", "--cov-branch",
         "--cov-report=json:coverage.json"]
-env = { PYTHONDONTWRITEBYTECODE = "1", TMPDIR = "/worktree/.run-gate" }
+env = { PYTHONDONTWRITEBYTECODE = "1", TMPDIR = "/worktree/.run-gate", GIT_CEILING_DIRECTORIES = "/worktree/.run-gate" }
 env_passthrough = ["PATH"]
 budget = "30m"
 allow_argv_append = false
@@ -80,7 +81,7 @@ rigor = ["R0", "R2"]
 enforcement = "gate"
 argv = ["/opt/tester-venv/bin/python", "-m", "pytest", "tests", "-q", "-x", "--cov=.", "--cov-branch",
         "--cov-report=json:coverage.json"]
-env = { PYTHONDONTWRITEBYTECODE = "1", TMPDIR = "/worktree/.run-gate" }
+env = { PYTHONDONTWRITEBYTECODE = "1", TMPDIR = "/worktree/.run-gate", GIT_CEILING_DIRECTORIES = "/worktree/.run-gate" }
 env_passthrough = ["PATH"]
 budget = "4h"
 allow_argv_append = false
