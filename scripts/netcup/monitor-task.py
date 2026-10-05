@@ -283,7 +283,7 @@ def build_cli():
     registry.register(
         VerbSpec(
             "show",
-            "TASK_UUID",
+            None,
             "Fetch a task once and print its current state or JSON response.",
             group=VerbGroup.EXPLORATION.value,
             examples=(

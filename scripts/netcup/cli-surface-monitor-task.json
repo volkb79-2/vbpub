@@ -10,7 +10,7 @@
       "shape": {
         "argument_id": "argument:route:entrypoint:monitor-task/show/task_uuid"
       },
-      "signature": "sha256:af4dac39bc314322c1765da7360d0656273e3e59217d72e0ebf4ab7d970c558e"
+      "signature": "sha256:4a8a6bea7b2477352d97c60adae50310b34ee33730ca7813732c01b7383e282c"
     },
     {
       "id": "case:route:entrypoint:monitor-task/show/interaction:raw-json-opt-out/json-and-debug-raw",
@@ -36,7 +36,7 @@
         "required_exclusive_groups": {},
         "required_options": []
       },
-      "signature": "sha256:3417c7433652455c4d3b08eac79b92bcc8bd113eadeacb0efe4798e176971554"
+      "signature": "sha256:b12e22b22d1047798d9951f53646783612f091919b477c5f5591b8b97c656594"
     },
     {
       "id": "case:route:entrypoint:monitor-task/show/interaction:show-poll-refusal/foreign-watch-poll",
@@ -75,7 +75,7 @@
         "required_exclusive_groups": {},
         "required_options": []
       },
-      "signature": "sha256:05034b5ecf6e9c097c6faf995007088d04d8f76b9f95cd11d0c6b41ee14d4fe0"
+      "signature": "sha256:6f93f71c1dcadb09cf32c3682a3b770b68aea0881f5c1d203b3b4a5dce38daa2"
     },
     {
       "id": "case:route:entrypoint:monitor-task/show/minimum",
@@ -95,7 +95,7 @@
         "required_exclusive_groups": {},
         "required_options": []
       },
-      "signature": "sha256:2555e343a538bd6dcddc6264283939d8aef423dd826c77b9bf3a8354929906ae"
+      "signature": "sha256:ba7203bbd62f0ba98c7431683d2312d342d47fbe95821e96799a807b92c3d19a"
     },
     {
       "id": "case:route:entrypoint:monitor-task/show/option-spelling/option:route:entrypoint:monitor-task/show/--debug-raw/--debug-raw",
@@ -108,7 +108,7 @@
         "option_id": "option:route:entrypoint:monitor-task/show/--debug-raw",
         "spelling": "--debug-raw"
       },
-      "signature": "sha256:28d605a04d8fd262721b6f7e70f5ac7dc44e0fa26177903e6ac6287f9d6e89a3"
+      "signature": "sha256:4f88d465c58df4f7cc615f77710efa7cd134f1763c103a1f9678746d16b99e5a"
     },
     {
       "id": "case:route:entrypoint:monitor-task/show/option-spelling/option:route:entrypoint:monitor-task/show/--json/--json",
@@ -121,7 +121,7 @@
         "option_id": "option:route:entrypoint:monitor-task/show/--json",
         "spelling": "--json"
       },
-      "signature": "sha256:0b3bdd82e40e492327becd986d6e80f88d7ec639ec1a29f0a9d476ba410cd108"
+      "signature": "sha256:0a98915b962161328fba7ca7c2e5624b215e5d035b474c7dfc9f2cd5a5ecd614"
     },
     {
       "id": "case:route:entrypoint:monitor-task/watch/argument-shape/argument:route:entrypoint:monitor-task/watch/task_uuid",
@@ -383,7 +383,7 @@
       "subcommands": [],
       "subcommands_required": false,
       "summary": "Fetch a task once and print its current state or JSON response.",
-      "synopsis_override": "TASK_UUID",
+      "synopsis_override": null,
       "syntax_complete": true,
       "usage_override": null
     },

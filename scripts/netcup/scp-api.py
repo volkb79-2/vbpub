@@ -2253,7 +2253,7 @@ def build_cli():
         )
 
     register(
-        "login", "", "authenticate and select locally protected servers",
+        "login", None, "authenticate and select locally protected servers",
         "Obtain an OAuth refresh token using the browser device-code flow. An interactive login may then select account servers named v<digits> for this checkout's local mutation denylist. This is local protection, not a provider-side lock.",
         VerbGroup.AUTHENTICATION.value, cmd_login, examples=("./scp-api.py login",), json=False,
     )
@@ -2263,7 +2263,7 @@ def build_cli():
         metavar="server_id", nargs="?", type=_positive_int, default=None,
     )
     register(
-        "servers", "", "list the account's known servers",
+        "servers", None, "list the account's known servers",
         "List all servers known to the authenticated Netcup SCP account.",
         VerbGroup.EXPLORATION.value, cmd_servers,
         examples=("./scp-api.py servers",),
@@ -2277,7 +2277,7 @@ def build_cli():
         examples=("./scp-api.py status", "./scp-api.py status 799611 --json"),
     )
     register(
-        "server-details", "server_id", "show one server's detailed API record",
+        "server-details", None, "show one server's detailed API record",
         "Show the complete server details record returned by SCP.",
         VerbGroup.EXPLORATION.value, cmd_server_details,
         arguments=(_argument("server_id", "Netcup SCP server ID.", metavar="server_id", type=_positive_int),),
@@ -2351,7 +2351,7 @@ def build_cli():
         examples=("./scp-api.py metrics 799611 cpu --hours 24",),
     )
     register(
-        "guest-agent-status", "server_id", "show QEMU guest-agent availability",
+        "guest-agent-status", None, "show QEMU guest-agent availability",
         "Read guest-agent availability. This is not an SSH or bootstrap health check.",
         VerbGroup.EXPLORATION.value, cmd_guest_agent_status,
         arguments=(_argument("server_id", "Netcup SCP server ID.", metavar="server_id", type=_positive_int),),
