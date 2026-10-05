@@ -347,7 +347,7 @@ def _wheel_builder_env_args() -> list[str]:
     """Name-only ``-e`` forwards for reproducible-build and pretend-version vars."""
     names = sorted(
         name for name in os.environ
-        if name == "SOURCE_DATE_EPOCH" or name.startswith("SETUPTOOLS_SCM_PRETEND_VERSION")
+        if name == "SOURCE_DATE_EPOCH" or name.startswith("SETUPTOOLS_SCM_PRETEND_VERSION_FOR_")
     )
     args: list[str] = []
     for name in names:
