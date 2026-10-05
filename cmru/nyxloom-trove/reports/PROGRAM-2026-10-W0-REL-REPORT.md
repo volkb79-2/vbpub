@@ -66,7 +66,15 @@ The first `coverage` run FAILED at 99.64%, with the suite itself green. Two caus
 ## Test and gate results
 - Full suite, no `--maxfail`, under the test lock, with `--cov=src/cmru --cov-branch`: **2945 passed, 10 skipped, 20 subtests passed;
   total coverage 100.0%** (local run on python 3.14.7).
-- Gates (from `cmru/`, through the gate lock, verdict read in a separate step): see the section at the end of this file.
+- Gates (from `cmru/`, through the gate lock, verdict line read in a separate step), run on code commit `26ada0687` (the later
+  commits only change this REPORT):
+  - `coverage`: **PASS**, exit 0 (`Required test coverage of 100% reached. Total coverage: 100.00%`, 2945 passed, 10 skipped).
+    The first two attempts failed: 99.64% (see above) and a `dirty-tree` NOT_RUN caused by the uncommitted REPORT.
+  - `canary`: **FAIL**, exit 1, NOT caused by this package. The known-good control stops (the lane's `--maxfail=1` is still present
+    on this branch; W0-GATE removes it) at `tests/test_cli_build_output_semantics.py::test_tls_edge_retained_tarball_inventory_contains_the_publisher_version_file`
+    (`FileNotFoundError: .../cmru-coverage-canary-*/tls-edge/cmru.toml`): the canary fixture does not contain the `tls-edge` tree.
+    W0-GATE already fixes exactly this (`14466be48` skip guard, `31f6be6cf` fixture closure). 608 tests passed before it stopped.
+    The canary lane will need a re-run after W0-GATE merges.
 
 ## Deviations
 - **Predecessor, disclosed:** the REL-02/REL-10 tests were appended to `tests/test_changelog.py` with a shell heredoc
@@ -74,6 +82,9 @@ The first `coverage` run FAILED at 99.64%, with the suite itself green. Two caus
   `COMMIT_ID_RE` plant used a temporary Edit (restored, verified).
 - Successor: all repository files were changed with Edit/Write. Scratch repositories used to prototype the end-to-end harness were
   built with shell commands under the session scratchpad (outside the repository).
+- Successor slip: commit `26ada0687` has the placeholder message "x" and no trailer (a stray `git commit -m x` after staging
+  everything). Its content is the coverage-closure follow-up (REPORT, `cli.py`, `transaction.py`, `test_cli_abandon.py`, the
+  end-to-end file). Not amended, per the no-amend rule; the controller may want to squash or reword on merge.
 - Successor's first commit (`9eaafed42`) carries the trailer `Co-Authored-By: Claude Sonnet 5.5` (from the harness's attribution
   reminder); later commits use the repo's `Claude Sonnet` trailer. No amend was done.
 - The end-to-end harness uses a project in a subdirectory (`demo/cmru.toml`). A project rooted at the repository root fails
