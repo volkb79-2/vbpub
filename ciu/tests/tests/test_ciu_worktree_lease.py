@@ -202,7 +202,7 @@ class TestReadingV1AndV2Records:
         raw["runtime"] = {"instance_id": None, "network": None}
 
         with pytest.raises(
-            worktree.WorktreeError, match="could not determine.*CIU root"
+            worktree.WorktreeError, match="could not inspect CIU root marker"
         ):
             worktree._record_from_dict(
                 raw, tmp_path / worktree.WORKTREE_INSTANCE_RECORD
