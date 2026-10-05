@@ -664,9 +664,16 @@ Subprocess test helpers (`cli_extended.testing`):
   `XDG_DATA_HOME`, `XDG_CACHE_HOME`, `XDG_STATE_HOME` under it and `NO_COLOR=1`.
 - The child environment is the parent's minus `FORCE_COLOR`, `CLICOLOR_FORCE`,
   `CLAUDE_CONFIG_DIR` and every key starting with a `scrub_prefixes` entry.
+- `home` MUST be absolute (`ValueError` otherwise). `env` MUST NOT contain
+  `HOME` or any `XDG_*_HOME` key (`ValueError` naming the key); `home` is the
+  only source. An empty string in `scrub_prefixes` is a `ValueError`.
 - `PYTHONPATH` is the directory of the imported `cli_extended` package, then
-  `pythonpath`, then any inherited value. `env` is applied last; a `None` value
-  deletes the key. `timeout` is a failsafe only.
+  `pythonpath`, then any inherited value, but the library directory is added
+  only when `python` is None (the same interpreter). With an explicit `python`
+  the caller supplies `pythonpath` itself, because an installed library
+  directory is a whole `site-packages` that must not leak into a foreign
+  interpreter. `env` is applied last; a `None` value deletes the key.
+  `timeout` is a failsafe only.
 
 Every adoption MUST keep two contracts distinct: the generated grammar
 inventory and the product's semantic command inventory. The product's
@@ -1239,7 +1246,7 @@ always present.
    upward from the rootdir). At collection finish it calls
    `assert_cli_case_tests` for every configured CLI with a `review` catalog and
    turns a config, catalog or assertion error into a pytest usage error (exit
-   4). It is strict by default. `--cli-case-partial` passes `partial=True`,
+   4). It is strict by default; CI and gate runs MUST use strict mode. `--cli-case-partial` passes `partial=True`,
    which skips only the "test not collected" and "no collected marked test"
    errors; every error about a collected item still applies. A config with no
    `review` is a no-op.

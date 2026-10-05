@@ -101,7 +101,6 @@ def test_invoke_script_env_overrides_apply_last_and_none_deletes(
     dump, home = _dump(
         tmp_path,
         env={
-            "HOME": "/override/home",
             "KEEP_ME": None,
             "NEW_KEY": "new",
             "NOT_PRESENT": None,
@@ -110,11 +109,53 @@ def test_invoke_script_env_overrides_apply_last_and_none_deletes(
     )
     env = dump["env"]
 
-    assert env["HOME"] == "/override/home"
+    assert env["HOME"] == str(home)
     assert "KEEP_ME" not in env
     assert env["NEW_KEY"] == "new"
     assert env["PYTHONPATH"] == "/only"
     assert env["XDG_CONFIG_HOME"] == str(home / ".config")
+
+
+@pytest.mark.parametrize(
+    "key",
+    ["HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME"],
+)
+@pytest.mark.parametrize("value", ["/elsewhere", None])
+def test_env_may_not_override_home_or_xdg(tmp_path, key, value):
+    with pytest.raises(ValueError, match=key):
+        invoke_script("x.py", [], home=tmp_path, env={key: value})
+    with pytest.raises(ValueError, match=key):
+        invoke_module("x", [], home=tmp_path, env={key: value})
+
+
+def test_home_must_be_absolute(tmp_path):
+    with pytest.raises(ValueError, match="absolute"):
+        invoke_script("x.py", [], home="relative/home")
+    with pytest.raises(ValueError, match="absolute"):
+        invoke_module("x", [], home=Path("rel"))
+
+
+def test_empty_scrub_prefix_is_refused(tmp_path):
+    with pytest.raises(ValueError, match="empty string"):
+        invoke_script("x.py", [], home=tmp_path, scrub_prefixes=("OK_", ""))
+
+
+def test_library_root_is_prepended_only_for_the_same_interpreter(
+    tmp_path, monkeypatch
+):
+    monkeypatch.delenv("PYTHONPATH", raising=False)
+    seen = []
+    monkeypatch.setattr(
+        testing_module.subprocess,
+        "run",
+        lambda command, **kw: seen.append(kw["env"]["PYTHONPATH"]),
+    )
+    invoke_script("x.py", [], home=tmp_path, pythonpath=["/mine"])
+    invoke_script("x.py", [], home=tmp_path, python="/other/py", pythonpath=["/mine"])
+    invoke_module("m", [], home=tmp_path, python="/other/py")
+    invoke_module("m", [], home=tmp_path)
+
+    assert seen == [LIBRARY_ROOT + os.pathsep + "/mine", "/mine", "", LIBRARY_ROOT]
 
 
 def test_invoke_script_runs_in_cwd(tmp_path):

@@ -16,6 +16,7 @@ CliInvoker = Callable[[Sequence[str]], Any]
 
 _LIBRARY_ROOT = Path(__file__).resolve().parents[1]
 _ALWAYS_REMOVED = ("FORCE_COLOR", "CLICOLOR_FORCE", "CLAUDE_CONFIG_DIR")
+_XDG_KEYS = ("XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME")
 
 
 def _child_environment(
@@ -23,11 +24,19 @@ def _child_environment(
     scrub_prefixes: Sequence[str],
     env: Mapping[str, str | None] | None,
     pythonpath: Sequence[Path | str],
+    same_interpreter: bool,
 ) -> dict[str, str]:
     if not str(home):
         raise ValueError("home must be a non-empty directory")
     home_path = Path(home)
+    if not home_path.is_absolute():
+        raise ValueError(f"home must be an absolute path, got {str(home)!r}")
     prefixes = tuple(scrub_prefixes)
+    if "" in prefixes:
+        raise ValueError("scrub_prefixes must not contain an empty string")
+    for key in env or {}:
+        if key == "HOME" or key in _XDG_KEYS:
+            raise ValueError(f"env may not override {key}; home is the only source")
     child = {
         key: value
         for key, value in os.environ.items()
@@ -39,7 +48,8 @@ def _child_environment(
     child["XDG_CACHE_HOME"] = str(home_path / ".cache")
     child["XDG_STATE_HOME"] = str(home_path / ".local" / "state")
     child["NO_COLOR"] = "1"
-    paths = [str(_LIBRARY_ROOT), *(str(item) for item in pythonpath)]
+    paths = [str(_LIBRARY_ROOT)] if same_interpreter else []
+    paths.extend(str(item) for item in pythonpath)
     if child.get("PYTHONPATH"):
         paths.append(child["PYTHONPATH"])
     child["PYTHONPATH"] = os.pathsep.join(paths)
@@ -60,10 +70,11 @@ def _run(
     cwd: Path | str | None,
     timeout: float,
     pythonpath: Sequence[Path | str],
+    same_interpreter: bool,
 ) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         command,
-        env=_child_environment(home, scrub_prefixes, env, pythonpath),
+        env=_child_environment(home, scrub_prefixes, env, pythonpath, same_interpreter),
         cwd=cwd,
         text=True,
         capture_output=True,
@@ -88,6 +99,11 @@ def invoke_script(
 
     ``home`` is required: the child gets ``HOME`` and the four ``XDG_*_HOME``
     directories under it, so a test can never read or write the real home.
+    ``home`` must be absolute, and ``env`` may not set ``HOME`` or any
+    ``XDG_*_HOME`` (``ValueError``); an empty ``scrub_prefixes`` entry is also
+    refused. The imported library root is prepended to ``PYTHONPATH`` only when
+    ``python`` is None (same interpreter); with an explicit ``python`` pass
+    ``pythonpath=`` yourself.
     ``NO_COLOR=1`` is set; ``FORCE_COLOR``, ``CLICOLOR_FORCE`` and
     ``CLAUDE_CONFIG_DIR`` and every variable starting with a ``scrub_prefixes``
     entry are removed. ``PYTHONPATH`` begins with the directory of the imported
@@ -104,6 +120,7 @@ def invoke_script(
         cwd=cwd,
         timeout=timeout,
         pythonpath=pythonpath,
+        same_interpreter=python is None,
     )
 
 
@@ -129,6 +146,7 @@ def invoke_module(
         cwd=cwd,
         timeout=timeout,
         pythonpath=pythonpath,
+        same_interpreter=python is None,
     )
 
 
