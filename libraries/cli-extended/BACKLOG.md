@@ -305,7 +305,7 @@ Oracles:
 where the operator chose `<tool> skills install` provided through
 cli-extended for DRY. Per-tool adoption entries follow once this exists.
 
-## CLI-EXT-06 … CLI-EXT-18 — unified-adoption program (2026-10-05)
+## CLI-EXT-06 … CLI-EXT-22 — unified-adoption program (2026-10-05)
 
 **Status:** Scheduled. Operator interview 2026-10-04/05 decided that every
 vbpub Python CLI adopts cli-extended as a real wheel dependency. The library
@@ -328,7 +328,11 @@ This list is the index:
 | CLI-EXT-15 | `ADOPTION-CHECKLIST.md`, `cli-extended audit`, `cli-extended-adoption` skill | W7 | No way for a consumer to verify complete, correct adoption |
 | CLI-EXT-16 | Wheel release via cmru, GitHub Releases + `--no-index` resolution | W8 | Four incompatible import mechanisms; PyPI dependency-confusion risk (CX-D2) |
 | CLI-EXT-17 | Constraints conditioned on a positional's value (e.g. `When("action", equals="set", then=RequiresChoice(...))`) plus declarable optional "action" positionals, so scp-api's ten `configure` callbacks and its handler-side `mac`/`action` swap can go (status: planned) | W9a Netcup adoption | scp-api hand-rolled conditional checks and `configure` callbacks |
-| CLI-EXT-18 | Shared review decision for the library-reviewed common controls (`--json`, `--yes`, `--debug-raw`, `--dry-run`) across routes: one rationale/effects block plus one parametrized linked test covering N route cases (status: planned) | W9a Netcup adoption | scp-api yields 151 cases, mostly these controls |
+| CLI-EXT-18 | Shared review decision for the library-reviewed common controls (`--json`, `--yes`, `--debug-raw`, `--dry-run`) across routes: one rationale/effects block plus one parametrized linked test covering N route cases (status: planned) | W9a Netcup adoption | scp-api yields 151 cases, mostly these controls; W9b: every `--config`/`--config-json` verb adds five identical cases (62 rows for 8 verbs) — share one case across identical option declarations too |
+| CLI-EXT-19 | `invoke_script`/`invoke_module` take `python_args` (e.g. `-S`, `-I`) or an `isolated=True` switch that also drops the inherited `PYTHONPATH` for an explicit interpreter (status: planned) | W9b debian-install-v2 adoption | Wrapper scripts and `env={"PYTHONPATH": None}` to prove "library not installed" |
+| CLI-EXT-20 | `Requires`/`Conflicts` on an option that has a default ("differs from its default"), so a defaulted option need not drop its argparse default (status: planned) | W9b debian-install-v2 adoption | `--repo-url` lost its default to be constrainable (F-005) |
+| CLI-EXT-21 | Per-verb `--dry-run` help sentence on `VerbSpec(dry_run=...)` (status: planned) | W9b debian-install-v2 adoption | One generic sentence for every verb (F-007) |
+| CLI-EXT-22 | Audit heuristic precision: AC-01 `version-source` ignores test files that build a pinned `CliIdentity(...)`; AC-25 `no-path-hacks` ignores comments (status: planned) | W9b debian-install-v2 adoption | Two false positives fixed by rewording tests, not code |
 
 **Provenance:** controller survey 2026-10-04 of cmru, nyxloom, Netcup,
 debian-install-v2 and the five non-adopting CLIs (ciu, assay, run-gate,

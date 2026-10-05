@@ -365,12 +365,13 @@ surface against the full CMRU interface.
 
 The first-party pilot declares its CLI in a standalone `cli-extended.toml`
 (it has no pyproject) that uses the script-path factory form, and runs the
-shared command from that directory:
+shared command from that directory with the installed `cli-extended` console
+script (from a library worktree, see
+[Running the cli-extended CLI from a source checkout](#running-the-cli-extended-cli-from-a-source-checkout)):
 
 ```bash
 cd scripts/netcup
-PYTHONPATH=../../libraries/cli-extended/src${PYTHONPATH:+:$PYTHONPATH} \
-python -m cli_extended.cli surface check
+cli-extended surface check
 ```
 
 When a registry changes, run `surface template` to discover new or stale review
@@ -1280,6 +1281,11 @@ stderr. When `--json` owns stdout, `--progress=rawjson` is intentionally muted;
 `--debug-raw` was explicitly requested. Consumers still own the JSON schema
 and must not print ad-hoc progress directly to stdout.
 
+`--debug-raw` is never silent: it writes a `[WARN] --debug-raw is active ...`
+line and enables `[DEBUG]` diagnostics on stderr. A test asserting that
+`--debug-raw` leaves output unchanged compares stdout, or filters those stderr
+lines first.
+
 ## Tests required for an adoption
 
 Use `assert_cli_contract()` against the real executable/subprocess for bare
@@ -1468,10 +1474,17 @@ cli_extended_config = "cli-extended.toml"
 The plugin registers the `cli_case` marker and, for every CLI in the project
 config that has a `review` catalog, runs `assert_cli_case_tests` after
 collection. It is strict: an active case whose test is not collected fails the
-run (exit status 4). CI and gate runs must use strict mode;
-`--cli-case-partial` is only for focused local runs. For a focused local run use `pytest --cli-case-partial
-tests/test_one.py`, which still rejects unknown, inactive, unlisted or unmarked
+run (exit status 4). The gate lane that runs the whole suite must use strict
+mode, so every active case is proven linked somewhere. A lane that by design
+collects a subset (a fake-integration lane, a canary that runs one test, a
+focused local run) passes `--cli-case-partial`, e.g. `pytest --cli-case-partial
+tests/test_one.py`; that still rejects unknown, inactive, unlisted or unmarked
 cases among the collected tests. A config where no CLI has `review` is a no-op.
+
+Catalog `test_ids` are pytest node IDs, which are relative to the pytest
+rootdir. Give the project a `pytest.ini` (or `[tool.pytest.ini_options]`) at
+the directory the IDs are written against; without one the rootdir, and
+therefore every node ID, can change with the arguments pytest is invoked with.
 
 Several reviewed CLIs in one project work with the same single line. The
 plugin loads every reviewed catalog first and refuses a case ID that appears
