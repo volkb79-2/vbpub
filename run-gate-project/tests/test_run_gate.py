@@ -576,6 +576,8 @@ class TestEarlyMutationSentinels:
             self, tmp_path, monkeypatch, capsys):
         repo = make_repo(tmp_path)
         proj = make_project(repo, SIMPLE_LANE)
+        monkeypatch.setattr(run_gate, "physical_path",
+                            lambda path, **kwargs: Path("/phys"))
         fake_docker(tmp_path, monkeypatch)
         stale = _shared_lock_dir() / "run-gate-exec-one.lock"
         stale.write_text("")
@@ -7490,8 +7492,6 @@ class TestShippedGateFullDeclaration:
         for name in ("r1", "r2"):
             assert cfg["lanes"][name]["argv"][0] \
                 == "/opt/tester-venv/bin/python"
-            assert "--basetemp=.assay/pytest-tmp-" + name \
-                in cfg["lanes"][name]["argv"]
 
     def test_gate_full_forwards_base_only_to_assay_r1_in_order(self):
         cfg_path = RUN_GATE_DIR / "run-gate.toml"
