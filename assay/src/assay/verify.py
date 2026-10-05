@@ -2576,12 +2576,11 @@ _BASELINE_NEVER_READ = object()
 #: ``judge_mutation``'s ``mutation is None`` branch propagates the baseline's
 #: own ``(outcome, reason_code)`` verbatim, which is correct for exactly one
 #: cause: mutation testing never began because the lane's command did not
-#: PASS (A-116). But ``run_lane`` renders SIX other payload-free R2 claims
+#: PASS (A-116). But ``run_lane`` renders SEVEN other payload-free R2 claims
 #: from a caught :class:`~assay.errors.AssayError` while R0 passed, and each
-#: was being compared against that passing baseline and rejected -- so
-#: ``assay run`` emitted artifacts its own ``assay verify`` refused. The one
-#: this package itself makes reachable is the discovery boundary; the rest
-#: predate it on the same branch:
+#: must be distinguished from that passing baseline -- otherwise ``assay run``
+#: emits artifacts its own ``assay verify`` refuses. The earlier independent
+#: terminals were:
 #:
 #: * ``MUTATION_DISCOVERY_FAILED`` -- ``run_mutation``'s discovery boundary
 #:   (P21 work item 4 / A-171), reachable today for unparseable Python.
@@ -2591,6 +2590,8 @@ _BASELINE_NEVER_READ = object()
 #: * ``GIT_FAILED`` -- the diff R2 resolves its targets from.
 #: * ``UNREADABLE_ARTIFACT`` -- the bounded source read during target
 #:   resolution (P20 work item 5).
+#: * ``EXEC_FAILED`` -- B145's required cgroup counters are unavailable before
+#:   native candidates start, or a resource-limit event aborts witness replay.
 #:
 #: This is NOT a licence to accept any pairing: the STATUS is re-derived from
 #: the closed vocabulary below rather than taken from the artifact, so a
@@ -2621,6 +2622,7 @@ _INDEPENDENT_R2_TERMINALS: frozenset[ReasonCode] = frozenset(
         ReasonCode.BASE_IS_HEAD,
         ReasonCode.GIT_FAILED,
         ReasonCode.UNREADABLE_ARTIFACT,
+        ReasonCode.EXEC_FAILED,
     }
 )
 
@@ -2628,13 +2630,13 @@ _INDEPENDENT_R2_TERMINALS: frozenset[ReasonCode] = frozenset(
 #: baseline's REASON but not of whether the baseline PASSED at all.
 #:
 #: ``_INDEPENDENT_R2_TERMINALS`` stopped after re-deriving the OUTCOME, so a
-#: payload-free R2 claim could name any of the six beside any baseline -- and
-#: three of them are producible only on a branch ``run_lane`` reaches after
+#: payload-free R2 claim could name any of the seven beside any baseline -- and
+#: four of them are producible only on a branch ``run_lane`` reaches after
 #: the command PASSED, because target resolution and mutation discovery are
 #: both inside ``if r2_declared and result.outcome is Outcome.PASS``
 #: (``runner.py``); the not-PASS arm renders
 #: ``build_mutation_claim(result, None)``, which propagates the baseline's own
-#: pair verbatim (A-116). So one of these three beside a non-passing baseline
+#: pair verbatim (A-116). So one of these four beside a non-passing baseline
 #: is a misreported reason code, and that was accepted.
 #:
 #: The other three are deliberately NOT here, each with a producer path that
@@ -2650,15 +2652,23 @@ _INDEPENDENT_R2_TERMINALS: frozenset[ReasonCode] = frozenset(
 #:   ``R0 = FAIL/COMMAND_FAILED`` beside ``R2 = NO_MEASUREMENT/DIRTY_TREE`` is
 #:   a truthful artifact.
 #:
+#: ``EXEC_FAILED`` joins this subset under B145: native R2 either refuses
+#: before candidate execution when required counters are unavailable, or
+#: stops on a resource-limit event during candidate/witness execution. Both
+#: paths are reached only after R0 passes; when R0 does not pass, the producer
+#: propagates its pair and never starts native R2.
+#:
 #: A-241's own headline example was ``ERROR``/``GIT_FAILED`` against an
 #: ``ERROR``/``EXEC_FAILED`` baseline. That example is WRONG -- it is exactly
-#: the cleanup path above and is legitimate; the gap is real for the other
-#: three. Recorded here because the wrong example is the more memorable half.
+#: the cleanup path above and is legitimate; the gap is real for the four
+#: post-baseline-only terminals. Recorded here because the wrong example is
+#: the more memorable half.
 _POST_BASELINE_R2_TERMINALS: frozenset[ReasonCode] = frozenset(
     {
         ReasonCode.MUTATION_DISCOVERY_FAILED,
         ReasonCode.BASE_IS_HEAD,
         ReasonCode.UNREADABLE_ARTIFACT,
+        ReasonCode.EXEC_FAILED,
     }
 )
 
@@ -2812,9 +2822,9 @@ def _check_r2_rederivation(verdict: Verdict, failures: list[str]) -> None:
                 f"{claim.reason_code.value} is "
                 f"{'no outcome' if expected_outcome is None else expected_outcome.value}"
             )
-        # (A-245, closing A-241) "Independent of the baseline's REASON" is not
-        # "independent of whether the baseline ran". For the three terminals
-        # only a PASSING baseline can lead to, a non-passing R0 sibling means
+        # (A-245, closing A-241; B145) "Independent of the baseline's REASON"
+        # is not "independent of whether the baseline ran". A non-passing R0
+        # sibling cannot accompany these four post-baseline-only terminals,
         # the producer would have propagated ITS pair verbatim instead
         # (A-116) -- so the recorded reason code is a misreport, and only the
         # OUTCOME agreeing was hiding it.

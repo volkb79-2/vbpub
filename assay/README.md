@@ -905,8 +905,9 @@ answer.
      lane legitimately differs from the ambient environment. The optional
      top-level `[defaults].env_passthrough` names project-wide allowed inputs;
      see the [default policy](docs/DESIGN-GUIDE.md#5-defaults-doctrine-dstdns-agents-42a-applied).
-     A `source_roots` entry may name a directory or one exact file reached
-     without traversing a symlink; see
+     A `source_roots` entry may name a directory or one exact, tracked file
+     present at the judged commit, reached without traversing a symlink; an
+     ignored or untracked worktree file is not enough. See
      [the design rule](docs/DESIGN-GUIDE.md#file-scoped-source-roots) and
      [worked lane](docs/CONSUMERS.md#scope-a-changed-lines-lane-to-one-file-b141).
 2. `assay run <lane>` executes the lane's declared command exactly once,

@@ -399,8 +399,10 @@ artifact = "coverage.json"
 ```
 
 The gate refuses a missing file, an absolute path, a file path traversing a
-symlink, or a path resolving outside the project root. A directory continues
-to select its descendants as before.
+symlink, a file absent from the judged commit, or a path resolving outside the
+project root. An ignored or untracked local file does not count: commit it
+before running the lane, or point `source_roots` at a tracked source file. A
+directory continues to select its descendants as before.
 See the [design rule](DESIGN-GUIDE.md#file-scoped-source-roots) for exact
 membership and containment behavior.
 

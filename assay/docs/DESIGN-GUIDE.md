@@ -287,6 +287,15 @@ in-project directory symlink can still name a directory root. Both forms
 resolve under the project root, and an absent path or a path escaping through
 `..` or a symlink refuses.
 
+**An exact-file root must also exist as a regular tracked file at the judged
+commit.** Config loading sees the invoking checkout, while R1/R2 execute from
+the committed snapshot. An ignored or untracked local file can therefore pass
+load-time existence checks but disappear from that snapshot; if Assay then
+drops its file key, a changed-lines lane can measure nothing and return 0/0
+PASS. Before the lane command starts, Assay checks the exact Git tree entry and
+refuses with `ERROR`/`BAD_LANE_CONFIG` unless it is a regular file. Commit
+the file or declare a tracked source path.
+
 The ingested R2 path applies the same boundary to report keys before resolving
 them: a report naming a sibling symlink cannot turn the resolved target into
 evidence for an exact-file root.

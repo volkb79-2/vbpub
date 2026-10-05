@@ -5843,6 +5843,60 @@ def run_lane(
             budget_seconds=lane.budget_seconds, monotonic=monotonic
         )
 
+    # B141: config loading proves that an exact-file root exists in the
+    # invoking checkout, but ignored/untracked files are absent from the
+    # judged commit snapshot. Without this check, _source_root_file_keys()
+    # drops such a root in the snapshot and changed-line judging can silently
+    # become 0/0. Read Git's exact tree entry before the lane command starts;
+    # a file root must be an ordinary tracked blob at this commit.
+    judge = lane.judge
+    project_prefix: PurePosixPath | None = None
+    if (
+        adapter is not None
+        and judge is not None
+        and judge.source_roots is not None
+    ):
+        try:
+            repo_top = git.repo_top(repo, remaining=deadline.remaining)
+            project_prefix = _resolved_project_prefix(repo_top, project_root)
+            for raw_root in judge.source_roots:
+                if not (project_root / raw_root).is_file():
+                    continue
+                normalized = PurePosixPath(
+                    os.path.normpath(raw_root).replace(os.sep, "/")
+                )
+                repo_path = (project_prefix / normalized).as_posix()
+                entry = git.tree_entry_info(
+                    repo, commit, repo_path, remaining=deadline.remaining
+                )
+                if entry not in (("100644", "blob"), ("100755", "blob")):
+                    raise AssayError(
+                        f"exact-file source root {raw_root!r} must name a tracked "
+                        f"regular file at judged commit {commit}; commit the file "
+                        f"or choose a tracked source path",
+                        outcome=Outcome.ERROR,
+                        reason_code=ReasonCode.BAD_LANE_CONFIG,
+                    )
+        except AssayError as exc:
+            file_root_detail = announce_refusal(exc, diagnostics=diagnostics)
+            return refuse_lane(
+                lane,
+                commit=commit,
+                status=exc.outcome,
+                reason_code=exc.reason_code,
+                argv_append=argv_append,
+                passthrough_source=passthrough_source,
+                project_prefix=project_prefix,
+                infrastructure_source=infrastructure_source,
+                infrastructure_environment=infrastructure_environment,
+                assay_version=assay_version,
+                judge_provenance=judge_provenance,
+                evidence=evidence,
+                declared_evidence=declared_evidence,
+                clock=clock,
+                detail=file_root_detail,
+            )
+
     # (B010) A lane may declare WHERE its command is meaningful. Run the probe
     # in the INVOKING environment before any repository or snapshot work and
     # refuse loudly on a nonzero exit, rather than surfacing an unrelated
