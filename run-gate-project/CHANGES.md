@@ -394,6 +394,26 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 
 <!-- cmru: release history -->
 
+### Adoption / Migration Notes
+
+- Declare an explicit environment `mode`: `ephemeral`, `exec`, or `host`.
+  The name `bare-host` is still only a name; declare `mode = "host"` for it.
+- With `--worktree PATH`, put `run-gate.toml` at the project path inside the
+  selected worktree and keep shared settings in its nearest
+  `run-gate.root.toml`. A missing selected config is a refusal.
+- Container environments must resolve `cgroup_slice_env` to
+  `CGROUP_PARENT_DEV_GATES`; the host must provide the loaded gates slice.
+- Admission remains off unless `[admission] enabled = true`. Enabled projects
+  must set `max_concurrent` and a locally available `ticket_image`.
+- Replace shell conjunctions with `kind = "sequence"`; declare
+  `[project].trunk` for first-parent merge-base behavior.
+- To import external Assay lanes, keep `[assay].command` and `[assay].pins`
+  and add `import = { environment = "...", lanes = [...] }`.
+- Container environments that run Assay must mount a writable durable
+  `state_root`; run-gate checks the mount before starting Assay.
+- `run-gate status [--worktree PATH] [--json]` provides a read-only view of
+  runner occupancy, inflight runs, and admission tickets.
+
 ## [23.9.1] - 2026-09-18
 <!-- cmru: generated -->
 <!-- cmru: source-end=084dfdfa2084652a937505ca2fc4535d33aff657 -->
