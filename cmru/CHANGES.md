@@ -16,8 +16,11 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ### Changed
 - Extend strict root/project config with `[versions]`; project overlays resolve and store state project-side, while root targets retain root policy/state.
+- `tester-gate` now requires `CMRU_TESTER_PIDS_LIMIT` (positive integer, passed as `--pids-limit`; declare it in `[env]`, estate value `4096`) and, with `--enable-docker`, `CMRU_TESTER_DIND_MEMORY`/`_CPUS`/`_PIDS_LIMIT`. The probe and DinD images run privileged, so they must be digest-pinned (`repo@sha256:<64 hex>`), are started `--pull=never` and must already be present locally; an image reference starting with `-` is refused.
+- `cmru` wheel bundles with a declared `[wheel].find_links` now build with `--no-index` (the wheelhouse is the only source).
 
 ### Fixed
+- `tester-gate` (KI-52): run the gate workload and the DinD sidecar under `--init` with a required pids limit, give every container an exact name and stop/remove it on SIGTERM/SIGHUP/Ctrl-C, copy the container's own `pids.events`/`memory.events` out before `--rm` deletes the cgroup and fail with exit 3 (naming the counter) on a non-zero `max`/`oom_kill` or a missing file, bound the DinD sidecar, time-out the DinD readiness probe, and pick the visible (last) entry on equal-length mount points. `tester-unified` disables detached git maintenance and builds estate-internal packages offline from the copied sources.
 - Mount the git worktree root in the wheel-builder container (not just the project's parent) so projects nested below the top level resolve their git version, and forward `SOURCE_DATE_EPOCH` / `SETUPTOOLS_SCM_PRETEND_VERSION_FOR_*` by name into the build (KI-53).
 - Add the monorepo's sibling `cli-extended` and `worktree` source roots to
   bound CMRU subprocesses, so system-Python release scripts can import the

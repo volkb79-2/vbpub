@@ -481,9 +481,11 @@ overrides a value only where it has a genuinely different requirement). The requ
 | `CMRU_TESTER_MEMORY` | gate container memory ceiling (no default — refuses unbounded) |
 | `CMRU_TESTER_MEMORY_SWAP` | combined mem+swap total (Docker semantics) |
 | `CMRU_TESTER_CPUS` | finite decimal CPU ceiling of at least `0.00001`; smaller values would remove Docker's per-container bound |
-| `CMRU_TESTER_CGROUP_PROBE_IMAGE` | host-systemd slice probe image |
+| `CMRU_TESTER_PIDS_LIMIT` | positive integer `--pids-limit` for the gate container (no default; without it the ceiling is the host's systemd `DefaultTasksMax`, shared with production) |
+| `CMRU_TESTER_CGROUP_PROBE_IMAGE` | host-systemd slice probe image; runs privileged with host PID, so it must be digest-pinned (`repo@sha256:<64 hex>`) and present locally (`--pull=never`) |
 | `CMRU_TESTER_CGROUP_PARENT` | required host gates slice (`${CGROUP_PARENT_DEV_GATES}`) |
-| `CMRU_TESTER_DIND_IMAGE` | **only** with `--enable-docker` (nested Docker daemon) |
+| `CMRU_TESTER_DIND_IMAGE` | **only** with `--enable-docker` (nested Docker daemon); privileged, so digest-pinned and local like the probe image |
+| `CMRU_TESTER_DIND_MEMORY`, `CMRU_TESTER_DIND_CPUS`, `CMRU_TESTER_DIND_PIDS_LIMIT` | **only** with `--enable-docker`: the sidecar's own memory / CPU / pids limits |
 | `CMRU_WHEEL_BUILDER_IMAGE` | required by `wheel-build` |
 
 These reach the step through `cmru release`. **`cmru standards` checks this exact set** against
@@ -498,9 +500,19 @@ The CPU setting must be a finite decimal of at least `0.00001`; CMRU passes it t
 set `--cpu-period`, because Docker rejects those two CPU controls together. Smaller positive
 values, zero, non-finite values, and values Docker cannot represent are refused instead of
 being rounded to an absent CPU limit.
-`--memory`, `--memory-swap`, and `--cpus` bound the tester workload. With `--enable-docker`,
-the DinD sidecar is also placed under `CMRU_TESTER_CGROUP_PARENT`, but currently has no separate
-per-container CPU or memory cap; the policy decision is open in the canonical CLI audit.
+`--memory`, `--memory-swap`, `--cpus` and `--pids-limit` bound the tester workload. With
+`--enable-docker`, the DinD sidecar is also placed under `CMRU_TESTER_CGROUP_PARENT` and has its
+own required `--dind-memory`/`--dind-cpus`/`--dind-pids-limit` (decided 2026-10-05).
+
+The gate workload and the DinD sidecar run under `--init`, every container has an exact name
+(`cmru-tester-<uuid8>`, `cmru-probe-<uuid8>`, `cmru-tester-dind-<12 hex>`), and SIGTERM/SIGHUP
+stop and remove them by that name. After your command exits, cmru reads the container's own
+`pids.events` and `memory.events` (copied by an in-container wrapper to
+`.cmru/tester-gate-events-<uuid>.txt` in your worktree, removed afterwards): a missing file, a
+non-zero `pids.events max` or a non-zero `memory.events oom_kill` makes the step exit **3**
+(infrastructure failure, naming the counter) even if your command exited 0. Otherwise your
+command's own exit status is returned unchanged. `.cmru/` is git-ignored in vbpub; add it to your
+project's ignore file if the gate runs against a worktree you also diff.
 
 ### Reproducing a gate step by hand
 
@@ -511,7 +523,8 @@ forget, but it is faster to set it before the first try:
 ```sh
 export CMRU_TESTER_UNIFIED_IMAGE=tester-unified:local \
        CMRU_TESTER_MEMORY=3g CMRU_TESTER_MEMORY_SWAP=16g CMRU_TESTER_CPUS=1.5 \
-       CMRU_TESTER_CGROUP_PROBE_IMAGE=debian:trixie-slim \
+       CMRU_TESTER_PIDS_LIMIT=4096 \
+       CMRU_TESTER_CGROUP_PROBE_IMAGE="$(docker image inspect --format '{{index .RepoDigests 0}}' debian:trixie-slim)" \
        CMRU_TESTER_CGROUP_PARENT="${CGROUP_PARENT_DEV_GATES:?CGROUP_PARENT_DEV_GATES is required}"
 # then run the step's argv
 ```
