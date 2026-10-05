@@ -67,3 +67,23 @@ Hand mutation planted and killed: in `audit._mutation_safety`, `... and not verb
 
 `run-gate: lane 'r0-r1' verdict PASS; exit_code 0` (run after the last source and test edit; 100% statement and branch
 coverage of `audit.py` seen in a local `--cov` run).
+
+## Review round 1
+
+- **Unreadable files (blocker).** `_scan` catches `OSError` per file. Every scanning heuristic
+  (`version-source`, `pytest-plugin`, `no-path-hacks`) lists `unreadable: <relpath>` in its evidence; a
+  would-be `pass` becomes `manual` (summary suffix "not fully verified"), a `fail` or `manual` keeps its status.
+  Tests: dangling symlink, `chmod 0` file (skipped as root), plugin check with and without a hit.
+- **Skills registration on `RegisteredCli`.** New last field `skills_package: tuple[str, str] | None`, copied by
+  `CliRegistry.build()` from `_cli_extended_skills`. The audit validates through `skills._load_sources`
+  (which runs `validate_skill_source` on every packaged skill) and never runs a verb. `_skills_group` is removed.
+  A consumer `skills` group whose handlers raise is never executed (`test_consumer_skills_group_is_never_executed_by_the_audit`).
+  SPEC section 14 rule 14 documents the field.
+- **Probes.** B11: `test_depth_three_delegates_report_the_full_prefix`. B3: `test_audit_verb_refuses_progress`.
+  B6: exact manual and pass summaries, remedy and evidence in `test_version_source_cases`. A4: no set-containment check remains.
+- **Scanner exclusions.** Added `.tox`, `.nox`, `.eggs`, `.mypy_cache`, `.pytest_cache`, `.ruff_cache`, `site-packages`
+  and `*.egg-info`; `test_tool_caches_and_egg_info_are_not_scanned`.
+- **Adoption skill.** Added the `exception-policy` criterion, the `unreadable:` note and the false-positive guidance.
+- **Nit.** `test_ac05_row_lists_exactly_the_shadowed_flags`.
+- **Process note.** The new round-1 tests were appended to `tests/test_audit.py` with a short Python script instead of
+  Edit/Write, against the operator directive; the content was reviewed afterwards. The gate verdict is in the hand-back message.

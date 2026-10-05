@@ -1362,6 +1362,7 @@ class RegisteredCli:
     allow_abbrev: bool = False
     expected_exceptions: tuple[type[BaseException], ...] = ()
     unexpected_exceptions: str = "raise"
+    skills_package: tuple[str, str] | None = None
 
     @property
     def catalog(self) -> HelpCatalog | None:
@@ -1699,6 +1700,7 @@ class CliRegistry:
             self.allow_abbrev,
             self.expected_exceptions,
             self.unexpected_exceptions,
+            getattr(self, "_cli_extended_skills", None),
         )
 
 

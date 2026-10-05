@@ -13,7 +13,12 @@ skip a `manual` item: each one needs a decision recorded in the findings file.
 1. Run `cli-extended audit --json` from the project (pass `--config PATH` or
    `--cli ID` when needed). Exit 2 means the project configuration or factory
    could not load; fix that first. Items marked `heuristic:` are text scans and
-   can be wrong; confirm them by reading the named files.
+   can be wrong; confirm them by reading the named files. An `unreadable:` line
+   in the evidence names a file the scan could not read; make it readable or
+   judge it by hand, because a scan that skipped files is only `manual`.
+   When a heuristic `fail` names files that are in fact fine, record a `wontfix`
+   adoption finding naming the file and why it is a false positive. Never edit
+   the code just to satisfy a heuristic.
 2. Fix every item with status `fail`, following its `remedy` and `evidence`.
    Re-run the audit until no item fails.
 3. For every `warn` item, either fix it or record a `wontfix` finding with a
@@ -42,6 +47,9 @@ skip a `manual` item: each one needs a decision recorded in the findings file.
 - `synopsis-overrides`: keep a hand-written `synopsis` only when the derived
   usage line would mislead (for example a complex alternative the declared
   options cannot express). Otherwise open a finding to delete it.
+- `exception-policy` (a `warn`): use `unexpected_exceptions="report"` unless the
+  tool deliberately wants raw tracebacks for operators; in that case record the
+  reason as a `wontfix` finding.
 - `configure-callbacks`: a `configure` callback is legitimate only for syntax
   the declarative specs cannot express. If it adds plain positionals, options,
   or conflicts and requirements between options, open a finding to move it to

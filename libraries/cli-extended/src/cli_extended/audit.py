@@ -9,11 +9,8 @@ to one onto the ``audit:`` rows of ``docs/ADOPTION-CHECKLIST.md``.
 
 from __future__ import annotations
 
-import io
-import json
 import os
 import re
-import tempfile
 import tomllib
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, replace
@@ -29,6 +26,7 @@ from .review import (
     check_cli_surface,
     load_cli_review_catalog,
 )
+from .skills import SkillError, _load_sources
 from .surface import DEFAULT_MAX_CANDIDATES, SurfaceError, export_cli_surface
 
 Status = Literal["pass", "warn", "fail", "manual"]
@@ -71,8 +69,13 @@ SHADOWED_REPLACEMENTS: dict[str, str] = {
 }
 
 EXCLUDED_DIRECTORIES = frozenset(
-    {".git", ".venv", "venv", "node_modules", "build", "dist", "__pycache__", ".worktrees"}
+    {
+        ".git", ".venv", "venv", "node_modules", "build", "dist", "__pycache__",
+        ".worktrees", ".tox", ".nox", ".eggs", ".mypy_cache", ".pytest_cache",
+        ".ruff_cache", "site-packages",
+    }
 )
+EXCLUDED_DIRECTORY_SUFFIX = ".egg-info"
 SOURCE_SUFFIXES = (".py", ".toml")
 PLUGIN_SUFFIXES = (".py", ".toml", ".ini", ".cfg")
 PLUGIN_MODULE = "cli_extended.pytest_plugin"
@@ -152,26 +155,63 @@ def _options(app: RegisteredCli) -> list[tuple[str, OptionSpec]]:
     return found
 
 
-def _scan(root: Path, suffixes: tuple[str, ...]) -> list[tuple[Path, str]]:
+def _scan(
+    root: Path, suffixes: tuple[str, ...]
+) -> tuple[list[tuple[Path, str]], list[str]]:
+    """Read matching text files; return them plus the relative paths that failed."""
+
     found: list[tuple[Path, str]] = []
+    unreadable: list[str] = []
     for directory, names, files in os.walk(root):
-        names[:] = sorted(name for name in names if name not in EXCLUDED_DIRECTORIES)
+        names[:] = sorted(
+            name
+            for name in names
+            if name not in EXCLUDED_DIRECTORIES
+            and not name.endswith(EXCLUDED_DIRECTORY_SUFFIX)
+        )
         for name in sorted(files):
             if name.endswith(suffixes):
                 path = Path(directory) / name
-                found.append((path, path.read_text(encoding="utf-8", errors="replace")))
-    return found
+                try:
+                    text = path.read_text(encoding="utf-8", errors="replace")
+                except OSError:
+                    unreadable.append(_relative(path, root))
+                else:
+                    found.append((path, text))
+    return found, unreadable
 
 
 def _relative(path: Path, root: Path) -> str:
     return path.relative_to(root).as_posix()
 
 
+def _verified(
+    check: str,
+    status: Status,
+    summary: str,
+    evidence: tuple[str, ...],
+    unreadable: list[str],
+    remedy: str | None = None,
+) -> AuditItem:
+    """A scan result: unreadable files are listed and keep a pass from being trusted."""
+
+    evidence = (*evidence, *(f"unreadable: {path}" for path in unreadable))
+    if status == "pass" and unreadable:
+        return _item(
+            check,
+            "manual",
+            f"{summary}; not fully verified, {len(unreadable)} unreadable file(s)",
+            evidence,
+            "Make the unreadable files readable, then re-run the audit.",
+        )
+    return _item(check, status, summary, evidence, remedy)
+
+
 # --------------------------------------------------------------------- checks
 
 
 def _version_source(cli: CliConfig, _app: RegisteredCli, _p: ProjectConfig) -> AuditItem:
-    files = _scan(cli.root, SOURCE_SUFFIXES)
+    files, unreadable = _scan(cli.root, SOURCE_SUFFIXES)
     hand_rolled = [
         _relative(path, cli.root)
         for path, text in files
@@ -179,20 +219,25 @@ def _version_source(cli: CliConfig, _app: RegisteredCli, _p: ProjectConfig) -> A
         and ("importlib.metadata" in text or (_REGEX_USE.search(text) and "VERSION" in text))
     ]
     if hand_rolled:
-        return _item(
+        return _verified(
             "version-source",
             "fail",
             "heuristic: a hand-rolled version reader sits next to CliIdentity(...)",
             tuple(hand_rolled),
+            unreadable,
             "Replace it with CliIdentity.resolve(name=..., long_name=..., distribution=...).",
         )
     if any("CliIdentity.resolve(" in text for _path, text in files):
-        return _item("version-source", "pass", "heuristic: CliIdentity.resolve( is used")
-    return _item(
+        return _verified(
+            "version-source", "pass", "heuristic: CliIdentity.resolve( is used", (), unreadable
+        )
+    return _verified(
         "version-source",
         "manual",
         "heuristic: no CliIdentity.resolve( found; confirm where the version comes from",
-        remedy="Use CliIdentity.resolve so the version has one source and no fallback.",
+        (),
+        unreadable,
+        "Use CliIdentity.resolve so the version has one source and no fallback.",
     )
 
 
@@ -402,15 +447,6 @@ def _surface_complete(cli: CliConfig, app: RegisteredCli, _p: ProjectConfig) -> 
     )
 
 
-def _skills_group(app: RegisteredCli) -> bool:
-    for verb in app.registered_verbs:
-        if verb.name == "skills" and verb.delegate is not None:
-            return {"install", "uninstall", "check", "list"} <= {
-                nested.name for nested in verb.delegate.registered_verbs
-            }
-    return False
-
-
 def _skills_packaged(cli: CliConfig, app: RegisteredCli, _p: ProjectConfig) -> AuditItem:
     loose = sorted(
         _relative(path, cli.root)
@@ -424,29 +460,23 @@ def _skills_packaged(cli: CliConfig, app: RegisteredCli, _p: ProjectConfig) -> A
             tuple(loose),
             "Move them into package data and ship them with register_skills_verbs.",
         )
-    if not _skills_group(app):
+    if app.skills_package is None:
         return _item(
             "skills-packaged",
             "manual",
             "no packaged skills registered; does this tool need skills?",
             remedy="If agents drive this tool, register_skills_verbs(registry, package=...).",
         )
-    stdout, stderr = io.StringIO(), io.StringIO()
-    with tempfile.TemporaryDirectory() as destination:
-        code = app.run(
-            argv=["skills", "list", "--json", "--dest", destination],
-            stdout=stdout,
-            stderr=stderr,
-        )
-    if code != 0:
+    try:
+        names = sorted(_load_sources(*app.skills_package))
+    except SkillError as exc:
         return _item(
             "skills-packaged",
             "fail",
             "a packaged skill does not validate",
-            tuple(line for line in stderr.getvalue().splitlines() if line.strip()),
+            (str(exc),),
             "Fix the named SKILL.md (frontmatter name, description, LF endings).",
         )
-    names = sorted({entry["name"] for entry in json.loads(stdout.getvalue())["skills"]})
     return _item(
         "skills-packaged",
         "pass",
@@ -468,23 +498,23 @@ def _doctor(_c: CliConfig, app: RegisteredCli, _p: ProjectConfig) -> AuditItem:
 def _pytest_plugin(cli: CliConfig, _a: RegisteredCli, _p: ProjectConfig) -> AuditItem:
     if cli.review is None:
         return _item("pytest-plugin", "manual", "heuristic: no review catalog configured")
-    found = [
-        _relative(path, cli.root)
-        for path, text in _scan(cli.root, PLUGIN_SUFFIXES)
-        if PLUGIN_MODULE in text
-    ]
+    files, unreadable = _scan(cli.root, PLUGIN_SUFFIXES)
+    found = [_relative(path, cli.root) for path, text in files if PLUGIN_MODULE in text]
     if found:
-        return _item(
+        return _verified(
             "pytest-plugin",
             "pass",
             f"heuristic: {PLUGIN_MODULE} is referenced",
             tuple(found),
+            unreadable,
         )
-    return _item(
+    return _verified(
         "pytest-plugin",
         "fail",
         f"heuristic: a review catalog exists but {PLUGIN_MODULE} is not enabled",
-        remedy=f'Add `-p {PLUGIN_MODULE}` to pytest addopts or `pytest_plugins` in conftest.py.',
+        (),
+        unreadable,
+        f"Add `-p {PLUGIN_MODULE}` to pytest addopts or `pytest_plugins` in conftest.py.",
     )
 
 
@@ -536,22 +566,30 @@ def _dependency_declared(cli: CliConfig, _a: RegisteredCli, _p: ProjectConfig) -
 
 
 def _no_path_hacks(cli: CliConfig, _a: RegisteredCli, _p: ProjectConfig) -> AuditItem:
+    files, unreadable = _scan(cli.root, SOURCE_SUFFIXES)
     hits = [
         _relative(path, cli.root)
-        for path, text in _scan(cli.root, SOURCE_SUFFIXES)
+        for path, text in files
         if path.name != GATE_FILE_NAME
         and "libraries/cli-extended" in text
         and ("sys.path" in text or "PYTHONPATH" in text)
     ]
     if hits:
-        return _item(
+        return _verified(
             "no-path-hacks",
             "fail",
             "heuristic: source paths point at the library checkout",
             tuple(hits),
+            unreadable,
             "Install cli-extended as a dependency instead of putting its source on a path.",
         )
-    return _item("no-path-hacks", "pass", "heuristic: no sys.path/PYTHONPATH vendoring found")
+    return _verified(
+        "no-path-hacks",
+        "pass",
+        "heuristic: no sys.path/PYTHONPATH vendoring found",
+        (),
+        unreadable,
+    )
 
 
 _CHECKS: dict[str, Callable[[CliConfig, RegisteredCli, ProjectConfig], AuditItem]] = {

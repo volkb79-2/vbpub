@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import sys
 import textwrap
@@ -227,7 +228,13 @@ def test_version_source_cases(tmp_path, files, status):
         assert item.summary == "heuristic: CliIdentity.resolve( is used"
         assert item.evidence == ()
     if status == "manual":
-        assert item.summary.startswith("heuristic: no CliIdentity.resolve( found")
+        assert item.summary == (
+            "heuristic: no CliIdentity.resolve( found; confirm where the version comes from"
+        )
+        assert item.remedy == (
+            "Use CliIdentity.resolve so the version has one source and no fallback."
+        )
+        assert item.evidence == ()
 
 
 def test_version_source_failure_evidence_is_relative_and_ordered(tmp_path):
@@ -640,32 +647,39 @@ def test_skills_packaged_manual_when_not_registered(tmp_path):
     )
 
 
-def test_skills_group_must_be_the_library_delegate(tmp_path):
+def test_consumer_skills_group_is_never_executed_by_the_audit(tmp_path):
     body = '''
-    own = VerbSpec("skills", description="my own", handler=lambda *_: 0)
-    registry.register(own)
-    child = CliRegistry(
-        CliIdentity("AUDIT", "1.0", "Audit Tool", command="audit-tool"),
-        prog="audit-tool other", description="Other.", unexpected_exceptions="report",
-    )
-    for name in ("install", "uninstall", "check", "list"):
-        child.register(VerbSpec(name, description=name, handler=lambda *_: 0))
-    registry.register(VerbSpec("other", description="other", delegate=child.build()))
-    '''
-    assert _audit(tmp_path, body=body)["skills-packaged"].status == "manual"
+    def boom(*_):
+        raise RuntimeError("the audit must not run consumer handlers")
 
-
-def test_skills_group_missing_a_verb_is_not_the_library_group(tmp_path):
-    body = '''
     child = CliRegistry(
         CliIdentity("AUDIT", "1.0", "Audit Tool", command="audit-tool"),
         prog="audit-tool skills", description="Skills.", unexpected_exceptions="report",
     )
-    for name in ("install", "uninstall", "check"):
-        child.register(VerbSpec(name, description=name, handler=lambda *_: 0))
+    for name in ("install", "uninstall", "check", "list"):
+        child.register(VerbSpec(name, description=name, handler=boom))
     registry.register(VerbSpec("skills", description="skills", delegate=child.build()))
+    registry.register(VerbSpec("own", description="own", handler=boom))
     '''
-    assert _audit(tmp_path, body=body)["skills-packaged"].status == "manual"
+    item = _audit(tmp_path, body=body)["skills-packaged"]
+    assert item.status == "manual"
+    assert item.summary == "no packaged skills registered; does this tool need skills?"
+
+
+def test_registered_cli_carries_the_skills_registration(tmp_path, monkeypatch):
+    libs = tmp_path / "libs"
+    libs.mkdir()
+    name = f"{SKILL_PACKAGES}carry"
+    _skill_package(libs, name, {"a": _skill("a")})
+    monkeypatch.syspath_prepend(str(libs))
+    registry = cli_extended.CliRegistry(
+        cli_extended.CliIdentity("T", "1.0", "Tool", command="tool"), prog="tool",
+        description="d",
+    )
+    registry.register(cli_extended.VerbSpec("x", description="x", handler=lambda *_: 0))
+    assert registry.build().skills_package is None
+    cli_extended.register_skills_verbs(registry, package=name)
+    assert registry.build().skills_package == (name, "skills")
 
 
 # ------------------------------------------------------------------------- doctor
@@ -988,3 +1002,121 @@ def test_o4_adoption_skill_validates_and_is_listed(tmp_path, capsys):
     assert code == 0
     assert "cli-extended-adoption" in out
     assert "cli-extended-review" in out
+
+
+# ------------------------------------------------- review round 1
+
+
+def _nested_body():
+    return '''
+    def make(name, child=None):
+        registry_ = CliRegistry(
+            CliIdentity("AUDIT", "1.0", "Audit Tool", command="audit-tool"),
+            prog="audit-tool " + name, description=name, unexpected_exceptions="report",
+        )
+        if child is None:
+            registry_.register(VerbSpec(
+                "leaf", description="leaf", handler=lambda *_: 0, include_json=False,
+                options=(OptionSpec(("--json",), "json"),),
+            ))
+        else:
+            registry_.register(VerbSpec(
+                child[0], description=child[0], delegate=child[1], include_progress=False,
+            ))
+        return registry_.build()
+
+    level3 = make("level2")
+    level2 = make("level1", ("level2", level3))
+    registry.register(VerbSpec(
+        "level1", description="level1", delegate=level2, include_progress=False,
+    ))
+    '''
+
+
+def test_depth_three_delegates_report_the_full_prefix(tmp_path):
+    item = _audit(tmp_path, body=_nested_body())["shadowed-controls"]
+    assert item.evidence == (
+        "level1 level2 leaf: --json shadows a library control; "
+        "use the library --json (VerbSpec include_json)",
+    )
+
+
+def test_audit_verb_refuses_progress(tmp_path, monkeypatch, capsys):
+    workflow_project(tmp_path, monkeypatch)
+    code, out, err = _run(capsys, "audit", "--progress", "plain")
+    assert code == 2
+    assert out == ""
+    assert "--progress" in err
+
+
+@pytest.mark.skipif(not hasattr(os, "symlink"), reason="needs symlinks")
+def test_dangling_symlink_is_listed_not_fatal(tmp_path):
+    files = {"a.py": "CliIdentity.resolve(name='x')\n"}
+    root = _setup(tmp_path, files=files)
+    (root / "gone.py").symlink_to(root / "missing-target.py")
+    items = _run_audit(root / "cli-extended.toml")
+    version = items["version-source"]
+    assert version.status == "manual"
+    assert version.summary == (
+        "heuristic: CliIdentity.resolve( is used; not fully verified, 1 unreadable file(s)"
+    )
+    assert version.evidence == ("unreadable: gone.py",)
+    assert version.remedy == "Make the unreadable files readable, then re-run the audit."
+    assert items["no-path-hacks"].status == "manual"
+    assert items["no-path-hacks"].evidence == ("unreadable: gone.py",)
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores file permissions")
+def test_unreadable_file_keeps_fail_and_lists_evidence(tmp_path):
+    files = {
+        "bad.py": "CliIdentity(\nimportlib.metadata\n",
+        "secret.py": "x = 1\n",
+    }
+    root = _setup(tmp_path, files=files)
+    (root / "secret.py").chmod(0)
+    try:
+        items = _run_audit(root / "cli-extended.toml")
+    finally:
+        (root / "secret.py").chmod(0o644)
+    assert items["version-source"].status == "fail"
+    assert items["version-source"].evidence == ("bad.py", "unreadable: secret.py")
+    assert items["no-path-hacks"].status == "manual"
+
+
+def test_unreadable_files_do_not_hide_a_plugin_failure(tmp_path, monkeypatch):
+    root = workflow_project(tmp_path, monkeypatch)
+    (root / "gone.py").symlink_to(root / "missing-target.py")
+    item = _run_audit(root / "cli-extended.toml")["pytest-plugin"]
+    assert item.status == "fail"
+    assert item.evidence == ("unreadable: gone.py",)
+    (root / "conftest.py").write_text("cli_extended.pytest_plugin\n", encoding="utf-8")
+    item = _run_audit(root / "cli-extended.toml")["pytest-plugin"]
+    assert item.status == "manual"
+    assert item.evidence == ("conftest.py", "unreadable: gone.py")
+
+
+def test_tool_caches_and_egg_info_are_not_scanned(tmp_path):
+    files = {
+        ".tox/py/lib/a.py": "CliIdentity(\nimportlib.metadata\nlibraries/cli-extended sys.path\n",
+        ".nox/s/a.py": "libraries/cli-extended sys.path\n",
+        ".eggs/a.py": "libraries/cli-extended sys.path\n",
+        ".mypy_cache/a.py": "libraries/cli-extended sys.path\n",
+        ".pytest_cache/a.py": "libraries/cli-extended sys.path\n",
+        ".ruff_cache/a.py": "libraries/cli-extended sys.path\n",
+        "lib/site-packages/a.py": "libraries/cli-extended sys.path\n",
+        "tool.egg-info/a.py": "libraries/cli-extended sys.path\n",
+        "keep.egg_info_not/a.py": "x = 1\n",
+    }
+    items = _audit(tmp_path, files=files)
+    assert items["no-path-hacks"].status == "pass"
+    assert items["version-source"].status == "manual"
+    (tmp_path / "second").mkdir()
+    visible = _audit(
+        tmp_path / "second", files={"egg-info/a.py": "libraries/cli-extended sys.path\n"}
+    )
+    assert visible["no-path-hacks"].status == "fail"
+
+
+def test_ac05_row_lists_exactly_the_shadowed_flags():
+    row = next(row for row in _rows() if row[0] == "AC-05")
+    assert set(re.findall(r"`(--[a-z-]+)`", row[1])) == set(SHADOWED_REPLACEMENTS)

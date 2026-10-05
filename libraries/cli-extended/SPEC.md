@@ -1407,7 +1407,9 @@ tool name is `identity.command_name` and the version is `identity.version`.
     MAINTENANCE) delegating to a child registry that shares the parent's
     `unexpected_exceptions` and logging logger, and records
     `registry._cli_extended_skills = (package, resource_dir)` for the shared
-    `doctor`. A second call on one registry raises `ValueError`. The pure
+    `doctor`; `CliRegistry.build()` copies it to the last field of the built
+    `RegisteredCli`, `skills_package: tuple[str, str] | None` (`None` when
+    skills were not registered), which `cli-extended audit` reads. A second call on one registry raises `ValueError`. The pure
     function `skill_states(package=, resource_dir=, tool=, version=,
     destinations=)` returns `(skill, destination, SkillState)` rows for
     consumers such as `doctor`.
