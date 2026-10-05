@@ -1594,7 +1594,6 @@ def _route_common_actions(
                 "choices": entry["choices"],
                 "const": None,
                 "exclusive_group": None,
-                "exclusive_required": False,
                 "scope": "common",
                 "placement": {
                     "before_verb": bool(entry["before_verb"])
@@ -1603,7 +1602,6 @@ def _route_common_actions(
                     "single_command_invocation": route["single_command"],
                 },
                 "parser_path": list(parser_path),
-                "hidden": False,
             }
         )
     return result
