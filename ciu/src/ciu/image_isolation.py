@@ -275,8 +275,6 @@ def scope_compose_images(compose_yaml: str, instance_id: str | None) -> str:
     # Scope all services which refer to a project-built image in this model,
     # including consumers whose own service has no ``build`` stanza.
     for _service_key, service_node in services_node.value:
-        if not isinstance(service_node, MappingNode):
-            continue
         image_node = mapping_value(service_node, "image")
         if isinstance(image_node, ScalarNode) and image_node.value in built_references:
             scoped = append_instance_tag(image_node.value, instance_id)
@@ -391,8 +389,6 @@ def bake_tag_overrides(print_output: str, instance_id: str) -> list[str]:
             raise ImageIsolationError(
                 f"Buildx target name {target_name!r} cannot be addressed safely with --set"
             )
-        if not scoped:
-            continue
         for tag in scoped:
             overrides.extend(["--set", f"{target_name}.tags={tag}"])
     return overrides

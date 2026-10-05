@@ -5012,7 +5012,12 @@ def resolve_worktree_image_tag_suffix(
             ) from exc
         # A non-Git CIU source tree has no linked-worktree image identity.
         return None
-    entries = list_worktrees(git_root)
+    try:
+        entries = list_worktrees(git_root)
+    except (RuntimeError, ValueError) as exc:
+        raise WorktreeError(
+            f"[CIU-117] cannot inspect Git worktree ownership for {git_root}"
+        ) from exc
     current = [entry for entry in entries if entry.path.resolve() == git_root.resolve()]
     primaries = [entry for entry in entries if entry.is_primary]
     if len(current) != 1 or len(primaries) != 1:
