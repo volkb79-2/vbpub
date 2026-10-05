@@ -240,10 +240,33 @@ def test_watch_accepts_explicit_poll_and_debug_raw(monitor_task_mod, monkeypatch
         ["watch", TASK_UUID, "--poll", "0.25", "--debug-raw"],
     )
 
-    assert result.returncode == 0
+    # The task ended in ERROR, so watch exits 1 after printing the final state.
+    assert result.returncode == 1
     assert sleeps == [0.25]
     assert "root-secret" in result.stderr
     assert "Task finished: ERROR" in result.stderr
+
+
+@pytest.mark.parametrize("state", ["ERROR", "CANCELED", "ROLLBACK", "error"])
+def test_watch_exits_1_for_every_unsuccessful_terminal_state(
+    state, monitor_task_mod, monkeypatch
+):
+    _stub_api(monkeypatch, monitor_task_mod, [{"state": state}])
+    monkeypatch.setattr(monitor_task_mod.time, "sleep", lambda seconds: None)
+
+    result = _invoke_app(monitor_task_mod.build_cli(), ["watch", TASK_UUID])
+
+    assert result.returncode == 1
+    assert f"Task finished: {state}" in result.stderr
+
+
+def test_watch_exits_0_only_for_finished_even_in_lower_case(monitor_task_mod, monkeypatch):
+    _stub_api(monkeypatch, monitor_task_mod, [{"state": "finished"}])
+
+    result = _invoke_app(monitor_task_mod.build_cli(), ["watch", TASK_UUID])
+
+    assert result.returncode == 0
+    assert "Task finished: finished" in result.stderr
 
 
 @pytest.mark.cli_case(

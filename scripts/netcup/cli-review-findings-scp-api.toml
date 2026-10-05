@@ -12,12 +12,12 @@ rationale = "Fixed in commit b30ca374e (explicit defaults in scp-api.py); the li
 
 [[findings]]
 id = "SA-002"
-status = "wontfix"
+status = "fixed"
 severity = "major"
 category = "consistency"
-summary = "--filter means a server-side API query on tasks and firewall-policies (alias of --query) but a client-side text filter on imageflavours and iso-bootable"
-remedy = "Give imageflavours and iso-bootable a client-side --filter only, and drop the --filter alias from tasks and firewall-policies (keep --query), with a deprecation period."
-rationale = "Product decision for the controller. Both spellings are documented in the help and in existing operator scripts; each verb's help text says what its option does, and each spelling has a replay test (tasks-filter, firewall-policies-filter, imageflavours-filter, iso-bootable-filter). Renaming is a breaking change outside this adoption package."
+summary = "--filter means a server-side API query on tasks and firewall-policies (alias of --query) and a client-side text filter on imageflavours and iso-bootable; the semantics are now documented per verb"
+remedy = "State each --filter's semantics in its help line."
+rationale = "Fixed per controller ruling (behaviour kept): tasks and firewall-policies help says 'server-side query (API search)', imageflavours and iso-bootable say 'client-side filter: keep rows where the text appears, ignoring case, in any returned field' (matches _filter_rows: casefolded substring over every field). Each spelling keeps its replay test."
 
 [[findings]]
 id = "SA-003"

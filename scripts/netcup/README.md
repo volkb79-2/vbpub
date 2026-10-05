@@ -236,7 +236,8 @@ Use `install --config FILE` for a separately prepared complete payload. The
 file-driven command monitors the task by default; `--no-monitor` returns after
 task creation. To inspect or monitor a task after the installer has exited,
 use the standalone task CLI. `show` fetches once; `watch` polls until the
-provider reports a terminal state. Bare invocation prints usage and performs
+provider reports a terminal state and exits 0 for `FINISHED`, 1 for `ERROR`,
+`CANCELED` or `ROLLBACK` (the final-state line is printed either way). Bare invocation prints usage and performs
 no credential or API work.
 
 ```bash

@@ -230,6 +230,10 @@ Branch `cli-ext-w9a-netcup`, HEAD `d1d95294f` at the time of writing (this repor
 - Open minor findings (not fixed, no blocker/major open): IH-001..IH-006, MT-003, MT-004, SA-005.
 - SA-001 is the `fixed` blocker for the `AttributeError` crash (commit `b30ca374e`) with replay tests as regression evidence.
 
+### Controller rulings applied after this section (MT-001, SA-002)
+
+MT-001 FIXED: `watch` returns 0 only for FINISHED, 1 for ERROR/CANCELED/ROLLBACK (final-state line unchanged); exit codes in verb help and README; `test_watch_accepts_explicit_poll_and_debug_raw` now expects 1, new tests `test_watch_exits_1_for_every_unsuccessful_terminal_state` (4 params) and `test_watch_exits_0_only_for_finished_even_in_lower_case`; the two catalog rows that replay an ERROR run (`--poll`, `--debug-raw`) now say `expected_exit_status = 1`. SA-002 FIXED as documentation only: per-verb `--filter` help states server-side query vs client-side casefolded substring over every field. Neither change altered a surface signature (sync reported no re-sign). The two sections above that list MT-001/SA-002 as `wontfix` are superseded. The final gate verdict is in the commit message of the ruling commit and the summary returned to the controller.
+
 ### Oracles
 
 - O1: suite lane PASS (above). No previously existing test assertion was changed in this session; the earlier sessions changed only how tests invoke the CLIs (invoke_script, plugin).

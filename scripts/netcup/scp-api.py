@@ -2292,7 +2292,7 @@ def build_cli():
             VerbGroup.EXPLORATION.value,
             cmd_imageflavours if name == "imageflavours" else cmd_iso_bootable,
             arguments=(server_id_optional,),
-            options=(_option(("--filter",), "case-insensitive text filter across returned fields", group="FILTERS", metavar="TEXT", type=_nonempty_text),),
+            options=(_option(("--filter",), "client-side filter: keep rows where the text appears, ignoring case, in any returned field", group="FILTERS", metavar="TEXT", type=_nonempty_text),),
             examples=(example,),
         )
     register(
@@ -2331,7 +2331,7 @@ def build_cli():
         arguments=(_argument("uuid", "Task UUID; omit to list tasks.", metavar="task_uuid", nargs="?", type=_nonempty_text, default=None),),
         configure=_configure_tasks,
         options=(
-            _option(("--query", "--filter"), "search task name, UUID, or server fields (API q filter)", group="FILTERS", metavar="TEXT", dest="query", type=_nonempty_text),
+            _option(("--query", "--filter"), "server-side query (API search) over task name, UUID, or server fields; --filter is an alias", group="FILTERS", metavar="TEXT", dest="query", type=_nonempty_text),
             _option(("--server-id",), "filter by server; required to cancel with protected-server policy", group="FILTERS", metavar="ID", dest="server_filter_id", type=_positive_int),
             _option(("--state",), "filter by task state", group="FILTERS", choices=_TASK_STATES),
             _option(("--limit",), "maximum tasks to return", group="FILTERS", type=_nonnegative_int),
@@ -2375,7 +2375,7 @@ def build_cli():
         "MIXED OPERATIONS", cmd_firewall_policies,
         configure=_configure_firewall_policies,
         options=(
-            _option(("--query", "--filter"), "search policy name/description", group="FILTERS", metavar="TEXT", dest="query", type=_nonempty_text, default=None),
+            _option(("--query", "--filter"), "server-side query (API search) over policy name/description; --filter is an alias", group="FILTERS", metavar="TEXT", dest="query", type=_nonempty_text, default=None),
             _option(("--limit",), "maximum policies to return", group="FILTERS", type=_nonnegative_int, default=None),
             _option(("--offset",), "matching policies to skip", group="FILTERS", type=_nonnegative_int, default=None),
         ),

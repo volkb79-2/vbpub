@@ -3,13 +3,13 @@ cli_id = "monitor-task"
 
 [[findings]]
 id = "MT-001"
-status = "wontfix"
+status = "fixed"
 severity = "major"
 category = "semantics"
 route = "route:entrypoint:monitor-task/watch"
-summary = "watch exits 0 when the task reaches the terminal state ERROR, CANCELED or ROLLBACK"
-remedy = "Exit non-zero (for example 1) when the final state is not FINISHED, and document the codes in the verb help."
-rationale = "Product decision recorded for the controller. watch's contract is 'follow until terminal' and an existing test (test_watch_accepts_explicit_poll_and_debug_raw) pins exit 0 with the final state printed; scripts read the printed 'Task finished: STATE' line. Changing the exit code would change behaviour beyond this adoption package."
+summary = "watch exited 0 when the task reached the terminal state ERROR, CANCELED or ROLLBACK"
+remedy = "Exit 1 when the final state is not FINISHED and document the codes in the verb help."
+rationale = "Fixed per controller ruling: watch returns 0 only for FINISHED and 1 for any other terminal state, still printing the final-state line; the exit codes are in the verb help and README. Tests: test_watch_exits_1_for_every_unsuccessful_terminal_state, test_watch_exits_0_only_for_finished_even_in_lower_case and the updated test_watch_accepts_explicit_poll_and_debug_raw."
 
 [[findings]]
 id = "MT-002"

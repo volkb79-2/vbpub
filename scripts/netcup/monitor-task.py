@@ -233,7 +233,7 @@ def _watch(args: Any, runtime: Any) -> int:
                     else netcup_scp_client._redact_for_log(response_error)
                 )
                 runtime.output.warn(f"Task response error: {safe_error}")
-            return 0
+            return 0 if state.upper() == "FINISHED" else 1
         time.sleep(interval)
 
 
@@ -299,7 +299,9 @@ def build_cli():
         VerbSpec(
             "watch",
             "TASK_UUID",
-            "Poll a task and report changes until it reaches a terminal state.",
+            "Poll a task and report changes until it reaches a terminal state. "
+            "Exit 0 when the final state is FINISHED, 1 when it is ERROR, CANCELED or ROLLBACK "
+            "(the final-state line is printed either way), 2 for usage errors.",
             group=VerbGroup.EXPLORATION.value,
             examples=(
                 "monitor-task.py watch 3a27fe8e-e747-4f3b-80b0-f930c0d0db3f",

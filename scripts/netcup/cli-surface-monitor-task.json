@@ -479,7 +479,7 @@
       "confirmation": false,
       "constraints": [],
       "delegated_metadata": [],
-      "description": "Poll a task and report changes until it reaches a terminal state.",
+      "description": "Poll a task and report changes until it reaches a terminal state. Exit 0 when the final state is FINISHED, 1 when it is ERROR, CANCELED or ROLLBACK (the final-state line is printed either way), 2 for usage errors.",
       "group": "EXPLORATION",
       "id": "route:entrypoint:monitor-task/watch",
       "kind": "invocation",
@@ -523,7 +523,7 @@
       "subcommand_groups": [],
       "subcommands": [],
       "subcommands_required": false,
-      "summary": "Poll a task and report changes until it reaches a terminal state.",
+      "summary": "Poll a task and report changes until it reaches a terminal state. Exit 0 when the final state is FINISHED, 1 when it is ERROR, CANCELED or ROLLBACK (the final-state line is printed either way), 2 for usage errors.",
       "synopsis_override": "TASK_UUID",
       "syntax_complete": true,
       "usage_override": null
