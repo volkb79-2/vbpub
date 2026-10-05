@@ -1559,7 +1559,7 @@ class SessionServer:
                 f"session {session_id}: DAMON cleanup raised during {context}: "
                 f"{type(cleanup_exc).__name__}: {cleanup_exc}"
             )
-        if not getattr(damon_session, "cleanup_confirmed", True):
+        if not getattr(damon_session, "cleanup_confirmed", False):
             pool = self.damon_pool
             quarantined = sorted(getattr(pool, "quarantined_indices", ()))
             self._log(

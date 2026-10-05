@@ -6978,3 +6978,34 @@ cmru.orchestration.toml`), not the historical `--project` form. Status shows
 no `cgprofile-v*` tag; the config's first release remains the explicitly
 chosen `1.0.0`, not its default `0.1.0` suggestion. No release or daemon
 activation has occurred.
+
+### RW-457 — 2026-10-05 22:03:18 UTC — P1 R2 survivor triage and oracle repair
+
+The exact P1 R2 on commit `33cfb15085cd259f2811731c377ec3879458f038`
+(tree `980863d4e3395d1d538a5cfb874af2e60a9c14aa`) ended at
+`2026-10-05T19:33:13.152801Z`: 114 candidates, 89 killed, 25 survived,
+zero equivalent/budget-exceeded/crashed/hung; R0 PASS and R2
+`FAIL/MUTANTS_SURVIVED`, exit 1. The exact judged worktree and its Assay
+records remain preserved and untouched.
+
+The survivor table in the P1 daemon report
+(`scripts/cgroup-profiler/nyxloom-trove/reports/cgprofile-P1-DAEMON-REPORT.md`)
+dispositions all 25: 20 behavioral oracle gaps now have focused assertions,
+while five are justified equivalents
+under the reachable-state guards and the kernel's remove/recreate behavior
+for `nr_kdamonds` writes. Assay itself does not label these equivalent, so
+the original verdict remains mechanically FAIL; no claim of a green final
+R2 is made. The successor candidate is based on current main
+`67c4c27328a76ded1cb0b8ac192382386d65e796`, whose P1 target files were
+byte-identical to the old judged tree before the new oracles. Its ownership
+invariant parametrization was tightened after the initial short-gate runs to
+test membership and identity independently; those earlier results are
+non-transferable.
+
+The preliminary registered `r0-r1` run passed 2,366 tests with 100% line
+and branch coverage; preliminary `r3` rejected 7/7 canaries. Both preceded
+that final test-only adjustment. Re-run `r0-r1`, `r3`, doctor, and the full
+gate on the exact committed successor. The next exact-tree R2 must follow
+the final committed tests/report, with its verdict read separately. P6 R2
+continues in its separate quiet tree; do not edit or inspect that tree before
+the next 25-minute progress interval.

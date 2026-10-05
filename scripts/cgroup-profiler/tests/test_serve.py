@@ -2306,6 +2306,20 @@ def test_finalize_session_swallows_optional_damon_cleanup_failure(
     assert "DAMON stop is unconfirmed" in err
 
 
+def test_missing_cleanup_confirmation_property_is_reported_as_unconfirmed(
+    simple_server, capsys,
+):
+    class LegacyDamonSession:
+        def __exit__(self, *_args):
+            return None
+
+    simple_server._close_damon_session(
+        LegacyDamonSession(), session_id="s-legacy", context="test cleanup",
+    )
+
+    assert "DAMON stop is unconfirmed" in capsys.readouterr().err
+
+
 def test_on_session_sample_discovery_due_and_not_due_and_status_damon_on(simple_server, monkeypatch):
     resolved = targets_mod.find_container_cgroup(SIMPLE_CONTAINER_ID, root=simple_server.cgroup_root)
     with simple_server._lock:
