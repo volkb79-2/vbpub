@@ -387,14 +387,16 @@ def _ciu_root_marker_present(root: Path) -> bool:
         return False
     except OSError as exc:
         raise WorktreeError(
-            f"[S16] could not inspect CIU root marker {marker}: {exc}"
+            f"[S16] could not determine CIU root status; could not inspect "
+            f"CIU root marker {marker}: {exc}"
         ) from exc
     if stat.S_ISLNK(mode):
         try:
             target_mode = marker.stat().st_mode
         except OSError as exc:
             raise WorktreeError(
-                f"[S16] could not inspect CIU root marker {marker}: {exc}"
+                f"[S16] could not determine CIU root status; could not inspect "
+                f"CIU root marker {marker}: {exc}"
             ) from exc
         if stat.S_ISREG(target_mode):
             return True
