@@ -2041,7 +2041,8 @@ changes are included in the candidate history; no cgroup-profiler source or
 test code changed. Main added a CP-17 cli-extended adoption backlog item,
 colliding with the P1 DAMON-startup item. Both are preserved: adoption stays
 CP-17, the DAMON issue is CP-18, and `nyxloom backlog index` regenerated the
-index. Historical review artifacts keep their contemporaneous CP-17 wording.
-This merge invalidates any prior exact-tree gate result. Fresh package gates,
+index. The no-ff merge was finalized as `f0cf27517`. Historical review
+artifacts keep their contemporaneous CP-17 wording. This merge invalidates
+any prior exact-tree gate result. Fresh package gates,
 mutation evidence, review fix-verification, and live DAMON sample/overhead
 measurement are still required; this addendum claims none of them.

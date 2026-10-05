@@ -1688,7 +1688,7 @@ assigned CP-17. Main's cli-extended adoption entry remains CP-17; the P1
 DAMON startup defect is now CP-18, and the index was regenerated with
 `nyxloom backlog index`. Historical review artifacts retain their original
 CP-17 references; this session records the renumbering for current readers.
-The merge is being finalized on this branch. No gate receipt applies to the
+The merge was finalized as `f0cf27517`. No gate receipt applies to the
 resolved merge tip: fresh `r0-r1`, `r3`, doctor, R2, full gate, review
 fix-verification, live DAMON samples/overhead, merge/release, and daemon
 activation remain pending.
