@@ -110,4 +110,22 @@ minus the agent/controller functions. That brought coverage back to the baseline
   `## [Unreleased]`, the bump itself is the controller's.
 - CLI-D3's `status` "read-only" row is deliberately left to W0-REL (CLI-01 owns the status block).
 - The `load_config` tuple keeps all 10 slots (see CLI-04 notes).
+
+## 5. Review fixes (commit `531e48659`)
+- **Blocker, double warning:** `default_projects` removed from the estate `cmru.orchestration.toml` and `cmru.orchestration.sample.toml`;
+  `config.py` now warns once per config path (module-level `_DEFAULT_PROJECTS_WARNED`). Test
+  `test_the_deprecation_warning_is_printed_once_per_config_path` loads the same config twice and expects one warning; with the guard
+  condition removed it fails (plant/revert done, restored).
+- **`--repack` docs:** `cmru/README.md` and `cmru/docs/CONSUMERS.md` now say the option was removed while KI-02 is open and returns with the fix.
+- **Stale template path:** `docs/spec-minisign-bundle-signing.md` (2), `docs/spec-cmru-installer-v2.md` (2) and
+  `modern-debian-tools-python-debug/templates/README.md` now point at `cmru/src/cmru/templates/get.py.tmpl`.
+- **Demo Consul leftovers:** removed the `cmru_node` comment in `consul-server/ciu.stack.toml`, the `consul_cmru_controller_token` secret
+  in `ciu.toml` and the README bullet about its hook mint (nothing in the demo consumed it; the hook script is dstdns-side, so the dstdns
+  notice should also mention it mints that token). Kept: `cmru_viewer` policy and the `consul_cmru_viewer_token` secret (consumed by
+  `infra-global/reverse-proxy/ciu.stack.toml:107`), `consul_cmru_bootstrap_bearer_token`, `kv_root` and `auto_config` (the viewer policy and
+  the consul-server compose still use them).
+- **Help test:** `test_rendered_help_does_not_promise_an_estate_default` now renders `--help` for run, build, status, resolve, get-py,
+  standards and tool-deps and asserts on the output (all 7 show the new wording).
+- **Results:** full suite via `pt.py`, no `--maxfail`: 2 failed (the two KI-54 tests), 2699 passed, 10 skipped. `coverage` lane FAIL: only those
+  two KI-54 tests (2905 passed). `canary` lane FAIL: only the tls-edge fixture test, as before (W0-GATE).
 - Not done, per scope: KI-49/50 untouched; `get.py.tmpl` content untouched; the leftover demo Consul items listed in section 1.
