@@ -181,6 +181,21 @@ def test_listed_dataclasses_are_frozen_and_reject_assignment(module_name, class_
         delattr(instance, dataclasses.fields(cls)[0].name)
 
 
+# ------------------------------------------ HelpCatalog traceback default (batch 4)
+
+
+def test_public_help_catalog_omits_traceback_unless_asked():
+    from cli_extended import HelpCatalog
+
+    identity = CliIdentity("T", "1.0", "T", command="t")
+    verbs = (VerbSpec("go", description="go"),)
+    default = HelpCatalog(identity, prog="t", verbs=verbs)
+    assert "--traceback" not in default.render_markdown()
+    assert "--traceback" not in default.render()
+    asked = HelpCatalog(identity, prog="t", verbs=verbs, include_traceback=True)
+    assert "--traceback" in asked.render_markdown()
+
+
 # --------------------------------------- verb option defaults (batch 2)
 
 import io  # noqa: E402
