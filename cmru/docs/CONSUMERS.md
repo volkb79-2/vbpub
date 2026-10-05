@@ -673,9 +673,11 @@ the same 1:1 scheme ciu uses. A successful release removes the worktree; a **fai
 it** for diagnosis and prints its exact path. The origin candidate branch is also retained. CMRU
 records the allocator's canonical identity input so the visible six-character token and the
 structured workspace context remain the same fact across resume and cleanup.
-publishes from the exact gated candidate SHA and only then fast-forwards `origin/main`; if a
-concurrent update rejects that final promotion, CMRU does not rebase the candidate or create a
-source revert. Inspect the retained candidate and resolve the external publication explicitly
+publishes from the exact gated candidate SHA and only then promotes it to `origin/main`; if a
+concurrent update rejects that final promotion, CMRU merges `origin/main` into the candidate when
+the project's own paths are untouched (bounded retries), otherwise it stops. It never rebases the
+candidate or creates a source revert. A build failure after the tag push rolls the tag back (the
+candidate stays resumable); once publishing began the tag is kept. Inspect the retained candidate and resolve the external publication explicitly
 before abandoning it. List and clean retained ones:
 
 ```

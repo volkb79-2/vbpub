@@ -219,9 +219,20 @@ publish → promote — to completion before the next project's cycle begins. In
 families are dispatched as separate ordered transactions; their results are coordinated but
 cannot be one atomic Git commit. The gate runs in the real gate environment before any tag or
 public artifact. The public artifact is built from the exact gated candidate commit; only after
-that build/publish succeeds does cmru fast-forward `origin/main` from that same `HEAD`.
-A non-fast-forward remote update therefore fails closed after publication and never rewrites the
-candidate by rebasing it onto a different source commit.
+that build/publish succeeds does cmru push that same `HEAD` to `origin/main`.
+A non-fast-forward rejection (REL-04) never rewrites the candidate by rebasing it onto a
+different source commit and never force-pushes: cmru fetches, verifies that the new `origin/main`
+commits did not touch the released project's own paths, merges `origin/main` INTO the candidate
+(`--no-ff`, `Merge origin/main into release candidate <tag>`) and pushes again, at most three
+attempts. A conflict (aborted, candidate unchanged), a touched project path, unknown paths or
+exhausted attempts fail closed after publication with manual recovery instructions; the tag and
+published state are kept. Non-race push failures (authentication, hooks, network) fail
+immediately. A failed build (never a failed publish) after the tag push rolls that tag back,
+locally and on `origin`, each deletion pinned to the object cmru pushed, and records an
+absence proof so `--resume` proceeds; once the publish (`push`) step has begun the tag is never
+touched and the message prints the tag, its object id and the exact recovery commands.
+The release-inputs commit carries a `Cmru-Release-Candidate: <tag>` trailer (REL-08); a
+candidate branch MUST NOT be merged into `main` by hand.
 If a versioning strategy creates a mechanical version commit after the initial pre-tag gate,
 cmru runs the gate again on that exact candidate before it publishes.
 
@@ -236,10 +247,10 @@ one run behind.
 On success: the origin candidate branch and the local worktree/branch are removed, and cmru
 attempts to sync the caller's local `main` with `origin/main`: a fast-forward when local main
 hasn't moved (the common case), or a `git rebase` when it has (e.g. ongoing work in another
-terminal while the release built) — rebase, not merge, to stay consistent with the rest of
-this pipeline, which is fast-forward-only end to end (`promote_workspace`'s push,
-the "local main not ahead" precondition below); no other step here ever produces a merge
-commit. Safe to replay because a release only ever commits declared,
+terminal while the release built) — rebase, not merge, for the caller's local main. The only
+merge commit the pipeline ever produces is the REL-04 `Merge origin/main into release
+candidate` commit made inside the isolated candidate when main advanced during the gate.
+Safe to replay because a release only ever commits declared,
 mechanical generated paths (S-REL.4a), never hand-edited source, so local commits essentially
 never touch the same files. When the caller is currently on `main`, cmru first requires the
 checkout to be clean, including tracked and untracked changes. A dirty checkout returns a
@@ -306,7 +317,7 @@ inspection — `release` never resumes one automatically; the caller explicitly 
 fresh instead. Promotion is the final step of a project's cycle, so `origin/main` contains only
 earlier, fully completed projects. cmru does not create a source-tree revert commit and does not
 silently rebase a candidate after its artifact was built. If publication succeeded but promotion
-lost a fast-forward race, the candidate SHA and public artifact remain visible together on the
+could not be completed (REL-04 stop conditions), the candidate SHA and public artifact remain visible together on the
 retained branch/logs; resolving that post-publication state is an explicit operator action.
 Local `main` cleanup is attempted with the same clean-checkout guard regardless of outcome; a
 false result is reported and does not claim that local main was synchronized. On a later fresh
@@ -433,7 +444,7 @@ compares these rows with the registered parser objects, not a second parser.
 | cmru publish | MODIFICATION | target? | --build-output; --config; --dry-run; --log-append; --show-run-details |
 | cmru changelog | MODIFICATION | target? | --backfill-tag; --config; --dry-run |
 | cmru release | MIXED OPERATIONS | target? | --allow-stale-tool-deps; --allow-tag-ahead-of-head; --allow-uncommitted; --config; --discard-artifacts-on-release; --discard-evidence-on-release; --discard-logs-on-release; --dry-run; --log-append; --major; --minor; --no-build; --ref; --resume; --set-version; --show-run-details |
-| cmru status | EXPLORATION | target? | --config; --log-append; --major; --minor; --ref; --set-version; --show-run-details |
+| cmru status | EXPLORATION | target? | --config; --major; --minor; --ref; --set-version |
 | cmru cleanup | MAINTENANCE | target? | --config; --delete-build-output; --delete-unmanaged-release-tag; --discard-build-worktree; --dry-run; --remove-assets; --yes |
 | cmru abandon | MAINTENANCE | branch? | --config; --dry-run; --yes |
 | cmru init | MODIFICATION | — | --dry-run; --layout; --owner; --owner-type; --repo; --root |

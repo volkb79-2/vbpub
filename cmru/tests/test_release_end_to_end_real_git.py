@@ -231,6 +231,20 @@ def test_rel15_fresh_release_end_to_end(e2e):
     assert "## [0.1.0]" in (e2e.project / "CHANGES.md").read_text()
 
 
+def test_rel08_release_inputs_commit_carries_the_candidate_trailer(e2e):
+    result = e2e.release()
+
+    assert result.returncode == 0, result.log
+    body = e2e.out("log", "-1", "--format=%B", "--grep=prepare release inputs", "main")
+    assert body.splitlines()[0] == "chore(demo): prepare release inputs"
+    assert f"Cmru-Release-Candidate: {_TAG}" in body.splitlines()
+    trailers = e2e.out(
+        "log", "-1", "--format=%(trailers:key=Cmru-Release-Candidate,valueonly)",
+        "--grep=prepare release inputs", "main",
+    )
+    assert trailers == _TAG
+
+
 def test_rel04_main_advancing_during_the_gate_is_merged_not_lost(e2e):
     e2e.advance_main_hook("other.txt")
 
@@ -400,6 +414,29 @@ exit 1
     assert "Traceback" not in launcher_tail
     assert "Could not sync local main" in failed.log
     assert Path(launcher_tail.split(" ", 1)[0]).is_dir()
+
+
+def test_cli01_status_does_not_touch_the_release_log_or_redirect_output(e2e):
+    log = e2e.project / "cmru.release.log"
+    log.write_text("SENTINEL from the previous release\n")
+
+    def run(*args):
+        return subprocess.run(
+            [e2e.env["CMRU_BIN"], *args], cwd=e2e.project, env=e2e.env,
+            capture_output=True, text=True, timeout=120,
+        )
+
+    status = run("status")
+
+    assert status.returncode == 0, status.stdout + status.stderr
+    assert log.read_text() == "SENTINEL from the previous release\n"
+    # Not redirected through the release tee: the preview is on this process's own
+    # stdout, and the (release-only) logging flags are not accepted by status.
+    assert "demo" in status.stdout + status.stderr
+    for flag in ("--log-append", "--show-run-details"):
+        rejected = run("status", flag)
+        assert rejected.returncode == 2, flag
+    assert log.read_text() == "SENTINEL from the previous release\n"
 
 
 def test_m24_launcher_snapshots_origin_tags_before_the_attempt(e2e):

@@ -125,6 +125,27 @@ def _project_release_plan(
     return version, last_tag
 
 
+def pending_release_tag(
+    repo_root: Path,
+    project: Any,
+    *,
+    minor: bool = False,
+    major: bool = False,
+    set_version: str | None = None,
+) -> str | None:
+    """The tag a release of *project* will create, or ``None`` for a no-tag project.
+
+    Same plan the generated history heading uses, so a commit trailer naming this
+    tag (REL-08) always agrees with the changelog section.
+    """
+    version, _previous = _project_release_plan(
+        repo_root, project, minor=minor, major=major, set_version=set_version,
+    )
+    if version is None:
+        return None
+    return f"{getattr(project, 'prefix', None) or project.name + '-v'}{version}"
+
+
 def _subject_groups(
     repo_root: Path,
     previous_ref: str | None,

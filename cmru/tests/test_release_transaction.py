@@ -2620,7 +2620,7 @@ def test_sync_local_main_refuses_dirty_current_main_without_rebase(monkeypatch):
         result = transaction._sync_local_main_result(h.repo_root)
         assert result.ok is False
         assert "dirty" in result.reason
-        assert "ignored files and directories" in result.reason
+        assert "tracked or untracked changes" in result.reason  # REL-13: ignored files are not blanket-blocking
         assert "conflict" not in result.reason
 
 

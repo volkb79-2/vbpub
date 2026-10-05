@@ -7,9 +7,13 @@ release child there.  The caller's uncommitted files therefore cannot leak into 
 wheel, image, tag, or release asset.
 
 The parent process owns a repository-local flock for the lifetime of its child.
-The child builds and publishes from the fixed candidate, then fast-forwards
-``origin/main`` from that exact branch tip; a concurrent remote update fails
-closed without rebasing the candidate.
+The child builds and publishes from the fixed candidate, then pushes that exact
+branch tip to ``origin/main``. When ``origin/main`` advanced during the gate the
+push is rejected; the candidate is then never rebased or force-pushed. Instead
+``origin/main`` is merged INTO the candidate (``--no-ff``, at most three
+attempts) provided the released project's own paths are untouched; a conflict,
+a touched project path or unknown paths stop with recovery instructions
+(REL-04, see :func:`promote_workspace`).
 """
 from __future__ import annotations
 
@@ -3197,10 +3201,10 @@ def revert_promotion(
 
 _SYNC_DIRTY_REASON = (
     "Could not sync local main automatically: the caller checkout is dirty "
-    "(tracked or untracked changes, including ignored files and directories), "
+    "(tracked or untracked changes), "
     "so no rebase or rebase-abort was attempted and local main plus those files "
-    "were left untouched. Commit or stash all changes (including ignored files "
-    "with `git stash -a`), then run `git rebase origin/main` from the clean checkout."
+    "were left untouched. Commit or stash all changes, then run "
+    "`git rebase origin/main` from the clean checkout."
 )
 
 

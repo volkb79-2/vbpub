@@ -256,7 +256,7 @@ def test_cli_file_strategy_rechecks_the_changed_candidate(monkeypatch, tmp_path)
     assert calls == ["gate", "gate"]
 
 
-def test_cli_status_from_console_entrypoint_configures_native_logging(monkeypatch, tmp_path):
+def test_cli_status_from_console_entrypoint_does_not_configure_native_logging(monkeypatch, tmp_path):
     project = cli.ProjectConfig("demo", {}, {}, prefix="demo-v")
     monkeypatch.setattr(cli, "_resolve_config", lambda _arg: tmp_path / "cmru.toml")
     monkeypatch.setattr(cli, "load_config", lambda _path: _loaded({"demo": project}))
@@ -280,11 +280,10 @@ def test_cli_status_from_console_entrypoint_configures_native_logging(monkeypatc
     monkeypatch.setattr("cmru.version.status_cmd", lambda *args, **kwargs: None)
     monkeypatch.setattr(sys, "argv", ["cmru", "status", "demo"])
     assert cli.main() == 0
-    assert calls and calls[0][1] == {"append": False}
+    assert calls == []  # CLI-01: status is read-only and owns no release log
 
-    calls.clear()
     assert cli.main(["status", "demo"]) == 0
-    assert calls and calls[-1][1] == {"append": False}
+    assert calls == []
 
 
 def test_project_loader_requires_both_repository_fact_tables(monkeypatch, tmp_path):

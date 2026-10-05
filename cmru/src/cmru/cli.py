@@ -4138,12 +4138,20 @@ def _is_declared_generated(path: str, declared: List[str]) -> bool:
     return any(path == item or path.startswith(item.rstrip("/") + "/") for item in declared)
 
 
-def _commit_prepared_generated(repo_root: Path, project: "ProjectConfig") -> bool:
+RELEASE_CANDIDATE_TRAILER = "Cmru-Release-Candidate"
+
+
+def _commit_prepared_generated(
+    repo_root: Path, project: "ProjectConfig", candidate_label: str | None = None,
+) -> bool:
     """Commit only a prepare step's declared generated outputs, or fail closed.
 
     Generated source is part of the release input, never a side effect to sweep
     into a post-publish commit.  This deliberately checks the entire worktree so
     a prepare script cannot hide an unrelated mutation behind one allowlisted file.
+    The commit carries a ``Cmru-Release-Candidate: <tag>`` trailer (REL-08) so the
+    release-inputs commit is recognisably candidate-only history, never something
+    to merge into main by hand.
     """
     cwd = _project_working_directory(project)
     declared_outputs = [*project.commit_generated]
@@ -4161,10 +4169,10 @@ def _commit_prepared_generated(repo_root: Path, project: "ProjectConfig") -> boo
             "declare mechanical outputs in project.<name>.release.commit_generated"
         )
     subprocess.run(["git", "add", "-A", "--", *changed], cwd=repo_root, check=True)
-    run_local_git(
-        repo_root, "commit", "-m", f"chore({project.name}): prepare release inputs",
-        check=True,
-    )
+    message = f"chore({project.name}): prepare release inputs"
+    if candidate_label:
+        message += f"\n\n{RELEASE_CANDIDATE_TRAILER}: {candidate_label}"
+    run_local_git(repo_root, "commit", "-m", message, check=True)
     log_info(f"{project.name}: committed prepared release inputs")
     return True
 
@@ -4179,7 +4187,7 @@ def _prepare_release_projects(
     set_version: Optional[str] = None,
 ) -> None:
     """Prepare declared source inputs, including an optional generated changelog."""
-    from cmru.changelog import generate_release_changelog
+    from cmru.changelog import generate_release_changelog, pending_release_tag
 
     log_dir = repo_root / "logs"
     for name in project_names:
@@ -4196,7 +4204,16 @@ def _prepare_release_projects(
             if changed:
                 log_info(f"{name}: updated {changelog}")
         if "prepare" in project.steps or changelog:
-            _commit_prepared_generated(repo_root, project)
+            candidate_label = project.name
+            if getattr(project, "git_tag", True):
+                try:
+                    candidate_label = pending_release_tag(
+                        repo_root, project, minor=minor, major=major,
+                        set_version=set_version,
+                    ) or project.name
+                except RuntimeError:
+                    pass  # the trailer is provenance only; fall back to the name
+            _commit_prepared_generated(repo_root, project, candidate_label)
 
 
 def _prepare_dry_run_external_versions(
@@ -4790,7 +4807,9 @@ def _release_or_status(verb: str, args, rest: List[str]) -> None:
     github_config, env_config = _rest[-2], _rest[-1]
     git_auth = _git_auth_for_repository(github_config)
     transaction_child = transaction.is_transaction_child(repo_root)
-    if not transaction_child:
+    # CLI-01: only a release owns the aggregate log. ``status`` is read-only and
+    # must not truncate cmru.release.log or redirect the caller's stderr.
+    if verb == "release" and not transaction_child:
         _configure_native_release_logging(repo_root, append=vargs.log_append)
     apply_release_env(github_config, env_config)
     # Restrict versioning verbs to the orchestrated set so un-migrated projects
@@ -5769,7 +5788,6 @@ def _build_cli():
         OptionSpec(("--major",), "bump major versions", parser_kwargs={"action": "store_true", "default": False}, mutually_exclusive_group="version-override"),
         OptionSpec(("--set-version",), "set an explicit version", metavar="VER", parser_kwargs={"default": None}, mutually_exclusive_group="version-override"),
         config_opt,
-        *detail_opts,
         OptionSpec(("--ref",), "git ref used for status comparison", metavar="REF", parser_kwargs={"default": None}),
     )
     registry.register(VerbSpec("release", description="Release selected projects from an isolated origin/main snapshot.", group=VerbGroup.MIXED.value, arguments=common_target, options=release_options, mutating=True, include_confirmation=False, include_json=False, include_progress=False, handler=direct()))

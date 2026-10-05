@@ -101,7 +101,13 @@ The re-execed child inherits the parent transaction lock; it does not try to
 acquire a second lock against its own release.
 
 Failure retains the worktree and prints its path and branch. A **pre-tag** failure
-can be inspected and corrected on that branch. Commit the fixes there before
+can be inspected and corrected on that branch. A failed **build** after the tag was pushed
+(REL-05) rolls the freshly pushed tag back automatically, locally and on `origin`, each
+deletion pinned to the exact object cmru pushed, and records an absence proof, so the
+candidate is resumable exactly like a pre-tag failure and the message prints the
+`--resume` command. If the rollback itself cannot be verified, the tag is kept and the
+exact manual commands are printed. A failure once the **publish** (`push`) step has begun
+never touches the tag; see [Post-publication recovery](#post-publication-recovery). Commit the fixes there before
 resuming; CMRU refuses a dirty candidate so the final tag and artifacts cannot
 silently omit the correction. Resume reruns prepare and the required gate against
 the corrected branch tip, then ships that candidate commit:
@@ -129,12 +135,17 @@ worktree for inspection.
 After a successful release, a plan refusal, or a child failure, cmru attempts the same
 caller-main cleanup; the primary release result is not replaced by a cleanup warning. If the
 caller is currently on `main`, cmru fetches `origin/main` and checks the caller worktree before
-rebasing. Any tracked or untracked change, including ignored files and directories, makes
-cleanup return false before either `git rebase` or `git rebase --abort` is run. The dirty files
+rebasing. Any tracked or untracked (non-ignored) change makes cleanup return false before
+either `git rebase` or `git rebase --abort` is run. Ordinary ignored build output (REL-13) does
+not block the sync; an ignored file blocks it only when `origin/main` would create a tracked
+file at that exact path, because a checkout would silently overwrite it (the warning then says
+so; move the file away or `git stash -a`). The dirty files
 and local `main` ref stay exactly where they were, and the terminal reports that the caller
 checkout is dirty rather than claiming a rebase conflict. The warning tells the operator to
-commit or stash all changes (use `git stash -a` when ignored files must be included), then run
-`git rebase origin/main` from the clean checkout.
+commit or stash the changes, then run `git rebase origin/main` from the clean checkout.
+A failed `git fetch` during this best-effort sync (REL-06) is likewise only a warning with the
+same recovery advice: it never turns a completed release into a failure, and on a failed
+release the retained-candidate path is printed before the sync is attempted.
 
 `--allow-uncommitted` applies only to the preflight that keeps caller edits out of the immutable
 remote release snapshot. It does not authorize cleanup to rebase, stash, or otherwise consume
@@ -167,7 +178,8 @@ same commit requires explicit deletion of the existing output record with
 
 > **Current recovery limit:** a post-tag publication failure is not an automatic retry.
 > Preserve the worktree, the stable logs, and generated provenance; do not assume a plain
-> resume will publish an existing tag. The deliberately scoped follow-up is
+> resume will publish an existing tag (`--resume` refuses it). See
+> [Post-publication recovery](#post-publication-recovery). The deliberately scoped follow-up is
 > [KI-06](../KNOWN_ISSUES_TODO_BACKLOG.md#ki-06--durable-post-tag-publication-resume--open-scoped-deliberately).
 
 ## Transaction order
@@ -190,8 +202,8 @@ cmru-release-<YYYYMMDD_HHMMSS>-<scope>-<workspace-id> worktree, one project at a
     │  required tester-unified gate (again if versioning adds a commit)  │
     │  refresh durable candidate branch                                  │
     │  explicit tag (if versioned) → build → publish/push                │
-    │  fast-forward origin/main from this exact candidate (or fail closed │
-    │    on a concurrent remote update)                                  │
+    │  push this exact candidate to origin/main; if main advanced, merge  │
+    │    origin/main INTO the candidate (bounded, never force/rebase)    │
     │  checkpoint: record this project's HEAD as the last full success   │
     └─────────────────────────────────────────────────────────────────────┘
     → repeat for the next project, or stop and report on failure
@@ -201,11 +213,57 @@ source commit
 ```
 
 There is no in-place release mode. A local lock prevents two releases on one
-clone; each project's final fast-forward push integrates the exact source commit
+clone; each project's final push integrates the exact source commit
 that produced its public artifact. The durable candidate branch is refreshed
 before publication and retained if the final promotion fails. Publication for a
 project therefore does not silently turn into a different source commit through
 an automatic rebase.
+
+### Promotion when `origin/main` advanced (REL-04)
+
+The gate can take a long time, so `origin/main` may move while it runs. The promotion push
+is then rejected as a non-fast-forward. Because the candidate is already built and published,
+cmru never rebases it and never force-pushes. Instead it:
+
+1. fetches `origin/main`;
+2. checks that the new `origin/main` commits did **not** touch the released project's own
+   paths since the merge-base (the gated and published content must be exactly what lands);
+3. merges `origin/main` into the candidate with a `--no-ff` merge commit titled
+   `Merge origin/main into release candidate <tag>`, and pushes again.
+
+This is retried at most three times, in case main keeps moving. Authentication, hook and
+network failures are not a lost race and fail immediately without merging. Promotion stops
+with an error (tag and published state kept, candidate retained) when:
+
+- `origin/main` advanced AND changed the released project's own paths: review those changes,
+  and merge by hand if they are acceptable;
+- the merge conflicts (the merge is aborted, the candidate is left unchanged);
+- the project's paths are unknown, or `origin/main` kept advancing for all three attempts.
+
+The error prints the manual recovery: merge `origin/main` into the candidate branch yourself,
+then `git push origin HEAD:refs/heads/main` from the retained worktree.
+
+> **Never merge a candidate branch into `main` by hand** (REL-08). The candidate branch
+> carries the generated release-inputs commit (marked with a `Cmru-Release-Candidate: <tag>`
+> trailer) and any file-strategy version commit; promotion lands those through the push
+> described above. Merging the branch separately duplicates generated history and was the root
+> cause of a stale generated changelog section (REL-02). Merge `origin/main` into the
+> candidate, never the other way round.
+
+### Post-publication recovery
+
+Once the publish (`push`) step has begun, cmru does not roll the tag back: public artifacts
+may already exist. The failure message prints the tag, its object id and these commands, to
+run from the source checkout:
+
+```sh
+git push --force-with-lease=refs/tags/<tag>:<object-id> origin :refs/tags/<tag>
+git tag -d <tag>
+cmru abandon <candidate-branch> --yes
+```
+
+then start a fresh release. Assets already published under the tag are removed with
+`cmru cleanup`. `--resume` refuses a candidate whose release tag survived.
 
 ### Failure and retained candidate
 
@@ -215,12 +273,15 @@ after its tag/build/publish work. `origin/main` therefore remains at the last
 fully completed project, while the candidate branch and worktree retain the exact
 source SHA, logs, and any generated release output. cmru does not push a source
 revert commit and does not rebase the candidate after publication. If an artifact
-was already published when a concurrent remote update rejected promotion, the
+was already published when promotion could not be completed (see the merge-promote stop
+conditions above), the
 artifact and candidate branch are retained as an explicit post-publication state
 for operator resolution; the release engine does not claim that source history
 can undo an external publication.
 
-In every case the worktree/branch is retained for inspection and `--resume`.
+In every case the worktree/branch is retained for inspection. `--resume` works only when
+no release tag was left behind (a pre-tag failure, or a build failure whose tag was rolled
+back); after publication began, abandon and re-release.
 Use the separate local transaction command after reviewing its exact plan:
 
 ```sh
@@ -308,10 +369,13 @@ nothing to revert. `ciu-v4.9.0` stands. mdt is never attempted. Fix nyxloom's
 test, then re-run: ciu shows unchanged (already tagged) and is skipped;
 nyxloom and mdt are attempted again.
 
-**Publication succeeds but final promotion loses a race**
+**Publication succeeds but final promotion cannot complete**
 
+If `origin/main` merely advanced during the gate without touching the project's paths,
+promotion merges it into the candidate and succeeds (REL-04). The case below is the one that
+stops: the concurrent update touched the project's own paths (or conflicted, or kept moving).
 mdt's `prepare` succeeds, its image is built and pushed, but the final candidate
-promotion loses a concurrent fast-forward race:
+promotion stops:
 
 ```
 === modern-debian-tools-python-debug: releasing ===
@@ -320,7 +384,7 @@ promotion loses a concurrent fast-forward race:
 [INFO] ... ghcr push succeeded ...
 [ERROR] release candidate was not promoted to origin/main; the candidate branch was retained
 [ERROR] Release transaction failed; retained .../cmru-release-20260818_195012-all-abc123 on branch
-        cmru-release-20260818_195012-all-abc123 for inspection/resume.
+        cmru-release-20260818_195012-all-abc123 for inspection.
 ```
 
 `origin/main` remains at `<sha B>` (nyxloom's completed commit); `ciu-v4.9.0`
