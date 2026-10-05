@@ -23,8 +23,6 @@ def test_disposable_project_fixture_copies_shared_libraries_and_estate_configs(t
         "run-gate-project/CONSUMERS.md",
         "topos/cmru.toml",
         "nyxloom/cmru.toml",
-        "tls-edge/cmru.toml",
-        "tls-edge/scripts/build-artifact.sh",
     ):
         path = repo_root / filename
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -51,5 +49,3 @@ def test_disposable_project_fixture_copies_shared_libraries_and_estate_configs(t
     assert (workspace / "libraries/worktree/src/worktree/__init__.py").is_file()
     assert (workspace / "topos/cmru.toml").is_file()
     assert (workspace / "nyxloom/cmru.toml").is_file()
-    assert (workspace / "tls-edge/cmru.toml").is_file()
-    assert (workspace / "tls-edge/scripts/build-artifact.sh").is_file()
