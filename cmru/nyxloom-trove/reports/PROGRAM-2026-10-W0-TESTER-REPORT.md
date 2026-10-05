@@ -92,7 +92,28 @@ Each plant applied to a scratch copy of `cmru/src` (or of the image files), the 
 
 ## Test and gate results
 
-- Full suite (`cmru/tests`, no `--maxfail`, under the shared lock, PSI checked): **2978 passed, 10 skipped, 2 failed**; the
-  two failures are exactly the known KI-54 tests in `test_cli_release_snapshot_boundaries.py`
+- Full suite (`cmru/tests`, no `--maxfail`, under the shared lock, PSI checked, after the last edit): **2981 passed, 10 skipped,
+  2 failed**; the two failures are exactly the known KI-54 tests in `test_cli_release_snapshot_boundaries.py`
   (`test_release_rejects_internal_handoff_on_dry_run`, `test_release_rejects_an_internal_snapshot_spanning_multiple_git_families`).
-- Gate lanes `coverage` and `canary`: see the section below.
+- Measured separately (`pytest --cov=src/cmru --cov-branch`, no maxfail): every file this package touched
+  (`tester_gate.py`, `runner.py`, `bundle.py`, `handlers.py`, `standards.py`) is 100% line and branch. The only
+  remaining partial branches are in `cli.py` (5) and `transaction.py` (2), not touched here.
+- Gate lane `coverage` (after the last edit, verdict read in a separate step): **FAIL, exit 1**, solely because pytest's
+  `--maxfail=1` stops at `test_release_rejects_internal_handoff_on_dry_run` (KI-54, fixed by W0-REL): `1 failed, 963 passed,
+  2 skipped`. Because of `--maxfail=1` the lane never reaches the `--cov-fail-under=100` check, so the lane itself cannot
+  vouch for coverage; the separate `--cov` run above does.
+- Gate lane `canary` (after the last edit): **FAIL, exit 1**, `known-good canary control failed`:
+  `tests/test_cli_build_output_semantics.py::test_tls_edge_retained_tarball_inventory_contains_the_publisher_version_file`
+  (`1 failed, 599 passed, 2 skipped`). Cause: that test reads `<repo>/tls-edge/cmru.toml`, which does not exist in the canary's
+  isolated copy of `cmru/` (`FileNotFoundError .../tls-edge/cmru.toml`). It is untouched by this package and independent of it,
+  so I believe it is pre-existing, but I did NOT run the canary on the integration branch to confirm; the controller should
+  (or W0-GATE, which owns the lanes, should skip repository-root tests under the canary the way I did below). My first canary run
+  failed earlier, on MY new `test_tester_unified_image.py` (it reads `tester-unified/` from the repo root); I fixed that with a
+  `skipif` on the repository-root files being absent and the same for the estate-config test, re-ran, and the remaining red is the
+  tls-edge test above.
+
+## Further process deviations
+
+Three small test-file additions were appended with a shell heredoc (`cat >>`) instead of Edit/Write
+(`cmru/tests/test_standards.py` twice, `cmru/tests/test_w0_tester_hardening.py` once); contents were then verified by running them. All
+other repository changes used Edit/Write. Scratch helper scripts (`t.sh`, plant scripts) were heredocs under the scratchpad, not in the repository.
