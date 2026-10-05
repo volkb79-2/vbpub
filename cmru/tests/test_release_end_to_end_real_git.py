@@ -207,8 +207,14 @@ git push -q origin HEAD:refs/heads/main
 
 
 @pytest.fixture
-def e2e(tmp_path):
-    return _Env(tmp_path)
+def e2e(tmp_path, monkeypatch):
+    env = _Env(tmp_path)
+    # Tests that call transaction.promote_workspace in-process make merge commits
+    # too; they must not depend on the host having a global git identity.
+    for key in ("GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME",
+                "GIT_COMMITTER_EMAIL", "GIT_CONFIG_GLOBAL"):
+        monkeypatch.setenv(key, env.env[key])
+    return env
 
 
 def test_rel15_fresh_release_end_to_end(e2e):
