@@ -77,7 +77,7 @@ matched.
 | ID | Requirement | Replaces | Verification | Docs |
 | --- | --- | --- | --- | --- |
 | AC-21 | Tests call `assert_cli_contract` at the rigor level the tool needs. | Hand-written help and exit-code assertions. | manual | [Tests required for an adoption](CONSUMERS.md#tests-required-for-an-adoption) |
-| AC-22 | When a review catalog exists, pytest runs with the `cli_extended.pytest_plugin` plugin so review cases link to real tests. | Hand-maintained lists of test ids. | audit:pytest-plugin | [Linking review cases with the pytest plugin](CONSUMERS.md#linking-review-cases-with-the-pytest-plugin) |
+| AC-22 | When a review catalog is configured, pytest runs with the `cli_extended.pytest_plugin` plugin so review cases link to real tests. | Hand-maintained lists of test ids. | audit:pytest-plugin | [Linking review cases with the pytest plugin](CONSUMERS.md#linking-review-cases-with-the-pytest-plugin) |
 | AC-23 | Tests run scripts and modules through the library invoker helpers (`invoke_script`). | Per-project `subprocess` wrappers. | manual | [Test helpers: invoke_script](CONSUMERS.md#test-helpers-invoke_script) |
 
 ## Packaging and dependency

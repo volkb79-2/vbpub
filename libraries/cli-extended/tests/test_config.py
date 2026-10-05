@@ -241,8 +241,42 @@ def test_o2_load_cli_wraps_factory_shape_errors(tmp_path, monkeypatch):
         raise TypeError("did not return a RegisteredCli")
 
     monkeypatch.setattr(config, "load_factory", broken)
-    with pytest.raises(ConfigError, match="cannot load factory 'm:f' for 'x': did not return"):
+    with pytest.raises(
+        ConfigError,
+        match="cannot load CLI factory 'm:f' for 'x': TypeError: did not return",
+    ):
         load_cli(CliConfig(id="x", factory="m:f", root=tmp_path))
+
+
+@pytest.mark.parametrize(
+    "body, expected",
+    [
+        ("raise RuntimeError('import boom')\n", "RuntimeError: import boom"),
+        ("def build():\n    raise KeyError('call boom')\n", "KeyError: 'call boom'"),
+        ("def other():\n    return 1\n", "AttributeError:"),
+    ],
+)
+def test_w8b_load_cli_turns_any_factory_exception_into_a_config_error(
+    tmp_path, monkeypatch, body, expected
+):
+    monkeypatch.setattr(sys, "path", list(sys.path))
+    monkeypatch.delitem(sys.modules, "_cli_extended_surface_w8b_factory", raising=False)
+    (tmp_path / "w8b-factory.py").write_text(body, encoding="utf-8")
+    spec = "w8b-factory.py:build"
+    with pytest.raises(ConfigError) as caught:
+        load_cli(CliConfig(id="x", factory=spec, root=tmp_path))
+    message = str(caught.value)
+    assert message.startswith(f"cannot load CLI factory {spec!r} for 'x': ")
+    assert expected in message
+
+
+def test_w8b_load_cli_missing_factory_file_names_file_and_spec(tmp_path):
+    spec = "absent-factory.py:build"
+    with pytest.raises(ConfigError) as caught:
+        load_cli(CliConfig(id="x", factory=spec, root=tmp_path))
+    message = str(caught.value)
+    assert f"cannot load CLI factory {spec!r} for 'x': FileNotFoundError:" in message
+    assert str(tmp_path / "absent-factory.py") in message
 
 
 def test_o2_file_factory_resolves_against_root_not_cwd(tmp_path, monkeypatch):

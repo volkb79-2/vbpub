@@ -463,6 +463,7 @@ are configured. Then run the shared command from anywhere inside the project:
 ```bash
 cli-extended surface sync
 cli-extended surface template
+cli-extended surface pack
 cli-extended surface check
 cli-extended surface report
 ```
@@ -1195,7 +1196,10 @@ A check can read its own options. Pass them with
 `run(runtime, args)`.
 
 `example doctor`, `example doctor --check docker --json` and CI use the same
-exit code (1 only for `fail`). Do not name a check `skills`.
+exit code (1 only for `fail`). Do not name a check `skills`. The automatic
+`skills` check is a `warn` when the skills were never installed and a `fail`
+when any installed skill is stale, modified, foreign or orphaned, or an
+interrupted install left files behind.
 
 Mapping the existing doctors:
 
