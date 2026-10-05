@@ -6940,3 +6940,41 @@ than reused (`resumed_total=0`, `rejudged_total=0`). Host memory PSI full
 was using coarse in-lane sampling; this is not a test verdict effect. Keep
 the judged P6 tree quiet and restore its recorded CIU branch before any CIU
 lifecycle command after this campaign.
+
+### RW-456 — 2026-10-05 18:43:55Z — validate cgprofile CIU deployment without starting it
+
+The first root-level `ciu check` refused because this nested standalone CIU
+root had no generated identity. `ciu env generate --root-folder
+scripts/cgroup-profiler` completed; CIU warned that `ciu.env` is a legacy
+write-only export (new identity facts are in `ciu.instance.generated.toml`),
+created network `cgroup-profiler-cmqemn-5kibda-network`, and connected the
+current `dstdns-devcontainer-vb` to it. This was CIU's normal bootstrap side
+effect; read-only `docker network inspect` showed `Internal=false` and that
+container as its only member. This changed the running devcontainer's network
+membership; no command was issued against the `/workspaces/dstdns` checkout,
+and I did not disconnect the container. The generated files are ignored by
+Git and retained for the planned singleton deploy.
+
+Root-level `ciu check` then passed but rendered zero stack configs; the
+standalone service must be selected with `--dir .`. `ciu up --dir .
+--render-toml` rendered its config, and `ciu up --dir . --dry-run` validated
+the merged service and compose without starting Docker Compose. No volume
+directories were needed. The rendered service is privileged, private-cgroup
+(and no host PID setting), network-none, under `cgprofile.slice`; it has
+read-only host `/proc`, writable cgroup-v2, read-only system-bus, and DAMON
+sysfs mounts. Governance resolved `cgroup_parent=cgprofile.slice` and
+injected no service fields. No daemon was started. The local `cgprofile:local`
+image is from 2026-10-04 and predates the latest P1 repair; rebuild only after
+the active mutation suites finish.
+
+Read-only host inspection reported `cgprofile.slice` loaded at
+`/cgprofile.slice`, `Delegate=no`, unlimited CPU quota, and 1 GiB `MemoryMax`.
+The `host-escape` wrapper's automatic mdt doctor found missing cgroup2 mount
+flags and restored `nsdelegate`, `memory_recursiveprot`, and
+`memory_hugetlb_accounting`. The existing mdt host-setup defaults already
+declare `CGROUP2_FLAGS=fix`; no template change is indicated. CMRU's current
+syntax is positional (`cmru status cgroup-profiler --config
+cmru.orchestration.toml`), not the historical `--project` form. Status shows
+no `cgprofile-v*` tag; the config's first release remains the explicitly
+chosen `1.0.0`, not its default `0.1.0` suggestion. No release or daemon
+activation has occurred.
