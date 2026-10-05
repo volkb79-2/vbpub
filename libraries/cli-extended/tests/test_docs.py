@@ -140,3 +140,15 @@ def test_library_document_markdown_links_and_anchors_resolve():
                 assert fragment in _heading_ids(target), (
                     f"{source_path} links to missing anchor #{fragment} in {target_path}"
                 )
+
+
+def test_mutation_targets_cover_every_module():
+    # A module missing from the R2 targets is never mutated, so the 100% kill
+    # gate would say nothing about it.
+    lane = tomllib.loads((PACKAGE_ROOT / "assay.toml").read_text(encoding="utf-8"))
+    targets = lane["lanes"]["cli-extended"]["judge"]["targets"]
+    modules = sorted(
+        path.relative_to(PACKAGE_ROOT).as_posix()
+        for path in (PACKAGE_ROOT / "src" / "cli_extended").glob("*.py")
+    )
+    assert targets == modules

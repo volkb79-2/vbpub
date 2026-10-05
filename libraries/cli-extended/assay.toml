@@ -27,17 +27,30 @@ unsafe_symlink_omissions = [
 language = "python"
 source_roots = ["src/cli_extended"]
 mode = "whole_target"
+# Every shipped module, kept in step by
+# tests/test_docs.py::test_mutation_targets_cover_every_module so a new module
+# cannot ship without entering the campaign.
 targets = [
   "src/cli_extended/__init__.py",
+  "src/cli_extended/audit.py",
+  "src/cli_extended/cli.py",
+  "src/cli_extended/config.py",
+  "src/cli_extended/constraints.py",
+  "src/cli_extended/contract.py",
+  "src/cli_extended/doctor.py",
+  "src/cli_extended/findings.py",
   "src/cli_extended/identity.py",
   "src/cli_extended/output.py",
   "src/cli_extended/parser.py",
   "src/cli_extended/progress.py",
   "src/cli_extended/prompts.py",
+  "src/cli_extended/pytest_plugin.py",
   "src/cli_extended/review.py",
+  "src/cli_extended/skills.py",
   "src/cli_extended/surface.py",
   "src/cli_extended/surface_cli.py",
   "src/cli_extended/testing.py",
+  "src/cli_extended/values.py",
 ]
 fail_under = 100.0
 allow_excluded = false
