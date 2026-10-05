@@ -1,4 +1,4 @@
-"""Final transaction/controller release boundary witnesses."""
+"""Final transaction release boundary witnesses."""
 from __future__ import annotations
 
 import json
@@ -10,8 +10,6 @@ from unittest.mock import patch
 import pytest
 
 from cmru import release, transaction, version
-from cmru.controller.rollout import RolloutEngine, _build_desired_json
-from cmru.controller.planner import LandscapePlan, PlanStep
 
 
 def git(root: Path, *args: str) -> str:
@@ -30,74 +28,6 @@ def repo(tmp_path: Path) -> Path:
     git(root, "add", ".")
     git(root, "commit", "-q", "-m", "initial")
     return root
-
-
-def step(*, nodes=None, required=True, approval=False, phase=1):
-    return PlanStep("plan", "wave", phase, "production", nodes or ["n1"], ["core"],
-                    "demo-v1", "https://m", "a" * 64, "b" * 64, "plan.step",
-                    required, approval)
-
-
-class Backend:
-    def __init__(self, observed=None, puts=None, gets=None):
-        self.observed = observed or {}
-        self.puts = puts if puts is not None else []
-        self.gets = gets or []
-    def _put(self, key, body): self.puts.append((key, body)); return (200, "")
-    def _delete(self, key): self.puts.append(("DELETE", key)); return (200, "")
-    def _get(self, key): return self.gets.pop(0) if self.gets else (404, "", {})
-    def read_observed(self, node, landscape): return self.observed.get(node)
-
-
-def test_desired_json_is_stable_contract_and_rollback_action_is_explicit():
-    payload = json.loads(_build_desired_json(step(), 7, "rollback"))
-    assert payload["generation"] == 7
-    assert payload["action"] == "rollback"
-    assert payload["release"]["manifest_sha256"] == "a" * 64
-
-
-def test_rollout_publish_writes_wave_then_status_and_stops_on_failed_observation(monkeypatch):
-    backend = Backend(observed={"n1": json.dumps({"schema_version": 1, "health": "failed", "applied_generation": 1, "adapter_phase": "apply", "error_class": "bad"})})
-    engine = RolloutEngine(backend, "prod", poll_interval=0, wave_timeout=0)
-    engine.publish(LandscapePlan("plan", "prod", [step()]))
-    assert any("desired" in key for key, _ in backend.puts if key != "DELETE")
-    status = [body for key, body in backend.puts if "plans/plan/status" in key][-1]
-    assert json.loads(status)["status"] == "failed"
-
-
-def test_rollout_wait_accepts_healthy_generation_and_ignores_malformed_observation():
-    good = json.dumps({"schema_version": 1, "health": "healthy", "applied_generation": 101, "adapter_phase": "done", "error_class": None})
-    backend = Backend(observed={"n1": good})
-    engine = RolloutEngine(backend, "prod", poll_interval=0, wave_timeout=1)
-    assert engine._wait_for_wave("plan", step()) is True
-    bad = Backend(observed={"n1": "not-json"})
-    engine = RolloutEngine(bad, "prod", poll_interval=0, wave_timeout=0)
-    assert engine._wait_for_wave("plan", step()) is False
-
-
-def test_rollout_approval_and_hold_poll_until_external_release(monkeypatch):
-    backend = Backend(gets=[(404, "", {}), (200, "approved", {})])
-    engine = RolloutEngine(backend, "prod", poll_interval=0)
-    engine._wait_for_approval_if_needed("plan", step(approval=True))
-    backend = Backend(gets=[(200, "hold", {}), (404, "", {})])
-    engine = RolloutEngine(backend, "prod", poll_interval=0)
-    engine._check_hold("plan")
-
-
-def test_rollout_dry_run_rollback_uses_plan_coordinate_without_backend_writes():
-    backend = Backend()
-    engine = RolloutEngine(backend, "prod", dry_run=True)
-    plan = LandscapePlan("plan", "prod", [step(nodes=["a", "b"])])
-    engine.publish(plan)
-    engine.rollback(plan, generation=99)
-    assert not any("/nodes/" in key for key, _ in backend.puts)
-
-
-def test_rollout_status_reports_standby_and_unknown_observation():
-    backend = Backend(observed={"n1": "broken"})
-    result = RolloutEngine(backend, "prod").status(LandscapePlan("plan", "prod", [step(nodes=["n1", "n2"]) ]))
-    assert result["nodes"]["n1"]["health"] == "unknown"
-    assert result["nodes"]["n2"]["health"] == "standby"
 
 
 def test_transaction_promotion_non_rejection_fails_without_rebase(tmp_path):

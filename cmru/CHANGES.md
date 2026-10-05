@@ -9,10 +9,60 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
      below for the prior occurrence): the retain-by-default change +
      KI-19/20/21/23/25 write-up that was here is now [5.2.0] below. -->
 
-<!-- cleared for 6.0.0; content regenerated (the generated release section is built
-     from the project commit range). The pre-clear hand-written text is recoverable
-     from git history at `68a03b4fe^:cmru/CHANGES.md`; the controller folds it into
-     the 6.0.0 notes. -->
+<!-- NOTE (W0-REL merge): KI-30 refuses a tagged release while this body is non-empty.
+     The controller moves it into the 6.0.0 notes before releasing. The pre-clear
+     hand-written text is recoverable at `68a03b4fe^:cmru/CHANGES.md`. -->
+
+### Added
+- Add explicit multi-source `cmru versions init`, `resolve`, and read-only `check` with a configurable supply-chain age window, registry evidence, and native artifacts.
+- Add configurable shipped/all dependency discovery, explicitly selected Python extras, and project-local requirements manifests.
+- Add opt-in rolling OCI tag checks that record manifest digests and detect moved tags.
+
+### Removed
+- **Breaking:** retire `cmru-agent` and `cmru-controller` (operator decision O5; no consumer, superseded by push over SSH): the two console scripts, `cmru.agent`, `cmru.controller`, `packaging/cmru-agent.service` and their SPEC/README/CONSUMERS/DESIGN-GUIDE rows are deleted. `docs/spec-cmru-agent-controller.md` is kept with a RETIRED banner.
+- Remove the `--repack` option from `cmru handler oci-image-build` / `oci-image-push` (CLI-14): it only ever failed while KI-02 is open. It returns when KI-02 is fixed.
+- Delete the byte-identical duplicate `templates/get.py.tmpl`; the package resource `src/cmru/templates/get.py.tmpl` is the only copy (CLI-18).
+
+### Changed
+- Deprecate `orchestration.default_projects` (CLI-04): it is no longer required, is accepted with a one-line warning that it is ignored, and will be removed. Help text for the project target now says "omitted: the current project, or every orchestrated project at the estate root"; the dead `estate_scope` parameter and `step_project_order` handling are gone.
+- `cmru cleanup PROJECT --remove-assets AGE` now refuses the target (exit 2) instead of silently pruning estate-wide (CLI-05).
+- Extend strict root/project config with `[versions]`; project overlays resolve and store state project-side, while root targets retain root policy/state.
+
+### Fixed
+- The ready-to-copy `templates/cmru.toml.tmpl` and `templates/cmru.orchestration.toml.tmpl` now load through the real config loader (missing `[runtime]` and central `[github]`/`[targets]`); a test loads every shipped template (CLI-18).
+- Mount the git worktree root in the wheel-builder container (not just the project's parent) so projects nested below the top level resolve their git version, and forward `SOURCE_DATE_EPOCH` / `SETUPTOOLS_SCM_PRETEND_VERSION_FOR_*` by name into the build (KI-53).
+- Add the monorepo's sibling `cli-extended` and `worktree` source roots to
+  bound CMRU subprocesses, so system-Python release scripts can import the
+  matching runtime dependencies.
+- Keep the release-time mutation campaign based on the previous CMRU tag instead of Assay's main-based candidate set, which is empty after merge.
+- Include the Topos and nyxloom manifests required by the estate adoption test in disposable mutation and canary controls.
+- Resolve project configs already loaded from an isolated release worktree without prefixing the child path twice.
+- Resolve Go pseudo-version constraints through module proxy metadata and roll back Go workspace files if a later native writer fails.
+- Scope registry authorization to its HTTPS origin while preserving safe redirects to signed registry storage URLs.
+- Query rolling OCI tags by exact manifest reference, and exclude explicitly marked Docker attestations from runnable-platform timestamp checks.
+- Time-box CMRU mutation candidates, preserve progress, and resume completed mutation evidence.
+- Keep a skipped cleanup Release's tag and derive the clean-step version from applied cleanup results.
+- Recheck whole-package GHCR identity before confirmed deletion and report the clean-step version as a preview estimate.
+- Scope abandonment tag checks to the recorded projects and remove only local tags proven to come from that candidate's push attempt.
+- Preserve credential rotation when restoring secret overlays after the gate.
+- Prevent publishing an older retained build from moving the `-latest` pointer backward.
+- Bind retained publication to the captured Release ID and tag commit, rechecking them before metadata and asset mutations.
+- Treat GHCR 404 responses as absent-or-inaccessible and skip cleanup without certifying absence.
+- Install gate secret overlays without replacing a credential rotated at the masking boundary.
+- Copy resume credentials through no-follow paths and atomic mode-0600 destination files.
+- Verify staged retained artifact bytes against the build manifest before remote publication.
+- Require the registered real-enrollment lane to fail when prerequisites or fixture-image construction fail.
+- Verify the gates slice on the Docker host before starting enrollment fixtures.
+- Reject malformed, invalid, or out-of-pattern remote tag records before cleanup planning.
+
+### Testing
+- Add registry, age-policy, project/root ownership, output transaction, mutation-runner, and adopter-doc contract tests.
+- Cover inclusive rolling-OCI age cutoffs, rolling-result override metadata, and the no-warning return contract.
+- Cover discovery-scope choices, rolling-tag digest changes, Docker attestation indexes, and loadable `.go` consumer examples.
+- Cover package replacement during cleanup confirmation, scoped tag abandonment, exact local tag recovery, credential rotation, and mutation resume evidence.
+- Cover retained-release identity changes, GHCR 404 ambiguity, and credential rotation during overlay installation.
+- Cover symlinked credential destinations, altered retained upload staging, and required enrollment-lane prerequisites.
+- Cover Docker-host slice verification and malformed, invalid, duplicate, orphaned, or out-of-pattern remote tag records.
 
 <!-- cmru: release history -->
 

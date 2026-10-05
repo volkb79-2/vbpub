@@ -387,9 +387,92 @@ def test_remove_workspace_wraps_shared_removal_failure(monkeypatch, tmp_path):
         transaction.remove_workspace(legacy)
 
 
+def _git_init(path: Path) -> Path:
+    path.mkdir(parents=True, exist_ok=True)
+    subprocess.run(["git", "init", "-q", str(path)], check=True)
+    subprocess.run(
+        ["git", "-C", str(path), "-c", "user.name=t", "-c", "user.email=t@t",
+         "commit", "-q", "--allow-empty", "-m", "init"],
+        check=True,
+    )
+    return path
+
+
+def test_git_scope_still_rejects_a_broken_dot_git_file_in_the_project_itself(tmp_path):
+    project = tmp_path / "proj"
+    project.mkdir()
+    (project / ".git").write_text("", encoding="utf-8")
+    with pytest.raises(ValueError, match="invalid gitfile format"):
+        config._git_scope(project)
+
+
+def test_git_scope_ignores_a_stray_empty_dot_git_directory_in_a_parent(tmp_path):
+    # REL-11: a bare, empty ``.git`` above the project is not a repository.
+    (tmp_path / ".git").mkdir()
+    project = tmp_path / "a" / "b"
+    project.mkdir(parents=True)
+    assert config._git_scope(project) == {}
+
+
+def test_git_scope_ignores_a_stray_dot_git_file_in_a_parent(tmp_path):
+    (tmp_path / ".git").write_text("", encoding="utf-8")
+    project = tmp_path / "proj"
+    project.mkdir()
+    assert config._git_scope(project) == {}
+
+
+def test_git_scope_finds_a_real_repository_from_a_subdirectory(tmp_path):
+    repo = _git_init(tmp_path / "repo")
+    sub = repo / "x" / "y"
+    sub.mkdir(parents=True)
+    scope = config._git_scope(sub)
+    assert scope["source_git_root"] == repo.resolve()
+
+
+def test_git_scope_reports_other_git_failures_and_a_missing_git_binary(monkeypatch, tmp_path):
+    repo = _git_init(tmp_path / "repo")
+    real_run = subprocess.run
+
+    def failing(argv, **kwargs):
+        return SimpleNamespace(returncode=128, stderr="fatal: detected dubious ownership\n")
+
+    monkeypatch.setattr(config.subprocess, "run", failing)
+    with pytest.raises(ValueError, match="dubious ownership"):
+        config._git_scope(repo)
+
+    def missing(argv, **kwargs):
+        raise FileNotFoundError("git")
+
+    monkeypatch.setattr(config.subprocess, "run", missing)
+    with pytest.raises(ValueError, match="could not resolve Git context"):
+        config._git_scope(repo)
+    monkeypatch.setattr(config.subprocess, "run", real_run)
+
+
+def test_git_scope_without_a_git_binary_is_empty_outside_a_repository(monkeypatch, tmp_path):
+    plain = tmp_path / "plain"
+    plain.mkdir()
+
+    def missing(argv, **kwargs):
+        raise FileNotFoundError("git")
+
+    monkeypatch.setattr(config.subprocess, "run", missing)
+    assert config._git_scope(plain) == {}
+
+
+def test_git_scope_probe_does_not_inherit_git_environment_variables(monkeypatch, tmp_path):
+    # A hook context exports GIT_DIR/GIT_WORK_TREE; inherited, they would make a
+    # plain directory look like the repository they point at.
+    repo = _git_init(tmp_path / "repo")
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    monkeypatch.setenv("GIT_DIR", str(repo / ".git"))
+    monkeypatch.setenv("GIT_WORK_TREE", str(repo))
+    assert config._git_scope(plain) == {}
+
+
 def test_config_git_scope_success_and_error_are_distinct(monkeypatch, tmp_path):
-    repo = tmp_path / "repo"
-    (repo / ".git").mkdir(parents=True)
+    repo = _git_init(tmp_path / "repo")
     fake = SimpleNamespace(
         discover_git_context=lambda path: (repo, repo / ".git", "main", "a" * 40)
     )
@@ -402,8 +485,7 @@ def test_config_git_scope_success_and_error_are_distinct(monkeypatch, tmp_path):
 
 
 def test_config_git_scope_source_fallback_and_missing_dependency(monkeypatch, tmp_path):
-    repo = tmp_path / "repo"
-    (repo / ".git").mkdir(parents=True)
+    repo = _git_init(tmp_path / "repo")
     real_import = builtins.__import__
     fake_worktree = SimpleNamespace(
         discover_git_context=lambda _path: (repo, repo / ".git", "main", "a" * 40)

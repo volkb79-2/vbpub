@@ -16,8 +16,7 @@ from pathlib import Path
 import pytest
 
 from cmru import cli
-from cmru.agent import cli as agent_cli
-from cmru.controller import cli as controller_cli
+from cmru import handlers
 
 
 def test_version_prefers_an_exact_source_tag_over_stale_install_metadata(monkeypatch):
@@ -25,13 +24,13 @@ def test_version_prefers_an_exact_source_tag_over_stale_install_metadata(monkeyp
     assert cli._cmru_version() == "2.0.0"
 
 def test_helper_nested_help_and_errors_start_with_the_headline(capsys):
-    assert agent_cli.main(["enroll", "--help"]) == 0
+    assert handlers.main(["wheel-build", "--help"]) == 0
     captured = capsys.readouterr()
     assert captured.err == ""
     assert captured.out.splitlines()[0].startswith("CMRU ")
     assert " — " in captured.out.splitlines()[0]
 
-    assert controller_cli.main(["publish"]) == 2
+    assert handlers.main(["wheel-validate"]) == 2
     captured = capsys.readouterr()
     assert captured.out == ""
     assert any(line.startswith("CMRU ") and " — " in line for line in captured.err.splitlines())
@@ -136,7 +135,7 @@ def test_load_config_s2_schema(tmp_path):
     assert repo_root == tmp_path
     assert list(projects) == ["alpha"]
     assert project_order == ["alpha"]
-    assert default_projects == ["alpha"]          # defaults to project_order
+    assert default_projects == []                 # reserved slot; the key is deprecated (CLI-04)
     assert default_steps == ["run-tests", "build", "push"]
     assert execution_mode == "project-first"
     assert github.owner == "octocat" and github.repo == "demo"
@@ -466,20 +465,6 @@ def test_version_verb_and_top_level_flag_are_compatible(monkeypatch, capsys):
     assert captured.err == ""
 
 
-def test_agent_and_controller_version_flags(monkeypatch, capsys):
-    from cmru.agent import cli as agent_cli
-    from cmru.controller import cli as controller_cli
-
-    monkeypatch.setattr(cli, "_cmru_version", lambda: "2.0.2")
-    for entrypoint, main in (
-        ("cmru-agent", agent_cli.main),
-        ("cmru-controller", controller_cli.main),
-    ):
-        assert main(["--version"]) == 0
-        captured = capsys.readouterr()
-        assert captured.out == f"{entrypoint} 2.0.2\n"
-        assert captured.err == ""
-
 def test_removed_module_console_dispatch_alias_refuses_version():
     project_dir = Path(__file__).resolve().parents[1]
     library_sources = project_dir.parent / "libraries"
@@ -663,9 +648,69 @@ def test_fresh_checkout_bootstrap_is_the_only_source_build_launcher():
     source = bootstrap.read_text(encoding="utf-8")
     assert "python3 -m cmru.handlers" not in source
     assert "-m cmru.handlers wheel-build" in source
+    # BG-10: fresh-host bootstrap needs both library roots, -s, and an epoch.
+    assert "libraries/cli-extended/src" in source
+    assert "libraries/worktree/src" in source
+    assert '"${python_bin}" -s -m cmru.handlers' in source
+    assert "SOURCE_DATE_EPOCH" in source and "log -1 --format=%ct" in source
     assert "CMRU_DOCKER_CGROUP_PARENT" in source
     assert 'CMRU_WHEEL_BUILDER_IMAGE:-wheel-builder:local' not in source
     assert 'CMRU_WHEEL_BUILDER_IMAGE' in source
+
+
+def test_bootstrap_script_runs_python_isolated_with_library_roots_and_commit_epoch(tmp_path):
+    # A throw-away tree with its own git history: the gate fixtures copy the
+    # project without .git, so the real checkout cannot be assumed here.
+    repo_root = (tmp_path / "tree").resolve()
+    (repo_root / "cmru").mkdir(parents=True)
+    source_script = Path(__file__).resolve().parents[1] / "build-initial-standalone.sh"
+    bootstrap = repo_root / "cmru" / "build-initial-standalone.sh"
+    bootstrap.write_text(source_script.read_text(encoding="utf-8"), encoding="utf-8")
+    bootstrap.chmod(0o755)
+    commit_env = {
+        **os.environ,
+        "GIT_AUTHOR_DATE": "2023-11-14T22:13:20+00:00",
+        "GIT_COMMITTER_DATE": "2023-11-14T22:13:20+00:00",
+    }
+    subprocess.run(["git", "init", "-q", str(repo_root)], check=True)
+    subprocess.run(
+        ["git", "-C", str(repo_root), "-c", "user.name=t", "-c", "user.email=t@t",
+         "commit", "-q", "--allow-empty", "-m", "init"],
+        check=True, env=commit_env,
+    )
+    record = tmp_path / "record.txt"
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    docker = fake_bin / "docker"
+    docker.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    docker.chmod(0o755)
+    python = fake_bin / "fakepython"
+    python.write_text(
+        '#!/bin/sh\n{ echo "ARGS=$*"; echo "PP=$PYTHONPATH"; echo "EPOCH=$SOURCE_DATE_EPOCH"; } > '
+        f'"{record}"\nexit 0\n',
+        encoding="utf-8",
+    )
+    python.chmod(0o755)
+    env = {
+        **os.environ,
+        "PATH": f"{fake_bin}:{os.environ['PATH']}",
+        "CMRU_BOOTSTRAP_PYTHON": "fakepython",
+        "CMRU_WHEEL_BUILDER_IMAGE": "wheel-builder:test",
+        "CMRU_BOOTSTRAP_CGROUP_PARENT": "test.slice",
+        "SOURCE_DATE_EPOCH": "1",
+    }
+    # The stub builds nothing, so the script's final wheel check fails; the
+    # recorded launch is what is under test.
+    subprocess.run(["bash", str(bootstrap)], env=env, capture_output=True, text=True, check=False)
+    lines = dict(line.split("=", 1) for line in record.read_text(encoding="utf-8").splitlines())
+    assert lines["ARGS"].startswith("-s -m cmru.handlers wheel-build")
+    roots = lines["PP"].split(os.pathsep)
+    assert roots[:3] == [
+        str(repo_root / "cmru" / "src"),
+        str(repo_root / "libraries" / "cli-extended" / "src"),
+        str(repo_root / "libraries" / "worktree" / "src"),
+    ]
+    assert lines["EPOCH"] == "1700000000"
 
 
 def test_cleanup_delete_unmanaged_release_previews_then_refuses_without_confirmation(

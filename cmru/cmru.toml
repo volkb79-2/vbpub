@@ -6,7 +6,9 @@ kind = "none"
 [env]
 CMRU_WHEEL_BUILDER_IMAGE = "wheel-builder:local"
 CMRU_RELEASE_NOTES = "## cmru wheel\n\nBuild, publish, and release orchestration for portable CMRU projects.\n\n**Install**\n```bash\npipx install cmru-*.whl\n```"
-PYTHONPATH = "src"
+# Keep the library roots: a bare "src" would replace the transaction child's
+# PYTHONPATH and run candidate cmru code against the installed cli_extended (BG-04).
+PYTHONPATH = "src:../libraries/cli-extended/src:../libraries/worktree/src"
 
 [project]
 id = "cmru"
@@ -50,13 +52,13 @@ commands = [
 [steps.build]
 quiet = true
 commands = [
-  { label = "cmru: build wheel", argv = ["python3", "-m", "cmru.handlers", "wheel-build", "--cwd", "."], cwd = "." },
+  { label = "cmru: build wheel", argv = ["cmru", "handler", "wheel-build", "--cwd", "."], cwd = "." },
 ]
 
 [steps.push]
 quiet = true
 commands = [
-  { label = "cmru: publish wheel", argv = ["python3", "-m", "cmru.handlers", "wheel-publish", "--prefix", "cmru", "--cwd", ".", "--notes-env", "CMRU_RELEASE_NOTES"], cwd = "." },
+  { label = "cmru: publish wheel", argv = ["cmru", "handler", "wheel-publish", "--prefix", "cmru", "--cwd", ".", "--notes-env", "CMRU_RELEASE_NOTES"], cwd = "." },
 ]
 
 [versions]

@@ -13,6 +13,8 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
+from xml.etree import ElementTree
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -370,13 +372,52 @@ def _secret_overlay_paths(
     return sorted(candidates)
 
 
+def _is_failure_line(line: str) -> bool:
+    return line.startswith(("FAILED ", "ERROR "))
+
+
+def _report_lane_failure(project_root: Path, lane: str, since_ns: int) -> None:
+    """Name the failing tests of a failed lane (BG-03).
+
+    A lane's own console output can hide pytest's short-summary lines (assay
+    keeps them only in the verdict's ``result_stdout_tail``). Print every
+    ``FAILED``/``ERROR`` line from verdicts and junit files written by this
+    lane run so the release log always names the test.
+    """
+    lines: list[str] = []
+    for verdict in sorted((project_root / ".assay").glob("verdict-*.json")):
+        try:
+            if verdict.stat().st_mtime_ns < since_ns:
+                continue
+            tail = json.loads(verdict.read_text(encoding="utf-8")).get("result_stdout_tail")
+        except (OSError, ValueError):
+            continue
+        if isinstance(tail, str):
+            lines.extend(line for line in tail.splitlines() if _is_failure_line(line))
+    junit = project_root / "junit-coverage.xml"
+    try:
+        if junit.stat().st_mtime_ns >= since_ns:
+            for case in ElementTree.parse(junit).iter("testcase"):
+                if case.find("failure") is not None or case.find("error") is not None:
+                    lines.append(f"FAILED {case.get('classname')}::{case.get('name')} (junit)")
+    except (OSError, ElementTree.ParseError):
+        pass
+    if lines:
+        print(f"cmru-release-gate: lane {lane!r} failed; failing tests:", file=sys.stderr)
+        for line in dict.fromkeys(lines):
+            print(f"  {line}", file=sys.stderr)
+
+
 def _invoke_lane(repo_root: Path, lane: str, environment: Mapping[str, str]) -> int:
+    started = time.time_ns()
     result = subprocess.run(
         ["./run-gate.py", "--worktree", str(repo_root), lane],
         cwd=repo_root / "cmru",
         env=dict(environment),
         check=False,
     )
+    if result.returncode:
+        _report_lane_failure(repo_root / "cmru", lane, started)
     return result.returncode
 
 

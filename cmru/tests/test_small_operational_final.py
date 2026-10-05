@@ -12,8 +12,6 @@ from unittest.mock import patch
 import pytest
 
 from cmru import bundle, dependencies, handlers, manifest, output, runner, tester_gate, transaction
-from cmru.agent import adapter, protocol, selfupdate, state
-from cmru.controller import planner
 
 
 def test_output_stream_reconfiguration_flush_and_proxy_contract():
@@ -57,58 +55,9 @@ def test_dependencies_reports_absolute_manifest_source_when_outside_repo(tmp_pat
     assert report.edges[-1].source == str(wheels)
 
 
-def test_selfupdate_replaces_stale_link_atomically_in_dry_run(tmp_path):
-    venv = tmp_path / "venv-2"
-    venv.mkdir()
-    current = tmp_path / "venv-current"
-    current.symlink_to(tmp_path / "old")
-    stale = tmp_path / "venv-current.new"
-    stale.symlink_to(tmp_path / "stale")
-    selfupdate.handoff_via_systemd("2", venv, dry_run=True)
-    assert current.is_symlink()
-    assert current.resolve() == venv
-    assert not stale.exists()
-
-
-def test_controller_cli_module_entrypoint_refuses_removed_alias():
-    with patch("sys.argv", ["cmru-controller", "--help"]):
-        with pytest.raises(SystemExit) as raised:
-            runpy.run_path(__import__("cmru.controller.cli", fromlist=["__file__"]).__file__, run_name="__main__")
-    assert str(raised.value) == (
-        "Use the installed 'cmru-controller' command; its module alias is not supported."
-    )
-
-
-def test_adapter_loader_reports_unloadable_spec(tmp_path):
-    adapter_file = tmp_path / "adapter.py"
-    adapter_file.write_text("class Adapter: pass\n", encoding="utf-8")
-    with patch.object(adapter.importlib.util, "spec_from_file_location", return_value=None):
-        with pytest.raises(RuntimeError, match="Cannot load adapter"):
-            adapter.load_adapter(tmp_path)
-
-
-def test_protocol_manifest_state_and_plan_validation_refuse_bad_shapes(tmp_path, monkeypatch):
-    with pytest.raises(protocol.DesiredStateError, match="JSON object"):
-        protocol.validate_desired([])
+def test_manifest_image_shape_refuses_non_dict():
     with pytest.raises(TypeError, match="images must be a dict"):
         manifest._validate_images([], "demo")
-    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
-    assert state.read_identity("user") is None
-    with pytest.raises(ValueError, match=r"\[plan\] section required"):
-        planner.load_plan_json("{}")
-    empty_nodes = {
-        "plan": {
-            "id": "p", "landscape": "l", "release_tag": "r",
-            "manifest_url": "u", "manifest_sha256": "h",
-            "waves": [{"phase": 1, "name": "w", "nodes": []}],
-        }
-    }
-    with pytest.raises(ValueError, match="nodes must be a non-empty list"):
-        planner.load_plan_json(json.dumps(empty_nodes))
-    empty_profile = empty_nodes["plan"].copy()
-    empty_profile["waves"] = [{"phase": 1, "name": "w", "nodes": ["n"], "profiles": [""]}]
-    with pytest.raises(ValueError, match="profiles entries"):
-        planner.load_plan_json(json.dumps({"plan": empty_profile}))
 
 
 def test_bundle_wheel_build_includes_declared_find_links(tmp_path, monkeypatch):

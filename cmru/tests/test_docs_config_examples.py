@@ -74,10 +74,33 @@ def test_version_policy_vocabulary_is_documented():
         assert value in corpus
 
 
+def test_estate_project_steps_use_the_bound_cmru_handler_not_the_module_form():
+    # BG-04/REL-07: `python3 -m cmru.handlers` bypasses the bound launcher.
+    repo = ROOT.parent
+    configs = sorted([*repo.glob("*/cmru.toml"), *repo.glob("libraries/*/cmru.toml")])
+    assert ROOT / "cmru.toml" in configs
+    for path in configs:
+        text = path.read_text(encoding="utf-8")
+        assert "cmru.handlers" not in text, f"{path} still calls python -m cmru.handlers"
+    scaffold = (ROOT / "src" / "cmru" / "scaffold.py").read_text(encoding="utf-8")
+    template = (ROOT / "src" / "cmru" / "templates" / "project-wheel.toml").read_text(
+        encoding="utf-8",
+    )
+    assert "cmru.handlers" not in scaffold and "cmru.handlers" not in template
+    assert '"cmru", "handler", "wheel-build"' in template
+
+
+def test_cmru_own_env_pythonpath_keeps_the_library_roots():
+    document = tomllib.loads((ROOT / "cmru.toml").read_text(encoding="utf-8"))
+    roots = document["env"]["PYTHONPATH"].split(":")
+    assert roots == ["src", "../libraries/cli-extended/src", "../libraries/worktree/src"]
+
+
 def test_assay_and_release_gate_split_rigor_without_empty_release_mutation():
     lane = tomllib.loads((ROOT / "assay.toml").read_text(encoding="utf-8"))["lanes"]["cmru"]
     assert lane["rigor"] == ["R0", "R1", "R3"]
-    assert "--maxfail=1" in lane["argv"]
+    # BG-03: fail-fast stops pytest-cov writing coverage.json and hides the failure.
+    assert not any(arg.startswith("--maxfail") for arg in lane["argv"])
 
     assert lane["isolation"]["snapshot_selection"] == "repository-minus-unsafe-symlinks"
     assert lane["judge"]["coverage"]["artifact"] == "coverage.json"
@@ -147,8 +170,12 @@ def test_assay_and_release_gate_split_rigor_without_empty_release_mutation():
     assert "remote_head_commit != head_commit" in baseline_checker
     assert "--require-candidates" in mutation_command
 
-    for name in ("coverage", "mutation", "canary"):
-        assert "--maxfail=1" in " ".join(gate["lanes"][name]["argv"])
+    # BG-03: only the mutation lane is fail-fast.
+    assert "--maxfail=1" in " ".join(gate["lanes"]["mutation"]["argv"])
+    for name in ("coverage", "canary"):
+        assert "--maxfail" not in " ".join(gate["lanes"][name]["argv"])
+    assert "--junitxml=junit-coverage.xml" in " ".join(gate["lanes"]["coverage"]["argv"])
+    assert "junit-coverage.xml" in gate["lanes"]["coverage"]["artifacts"]
 
     coverage_command = " ".join(gate["lanes"]["coverage"]["argv"])
     source_assay_install = (

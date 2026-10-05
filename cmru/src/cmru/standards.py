@@ -111,8 +111,22 @@ def assess_projects(
                     "Docker-enabled tester-gate requires explicit CMRU_TESTER_DIND_IMAGE in [env]"
                 )
 
+        # BG-04/REL-07: `python3 -m cmru.handlers` resolves cmru from whatever
+        # interpreter/site-packages the step inherits, bypassing the bound
+        # launcher. It is bootstrap-only; project steps use `cmru handler <verb>`.
+        module_handler_steps = sorted(
+            step_name for step_name, step_commands in steps.items()
+            if any("cmru.handlers" in command.argv for command in step_commands)
+        )
+        if module_handler_steps:
+            problems.append(
+                "steps call `python -m cmru.handlers` (bypasses the bound cmru launcher); "
+                "use argv = [\"cmru\", \"handler\", <verb>, ...] in: "
+                + ", ".join(module_handler_steps)
+            )
         uses_wheel_build = any(
-            "cmru.handlers" in command.argv and "wheel-build" in command.argv
+            ("cmru.handlers" in command.argv or "handler" in command.argv)
+            and "wheel-build" in command.argv
             for command in commands
         )
         if uses_wheel_build and not str(getattr(project, "env", {}).get(
@@ -184,7 +198,7 @@ def standards_cli():
         mutating=True,
         include_confirmation=False,
         arguments=(ArgumentSpec(
-            "target", "project target; omitted uses the current project or estate default",
+            "target", "project target; omitted: the current project, or every orchestrated project at the estate root",
             metavar="[all|PROJECT[,PROJECT...]]",
             parser_kwargs={"nargs": "?", "default": None},
         ),),
@@ -226,19 +240,15 @@ def _run_standards(args, _runtime) -> None:
     from cmru.config import resolve_invocation_context
     if args.target is None and config_path.name == PROJECT_CONFIG_FILENAME and len(projects) == 1:
         context_project = next(iter(projects))
-        estate_scope = False
     elif args.target is None:
         context = resolve_invocation_context(config_path)
         context_project = context.project_name
-        estate_scope = context.scope == "estate"
     else:
         context_project = None
-        estate_scope = False
     try:
         selected = select_target_names(
             args.target, projects, project_order,
             context_project=context_project,
-            estate_scope=estate_scope,
         )
     except TargetSelectionError as exc:
         raise CliFailure(str(exc), exit_code=2, show_help=True) from exc

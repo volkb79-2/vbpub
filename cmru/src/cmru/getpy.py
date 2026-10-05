@@ -199,7 +199,7 @@ def getpy_cli():
         include_confirmation=False,
         arguments=(ArgumentSpec(
             "target",
-            "project target; omitted uses the current project or estate default",
+            "project target; omitted: the current project, or every orchestrated project at the estate root",
             metavar="[all|PROJECT[,PROJECT...]]",
             parser_kwargs={"nargs": "?", "default": None},
         ),),
@@ -238,19 +238,15 @@ def _run_getpy(args, _runtime) -> None:
     configs, project_order = loaded[1], loaded[2]
     if args.target is None and cfg_path.name == PROJECT_CONFIG_FILENAME and len(configs) == 1:
         context_project = next(iter(configs))
-        estate_scope = False
     elif args.target is None:
         context = resolve_invocation_context(cfg_path)
         context_project = context.project_name
-        estate_scope = context.scope == "estate"
     else:
         context_project = None
-        estate_scope = False
     try:
         names = select_target_names(
             args.target, configs, project_order,
             context_project=context_project,
-            estate_scope=estate_scope,
         )
     except TargetSelectionError as exc:
         raise CliFailure(str(exc), exit_code=2, show_help=True) from exc

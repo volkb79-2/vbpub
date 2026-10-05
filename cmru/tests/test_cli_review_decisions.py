@@ -332,7 +332,7 @@ def test_transaction_child_rechecks_progress_for_validated_legacy_record(
             transaction.is_transaction_child(child)
 
 
-def test_repack_is_rejected_before_external_side_effects(monkeypatch, tmp_path, capsys):
+def test_repack_is_not_accepted_and_nothing_external_runs(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(
         "cmru.handlers.subprocess.run",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("Docker was called")),
@@ -345,4 +345,4 @@ def test_repack_is_rejected_before_external_side_effects(monkeypatch, tmp_path, 
         "handler", "oci-image-build", "--cwd", str(tmp_path),
         "--bake-file", "docker-bake.hcl", "--target", "demo", "--repack",
     ]) == 2
-    assert "disabled" in capsys.readouterr().err.lower()
+    assert "unrecognized arguments: --repack" in capsys.readouterr().err

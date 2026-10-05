@@ -475,6 +475,11 @@ def test_tarball_publish_validates_retained_version_file_and_artifact_selection(
 
 def test_tls_edge_retained_tarball_inventory_contains_the_publisher_version_file():
     repo_root = Path(__file__).resolve().parents[2]
+    if not (repo_root / "tls-edge" / "cmru.toml").is_file():
+        # The disposable gate fixtures (canary, mutation) copy a closed set of
+        # sibling files that excludes tls-edge; same guard as test_installer's
+        # real-config test. The full-suite lane still runs it.
+        pytest.skip("tls-edge tree is not part of the disposable gate fixture")
     config = tomllib.loads((repo_root / "tls-edge" / "cmru.toml").read_text(encoding="utf-8"))
     script = (repo_root / "tls-edge" / "scripts" / "build-artifact.sh").read_text(encoding="utf-8")
     publish_argv = config["steps"]["push"]["commands"][0]["argv"]

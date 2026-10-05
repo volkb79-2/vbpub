@@ -1,4 +1,4 @@
-"""Final CLI/controller refusal and version-dispatch witnesses."""
+"""Final CLI refusal and version-dispatch witnesses."""
 from __future__ import annotations
 
 import json
@@ -8,26 +8,6 @@ from types import SimpleNamespace
 import pytest
 
 from cmru import cli
-from cmru.controller import cli as controller_cli
-
-
-def _args(**kwargs):
-    values = dict(plan="plan", landscape="land", consul_addr=None, token=None,
-                  generation_base=1, dry_run=False, generation=None)
-    values.update(kwargs)
-    return SimpleNamespace(**values)
-
-
-def test_controller_plan_load_failures_and_unknown_dispatch_are_explicit(monkeypatch, tmp_path, capsys):
-    plan = tmp_path / "plan.toml"; plan.write_text("bad")
-    monkeypatch.setattr("cmru.controller.planner.load_plan", lambda path: (_ for _ in ()).throw(ValueError("malformed")))
-    assert controller_cli.cmd_status(_args(plan=str(plan))) == 2
-    assert controller_cli.cmd_rollback(_args(plan=str(plan))) == 2
-    error = capsys.readouterr().err
-    assert "Failed to load plan" in error
-
-    assert controller_cli.main(["unexpected"]) == 2
-    assert "invalid choice" in capsys.readouterr().err
 
 
 def test_cli_load_config_reports_dependency_preflight_errors(monkeypatch, capsys, tmp_path):

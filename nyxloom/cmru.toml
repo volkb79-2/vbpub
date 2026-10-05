@@ -47,7 +47,7 @@ commands = [
 [steps.build]
 quiet = true
 commands = [
-  { label = "nyxloom: build wheel", argv = ["python3", "-m", "cmru.handlers", "wheel-build", "--cwd", "."], cwd = "." },
+  { label = "nyxloom: build wheel", argv = ["cmru", "handler", "wheel-build", "--cwd", "."], cwd = "." },
   # OCI image build/push (build-push.py) deliberately NOT invoked here -- see
   # [project] artifacts comment above. Re-enable only after fixing the
   # uncapped buildx builder and the push-ordering finding (NL-15), and only
@@ -57,7 +57,7 @@ commands = [
 [steps.push]
 quiet = true
 commands = [
-  { label = "nyxloom: publish wheel", argv = ["python3", "-m", "cmru.handlers", "wheel-publish", "--prefix", "nyxloom", "--cwd", ".", "--notes-env", "NYXLOOM_RELEASE_NOTES"], cwd = "." },
+  { label = "nyxloom: publish wheel", argv = ["cmru", "handler", "wheel-publish", "--prefix", "nyxloom", "--cwd", ".", "--notes-env", "NYXLOOM_RELEASE_NOTES"], cwd = "." },
 ]
 
 [versions]

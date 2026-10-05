@@ -18,16 +18,16 @@ with this pasteable probe:
     cmru --version
 
 It prints one `cmru <version>` line on stdout and exits 0. The equivalent native
-verb is `cmru version`. Help from `cmru`, `cmru-agent`, and `cmru-controller`,
+verb is `cmru version`. Help from `cmru`,
 including nested verbs, begins with the generated CMRU identity. CMRU
 configuration diagnostics put that identity on line 1; shared
 `cli-extended` usage/refusal diagnostics put the actionable error first and
 then show relevant generated help, which begins with the same identity. Use
 `--help` or `cmru help <verb>`; CMRU's shared grammar deliberately does not add
 a separate short `-h` spelling.
-The documented `python3 -m cmru.handlers` calls are explicit project-step
-library adapters rather than a separately versioned operator entrypoint, so
-they are outside this top-level identity surface.
+`python3 -m cmru.handlers` is a bootstrap-only library adapter (the first-wheel
+build), not a separately versioned operator entrypoint, so it is outside this
+top-level identity surface. Project steps use `cmru handler <verb>`.
 
 ---
 
@@ -130,15 +130,21 @@ commands = [
 [steps.build]
 quiet = true
 commands = [
-  { label = "build wheel", argv = ["python3", "-m", "cmru.handlers", "wheel-build", "--cwd", "."], cwd = "." },
+  { label = "build wheel", argv = ["cmru", "handler", "wheel-build", "--cwd", "."], cwd = "." },
 ]
 
 [steps.push]
 quiet = true
 commands = [
-  { label = "publish wheel", argv = ["python3", "-m", "cmru.handlers", "wheel-publish", "--prefix", "example-wheel", "--cwd", ".", "--notes-env", "EXAMPLE_RELEASE_NOTES"], cwd = "." },
+  { label = "publish wheel", argv = ["cmru", "handler", "wheel-publish", "--prefix", "example-wheel", "--cwd", ".", "--notes-env", "EXAMPLE_RELEASE_NOTES"], cwd = "." },
 ]
 ```
+
+Project steps call handlers as `cmru handler <verb> ...`, never
+`python3 -m cmru.handlers`: inside a release transaction `cmru` resolves to the
+launcher bound to the running cmru (its own library roots), while the module form
+resolves cmru from whatever interpreter and `PYTHONPATH` the step inherits.
+`cmru standards` flags the module form in project steps.
 
 The runtime declaration is mandatory and closed. Paste `kind = "none"` for a
 self-contained project step; use `kind = "ciu"` when the step deliberately
@@ -166,7 +172,6 @@ registry = ["ghcr.io"]
 
 [orchestration]
 project_order    = ["example-wheel"]
-default_projects = ["example-wheel"]
 default_steps    = ["run-tests", "build", "push"]
 execution_mode   = "project-first"
 
@@ -208,8 +213,7 @@ adopter can render an installer from any working directory after installing CMRU
 cmru get-py example-wheel --config /path/to/cmru.orchestration.toml --output ./get.py
 ```
 
-The wheel also installs `cmru-agent` and `cmru-controller`; those are independent companion
-CLIs with their own registered verbs. `cmru --help` lists top-level CMRU commands, while
+`cmru --help` lists top-level CMRU commands, while
 `cmru help get-py` or `cmru get-py --help` prints the exact delegated grammar.
 
 ## Using the wheel and component interfaces
@@ -228,10 +232,10 @@ python3 -m venv .venv-cmru
 ```
 
 Use installed console scripts for operator workflows. `python -m cmru.handlers`
-is the supported component CLI because project contracts and the first-wheel
-bootstrap need it. `cmru.bundle` and `cmru.runner` are library modules; they do
-not expose module commands. The `cmru.cli`, `cmru.agent.cli`, and
-`cmru.controller.cli` module aliases are retired. Use `cmru run-step` for
+is the bootstrap-only component CLI (the first-wheel build runs before an
+installed `cmru` exists); project contracts use `cmru handler <verb>` instead.
+`cmru.bundle` and `cmru.runner` are library modules; they do not expose module
+commands. The `cmru.cli` module alias is retired. Use `cmru run-step` for
 direct single-step CLI work, and use the documented Python functions to compose
 bundle or runner behavior:
 
@@ -263,8 +267,7 @@ archive = run_bundle(Path("bundle.toml"))
 
 Prefer the declared project-step commands or these documented entrypoints over
 copying CMRU implementation code. Do not import private helpers as an API. For
-operator commands, use the installed `cmru`, `cmru-agent`, or `cmru-controller`
-script. The bundle module is a library, and the runner module's supported CLI
+operator commands, use the installed `cmru` script. The bundle module is a library, and the runner module's supported CLI
 is `cmru run-step`.
 
 A real `wheel-build` handler invocation requires a Git worktree and a configured
@@ -950,8 +953,8 @@ only its declared outputs; CMRU refuses any other write.
 Adopt with these boundaries in mind — each is a deliberate, fail-closed gap, tracked in
 [`../KNOWN_ISSUES_TODO_BACKLOG.md`](../KNOWN_ISSUES_TODO_BACKLOG.md):
 
-- **OCI repack** is guarded off for production (`--repack` exits 2 before any side effect) until
-  it proves single-build + registry-digest equivalence (KI-02, `S14`).
+- **OCI repack** is unavailable: the `--repack` option was removed from the handler verbs while
+  KI-02 is open and returns when it is fixed, once it proves single-build + registry-digest equivalence (KI-02, `S14`).
 - **Durable post-tag publish resume** does not exist: `--resume` can continue a retained
   *pre-tag* worktree only after corrections are committed there; prepare and the required gate
   rerun, and the corrected candidate commit is what ships. It is not a post-tag retry (KI-06).

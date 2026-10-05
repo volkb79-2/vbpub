@@ -15,7 +15,6 @@ registry = ["ghcr.io"]
 
 [orchestration]
 project_order = ["example-wheel"]
-default_projects = ["example-wheel"]
 default_steps = ["run-tests", "build", "push"]
 execution_mode = "project-first"
 # Repository credentials live in the gitignored root cmru.secret.toml; an

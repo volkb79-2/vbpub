@@ -32,8 +32,8 @@ candidate for inspection. The reason is in the
 The [consumer guide](docs/CONSUMERS.md#git-version-for-local-tag-inspection)
 shows the prerequisite check.
 
-The wheel also installs the companion `cmru-agent` and `cmru-controller`
-entrypoints. All three use CMRU's registered CLI grammar; `cmru --help` lists
+The wheel installs the single `cmru` entrypoint (the `cmru-agent` and `cmru-controller`
+companions were retired on 2026-10-05). It uses CMRU's registered CLI grammar; `cmru --help` lists
 root verbs, and `cmru help <verb>` (or `<verb> --help`) shows that verb's exact
 options. The old release-scoped `--abandon` switch is removed; use
 `cmru abandon [BRANCH]` for a retained release transaction.
@@ -58,9 +58,8 @@ The image is defined by [`wheel-builder/Dockerfile`](../wheel-builder/Dockerfile
 The script prints the manual virtual-environment install commands after it produces
 the wheel; once installed, all subsequent builds use the `cmru` console script.
 
-The wheel installs the operator commands `cmru`, `cmru-agent`, and
-`cmru-controller`. It also carries the supported `python -m cmru.handlers`
-project-step and bootstrap CLI, the `cmru.bundle` and `cmru.runner` Python libraries, and the
+The wheel installs the operator command `cmru`. It also carries the bootstrap-only `python -m cmru.handlers`
+CLI (project steps use `cmru handler <verb>`), the `cmru.bundle` and `cmru.runner` Python libraries, and the
 `cli-extended` and `worktree` libraries they use. Use installed console scripts
 for operator commands; the retired module CLI aliases for bundle, runner, and
 the operator scripts refuse and direct callers to the supported interface. See the
@@ -136,7 +135,7 @@ cmru --help                       # generated verb catalog; use `cmru help <verb
 ```
 
 These are representative operator workflows. The complete registered grammar,
-including `cmru-agent`, `cmru-controller`, nested handler verbs, the supported
+including nested handler verbs, the supported
 handlers module adapter, every option, and the required semantic review table, is maintained
 in the [canonical CLI spec](docs/SPEC.md#s-cli9-canonical-cli-grammar-and-semantic-audit).
 
@@ -586,7 +585,7 @@ fits the work:
 | Need | Interface | Role |
 |---|---|---|
 | Release, inspect, or maintain a product | `cmru` and its registered verbs | Canonical operator workflow |
-| Register/build/publish an artifact handler from a project step | `python -m cmru.handlers …` | Explicit project-step adapter; also used by the fresh-checkout wheel bootstrap |
+| Register/build/publish an artifact handler from a project step | `cmru handler <verb> …` | Project-step adapter (bound launcher inside a release transaction); `python -m cmru.handlers` is bootstrap-only, used by the fresh-checkout wheel bootstrap |
 | Preview or reproduce one declared step | `cmru run-step …` | Direct single-step diagnostic using the project's normal `cmru.toml` |
 | Compose step or bundle behavior in Python | `cmru.runner.run_step` or `cmru.bundle.run_bundle` | Supported library entrypoints used by estate consumers |
 | Manage generic Git worktree lifecycles | `worktree` package in the CMRU wheel | Stable shared API, versioned with the CMRU wheel; see the [worktree consumer guide](../libraries/worktree/CONSUMERS.md) |
@@ -601,8 +600,8 @@ The standalone generated `get.py` remains intentionally independent and uses
 [consumer guide](docs/CONSUMERS.md#using-the-wheel-and-component-interfaces)
 shows installation and invocation examples.
 
-The OCI helper has an explicit normal Buildx bake load/push command. Its `--repack` argument
-is intentionally fail-closed while production-equivalence evidence is absent; use a
+The OCI helper has an explicit normal Buildx bake load/push command. Its `--repack` option was
+removed while KI-02 is open (it only ever failed) and returns when KI-02 is fixed; use a
 project-owned, tested flow such as MDT's for real OCI repacking.
 
 ## Differentiators

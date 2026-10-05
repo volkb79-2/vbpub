@@ -1,4 +1,4 @@
-"""Exhaustive boundary witnesses for release, transaction, and agent contracts."""
+"""Exhaustive boundary witnesses for release, transaction, version and tester-gate contracts."""
 from __future__ import annotations
 
 import json
@@ -288,27 +288,6 @@ def test_resolve_format_env_and_url_are_stable():
     rendered = resolve.format_result(result, "env")
     assert "DEMO_VERSION=1.2.3" in rendered and "DEMO_SHA256=abc" in rendered
     assert resolve.format_result(result, "url") == "https://x"
-
-
-def test_selfupdate_marker_and_handoff_are_atomic_at_systemd_boundary(tmp_path, monkeypatch):
-    from cmru.agent import selfupdate
-    venv = tmp_path / "venv-2"; venv.mkdir()
-    selfupdate.write_pending_marker(tmp_path, "2", venv)
-    assert selfupdate.read_pending_marker(tmp_path) == {"version": "2", "venv": str(venv)}
-    calls = []
-    monkeypatch.setattr(selfupdate.subprocess, "run", lambda argv, **kwargs: calls.append(argv) or SimpleNamespace(returncode=0, stderr=""))
-    selfupdate.handoff_via_systemd("2", venv, scope="user")
-    assert (tmp_path / "venv-current").is_symlink()
-    assert calls == [["systemctl", "--user", "restart", "cmru-agent"]]
-    selfupdate.clear_pending_marker(tmp_path)
-    assert selfupdate.read_pending_marker(tmp_path) is None
-
-
-def test_controller_cli_reports_missing_plan_without_constructing_backend(tmp_path, capsys):
-    from cmru.controller import cli
-    args = SimpleNamespace(plan=str(tmp_path / "missing.toml"), landscape=None)
-    assert cli.cmd_publish(args) == 2
-    assert "Plan file not found" in capsys.readouterr().err
 
 
 def test_tester_gate_resolvers_fail_closed_and_prefer_explicit(monkeypatch):

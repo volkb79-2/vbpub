@@ -9,7 +9,6 @@ from types import SimpleNamespace
 import pytest
 
 from cmru import dependencies, ghcr, manifest, output, resolve, standards
-from cmru.agent import protocol, selfupdate, state
 from cmru.hosts.github import GitHubReleaseHost
 
 
@@ -162,45 +161,6 @@ def test_output_stream_handles_partial_prefix_and_literal_passthrough():
     stream = io.StringIO(); decorated = output.SeverityStream(stream, time_short=False, colour=False)
     decorated.write("[INFO] ok\n")
     assert stream.getvalue() == "[INFO] ok\n"
-
-
-def test_selfupdate_handoff_updates_link_and_reports_restart_failure(tmp_path, monkeypatch):
-    venv = tmp_path / "venvs" / "v2"; venv.mkdir(parents=True)
-    current = venv.parent / "venv-current"
-    selfupdate.handoff_via_systemd("2", venv, scope="user", dry_run=True)
-    assert current.is_symlink() and current.resolve() == venv
-    monkeypatch.setattr(selfupdate.subprocess, "run", lambda *a, **k: SimpleNamespace(returncode=1, stderr="failed"))
-    with pytest.raises(SystemExit) as error:
-        selfupdate.handoff_via_systemd("2", venv, scope="system")
-    assert error.value.code == 0
-
-
-def test_protocol_and_state_reject_malformed_inputs_and_write_atomically(tmp_path, monkeypatch):
-    raw = {"schema_version": 1, "generation": 1, "action": "hold",
-           "release": {"tag": "t", "manifest_url": "u", "manifest_sha256": "s"},
-           "profiles": [""]}
-    with pytest.raises(protocol.DesiredStateError, match="profile"):
-        protocol.validate_desired(raw)
-    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
-    state.write_observed(protocol.ObservedState(applied_generation=4), "user")
-    assert state.read_observed("user").applied_generation == 4
-    state_dir = state.state_dir("user")
-    (state_dir / "identity.json").write_text("not-json")
-    (state_dir / "current_generation").write_text("not-an-int")
-    assert state.read_identity("user") is None
-    assert state.read_current_generation("user") is None
-
-
-def test_protocol_accepts_generation_zero_as_the_first_valid_generation():
-    """Zero is a valid coordinate; only negative integers are rejected."""
-    desired = protocol.validate_desired({
-        "schema_version": 1,
-        "generation": 0,
-        "action": "hold",
-        "release": {"tag": "t", "manifest_url": "u", "manifest_sha256": "s"},
-        "profiles": ["core"],
-    })
-    assert desired.generation == 0
 
 
 def test_github_host_filters_releases_and_surfaces_sha_retry_failure(monkeypatch):
