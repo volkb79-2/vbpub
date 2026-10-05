@@ -770,6 +770,21 @@ def test_adopted_full_sha_is_the_allocation_target_and_moved_head_refuses(
         )
 
 
+def test_allocated_commit_refuses_invalid_in_memory_fork_point(monkeypatch, tmp_path):
+    """A value that bypassed record parsing still cannot be certified."""
+    record = replace(_record(tmp_path), fork_point_sha="not-a-full-sha")
+    monkeypatch.setattr(
+        worktree,
+        "_git",
+        lambda *_args, **_kwargs: pytest.fail("invalid saved value must not read Git"),
+    )
+    with pytest.raises(
+        worktree.WorktreeError,
+        match="allocation commit is unavailable from both",
+    ):
+        worktree._allocated_commit_sha(record, SimpleNamespace(base_commit="a" * 40))
+
+
 def test_ready_record_refuses_to_infer_allocation_commit_from_a_moved_head(
     monkeypatch, tmp_path
 ):
