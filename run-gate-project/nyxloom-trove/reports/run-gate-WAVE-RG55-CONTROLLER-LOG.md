@@ -6866,3 +6866,31 @@ gates on its committed successor before requesting the same Sol reviewer for
 fix verification. The previously observed no-daemon warning means the runner
 used its registered coarse rusage profile; it does not affect the test or
 canary verdicts. No gate containers remain active.
+
+### RW-453 — 2026-10-05 17:44:42Z — Sol accepts P1 DAMON lock repair for provisional integration
+
+Fresh Sol/xhigh fix-verification round 5 accepted P1 candidate
+`ceb56b769ec74e7e51033876e2e31aee5c979ba0` for provisional integration.
+Round-4 blockers R4-1 (already-correct root-created DAMON lock rejected by
+non-root permission repair) and R4-2 (docs contradicting RW-434's combined
+first `1.0.0` release) are resolved. The preserved review is
+`scripts/cgroup-profiler/nyxloom-trove/reports/cgprofile-P1-DAMON-START-FIX-SOL-REVIEW-round5-20261005.md`.
+It records two low, nonblocking test-oracle limitations (fallback helper
+test does not require samples/DONE; descriptor-close fake does not assert the
+close call), and explicitly does not certify R2, the full gate, live helper
+completion, live DAMON samples/overhead, release, or deployment.
+
+The reviewer verified exact-tip `r0-r1` and `r3` history/log evidence on
+`ceb56b7`: 2,348 passed with 100% package line/branch coverage; 7/7 canaries
+rejected; both clean, history-eligible PASS. The operator supplied two
+scenario-specific live lock-permission probes (daemon-first already-correct
+root:gid lock without owner mutation; caller-first lock creation and group/mode
+repair). The reviewer records these as operator-reported corroboration, not
+independently verified live DAMON acceptance. At 17:44:26Z memory PSI
+`full avg10=0.00`; no mutation/gate process was running, and existing
+non-RG55 containers were left untouched.
+
+After preserving the report and this ruling, rerun short gates on the new
+commit-bound tree before provisional `--no-ff` integration. Then launch P1 R2
+from a quiet, supported CIU worktree and continue the remaining P3 live
+measurement/release work. This ACCEPT is not a release verdict.
