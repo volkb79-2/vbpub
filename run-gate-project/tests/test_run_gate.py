@@ -206,6 +206,7 @@ def fake_docker(tmp_path: Path, monkeypatch, wait_code: int | str = 0) -> Path:
         from pathlib import Path
         import re
         import shlex
+        import subprocess
         import sys
 
         status = sys.argv[1]
@@ -215,6 +216,7 @@ def fake_docker(tmp_path: Path, monkeypatch, wait_code: int | str = 0) -> Path:
                 continue
             value = argument.split(marker, 1)[1].strip().split()[0]
             path = Path(value.strip("'\\\""))
+            base = Path.cwd()
             if not path.is_absolute():
                 # Assay writes after run-gate's inner command has changed to
                 # the project directory. The fake Docker process itself runs
@@ -222,7 +224,6 @@ def fake_docker(tmp_path: Path, monkeypatch, wait_code: int | str = 0) -> Path:
                 changedir = re.search(
                     r"(?:^|&&)\\s*cd\\s+(.+?)(?=\\s*&&|\\s*;|$)",
                     argument)
-                base = Path.cwd()
                 if changedir:
                     parts = shlex.split(changedir.group(1))
                     if parts:
@@ -230,9 +231,16 @@ def fake_docker(tmp_path: Path, monkeypatch, wait_code: int | str = 0) -> Path:
                         base = candidate if candidate.is_absolute() else base / candidate
                 path = base / path
             path.parent.mkdir(parents=True, exist_ok=True)
+            commit_result = subprocess.run(
+                ["git", "-C", str(base), "rev-parse", "--verify", "HEAD"],
+                capture_output=True, text=True)
+            commit = commit_result.stdout.strip() \
+                if commit_result.returncode == 0 else ""
             outcome = "PASS" if status == "0" else "FAIL"
             path.write_text(json.dumps({
                 "outcome": outcome,
+                "assay_version": "7.2.0",
+                "commit": commit,
                 "reason_code": None,
                 "judge_provenance": {
                     "name": "assay", "version": "7.2.0",
@@ -416,7 +424,23 @@ def lane_execs(log: Path) -> list[list[str]]:
 
 
 def shim_dir_of(monkeypatch) -> Path:
-    return Path(os.environ["PATH"].split(":")[0])
+    first = Path(os.environ["PATH"].split(":")[0])
+    try:
+        probe_fd, probe_name = tempfile.mkstemp(
+            prefix="run-gate-test-write-probe-", dir=first)
+    except OSError:
+        pass
+    else:
+        os.close(probe_fd)
+        os.unlink(probe_name)
+        return first
+    # tester-unified's estate venv bin is intentionally read-only. Tests that
+    # install a PATH shim must own a writable directory, even when they do not
+    # also install fake_docker().
+    private = Path(tempfile.mkdtemp(prefix="run-gate-test-bin-"))
+    atexit.register(shutil.rmtree, private, ignore_errors=True)
+    monkeypatch.setenv("PATH", f"{private}:{os.environ['PATH']}")
+    return private
 
 
 def _shared_lock_dir() -> Path:
@@ -562,7 +586,7 @@ class TestEarlyMutationSentinels:
         assert "1 entry older than 1 day" in capsys.readouterr().out
 
     def test_foreign_record_dry_run_is_terminal_before_fresh_preflight(
-            self, tmp_path, monkeypatch):
+            self, tmp_path, monkeypatch, capsys):
         repo = make_repo(tmp_path)
         proj = make_project(repo, SIMPLE_LANE)
         record = plant_inflight(proj, repo, None, runner="exec")
@@ -575,7 +599,8 @@ class TestEarlyMutationSentinels:
 
         monkeypatch.setattr(run_gate, "physical_path",
                             fresh_preflight_must_not_run)
-        assert run_gate.main(["suite", "--dry-run"]) == 0
+        assert run_gate.main(["suite", "--dry-run"]) == 2
+        assert "foreign record" in capsys.readouterr().err
         assert record.read_bytes() == before
 
     def test_foreign_record_refusal_is_visible_before_the_process_exits(
@@ -1256,9 +1281,44 @@ class TestRG78ClosedExitTable:
                                                 judge_provenance=provenance)
             assert result.verdict == verdict
             assert result.assay_outcome == outcome
+        selected_commit = "b" * 40
+        for outcome, verdict in expected.items():
+            result = run_gate.assay_lane_result(
+                1, outcome, source_mode=True, source_version="8.0.0.dev1",
+                source_commit=selected_commit,
+                expected_source_commit=selected_commit)
+            assert result.verdict == verdict
+            assert result.assay_outcome == outcome
+        invalid = run_gate.assay_lane_result(
+            0, "UNKNOWN", source_mode=True, source_version="8.0.0.dev1",
+            source_commit=selected_commit,
+            expected_source_commit=selected_commit)
+        assert invalid.verdict == "ERROR"
+        assert invalid.reason == "invalid-assay-outcome"
         missing = run_gate.assay_lane_result(0, "PASS")
         assert missing.verdict == "ERROR"
+        assert missing.reason == "missing-or-invalid-judge-provenance"
         assert missing.gate_exit_code == 2
+        missing_source = run_gate.assay_lane_result(
+            0, "PASS", source_mode=True, source_version="8.0.0.dev1",
+            source_commit=selected_commit, expected_source_commit=None)
+        assert missing_source.verdict == "ERROR"
+        assert missing_source.reason == "missing-or-invalid-source-identity"
+        # The source version is an independent part of the identity contract:
+        # valid matching commit hashes must not mask a missing or blank version.
+        for source_version in (None, "", "   "):
+            invalid_source_version = run_gate.assay_lane_result(
+                0, "PASS", source_mode=True, source_version=source_version,
+                source_commit=selected_commit,
+                expected_source_commit=selected_commit)
+            assert invalid_source_version.verdict == "ERROR"
+            assert invalid_source_version.reason == \
+                "missing-or-invalid-source-identity"
+        mismatch = run_gate.assay_lane_result(
+            0, "PASS", source_mode=True, source_version="8.0.0.dev1",
+            source_commit="c" * 40, expected_source_commit=selected_commit)
+        assert mismatch.verdict == "ERROR"
+        assert mismatch.reason == "source-commit-mismatch"
 
     def test_only_finish_returns_the_cli_gate_code_and_sys_exit_is_unique(self):
         tree = ast.parse((RUN_GATE_DIR / "run-gate.py").read_text())
@@ -1848,11 +1908,13 @@ class TestArgvConstruction:
 
         The probe is short-lived, but it can exercise the same imported
         tooling as a judged lane. It must therefore get the same orphan and
-        zombie protection as the detached lane rather than being a second
-        unreviewed Docker launch shape.
+        zombie protection, mounts and user as the detached lane rather than
+        being a second unreviewed Docker launch shape.
         """
         repo = tmp_path / "repo"
         worktree = tmp_path / "worktree"
+        monkeypatch.setenv(run_gate.EXTRA_MOUNT_ENV_VAR,
+                           "/host/cache=/cache:/host/data=/data")
         monkeypatch.setattr(run_gate, "physical_path", lambda path: tmp_path / "host")
         monkeypatch.setattr(
             run_gate,
@@ -1861,7 +1923,8 @@ class TestArgvConstruction:
         )
         argv = run_gate.build_env_probe_argv(
             "docker",
-            {"image": "tester-unified:local"},
+            {"mode": "ephemeral", "image": "tester-unified:local",
+             "user": "1001:1002"},
             "tester-unified",
             repo,
             worktree,
@@ -1872,6 +1935,13 @@ class TestArgvConstruction:
         assert argv[:5] == [
             "docker", "run", "--rm", "--init", "--cgroup-parent",
         ]
+        assert argv[argv.index("--user") + 1] == "1001:1002"
+        assert ["-v", "/host/cache:/cache"] == argv[
+            argv.index("/host/cache:/cache") - 1:
+            argv.index("/host/cache:/cache") + 1]
+        assert ["-v", "/host/data:/data"] == argv[
+            argv.index("/host/data:/data") - 1:
+            argv.index("/host/data:/data") + 1]
 
     def test_assay_lane_inner_shape_and_verdict_line(self, tmp_path, monkeypatch):
         repo = make_repo(tmp_path)
@@ -3160,9 +3230,37 @@ def test_source_backed_assay_inner_installs_selected_worktree_source():
     )
     assert "pip install" in inner
     assert "--editable /tree/assay" in inner
-    assert '"$RUN_GATE_ASSAY_BIN" run x' in inner
+    assert "importlib.machinery.PathFinder.find_spec" in inner
+    # shlex.quote changes the literal quote characters around "assay"; pin
+    # the selected resolver call without pinning that shell-encoding detail.
+    assert "spec=importlib.util.find_spec" in inner
+    assert "import assay" not in inner
+    assert "assay/src/assay/__init__.py" in inner
+    assert "/tree" in inner
+    assert "not from the selected worktree source" in inner
+    assert 'cd / && "$ASSAY_PYTHON" -I -m pip install' in inner
+    assert '"$ASSAY_PYTHON" -I -c' in inner
+    assert "PathFinder.find_spec" in inner
+    assert "assay.__file__" not in inner
+    assert '"$ASSAY_PYTHON" -I -m assay.cli run x' in inner
+    assert inner.index("--editable /tree/assay") < inner.rindex("cd /proj")
+    assert inner.rindex("cd /proj") < inner.index(
+        "not from the selected worktree source")
+    assert inner.index("rm -f -- .assay/verdict-x.json") < inner.index(
+        "--editable /tree/assay")
     assert "assay-6." not in inner
     assert "sha256sum" not in inner
+
+
+def test_unreleased_changelog_matches_revision_and_recovery_contract():
+    changes = (RUN_GATE_DIR / "CHANGES.md").read_text()
+
+    assert f"source rev {run_gate.__revision__}" in changes
+    assert f"RG-81, rev {run_gate.__revision__}" in changes
+    assert "Older schemas refuse rather than being guessed or overwritten" \
+        in changes
+    assert "--fresh` only for an ephemeral-container lane" in changes
+    assert "lifecycle owner's confirmation" in changes
 
 
 def test_source_and_external_assay_commands_have_distinct_probe_identity():
@@ -3170,6 +3268,189 @@ def test_source_and_external_assay_commands_have_distinct_probe_identity():
     assert run_gate.assay_command_identity({"assay_command": ["assay"]}) == (
         "assay",
     )
+    assert run_gate.assay_command_text({}) == \
+        '"$ASSAY_PYTHON" -I -m assay.cli'
+    assert run_gate.assay_command_text(
+        {"assay_command": ["/opt/assay/assay.pyz"]}) == \
+        "/opt/assay/assay.pyz"
+    external = run_gate.build_assay_inner(
+        {"assay_lane": "x", "assay_command": ["assay"], "pins": {}},
+        Path("/proj"), Path("/repo"), worktree=Path("/tree"))
+    assert "not from the selected worktree source" not in external
+
+
+def test_source_inventory_checks_and_runs_selected_package_from_project_cwd(
+        tmp_path, monkeypatch):
+    source_root = tmp_path / "selected-tree"
+    package = source_root / "assay" / "src" / "assay"
+    package.mkdir(parents=True)
+    (source_root / "assay" / "pyproject.toml").write_text("[project]\nname='assay'\n")
+    (package / "__init__.py").write_text("__version__ = 'test'\n")
+    project_dir = tmp_path / "consumer"
+    project_dir.mkdir()
+    (project_dir / "assay.toml").write_text("# inventory probe fixture\n")
+    pip_shadow_log = tmp_path / "project-pip-shadow-used"
+    (project_dir / "pip.py").write_text(
+        "from pathlib import Path\n"
+        f"Path({str(pip_shadow_log)!r}).write_text('used')\n")
+    trace = tmp_path / "selected-python-calls.jsonl"
+    (package / "cli.py").write_text(textwrap.dedent("""\
+        import json
+        import os
+        import sys
+
+        with open(os.environ["ASSAY_TEST_TRACE"], "a", encoding="utf-8") as stream:
+            stream.write(json.dumps({"kind": "assay.cli", "argv": sys.argv[1:], "cwd": os.getcwd()}) + "\\n")
+        print(json.dumps({"assay_version": "selected-source", "inventory_schema": 1,
+                          "lanes": [{"name": "selected-tree-lane"}]}))
+        """))
+
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    selected_python = fake_bin / "selected-python"
+    selected_python.write_text(textwrap.dedent(f"""\
+        #!{sys.executable}
+        import json
+        import os
+        import runpy
+        import sys
+        from pathlib import Path
+
+        args = sys.argv[1:]
+        with open(os.environ["ASSAY_TEST_TRACE"], "a", encoding="utf-8") as stream:
+            stream.write(json.dumps({{"kind": "interpreter", "argv": args,
+                                     "cwd": os.getcwd()}}) + "\\n")
+        if args[:3] == ["-I", "-m", "pip"]:
+            raise SystemExit(0)
+        if args[:2] == ["-m", "pip"]:
+            local_pip = Path.cwd() / "pip.py"
+            if local_pip.is_file():
+                runpy.run_path(str(local_pip), run_name="__main__")
+            raise SystemExit(0)
+        source = Path(os.environ["ASSAY_SOURCE_ROOT"]) / "assay" / "src"
+        if args[:2] == ["-I", "-c"]:
+            # Model isolated Python: the selected editable source is
+            # importable, while the consumer cwd and PYTHONPATH are absent.
+            sys.path[:] = [str(source)]
+            sys.argv = ["-c", *args[3:]]
+            exec(compile(args[2], "<run-gate-import-check>", "exec"),
+                 {{"__name__": "__main__"}})
+        elif args[:3] == ["-I", "-m", "assay.cli"]:
+            # Isolated module execution ignores PYTHONPATH and the consumer
+            # cwd, then resolves the selected editable source.
+            sys.path[:] = [str(source)]
+            sys.argv = ["assay.cli", *args[3:]]
+            runpy.run_module("assay.cli", run_name="__main__", alter_sys=True)
+        elif args[:2] == ["-m", "assay.cli"]:
+            # Model the vulnerable non-isolated form so this oracle would
+            # execute the PYTHONPATH shadow if the production command lost
+            # `-I` again.
+            pythonpath = os.environ.get("PYTHONPATH")
+            if pythonpath:
+                sys.path.insert(0, pythonpath)
+            sys.argv = ["assay.cli", *args[2:]]
+            runpy.run_module("assay.cli", run_name="__main__", alter_sys=True)
+        else:
+            raise SystemExit(91)
+        """))
+    selected_python.chmod(selected_python.stat().st_mode | stat.S_IEXEC)
+    monkeypatch.setattr(run_gate, "ASSAY_SOURCE_PYTHON", str(selected_python))
+
+    other_python_log = tmp_path / "other-python-used"
+    other_python = fake_bin / "python3"
+    other_python.write_text(
+        "#!/bin/sh\nprintf 'used\\n' > \"$OTHER_PYTHON_LOG\"\nexit 92\n")
+    other_python.chmod(other_python.stat().st_mode | stat.S_IEXEC)
+    shadow_log = tmp_path / "shadow-assay-used"
+    shadow_assay = fake_bin / "assay"
+    shadow_assay.write_text(
+        "#!/bin/sh\nprintf 'used\\n' > \"$SHADOW_LOG\"\nexit 93\n")
+    shadow_assay.chmod(shadow_assay.stat().st_mode | stat.S_IEXEC)
+
+    pythonpath_root = tmp_path / "pythonpath-shadow"
+    pythonpath_package = pythonpath_root / "assay"
+    pythonpath_package.mkdir(parents=True)
+    pythonpath_marker = tmp_path / "pythonpath-shadow-executed"
+    (pythonpath_package / "__init__.py").write_text(
+        "from pathlib import Path\n"
+        f"Path({str(pythonpath_marker)!r}).write_text('executed')\n")
+    (pythonpath_package / "cli.py").write_text(
+        "import json\nprint(json.dumps({'inventory_schema': 1, "
+        "'lanes': [{'name': 'pythonpath-shadow'}]}))\n")
+
+    env = os.environ.copy()
+    env.update({"ASSAY_TEST_TRACE": str(trace),
+                "ASSAY_SOURCE_ROOT": str(source_root),
+                "OTHER_PYTHON_LOG": str(other_python_log),
+                "SHADOW_LOG": str(shadow_log),
+                "PYTHONPATH": str(pythonpath_root),
+                "PATH": f"{fake_bin}:{env['PATH']}"})
+    lane = {"kind": "assay", "assay_lane": "unit"}
+    monkeypatch.setenv("ASSAY_TEST_TRACE", str(trace))
+    monkeypatch.setenv("ASSAY_SOURCE_ROOT", str(source_root))
+    monkeypatch.setenv("OTHER_PYTHON_LOG", str(other_python_log))
+    monkeypatch.setenv("SHADOW_LOG", str(shadow_log))
+    monkeypatch.setenv("PYTHONPATH", str(pythonpath_root))
+    monkeypatch.setenv("PATH", env["PATH"])
+    document, why = run_gate.assay_inventory(
+        "/unused/docker", lane, {}, "bare-host", source_root, source_root,
+        "bare-host", project_dir)
+    assert why is None
+    assert document == {
+        "assay_version": "selected-source", "inventory_schema": 1,
+        "lanes": [{"name": "selected-tree-lane"}],
+    }
+    rows = [json.loads(line) for line in trace.read_text().splitlines()]
+    interpreter_calls = [row["argv"] for row in rows
+                         if row["kind"] == "interpreter"]
+    installer_calls = [row for row in rows
+                       if row["kind"] == "interpreter"
+                       and row["argv"][:3] == ["-I", "-m", "pip"]]
+    assert interpreter_calls[0][:3] == ["-I", "-m", "pip"]
+    assert installer_calls[0]["cwd"] == "/"
+    assert interpreter_calls[1][:2] == ["-I", "-c"]
+    assert interpreter_calls[2][:4] == ["-I", "-m", "assay.cli", "lanes"]
+    assert {"kind": "assay.cli",
+            "argv": ["lanes", "--json", "--file", "assay.toml"],
+            "cwd": str(project_dir)} in rows
+    assert not other_python_log.exists()
+    assert not shadow_log.exists()
+    assert not pip_shadow_log.exists()
+    assert not pythonpath_marker.exists()
+
+    local_shadow = project_dir / "assay"
+    local_shadow.mkdir()
+    # A namespace-only directory is not an importable project-local package:
+    # Python continues searching and selects the installed regular package.
+    document, why = run_gate.assay_inventory(
+        "/unused/docker", lane, {}, "bare-host", source_root, source_root,
+        "bare-host", project_dir)
+    assert why is None
+    assert document["lanes"] == [{"name": "selected-tree-lane"}]
+
+    executed_shadow = tmp_path / "project-assay-shadow-executed"
+    (local_shadow / "__init__.py").write_text(
+        "from pathlib import Path\n"
+        f"Path({str(executed_shadow)!r}).write_text('executed')\n"
+        f"__file__ = {str(package / '__init__.py')!r}\n")
+    (local_shadow / "cli.py").write_text(
+        "import json\nprint(json.dumps({'inventory_schema': 1, "
+        "'lanes': [{'name': 'project-shadow'}]}))\n")
+    rows_before_shadow_probe = len(trace.read_text().splitlines())
+    document, why = run_gate.assay_inventory(
+        "/unused/docker", lane, {}, "bare-host", source_root, source_root,
+        "bare-host", project_dir)
+    assert document is None
+    assert "imported assay package is not from the selected worktree source" in why
+    rows = [json.loads(line) for line in trace.read_text().splitlines()]
+    recent_calls = [row["argv"] for row in rows if row["kind"] == "interpreter"]
+    assert recent_calls[-2][:3] == ["-I", "-m", "pip"]
+    assert recent_calls[-1][:2] == ["-I", "-c"]
+    assert not executed_shadow.exists()
+    assert not any(row.get("kind") == "assay.cli" and
+                   row.get("argv", [None])[0] == "lanes" and
+                   row.get("cwd") == str(project_dir)
+                   for row in rows[rows_before_shadow_probe:])
 
 
 class TestPinVersionVerify:
@@ -5552,6 +5833,773 @@ class TestExecModeMutex:
 # RG-9 — doctor: one preflight command for the first-contact failure classes
 # ---------------------------------------------------------------------------
 
+def test_status_json_reads_internal_exec_lock_inflight_and_admission(
+        tmp_path, monkeypatch, capsys):
+    repo = make_repo(tmp_path)
+    config = """\
+        schema_version = 1
+        [lanes.schema]
+        kind = "command"
+        environment = "bare-host"
+        argv = ["true"]
+        clean_tree = false
+
+        [admission]
+        enabled = true
+        ticket_image = "ticket:local"
+    """
+    project = make_project(repo, config)
+    fake_docker(tmp_path, monkeypatch)
+    lock_dir = tmp_path / "status-locks"
+    lock_dir.mkdir()
+    monkeypatch.setenv("RUN_GATE_LOCK_DIR", str(lock_dir))
+    lock_path = lock_dir / "run-gate-exec-test-runner.lock"
+    fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+    inflight = project / ".run-gate" / "inflight"
+    inflight.mkdir(parents=True)
+    record = {
+        "schema": run_gate.INFLIGHT_SCHEMA,
+        "lane": "schema",
+        "runner": "exec",
+        "container": "test-runner",
+        "container_id": "runner-id",
+        "started_at": "2026-10-04T00:00:00Z",
+        "owner_pid": os.getpid(),
+        "owner_start": run_gate.process_start_ticks(os.getpid()),
+        "boot_id": run_gate.boot_id(),
+        "pid_ns": run_gate.pid_ns_inode(),
+    }
+    (inflight / "schema.json").write_text(json.dumps(record))
+    fixture = {
+        "published": {"name": "ciu-admission-1", "generation": 1,
+                      "max_concurrent": 1,
+                      "max_concurrent_readable": True},
+        "visible_admission_objects": [],
+        "tickets": [
+            {"name": "ciu-res-gates-1", "state": "running",
+             "owner": {"lane": "schema", "pid": 501, "run_id": "r1"},
+             "owner_liveness": "alive", "deadline": 1800000300},
+            {"name": "ciu-res-gates-2", "state": "queued",
+             "owner": {"lane": "assay-r1", "pid": 502, "run_id": "r2"},
+             "owner_liveness": "alive", "deadline": 1800000300},
+            {"name": "ciu-res-gates-3", "state": "dead-owner",
+             "owner": {"lane": "old-lane", "pid": 503, "run_id": "r3"},
+             "owner_liveness": "dead", "deadline": 1800000300},
+        ],
+    }
+
+    class StatusAdmission:
+        def __init__(self, **_kwargs):
+            pass
+
+        def status_snapshot(self):
+            return fixture
+
+    monkeypatch.setattr(run_gate, "DockerAdmission", StatusAdmission)
+    monkeypatch.setattr(run_gate, "local_docker_endpoint",
+                        lambda: (True, "local Docker Unix endpoint"))
+    monkeypatch.chdir(project)
+    try:
+        assert run_gate.main(["status", "--json"]) == 0
+    finally:
+        os.close(fd)
+
+    result = json.loads(capsys.readouterr().out)
+    internal = next(lock for lock in result["exec_locks"]
+                    if lock["runner"] == "test-runner")
+    assert internal["state"] == "running"
+    assert internal["holders"] == [{"pid": os.getpid(), "liveness": "alive",
+                                     "lane": "schema",
+                                     "inflight_record": str(inflight / "schema.json")}]
+    assert not (lock_dir / "dstdns-gate-slot.lock").exists()
+    assert {ticket["state"] for ticket in result["admission"]["tickets"]} \
+        == {"running", "queued", "dead-owner"}
+    assert result["verdict"] == "PASS" and result["exit_code"] == 0
+
+
+def test_status_does_not_call_an_invisible_lock_pid_dead(tmp_path):
+    assert run_gate._status_pid_liveness(123456789, tmp_path) == "unknown"
+
+
+def test_status_reports_unreadable_exec_lock_directory(tmp_path, monkeypatch):
+    lock_dir = tmp_path / "locks"
+    lock_dir.mkdir()
+    proc_root = tmp_path / "proc"
+    proc_root.mkdir()
+    (proc_root / "locks").write_text("")
+
+    def denied(_path):
+        raise PermissionError("directory scan denied")
+
+    monkeypatch.setattr(run_gate.os, "scandir", denied)
+    locks, errors = run_gate._read_exec_lock_status(lock_dir, proc_root)
+
+    assert locks == []
+    assert len(errors) == 1
+    assert "cannot list exec lock directory" in errors[0]
+    assert "directory scan denied" in errors[0]
+
+
+def test_status_reports_unreadable_inflight_directory(tmp_path, monkeypatch):
+    project = tmp_path / "project"
+    directory = project / ".run-gate" / "inflight"
+    directory.mkdir(parents=True)
+
+    def denied(_path):
+        raise PermissionError("directory scan denied")
+
+    monkeypatch.setattr(run_gate.os, "scandir", denied)
+    records, errors = run_gate._read_inflight_status(project, tmp_path)
+
+    assert records == []
+    assert len(errors) == 1
+    assert "cannot list inflight directory" in errors[0]
+    assert "directory scan denied" in errors[0]
+
+
+def test_status_reports_inflight_directory_stat_failure(tmp_path, monkeypatch):
+    project = tmp_path / "project"
+    directory = project / ".run-gate" / "inflight"
+    directory.mkdir(parents=True)
+    original_lstat = Path.lstat
+
+    def denied(path, *args, **kwargs):
+        if path == directory:
+            raise PermissionError("directory stat denied")
+        return original_lstat(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "lstat", denied)
+    records, errors = run_gate._read_inflight_status(project, tmp_path)
+
+    assert records == []
+    assert len(errors) == 1
+    assert "cannot list inflight directory" in errors[0]
+    assert "directory stat denied" in errors[0]
+
+
+def test_status_reports_inflight_directory_removed_during_listing(
+        tmp_path, monkeypatch):
+    project = tmp_path / "project"
+    directory = project / ".run-gate" / "inflight"
+    directory.mkdir(parents=True)
+
+    def disappeared(_path):
+        raise FileNotFoundError("directory disappeared during scan")
+
+    monkeypatch.setattr(run_gate.os, "scandir", disappeared)
+    records, errors = run_gate._read_inflight_status(project, tmp_path)
+
+    assert records == []
+    assert len(errors) == 1
+    assert "directory disappeared during scan" in errors[0]
+
+
+def test_status_proc_liveness_requires_matching_owner_identity(tmp_path):
+    proc_root = tmp_path / "proc"
+    proc_root.mkdir()
+    assert run_gate._proc_stat_identity(999, proc_root) is None
+    proc = proc_root / "321"
+    (proc / "ns").mkdir(parents=True)
+    (proc_root / "sys/kernel/random").mkdir(parents=True)
+    (proc_root / "self/ns").mkdir(parents=True)
+    (proc_root / "sys/kernel/random/boot_id").write_text("boot-a\n")
+    (proc_root / "self/ns/pid").write_text("")
+    pid_ns = os.stat(proc_root / "self/ns/pid").st_ino
+
+    def write_stat(state="S", start_ticks=456):
+        fields = [state, *(["0"] * 18), str(start_ticks)]
+        (proc / "stat").write_text(
+            f"321 (status process) {' '.join(fields)}\n")
+
+    record = {"owner_pid": 321, "pid_ns": pid_ns,
+              "owner_start": 456, "boot_id": "boot-a"}
+    write_stat()
+    assert run_gate._proc_stat_identity(321, proc_root) == ("S", 456)
+    assert run_gate._status_pid_liveness(321, proc_root) == "alive"
+    assert run_gate._status_inflight_owner_liveness(record, proc_root) == "alive"
+
+    write_stat(start_ticks=457)
+    assert run_gate._status_inflight_owner_liveness(record, proc_root) == "dead"
+    write_stat(state="Z")
+    assert run_gate._status_pid_liveness(321, proc_root) == "dead"
+    assert run_gate._status_inflight_owner_liveness(record, proc_root) == "dead"
+
+    (proc / "stat").unlink()
+    assert run_gate._status_pid_liveness(321, proc_root) == "unknown"
+    assert run_gate._status_inflight_owner_liveness(record, proc_root) == "dead"
+    assert run_gate._status_inflight_owner_liveness(
+        {**record, "boot_id": "boot-b"}, proc_root) == "unknown"
+    assert run_gate._status_inflight_owner_liveness(
+        {**record, "pid_ns": pid_ns + 1}, proc_root) == "unknown"
+    assert run_gate._status_inflight_owner_liveness(
+        {**record, "owner_pid": True}, proc_root) == "unknown"
+
+    proc.mkdir(exist_ok=True)
+    (proc / "stat").write_text("malformed\n")
+    assert run_gate._proc_stat_identity(321, proc_root) is None
+    assert run_gate._status_pid_liveness(321, proc_root) == "unknown"
+    assert run_gate._status_inflight_owner_liveness(record, proc_root) == "unknown"
+    (proc_root / "sys/kernel/random/boot_id").unlink()
+    assert run_gate._status_inflight_owner_liveness(record, proc_root) == "unknown"
+
+
+def test_status_keeps_unreadable_proc_entries_unknown(tmp_path, monkeypatch):
+    proc_root = tmp_path / "proc"
+    proc = proc_root / "321"
+    (proc / "ns").mkdir(parents=True)
+    (proc_root / "sys/kernel/random").mkdir(parents=True)
+    (proc_root / "self/ns").mkdir(parents=True)
+    (proc_root / "sys/kernel/random/boot_id").write_text("boot-a\n")
+    (proc_root / "self/ns/pid").write_text("")
+    stat_path = proc / "stat"
+    stat_path.write_text("321 (runner) S " + "0 " * 18 + "456\n")
+    record = {"owner_pid": 321,
+              "pid_ns": os.stat(proc_root / "self/ns/pid").st_ino,
+              "owner_start": 456, "boot_id": "boot-a"}
+    read_text = Path.read_text
+
+    def denied(path, *args, **kwargs):
+        if path == stat_path:
+            raise PermissionError("proc entry hidden")
+        return read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", denied)
+
+    assert run_gate._status_pid_liveness(321, proc_root) == "unknown"
+    assert run_gate._status_inflight_owner_liveness(record, proc_root) == "unknown"
+
+
+def test_status_inflight_reader_preserves_malformed_records(tmp_path):
+    project = tmp_path / "project"
+    assert run_gate._read_inflight_status(project, tmp_path) == ([], [])
+    directory = project / ".run-gate" / "inflight"
+    directory.mkdir(parents=True)
+    cases = {
+        "bad-json.json": ("{", "unreadable"),
+        "not-object.json": ("[]", "unreadable"),
+        "wrong-schema.json": (json.dumps({"schema": 999}), "unknown-schema"),
+        "bad-fields.json": (json.dumps({
+            "schema": run_gate.INFLIGHT_SCHEMA, "lane": "lane",
+            "runner": "exec", "container": "",
+        }), "unreadable"),
+    }
+    for name, (content, _state) in cases.items():
+        (directory / name).write_text(content)
+    (directory / "not-utf8.json").write_bytes(b"\xff")
+    (directory / "non-file.json").mkdir()
+    (directory / "ignored.txt").write_text("not a record")
+
+    records, errors = run_gate._read_inflight_status(project, tmp_path)
+
+    by_name = {Path(record["path"]).name: record for record in records}
+    for name, (_content, state) in cases.items():
+        assert by_name[name]["state"] == state
+    assert by_name["not-utf8.json"]["state"] == "unreadable"
+    assert by_name["non-file.json"]["state"] == "unreadable"
+    assert "ignored.txt" not in by_name
+    assert len(errors) == len(cases) + 2
+
+
+def test_status_inflight_reader_rejects_a_non_directory_scope(tmp_path):
+    project = tmp_path / "project"
+    inflight_parent = project / ".run-gate"
+    inflight_parent.mkdir(parents=True)
+    (inflight_parent / "inflight").write_text("not a directory")
+
+    records, errors = run_gate._read_inflight_status(project, tmp_path)
+
+    assert records == []
+    assert len(errors) == 1
+    assert "not a directory" in errors[0]
+
+
+def test_status_parses_proc_lock_holders_waiters_and_ignores_other_rows():
+    locks = run_gate._parse_proc_lock_rows("\n".join([
+        "",
+        "1: FLOCK ADVISORY WRITE 111 00:2a:42 0 EOF",
+        "2: -> FLOCK ADVISORY WRITE 222 00:2a:42 0 EOF",
+        "3: FLOCK ADVISORY READ - 00:2a:43 0 EOF",
+        "4: POSIX ADVISORY WRITE 333 00:2a:44 0 EOF",
+        "5: FLOCK MANDATORY WRITE 444 00:2a:45 0 EOF",
+        "6: FLOCK ADVISORY READ nope bad-key 0 EOF",
+        "7: FLOCK ADVISORY WRITE 0 00:2a:46 0 EOF",
+        "8: FLOCK ADVISORY WRITE -1 00:2a:47 0 EOF",
+        "FLOCK ADVISORY WRITE 333 00:2a:48 0 EOF",
+    ]))
+
+    assert locks[(0, 42, 42)] == {"holders": [111], "waiters": [222]}
+    assert locks[(0, 42, 43)] == {"holders": [None], "waiters": []}
+    assert (0, 42, 47) not in locks
+    assert locks[(0, 42, 48)] == {"holders": [333], "waiters": []}
+    assert (0, 42, 44) not in locks
+
+
+def test_status_reports_missing_proc_locks_as_a_source_error(tmp_path):
+    lock_dir = tmp_path / "locks"
+    lock_dir.mkdir()
+    proc_root = tmp_path / "proc"
+    proc_root.mkdir()
+
+    locks, errors = run_gate._read_exec_lock_status(lock_dir, proc_root)
+
+    assert locks == []
+    assert len(errors) == 1
+    assert "cannot read" in errors[0] and "/locks" in errors[0]
+
+
+def test_status_exec_lock_reader_joins_running_queued_idle_and_bad_lock_files(
+        tmp_path):
+    lock_dir = tmp_path / "locks"
+    lock_dir.mkdir()
+    proc_root = tmp_path / "proc"
+    proc_root.mkdir()
+    runner_path = lock_dir / "run-gate-exec-running.lock"
+    queued_path = lock_dir / "run-gate-exec-queued.lock"
+    idle_path = lock_dir / "run-gate-exec-idle.lock"
+    broken_path = lock_dir / "run-gate-exec-broken.lock"
+    for path in (runner_path, queued_path, idle_path):
+        path.touch()
+    broken_path.symlink_to(idle_path)
+    (proc_root / "111").mkdir()
+    fields = ["S", *(["0"] * 18), "456"]
+    (proc_root / "111/stat").write_text(f"111 (runner) {' '.join(fields)}\n")
+    (proc_root / "222").mkdir()
+    (proc_root / "222/stat").write_text(f"222 (runner) {' '.join(fields)}\n")
+    (proc_root / "locks").write_text("\n".join([
+        f"1: FLOCK ADVISORY WRITE 111 "
+        f"{os.major(runner_path.stat().st_dev):x}:"
+        f"{os.minor(runner_path.stat().st_dev):x}:"
+        f"{runner_path.stat().st_ino} 0 EOF",
+        f"2: -> FLOCK ADVISORY WRITE 222 "
+        f"{os.major(runner_path.stat().st_dev):x}:"
+        f"{os.minor(runner_path.stat().st_dev):x}:"
+        f"{runner_path.stat().st_ino} 0 EOF",
+        f"3: -> FLOCK ADVISORY WRITE 222 "
+        f"{os.major(queued_path.stat().st_dev):x}:"
+        f"{os.minor(queued_path.stat().st_dev):x}:"
+        f"{queued_path.stat().st_ino} 0 EOF",
+    ]))
+
+    locks, errors = run_gate._read_exec_lock_status(lock_dir, proc_root)
+
+    by_runner = {lock["runner"]: lock for lock in locks}
+    assert errors and "run-gate-exec-broken.lock" in errors[0]
+    assert by_runner["running"]["state"] == "running"
+    assert by_runner["running"]["holders"] == [
+        {"pid": 111, "liveness": "alive"}]
+    assert by_runner["running"]["waiters"] == [
+        {"pid": 222, "liveness": "alive"}]
+    assert by_runner["queued"]["state"] == "queued"
+    assert by_runner["idle"]["state"] == "idle"
+    assert by_runner["broken"]["state"] == "unreadable"
+
+
+def test_status_human_output_discloses_empty_sources_and_docker_error(
+        tmp_path, monkeypatch, capsys):
+    project = tmp_path / "project"
+    project.mkdir()
+    monkeypatch.setattr(run_gate, "_read_exec_lock_status",
+                        lambda *_args: ([], []))
+    monkeypatch.setattr(run_gate, "_read_inflight_status",
+                        lambda *_args: ([], []))
+    monkeypatch.setattr(run_gate.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(run_gate, "_git_toplevel_if_available", lambda _path: None)
+
+    code = run_gate.cmd_status(project, {}, tmp_path / "run-gate.toml")
+    captured = capsys.readouterr()
+
+    assert code == 2
+    assert "run-gate status: ERROR exit_code=2" in captured.out
+    assert "none held or queued" in captured.out
+    assert "inflight records:\n  none" in captured.out
+    assert "no readable published object" in captured.out
+    assert "no visible admission tickets or tombstones" in captured.out
+    assert "Docker CLI not found on PATH" in captured.err
+
+
+def test_status_lane_name_can_be_recovered_from_proc_cmdline(tmp_path):
+    proc = tmp_path / "789"
+    proc.mkdir()
+    cmdline = proc / "cmdline"
+    cmdline.write_bytes(
+        b"/usr/bin/python\0/workspaces/vbpub/run-gate-project/run-gate.py\0"
+        b"--worktree\0/worktrees/feature\0--base\0main\0--json\0schema\0")
+
+    assert run_gate._status_command_lane(789, tmp_path) == "schema"
+    cmdline.write_bytes(b"run-gate.py\0--\0schema\0")
+    assert run_gate._status_command_lane(789, tmp_path) is None
+    cmdline.write_bytes(b"python\0--version\0")
+    assert run_gate._status_command_lane(789, tmp_path) is None
+    cmdline.write_bytes(
+        b"run-gate.py\0--worktree\0/worktrees/x\0--base\0main\0"
+        b"--json\0--allow-dirty\0")
+    assert run_gate._status_command_lane(789, tmp_path) is None
+    assert run_gate._status_command_lane(790, tmp_path) is None
+
+
+def test_status_human_output_reports_lock_and_admission_occupancy(
+        tmp_path, monkeypatch, capsys):
+    project = tmp_path / "project"
+    project.mkdir()
+    monkeypatch.setattr(run_gate, "_read_exec_lock_status", lambda *_args: ([
+        {"runner": "test-runner", "state": "running",
+         "holders": [{"pid": 10, "liveness": "alive", "lane": "schema"}],
+         "waiters": [{"pid": 11, "liveness": "alive", "lane": "unit"}]},
+        {"runner": "idle-runner", "state": "idle",
+         "holders": [], "waiters": []},
+    ], []))
+    monkeypatch.setattr(run_gate, "_read_inflight_status", lambda *_args: ([
+        {"path": "/project/.run-gate/inflight/schema.json", "lane": "schema",
+         "runner": "exec", "container": "test-runner", "owner_pid": 10,
+         "owner_liveness": "alive"},
+        {"path": "/project/.run-gate/inflight/bad.json", "state": "unreadable"},
+    ], []))
+    monkeypatch.setattr(run_gate.shutil, "which", lambda _name: "/usr/bin/docker")
+    monkeypatch.setattr(run_gate, "local_docker_endpoint",
+                        lambda: (True, "local Docker Unix endpoint"))
+
+    class HumanStatusAdmission:
+        def __init__(self, **_kwargs):
+            pass
+
+        def status_snapshot(self):
+            return {
+                "published": {"name": "ciu-admission-2",
+                              "max_concurrent": 2,
+                              "max_concurrent_readable": True},
+                "visible_admission_objects": [{
+                    "name": "ciu-admission-1", "generation": 1,
+                    "docker_status": "created", "identity_readable": False,
+                    "max_concurrent_readable": False}, {
+                    "name": "ciu-admission-readable", "generation": 2,
+                    "docker_status": "running", "identity_readable": True,
+                    "max_concurrent_readable": True}],
+                "tickets": [
+                    {"name": "ciu-res-gates-1", "state": "running",
+                     "owner": {"lane": "schema", "pid": 10},
+                     "owner_liveness": "alive", "deadline": 1800000300},
+                    {"name": "ciu-res-gates-2", "state": "unreadable-live",
+                     "owner": None, "owner_liveness": "unknown",
+                     "deadline": None},
+                ],
+            }
+
+    monkeypatch.setattr(run_gate, "DockerAdmission", HumanStatusAdmission)
+    code = run_gate.cmd_status(project, {"admission": {"enabled": True}},
+                               tmp_path / "run-gate.toml")
+    out = capsys.readouterr().out
+
+    assert code == 0
+    assert "test-runner: running pid=10" in out
+    assert "test-runner: queued pid=11" in out
+    assert "1 idle lock file(s)" in out
+    assert "schema: exec runner=test-runner" in out
+    assert "unreadable:" in out
+    assert "published=ciu-admission-2 cap=2 cap_readable=true" in out
+    assert "unreadable admission object: ciu-admission-1" in out
+    assert "unreadable admission object: ciu-admission-readable" not in out
+    assert "ciu-res-gates-1: running lane=schema pid=10" in out
+    assert "ciu-res-gates-2: unreadable-live lane=(unreadable)" in out
+
+
+@pytest.mark.parametrize("failure", ["no-docker", "remote", "unavailable", "docker-error"])
+def test_status_json_reports_partial_data_on_admission_source_failures(
+        tmp_path, monkeypatch, capsys, failure):
+    project = tmp_path / "project"
+    project.mkdir()
+    monkeypatch.setattr(run_gate, "_read_exec_lock_status", lambda *_args: ([
+        {"runner": "test-runner", "state": "idle",
+         "holders": [], "waiters": []}], []))
+    inflight = [{"path": "/project/.run-gate/inflight/schema.json",
+                 "lane": "schema", "runner": "exec",
+                 "container": "test-runner", "owner_pid": 10,
+                 "owner_liveness": "alive"}]
+    monkeypatch.setattr(run_gate, "_read_inflight_status",
+                        lambda *_args: (inflight, []))
+    docker_path = None if failure == "no-docker" else "/usr/bin/docker"
+    monkeypatch.setattr(run_gate.shutil, "which", lambda _name: docker_path)
+    monkeypatch.setattr(run_gate, "local_docker_endpoint", lambda: (
+        (False, "remote Docker context") if failure == "remote"
+        else (True, "local Docker Unix endpoint")))
+    monkeypatch.setattr(run_gate, "_git_toplevel_if_available", lambda _path: None)
+
+    class FailingStatusAdmission:
+        def __init__(self, **_kwargs):
+            pass
+
+        def status_snapshot(self):
+            if failure == "unavailable":
+                raise run_gate.AdmissionDockerUnavailable("daemon unavailable")
+            raise run_gate.AdmissionError("status labels malformed")
+
+    monkeypatch.setattr(run_gate, "DockerAdmission", FailingStatusAdmission)
+    code = run_gate.cmd_status(project, {}, tmp_path / "run-gate.toml",
+                               json_mode=True)
+    result = json.loads(capsys.readouterr().out)
+
+    assert code == 2
+    assert result["verdict"] == "ERROR"
+    assert result["exit_code"] == 2
+    assert result["inflight"] == inflight
+    assert result["exec_locks"][0]["runner"] == "test-runner"
+    assert result["errors"]
+
+
+def test_status_worktree_selects_its_config_and_inflight_scope(
+        tmp_path, monkeypatch, capsys):
+    repo = make_repo(tmp_path)
+    project = make_project(repo, """\
+        schema_version = 1
+        [admission]
+        enabled = false
+        ticket_image = "ticket:local"
+    """)
+    worktree = make_worktree(repo, tmp_path)
+    selected_project = worktree / "proj"
+    inflight = selected_project / ".run-gate" / "inflight"
+    inflight.mkdir(parents=True)
+    (inflight / "target.json").write_text(json.dumps({
+        "schema": run_gate.INFLIGHT_SCHEMA,
+        "lane": "target-lane",
+        "runner": "exec",
+        "container": "target-runner",
+    }))
+    fake_docker(tmp_path, monkeypatch)
+    lock_dir = tmp_path / "status-locks"
+    lock_dir.mkdir()
+    monkeypatch.setenv("RUN_GATE_LOCK_DIR", str(lock_dir))
+    monkeypatch.setattr(run_gate, "local_docker_endpoint",
+                        lambda: (True, "local Docker Unix endpoint"))
+
+    class StatusAdmission:
+        def __init__(self, **_kwargs):
+            pass
+
+        def status_snapshot(self):
+            return {"published": None,
+                    "visible_admission_objects": [], "tickets": []}
+
+    monkeypatch.setattr(run_gate, "DockerAdmission", StatusAdmission)
+    monkeypatch.chdir(project)
+    assert run_gate.main(["status", "--worktree", str(worktree),
+                          "--json"]) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["scope"]["project"] == str(selected_project)
+    assert result["scope"]["worktree"] == str(worktree)
+    assert result["scope"]["config"] == str(
+        selected_project / "run-gate.toml")
+    assert [row["lane"] for row in result["inflight"]] == ["target-lane"]
+
+
+def test_status_rejects_lane_execution_options(tmp_path, monkeypatch, capsys):
+    repo = make_repo(tmp_path)
+    project = make_project(repo, "schema_version = 1\n")
+    monkeypatch.setattr(sys, "argv", [str(_TOOL_INVOKE)])
+    monkeypatch.chdir(project)
+
+    assert run_gate.main(["status", "--dry-run"]) == 2
+    assert "status accepts only" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("published, remedy", [
+    (None, "run-gate admission set --max-concurrent <desired-N>"),
+    ({"name": "ciu-admission-2", "generation": 2,
+      "max_concurrent": None, "max_concurrent_readable": False},
+     "--max-concurrent <desired-N> --replace"),
+])
+def test_doctor_checks_enabled_admission_publication_and_readable_cap(
+        tmp_path, monkeypatch, capsys, published, remedy):
+    repo = make_repo(tmp_path)
+    project = make_project(repo, """\
+        schema_version = 1
+        [admission]
+        enabled = true
+        ticket_image = "ticket:local"
+    """)
+    fake_docker(tmp_path, monkeypatch)
+    monkeypatch.setattr(run_gate.shutil, "which",
+                        lambda name: "/usr/bin/docker" if name == "docker" else None)
+    monkeypatch.setattr(run_gate, "local_docker_endpoint",
+                        lambda: (True, "local Docker Unix endpoint"))
+
+    class DoctorAdmission:
+        def __init__(self, **_kwargs):
+            pass
+
+        def image_present(self, image):
+            assert image == "ticket:local"
+            return True
+
+        def admission_snapshot(self):
+            visible = ([{"name": published["name"],
+                         "identity_readable": True}]
+                       if published else [])
+            return {"published": published,
+                    "visible_admission_objects": visible}
+
+    monkeypatch.setattr(run_gate, "DockerAdmission", DoctorAdmission)
+    monkeypatch.chdir(project)
+    cfg, cfg_path, central, central_path = run_gate.load_config(project)
+    code = run_gate.cmd_doctor({}, project, cfg, central, cfg_path, central_path)
+    out = capsys.readouterr().out
+    assert code == 2
+    assert "[OK] admission ticket image: 'ticket:local' is present locally" in out
+    assert remedy in out
+
+
+def test_doctor_admission_image_check_is_read_only_and_names_missing_image(
+        tmp_path, monkeypatch, capsys):
+    repo = make_repo(tmp_path)
+    project = make_project(repo, """\
+        schema_version = 1
+        [admission]
+        enabled = true
+        ticket_image = "ticket:missing"
+    """)
+    fake_docker(tmp_path, monkeypatch)
+    monkeypatch.setattr(run_gate.shutil, "which",
+                        lambda name: "/usr/bin/docker" if name == "docker" else None)
+    monkeypatch.setattr(run_gate, "local_docker_endpoint",
+                        lambda: (True, "local Docker Unix endpoint"))
+    calls = []
+
+    class DoctorAdmission:
+        def __init__(self, **_kwargs):
+            pass
+
+        def image_present(self, image):
+            calls.append(("image_present", image))
+            return False
+
+        def admission_snapshot(self):
+            calls.append(("admission_snapshot",))
+            published = {"name": "ciu-admission-1", "generation": 1,
+                         "max_concurrent": 1,
+                         "max_concurrent_readable": True}
+            return {"published": published,
+                    "visible_admission_objects": [
+                        {"name": "ciu-admission-1",
+                         "identity_readable": True}]}
+
+        def verify_image(self, _image):
+            raise AssertionError("doctor must not run a ticket container")
+
+    monkeypatch.setattr(run_gate, "DockerAdmission", DoctorAdmission)
+    monkeypatch.chdir(project)
+    cfg, cfg_path, central, central_path = run_gate.load_config(project)
+    code = run_gate.cmd_doctor({}, project, cfg, central, cfg_path, central_path)
+    out = capsys.readouterr().out
+    assert code == 2
+    assert calls == [("image_present", "ticket:missing"),
+                     ("admission_snapshot",)]
+    assert "build/load it or set [admission].ticket_image" in out
+    assert "max-concurrent=1 is readable" in out
+
+
+def test_doctor_names_unreadable_admission_object_without_false_repair(
+        tmp_path, monkeypatch, capsys):
+    repo = make_repo(tmp_path)
+    project = make_project(repo, """\
+        schema_version = 1
+        [admission]
+        enabled = true
+        ticket_image = "ticket:local"
+    """)
+    fake_docker(tmp_path, monkeypatch)
+    monkeypatch.setattr(run_gate.shutil, "which",
+                        lambda name: "/usr/bin/docker" if name == "docker" else None)
+    monkeypatch.setattr(run_gate, "local_docker_endpoint",
+                        lambda: (True, "local Docker Unix endpoint"))
+
+    class DoctorAdmission:
+        def __init__(self, **_kwargs):
+            pass
+
+        def image_present(self, _image):
+            return True
+
+        def admission_snapshot(self):
+            return {"published": None,
+                    "visible_admission_objects": [
+                        {"name": "ciu-admission-7",
+                         "identity_readable": False}]}
+
+    monkeypatch.setattr(run_gate, "DockerAdmission", DoctorAdmission)
+    monkeypatch.chdir(project)
+    cfg, cfg_path, central, central_path = run_gate.load_config(project)
+    code = run_gate.cmd_doctor({}, project, cfg, central, cfg_path, central_path)
+    out = capsys.readouterr().out
+    assert code == 2
+    assert "ciu-admission-7" in out
+    assert "run-gate admission set` is not a repair" in out
+    assert "no valid ciu-admission object is published" not in out
+
+
+@pytest.mark.parametrize("failure", [
+    "no-docker", "remote", "missing-image", "image-unavailable",
+    "image-error", "state-unavailable", "state-error",
+])
+def test_doctor_admission_diagnostics_cover_unavailable_sources(
+        tmp_path, monkeypatch, capsys, failure):
+    project = make_project(make_repo(tmp_path), "schema_version = 1\n")
+    docker_path = None if failure == "no-docker" else "/usr/bin/docker"
+    monkeypatch.setattr(run_gate.shutil, "which", lambda _name: docker_path)
+    monkeypatch.setattr(run_gate, "local_docker_endpoint", lambda: (
+        (False, "remote Docker context") if failure == "remote"
+        else (True, "local Docker Unix endpoint")))
+
+    class FailingDoctorAdmission:
+        def __init__(self, **_kwargs):
+            pass
+
+        def image_present(self, _image):
+            if failure == "image-unavailable":
+                raise run_gate.AdmissionDockerUnavailable("daemon unavailable")
+            if failure == "image-error":
+                raise run_gate.AdmissionError("image inspection failed")
+            return True
+
+        def admission_snapshot(self):
+            if failure == "state-unavailable":
+                raise run_gate.AdmissionDockerUnavailable("daemon unavailable")
+            if failure == "state-error":
+                raise run_gate.AdmissionError("admission inspection failed")
+            return {
+                "visible_admission_objects": [],
+                "published": {"name": "ciu-admission-2", "generation": 2,
+                              "max_concurrent": 2,
+                              "max_concurrent_readable": True},
+            }
+
+    monkeypatch.setattr(run_gate, "DockerAdmission", FailingDoctorAdmission)
+    cfg = {"admission": {"enabled": True}}
+    if failure != "missing-image":
+        cfg["admission"]["ticket_image"] = "ticket:local"
+    _cfg, cfg_path, central, central_path = run_gate.load_config(project)
+
+    code = run_gate.cmd_doctor({}, project, cfg, central, cfg_path, central_path)
+    out = capsys.readouterr().out
+
+    assert code == 2
+    if failure == "no-docker":
+        assert "Docker is unavailable" in out
+        assert "could not inspect the configured local image" in out
+    elif failure == "remote":
+        assert "requires the daemon shared by local gates" in out
+        assert "cannot verify the shared object" in out
+    elif failure == "missing-image":
+        assert "requires ticket_image" in out
+    elif failure.startswith("image-"):
+        assert "admission ticket image" in out
+        assert "restore access to the local Docker daemon" in out or \
+            "correct [admission].ticket_image" in out
+    elif failure.startswith("state-"):
+        assert "admission published count" in out
+        assert "restore access to the local Docker daemon" in out or \
+            "published admission state is unreadable" in out
+
 class TestDoctor:
     def test_exec_declared_slice_is_reported_naming_only_in_process(
             self, tmp_path, monkeypatch, capsys):
@@ -6446,6 +7494,16 @@ class TestDoctorAndCheckEnvWorktreeReadScope:
 
 class TestShippedGateFullDeclaration:
     """RG-26: pin the real project's conjunction declaration, not a fixture."""
+
+    def test_assay_test_commands_use_the_tester_unified_python(self):
+        cfg = tomllib.loads((RUN_GATE_DIR / "assay.toml").read_text())
+        for name in ("r1", "r2"):
+            assert cfg["lanes"][name]["argv"][0] \
+                == "/opt/tester-venv/bin/python"
+            assert cfg["lanes"][name]["env"]["TMPDIR"] \
+                == "/worktree/.run-gate"
+            assert cfg["lanes"][name]["env"]["GIT_CEILING_DIRECTORIES"] \
+                == "/worktree/.run-gate"
 
     def test_gate_full_forwards_base_only_to_assay_r1_in_order(self):
         cfg_path = RUN_GATE_DIR / "run-gate.toml"
@@ -7516,6 +8574,29 @@ class TestRecordedWorktreeBase:
         assert "records no usable 'fork_point_sha'" in why
         assert "CIU-106" in why
 
+    def test_recorded_worktree_base_accepts_sha256_fork_point(
+            self, tmp_path, monkeypatch):
+        repo = make_feature_repo(tmp_path)
+        oid = "a" * 64
+        record = write_instance_record(repo, base_ref="main",
+                                       fork_point_sha=oid)
+        monkeypatch.setattr(run_gate, "current_branch_ref",
+                            lambda _worktree: "refs/heads/feature")
+        monkeypatch.setattr(run_gate, "local_branch_ref_name",
+                            lambda _worktree, _base: "refs/heads/main")
+        monkeypatch.setattr(run_gate, "merge_base_of",
+                            lambda _worktree, _base: oid)
+        monkeypatch.setattr(run_gate, "base_already_contains_head",
+                            lambda _worktree, _base: False)
+        monkeypatch.setattr(run_gate, "judged_diff_is_empty",
+                            lambda _worktree, _fork: False)
+
+        resolved, used_record, why = run_gate.recorded_worktree_base(repo, repo)
+
+        assert resolved == oid
+        assert used_record == record
+        assert why == ""
+
     @pytest.mark.parametrize("bad", ["", "   ", "not-a-sha", 42, [], {}, True,
                                      "0123456789ABCDEF0123456789ABCDEF01234567",
                                      "0123456789abcdef0123456789abcdef0123456",
@@ -8462,6 +9543,166 @@ class TestRG76AssayLaneImports:
         monkeypatch.chdir(proj)
         return repo, proj, fake
 
+    def _use_ephemeral_import_environment(self, project):
+        config_path = project / run_gate.CONFIG_NAME
+        config = config_path.read_text()
+        config = config.replace(
+            "[assay]\n",
+            '[environments.runner]\nmode = "ephemeral"\n'
+            'image = "tester-unified:local"\n[assay]\n', 1)
+        config = config.replace(
+            'import = { environment = "bare-host"',
+            'import = { environment = "runner"', 1)
+        config_path.write_text(config)
+
+    def _use_exec_import_environment(self, project):
+        config_path = project / run_gate.CONFIG_NAME
+        config = config_path.read_text()
+        config = config.replace(
+            "[environments.bare-host]\nmode = \"host\"\n",
+            '[environments.runner]\nmode = "exec"\n'
+            'image = "runner:v1"\ncontainer_name = "shared-runner"\n',
+            1)
+        config = config.replace('"bare-host"', '"runner"')
+        config_path.write_text(config)
+
+    @pytest.mark.parametrize("environment", ["host", "exec"])
+    def test_container_record_refuses_after_imported_assay_environment_changes(
+            self, tmp_path, monkeypatch, environment):
+        _repo, project, _fake = self._project(
+            tmp_path, monkeypatch, imported=["alpha"])
+        if environment == "exec":
+            self._use_exec_import_environment(project)
+        record_path = run_gate.inflight_path(project, "alpha")
+        record_path.parent.mkdir(parents=True)
+        record_path.write_text(json.dumps({
+            "schema": 2, "runner": "container", "container": "old-assay",
+            "assay_identity_mode": "source",
+            "verdict": str(project / run_gate.assay_verdict_rel("alpha")),
+            "progress": str(project / run_gate.assay_progress_rel("alpha")),
+        }))
+        monkeypatch.setattr(
+            run_gate, "discover_imported_assay_lanes",
+            lambda *_args, **_kwargs: pytest.fail(
+                "old container record must refuse before imported Assay inventory"))
+
+        result = run_gate._dispatch(["alpha"])
+
+        assert result.verdict == "ERROR"
+        assert "current lane environment is not ephemeral-container mode" \
+            in result.reason
+        assert "lifecycle owner" in result.reason
+        assert record_path.exists()
+
+    @pytest.mark.parametrize("identity_mode", [["source"], {"mode": "source"}])
+    def test_sequence_malformed_assay_identity_is_closed_before_inventory(
+            self, tmp_path, monkeypatch, identity_mode):
+        _repo, project, _fake = self._project(
+            tmp_path, monkeypatch, imported=["alpha"])
+        self._use_ephemeral_import_environment(project)
+        config_path = project / run_gate.CONFIG_NAME
+        config_path.write_text(
+            config_path.read_text() + "\n"
+            "[admission]\nenabled = true\nticket_image = 'ticket:v1'\n"
+            "[lanes.gate]\nkind = 'sequence'\nlanes = ['alpha']\n")
+        record_path = run_gate.inflight_path(project, "gate")
+        record_path.parent.mkdir(parents=True)
+        record_path.write_text(json.dumps({
+            "schema": 2, "runner": "container", "container": "old-assay",
+            "assay_identity_mode": identity_mode,
+            "verdict": str(project / run_gate.assay_verdict_rel("gate")),
+            "progress": str(project / run_gate.assay_progress_rel("gate")),
+        }))
+        monkeypatch.setattr(
+            run_gate, "discover_imported_assay_lanes",
+            lambda *_args, **_kwargs: pytest.fail(
+                "malformed sequence record must refuse before Assay inventory"))
+        monkeypatch.setattr(
+            run_gate, "_admit_lane",
+            lambda *_args, **_kwargs: pytest.fail(
+                "malformed sequence record must refuse before admission"))
+
+        result = run_gate._dispatch(["gate"])
+
+        assert result.verdict == "ERROR"
+        assert "invalid assay_identity_mode" in result.reason
+        assert "lifecycle owner" in result.reason
+        assert record_path.exists()
+
+    @pytest.mark.parametrize("fresh", [False, True])
+    def test_sequence_foreign_runner_refuses_before_inventory_and_admission(
+            self, tmp_path, monkeypatch, fresh):
+        _repo, project, _fake = self._project(
+            tmp_path, monkeypatch, imported=["alpha"])
+        self._use_ephemeral_import_environment(project)
+        config_path = project / run_gate.CONFIG_NAME
+        config_path.write_text(
+            config_path.read_text() + "\n"
+            "[admission]\nenabled = true\nticket_image = 'ticket:v1'\n"
+            "[lanes.gate]\nkind = 'sequence'\nlanes = ['alpha']\n")
+        record_path = run_gate.inflight_path(project, "alpha")
+        record_path.parent.mkdir(parents=True)
+        record_path.write_text(json.dumps({
+            "schema": 2, "runner": "exec", "container": "shared-runner",
+            "assay_identity_mode": "artifact",
+            "verdict": str(project / run_gate.assay_verdict_rel("alpha")),
+            "progress": str(project / run_gate.assay_progress_rel("alpha")),
+        }))
+        monkeypatch.setattr(
+            run_gate, "discover_imported_assay_lanes",
+            lambda *_args, **_kwargs: pytest.fail(
+                "foreign runner must refuse before imported Assay inventory"))
+        monkeypatch.setattr(
+            run_gate, "_admit_lane",
+            lambda *_args, **_kwargs: pytest.fail(
+                "foreign runner must refuse before sequence admission"))
+
+        argv = ["gate"] + (["--fresh"] if fresh else [])
+        result = run_gate._dispatch(argv)
+
+        assert result.verdict == "ERROR"
+        assert "foreign record" in result.reason
+        assert "runner 'exec'" in result.reason
+        assert "lifecycle owner" in result.reason
+        assert record_path.exists()
+
+    @pytest.mark.parametrize("fresh", [False, True])
+    def test_sequence_parent_assay_record_refuses_before_inventory_and_admission(
+            self, tmp_path, monkeypatch, fresh):
+        _repo, project, _fake = self._project(
+            tmp_path, monkeypatch, imported=["alpha"])
+        self._use_ephemeral_import_environment(project)
+        config_path = project / run_gate.CONFIG_NAME
+        config_path.write_text(
+            config_path.read_text() + "\n"
+            "[admission]\nenabled = true\nticket_image = 'ticket:v1'\n"
+            "[lanes.gate]\nkind = 'sequence'\nlanes = ['alpha']\n")
+        record_path = run_gate.inflight_path(project, "gate")
+        record_path.parent.mkdir(parents=True)
+        record_path.write_text(json.dumps({
+            "schema": 2, "runner": "container", "container": "old-assay",
+            "assay_identity_mode": "source",
+            "verdict": str(project / run_gate.assay_verdict_rel("gate")),
+            "progress": str(project / run_gate.assay_progress_rel("gate")),
+        }))
+        monkeypatch.setattr(
+            run_gate, "discover_imported_assay_lanes",
+            lambda *_args, **_kwargs: pytest.fail(
+                "changed-kind record must refuse before imported Assay inventory"))
+        monkeypatch.setattr(
+            run_gate, "_admit_lane",
+            lambda *_args, **_kwargs: pytest.fail(
+                "changed-kind record must refuse before sequence admission"))
+
+        argv = ["gate"] + (["--fresh"] if fresh else [])
+        result = run_gate._dispatch(argv)
+
+        assert result.verdict == "ERROR"
+        assert "current lane kind is 'sequence'" in result.reason
+        assert "refusing to interpret its result under the changed lane config" \
+            in result.reason
+        assert record_path.exists()
+
     def test_import_all_lists_inventory_and_keeps_tsv_shape(self, tmp_path,
                                                               monkeypatch,
                                                               capsys):
@@ -8496,6 +9737,64 @@ class TestRG76AssayLaneImports:
         assert run_gate.main(["alpha", "--dry-run"]) == 3
         failed = capsys.readouterr()
         assert "judge-digest" in failed.out
+
+    @pytest.mark.parametrize("bad_field", ["mode", "redirected-path", "nul-path"])
+    def test_imported_lane_inflight_contract_refuses_before_inventory_docker(
+            self, tmp_path, monkeypatch, bad_field):
+        _repo, project, _fake = self._project(
+            tmp_path, monkeypatch, imported=["alpha"])
+        self._use_ephemeral_import_environment(project)
+        record_path = run_gate.inflight_path(project, "alpha")
+        record_path.parent.mkdir(parents=True)
+        pending = {"schema": 2, "runner": "container",
+                   "container": "runner"}
+        if bad_field != "mode":
+            pending.update({
+                "assay_identity_mode": "source",
+                "verdict": str(project / run_gate.assay_verdict_rel("alpha")),
+                "progress": str(project / run_gate.assay_progress_rel("alpha")),
+            })
+            if bad_field == "redirected-path":
+                pending["verdict"] = str(project / ".assay/old-pass.json")
+            else:
+                pending["verdict"] = "\0"
+        record_path.write_text(json.dumps(pending))
+        monkeypatch.setattr(
+            run_gate, "discover_imported_assay_lanes",
+            lambda *_args, **_kwargs: pytest.fail(
+                "malformed inflight identity must refuse before inventory Docker"))
+
+        result = run_gate._dispatch(["alpha"])
+
+        assert result.verdict == "ERROR"
+        expected = ("assay_identity_mode" if bad_field == "mode" else
+                    "not the path for the recorded Assay lane"
+                    if bad_field == "redirected-path" else
+                    "valid verdict path")
+        assert expected in result.reason
+
+    def test_imported_sequence_member_inflight_refuses_before_inventory(
+            self, tmp_path, monkeypatch):
+        _repo, project, _fake = self._project(
+            tmp_path, monkeypatch, imported=["alpha"])
+        self._use_ephemeral_import_environment(project)
+        config_path = project / run_gate.CONFIG_NAME
+        config_path.write_text(config_path.read_text() + "\n" +
+                               '[lanes.gate]\nkind = "sequence"\n'
+                               'lanes = ["alpha"]\n')
+        record_path = run_gate.inflight_path(project, "alpha")
+        record_path.parent.mkdir(parents=True)
+        record_path.write_text(json.dumps({"schema": 2,
+                                           "container": "runner"}))
+        monkeypatch.setattr(
+            run_gate, "discover_imported_assay_lanes",
+            lambda *_args, **_kwargs: pytest.fail(
+                "sequence member identity must be checked before inventory Docker"))
+
+        result = run_gate._dispatch(["gate"])
+
+        assert result.verdict == "ERROR"
+        assert "assay_identity_mode" in result.reason
 
     def test_import_all_drops_a_lane_removed_from_inventory(self, tmp_path,
                                                             monkeypatch,
@@ -10617,6 +11916,24 @@ class TestHistoryDegradedInputs:
         git(empty, "init", "-q", "-b", "main")
         assert run_gate.head_commit(empty) is None
 
+    @pytest.mark.parametrize("oid", ["a" * 40, "b" * 64])
+    def test_head_commit_accepts_sha1_and_sha256_object_ids(
+            self, tmp_path, monkeypatch, oid):
+        monkeypatch.setattr(
+            run_gate.subprocess, "run",
+            lambda *_args, **_kwargs: SimpleNamespace(
+                returncode=0, stdout=oid))
+        assert run_gate.head_commit(tmp_path) == oid
+
+    def test_head_commit_requires_success_even_with_sha_stdout(
+            self, tmp_path, monkeypatch):
+        oid = "a" * 40
+        monkeypatch.setattr(
+            run_gate.subprocess, "run",
+            lambda *_args, **_kwargs: SimpleNamespace(
+                returncode=1, stdout=oid))
+        assert run_gate.head_commit(tmp_path) is None
+
     def test_history_table_must_be_a_table(self, tmp_path):
         _, proj = make_history_repo(
             tmp_path, HISTORY_LANE.replace("schema_version = 1",
@@ -10839,7 +12156,7 @@ class TestHistoryFlushIsAtMostOnce:
 
 
 class TestJsonFlagScope:
-    """`--json` belongs to history/footprint queries and lane results; every
+    """`--json` belongs to history/footprint/status queries and lane results; every
     other use refuses by name instead of silently returning a human table."""
 
     @pytest.mark.parametrize("args", [["--list", "--json"],
@@ -10849,7 +12166,7 @@ class TestJsonFlagScope:
         _, proj = make_history_repo(tmp_path)
         out = run_tool(proj, *args)
         assert out.returncode == 2, out.stdout + out.stderr
-        assert "--json is honored by the `history`/`footprint` verbs only" \
+        assert "--json is honored by the `history`/`footprint`/`status` verbs only" \
             in out.stderr
         assert "Traceback" not in out.stderr
 
@@ -10872,7 +12189,7 @@ class TestJsonFlagScope:
     def test_usage_says_where_json_is_accepted(self, tmp_path):
         _, proj = make_history_repo(tmp_path)
         out = run_tool(proj, "--help")
-        assert "`history`/`footprint` ONLY" in out.stdout
+        assert "`history`/`footprint`/`status`: emit one JSON" in out.stdout
         assert "REFUSES it by name" in out.stdout
         assert "run-gate.py history [LANE] [--worktree PATH] [--json]" \
             in out.stdout
@@ -10943,7 +12260,7 @@ class TestHistoryReadScopeInProcess:
         repo, proj = make_history_repo(tmp_path)
         monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
         assert run_gate.main(args) == 2
-        assert "--json is honored by the `history`/`footprint` verbs only" \
+        assert "--json is honored by the `history`/`footprint`/`status` verbs only" \
             in capsys.readouterr().err
 
 
@@ -10967,7 +12284,8 @@ class TestResumeAndProgressAlways:
              "assay_command": ["./tools/assay/assay.pyz"], "pins": {}}
 
     def test_inner_carries_resume_progress_and_state_dir_after_the_verdict(self):
-        inner = run_gate.build_assay_inner(self._LANE, Path("/proj"), Path("/repo"))
+        inner = run_gate.build_assay_inner(
+            self._LANE, Path("/repo/proj"), Path("/repo"))
         assert ("run sql_mutation --file assay.toml "
                 "--verdict-json .assay/verdict-sql_mutation.json "
                 "--resume --progress .assay/progress-sql_mutation.jsonl") in inner
@@ -10977,7 +12295,7 @@ class TestResumeAndProgressAlways:
         """RG-26's flag keeps its position: appended only for a delegating
         lane, after everything the lane always gets (including RG-38's
         --state-dir, which sits between --progress and --request-base)."""
-        inner = run_gate.build_assay_inner(self._LANE, Path("/proj"), Path("/repo"),
+        inner = run_gate.build_assay_inner(self._LANE, Path("/repo/proj"), Path("/repo"),
                                            request_base="deadbeef")
         assert inner.rstrip().endswith("--request-base deadbeef")
         assert ("--progress .assay/progress-sql_mutation.jsonl "
@@ -10990,7 +12308,8 @@ class TestResumeAndProgressAlways:
         adopter git-ignores (R-32). A progress file anywhere in the judged
         tree would make assay refuse NO_MEASUREMENT/DIRTY_TREE on the lane's
         NEXT run, so the location is not a style choice."""
-        inner = run_gate.build_assay_inner(self._LANE, Path("/proj"), Path("/repo"))
+        inner = run_gate.build_assay_inner(
+            self._LANE, Path("/repo/proj"), Path("/repo"))
         assert inner.index("mkdir -p .assay") < inner.index(
             "--progress .assay/progress-sql_mutation.jsonl")
         assert "--progress .assay/" in inner and "--progress /" not in inner
@@ -11000,7 +12319,8 @@ class TestResumeAndProgressAlways:
         shared .git, outside an ephemeral judged worktree. The lane may
         create keyed descendants but must never recreate the mount root in a
         runner's disposable layer."""
-        inner = run_gate.build_assay_inner(self._LANE, Path("/proj"), Path("/repo"))
+        inner = run_gate.build_assay_inner(
+            self._LANE, Path("/repo/proj"), Path("/repo"))
         state_dir = "/repo/.run-gate/assay-state/proj"
         assert "[ ! -d /repo/.run-gate ]" in inner
         assert "[ ! -w /repo/.run-gate ]" in inner
@@ -11428,11 +12748,15 @@ class TestResumeAndProgressAlways:
 
         monkeypatch.setattr(run_gate.shutil, "which", lambda _name: "/bin/docker")
         monkeypatch.setattr(run_gate.subprocess, "run", run)
+        repo = tmp_path / "repo"
+        project = repo / "project"
+        repo.mkdir()
+        project.mkdir()
         lane = {**self._LANE, "kind": "assay", "environment": "runner"}
         env = {"mode": "exec", "image": "runner", "state_root": "/persist/.run-gate"}
         assert run_gate.run_exec_lane(
-            lane, "mutation", tmp_path / "project", tmp_path / "repo",
-            tmp_path / "repo", env, "[environments.runner]", "runner-1",
+            lane, "mutation", project, repo,
+            repo, env, "[environments.runner]", "runner-1",
             "worktree config", "ciu up --dir tools/test-runner", None,
             "exec runner", dry_run=True, run_record=None,
             profile_plan={"enabled": False, "disabled_reason": "disabled",
@@ -11480,15 +12804,18 @@ class TestResumeAndProgressAlways:
 
     def test_assay_state_dir_falls_back_to_a_safe_key_outside_repo(self):
         """A --worktree override can relocate project_dir entirely outside
-        `repo` (Mode-B); relative_to() then raises, and the fallback (full
-        resolved path, filesystem-safe) must still be a real, usable,
-        collision-resistant directory name, not raise itself."""
+        `repo` (Mode-B); its resolved absolute path gets a deterministic
+        SHA-256 key under a separate namespace."""
         repo = Path("/repo")
-        outside = Path("/elsewhere/proj")
+        outside = Path("/a-b/c")
+        colliding_sanitized = Path("/a/b-c")
         state_dir = run_gate.assay_state_dir(repo, outside)
-        assert state_dir.parent == repo / ".run-gate" / "assay-state"
-        assert "/" not in state_dir.name  # a single, real path segment
-        assert state_dir.name == "elsewhere-proj"
+        expected_key = hashlib.sha256(
+            os.fsencode(str(outside.resolve()))).hexdigest()
+        assert state_dir.parent == repo / ".run-gate" / "assay-state-external"
+        assert state_dir.name == expected_key
+        assert run_gate.assay_state_dir(repo, outside) == state_dir
+        assert run_gate.assay_state_dir(repo, colliding_sanitized) != state_dir
 
     def test_print_lane_artifacts_discloses_the_state_directory(
             self, capsys):
@@ -11498,7 +12825,7 @@ class TestResumeAndProgressAlways:
         from it until this fix."""
         run_gate.print_lane_artifacts(
             {**self._LANE, "kind": "assay"}, "sql_mutation",
-            Path("/proj"), Path("/repo"), Path("/proj"))
+            Path("/repo/proj"), Path("/repo"), Path("/repo/proj"))
         out = capsys.readouterr().out
         assert "run-gate: state directory: /repo/.run-gate/assay-state/proj" in out
 
@@ -11876,22 +13203,29 @@ def plant_inflight(proj: Path, repo: Path, state: Path | None, *,
     if commit == "HEAD":
         commit = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"],
                                 capture_output=True, text=True).stdout.strip()
+    config = tomllib.loads((proj / run_gate.CONFIG_NAME).read_text())
+    lane_config = config.get("lanes", {}).get(lane, {})
     path = proj / ".run-gate" / "inflight" / f"{lane}.json"
     path.parent.mkdir(parents=True, exist_ok=True)
-    payload = {"schema": 1, "lane": lane, "container": container,
+    payload = {"schema": run_gate.INFLIGHT_SCHEMA, "lane": lane,
+               "container": container,
                "container_id": f"sha256:fakeid-{container}",
                "started_at": "2026-09-02T11:00:00Z",
                "started_epoch": time.time() - 754,
                "commit": commit, "worktree": str(repo),
                "project_dir": str(proj), "verdict": None, "progress": None,
+               "assay_identity_mode": run_gate.assay_identity_mode(
+                   lane_config),
                "revision": run_gate.__revision__}
+    if lane_config.get("kind") == "assay":
+        assay_lane = lane_config["assay_lane"]
+        payload["verdict"] = str(proj / run_gate.assay_verdict_rel(assay_lane))
+        payload["progress"] = str(proj / run_gate.assay_progress_rel(assay_lane))
     payload.update(over)
     path.write_text(json.dumps(payload))
     # A running assay has already written its verdict before run-gate can
     # re-attach and inspect the record. Model that durable file for planted
     # containers so the re-attach path exercises the recorded artifact.
-    config = tomllib.loads((proj / run_gate.CONFIG_NAME).read_text())
-    lane_config = config.get("lanes", {}).get(lane, {})
     if lane_config.get("kind") == "assay":
         assay_lane = lane_config["assay_lane"]
         verdict = payload.get("verdict") or str(
@@ -12549,12 +13883,12 @@ class TestInflightRecordDecisions:
         record = plant_inflight(proj, repo, state, container="dstdns-98535c-test-runner",
                                 runner="exec")
         before = record.read_text()
-        assert run_gate.main(["suite", "--dry-run"]) == 0
-        out = capsys.readouterr().out
-        assert ("foreign record — refusing to attach, follow, collect, "
-                "or remove it") in out
-        assert "dstdns-98535c-test-runner" in out
-        assert "written by runner 'exec'" in out
+        assert run_gate.main(["suite", "--dry-run"]) == 2
+        captured = capsys.readouterr()
+        output = captured.out + captured.err
+        assert "foreign record" in output
+        assert "dstdns-98535c-test-runner" in output
+        assert "written by runner 'exec'" in output
         assert lane_runs(log) == []
         assert record.read_text() == before    # not cleared, not rewritten
         assert (state / "dstdns-98535c-test-runner").exists()   # not removed
@@ -12808,12 +14142,27 @@ class TestInflightRecordDecisions:
         assert f"delete {record}" in err
         assert lane_runs(log) == []
 
+    @pytest.mark.parametrize("schema", [None, 2.0])
+    def test_inflight_schema_must_be_an_integer_version(
+            self, tmp_path, monkeypatch, capsys, schema):
+        repo, proj, log, state = self._fixture(tmp_path, monkeypatch)
+        record = plant_inflight(proj, repo, state, schema=schema)
+        before = record.read_text()
+
+        assert run_gate.main(["suite"]) == 2
+        assert f"declares schema {schema!r}" in capsys.readouterr().err
+        assert _docker_calls(log) == []
+        assert lane_runs(log) == []
+        assert (state / "run-gate-planted").exists()
+        assert record.read_text() == before
+
     def test_fresh_reads_only_the_container_name_out_of_a_foreign_record(
             self, tmp_path, monkeypatch, capsys):
         """The escape the refusal offers has to WORK. Under `--fresh` the
-        only things read out of a record whose grammar this client does not
+        only values used from a record whose grammar this client does not
         know are the container NAME (what to remove) and, for display,
-        `started_at` — never its commit, its owner or its artifacts."""
+        `started_at`; the stable `runner` marker can only block removal of a
+        foreign runner."""
         repo, proj, log, state = self._fixture(tmp_path, monkeypatch)
         record = plant_inflight(proj, repo, state, schema=99)
         assert run_gate.main(["suite", "--fresh"]) == 0
@@ -12826,6 +14175,21 @@ class TestInflightRecordDecisions:
         assert ["rm", "-f", "run-gate-planted"] in _docker_calls(log)
         assert len(lane_runs(log)) == 1        # ran anew
         assert not record.exists()
+
+    def test_fresh_refuses_an_old_schema_record_for_exec_runner(
+            self, tmp_path, monkeypatch, capsys):
+        repo, proj, log, state = self._fixture(tmp_path, monkeypatch)
+        record = plant_inflight(proj, repo, state, schema=1, runner="exec")
+        before = record.read_text()
+
+        assert run_gate.main(["suite", "--fresh"]) == 2
+        err = capsys.readouterr().err
+        assert "declares schema 1 and names runner 'exec'" in err
+        assert "--fresh will not remove" in err
+        assert _docker_calls(log) == []
+        assert lane_runs(log) == []
+        assert (state / "run-gate-planted").exists()
+        assert record.read_text() == before
 
     def test_a_schema_absent_record_with_a_matching_commit_runs_fresh(
             self, tmp_path, monkeypatch, capsys):
@@ -12871,29 +14235,28 @@ class TestInflightRecordDecisions:
         clean_tree = false
     """
 
-    def test_a_re_attached_run_discloses_the_verdict_the_record_declared(
+    def test_a_re_attached_run_uses_the_exact_verdict_path_for_its_lane(
             self, tmp_path, monkeypatch, capsys):
-        """N3. `verdict` and `progress` were written into the record and
-        never read back: the re-attach path recomputed both from the LIVE
-        config. They are the artifacts THAT run declared, and the live config
-        is not the authority for a run already in flight — retarget the lane
-        between the two invocations and the operator is sent to a file
-        nothing wrote."""
+        """Schema 2 binds an Assay record to the exact evidence path derived
+        from its lane identity; a redirected path must not be interpreted."""
         repo, proj, log, state = self._fixture(
             tmp_path, monkeypatch, config=self.ASSAY_ARTIFACT_LANE)
-        recorded_verdict = str(tmp_path / "the-run-that-is-running.json")
+        recorded_verdict = str(proj / ".assay" /
+                               "verdict-cw2b_schema.json")
         plant_inflight(proj, repo, state, lane="mutation", status="running",
-                       verdict=recorded_verdict, progress=None)
+                       verdict=recorded_verdict)
         assert run_gate.main(["mutation"]) == 0
         out = capsys.readouterr().out
         assert f"run-gate: verdict artifact: {recorded_verdict}" in out
-        assert "verdict-cw2b_schema.json" not in out   # NOT the live config's
+        assert "verdict-cw2b_schema.json" in out
 
     def test_a_re_attached_run_watches_the_progress_file_the_record_declared(
             self, tmp_path, monkeypatch, capsys):
         repo, proj, log, state = self._fixture(
             tmp_path, monkeypatch, config=self.ASSAY_ARTIFACT_LANE)
-        recorded_progress = tmp_path / "that-runs-progress.jsonl"
+        recorded_progress = proj / ".assay" / \
+            "progress-cw2b_schema.jsonl"
+        recorded_progress.parent.mkdir(parents=True, exist_ok=True)
         write_progress(recorded_progress, candidate(41))
         monkeypatch.setattr(run_gate, "PROGRESS_POLL_SECONDS", 0.2)
         observed = threading.Event()
@@ -12908,7 +14271,7 @@ class TestInflightRecordDecisions:
         monkeypatch.setattr(run_gate.ProgressWatch, "poll",
                             observe_recorded_progress)
         plant_inflight(proj, repo, state, lane="mutation", status="running",
-                       verdict=None, progress=str(recorded_progress))
+                       progress=str(recorded_progress))
         (state / ".hang").write_text("")
 
         def release():
@@ -12922,64 +14285,34 @@ class TestInflightRecordDecisions:
         out = capsys.readouterr().out
         assert "run-gate: progress mutation: candidate 41/172" in out
 
-    def test_a_recorded_null_progress_falls_back_to_the_config(
+    def test_a_recorded_null_progress_is_malformed_and_refuses(
             self, tmp_path, monkeypatch, capsys):
-        """Review round 2, N-a. PRESENCE of the key used to decide, so a
-        record whose `progress` is present-but-`null` silently disabled the
-        stall watch on every re-attach and follow. A COMMAND lane's own
-        record always writes that `null` (its liveness is `LogStreamWatch`
-        since RG-41, unrelated to this path), so an ASSAY lane's record only
-        reaches this branch the instant a lane's `kind` changes between two
-        invocations — rare, but it used to fail SILENT, which is the shape
-        R-40 exists to end. A record that names no path falls back to the
-        config."""
+        """Schema 2 always names an Assay progress path. A null is corrupt,
+        so recovery must refuse before attaching to the container."""
         repo, proj, log, state = self._fixture(
             tmp_path, monkeypatch, config=self.ASSAY_ARTIFACT_LANE)
-        monkeypatch.setattr(run_gate, "PROGRESS_POLL_SECONDS", 0.2)
-        configured_progress = proj / ".assay" / \
-            "progress-cw2b_schema.jsonl"
-        write_progress(configured_progress, candidate(41))
-        observed = threading.Event()
-        original_poll = run_gate.ProgressWatch.poll
-
-        def observe_configured_progress(watch):
-            result = original_poll(watch)
-            if watch.path == configured_progress:
-                observed.set()
-            return result
-
-        monkeypatch.setattr(run_gate.ProgressWatch, "poll",
-                            observe_configured_progress)
         plant_inflight(proj, repo, state, lane="mutation", status="running",
                        progress=None)
-        (state / ".hang").write_text("")
+        assert run_gate.main(["mutation"]) == 2
+        assert "valid progress path" in capsys.readouterr().err
+        assert lane_runs(log) == []
 
-        def release():
-            observed.wait(5.0)
-            (state / ".hang").unlink(missing_ok=True)
-
-        releaser = threading.Thread(target=release, daemon=True)
-        releaser.start()
-        assert run_gate.main(["mutation"]) == 0
-        releaser.join(timeout=10)
-        assert "run-gate: progress mutation: candidate 41/172" in \
-            capsys.readouterr().out
-
-    def test_a_pre_rev_34_record_without_the_keys_falls_back_to_the_config(
+    def test_a_pre_rev_34_record_schema_is_refused_without_guessing(
             self, tmp_path, monkeypatch, capsys):
-        """A record written before rev 34 named no artifacts at all and must
-        still get the config's answer. Since N-a a recorded `null` is the
-        same answer — "this record names no path" — rather than "there is no
-        path"."""
+        """An old record has no schema-2 artifact contract; do not infer
+        paths from today's config when deciding what its run judged."""
         repo, proj, log, state = self._fixture(
             tmp_path, monkeypatch, config=self.ASSAY_ARTIFACT_LANE)
         record = plant_inflight(proj, repo, state, lane="mutation",
                                status="running")
         payload = json.loads(record.read_text())
+        payload["schema"] = 1
         del payload["verdict"], payload["progress"]
         record.write_text(json.dumps(payload))
-        assert run_gate.main(["mutation"]) == 0
-        assert "verdict-cw2b_schema.json" in capsys.readouterr().out
+        before = record.read_bytes()
+        assert run_gate.main(["mutation"]) == 2
+        assert "declares schema 1" in capsys.readouterr().err
+        assert record.read_bytes() == before
 
     def test_a_docker_failure_that_is_not_gone_leaves_the_record_alone(
             self, tmp_path, monkeypatch, capsys):
@@ -14533,7 +15866,8 @@ class TestOwnerLivenessAndFollowEdges:
         path = run_gate.inflight_path(tmp_path, "suite")
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(
-            {"schema": 1, "lane": "suite", "container": container,
+            {"schema": run_gate.INFLIGHT_SCHEMA, "lane": "suite",
+             "container": container,
              "started_at": "2026-09-02T11:00:00Z",
              "started_epoch": time.time() - 754,
              "owner_pid": 2 ** 22 + 1, "owner_start": 987654321,
@@ -14576,7 +15910,8 @@ class TestOwnerLivenessAndFollowEdges:
         record = run_gate.inflight_path(tmp_path, "suite")
         record.parent.mkdir(parents=True, exist_ok=True)
         record.write_text(json.dumps(
-            {"schema": 1, "lane": "suite", "container": "run-gate-x",
+            {"schema": run_gate.INFLIGHT_SCHEMA, "lane": "suite",
+             "container": "run-gate-x",
              "started_at": "2026-09-02T11:00:00Z", **live_owner_fields()}))
         calls = tmp_path / "calls"
         code = self._follow(
@@ -14678,6 +16013,7 @@ class TestInflightRecordStore:
         assert data["project_dir"] == str(proj)
         assert data["revision"] == run_gate.__revision__
         assert data["schema"] == run_gate.INFLIGHT_SCHEMA
+        assert data["assay_identity_mode"] is None
         assert data["verdict"] is None and data["progress"] is None
         assert data["started_at"].endswith("Z")
         assert isinstance(data["started_epoch"], float)
@@ -14686,12 +16022,139 @@ class TestInflightRecordStore:
         lane = {"kind": "assay", "assay_lane": "sql_mutation",
                 "assay_command": ["./a.pyz"]}
         verdict, progress, state_dir = run_gate.assay_artifact_paths(
-            lane, Path("/p"), Path("/repo"))
-        assert verdict == "/p/.assay/verdict-sql_mutation.json"
-        assert progress == "/p/.assay/progress-sql_mutation.jsonl"
+            lane, Path("/repo/p"), Path("/repo"))
+        assert verdict == "/repo/p/.assay/verdict-sql_mutation.json"
+        assert progress == "/repo/p/.assay/progress-sql_mutation.jsonl"
         assert state_dir == "/repo/.run-gate/assay-state/p"
         assert run_gate.assay_artifact_paths(
             {"kind": "command"}, Path("/p"), Path("/repo")) == (None, None, None)
+
+    def test_private_assay_identity_mode_does_not_enter_history(self):
+        record = {
+            "_assay_identity_mode": "artifact",
+            "_started_monotonic": time.monotonic(),
+            "dirty": False, "git_operation": None, "commit": "a" * 40,
+            "verdict": "PASS", "excluded_reason": None,
+        }
+        finished = run_gate.finish_run_record(record, exit_code=0)
+        assert "_assay_identity_mode" not in finished
+        assert finished["history_eligible"] is True
+
+    @pytest.mark.parametrize(
+        ("lane", "expected"),
+        [({"kind": "assay", "assay_lane": "unit", "environment": "runner"}, "source"),
+         ({"kind": "assay", "assay_lane": "unit",
+           "assay_command": ["assay"], "environment": "runner"}, "artifact")])
+    def test_container_inflight_record_names_assay_identity_mode(
+            self, tmp_path, monkeypatch, lane, expected):
+        repo = make_repo(tmp_path)
+        payloads = []
+        monkeypatch.setattr(run_gate.shutil, "which", lambda _name: "/usr/bin/docker")
+        monkeypatch.setattr(run_gate, "resolve_inflight", lambda *_args: None)
+        monkeypatch.setattr(run_gate, "clear_previous_assay_verdict",
+                            lambda *_args: None)
+        monkeypatch.setattr(run_gate, "physical_path", lambda _repo: Path("/phys"))
+        monkeypatch.setattr(run_gate, "dual_mount_flags", lambda *_args: [])
+        monkeypatch.setattr(run_gate, "verify_slice_loaded", lambda _slice: None)
+        monkeypatch.setattr(run_gate, "assure_assay_state_root",
+                            lambda *_args, **_kwargs: None)
+        monkeypatch.setattr(run_gate, "build_assay_inner", lambda *_args, **_kw: "true")
+        monkeypatch.setattr(run_gate, "subprocess", SimpleNamespace(run=lambda *_a, **_kw:
+                            SimpleNamespace(returncode=0, stdout="id-1\n", stderr="")))
+        monkeypatch.setattr(run_gate, "write_inflight_record",
+                            lambda _project, _worktree, _lane, payload:
+                            payloads.append(dict(payload)) or True)
+        monkeypatch.setattr(run_gate, "await_container", lambda *_args, **_kw: 0)
+
+        assert run_gate.run_container_lane(
+            lane, "unit", repo, repo, repo,
+            {"mode": "ephemeral", "image": "tester:local"}, "fixture",
+            "run-gates.slice", "fixture", profile_plan={
+                "enabled": False, "disabled_reason": "test"}) == 0
+        assert payloads[0]["schema"] == run_gate.INFLIGHT_SCHEMA
+        assert payloads[0]["assay_identity_mode"] == expected
+
+    def test_fresh_launch_failure_cannot_reuse_stale_pass_but_attach_keeps_it(
+            self, tmp_path, monkeypatch):
+        repo = make_repo(tmp_path)
+        lane = {"kind": "assay", "assay_lane": "unit",
+                "environment": "runner"}
+        verdict, _progress, _state_dir = run_gate.assay_artifact_paths(
+            lane, repo, repo)
+        verdict_path = Path(verdict)
+        verdict_path.parent.mkdir(parents=True)
+        commit = run_gate.head_commit(repo)
+        stale_pass = {"outcome": "PASS", "assay_version": "8.0.0",
+                      "commit": commit}
+        verdict_path.write_text(json.dumps(stale_pass))
+        run_record = {"commit": commit, "_verdict_path": verdict}
+        starts_seen = []
+        resolutions = iter((None, 0, 1))
+        monkeypatch.setattr(run_gate.shutil, "which",
+                            lambda _name: "/usr/bin/docker")
+        monkeypatch.setattr(run_gate, "resolve_inflight",
+                            lambda *_args, **_kwargs: next(resolutions))
+        monkeypatch.setattr(run_gate, "physical_path",
+                            lambda _repo, **_kwargs: Path("/phys"))
+        monkeypatch.setattr(run_gate, "dual_mount_flags", lambda *_args: [])
+        monkeypatch.setattr(run_gate, "verify_slice_loaded", lambda _slice: None)
+        monkeypatch.setattr(run_gate, "assure_assay_state_root",
+                            lambda *_args, **_kwargs: None)
+        monkeypatch.setattr(run_gate, "print_lane_bounds", lambda *_args: None)
+        monkeypatch.setattr(run_gate, "log_forwarded_env", lambda *_args: None)
+        monkeypatch.setattr(run_gate, "save_container_logs", lambda *_args: None)
+
+        def docker_run(argv, **_kwargs):
+            if argv[1] == "run":
+                starts_seen.append(not verdict_path.exists())
+                return subprocess.CompletedProcess(argv, 125, "", "setup failed")
+            if argv[1:3] == ["rm", "-f"]:
+                return subprocess.CompletedProcess(argv, 0, "", "")
+            raise AssertionError(f"unexpected docker argv: {argv!r}")
+
+        monkeypatch.setattr(run_gate.subprocess, "run", docker_run)
+        env = {"image": "tester-unified:local"}
+        profile_plan = {"enabled": False, "disabled_reason": "test"}
+
+        with pytest.raises(run_gate.GateInfraError, match="docker run failed"):
+            run_gate.run_container_lane(
+                lane, "unit", repo, repo, repo, env, "fixture", "slice",
+                "slice source", run_record=run_record,
+                profile_plan=profile_plan)
+        assert starts_seen == [True]
+        assert not verdict_path.exists()
+
+        # A resolver result may follow a live container or collect a completed
+        # one; both return before fresh-attempt cleanup.
+        for attached_code, attached_verdict in (
+                (0, stale_pass),
+                (1, {"outcome": "FAIL", "assay_version": "8.0.0",
+                     "commit": commit})):
+            verdict_path.write_text(json.dumps(attached_verdict))
+            assert run_gate.run_container_lane(
+                lane, "unit", repo, repo, repo, env, "fixture", "slice",
+                "slice source", run_record=run_record,
+                profile_plan=profile_plan) == attached_code
+            assert json.loads(verdict_path.read_text()) == attached_verdict
+
+    def test_fresh_assay_verdict_cleanup_refuses_on_unlink_error(
+            self, tmp_path, monkeypatch):
+        repo = make_repo(tmp_path)
+        lane = {"kind": "assay", "assay_lane": "unit"}
+        verdict, _progress, _state_dir = run_gate.assay_artifact_paths(
+            lane, repo, repo)
+        verdict_path = Path(verdict)
+        verdict_path.parent.mkdir(parents=True)
+        verdict_path.write_text('{"outcome":"PASS"}')
+
+        def fail_unlink(_path, *, missing_ok=False):
+            raise OSError("read-only fixture")
+
+        with monkeypatch.context() as patch:
+            patch.setattr(type(verdict_path), "unlink", fail_unlink)
+            with pytest.raises(run_gate.GateError,
+                               match="cannot remove previous assay verdict"):
+                run_gate.clear_previous_assay_verdict(lane, repo, repo)
 
     def test_an_unignored_store_disables_re_attach_but_not_the_lane(
             self, tmp_path, monkeypatch, capsys):
@@ -14852,8 +16315,8 @@ class TestFreshFlagScope:
         """)
         assert run_gate.main(["suite", "--fresh"]) == 2
         err = capsys.readouterr().err
-        assert "host-mode environment 'suite'" in err
-        assert "nothing to re-attach to or replace" in err
+        assert "--fresh applies only to an ephemeral-container lane" in err
+        assert "lane 'suite' does not use one" in err
 
     def test_a_host_lane_no_longer_refuses_it(self, tmp_path, monkeypatch):
         """RG-43 (rev 36): 'host' now routes through run_container_lane(),
@@ -14875,7 +16338,8 @@ class TestFreshFlagScope:
     def test_an_exec_lane_refuses_it(self, tmp_path, monkeypatch, capsys):
         self._project(tmp_path, monkeypatch, EXEC_LANE)
         assert run_gate.main(["suite", "--fresh"]) == 2
-        assert "exec-mode environment" in capsys.readouterr().err
+        assert "--fresh applies only to an ephemeral-container lane" \
+            in capsys.readouterr().err
 
     def test_the_usage_text_documents_it(self, tmp_path, monkeypatch, capsys):
         self._project(tmp_path, monkeypatch)
@@ -20068,7 +21532,7 @@ class TestDispatchOptionRefusals:
          "either the positional footprint query lane"),
         (["suite", "--rejudge-outcome", "FAIL"],
          "requires at least one --rejudge ID"),
-        (["doctor", "--json"], "honored by the `history`/`footprint`"),
+        (["doctor", "--json"], "honored by the `history`/`footprint`/`status"),
         (["suite", "--write"], "honored by the `footprint` verb only"),
         (["doctor", "--lock-wait", "1m"], "applies to a lane run only"),
         (["validate-pointers"], "requires the consumer file to certify"),
@@ -20543,16 +22007,19 @@ class TestClosedDispatcherAndMigrationOracles:
 
 class TestDispatchAssayEvidenceAndAdmissionOracles:
     @staticmethod
-    def _project(tmp_path, monkeypatch, *, admission=False):
+    def _project(tmp_path, monkeypatch, *, admission=False, repo=None,
+                 mode="host"):
         policy = ('[admission]\nenabled = true\nticket_image = "ticket:v1"\n'
                   if admission else "")
-        repo = make_repo(tmp_path)
+        image = 'image = "runner:v1"\n' if mode == "ephemeral" else ""
+        repo = repo or make_repo(tmp_path)
         (repo / ".run-gate").mkdir(exist_ok=True)
         project = make_project(repo, f"""\
             schema_version = 1
             {policy}
             [environments.local]
-            mode = "host"
+            mode = "{mode}"
+            {image}
             [lanes.unit]
             kind = "assay"
             environment = "local"
@@ -20568,12 +22035,13 @@ class TestDispatchAssayEvidenceAndAdmissionOracles:
             "event": "test", "when": "call", "nodeid": "case::bad",
             "outcome": "failed", "exception_class": "AssertionError"}) + "\n")
         verdict = assay_dir / "verdict-unit.json"
-        provenance = {"name": "assay", "version": "8.0.0",
-                      "artifact": "assay", "digest_algorithm": "sha256",
-                      "digest": "d" * 64}
+        commit = run_gate.head_commit(repo)
         verdict.write_text(json.dumps({"outcome": "FAIL",
-                                       "judge_provenance": provenance}))
-        record = {"run_id": "evidence-run", "log_path": None,
+                                       "assay_version": "8.0.0",
+                                       "commit": commit}))
+        record = {"run_id": "evidence-run", "commit": commit,
+                  "log_path": None,
+                  "excluded_reason": None,
                   "_verdict_path": str(verdict),
                   "_progress_path": str(progress)}
         monkeypatch.setattr(run_gate, "preflight_assay_pins",
@@ -20591,6 +22059,125 @@ class TestDispatchAssayEvidenceAndAdmissionOracles:
                             lambda *_a: (10, "test"))
         monkeypatch.setattr(run_gate, "allocate_lane_log", lambda *_a: None)
         return repo, project, record, verdict, progress
+
+    def test_source_dispatch_matches_commit_from_real_sha256_repository(
+            self, tmp_path, monkeypatch):
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        git(repo, "init", "-q", "-b", "main", "--object-format=sha256")
+        git(repo, "config", "user.email", "t@example.invalid")
+        git(repo, "config", "user.name", "t")
+        (repo / "README.md").write_text("sha256 source identity\n")
+        (repo / ".gitignore").write_text(".run-gate/\n.assay/\n")
+        git(repo, "add", "README.md", ".gitignore")
+        git(repo, "commit", "-q", "-m", "sha256 source identity fixture")
+        repo, _project, _record, verdict, _progress = self._project(
+            tmp_path, monkeypatch, repo=repo)
+        commit = run_gate.head_commit(repo)
+        assert len(commit) == 64
+
+        def publish_source_verdict(_lane, _name, _project, _repo, worktree,
+                                   *, run_record, **_kwargs):
+            selected = run_gate.head_commit(worktree)
+            assert run_record["commit"] == selected == commit
+            verdict.write_text(json.dumps({"outcome": "PASS",
+                                           "assay_version": "8.0.0",
+                                           "commit": selected}))
+            return 0
+
+        monkeypatch.setattr(run_gate, "run_bare_host_lane",
+                            publish_source_verdict)
+        result = run_gate._dispatch(["unit", "--allow-dirty"])
+
+        assert result.verdict == "PASS"
+        assert result._record["commit"] == commit
+
+    def test_malformed_inflight_contract_refuses_before_enabled_admission(
+            self, tmp_path, monkeypatch):
+        _repo, project, _record, _verdict, _progress = self._project(
+            tmp_path, monkeypatch, admission=True, mode="ephemeral")
+        record_path = run_gate.inflight_path(project, "unit")
+        record_path.parent.mkdir(parents=True)
+        record_path.write_text(json.dumps({"schema": 2,
+                                           "container": "runner"}))
+        monkeypatch.setattr(
+            run_gate, "_admit_lane",
+            lambda *_args, **_kwargs: pytest.fail(
+                "malformed inflight identity must refuse before admission"))
+
+        result = run_gate._dispatch(["unit", "--allow-dirty"])
+
+        assert result.verdict == "ERROR"
+        assert "assay_identity_mode" in result.reason
+
+    def test_sequence_member_inflight_refuses_before_sequence_admission(
+            self, tmp_path, monkeypatch):
+        repo = make_repo(tmp_path)
+        project = make_project(repo, """\
+            schema_version = 1
+            [admission]
+            enabled = true
+            ticket_image = "ticket:v1"
+            [environments.local]
+            mode = "ephemeral"
+            image = "runner:v1"
+            [lanes.gate]
+            kind = "sequence"
+            lanes = ["unit"]
+            [lanes.unit]
+            kind = "command"
+            environment = "local"
+            argv = ["true"]
+            clean_tree = false
+            """)
+        monkeypatch.setattr(sys, "argv", [str(project / "run-gate.py")])
+        monkeypatch.chdir(project)
+        record_path = run_gate.inflight_path(project, "unit")
+        record_path.parent.mkdir(parents=True)
+        record_path.write_text(json.dumps({"schema": 2,
+                                           "container": "runner"}))
+        monkeypatch.setattr(
+            run_gate, "_admit_lane",
+            lambda *_args, **_kwargs: pytest.fail(
+                "sequence admission must wait for member recovery validation"))
+
+        result = run_gate._dispatch(["gate"])
+
+        assert result.verdict == "ERROR"
+        assert "assay_identity_mode" in result.reason
+
+    def test_unknown_schema_on_host_lane_gives_lifecycle_recovery(
+            self, tmp_path, monkeypatch):
+        repo = make_repo(tmp_path)
+        project = make_project(repo, """\
+            schema_version = 1
+            [environments.local]
+            mode = "host"
+            [lanes.gate]
+            kind = "sequence"
+            lanes = ["unit"]
+            [lanes.unit]
+            kind = "command"
+            environment = "local"
+            argv = ["true"]
+            clean_tree = false
+            """)
+        monkeypatch.setattr(sys, "argv", [str(project / "run-gate.py")])
+        monkeypatch.chdir(project)
+        record_path = run_gate.inflight_path(project, "unit")
+        record_path.parent.mkdir(parents=True)
+        record_path.write_text(json.dumps({"schema": 99,
+                                           "container": "runner"}))
+
+        result = run_gate._dispatch(["gate"])
+
+        assert result.verdict == "ERROR"
+        assert "declares schema 99" in result.reason
+        assert "current lane environment cannot use --fresh" in result.reason
+        assert "confirmed stopped by its lifecycle owner" in result.reason
+        assert f"remove the recovery record at {record_path}" in result.reason
+        assert "re-run with --fresh" not in result.reason
+        assert record_path.exists()
 
     def test_assay_failure_routes_digest_and_archive_from_dispatch(
             self, tmp_path, monkeypatch, capsys):
@@ -21706,13 +23293,16 @@ class TestFinalChangedLineCoverageOracles:
 
     def test_resolve_inflight_preserves_recorded_paths_for_follow_and_reattach(
             self, tmp_path, monkeypatch):
+        verdict_path = str(tmp_path / run_gate.assay_verdict_rel("unit"))
+        progress_path = str(tmp_path / run_gate.assay_progress_rel("unit"))
         common = {
             "container": "runner", "container_id": "id-1",
             "started_at": "2026-10-04T00:00:00Z", "started_epoch": 1,
             "commit": "commit-1", "status": "running",
             "log_path": str(tmp_path / "lane.log"),
-            "verdict": str(tmp_path / "verdict.json"),
-            "progress": str(tmp_path / "progress.jsonl"),
+            "verdict": verdict_path,
+            "progress": progress_path,
+            "assay_identity_mode": "source",
         }
         monkeypatch.setattr(run_gate, "load_inflight_record",
                             lambda *_args, **_kwargs: dict(common))
@@ -21733,7 +23323,7 @@ class TestFinalChangedLineCoverageOracles:
         monkeypatch.setattr(run_gate, "live_owner_pid", lambda _pending: 123)
         record = {}
         assert run_gate.resolve_inflight(
-            "docker", {"kind": "command"}, "unit", tmp_path, tmp_path,
+            "docker", {"kind": "assay", "assay_lane": "unit"}, "unit", tmp_path, tmp_path,
             tmp_path, False, False, record) == 0
         assert record["log_path"] == common["log_path"]
         assert record["_verdict_path"] == common["verdict"]
@@ -21742,7 +23332,7 @@ class TestFinalChangedLineCoverageOracles:
 
         follow.clear()
         assert run_gate.resolve_inflight(
-            "docker", {"kind": "command"}, "unit", tmp_path, tmp_path,
+            "docker", {"kind": "assay", "assay_lane": "unit"}, "unit", tmp_path, tmp_path,
             tmp_path, False, False, None) == 0
         assert follow["record"] is None
 
@@ -21754,16 +23344,191 @@ class TestFinalChangedLineCoverageOracles:
                                 adopted.update(record=kwargs.get("run_record"),
                                                pending=kwargs.get("recorded")) or 0))
         assert run_gate.resolve_inflight(
-            "docker", {"kind": "command"}, "unit", tmp_path, tmp_path,
+            "docker", {"kind": "assay", "assay_lane": "unit"}, "unit", tmp_path, tmp_path,
             tmp_path, False, False, record) == 0
         assert adopted["record"] is record
         assert record["_verdict_path"] == common["verdict"]
         assert record["_progress_path"] == common["progress"]
 
         assert run_gate.resolve_inflight(
-            "docker", {"kind": "command"}, "unit", tmp_path, tmp_path,
+            "docker", {"kind": "assay", "assay_lane": "unit"}, "unit", tmp_path, tmp_path,
             tmp_path, False, False, None) == 0
         assert adopted["record"] is None
+
+    def test_assay_reattach_uses_the_recorded_identity_mode(
+            self, tmp_path, monkeypatch):
+        pending = {
+            "container": "runner", "container_id": "id-1",
+            "started_at": "2026-10-04T00:00:00Z", "started_epoch": 1,
+            "commit": "commit-1", "status": "running",
+            "runner": "container", "assay_identity_mode": "artifact",
+            "verdict": str(tmp_path / run_gate.assay_verdict_rel("unit")),
+            "progress": str(tmp_path / run_gate.assay_progress_rel("unit")),
+        }
+        monkeypatch.setattr(run_gate, "load_inflight_record",
+                            lambda *_args, **_kwargs: dict(pending))
+        monkeypatch.setattr(run_gate, "record_is_foreign_namespace",
+                            lambda _pending: False)
+        monkeypatch.setattr(run_gate, "container_state", lambda *_args: {
+            "id": "id-1", "status": "running", "exit_code": None,
+            "finished_at": None,
+        })
+        monkeypatch.setattr(run_gate, "head_commit", lambda _worktree: "commit-1")
+        monkeypatch.setattr(run_gate, "print_lane_bounds", lambda *_args, **_kw: None)
+        monkeypatch.setattr(run_gate, "live_owner_pid", lambda _pending: 123)
+        monkeypatch.setattr(run_gate, "disown_run_record", lambda _record: None)
+        monkeypatch.setattr(run_gate, "follow_container",
+                            lambda *_args, **_kwargs: 0)
+        record = {"_assay_identity_mode": "source"}
+
+        assert run_gate.resolve_inflight(
+            "docker", {"kind": "assay", "assay_lane": "unit"}, "unit",
+            tmp_path, tmp_path, tmp_path, False, False, record) == 0
+        assert record["_assay_identity_mode"] == "artifact"
+
+    def test_assay_reattach_without_identity_mode_refuses_before_docker(
+            self, tmp_path, monkeypatch):
+        pending = {"container": "runner", "runner": "container"}
+        monkeypatch.setattr(run_gate, "load_inflight_record",
+                            lambda *_args, **_kwargs: dict(pending))
+        monkeypatch.setattr(
+            run_gate, "container_state",
+            lambda *_args: pytest.fail("must refuse before Docker access"))
+        with pytest.raises(run_gate.GateError,
+                           match="does not contain a valid assay_identity_mode"):
+            run_gate.resolve_inflight(
+                "docker", {"kind": "assay", "assay_lane": "unit"}, "unit",
+                tmp_path, tmp_path, tmp_path, False, False, {})
+
+    @pytest.mark.parametrize("identity_mode", [["source"], {"mode": "source"}])
+    def test_assay_reattach_refuses_unhashable_identity_mode(
+            self, tmp_path, monkeypatch, identity_mode):
+        pending = {"container": "runner", "runner": "container",
+                   "assay_identity_mode": identity_mode}
+        monkeypatch.setattr(run_gate, "load_inflight_record",
+                            lambda *_args, **_kwargs: dict(pending))
+        monkeypatch.setattr(
+            run_gate, "container_state",
+            lambda *_args: pytest.fail("must refuse before Docker access"))
+        with pytest.raises(run_gate.GateError,
+                           match="does not contain a valid assay_identity_mode"):
+            run_gate.resolve_inflight(
+                "docker", {"kind": "assay", "assay_lane": "unit"}, "unit",
+                tmp_path, tmp_path, tmp_path, False, False, {})
+
+    def test_assay_reattach_refuses_if_current_lane_is_not_assay(
+            self, tmp_path, monkeypatch):
+        pending = {"container": "runner", "runner": "container",
+                   "assay_identity_mode": "source",
+                   "verdict": str(tmp_path / run_gate.assay_verdict_rel("unit")),
+                   "progress": str(tmp_path / run_gate.assay_progress_rel("unit"))}
+        monkeypatch.setattr(run_gate, "load_inflight_record",
+                            lambda *_args, **_kwargs: dict(pending))
+        monkeypatch.setattr(
+            run_gate, "container_state",
+            lambda *_args: pytest.fail("must refuse before Docker access"))
+        with pytest.raises(run_gate.GateError,
+                           match="describes an Assay run"):
+            run_gate.resolve_inflight(
+                "docker", {"kind": "command"}, "unit", tmp_path, tmp_path,
+                tmp_path, False, False, {})
+
+    def test_non_assay_record_with_assay_verdict_path_refuses_before_docker(
+            self, tmp_path, monkeypatch):
+        pending = {"container": "runner", "runner": "container",
+                   "assay_identity_mode": None,
+                   "verdict": str(tmp_path / "verdict.json"),
+                   "progress": None}
+        monkeypatch.setattr(run_gate, "load_inflight_record",
+                            lambda *_args, **_kwargs: dict(pending))
+        monkeypatch.setattr(
+            run_gate, "container_state",
+            lambda *_args: pytest.fail("must refuse before Docker access"))
+        with pytest.raises(run_gate.GateError,
+                           match="contains an Assay verdict path"):
+            run_gate.resolve_inflight(
+                "docker", {"kind": "command"}, "unit", tmp_path,
+                tmp_path, tmp_path, False, False, {})
+
+    def test_schema_two_command_record_requires_identity_mode_key(
+            self, tmp_path, monkeypatch):
+        pending = {"container": "runner", "runner": "container"}
+        monkeypatch.setattr(run_gate, "load_inflight_record",
+                            lambda *_args, **_kwargs: dict(pending))
+        monkeypatch.setattr(
+            run_gate, "container_state",
+            lambda *_args: pytest.fail("must refuse before Docker access"))
+        with pytest.raises(run_gate.GateError,
+                           match="does not contain a valid assay_identity_mode"):
+            run_gate.resolve_inflight(
+                "docker", {"kind": "command"}, "unit", tmp_path,
+                tmp_path, tmp_path, False, False, {})
+
+    @pytest.mark.parametrize("artifact", ["verdict", "progress"])
+    def test_assay_reattach_refuses_missing_artifact_path_before_docker(
+            self, tmp_path, monkeypatch, artifact):
+        pending = {"container": "runner", "runner": "container",
+                   "assay_identity_mode": "source",
+                   "verdict": str(tmp_path / run_gate.assay_verdict_rel("unit")),
+                   "progress": str(tmp_path / run_gate.assay_progress_rel("unit"))}
+        pending[artifact] = " "
+        monkeypatch.setattr(run_gate, "load_inflight_record",
+                            lambda *_args, **_kwargs: dict(pending))
+        monkeypatch.setattr(
+            run_gate, "container_state",
+            lambda *_args: pytest.fail("must refuse before Docker access"))
+        with pytest.raises(run_gate.GateError,
+                           match=f"valid {artifact} path"):
+            run_gate.resolve_inflight(
+                "docker", {"kind": "assay", "assay_lane": "unit"},
+                "unit", tmp_path, tmp_path, tmp_path, False, False, {})
+
+    @pytest.mark.parametrize("artifact,value", [
+        ("verdict", "old-pass-verdict.json"),
+        ("verdict", "\0"),
+        ("progress", "old-progress.jsonl"),
+        ("progress", "\0"),
+    ])
+    def test_assay_reattach_refuses_substituted_artifact_path_before_docker(
+            self, tmp_path, monkeypatch, artifact, value):
+        pending = {"container": "runner", "runner": "container",
+                   "assay_identity_mode": "artifact",
+                   "verdict": str(tmp_path / run_gate.assay_verdict_rel("unit")),
+                   "progress": str(tmp_path / run_gate.assay_progress_rel("unit"))}
+        pending[artifact] = (value if value == "\0"
+                             else str(tmp_path / value))
+        monkeypatch.setattr(run_gate, "load_inflight_record",
+                            lambda *_args, **_kwargs: dict(pending))
+        monkeypatch.setattr(
+            run_gate, "container_state",
+            lambda *_args: pytest.fail("must refuse before Docker access"))
+        expected = (f"valid {artifact} path" if value == "\0"
+                    else f"not the path for the recorded Assay lane")
+        with pytest.raises(run_gate.GateError, match=expected):
+            run_gate.resolve_inflight(
+                "docker", {"kind": "assay", "assay_lane": "unit"},
+                "unit", tmp_path, tmp_path, tmp_path, False, False, {})
+
+    def test_lost_artifact_container_does_not_replace_fresh_source_mode(
+            self, tmp_path, monkeypatch):
+        pending = {"container": "runner", "runner": "container",
+                   "commit": "old-commit", "status": "running",
+                   "assay_identity_mode": "artifact",
+                   "verdict": str(tmp_path / run_gate.assay_verdict_rel("unit")),
+                   "progress": str(tmp_path / run_gate.assay_progress_rel("unit"))}
+        monkeypatch.setattr(run_gate, "load_inflight_record",
+                            lambda *_args, **_kwargs: dict(pending))
+        monkeypatch.setattr(run_gate, "container_state", lambda *_args: None)
+        monkeypatch.setattr(run_gate, "live_owner_pid", lambda _pending: None)
+        monkeypatch.setattr(run_gate, "head_commit", lambda _worktree: "new-commit")
+        monkeypatch.setattr(run_gate, "record_lost_run", lambda *_args: None)
+        monkeypatch.setattr(run_gate, "clear_inflight_record", lambda *_args: None)
+        record = {"_assay_identity_mode": "source"}
+
+        assert run_gate.resolve_inflight(
+            "docker", {"kind": "assay", "assay_lane": "unit"}, "unit",
+            tmp_path, tmp_path, tmp_path, False, False, record) is None
+        assert record["_assay_identity_mode"] == "source"
 
     def test_container_dry_run_labels_admission_ticket_when_present(
             self, tmp_path, monkeypatch):
@@ -22015,7 +23780,7 @@ class TestFinalChangedLineCoverageOracles:
         monkeypatch.setattr(run_gate, "resolve_slice",
                             lambda *_args: ("run-gates.slice", "fixture"))
         monkeypatch.setattr(run_gate, "verify_slice_loaded", lambda _slice: None)
-        monkeypatch.setattr(run_gate, "run_container_lane",
+        monkeypatch.setattr(run_gate, "run_bare_host_lane",
                             lambda *_args, **_kwargs: 0)
         result = run_gate._dispatch(
             ["unit", "--allow-dirty"], _admission_ticket=ticket,
@@ -22027,7 +23792,11 @@ class TestFinalChangedLineCoverageOracles:
         record["run_id"] = "selective-run"
         monkeypatch.setattr(run_gate, "start_run_record",
                             lambda *_args, **_kwargs: record)
-        monkeypatch.setattr(run_gate, "run_container_lane",
+        monkeypatch.setattr(run_gate, "assay_inventory_entry",
+                            lambda *_args, **_kwargs: (
+                                {"name": "unit", "rigor": ["R0", "R2"]},
+                                "8.0.0", None))
+        monkeypatch.setattr(run_gate, "run_bare_host_lane",
                             lambda *_args, **_kwargs: 1)
         result = run_gate._dispatch(
             ["unit", "--allow-dirty", "--rejudge", "case::bad"])
@@ -22038,7 +23807,7 @@ class TestFinalChangedLineCoverageOracles:
             "rejudge_outcome": None,
         }
 
-    def test_dispatch_rejects_assay_verdict_without_provenance(
+    def test_dispatch_rejects_source_verdict_without_version_or_commit(
             self, tmp_path, monkeypatch):
         _repo, _project, _record, verdict, _progress = \
             TestDispatchAssayEvidenceAndAdmissionOracles._project(
@@ -22047,8 +23816,369 @@ class TestFinalChangedLineCoverageOracles:
         monkeypatch.setattr(run_gate, "resolve_slice",
                             lambda *_args: ("run-gates.slice", "fixture"))
         monkeypatch.setattr(run_gate, "verify_slice_loaded", lambda _slice: None)
-        monkeypatch.setattr(run_gate, "run_container_lane",
+        monkeypatch.setattr(run_gate, "run_bare_host_lane",
                             lambda *_args, **_kwargs: 1)
         result = run_gate._dispatch(["unit", "--allow-dirty"])
         assert result.verdict == "ERROR"
-        assert "no complete judge_provenance" in result.reason
+        assert result.reason == "missing-or-invalid-source-identity"
+
+    def test_dispatch_rejects_source_verdict_for_another_commit(
+            self, tmp_path, monkeypatch):
+        _repo, _project, _record, verdict, _progress = \
+            TestDispatchAssayEvidenceAndAdmissionOracles._project(
+                tmp_path, monkeypatch)
+        verdict.write_text(json.dumps({"outcome": "FAIL",
+                                       "assay_version": "8.0.0",
+                                       "commit": "f" * 40}))
+        monkeypatch.setattr(run_gate, "resolve_slice",
+                            lambda *_args: ("run-gates.slice", "fixture"))
+        monkeypatch.setattr(run_gate, "verify_slice_loaded", lambda _slice: None)
+        monkeypatch.setattr(run_gate, "run_bare_host_lane",
+                            lambda *_args, **_kwargs: 1)
+        result = run_gate._dispatch(["unit", "--allow-dirty"])
+        assert result.verdict == "ERROR"
+        assert result.reason == "source-commit-mismatch"
+
+    def test_dispatch_rejects_unhashable_source_verdict_outcome(
+            self, tmp_path, monkeypatch):
+        _repo, _project, record, verdict, _progress = \
+            TestDispatchAssayEvidenceAndAdmissionOracles._project(
+                tmp_path, monkeypatch)
+        verdict.write_text(json.dumps({"outcome": ["PASS"],
+                                       "assay_version": "8.0.0",
+                                       "commit": record["commit"]}))
+        monkeypatch.setattr(run_gate, "resolve_slice",
+                            lambda *_args: ("run-gates.slice", "fixture"))
+        monkeypatch.setattr(run_gate, "verify_slice_loaded", lambda _slice: None)
+        monkeypatch.setattr(run_gate, "run_bare_host_lane",
+                            lambda *_args, **_kwargs: 1)
+        result = run_gate._dispatch(["unit", "--allow-dirty"])
+        assert result.verdict == "ERROR"
+        assert result.reason == "invalid-assay-outcome"
+
+    def test_dispatch_rejects_non_object_assay_verdict(
+            self, tmp_path, monkeypatch):
+        _repo, _project, _record, verdict, _progress = \
+            TestDispatchAssayEvidenceAndAdmissionOracles._project(
+                tmp_path, monkeypatch)
+        verdict.write_text("[]")
+        monkeypatch.setattr(run_gate, "resolve_slice",
+                            lambda *_args: ("run-gates.slice", "fixture"))
+        monkeypatch.setattr(run_gate, "verify_slice_loaded", lambda _slice: None)
+        monkeypatch.setattr(run_gate, "run_bare_host_lane",
+                            lambda *_args, **_kwargs: 1)
+        result = run_gate._dispatch(["unit", "--allow-dirty"])
+        assert result.verdict == "ERROR"
+        assert result.reason == "assay verdict is not a JSON object"
+
+    def test_dispatch_uses_recorded_artifact_mode_after_config_changes(
+            self, tmp_path, monkeypatch):
+        _repo, _project, record, verdict, _progress = \
+            TestDispatchAssayEvidenceAndAdmissionOracles._project(
+                tmp_path, monkeypatch)
+        provenance = {
+            "name": "assay", "version": "8.0.0",
+            "artifact": "assay.pyz", "digest_algorithm": "sha256",
+            "digest": "a" * 64,
+        }
+
+        def collect_as_recorded_artifact(*_args, **_kwargs):
+            # The current config is source mode. This mode came from the
+            # inflight record written by the old invocation.
+            record["_assay_identity_mode"] = "artifact"
+            verdict.write_text(json.dumps({"outcome": "PASS",
+                                           "judge_provenance": provenance}))
+            return 0
+
+        monkeypatch.setattr(run_gate, "resolve_slice",
+                            lambda *_args: ("run-gates.slice", "fixture"))
+        monkeypatch.setattr(run_gate, "verify_slice_loaded", lambda _slice: None)
+        monkeypatch.setattr(run_gate, "run_bare_host_lane",
+                            collect_as_recorded_artifact)
+        result = run_gate._dispatch(["unit", "--allow-dirty"])
+        assert result.verdict == "PASS"
+
+    def test_promoted_follower_keeps_mode_until_dispatch_parses_verdict(
+            self, tmp_path, monkeypatch):
+        repo, project, record, verdict, _progress = \
+            TestDispatchAssayEvidenceAndAdmissionOracles._project(
+                tmp_path, monkeypatch, mode="ephemeral")
+        provenance = {
+            "name": "assay", "version": "8.0.0",
+            "artifact": "assay.pyz", "digest_algorithm": "sha256",
+            "digest": "a" * 64,
+        }
+        pending = {
+            "schema": 2, "runner": "container", "container": "runner",
+            "assay_identity_mode": "artifact",
+            "verdict": str(verdict), "progress": str(_progress),
+        }
+        persisted = {}
+
+        def promote_during_lane(*_args, run_record, **_kwargs):
+            run_record["_assay_identity_mode"] = "artifact"
+            promoted, _saved = run_gate.promote_follower(
+                "docker", "runner", "unit", project, 0, run_record)
+            assert promoted
+            verdict.write_text(json.dumps({"outcome": "PASS",
+                                           "judge_provenance": provenance}))
+            return 0
+
+        def finish_and_capture(run_record, *, exit_code=None, error=None):
+            persisted.update(run_gate.finish_run_record(
+                run_record, exit_code=exit_code, error=error))
+
+        monkeypatch.setattr(run_gate, "load_inflight_record",
+                            lambda *_args, **_kwargs: dict(pending))
+        monkeypatch.setattr(run_gate, "live_owner_pid", lambda _pending: None)
+        monkeypatch.setattr(run_gate, "adopt_inflight_start", lambda *_args: None)
+        monkeypatch.setattr(run_gate, "clear_inflight_record", lambda *_args: None)
+        monkeypatch.setattr(run_gate, "flush_run_record", finish_and_capture)
+        monkeypatch.setattr(run_gate, "_git_toplevel_if_available",
+                            lambda _project: repo)
+        monkeypatch.setattr(run_gate, "resolve_repo_and_worktree",
+                            lambda _project, _override: (repo, repo, repo))
+        monkeypatch.setattr(run_gate, "subprocess",
+                            SimpleNamespace(run=lambda *_args, **_kwargs: None))
+        monkeypatch.setattr(run_gate, "resolve_slice",
+                            lambda *_args: ("run-gates.slice", "fixture"))
+        monkeypatch.setattr(run_gate, "verify_slice_loaded", lambda _slice: None)
+        monkeypatch.setattr(run_gate, "run_container_lane", promote_during_lane)
+        record.update({"_started_monotonic": time.monotonic(), "dirty": False,
+                       "git_operation": None, "verdict": "PASS"})
+
+        result = run_gate._dispatch(["unit", "--allow-dirty"])
+        run_gate.finish(result)
+
+        assert result.verdict == "PASS"
+        assert persisted["outcome"] == "pass"
+        assert "_assay_identity_mode" not in persisted
+        assert "_assay_identity_mode" not in record
+
+    def test_promoted_source_follower_history_uses_parsed_verdict(
+            self, tmp_path, monkeypatch):
+        repo, project, record, verdict, progress = \
+            TestDispatchAssayEvidenceAndAdmissionOracles._project(
+                tmp_path, monkeypatch, mode="ephemeral")
+        pending = {
+            "schema": 2, "runner": "container", "container": "runner",
+            "assay_identity_mode": "source",
+            "verdict": str(verdict), "progress": str(progress),
+        }
+        persisted = {}
+
+        def promote_during_lane(*_args, run_record, **_kwargs):
+            run_record["_assay_identity_mode"] = "source"
+            promoted, _saved = run_gate.promote_follower(
+                "docker", "runner", "unit", project, 0, run_record)
+            assert promoted
+            # A zero container status is not a PASS if the source verdict is
+            # missing its selected commit and Assay version.
+            verdict.write_text(json.dumps({"outcome": "PASS"}))
+            return 0
+
+        def finish_and_capture(run_record, *, exit_code=None, error=None):
+            persisted.update(run_gate.finish_run_record(
+                run_record, exit_code=exit_code, error=error))
+
+        monkeypatch.setattr(run_gate, "load_inflight_record",
+                            lambda *_args, **_kwargs: dict(pending))
+        monkeypatch.setattr(run_gate, "live_owner_pid", lambda _pending: None)
+        monkeypatch.setattr(run_gate, "adopt_inflight_start", lambda *_args: None)
+        monkeypatch.setattr(run_gate, "clear_inflight_record", lambda *_args: None)
+        monkeypatch.setattr(run_gate, "flush_run_record", finish_and_capture)
+        monkeypatch.setattr(run_gate, "paths_are_git_ignored",
+                            lambda *_args, **_kwargs: True)
+        monkeypatch.setattr(run_gate, "_git_toplevel_if_available",
+                            lambda _project: repo)
+        monkeypatch.setattr(run_gate, "resolve_repo_and_worktree",
+                            lambda _project, _override: (repo, repo, repo))
+        monkeypatch.setattr(run_gate, "subprocess",
+                            SimpleNamespace(run=lambda *_args, **_kwargs: None))
+        monkeypatch.setattr(run_gate, "resolve_slice",
+                            lambda *_args: ("run-gates.slice", "fixture"))
+        monkeypatch.setattr(run_gate, "verify_slice_loaded", lambda _slice: None)
+        monkeypatch.setattr(run_gate, "run_container_lane", promote_during_lane)
+        record.update({"_started_monotonic": time.monotonic(), "dirty": False,
+                       "git_operation": None, "verdict": "PASS"})
+
+        result = run_gate._dispatch(["unit", "--allow-dirty"])
+        run_gate.finish(result)
+
+        assert result.verdict == "ERROR"
+        assert result.reason == "missing-or-invalid-source-identity"
+        assert persisted["outcome"] == "error"
+        assert "_assay_identity_mode" not in persisted
+
+    def test_dispatch_refuses_to_guess_missing_assay_identity_mode(
+            self, tmp_path, monkeypatch):
+        _repo, _project, record, verdict, _progress = \
+            TestDispatchAssayEvidenceAndAdmissionOracles._project(
+                tmp_path, monkeypatch)
+        provenance = {
+            "name": "assay", "version": "8.0.0",
+            "artifact": "assay.pyz", "digest_algorithm": "sha256",
+            "digest": "a" * 64,
+        }
+
+        def erase_recorded_mode(*_args, **_kwargs):
+            record.pop("_assay_identity_mode", None)
+            verdict.write_text(json.dumps({"outcome": "PASS",
+                                           "judge_provenance": provenance}))
+            return 0
+
+        monkeypatch.setattr(run_gate, "resolve_slice",
+                            lambda *_args: ("run-gates.slice", "fixture"))
+        monkeypatch.setattr(run_gate, "verify_slice_loaded", lambda _slice: None)
+        monkeypatch.setattr(run_gate, "run_bare_host_lane", erase_recorded_mode)
+        result = run_gate._dispatch(["unit", "--allow-dirty"])
+        assert result.verdict == "ERROR"
+        assert result.reason == "missing-or-invalid-assay-identity-mode"
+
+
+def test_unknown_schema_foreign_runner_names_its_lifecycle_owner(
+        tmp_path):
+    path = tmp_path / "inflight.json"
+    path.write_text(json.dumps({"schema": 99, "container": "runner",
+                                "runner": "exec"}))
+
+    with pytest.raises(run_gate.GateError,
+                       match="names runner 'exec'.*lifecycle owner"):
+        run_gate.load_inflight_record(path)
+
+    assert path.exists()
+
+
+def test_unknown_schema_is_not_fresh_by_default(tmp_path):
+    path = tmp_path / "inflight.json"
+    record = {"schema": 99, "container": "runner", "runner": "container"}
+    path.write_text(json.dumps(record))
+
+    with pytest.raises(run_gate.GateError, match="declares schema 99"):
+        run_gate.load_inflight_record(path)
+
+    assert json.loads(path.read_text()) == record
+
+
+def test_unknown_schema_default_names_supported_fresh_remedy(tmp_path):
+    path = tmp_path / "inflight.json"
+    path.write_text(json.dumps({
+        "schema": 99, "container": "runner", "runner": "container",
+    }))
+
+    with pytest.raises(run_gate.GateError) as exc:
+        run_gate.load_inflight_record(path, fresh=False)
+
+    assert "re-run with --fresh" in str(exc.value)
+    assert path.exists()
+
+
+@pytest.mark.parametrize("runner", [None, "container"])
+def test_unknown_schema_fresh_can_read_its_own_container_runner(
+        tmp_path, runner):
+    path = tmp_path / "inflight.json"
+    path.write_text(json.dumps({
+        "schema": 99, "container": "runner", "runner": runner,
+        "started_at": "2026-10-05T00:00:00Z",
+    }))
+
+    pending = run_gate.load_inflight_record(path, fresh=True)
+
+    assert pending == {
+        "schema": 99, "container": "runner",
+        "started_at": "2026-10-05T00:00:00Z",
+    }
+    assert path.exists()
+
+
+def test_inflight_assay_contract_rejects_null_identity_mode_for_assay(
+        tmp_path):
+    pending = {"container": "runner", "assay_identity_mode": None}
+
+    with pytest.raises(run_gate.GateError,
+                       match="does not contain a valid assay_identity_mode") as exc:
+        run_gate.validate_inflight_assay_contract(
+            pending, "unit", tmp_path,
+            {"kind": "assay", "assay_lane": "unit"},
+            fresh_supported=False)
+
+    assert "cannot use --fresh" in str(exc.value)
+
+
+def test_inflight_assay_contract_rejects_unsafe_assay_lane_identity(
+        tmp_path):
+    pending = {"container": "runner", "assay_identity_mode": "source"}
+
+    with pytest.raises(run_gate.GateError,
+                       match="no safe assay_lane identity"):
+        run_gate.validate_inflight_assay_contract(
+            pending, "unit", tmp_path,
+            {"kind": "assay", "assay_lane": "../other"})
+
+
+def test_lane_supports_fresh_uses_assay_defaults_and_central_environments():
+    assert run_gate.lane_supports_fresh(
+        {"kind": "assay"}, {},
+        {"environments": {"runner": {"mode": "ephemeral"}}},
+        {"environment": "runner"})
+    assert run_gate.lane_supports_fresh(
+        {"kind": "command", "environment": "runner"}, {},
+        {"environments": {"runner": {"mode": "ephemeral"}}}, {})
+    assert not run_gate.lane_supports_fresh(
+        {"kind": "command"}, {}, {}, {})
+
+
+def test_inflight_preflight_walks_cycles_and_reuses_checked_members(
+        tmp_path, monkeypatch):
+    cfg = {
+        "environments": {"local": {"mode": "ephemeral"}},
+        "lanes": {
+            "suite": {"kind": "sequence",
+                      "lanes": ["child", "child", "suite"]},
+            "child": {"kind": "sequence", "lanes": ["leaf"]},
+            "leaf": {"kind": "command", "environment": "local"},
+        },
+    }
+    monkeypatch.setattr(run_gate, "load_inflight_record",
+                        lambda *_args, **_kwargs: None)
+
+    run_gate.preflight_inflight_assay_contract(
+        SimpleNamespace(help=False, list=False, check_env=False,
+                        lane="suite", fresh=False),
+        cfg, {}, {}, tmp_path)
+
+
+def test_sequence_inflight_record_with_null_identity_is_previous_container(
+        tmp_path, monkeypatch):
+    cfg = {"lanes": {"suite": {"kind": "sequence", "lanes": []}}}
+    monkeypatch.setattr(
+        run_gate, "load_inflight_record",
+        lambda *_args, **_kwargs: {"container": "runner",
+                                   "assay_identity_mode": None})
+
+    with pytest.raises(run_gate.GateError,
+                       match="belongs to a previous container lane"):
+        run_gate.preflight_inflight_assay_contract(
+            SimpleNamespace(help=False, list=False, check_env=False,
+                            lane="suite", fresh=False),
+            cfg, {}, {}, tmp_path)
+
+
+@pytest.mark.parametrize("members,extra_lanes", [
+    (("unknown",), {}),
+    ([None], {}),
+    (["unsupported"], {"unsupported": {"kind": "custom"}}),
+])
+def test_sequence_fresh_refuses_when_members_are_not_ephemeral(
+        tmp_path, monkeypatch, members, extra_lanes):
+    lanes = {"suite": {"kind": "sequence", "lanes": members},
+             **extra_lanes}
+    monkeypatch.setattr(run_gate, "load_inflight_record",
+                        lambda *_args, **_kwargs: None)
+
+    with pytest.raises(run_gate.GateError,
+                       match="has no ephemeral member container"):
+        run_gate.preflight_inflight_assay_contract(
+            SimpleNamespace(help=False, list=False, check_env=False,
+                            lane="suite", fresh=True),
+            {"lanes": lanes}, {}, {}, tmp_path)

@@ -38,16 +38,16 @@ from dataclasses import dataclass, field
 from typing import Dict, Iterable, List, Optional, Sequence, Set, Tuple
 from urllib.parse import unquote
 
-from . import access, util
+from . import access, proc_stat, util
 from .access import CGROUP_ROOT, PROC_ROOT, docker_bin
 
-_CONTAINER_ID_RE = re.compile(r"^[0-9a-f]{64}$")
 _HELPER_PID_OPTION = "_cgprofile_pid"
+_CONTAINER_ID = util.CONTAINER_ID_PATTERN
 # Both cgroup drivers docker can be configured with: systemd names the leaf
 # "docker-<id>.scope", cgroupfs names it plain "<id>" under a "docker" parent.
 _SCOPE_RES = (
-    re.compile(r"^(?:docker|crio|containerd|libpod)-(?P<id>[0-9a-f]{64})\.scope$"),
-    re.compile(r"^(?P<id>[0-9a-f]{64})$"),
+    re.compile(rf"(?:docker|crio|containerd|libpod)-(?P<id>{_CONTAINER_ID})\.scope"),
+    re.compile(rf"(?P<id>{_CONTAINER_ID})"),
 )
 
 
@@ -275,6 +275,8 @@ def pid_namespace_number(pid: int, proc_root: str = PROC_ROOT) -> Optional[int]:
 
 def proc_start_time_ticks(pid: int, proc_root: str = PROC_ROOT) -> Optional[int]:
     """Read field 22 of proc stat, robust to spaces/parentheses in comm."""
+    if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
+        return None
     text = util.read_text(os.path.join(proc_root, str(pid), "stat"))
     if not text:
         return None
@@ -284,10 +286,10 @@ def proc_start_time_ticks(pid: int, proc_root: str = PROC_ROOT) -> Optional[int]
     prefix = f"{pid} ("
     if not text.startswith(prefix):
         return None
-    close = text.rfind(")")
-    if close < len(prefix):
+    parsed = proc_stat.split_after_comm(text)
+    if parsed is None:
         return None
-    fields = text[close + 1 :].split()
+    _, fields = parsed
     # fields[0] is stat field 3 (state); starttime is field 22.
     if len(fields) <= 19:
         return None
@@ -433,7 +435,7 @@ def find_container_cgroup(container_id: str, root: str = CGROUP_ROOT) -> Optiona
     for dirpath, dirnames, _ in os.walk(root, onerror=walk_errors.append):
         for name in dirnames:
             for pattern in _SCOPE_RES:
-                match = pattern.match(name)
+                match = pattern.fullmatch(name)
                 if match and match.group("id") == container_id:
                     full = os.path.join(dirpath, name)
                     return "/" + os.path.relpath(full, root)
@@ -590,7 +592,7 @@ def parse_target(
         # Already-resolved form, produced by the outer process and handed to the
         # helper. The helper has the host cgroup tree but no Docker socket, so
         # it must be able to locate a container without asking the daemon.
-        if not _CONTAINER_ID_RE.fullmatch(value):
+        if not util.is_container_id(value):
             raise TargetError(f"containerid: needs a hex container id, got {value!r}")
         container_cgroup = find_container_cgroup(value, root)
         if not container_cgroup:

@@ -11958,4 +11958,4 @@ Fix: add both names in pytest's own precedence order, and check the order agains
 
 **Oracles.** In a test container with a low `--pids-limit`, a suite that forks per test produces `unresolved`/infrastructure outcomes, not kills, and the lane does not pass; a controlled wrong implementation that ignores `pids.events` reports kills and fails the oracle; a real kill with an unchanged `pids.events` stays `killed`; the verdict records the counter deltas as evidence and `assay verify` checks them.
 
-**Related:** cmru KI-52 (the no-init launcher and the git auto-maintenance mechanism, with the image-level `maintenance.autoDetach=false` hardening), run-gate RG-83, B107 (resource-stall liveness evidence), B108 (campaign summaries), dstdns D-670 TEST-RUNNER-INIT (same zombie mechanism, different launcher).
+**Related:** cmru KI-52 (the no-init launcher and the git auto-maintenance mechanism, with the image-level `maintenance.autoDetach=false` hardening), run-gate RG-84, B107 (resource-stall liveness evidence), B108 (campaign summaries), dstdns D-670 TEST-RUNNER-INIT (same zombie mechanism, different launcher).

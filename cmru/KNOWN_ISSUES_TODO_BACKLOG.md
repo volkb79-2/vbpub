@@ -1626,4 +1626,4 @@ gate exercises the regression; README, DESIGN-GUIDE, CONSUMERS, and SPEC documen
 
 **Immediate operator action (not done here — the container belongs to another session):** the campaign in `pedantic_antonelli` (worktree `.worktrees/run-gate-r2-assay-venv-20261005`, lane `assay-r2`) must be stopped and its R2 evidence after 03:11Z discarded; zombies clear when its PID 1 exits.
 
-**Related:** assay B145 (false kills under fork exhaustion), run-gate RG-83 (refuse to run as an unreaping PID 1), dstdns D-670 TEST-RUNNER-INIT.
+**Related:** assay B145 (false kills under fork exhaustion), run-gate RG-84 (refuse to run as an unreaping PID 1), dstdns D-670 TEST-RUNNER-INIT.

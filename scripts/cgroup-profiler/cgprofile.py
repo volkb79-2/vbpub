@@ -213,7 +213,7 @@ def _predigest_specs(specs: Sequence[str], *, resolve_self: bool = False) -> Lis
 
 def _caller_container_id() -> str:
     cid = access.self_container_id()
-    if not cid or not targets_mod._CONTAINER_ID_RE.fullmatch(cid):
+    if not util.is_container_id(cid):
         _err(
             "helper-mode self/pid target needs the caller container's full Docker id; "
             "Docker inspect could not establish it"

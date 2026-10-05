@@ -15,7 +15,7 @@ read-only greps of the tool's source in that worktree; "evidence" below counts t
 | 4 | cgprofile | `scripts/cgroup-profiler/nyxloom-trove/backlog/CP-17-adopt-cli-extended-unified-adoption-order-4-of-8.md` (+ regenerated `INDEX.md`) | CP-17 | new | 21 |
 | 5 | pwmcp | `pwmcp/KNOWN_ISSUES_TODO_BACKLOG.md` | PWMCP-02 | new | 18 |
 | 6 | assay | `assay/nyxloom-trove/4-backlog.md` (frontmatter line, "Later waves" list line, body) and `assay/nyxloom-trove/decisions.md` (A-005 row) | B143 | new backlog item; A-005 reworded in place | 26 |
-| 7 | run-gate | `run-gate-project/KNOWN_ISSUES_TODO_BACKLOG.md` (two status-table rows + two bodies) | RG-81 (adoption), RG-82 (bug) | new | 18 (RG-81), 14 (RG-82) |
+| 7 | run-gate | `run-gate-project/KNOWN_ISSUES_TODO_BACKLOG.md` (two status-table rows + two bodies) | RG-82 (adoption), RG-83 (bug); filed as RG-81/RG-82, renumbered at the merge with main, which had taken RG-81 meanwhile | new | 18 (RG-82), 14 (RG-83) |
 | 8 | ciu | `ciu/KNOWN_ISSUES_TODO_BACKLOG.md` | CIU-114 | UPDATED (the existing one-line stub "adopt `cli-extended` for CLI grammer, usage(), wizard" was rewritten into the evidenced entry; no parallel entry) | 28 |
 
 Ids were taken from each file's own sequence: nyxloom and cgprofile via
@@ -51,7 +51,7 @@ deployed); and the dependency on cli-extended 0.2.0.
    `grep -rn "CliRegistry(" cmru/src` finds 12 construction sites (listed in KI-51).
 5. **pwmcp:** the table says "also `run-gate.py`/`build-push.py`". `pwmcp/run-gate.py`
    is a symlink to `../run-gate-project/run-gate.py` (so are `assay/run-gate.py` and
-   `ciu/run-gate.py`), adopted once under RG-81. The real pwmcp scripts are
+   `ciu/run-gate.py`), adopted once under RG-82. The real pwmcp scripts are
    `build-push.py`, `scripts/build-bundle.py`, `scripts/publish-bundle.py` and
    `scripts/resolve-playwright-version.py`.
 6. **cgprofile and run-gate raise a design question** the program text does not settle
@@ -61,7 +61,7 @@ deployed); and the dependency on cli-extended 0.2.0.
    wheels one at a time with `pip install --no-index`, which cannot resolve a
    `cli-extended` dependency; KI-51 and CIU-114 record the CX-D2 change.
 
-## run-gate bug (RG-82)
+## run-gate bug (RG-83)
 
 `run-gate-project/tests/test_run_gate.py:355` (`install_fake_assay`, def at `:348`)
 writes `<first $PATH entry>/assay` and `assay.real` (`:360`, `:362`) using
