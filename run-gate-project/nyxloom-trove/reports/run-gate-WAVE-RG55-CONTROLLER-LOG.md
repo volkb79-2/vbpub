@@ -6684,3 +6684,27 @@ the gate in `dev-gates.slice` with the gate's verified 3-CPU cap; this does not
 authorize a mutation campaign, extra probe workload, or changes to another
 agent's containers. Preserve the preflight reading (`memory full avg10=19.39`)
 and disclose it with the verdict.
+
+### RW-442 — 2026-10-05 05:40:20Z — DAMON pool lifecycle must honor global sysfs resize and verified-stop constraints
+
+The Sol/xhigh round-2 review rejected the P1 startup repair on two lifecycle
+blockers. Binding repair: reserve the daemon's configured DAMON pool capacity
+before the first owned kdamond is started, because the kernel refuses
+`nr_kdamonds` changes while any kdamond is running, including foreign monitors.
+If a foreign monitor prevents initial reservation or the kernel permits only a
+partial pool, the daemon may report DAMON unavailable for an affected start;
+ordinary profiling and its verdict continue unchanged (R-36h). Once monitoring
+has begun, do not grow the pool. A stop/write/readback that does not establish
+`state=off` quarantines the owned slot; do not reuse it or shrink the shared
+count across it. Daemon shutdown retries cleanup. Restore the baseline only
+after owned slots are confirmed off, all remaining monitor states are
+readable/off, and the count still matches the ownership boundary; never stop
+or delete foreign slots. Optional DAMON teardown errors must be logged and
+must not abort session finalization or ordinary samples.
+
+The design rationale, README behavior summary, consumer guidance, CP-17 record,
+fake sysfs model, and lifecycle tests are being updated together. This ruling
+does not waive the exact-tree coverage/canary gates, same-reviewer fix
+verification, current-main reconciliation, P1 mutation disposition, live DAMON
+sample/overhead evidence, or release requirements. No test gate or container
+has been launched for this repair as of the ruling timestamp.

@@ -187,6 +187,15 @@ top-level `series.damon` field for `damon.jsonl` before claiming DAMON samples
 or overhead. See the
 [design rationale](DESIGN-GUIDE.md#damon-availability-is-not-session-readiness).
 
+The daemon pre-reserves its configured DAMON session capacity before starting
+the first kdamond. Linux refuses to resize that shared table while any monitor
+is running, including one owned by another program. If a foreign monitor is
+already on, or the kernel permits only a partial reservation, affected starts
+still profile normally but report DAMON as unavailable. A stop that cannot be
+verified quarantines its slot; the daemon will not reuse it or remove it, and
+shutdown retries cleanup. Treat `damon: "on"` plus a persisted `damon.jsonl`
+series as the evidence that DAMON actually ran, not `ctl version` alone.
+
 ## Attach a run-gate lane
 
 Run-gate must start the lane first, inspect its immutable 64-hex container ID,

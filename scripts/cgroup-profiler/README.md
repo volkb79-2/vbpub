@@ -68,6 +68,12 @@ Every daemon session records sample zero at start. A no-token start is always a
 new session (subject to `--max-sessions`); only the same non-null token is
 idempotent. A token scopes its roots to exact-token processes directly in the
 selected cgroup; their descendants remain attributed if they move elsewhere.
+DAMON capacity is pre-reserved before its first monitor starts because the
+kernel forbids resizing the shared kdamond table while any monitor is running.
+If another monitor prevents reservation, that session reports DAMON
+unavailable; if a stop cannot be verified, its slot is logged and quarantined.
+Neither condition stops ordinary profiling; see the
+[design rationale](docs/DESIGN-GUIDE.md#damon-availability-is-not-session-readiness).
 The daemon control contract is major version 1, and `ctl` refuses
 to print a response whose object, major, `ok`, or verb-specific shape is not
 valid.

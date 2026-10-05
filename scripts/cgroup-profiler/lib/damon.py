@@ -231,31 +231,137 @@ class KdamondPool:
     (``lib.serve``) must therefore route every session through ONE shared
     pool rather than let each session manage the counter itself.
 
-    Allocation is the lowest free index *created by this pool*. The pool's
-    baseline is an ownership boundary: indices below it already existed and
-    are foreign, so they are never configured, turned on/off, released, or
-    removed by this class. Freeing an index never touches ``nr_kdamonds``
-    while any OTHER index is still live. Only once every index the pool
-    handed out has been freed does it shrink ``nr_kdamonds`` back to the
-    value it first observed before any of its own sessions existed — and only
-    when no outside growth was observed. An unreadable baseline is a refusal,
-    not permission to invent index zero.
+    The kernel refuses to resize ``nr_kdamonds`` while any kdamond is
+    running. Consequently, a pool reserves its whole configured capacity
+    while every owned kdamond is still off, before the first session starts.
+    A running session only claims one of those pre-created indices; it never
+    grows the shared counter. If the kernel cannot reserve the requested
+    capacity, the pool uses any slots it did successfully reserve, and a
+    later session degrades DAMON rather than attempting a live resize.
+
+    The pool's initial count is an ownership boundary: indices below it were
+    already present and are foreign, so they are never configured, stopped,
+    or removed here. A released index is reusable only after sysfs confirms
+    its state is ``off``. If stopping or confirming a slot fails, it is
+    quarantined: the pool neither reuses it nor shrinks the count across it.
+    The next acquisition and daemon shutdown retry cleanup. An unreadable
+    baseline is a refusal, not permission to invent index zero.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, capacity: int = 1) -> None:
+        if capacity < 0:
+            raise ValueError("DAMON pool capacity must be nonnegative")
+        self.capacity = capacity
         self._live: set = set()
         self._owned: set = set()
         self._free: set = set()
+        self._quarantined: set = set()
         self._baseline: Optional[int] = None
         self._foreign_growth = False
         self._lock = threading.RLock()
 
+    def _clear_if_restored(self) -> None:
+        self._baseline = None
+        self._owned.clear()
+        self._free.clear()
+        self._quarantined.clear()
+        self._foreign_growth = False
+
+    def _confirm_off(self, idx: int) -> bool:
+        try:
+            return SysfsInterface.kdamond_state(idx) == "off"
+        except Exception:
+            return False
+
+    def _stop_and_confirm_off(self, idx: int) -> bool:
+        try:
+            if SysfsInterface.kdamond_state(idx) != "off":
+                SysfsInterface.kdamond_off(idx)
+            return self._confirm_off(idx)
+        except Exception:
+            return False
+
+    def _recover_quarantined(self) -> None:
+        for idx in sorted(self._quarantined):
+            if self._stop_and_confirm_off(idx):
+                self._quarantined.remove(idx)
+                self._free.add(idx)
+
+    def _all_kdamonds_off(self, count: int) -> bool:
+        """Prove the kernel-wide resize precondition, including foreign slots."""
+        try:
+            return all(
+                SysfsInterface.kdamond_state(idx) == "off"
+                for idx in range(count)
+            )
+        except Exception:
+            return False
+
+    def _reserve_capacity(self) -> None:
+        if self._baseline is None:
+            baseline = _read_nr_kdamonds()
+            if baseline is None or baseline < 0:
+                raise DamonSessionError(
+                    "cannot determine nr_kdamonds baseline; refusing to claim a slot"
+                )
+            self._baseline = baseline
+
+        if self._live or self._quarantined:
+            raise DamonSessionError(
+                "cannot grow the DAMON pool while an owned kdamond may be running"
+            )
+
+        while len(self._owned) < self.capacity:
+            baseline = self._baseline
+            current = _read_nr_kdamonds()
+            expected = max(self._owned, default=baseline - 1) + 1
+            if current is None or current < expected:
+                raise DamonSessionError(
+                    f"cannot prove the next pool-owned kdamond slot from nr_kdamonds={current!r}"
+                )
+            idx = expected
+            if current > expected:
+                # Preserve intervening indices created by another owner.
+                self._foreign_growth = True
+                idx = current
+            try:
+                SysfsInterface.create_kdamond(idx)
+            except Exception as exc:
+                after_failure = _read_nr_kdamonds()
+                if after_failure is None or after_failure > current:
+                    # The write failed, but the counter's final state is
+                    # ambiguous. Do not claim the possibly-created index or
+                    # later shrink across it; a fresh read may still show the
+                    # original baseline and clear this conservative marker.
+                    self._foreign_growth = True
+                if self._free:
+                    # A partial reservation remains usable, but its actual
+                    # capacity is lower; never try to grow it while active.
+                    break
+                if not self._owned and not self._foreign_growth:
+                    self._baseline = None
+                raise DamonSessionError(
+                    f"cannot reserve DAMON pool slot {idx}: {type(exc).__name__}: {exc}"
+                ) from exc
+
+            after = _read_nr_kdamonds()
+            if after is None or after <= idx:
+                # create_kdamond returned, so retain ownership conservatively
+                # even though the counter read cannot prove the slot is
+                # usable. Shutdown retries state=off but never reuses or
+                # shrinks across this ambiguous slot.
+                self._owned.add(idx)
+                self._quarantined.add(idx)
+                raise DamonSessionError(
+                    f"cannot prove reserved DAMON pool slot {idx} exists"
+                )
+            if after > idx + 1:
+                self._foreign_growth = True
+            self._owned.add(idx)
+            self._free.add(idx)
+
     def acquire(self) -> int:
-        """Claim the lowest free kdamond index and return it. Propagates
-        whatever :func:`SysfsInterface.create_kdamond` raises (a real sysfs
-        write failure) rather than swallowing it — the caller
-        (``DamonSession.__enter__``) already has the tear-down-on-exception
-        discipline for that."""
+        """Claim a verified-off pool-owned index without resizing live sysfs."""
         with self._lock:
             if self._baseline is None:
                 baseline = _read_nr_kdamonds()
@@ -265,79 +371,123 @@ class KdamondPool:
                     )
                 self._baseline = baseline
 
-            baseline = self._baseline
-            if self._free:
-                idx = min(self._free)
+            self._recover_quarantined()
+            # Reserve the configured concurrency before any owned monitor is
+            # turned on. A partial reservation can be used, but capacity is
+            # immutable until every owned monitor is confirmed off again.
+            if len(self._owned) < self.capacity and not self._free:
+                self._reserve_capacity()
+
+            for idx in sorted(self._free):
                 current = _read_nr_kdamonds()
                 if current is None or current <= idx:
-                    raise DamonSessionError(
-                        f"cannot prove pool-owned kdamond slot {idx} still exists"
-                    )
-                expected_end = max(self._owned, default=baseline - 1) + 1
+                    self._free.remove(idx)
+                    self._quarantined.add(idx)
+                    continue
+                expected_end = max(self._owned, default=self._baseline - 1) + 1
                 if current > expected_end:
                     self._foreign_growth = True
-            else:
-                # ``current`` is the first index that did not exist at the
-                # pool baseline. If another owner grew the shared counter,
-                # skip all of those indices rather than treating one as ours.
-                idx = max(self._owned, default=baseline - 1) + 1
-                current = _read_nr_kdamonds()
-                if current is None or current < idx:
-                    raise DamonSessionError(
-                        f"cannot prove fresh kdamond slot {idx} from nr_kdamonds"
-                    )
-                if current > idx:
-                    self._foreign_growth = True
-                    idx = current
+                if not self._confirm_off(idx):
+                    self._free.remove(idx)
+                    self._quarantined.add(idx)
+                    continue
+                self._free.remove(idx)
+                self._live.add(idx)
+                return idx
 
-            try:
-                SysfsInterface.create_kdamond(idx)
-            except Exception:
-                # Nothing has been added to the ownership sets, so a failed
-                # create cannot cause the session to stop a placeholder slot.
-                raise
+            raise DamonSessionError(
+                f"no verified-off DAMON pool slot available (capacity={self.capacity}, "
+                f"live={sorted(self._live)}, quarantined={sorted(self._quarantined)})"
+            )
 
-            self._owned.add(idx)
-            self._free.discard(idx)
-            self._live.add(idx)
-            return idx
+    def _restore_baseline(self) -> bool:
+        if self._live or self._quarantined:
+            return False
+        baseline = self._baseline
+        if baseline is None:
+            return True
+        if not self._owned:
+            self._clear_if_restored()
+            return True
+        try:
+            current = _read_nr_kdamonds()
+            expected_end = max(self._owned) + 1
+            if current == baseline:
+                self._clear_if_restored()
+                return True
+            if (
+                self._foreign_growth
+                or current != expected_end
+                or current <= baseline
+            ):
+                return False
+            # The kernel rejects *any* nr_kdamonds resize while any monitor
+            # is running, not only when one of this pool's indices is live.
+            # Avoid a predictable failed write when a foreign monitor is on;
+            # if state changes after this read, the kernel remains the final
+            # guard and ownership is retained on write failure.
+            if not self._all_kdamonds_off(current):
+                return False
+            _write_nr_kdamonds(baseline)
+            if _read_nr_kdamonds() != baseline:
+                return False
+        except Exception:
+            # Retain the free-slot ownership record so a later acquire or
+            # close can retry; forgetting it could abandon active state.
+            return False
+        self._clear_if_restored()
+        return True
 
-    def release(self, idx: int) -> None:
-        """Free ``idx`` back to the pool. Never raises — this runs from the
-        same teardown paths (normal exit, mid-exception, signal handler,
-        reentrant signal handler) as ``DamonSession._teardown`` itself, and
-        none of those may fail because releasing a slot failed."""
+    def release(self, idx: int) -> bool:
+        """Return an index only after sysfs confirms it is off.
+
+        Never raises: teardown runs on normal exit, exceptions and signals.
+        A live or unreadable state is quarantined instead of freed, reused,
+        or crossed by a ``nr_kdamonds`` shrink.
+        """
         with self._lock:
             if idx not in self._live:
-                return
+                return idx in self._free
             self._live.remove(idx)
+            if not self._confirm_off(idx):
+                self._quarantined.add(idx)
+                return False
+            self._quarantined.discard(idx)
             self._free.add(idx)
-            if self._live:
-                return
-            baseline = self._baseline
-            try:
-                current = _read_nr_kdamonds() if baseline is not None else None
-                expected_end = max(self._owned, default=baseline - 1) + 1 if baseline is not None else None
-                if (
-                    baseline is not None
-                    and not self._foreign_growth
-                    and current is not None
-                    and expected_end is not None
-                    and current == expected_end
-                    and current > baseline
-                ):
-                    _write_nr_kdamonds(baseline)
-            except Exception:
-                pass
-            finally:
-                self._baseline = None
-                self._owned.clear()
-                self._free.clear()
-                self._foreign_growth = False
+            if not self._live and not self._quarantined:
+                self._restore_baseline()
+            return True
+
+    def close(self) -> bool:
+        """Retry stopping every owned slot and restore the original count.
+
+        Called after the server has finalized its sessions. A failure is
+        reported to the caller and leaves ownership recorded; it never
+        shrinks the registry across a monitor whose stopped state is unknown.
+        """
+        with self._lock:
+            stopped = True
+            for idx in sorted(self._owned):
+                if self._stop_and_confirm_off(idx):
+                    self._live.discard(idx)
+                    self._quarantined.discard(idx)
+                    self._free.add(idx)
+                else:
+                    self._live.discard(idx)
+                    self._free.discard(idx)
+                    self._quarantined.add(idx)
+                    stopped = False
+            if not stopped:
+                return False
+            return self._restore_baseline()
 
     @property
     def live_indices(self) -> frozenset:
         return frozenset(self._live)
+
+    @property
+    def quarantined_indices(self) -> frozenset:
+        return frozenset(self._quarantined)
 
 
 class DamonSession:
@@ -389,6 +539,7 @@ class DamonSession:
         self._prev_handlers: Dict[int, Any] = {}
         self._torn_down = True   # nothing to tear down until __enter__ acquires it
         self._entered = False
+        self._cleanup_confirmed = True
         self.last_summary: Dict[str, Any] = {}
         self._hot_rate_pct = hot_rate_pct
         self._warm_rate_pct = warm_rate_pct
@@ -441,6 +592,7 @@ class DamonSession:
                 self.kdamond_idx = self.pool.acquire()
                 self._acquired_from_pool = True
                 self._owns_kdamond = True
+                self._cleanup_confirmed = False
             else:
                 self._prev_nr_kdamonds = _read_nr_kdamonds()
                 if self._prev_nr_kdamonds is None:
@@ -454,6 +606,7 @@ class DamonSession:
                     )
                 SysfsInterface.create_kdamond(self.kdamond_idx)
                 self._owns_kdamond = True
+                self._cleanup_confirmed = False
             SysfsInterface.create_context(self.kdamond_idx, self._ctx_idx)
             SysfsInterface.set_operations(self.kdamond_idx, self._ctx_idx, self.targets[0].kind)
             SysfsInterface.set_intervals(
@@ -566,58 +719,49 @@ class DamonSession:
             DamonTarget(kind="vaddr", pid=pid, label=str(pid)) for pid in new_pids
         ]
 
-    def _teardown(self) -> None:
-        """Idempotent by design: called from ``__exit__``, from the exception
-        path inside ``__enter__``, and from a signal handler — in any order,
-        any combination, any number of times, including *reentrantly* (a
-        SIGTERM landing while this very call is mid-flight, because the
-        signal handler's cleanup callback is this same bound method).
+    def _teardown(self) -> bool:
+        """Stop this owned monitor and release its index only when proven off.
 
-        ``self._torn_down`` is set only once the real work below has been
-        attempted, not at the top — setting it first would make a reentrant
-        call (the signal handler firing while ``kdamond_off`` is in flight)
-        see "already done" and return immediately, permanently skipping the
-        ``nr_kdamonds`` shrink and leaking a phantom (harmless but
-        undercounted) kdamond slot. With the flag set at the end, the
-        reentrant call — which runs to completion synchronously before the
-        interrupted outer call ever gets to resume — is the one that
-        actually finishes the job; the abandoned outer call simply never
-        reaches the flag-set, which is fine because there is nothing left
-        for it to do.
+        A state-write error is ambiguous, so read the state back. Pooled slots
+        whose state is still on or unreadable are quarantined rather than
+        reused or crossed by a counter shrink. The teardown flag is set only
+        after cleanup was attempted so a reentrant signal-handler call can
+        finish work interrupted by the outer call.
         """
         if self._torn_down:
-            return
+            return self._cleanup_confirmed
+        off_confirmed = not self._owns_kdamond
         if self._owns_kdamond:
             try:
                 SysfsInterface.kdamond_off(self.kdamond_idx)
             except Exception:
                 pass
+            try:
+                off_confirmed = SysfsInterface.kdamond_state(self.kdamond_idx) == "off"
+            except Exception:
+                off_confirmed = False
         if self.pool is not None:
-            # A shared pool: release is a no-op unless this session actually
-            # acquired an index from it (acquire() can fail mid-__enter__,
-            # e.g. a sysfs write error, before ever adding this index to the
-            # pool's live set — nothing to release in that case, and calling
-            # release() with the constructor's placeholder index would risk
-            # freeing an unrelated session that happens to share it).
+            # acquire() can fail before an index is claimed; only release the
+            # exact index this session actually acquired.
             if self._acquired_from_pool:
-                self.pool.release(self.kdamond_idx)
-        elif self._owns_kdamond:
+                off_confirmed = self.pool.release(self.kdamond_idx)
+        elif self._owns_kdamond and off_confirmed:
             prev = self._prev_nr_kdamonds
             if prev is not None:
                 try:
                     current = _read_nr_kdamonds()
-                    if current is not None and current > prev:
-                        # Shrink back to exactly what was there before this
-                        # session — verified on this host that writing
-                        # nr_kdamonds back down tears the higher-indexed kdamond
-                        # dir(s) down. Restoring the prior count rather than
-                        # unconditionally writing 0 means a kdamond some other
-                        # process already owned before we started is left
-                        # running, never destroyed out from under it.
+                    if current == prev + 1:
                         _write_nr_kdamonds(prev)
                 except Exception:
                     pass
+        self._cleanup_confirmed = off_confirmed
         self._torn_down = True
+        return off_confirmed
+
+    @property
+    def cleanup_confirmed(self) -> bool:
+        """Whether teardown verified that this session's kdamond is off."""
+        return self._cleanup_confirmed
 
     def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
         try:

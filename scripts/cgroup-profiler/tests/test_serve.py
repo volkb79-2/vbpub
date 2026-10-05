@@ -159,6 +159,7 @@ def test_damon_pool_explicit_arg_is_used_as_is(tmp_path):
 def test_damon_pool_defaults_to_a_real_kdamond_pool_when_omitted(tmp_path):
     server = serve.SessionServer(sessions_dir=str(tmp_path / "sessions"))
     assert isinstance(server.damon_pool, damon_mod.KdamondPool)
+    assert server.damon_pool.capacity == server.max_sessions
 
 
 def test_parse_iso_epoch_returns_none_for_malformed_text():
@@ -2185,6 +2186,7 @@ def test_runtime_damon_failure_keeps_profiling_session_alive(
             }
             self.collect_calls = 0
             self.close_calls = 0
+            self.cleanup_confirmed = not cleanup_fails
 
         def __enter__(self):
             return self
@@ -2259,7 +2261,9 @@ def test_runtime_damon_failure_keeps_profiling_session_alive(
     assert sess.damon_unavailable_reason == f"RuntimeError: late {failure} failure"
     assert damon_session.close_calls == 1
     if cleanup_fails:
-        assert "DAMON cleanup also failed" in capsys.readouterr().err
+        err = capsys.readouterr().err
+        assert "DAMON cleanup raised during runtime failure" in err
+        assert "DAMON stop is unconfirmed" in err
     assert simple_server._status_entry(sess)["live"]["damon"] == {
         "status": "unavailable", "hot_bytes_recent": None,
     }
@@ -2273,6 +2277,30 @@ def test_runtime_damon_failure_keeps_profiling_session_alive(
     assert stop_resp["summary"]["damon"]["status"] == "unavailable"
     assert stop_resp["summary"]["damon"]["reason"] == f"RuntimeError: late {failure} failure"
     assert sess.error is None
+
+
+def test_finalize_session_swallows_optional_damon_cleanup_failure(
+    simple_server, capsys,
+):
+    started = simple_server._dispatch(_start_req())
+    sess = simple_server._sessions[started["session"]]
+
+    class _UnconfirmedDamon:
+        cleanup_confirmed = False
+
+        def __exit__(self, *_args):
+            raise RuntimeError("synthetic stop failure")
+
+    sess.damon_session = _UnconfirmedDamon()
+    with simple_server._lock:
+        simple_server._finalize_session_locked(sess, aborted_reason=None)
+
+    assert sess.finished
+    assert (Path(simple_server.sessions_dir) / sess.session_id / "summary.json").is_file()
+    assert sess.error is None
+    err = capsys.readouterr().err
+    assert "DAMON cleanup raised during session finalization" in err
+    assert "DAMON stop is unconfirmed" in err
 
 
 def test_on_session_sample_discovery_due_and_not_due_and_status_damon_on(simple_server, monkeypatch):
@@ -2871,6 +2899,66 @@ def test_accept_loop_breaks_on_a_non_timeout_oserror(tmp_path, monkeypatch):
     monkeypatch.setattr(server, "_close_socket", lambda: calls.append("closed"))
     server._accept_loop()
     assert calls == ["closed"]
+
+
+@pytest.mark.parametrize("close_mode", ["false", "raises"])
+def test_accept_loop_reports_unconfirmed_pool_shutdown(
+    tmp_path, monkeypatch, capsys, close_mode,
+):
+    server = serve.SessionServer(sessions_dir=str(tmp_path / "sessions"))
+
+    class _FakeSock:
+        def accept(self):
+            raise OSError("done")
+
+    class _Pool:
+        quarantined_indices = frozenset({7})
+
+        def close(self):
+            if close_mode == "raises":
+                raise RuntimeError("synthetic close failure")
+            return False
+
+    monkeypatch.setattr(server, "_bind", lambda: setattr(server, "_sock", _FakeSock()))
+    monkeypatch.setattr(server, "_close_socket", lambda: None)
+    server.damon_pool = _Pool()
+
+    server._accept_loop()
+
+    err = capsys.readouterr().err
+    assert "DAMON pool shutdown could not confirm" in err
+    assert "quarantined=[7]" in err
+    if close_mode == "raises":
+        assert "DAMON pool shutdown raised: RuntimeError: synthetic close failure" in err
+
+
+def test_accept_loop_closes_pool_even_if_session_finalization_raises(tmp_path, monkeypatch):
+    server = serve.SessionServer(sessions_dir=str(tmp_path / "sessions"))
+    calls = []
+
+    class _FakeSock:
+        def accept(self):
+            raise OSError("done")
+
+    class _Pool:
+        quarantined_indices = frozenset()
+
+        def close(self):
+            calls.append("pool")
+            return True
+
+    monkeypatch.setattr(server, "_bind", lambda: setattr(server, "_sock", _FakeSock()))
+    monkeypatch.setattr(server, "_close_socket", lambda: calls.append("socket"))
+    monkeypatch.setattr(
+        server, "_stop_all_sessions",
+        lambda **kwargs: (_ for _ in ()).throw(RuntimeError("finalize failed")),
+    )
+    server.damon_pool = _Pool()
+
+    with pytest.raises(RuntimeError, match="finalize failed"):
+        server._accept_loop()
+
+    assert calls == ["socket", "pool"]
 
 
 # ── a real Unix socket round trip ────────────────────────────────────────

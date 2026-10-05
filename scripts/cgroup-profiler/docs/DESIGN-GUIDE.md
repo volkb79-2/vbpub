@@ -209,6 +209,33 @@ only indices proven to have been created after the baseline, and teardown
 touches only indices that the pool actually handed out. If the baseline cannot
 be read, acquisition refuses; index zero is never a placeholder default.
 
+The pool reserves its configured capacity (`max_sessions`) before starting
+its first monitor. This is not merely an optimization: Linux DAMON sysfs
+refuses every `nr_kdamonds` resize while *any* kdamond is running, including
+growth and including a monitor owned by another program. Lazy allocation
+would therefore make the second session fail after the first had started.
+This is enforced in the upstream v7.1 [`nr_kdamonds_store()` and directory
+growth path](https://github.com/torvalds/linux/blob/v7.1/mm/damon/sysfs.c#L1923-L1944).
+Pre-reservation gives the pool a fixed set of off slots to reuse without
+changing the shared count while monitoring is active. If a foreign kdamond is
+already on when the daemon first needs capacity, the kernel refuses the
+reservation; if the requested capacity cannot be fully reserved, the pool
+uses the slots it did reserve and does not grow while one may be running.
+Sessions still start and collect ordinary metrics when no DAMON slot is
+available; their start response marks DAMON `unavailable` rather than making
+profiling readiness depend on this optional evidence (R-36h).
+
+Release is a verified state transition, not bookkeeping alone. The session
+asks its owned kdamond to stop and reads `state` back. An on or unreadable slot
+is quarantined: it is never reused and the pool never shrinks across it. At
+pool shutdown the daemon retries every owned stop. The shared count is restored
+only when all owned slots are confirmed off, all remaining kdamonds (including
+foreign ones) are off, and the count still matches the pool's ownership
+boundary. If a foreign monitor is active or a write/readback fails, the pool
+retains ownership and leaves the count alone for a later retry; it never stops
+or removes a foreign monitor. This favors a visible leftover off slot over
+silently abandoning or reusing a monitor whose state is uncertain.
+
 The same rule applies to a bare session: it must prove that its requested
 index is the first slot beyond the observed count before it configures or turns
 the kdamond on. This keeps a pre-existing monitor on even when a new session
@@ -238,7 +265,10 @@ for the interface and commit semantics. The kernel's
 [`damon_sysfs_commit_input()`](https://github.com/torvalds/linux/blob/master/mm/damon/sysfs.c#L2008-L2024)
 explicitly refuses a stopped kdamond; its
 [`state=on` path](https://github.com/torvalds/linux/blob/master/mm/damon/sysfs.c#L2113-L2142)
-builds and starts the context from those initial inputs.
+builds and starts the context from those initial inputs. The same sysfs
+implementation rejects `nr_kdamonds` changes while any kdamond is running;
+the pool's pre-reservation and verified teardown above are the lifecycle
+response to that global constraint.
 
 DAMON remains optional profiling evidence throughout the session, not just at
 startup. If a later target recommit or collector read fails, cgprofile stops

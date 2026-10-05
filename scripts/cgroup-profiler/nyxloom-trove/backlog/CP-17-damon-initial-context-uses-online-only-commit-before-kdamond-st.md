@@ -77,3 +77,14 @@ and before online commit, and the stateful fake observes the kernel-facing PID
 list. Follow-up tests also inject late commit/collector errors and require the
 profiler to keep recording without DAMON. Entry remains open until final gates
 and live sample/overhead probes pass.
+
+**2026-10-05** — Sol's lifecycle review found that the kernel rejects changes
+to `nr_kdamonds` while any monitor is running, so lazy pool growth cannot
+provide the promised concurrent sessions. The pool now reserves configured
+capacity before the first `state=on`; it degrades DAMON only if a foreign
+monitor or a partial kernel reservation prevents enough slots. A failed or
+unreadable stop quarantines the owned index, and count restoration waits until
+all owned and foreign monitors are confirmed off. Tests model the kernel's
+resize refusal and verify no reuse/shrink on ambiguous cleanup. This remains
+open pending final gates, review fix-verification, and live DAMON sample and
+overhead probes.
