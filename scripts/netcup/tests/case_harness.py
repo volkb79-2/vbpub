@@ -146,19 +146,125 @@ def run_install_host(mod, argv, *, tmp_path, monkeypatch, capsys, fake_client, s
     return CaseRun(status, out.out, out.err, client.calls, captured.get("args"), followers)
 
 
-def run_script_in_process(mod, argv, *, tmp_path, monkeypatch, capsys, client=None, patches=()):
-    """Replay one invocation of scp-api.py or monitor-task.py.
+MAC = "aa:bb:cc:dd:ee:ff"
+TASK_UUID = "3a27fe8e-e747-4f3b-80b0-f930c0d0db3f"
+S42 = "/api/v1/servers/42"
+POLICY_JSON = '{"name": "ssh-in", "description": "allow ssh", "rules": []}'
 
-    ``patches`` is a sequence of (attribute, value) pairs applied to ``mod``.
+SCP_ROUTES = {
+    "/api/v1/servers": [
+        {"id": 42, "name": "v42", "hostname": "h42.example", "nickname": "n42", "disabled": False}
+    ],
+    S42: {
+        "id": 42,
+        "name": "v42",
+        "hostname": "h42.example",
+        "architecture": "AMD64",
+        "serverLiveInfo": {
+            "state": "RUNNING",
+            "cpuCount": 2,
+            "currentServerMemoryInMiB": 2048,
+            "disks": [{"dev": "vda", "capacityInMiB": 10240}],
+            "interfaces": [{"mac": MAC}],
+        },
+    },
+    S42 + "/imageflavours": [{"id": 2, "alias": "debian", "image": {"name": "Debian 13"}}],
+    S42 + "/isoimages": [
+        {"id": 1234, "name": "rescue", "description": "recovery ISO", "architecture": "AMD64"}
+    ],
+    S42 + "/iso": {"isoAttached": False},
+    S42 + "/disks": [{"name": "vda", "capacityInMiB": 10240, "storageDriver": "VIRTIO"}],
+    S42 + "/disks/supported-drivers": ["VIRTIO", "SATA"],
+    S42 + "/rescuesystem": {"active": False},
+    S42 + "/snapshots": [{"uuid": "snap-1", "name": "before", "state": "READY"}],
+    S42 + "/metrics/cpu": {"metrics": [{"cpu": 1}]},
+    S42 + "/metrics/disk": {"metrics": [{"disk": 1}]},
+    S42 + "/metrics/network": {"metrics": [{"network": 1}]},
+    S42 + "/metrics/network/packet": {"metrics": [{"packet": 1}]},
+    S42 + "/guest-agent/status": {"available": True},
+    "/api/v1/tasks": [{"uuid": TASK_UUID, "name": "installImage", "state": "FINISHED"}],
+    f"/api/v1/tasks/{TASK_UUID}": {"uuid": TASK_UUID, "state": "FINISHED"},
+    "/api/v1/users/1/isos": [{"key": "custom.iso", "sizeInB": 3}],
+    "/api/v1/users/1/isos/custom.iso/up-1/parts/1": {"url": "https://upload.invalid/part-1"},
+    "/api/v1/users/1/firewall-policies": [{"id": 9, "name": "ssh-in", "rules": []}],
+    f"{S42}/interfaces/{MAC}/firewall": {"active": True},
+}
+
+
+class RoutedClient:
+    """Answers each endpoint from a fixed table and records every call.
+
+    Calls are (method, endpoint, params-or-body).  An endpoint outside the
+    table is a test failure, so a case can never reach an unplanned request.
     """
+
+    def __init__(self, routes=None):
+        self.routes = dict(SCP_ROUTES if routes is None else routes)
+        self.calls: list = []
+
+    def _answer(self, method, endpoint, detail):
+        self.calls.append((method, endpoint, detail))
+        if method == "get":
+            if endpoint not in self.routes:
+                raise AssertionError(f"unplanned GET {endpoint}")
+            import copy
+
+            return copy.deepcopy(self.routes[endpoint])
+        return {}
+
+    def get(self, endpoint, params=None):
+        return self._answer("get", endpoint, params)
+
+    def post(self, endpoint, data=None):
+        if "?multipart=true" in endpoint:
+            self.calls.append(("post", endpoint, data))
+            return {"uploadId": "up-1"}
+        if "?multipart=false" in endpoint:
+            self.calls.append(("post", endpoint, data))
+            return {"presignedUrl": "https://upload.invalid/object"}
+        return self._answer("post", endpoint, data)
+
+    def put(self, endpoint, data=None, params=None):
+        return self._answer("put", endpoint, data)
+
+    def patch(self, endpoint, data=None, params=None):
+        return self._answer("patch", endpoint, (data, params))
+
+    def delete(self, endpoint, params=None):
+        return self._answer("delete", endpoint, params)
+
+    def upload_file(self, url, path, offset=0, size=None):
+        self.calls.append(("upload_file", url, (str(path), offset, size)))
+        return {"etag": '"e-1"'}
+
+    def get_user_info(self):
+        self.calls.append(("get_user_info", "userinfo", None))
+        return {"id": 1}
+
+
+MUTATING = {"post", "put", "patch", "delete", "upload_file"}
+
+
+def run_scp_api(mod, argv, *, tmp_path, monkeypatch, capsys, routes=None):
+    """Replay one scp-api invocation against a RoutedClient."""
     _isolate(monkeypatch, tmp_path)
-    monkeypatch.setattr(mod, "load_env_file", lambda: None, raising=False)
-    for name, value in patches:
-        monkeypatch.setattr(mod, name, value)
+    monkeypatch.setenv("NETCUP_SCP_API_REFRESH_TOKEN", "fake-refresh-token")
+    monkeypatch.setattr(mod, "load_env_file", lambda: None)
+    (tmp_path / "custom.iso").write_bytes(b"iso")
+    (tmp_path / "policy.json").write_text(POLICY_JSON)
+    client = RoutedClient(routes)
+    logins: list = []
+
+    def fake_login(_env_path, output=None):
+        logins.append(_env_path)
+        return 0
+
+    monkeypatch.setattr(mod, "build_client", lambda: client)
+    monkeypatch.setattr(mod, "run_device_code_login", fake_login)
+    # status would otherwise probe SSH and resolve reverse DNS.
+    monkeypatch.setattr(mod, "_prepare_ssh_probe_context", lambda: {})
+    monkeypatch.setattr(mod, "_ssh_connection_summary", lambda *a, **k: "no keys tried")
+    monkeypatch.setattr(mod, "_reverse_dns_summary", lambda _inventory: "-")
     status = _status(lambda: mod.main(list(argv)))
     out = capsys.readouterr()
-    return CaseRun(status, out.out, out.err, list(getattr(client, "calls", [])))
-
-
-def namespace(**values) -> types.SimpleNamespace:
-    return types.SimpleNamespace(**values)
+    return CaseRun(status, out.out, out.err, client.calls, None, logins)

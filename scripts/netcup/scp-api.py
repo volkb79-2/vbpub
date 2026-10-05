@@ -2347,7 +2347,7 @@ def build_cli():
             _argument("server_id", "Netcup SCP server ID.", metavar="server_id", type=_positive_int),
             _argument("metric", "metric series to return.", metavar="{cpu,disk,network,network-packet}", choices=tuple(_METRIC_ENDPOINTS)),
         ),
-        options=(_option(("--hours",), "look back this many hours (1-1440; API default if omitted)", group="TIME RANGE", type=_hours),),
+        options=(_option(("--hours",), "look back this many hours (1-1440; API default if omitted)", group="TIME RANGE", type=_hours, default=None),),
         examples=("./scp-api.py metrics 799611 cpu --hours 24",),
     )
     register(
@@ -2363,8 +2363,8 @@ def build_cli():
         "MIXED OPERATIONS", cmd_user_iso,
         configure=_configure_user_iso,
         options=(
-            _option(("--name",), "object name (defaults to the local filename)", group="UPLOAD OPTIONS", metavar="KEY", type=_nonempty_text),
-            _option(("--multipart",), "use multipart upload for large ISO files", group="UPLOAD OPTIONS", action="store_true"),
+            _option(("--name",), "object name (defaults to the local filename)", group="UPLOAD OPTIONS", metavar="KEY", type=_nonempty_text, default=None),
+            _option(("--multipart",), "use multipart upload for large ISO files", group="UPLOAD OPTIONS", action="store_true", default=False),
             _option(("--part-size-mib",), "multipart part size in MiB (default 64; minimum 5)", group="UPLOAD OPTIONS", metavar="N", type=_part_size_mib, default=None),
         ),
         examples=("./scp-api.py user-iso", "./scp-api.py user-iso upload ./custom.iso --name custom.iso --yes", "./scp-api.py attach-iso 799611 --user-iso-name custom.iso --yes", "./scp-api.py power cycle 799611 --yes"), mutating=True,
@@ -2375,9 +2375,9 @@ def build_cli():
         "MIXED OPERATIONS", cmd_firewall_policies,
         configure=_configure_firewall_policies,
         options=(
-            _option(("--query", "--filter"), "search policy name/description", group="FILTERS", metavar="TEXT", dest="query", type=_nonempty_text),
-            _option(("--limit",), "maximum policies to return", group="FILTERS", type=_nonnegative_int),
-            _option(("--offset",), "matching policies to skip", group="FILTERS", type=_nonnegative_int),
+            _option(("--query", "--filter"), "search policy name/description", group="FILTERS", metavar="TEXT", dest="query", type=_nonempty_text, default=None),
+            _option(("--limit",), "maximum policies to return", group="FILTERS", type=_nonnegative_int, default=None),
+            _option(("--offset",), "matching policies to skip", group="FILTERS", type=_nonnegative_int, default=None),
         ),
         examples=("./scp-api.py firewall-policies", "./scp-api.py firewall-policies create --policy-json '{\"name\":\"ssh\",\"rules\":[]}' --yes", "./scp-api.py firewall-policies put 12 --policy-file firewall-policy.json --yes"), mutating=True,
     )

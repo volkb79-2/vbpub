@@ -388,7 +388,7 @@
         "option_id": "option:route:entrypoint:scp-api/firewall-policies/--limit",
         "spelling": "--limit"
       },
-      "signature": "sha256:b269d7e5748708b038c5aad7883d22a57fcb8a0fb6180a006345e3403ca2aeb2"
+      "signature": "sha256:72dd0edf876b15fc0c0f5868725fd6d44c03b99f2ba316a7fb0ad062ab9fb976"
     },
     {
       "id": "case:route:entrypoint:scp-api/firewall-policies/option-spelling/option:route:entrypoint:scp-api/firewall-policies/--offset/--offset",
@@ -401,7 +401,7 @@
         "option_id": "option:route:entrypoint:scp-api/firewall-policies/--offset",
         "spelling": "--offset"
       },
-      "signature": "sha256:8fcd60aa49dbc36686a39d8aeeee1a480ad7f2688749374ebd974397411a4d08"
+      "signature": "sha256:3e125080f6b28a55d2e95cdd61e6e29d12a14eeb0bcebd360cfbfd3108b71a70"
     },
     {
       "id": "case:route:entrypoint:scp-api/firewall-policies/option-spelling/option:route:entrypoint:scp-api/firewall-policies/--policy-file/--policy-file",
@@ -440,7 +440,7 @@
         "option_id": "option:route:entrypoint:scp-api/firewall-policies/--query",
         "spelling": "--filter"
       },
-      "signature": "sha256:31d1545250e36092a25e31f0ba86109e54a9181af260445cfd7dac464fc36a9b"
+      "signature": "sha256:56bbd1ece6e2de105b9ba70d845a908291b65535acf514abe698ebab802474cb"
     },
     {
       "id": "case:route:entrypoint:scp-api/firewall-policies/option-spelling/option:route:entrypoint:scp-api/firewall-policies/--query/--query",
@@ -453,7 +453,7 @@
         "option_id": "option:route:entrypoint:scp-api/firewall-policies/--query",
         "spelling": "--query"
       },
-      "signature": "sha256:c9597f68b7b8f7b8b1b8e3757b86aaa807119c57474b8333a5bbb9f61e7d2cf9"
+      "signature": "sha256:698b0824b8875ea52f6a9ceaaaaa840356d842f24b6189ffa405347a335e3c68"
     },
     {
       "id": "case:route:entrypoint:scp-api/firewall-policies/option-spelling/option:route:entrypoint:scp-api/firewall-policies/--yes/--yes",
@@ -1134,7 +1134,7 @@
         "option_id": "option:route:entrypoint:scp-api/metrics/--hours",
         "spelling": "--hours"
       },
-      "signature": "sha256:ec8f35d100ae8e167506d99b78819257e7e285153a8790deebf30f56182a2c62"
+      "signature": "sha256:64b937efa3fea39bc0d5a5c7c3a2d048cf09324b50a86bf542fd690044059370"
     },
     {
       "id": "case:route:entrypoint:scp-api/metrics/option-spelling/option:route:entrypoint:scp-api/metrics/--json/--json",
@@ -1946,16 +1946,20 @@
     {
       "id": "case:route:entrypoint:scp-api/user-iso/minimum",
       "kind": "minimum",
-      "members": [],
+      "members": [
+        "option:route:entrypoint:scp-api/user-iso/--multipart"
+      ],
       "route_id": "route:entrypoint:scp-api/user-iso",
       "shape": {
-        "defaulted_options": [],
+        "defaulted_options": [
+          "option:route:entrypoint:scp-api/user-iso/--multipart"
+        ],
         "required_argument_values": {},
         "required_arguments": [],
         "required_exclusive_groups": {},
         "required_options": []
       },
-      "signature": "sha256:f40302cc1befeee4db58d50d9dc49432fa2d59fd8dfde738bbfdb7acfe21e059"
+      "signature": "sha256:dae266997b62c47aa41395fb563ad64a461c678c12b5a446d1d681e7b72cb77c"
     },
     {
       "id": "case:route:entrypoint:scp-api/user-iso/option-spelling/option:route:entrypoint:scp-api/user-iso/--debug-raw/--debug-raw",
@@ -1994,7 +1998,7 @@
         "option_id": "option:route:entrypoint:scp-api/user-iso/--multipart",
         "spelling": "--multipart"
       },
-      "signature": "sha256:5de782640761906b172903f1ff68eaf8c26d8010f4b328c82f7ccb297d67f244"
+      "signature": "sha256:583e1d2d1cca50801933b67ffb6bfaf21ddc938dfa76fbcbde9c11e0537d32e1"
     },
     {
       "id": "case:route:entrypoint:scp-api/user-iso/option-spelling/option:route:entrypoint:scp-api/user-iso/--name/--name",
@@ -2007,7 +2011,7 @@
         "option_id": "option:route:entrypoint:scp-api/user-iso/--name",
         "spelling": "--name"
       },
-      "signature": "sha256:75c0c9b05894c5012e3f962031fbfd3d4b9466de69b12f933e1b04e7f915f03d"
+      "signature": "sha256:a59d20e4440d5f5ba8ab8bd1acd280771237ac1ebb974e7e80491205d9fb59a7"
     },
     {
       "id": "case:route:entrypoint:scp-api/user-iso/option-spelling/option:route:entrypoint:scp-api/user-iso/--part-size-mib/--part-size-mib",
@@ -2742,15 +2746,11 @@
           "canonical": "--query",
           "choices": null,
           "const": null,
-          "default": {
-            "kind": "suppressed"
-          },
-          "default_present": false,
+          "default": null,
+          "default_present": true,
           "description": "search policy name/description",
           "dest": "query",
-          "effective_default": {
-            "kind": "suppressed"
-          },
+          "effective_default": null,
           "exclusive_group": null,
           "exclusive_required": false,
           "flags": [
@@ -2765,6 +2765,7 @@
           "minimum_values": 1,
           "nargs": null,
           "parser_kwargs": {
+            "default": null,
             "dest": "query",
             "type": {
               "callable": "_cli_extended_surface_scp_api._nonempty_text"
@@ -2790,15 +2791,11 @@
           "canonical": "--limit",
           "choices": null,
           "const": null,
-          "default": {
-            "kind": "suppressed"
-          },
-          "default_present": false,
+          "default": null,
+          "default_present": true,
           "description": "maximum policies to return",
           "dest": "limit",
-          "effective_default": {
-            "kind": "suppressed"
-          },
+          "effective_default": null,
           "exclusive_group": null,
           "exclusive_required": false,
           "flags": [
@@ -2812,6 +2809,7 @@
           "minimum_values": 1,
           "nargs": null,
           "parser_kwargs": {
+            "default": null,
             "type": {
               "callable": "_cli_extended_surface_scp_api._nonnegative_int"
             }
@@ -2836,15 +2834,11 @@
           "canonical": "--offset",
           "choices": null,
           "const": null,
-          "default": {
-            "kind": "suppressed"
-          },
-          "default_present": false,
+          "default": null,
+          "default_present": true,
           "description": "matching policies to skip",
           "dest": "offset",
-          "effective_default": {
-            "kind": "suppressed"
-          },
+          "effective_default": null,
           "exclusive_group": null,
           "exclusive_required": false,
           "flags": [
@@ -2858,6 +2852,7 @@
           "minimum_values": 1,
           "nargs": null,
           "parser_kwargs": {
+            "default": null,
             "type": {
               "callable": "_cli_extended_surface_scp_api._nonnegative_int"
             }
@@ -3729,15 +3724,11 @@
           "canonical": "--hours",
           "choices": null,
           "const": null,
-          "default": {
-            "kind": "suppressed"
-          },
-          "default_present": false,
+          "default": null,
+          "default_present": true,
           "description": "look back this many hours (1-1440; API default if omitted)",
           "dest": "hours",
-          "effective_default": {
-            "kind": "suppressed"
-          },
+          "effective_default": null,
           "exclusive_group": null,
           "exclusive_required": false,
           "flags": [
@@ -3751,6 +3742,7 @@
           "minimum_values": 1,
           "nargs": null,
           "parser_kwargs": {
+            "default": null,
             "type": {
               "callable": "_cli_extended_surface_scp_api._hours"
             }
@@ -4948,15 +4940,11 @@
           "canonical": "--name",
           "choices": null,
           "const": null,
-          "default": {
-            "kind": "suppressed"
-          },
-          "default_present": false,
+          "default": null,
+          "default_present": true,
           "description": "object name (defaults to the local filename)",
           "dest": "name",
-          "effective_default": {
-            "kind": "suppressed"
-          },
+          "effective_default": null,
           "exclusive_group": null,
           "exclusive_required": false,
           "flags": [
@@ -4970,6 +4958,7 @@
           "minimum_values": 1,
           "nargs": null,
           "parser_kwargs": {
+            "default": null,
             "type": {
               "callable": "_cli_extended_surface_scp_api._nonempty_text"
             }
@@ -4994,15 +4983,11 @@
           "canonical": "--multipart",
           "choices": null,
           "const": true,
-          "default": {
-            "kind": "suppressed"
-          },
-          "default_present": false,
+          "default": false,
+          "default_present": true,
           "description": "use multipart upload for large ISO files",
           "dest": "multipart",
-          "effective_default": {
-            "kind": "suppressed"
-          },
+          "effective_default": false,
           "exclusive_group": null,
           "exclusive_required": false,
           "flags": [
@@ -5016,7 +5001,8 @@
           "minimum_values": 0,
           "nargs": 0,
           "parser_kwargs": {
-            "action": "store_true"
+            "action": "store_true",
+            "default": false
           },
           "parser_path": [
             "user-iso"
