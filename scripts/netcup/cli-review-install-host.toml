@@ -194,7 +194,7 @@ expected_exit_status = 0
 expected_stdout_contains = "[dry-run] Preflight OK"
 expected_stderr_contains = ""
 effects = ["Plans the install with removal of the local controller key after completion; the dry-run stops before saving or the install POST."]
-test_ids = ["tests/test_cli_cases_install_host.py::test_replayed_case_matches_catalog[configure-local-controller-key-remove]"]
+test_ids = ["tests/test_cli_cases_install_host.py::test_replayed_case_matches_catalog[configure-local-controller-key-remove]", "tests/test_cli_cases_install_host.py::test_local_controller_key_flag_decides_whether_the_key_is_removed[configure-remove]"]
 
 [[cases]]
 id = "case:route:entrypoint:install-host/configure/option-choice/option:route:entrypoint:install-host/configure/--local-controller-key/689680efe3"
@@ -207,7 +207,7 @@ expected_exit_status = 0
 expected_stdout_contains = "[dry-run] Preflight OK"
 expected_stderr_contains = ""
 effects = ["Plans the install keeping the local controller key after completion; the dry-run stops before saving or the install POST."]
-test_ids = ["tests/test_cli_cases_install_host.py::test_replayed_case_matches_catalog[configure-local-controller-key-retain]"]
+test_ids = ["tests/test_cli_cases_install_host.py::test_replayed_case_matches_catalog[configure-local-controller-key-retain]", "tests/test_cli_cases_install_host.py::test_local_controller_key_flag_decides_whether_the_key_is_removed[configure-retain]"]
 
 [[cases]]
 id = "case:route:entrypoint:install-host/configure/option-spelling/option:route:entrypoint:install-host/configure/--attach-custom-script/--attach-custom-script"
@@ -480,7 +480,7 @@ expected_exit_status = 0
 expected_stdout_contains = "[dry-run] Preflight OK"
 expected_stderr_contains = ""
 effects = ["Validates the config with GET requests and plans removal of the local controller key after completion; the dry-run sends no install POST."]
-test_ids = ["tests/test_cli_cases_install_host.py::test_replayed_case_matches_catalog[install-local-controller-key-remove]"]
+test_ids = ["tests/test_cli_cases_install_host.py::test_replayed_case_matches_catalog[install-local-controller-key-remove]", "tests/test_cli_cases_install_host.py::test_local_controller_key_flag_decides_whether_the_key_is_removed[install-remove]"]
 
 [[cases]]
 id = "case:route:entrypoint:install-host/install/option-choice/option:route:entrypoint:install-host/install/--local-controller-key/689680efe3"
@@ -493,7 +493,7 @@ expected_exit_status = 0
 expected_stdout_contains = "[dry-run] Preflight OK"
 expected_stderr_contains = ""
 effects = ["Validates the config with GET requests and plans keeping the local controller key after completion; the dry-run sends no install POST."]
-test_ids = ["tests/test_cli_cases_install_host.py::test_replayed_case_matches_catalog[install-local-controller-key-retain]"]
+test_ids = ["tests/test_cli_cases_install_host.py::test_replayed_case_matches_catalog[install-local-controller-key-retain]", "tests/test_cli_cases_install_host.py::test_local_controller_key_flag_decides_whether_the_key_is_removed[install-retain]"]
 
 [[cases]]
 id = "case:route:entrypoint:install-host/install/option-spelling/option:route:entrypoint:install-host/install/--attach-custom-script/--attach-custom-script"
@@ -753,7 +753,7 @@ expected_exit_status = 0
 expected_stdout_contains = "[dry-run] Preflight OK"
 expected_stderr_contains = ""
 effects = ["Plans the install with removal of the local controller key after completion; the dry-run stops before saving or the install POST."]
-test_ids = ["tests/test_cli_cases_install_host.py::test_replayed_case_matches_catalog[wizard-local-controller-key-remove]"]
+test_ids = ["tests/test_cli_cases_install_host.py::test_replayed_case_matches_catalog[wizard-local-controller-key-remove]", "tests/test_cli_cases_install_host.py::test_local_controller_key_flag_decides_whether_the_key_is_removed[wizard-remove]"]
 
 [[cases]]
 id = "case:route:entrypoint:install-host/wizard/option-choice/option:route:entrypoint:install-host/wizard/--local-controller-key/689680efe3"
@@ -766,7 +766,7 @@ expected_exit_status = 0
 expected_stdout_contains = "[dry-run] Preflight OK"
 expected_stderr_contains = ""
 effects = ["Plans the install keeping the local controller key after completion; the dry-run stops before saving or the install POST."]
-test_ids = ["tests/test_cli_cases_install_host.py::test_replayed_case_matches_catalog[wizard-local-controller-key-retain]"]
+test_ids = ["tests/test_cli_cases_install_host.py::test_replayed_case_matches_catalog[wizard-local-controller-key-retain]", "tests/test_cli_cases_install_host.py::test_local_controller_key_flag_decides_whether_the_key_is_removed[wizard-retain]"]
 
 [[cases]]
 id = "case:route:entrypoint:install-host/wizard/option-spelling/option:route:entrypoint:install-host/wizard/--attach-custom-script/--attach-custom-script"

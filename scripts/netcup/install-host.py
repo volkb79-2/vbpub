@@ -722,6 +722,12 @@ def _print_dry_run_ssh_plan(args: argparse.Namespace, ip_address: Optional[str])
         "[dry-run] Follow customScript log over SSH: "
         f"{'yes' if getattr(args, 'attach_custom_script', True) else 'no'}"
     )
+    print(f"[dry-run] Task poll interval: {getattr(args, 'poll_interval', None)} seconds")
+    print(
+        "[dry-run] Completion marker: "
+        f"{getattr(args, 'completion_marker', None) or 'none declared'}; "
+        f"wait up to {getattr(args, 'completion_wait_seconds', None)} seconds"
+    )
     print(
         "[dry-run] Local controller key after the completion marker: "
         f"{getattr(args, 'local_controller_key', None)}"

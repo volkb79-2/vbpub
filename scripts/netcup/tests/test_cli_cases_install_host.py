@@ -246,6 +246,62 @@ def test_replayed_case_matches_catalog(
         assert "[dry-run] NOT saving to reviewed-target.jsonc" in run.out
     if row["invocation"][0] == "configure" and row["expected_exit_status"] != 2:
         assert "[compat] configure is the interactive installer wizard" in run.out
+    _assert_effects_are_observed(row, run, args, tmp_path)
+
+
+# What a dry-run plan prints for each parsed value (see _print_dry_run_ssh_plan).
+PLAN_LINES = {
+    "ssh_host": lambda v: f"@{v}:22",
+    "ssh_user": lambda v: f"[dry-run] SSH target: {v}@",
+    "ssh_identity_file": lambda v: f"[dry-run] SSH identity: {v} (explicit)",
+    "attach_custom_script": lambda v: (
+        f"[dry-run] Follow customScript log over SSH: {'yes' if v else 'no'}"
+    ),
+    "poll_interval": lambda v: f"[dry-run] Task poll interval: {v} seconds",
+    "completion_wait_seconds": lambda v: f"wait up to {v} seconds",
+    "completion_marker": lambda v: f"[dry-run] Completion marker: {v};",
+    "local_controller_key": lambda v: (
+        f"[dry-run] Local controller key after the completion marker: {v}"
+    ),
+}
+
+
+def _assert_effects_are_observed(row, run, args, tmp_path):
+    """The parts of a row's `effects` text that a replay can see."""
+    invocation = row["invocation"]
+    route = invocation[0]
+    status = row["expected_exit_status"]
+    if route == "attach":
+        # attach never talks to Netcup and never writes key material.
+        assert run.calls == []
+        assert sorted(p.name for p in tmp_path.iterdir()) == sorted(
+            name for name in ("controller-key",) if name in invocation
+        )
+        return
+    if status == 2 and not row["id"].endswith("install/minimum"):
+        # Refusals made while parsing or before any work reach no API.
+        assert run.calls == []
+        return
+    if "--dry-run" not in invocation or status != 0:
+        return
+    # A dry-run plan only ever reads, and writes no config file of its own.
+    assert set(run.methods) <= {"get", "get_user_info"}
+    written = {p.name for p in tmp_path.glob("*.jsonc")}
+    assert written <= ({"target-host.jsonc"} if route == "install" else set())
+    for dest, expected in args.items():
+        if dest in PLAN_LINES:
+            assert PLAN_LINES[dest](expected) in run.out
+    if "--no-monitor" in invocation:
+        assert "[dry-run] Monitor after install: no" in run.out
+    elif "--monitor" in invocation:
+        assert "[dry-run] Monitor after install: yes" in run.out
+    if "--ssh-identity-file" in invocation:
+        # A named key is used as given: never regenerated, overwritten or paired.
+        assert (tmp_path / "controller-key").read_text() == "not a real private key\n"
+        assert not (tmp_path / "controller-key.pub").exists()
+    if "--ssh-key-id" in invocation and route in ("wizard", "configure"):
+        # The account key list is not fetched when keys are named explicitly.
+        assert not any("/ssh-keys" in str(call[1]) for call in run.calls if len(call) > 1)
 
 
 # --- library controls: one parametrised test each, across routes ------------
@@ -358,3 +414,143 @@ def test_debug_raw_warns_and_is_off_by_default(
         # Secret-bearing customScript text is shown raw only with the opt-out.
         assert '"customScript": "echo hi"' in raw.out
         assert "REDACTED customScript (len=7)" in plain.out
+
+
+# --- behaviour the plan-only rows cannot show: live runs, defaults, refusals ---
+
+
+def _live(argv, scenario, mod, tmp_path, monkeypatch, capsys, fake_client, monitor_calls):
+    return run_install_host(
+        mod,
+        argv,
+        tmp_path=tmp_path,
+        monkeypatch=monkeypatch,
+        capsys=capsys,
+        fake_client=fake_client,
+        scenario=scenario,
+        monitor_calls=monitor_calls,
+    )
+
+
+def test_install_defaults_to_monitoring_with_customscript_log_attachment(
+    install_host_mod, tmp_path, monkeypatch, capsys, fake_client
+):
+    plan = run_install_host(
+        install_host_mod, ["install", "--dry-run", "--yes"], tmp_path=tmp_path,
+        monkeypatch=monkeypatch, capsys=capsys, fake_client=fake_client, scenario="file",
+    )
+    assert plan.status == 0
+    assert "[dry-run] Monitor after install: yes" in plan.out
+    assert "[dry-run] Follow customScript log over SSH: yes" in plan.out
+    calls: list = []
+    live = _live(["install", "--yes"], "file", install_host_mod, tmp_path, monkeypatch, capsys,
+                 fake_client, calls)
+    assert live.status == 0
+    assert len(calls) == 1
+    assert calls[0]["attach_custom_script"] is True
+    skipped: list = []
+    _live(["install", "--yes", "--no-monitor"], "file", install_host_mod, tmp_path, monkeypatch,
+          capsys, fake_client, skipped)
+    assert skipped == []
+
+
+@pytest.mark.parametrize("route", ["install", "wizard"])
+def test_monitoring_receives_every_resolved_value(
+    route, install_host_mod, tmp_path, monkeypatch, capsys, fake_client
+):
+    calls: list = []
+    argv = [
+        route, "--yes", "--ssh-host", "192.0.2.10", "--ssh-user", "ops",
+        "--ssh-identity-file", "controller-key", "--poll-interval", "2.5",
+        "--completion-wait-seconds", "45", "--no-attach-custom-script",
+    ]
+    if route == "wizard":
+        # install takes the marker from its config file, not from an option.
+        argv += ["--completion-marker", "/var/tmp/netcup-install-done"]
+    run = _live(argv, "file" if route == "install" else "gather", install_host_mod, tmp_path,
+                monkeypatch, capsys, fake_client, calls)
+    assert run.status == 0
+    assert len(calls) == 1
+    call = calls[0]
+    assert call["task_uuid"] == "task-1"
+    assert call["poll_interval"] == 2.5
+    assert call["ssh_host"] == "192.0.2.10"
+    assert call["ssh_user"] == "ops"
+    assert call["ssh_identity_file"] == "controller-key"
+    assert call["attach_custom_script"] is False
+    assert call["completion_marker"] == (
+        "/var/tmp/netcup-install-done" if route == "wizard" else None
+    )
+    assert call["completion_wait_seconds"] == 45.0
+
+
+RETENTION = [
+    pytest.param(
+        route, choice,
+        marks=pytest.mark.cli_case(choice_id(route, "--local-controller-key", choice)),
+        id=f"{route}-{choice}",
+    )
+    for route in ("wizard", "configure", "install")
+    for choice in ("remove", "retain")
+]
+
+
+@pytest.mark.parametrize(("route", "choice"), RETENTION)
+def test_local_controller_key_flag_decides_whether_the_key_is_removed(
+    route, choice, install_host_mod, tmp_path, monkeypatch, capsys, fake_client
+):
+    calls: list = []
+    argv = [
+        route, "--yes", "--local-controller-key", choice, "--ssh-identity-file", "controller-key",
+    ]
+    if route != "install":
+        argv += ["--completion-marker", "/var/tmp/netcup-install-done"]
+    run = _live(argv, "file" if route == "install" else "gather", install_host_mod, tmp_path,
+                monkeypatch, capsys, fake_client, calls)
+    assert run.status == 0
+    assert len(calls) == 1  # monitoring ran and reported the marker as observed
+    assert install_host_mod.CONTROLLER_LOCAL_KEY_RETENTION == choice
+    key = tmp_path / "controller-key"
+    # remove deletes the key after the observed completion marker; retain keeps it.
+    assert key.exists() is (choice == "retain")
+    assert ("Removed local controller key material" in run.out) is (choice == "remove")
+
+
+@pytest.mark.parametrize("route", ["wizard", "configure"])
+def test_relative_completion_marker_is_refused(
+    route, install_host_mod, tmp_path, monkeypatch, capsys, fake_client
+):
+    run = run_install_host(
+        install_host_mod, [route, "--dry-run", "--yes", "--completion-marker", "relative/marker"],
+        tmp_path=tmp_path, monkeypatch=monkeypatch, capsys=capsys, fake_client=fake_client,
+        scenario="none",
+    )
+    assert run.status == 2
+    assert "invalid --completion-marker: completion marker must be an absolute remote path" in run.err
+    assert run.calls == []
+
+
+def test_duplicate_account_key_ids_are_refused(
+    install_host_mod, tmp_path, monkeypatch, capsys, fake_client
+):
+    run = run_install_host(
+        install_host_mod, ["wizard", "--dry-run", "--yes", "--ssh-key-id", "7", "--ssh-key-id", "7"],
+        tmp_path=tmp_path, monkeypatch=monkeypatch, capsys=capsys, fake_client=fake_client,
+        scenario="none",
+    )
+    assert run.status == 2
+    assert "--ssh-key-id values must not contain duplicates" in run.err
+    assert run.calls == []
+
+
+def test_active_task_lookup_treats_terminal_states_case_insensitively(
+    install_host_mod, fake_client
+):
+    tasks = [
+        {"uuid": "done-lower", "state": "finished", "name": "installImage"},
+        {"uuid": "failed-mixed", "state": "Error", "name": "installImage"},
+        {"uuid": "live", "state": "RUNNING", "name": "installImage"},
+    ]
+    client = fake_client(get_responses=[tasks])
+    found = install_host_mod._find_active_task_for_server(client, 42)
+    assert found["uuid"] == "live"

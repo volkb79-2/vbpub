@@ -69,11 +69,16 @@ def _status(callable_) -> Any:
         return exc.code
 
 
-def run_install_host(mod, argv, *, tmp_path, monkeypatch, capsys, fake_client, scenario):
+def run_install_host(
+    mod, argv, *, tmp_path, monkeypatch, capsys, fake_client, scenario, monitor_calls=None
+):
     """Replay one install-host invocation.
 
     scenario: "none" (no network expected), "file" (a valid target-host.jsonc
     in the working directory), "gather" (a wizard gather against one server).
+    monitor_calls: a list that receives the keyword arguments of every
+    ``monitor_task`` call; when given, the install POST answers with a task
+    uuid and monitor_task is replaced by a recorder (no polling, no SSH).
     """
     _isolate(monkeypatch, tmp_path)
     monkeypatch.setenv("NETCUP_SCP_API_REFRESH_TOKEN", "fake-refresh-token")
@@ -99,6 +104,14 @@ def run_install_host(mod, argv, *, tmp_path, monkeypatch, capsys, fake_client, s
     else:
         client = fake_client(allow=())
     monkeypatch.setattr(mod, "NetcupSCPClient", lambda *a, **k: client)
+    if monitor_calls is not None:
+        client._post_responses = [{"uuid": "task-1"}]
+
+        def record_monitor(_client, task_uuid, poll_interval=5.0, **kwargs):
+            monitor_calls.append({"task_uuid": task_uuid, "poll_interval": poll_interval, **kwargs})
+            return {"custom_script_completed": True}
+
+        monkeypatch.setattr(mod, "monitor_task", record_monitor)
 
     # An explicit identity must name an existing file; the key itself is never
     # derived by a real ssh-keygen here.
