@@ -1527,6 +1527,7 @@ def _as_ingested_at_floor(document: dict, fail_under: float) -> dict:
                 "source_sha256",
                 "mutated_file_sha256",
                 "execution",
+                "resource_limit_evidence",
             ):
                 mutant.pop(field, None)
     return document
