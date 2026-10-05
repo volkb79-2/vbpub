@@ -53,6 +53,13 @@ from .surface import (
     export_cli_surface,
     render_cli_surface_json,
 )
+from .skills import (
+    SkillError,
+    SkillState,
+    register_skills_verbs,
+    skill_states,
+    validate_skill_source,
+)
 from .testing import assert_cli_contract
 
 __all__ = [
@@ -80,6 +87,8 @@ __all__ = [
     "ReviewCase",
     "DEFAULT_MAX_CANDIDATES",
     "SURFACE_SCHEMA_VERSION",
+    "SkillError",
+    "SkillState",
     "SurfaceError",
     "SurfaceLimitError",
     "SurfaceReport",
@@ -98,10 +107,13 @@ __all__ = [
     "logging_context",
     "redact_text",
     "redact_value",
+    "register_skills_verbs",
     "render_cli_review_template",
     "render_cli_surface_json",
     "render_cli_surface_markdown",
     "run_cli",
+    "skill_states",
     "sync_cli_surface",
     "uninstall_logging",
+    "validate_skill_source",
 ]

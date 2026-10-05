@@ -901,6 +901,48 @@ Cancellation is distinct from valid answers such as `False` or an empty
 checkbox list. Prompt collection must not write state or decide whether
 collected values satisfy the product schema.
 
+## Ship your agent skills
+
+Skills that live in a repository's `.claude/skills/<name>` are only visible to
+people working in that checkout. To make them follow the installed tool (the
+version always matches the wheel), move them into the package and register the
+shared verb group.
+
+1. Move each skill: `git mv .claude/skills/<name> src/<pkg>/skills/<name>`.
+   The frontmatter must satisfy [SPEC §14](../SPEC.md#14-packaged-agent-skills)
+   (single-line `name`/`description`, `name` equal to the directory name).
+2. Ship it as package data in `pyproject.toml`:
+
+   ```toml
+   [tool.setuptools.package-data]
+   "example_tool" = ["skills/**/*"]
+   ```
+
+3. Register once, on the same registry as your other verbs:
+
+   ```python
+   from cli_extended import CliIdentity, CliRegistry, register_skills_verbs
+
+   identity = CliIdentity.resolve(
+       name="EXAMPLE", command="example", long_name="Example Tool",
+       distribution="example-tool",
+   )
+   registry = CliRegistry(identity, prog="example", description="Example tool.")
+   register_skills_verbs(registry, package="example_tool")
+   ```
+
+4. Add `example skills install` to the mdt or devcontainer finalize step, and
+   `example skills check` to the tool's doctor or CI. Re-run `install` after
+   every upgrade: wheels cannot run post-install hooks.
+5. For a project-level install (skills committed or mounted for one checkout
+   only) use `example skills install --dest <project>/.claude/skills`;
+   `--dest` is exactly that directory and cannot be combined with `--harness`.
+   Use `--dry-run` first to see the plan.
+
+A skill you edited locally is reported `modified` and kept until you pass
+`--overwrite-modified`. Directories created by another tool, or by hand, are
+never replaced; remove them yourself if they are no longer wanted.
+
 ## Consumer responsibilities
 
 | `cli-extended` guarantees | The adopting CLI must decide and implement |

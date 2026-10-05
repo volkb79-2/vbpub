@@ -1072,3 +1072,109 @@ Contract version `1` covers these controls: `--help`, `--version`,
 `--dry-run` follows its verb registration, and `--traceback` is present only
 when the registry uses `unexpected_exceptions="report"`; the other controls are
 always present.
+
+## 14. Packaged agent skills
+
+A tool that ships agent skills (`SKILL.md` trees read by Claude Code and by
+the `~/.agents` harnesses) MUST package them inside its own distribution and
+expose them through the shared `skills` verb group registered by
+`register_skills_verbs(registry, package=..., resource_dir="skills")`. The
+tool name is `identity.command_name` and the version is `identity.version`.
+
+1. **Layout.** Skills live at `<package>/<resource_dir>/<skill-name>/SKILL.md`,
+   plus any other files, as package data. They are read only through
+   `importlib.resources`, so wheels, editable installs and zipapps behave the
+   same. A child directory without `SKILL.md`, a missing resource directory, or
+   a missing package is a `SkillError`; loose files next to the skill
+   directories are ignored, and so is any entry whose name starts with `.` or
+   `_` (for example `__pycache__`). `SKILL.md` MUST be non-empty, LF-terminated
+   (CRLF is rejected as "uses CRLF line endings") and without a UTF-8 BOM
+   (rejected as "starts with a UTF-8 BOM").
+2. **Source schema.** The frontmatter is the first `---` line through the next
+   `---` line. It MAY contain only single-line `key: value` scalars (plain, or
+   wrapped in matching single or double quotes), blank lines, and one optional
+   `metadata:` line followed by lines of exactly two-space indent
+   `  key: value`. Folded or literal scalars, list items, deeper indentation,
+   tabs and carriage returns are rejected with the line number. `name` is
+   required, 1-64 characters, full-matches `[a-z0-9]+(-[a-z0-9]+)*` and equals
+   the directory name. `description` is required, 1-1024 characters.
+   Duplicate keys are rejected, and `metadata` keys starting `cli-extended-`
+   are reserved. The source MUST NOT contain `.cli-extended-stamp.json`.
+3. **Source hash.** `sha256` over the records `relpath, NUL, decimal length, NUL,
+   bytes` for every source file in sorted POSIX-relative-path order, written
+   `sha256:<hex>`.
+4. **Installed tree.** Every file is copied byte for byte except `SKILL.md`,
+   which gains `metadata` keys `cli-extended-tool`, `cli-extended-version` and
+   `cli-extended-source-hash` (appended to an existing `metadata:` block, or a
+   new block at the end of the frontmatter) and, directly after the closing
+   `---`, the banner line ``> Installed by <tool> <version> via cli-extended.
+   If this disagrees with `<tool> --help`, run `<tool> skills check`.`` followed
+   by a blank line.
+5. **Stamp sidecar.** `.cli-extended-stamp.json` (sorted keys, indent 2,
+   trailing newline) holds `schema_version` (1), `tool`, `version`,
+   `source_hash` and `files`, a `sha256:<hex>` for every installed file except
+   the sidecar. A missing, unparsable or structurally invalid sidecar means the
+   directory is not managed by this mechanism.
+6. **Destinations.** `--harness claude` is `$CLAUDE_CONFIG_DIR/skills` when that
+   variable is set and non-empty, else `~/.claude/skills`; `--harness agents`
+   is `~/.agents/skills`; `--harness all` (the default) is both. `--dest DIR`
+   is exactly `DIR` and is mutually exclusive with `--harness` (usage error,
+   exit 2). `install` creates a missing destination including parents.
+7. **States.** Per skill and destination: `absent` (no directory); `unmanaged`
+   (directory without a valid sidecar, not a directory, or any symlink, which
+   is never followed, overwritten or removed); `foreign` (sidecar
+   names another tool); `modified` (an installed file's hash differs from the
+   sidecar, or a file was added or removed); `stale` (unmodified but version or
+   source hash differs from the packaged skill); `current`; `orphaned`
+   (stamped by this tool, unmodified, no longer packaged). A modified directory
+   of this tool that is no longer packaged is reported `modified`. Checks are
+   made in the order above. Directories starting with `.` are ignored.
+8. **`install`** (mutating, `--dry-run`, no `--yes`, no `--json`). Every packaged
+   skill and every orphan is processed, one output line per action:
+   `installed|updated|unchanged|removed|skipped <skill> -> <dest>`. `absent` is
+   installed; `stale` is updated; `current` is rewritten only when the rendered
+   bytes differ from the installed bytes, otherwise `unchanged` (no file is
+   touched); orphans are removed. Writes go to a temporary sibling directory
+   renamed into place, with the previous tree restored if the swap fails. The
+   staging directory is created with the process umask (never a private
+   `mkdtemp` mode), so installed modes are the umask's. Hidden
+   `.<skill>.cli-extended-<tool>-(tmp|old)-<16 hex>` staging and backup paths
+   (`<tool>` is the command name) are this tool's leftovers of an interrupted
+   install. `install` and `uninstall` remove every leftover of this tool in the
+   selected destinations, whether or not its skill is still packaged
+   (`removed leftover <path>`; `would remove leftover <path>` under
+   `--dry-run`). Another tool's leftovers share the directory and are neither
+   reported nor removed.
+   `modified` is refused unless `--overwrite-modified` is given. `foreign` and
+   `unmanaged` are always refused and never touched, even with
+   `--overwrite-modified`. A refusal is an `[ERROR]` naming skill and
+   destination with a hint; the remaining skills are still processed.
+9. **`uninstall`** (mutating, `--dry-run`). Removes only directories whose sidecar
+   names this tool (packaged skills and orphans). `modified` needs
+   `--overwrite-modified`, otherwise it is refused like in `install`.
+   `absent`, `foreign` and `unmanaged` are reported as
+   `skipped <skill> -> <dest> (<state>)` and are not errors. It also removes
+   this tool's interrupted-install leftovers (rule 8).
+10. **Dry run.** Under `--dry-run` the same plan is printed as
+    `would install|update|remove|skip <skill> -> <dest>` and nothing on disk
+    changes, not even a missing destination directory. The exit status is the
+    one the real run would produce.
+11. **`check`** (read-only, `--json`). Prints `<state> <skill> <dest>` per row.
+    Exit 0 only when every packaged skill is `current` in every selected
+    destination and there is no orphan or modified leftover; otherwise exit 1.
+    This tool's interrupted-install leftovers are listed one per line as `leftover <path>`
+    and also make `check` exit 1.
+12. **`list`** (read-only, `--json`). Same rows as `check`; always exit 0.
+    With `--json` both verbs print
+    `{"tool", "version", "skills": [{"name", "destination", "state"}],
+    "leftovers": [path]}` with `skills` sorted by `(destination, name)`.
+13. **Exit codes.** 0 success; 1 any refusal, failed check or source error
+    (`SkillError` is reported as a clean `[ERROR]`); 2 usage error.
+14. **Registration.** `register_skills_verbs` adds one `skills` verb (group
+    MAINTENANCE) delegating to a child registry that shares the parent's
+    `unexpected_exceptions` and logging logger, and records
+    `registry._cli_extended_skills = (package, resource_dir)` for the shared
+    `doctor`. A second call on one registry raises `ValueError`. The pure
+    function `skill_states(package=, resource_dir=, tool=, version=,
+    destinations=)` returns `(skill, destination, SkillState)` rows for
+    consumers such as `doctor`.
