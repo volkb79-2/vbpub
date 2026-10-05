@@ -6907,3 +6907,36 @@ registered lane in a tracked foreground exec session; keep its exact session
 handle, verify the gate container/cap/progress at +90 seconds, and read the
 run-gate verdict/history separately after completion. Since this ruling
 changes the judged tree, those gates qualify only the resulting commit.
+
+### RW-455 — 2026-10-05 18:29:03Z — resume P1 and launch combined-tree P6 R2
+
+Main remains clean at `33cfb15085cd259f2811731c377ec3879458f038`, ahead of
+`origin/main` by 24 commits. P1 R2 is still running in its isolated CIU
+worktree, container `run-gate-vbpub-r2-1926195-1791223388` (3 CPUs under
+`dev-gates.slice`). Its last progress read, at 18:16:38Z, had judged 21/114
+candidates, all killed; a 18:23Z container check still found it running.
+No P1 progress was read after that check.
+
+P6's old CIU worktree branch was a clean ancestor of current `main`, so its
+tip did not represent a distinct candidate. Assay intentionally resolves a
+merge `HEAD` to its first parent; planning at the current main merge therefore
+selected only the P1 merge payload (114 candidates). To judge the accumulated
+P6+P1 source delta without changing its tree, the P6 CIU worktree was
+temporarily detached at one-parent commit `324eac950bf0b261d51d064d8a8152e3af0dbe31`.
+Its tree `980863d4e3395d1d538a5cfb874af2e60a9c14aa` is byte-identical to
+current main's merge tree, and `merge-base(db29266, 324eac9)` resolves to
+`db29266`. The exact `assay plan r2 --request-base db29266` reported 1,251
+candidates across 13 `lib/*.py` files, two workers, below the 1,500 cap.
+Its printed 104-hour estimate is derived from the 600-second per-candidate
+budget, not observed throughput; the P1 live rate suggests roughly 11 hours,
+within the declared 24-hour lane budget.
+
+The second allowed mutation slot launched at 18:25:04Z as registered R2,
+container `run-gate-vbpub-r2-1957326-1791224704`, capped at 3 CPUs under
+`dev-gates.slice`. At the startup check, the 154-second baseline had passed,
+all 1,251 candidates were pending, and 8 prior records were rejected rather
+than reused (`resumed_total=0`, `rejudged_total=0`). Host memory PSI full
+`avg10` was 0.02. The profiler daemon was down, so run-gate warned that it
+was using coarse in-lane sampling; this is not a test verdict effect. Keep
+the judged P6 tree quiet and restore its recorded CIU branch before any CIU
+lifecycle command after this campaign.
