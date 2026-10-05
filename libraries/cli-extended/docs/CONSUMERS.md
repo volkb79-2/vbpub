@@ -1052,6 +1052,73 @@ A skill you edited locally is reported `modified` and kept until you pass
 `--overwrite-modified`. Directories created by another tool, or by hand, are
 never replaced; remove them yourself if they are no longer wanted.
 
+## Add a `doctor` verb
+
+Replace a hand-rolled `doctor` with the shared one. Declare each probe as a
+`DoctorCheck`; the verb adds `--check NAME`, `--json`, exit codes and crash
+handling.
+
+```python
+import shutil
+
+from cli_extended import (
+    CheckResult, CliIdentity, CliRegistry, DoctorCheck,
+    register_doctor, register_skills_verbs,
+)
+
+
+def docker_check(runtime, args) -> CheckResult:
+    if shutil.which("docker") is None:
+        return CheckResult("fail", "docker not found on PATH",
+                           remedy="install docker or add it to PATH")
+    return CheckResult("ok", "docker found", details={"path": shutil.which("docker")})
+
+
+def cache_check(runtime, args) -> CheckResult:
+    return CheckResult("warn", "cache is empty", remedy="run 'example warm'")
+
+
+identity = CliIdentity("EXAMPLE", "1.2.3", "Example Tool", "example")
+registry = CliRegistry(identity, prog="example", description="Example tool.")
+register_doctor(registry, [
+    DoctorCheck("docker", "docker is installed", docker_check),
+    DoctorCheck("cache", "cache is warm", cache_check),
+])
+# Optional, in either order: adds the automatic `skills` check.
+register_skills_verbs(registry, package="example_tool")
+```
+
+A check can read its own options. Pass them with
+`register_doctor(registry, checks, options=[OptionSpec(("--helper-image",),
+"helper image", metavar="IMAGE")])` and use `args.helper_image` inside
+`run(runtime, args)`.
+
+`example doctor`, `example doctor --check docker --json` and CI use the same
+exit code (1 only for `fail`). Do not name a check `skills`.
+
+Mapping the existing doctors:
+
+- **cgprofile** (`scripts/cgroup-profiler/cgprofile.py` `cmd_doctor`): prints an
+  `access` key/value table, a reporting-venv state and a resolved mode, and
+  returns 1 only when the helper spec cannot be built. Express it as checks
+  `access` (key/value table into `details`), `reporting-venv` (`ok`, `warn` for
+  "present but this interpreter lacks the libraries", `fail` for missing with
+  remedy `run ./setup.sh`) and `mode` (`fail` on `AccessError`, helper image and
+  mounts in `details`). Its `--helper-image` and `--helper-cgroup-parent`
+  options now fit: pass them as `options=[OptionSpec(("--helper-image",), ...),
+  OptionSpec(("--helper-cgroup-parent",), ...)]` and read
+  `args.helper_image` / `args.helper_cgroup_parent` in the `mode` check.
+- **nyxloomctl** (`cli_registry.py` `doctor` and `route doctor`): the project
+  doctor yields findings with severities `critical`, `error`, `warn`. Map
+  `critical`/`error` to `fail` and the rest to `warn`, one check per finding
+  kind or per project, and put the finding rows in `details`. Its options
+  (`--project-id`, `--rebuild`, `--write`, `--liveness`) and the `route doctor`
+  `--no-probe` are passed as `options=[...]` and read from `args`; a
+  `--liveness` flag is read by the checks that should run only in that mode
+  (return `skip` otherwise), or use `--check liveness`. `route doctor` is
+  registered on its own sub-registry with `--no-probe`. Option flags may not
+  reuse `--check` or a library control such as `--json` (`ValueError`).
+
 ## Consumer responsibilities
 
 | `cli-extended` guarantees | The adopting CLI must decide and implement |

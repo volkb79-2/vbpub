@@ -54,6 +54,7 @@ from .surface import (
     export_cli_surface,
     render_cli_surface_json,
 )
+from .doctor import CheckResult, DoctorCheck, register_doctor
 from .skills import (
     SkillError,
     SkillState,
@@ -67,6 +68,7 @@ from .values import SelectorList
 __all__ = [
     "CONTRACT_VERSION",
     "ArgumentSpec",
+    "CheckResult",
     "CliFailure",
     "CliIdentity",
     "CliLoggingHandler",
@@ -92,6 +94,7 @@ __all__ = [
     "ReviewCatalogError",
     "ReviewCase",
     "DEFAULT_MAX_CANDIDATES",
+    "DoctorCheck",
     "SURFACE_SCHEMA_VERSION",
     "SelectorList",
     "SkillError",
@@ -114,6 +117,7 @@ __all__ = [
     "logging_context",
     "redact_text",
     "redact_value",
+    "register_doctor",
     "register_skills_verbs",
     "render_cli_review_template",
     "render_cli_surface_json",

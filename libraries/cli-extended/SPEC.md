@@ -1295,3 +1295,63 @@ tool name is `identity.command_name` and the version is `identity.version`.
     function `skill_states(package=, resource_dir=, tool=, version=,
     destinations=)` returns `(skill, destination, SkillState)` rows for
     consumers such as `doctor`.
+
+## 15. Doctor
+
+A tool reports on its own environment through the shared `doctor` verb
+registered by `register_doctor(registry, checks, *, description=...)` with
+`DoctorCheck(name, description, run)` objects. `run(runtime, args)` receives
+the `CliRuntime` and the parsed `argparse.Namespace` (so it can read
+consumer options) and returns a
+`CheckResult(status, summary, remedy=None, details={})`. `register_doctor`
+also takes `options: Sequence[OptionSpec] = ()`, added to the `doctor` verb;
+an option flag equal to `--check`, `-h` or any library-owned control flag
+raises `ValueError`.
+
+1. **Result.** `status` is one of `ok`, `warn`, `fail`, `skip`; anything else
+   raises `ValueError`. `summary` is a non-empty single line. `details` MUST be
+   JSON-serialisable; this is checked when the result is rendered, and a
+   non-serialisable value turns that one check into `fail` with summary
+   `check returned non-JSON details`.
+2. **Check names.** `[a-z0-9]+(-[a-z0-9]+)*` and a non-empty description, else
+   `ValueError`. Duplicate names, a second `register_doctor` on one registry,
+   and a user check named `skills` while the skills verbs are registered raise
+   `ValueError` at registration.
+3. **Verb.** `doctor` is read-only (group MAINTENANCE) and has `--json`,
+   no progress options, and `--check NAME` (repeatable). `--check` runs only the
+   named checks, still in declared order. An unknown name is a usage error:
+   `unknown doctor check 'x'; available: a, b`, exit 2, with help.
+4. **Order and crashes.** Checks run in declared order, the automatic `skills`
+   check last. A check that raises `Exception` (or returns something other than
+   a `CheckResult`) becomes `fail` with summary
+   `check crashed: <Type>: <message>` and the remaining checks still run.
+   `KeyboardInterrupt` propagates.
+5. **Text output** (stdout via the primary stream): one line per check
+   `[OK]|[WARN]|[FAIL]|[SKIP] <name>: <summary>`, an indented
+   `    remedy: <text>` line when a remedy is set, then
+   `doctor: <n> ok, <n> warn, <n> fail, <n> skip`.
+6. **JSON output.** `{"tool", "version", "checks": [{"name", "status",
+   "summary", "remedy", "details"}], "summary": {"ok", "warn", "fail",
+   "skip"}}`; `remedy` is `null` when absent.
+7. **Exit code.** 0 when no check is `fail` (warnings and skips do not fail the
+   run); 1 when any check is `fail`; 2 for a usage error.
+8. **Automatic `skills` check.** At run time, not registration time, so the
+   order of `register_skills_verbs` and `register_doctor` does not matter, a
+   registry carrying `_cli_extended_skills` gets a built-in check `skills`
+   appended. It evaluates the default destinations (`--harness all`,
+   `default_skill_destinations()`) with `skill_states` and `skill_leftovers`, exactly the `skills check` condition:
+   `ok` (`all skills current`) when every skill is `current` and there is no
+   orphan and no leftover of this tool; otherwise `fail` with summary
+   `N skill(s) not current` (plus `; M leftover path(s)` when leftovers exist,
+   or just `M leftover path(s)`), remedy `run '<tool> skills install'` and
+   details `{"skills": [{"name", "destination", "state"}], "leftovers": [path]}`.
+   A user check named `skills` is refused at registration in either order:
+   `register_doctor` raises `ValueError` when the skills verbs are already
+   registered, and `register_skills_verbs` raises `ValueError` when the
+   registry's doctor already holds a check named `skills`.
+9. **Single-line output.** A check can never break the report through its own
+   text. A crash message is collapsed to one line (whitespace runs become one
+   space) and, when empty, the summary is just `check crashed: <Type>`. A
+   `remedy` is collapsed the same way and omitted when empty. `details` are
+   serialised with `allow_nan=False`, so NaN and infinity also give
+   `check returned non-JSON details`.

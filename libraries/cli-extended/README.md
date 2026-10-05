@@ -517,6 +517,29 @@ register_skills_verbs(registry, package="example_tool")  # <pkg>/skills/<name>/S
 app = registry.build()
 ```
 
+## Report environment problems with `doctor`
+
+`register_doctor(registry, [DoctorCheck(...)])` adds one shared read-only
+`<tool> doctor` verb. Each check returns `ok`, `warn`, `fail` or `skip` with a
+summary and optional remedy and JSON details; a crashing check is reported as
+`fail`, never swallowed. It supports `--check NAME` and `--json`, and exits 1
+only when a check failed. A registry that also ships agent skills gets a
+`skills` check automatically. The
+[design guide](docs/DESIGN-GUIDE.md#one-doctor-verb-crashes-are-failures)
+explains the choices; the contract is [SPEC §15](SPEC.md#15-doctor).
+
+```python
+from cli_extended import CheckResult, CliIdentity, CliRegistry, DoctorCheck, register_doctor
+
+identity = CliIdentity("EXAMPLE", "1.2.3", "Example Operator Tool", "example")
+registry = CliRegistry(identity, prog="example", description="Example tool.")
+register_doctor(registry, [
+    DoctorCheck("config", "configuration file is readable",
+                lambda runtime, args: CheckResult("ok", "config found")),
+])
+app = registry.build()
+```
+
 ## Test and gate
 
 The package gate covers R0/R1/R2 plus an independent R3 canary. R1 requires
