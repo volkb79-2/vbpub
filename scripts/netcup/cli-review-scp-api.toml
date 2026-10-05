@@ -2039,7 +2039,7 @@ expected_exit_status = 0
 expected_stdout_contains = "key: custom.iso"
 expected_stderr_contains = "Confirmation accepted via --yes"
 effects = ["Creates a multipart upload with 5 MiB parts and sends the file in parts after --yes."]
-test_ids = ["tests/test_cli_cases_scp_api.py::test_replayed_case_matches_catalog[user-iso-part-size-mib]"]
+test_ids = ["tests/test_cli_cases_scp_api.py::test_replayed_case_matches_catalog[user-iso-part-size-mib]", "tests/test_cli_cases_scp_api.py::test_part_size_changes_how_a_large_iso_is_split"]
 
 [[cases]]
 id = "case:route:entrypoint:scp-api/user-iso/option-spelling/option:route:entrypoint:scp-api/user-iso/--yes/--yes"

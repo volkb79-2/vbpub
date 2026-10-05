@@ -245,12 +245,16 @@ class RoutedClient:
 MUTATING = {"post", "put", "patch", "delete", "upload_file"}
 
 
-def run_scp_api(mod, argv, *, tmp_path, monkeypatch, capsys, routes=None):
-    """Replay one scp-api invocation against a RoutedClient."""
+def run_scp_api(mod, argv, *, tmp_path, monkeypatch, capsys, routes=None, iso_size=3):
+    """Replay one scp-api invocation against a RoutedClient.
+
+    iso_size: bytes in the ``custom.iso`` fixture (a sparse file when large).
+    """
     _isolate(monkeypatch, tmp_path)
     monkeypatch.setenv("NETCUP_SCP_API_REFRESH_TOKEN", "fake-refresh-token")
     monkeypatch.setattr(mod, "load_env_file", lambda: None)
-    (tmp_path / "custom.iso").write_bytes(b"iso")
+    with (tmp_path / "custom.iso").open("wb") as iso:
+        iso.truncate(iso_size)
     (tmp_path / "policy.json").write_text(POLICY_JSON)
     client = RoutedClient(routes)
     logins: list = []
