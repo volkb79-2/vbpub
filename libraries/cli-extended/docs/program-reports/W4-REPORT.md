@@ -51,6 +51,17 @@ Notes: leftovers of skills that are not processed in that destination are only r
 
 Gate after fixes: `run-gate: lane 'r0-r1' verdict PASS; exit_code 0`.
 
+## Review round 2
+
+Blocker: `check` could keep failing on a leftover that `install`/`uninstall` never removed (owner skill no longer packaged), and the leftover name did not identify the tool, so global cleanup could delete another tool's staging dir in the shared `~/.claude/skills`. Controller decision: tool-scoped leftovers.
+
+- Staging and backup paths are `.<skill>.cli-extended-<tool>-(tmp|old)-<16 hex>` (`<tool>` = command name). The matcher escapes the tool name and requires exactly 16 lowercase hex digits.
+- `check`/`list` report only this tool's leftovers. `install` and `uninstall` remove every leftover of this tool in the selected destinations, owner skill or not; dry-run prints `would remove leftover <path>` and keeps them.
+- Tests: `test_interrupted_install_leftovers_are_reported_and_cleaned` (unowned, other-tool and short-hex paths included), `test_uninstall_removes_unowned_leftovers_and_dry_run_keeps_them`, `test_another_tools_leftovers_are_invisible_in_all_four_verbs` (including a tool named `mytool-x` and the symmetric view of `othertool`); the older prefix tests use the new name format.
+- SPEC §14 rules 8, 9 and 11 updated.
+
+Gate: `run-gate: lane 'r0-r1' verdict PASS; exit_code 0`.
+
 ## Deviations
 
 - **Process violation**: the SPEC section 14 text was appended with a bash heredoc (`cat >> SPEC.md`), contrary to the Edit/Write-only rule. Everything else used Edit/Write. Content is identical to what an Edit would have produced.

@@ -1076,8 +1076,13 @@ tool name is `identity.command_name` and the version is `identity.version`.
    renamed into place, with the previous tree restored if the swap fails. The
    staging directory is created with the process umask (never a private
    `mkdtemp` mode), so installed modes are the umask's. Hidden
-   `.<skill>.cli-extended-(tmp|old)-*` leftovers of an interrupted install are
-   removed for every skill processed (`removed leftover <path>`).
+   `.<skill>.cli-extended-<tool>-(tmp|old)-<16 hex>` staging and backup paths
+   (`<tool>` is the command name) are this tool's leftovers of an interrupted
+   install. `install` and `uninstall` remove every leftover of this tool in the
+   selected destinations, whether or not its skill is still packaged
+   (`removed leftover <path>`; `would remove leftover <path>` under
+   `--dry-run`). Another tool's leftovers share the directory and are neither
+   reported nor removed.
    `modified` is refused unless `--overwrite-modified` is given. `foreign` and
    `unmanaged` are always refused and never touched, even with
    `--overwrite-modified`. A refusal is an `[ERROR]` naming skill and
@@ -1086,7 +1091,8 @@ tool name is `identity.command_name` and the version is `identity.version`.
    names this tool (packaged skills and orphans). `modified` needs
    `--overwrite-modified`, otherwise it is refused like in `install`.
    `absent`, `foreign` and `unmanaged` are reported as
-   `skipped <skill> -> <dest> (<state>)` and are not errors.
+   `skipped <skill> -> <dest> (<state>)` and are not errors. It also removes
+   this tool's interrupted-install leftovers (rule 8).
 10. **Dry run.** Under `--dry-run` the same plan is printed as
     `would install|update|remove|skip <skill> -> <dest>` and nothing on disk
     changes, not even a missing destination directory. The exit status is the
@@ -1094,7 +1100,7 @@ tool name is `identity.command_name` and the version is `identity.version`.
 11. **`check`** (read-only, `--json`). Prints `<state> <skill> <dest>` per row.
     Exit 0 only when every packaged skill is `current` in every selected
     destination and there is no orphan or modified leftover; otherwise exit 1.
-    Interrupted-install leftovers are listed one per line as `leftover <path>`
+    This tool's interrupted-install leftovers are listed one per line as `leftover <path>`
     and also make `check` exit 1.
 12. **`list`** (read-only, `--json`). Same rows as `check`; always exit 0.
     With `--json` both verbs print

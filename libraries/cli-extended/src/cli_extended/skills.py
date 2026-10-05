@@ -373,18 +373,21 @@ def _collect(
     return rows
 
 
-_LEFTOVER_RE = re.compile(r"\.(.+)\.cli-extended-(?:tmp|old)-[0-9a-z]+")
+def _leftovers(destination: Path, tool: str) -> list[Path]:
+    """This tool's hidden temp/backup siblings left by an interrupted install.
 
-
-def _leftovers(destination: Path) -> list[Path]:
-    """Hidden temp/backup siblings left behind by an interrupted install."""
+    Other tools' leftovers share the destination and are never touched.
+    """
 
     if not destination.is_dir():
         return []
+    pattern = re.compile(
+        r"\..+\.cli-extended-" + re.escape(tool) + r"-(?:tmp|old)-[0-9a-f]{16}"
+    )
     return [
         child
         for child in sorted(destination.iterdir(), key=lambda item: item.name)
-        if _LEFTOVER_RE.fullmatch(child.name)
+        if pattern.fullmatch(child.name)
     ]
 
 
@@ -432,10 +435,12 @@ def _destinations(harness: str | None, dest: str | None) -> list[Path]:
 # ------------------------------------------------------------------ writing
 
 
-def _write_atomic(destination: Path, name: str, tree: Mapping[str, bytes]) -> None:
+def _write_atomic(
+    destination: Path, name: str, tree: Mapping[str, bytes], tool: str
+) -> None:
     target = destination / name
-    staging = destination / f".{name}.cli-extended-tmp-{secrets.token_hex(8)}"
-    backup = destination / f".{name}.cli-extended-old-{secrets.token_hex(8)}"
+    staging = destination / f".{name}.cli-extended-{tool}-tmp-{secrets.token_hex(8)}"
+    backup = destination / f".{name}.cli-extended-{tool}-old-{secrets.token_hex(8)}"
     try:
         staging.mkdir()  # not mkdtemp: the umask must decide the mode
         for relative, data in tree.items():
@@ -539,7 +544,7 @@ def _execute(
     if action.kind in ("install", "update"):
         assert rendered is not None
         row.destination.mkdir(parents=True, exist_ok=True)
-        _write_atomic(row.destination, row.name, rendered)
+        _write_atomic(row.destination, row.name, rendered, runtime.identity.command_name)
     elif action.kind == "remove":
         shutil.rmtree(row.destination / row.name)
     if action.note == "unchanged":
@@ -566,22 +571,17 @@ def _make_handler(package: str, resource_dir: str, mode: str):
             raise CliFailure(str(exc)) from exc
         rows = _collect(sources, tool, version, destinations)
         if mode in ("check", "list"):
-            leftovers = [path for dest in destinations for path in _leftovers(dest)]
+            leftovers = [path for dest in destinations for path in _leftovers(dest, tool)]
             return _report(rows, leftovers, runtime, tool, version, mode)
         overwrite = bool(args.overwrite_modified)
         refused = 0
-        if mode == "install":
-            processed = {(row.destination, row.name) for row in rows}
-            for destination in destinations:
-                for leftover in _leftovers(destination):
-                    owner = _LEFTOVER_RE.fullmatch(leftover.name).group(1)  # type: ignore[union-attr]
-                    if (destination, owner) not in processed:
-                        continue
-                    if runtime.dry_run:
-                        runtime.output.primary(f"would remove leftover {leftover}")
-                    else:
-                        _remove_path(leftover)
-                        runtime.output.primary(f"removed leftover {leftover}")
+        for destination in destinations:
+            for leftover in _leftovers(destination, tool):
+                if runtime.dry_run:
+                    runtime.output.primary(f"would remove leftover {leftover}")
+                else:
+                    _remove_path(leftover)
+                    runtime.output.primary(f"removed leftover {leftover}")
         for row in rows:
             rendered = (
                 _render(row.name, sources[row.name], tool, version)

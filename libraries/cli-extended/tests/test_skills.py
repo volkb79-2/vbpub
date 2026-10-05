@@ -7,6 +7,7 @@ import importlib
 import io
 import json
 import os
+import re
 import sys
 import zipfile
 from pathlib import Path
@@ -831,7 +832,7 @@ def test_failed_write_leaves_no_temp_dir_and_keeps_the_old_install(pkg, tmp_path
 
     def flaky(src, dst):
         calls.append((Path(src).name, Path(dst).name))
-        if Path(src).name.startswith(".alpha.cli-extended-tmp-"):
+        if Path(src).name.startswith(".alpha.cli-extended-mytool-tmp-"):
             raise OSError("disk says no")
         return real_rename(src, dst)
 
@@ -841,7 +842,7 @@ def test_failed_write_leaves_no_temp_dir_and_keeps_the_old_install(pkg, tmp_path
     monkeypatch.undo()
     assert snapshot(dest) == before
     assert sorted(p.name for p in dest.iterdir()) == ["alpha", "beta"]
-    assert any(name.startswith(".alpha.cli-extended-old-") for _, name in calls)
+    assert any(re.fullmatch(r"\.alpha\.cli-extended-mytool-old-[0-9a-f]{16}", name) for _, name in calls)
 
 
 def test_failed_first_install_leaves_nothing_behind(pkg, tmp_path, monkeypatch):
@@ -1089,15 +1090,19 @@ def test_o7_empty_bom_and_crlf_sources_name_the_actual_cause():
 def test_interrupted_install_leftovers_are_reported_and_cleaned(pkg, tmp_path):
     dest = tmp_path / "dest"
     run(pkg, "install", "--dest", str(dest))
-    tmp_dir = dest / ".alpha.cli-extended-tmp-0123abcd"
-    old_dir = dest / ".beta.cli-extended-old-ffee0011"
-    old_file = dest / ".alpha.cli-extended-old-aa"
-    unrelated = dest / ".other.cli-extended-tmp-99"
+    tmp_dir = dest / ".alpha.cli-extended-mytool-tmp-0123456789abcdef"
+    old_dir = dest / ".beta.cli-extended-mytool-old-ffeeddccbbaa0011"
+    old_file = dest / ".alpha.cli-extended-mytool-old-aaaaaaaaaaaaaaaa"
+    unrelated = dest / ".ghost.cli-extended-mytool-tmp-9999999999999999"  # unowned
+    other_tool = dest / ".alpha.cli-extended-othertool-tmp-0123456789abcdef"
+    short_hex = dest / ".alpha.cli-extended-mytool-tmp-1"
     plain = dest / ".alpha.notes"
     write_tree(tmp_dir, {"SKILL.md": "half"})
     write_tree(old_dir, {"SKILL.md": "old"})
     old_file.write_text("f")
     write_tree(unrelated, {"x": "y"})
+    write_tree(other_tool, {"x": "theirs"})
+    write_tree(short_hex, {"x": "not ours by pattern"})
     plain.write_text("keep")
 
     code, out, err = run(pkg, "check", "--dest", str(dest))
@@ -1110,6 +1115,7 @@ def test_interrupted_install_leftovers_are_reported_and_cleaned(pkg, tmp_path):
         f"leftover {old_dir}",
         f"leftover {unrelated}",
     ]
+    assert str(other_tool) not in out and str(short_hex) not in out
     assert "4 leftover temporary path(s) from an interrupted install" in err
     assert "skill(s) are not current" not in err
     code, out, _ = run(pkg, "list", "--dest", str(dest))
@@ -1122,22 +1128,63 @@ def test_interrupted_install_leftovers_are_reported_and_cleaned(pkg, tmp_path):
 
     code, out, _ = run(pkg, "install", "--dest", str(dest), "--dry-run")
     assert code == 0
-    assert out.splitlines()[:3] == [
+    assert out.splitlines()[:4] == [
         f"would remove leftover {old_file}",
         f"would remove leftover {tmp_dir}",
         f"would remove leftover {old_dir}",
+        f"would remove leftover {unrelated}",
     ]
-    assert tmp_dir.exists()
+    assert tmp_dir.exists() and unrelated.exists()
     code, out, _ = run(pkg, "install", "--dest", str(dest))
     assert code == 0
-    assert out.splitlines()[:3] == [
+    assert out.splitlines()[:4] == [
         f"removed leftover {old_file}",
         f"removed leftover {tmp_dir}",
         f"removed leftover {old_dir}",
+        f"removed leftover {unrelated}",
     ]
-    assert not (tmp_dir.exists() or old_dir.exists() or old_file.exists())
-    assert unrelated.is_dir() and plain.read_text() == "keep"
-    assert run(pkg, "check", "--dest", str(dest))[0] == 1  # unrelated one remains reported
+    assert not (tmp_dir.exists() or old_dir.exists() or old_file.exists() or unrelated.exists())
+    assert other_tool.is_dir() and short_hex.is_dir() and plain.read_text() == "keep"
+    code, out, err = run(pkg, "check", "--dest", str(dest))
+    assert (code, err) == (0, "")
+    assert "leftover" not in out
+
+
+def test_uninstall_removes_unowned_leftovers_and_dry_run_keeps_them(pkg, tmp_path):
+    dest = tmp_path / "dest"
+    run(pkg, "install", "--dest", str(dest))
+    run(pkg, "uninstall", "--dest", str(dest))
+    ghost = dest / ".gone.cli-extended-mytool-old-0123456789abcdef"
+    write_tree(ghost, {"x": "y"})
+    assert run(pkg, "check", "--dest", str(dest))[0] == 1
+    code, out, _ = run(pkg, "uninstall", "--dest", str(dest), "--dry-run")
+    assert code == 0
+    assert out.splitlines()[0] == f"would remove leftover {ghost}"
+    assert ghost.exists()
+    code, out, _ = run(pkg, "uninstall", "--dest", str(dest))
+    assert code == 0
+    assert out.splitlines()[0] == f"removed leftover {ghost}"
+    assert not ghost.exists()
+    assert states(run(pkg, "check", "--dest", str(dest))[1]) == ["absent", "absent"]
+
+
+def test_another_tools_leftovers_are_invisible_in_all_four_verbs(pkg, tmp_path):
+    dest = tmp_path / "dest"
+    theirs = dest / ".alpha.cli-extended-othertool-tmp-0123456789abcdef"
+    prefix_tool = dest / ".alpha.cli-extended-mytool-x-tmp-0123456789abcdef"
+    write_tree(theirs, {"x": "theirs"})
+    write_tree(prefix_tool, {"x": "tool named mytool-x"})
+    for verb in ("check", "list"):
+        code, out, err = run(pkg, verb, "--dest", str(dest), "--json")
+        assert json.loads(out)["leftovers"] == []
+        assert "leftover" not in err
+    assert run(pkg, "install", "--dest", str(dest))[0] == 0
+    assert run(pkg, "uninstall", "--dest", str(dest))[0] == 0
+    assert (theirs / "x").read_text() == "theirs"
+    assert (prefix_tool / "x").read_text() == "tool named mytool-x"
+    # and symmetrically the other tool only sees its own
+    code, out, _ = run(pkg, "list", "--dest", str(dest), "--json", tool="othertool")
+    assert json.loads(out)["leftovers"] == [str(theirs)]
 
 
 def test_leftover_symlink_is_unlinked_not_followed(pkg, tmp_path):
@@ -1145,7 +1192,7 @@ def test_leftover_symlink_is_unlinked_not_followed(pkg, tmp_path):
     keep = tmp_path / "keep"
     write_tree(keep, {"f": "x"})
     dest.mkdir()
-    link = dest / ".alpha.cli-extended-tmp-1"
+    link = dest / ".alpha.cli-extended-mytool-tmp-0123456789abcdef"
     link.symlink_to(keep, target_is_directory=True)
     assert run(pkg, "install", "--dest", str(dest))[0] == 0
     assert not link.is_symlink()
