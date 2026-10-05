@@ -235,8 +235,9 @@ python3 -m venv .venv-cmru
 
 Use installed console scripts for operator workflows. `python -m cmru.handlers`
 is the bootstrap-only component CLI (the first-wheel build runs before an
-installed `cmru` exists); project contracts use `cmru handler <verb>` instead. `cmru.bundle` and `cmru.runner` are library modules; they do
-not expose module commands. The `cmru.cli`, `cmru.agent.cli`, and
+installed `cmru` exists); project contracts use `cmru handler <verb>` instead.
+`cmru.bundle` and `cmru.runner` are library modules; they do not expose module
+commands. The `cmru.cli`, `cmru.agent.cli`, and
 `cmru.controller.cli` module aliases are retired. Use `cmru run-step` for
 direct single-step CLI work, and use the documented Python functions to compose
 bundle or runner behavior:

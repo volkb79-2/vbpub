@@ -577,6 +577,7 @@ Last reconciled: 2026-08-17, automation-safe worktree lifecycle milestone.
 | CIU-126 | CIU rejects its own valid rootless worktree record and siblings can block lifecycle verbs | Medium | FIXED 2026-10-04 |
 | CIU-127 | `ciu down` cannot stop one stack without targeting the whole project | Medium | FIXED 2026-10-04 |
 | CIU-128 | Worktree reports `ready` before committed nested roots are prepared | High | FIXED 2026-10-05 |
+| CIU-129 | `assay.toml` runs pytest with `--maxfail=1` plus coverage, so a failing run writes no coverage report and assay reports NO_MEASUREMENT instead of naming the test | Medium | OPEN |
 
 
 The approved milestone decisions and serial package order are in
@@ -4868,3 +4869,13 @@ specific to a generic Git worktree containing multiple CIU roots; v8 has one
 instance per checkout, so that aggregate metadata detail is not applicable.
 
 **Disposition (2026-10-05): FIXED.** The ready transition now follows nested-root fact generation and locked shared metadata persistence. `ensure` verifies historical readiness and derives the original allocation commit from saved facts. A partial allocation with a recorded fork point repairs against that commit without resetting later work; an older no-fork-point record whose checkout moved is demoted to `recovery-required` and refused. The registered CIU gate passed on implementation commit `b588cd96ecf0f9e0fb2fa8f47654906e911def9a` (run `195b964ff850afc73eff9c6e708babb8`, 2026-10-05): R0/R1/R2/R3 PASS, 100% branch coverage, 28/28 mutation candidates killed, no budget overruns, and the import-break canary detected. The final gate covers this backlog disposition update.
+
+## CIU-129 — `assay.toml` runs pytest with `--maxfail=1` plus coverage: a failing run hides the failing test behind `NO_MEASUREMENT`
+
+Severity: Medium. Type: bugfix. Filed 2026-10-05 by the cmru program 2026-10 (package W0-GATE); not changed there.
+
+**Observed.** `ciu/assay.toml` (~:28) passes `--cov-fail-under=100 --maxfail=1` with `--cov-report=json:coverage.json`. pytest-cov writes its report after the `yield` in its `pytest_runtestloop` hookwrapper; under `--maxfail`, `session.Failed` is raised before that code runs, so a failing run writes no `coverage.json`. Assay then reports `NO_MEASUREMENT/EMPTY_COVERAGE`, ranked above the failed R0, and the headline never names the failing test. Reproduced for cmru (pytest 9.1.1 / coverage 7.16.2 / pytest-cov 7.1.0), where it hid 25 consecutive release failures.
+
+**Fix direction.** Keep `--maxfail=1` only on the mutation-candidate runs the comment at ~:34 describes (an R2 candidate stopping at its first failure); drop it from the R0/R1/R3 lane that also produces coverage, and consider declaring `--junitxml` as an artifact.
+
+**Related.** cmru BG-03 (fixed in cmru's own lanes), assay B146 (verdict summary should name an R0 FAIL and the first failure), nyxloom NL-31 (same pattern in `nyxloom/assay.toml`).

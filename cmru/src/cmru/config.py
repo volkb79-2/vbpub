@@ -197,13 +197,20 @@ def _git_scope(path: Path) -> dict[str, Optional[Path]]:
     # Let Git decide whether this is a repository (REL-11). Walking parents for
     # any ``.git`` entry mistook a stray empty ``/tmp/.git`` for a repository
     # and then hard-failed every project below it.
+    # GIT_* (GIT_DIR, GIT_WORK_TREE, ...) leaks in from hook contexts and would
+    # turn any directory into "the" repository; the probe must not inherit it.
+    probe_env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+    probe_env["LC_ALL"] = "C"
     try:
         probe = subprocess.run(
             ["git", "-C", str(candidate), "rev-parse", "--show-toplevel"],
-            capture_output=True, text=True, check=False,
-            env={**os.environ, "LC_ALL": "C"},
+            capture_output=True, text=True, check=False, env=probe_env,
         )
     except OSError as exc:
+        # No git binary: outside any repository that is the old "no Git here"
+        # answer; inside one it is a real failure.
+        if not any((directory / ".git").exists() for directory in (candidate, *candidate.parents)):
+            return {}
         raise ValueError(f"could not resolve Git context for CMRU project {path}: {exc}") from exc
     if probe.returncode != 0:
         if "not a git repository" in probe.stderr.lower():

@@ -153,6 +153,24 @@ def test_standards_flags_python_module_handler_calls_in_steps(tmp_path, capsys):
     assert "bound cmru launcher" in captured.out + captured.err
 
 
+def test_standards_handler_form_without_builder_image_names_that_exact_problem(tmp_path, capsys):
+    # Only the missing image may be reported: the handler form itself is fine,
+    # and the wheel-build check must recognise `cmru handler wheel-build`.
+    config, project = _config(tmp_path)
+    contents = project.read_text(encoding="utf-8").replace(
+        'argv = ["true"]',
+        'argv = ["cmru", "handler", "wheel-build", "--cwd", "."]',
+        1,
+    )
+    contents = contents.replace("[project]\n", "[project]\ntemplate_revision = 4\n", 1)
+    project.write_text(contents, encoding="utf-8")
+
+    assert standards_main(["demo", "--config", str(config)]) == 2
+    text = "".join(capsys.readouterr())
+    assert "wheel-build requires explicit CMRU_WHEEL_BUILDER_IMAGE in [env]" in text
+    assert "bound cmru launcher" not in text
+
+
 def test_standards_accepts_the_bound_cmru_handler_form(tmp_path):
     config, project = _config(tmp_path)
     contents = project.read_text(encoding="utf-8").replace(

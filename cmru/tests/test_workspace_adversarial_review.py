@@ -449,6 +449,28 @@ def test_git_scope_reports_other_git_failures_and_a_missing_git_binary(monkeypat
     monkeypatch.setattr(config.subprocess, "run", real_run)
 
 
+def test_git_scope_without_a_git_binary_is_empty_outside_a_repository(monkeypatch, tmp_path):
+    plain = tmp_path / "plain"
+    plain.mkdir()
+
+    def missing(argv, **kwargs):
+        raise FileNotFoundError("git")
+
+    monkeypatch.setattr(config.subprocess, "run", missing)
+    assert config._git_scope(plain) == {}
+
+
+def test_git_scope_probe_does_not_inherit_git_environment_variables(monkeypatch, tmp_path):
+    # A hook context exports GIT_DIR/GIT_WORK_TREE; inherited, they would make a
+    # plain directory look like the repository they point at.
+    repo = _git_init(tmp_path / "repo")
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    monkeypatch.setenv("GIT_DIR", str(repo / ".git"))
+    monkeypatch.setenv("GIT_WORK_TREE", str(repo))
+    assert config._git_scope(plain) == {}
+
+
 def test_config_git_scope_success_and_error_are_distinct(monkeypatch, tmp_path):
     repo = _git_init(tmp_path / "repo")
     fake = SimpleNamespace(

@@ -59,8 +59,8 @@ The script prints the manual virtual-environment install commands after it produ
 the wheel; once installed, all subsequent builds use the `cmru` console script.
 
 The wheel installs the operator commands `cmru`, `cmru-agent`, and
-`cmru-controller`. It also carries the supported `python -m cmru.handlers`
-project-step and bootstrap CLI, the `cmru.bundle` and `cmru.runner` Python libraries, and the
+`cmru-controller`. It also carries the bootstrap-only `python -m cmru.handlers`
+CLI (project steps use `cmru handler <verb>`), the `cmru.bundle` and `cmru.runner` Python libraries, and the
 `cli-extended` and `worktree` libraries they use. Use installed console scripts
 for operator commands; the retired module CLI aliases for bundle, runner, and
 the operator scripts refuse and direct callers to the supported interface. See the
