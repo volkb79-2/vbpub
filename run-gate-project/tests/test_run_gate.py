@@ -6130,6 +6130,70 @@ def test_doctor_names_unreadable_admission_object_without_false_repair(
     assert "run-gate admission set` is not a repair" in out
     assert "no valid ciu-admission object is published" not in out
 
+
+@pytest.mark.parametrize("failure", [
+    "no-docker", "remote", "missing-image", "image-unavailable",
+    "image-error", "state-unavailable", "state-error",
+])
+def test_doctor_admission_diagnostics_cover_unavailable_sources(
+        tmp_path, monkeypatch, capsys, failure):
+    project = make_project(make_repo(tmp_path), "schema_version = 1\n")
+    docker_path = None if failure == "no-docker" else "/usr/bin/docker"
+    monkeypatch.setattr(run_gate.shutil, "which", lambda _name: docker_path)
+    monkeypatch.setattr(run_gate, "local_docker_endpoint", lambda: (
+        (False, "remote Docker context") if failure == "remote"
+        else (True, "local Docker Unix endpoint")))
+
+    class FailingDoctorAdmission:
+        def __init__(self, **_kwargs):
+            pass
+
+        def image_present(self, _image):
+            if failure == "image-unavailable":
+                raise run_gate.AdmissionDockerUnavailable("daemon unavailable")
+            if failure == "image-error":
+                raise run_gate.AdmissionError("image inspection failed")
+            return True
+
+        def admission_snapshot(self):
+            if failure == "state-unavailable":
+                raise run_gate.AdmissionDockerUnavailable("daemon unavailable")
+            if failure == "state-error":
+                raise run_gate.AdmissionError("admission inspection failed")
+            return {
+                "visible_admission_objects": [],
+                "published": {"name": "ciu-admission-2", "generation": 2,
+                              "max_concurrent": 2,
+                              "max_concurrent_readable": True},
+            }
+
+    monkeypatch.setattr(run_gate, "DockerAdmission", FailingDoctorAdmission)
+    cfg = {"admission": {"enabled": True}}
+    if failure != "missing-image":
+        cfg["admission"]["ticket_image"] = "ticket:local"
+    _cfg, cfg_path, central, central_path = run_gate.load_config(project)
+
+    code = run_gate.cmd_doctor({}, project, cfg, central, cfg_path, central_path)
+    out = capsys.readouterr().out
+
+    assert code == 2
+    if failure == "no-docker":
+        assert "Docker is unavailable" in out
+        assert "could not inspect the configured local image" in out
+    elif failure == "remote":
+        assert "requires the daemon shared by local gates" in out
+        assert "cannot verify the shared object" in out
+    elif failure == "missing-image":
+        assert "requires ticket_image" in out
+    elif failure.startswith("image-"):
+        assert "admission ticket image" in out
+        assert "restore access to the local Docker daemon" in out or \
+            "correct [admission].ticket_image" in out
+    elif failure.startswith("state-"):
+        assert "admission published count" in out
+        assert "restore access to the local Docker daemon" in out or \
+            "published admission state is unreadable" in out
+
 class TestDoctor:
     def test_exec_declared_slice_is_reported_naming_only_in_process(
             self, tmp_path, monkeypatch, capsys):
