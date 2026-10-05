@@ -145,7 +145,7 @@ the recorded run. External artifact mode continues to require complete
 `judge_provenance`. An inflight Assay record keeps the launch-time identity
 mode, so re-attachment does not reinterpret an old verdict after config
 changes or pass it as a command result if the lane kind changed. See the [source identity rationale](docs/DESIGN-GUIDE.md#source-backed-assay-identifies-code-as-source)
-and [Assay adoption and recovery](CONSUMERS.md#kind-=-assay-projects-that-adopt-assay-the-quality-partnership).
+and [Assay adoption and recovery](CONSUMERS.md#assay-lanes-projects-that-adopt-assay-the-quality-partnership).
 
 ### Daemon-wide count admission and failed evidence
 

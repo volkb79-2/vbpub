@@ -330,7 +330,7 @@ regex, so a parse failure is never silently reported as "nothing found".
 **A clean sweep is evidence, not a certificate** — it stays advisory (always
 exit 0 for drift); `required_env` is the mechanism that actually refuses.
 
-### `kind = "assay"` — projects that adopt assay (the quality partnership)
+### Assay lanes — projects that adopt assay (the quality partnership)
 
 run-gate.py does the ORCHESTRATION (environment, mounts, cgroup, optional
 artifact verification, clean `--init` detached run), then invokes assay; **assay

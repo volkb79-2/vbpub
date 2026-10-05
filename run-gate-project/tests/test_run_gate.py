@@ -23847,8 +23847,7 @@ class TestFinalChangedLineCoverageOracles:
         }
         persisted = {}
 
-        def promote_during_lane(_lane, _lane_name, _project_dir, _repo,
-                                _worktree, *, run_record, **_kwargs):
+        def promote_during_lane(*_args, run_record, **_kwargs):
             run_record["_assay_identity_mode"] = "artifact"
             promoted, _saved = run_gate.promote_follower(
                 "docker", "runner", "unit", project, 0, run_record)
@@ -23900,8 +23899,7 @@ class TestFinalChangedLineCoverageOracles:
         }
         persisted = {}
 
-        def promote_during_lane(_lane, _lane_name, _project_dir, _repo,
-                                _worktree, *, run_record, **_kwargs):
+        def promote_during_lane(*_args, run_record, **_kwargs):
             run_record["_assay_identity_mode"] = "source"
             promoted, _saved = run_gate.promote_follower(
                 "docker", "runner", "unit", project, 0, run_record)
