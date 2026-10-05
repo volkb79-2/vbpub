@@ -97,3 +97,39 @@ def test_o3_invalid_findings_files_are_refused(tmp_path, text, message):
 
 def test_findings_error_is_a_value_error():
     assert issubclass(FindingsError, ValueError)
+
+
+@pytest.mark.parametrize("key", ("id", "status", "severity", "category", "summary"))
+def test_w8c_every_required_finding_key_is_refused_when_missing(tmp_path, key):
+    lines = [line for line in GOOD.splitlines(keepends=True) if not line.startswith(f"{key} = ")]
+    text = HEADER + "".join(lines)
+    with pytest.raises(FindingsError) as caught:
+        load_review_findings(_write(tmp_path, text))
+    assert str(caught.value) == f"findings[0] is missing required key {key!r}"
+
+
+def test_w8c_remedy_and_rationale_are_required_only_for_their_status(tmp_path):
+    fixed = (
+        '[[findings]]\nid = "f"\nstatus = "fixed"\nseverity = "note"\n'
+        'category = "help"\nsummary = "s"\n'
+    )
+    wontfix = (
+        '[[findings]]\nid = "w"\nstatus = "wontfix"\nseverity = "note"\n'
+        'category = "help"\nsummary = "s"\nrationale = "because"\n'
+    )
+    loaded = load_review_findings(_write(tmp_path, HEADER + GOOD + fixed + wontfix))
+    by_id = {item.id: item for item in loaded.findings}
+    assert (by_id["x"].remedy, by_id["x"].rationale, by_id["x"].route) == ("R x", "", "")
+    assert (by_id["f"].remedy, by_id["f"].rationale) == ("", "")
+    assert (by_id["w"].remedy, by_id["w"].rationale) == ("", "because")
+    open_without_remedy = HEADER + GOOD.replace('remedy = "R x"\n', "")
+    with pytest.raises(FindingsError, match="missing required key 'remedy'"):
+        load_review_findings(_write(tmp_path, open_without_remedy))
+    wontfix_without = HEADER + wontfix.replace('rationale = "because"\n', "")
+    with pytest.raises(FindingsError, match="missing required key 'rationale'"):
+        load_review_findings(_write(tmp_path, wontfix_without))
+
+
+def test_w8c_an_optional_route_may_be_omitted_and_is_kept_when_given(tmp_path):
+    loaded = load_review_findings(_write(tmp_path, HEADER + GOOD + GOOD.replace('"x"', '"y"') + 'route = "route:r"\n'))
+    assert [item.route for item in loaded.findings] == ["", "route:r"]

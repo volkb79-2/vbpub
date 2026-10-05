@@ -91,3 +91,31 @@ SUPPRESS` and now sees real defaults for verb options, which is the manifest cha
 
 **Docs.** SPEC constraints rule 3 (new sentences), CONSUMERS ("Every declared option is an attribute"),
 CHANGES 0.2.0.
+
+## Batch 3
+
+Integration was merged into the branch first (`git merge --no-ff cli-extended-unified`, trivial).
+
+1. and 2. **`findings.py` required fields.** New tests in `tests/test_findings.py`:
+   `test_w8c_every_required_finding_key_is_refused_when_missing` (id, status, severity,
+   category, summary; asserts the exact message `findings[0] is missing required key '<key>'`),
+   `test_w8c_remedy_and_rationale_are_required_only_for_their_status` (fixed and wontfix load
+   without remedy; open without remedy and wontfix without rationale are refused),
+   `test_w8c_an_optional_route_may_be_omitted_and_is_kept_when_given`.
+   Audit of every `required` use: `findings.py` has `_choice` (status/severity/category),
+   `id`, `summary`, `cli_id` (True), `remedy`/`rationale` (status-dependent), `route` (False);
+   `config.py` has no `required=` argument (its missing-key loop for `id`/`factory` is already pinned by
+   `test_config.py`); `review.py` has `_string_tuple(required=...)` with default False and one
+   `required=True` call (interaction `option_ids`), pinned by existing review tests. Planted mutants,
+   all killed: `_choice` True->False (status/severity/category tests), summary False, id False, cli_id False,
+   route True, remedy `status != "open"`, review `option_ids` required=False, review default True.
+3. **Dataclass AST scan.** `test_source_scan_finds_every_dataclass_at_any_depth_in_any_module` parses
+   every `.py` under `src/cli_extended/` recursively, finds `@dataclass`, `@dataclass(...)`,
+   `@dataclasses.dataclass` and its call form on any ClassDef (nested or function-local), and compares
+   `(module, class)` to the FROZEN and MUTABLE tables.
+   `test_source_scan_recognises_the_decorator_spellings` pins the matcher. Planted mutant: a
+   function-local `@dataclass class Nested` in `values.py`: killed by the scan test (the reflective test
+   cannot see it). I did not create a subpackage to test that path; the module name logic
+   (`__init__.py` -> package name) is untested beyond the current flat layout.
+
+Gate after the last edit: `run-gate: lane 'r0-r1' verdict PASS; exit_code 0` (100% statement and branch).

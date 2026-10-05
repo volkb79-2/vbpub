@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import dataclasses
 import importlib
 import pkgutil
 import sys
 import types
+from pathlib import Path
 
 import pytest
 from test_workflow import _project, _run
@@ -110,6 +112,54 @@ def test_every_dataclass_in_the_package_is_listed_here():
     # A new dataclass must be added to FROZEN (and so get the immutability
     # test) or, deliberately, to MUTABLE.
     assert _all_dataclasses() == set(EXPECTED) | MUTABLE
+
+
+def _is_dataclass_decorator(node):
+    target = node.func if isinstance(node, ast.Call) else node
+    if isinstance(target, ast.Attribute):
+        return target.attr == "dataclass"
+    return isinstance(target, ast.Name) and target.id == "dataclass"
+
+
+def _dataclass_classes_by_source():
+    root = Path(cli_extended.__file__).resolve().parent
+    found = set()
+    for path in sorted(root.rglob("*.py")):
+        relative = path.relative_to(root.parent).with_suffix("")
+        parts = relative.parts[:-1] if relative.name == "__init__" else relative.parts
+        module = ".".join(parts)
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if isinstance(node, ast.ClassDef) and any(
+                _is_dataclass_decorator(item) for item in node.decorator_list
+            ):
+                found.add((module, node.name))
+    return found
+
+
+def test_source_scan_finds_every_dataclass_at_any_depth_in_any_module():
+    # Unlike the reflective check above, this also sees classes nested in
+    # functions or classes and modules in a future subpackage.
+    assert _dataclass_classes_by_source() == set(EXPECTED) | MUTABLE
+
+
+def test_source_scan_recognises_the_decorator_spellings(tmp_path):
+    tree = ast.parse(
+        "import dataclasses\n"
+        "@dataclass\nclass A: ...\n"
+        "@dataclass(frozen=True)\nclass B: ...\n"
+        "@dataclasses.dataclass\nclass C: ...\n"
+        "@dataclasses.dataclass(frozen=True)\nclass D: ...\n"
+        "@other\nclass E: ...\n"
+        "@other(1)\nclass F: ...\n"
+        "def f():\n    @dataclass\n    class G: ...\n"
+    )
+    names = {
+        node.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ClassDef)
+        and any(_is_dataclass_decorator(item) for item in node.decorator_list)
+    }
+    assert names == {"A", "B", "C", "D", "G"}
 
 
 @pytest.mark.parametrize("module_name, class_name", sorted(MUTABLE))
