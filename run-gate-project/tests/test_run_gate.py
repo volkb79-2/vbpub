@@ -21974,6 +21974,7 @@ class TestDispatchAssayEvidenceAndAdmissionOracles:
                                        "commit": commit}))
         record = {"run_id": "evidence-run", "commit": commit,
                   "log_path": None,
+                  "excluded_reason": None,
                   "_verdict_path": str(verdict),
                   "_progress_path": str(progress)}
         monkeypatch.setattr(run_gate, "preflight_assay_pins",
@@ -23919,6 +23920,8 @@ class TestFinalChangedLineCoverageOracles:
         monkeypatch.setattr(run_gate, "adopt_inflight_start", lambda *_args: None)
         monkeypatch.setattr(run_gate, "clear_inflight_record", lambda *_args: None)
         monkeypatch.setattr(run_gate, "flush_run_record", finish_and_capture)
+        monkeypatch.setattr(run_gate, "paths_are_git_ignored",
+                            lambda *_args, **_kwargs: True)
         monkeypatch.setattr(run_gate, "_git_toplevel_if_available",
                             lambda _project: repo)
         monkeypatch.setattr(run_gate, "resolve_repo_and_worktree",
