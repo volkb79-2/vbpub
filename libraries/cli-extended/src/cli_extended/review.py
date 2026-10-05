@@ -15,13 +15,16 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from . import contract
 from .surface import (
     DEFAULT_MAX_CANDIDATES,
     SurfaceError,
     _ARGPARSE_CHOICE_ACTION_LABELS,
     _BUILTIN_TYPE_LABELS,
     _minimum_values,
+    _route_common_actions,
     _route_required_baseline,
+    _routes_by_path,
     export_cli_surface,
     render_cli_surface_json,
 )
@@ -509,6 +512,13 @@ def render_cli_surface_markdown(
 ) -> str:
     """Render the generated part of a consumer-owned CLI specification."""
 
+    library_contract = surface.get("library_contract")
+    if (
+        not isinstance(library_contract, Mapping)
+        or not isinstance(library_contract.get("name"), str)
+        or type(library_contract.get("version")) is not int
+    ):
+        raise SurfaceSpecError("surface is missing its library_contract record")
     for route in surface["routes"]:
         for field in ("single_command", "no_args_action"):
             if type(route.get(field)) is not bool:
@@ -539,7 +549,12 @@ def render_cli_surface_markdown(
             )
         ),
         "",
-        f"Surface schema: `{surface['schema_version']}`; review catalog schema: `{REVIEW_SCHEMA_VERSION}`.",
+        (
+            f"Surface schema: `{surface['schema_version']}`; review catalog schema: "
+            f"`{REVIEW_SCHEMA_VERSION}`; library contract: "
+            f"`{surface['library_contract']['name']}` v"
+            f"{surface['library_contract']['version']}."
+        ),
         "",
         "The manifest records registered syntax. The review catalog owns expected behavior, effects, rationale, and test references.",
         "",
@@ -697,6 +712,12 @@ def render_cli_surface_markdown(
                     )
                 ) + " |"
             )
+    lines.extend(("", "### Library common controls", ""))
+    for route in surface["routes"]:
+        lines.append(
+            f"- `{route['id']}`: Common controls: "
+            + (", ".join(route.get("common_controls", ())) or "none")
+        )
     cases = catalog.cases_by_id
     lines.extend(
         (
@@ -943,6 +964,23 @@ def _prepare(
 def _review_findings(
     surface: Mapping[str, Any], catalog: ReviewCatalog
 ) -> list[str]:
+    # The manifest names library controls only; rebuild their option records
+    # from the contract table so invocations that use them check as before.
+    paths = _routes_by_path(surface["routes"])
+    surface = {
+        **surface,
+        "routes": [
+            {
+                **route,
+                "actions": [
+                    *route.get("actions", ()),
+                    *_route_common_actions(route, paths),
+                ],
+            }
+            for route in surface["routes"]
+        ],
+    }
+
     def is_negative_number(
         token: str, route: Mapping[str, Any], depth: int
     ) -> bool:
@@ -1086,6 +1124,27 @@ def _review_findings(
             return len(argv)
         return index + 1
 
+    def external_option_flags(external_option: Mapping[str, Any]) -> tuple[str, ...]:
+        """Spellings of a foreign option.
+
+        A library-owned control is signed by its canonical name only, so its
+        spellings come from the owner route's rebuilt record.
+        """
+
+        owner_route = routes_by_id.get(str(external_option.get("route_id")))
+        owner_action = next(
+            (
+                action
+                for action in (owner_route or {}).get("actions", ())
+                if action.get("id") == external_option.get("id")
+                and action.get("library_control")
+            ),
+            None,
+        )
+        if owner_action is not None:
+            return tuple(owner_action["flags"])
+        return tuple(external_option.get("flags", ()))
+
     def invocation_parts(
         argv: Sequence[str],
         route: Mapping[str, Any],
@@ -1112,7 +1171,7 @@ def _review_findings(
                 None,
             )
             if external_action is not None:
-                for flag in external_option.get("flags", ()):
+                for flag in external_option_flags(external_option):
                     external_by_flag[str(flag)] = external_action
         path_depth = 0
         options_enabled = {0: True}
@@ -1403,7 +1462,7 @@ def _review_findings(
         external_flags = {
             str(flag)
             for external_option in external_options
-            for flag in external_option.get("flags", ())
+            for flag in external_option_flags(external_option)
         }
         non_command_positions, option_occurrences, unknown_options = invocation_parts(
             case.invocation,
@@ -1686,7 +1745,7 @@ def _review_findings(
                         f"valid value shape for participating option {option_id}"
                     )
             for external_option in shape.get("external_options", ()):
-                flags = set(external_option.get("flags", ()))
+                flags = set(external_option_flags(external_option))
                 matching_occurrences = [
                     occurrence
                     for occurrence in unknown_options
@@ -1941,6 +2000,24 @@ def sync_cli_surface(
     return SurfaceReport(tuple(findings))
 
 
+def _committed_contract_version(manifest_text: str | None) -> int | None:
+    """Return the library contract version a committed manifest records.
+
+    A missing, unreadable, or malformed record yields ``None`` and falls
+    through to the ordinary stale-manifest comparison.
+    """
+
+    if manifest_text is None:
+        return None
+    try:
+        manifest = json.loads(manifest_text)
+    except ValueError:
+        return None
+    library = manifest.get("library_contract") if isinstance(manifest, dict) else None
+    version = library.get("version") if isinstance(library, dict) else None
+    return version if type(version) is int else None
+
+
 def check_cli_surface(
     app: Any,
     *,
@@ -1962,6 +2039,17 @@ def check_cli_surface(
         committed_manifest = _read_text_preserving_newlines(manifest_path)
     except OSError:
         committed_manifest = None
+    committed_version = _committed_contract_version(committed_manifest)
+    if committed_version is not None and committed_version != contract.CONTRACT_VERSION:
+        # One actionable finding. Per-case signature and stale-file noise that
+        # stems from the contract change would only bury it.
+        return SurfaceReport(
+            (
+                f"cli-extended contract changed v{committed_version} → "
+                f"v{contract.CONTRACT_VERSION}; read cli-extended CHANGES.md "
+                "contract notes, then run sync",
+            )
+        )
     if committed_manifest != manifest_text:
         findings.append("generated CLI manifest is stale")
     try:

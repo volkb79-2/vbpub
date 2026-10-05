@@ -1091,6 +1091,7 @@ def add_common_options(
     if getattr(parser, "_cli_extended_common_options", False):
         return
     parser._cli_extended_common_options = True
+    first_library_action = len(parser._actions)
     default = argparse.SUPPRESS if suppress_defaults else None
     if parser.top_level and parser.catalog is not None:
         parser.catalog.add_global_options(
@@ -1190,6 +1191,8 @@ def add_common_options(
                 default=default,
                 help="show what would change without changing anything",
             )
+    for library_action in parser._actions[first_library_action:]:
+        library_action._cli_extended_common = True
 
 
 @dataclass

@@ -1,5 +1,6 @@
 """Reusable command-line contract helpers for vbpub projects."""
 
+from .contract import CONTRACT_VERSION
 from .identity import CliIdentity, VersionLookupError
 from .output import (
     CliLoggingHandler,
@@ -55,6 +56,7 @@ from .surface import (
 from .testing import assert_cli_contract
 
 __all__ = [
+    "CONTRACT_VERSION",
     "ArgumentSpec",
     "CliFailure",
     "CliIdentity",

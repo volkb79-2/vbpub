@@ -318,6 +318,16 @@ follow-ups.
 
 ## Keep the canonical CLI spec in sync
 
+The generated surface names the library's own common controls per route
+(`Common controls: ...`) and records one integer
+contract version, stated once in the region header, instead of signing their syntax, so a library upgrade leaves
+your manifest and review signatures untouched unless the contract version
+changes; then `check` reports a single finding telling you to read the contract
+notes and re-run `sync`. See
+[Version the library's own controls](docs/DESIGN-GUIDE.md#version-the-librarys-own-controls-dont-sign-them)
+and
+[What a library upgrade does to your surface](docs/CONSUMERS.md#what-a-library-upgrade-does-to-your-surface).
+
 `RegisteredCli` can export its built parser tree as stable JSON and generate a
 bounded semantic-review checklist. Its generated Markdown shows each route's
 invocation mode, help summary and description, the entrypoint's empty-argv

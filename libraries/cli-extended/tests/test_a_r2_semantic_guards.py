@@ -189,7 +189,8 @@ def test_markdown_refuses_missing_route_invocation_metadata():
     def root_row(route):
         markdown = render_cli_surface_markdown(
             {
-                "schema_version": 6,
+                "schema_version": 7,
+                "library_contract": {"name": "cli-extended", "version": 1},
                 "entrypoint": entrypoint,
                 "routes": [route],
                 "candidates": [],

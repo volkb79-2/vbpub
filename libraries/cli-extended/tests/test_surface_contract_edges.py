@@ -170,7 +170,8 @@ def test_markdown_rows_preserve_optional_fields_shapes_and_review_dispositions()
     )
     stale = _review_case("case:removed-active", state="active", decision="accept")
     surface = {
-        "schema_version": 6,
+        "schema_version": 7,
+        "library_contract": {"name": "cli-extended", "version": 1},
         "entrypoint": {
             "command": "audit-tool",
             "prog": "audit-tool",
@@ -462,7 +463,9 @@ def test_surface_export_records_option_and_argument_edges_and_candidate_boundari
         "option:route:entrypoint:surface-tool/inspect/--custom-action.action"
     ]
     for spelling in ("--json", "--progress", "--yes"):
-        assert parent_actions[spelling]["scope"] == "common"
+        # Library controls are named in common_controls, never in actions.
+        assert spelling in parent["common_controls"]
+        assert spelling not in parent_actions
 
     generated = {
         candidate["id"]: candidate for candidate in surface["candidates"]

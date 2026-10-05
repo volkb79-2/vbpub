@@ -45,6 +45,7 @@ from cli_extended.review import (
     _value_count_problem,
     _value_shape_accepts,
 )
+from cli_extended.surface import _route_common_actions, _routes_by_path
 from cli_extended.surface_cli import _load_factory
 
 IDENTITY = CliIdentity("AUDIT", "1.0", "Audit Tool", command="audit-tool")
@@ -140,7 +141,13 @@ def _option_argv(action, spelling=None):
 
 def _candidate_argv(candidate, surface):
     route = next(route for route in surface["routes"] if route["id"] == candidate["route_id"])
-    actions = {action["id"]: action for action in route["actions"]}
+    # Library-owned controls are named in the manifest only; the contract
+    # table supplies their arity for generated argv.
+    paths = _routes_by_path(surface["routes"])
+    actions = {
+        action["id"]: action
+        for action in (*route["actions"], *_route_common_actions(route, paths))
+    }
     argv = list(route["path"])
     kind = candidate["kind"]
     candidate_argument_id = (
@@ -1392,6 +1399,7 @@ def test_surface_markdown_exposes_nested_routes_stale_rows_and_incomplete_invent
     )
     surface = {
         "schema_version": 1,
+        "library_contract": {"name": "cli-extended", "version": 1},
         "entrypoint": {
             "command": "audit-tool",
             "prog": "audit-tool",
@@ -1626,7 +1634,8 @@ def test_surface_markdown_lists_delegated_group_children():
     group_id = "route:entrypoint:audit-tool/plugins"
     child_id = f"{group_id}/inspect"
     surface = {
-        "schema_version": 6,
+        "schema_version": 7,
+        "library_contract": {"name": "cli-extended", "version": 1},
         "entrypoint": {
             "command": "audit-tool",
             "prog": "audit-tool",
@@ -1784,6 +1793,7 @@ def test_empty_single_command_invocation_is_valid_when_no_argument_is_required()
 def test_surface_markdown_rejects_unknown_action_kinds():
     surface = {
         "schema_version": 1,
+        "library_contract": {"name": "cli-extended", "version": 1},
         "entrypoint": {
             "command": "audit-tool",
             "prog": "audit-tool",
@@ -1917,7 +1927,8 @@ def test_render_route_invocation_modes_describe_the_parser_receiving_argv():
         },
     ]
     surface = {
-        "schema_version": 6,
+        "schema_version": 7,
+        "library_contract": {"name": "cli-extended", "version": 1},
         "entrypoint": {
             "command": "audit-tool",
             "prog": "audit-tool",
@@ -5160,7 +5171,7 @@ def test_sync_is_idempotent_preserves_outside_bytes_and_never_rewrites_catalog(t
     assert synced.endswith(suffix)
     assert b"\r\nAfter\r\n" in synced
     assert review.read_bytes() == original_review
-    assert json.loads(manifest.read_text(encoding="utf-8"))["schema_version"] == 6
+    assert json.loads(manifest.read_text(encoding="utf-8"))["schema_version"] == 7
     assert SURFACE_START_MARKER.encode() in synced
     assert SURFACE_END_MARKER.encode() in synced
 
@@ -6241,6 +6252,7 @@ def test_distinct_surface_path_validation_refuses_a_missing_parent(tmp_path):
 def test_markdown_marks_positional_actions_as_outside_exclusive_groups():
     surface = {
         "schema_version": 5,
+        "library_contract": {"name": "cli-extended", "version": 1},
         "entrypoint": {
             "command": "audit-tool",
             "prog": "audit-tool",
