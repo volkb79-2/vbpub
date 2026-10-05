@@ -1,5 +1,6 @@
 """Reusable command-line contract helpers for vbpub projects."""
 
+from .constraints import Conflicts, Constraint, Requires, RequiresChoice
 from .contract import CONTRACT_VERSION
 from .identity import CliIdentity, VersionLookupError
 from .output import (
@@ -61,6 +62,7 @@ from .skills import (
     validate_skill_source,
 )
 from .testing import assert_cli_contract
+from .values import SelectorList
 
 __all__ = [
     "CONTRACT_VERSION",
@@ -71,6 +73,8 @@ __all__ = [
     "CliOutput",
     "CliRegistry",
     "CliRuntime",
+    "Conflicts",
+    "Constraint",
     "ExtendedArgumentParser",
     "HelpCatalog",
     "HelpFormat",
@@ -82,11 +86,14 @@ __all__ = [
     "PromptDriver",
     "REVIEW_SCHEMA_VERSION",
     "RegisteredCli",
+    "Requires",
+    "RequiresChoice",
     "ReviewCatalog",
     "ReviewCatalogError",
     "ReviewCase",
     "DEFAULT_MAX_CANDIDATES",
     "SURFACE_SCHEMA_VERSION",
+    "SelectorList",
     "SkillError",
     "SkillState",
     "SurfaceError",

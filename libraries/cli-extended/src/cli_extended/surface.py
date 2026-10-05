@@ -20,6 +20,7 @@ from typing import Any
 
 from . import contract
 from .contract import canonical_flag, is_library_action
+from .constraints import Constraint
 from .parser import (
     ArgumentSpec,
     OptionSpec,
@@ -28,7 +29,9 @@ from .parser import (
     _HelpAction,
     _VersionAction,
 )
+from .values import SelectorList
 
+SELECTOR_LIST_LABEL = "cli_extended.SelectorList"
 SURFACE_SCHEMA_VERSION = 7
 DEFAULT_MAX_CANDIDATES = 512
 _DEFAULT_ARGPARSE_PARSER = argparse.ArgumentParser()
@@ -186,12 +189,19 @@ def _normalize_action_type(value: Any, *, path: str, opaque: list[str]) -> Any:
 
     if value is None:
         return None
+    if type(value) is SelectorList:
+        return {
+            "callable": SELECTOR_LIST_LABEL,
+            "choices": None if value.choices is None else list(value.choices),
+            "all_token": value.all_token,
+            "separator": value.separator,
+        }
     for converter, label in _BUILTIN_TYPE_LABELS.items():
         if value is converter:
             return {"callable": label}
     if callable(value):
         label = _callable_label(value)
-        if label in _BUILTIN_TYPE_LABELS.values():
+        if label in _BUILTIN_TYPE_LABELS.values() or label == SELECTOR_LIST_LABEL:
             opaque.append(path)
             return {"opaque": "built-in-converter-label-collision"}
     return _normalize(value, path=path, opaque=opaque)
@@ -565,7 +575,13 @@ def _surface_action(
         "help_group": group_titles.get(id(action), "ARGUMENTS"),
         "parser_kwargs": (
             {
-                key: _normalize(value, path=f"{surface_id}.{key}", opaque=opaque)
+                key: (
+                    _normalize_action_type(
+                        value, path=f"{surface_id}.{key}", opaque=opaque
+                    )
+                    if key == "type"
+                    else _normalize(value, path=f"{surface_id}.{key}", opaque=opaque)
+                )
                 for key, value in sorted(spec.parser_kwargs.items())
             }
             if spec is not None
@@ -837,6 +853,33 @@ def _verb_metadata(spec: VerbSpec) -> dict[str, Any]:
     }
 
 
+def _constraint_records(
+    constraints: Sequence[Constraint],
+) -> list[dict[str, Any]]:
+    """Describe declared constraints, naming library controls canonically.
+
+    A library control is referenced by its canonical flag only, so a library
+    syntax change cannot move a consumer signature (CX-D5).
+    """
+
+    canonical = {
+        flag: name
+        for name, entry in contract.common_control_table().items()
+        for flag in entry["flags"]
+    }
+    records = []
+    for constraint in constraints:
+        record = constraint.to_record()
+        for key in ("option", "target"):
+            if key in record:
+                record[key] = canonical.get(record[key], record[key])
+        for key in ("any_of", "options"):
+            if key in record:
+                record[key] = [canonical.get(flag, flag) for flag in record[key]]
+        records.append(record)
+    return records
+
+
 def _describe_parser(
     parser: argparse.ArgumentParser,
     *,
@@ -1093,6 +1136,9 @@ def _describe_parser(
         ),
         "actions": actions,
         "common_controls": sorted(common_controls),
+        "constraints": _constraint_records(
+            verb_specs[0].constraints if verb_specs else ()
+        ),
         "opaque_fields": opaque,
         "syntax_complete": not local_incomplete,
         "delegated_metadata": [
@@ -1309,6 +1355,7 @@ def _walk_registered_cli(
                     "parser_configured_by_callback": spec.configure is not None,
                     "actions": [],
                     "common_controls": [],
+                    "constraints": [],
                     "opaque_fields": [],
                     "delegated_metadata": [],
                     "subcommands": [],
@@ -1562,6 +1609,37 @@ def _route_common_actions(
     return result
 
 
+_CONSTRAINT_CANDIDATE_KINDS = {
+    "requires": "constraint-requires",
+    "conflicts": "constraint-conflict",
+    "requires-choice": "constraint-choice",
+}
+
+
+def _constraint_member_id(
+    route: Mapping[str, Any],
+    controls: Sequence[Mapping[str, Any]],
+    flag: str,
+) -> str:
+    """Resolve a constraint's flag to the route-local ID of its option.
+
+    Consumer options match by any spelling; the shallowest declaration wins,
+    which is the verb parser's own option that ``build()`` validated, not a
+    same-named option of a nested parser. Library controls match by
+    canonical flag only.
+    """
+
+    for action in route.get("actions", ()):
+        if flag in action.get("flags", ()):
+            return str(action["id"])
+    for control in controls:
+        if control["canonical"] == flag:
+            return str(control["id"])
+    raise SurfaceError(
+        f"route {route['id']!r} constraint references unknown option {flag}"
+    )
+
+
 def _routes_by_path(
     routes: Sequence[Mapping[str, Any]],
 ) -> dict[tuple[str, ...], Mapping[str, Any]]:
@@ -1661,6 +1739,9 @@ def _generate_candidates(
                 for metadata in route.get("delegated_metadata", [])
             ],
         }
+        if route.get("constraints"):
+            # Consumer-declared grammar: part of the route's signed context.
+            route_context["constraints"] = route["constraints"]
         member_shapes = []
         for member_id in sorted(set(members)):
             action = actions_by_id.get(member_id)
@@ -1850,6 +1931,24 @@ def _generate_candidates(
                         "spelling": control["canonical"],
                     },
                 )
+        for number, constraint in enumerate(route.get("constraints", ()), start=1):
+            kind = _CONSTRAINT_CANDIDATE_KINDS[constraint["kind"]]
+            if constraint["kind"] == "requires":
+                flags = [constraint["option"], *constraint["any_of"]]
+            elif constraint["kind"] == "conflicts":
+                flags = list(constraint["options"])
+            else:
+                flags = [constraint["option"], constraint["target"]]
+            add_for_route(
+                route,
+                case_id=_candidate_id(route_id, kind, str(number)),
+                kind=kind,
+                members=[
+                    _constraint_member_id(route, common_actions[route_id], flag)
+                    for flag in flags
+                ],
+                payload=constraint,
+            )
         for group_id, members in sorted(groups.items()):
             for action in members:
                 add_for_route(
