@@ -4729,5 +4729,12 @@ facts/metadata is repaired by `ensure`, not returned unchanged. (4) A moved
 symbolic base cannot change the root set selected for an already allocated
 checkout.
 
+**v8: n/a in this form.** This is the v7 `worktree create` allocation path
+(S16.1), which prepares nested CIU roots before certifying the linked checkout
+ready. SPEC-V8 S14.1.1 initializes an existing checkout with `ciu instance
+init`, and S18 does not define a worktree-creation verb; v8 therefore has no
+equivalent nested-root allocation sequence to backport. Keep v8's own instance
+initialization contract authoritative.
+
 **Status: OPEN — implementation and focused regression are on the RG-55 CIU
 fix branch; registered gate and independent verification remain pending.**
