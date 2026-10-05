@@ -47,6 +47,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -55,6 +56,7 @@ from . import composefile
 from . import governance
 from . import hooks_runner
 from . import hosts
+from . import image_isolation
 from . import procutil
 from . import worktree
 from .deploy_pkg import health as _health
@@ -193,16 +195,26 @@ def configure_logging(log_level: str = "INFO") -> None:
     logger.info(f"Logging configured: {log_level.upper()}")
 
 
-def get_git_hash() -> str:
-    """Return the current git commit hash (short, 8 chars), with -dirty suffix."""
+def _git_hash_at(repo_root: Path | None) -> str:
+    """Return a checkout's short commit id with its dirty marker."""
     try:
-        result = procutil.run_cmd(["git", "rev-parse", "--short=8", "HEAD"], check=True)
+        cwd = str(Path(repo_root).resolve()) if repo_root is not None else None
+        result = procutil.run_cmd(
+            ["git", "rev-parse", "--short=8", "HEAD"], check=True, cwd=cwd
+        )
         git_hash = result.stdout.strip()
-        result = procutil.run_cmd(["git", "status", "--porcelain"], check=True)
+        result = procutil.run_cmd(
+            ["git", "status", "--porcelain"], check=True, cwd=cwd
+        )
         is_dirty = len(result.stdout.strip()) > 0
         return f"{git_hash}{'-dirty' if is_dirty else ''}"
     except (subprocess.CalledProcessError, FileNotFoundError):
         return "dev"
+
+
+def get_git_hash() -> str:
+    """Return the current git commit hash (short, 8 chars), with -dirty suffix."""
+    return _git_hash_at(None)
 
 
 IMAGE_REVISION_LABEL = "org.opencontainers.image.revision"
@@ -242,14 +254,16 @@ def get_timestamp() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def auto_generate_values(config: dict) -> dict:
+def auto_generate_values(config: dict, *, repo_root: Path | None = None) -> dict:
     """S3.9 — compute build metadata and expose UID/GID to templates.
 
     B7 fix: ``container_gid if container_gid is not None and container_gid != ''
     else docker_gid`` — GID 0 is valid (falsy-safe, never truthiness).
     """
     config.setdefault("auto_generated", {})
-    config["auto_generated"]["build_version"] = get_git_hash()
+    config["auto_generated"]["build_version"] = (
+        _git_hash_at(repo_root) if repo_root is not None else get_git_hash()
+    )
     config["auto_generated"]["build_time"] = get_timestamp()
 
     deploy_shared = config.get("deploy", {}).get("env", {}).get("shared", {})
@@ -1240,6 +1254,169 @@ def workspace_ownership_labels(repo_root: Path) -> dict[str, str] | None:
     }
 
 
+def scope_worktree_compose_images(
+    repo_root: Path, rendered_compose: str, *,
+    primary_image_references: set[str] | Callable[[], set[str]] | None = None,
+    check_primary_image_map: bool = False,
+) -> str:
+    """Apply CIU-117's linked-worktree image tags to rendered Compose text."""
+    if not image_isolation.compose_may_require_image_scoping(rendered_compose):
+        return rendered_compose
+    suffix = worktree.resolve_worktree_image_tag_suffix(repo_root)
+    scoped = image_isolation.scope_compose_images(rendered_compose, suffix)
+    if suffix is not None and check_primary_image_map:
+        candidates = image_isolation.project_built_image_references(scoped)
+        if candidates:
+            if primary_image_references is None:
+                primary_image_references = lambda: _primary_image_references(repo_root)
+            if callable(primary_image_references):
+                primary_image_references = primary_image_references()
+            image_isolation.check_primary_image_collisions(
+                candidates, primary_image_references
+            )
+    if scoped != rendered_compose:
+        print(
+            f"[CIU-117] project-built images use worktree tag suffix {suffix!r}",
+            flush=True,
+        )
+    return scoped
+
+
+def _primary_image_references(repo_root: Path) -> set[str]:
+    """Read the primary Compose image map through deploy's in-memory resolver."""
+    from .deploy import resolve_primary_image_references
+
+    return resolve_primary_image_references(repo_root)
+
+
+def guard_container_name_owners(
+    rendered_compose: str, *, expected_project: str, repo_root: Path,
+    file_args: list[str], cwd: Path, env: dict[str, str],
+) -> None:
+    """Refuse an explicit container name owned by another/unknown checkout.
+
+    Docker Compose's exact working-directory, project, and service labels are
+    the evidence. A daemon query failure or absent ownership labels is
+    indeterminate and refuses; it is never interpreted as an empty daemon.
+    """
+    try:
+        declared_in_source = image_isolation.explicit_container_services(
+            rendered_compose
+        )
+        may_import_services = image_isolation.compose_may_import_service_definitions(
+            rendered_compose
+        )
+    except image_isolation.ContainerOwnershipError as exc:
+        raise ComposeError(f"[CIU-104] {exc}") from exc
+    if not declared_in_source and not may_import_services:
+        return
+
+    config_argv = [
+        "docker", "compose", "-p", expected_project,
+        "--project-directory", str(Path(repo_root).resolve()),
+        *file_args, "config", "--format", "json",
+    ]
+    try:
+        resolved_config = procutil.run_cmd(
+            config_argv, check=False, env=env, cwd=str(cwd)
+        )
+    except OSError as exc:
+        raise ComposeError(
+            f"[CIU-104] could not resolve Compose container names: {exc}"
+        ) from exc
+    if resolved_config.returncode != 0:
+        detail = (
+            resolved_config.stderr.strip()
+            or resolved_config.stdout.strip()
+            or "unknown Compose error"
+        )
+        raise ComposeError(
+            f"[CIU-104] could not resolve Compose container names: {detail}"
+        )
+    try:
+        declared = image_isolation.explicit_container_services(
+            resolved_config.stdout
+        )
+    except image_isolation.ContainerOwnershipError as exc:
+        raise ComposeError(
+            f"[CIU-104] could not inspect resolved Compose container names: {exc}"
+        ) from exc
+    if not declared:
+        return
+
+    current_roots = {str(Path(repo_root).resolve())}
+    try:
+        current_labels = workspace_ownership_labels(repo_root)
+    except (OSError, ValueError, worktree.WorktreeError) as exc:
+        raise ComposeError(
+            f"[CIU-104] cannot prove this checkout's container ownership identity: {exc}"
+        ) from exc
+    if current_labels is not None:
+        current_roots.add(current_labels[OWNERSHIP_LABEL_REPO_ROOT])
+
+    try:
+        listing = procutil.run_cmd(
+            ["docker", "ps", "-a", "--no-trunc", "--format", "{{.ID}} {{.Names}}"],
+            check=False,
+        )
+    except OSError as exc:
+        raise ComposeError(f"[CIU-104] could not query Docker container names: {exc}") from exc
+    if listing.returncode != 0:
+        detail = listing.stderr.strip() or listing.stdout.strip() or "unknown Docker error"
+        raise ComposeError(
+            f"[CIU-104] could not verify explicit container-name ownership: {detail}"
+        )
+    try:
+        existing = image_isolation.docker_exact_container_ids(
+            listing.stdout, set(declared)
+        )
+    except image_isolation.ContainerOwnershipError as exc:
+        raise ComposeError(f"[CIU-104] could not verify container ownership: {exc}") from exc
+
+    for name, service in sorted(declared.items()):
+        container_id = existing.get(name)
+        if container_id is None:
+            continue
+        try:
+            inspected = procutil.run_cmd(
+                ["docker", "inspect", container_id], check=False
+            )
+            if inspected.returncode != 0:
+                detail = inspected.stderr.strip() or "container changed during inspection"
+                raise image_isolation.ContainerOwnershipError(detail)
+            actual_name, labels = image_isolation.inspect_labels(
+                inspected.stdout, container_id
+            )
+            if actual_name != name:
+                raise image_isolation.ContainerOwnershipError(
+                    f"Docker returned {actual_name!r} while checking {name!r}"
+                )
+            same, owner = image_isolation.same_compose_owner(
+                labels,
+                current_roots=current_roots,
+                project=expected_project,
+                service=service,
+            )
+        except (OSError, image_isolation.ContainerOwnershipError) as exc:
+            raise ComposeError(
+                f"[CIU-104] refusing to recreate container {name!r}: CIU could not "
+                f"prove who owns the existing container ({exc}). Resolve the name "
+                "or restore its Docker Compose ownership labels, then retry."
+            ) from exc
+        if not same:
+            owner_text = owner or "unknown checkout (ownership labels absent)"
+            raise ComposeError(
+                f"[CIU-104] refusing to recreate container {name!r}: it belongs to "
+                f"checkout {owner_text!r}, project "
+                f"{labels.get('com.docker.compose.project')!r}, service "
+                f"{labels.get('com.docker.compose.service')!r}; this checkout is "
+                f"{str(Path(repo_root).resolve())!r}, project {expected_project!r}, "
+                f"service {service!r}. Give worktrees distinct explicit container "
+                "names. If this template derives the name from "
+                "deploy.environment_tag, set that value to \"$INSTANCE_ID\"."
+            )
+
+
 def _labelable_top_level(doc: dict, key: str) -> list[str]:
     """Top-level ``volumes:``/``networks:`` entries compose actually CREATES.
 
@@ -1344,6 +1521,7 @@ def main_execution(
     auto_connect_network: Optional[bool] = None,
     compose_profiles: Optional[list[str]] = None,
     ciu_context: Optional[dict] = None,
+    primary_image_references: set[str] | Callable[[], set[str]] | None = None,
 ) -> dict:
     """Run the S8.3 pipeline for one stack. Returns a result dict with 'status'.
 
@@ -1738,12 +1916,23 @@ def main_execution(
             else:
                 rendered_compose = composefile.render_compose(compose_template, guarded)
             output_path = working_dir / CIU_COMPOSE_OUTPUT
-            # S8.4: atomic write via tmp sibling + os.replace (no partial writes).
+        else:
+            rendered_compose = compose_template.read_text(encoding="utf-8")
+
+        # CIU-117: use the current linked checkout's identity at the final
+        # Compose boundary, after templates and environment values resolve.
+        # Vendor references have no matching build declaration and stay as-is.
+        rendered_compose = scope_worktree_compose_images(
+            repo_root,
+            rendered_compose,
+            primary_image_references=primary_image_references,
+            check_primary_image_map=not dry_run,
+        )
+        if compose_template.suffix == ".j2":
+            # S8.4: atomic write via tmp sibling + os.replace (no partial write).
             tmp_path = output_path.with_suffix(".yml.tmp")
             tmp_path.write_text(rendered_compose, encoding="utf-8")
             os.replace(tmp_path, output_path)
-        else:
-            rendered_compose = compose_template.read_text(encoding="utf-8")
 
         # ---- Step 14: leak scan (S4.22) + consumption (S4.20) ----
         print("[STEP 14/17] Scanning rendered compose for leaks...", flush=True)
@@ -1810,12 +1999,20 @@ def main_execution(
             file_args = composefile.compose_file_args(working_dir, overlay_path)
             if ownership_path is not None:
                 file_args += ["-f", f"{MACHINE_DIR}/{OWNERSHIP_OVERLAY_NAME}"]
+            project = compose_project_name(global_config, working_dir)
+            guard_container_name_owners(
+                rendered_compose,
+                expected_project=project,
+                repo_root=repo_root,
+                file_args=file_args,
+                cwd=working_dir,
+                env=compose_env,
+            )
+            guard_legacy_compose_project(working_dir, project)
             # S16.9: claim ownership BEFORE anything is created (see
             # acquire_instance_lease). A no-op unless lease_ttl_hours is
             # configured AND this checkout is a managed instance.
             acquire_instance_lease(repo_root)
-            project = compose_project_name(global_config, working_dir)
-            guard_legacy_compose_project(working_dir, project)
             # S16.3/CIU-24 — resolve the primary-worktree policy only for an
             # actual Compose start.  Dry-run and render-only paths must remain
             # Docker/worktree-family-free: a tester container can deliberately
@@ -1897,6 +2094,7 @@ def run_shipped(
     update_cert_permission: bool = False,
     auto_connect_network: Optional[bool] = None,
     compose_profiles: Optional[list[str]] = None,
+    primary_image_references: set[str] | Callable[[], set[str]] | None = None,
 ) -> dict:
     """Run a maintainer's pre-shipped compose file *through* CIU (S8.5).
 
@@ -1954,6 +2152,19 @@ def run_shipped(
                 f"[--shipped] no pre-shipped compose file at {compose_path}. "
                 f"Ship a '{compose_file}' next to the stack, or pass -f <name>."
             )
+        shipped_compose = compose_path.read_text(encoding="utf-8")
+        scoped_shipped_compose = scope_worktree_compose_images(
+            repo_root,
+            shipped_compose,
+            primary_image_references=primary_image_references,
+            check_primary_image_map=not dry_run,
+        )
+        try:
+            shipped_image_override = image_isolation.compose_image_override(
+                shipped_compose, scoped_shipped_compose
+            )
+        except image_isolation.ImageIsolationError as exc:
+            raise ComposeError(f"[CIU-117] {exc}") from exc
 
         # ---- Compose up (S8.5) — no overlay, no expose_env secrets ----
         compose_env = composefile.compose_process_env(
@@ -1985,6 +2196,14 @@ def run_shipped(
         # CIU-46 cutover: shipped_project is ALWAYS a known name now (the
         # S8.7 scoped project or the computed identity project) — the guard
         # runs unconditionally.
+        guard_container_name_owners(
+            scoped_shipped_compose,
+            expected_project=shipped_project,
+            repo_root=repo_root,
+            file_args=["-f", compose_file],
+            cwd=working_dir,
+            env=compose_env,
+        )
         guard_legacy_compose_project(working_dir, shipped_project)
         # Same S16.3 boundary as the native path: only a genuine Compose start
         # reads the primary-worktree policy.  ``--dry-run`` returned above.
@@ -1997,20 +2216,41 @@ def run_shipped(
         # and `clean` skips `reset_service` for a shipped stack — see S16.9's
         # "Still open".)
         acquire_instance_lease(repo_root)
+        image_compose_path: Path | None = None
+        active_file_args = ["-f", compose_file]
         # S16.3/CIU-24 — same budget-slot wiring as main_execution's native
         # path (see the comment there): wraps ONLY the real Compose start.
         try:
+            if shipped_image_override is not None:
+                temp_dir = working_dir / MACHINE_DIR
+                temp_dir.mkdir(parents=True, exist_ok=True)
+                with tempfile.NamedTemporaryFile(
+                    mode="w",
+                    encoding="utf-8",
+                    prefix="ciu-compose-worktree-images-",
+                    suffix=".yml",
+                    dir=temp_dir,
+                    delete=False,
+                ) as image_compose_file:
+                    image_compose_path = Path(image_compose_file.name)
+                    image_compose_file.write(shipped_image_override)
+                active_file_args += [
+                    "-f", image_compose_path.relative_to(working_dir).as_posix()
+                ]
             with worktree.worktree_budget_slot(
                 repo_root, worktree_cap,
                 os.environ["DOCKER_NETWORK_INTERNAL"],
                 working_dir.relative_to(repo_root),
             ):
                 docker_result = execute_docker_compose_with_logs(
-                    ["-f", compose_file], cwd=working_dir, env=compose_env,
+                    active_file_args, cwd=working_dir, env=compose_env,
                     project=shipped_project, repo_root=repo_root,
                 )
         except worktree.WorktreeError as exc:
             raise ComposeError(str(exc)) from exc
+        finally:
+            if image_compose_path is not None:
+                image_compose_path.unlink(missing_ok=True)
         if docker_result["status"] == "error":
             raise ComposeError(docker_result["message"])
         if docker_result["status"] == "interrupted":

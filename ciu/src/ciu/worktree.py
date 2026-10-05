@@ -4931,7 +4931,10 @@ _BUDGET_LOCK_NAME = "ciu-worktree-budget.lock"
 # same table too (CIU-69) — its own contents are NOT re-validated here, only
 # its presence as a top-level key is accepted rather than refused.
 WORKTREE_TABLE_KEYS = frozenset(
-    {"max_concurrent_instances", "lease_ttl_hours", "exec_targets", "up"}
+    {
+        "max_concurrent_instances", "lease_ttl_hours", "exec_targets", "up",
+        "shared_image_tags",
+    }
 )
 
 
@@ -4964,6 +4967,101 @@ def _validate_worktree_table(raw: Any) -> None:
             raise WorktreeError(
                 "[S16.1] [ciu.worktree] up contains a duplicate profile name"
             )
+    if "shared_image_tags" in raw and not isinstance(raw["shared_image_tags"], bool):
+        raise WorktreeError(
+            "[CIU-117] [ciu.worktree] shared_image_tags must be a boolean"
+        )
+
+
+def resolve_worktree_image_tag_suffix(
+    repo_root: Path,
+    *,
+    allow_shared_tag: bool = False,
+) -> str | None:
+    """Return the image-tag suffix for a linked checkout, or ``None``.
+
+    The Git primary checkout keeps declared image tags. A linked checkout uses
+    its generated instance identity unless the committed project policy sets
+    ``[ciu.worktree].shared_image_tags = true`` or the operator explicitly
+    passes ``--allow-shared-tag``. Identity is read from CIU's generated facts
+    and, for a managed worktree, must agree with the lifecycle record.
+    """
+    from .workspace import CiuWorkspaceError, resolve_worktree_git_root
+
+    try:
+        git_root = resolve_worktree_git_root(repo_root)
+    except CiuWorkspaceError as exc:
+        # Preserve standalone source trees, but do not turn a broken .git
+        # pointer into the primary-checkout behavior. A .git marker exists
+        # somewhere above a real or damaged checkout; if discovery failed in
+        # that case the image owner is unknown and the safe answer is refusal.
+        candidate = Path(repo_root).resolve()
+        try:
+            parents = (candidate, *candidate.parents)
+            has_git_marker = any(
+                (parent / ".git").exists() for parent in parents
+            )
+        except OSError as marker_error:
+            raise WorktreeError(
+                f"[CIU-117] could not determine whether {candidate} belongs to "
+                f"a Git checkout: {marker_error}"
+            ) from marker_error
+        if has_git_marker:
+            raise WorktreeError(
+                f"[CIU-117] could not resolve the checkout's Git identity: {exc}"
+            ) from exc
+        # A non-Git CIU source tree has no linked-worktree image identity.
+        return None
+    entries = list_worktrees(git_root)
+    current = [entry for entry in entries if entry.path.resolve() == git_root.resolve()]
+    primaries = [entry for entry in entries if entry.is_primary]
+    if len(current) != 1 or len(primaries) != 1:
+        raise WorktreeError(
+            f"[CIU-117] could not identify exactly one current and primary Git "
+            f"worktree for {git_root}"
+        )
+    if current[0].is_primary:
+        return None
+
+    # This is repository-family policy, so a linked branch cannot opt itself
+    # out by changing its own copy of the config. It follows the same primary
+    # root authority as the capacity cap and lease TTL.
+    raw = _primary_worktree_table(Path(repo_root))
+    shared = False
+    if raw is not None:
+        _validate_worktree_table(raw)
+        shared = raw.get("shared_image_tags", False)
+    if shared or allow_shared_tag:
+        return None
+
+    record_path = Path(repo_root) / WORKTREE_INSTANCE_RECORD
+    record = None
+    if record_path.is_file():
+        record = read_instance_record(record_path)
+        if record.state != "ready" or not record.instance_id:
+            raise WorktreeError(
+                f"[CIU-117] linked checkout {git_root} has no ready CIU image identity; "
+                "resume it with `ciu worktree ensure` before baking or deploying"
+            )
+
+    from .workspace_env import WorkspaceEnvError, read_generated_facts
+
+    try:
+        facts = read_generated_facts(Path(repo_root), allow_repair=False)
+    except WorkspaceEnvError as exc:
+        raise WorktreeError(f"[CIU-117] could not read worktree image identity: {exc}") from exc
+    instance_id = facts.get("instance_id")
+    if not instance_id:
+        raise WorktreeError(
+            f"[CIU-117] linked checkout {git_root} has no generated instance_id; "
+            "run `ciu env generate` in this checkout before baking or deploying"
+        )
+    if record is not None and record.instance_id != instance_id:
+        raise WorktreeError(
+            f"[CIU-117] linked checkout identity disagrees: {record_path} records "
+            f"{record.instance_id!r}, generated facts contain {instance_id!r}"
+        )
+    return instance_id
 
 
 def resolve_worktree_up_profiles(

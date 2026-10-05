@@ -552,7 +552,7 @@ Last reconciled: 2026-08-17, automation-safe worktree lifecycle milestone.
 | CIU-100 | **`docs/SPEC.md` S14.7a specifies `--controller`'s auto-default source as `topology.external.public_fqdn`, but no config path in ciu ever sets that key — the real, established equivalent elsewhere in this codebase is `infrastructure.public_fqdn`** (`src/ciu/workspace_env.py:392`'s own resolution order, `docs/SPEC.md:219`). Confirmed by grep: `topology.external.public_fqdn` appears NOWHERE else in the source or docs except S14.7a's own text and `src/ciu/host_enroll.py`'s literal implementation of it (`resolve_controller`, `cli.py`'s own help text). Practical consequence: `ciu host enroll`'s documented convenience — "defaults from the declared controller, `--controller` only required when it is not declared" — never actually fires in real use, because the config key it reads is never set by anything; every real invocation silently requires `--controller` explicitly, with no error pointing at WHY the default never applied (the code correctly refuses with a clear message when NEITHER is present, so this is not a silent wrong answer, just a silently-dead convenience). Found and flagged, not fixed, by ciu-P52 (implementing S14.7 literally as written is the correct call per a fresh implementer's own scope — AUTHORING.md "product decisions are decisions, not silent workarounds" — this is a normative-text question for S14.7's own owner, not an implementation bug). Proposed fix: either correct S14.7a/proposal text to read `infrastructure.public_fqdn` (and `resolve_controller` to match) if that key is genuinely the intended source, or explain in S14.7a why host-enrollment needs a DIFFERENT, new config key than every other public-hostname consumer in this codebase — whichever is right, `resolve_controller` (`src/ciu/host_enroll.py:93-110`) and `cli.py:454`'s help text need to agree with the corrected spec | Low | DEFERRED TO V8.2 — not built in v7 by operator direction (2026-10-04); host enrollment is redesigned in v8.2 |
 | CIU-102 | **A `post_compose` hook cannot read back a secret IT ITSELF persisted through S9.4a — `ctx.secret_file(name)` resolves DECLARED directive names only and raises `KeyError` for every hook-persisted one, which is by definition every S9.4a name** (S9.4a's own uniqueness rule forbids declaring one). Mechanism, read from installed ciu 7.11.0 source: `engine.py`'s `_secret_file` closure iterates `specs` (the output of `secret_directives.discover`) and `raise KeyError(name)` on a miss; hook-persisted names live only in `<stack>/.ciu/secrets/.hook-persisted.toml`, which nothing on the HookContext exposes. `ciu secrets list`/`reset` DO see them (`secret_materialize.hook_secret_rows`), so the provenance is tracked — it is only the hook-facing read that is missing. Why this is not theoretical: an idempotent hook that mints a credential the provider reveals ONLY ONCE (a Mattermost personal access token; the same is true of many API tokens) has to distinguish three states on every re-run — (a) not minted, (b) minted and still stored, (c) minted but the store file is gone. Without a read-back it can only see (a) vs (not-a), so it either silently skips — leaving the consumer with no credential, forever, with no signal — or mints again, leaving a live orphan credential that cannot be revoked by value. Found by nyxloom-P109 (2026-09-09) while extending `nyxloom/mattermost/hooks/post_compose_provision.py`; worked around there by computing `Path(ctx.stack_dir) / '.ciu' / 'secrets' / name` directly, which is NOT reaching around the API — S9.4a states that path normatively — but it does hardcode a layout the context should own. Proposed fix: extend `_secret_file` to fall through to the hook-persisted store (it is the same directory `secret_materialize.stack_store(working_dir)` already returns for non-`GEN_LOCAL`/`ASK_FILE` specs, so this is a lookup-order change, not new machinery), or add an explicit `ctx.hook_secret_file(name)` alongside it. Oracle: a hook that returns `{'x': {'value': 'v', 'persist': 'secret'}}` on run 1 must, on run 2, be able to observe that `x` exists WITHOUT the value having to be re-minted; the controlled wrong implementation is a `secret_file` that returns a path for an undeclared name that was never persisted either (it must still raise, not hand back a path to a file that does not exist and never will) | Medium | OPEN — found by nyxloom-P109 (2026-09-09), worked around consumer-side |
 | CIU-103 | `ciu up --dry-run` executes the live post_compose hook | Medium | FIXED 2026-10-04 |
-| CIU-104 | Worktree create can recreate a different checkout’s live container | Medium | PARTIAL — remaining ownership checks open |
+| CIU-104 | Worktree create can recreate a different checkout’s live container | Medium | FIXED — exact container-name ownership preflight refuses another or unknown checkout before Compose up |
 | CIU-105 | No intent guard for destructive actions on a rightful protected instance | Medium | PARTIAL — remaining design open |
 | CIU-106 | Worktree records lack the immutable fork commit | Medium | FIXED 2026-09-11 |
 | CIU-107 | Interrupted adopt resume can reset and destroy later commits | High | FIXED 2026-10-04 |
@@ -565,7 +565,7 @@ Last reconciled: 2026-08-17, automation-safe worktree lifecycle milestone.
 | CIU-114 | CLI grammar/help/wizard extension | Low | OPEN — design candidate |
 | CIU-115 | CIU-owned outdated identity records block siblings and teardown | Medium | FIXED 2026-10-04 |
 | CIU-116 | Worktree shared-infrastructure reuse is not declared in project config | Medium | OPEN — waiting for shareability measurements |
-| CIU-117 | Worktree builds overwrite the primary checkout image tag | Medium | OPEN |
+| CIU-117 | Worktree builds overwrite the primary checkout image tag | Medium | FIXED — linked-worktree Compose and Bake image tags include its instance id by default |
 | CIU-118 | No supported resolve/exec API for services of any instance | Medium | FIXED 2026-10-04; RG-70 direct command path folded into `ciu exec` |
 | CIU-119 | v7 clean cannot remove resources owned by a retired instance id | Medium | FIXED 2026-10-04 with CIU-115 |
 | CIU-120 | Reserved; intentionally unused | — | UNUSED |
@@ -3847,39 +3847,43 @@ hardcoded operator recipes) would still opt out deliberately — but that
 would then be a visible, intentional choice instead of the accidental
 default shape every fresh `ciu init` currently produces.
 
-Separately confirmed (asked and checked, not assumed): the v8
-`{project}-{instance}-{stack}-{service}[-{replica}]` scheme and the
-`owner_id`-token ownership refusal (S4.1.1/S4.5.3, `docs/SPEC-V8.md`) that
-would ALSO close this class of hazard structurally are real, current V8
-design — but v8 is unbuilt (`ciu8/` has one shelved carve, `P001`, the
-config-schema piece only; the identity/naming/ownership piece is
-unstarted "checkpoint A" work) and was never decided as a v7 backport
-(only host enrollment, V8-29/CIU-93, has that explicit exception). An
-earlier `CIU-V8-TESTING-GATE-PROPOSAL.md` draft also carried a
-`[deploy.profiles.<name>.locks]` "production-lockdown"/interactive-
-confirmation-on-teardown mechanism; it is no longer in the current file —
-superseded by the `owner_id` approach above, not merely forgotten.
+**v8: absorb.** Checked against SPEC-V8 draft.12: S4.1.1 derives the
+path-based instance identity and refuses an id collision at allocation;
+S4.5.1 labels resources with `ciu.project`, `ciu.instance`, and
+`ciu.checkout`; S4.5.4 verifies all three before a mutating verb removes or
+recreates a resource. Draft.12 has no `owner_id` and no S4.5.3 ownership
+token. The v7 implementation below uses the current checkout path plus
+Docker Compose's project and service labels for the legacy resource set.
 
-### Status — PARTIALLY FIXED, 2026-09-11
+### Status — FIXED, 2026-10-05
 
 Proposed-fix option 3 (re-weighted per the Correction above) landed:
 `scaffold.py`'s `ciu init` default is now `environment_tag =
-"$INSTANCE_ID"`, not the inert literal `"dev"` — every FRESH `ciu init`
-from this point forward is collision-proof by default, with zero extra
-author effort, unless the author deliberately opts out via
-`--environment-tag`. Gate-verified (R0+R1 PASS, 100% coverage).
+"$INSTANCE_ID"`, so the ordinary generated name varies by checkout. This
+reduces accidental collisions for fresh projects; existing explicit names
+still need the runtime ownership check below. The scaffold change was
+gate-verified (R0+R1 PASS, 100% coverage).
 
-Options 1 and 2 (`ciu up`/`ciu worktree create-ensure` actively refusing
-or warning when a container name about to be recreated already exists,
-is RUNNING, and belongs to a different `repo_root`) remain **OPEN** — no
-runtime guard exists. This means: any EXISTING repo that already
+**Disposition (2026-10-05): FIXED.** Before any real Compose `up`, CIU now
+checks each explicit `container_name` against Docker's full container list
+using exact name equality. An existing name is reusable only when Docker's
+resolved Compose working-directory, project, and service labels prove it is
+the same checkout and service. Compose resolves interpolation with the same
+files, environment, and profiles as the upcoming start. A different checkout,
+missing/contradictory labels, failed query, or inspection race refuses before
+Compose starts. The guard covers native and shipped Compose paths; ordinary generated Compose
+names without explicit `container_name` already include the per-instance
+project. The scaffold default remains `environment_tag = "$INSTANCE_ID"`.
+
+This means: any EXISTING repo that already
 declares a fixed, non-`$INSTANCE_ID` `environment_tag` literal (as
 nyxloom/mattermost's own `"prod"` did, fixed by hand separately, not by
 this scaffold change), or any new repo whose author deliberately opts
-out of the new default, still has zero runtime protection against the
-exact live-incident scenario this entry documents. The scaffold-default
-fix prevents the hazard from being created by accident going forward; it
-does not detect or refuse it when it already exists.
+out of the new default, now gets a refusal when a live or stopped container
+with the exact declared name is owned by a different checkout. Resolve the
+collision by giving worktrees distinct explicit names. When a template
+derives those names from `environment_tag`, use its instance-derived value;
+CIU does not offer a container-takeover override.
 
 ## CIU-105 — no protection against the RIGHTFUL owner's own accidental `ciu down`/`ciu clean` against a flagged-important instance, in v7 or as currently designed for v8
 
@@ -4633,6 +4637,30 @@ Severity: Medium. Type: feature. Spec owner: S8.x (bake), S17 (provenance). v8: 
 **v8: absorb.** No instance-scoping rule for project-built tags was found in SPEC-V8 draft.7 S6.2 or S17.6.1 (grep). The image map is per reference, so two instances building one reference collide exactly as in v7.
 
 **Amendment (2026-10-03, dstdns D-666; reviewed against SPEC-V8 draft.11 and proposal rev 4.9):** the **v8: absorb** paragraph above is superseded: draft.8+ specifies it (proposal V8-35, N26). SPEC-V8 S6.2 and S17.6.1: a linked worktree's project-built reference is tagged `<declared tag>-<instance_id>`, the compose `image:` is injected with it, `image_from` names it (S16.4, S16.11.6), and `ciu build` refuses to tag, retag or push a tag the primary's image map names (`[S17.6] refusing to overwrite dstdns/test-runner:latest, which the primary names`). S17.6 stays in **8.0** under the v8.2 split (only releases and activation moved). Two differences, stated so the v7 build does not read as a disagreement: v8 has **no opt-out** (no `shared_image_tags`, no `--allow-shared-tag`; greenfield, AGENTS §4.1), so the opt-out of the proposed contract is a v7-line safety valve for existing adopters only; and `ciu status --json`'s image reference is, in v8, `ciu resolve --json` (S4.4.3). With D-666 this is also how a worktree changes its **own** runner's runtime without touching main's `:latest`.
+
+**Amendment (2026-10-05; checked against SPEC-V8 draft.12): v8: absorb.**
+S6.2 classifies project-built images from the `build` declaration and
+S17.6.1 scopes each project-owned reference in a linked worktree to
+`<declared tag>-<instance_id>`. Compose uses that reference, while the
+primary retains the declared tag; v8 refuses to write any tag named by the
+primary image map. The rule remains in v8.0. V7 exposes a per-project
+`[ciu.worktree].shared_image_tags = true` safety valve for existing consumers
+and a one-command `ciu bake --allow-shared-tag` escape hatch; neither is in
+v8's contract. Pulled images remain unchanged in both lines.
+
+**Disposition (2026-10-05): FIXED.** Linked-worktree Compose rendering now
+adds the generated instance id only to image references whose Compose service
+declares `build`; other services sharing the same reference receive the same
+scoped reference, and pulled images remain unchanged. `ciu bake` reads the
+resolved Buildx target/tag plan and scopes its output tags before building.
+The primary keeps declared tags. Before writing, CIU resolves the primary
+checkout's active image map and refuses a colliding scoped tag; failure to
+resolve that map refuses instead of passing as empty. Project policy can opt
+out with `shared_image_tags = true`; an individual bake can opt out with
+`--allow-shared-tag`. A linked Git checkout with no resolvable CIU root and
+generated identity refuses an unscoped Bake unless that explicit flag is
+supplied. CIU-104 independently refuses an exact explicit container-name
+collision unless Docker labels prove the same checkout, project, and service.
 
 ## CIU-118 — no supported way to name or exec into a service of ANY instance (the primary included); consumers re-derive container names from the rendered file
 
