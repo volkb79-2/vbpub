@@ -268,8 +268,17 @@ def test_wheel_build_nested_project_mounts_the_worktree_root(tmp_path, monkeypat
     _git_run(main, "worktree", "add", "-q", str(wt), "-b", "feat")
     project = wt / "libraries" / "pkg"
     project.mkdir(parents=True)
-    argv = _wheel_build_argv(project, monkeypatch)
     wt_real = wt.resolve()
+    seen_roots = []
+    real_mount_args = handlers._wheel_builder_git_mount_args
+
+    def spy(source, **kw):
+        seen_roots.append(kw.get("mount_root"))
+        return real_mount_args(source, **kw)
+
+    monkeypatch.setattr(handlers, "_wheel_builder_git_mount_args", spy)
+    argv = _wheel_build_argv(project, monkeypatch)
+    assert seen_roots == [wt_real]
     mounts = _mounts(argv)
     assert f"/host{wt_real}:{wt_real}" in mounts
     assert not any(m.endswith(f":{wt_real / 'libraries'}") for m in mounts)
@@ -341,6 +350,17 @@ def test_wheel_builder_mount_root_ignores_a_toplevel_not_containing_the_parent(t
     project = tmp_path / "a" / "pkg"
     monkeypatch.setattr(handlers, "_git_toplevel", lambda _cwd: tmp_path / "elsewhere")
     assert handlers._wheel_builder_mount_root(project) == project.parent
+
+
+def test_wheel_build_does_not_forward_near_miss_scm_names(tmp_path, monkeypatch):
+    _clean_build_env(monkeypatch)
+    monkeypatch.setenv("SETUPTOOLS_SCM_PRETEND_VERSIONX", "1")
+    monkeypatch.setenv("SETUPTOOLS_SCM_PRETEND_VERSION", "2")
+    monkeypatch.setenv("SETUPTOOLS_SCM_OTHER", "3")
+    project = tmp_path / "cmru"
+    project.mkdir()
+    monkeypatch.setattr(handlers, "_git_common_dir", lambda _cwd: tmp_path / ".git")
+    assert "-e" not in _wheel_build_argv(project, monkeypatch)
 
 
 def test_wheel_build_forwards_no_env_when_unset(tmp_path, monkeypatch):

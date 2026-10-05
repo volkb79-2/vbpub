@@ -1640,7 +1640,7 @@ gate exercises the regression; README, DESIGN-GUIDE, CONSUMERS, and SPEC documen
 
 **Fix:**
 - `handlers._wheel_builder_mount_root(cwd)`: the git top-level (`discover_git_root`) when it contains `cwd.parent`, else `cwd.parent` (copied one-project repo where top-level is `cwd` itself, or no top-level). Mounted at its host bind source; passed as `mount_root` to `_wheel_builder_git_mount_args`. `-w cwd.parent` and the positional source are unchanged, so top-level projects get an identical command.
-- `handlers._wheel_builder_env_args()`: name-only `-e NAME` for `SOURCE_DATE_EPOCH` and every `SETUPTOOLS_SCM_PRETEND_VERSION*` present, sorted; nothing for absent names, never `NAME=value` on argv.
+- `handlers._wheel_builder_env_args()`: name-only `-e NAME` for `SOURCE_DATE_EPOCH` and every `SETUPTOOLS_SCM_PRETEND_VERSION_FOR_*` present, sorted (the bare `SETUPTOOLS_SCM_PRETEND_VERSION` is deliberately NOT forwarded: cmru exports only the `_FOR_<DIST>` form and a bare value would apply to every project); nothing for absent names, never `NAME=value` on argv.
 - Audit: no other cmru container launch uses the `cwd.parent` mount (`docker buildx bake` image builds, `docker login`, `tester_gate` docker runs).
 
 **Oracles:** `tests/test_builtin_handlers.py::test_wheel_build_nested_project_mounts_the_worktree_root` (real linked worktree, `libraries/pkg`: mount is the worktree root, none of only `libraries`), `..._top_level_project_argv_is_unchanged`, `..._copied_one_project_repo_mounts_the_parent`, `..._forwards_build_env_by_name_only`, `..._forwards_no_env_when_unset`; each fix was reverted by hand and a test failed.
