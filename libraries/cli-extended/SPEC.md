@@ -1152,7 +1152,10 @@ reviewed grammar. The library exposes one integer `CONTRACT_VERSION`
    unchanged and the signature context contains only the control's canonical
    flag, the route, and the route's required baseline. No other library
    control produces a candidate. Upgrading the library without changing
-   `CONTRACT_VERSION` MUST leave every consumer's signatures unchanged.
+   `CONTRACT_VERSION` MUST leave every consumer's signatures unchanged. This
+   binds every release after 0.2.0, the first release of contract version 1;
+   the 0.2.0 export (manifest schema 7, including verb options exported with
+   their real `None`/`False` defaults) is the version-1 baseline.
 5. **A contract bump is one finding.** `CONTRACT_VERSION` MUST change when a
    library control's accepted syntax or meaning changes in a way consumers must
    re-review (a flag added, removed, renamed; arity, choices, or placement

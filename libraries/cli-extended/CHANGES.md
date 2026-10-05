@@ -37,7 +37,9 @@ control still suppresses its default so a value parsed before the verb
 survives. The surface manifest records these defaults, so manifests and the
 review signatures of routes with such options change: run
 `cli-extended surface sync` and re-review the cases `check` reports as
-changed. `CONTRACT_VERSION` is not bumped (no library control changed).
+changed. `CONTRACT_VERSION` is not bumped: no library control changed, and
+this lands before contract version 1 is first released, so it is part of the
+version-1 baseline (SPEC "Library contract and contract version", rule 4).
 
 When a future release bumps `CONTRACT_VERSION`, its entry below states what
 changed in the controls and what a consumer must re-review.
