@@ -1,4 +1,4 @@
-BLOCKED: the library's pytest plugin cannot serve a project with more than one reviewed CLI (details below). Everything that did not depend on it is done and committed; the catalog/review work (step 7) is intentionally not started, because its test linking cannot be verified until the library is fixed.
+STATUS: CHECKPOINT (the original BLOCK was resolved by W6b; see "Resumption" at the end). The BLOCK text below is kept as history.
 
 # W9a report: Netcup adopts cli-extended (checkpoint, BLOCKED)
 
@@ -64,3 +64,23 @@ AC-04 synopsis overrides (keep the informative ones); AC-07 configure callbacks 
 Gate verdict: none (not run).
 
 Co-Authored-By: Claude Sonnet <noreply@anthropic.com>
+
+## Resumption (checkpoint 2, after the coordinator unblocked W9a)
+
+State at this checkpoint (HEAD of `cli-ext-w9a-netcup`, integration merged in):
+
+- `pytest tests/ -q` in `scripts/netcup` (real plugin, real `cli-extended.toml`, nice/ionice, serial): **228 passed**. The plugin now works with the three CLIs in one config.
+- **monitor-task is finished for step 7**: its 13 existing catalog rows were re-signed to schema 7 (only `reviewed_signature` changed; every decision, rationale, effect and test link is untouched, so no test assertion changed). `cli-extended surface check --cli monitor-task` prints `CLI surface check passed.`
+- **install-host (78 pending cases) and scp-api (151 pending cases) are NOT done.** Their catalogs are still empty schema stubs; their manifests and spec regions are synced. `surface template --cli <id>` prints the skeleton rows (one saved copy for install-host was at the scratchpad `tpl-ih.txt`, regenerate rather than trust it).
+- Not started: `surface pack` + LLM review, findings (including the AC-07 `wontfix` findings pointing at CLI-EXT-17 and the AC-19/AC-20 adoption notes), the audit transcripts, synopsis-override cleanup, README/DESIGN-GUIDE workflow paragraph, the `suite` gate lane.
+- Tooling note: I kept running the library from the worktree source with a scratch `cli_extended-0.2.0.dev0.dist-info/METADATA` on `PYTHONPATH` (scratchpad `w9a-meta`, helper `w9a-env.sh` defines `cx`) instead of the editable scratch venv, because `pip install -e` needs build-time downloads that are not available here. Behaviour is identical for `sync`/`check`/`audit`/`pack`.
+
+Facts the successor needs (verified in `review.py` `check_cli_surface`, ~line 1489 onward): an `active` case must carry a concrete `invocation` that names the route's command path, uses only declared options, supplies every required positional and a valid value for each option under review, and (for constraint/exclusive candidates) triggers the rule; `expected_exit_status`, `effects`, `rationale`, `decision`, `test_ids` are required. The invocation is documentation: the linked test is what actually runs, and the plugin requires each `test_ids` node to exist, carry `@pytest.mark.cli_case("<id>")` and be listed. Per the coordinator, keep tests DRY with one parametrized test per library control (`--json`, `--debug-raw`, `--yes`, `--dry-run`) across routes using `pytest.param(..., marks=pytest.mark.cli_case(...))`, and list each param node id in `test_ids`.
+
+Remaining work, in order:
+1. install-host catalog (78 rows) + linked tests (in-process `_invoke_app`-style with `FakeClient` for dry-run/confirm paths; `make_invoker` only for parse refusals).
+2. scp-api catalog (151 rows) + linked tests.
+3. `surface pack` per CLI, review per `cli-extended-review/SKILL.md`, findings files (fix blockers/majors; wontfix with rationale for product decisions; AC-07 items `wontfix` -> CLI-EXT-17).
+4. `surface sync`/`check` and `audit --cli <id>` x3 transcripts; delete redundant `synopsis=` overrides the audit warns about.
+5. README/DESIGN-GUIDE: new test/config workflow (cli-extended.toml, per-CLI spec/catalog/findings files, plugin, `invoke_script`).
+6. `cd scripts/netcup && flock <scratchpad>/gate.lock ./run-gate.py --worktree <wt> suite > <scratchpad>/w9a-suite.log 2>&1`, then `grep verdict` separately; fill in the oracle evidence (O1-O5) and the deviations table.
