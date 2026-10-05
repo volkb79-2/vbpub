@@ -7073,3 +7073,22 @@ candidates/minute; roughly 7h50m remained at that observed rate. No verdict
 was read, and no P6 tree/container was changed. Next progress inspection for
 both campaigns is not before 23:36Z unless a concrete error/completion signal
 arrives sooner.
+
+### RW-460 — 2026-10-05 23:26:40 UTC — Sol fix-verification accepts P1 for provisional integration
+
+The same fresh Sol reviewer verified the corrections on the reconciled P1
+repair tree `99cffbe09d9fe72d45ee34ad61b4c767b950a1c1` and returned `ACCEPT`
+for provisional integration, not release. It confirmed the 19-gap/six-
+equivalent survivor disposition; the cleanup diagnostic withholds a no-reuse
+claim unless the identified index is actually quarantined; and the lock tests
+assert file mode/group behavior rather than a helper call. No new blocker was
+found. The reviewer did not rerun tests or doctor; its full disposition and
+evidence limits are recorded in
+`scripts/cgroup-profiler/nyxloom-trove/reports/cgprofile-P1-R2-SURVIVOR-SOL-REVIEW-20261005.md`.
+
+The controller's seven focused regression cases passed (1.95 seconds) and
+`run-gate.py doctor` on `99cffbe` reported 9 OK, 2 warnings, 0 failures, and
+2 info. Both were before the review-record commit; exact-tip `r0-r1`, `r3`,
+and doctor will be refreshed after that commit. The c24 P1 R2 campaign remains
+active only as old-tree triage and cannot certify the repaired/reconciled
+tree. Do not change its judged checkout.
