@@ -454,7 +454,9 @@ spec = "CLI-SPEC.md"
 
 The `findings` file is optional. Discovery walks up from the current directory
 to the first directory holding either file (both in one directory is an error);
-`--config PATH` names one explicitly, and `--cli ID` picks a CLI when several
+a malformed or unreadable `pyproject.toml` or `cli-extended.toml` met on the
+way is an error naming the file, never skipped (pass `--config PATH` to bypass
+it); `--config PATH` names one explicitly, and `--cli ID` picks a CLI when several
 are configured. Then run the shared command from anywhere inside the project:
 
 ```bash

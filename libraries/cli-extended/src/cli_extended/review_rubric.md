@@ -30,7 +30,8 @@ data) but do not declare `mutating`, have no `--yes` confirmation and offer no
 `--dry-run`.
 How to record it: category `semantics`, remedy "declare `mutating=True` with
 `dry_run=True`" or an explicit reason it is safe. A destructive verb with neither
-is `blocker`.
+is `blocker`. Exemption: a verb that writes only generated, idempotent files the
+tool owns and regenerates (and never user-authored state) need not be `mutating`.
 
 ### Read verbs without `--json`
 

@@ -555,6 +555,14 @@ because a gate that fails on every style remark gets switched off. Findings
 that name a route which no longer exists fail as stale, so closed-out work
 cannot silently point at nothing.
 
+`surface sync`, `check` and `template` are deliberately not marked `mutating`.
+The exemption criterion: they write only generated, idempotent files the
+library owns (the manifest and the marked spec region), re-running them
+changes nothing, and they never touch the catalog or findings. A confirmation
+or `--dry-run` there would only get in the way of `check`-style gating.
+Any verb that changes state it does not own or cannot regenerate still needs
+`mutating` with a confirmation or dry-run.
+
 The library never rewrites the catalog or the findings file. A tool that
 rewrites reviewed text turns every regeneration into a diff nobody wrote and
 loses comments, ordering and the author's wording; hand edits by the reviewer,

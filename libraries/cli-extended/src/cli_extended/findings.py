@@ -85,7 +85,7 @@ def _finding(raw: Any, index: int) -> Finding:
         if key not in _FINDING_KEYS:
             raise FindingsError(f"unknown key {key!r} in {where}")
     identifier = _text(raw, "id", where, required=True)
-    if not _ID.fullmatch(identifier):
+    if not _ID.fullmatch(identifier):  # whole string, never a prefix
         raise FindingsError(
             f"{where}.id {identifier!r} must match [A-Za-z0-9][A-Za-z0-9._-]*"
         )

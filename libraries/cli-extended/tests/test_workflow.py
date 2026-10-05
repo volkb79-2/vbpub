@@ -39,6 +39,7 @@ from cli_extended import (
 )
 from cli_extended.cli import _case_toml, _fence, render_pack, render_report
 from cli_extended.findings import FindingsError, load_review_findings
+from cli_extended.parser import fixed_help_width
 from cli_extended.review import SURFACE_END_MARKER, SURFACE_START_MARKER
 
 SRC = Path(cli_extended.__file__).resolve().parent.parent
@@ -568,7 +569,8 @@ def test_o5_pack_contains_rubric_help_for_every_route_and_each_pending_case(tmp_
     assert f"- Surface schema version: {surface['schema_version']}\n" in first
     for argv in (["help"], ["help", "inspect"]):
         out = io.StringIO()
-        assert app.run(argv=argv, stdout=out, stderr=io.StringIO()) == 0
+        with fixed_help_width(100):
+            assert app.run(argv=argv, stdout=out, stderr=io.StringIO()) == 0
         assert "```text\n" + out.getvalue().rstrip("\n") + "\n```" in first
     for candidate in surface["candidates"]:
         assert f"### `{candidate['id']}`\n" in first
@@ -839,3 +841,132 @@ def test_o9_in_process_help_version_and_registry_policy(capsys):
     assert cli_module.build_cli(injected).identity is injected
     assert cli_module.main(["--help"]) == 0
     assert capsys.readouterr().out.startswith("CLI-EXTENDED 0.1.0")
+
+
+# ---- review round 1 ----------------------------------------------------------
+
+
+def test_pack_is_identical_for_any_terminal_width(tmp_path, monkeypatch, capsys):
+    _project(tmp_path, monkeypatch, catalog=False)
+    bundles = {}
+    for columns in ("40", "200"):
+        monkeypatch.setenv("COLUMNS", columns)
+        code, out, err = _run(capsys, "surface", "pack")
+        assert (code, err) == (0, "")
+        bundles[columns] = out
+    assert bundles["40"] == bundles["200"]
+    # The width is pinned, not absent: the same help wraps differently outside pack.
+    app = _build_cli()
+    plain = {}
+    for columns in ("60", "200"):
+        monkeypatch.setenv("COLUMNS", columns)
+        out = io.StringIO()
+        app.run(argv=["help", "inspect"], stdout=out, stderr=io.StringIO())
+        plain[columns] = out.getvalue()
+    assert plain["60"] != plain["200"]
+    # ... and pack uses the 100-column rendering.
+    monkeypatch.setenv("COLUMNS", "100")
+    out = io.StringIO()
+    app.run(argv=["help", "inspect"], stdout=out, stderr=io.StringIO())
+    assert out.getvalue().rstrip("\n") in bundles["40"]
+
+
+def test_pack_help_has_no_colour_even_when_argparse_would_force_it(tmp_path, monkeypatch, capsys):
+    _project(tmp_path, monkeypatch, catalog=False)
+    monkeypatch.setenv("FORCE_COLOR", "1")
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    code, out, _err = _run(capsys, "surface", "pack")
+    assert code == 0
+    assert "\x1b" not in out
+    assert "usage: audit-tool inspect" in out
+
+
+def test_help_with_no_color_is_plain_under_force_color_and_color_still_works(monkeypatch):
+    monkeypatch.setenv("FORCE_COLOR", "1")
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    app = _build_cli()
+    for argv in (["--help", "--no-color"], ["inspect", "--help", "--no-color"], ["--no-color", "help", "inspect"]):
+        out = io.StringIO()
+        assert app.run(argv=argv, stdout=out, stderr=io.StringIO()) == 0
+        assert "\x1b" not in out.getvalue(), argv
+    out = io.StringIO()
+    assert app.run(argv=["inspect", "--help", "--color"], stdout=out, stderr=io.StringIO()) == 0
+    assert "\x1b[1;36m--help\x1b[0m" in out.getvalue()
+
+
+def test_the_parser_never_lets_argparse_colour_on_its_own(monkeypatch):
+    from cli_extended import ExtendedArgumentParser
+
+    monkeypatch.setenv("FORCE_COLOR", "1")
+    parser = ExtendedArgumentParser(
+        prog="x", identity=CliIdentity("X", "1.0", "X", command="x")
+    )
+    parser.add_argument("--flag", help="a flag")
+    assert "\x1b" not in parser.format_help()
+    assert "\x1b" not in parser.format_usage()
+
+
+def test_pack_shape_json_is_key_sorted(tmp_path):
+    app, surface, catalog = _surface_and_catalog(tmp_path)
+    candidate = {
+        **surface["candidates"][0],
+        "shape": {"zeta": 1, "alpha": {"yy": 1, "bb": [2, {"q": 1, "c": 2}]}},
+        "members": ["m"],
+    }
+    catalog = types.SimpleNamespace(cases=(), cases_by_id={})
+    text = render_pack(app, {**surface, "candidates": [candidate]}, catalog, None)
+    expected = json.dumps(
+        {
+            "route_id": candidate["route_id"],
+            "members": ["m"],
+            "shape": candidate["shape"],
+            "signature": candidate["signature"],
+        },
+        indent=2, sort_keys=True,
+    )
+    assert expected in text
+    assert text.index('"alpha"') < text.index('"zeta"')
+    assert text.index('"bb"') < text.index('"yy"')
+    assert text.index('"members"') < text.index('"route_id"') < text.index('"shape"') < text.index('"signature"')
+
+
+def test_pack_with_only_a_stale_case_lists_it_and_does_not_say_none(tmp_path):
+    extra = ["[[cases]]", 'id = "case:gone"', 'state = "pending"']
+    app, surface, catalog = _surface_and_catalog(tmp_path, None, extra)
+    text = render_pack(app, surface, catalog, None)
+    section = text.split("## Cases to review\n\n")[1].split("\n## Open findings")[0]
+    assert section.startswith("### `case:gone`\n")
+    assert "None." not in section
+    assert "- kind: stale\n" in section
+
+
+def test_discovery_from_a_symlinked_directory_finds_the_physical_parents_config(tmp_path, monkeypatch):
+    from cli_extended import load_project_config
+
+    project = tmp_path / "project"
+    (project / "sub").mkdir(parents=True)
+    (project / "cli-extended.toml").write_text(
+        'schema_version = 1\n[[clis]]\nid = "a"\nfactory = "m:f"\n', encoding="utf-8"
+    )
+    link = tmp_path / "elsewhere" / "link"
+    link.parent.mkdir()
+    link.symlink_to(project / "sub", target_is_directory=True)
+    assert load_project_config(start=link).path == (project / "cli-extended.toml").resolve()
+    monkeypatch.chdir(link)
+    assert load_project_config().path == (project / "cli-extended.toml").resolve()
+
+
+def test_backslash_alone_does_not_make_a_factory_a_file_path(monkeypatch):
+    import cli_extended.config as config
+
+    seen = []
+
+    def fake_import(name):
+        seen.append(name)
+        return types.SimpleNamespace(build=lambda: _build_cli())
+
+    monkeypatch.setattr(config.importlib, "import_module", fake_import)
+    assert config.load_factory("pkg\\mod:build").identity.command_name == "audit-tool"
+    assert seen == ["pkg\\mod"]
+    assert config._is_file_target("a/b") and config._is_file_target("x.py")
+    assert not config._is_file_target("a\\b")

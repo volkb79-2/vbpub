@@ -16,7 +16,15 @@ from . import contract
 from .config import ConfigError, CliConfig, load_cli, load_project_config
 from .findings import FindingsError, FindingsFile
 from .identity import CliIdentity, VersionLookupError
-from .parser import CliFailure, CliRegistry, CliRuntime, OptionSpec, RegisteredCli, VerbSpec
+from .parser import (
+    CliFailure,
+    CliRegistry,
+    CliRuntime,
+    OptionSpec,
+    RegisteredCli,
+    VerbSpec,
+    fixed_help_width,
+)
 from .review import (
     ReviewCase,
     ReviewCatalog,
@@ -31,6 +39,7 @@ from .review import (
 from .skills import register_skills_verbs
 from .surface import SURFACE_SCHEMA_VERSION, SurfaceError, export_cli_surface
 
+PACK_HELP_COLUMNS = 100
 NO_TEMPLATE_ROWS = "No semantic review rows need adding or updating.\n"
 RUBRIC_RESOURCE = "review_rubric.md"
 _EXPECTED = (
@@ -206,11 +215,8 @@ def render_report(
 
 def _route_help(app: RegisteredCli, path: Sequence[str]) -> str:
     stdout, stderr = io.StringIO(), io.StringIO()
-    app.run(
-        argv=["--no-color", *path[:-1], "help", *path[-1:]],
-        stdout=stdout,
-        stderr=stderr,
-    )
+    with fixed_help_width(PACK_HELP_COLUMNS):
+        app.run(argv=[*path[:-1], "help", *path[-1:]], stdout=stdout, stderr=stderr)
     return stdout.getvalue()
 
 

@@ -84,7 +84,7 @@ def _string(table: Mapping[str, Any], key: str, where: str, path: Path) -> str:
 
 
 def _is_file_target(target: str) -> bool:
-    return target.endswith(".py") or "/" in target or "\\" in target
+    return target.endswith(".py") or "/" in target
 
 
 def _absolute(value: str, root: Path) -> Path:

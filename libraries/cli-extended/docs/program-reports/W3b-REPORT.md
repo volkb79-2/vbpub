@@ -46,3 +46,20 @@ In `review.py::_findings_results` changed `item.severity in BLOCKING_SEVERITIES`
 - `[project.scripts] cli-extended = "cli_extended.cli:main"`.
 - Package data: `cli_extended/skills/**` and `cli_extended/review_rubric.md` (the gate runs from the source tree, so tests do not prove the wheel contains them).
 - `CHANGES.md` mention of the deprecation of `python -m cli_extended.surface_cli`.
+
+## Review round 1
+
+Verdict was REJECT; all items fixed.
+
+| # | Finding | Fix | Test |
+|---|---|---|---|
+| 1 | pack help depended on `COLUMNS`/tty | `parser.fixed_help_width(columns)` context manager (a `ContextVar` read by `help_columns()`, used by the formatter and the help catalog); no env or global mutation. `surface pack` pins 100 columns (`cli.PACK_HELP_COLUMNS`) | `test_pack_is_identical_for_any_terminal_width` (COLUMNS=40 vs 200 identical; unpinned help differs, so the test is meaningful) |
+| 2 | argparse (3.14) coloured `usage:`/headings under `FORCE_COLOR`, ignoring `--no-color`; a library-wide bug | `ExtendedArgumentParser` passes `color=False` when `ArgumentParser.__init__` accepts it (detected with `inspect.signature`); the `--no-color` argv hack in `_route_help` is removed | `test_pack_help_has_no_colour_even_when_argparse_would_force_it`, `test_help_with_no_color_is_plain_under_force_color_and_color_still_works` (library `--color` colour still present), `test_the_parser_never_lets_argparse_colour_on_its_own`; removing the fix fails 3 of them |
+| 3 | `fullmatch` to `match` survived | rejection cases `"a b!"`, `"ab!"` | `test_o3_invalid_findings_files_are_refused[*]` |
+| 4 C7 | backslash clause in `_is_file_target` | removed; SPEC states Windows is unsupported | `test_backslash_alone_does_not_make_a_factory_a_file_path` |
+| 4 C8 | symlinked cwd | test only (discovery already resolves) | `test_discovery_from_a_symlinked_directory_finds_the_physical_parents_config` |
+| 4 V6 | pack shape key order | fixture with unsorted keys, exact `json.dumps(sort_keys=True)` | `test_pack_shape_json_is_key_sorted` |
+| 4 V18 | stale-only pack | | `test_pack_with_only_a_stale_case_lists_it_and_does_not_say_none` |
+| 5 | docs decisions | non-mutating exemption in DESIGN-GUIDE and the rubric's mutating item; loud discovery failure on a malformed config in SPEC and CONSUMERS (remedy `--config`); SPEC rules 9 (colour) and the 100-column pack width | `tests/test_docs.py` |
+
+`parser.py` touched only for the fixed width and `color=False`. Gate after the last edit: `run-gate: lane 'r0-r1' verdict PASS; exit_code 0`.

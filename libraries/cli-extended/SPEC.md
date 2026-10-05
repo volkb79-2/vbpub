@@ -1168,7 +1168,11 @@ always present.
    `pyproject.toml` with the table wins. Both in one directory is an error;
    none found is an error listing the searched directories. `--cli ID` is
    required when several CLIs are configured, and `id` MUST equal the registered
-   executable name.
+   executable name. A malformed or unreadable `pyproject.toml` or
+   `cli-extended.toml` met during the walk is a `ConfigError` naming the file
+   (it is never skipped); the remedy is `--config PATH`. A `factory` target is a
+   file path when it contains `/` or ends in `.py`; Windows path separators are
+   unsupported, so a target with only a backslash is a module name.
 3. **Findings file.** `schema_version = 1`, `cli_id`, and `[[findings]]` with a
    unique `id` (`[A-Za-z0-9][A-Za-z0-9._-]*`), `status` (`open`, `fixed`,
    `wontfix`), `severity` (`blocker`, `major`, `minor`, `note`), `category`
@@ -1198,8 +1202,15 @@ always present.
    surface schema version), `## Help` (the plain `help` output of the root and
    every route), `## Cases to review` (id, kind, shape and current catalog row
    of every awaiting and stale case), `## Open findings` and `## Your task`.
-   Two runs over the same inputs MUST produce identical bytes.
-8. **Deprecation.** `python -m cli_extended.surface_cli` keeps its flags and
+   Two runs over the same inputs MUST produce identical bytes: help is rendered
+   at a fixed width of 100 columns regardless of `COLUMNS` or the terminal, and
+   without colour.
+9. **No library-independent colour.** On Pythons whose `argparse` accepts a
+   `color` argument, `ExtendedArgumentParser` passes `color=False`, so the
+   library's own policy (`--color`, `--no-color`, `NO_COLOR`, TTY detection) is
+   the only source of colour; `FORCE_COLOR` MUST NOT colour argparse's `usage:`
+   or section headings.
+10. **Deprecation.** `python -m cli_extended.surface_cli` keeps its flags and
    behaviour, writes `[WARN] ... is deprecated` to stderr first, and is
    removed in a later release.
 

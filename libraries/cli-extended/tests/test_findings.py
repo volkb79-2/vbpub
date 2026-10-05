@@ -74,6 +74,8 @@ GOOD = OPEN.format(id="x", sev="major")
         (HEADER + GOOD + "bogus = 1\n", r"unknown key 'bogus' in findings\[0\]"),
         (HEADER + GOOD.replace('id = "x"\n', ""), "missing required key 'id'"),
         (HEADER + GOOD.replace('"x"', '"-x"', 1), "must match"),
+        (HEADER + GOOD.replace('"x"', '"a b!"', 1), "must match"),
+        (HEADER + GOOD.replace('"x"', '"ab!"', 1), "must match"),
         (HEADER + GOOD.replace('"open"', '"closed"'), "status must be one of open, fixed, wontfix, got 'closed'"),
         (HEADER + GOOD.replace('"major"', '"huge"'), "severity must be one of blocker, major, minor, note"),
         (HEADER + GOOD.replace('"help"', '"style"'), "category must be one of grammar, help"),
