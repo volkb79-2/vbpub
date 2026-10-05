@@ -544,7 +544,16 @@ def _workflow_options(*, target_picker: bool, monitor: bool):
 def _attach_options():
     return (
         _option(("--attach-task-uuid",), "identifier used for local capture files (default: timestamp)", group="ATTACH SESSION", default=None),
-        _option(("--simulate-disconnect-seconds",), "testing aid: force an SSH reconnect after this many seconds", group="ATTACH SESSION", type=float, default=None),
+        # Hidden on purpose (AC-08): a test/debug hook that forces an SSH
+        # reconnect to exercise the reattach logic; not part of the supported
+        # operator interface, so it stays out of --help but remains accepted.
+        OptionSpec(
+            ("--simulate-disconnect-seconds",),
+            "testing aid: force an SSH reconnect after this many seconds",
+            group="ATTACH SESSION",
+            parser_kwargs={"type": float, "default": None},
+            hidden=True,
+        ),
         _option(("--attach-initial-delay",), "delay before the first SSH probe (default: install-host.toml)", group="STOP CONDITIONS", type=_positive_finite, default=None),
         _option(("--attach-max-wait-seconds",), "maximum time to wait for SSH (default: install-host.toml)", group="STOP CONDITIONS", type=_positive_finite, default=None),
         _option(("--poll-interval",), "retry interval for SSH attachment (default: install-host.toml)", group="STOP CONDITIONS", type=_positive_finite, default=None),
@@ -694,6 +703,31 @@ def _should_monitor(args: argparse.Namespace) -> bool:
     )
 
 
+def _print_dry_run_ssh_plan(args: argparse.Namespace, ip_address: Optional[str]) -> None:
+    """Show the SSH target and key choice a live run would use after the POST."""
+    host = getattr(args, "ssh_host", None) or ip_address
+    identity = getattr(args, "ssh_identity_file", None)
+    if identity:
+        origin = "explicit" if getattr(args, "identity_explicit", False) else "from install-host.toml"
+        identity_text = f"{identity} ({origin})"
+    else:
+        identity_text = "none configured (normal ssh key/agent discovery)"
+    print(f"[dry-run] Monitor after install: {'yes' if _should_monitor(args) else 'no'}")
+    print(
+        "[dry-run] SSH target: "
+        f"{getattr(args, 'ssh_user', None)}@{host or '(unresolved: no --ssh-host and no server IPv4)'}:22"
+    )
+    print(f"[dry-run] SSH identity: {identity_text}")
+    print(
+        "[dry-run] Follow customScript log over SSH: "
+        f"{'yes' if getattr(args, 'attach_custom_script', True) else 'no'}"
+    )
+    print(
+        "[dry-run] Local controller key after the completion marker: "
+        f"{getattr(args, 'local_controller_key', None)}"
+    )
+
+
 def _fmt_ts(ts: Optional[str]) -> str:
     if not ts:
         return ""
@@ -839,7 +873,7 @@ def _find_active_task_for_server(client: "NetcupSCPClient", server_id: int) -> O
         if not isinstance(t, dict):
             continue
         state = t.get("state")
-        if isinstance(state, str) and state in _TASK_TERMINAL_STATES:
+        if isinstance(state, str) and state.upper() in _TASK_TERMINAL_STATES:
             continue
         active.append(t)
 
@@ -1691,6 +1725,7 @@ def install_from_payload(
 
     if args.dry_run:
         print("=" * 70)
+        _print_dry_run_ssh_plan(args, ip_address)
         print(f"[dry-run] Preflight OK. NOT calling POST /api/v1/servers/{server_id}/image.")
         print("=" * 70)
         return
@@ -2053,12 +2088,6 @@ def _prepare_runtime_arguments(cli_args, runtime):
                 exit_code=2,
                 show_help=True,
             )
-    if cli_args.command == "install" and cli_args.server_id is not None:
-        raise CliFailure(
-            "install reads its target from --config/target-host.jsonc; do not combine it with --server-id",
-            exit_code=2,
-            show_help=True,
-        )
     if cli_args.config_path and cli_args.server_id is not None and cli_args.command not in {"wizard", "configure"}:
         raise CliFailure(
             "--config/--payload supplies its own target; do not combine it with --server-id",
@@ -2486,6 +2515,7 @@ def _run_install_workflow_body(args, runtime):
                 "(would overwrite any existing "
                 "file, and any not-yet-created SSH key above is only a placeholder id)."
             )
+            _print_dry_run_ssh_plan(args, ip_address)
             print(f"[dry-run] Preflight OK. NOT calling POST /api/v1/servers/{server_id}/image.")
             print("=" * 70)
             return

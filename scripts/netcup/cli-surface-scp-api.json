@@ -10,10 +10,10 @@
       "shape": {
         "argument_id": "argument:route:entrypoint:scp-api/attach-iso/server_id"
       },
-      "signature": "sha256:0242cd1896480175ab89ce4a73efe42769a4623bb81a590edd3e79dff11fbf25"
+      "signature": "sha256:f09ec351a4ad00b32bcbfc46c11d67836400dae1729a13a0b93e3c0deede3b39"
     },
     {
-      "id": "case:route:entrypoint:scp-api/attach-iso/exclusive-conflict/parser-exclusive-ed5cad99d2f0/option:route:entrypoint:scp-api/attach-iso/--iso-id/option:route:entrypoint:scp-api/attach-iso/--user-iso-name",
+      "id": "case:route:entrypoint:scp-api/attach-iso/exclusive-conflict/iso-source/option:route:entrypoint:scp-api/attach-iso/--iso-id/option:route:entrypoint:scp-api/attach-iso/--user-iso-name",
       "kind": "exclusive-conflict",
       "members": [
         "option:route:entrypoint:scp-api/attach-iso/--iso-id",
@@ -21,41 +21,41 @@
       ],
       "route_id": "route:entrypoint:scp-api/attach-iso",
       "shape": {
-        "group_id": "parser-exclusive-ed5cad99d2f0",
+        "group_id": "iso-source",
         "options": [
           "option:route:entrypoint:scp-api/attach-iso/--iso-id",
           "option:route:entrypoint:scp-api/attach-iso/--user-iso-name"
         ]
       },
-      "signature": "sha256:753e55920393dbbf4092d57921122b4614cb32346fac16b369f12e777e94defd"
+      "signature": "sha256:b0f1ebf94fc2a2c0287f073103dd864684f3c0180a7a45de4e95b0ee87a03fd7"
     },
     {
-      "id": "case:route:entrypoint:scp-api/attach-iso/exclusive-member/parser-exclusive-ed5cad99d2f0/option:route:entrypoint:scp-api/attach-iso/--iso-id",
+      "id": "case:route:entrypoint:scp-api/attach-iso/exclusive-member/iso-source/option:route:entrypoint:scp-api/attach-iso/--iso-id",
       "kind": "exclusive-member",
       "members": [
         "option:route:entrypoint:scp-api/attach-iso/--iso-id"
       ],
       "route_id": "route:entrypoint:scp-api/attach-iso",
       "shape": {
-        "group_id": "parser-exclusive-ed5cad99d2f0",
+        "group_id": "iso-source",
         "required": true,
         "selected_option": "option:route:entrypoint:scp-api/attach-iso/--iso-id"
       },
-      "signature": "sha256:9a6323cf67512aee8202e050297cc29fc6818d4df03c5e26edb167500af2dee4"
+      "signature": "sha256:bb8d4977620864e52b8736269bf21724f1b5072926838b774176d338623c2690"
     },
     {
-      "id": "case:route:entrypoint:scp-api/attach-iso/exclusive-member/parser-exclusive-ed5cad99d2f0/option:route:entrypoint:scp-api/attach-iso/--user-iso-name",
+      "id": "case:route:entrypoint:scp-api/attach-iso/exclusive-member/iso-source/option:route:entrypoint:scp-api/attach-iso/--user-iso-name",
       "kind": "exclusive-member",
       "members": [
         "option:route:entrypoint:scp-api/attach-iso/--user-iso-name"
       ],
       "route_id": "route:entrypoint:scp-api/attach-iso",
       "shape": {
-        "group_id": "parser-exclusive-ed5cad99d2f0",
+        "group_id": "iso-source",
         "required": true,
         "selected_option": "option:route:entrypoint:scp-api/attach-iso/--user-iso-name"
       },
-      "signature": "sha256:703dd505f155afdd98485049343c855bf62ced94ddf3a7521910c271aefe6585"
+      "signature": "sha256:f93f345720cc99b745c0dc923e85db17ad34ed030afa7adf311d67ddec667b44"
     },
     {
       "id": "case:route:entrypoint:scp-api/attach-iso/minimum",
@@ -78,14 +78,14 @@
           "argument:route:entrypoint:scp-api/attach-iso/server_id"
         ],
         "required_exclusive_groups": {
-          "parser-exclusive-ed5cad99d2f0": [
+          "iso-source": [
             "option:route:entrypoint:scp-api/attach-iso/--iso-id",
             "option:route:entrypoint:scp-api/attach-iso/--user-iso-name"
           ]
         },
         "required_options": []
       },
-      "signature": "sha256:92d9407c07fde74da398d7881f137643b0dfacfdb4da08ad8634e7bec8dc1c52"
+      "signature": "sha256:1eac32fcdc2455be95c7ec7da33a8a55e931d54a8567a615cafb37a25ca23a5a"
     },
     {
       "id": "case:route:entrypoint:scp-api/attach-iso/option-spelling/option:route:entrypoint:scp-api/attach-iso/--change-boot-device-to-cdrom/--change-boot-device-to-cdrom",
@@ -98,7 +98,7 @@
         "option_id": "option:route:entrypoint:scp-api/attach-iso/--change-boot-device-to-cdrom",
         "spelling": "--change-boot-device-to-cdrom"
       },
-      "signature": "sha256:788d11fbe98d939ab1b45f97d3fa8cf7e2f1cb7da9c46bb04731baf2d1fa1a46"
+      "signature": "sha256:668077da32986d0b6a4b06f95b3d165d1028e5e0086e796aa3a97757e8ccd93f"
     },
     {
       "id": "case:route:entrypoint:scp-api/attach-iso/option-spelling/option:route:entrypoint:scp-api/attach-iso/--debug-raw/--debug-raw",
@@ -111,7 +111,7 @@
         "option_id": "option:route:entrypoint:scp-api/attach-iso/--debug-raw",
         "spelling": "--debug-raw"
       },
-      "signature": "sha256:5a0b8c1b0ad72690ae7df0c7ece6b5a89273114a95562f9dc283675ee920ee12"
+      "signature": "sha256:19b30bced643836aa3e4dcdfef95fd7a412f87b3541442ba1a8f88c12219791b"
     },
     {
       "id": "case:route:entrypoint:scp-api/attach-iso/option-spelling/option:route:entrypoint:scp-api/attach-iso/--iso-id/--iso-id",
@@ -124,7 +124,7 @@
         "option_id": "option:route:entrypoint:scp-api/attach-iso/--iso-id",
         "spelling": "--iso-id"
       },
-      "signature": "sha256:78d991add617c88d051b8d306a8a18c10b374af5c5f2cfff7d96e076541d493a"
+      "signature": "sha256:246e6aaeba4de446bdfa3f8e7b9415796bcb28d896e9bac0525b527818e2664b"
     },
     {
       "id": "case:route:entrypoint:scp-api/attach-iso/option-spelling/option:route:entrypoint:scp-api/attach-iso/--json/--json",
@@ -137,7 +137,7 @@
         "option_id": "option:route:entrypoint:scp-api/attach-iso/--json",
         "spelling": "--json"
       },
-      "signature": "sha256:5dc23b3db9e03d6893ec5159b444c086c636089c1802d1826851706e0a2f3f3a"
+      "signature": "sha256:55160902da60e9697384a22a1622b79466437f25360b62d149d9e60addadf987"
     },
     {
       "id": "case:route:entrypoint:scp-api/attach-iso/option-spelling/option:route:entrypoint:scp-api/attach-iso/--user-iso-name/--user-iso-name",
@@ -150,7 +150,7 @@
         "option_id": "option:route:entrypoint:scp-api/attach-iso/--user-iso-name",
         "spelling": "--user-iso-name"
       },
-      "signature": "sha256:cdcd005aa26775e02c5a2c45dc42e1b129c91679203d3af917dc27b3f58cee75"
+      "signature": "sha256:f0cd3c6cfd97ddca23c273af7e155ec78925cb5c3a62aee30a554f4e5918296d"
     },
     {
       "id": "case:route:entrypoint:scp-api/attach-iso/option-spelling/option:route:entrypoint:scp-api/attach-iso/--yes/--yes",
@@ -163,7 +163,7 @@
         "option_id": "option:route:entrypoint:scp-api/attach-iso/--yes",
         "spelling": "--yes"
       },
-      "signature": "sha256:fe3b5311ae751a59fd239137caa884ab42f73dedb3969d97099ab54c77b7f392"
+      "signature": "sha256:9733da97f2ded79a55523f5366d7e2c3402d779d49b4e86e2428207a88fd7010"
     },
     {
       "id": "case:route:entrypoint:scp-api/disks/argument-choice/argument:route:entrypoint:scp-api/disks/action/d7e3e586da",
@@ -2108,7 +2108,7 @@
           "description": "ID returned by iso-bootable",
           "dest": "iso_id",
           "effective_default": null,
-          "exclusive_group": "parser-exclusive-ed5cad99d2f0",
+          "exclusive_group": "iso-source",
           "exclusive_required": true,
           "flags": [
             "--iso-id"
@@ -2120,7 +2120,12 @@
           "metavar": null,
           "minimum_values": 1,
           "nargs": null,
-          "parser_kwargs": {},
+          "parser_kwargs": {
+            "default": null,
+            "type": {
+              "callable": "_cli_extended_surface_scp_api._positive_int"
+            }
+          },
           "parser_path": [
             "attach-iso"
           ],
@@ -2130,7 +2135,7 @@
             "single_command_invocation": false
           },
           "required": false,
-          "scope": "custom",
+          "scope": "verb-local",
           "type": {
             "callable": "_cli_extended_surface_scp_api._positive_int"
           }
@@ -2146,7 +2151,7 @@
           "description": "name of an ISO uploaded to the account",
           "dest": "user_iso_name",
           "effective_default": null,
-          "exclusive_group": "parser-exclusive-ed5cad99d2f0",
+          "exclusive_group": "iso-source",
           "exclusive_required": true,
           "flags": [
             "--user-iso-name"
@@ -2158,7 +2163,12 @@
           "metavar": "NAME",
           "minimum_values": 1,
           "nargs": null,
-          "parser_kwargs": {},
+          "parser_kwargs": {
+            "default": null,
+            "type": {
+              "callable": "_cli_extended_surface_scp_api._nonempty_text"
+            }
+          },
           "parser_path": [
             "attach-iso"
           ],
@@ -2168,7 +2178,7 @@
             "single_command_invocation": false
           },
           "required": false,
-          "scope": "custom",
+          "scope": "verb-local",
           "type": {
             "callable": "_cli_extended_surface_scp_api._nonempty_text"
           }
@@ -2196,7 +2206,10 @@
           "metavar": null,
           "minimum_values": 0,
           "nargs": 0,
-          "parser_kwargs": {},
+          "parser_kwargs": {
+            "action": "store_true",
+            "default": false
+          },
           "parser_path": [
             "attach-iso"
           ],
@@ -2206,7 +2219,7 @@
             "single_command_invocation": false
           },
           "required": false,
-          "scope": "custom",
+          "scope": "verb-local",
           "type": null
         }
       ],
@@ -2240,7 +2253,7 @@
         "option:route:entrypoint:scp-api/attach-iso/--iso-id.type",
         "option:route:entrypoint:scp-api/attach-iso/--user-iso-name.type"
       ],
-      "parser_configured_by_callback": true,
+      "parser_configured_by_callback": false,
       "parser_settings": [
         {
           "allow_abbrev": false,
@@ -3835,7 +3848,7 @@
           "const": null,
           "default": null,
           "description": "select the power operation",
-          "help_group": "ACTIONS",
+          "help_group": "positional arguments",
           "hidden": false,
           "id": "argument:route:entrypoint:scp-api/power/action",
           "kind": "argument",
@@ -3843,7 +3856,14 @@
           "minimum_values": 1,
           "name": "action",
           "nargs": null,
-          "parser_kwargs": {},
+          "parser_kwargs": {
+            "choices": [
+              "on",
+              "off",
+              "cycle",
+              "reset"
+            ]
+          },
           "parser_path": [
             "power"
           ],
@@ -3866,7 +3886,11 @@
           "minimum_values": 1,
           "name": "server_id",
           "nargs": null,
-          "parser_kwargs": {},
+          "parser_kwargs": {
+            "type": {
+              "callable": "_cli_extended_surface_scp_api._positive_int"
+            }
+          },
           "parser_path": [
             "power"
           ],
@@ -3905,7 +3929,7 @@
       "opaque_fields": [
         "argument:route:entrypoint:scp-api/power/server_id.type"
       ],
-      "parser_configured_by_callback": true,
+      "parser_configured_by_callback": false,
       "parser_settings": [
         {
           "allow_abbrev": false,

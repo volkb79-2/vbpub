@@ -2021,24 +2021,6 @@ def _add_actions(parser, choices, description: str, *, required: bool = False):
     )
 
 
-def _configure_attach_iso(parser):
-    source = parser.add_argument_group("ISO SOURCE").add_mutually_exclusive_group(
-        required=True
-    )
-    source.add_argument("--iso-id", type=_positive_int, help="ID returned by iso-bootable")
-    source.add_argument(
-        "--user-iso-name",
-        type=_nonempty_text,
-        metavar="NAME",
-        help="name of an ISO uploaded to the account",
-    )
-    parser.add_argument_group("BOOT OPTIONS").add_argument(
-        "--change-boot-device-to-cdrom",
-        action="store_true",
-        help="also make the virtual CD-ROM the next boot device",
-    )
-
-
 def _configure_iso_attached(parser):
     _add_actions(parser, ("detach",), "detach the currently attached ISO")
 
@@ -2125,11 +2107,6 @@ def _configure_firewall(parser):
     active.add_argument("--active", dest="active", action="store_true", help="enable the firewall")
     active.add_argument("--inactive", dest="active", action="store_false", help="disable the firewall")
     parser.set_defaults(active=None)
-
-
-def _configure_power(parser):
-    _add_actions(parser, ("on", "off", "cycle", "reset"), "select the power operation", required=True)
-    parser.add_argument("server_id", type=_positive_int, metavar="server_id", help="Netcup SCP server ID")
 
 
 def _command_handler(command: str, implementation):
@@ -2392,7 +2369,13 @@ def build_cli():
         "power", "{on|off|cycle|reset} server_id", "power on, off, cycle, or reset one server",
         "Control a server's power state. Every operation is confirmed unless --yes is supplied.",
         VerbGroup.MODIFICATION.value, cmd_power,
-        configure=_configure_power,
+        arguments=(
+            _argument(
+                "action", "select the power operation", metavar="{on,off,cycle,reset}",
+                choices=("on", "off", "cycle", "reset"),
+            ),
+            _argument("server_id", "Netcup SCP server ID", metavar="server_id", type=_positive_int),
+        ),
         examples=("./scp-api.py power cycle 799611 --yes", "./scp-api.py power on 799611 --yes"), mutating=True,
     )
     register(
@@ -2400,7 +2383,23 @@ def build_cli():
         "Attach an ISO by ID from iso-bootable or a user ISO name. This changes attached media and is confirmed.",
         VerbGroup.MODIFICATION.value, cmd_attach_iso,
         arguments=(_argument("server_id", "Netcup SCP server ID.", metavar="server_id", type=_positive_int),),
-        configure=_configure_attach_iso,
+        options=(
+            OptionSpec(
+                ("--iso-id",), "ID returned by iso-bootable", group="ISO SOURCE",
+                parser_kwargs={"type": _positive_int, "default": None},
+                mutually_exclusive_group="iso-source", mutually_exclusive_required=True,
+            ),
+            OptionSpec(
+                ("--user-iso-name",), "name of an ISO uploaded to the account", group="ISO SOURCE",
+                metavar="NAME", parser_kwargs={"type": _nonempty_text, "default": None},
+                mutually_exclusive_group="iso-source", mutually_exclusive_required=True,
+            ),
+            _option(
+                ("--change-boot-device-to-cdrom",),
+                "also make the virtual CD-ROM the next boot device",
+                group="BOOT OPTIONS", action="store_true", default=False,
+            ),
+        ),
         examples=("./scp-api.py attach-iso 799611 --iso-id 1234 --yes", "./scp-api.py attach-iso 799611 --user-iso-name custom.iso --change-boot-device-to-cdrom --yes"), mutating=True,
     )
     return registry.build()

@@ -90,7 +90,7 @@
         "option_id": "option:route:entrypoint:install-host/attach/--simulate-disconnect-seconds",
         "spelling": "--simulate-disconnect-seconds"
       },
-      "signature": "sha256:6e4d66241287406588b48c128c66748803b623437e3e2e9c4ecd70e7e897e1e9"
+      "signature": "sha256:5c2e7e23f9a5a90a32a5bf5932676adf6241f22aca592a7f5555e1ca3c1b9ea1"
     },
     {
       "id": "case:route:entrypoint:install-host/attach/option-spelling/option:route:entrypoint:install-host/attach/--ssh-host/--ssh-host",
@@ -1130,7 +1130,7 @@
             "--simulate-disconnect-seconds"
           ],
           "help_group": "ATTACH SESSION",
-          "hidden": false,
+          "hidden": true,
           "id": "option:route:entrypoint:install-host/attach/--simulate-disconnect-seconds",
           "kind": "option",
           "metavar": null,
