@@ -3851,12 +3851,18 @@ def _allocated_commit_sha(
         current = head.stdout.strip() if head.returncode == 0 else ""
         if commit is None:
             workspace_base = getattr(workspace_context, "base_commit", None)
-            if (
+            valid_workspace_base = (
                 isinstance(workspace_base, str)
                 and _FULL_SHA_RE.fullmatch(workspace_base)
-                and current == workspace_base
-            ):
+            )
+            if valid_workspace_base and current == workspace_base:
                 commit = workspace_base
+            elif valid_workspace_base and _FULL_SHA_RE.fullmatch(current):
+                raise WorktreeError(
+                    f"[S16] worktree HEAD moved from recorded allocation commit "
+                    f"{workspace_base!r} (current HEAD is {current}); refusing "
+                    "to infer roots or reset the checkout"
+                )
             else:
                 detail = (head.stderr or head.stdout).strip() or (
                     f"workspace base={workspace_base or 'missing'}, "
