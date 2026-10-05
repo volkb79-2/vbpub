@@ -6654,3 +6654,13 @@ optional report dependencies. They do not describe a tester-container failure:
 the registered exact-tree `r0-r1` gate for RW-437 collected and passed 2,275
 tests with full line and branch coverage. Do not run package tests in the
 cockpit; use the project's registered tester-unified lanes.
+
+### RW-439 — 2026-10-05 03:00:33Z — defer new container launches while memory PSI is over the gate
+
+Before launching the startup-fix gate or a synthetic workload, `/proc/pressure/memory`
+reported `full avg10=18.06` (CPU `full avg10=0.00`). The RG-55 launch limit is
+memory `full avg10 <= 5`; therefore no new gate or workload container was
+started. The fix candidate remains clean at `a3735a42e`; run its registered
+gates after a later preflight meets the memory limit and existing tester
+containers have released their resources. This is a resource-safety deferral,
+not a gate result.
