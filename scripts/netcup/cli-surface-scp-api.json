@@ -814,7 +814,7 @@
         "option_id": "option:route:entrypoint:scp-api/imageflavours/--filter",
         "spelling": "--filter"
       },
-      "signature": "sha256:75b1abecbb173062ada9dd91be172c15fb997ae154365653e33c404ca86b0e10"
+      "signature": "sha256:e75ececbd1afedcc1b02714f8aff5089f8b17986615cd25415fa41d3b95b0d16"
     },
     {
       "id": "case:route:entrypoint:scp-api/imageflavours/option-spelling/option:route:entrypoint:scp-api/imageflavours/--json/--json",
@@ -969,7 +969,7 @@
         "option_id": "option:route:entrypoint:scp-api/iso-bootable/--filter",
         "spelling": "--filter"
       },
-      "signature": "sha256:364d5f3b7fc2978767244300ace8d5bbfb4228ce5fdc2cebfb48e4fb0287bc1f"
+      "signature": "sha256:7ed896131f4848d7b6d96d4734b1b7a988532a0d83b5eac7d02775d69f29ec15"
     },
     {
       "id": "case:route:entrypoint:scp-api/iso-bootable/option-spelling/option:route:entrypoint:scp-api/iso-bootable/--json/--json",
@@ -1722,7 +1722,7 @@
         "choice": "WAITING_FOR_CANCEL",
         "option_id": "option:route:entrypoint:scp-api/tasks/--state"
       },
-      "signature": "sha256:de6faac8ab2fcedd30537ddc656f1cae65c398f08bc97ad427f50de9017266a1"
+      "signature": "sha256:3d4426b4bc01d8ab17b6b8e5138c195a30590d77eb350885d4f679b51edfe122"
     },
     {
       "id": "case:route:entrypoint:scp-api/tasks/option-choice/option:route:entrypoint:scp-api/tasks/--state/294bdbf9fe",
@@ -1735,7 +1735,7 @@
         "choice": "RUNNING",
         "option_id": "option:route:entrypoint:scp-api/tasks/--state"
       },
-      "signature": "sha256:1f7721ada7e2f5e7ce80dc1f173336783745b46a0337adccdc3f3e07a96560b2"
+      "signature": "sha256:66272a01f56ace2d11c557f3a7ac54ad69682162a8f9d4c1c66c9769249352b8"
     },
     {
       "id": "case:route:entrypoint:scp-api/tasks/option-choice/option:route:entrypoint:scp-api/tasks/--state/33e202c61f",
@@ -1748,7 +1748,7 @@
         "choice": "FINISHED",
         "option_id": "option:route:entrypoint:scp-api/tasks/--state"
       },
-      "signature": "sha256:b6e290f26b965961e9a0a47e58d5c2e287321e03fb266fa40d19e64ffb395ed7"
+      "signature": "sha256:a50a036f5f33425b3a866ab96757d609e4de64f7263cbc6e065b5a8b37e261e3"
     },
     {
       "id": "case:route:entrypoint:scp-api/tasks/option-choice/option:route:entrypoint:scp-api/tasks/--state/78e030487c",
@@ -1761,7 +1761,7 @@
         "choice": "CANCELED",
         "option_id": "option:route:entrypoint:scp-api/tasks/--state"
       },
-      "signature": "sha256:846a8fe787b48aa047a27397cf425bed0068e821334ad05969714a3b4d19face"
+      "signature": "sha256:6c8e8b3766f9839014c5a829defb5889ca404a0197a3b550949f10d8ea4db6cd"
     },
     {
       "id": "case:route:entrypoint:scp-api/tasks/option-choice/option:route:entrypoint:scp-api/tasks/--state/b11db31f9f",
@@ -1774,7 +1774,7 @@
         "choice": "PENDING",
         "option_id": "option:route:entrypoint:scp-api/tasks/--state"
       },
-      "signature": "sha256:ff6f6f876745266c0aaea3ac89006598653ea7949370fe46c74a496b2bf29fde"
+      "signature": "sha256:e8fbbd017a34131c1f5fc8f67512f4564bfa1fdadb3ee62c92c05b364fced74c"
     },
     {
       "id": "case:route:entrypoint:scp-api/tasks/option-choice/option:route:entrypoint:scp-api/tasks/--state/f717e7d817",
@@ -1787,7 +1787,7 @@
         "choice": "ERROR",
         "option_id": "option:route:entrypoint:scp-api/tasks/--state"
       },
-      "signature": "sha256:0e00a4e0df5e079e488773ef73290b9014be9054966aaffcd35499a0041fb034"
+      "signature": "sha256:017155825df4cec133f1e8344fdaac4af3f8bf3a317e6880940dc708a8307cd1"
     },
     {
       "id": "case:route:entrypoint:scp-api/tasks/option-spelling/option:route:entrypoint:scp-api/tasks/--debug-raw/--debug-raw",
@@ -1826,7 +1826,7 @@
         "option_id": "option:route:entrypoint:scp-api/tasks/--limit",
         "spelling": "--limit"
       },
-      "signature": "sha256:836eb8dd95f2a578903c7ec61a28ab34dd6c77364e512020fa2635a81cca9c09"
+      "signature": "sha256:f366276420d1353bbf4dd20e4da2edff8b51c308c76da2562dae20b44fdbca1b"
     },
     {
       "id": "case:route:entrypoint:scp-api/tasks/option-spelling/option:route:entrypoint:scp-api/tasks/--offset/--offset",
@@ -1839,7 +1839,7 @@
         "option_id": "option:route:entrypoint:scp-api/tasks/--offset",
         "spelling": "--offset"
       },
-      "signature": "sha256:084636d6187ed16af9956a00ef2f1aca1409c7fc4bda54e0d1e9b897c08a304f"
+      "signature": "sha256:d83925f8295cb001c07ff4f2feecba749552f9937254592cf63e1256cc93da2f"
     },
     {
       "id": "case:route:entrypoint:scp-api/tasks/option-spelling/option:route:entrypoint:scp-api/tasks/--query/--filter",
@@ -1852,7 +1852,7 @@
         "option_id": "option:route:entrypoint:scp-api/tasks/--query",
         "spelling": "--filter"
       },
-      "signature": "sha256:cda8ace4a95a7e1ef6bc12ec27c0df8ca48e9637156a1549ec4d3f6a1bba681a"
+      "signature": "sha256:43cee043ca3b1559db4cb68ed3239ceacf7908604af8d6a805b838c555aa208a"
     },
     {
       "id": "case:route:entrypoint:scp-api/tasks/option-spelling/option:route:entrypoint:scp-api/tasks/--query/--query",
@@ -1865,7 +1865,7 @@
         "option_id": "option:route:entrypoint:scp-api/tasks/--query",
         "spelling": "--query"
       },
-      "signature": "sha256:509c823cd9f1c7b16b2b496bf36b7738273d676e9ec3b4ac05d82ee563519ba8"
+      "signature": "sha256:659297f8e81b080ff106235b4d4ff2e3888f6b72653750a70b181bc45bc8be27"
     },
     {
       "id": "case:route:entrypoint:scp-api/tasks/option-spelling/option:route:entrypoint:scp-api/tasks/--server-id/--server-id",
@@ -1878,7 +1878,7 @@
         "option_id": "option:route:entrypoint:scp-api/tasks/--server-id",
         "spelling": "--server-id"
       },
-      "signature": "sha256:5384ea5e66f68eac569df9fbaa5979be435c1602232dec10de51920bd25afd85"
+      "signature": "sha256:e9a1a68e25c98c313d1bc75dc19bfabe0738a8224bf64eee2447a2d3503a4a66"
     },
     {
       "id": "case:route:entrypoint:scp-api/tasks/option-spelling/option:route:entrypoint:scp-api/tasks/--state/--state",
@@ -1891,7 +1891,7 @@
         "option_id": "option:route:entrypoint:scp-api/tasks/--state",
         "spelling": "--state"
       },
-      "signature": "sha256:e23da9cad2b8871e4235c65cb235592909efa74d882a7e9bd13a718bc6ac81e4"
+      "signature": "sha256:3a7cc9af0107de5e3d2498e1cd4cfa7e6a0f05f6ea90e072f131febb3fa865b7"
     },
     {
       "id": "case:route:entrypoint:scp-api/tasks/option-spelling/option:route:entrypoint:scp-api/tasks/--yes/--yes",
@@ -3204,15 +3204,11 @@
           "canonical": "--filter",
           "choices": null,
           "const": null,
-          "default": {
-            "kind": "suppressed"
-          },
-          "default_present": false,
+          "default": null,
+          "default_present": true,
           "description": "case-insensitive text filter across returned fields",
           "dest": "filter",
-          "effective_default": {
-            "kind": "suppressed"
-          },
+          "effective_default": null,
           "exclusive_group": null,
           "exclusive_required": false,
           "flags": [
@@ -3479,15 +3475,11 @@
           "canonical": "--filter",
           "choices": null,
           "const": null,
-          "default": {
-            "kind": "suppressed"
-          },
-          "default_present": false,
+          "default": null,
+          "default_present": true,
           "description": "case-insensitive text filter across returned fields",
           "dest": "filter",
-          "effective_default": {
-            "kind": "suppressed"
-          },
+          "effective_default": null,
           "exclusive_group": null,
           "exclusive_required": false,
           "flags": [
@@ -4596,15 +4588,11 @@
           "canonical": "--query",
           "choices": null,
           "const": null,
-          "default": {
-            "kind": "suppressed"
-          },
-          "default_present": false,
+          "default": null,
+          "default_present": true,
           "description": "search task name, UUID, or server fields (API q filter)",
           "dest": "query",
-          "effective_default": {
-            "kind": "suppressed"
-          },
+          "effective_default": null,
           "exclusive_group": null,
           "exclusive_required": false,
           "flags": [
@@ -4644,15 +4632,11 @@
           "canonical": "--server-id",
           "choices": null,
           "const": null,
-          "default": {
-            "kind": "suppressed"
-          },
-          "default_present": false,
+          "default": null,
+          "default_present": true,
           "description": "filter by server; required to cancel with protected-server policy",
           "dest": "server_filter_id",
-          "effective_default": {
-            "kind": "suppressed"
-          },
+          "effective_default": null,
           "exclusive_group": null,
           "exclusive_required": false,
           "flags": [
@@ -4698,15 +4682,11 @@
             "CANCELED"
           ],
           "const": null,
-          "default": {
-            "kind": "suppressed"
-          },
-          "default_present": false,
+          "default": null,
+          "default_present": true,
           "description": "filter by task state",
           "dest": "state",
-          "effective_default": {
-            "kind": "suppressed"
-          },
+          "effective_default": null,
           "exclusive_group": null,
           "exclusive_required": false,
           "flags": [
@@ -4747,15 +4727,11 @@
           "canonical": "--limit",
           "choices": null,
           "const": null,
-          "default": {
-            "kind": "suppressed"
-          },
-          "default_present": false,
+          "default": null,
+          "default_present": true,
           "description": "maximum tasks to return",
           "dest": "limit",
-          "effective_default": {
-            "kind": "suppressed"
-          },
+          "effective_default": null,
           "exclusive_group": null,
           "exclusive_required": false,
           "flags": [
@@ -4793,15 +4769,11 @@
           "canonical": "--offset",
           "choices": null,
           "const": null,
-          "default": {
-            "kind": "suppressed"
-          },
-          "default_present": false,
+          "default": null,
+          "default_present": true,
           "description": "matching tasks to skip",
           "dest": "offset",
-          "effective_default": {
-            "kind": "suppressed"
-          },
+          "effective_default": null,
           "exclusive_group": null,
           "exclusive_required": false,
           "flags": [

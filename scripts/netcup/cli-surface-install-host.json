@@ -146,7 +146,7 @@
           "option:route:entrypoint:install-host/configure/--no-monitor"
         ]
       },
-      "signature": "sha256:b9cd69fc0eee3ea842c857581248e8a9389f040c86f6ae8b10b7365a0aa7a803"
+      "signature": "sha256:970f63da691466729977b273ae5b663983fcfaddece3feaae3caf5385f8b7055"
     },
     {
       "id": "case:route:entrypoint:install-host/configure/exclusive-member/task-monitor-mode/option:route:entrypoint:install-host/configure/--monitor",
@@ -160,7 +160,7 @@
         "required": false,
         "selected_option": "option:route:entrypoint:install-host/configure/--monitor"
       },
-      "signature": "sha256:319a6a5cf5ddc266de5d9dd074cbacd747acf1d925149959c9d7e6f4aedcdddc"
+      "signature": "sha256:739de71f229c19ed54f370518069997d5de1b741b6cef686c3fde5e1f01ac09f"
     },
     {
       "id": "case:route:entrypoint:install-host/configure/exclusive-member/task-monitor-mode/option:route:entrypoint:install-host/configure/--no-monitor",
@@ -174,21 +174,27 @@
         "required": false,
         "selected_option": "option:route:entrypoint:install-host/configure/--no-monitor"
       },
-      "signature": "sha256:dad773d8ee5ab9823299cdde2b65ff20b39849bd3652f8f34733c2dded390662"
+      "signature": "sha256:ea2a9a23fa72d90f6b3ad052efc6e369a66e2870b5bb062851c29574194d8d63"
     },
     {
       "id": "case:route:entrypoint:install-host/configure/minimum",
       "kind": "minimum",
-      "members": [],
+      "members": [
+        "option:route:entrypoint:install-host/configure/--monitor",
+        "option:route:entrypoint:install-host/configure/--no-monitor"
+      ],
       "route_id": "route:entrypoint:install-host/configure",
       "shape": {
-        "defaulted_options": [],
+        "defaulted_options": [
+          "option:route:entrypoint:install-host/configure/--monitor",
+          "option:route:entrypoint:install-host/configure/--no-monitor"
+        ],
         "required_argument_values": {},
         "required_arguments": [],
         "required_exclusive_groups": {},
         "required_options": []
       },
-      "signature": "sha256:a4363f065dbef5354bcb95d2e0c6c45c0a8318e20cb1d8cc099f82cd3194821f"
+      "signature": "sha256:eaab0b1627b8f4a84c6a2fdba3695a753384bf7d9c0647dd37da9db7d30593ce"
     },
     {
       "id": "case:route:entrypoint:install-host/configure/option-choice/option:route:entrypoint:install-host/configure/--local-controller-key/66f3d68b76",
@@ -240,7 +246,7 @@
         "option_id": "option:route:entrypoint:install-host/configure/--completion-marker",
         "spelling": "--completion-marker"
       },
-      "signature": "sha256:4eb7857d62252ddaf723ba1d4e792b03d4267b1e06d29856159d25a6ecf4f694"
+      "signature": "sha256:6cbc33d6b9ce2798af43f06c3bd0f13caa3c474f6efc9ea6ca7f8b5dd5e83eca"
     },
     {
       "id": "case:route:entrypoint:install-host/configure/option-spelling/option:route:entrypoint:install-host/configure/--completion-wait-seconds/--completion-wait-seconds",
@@ -266,7 +272,7 @@
         "option_id": "option:route:entrypoint:install-host/configure/--config",
         "spelling": "--config"
       },
-      "signature": "sha256:1a6838a0988cc9722bb0d853a20de0b685fd52378ca9f6d8a8dbe74baf98155c"
+      "signature": "sha256:2e110b0cf75ec532fb30e6375f40f388072bcdf40f1a80ac71d5cbcb80aa661a"
     },
     {
       "id": "case:route:entrypoint:install-host/configure/option-spelling/option:route:entrypoint:install-host/configure/--config/--payload",
@@ -279,7 +285,7 @@
         "option_id": "option:route:entrypoint:install-host/configure/--config",
         "spelling": "--payload"
       },
-      "signature": "sha256:b08f4e650b7d1946d068d53b836f0280a0a960744ba2b9b3985d98956b6af8c7"
+      "signature": "sha256:5adf9555c839b77059da642da2e601baf2ae2a073aff75bad95de28670b14f9a"
     },
     {
       "id": "case:route:entrypoint:install-host/configure/option-spelling/option:route:entrypoint:install-host/configure/--custom-script-file/--custom-script-file",
@@ -292,7 +298,7 @@
         "option_id": "option:route:entrypoint:install-host/configure/--custom-script-file",
         "spelling": "--custom-script-file"
       },
-      "signature": "sha256:a0c236907543fd7842ec60795f200d3cb0a9dfa214a1279d94effb8cd10cf477"
+      "signature": "sha256:726f3774d1e79f7baf2aa252a41e08364ff09a79e92bf1aa248fc5d2dde58c36"
     },
     {
       "id": "case:route:entrypoint:install-host/configure/option-spelling/option:route:entrypoint:install-host/configure/--debug-raw/--debug-raw",
@@ -344,7 +350,7 @@
         "option_id": "option:route:entrypoint:install-host/configure/--monitor",
         "spelling": "--monitor"
       },
-      "signature": "sha256:d95766d2cfcd8d8c2281c82a1b78f8bd4094adee04ef3be9dc94400c0301fbc0"
+      "signature": "sha256:ac60a2ced02f00720068d1946e5dfcbb7b017fd598d603d2fe1c4515bc58ad86"
     },
     {
       "id": "case:route:entrypoint:install-host/configure/option-spelling/option:route:entrypoint:install-host/configure/--no-attach-custom-script/--no-attach-custom-script",
@@ -370,7 +376,7 @@
         "option_id": "option:route:entrypoint:install-host/configure/--no-monitor",
         "spelling": "--no-monitor"
       },
-      "signature": "sha256:5b4dcbab2e7d5cd98dfcb220521925667b9e6e7d6d5b8e131279ed61b16b73f6"
+      "signature": "sha256:4b0e7f4fb45bb7599fba3ee04df93a2413fc2893ca176615680fff6116240d91"
     },
     {
       "id": "case:route:entrypoint:install-host/configure/option-spelling/option:route:entrypoint:install-host/configure/--poll-interval/--poll-interval",
@@ -466,16 +472,20 @@
     {
       "id": "case:route:entrypoint:install-host/install/minimum",
       "kind": "minimum",
-      "members": [],
+      "members": [
+        "option:route:entrypoint:install-host/install/--no-monitor"
+      ],
       "route_id": "route:entrypoint:install-host/install",
       "shape": {
-        "defaulted_options": [],
+        "defaulted_options": [
+          "option:route:entrypoint:install-host/install/--no-monitor"
+        ],
         "required_argument_values": {},
         "required_arguments": [],
         "required_exclusive_groups": {},
         "required_options": []
       },
-      "signature": "sha256:729941a641dc9b0c57f64578a3b2a19ae891b17623e87b4b6511e81fb9779670"
+      "signature": "sha256:f2f6b418bbf3a01cc67952fc32f6b4d99ba451592e75b5bbb58bb6ef012dbcf8"
     },
     {
       "id": "case:route:entrypoint:install-host/install/option-choice/option:route:entrypoint:install-host/install/--local-controller-key/66f3d68b76",
@@ -540,7 +550,7 @@
         "option_id": "option:route:entrypoint:install-host/install/--config",
         "spelling": "--config"
       },
-      "signature": "sha256:1e3175e1d9b7ec5be1a5c519c29af65e0c4aa55c5d7e5a8eb049916db1d4ce5c"
+      "signature": "sha256:5c12b5fe945d4096c0c3d1862dfe2f768c241946ae58755deec447b8b8592fb3"
     },
     {
       "id": "case:route:entrypoint:install-host/install/option-spelling/option:route:entrypoint:install-host/install/--config/--payload",
@@ -553,7 +563,7 @@
         "option_id": "option:route:entrypoint:install-host/install/--config",
         "spelling": "--payload"
       },
-      "signature": "sha256:2293ed1dd8e8224a887899cf747b61c3488fa07750386059a0f6adb1ecabfb8b"
+      "signature": "sha256:75ff7cd2725b6678b895d1f608ef6db03abca8c43ab0357d3c9912c0e0bc55d7"
     },
     {
       "id": "case:route:entrypoint:install-host/install/option-spelling/option:route:entrypoint:install-host/install/--debug-raw/--debug-raw",
@@ -618,7 +628,7 @@
         "option_id": "option:route:entrypoint:install-host/install/--no-monitor",
         "spelling": "--no-monitor"
       },
-      "signature": "sha256:9c63f433eea0ee6bafb8df1317baf5783b0ecaa5cd344bd009fb7752b4df8e8f"
+      "signature": "sha256:8252c591e43593ef9cb5e6cc9ed507dfeb5baa7935a9514843d8dde30c2a9b72"
     },
     {
       "id": "case:route:entrypoint:install-host/install/option-spelling/option:route:entrypoint:install-host/install/--poll-interval/--poll-interval",
@@ -713,7 +723,7 @@
           "option:route:entrypoint:install-host/wizard/--no-monitor"
         ]
       },
-      "signature": "sha256:6074448b819d496a3cf198c4beef44139ef06d8d1c91799592d925019815bb19"
+      "signature": "sha256:fbba1212f7bae13c7a89af176be408d25a5031a9206f3e58663daba5a29a11d2"
     },
     {
       "id": "case:route:entrypoint:install-host/wizard/exclusive-member/task-monitor-mode/option:route:entrypoint:install-host/wizard/--monitor",
@@ -727,7 +737,7 @@
         "required": false,
         "selected_option": "option:route:entrypoint:install-host/wizard/--monitor"
       },
-      "signature": "sha256:7927481d794e8487f582cfb76b56c18a5bd51d2eda37fff09380a4daead207f8"
+      "signature": "sha256:0f53b38b5a4b3035f262ef29ce5c5f23b156e082c174e25dffc713c0c83c7d2f"
     },
     {
       "id": "case:route:entrypoint:install-host/wizard/exclusive-member/task-monitor-mode/option:route:entrypoint:install-host/wizard/--no-monitor",
@@ -741,21 +751,27 @@
         "required": false,
         "selected_option": "option:route:entrypoint:install-host/wizard/--no-monitor"
       },
-      "signature": "sha256:83c5592a20ea218e5493bf7654bbb54c385228d85f1f64c737bc002df412a028"
+      "signature": "sha256:a9b7e156d19a14e2749fc0b677c729767a336c0cf144cd49b13a44bb250eadda"
     },
     {
       "id": "case:route:entrypoint:install-host/wizard/minimum",
       "kind": "minimum",
-      "members": [],
+      "members": [
+        "option:route:entrypoint:install-host/wizard/--monitor",
+        "option:route:entrypoint:install-host/wizard/--no-monitor"
+      ],
       "route_id": "route:entrypoint:install-host/wizard",
       "shape": {
-        "defaulted_options": [],
+        "defaulted_options": [
+          "option:route:entrypoint:install-host/wizard/--monitor",
+          "option:route:entrypoint:install-host/wizard/--no-monitor"
+        ],
         "required_argument_values": {},
         "required_arguments": [],
         "required_exclusive_groups": {},
         "required_options": []
       },
-      "signature": "sha256:6b7c17a178f9caa6a56317122e32335cf3825436a539787b8ce5d89a7b4022dc"
+      "signature": "sha256:d4b782d451dcc2e1e3d0082f11c49c722afa34f8fe2e29ce0b34ad0b71e61a63"
     },
     {
       "id": "case:route:entrypoint:install-host/wizard/option-choice/option:route:entrypoint:install-host/wizard/--local-controller-key/66f3d68b76",
@@ -807,7 +823,7 @@
         "option_id": "option:route:entrypoint:install-host/wizard/--completion-marker",
         "spelling": "--completion-marker"
       },
-      "signature": "sha256:a9901a2776adb1784256bcce5f37bd40ac8e9387ee76891d9871a9230df8f744"
+      "signature": "sha256:3b101f33ca8fc01b5352fc1f1c533b59b6355964a9e5d477e9bd68088c35d01e"
     },
     {
       "id": "case:route:entrypoint:install-host/wizard/option-spelling/option:route:entrypoint:install-host/wizard/--completion-wait-seconds/--completion-wait-seconds",
@@ -833,7 +849,7 @@
         "option_id": "option:route:entrypoint:install-host/wizard/--config",
         "spelling": "--config"
       },
-      "signature": "sha256:9a3139e731b3fd2e7ca46cd2d8d77df8dd76197138e0583945a8dad5978ddecb"
+      "signature": "sha256:fc1003e248d0bbaf0868693151dc9787eafe9d464127ff23543171eafec4261a"
     },
     {
       "id": "case:route:entrypoint:install-host/wizard/option-spelling/option:route:entrypoint:install-host/wizard/--config/--payload",
@@ -846,7 +862,7 @@
         "option_id": "option:route:entrypoint:install-host/wizard/--config",
         "spelling": "--payload"
       },
-      "signature": "sha256:da9420bfec4b6624246b5d2e906ceab0c7710583cf8a311a29736b6e38df6b05"
+      "signature": "sha256:bd18232b998572bab8ab66ec64d0005c4f89fc1e6356aae69b6c81dd2b68c097"
     },
     {
       "id": "case:route:entrypoint:install-host/wizard/option-spelling/option:route:entrypoint:install-host/wizard/--custom-script-file/--custom-script-file",
@@ -859,7 +875,7 @@
         "option_id": "option:route:entrypoint:install-host/wizard/--custom-script-file",
         "spelling": "--custom-script-file"
       },
-      "signature": "sha256:62c70ed8551529a7be372216494b73880fc02d42e6e393627e21cf0c13932845"
+      "signature": "sha256:1e10289b6ebdabcce7770b8707813cebf0251aee9d78f56e139a0edae377e4f4"
     },
     {
       "id": "case:route:entrypoint:install-host/wizard/option-spelling/option:route:entrypoint:install-host/wizard/--debug-raw/--debug-raw",
@@ -911,7 +927,7 @@
         "option_id": "option:route:entrypoint:install-host/wizard/--monitor",
         "spelling": "--monitor"
       },
-      "signature": "sha256:e8872e0084014bdfe035e99f1338ed923d864dc3972ae94d0fd571f4ec2cde0a"
+      "signature": "sha256:f22949a9fbc258ef5ab860ecf6415c29e19507d96ac075e30f3625cb3159fb6e"
     },
     {
       "id": "case:route:entrypoint:install-host/wizard/option-spelling/option:route:entrypoint:install-host/wizard/--no-attach-custom-script/--no-attach-custom-script",
@@ -937,7 +953,7 @@
         "option_id": "option:route:entrypoint:install-host/wizard/--no-monitor",
         "spelling": "--no-monitor"
       },
-      "signature": "sha256:3cd5753b7d0a5106ebdf0f55afa6e897b17c640f6e71d38caf282224e75d9b73"
+      "signature": "sha256:fcba6c5302dd34f104a2ac158031cd143384ed8bd298faf1405fad9c170555bb"
     },
     {
       "id": "case:route:entrypoint:install-host/wizard/option-spelling/option:route:entrypoint:install-host/wizard/--poll-interval/--poll-interval",
@@ -1461,15 +1477,11 @@
           "canonical": "--config",
           "choices": null,
           "const": null,
-          "default": {
-            "kind": "suppressed"
-          },
-          "default_present": false,
+          "default": null,
+          "default_present": true,
           "description": "config to install or output file to write; --payload is a deprecated alias",
           "dest": "config_path",
-          "effective_default": {
-            "kind": "suppressed"
-          },
+          "effective_default": null,
           "exclusive_group": null,
           "exclusive_required": false,
           "flags": [
@@ -1929,15 +1941,11 @@
           "canonical": "--custom-script-file",
           "choices": null,
           "const": null,
-          "default": {
-            "kind": "suppressed"
-          },
-          "default_present": false,
+          "default": null,
+          "default_present": true,
           "description": "consume an opaque customScript command or producer JSON bundle",
           "dest": "custom_script_file",
-          "effective_default": {
-            "kind": "suppressed"
-          },
+          "effective_default": null,
           "exclusive_group": null,
           "exclusive_required": false,
           "flags": [
@@ -1969,15 +1977,11 @@
           "canonical": "--completion-marker",
           "choices": null,
           "const": null,
-          "default": {
-            "kind": "suppressed"
-          },
-          "default_present": false,
+          "default": null,
+          "default_present": true,
           "description": "absolute remote completion path declared by the consumed customScript",
           "dest": "completion_marker",
-          "effective_default": {
-            "kind": "suppressed"
-          },
+          "effective_default": null,
           "exclusive_group": null,
           "exclusive_required": false,
           "flags": [
@@ -2009,15 +2013,11 @@
           "canonical": "--monitor",
           "choices": null,
           "const": true,
-          "default": {
-            "kind": "suppressed"
-          },
-          "default_present": false,
+          "default": false,
+          "default_present": true,
           "description": "explicitly poll the task after wizard installation",
           "dest": "monitor",
-          "effective_default": {
-            "kind": "suppressed"
-          },
+          "effective_default": false,
           "exclusive_group": "task-monitor-mode",
           "exclusive_required": false,
           "flags": [
@@ -2051,15 +2051,11 @@
           "canonical": "--no-monitor",
           "choices": null,
           "const": true,
-          "default": {
-            "kind": "suppressed"
-          },
-          "default_present": false,
+          "default": false,
+          "default_present": true,
           "description": "return after task creation instead of following it",
           "dest": "no_monitor",
-          "effective_default": {
-            "kind": "suppressed"
-          },
+          "effective_default": false,
           "exclusive_group": "task-monitor-mode",
           "exclusive_required": false,
           "flags": [
@@ -2170,15 +2166,11 @@
           "canonical": "--config",
           "choices": null,
           "const": null,
-          "default": {
-            "kind": "suppressed"
-          },
-          "default_present": false,
+          "default": null,
+          "default_present": true,
           "description": "config to install or output file to write; --payload is a deprecated alias",
           "dest": "config_path",
-          "effective_default": {
-            "kind": "suppressed"
-          },
+          "effective_default": null,
           "exclusive_group": null,
           "exclusive_required": false,
           "flags": [
@@ -2595,15 +2587,11 @@
           "canonical": "--no-monitor",
           "choices": null,
           "const": true,
-          "default": {
-            "kind": "suppressed"
-          },
-          "default_present": false,
+          "default": false,
+          "default_present": true,
           "description": "return after task creation instead of following it",
           "dest": "no_monitor",
-          "effective_default": {
-            "kind": "suppressed"
-          },
+          "effective_default": false,
           "exclusive_group": null,
           "exclusive_required": false,
           "flags": [
@@ -2713,15 +2701,11 @@
           "canonical": "--config",
           "choices": null,
           "const": null,
-          "default": {
-            "kind": "suppressed"
-          },
-          "default_present": false,
+          "default": null,
+          "default_present": true,
           "description": "config to install or output file to write; --payload is a deprecated alias",
           "dest": "config_path",
-          "effective_default": {
-            "kind": "suppressed"
-          },
+          "effective_default": null,
           "exclusive_group": null,
           "exclusive_required": false,
           "flags": [
@@ -3181,15 +3165,11 @@
           "canonical": "--custom-script-file",
           "choices": null,
           "const": null,
-          "default": {
-            "kind": "suppressed"
-          },
-          "default_present": false,
+          "default": null,
+          "default_present": true,
           "description": "consume an opaque customScript command or producer JSON bundle",
           "dest": "custom_script_file",
-          "effective_default": {
-            "kind": "suppressed"
-          },
+          "effective_default": null,
           "exclusive_group": null,
           "exclusive_required": false,
           "flags": [
@@ -3221,15 +3201,11 @@
           "canonical": "--completion-marker",
           "choices": null,
           "const": null,
-          "default": {
-            "kind": "suppressed"
-          },
-          "default_present": false,
+          "default": null,
+          "default_present": true,
           "description": "absolute remote completion path declared by the consumed customScript",
           "dest": "completion_marker",
-          "effective_default": {
-            "kind": "suppressed"
-          },
+          "effective_default": null,
           "exclusive_group": null,
           "exclusive_required": false,
           "flags": [
@@ -3261,15 +3237,11 @@
           "canonical": "--monitor",
           "choices": null,
           "const": true,
-          "default": {
-            "kind": "suppressed"
-          },
-          "default_present": false,
+          "default": false,
+          "default_present": true,
           "description": "explicitly poll the task after wizard installation",
           "dest": "monitor",
-          "effective_default": {
-            "kind": "suppressed"
-          },
+          "effective_default": false,
           "exclusive_group": "task-monitor-mode",
           "exclusive_required": false,
           "flags": [
@@ -3303,15 +3275,11 @@
           "canonical": "--no-monitor",
           "choices": null,
           "const": true,
-          "default": {
-            "kind": "suppressed"
-          },
-          "default_present": false,
+          "default": false,
+          "default_present": true,
           "description": "return after task creation instead of following it",
           "dest": "no_monitor",
-          "effective_default": {
-            "kind": "suppressed"
-          },
+          "effective_default": false,
           "exclusive_group": "task-monitor-mode",
           "exclusive_required": false,
           "flags": [
