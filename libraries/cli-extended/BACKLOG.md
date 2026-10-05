@@ -305,7 +305,7 @@ Oracles:
 where the operator chose `<tool> skills install` provided through
 cli-extended for DRY. Per-tool adoption entries follow once this exists.
 
-## CLI-EXT-06 … CLI-EXT-16 — unified-adoption program (2026-10-05)
+## CLI-EXT-06 … CLI-EXT-18 — unified-adoption program (2026-10-05)
 
 **Status:** Scheduled. Operator interview 2026-10-04/05 decided that every
 vbpub Python CLI adopts cli-extended as a real wheel dependency. The library
@@ -327,6 +327,8 @@ This list is the index:
 | CLI-EXT-14 | `invoke_script`/`invoke_module` + opt-in pytest plugin | W6 | Netcup's two `_invoke` helpers; conftest marker wiring |
 | CLI-EXT-15 | `ADOPTION-CHECKLIST.md`, `cli-extended audit`, `cli-extended-adoption` skill | W7 | No way for a consumer to verify complete, correct adoption |
 | CLI-EXT-16 | Wheel release via cmru, GitHub Releases + `--no-index` resolution | W8 | Four incompatible import mechanisms; PyPI dependency-confusion risk (CX-D2) |
+| CLI-EXT-17 | Constraints conditioned on a positional's value (e.g. `When("action", equals="set", then=RequiresChoice(...))`) plus declarable optional "action" positionals, so scp-api's ten `configure` callbacks and its handler-side `mac`/`action` swap can go (status: planned) | W9a Netcup adoption | scp-api hand-rolled conditional checks and `configure` callbacks |
+| CLI-EXT-18 | Shared review decision for the library-reviewed common controls (`--json`, `--yes`, `--debug-raw`, `--dry-run`) across routes: one rationale/effects block plus one parametrized linked test covering N route cases (status: planned) | W9a Netcup adoption | scp-api yields 151 cases, mostly these controls |
 
 **Provenance:** controller survey 2026-10-04 of cmru, nyxloom, Netcup,
 debian-install-v2 and the five non-adopting CLIs (ciu, assay, run-gate,

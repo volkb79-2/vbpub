@@ -1259,10 +1259,14 @@ always present.
    as a `pytest11` entry point; importing it does not require pytest. It
    registers the `cli_case(case_id)` marker and the ini option
    `cli_extended_config` (path relative to the rootdir; default is discovery
-   upward from the rootdir). At collection finish it calls
-   `assert_cli_case_tests` for every configured CLI with a `review` catalog and
-   turns a config, catalog or assertion error into a pytest usage error (exit
-   4). It is strict by default; CI and gate runs MUST use strict mode. `--cli-case-partial` passes `partial=True`,
+   upward from the rootdir). At collection finish it loads every configured
+   CLI's `review` catalog, refuses a case ID present in two catalogs (usage
+   error naming both CLI IDs), then calls `assert_cli_case_tests` per catalog
+   with `foreign_case_ids` set to the union of the other catalogs' case IDs
+   (such markers are skipped for that catalog; a marker known to no catalog is
+   still an error). Errors from all catalogs are collected, deduplicated in
+   order and raised as one pytest usage error (exit 4), as is any config or
+   catalog error. It is strict by default; CI and gate runs MUST use strict mode. `--cli-case-partial` passes `partial=True`,
    which skips only the "test not collected" and "no collected marked test"
    errors; every error about a collected item still applies. A config with no
    `review` is a no-op.

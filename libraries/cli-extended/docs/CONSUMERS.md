@@ -354,7 +354,7 @@ The library exposes a stable machine-readable CLI manifest and a merge-aware
 specification generator alongside Markdown help. Generated help is not a
 substitute for the semantic audit. The live catalog pilot is Netcup's
 [`monitor-task.py` CLI spec](../../../scripts/netcup/CLI-SPEC.md), with its
-[`cli-review.toml`](../../../scripts/netcup/cli-review.toml), generated JSON
+[`cli-review-monitor-task.toml`](../../../scripts/netcup/cli-review-monitor-task.toml), generated JSON
 manifest, and pytest collection hook. It demonstrates regeneration and test
 linkage on a real hyphenated script. CMRU's
 [`S-CLI.9`](../../../cmru/docs/SPEC.md#s-cli9-canonical-cli-grammar-and-semantic-audit)
@@ -654,6 +654,41 @@ Re-sync like this:
 A manifest written before contract versions existed (no `library_contract`
 record) is treated as an ordinary stale manifest: `check` reports
 `generated CLI manifest is stale`; run `sync` once.
+
+### A project with several CLIs
+
+List every executable as its own `[[clis]]` entry (the key is `clis`, in
+`cli-extended.toml` or `[[tool.cli-extended.clis]]`):
+
+```toml
+# cli-extended.toml
+schema_version = 1
+
+[[clis]]
+id = "scp-api"
+factory = "scp-api.py:build_cli"
+review = "cli-review-scp-api.toml"
+manifest = "cli-surface-scp-api.json"
+spec = "CLI-SPEC-scp-api.md"
+findings = "cli-findings-scp-api.toml"
+
+[[clis]]
+id = "monitor-task"
+factory = "monitor-task.py:build_cli"
+review = "cli-review-monitor-task.toml"
+manifest = "cli-surface-monitor-task.json"
+spec = "CLI-SPEC-monitor-task.md"
+findings = "cli-findings-monitor-task.toml"
+```
+
+Keep one spec file per CLI: `surface sync` owns exactly one generated region
+(the marker pair) per spec file, so two CLIs cannot share one. An optional
+hand-written index spec may link the per-CLI specs; it carries no markers and
+is not listed in the config. Each CLI also has its own review catalog (its
+`cli_id` must equal that executable) and its own findings file. Address one
+CLI with `--cli ID` (`cli-extended surface sync --cli scp-api`); it is required
+when several are configured. A single `pytest_plugins =
+["cli_extended.pytest_plugin"]` line covers them all (see below).
 
 ## Review cross-route and arity interactions
 
@@ -1348,6 +1383,28 @@ can check or an agent can judge from the
     `[FAIL] AC-05 shadowed-controls: 1 consumer option(s) shadow library controls`,
     followed by indented `evidence:` and `remedy:` lines.
 
+### Running the cli-extended CLI from a source checkout
+
+The `cli-extended` command takes its identity from installed distribution
+metadata and deliberately refuses to run without it; there is no literal
+fallback version. From a checkout or worktree, install it editable into a
+scratch virtual environment:
+
+```bash
+python3 -m venv /tmp/cx-venv
+/tmp/cx-venv/bin/pip install --no-deps -e libraries/cli-extended
+/tmp/cx-venv/bin/cli-extended --version
+```
+
+setuptools_scm derives the version from the `cli-extended-v*` tags. Before the
+first such tag exists (or in a checkout without tags), set a pretend version
+for the install:
+
+```bash
+SETUPTOOLS_SCM_PRETEND_VERSION_FOR_CLI_EXTENDED=0.2.0 \
+  /tmp/cx-venv/bin/pip install --no-deps -e libraries/cli-extended
+```
+
 ## Test helpers and review-case linking
 
 ### Test helpers: invoke_script
@@ -1415,3 +1472,11 @@ run (exit status 4). CI and gate runs must use strict mode;
 `--cli-case-partial` is only for focused local runs. For a focused local run use `pytest --cli-case-partial
 tests/test_one.py`, which still rejects unknown, inactive, unlisted or unmarked
 cases among the collected tests. A config where no CLI has `review` is a no-op.
+
+Several reviewed CLIs in one project work with the same single line. The
+plugin loads every reviewed catalog first and refuses a case ID that appears
+in two catalogs (naming both CLI IDs). It then checks each catalog while
+ignoring markers that belong to the other catalogs (`foreign_case_ids`), so a
+test marked for `monitor-task` is not "unknown" to `scp-api`. A marker that no
+catalog knows is still an error, and all errors from all catalogs are
+collected, deduplicated and reported in one failure.
