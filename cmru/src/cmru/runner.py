@@ -672,19 +672,15 @@ def _run_step_cli(args, _runtime) -> int | None:
     projects, project_order = loaded[1], loaded[2]
     if args.target is None and config_path.name == "cmru.toml" and len(projects) == 1:
         context_project = next(iter(projects))
-        estate_scope = False
     elif args.target is None:
         context = resolve_invocation_context(config_path)
         context_project = context.project_name
-        estate_scope = context.scope == "estate"
     else:
         context_project = None
-        estate_scope = False
     try:
         names = select_target_names(
             args.target, projects, project_order,
             context_project=context_project,
-            estate_scope=estate_scope,
         )
     except TargetSelectionError as exc:
         raise CliFailure(str(exc), exit_code=2, show_help=True) from exc

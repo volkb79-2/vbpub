@@ -79,7 +79,7 @@ recovery is not implemented; see KI-06.
 **S-CLI.2** `status` and `release` MUST operate only on the orchestrated set
 (`orchestration.project_order`); a project is released only once it is listed there.
 
-**S-CLI.3** Verbs that write to the host, source tree, remote service, or controller state
+**S-CLI.3** Verbs that write to the host, source tree, or remote service
 MUST be clearly distinguished in `--help` from read-only verbs. `--dry-run` MUST be exposed
 on mutating verbs and MUST preview the complete selected action without performing it. A
 verb that is read-only MUST NOT expose `--dry-run` as a no-op. Conditional writers such as
@@ -91,11 +91,11 @@ are the only CMRU commands that create or refresh version targets and their nati
 `cmru build`, `cmru release`, tester gates, and schedules MUST NOT invoke them implicitly.
 `cmru versions check` performs fresh registry reads and MUST NOT write files.
 
-**S-CLI.7 — The installed CLI grammar has one source.** The `cmru`, `cmru-agent`, and
-`cmru-controller` entrypoints MUST declare their public verbs, arguments, aliases, option
+**S-CLI.7 — The installed CLI grammar has one source.** The `cmru` entrypoint
+MUST declare its public verbs, arguments, aliases, option
 constraints, help text, and handlers through `cli-extended` registries. CMRU MUST NOT
-maintain a second hand-written parser or a hand-written `usage()` synopsis for those
-entrypoints. Root help is the registered verb catalog; `cmru help VERB` and `cmru VERB
+maintain a second hand-written parser or a hand-written `usage()` synopsis for that
+entrypoint. Root help is the registered verb catalog; `cmru help VERB` and `cmru VERB
 --help` render each command's declared grammar. Nested commands MUST delegate their
 remaining argv to the registered child CLI rather than parse it a second time. An accepted
 option MUST affect the behavior named by its help, and unsupported options MUST fail with
@@ -191,8 +191,8 @@ local-only commits on local `main` that the remote snapshot would omit (and warn
 `main` is behind), and
 rejects any uncommitted change (tracked or untracked) under a project's own path for every
 project in this run's scope (`<name>`, else every orchestrated project — the same
-`project_order`-derived set `release` itself iterates, not the possibly-different
-`orchestration.default_projects`) — skipped entirely for `--dry-run` (nothing is published, so
+`project_order`-derived set `release` itself iterates; the deprecated, ignored
+`orchestration.default_projects` plays no part) — skipped entirely for `--dry-run` (nothing is published, so
 there is nothing to protect). `--allow-uncommitted` overrides this second check only; there is
 no override for local-only commits. It then fetches `origin/main`, creates an ephemeral
 `cmru-release-<YYYYMMDD_HHMMSS>-<scope>-<workspace-id>` worktree (KI-16; see S-CLI.5b) at that exact
@@ -363,7 +363,7 @@ the lifecycle context; the legacy removal bridge is used only when no shared rec
 | `cmru` console script | installed | Canonical portable entry point for every verb. |
 | `cmru/build-initial-standalone.sh` | committed | Fresh-checkout bootstrap that builds the first CMRU wheel without CMRU installed. |
 
-**S-CLI.4** The names `release.toml`, `release.sample.toml`, `.release-vars`,
+**S-CLI.11 — Retired names.** The names `release.toml`, `release.sample.toml`, `.release-vars`,
 `build-push.toml`, `release-all.py`, `release-runner.py` are **retired and removed** — no
 legacy remains. The installed `cmru` console script is the only general release entry
 point; native `cmru release` owns the aggregate log and live tee.
@@ -373,7 +373,7 @@ point; native `cmru release` owns the aggregate log and live tee.
 ### S-CLI.9: Canonical CLI grammar and semantic audit
 
 The tables in this clause are the canonical current-state record for CMRU's
-installed `cmru`, `cmru-agent`, and `cmru-controller` command surfaces and the
+installed `cmru` command surface and the
 one supported executable module adapter, `python -m cmru.handlers`. They record registered
 leaf verbs and each exact positional/option spelling, including hidden
 internal options and deprecated aliases. Shared options are recorded once per
@@ -411,16 +411,12 @@ compares these rows with the registered parser objects, not a second parser.
 | Entry point family | Common flags on every leaf |
 |---|---|
 | cmru and handlers module adapter | --help; --version; --log-level; --quiet; --debug; --verbose; --debug-raw; --color; --no-color; --log-prefix-time-short |
-| cmru-agent | --help; --version; --log-level; --quiet; --debug; --verbose; --debug-raw; --color; --no-color; --scope; --consul-addr; --token |
-| cmru-controller | --help; --version; --log-level; --quiet; --debug; --verbose; --debug-raw; --color; --no-color; --landscape; --consul-addr; --token |
 <!-- cmru-cli-common:end -->
 
 <!-- cmru-cli-builtins:start -->
 | Entry point | Built-in commands |
 |---|---|
 | cmru | help [VERB]; version |
-| cmru-agent | help [VERB]; version |
-| cmru-controller | help [VERB]; version |
 <!-- cmru-cli-builtins:end -->
 
 <!-- cmru-cli-grammar:start -->
@@ -446,43 +442,35 @@ compares these rows with the registered parser objects, not a second parser.
 | cmru handler wheel-validate | EXPLORATION | — | --prefix |
 | cmru handler tarball-publish | MODIFICATION | — | --cwd; --dry-run; --glob; --notes-env; --prefix; --version-env; --version-file |
 | cmru handler tarball-validate | EXPLORATION | — | --artifact-suffix; --prefix |
-| cmru handler oci-image-build | MODIFICATION | — | --bake-file; --cwd; --dry-run; --repack; --target |
-| cmru handler oci-image-push | MODIFICATION | — | --bake-file; --cwd; --dry-run; --repack; --target |
+| cmru handler oci-image-build | MODIFICATION | — | --bake-file; --cwd; --dry-run; --target |
+| cmru handler oci-image-push | MODIFICATION | — | --bake-file; --cwd; --dry-run; --target |
 | cmru tester-gate | MODIFICATION | command... | --cgroup-parent; --cgroup-probe-image; --cpus; --cwd; --device-read-bps; --device-read-iops; --device-write-bps; --device-write-iops; --dind-image; --dry-run; --enable-docker; --forward-cgroup-parent-gates-var; --forward-cgroup-parent-var; --image; --memory; --memory-swap |
 | cmru resolve | EXPLORATION | target? | --config; --format |
 | cmru get-py | MODIFICATION | target? | --config; --dry-run; --output; --output-dir |
 | cmru standards | MIXED OPERATIONS | target? | --config; --dry-run; --update |
 | cmru tool-deps | MIXED OPERATIONS | target? | --allow-stale-tool-deps; --config; --dry-run; --json; --refresh; --timeout |
-| cmru-agent enroll | AUTHENTICATION / SETUP | — | --dry-run; --landscape; --minisign-pubkey; --node-id |
-| cmru-agent run | MODIFICATION | — | --dry-run; --release-root |
-| cmru-agent once | MODIFICATION | — | --dry-run; --release-root |
-| cmru-agent status | EXPLORATION | — | — |
-| cmru-controller publish | MODIFICATION | — | --dry-run; --generation-base; --plan |
-| cmru-controller approve | MODIFICATION | — | --dry-run; --plan |
-| cmru-controller hold | MODIFICATION | — | --dry-run; --plan |
-| cmru-controller status | EXPLORATION | — | --plan |
-| cmru-controller rollback | MODIFICATION | — | --dry-run; --generation; --plan |
 | python -m cmru.handlers wheel-build | MODIFICATION | — | --cwd; --dry-run |
 | python -m cmru.handlers wheel-publish | MODIFICATION | — | --cwd; --dry-run; --extra-asset; --glob; --notes-env; --prefix |
 | python -m cmru.handlers wheel-validate | EXPLORATION | — | --prefix |
 | python -m cmru.handlers tarball-publish | MODIFICATION | — | --cwd; --dry-run; --glob; --notes-env; --prefix; --version-env; --version-file |
 | python -m cmru.handlers tarball-validate | EXPLORATION | — | --artifact-suffix; --prefix |
-| python -m cmru.handlers oci-image-build | MODIFICATION | — | --bake-file; --cwd; --dry-run; --repack; --target |
-| python -m cmru.handlers oci-image-push | MODIFICATION | — | --bake-file; --cwd; --dry-run; --repack; --target |
+| python -m cmru.handlers oci-image-build | MODIFICATION | — | --bake-file; --cwd; --dry-run; --target |
+| python -m cmru.handlers oci-image-push | MODIFICATION | — | --bake-file; --cwd; --dry-run; --target |
 <!-- cmru-cli-grammar:end -->
 
 #### Invocation roles and support policy
 
-The installed `cmru`, `cmru-agent`, and `cmru-controller` scripts are the
-operator entrypoints. `python -m cmru.handlers` is the one supported component
+The installed `cmru` script is the
+operator entrypoint (the `cmru-agent` and `cmru-controller` scripts were retired on
+2026-10-05; see the repo-root `docs/spec-cmru-agent-controller.md`). `python -m cmru.handlers` is the one supported component
 CLI because active project steps and the first-wheel bootstrap call it. The
 `cmru.bundle` and `cmru.runner` modules remain Python libraries; their unused
-module CLI aliases and module aliases for the three operator commands were
+module CLI aliases and the module alias for the operator command were
 removed. `cmru run-step` remains the registered single-step operator verb.
 
 | Invocation or API | Support role | Intended use and boundary |
 |---|---|---|
-| `cmru`, `cmru-agent`, `cmru-controller` | Operator CLI | Canonical installed commands for product operations; registered verbs are the operator grammar. |
+| `cmru` | Operator CLI | Canonical installed commands for product operations; registered verbs are the operator grammar. |
 | `python -m cmru.handlers` | Project-step and bootstrap CLI | Run explicit artifact handlers from project contracts. `build-initial-standalone.sh` uses it to build the first CMRU wheel before the installed `cmru` script exists. |
 | `cmru run-step` | Single-step diagnostic CLI | Preview or reproduce one declared project step with its normal project config and registered grammar. The `cmru.runner.run_step` API is also consumed by MDT. |
 | `cmru.bundle` | Python library | Build a stack bundle from its dedicated TOML through `run_bundle`; PWMCP consumes the library. No CLI exists because no distinct operator workflow needs one. |
@@ -528,7 +516,6 @@ registered implementation named beside them.
 | Surface | Verb, arguments, and option semantics reviewed | Result |
 |---|---|---|
 | CMRU common controls | `--help` shows registered help, `--version` matches `version`, and `--log-level LEVEL` accepts the library's supported levels. `--quiet` suppresses routine output; `--debug` and `--verbose` are the same diagnostic setting; `--debug-raw` preserves raw diagnostics; `--color` and `--no-color` are mutually exclusive; `--log-prefix-time-short` timestamps severity lines. Long options require exact spelling; prefixes are not aliases. | ACCEPTED; shared controls come from cli-extended and are inherited by the installed `cmru` CLI and active handlers module adapter. |
-| Agent/controller common controls | `--help`, `--version`, `--log-level`, `--quiet`, `--debug`, `--verbose`, `--debug-raw`, `--color`, and `--no-color` have the shared CMRU meanings. Agent `--scope` selects user (default) or system state; `--consul-addr` overrides `CONSUL_HTTP_ADDR` and its documented local default; `--token` overrides `CONSUL_HTTP_TOKEN`, though environment use avoids exposing a secret in process arguments. Controller `--landscape` overrides the plan's landscape; `--consul-addr` and `--token` select its Consul endpoint and credentials. All options require exact spellings; prefixes are not aliases. | ACCEPTED; controller `--dry-run` was removed from shared options and exists only on writes. Protect token visibility through the environment by default. |
 | cmru run | Optional target uses invocation context/default project selection; `--config` selects the project or orchestration file. `--run-tests`, `--build`, `--push`, and `--validate` compose an explicit step set; if none is supplied, `default_steps` remains the configured policy. An empty configured default is a no-op and performs no project environment setup. `--dry-run` resolves the same target, steps, and project-first or step-first order and prints declared cleanup, environment inputs, command argv, and command cwd without starting project commands. Dynamic `env_command` output is named but not run, so that generated value is intentionally unresolved. `--show-run-details` streams subprocess output; `--log-append` retains prior step logs. | ACCEPTED; configured defaults are preserved and made visible in help. `--remove-assets` was removed from `run`; remote cleanup has one home in `cleanup`. Project `cmru` calls use the runtime launcher bound to this invocation, with identity checked before execution (KI-11). |
 | cmru worktrees | No positional target; `--json` emits machine-readable retained build/release worktree records. Default output is human-readable. This is read-only and does not require project selection. | ACCEPTED; JSON is a genuine output mode, not a mutation selector. |
 | cmru dependencies | `--config` selects the orchestration file; `--json` selects machine output; `--write` updates only the marked generated graph block. `--dry-run` requires `--write` and prints the exact diff without writing; `--json` can accompany `--write` to report the same graph. | ACCEPTED; `dependency-graph` and `graph` aliases were removed to leave one canonical verb. |
@@ -537,7 +524,7 @@ registered implementation named beside them.
 | cmru changelog | Optional target selects projects; required repeatable `--backfill-tag TAG` provides one already-published tag per selected project; `--config` selects the source contract. `--dry-run` prints the exact changelog diff and creates or writes no file. | ACCEPTED; the verb is a post-release migration and refuses ambiguous tag/project matches. |
 | cmru release | Optional target selects projects. `--minor`, `--major`, and `--set-version VER` are mutually exclusive and are rejected for external-version or no-tag projects. `--dry-run` executes the declared external-version preparation only inside a disposable managed candidate so it can derive the plan; it does not gate, tag, build, publish, or promote. `--no-build` intentionally stops after tag/push. `--resume WORKTREE` resumes a retained pre-tag candidate using its recorded project scope when no target is supplied; an explicit target must match, and legacy candidates without scope metadata require an explicit target. Corrections must be committed there, then prepare and required gates rerun so the corrected commit is tagged and shipped. It is not post-tag publication recovery (KI-06). `--allow-uncommitted` permits caller edits to be omitted from the origin/main snapshot. `--allow-tag-ahead-of-head` allows only the strictly-ahead baseline case. `--allow-stale-tool-deps` relaxes freshness only; `--ref REF` changes comparison ref. `--discard-logs-on-release`, `--discard-artifacts-on-release`, and `--discard-evidence-on-release` change successful retention. `--config`, `--show-run-details`, and `--log-append` select config and diagnostics. | ACCEPTED; the removed `--allow-tag-at-head` spelling has no compatibility window. Dry-run preparation is confined to the managed candidate; if that preparation fails, the retained candidate remains inspectable. KI-06 now supports corrected pre-tag resume; durable post-tag retry remains open. |
 | cmru status | Optional target and `--config` choose the release view. `--minor`, `--major`, and `--set-version VER` are mutually exclusive preview selectors and are rejected for external-version/no-tag projects. `--ref REF` selects the comparison ref. `--show-run-details` and `--log-append` configure diagnostics, though status itself runs no project command. | ACCEPTED; read-only status has no `--dry-run`, and it no longer accepts a hidden transaction switch. |
-| cmru cleanup | Optional target selects projects; omission applies configured policy to its resolved scope. Exactly one explicit mode may be selected: `--remove-assets AGE` prunes configured age-based remote Releases/tags/GHCR versions; `--delete-unmanaged-release-tag TAG` deletes one exact unmanaged GitHub Release but never its Git tag; `--delete-build-output ID` deletes the exact validated local retained record; `--discard-build-worktree PATH` removes one exact failed build worktree and forbids a project target. `--config` selects policy. Every mutating mode displays a captured target plan and asks for confirmation; `--yes` accepts that plan without rediscovery. `--dry-run` displays the plan and performs no deletion. | ACCEPTED; explicit cleanup modes are mutually exclusive, and age cleanup applies only the targets shown before confirmation (S2.5a). |
+| cmru cleanup | Optional target selects projects; omission applies configured policy to its resolved scope. Exactly one explicit mode may be selected: `--remove-assets AGE` prunes configured age-based remote Releases/tags/GHCR versions estate-wide under the `[cleanup]` policy and refuses a project target (exit 2, CLI-05); `--delete-unmanaged-release-tag TAG` deletes one exact unmanaged GitHub Release but never its Git tag; `--delete-build-output ID` deletes the exact validated local retained record; `--discard-build-worktree PATH` removes one exact failed build worktree and forbids a project target. `--config` selects policy. Every mutating mode displays a captured target plan and asks for confirmation; `--yes` accepts that plan without rediscovery. `--dry-run` displays the plan and performs no deletion. | ACCEPTED; explicit cleanup modes are mutually exclusive, and age cleanup applies only the targets shown before confirmation (S2.5a). |
 | cmru abandon | Optional `branch` must exactly match a managed release branch; omission selects the complete retained release set. `--config` selects the project policy used to validate each recorded scope, including externally configured multi-project releases. `--dry-run` reports exact local and known remote candidates without changing them. `--yes` confirms the complete displayed set; otherwise interactive confirmation is required. | ACCEPTED; KI-29 exact selection, publication-evidence refusal, and no-widening semantics remain canonical in S-CLI.8. |
 | cmru init | `--root PATH` selects the adoption directory; `--layout` is exactly `single` or `monorepo`; `--owner`, `--repo`, and `--owner-type user or org` supply facts otherwise read from the Git origin or interactive prompts. `--dry-run` renders and validates generated files without prompting to write or changing the filesystem. | ACCEPTED; numeric `1`/`2` layout spellings were removed rather than carried as compatibility aliases. |
 | cmru versions init | Optional target and `--config` select manifests from which version targets are derived. `--dry-run` reports the prospective target changes without writing. | ACCEPTED; init remains the explicit target-creation operation. |
@@ -549,32 +536,24 @@ registered implementation named beside them.
 | cmru handler wheel-validate; python -m cmru.handlers wheel-validate | Required `--prefix` selects the latest release to validate. It is read-only, so no `--dry-run` is offered. | ACCEPTED; validation does not accept a meaningless mutation flag. |
 | cmru handler tarball-publish; python -m cmru.handlers tarball-publish | Required `--prefix`, `--cwd`, and `--glob` select the one source; exactly one of `--version-file PATH` or `--version-env NAME` supplies its version; optional `--notes-env` supplies notes. `--dry-run` displays inputs and skips publication. | ACCEPTED; the mutually exclusive version source is semantically necessary. |
 | cmru handler tarball-validate; python -m cmru.handlers tarball-validate | Required `--prefix` selects the release; `--artifact-suffix` defaults to `.tar.xz` and selects the expected extension. This is read-only and has no `--dry-run`. | ACCEPTED; a future suffix change must preserve non-empty/path-safe validation. |
-| cmru handler oci-image-build; python -m cmru.handlers oci-image-build | Required `--cwd`, `--bake-file`, and `--target` select the project build. `--repack` is accepted only to fail immediately with a clear disabled-feature error; no Docker login or command runs. `--dry-run` previews only the supported non-repack path. | ACCEPTED; KI-02 repack tuning flags were removed, and the disabled path is covered by a pre-side-effect test. |
-| cmru handler oci-image-push; python -m cmru.handlers oci-image-push | Required `--cwd`, `--bake-file`, and `--target` select the image. `--repack` fails before login or Docker; ordinary operation uses buildx bake push. `--dry-run` shows inputs without pushing. | ACCEPTED; no dormant repack grammar remains beyond the explicit refusal switch. |
+| cmru handler oci-image-build; python -m cmru.handlers oci-image-build | Required `--cwd`, `--bake-file`, and `--target` select the project build. `--dry-run` previews the build without Docker login or any command. | ACCEPTED; `--repack` and the KI-02 repack tuning flags were removed (CLI-14); a test pins that `--repack` is refused as an unrecognized argument. |
+| cmru handler oci-image-push; python -m cmru.handlers oci-image-push | Required `--cwd`, `--bake-file`, and `--target` select the image; operation uses buildx bake push. `--dry-run` shows inputs without pushing. | ACCEPTED; no dormant repack grammar remains. |
 | cmru tester-gate | Required `--cwd DIR` selects the in-container checkout path and positional `command...` is the command after `--`. `--image` selects the pinned tester image; `--cgroup-parent` overrides the required gates slice; `--forward-cgroup-parent-var` and `--forward-cgroup-parent-gates-var` control nested slice fact forwarding; `--memory`, `--memory-swap`, and `--cpus` set container resource bounds. CPU must be a finite decimal of at least `0.00001` that Docker can represent; CMRU uses `--cpus` without `--cpu-period` because Docker rejects NanoCPUs and CPU Period together; it refuses zero/smaller, non-finite, or unrepresentable values before host probes because those values can remove the per-container CPU limit. `--cgroup-probe-image` and `--dind-image` select helper images; `--device-read-iops`, `--device-write-iops`, `--device-read-bps`, and `--device-write-bps` set device I/O limits; `--enable-docker` requests DinD and requires its configured image; the sidecar receives the gates-slice parent but has no separate per-container CPU or memory cap. `--dry-run` prints the workload argv and, when enabled, the DinD startup argv; it starts no container and skips privileged host slice/IO probes. Every helper and workload container receives the required `--cgroup-parent`. | ACCEPTED WITH OPEN DECISION: live Docker refused `--memory 1g --memory-swap 512m` with status 125 before workload creation. A live `docker create` plus inspect showed `--cpus 0` left `NanoCpus`, `CpuQuota`, and `CpuPeriod` all zero; live runs showed values below `0.00001` produce `cpu.max = max 100000`, whereas `0.00001` produces a bounded quota. CMRU rejects zero, smaller, non-finite, and unrepresentable limits before privileged probes. `--dry-run` still intentionally skips host slice/IO capability checks. Decide whether DinD should inherit workload limits or have separate required CPU/memory inputs; recommendation: separate explicit limits to avoid doubling the workload envelope. |
-| cmru resolve | Optional target and `--config` select a project; `--format` is `json` by default or `env`/`url`. It reads the latest published artifact facts, including the selected digest, and performs no write; no `--dry-run` is offered. | ACCEPTED; supported output formats are closed and distinguishable. |
+| cmru resolve | Optional target and `--config` select a project; `--format` is `json` by default or `env`/`url`. It reads the latest published artifact facts, including the selected digest, and performs no write; no `--dry-run` is offered. | ACCEPTED; supported output formats are closed. The JSON shape (bare object for one resolved project, keyed map for several) varies with the number of projects resolved (CLI-13, open). |
 | cmru get-py | Optional target and `--config` select installer templates; `--output` writes exactly one selected installer, `--output-dir` writes one per project, and those destination options are mutually exclusive. Omission of both writes rendered scripts to stdout. `--dry-run` renders/validates selected templates and destinations but writes no file. Generated installers intentionally keep standalone `argparse`. | ACCEPTED; the installed-wheel fix for KI-26 is in scope, and the `get` alias was removed. |
 | cmru standards | Optional target and `--config` choose projects; default mode checks conformance. `--update` writes only CMRU-owned template revision markers; `--dry-run` requires `--update` and prints diffs without writing. | ACCEPTED; mixed read/write verb exposes dry-run only for its explicit mutation path. |
 | cmru tool-deps | Optional target and `--config` select declarations; `--timeout SECONDS` defaults to 10 for each network request; `--json` renders verification results; `--allow-stale-tool-deps` relaxes freshness only during verification. `--refresh PROJECT` replaces selected pins and hashes; it refuses `--json` and `--allow-stale-tool-deps` because those have no refresh meaning. `--dry-run` requires `--refresh`, fetches/verifies the proposed artifact, and prints planned file/config changes without writing. | ACCEPTED; invalid early-return combinations now fail with status 2 rather than silently ignoring options. |
-| cmru-agent enroll | `--node-id`, `--landscape`, and `--minisign-pubkey` identify enrollment facts, otherwise read from their documented environment sources; common `--scope`, `--consul-addr`, and `--token` select local state and backend credentials. `--dry-run` validates and prints targets without backend writes or local identity files. | ACCEPTED; environment-derived facts remain the default and token values should not be placed in process arguments. |
-| cmru-agent run; cmru-agent once | Common `--scope`, `--consul-addr`, and `--token` select state/backend; `--release-root DIR` overrides release storage. `run` is the long-running service; `once` performs one reconciliation. `--dry-run` on `run` reports intent without starting it; on `once` it reads/validates desired state and reports a prospective apply without lock, adapter, state, health, or backend writes. | ACCEPTED; both mutation-capable verbs have a real dry-run path; read-only `status` does not. |
-| cmru-agent status | Common `--scope`, `--consul-addr`, and `--token` select the state/backend view; it displays observed state and applied generation without a mutation option. | ACCEPTED; status is read-only. |
-| cmru-controller publish | Required `--plan PLAN_TOML` selects local rollout plan; `--generation-base N` defaults to 1 and must be positive. Common `--landscape`, `--consul-addr`, and `--token` select destination and credentials. `--dry-run` prints generation, node, tag, digest, approval barrier, and wait plan without Consul reads or writes. | ACCEPTED; generation validation fails before backend launch. |
-| cmru-controller approve | Required `--plan PLAN_ID` selects approval key; common landscape/backend controls select destination. `--dry-run` identifies the approval write and performs no Consul access. | ACCEPTED; approval is a distinct explicit state mutation. |
-| cmru-controller hold | Required `--plan PLAN_ID` selects hold key; common landscape/backend controls select destination. `--dry-run` identifies the hold write and performs no Consul access. | ACCEPTED; holding is separate from plan publication. |
-| cmru-controller status | Optional `--plan` accepts a plan file or plan ID; common landscape/backend controls choose the read view. It queries Consul or observed state and emits JSON/human status; no `--dry-run` is offered. | ACCEPTED; read-only status no longer accepts a no-op dry-run flag. |
-| cmru-controller rollback | Required `--plan PLAN_TOML` selects nodes and the first wave's complete release coordinate; `--generation N` overrides the generated number and must be positive. Common landscape/backend controls choose destination; `--dry-run` prints proposed generation, tag, digest, URL, nodes, and suppresses Consul writes. | ACCEPTED; rollback remains available while `--to` is removed because a tag-only override could disagree with the plan's immutable URL/digest tuple (KI-32). |
 <!-- cmru-cli-semantic-audit:end -->
 
 The verb/group review keeps distinct paths for atomic source-first release,
 retained local build and artifact publication, caller-checkout publication,
 configured step execution, read-only inspection, dependency/version work,
-consumer resolution, maintenance/recovery, and the agent/controller deployment plane. The grammar
+consumer resolution, and maintenance/recovery. The grammar
 inventory records each cli-extended help group, and the gate compares those
 groups to registration so grouping changes update this spec. Setup belongs in
 `MODIFICATION`; read-only validators belong in `EXPLORATION`; conditional
 read/write verbs belong in `MIXED OPERATIONS`; cleanup and abandonment belong
-in `MAINTENANCE`. The only authentication/setup group is agent enrollment.
+in `MAINTENANCE`.
 
 The review removed duplicate names and legacy spellings (`get`,
 `dependency-graph`, `graph`, numeric layout values, and `--allow-tag-at-head`),
@@ -922,9 +901,9 @@ host = "github"
 registry = ["ghcr.io"]
 [orchestration]
 project_order = ["example"]
-default_projects = ["example"]
 default_steps = ["run-tests", "build", "push"]
 execution_mode = "project-first"
+# `default_projects` is deprecated (CLI-04): accepted with a warning, ignored, to be removed.
 
 [orchestration.project.example]
 config = "example/cmru.toml"         # project-relative, exact filename
@@ -1846,8 +1825,9 @@ runs `docker buildx bake -f <bake-file> <target> --load` or `--push`. A publishi
 transaction preflights its GitHub credential before source or host state changes; a handler
 also refuses missing Docker prerequisites with exit 3.
 
-`--repack` remains deliberately fail-closed with exit 2 before login, Docker, or filesystem
-mutation. It is not a supported CMRU release feature. A project that needs OCI repacking
+`--repack` was removed from the handler grammar (CLI-14): it only ever failed closed while
+KI-02 is open, which S-CLI.7 treats as dead grammar. The option returns when KI-02 is fixed.
+OCI repack is not a supported CMRU release feature. A project that needs OCI repacking
 MUST own an explicit tested command and its reproducibility, resource-governance, digest
 verification, and runtime-smoke evidence. MDT is the estate example; its implementation is
 not silently generalized as a CMRU profile.

@@ -56,7 +56,7 @@ The generator and the only live consumer:
   `proj.getsh` and **raises if `[getsh]` is absent** (lines 138-141);
   `_render_preserve_func()` (line 22) code-generates the preserve/restore helpers;
   `getpy_main()` (line 162) is the `cmru get-py --project <name> --config <toml>` CLI.
-- **`templates/get.py.tmpl`** — the rendered installer template (`[[VARNAME]]` syntax).
+- **`cmru/src/cmru/templates/get.py.tmpl`** — the rendered installer template (`[[VARNAME]]` syntax).
 - **`src/cmru/config.py`** — `GetShConfig` dataclass (line 61: `install_dir`, `preserve`,
   `deps`, `next_steps`); parsed at lines 192-226 (`if "getsh" in raw:`); attached as
   `ProjectS2Config.getsh` (line 86). Config validation is fail-fast / unknown-keys-rejected
@@ -221,7 +221,7 @@ Before **any** extraction:
    the placeholder set for the new template (scope dirs, wheels, entrypoint, manifest/sig
    names, required_commands, manifest-pubkey arg). Keep the `[[VARNAME]]` engine + the
    unreplaced-placeholder warning (lines 123-127).
-3. **`templates/get.py.tmpl`** — rewrite as the transactional installer. Pipeline per
+3. **`cmru/src/cmru/templates/get.py.tmpl`** — rewrite as the transactional installer. Pipeline per
    command:
    `resolve` (S5 resolver / `--version` pin) → `download` (private-aware §5) →
    `verify` (SHA256 + minisign §4) → `stage` (extract into

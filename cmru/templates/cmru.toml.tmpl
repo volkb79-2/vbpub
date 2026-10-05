@@ -1,6 +1,11 @@
 # cmru-project-template-revision: 4
 # Complete portable CMRU project contract. Copy to <project>/cmru.toml.
+# In a monorepo with a cmru.orchestration.toml, delete the [github] and
+# [targets] tables below: they are central orchestration facts there.
 schema_version = 1
+
+[runtime]
+kind = "none"
 
 [github]
 owner = "your-github-owner"

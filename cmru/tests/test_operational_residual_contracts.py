@@ -7,7 +7,6 @@ from types import SimpleNamespace
 import pytest
 
 from cmru import handlers, release, tester_gate
-from cmru.agent.consul_backend import ConsulBackend
 
 
 def test_handlers_validate_commands_emit_resolved_artifact_contract(monkeypatch, capsys):
@@ -59,13 +58,6 @@ def test_tester_gate_slice_probe_surfaces_probe_failure_and_nonloaded_units(monk
     ))
     ok, note = tester_gate.check_slice_unit("missing.slice", "probe", "dev-gates.slice")
     assert ok is False and "not installed" in note
-
-
-def test_consul_read_absent_observed_and_signature_are_none():
-    backend = ConsulBackend()
-    backend._get = lambda *args, **kwargs: (404, b"", {})
-    assert backend.read_observed("node", "land") is None
-    assert backend.read_desired_sig("node", "land") is None
 
 
 def test_release_read_wheel_version_without_metadata_fails_exactly(tmp_path, capsys):

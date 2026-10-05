@@ -16,8 +16,7 @@ from pathlib import Path
 import pytest
 
 from cmru import cli
-from cmru.agent import cli as agent_cli
-from cmru.controller import cli as controller_cli
+from cmru import handlers
 
 
 def test_version_prefers_an_exact_source_tag_over_stale_install_metadata(monkeypatch):
@@ -25,13 +24,13 @@ def test_version_prefers_an_exact_source_tag_over_stale_install_metadata(monkeyp
     assert cli._cmru_version() == "2.0.0"
 
 def test_helper_nested_help_and_errors_start_with_the_headline(capsys):
-    assert agent_cli.main(["enroll", "--help"]) == 0
+    assert handlers.main(["wheel-build", "--help"]) == 0
     captured = capsys.readouterr()
     assert captured.err == ""
     assert captured.out.splitlines()[0].startswith("CMRU ")
     assert " — " in captured.out.splitlines()[0]
 
-    assert controller_cli.main(["publish"]) == 2
+    assert handlers.main(["wheel-validate"]) == 2
     captured = capsys.readouterr()
     assert captured.out == ""
     assert any(line.startswith("CMRU ") and " — " in line for line in captured.err.splitlines())
@@ -136,7 +135,7 @@ def test_load_config_s2_schema(tmp_path):
     assert repo_root == tmp_path
     assert list(projects) == ["alpha"]
     assert project_order == ["alpha"]
-    assert default_projects == ["alpha"]          # defaults to project_order
+    assert default_projects == []                 # reserved slot; the key is deprecated (CLI-04)
     assert default_steps == ["run-tests", "build", "push"]
     assert execution_mode == "project-first"
     assert github.owner == "octocat" and github.repo == "demo"
@@ -465,20 +464,6 @@ def test_version_verb_and_top_level_flag_are_compatible(monkeypatch, capsys):
     assert captured.out == "cmru 2.0.2\n"
     assert captured.err == ""
 
-
-def test_agent_and_controller_version_flags(monkeypatch, capsys):
-    from cmru.agent import cli as agent_cli
-    from cmru.controller import cli as controller_cli
-
-    monkeypatch.setattr(cli, "_cmru_version", lambda: "2.0.2")
-    for entrypoint, main in (
-        ("cmru-agent", agent_cli.main),
-        ("cmru-controller", controller_cli.main),
-    ):
-        assert main(["--version"]) == 0
-        captured = capsys.readouterr()
-        assert captured.out == f"{entrypoint} 2.0.2\n"
-        assert captured.err == ""
 
 def test_removed_module_console_dispatch_alias_refuses_version():
     project_dir = Path(__file__).resolve().parents[1]

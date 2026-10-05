@@ -184,7 +184,7 @@ def standards_cli():
         mutating=True,
         include_confirmation=False,
         arguments=(ArgumentSpec(
-            "target", "project target; omitted uses the current project or estate default",
+            "target", "project target; omitted: the current project, or every orchestrated project at the estate root",
             metavar="[all|PROJECT[,PROJECT...]]",
             parser_kwargs={"nargs": "?", "default": None},
         ),),
@@ -226,19 +226,15 @@ def _run_standards(args, _runtime) -> None:
     from cmru.config import resolve_invocation_context
     if args.target is None and config_path.name == PROJECT_CONFIG_FILENAME and len(projects) == 1:
         context_project = next(iter(projects))
-        estate_scope = False
     elif args.target is None:
         context = resolve_invocation_context(config_path)
         context_project = context.project_name
-        estate_scope = context.scope == "estate"
     else:
         context_project = None
-        estate_scope = False
     try:
         selected = select_target_names(
             args.target, projects, project_order,
             context_project=context_project,
-            estate_scope=estate_scope,
         )
     except TargetSelectionError as exc:
         raise CliFailure(str(exc), exit_code=2, show_help=True) from exc

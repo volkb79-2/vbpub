@@ -461,7 +461,6 @@ def _selected_projects(forge: ForgeConfig, context: InvocationContext, target: s
             forge.projects,
             order,
             context_project=context.project_name,
-            estate_scope=context.scope == "estate",
         )
     except TargetSelectionError as exc:
         raise VersionsError(str(exc)) from exc

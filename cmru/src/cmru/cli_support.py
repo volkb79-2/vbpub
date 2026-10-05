@@ -101,18 +101,16 @@ def select_target_names(
     project_order: Iterable[str],
     *,
     context_project: str | None = None,
-    estate_scope: bool = False,
 ) -> list[str]:
-    """Resolve a parsed target against the loaded registry in declared order."""
+    """Resolve a parsed target against the loaded registry in declared order.
+
+    An omitted target selects the current project, or every orchestrated project
+    (``project_order``) at the estate root.
+    """
     parsed = parse_target_names(raw)
     ordered = [name for name in project_order if name in projects]
     if parsed is None:
-        if context_project is not None:
-            parsed = [context_project]
-        elif estate_scope:
-            parsed = ["all"]
-        else:
-            parsed = ordered
+        parsed = [context_project] if context_project is not None else ordered
     if parsed == ["all"]:
         return ordered
     unknown = [name for name in parsed if name not in projects]
