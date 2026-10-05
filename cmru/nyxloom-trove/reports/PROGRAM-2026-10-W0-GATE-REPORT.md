@@ -72,5 +72,19 @@ by the full-suite run from a non-git temp dir).
 3. `_git_scope` now fails if git is unavailable or a repository has no commits (previously the same, via the worktree library); the
    existing `_git_scope` tests used empty `.git` directories and now `git init` plus a commit.
 4. assay backlog id `B146` was the next free id in my branch; another wave filing into that file could collide.
+6. **Review round 1 (commit `35b7f2968`)**, Edit/Write only:
+   - Flaky gate-report tests made deterministic: `run_release_gate.time` is pinned to a fixed value and files the fake
+     lane writes are stamped with a later mtime (stale ones with mtime 1).
+   - `cmru.project.sample.toml` and `cmru/templates/cmru.toml.tmpl` use `cmru handler` (step argv lines only).
+   - README line 62 and the CONSUMERS run-on line fixed.
+   - `_git_scope` strips every `GIT_*` variable from its probe env; a missing git binary outside a repo returns `{}`.
+     Tests: `test_git_scope_probe_does_not_inherit_git_environment_variables`,
+     `test_git_scope_without_a_git_binary_is_empty_outside_a_repository`.
+   - Surviving mutants killed (all re-planted and confirmed failing): junit stale-mtime filter, junit `<error>` case,
+     `dict.fromkeys` dedupe, and the standards wheel-build check ignoring the `handler` form
+     (`test_standards_handler_form_without_builder_image_names_that_exact_problem`). The GIT_ strip plant was killed too.
+   - Filed ciu `CIU-129` and nyxloom `NL-31` (same `--maxfail` coverage-hiding pattern; those projects' configs unchanged).
+   - Gate: full suite `2 failed, 2905 passed, 10 skipped` (the two KI-54 tests only); `coverage` lane FAIL on those two;
+     `canary` lane run twice, both FAIL on only those two (no flake).
 5. `CHANGES.md` not touched: record for the controller fold-in: BG-03 gate diagnosability, BG-04/REL-07 `cmru handler` in
    estate configs and standards check, REL-11 `_git_scope`, BG-10 bootstrap script, BG-09 pretend-version clearing.
