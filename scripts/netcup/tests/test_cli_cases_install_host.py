@@ -688,3 +688,18 @@ def test_dry_run_plan_leaks_no_token_key_or_script_text(
         "echo hi",  # the install config's customScript text
     ):
         assert secret not in combined
+
+
+@pytest.mark.parametrize("route", ["wizard", "configure"])
+def test_wizard_still_takes_its_server_id_from_the_environment(
+    route, install_host_mod, tmp_path, monkeypatch, capsys, fake_client
+):
+    # The deliberate contrast with install, which ignores NETCUP_SCP_API_SERVER_ID.
+    run = run_install_host(
+        install_host_mod, [route, "--dry-run", "--yes", "--no-monitor"], tmp_path=tmp_path,
+        monkeypatch=monkeypatch, capsys=capsys, fake_client=fake_client, scenario="gather-id",
+        env={"NETCUP_SCP_API_SERVER_ID": "42"},
+    )
+    assert run.status == 0
+    assert run.calls[0][1] == "/api/v1/servers/42"
+    assert "NOT calling POST /api/v1/servers/42/image" in run.out
