@@ -55,9 +55,31 @@ recorded target and refuses if the checkout moved, preserving newer commits.
 the allocated checkout's exact commit has generated facts and a matching entry
 in the shared workspace record. While those roots are being prepared,
 inspection reports `allocating`; a recoverable failure reports
-`recovery-required`, and `ciu worktree ensure NAME` retries it. See the
+`recovery-required`, and `ciu worktree ensure NAME` retries it. If CIU cannot
+prove the checkout's exact commit, it keeps the allocation non-ready rather
+than guessing which roots to prepare. See the
 [readiness rationale](docs/DESIGN-GUIDE.md#workspace-and-root-identity) and
 [worktree example](docs/CONSUMERS.md#2-create-a-managed-workspace).
+
+When a worktree's Git root is only an aggregate for nested CIU roots, its
+`ready` family record has no runtime identity of its own (`runtime` contains
+two nulls); each discovered CIU root is initialized separately. The record
+reader distinguishes that shape from a malformed CIU-root record using the
+exact root marker: only a genuinely absent marker path permits null/null.
+The marker must resolve to a regular file; a directory, dangling symlink, or
+unreadable marker is refused, as are partial identities.
+`ready` is written only after every committed root at the allocated checkout's
+recorded allocation commit has readable generated facts and its root entry is
+recorded in the shared workspace metadata. Until then inspection reports
+`allocating`; a recoverable preparation failure reports `recovery-required`. The
+`ciu worktree ensure` command retries incomplete preparation and checks older
+ready records for the same evidence before returning them. A partial checkout with a saved fork point resumes against that exact
+commit while preserving later commits. If a no-fork-point checkout moved from
+its provable target, `ensure` refuses and preserves it; it never hard-resets an
+existing worktree during resume. An older `ready` record that cannot be
+verified is demoted to `recovery-required` before refusal.
+See the [aggregate-record rationale](docs/DESIGN-GUIDE.md#aggregate-family-records-and-runtime-identity)
+and [consumer example](docs/CONSUMERS.md#2-create-a-managed-workspace).
 
 > **ciu builds-and-runs; cmru releases.** ciu is the **inner loop** (build local images,
 > run the stack on this host); its sibling **cmru** is the **outer loop** (version + publish
@@ -85,6 +107,9 @@ or bandwidth caps by default. Set keys such as `mem_limit`, `mem_reservation`,
 `read_iops`, and `write_iops` in a stack's
 `[<root>.governance]` table or the global `[governance]` table only when the
 project wants those limits; service-authored Compose keys remain authoritative.
+The explicit controls include `mem_limit`, `mem_swap_limit`,
+`mem_reservation`, `cpus`, `read_iops`, `write_iops`, `read_bps`, and
+`write_bps`.
 The host's parent-slice limits continue to apply independently. See the
 [pasteable consumer example](docs/CONSUMERS.md#configure-ciu-resource-limits)
 and the [design rationale](docs/DESIGN-GUIDE.md#governance-resource-limits).

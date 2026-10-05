@@ -321,6 +321,34 @@ class TestManagedIdentityLifecycle:
         assert ensured == created
         assert created.record_path.read_bytes() == before
 
+    def test_ensure_repairs_ready_record_while_its_network_exists(
+        self, tmp_repo, fake_generate_env, monkeypatch
+    ):
+        monkeypatch.setattr(worktree, "_docker_network_exists", lambda _network: False)
+        created = worktree.create(tmp_repo, "logical-one")
+        context = worktree._ensure_shared_record(tmp_repo, created)
+        shared = worktree._shared_worktree()
+        shared_record = shared.read_record(context.record_path)
+        shared.write_record(replace(
+            shared_record,
+            metadata={**dict(shared_record.metadata), "root_entries": []},
+        ))
+        facts = created.ciu_root / "ciu.instance.generated.toml"
+        facts.unlink()
+
+        existing_networks = {created.network}
+        network_is_present = lambda network: network in existing_networks
+        assert network_is_present(created.network)
+        monkeypatch.setattr(worktree, "_docker_network_exists", network_is_present)
+
+        repaired = worktree.ensure(tmp_repo, "logical-one")
+
+        assert repaired.state == "ready"
+        assert repaired.instance_id == created.instance_id
+        assert repaired.network == created.network
+        assert facts.is_file()
+        assert shared.read_record(context.record_path).metadata["root_entries"]
+
     def test_ensure_constraint_mismatch_fails_closed(self, tmp_repo, fake_generate_env):
         worktree.create(tmp_repo, "logical-one", display_name="visible-one")
         with pytest.raises(worktree.WorktreeError, match="ensure mismatch"):
@@ -799,12 +827,11 @@ class TestForkPointProvenance:
         with pytest.raises(worktree.WorktreeError, match="unknown"):
             worktree._record_from_dict(raw, tmp_path / "r.json")
 
-    def test_create_degrades_to_none_when_the_head_cannot_be_resolved(
+    def test_create_refuses_when_the_allocated_head_cannot_be_resolved(
         self, tmp_repo, fake_generate_env, monkeypatch
     ):
-        """Provenance is a nice-to-have for a downstream gate; a worktree the
-        operator asked for must not be refused because an extra `rev-parse`
-        did not answer."""
+        """Without an exact commit CIU cannot prove which nested roots need
+        preparation, so the allocated worktree must never become ready."""
         real = worktree._git
 
         def flaky(args, cwd, **kwargs):
@@ -813,9 +840,16 @@ class TestForkPointProvenance:
             return real(args, cwd, **kwargs)
 
         monkeypatch.setattr(worktree, "_git", flaky)
-        record = worktree.create(tmp_repo, "logical-one", base="main")
+        with pytest.raises(
+            worktree.WorktreeError,
+            match="could not determine the allocated worktree commit",
+        ):
+            worktree.create(tmp_repo, "logical-one", base="main")
+        record = worktree.find_instance_record(tmp_repo, "logical-one")
+        assert record is not None
         assert record.fork_point_sha is None
-        assert record.state == "ready"          # the create still succeeded
+        assert record.state == "recovery-required"
+        assert record.recovery_status == "env-generation-failed"
 
     @pytest.mark.parametrize(
         "output", ["", "   \n", "not-a-sha", "deadbeef",
@@ -823,14 +857,12 @@ class TestForkPointProvenance:
                    "0123456789abcdef0123456789abcdef01234567 extra",
                    "0123456789abcdef0123456789abcdef01234567junk"],
     )
-    def test_create_degrades_when_rev_parse_succeeds_with_a_non_sha(
+    def test_create_refuses_when_rev_parse_succeeds_with_a_non_sha(
         self, tmp_repo, fake_generate_env, monkeypatch, output
     ):
-        """Exit 0 is not the test — the OUTPUT has to be a real object name.
-        `rev-parse --verify --quiet` exits 0 while printing something else in
-        more than one situation, and a stored value that could never equal a
-        real `merge-base` would make the consumer distrust the record forever
-        instead of reporting a problem.
+        """Exit 0 is not proof — the OUTPUT has to be a real object name.
+        A malformed answer cannot identify the tree whose nested roots must
+        be prepared, so create leaves a recoverable non-ready record.
 
         The last two cases are a valid 40-hex PREFIX with a tail: they pin
         `fullmatch` specifically, which `match` would wave through."""
@@ -842,12 +874,16 @@ class TestForkPointProvenance:
             return real(args, cwd, **kwargs)
 
         monkeypatch.setattr(worktree, "_git", odd)
-        record = worktree.create(tmp_repo, "logical-one", base="main")
+        with pytest.raises(
+            worktree.WorktreeError,
+            match="could not determine the allocated worktree commit",
+        ):
+            worktree.create(tmp_repo, "logical-one", base="main")
+        record = worktree.find_instance_record(tmp_repo, "logical-one")
+        assert record is not None
         assert record.fork_point_sha is None
-        assert record.state == "ready"
-        assert "fork_point_sha" not in json.loads(
-            record.record_path.read_text(encoding="utf-8")
-        )
+        assert record.state == "recovery-required"
+        assert record.recovery_status == "env-generation-failed"
 
     def test_the_fork_point_is_the_CHECKED_OUT_tip_not_base_at_entry(
         self, tmp_repo, fake_generate_env, monkeypatch
@@ -1038,7 +1074,8 @@ class TestManagedRecordValidation:
             (lambda raw: {**raw, "state": "future"}, "lifecycle state"),
             (lambda raw: {**raw, "recovery_status": "future"}, "recovery status"),
             (lambda raw: {**raw, "runtime": {"instance_id": 3, "network": "n"}}, "runtime.instance_id"),
-            (lambda raw: {**raw, "runtime": {"instance_id": None, "network": "n"}}, "ready record"),
+            (lambda raw: {**raw, "runtime": {"instance_id": None, "network": "n"}}, "incomplete runtime identity"),
+            (lambda raw: {**raw, "state": "allocating", "runtime": {"instance_id": "i", "network": None}}, "incomplete runtime identity"),
             (lambda raw: {**raw, "state": "allocating", "recovery_status": "checkout-incomplete"}, "carries recovery"),
             (lambda raw: {**raw, "ciu_root_offset": "../escape"}, "unsafe ciu_root_offset"),
             (lambda raw: {**raw, "git_worktree_path": "relative"}, "not absolute"),

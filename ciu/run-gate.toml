@@ -19,5 +19,6 @@ budget = "8h"
 # verdict records the exact runtime assay version and source commit.
 
 [lanes.ciu.resources]
+cpus = "3"
 memory = "2g"
 memory_swap = "16g"

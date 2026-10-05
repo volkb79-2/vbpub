@@ -4239,12 +4239,17 @@ A partial preparation remains attributable and is reported as
 `recovery-required`; `ensure` MUST retry incomplete preparation before
 returning `ready`. It MUST verify the discovered roots, generated facts, and
 recorded root entries before fast-returning a historical ready record. Root
-discovery uses the allocated checkout's resolved commit, not a mutable base
+discovery uses the allocated checkout's saved commit, not a mutable base
 reference re-read in the primary checkout. No missing or malformed
-generated-facts file is silently treated as a fresh identity. When a legacy
-record lacks a fork-point SHA, the neutral workspace's `base_commit` may stand
-in only while the checkout's HEAD still equals it; otherwise ensure MUST refuse
-without rewriting the ready record as a generation failure.
+generated-facts file is silently treated as a fresh identity. A full-SHA
+recorded target is used directly; when a legacy record has only a symbolic
+base and no fork-point SHA, the neutral workspace's `base_commit` may stand in
+only while checkout HEAD still equals it. `ensure` MUST never reset an existing
+checkout during resume. If an older `ready` claim cannot be verified, CIU
+first demotes it to `recovery-required`. A partial record with a saved
+fork-point SHA resumes against that exact commit while preserving later
+checkout commits; when no fork point exists, a moved HEAD makes the target
+unprovable, so CIU refuses rather than leaving a false `ready` status.
 Root-entry persistence and lease mirroring MUST re-read and merge the shared
 workspace record under its Git-family lock so concurrent updates preserve both
 metadata fields.

@@ -747,6 +747,44 @@ def test_finish_allocation_refuses_selected_root_without_preflight_identity(
     assert list(marker_checks) == []
 
 
+def test_adopted_full_sha_is_the_allocation_target_and_moved_head_refuses(
+    monkeypatch, tmp_path
+):
+    record = replace(
+        _record(tmp_path, state="recovery-required"), base_ref="b" * 40
+    )
+    context = SimpleNamespace(base_commit="a" * 40)
+    monkeypatch.setattr(worktree, "_git", lambda *_args, **_kwargs: SimpleNamespace(
+        returncode=0, stdout="b" * 40, stderr=""
+    ))
+    assert worktree._allocated_commit_sha(
+        record, context, require_current_head=True
+    ) == "b" * 40
+
+    monkeypatch.setattr(worktree, "_git", lambda *_args, **_kwargs: SimpleNamespace(
+        returncode=0, stdout="c" * 40, stderr=""
+    ))
+    with pytest.raises(worktree.WorktreeError, match="HEAD moved from recorded allocation commit"):
+        worktree._allocated_commit_sha(
+            record, context, require_current_head=True
+        )
+
+
+def test_allocated_commit_refuses_invalid_in_memory_fork_point(monkeypatch, tmp_path):
+    """A value that bypassed record parsing still cannot be certified."""
+    record = replace(_record(tmp_path), fork_point_sha="not-a-full-sha")
+    monkeypatch.setattr(
+        worktree,
+        "_git",
+        lambda *_args, **_kwargs: pytest.fail("invalid saved value must not read Git"),
+    )
+    with pytest.raises(
+        worktree.WorktreeError,
+        match="allocation commit is unavailable from both",
+    ):
+        worktree._allocated_commit_sha(record, SimpleNamespace(base_commit="a" * 40))
+
+
 def test_ready_record_refuses_to_infer_allocation_commit_from_a_moved_head(
     monkeypatch, tmp_path
 ):
@@ -762,9 +800,10 @@ def test_ready_record_refuses_to_infer_allocation_commit_from_a_moved_head(
     monkeypatch.setattr(worktree, "_git", lambda *_args, **_kwargs: SimpleNamespace(
         returncode=0, stdout="b" * 40, stderr=""
     ))
-    with pytest.raises(worktree.WorktreeError, match="refusing to infer it from the current checkout"):
+    with pytest.raises(worktree.WorktreeError, match="HEAD moved from recorded allocation commit"):
         worktree.ensure(tmp_path, "demo")
-    assert writes == []
+    assert [item.state for item in writes] == ["allocating", "recovery-required"]
+    assert writes[-1].recovery_status == "env-generation-failed"
 
 
 def test_finish_allocation_requires_shared_context_to_certify_ready(tmp_path):
@@ -852,6 +891,9 @@ def test_ensure_does_not_reset_a_checkout_after_fork_point_was_recorded(
         worktree, "_ensure_shared_record",
         lambda *_args: SimpleNamespace(physical_worktree_path=tmp_path),
     )
+    monkeypatch.setattr(worktree, "_git", lambda *_args, **_kwargs: SimpleNamespace(
+        returncode=0, stdout="a" * 40, stderr=""
+    ))
     monkeypatch.setattr(
         worktree, "_finish_allocation",
         lambda _root, _record, **kwargs: calls.update(kwargs) or record,
