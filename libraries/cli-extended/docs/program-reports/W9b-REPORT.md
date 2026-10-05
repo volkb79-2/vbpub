@@ -131,3 +131,13 @@ surface check: passed.  audit: 12 pass, 0 warn, 0 fail, 3 manual.
 `r1-vm-real-commit`, `gate` and `r2` not run.
 
 Library friction item 9 (belongs to the list above): `CliIdentity.resolve` plus the wheel/zipimport path worked unchanged under `python -S` with the wheel on `sys.path`; skills resources inside a zip were not exercised (this tool registers no skills).
+
+## Post-release live verification
+
+Against the real release `cli-extended-v0.2.0` (asset `cli_extended-0.2.0-py3-none-any.whl`, sha256 `84ec3db81e8a4eaa931e57786f9b07395382af2601562f067b56fadbf3f3b58b`) over real HTTPS to github.com only. A scratchpad script called `bootstrap-remote.py`'s own `resolve_wheel`/`install_wheel` in tmp dirs with a tmp HOME, no root, nothing outside the tmp dirs (no `/opt`, no `/usr`, no swap or loop devices); the tmp dirs were removed afterwards. The pinned digest variable is `CLI_EXTENDED_WHEEL_SHA256` (the brief wrote `CLI_EXTENDED_SHA256`, which the bootstrap does not read).
+
+- **Pinned pair, wrong digest** (`0`*64): refused with `cli-extended wheel sha256 mismatch ... expected 000..., got 84ec3db8...`; the install dir was never created.
+- **Pinned pair, correct digest**: wrote `cli_extended-0.2.0-py3-none-any.whl` (124610 bytes), the only file in the dir.
+- **`latest.json` mode** (`CLI_EXTENDED_LATEST_URL` set to the pointer URL): resolved exactly the versioned asset URL and the digest above, downloaded and verified it; the bytes are identical to the pinned download.
+- **Zipimport**: with the wheel at `sys.path[0]` under `python -S`, `cli_extended.__file__` is `<dir>/cli_extended-0.2.0-py3-none-any.whl/cli_extended/__init__.py`, `importlib.metadata.version("cli-extended")` is `0.2.0`, and `CliIdentity.resolve` is present. The real `debian-install-v2.py` copied beside that wheel (python `-S`, no `PYTHONPATH`) prints `debian-install-v2 2.0.0` and refuses `plan` without a config with the normal usage error.
+- **Lanes after merging main** (each through the flock, verdict read separately): `r0-r1` PASS (491 passed, 11 skipped), `fake-integration` PASS, `r3` PASS. `r2`, `gate`, `r1-vm-real-commit` not run.
