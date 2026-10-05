@@ -37,7 +37,8 @@ from cli_extended.surface import (
     _safe_choice_values,
     _signature,
 )
-from cli_extended.surface_cli import _load_factory, main as surface_cli_main
+from cli_extended.config import load_factory as _load_factory
+from cli_extended.surface_cli import main as surface_cli_main
 
 
 def _review_case(

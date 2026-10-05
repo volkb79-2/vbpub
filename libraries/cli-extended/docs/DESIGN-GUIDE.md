@@ -535,6 +535,41 @@ stronger statement. It is only valid on mutating verbs because a read-only
 verb has nothing to preview, and a consumer's own `--dry-run` is refused once
 a verb opts in so the two meanings cannot diverge.
 
+## Review the surface with the agent harness and keep findings separate
+
+Judging whether a help text is clear or a verb needs a dry-run is a language
+task, and the library is stdlib-only with no model access. So the library
+collects the evidence deterministically (`surface pack`: rubric, every route's
+plain help, every case awaiting review) and the agent harness, which already
+has a model and a conversation, does the judging. The alternative of calling a
+model from inside `cli-extended` was rejected: it would add a network
+dependency, a credential, and nondeterminism to a gate command.
+
+The judgment lands in two hand-edited files. The review catalog records
+per-case decisions keyed to stable surface IDs. The findings file records
+what is wrong, with a remedy, and survives the case being accepted: a case can
+be correctly refused while a finding about its help text stays open. Keeping
+them apart lets `check` treat them differently. An open `blocker` or `major`
+finding fails `check`; `minor` and `note` findings are reported but do not,
+because a gate that fails on every style remark gets switched off. Findings
+that name a route which no longer exists fail as stale, so closed-out work
+cannot silently point at nothing.
+
+`surface sync`, `check` and `template` are deliberately not marked `mutating`.
+The exemption criterion: they write only generated, idempotent files the
+library owns (the manifest and the marked spec region), re-running them
+changes nothing, and they never touch the catalog or findings. A confirmation
+or `--dry-run` there would only get in the way of `check`-style gating.
+Any verb that changes state it does not own or cannot regenerate still needs
+`mutating` with a confirmation or dry-run.
+
+The library never rewrites the catalog or the findings file. A tool that
+rewrites reviewed text turns every regeneration into a diff nobody wrote and
+loses comments, ordering and the author's wording; hand edits by the reviewer,
+checked by the library, keep the record attributable. `sync` therefore
+renders open findings into the marked spec region (read-only echo) but never
+the other way round.
+
 ## Ship agent skills per tool and stamp them
 
 Each tool packages its own skills instead of a central repository syncing them

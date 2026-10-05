@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import argparse
+import inspect
 import logging
 import sys
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from enum import Enum
 from shutil import get_terminal_size
@@ -658,7 +661,7 @@ class HelpCatalog:
         )
         if output_format is HelpFormat.MARKDOWN:
             return self.render_markdown(width=width)
-        width = width or self.width or get_terminal_size((120, 24)).columns
+        width = width or self.width or help_columns()
         width = max(60, width)
         lines = [self.identity.headline, "", f"Usage: {self.usage}"]
         lines.extend(
@@ -889,6 +892,43 @@ class HelpCatalog:
             raise ValueError("help catalog/parser mismatch; " + "; ".join(details))
 
 
+MIN_HELP_COLUMNS = 60
+_FIXED_HELP_COLUMNS: ContextVar[int | None] = ContextVar(
+    "cli_extended_fixed_help_columns", default=None
+)
+_ARGPARSE_COLOR_KWARGS: dict[str, bool] = (
+    {"color": False}
+    if "color" in inspect.signature(argparse.ArgumentParser.__init__).parameters
+    else {}
+)
+
+
+def help_columns() -> int:
+    """Columns help wraps to: a pinned width, else the terminal, else 120."""
+
+    pinned = _FIXED_HELP_COLUMNS.get()
+    return pinned if pinned is not None else get_terminal_size((120, 24)).columns
+
+
+@contextmanager
+def fixed_help_width(columns: int) -> Iterator[None]:
+    """Render help at exactly ``columns`` (machine-independent) inside the block.
+
+    ``columns`` must be an int of at least ``MIN_HELP_COLUMNS``, the narrowest
+    width help ever renders at, so a pinned value is always the value used.
+    """
+
+    if type(columns) is not int or columns < MIN_HELP_COLUMNS:
+        raise ValueError(
+            f"columns must be an integer of at least {MIN_HELP_COLUMNS}, got {columns!r}"
+        )
+    token = _FIXED_HELP_COLUMNS.set(columns)
+    try:
+        yield
+    finally:
+        _FIXED_HELP_COLUMNS.reset(token)
+
+
 class ExtendedArgumentParser(argparse.ArgumentParser):
     """ArgumentParser with no ``-h`` and command-help-on-error semantics."""
 
@@ -901,6 +941,8 @@ class ExtendedArgumentParser(argparse.ArgumentParser):
         **kwargs: Any,
     ) -> None:
         kwargs["add_help"] = False
+        # The library's output policy is the only source of colour.
+        kwargs.update(_ARGPARSE_COLOR_KWARGS)
         kwargs.setdefault("formatter_class", WideRawDescriptionHelpFormatter)
         self.identity = identity
         self.catalog = catalog
@@ -936,9 +978,7 @@ class WideRawDescriptionHelpFormatter(argparse.RawDescriptionHelpFormatter):
     """Preserve examples and use terminal width with a 120-column fallback."""
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
-        width = kwargs.setdefault(
-            "width", max(60, get_terminal_size((120, 24)).columns)
-        )
+        width = kwargs.setdefault("width", max(60, help_columns()))
         kwargs.setdefault("max_help_position", min(40, max(24, width // 3)))
         super().__init__(*args, **kwargs)
 

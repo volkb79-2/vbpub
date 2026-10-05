@@ -1151,6 +1151,71 @@ Contract version `1` covers these controls: `--help`, `--version`,
 when the registry uses `unexpected_exceptions="report"`; the other controls are
 always present.
 
+### Project configuration, findings and the `cli-extended` command
+
+1. **Config schema.** `[tool.cli-extended]` in `pyproject.toml`, or the same
+   keys at the top level of a standalone `cli-extended.toml`: `schema_version`
+   (integer, MUST be `1`) and one or more `[[clis]]` tables with `id` and
+   `factory` (required) and `review`, `manifest`, `spec`, `findings`
+   (optional; `manifest` and `spec` MUST be given together). An unknown key at
+   any level, a duplicate `id`, or a wrong `schema_version` is a `ConfigError`
+   naming the key and the file. Relative paths resolve against the config
+   file's directory.
+2. **Discovery.** `--config PATH` loads exactly that file (a file named
+   `pyproject.toml` MUST have the `tool.cli-extended` table; any other name
+   uses the standalone schema). Otherwise discovery walks up from the current
+   directory; the first directory holding `cli-extended.toml` or a
+   `pyproject.toml` with the table wins. Both in one directory is an error;
+   none found is an error listing the searched directories. `--cli ID` is
+   required when several CLIs are configured, and `id` MUST equal the registered
+   executable name. A malformed or unreadable `pyproject.toml` or
+   `cli-extended.toml` met during the walk is a `ConfigError` naming the file
+   (it is never skipped); the remedy is `--config PATH`. A `factory` target is a
+   file path when it contains `/` or ends in `.py`; Windows path separators are
+   unsupported, so a target with only a backslash is a module name.
+3. **Findings file.** `schema_version = 1`, `cli_id`, and `[[findings]]` with a
+   unique `id` (`[A-Za-z0-9][A-Za-z0-9._-]*`), `status` (`open`, `fixed`,
+   `wontfix`), `severity` (`blocker`, `major`, `minor`, `note`), `category`
+   (`grammar`, `help`, `semantics`, `consistency`, `adoption`), `summary`, an
+   optional `route` ID, `remedy` (required when `open`) and `rationale`
+   (required when `wontfix`). Unknown keys or values are a `FindingsError`.
+4. **Check semantics.** With a findings file, `cli_id` MUST match the
+   executable. A finding (any status) whose `route` is not a current route ID
+   is `stale finding <id>: route <r> no longer exists`. Each open `blocker` or
+   `major` is `open <severity> finding <id>: <summary>` and fails the check;
+   open `minor`/`note` findings are returned in `SurfaceReport.notes` and do
+   not fail it. `sync` renders `### Open review findings` at the end of the
+   marked region (severity order blocker to note, then id; `None.` when none)
+   and omits it when no findings file is configured.
+5. **Commands.** `cli-extended surface sync|check|template|pack|report` and
+   `cli-extended skills ...`, each surface verb taking `--config` and `--cli`
+   (`sync`/`check`/`template` also `--max-candidates N`, `N >= 1`). Exit
+   status: `sync` 0, `check` 0 or 1, `template` 0, any config, catalog,
+   findings, surface or import error 2. Findings print as `[REVIEW] ...` and
+   non-failing notes as `[NOTE] ...` on stderr.
+6. **Report.** `surface report` prints Markdown: `# CLI review report: <id>`,
+   then `## Open findings`, `## Cases awaiting review` (new, pending, changed,
+   reappeared), `## Stale cases` and `## Incomplete syntax`, each `None.` when
+   empty.
+7. **Pack.** `surface pack [--output FILE]` writes one deterministic Markdown
+   bundle: the packaged rubric verbatim, `## CLI` (identity, contract version,
+   surface schema version), `## Help` (the plain `help` output of the root and
+   every route), `## Cases to review` (id, kind, shape and current catalog row
+   of every awaiting and stale case), `## Open findings` and `## Your task`.
+   Two runs over the same inputs MUST produce identical bytes: help is rendered
+   at a fixed width of 100 columns regardless of `COLUMNS` or the terminal, and
+   without colour.
+9. **No library-independent colour.** On Pythons whose `argparse` accepts a
+   `color` argument, `ExtendedArgumentParser` passes `color=False`, so the
+   library's own policy (`--color`, `--no-color`, `NO_COLOR`, TTY detection) is
+   the only source of colour; `FORCE_COLOR` MUST NOT colour argparse's `usage:`
+   or section headings. On Python versions whose `argparse` colours its own
+   output, that native palette is disabled, so every colour comes from the
+   cli-extended policy; this is a visible palette change on a TTY.
+10. **Deprecation.** `python -m cli_extended.surface_cli` keeps its flags and
+   behaviour, writes `[WARN] ... is deprecated` to stderr first, and is
+   removed in a later release.
+
 ### Constraints and selector lists in the surface
 
 1. **Route records.** Each route MUST carry a `constraints` list (empty when

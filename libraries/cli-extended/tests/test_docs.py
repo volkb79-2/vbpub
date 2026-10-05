@@ -6,7 +6,9 @@ from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
 from cli_extended import CONTRACT_VERSION, load_cli_review_catalog
+from cli_extended.config import load_project_config
 from cli_extended.contract import common_control_table
+from cli_extended.findings import load_review_findings
 from cli_extended.review import (
     REVIEW_SCHEMA_VERSION,
     _REVIEW_CASE_STATES,
@@ -48,12 +50,26 @@ def _heading_ids(document: str) -> set[str]:
 
 def test_canonical_document_toml_examples_parse_and_review_catalogs_load(tmp_path):
     review_examples = 0
+    config_examples = []
+    findings_examples = []
     for document_path in CANONICAL_DOCS:
         document = document_path.read_text(encoding="utf-8")
         for block_index, (language, source) in enumerate(_fenced_blocks(document)):
             if language.lower() != "toml":
                 continue
             parsed = tomllib.loads(source)
+            if "clis" in parsed or "cli-extended" in parsed.get("tool", {}):
+                name = "pyproject.toml" if "tool" in parsed else "cli-extended.toml"
+                project = tmp_path / f"{document_path.stem}-{block_index}"
+                project.mkdir()
+                (project / name).write_text(source, encoding="utf-8")
+                config_examples.append(load_project_config(project / name))
+                continue
+            if "findings" in parsed:
+                findings_path = tmp_path / f"{document_path.stem}-{block_index}-findings.toml"
+                findings_path.write_text(source, encoding="utf-8")
+                findings_examples.append(load_review_findings(findings_path))
+                continue
             if "cli_id" not in parsed:
                 continue
 
@@ -67,6 +83,10 @@ def test_canonical_document_toml_examples_parse_and_review_catalogs_load(tmp_pat
             load_cli_review_catalog(catalog_path)
 
     assert review_examples, "canonical docs must include a loader-valid review catalog example"
+    assert {path.path.name for path in config_examples} == {
+        "cli-extended.toml", "pyproject.toml",
+    }, "CONSUMERS.md must show both a cli-extended.toml and a [tool.cli-extended] example"
+    assert findings_examples, "canonical docs must include a loader-valid findings example"
 
 
 def test_review_catalog_closed_vocabularies_are_documented():

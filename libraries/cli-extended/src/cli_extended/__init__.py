@@ -1,7 +1,9 @@
 """Reusable command-line contract helpers for vbpub projects."""
 
+from .config import CliConfig, ConfigError, ProjectConfig, load_project_config
 from .constraints import Conflicts, Constraint, Requires, RequiresChoice
 from .contract import CONTRACT_VERSION
+from .findings import Finding, FindingsError, FindingsFile, load_review_findings
 from .identity import CliIdentity, VersionLookupError
 from .output import (
     CliLoggingHandler,
@@ -69,8 +71,16 @@ __all__ = [
     "CONTRACT_VERSION",
     "ArgumentSpec",
     "CheckResult",
+    "CliConfig",
     "CliFailure",
     "CliIdentity",
+    "ConfigError",
+    "Finding",
+    "FindingsError",
+    "FindingsFile",
+    "ProjectConfig",
+    "load_project_config",
+    "load_review_findings",
     "CliLoggingHandler",
     "CliOutput",
     "CliRegistry",
