@@ -87,6 +87,7 @@ def _install_candidate_facts(monkeypatch, root, candidates):
 def _install_abandon_inspection(
     monkeypatch, root, candidate, *, scope=None, configs=None, snapshot=None,
     attempts=None, local_tags=None, remote_tags=None, heads=None, merge_codes=None,
+    real_git=False,
 ):
     _install_candidate_facts(monkeypatch, root, [candidate])
     if scope is not None:
@@ -116,6 +117,9 @@ def _install_abandon_inspection(
             stderr="",
         ),
     )
+    if real_git:
+        # Local ancestry questions go to the real repository at `root`.
+        return
     outcomes = dict(merge_codes or {})
     monkeypatch.setattr(
         cli, "run_local_git",
@@ -559,25 +563,90 @@ def test_abandon_withholds_unrequested_origin_branch_refs(monkeypatch, tmp_path,
     assert "refs/heads/other" in output
 
 
-@pytest.mark.parametrize(
-    "tag_rc, expected",
-    [
-        (0, "no pre-attempt origin tag snapshot"),
-        (2, "could not inspect remote tag alpha-v9"),
-    ],
-)
-def test_abandon_legacy_snapshot_uses_conservative_tag_ancestry_check(
-    monkeypatch, tmp_path, capsys, tag_rc, expected,
-):
-    candidate = _workspace(tmp_path, "cmru-release-20260924_120000-alpha-ab12cd")
-    _install_abandon_inspection(
-        monkeypatch, tmp_path, candidate, snapshot=None,
-        remote_tags={"refs/tags/alpha-v9": "d" * 40},
-        merge_codes={"d" * 40: tag_rc},
+def _real_git(repo: Path, *args: str) -> str:
+    done = subprocess.run(
+        ["git", *args], cwd=repo, capture_output=True, text=True, check=False,
     )
+    assert done.returncode == 0, done.stderr
+    return done.stdout.strip()
 
-    assert _invoke_abandon(candidate, branch=candidate.branch) == 2
-    assert expected in capsys.readouterr().out
+
+def _legacy_candidate_repo(tmp_path: Path):
+    """A REAL repository: old release tag < base == candidate tip, plus a side commit."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _real_git(repo, "init", "-b", "main")
+    _real_git(repo, "config", "user.email", "test@cmru.test")
+    _real_git(repo, "config", "user.name", "CMRU test")
+    for index, name in enumerate(("first", "base")):
+        (repo / f"{name}.txt").write_text(name, encoding="utf-8")
+        _real_git(repo, "add", ".")
+        _real_git(repo, "commit", "-m", name)
+        if index == 0:
+            first = _real_git(repo, "rev-parse", "HEAD")
+    base = _real_git(repo, "rev-parse", "HEAD")
+    branch = "cmru-release-20260924_120000-alpha-ab12cd"
+    _real_git(repo, "branch", branch, base)
+    return repo, branch, first, base
+
+
+def _legacy_inspect(monkeypatch, repo, branch, base, tag_oid):
+    candidate = _workspace(repo, branch, base=base)
+    _install_abandon_inspection(
+        monkeypatch, repo, candidate, snapshot=None,
+        remote_tags={"refs/tags/alpha-v9": tag_oid},
+        heads={"refs/heads/main": base},
+        real_git=True,
+    )
+    return candidate
+
+
+def test_rel03_legacy_abandon_ignores_an_earlier_release_tag_below_the_base(
+    monkeypatch, tmp_path, capsys,
+):
+    # Every earlier release tag is reachable from the candidate; one that is a
+    # strict ancestor of the transaction base cannot have been pushed by it.
+    repo, branch, first, base = _legacy_candidate_repo(tmp_path)
+    candidate = _legacy_inspect(monkeypatch, repo, branch, base, first)
+
+    assert _invoke_abandon(candidate, branch=branch) == 0
+    assert "no pre-attempt origin tag snapshot" not in capsys.readouterr().out
+
+
+def test_rel03_legacy_abandon_keeps_a_tag_exactly_at_the_base_suspicious(
+    monkeypatch, tmp_path, capsys,
+):
+    repo, branch, _first, base = _legacy_candidate_repo(tmp_path)
+    candidate = _legacy_inspect(monkeypatch, repo, branch, base, base)
+
+    assert _invoke_abandon(candidate, branch=branch) == 2
+    assert "no pre-attempt origin tag snapshot" in capsys.readouterr().out
+
+
+def test_rel03_legacy_abandon_refuses_a_tag_on_a_candidate_only_commit(
+    monkeypatch, tmp_path, capsys,
+):
+    repo, branch, _first, base = _legacy_candidate_repo(tmp_path)
+    _real_git(repo, "checkout", "-q", branch)
+    (repo / "candidate.txt").write_text("candidate", encoding="utf-8")
+    _real_git(repo, "add", ".")
+    _real_git(repo, "commit", "-m", "release inputs")
+    new_tip = _real_git(repo, "rev-parse", "HEAD")
+    _real_git(repo, "checkout", "-q", "main")
+    candidate = _legacy_inspect(monkeypatch, repo, branch, base, new_tip)
+
+    assert _invoke_abandon(candidate, branch=branch) == 2
+    assert "no pre-attempt origin tag snapshot" in capsys.readouterr().out
+
+
+def test_abandon_legacy_snapshot_refuses_when_a_remote_tag_cannot_be_inspected(
+    monkeypatch, tmp_path, capsys,
+):
+    repo, branch, _first, base = _legacy_candidate_repo(tmp_path)
+    candidate = _legacy_inspect(monkeypatch, repo, branch, base, "d" * 40)
+
+    assert _invoke_abandon(candidate, branch=branch) == 2
+    assert "could not inspect remote tag alpha-v9" in capsys.readouterr().out
 
 
 def test_abandon_refuses_selected_scope_tag_changes_since_snapshot(monkeypatch, tmp_path, capsys):

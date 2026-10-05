@@ -1396,7 +1396,7 @@ def delete_git_tag_remote(
     if expected_present is False:
         log_info(f"  Remote tag {tag} was absent from the confirmed cleanup preview — skipping")
         return
-    if expected_oid is not None and not re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", expected_oid):
+    if expected_oid is not None and not transaction.COMMIT_ID_RE.fullmatch(expected_oid):
         raise RuntimeError(f"Confirmed remote tag {tag} has an invalid captured object ID")
     remote_oid = list_remote_tag_refs_matching(repo_root, tag, git_auth=git_auth).get(tag)
     if expected_present is True and expected_oid is None:
@@ -1493,7 +1493,7 @@ def local_git_tag_oid(
             f"{context} ({result.returncode}): {detail}"
         )
     oid = result.stdout.strip()
-    if not re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", oid):
+    if not transaction.COMMIT_ID_RE.fullmatch(oid):
         raise RuntimeError(f"Git returned an invalid object ID while inspecting local tag {tag}")
     return oid
 
@@ -1510,7 +1510,7 @@ def delete_git_tag_local(
     if expected_present is False:
         log_info(f"  Local tag {tag} was absent from the confirmed cleanup preview — skipping")
         return
-    if expected_oid is not None and not re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", expected_oid):
+    if expected_oid is not None and not transaction.COMMIT_ID_RE.fullmatch(expected_oid):
         raise RuntimeError(f"Confirmed local tag {tag} has an invalid captured object ID")
     local_oid = local_git_tag_oid(repo_root, tag)
     if expected_present is True and expected_oid is None:
@@ -1555,7 +1555,7 @@ def list_remote_tag_refs_matching(
         )
     tags: dict[str, str] = {}
     peeled_tags: set[str] = set()
-    oid_pattern = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})")
+    oid_pattern = transaction.COMMIT_ID_RE
     for line_number, line in enumerate(result.stdout.splitlines(), start=1):
         parts = line.split("\t")
         if len(parts) != 2:
@@ -3794,7 +3794,7 @@ def _consume_release_snapshot_handoff(
     if (
         not separator
         or Path(source_root).resolve() != repo_root.resolve()
-        or not re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", base)
+        or not transaction.COMMIT_ID_RE.fullmatch(base)
     ):
         raise RuntimeError("invalid CMRU preflighted origin/main snapshot handoff")
     result = run_local_git(
@@ -5232,10 +5232,10 @@ def _abandon_locked(args, runtime, repo_root: Path) -> int:
             progress = transaction.read_release_progress(repo_root, workspace)
             if progress is None:
                 raise RuntimeError("release progress metadata is missing")
-            if not re.fullmatch(r"[0-9a-f]{40}", progress):
+            if not transaction.COMMIT_ID_RE.fullmatch(progress):
                 raise RuntimeError("release progress metadata is malformed")
             base_commit = getattr(workspace.context, "base_commit", None)
-            if not base_commit or not re.fullmatch(r"[0-9a-f]{40}", str(base_commit)):
+            if not base_commit or not transaction.COMMIT_ID_RE.fullmatch(str(base_commit)):
                 raise RuntimeError("original snapshot commit is unavailable; promotion state is ambiguous")
             remote = run_remote_git(
                 repo_root, "ls-remote", "--heads", "origin",
@@ -5313,6 +5313,20 @@ def _abandon_locked(args, runtime, repo_root: Path) -> int:
                         capture_output=True, text=True, check=False,
                     )
                     if tag_on_candidate.returncode == 0:
+                        # REL-03: every earlier release tag is reachable from the
+                        # candidate. Only a tag that is NOT a strict ancestor of the
+                        # transaction base can have been created by this transaction;
+                        # a tag exactly at the base stays suspicious.
+                        if tag_sha != base_commit:
+                            below_base = run_local_git(
+                                repo_root, "merge-base", "--is-ancestor", tag_sha,
+                                str(base_commit),
+                                capture_output=True, text=True, check=False,
+                            )
+                            if below_base.returncode == 0:
+                                continue
+                            if below_base.returncode != 1:
+                                raise RuntimeError(f"could not inspect remote tag {tag_name}")
                         new_tags.append(tag_name)
                     elif tag_on_candidate.returncode != 1:
                         raise RuntimeError(f"could not inspect remote tag {tag_name}")

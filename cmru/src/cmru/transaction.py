@@ -46,6 +46,9 @@ BRANCH_ENV = "CMRU_RELEASE_BRANCH"
 BASE_ENV = "CMRU_RELEASE_BASE"
 _LEGACY_RESUME_METADATA_KEY = "transaction_scope"
 _LEGACY_RESUME_METADATA_VALUE = "legacy-release-resume"
+# REL-14: one commit-id grammar for sidecars and abandon -- SHA-1 (40 hex) and
+# SHA-256 (64 hex) object formats alike.
+COMMIT_ID_RE = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
 
 
 def is_transaction_child(repo_root: Path) -> bool:
@@ -206,13 +209,13 @@ def _validate_legacy_release_progress(
     """Require a valid, committed legacy-release checkpoint at or before HEAD."""
     if not _is_release_branch(branch):
         raise RuntimeError(f"{path} is not a retained cmru release branch (got {branch!r})")
-    if not re.fullmatch(r"[0-9a-f]{40}", head):
+    if not COMMIT_ID_RE.fullmatch(head):
         raise RuntimeError(f"{path} has an invalid Git HEAD; refusing legacy resume")
     progress_workspace = ReleaseWorkspace(
         repo_root=repo_root.resolve(), path=path.resolve(), branch=branch, base=head,
     )
     progress = read_release_progress(repo_root, progress_workspace)
-    if progress is None or not re.fullmatch(r"[0-9a-f]{40}", progress):
+    if progress is None or not COMMIT_ID_RE.fullmatch(progress):
         raise RuntimeError(
             f"{path} has no valid CMRU release progress record; refusing legacy resume"
         )
@@ -930,7 +933,7 @@ def write_release_tag_snapshot(
             not isinstance(ref, str)
             or not _valid_ls_remote_ref(ref, "refs/tags/")
             or not isinstance(oid, str)
-            or not re.fullmatch(r"[0-9a-f]{40}", oid)
+            or not COMMIT_ID_RE.fullmatch(oid)
         ):
             raise RuntimeError("origin tag snapshot contains a malformed ref record")
     try:
@@ -969,7 +972,7 @@ def read_release_tag_snapshot(
             not isinstance(ref, str)
             or not _valid_ls_remote_ref(ref, "refs/tags/")
             or not isinstance(oid, str)
-            or not re.fullmatch(r"[0-9a-f]{40}", oid)
+            or not COMMIT_ID_RE.fullmatch(oid)
         ):
             raise RuntimeError(f"release tag snapshot is malformed: {path}")
         snapshot[ref] = oid
@@ -991,7 +994,7 @@ def list_local_tag_refs(repo_root: Path) -> dict[str, str]:
         if (
             len(fields) != 2
             or not _valid_ls_remote_ref(fields[0], "refs/tags/")
-            or not re.fullmatch(r"[0-9a-f]{40}", fields[1])
+            or not COMMIT_ID_RE.fullmatch(fields[1])
         ):
             raise RuntimeError(f"local tag listing returned a malformed ref record: {line!r}")
         ref, oid = fields
@@ -1014,7 +1017,7 @@ def write_release_tag_attempts(
             not isinstance(ref, str)
             or not _valid_ls_remote_ref(ref, "refs/tags/")
             or not isinstance(oid, str)
-            or not re.fullmatch(r"[0-9a-f]{40}", oid)
+            or not COMMIT_ID_RE.fullmatch(oid)
         ):
             raise RuntimeError("local release tag attempt contains a malformed ref record")
         incoming[ref] = oid
@@ -1081,7 +1084,7 @@ def read_release_tag_attempts(
             not isinstance(ref, str)
             or not _valid_ls_remote_ref(ref, "refs/tags/")
             or not isinstance(oid, str)
-            or not re.fullmatch(r"[0-9a-f]{40}", oid)
+            or not COMMIT_ID_RE.fullmatch(oid)
         ):
             raise RuntimeError(f"release tag attempt record is malformed: {path}")
         attempts[ref] = oid
@@ -1104,7 +1107,7 @@ def write_confirmed_absent_release_tag_attempts(
             not isinstance(ref, str)
             or not _valid_ls_remote_ref(ref, "refs/tags/")
             or not isinstance(oid, str)
-            or not re.fullmatch(r"[0-9a-f]{40}", oid)
+            or not COMMIT_ID_RE.fullmatch(oid)
         ):
             raise RuntimeError("confirmed absent release tag record contains a malformed ref")
         if attempts.get(ref) != oid:
@@ -1159,7 +1162,7 @@ def read_confirmed_absent_release_tag_attempts(
             not isinstance(ref, str)
             or not _valid_ls_remote_ref(ref, "refs/tags/")
             or not isinstance(oid, str)
-            or not re.fullmatch(r"[0-9a-f]{40}", oid)
+            or not COMMIT_ID_RE.fullmatch(oid)
             or attempts.get(ref) != oid
         ):
             raise RuntimeError(f"release tag absence record is malformed: {path}")
@@ -1240,7 +1243,7 @@ def parse_ls_remote_refs(
             raise RuntimeError(f"{description} returned a malformed ref record: {line!r}")
         oid, ref = fields
         valid_ref = _valid_ls_remote_ref(ref, namespace)
-        if not re.fullmatch(r"[0-9a-f]{40}", oid) or not valid_ref:
+        if not COMMIT_ID_RE.fullmatch(oid) or not valid_ref:
             raise RuntimeError(f"{description} returned a malformed ref record: {line!r}")
         if ref in refs:
             raise RuntimeError(f"{description} returned a duplicate ref record: {ref}")
@@ -2845,7 +2848,7 @@ def abandon_workspace(
         if current_local_tag_refs != dict(expected_local_tag_refs):
             raise RuntimeError("local release tags changed after abandonment inspection; retained transaction was not removed")
     if pushed and not removed:
-        if remote_candidate_oid is None or not re.fullmatch(r"[0-9a-f]{40}", remote_candidate_oid):
+        if remote_candidate_oid is None or not COMMIT_ID_RE.fullmatch(remote_candidate_oid):
             raise RuntimeError("origin candidate object ID is unavailable; retained transaction was not removed")
         result = run_remote_git(
             repo_root, "push",
@@ -2873,7 +2876,7 @@ def abandon_workspace(
     for tag_ref, expected_oid in sorted((local_tags_to_remove or {}).items()):
         if (
             not _valid_ls_remote_ref(tag_ref, "refs/tags/")
-            or not re.fullmatch(r"[0-9a-f]{40}", expected_oid)
+            or not COMMIT_ID_RE.fullmatch(expected_oid)
         ):
             raise RuntimeError("abandonment has a malformed local release-tag cleanup target")
         current_oid = list_local_tag_refs(repo_root).get(tag_ref)
