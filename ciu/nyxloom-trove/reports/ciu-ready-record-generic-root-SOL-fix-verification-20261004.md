@@ -86,5 +86,9 @@ records, the shared workspace's `base_commit`; a mismatch refuses without
 resetting. Added a real-Git regression that preserves a commit made after an
 interrupted adopt, plus a same-target recovery case and legacy-root commit
 oracles. `py_compile` and `git diff --check` pass on that commit. Its registered
-gate is still pending; the 2026-10-04 gate evidence above is not evidence for
-the updated tree.
+oracles. Follow-up commit `d00f89f76` demotes an unverifiable
+legacy `ready` record before refusing, so inspection no longer retains a false
+readiness claim after recovery discovers a moved allocation target.
+`py_compile` and `git diff --check` pass on the updated source and tests. Its
+registered gate is still pending; the 2026-10-04 gate evidence above is not
+evidence for the updated tree.
