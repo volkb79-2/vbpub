@@ -225,6 +225,10 @@ def _require(d: dict, key: str, section: str) -> object:
     return val
 
 
+# Config paths already warned about the deprecated orchestration.default_projects.
+_DEFAULT_PROJECTS_WARNED: set[str] = set()
+
+
 def _error(message: str) -> "None":
     from cmru.cli_support import write_config_diagnostic
 
@@ -1015,12 +1019,14 @@ def _load_orchestration_config(config_path: Path) -> ForgeConfig:
     )
     for key in ("project_order", "default_steps"):
         _string_list(_require(orch_raw, key, "orchestration"), f"orchestration.{key}")
-    if "default_projects" in orch_raw:
+    if "default_projects" in orch_raw and str(config_path) not in _DEFAULT_PROJECTS_WARNED:
         # CLI-04: the key was required and validated but never read (an omitted
         # target selects the current project, or every orchestrated project at
-        # the estate root). Accept it for one release, warn, ignore.
+        # the estate root). Accept it for one release, warn once per config
+        # path (a run loads the config more than once), ignore.
         import sys
 
+        _DEFAULT_PROJECTS_WARNED.add(str(config_path))
         print(
             "[WARN] orchestration.default_projects is ignored and will be removed; "
             "an omitted target selects the current project or every orchestrated "

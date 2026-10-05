@@ -592,8 +592,8 @@ The standalone generated `get.py` remains intentionally independent and uses
 [consumer guide](docs/CONSUMERS.md#using-the-wheel-and-component-interfaces)
 shows installation and invocation examples.
 
-The OCI helper has an explicit normal Buildx bake load/push command. Its `--repack` argument
-is intentionally fail-closed while production-equivalence evidence is absent; use a
+The OCI helper has an explicit normal Buildx bake load/push command. Its `--repack` option was
+removed while KI-02 is open (it only ever failed) and returns when KI-02 is fixed; use a
 project-owned, tested flow such as MDT's for real OCI repacking.
 
 ## Differentiators

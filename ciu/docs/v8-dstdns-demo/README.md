@@ -118,7 +118,6 @@ Round-3 corrections (draft.6 / rev 3.3, `../CIU-V8-THIRD-PARTY-REVIEW-ROUND3-202
 ## Known deviations and consumer-side findings
 
 - `pg:role/workerdb_ddl` is in db-core's `provides` but `01-init-users.sh` never creates it (v7 data oddity, preserved); no binding lists it, so it is not in any derived contract.
-- Consul's hook mints `consul/cmru/controller/token`, which no binding or secret consumes — an INFO under draft.3 (provided-but-unconsumed), not a WARN.
 - `tools/admin-debug` was not converted (in no bundle; `ddcli` covers the admin use).
 - Hook scripts must be rewritten on `ciu.hookkit` (S12.5): they read identities and resolved bindings from the hook context v2, emit `state`/`secrets`/`facts` through `emit()`, and use `wait_healthy`/`wait_tcp` instead of hand-rolled polls; the v7 scripts that read `config["<root>"]` or `topology.external.public_fqdn` need the same re-rooting as the templates (`host.fqdn`).
 - Image names are literal `dstdns/<name>:<tag>` in stack files (D3).

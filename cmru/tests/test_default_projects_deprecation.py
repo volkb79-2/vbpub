@@ -120,8 +120,28 @@ def test_estate_scope_parameter_is_gone():
     assert "estate_scope" not in inspect.signature(cli_support.select_target_names).parameters
 
 
-@pytest.mark.parametrize("module", [cli, resolve, getpy, standards, tool_deps])
-def test_no_help_text_promises_an_estate_default(module):
-    source = inspect.getsource(module)
-    assert "estate default" not in source
-    assert "every orchestrated project at the estate root" in source
+@pytest.mark.parametrize(
+    "verb", ["run", "build", "status", "resolve", "get-py", "standards", "tool-deps"],
+)
+def test_rendered_help_does_not_promise_an_estate_default(verb, capsys):
+    try:
+        cli.main([verb, "--help"])
+    except SystemExit:
+        pass
+    text = " ".join(capsys.readouterr().out.split())
+    assert "estate default" not in text
+    if "project target" in text:
+        assert "omitted: the current project, or every orchestrated project at the estate root" in text
+
+
+def test_the_deprecation_warning_is_printed_once_per_config_path(tmp_path, capsys):
+    from cmru import config as config_module
+
+    config_module._DEFAULT_PROJECTS_WARNED.discard(str(tmp_path / "cmru.orchestration.toml"))
+    central = _estate(tmp_path, 'default_projects = ["a"]\n')
+
+    load_forge_config(central, require_orchestration=True)
+    load_forge_config(central, require_orchestration=True)
+
+    err = capsys.readouterr().err
+    assert err.count("orchestration.default_projects is ignored") == 1

@@ -939,8 +939,8 @@ only its declared outputs; CMRU refuses any other write.
 Adopt with these boundaries in mind — each is a deliberate, fail-closed gap, tracked in
 [`../KNOWN_ISSUES_TODO_BACKLOG.md`](../KNOWN_ISSUES_TODO_BACKLOG.md):
 
-- **OCI repack** is guarded off for production (`--repack` exits 2 before any side effect) until
-  it proves single-build + registry-digest equivalence (KI-02, `S14`).
+- **OCI repack** is unavailable: the `--repack` option was removed from the handler verbs while
+  KI-02 is open and returns when it is fixed, once it proves single-build + registry-digest equivalence (KI-02, `S14`).
 - **Durable post-tag publish resume** does not exist: `--resume` can continue a retained
   *pre-tag* worktree only after corrections are committed there; prepare and the required gate
   rerun, and the corrected candidate commit is what ships. It is not a post-tag retry (KI-06).
