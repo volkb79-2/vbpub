@@ -62,8 +62,9 @@ prove that.
 
 ## SPEC ownership
 
-`lib/damon.py`, `tests/test_damon.py`, `docs/DESIGN-GUIDE.md`, and the RG-55
-P3 live-probe report.
+`lib/damon.py`, `lib/serve.py`, `cgprofile.py`, their lifecycle tests,
+`README.md`, `docs/DESIGN-GUIDE.md`, `docs/CONSUMERS.md`, and the RG-55 P3
+live-probe report.
 
 ## Updates
 
@@ -87,4 +88,7 @@ unreadable stop quarantines the owned index, and count restoration waits until
 all owned and foreign monitors are confirmed off. Tests model the kernel's
 resize refusal and verify no reuse/shrink on ambiguous cleanup. This remains
 open pending final gates, review fix-verification, and live DAMON sample and
-overhead probes.
+overhead probes. The one-shot collector also treats a setup-time
+`DamonSessionError` as optional-evidence unavailability: it writes its ready
+sentinel and continues ordinary sampling so `cgprofile run` does not withhold
+the user's command while DAMON is unavailable (R-36h).

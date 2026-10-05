@@ -446,17 +446,17 @@ def test_exception_during_enter_that_is_already_damon_session_error_is_not_rewra
     assert fake_damon.nr_kdamonds() == 0
 
 
-def test_preexisting_kdamonds_are_not_widened_away(fake_damon):
-    # kdamond 0 already belongs to someone else before our session asks for
-    # kdamond_idx=1 — teardown must shrink back to 1 (what was there before
-    # us), never to 0, and must never touch kdamond 0's state.
+def test_bare_session_refuses_growth_while_a_foreign_kdamond_is_running(fake_damon):
+    # The kernel forbids appending a bare session's slot while a foreign
+    # monitor is on. Refusal must preserve the foreign monitor and count.
     fake_damon.create_kdamond(0)
     fake_damon.kdamond_on(0)
     assert fake_damon.nr_kdamonds() == 1
-    with damon.DamonSession([make_target()], kdamond_idx=1):
-        assert fake_damon.nr_kdamonds() == 2
+    with pytest.raises(damon.DamonSessionError, match="cannot resize while"):
+        damon.DamonSession([make_target()], kdamond_idx=1).__enter__()
     assert fake_damon.nr_kdamonds() == 1
     assert fake_damon.state_of(0) == "on"
+    assert not any(call[0] == "kdamond_off" and call[1] == 0 for call in fake_damon.calls)
 
 
 def test_pool_refuses_to_grow_while_a_foreign_kdamond_is_running(fake_damon):
@@ -1025,7 +1025,7 @@ def test_pool_never_shrinks_away_foreign_growth(fake_damon):
     fake_damon.kdamond_off(first)
     pool.release(first)
     pool.release(second)
-    assert fake_damon.nr_kdamonds() == 2
+    assert fake_damon.nr_kdamonds() == 3
     assert fake_damon.state_of(2) == "on"
     assert not [c for c in fake_damon.calls if c[0] == "_write_int" and c[1].endswith("nr_kdamonds")]
 
@@ -1038,6 +1038,19 @@ def test_pool_refuses_a_freed_owned_slot_that_disappeared(fake_damon):
     with pytest.raises(damon.DamonSessionError):
         pool.acquire()
     assert pool.quarantined_indices == frozenset({0, 1})
+    assert pool.live_indices == frozenset()
+
+
+def test_pool_retains_live_claim_when_counter_cannot_be_read(fake_damon, monkeypatch):
+    pool = damon.KdamondPool()
+    assert pool.acquire() == 0
+    monkeypatch.setattr(damon, "_read_nr_kdamonds", lambda: None)
+
+    with pytest.raises(damon.DamonSessionError, match="no verified-off"):
+        pool.acquire()
+
+    assert pool.live_indices == frozenset({0})
+    assert pool.quarantined_indices == frozenset()
 
 
 def test_pool_marks_external_growth_while_reusing_a_free_slot(fake_damon):

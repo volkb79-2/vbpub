@@ -39,6 +39,16 @@ selects the separate `cgprofile-release` Bake target, which contains only the
 versioned `ghcr.io/volkb79-2/cgprofile:<version>` tag; it does not publish the
 unqualified local alias to Docker Hub.
 
+## One-shot collector behavior
+
+If `cgprofile run` or `attach` requests DAMON but the kernel refuses to start
+its kdamond (for example, another host monitor is already running), the
+collector logs that DAMON is unavailable, signals readiness, and continues
+ordinary cgroup/CPU/memory sampling. `cgprofile run` still launches the wrapped
+command; a DAMON setup problem must not change the command's exit status
+(R-36h). Confirm actual DAMON collection from a persisted `damon.jsonl` series,
+not from `cgprofile doctor` or a visible DAMON sysfs directory alone.
+
 ## Deploy a published daemon image with CIU
 
 The default CIU image coordinates intentionally select the local development

@@ -74,6 +74,9 @@ If another monitor prevents reservation, that session reports DAMON
 unavailable; if a stop cannot be verified, its slot is logged and quarantined.
 Neither condition stops ordinary profiling; see the
 [design rationale](docs/DESIGN-GUIDE.md#damon-availability-is-not-session-readiness).
+The one-shot collector follows the same optional-evidence rule: if DAMON cannot
+start, it still becomes ready and launches the wrapped command while collecting
+the ordinary metrics.
 The daemon control contract is major version 1, and `ctl` refuses
 to print a response whose object, major, `ok`, or verb-specific shape is not
 valid.

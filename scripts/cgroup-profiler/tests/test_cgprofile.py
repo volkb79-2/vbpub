@@ -1124,6 +1124,38 @@ class TestCmdCollect:
         assert cg.cmd_collect(args) == 0
         assert "unavailable" in capsys.readouterr().err
 
+    @pytest.mark.parametrize("failure_stage", ["construct", "enter"])
+    def test_damon_start_failure_still_signals_ready_and_collects(
+        self, collect_env, tmp_path: Path, monkeypatch, capsys, failure_stage,
+    ):
+        run_dir = tmp_path / f"run-damon-start-failure-{failure_stage}"
+
+        class FailingDamonSession:
+            def __init__(self, targets):
+                if failure_stage == "construct":
+                    raise damon_lib.DamonSessionError("synthetic kernel EBUSY")
+
+            def __enter__(self):
+                raise damon_lib.DamonSessionError("synthetic kernel EBUSY")
+
+            def __exit__(self, *_exc):
+                return False
+
+        monkeypatch.setattr(damon_lib, "available", lambda: True)
+        monkeypatch.setattr(damon_lib, "DamonSession", FailingDamonSession)
+        monkeypatch.setattr(
+            sampler_lib, "Sampler", make_fake_sampler([("sample", 0, 0.0)]),
+        )
+        args = make_collect_args(run_dir, damon=True)
+
+        assert cg.cmd_collect(args) == 0
+        assert (run_dir / cg.READY_FILE).is_file()
+        assert (run_dir / cg.DONE_FILE).is_file()
+        run = store_lib.RunDir(str(tmp_path), run_id=run_dir.name, create=False)
+        assert len(list(run.read("samples"))) == 1
+        assert list(run.read("damon")) == []
+        assert "could not start" in capsys.readouterr().err
+
     def test_damon_available_collects_on_every_twentieth_sample(self, collect_env, tmp_path: Path, monkeypatch):
         run_dir = tmp_path / "run-damon-ok"
 

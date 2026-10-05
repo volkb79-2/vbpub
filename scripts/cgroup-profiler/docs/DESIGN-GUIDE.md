@@ -244,6 +244,13 @@ fails part-way through setup. Before `state=on`, startup writes the exact
 recreates the input directories; this is required because a pooled kdamond
 index can carry the previous session's target array even after it is stopped.
 
+The one-shot `run`/`attach` collector shares the same host DAMON registry, so
+it can also be refused when a foreign monitor is already running. That failure
+disables only DAMON: the collector logs the reason, writes its ready sentinel,
+and continues cgroup/CPU/memory sampling. In particular, `cgprofile run` must
+not wait for a DAMON context before launching the user's command; otherwise a
+host profiling condition would alter the command's verdict, violating R-36h.
+
 ### DAMON availability is not session readiness
 
 The `damon` field in `ctl version` answers a narrow capability question:

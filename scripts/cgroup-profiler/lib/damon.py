@@ -287,6 +287,16 @@ class KdamondPool:
                 self._quarantined.remove(idx)
                 self._free.add(idx)
 
+    def _reconcile_live_indices(self) -> None:
+        """Quarantine pool claims that an external shrink removed while off."""
+        current = _read_nr_kdamonds()
+        if current is None:
+            return
+        for idx in tuple(self._live):
+            if current <= idx:
+                self._live.remove(idx)
+                self._quarantined.add(idx)
+
     def _all_kdamonds_off(self, count: int) -> bool:
         """Prove the kernel-wide resize precondition, including foreign slots."""
         try:
@@ -371,6 +381,7 @@ class KdamondPool:
                     )
                 self._baseline = baseline
 
+            self._reconcile_live_indices()
             self._recover_quarantined()
             # Reserve the configured concurrency before any owned monitor is
             # turned on. A partial reservation can be used, but capacity is

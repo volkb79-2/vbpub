@@ -6708,3 +6708,28 @@ does not waive the exact-tree coverage/canary gates, same-reviewer fix
 verification, current-main reconciliation, P1 mutation disposition, live DAMON
 sample/overhead evidence, or release requirements. No test gate or container
 has been launched for this repair as of the ruling timestamp.
+
+### RW-443 — 2026-10-05 06:01:55Z — first post-RW-442 gate exposed stale expectations and a one-shot R-36h gap
+
+The registered `r0-r1` run on exact tree `c8f7c70e91c5e09a539cf6270445da56d1404666`
+completed with FAIL (run `2ada30366c4d4394cb79c20b12a2b59f`, 2,292 passed,
+4 failed; log `/tmp/run-gate/lanes/r0-r1/2ada30366c4d4394cb79c20b12a2b59f.log`).
+Two failures were stale fake-kernel expectations: a bare session cannot grow
+`nr_kdamonds` while a foreign monitor is on, and foreign growth must leave the
+count at 3 rather than incorrectly expecting 2. The disappeared-owned-slot
+case exposed that pool bookkeeping retained live claims after an external
+counter shrink; it is now reconciled into quarantine. The cleanup-finalization
+test fixture lacked manifest fields required by the real manifest path and has
+been completed.
+
+The gate review also exposed a separate R-36h path: one-shot `cgprofile run`
+could fail before its READY sentinel if an available DAMON interface refused
+session setup, withholding the wrapped command. The current candidate catches
+`DamonSessionError` both during construction and context entry, logs DAMON as
+unavailable, then signals readiness and continues ordinary sampling. Regression
+tests and README/design/consumer/CP-17 documentation are updated. These edits
+are still uncommitted at this ruling; no gate has yet validated them. Current
+memory PSI is below the launch ceiling, so the next exact-tree registered gate
+is authorized by the standing RG-55 rule, not by RW-441's already-used one-run
+override. The failed `c8f7c70e` gate is not coverage or release evidence for the
+candidate.

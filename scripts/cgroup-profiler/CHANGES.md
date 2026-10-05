@@ -21,7 +21,8 @@ the release gate runs. Normative daemon behavior lives in `DESIGN.md` and
   samples and verdict neutrality (RG-55 P3, R-36h)
 - fix(cgprofile): pre-reserve DAMON pool capacity before any monitor starts,
   honor the kernel-wide no-resize-while-running rule, and quarantine slots whose
-  stop cannot be verified; ordinary profiling remains independent (RG-55 P1)
+  stop cannot be verified; one-shot collectors also proceed without DAMON when
+  optional startup fails, preserving the wrapped command's verdict (RG-55 P1)
 - fix(cgprofile): D-31 placement ownership — create a systemd-delegated transient scope under the verified gates slice, keep the leaf below it, journal PID identity/origins for safe stop and restart recovery, and document that leaf memory limits/counters are cgroup charges rather than total RSS
 - fix(cgprofile): CP-11 — retry identity-checked placement recovery for journal-only startup crashes and finished manifests with incomplete cleanup; retain unknown scopes/leaves for operator attention
 - fix(cgprofile): fail closed on non-ESRCH lane-PID migration write errors; refuse placement and remove an empty leaf instead of reporting successful placement

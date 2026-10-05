@@ -29,6 +29,7 @@ because a file survives the driver being suspended mid-run.
 from __future__ import annotations
 
 import argparse
+from contextlib import ExitStack
 import json
 import math
 import os
@@ -437,14 +438,23 @@ def cmd_collect(args: argparse.Namespace) -> int:
             damon_targets = [damon_mod.DamonTarget(kind="vaddr", pid=p, label=str(p))
                              for p in pids] or [damon_mod.DamonTarget(kind="paddr", pid=None,
                                                                      label="physical")]
-            damon_session = damon_mod.DamonSession(damon_targets)
+            try:
+                damon_session = damon_mod.DamonSession(damon_targets)
+            except damon_mod.DamonSessionError as exc:
+                _note(f"DAMON requested but could not start ({exc}) — continuing without it")
         else:
             _note("DAMON requested but unavailable here — continuing without it")
 
     sampler = sampler_mod.Sampler(membership, config, sample_fn)
 
     with caps_mod.TempCaps(cap_changes, root) if cap_changes else _nullcontext():
-        with damon_session if damon_session else _nullcontext():
+        with ExitStack() as resources:
+            if damon_session is not None:
+                try:
+                    damon_session = resources.enter_context(damon_session)
+                except damon_mod.DamonSessionError as exc:
+                    _note(f"DAMON requested but could not start ({exc}) — continuing without it")
+                    damon_session = None
             open(os.path.join(run.path, READY_FILE), "w").close()
             _note(f"collecting into {run.path}")
             prev = None

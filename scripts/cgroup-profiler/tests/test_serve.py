@@ -2287,6 +2287,9 @@ def test_finalize_session_swallows_optional_damon_cleanup_failure(
 
     class _UnconfirmedDamon:
         cleanup_confirmed = False
+        kdamond_idx = 7
+        thresholds = {"hot_rate_pct": 50, "warm_rate_pct": 5,
+                      "cold_age_s": 30, "idle_age_s": 120}
 
         def __exit__(self, *_args):
             raise RuntimeError("synthetic stop failure")
