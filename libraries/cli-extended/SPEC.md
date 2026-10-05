@@ -716,7 +716,10 @@ delegated paths, positional and option IDs/shapes, option aliases, defaults,
 choices, requiredness, scope/placement, exclusive groups, synopsis, behavior
 and confirmation policy, parser-scoped `allow_abbrev`, argparse's
 negative-number matcher and whether that parser registers negative-number-like
-options, and actions added by parser callbacks. The JSON surface schema version is `6`; each route records
+options, and actions added by parser callbacks. The syntax of library-owned
+common controls is not part of this inventory; see
+[Library contract and contract version](#library-contract-and-contract-version).
+The JSON surface schema version is `7`; each route records
 `single_command` and `no_args_action`, and those values participate in
 candidate signatures so a change to empty-invocation behavior requires review.
 Both route fields MUST be booleans. Markdown rendering MUST refuse a route
@@ -855,10 +858,10 @@ different product meaning. It MUST NOT enumerate the
 full power set of switches. The default cap is 512 candidates; a product may
 raise the cap explicitly. The exporter MUST fail on overflow instead of
 truncating. The standard library owns its common controls such as verbosity,
-color, and progress behavior; their syntax remains in the manifest, while
-product-sensitive common options (`--json`, `--yes`, and `--debug-raw`) remain
-review candidates. A product-specific common-option interaction belongs in
-its TOML catalog.
+color, and progress behavior; they are covered by the library contract version,
+not by the consumer's signatures, while product-sensitive common options
+(`--json`, `--yes`, `--debug-raw`, and `--dry-run`) remain review candidates.
+A product-specific common-option interaction belongs in its TOML catalog.
 
 Callable converters and custom argparse actions are reported by stable import
 label and marked opaque. An opaque validator does not make otherwise visible
@@ -967,3 +970,60 @@ defaulted value does, which options conflict or depend on one another, and
 which files, state, network, credentials, confirmation, and output each case
 can affect. The generic library reports surface facts; it does not decide
 whether a product supports the right use cases.
+
+### Library contract and contract version
+
+Library-owned common controls are versioned separately from a consumer's
+reviewed grammar. The library exposes one integer `CONTRACT_VERSION`
+(`cli_extended.contract`), starting at `1`, and one name,
+`LIBRARY_CONTRACT_NAME = "cli-extended"`.
+
+1. **Ownership by creation.** A control is library-owned when
+   `add_common_options` created its argparse action; the action carries an
+   internal marker. Ownership MUST NOT be inferred from flag spelling. A
+   consumer `OptionSpec` spelled `--json` or `--dry-run` is consumer grammar:
+   it appears in the route's `actions` with its real scope and is covered by
+   the consumer's signatures.
+2. **Manifest.** The manifest MUST record a top-level
+   `library_contract: {"name": "cli-extended", "version": <int>}` and, per
+   route, a sorted `common_controls` list of the canonical flags of the
+   library-owned controls enabled on that route. Library-owned controls MUST
+   NOT appear in a route's `actions`. Help text, metavar, default, and action
+   class of a library control MUST NOT appear anywhere in the manifest.
+3. **Markdown.** The generated region header MUST state the contract version
+   once. Each route renders exactly one line,
+   `Common controls (cli-extended contract v<N>): <flags>`, in sorted
+   canonical order, and no option rows for library controls.
+4. **What signatures cover.** A consumer's candidate signatures cover only
+   consumer-declared grammar. For the review candidates of
+   `--json`, `--yes`, `--debug-raw`, and `--dry-run` (the
+   `CONSUMER_REVIEWED_COMMON_FLAGS`), the candidate `id` and `kind` are
+   unchanged and the signature context contains only the control's canonical
+   flag, the route, and the route's required baseline. No other library
+   control produces a candidate. Upgrading the library without changing
+   `CONTRACT_VERSION` MUST leave every consumer's signatures unchanged.
+5. **A contract bump is one finding.** `CONTRACT_VERSION` MUST change when a
+   library control's accepted syntax or meaning changes in a way consumers must
+   re-review (a flag added, removed, renamed; arity, choices, or placement
+   changed). When the committed manifest records a different
+   `library_contract.version`, check MUST report exactly one finding,
+   `cli-extended contract changed v<old> → v<new>; read cli-extended CHANGES.md
+   contract notes, then run sync`, fail, and omit per-case signature and
+   stale-file findings that stem from the change. A manifest with no
+   `library_contract` record, or an unusable one, falls through to the ordinary
+   stale-manifest comparison.
+6. **Invocation checking.** Check mode MUST validate invocations that use
+   library controls from the library's control table (arity, value choices,
+   placement) together with the route's `common_controls`. A control that the
+   route does not enable is an unrecognized option.
+7. **Single source.** The control table MUST be derived by building a scratch
+   parser with `add_common_options` and every `include_*` option enabled. No
+   other module may restate the control list.
+
+#### Contract v1 controls
+
+Contract version `1` covers these controls: `--help`, `--version`,
+`--log-level`, `--quiet`, `--debug` (alias `--verbose`), `--debug-raw`,
+`--color`, `--no-color`, `--json`, `--progress`, and `--yes`. Whether a route
+enables `--json`, `--progress`, and `--yes` follows its registration; the
+other controls are always present.

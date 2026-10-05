@@ -391,6 +391,35 @@ replacements is visible as drift on the next check.
 This boundary makes semantic review auditable without asking a generic library
 to invent product truth.
 
+### Version the library's own controls, don't sign them
+
+The library's common controls (`--log-level`, `--quiet`, `--color`, ...) are
+not product decisions, yet the first generator signed them into every
+consumer's candidates. A copy edit to a library help string, or a new library
+control, then changed signatures in every adopting repository at once; each
+consumer had to re-review something it never decided (decision CX-D5).
+
+The manifest now records only a per-route list of enabled control names and one
+`library_contract` version, and consumer signatures cover consumer-declared
+grammar alone. Library releases that do not change a control's syntax or
+meaning leave every consumer byte-identical. When one does, the library bumps
+`CONTRACT_VERSION` and `check` reports a single finding that points at the
+contract notes; the consumer reads, re-syncs, and reviews only genuine
+signature changes.
+
+Rejected alternative: re-sign everything on any library change. It is simple
+and makes drift impossible to miss, but it turns every library release into a
+repository-wide review of unrelated text, which trains reviewers to approve
+signature changes unread. The version number keeps the "something you must read
+changed" signal rare and meaningful.
+
+Ownership is decided by the action's creation (a marker set in
+`add_common_options`), never by flag spelling, so a product option that happens
+to be called `--json` remains product grammar. The control table used to check
+invocations is derived from the same function with every `include_*` option
+enabled, so the contract list cannot drift from the parser. See
+[Library contract and contract version](../SPEC.md#library-contract-and-contract-version).
+
 ## Prove the shared contract at each rigor level
 
 The package gate separates ordinary behavior and coverage (R0/R1), mutation

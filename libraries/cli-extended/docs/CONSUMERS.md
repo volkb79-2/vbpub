@@ -352,9 +352,50 @@ alternatives and conflicts, parser subcommand aliases, plus combinations in
 catalog `interaction_groups`. It does not invent real argument values, decide
 whether a combination is valid, or expand the power set of all switches.
 Library-owned common controls such as `--quiet`, `--debug`, `--color`, and
-`--progress` stay in the grammar table and rely on the library's normative
-contract. `--json`, `--yes`, and `--debug-raw` are also consumer review cases;
-declare an interaction when any common option participates in a product rule.
+`--progress` are not in the grammar table. Each route lists the enabled ones on
+one `Common controls (cli-extended contract v1): ...` line, and the library's
+contract version (see
+[What a library upgrade does to your surface](#what-a-library-upgrade-does-to-your-surface))
+covers their syntax. `--json`, `--yes`, and `--debug-raw` are also consumer
+review cases; declare an interaction when any common option participates in a
+product rule. An interaction may still name a library control by its usual
+option ID, for example `option:route:entrypoint:example-tool/publish/--json`.
+
+#### What a library upgrade does to your surface
+
+Your signatures cover only what your product declared. The library's own
+controls (`--help`, `--version`, `--log-level`, `--quiet`, `--debug`,
+`--debug-raw`, `--color`, `--no-color`, `--json`, `--progress`, `--yes`) are
+named in the manifest, per route, and versioned by one integer, the *contract
+version*. Upgrading the library normally leaves your manifest, spec region,
+and every `reviewed_signature` byte-identical. An option of your own that
+happens to be spelled `--json` is your grammar and stays in the table.
+
+When a library release changes a control's syntax or meaning, it bumps
+`CONTRACT_VERSION` and lists the change under the contract notes in the
+library's `CHANGES.md`. Your next `check` then reports exactly one finding and
+fails, with no per-case noise:
+
+```text
+cli-extended contract changed v1 → v2; read cli-extended CHANGES.md contract notes, then run sync
+```
+
+Re-sync like this:
+
+1. Read the contract notes for the versions you skipped. Decide whether any
+   product decision depends on a changed control.
+2. Run `sync` (the command shown above). It writes the new
+   `library_contract` version, each route's `common_controls`, and the
+   Markdown region.
+3. Run `check`. Any signature that really changed (for the reviewed
+   `--json`, `--yes`, `--debug-raw` candidates, only their identity and route
+   baseline are signed) now appears as an ordinary `signature changed`
+   finding; review it and update `reviewed_signature` as usual.
+4. Commit the manifest and spec together.
+
+A manifest written before contract versions existed (no `library_contract`
+record) is treated as an ordinary stale manifest: `check` reports
+`generated CLI manifest is stale`; run `sync` once.
 
 ## Review cross-route and arity interactions
 

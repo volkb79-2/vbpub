@@ -5,7 +5,8 @@ import tomllib
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
-from cli_extended import load_cli_review_catalog
+from cli_extended import CONTRACT_VERSION, load_cli_review_catalog
+from cli_extended.contract import common_control_table
 from cli_extended.review import (
     REVIEW_SCHEMA_VERSION,
     _REVIEW_CASE_STATES,
@@ -72,6 +73,22 @@ def test_review_catalog_closed_vocabularies_are_documented():
     corpus = "\n".join(path.read_text(encoding="utf-8") for path in CANONICAL_DOCS)
     for value in (*_REVIEW_CASE_STATES, *_REVIEW_DECISIONS):
         assert f"`{value}`" in corpus, f"review catalog value {value!r} is undocumented"
+
+
+def test_spec_contract_subsection_names_every_library_control():
+    """The documented contract list is checked against the code-derived table."""
+
+    spec = (PACKAGE_ROOT / "SPEC.md").read_text(encoding="utf-8")
+    start = spec.index("#### Contract v1 controls")
+    following = re.search(r"^#{1,4} ", spec[start + 5 :], re.MULTILINE)
+    section = spec[start : start + 5 + following.start()] if following else spec[start:]
+    table = common_control_table()
+    assert table
+    for canonical, entry in table.items():
+        for flag in entry["flags"]:
+            assert f"`{flag}`" in section, f"contract v1 omits {flag} ({canonical})"
+    assert "library_contract" in spec
+    assert f"version `{CONTRACT_VERSION}`" in section
 
 
 def test_library_document_markdown_links_and_anchors_resolve():

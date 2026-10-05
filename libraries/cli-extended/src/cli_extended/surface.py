@@ -18,6 +18,8 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any
 
+from . import contract
+from .contract import canonical_flag, is_library_action
 from .parser import (
     ArgumentSpec,
     OptionSpec,
@@ -25,15 +27,10 @@ from .parser import (
     VerbSpec,
     _HelpAction,
     _VersionAction,
-    _common_option_specs,
 )
 
-SURFACE_SCHEMA_VERSION = 6
+SURFACE_SCHEMA_VERSION = 7
 DEFAULT_MAX_CANDIDATES = 512
-_LIBRARY_OWNED_COMMON_OPTIONS = {
-    "--help", "--version", "--log-level", "--quiet", "--debug", "--verbose",
-    "--color", "--no-color", "--progress",
-}
 _DEFAULT_ARGPARSE_PARSER = argparse.ArgumentParser()
 _DEFAULT_NEGATIVE_NUMBER_MATCHER = _DEFAULT_ARGPARSE_PARSER._negative_number_matcher
 _DEFAULT_TYPE_CONVERTER = _DEFAULT_ARGPARSE_PARSER._registries["type"][None]
@@ -230,8 +227,7 @@ def _normalize_parser_kwarg(
     return _normalize(value, path=path, opaque=opaque)
 
 
-def _canonical_flag(flags: Sequence[str]) -> str:
-    return next((flag for flag in flags if flag.startswith("--")), flags[0])
+_canonical_flag = canonical_flag
 
 
 def _minimum_values(nargs: Any) -> int:
@@ -319,25 +315,13 @@ def _scope(
     flags = set(action.option_strings)
     if any(flags.intersection(spec.flags) for spec in global_options):
         scope = "global"
+    elif any(flags.intersection(spec.flags) for spec in option_specs):
+        scope = "verb-local"
     else:
-        common_flags = {
-            flag
-            for spec in _common_option_specs(
-                include_json=True,
-                include_progress=True,
-                include_confirmation=True,
-            )
-            for flag in spec.flags
-        }
-        if flags.intersection(common_flags):
-            scope = "common"
-        elif any(flags.intersection(spec.flags) for spec in option_specs):
-            scope = "verb-local"
-        else:
-            scope = "custom"
+        scope = "custom"
     placement = {
-        "before_verb": not single_command and scope in {"global", "common"},
-        "after_verb": not single_command or scope in {"global", "common", "verb-local", "custom"},
+        "before_verb": not single_command and scope == "global",
+        "after_verb": True,
         "single_command_invocation": single_command,
     }
     return scope, placement
@@ -368,9 +352,6 @@ def _effective_default(
         if option is not None:
             value = option.parser_kwargs.get("default", None)
             return value is not argparse.SUPPRESS, value
-    if scope == "common":
-        # add_common_options installs root controls with argparse's None default.
-        return True, None
     return False, argparse.SUPPRESS
 
 
@@ -973,8 +954,14 @@ def _describe_parser(
                 f"{route_id}: parser {setting_path} has an uninspectable "
                 "negative-number matcher"
             )
+    common_controls: set[str] = set()
     for action_context in contexts:
         for action in action_context.actions:
+            if is_library_action(action):
+                # Library-owned controls are recorded by name only; their
+                # syntax belongs to the library contract, not this manifest.
+                common_controls.add(canonical_flag(action.option_strings))
+                continue
             if (
                 action.option_strings
                 and action.nargs == "?"
@@ -1105,6 +1092,7 @@ def _describe_parser(
             any(spec.configure is not None for spec in verb_specs)
         ),
         "actions": actions,
+        "common_controls": sorted(common_controls),
         "opaque_fields": opaque,
         "syntax_complete": not local_incomplete,
         "delegated_metadata": [
@@ -1320,6 +1308,7 @@ def _walk_registered_cli(
                     "aliases": [],
                     "parser_configured_by_callback": spec.configure is not None,
                     "actions": [],
+                    "common_controls": [],
                     "opaque_fields": [],
                     "delegated_metadata": [],
                     "subcommands": [],
@@ -1505,6 +1494,84 @@ def _route_required_baseline(route: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def _common_parser_path(
+    route: Mapping[str, Any],
+    routes_by_path: Mapping[tuple[str, ...], Mapping[str, Any]],
+    flag: str,
+) -> tuple[str, ...]:
+    """Return the path of the parser that owns a route's common control.
+
+    That is the shallowest route, from depth 1 down to the route itself,
+    whose own ``common_controls`` lists the flag. Nested routes inherit the
+    list of their verb, so their controls belong to the verb's parser.
+    """
+
+    path = tuple(route.get("path", ()))
+    for depth in range(1, len(path) + 1):
+        owner = routes_by_path.get(path[:depth])
+        if owner is not None and flag in owner.get("common_controls", ()):
+            return path[:depth]
+    return path
+
+
+def _route_common_actions(
+    route: Mapping[str, Any],
+    routes_by_path: Mapping[tuple[str, ...], Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    """Rebuild option-shaped records for a route's library-owned controls.
+
+    The manifest stores only their names. Candidate generation and the
+    invocation checker need arity and spelling, which come from the library
+    contract table. These records are never serialized into the manifest.
+    """
+
+    table = contract.common_control_table()
+    route_id = str(route["id"])
+    path = tuple(route.get("path", ()))
+    result: list[dict[str, Any]] = []
+    for flag in route.get("common_controls", ()):
+        entry = table[flag]
+        parser_path = _common_parser_path(route, routes_by_path, flag)
+        result.append(
+            {
+                "kind": "option",
+                "library_control": True,
+                "id": _action_surface_id("option", route_id, path, parser_path, flag),
+                "flags": list(entry["flags"]),
+                "canonical": flag,
+                "action": None,
+                "type": None,
+                "nargs": entry["nargs"],
+                "minimum_values": _minimum_values(entry["nargs"]),
+                "required": False,
+                "choices": entry["choices"],
+                "const": None,
+                "exclusive_group": None,
+                "exclusive_required": False,
+                "scope": "common",
+                "placement": {
+                    "before_verb": bool(entry["before_verb"])
+                    and not route["single_command"],
+                    "after_verb": bool(entry["after_verb"]),
+                    "single_command_invocation": route["single_command"],
+                },
+                "parser_path": list(parser_path),
+                "before_nested_subcommand": len(parser_path) < len(path),
+                "hidden": False,
+            }
+        )
+    return result
+
+
+def _routes_by_path(
+    routes: Sequence[Mapping[str, Any]],
+) -> dict[tuple[str, ...], Mapping[str, Any]]:
+    result: dict[tuple[str, ...], Mapping[str, Any]] = {}
+    for route in routes:
+        result.setdefault(tuple(route.get("path", ())), route)
+    return result
+
+
 def _generate_candidates(
     routes: Sequence[Mapping[str, Any]],
     interactions: Sequence[Mapping[str, Any]],
@@ -1526,9 +1593,19 @@ def _generate_candidates(
             )
 
     route_index = {str(route["id"]): route for route in routes}
+    paths = _routes_by_path(routes)
+    common_actions = {
+        str(route["id"]): _route_common_actions(route, paths) for route in routes
+    }
+
+    def route_actions(route: Mapping[str, Any]) -> list[Mapping[str, Any]]:
+        """Consumer actions plus rebuilt library controls (for ID resolution)."""
+
+        return [*route.get("actions", ()), *common_actions[str(route["id"])]]
+
     option_index: dict[str, list[tuple[Mapping[str, Any], Mapping[str, Any]]]] = {}
     for owner_route in routes:
-        for action in owner_route.get("actions", ()):
+        for action in route_actions(owner_route):
             if action.get("kind") == "option":
                 option_index.setdefault(str(action["id"]), []).append(
                     (owner_route, action)
@@ -1555,7 +1632,7 @@ def _generate_candidates(
         ] | None = None,
     ) -> None:
         actions_by_id = {
-            str(action["id"]): action for action in route.get("actions", [])
+            str(action["id"]): action for action in route_actions(route)
         }
         route_context = {
             "path": route.get("path", []),
@@ -1591,9 +1668,13 @@ def _generate_candidates(
             owner_route = route
             if action is None:
                 owner_route, action = (external_members or {})[member_id]
-            action_shape = {
-                key: action.get(key)
-                for key in (
+            # Library-owned controls contribute only their identity: the
+            # canonical flag and route-local ID. Their syntax is covered by
+            # the library contract version, never by consumer signatures.
+            shape_keys = (
+                ("id", "kind", "canonical", "scope")
+                if action.get("library_control")
+                else (
                     "id",
                     "kind",
                     "flags",
@@ -1619,7 +1700,8 @@ def _generate_candidates(
                     "before_nested_subcommand",
                     "hidden",
                 )
-            }
+            )
+            action_shape = {key: action.get(key) for key in shape_keys}
             if "const_choice_check_on_omission" in action:
                 action_shape["const_choice_check_on_omission"] = action[
                     "const_choice_check_on_omission"
@@ -1650,13 +1732,7 @@ def _generate_candidates(
         is_route_prefix = route.get("kind") in {"route-prefix", "delegate-group"}
         actions = route.get("actions", [])
         option_actions = [
-            action
-            for action in actions
-            if action.get("kind") == "option"
-            and not (
-                action.get("scope") == "common"
-                and set(action.get("flags", ())).issubset(_LIBRARY_OWNED_COMMON_OPTIONS)
-            )
+            action for action in actions if action.get("kind") == "option"
         ]
         positional_actions = [action for action in actions if action.get("kind") == "argument"]
         groups: dict[str, list[Mapping[str, Any]]] = {}
@@ -1760,6 +1836,20 @@ def _generate_candidates(
                     kind="option-choice",
                     members=(str(action["id"]),),
                     payload={"option_id": action["id"], "choice": value},
+                )
+        for control in common_actions[route_id]:
+            if control["canonical"] in contract.CONSUMER_REVIEWED_COMMON_FLAGS:
+                add_for_route(
+                    route,
+                    case_id=_candidate_id(
+                        route_id, "option-spelling", str(control["id"]), str(control["canonical"])
+                    ),
+                    kind="option-spelling",
+                    members=(str(control["id"]),),
+                    payload={
+                        "option_id": control["id"],
+                        "spelling": control["canonical"],
+                    },
                 )
         for group_id, members in sorted(groups.items()):
             for action in members:
@@ -1870,7 +1960,7 @@ def _generate_candidates(
         ]
         target_flags = {
             str(flag)
-            for action in route.get("actions", ())
+            for action in route_actions(route)
             if action.get("kind") == "option"
             for flag in action.get("flags", ())
         }
@@ -1906,17 +1996,17 @@ def _generate_candidates(
         }
         required_arguments = [
             str(action["id"])
-            for action in route.get("actions", ())
+            for action in route_actions(route)
             if action.get("kind") == "argument" and action.get("required")
         ]
         required_argument_values = {
             str(action["id"]): int(action.get("minimum_values", 1))
-            for action in route.get("actions", ())
+            for action in route_actions(route)
             if action.get("kind") == "argument" and action.get("required")
         }
         target_options = [
             action
-            for action in route.get("actions", ())
+            for action in route_actions(route)
             if action.get("kind") == "option"
         ]
         required_options = [
@@ -2017,6 +2107,10 @@ def export_cli_surface(
     builtins.extend(("version", "--help", "--version"))
     return {
         "schema_version": SURFACE_SCHEMA_VERSION,
+        "library_contract": {
+            "name": contract.LIBRARY_CONTRACT_NAME,
+            "version": contract.CONTRACT_VERSION,
+        },
         "entrypoint": {
             "id": entrypoint_id,
             "command": app.identity.command_name,
