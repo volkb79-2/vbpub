@@ -1601,3 +1601,29 @@ gate exercises the regression; README, DESIGN-GUIDE, CONSUMERS, and SPEC documen
 **Acceptance.** `cli-extended audit` reports no `fail`; `cli-extended surface check` passes; cmru's own registered gate passes (`run-gate.py`, lanes in `run-gate.toml`); a released cmru version is deployed (merge + `cmru release` + devcontainer install; remember the `--resume` / `--set-version` hazard recorded in memory). A fresh `get.py enroll` bundle on a pip-less host installs cmru and cli-extended offline.
 
 **Oracles.** Installing the built cmru wheel into a scratch venv with `--no-index` and no cli-extended wheel fails with the dependency named; with the verified cli-extended wheel it passes `cmru --version`; the installer test in `tests/test_installer.py` gains a case where the tool wheel `Requires-Dist: cli-extended` and installation order is wrong (must fail) versus right (must pass); a controlled wrong implementation that leaves the vendored copy in the wheel fails a wheel-contents check.
+
+### KI-52 — `cmru tester-gate` starts tester-unified without `--init`: the gate command becomes PID 1, never reaps orphans, and git's detached auto-maintenance fills the container's `pids.max` with zombies until every fork fails — *open, severity: critical (silent false kills)*
+
+**Status:** open (filed 2026-10-05, investigated on the host with `host-escape`, read-only).
+
+**Observed (2026-10-05, host-wide 19,109 zombies):**
+- 19,108 zombies had one parent: PID 1414479, `python3 ./run-gate.py --base main assay-r2`, which is PID 1 of container `pedantic_antonelli` (`tester-unified:local`, cgroup `dev.slice/dev-gates.slice/docker-df361f8a….scope`). 19,057 of them are `git`, 42 `sleep`, 9 `docker`.
+- The container matches `cmru tester-gate`'s argv exactly: `--rm`, worktree bind-mounted at `/worktree`, a relative `--workdir`, `--memory 1g`, `--cpus 2.5`, `CGROUP_PARENT_*` env, the command as the image CMD. `docker inspect` shows `HostConfig.Init = <nil>`.
+- Zombies accrued from 02:40:55Z to 03:11:18Z (~10/s). At 03:11Z the container's `pids.current` reached **19,115 of `pids.max` 19,117** and zombie growth stopped — because nothing could fork any more. `docker exec pedantic_antonelli sh -c true` then failed with `OCI runtime exec failed: … procReady not received`.
+- **Consequence (filed separately as assay B145):** the assay R2 campaign inside kept running and recorded fork failures as kills. Before 03:11Z: 18 candidates, 13 killed (median 155 tests to the kill), 5 survived. After: **192 of 192 killed, median 2 tests, 91 killed by the first test** — a false 100% in the making.
+
+**Root cause (reproduced):**
+1. `src/cmru/tester_gate.py:150` `_docker_run_argv` builds `docker run --cgroup-parent=… --rm --mount … <image> <command>` with no `--init` (the tester-gate call at `:577`; the dind sidecar at `:472` and the probes at `:233`/`:297` are separate). The image has no init in its ENTRYPOINT, so the gate command is PID 1, and an ordinary program as PID 1 never `wait()`s for orphans it did not spawn.
+2. git 2.55 (the image's git) runs auto-maintenance **detached** after `commit`/`merge`/`fetch`: the foreground git spawns `git maintenance run --auto --detach`, which daemonizes and is orphaned to PID 1. Reproduced in a disposable no-init `tester-unified:local` container: 20 `git commit`s → **20 new zombies**; with `-c maintenance.autoDetach=false -c gc.autoDetach=false` → 0; with `-c maintenance.auto=false` → 0. A test suite or mutation campaign that makes thousands of commits in scratch repos therefore leaks one zombie per commit.
+3. The same mechanism caused dstdns's 2026-10-04 incident (755 zombies, mostly git, under a `sleep infinity` runner PID 1; dstdns D-670 "TEST-RUNNER-INIT"). That one was a dstdns runner without `init: true`; this one is cmru's own launcher. run-gate's own container launches already pass `--init` (`run-gate.py:5873`, `:9856`).
+
+**Fix:**
+- (a) `_docker_run_argv` (or the tester-gate call site) always passes `--init`; pin it with a test that asserts `--init` is in the argv of every container cmru starts for a command it does not control. Decide explicitly for the dind sidecar (its entrypoint runs `dockerd`; `--init` is harmless there and reaps dind's own orphans).
+- (b) Defence in depth in the image: `tester-unified/Dockerfile` sets `git config --system maintenance.autoDetach false` and `git config --system gc.autoDetach false` (verified to stop the leak). This also stops background maintenance from mutating a test or snapshot repository mid-run, which is a determinism win on its own. Document it in `tester-unified/README.md`.
+- (c) `cmru tester-gate` checks the container's `pids.events` `max` counter after the command: non-zero means at least one fork was refused at the pid limit, and the step must fail as an infrastructure error (never pass), naming the counter. (This is the generic guard; B145 is assay's own.)
+
+**Oracles:** the tester-gate argv contains `--init` (a controlled wrong implementation without it fails); in a scratch tester-gate run whose command makes 200 `git commit`s in a temp repo and then exits, the container ends with zero zombies (`ps -eo stat` inside, before exit); with (b) and no `--init`, the same run also leaves zero; a command that exhausts a low `--pids-limit` makes the step fail infrastructure-red via `pids.events`.
+
+**Immediate operator action (not done here — the container belongs to another session):** the campaign in `pedantic_antonelli` (worktree `.worktrees/run-gate-r2-assay-venv-20261005`, lane `assay-r2`) must be stopped and its R2 evidence after 03:11Z discarded; zombies clear when its PID 1 exits.
+
+**Related:** assay B145 (false kills under fork exhaustion), run-gate RG-83 (refuse to run as an unreaping PID 1), dstdns D-670 TEST-RUNNER-INIT.
