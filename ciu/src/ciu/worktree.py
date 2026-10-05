@@ -387,14 +387,16 @@ def _ciu_root_marker_present(root: Path) -> bool:
         return False
     except OSError as exc:
         raise WorktreeError(
-            f"[S16] could not inspect CIU root marker {marker}: {exc}"
+            f"[S16] could not determine CIU root status; could not inspect "
+            f"CIU root marker {marker}: {exc}"
         ) from exc
     if stat.S_ISLNK(mode):
         try:
             target_mode = marker.stat().st_mode
         except OSError as exc:
             raise WorktreeError(
-                f"[S16] could not inspect CIU root marker {marker}: {exc}"
+                f"[S16] could not determine CIU root status; could not inspect "
+                f"CIU root marker {marker}: {exc}"
             ) from exc
         if stat.S_ISREG(target_mode):
             return True
@@ -460,15 +462,13 @@ def _record_from_dict(raw: Any, path: Path) -> WorktreeInstanceRecord:
     for key, value in runtime.items():
         if value is not None and (not isinstance(value, str) or not value):
             raise WorktreeError(f"[S16] malformed runtime.{key} in {path}")
+    identity_values = (runtime["instance_id"], runtime["network"])
+    if (identity_values[0] is None) != (identity_values[1] is None):
+        raise WorktreeError(f"[S16] incomplete runtime identity in {path}")
     if state == "ready":
-        has_identity = bool(runtime["instance_id"] and runtime["network"])
-        rootless_identity = (
-            runtime["instance_id"] is None and runtime["network"] is None
-        )
-        if recovery is not None or (
-            not has_identity
-            and (not rootless_identity or _ciu_root_marker_present(path.parent))
-        ):
+        if recovery is not None:
+            raise WorktreeError(f"[S16] ready record carries recovery_status in {path}")
+        if identity_values == (None, None) and _ciu_root_marker_present(path.parent):
             raise WorktreeError(
                 f"[S16] ready record lacks a closed runtime identity in {path}"
             )
@@ -3831,32 +3831,64 @@ def _mark_recovery(record: WorktreeInstanceRecord, status: str) -> WorktreeInsta
 def _allocated_commit_sha(
     record: WorktreeInstanceRecord,
     workspace_context: object,
+    *,
+    require_current_head: bool = False,
 ) -> str:
-    """Resolve the checkout's allocation commit without guessing from a moved HEAD."""
-    if record.fork_point_sha and _FULL_SHA_RE.fullmatch(record.fork_point_sha):
-        return record.fork_point_sha
-    if _FULL_SHA_RE.fullmatch(record.base_ref):
-        return record.base_ref
+    """Return the saved allocation commit, refusing to infer a moved target.
 
-    head = _git(["rev-parse", "HEAD^{commit}"], record.git_worktree_path)
-    current_head = head.stdout.strip() if head.returncode == 0 else ""
-    head_detail = (head.stderr or head.stdout).strip()
-    workspace_base = str(getattr(workspace_context, "base_commit", ""))
-    if (
-        _FULL_SHA_RE.fullmatch(workspace_base)
-        and current_head == workspace_base
-    ):
-        return workspace_base
-    provenance = head_detail or (
-        f"workspace base={workspace_base or 'missing'}, "
-        f"current HEAD={current_head or 'unreadable'}"
-    )
-    raise WorktreeError(
-        f"[S16] could not determine the allocated worktree commit at "
-        f"{record.git_worktree_path}; refusing to infer it from the current "
-        "checkout"
-        + f": {provenance}"
-    )
+    New CIU-created records carry their post-checkout fork point. Adopted and
+    older records use their saved full-SHA target when available; records with
+    only a symbolic base may use the shared workspace's base commit, but only
+    while the checkout still points at that commit.
+    """
+    commit = record.fork_point_sha
+    if commit is None and _FULL_SHA_RE.fullmatch(record.base_ref):
+        commit = record.base_ref
+
+    if require_current_head or record.fork_point_sha is None:
+        head = _git(
+            ["rev-parse", "--verify", "--quiet", "HEAD^{commit}"],
+            record.git_worktree_path,
+        )
+        current = head.stdout.strip() if head.returncode == 0 else ""
+        if commit is None:
+            workspace_base = getattr(workspace_context, "base_commit", None)
+            valid_workspace_base = (
+                isinstance(workspace_base, str)
+                and _FULL_SHA_RE.fullmatch(workspace_base)
+            )
+            if valid_workspace_base and current == workspace_base:
+                commit = workspace_base
+            elif valid_workspace_base and _FULL_SHA_RE.fullmatch(current):
+                raise WorktreeError(
+                    f"[CIU-107] [S16] worktree HEAD moved from recorded allocation commit "
+                    f"{workspace_base!r} (current HEAD is {current}); refusing "
+                    "to infer roots or reset the checkout"
+                )
+            else:
+                detail = (head.stderr or head.stdout).strip() or (
+                    f"workspace base={workspace_base or 'missing'}, "
+                    f"current HEAD={current or 'unreadable'}"
+                )
+                raise WorktreeError(
+                    f"[S16] could not determine the allocated worktree commit at "
+                    f"{record.git_worktree_path}; refusing to infer it from the "
+                    f"current checkout: {detail}"
+                )
+        elif not _FULL_SHA_RE.fullmatch(current) or current != commit:
+            raise WorktreeError(
+                f"[CIU-107] [S16] worktree HEAD moved from recorded allocation commit "
+                f"{commit!r} (current HEAD is {current or 'unreadable'}); "
+                "refusing to infer roots or reset the checkout"
+            )
+
+    if not isinstance(commit, str) or not _FULL_SHA_RE.fullmatch(commit):
+        raise WorktreeError(
+            "[S16] allocation commit is unavailable from both the CIU "
+            "record and shared workspace record"
+        )
+    return commit
+
 
 
 def _committed_root_entries(
@@ -3998,18 +4030,17 @@ def _ready_roots_are_complete(
     """Recognize historical ready records before ensure fast-returns."""
     if workspace_context is None:
         return False
-    # If provenance itself is unavailable, propagate the refusal without
-    # rewriting an otherwise-ready record as a failed preparation.
-    commit = _allocated_commit_sha(record, workspace_context)
     try:
+        commit = _allocated_commit_sha(record, workspace_context)
         _entries, matches = _committed_root_entries(
             repo_root, record, workspace_context, prepare=False, persist=False,
             allocation_commit=commit, verify_persisted=True,
         )
         return matches is True
     except Exception:
-        # ensure() repairs through the normal path, which gives a concrete
-        # refusal if the missing evidence cannot be regenerated.
+        # ensure() first demotes this unverifiable claim, then retries through
+        # the normal path, which gives a concrete refusal if provenance or
+        # generated facts cannot be established.
         return False
 
 
@@ -4054,9 +4085,9 @@ def _finish_allocation(
         head = _git(["rev-parse", "--verify", "--quiet", "HEAD^{commit}"],
                     record.git_worktree_path)
         candidate = head.stdout.strip() if head.returncode == 0 else ""
-        # Degrades to leaving it unset rather than failing the allocation:
-        # provenance is a nice-to-have for a downstream gate, and consumers
-        # fail closed on absence anyway.
+        # Record only a verified object id. Root discovery below must use the
+        # exact allocated tree; if neither this value nor a checked legacy
+        # target proves it, preparation leaves the record recovery-required.
         if _FULL_SHA_RE.fullmatch(candidate):
             record = replace(record, fork_point_sha=candidate)
 
@@ -4413,37 +4444,33 @@ def ensure(
                     repo_root, record, workspace_context
                 ):
                     return record
-                checkout_required = False
+                # Do not leave an unverified historical ready claim visible if
+                # its saved allocation target or generated root evidence is
+                # incomplete. Repair it in place, never by resetting to a
+                # mutable base reference.
+                record = replace(record, state="allocating", recovery_status=None)
+                _write_instance_record(record)
+                try:
+                    _allocated_commit_sha(record, workspace_context)
+                except WorktreeError:
+                    _mark_recovery(record, "env-generation-failed")
+                    raise
+                allow_existing_network = True
             else:
-                checkout_required = record.recovery_status in (
-                    None, "checkout-incomplete"
+                try:
+                    _allocated_commit_sha(record, workspace_context)
+                except WorktreeError:
+                    _mark_recovery(record, "env-generation-failed")
+                    raise
+                allow_existing_network = (
+                    record.recovery_status == "env-generation-failed"
                 )
-            if (
-                record.recovery_status == "env-generation-failed"
-                and record.fork_point_sha is None
-                and _FULL_SHA_RE.fullmatch(record.base_ref) is not None
-            ):
-                head = _git(
-                    ["rev-parse", "--verify", "--quiet", "HEAD^{commit}"],
-                    record.git_worktree_path,
-                )
-                current = head.stdout.strip() if head.returncode == 0 else ""
-                if current != record.base_ref:
-                    raise WorktreeError(
-                        f"[CIU-107] refusing to resume adopt for "
-                        f"{record.logical_name!r}: HEAD is {current or 'unreadable'}, "
-                        f"but the recorded target is {record.base_ref}; HEAD moved "
-                        "after adoption began. Preserve the checkout and review "
-                        "its commits before running `ciu worktree adopt` again."
-                    )
-                return _finish_allocation(
-                    repo_root, record, checkout_required=False,
-                    allow_existing_network=True,
-                    workspace_context=workspace_context,
-                )
+            # The allocation target was proven from its record or the neutral
+            # workspace record above. Re-resolving base_ref here could move a
+            # partially initialized checkout and discard operator commits.
             return _finish_allocation(
-                repo_root, record, checkout_required=checkout_required,
-                allow_existing_network=record.recovery_status == "env-generation-failed",
+                repo_root, record, checkout_required=False,
+                allow_existing_network=allow_existing_network,
                 workspace_context=workspace_context,
             )
     return create(repo_root, logical_name, **create_kwargs)

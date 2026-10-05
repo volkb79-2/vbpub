@@ -412,7 +412,10 @@ the tool's reason to exist and MUST be implemented + tested:
   Exec-mode runner selection follows the same tree boundary (see the
   [design rationale](docs/DESIGN-GUIDE.md#the-runner-belongs-to-the-judged-worktree)).
   Judging checkout A while pointed at worktree B is the silent false-PASS
-  class this kills. The READ-ONLY verbs follow the same config selection;
+  class this kills. The missing-runner remedy uses
+  `ciu up --dir <test-runner stack> --deploy --healthcheck`, which requires
+  CIU 7.15.2 or newer (CIU-124). The READ-ONLY verbs follow the same config
+  selection;
   `doctor`/`--check-env --worktree B` report B's git identity, host-lane
   view, and toolchain fitness, never the invoking checkout's under B's name
   (SPEC `R-37`, RG-30).

@@ -457,7 +457,8 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   dir>` still reaches the right files while the container's network/env are
   wrong. A missing worktree config is a refusal naming that path and telling
   the operator to start this worktree's own test-runner with
-  `ciu up --dir <test-runner stack> --deploy --healthcheck`. A declared
+  `ciu up --dir <test-runner stack> --deploy --healthcheck`; this remedy
+  requires CIU 7.15.2 or newer (CIU-124). A declared
   `container_name` remains an explicit alternative and uses the project's
   own deployment authority. The resolved name source names the judged
   worktree config. Before `docker exec`, `docker ps` must confirm a

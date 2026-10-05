@@ -21,6 +21,167 @@ restatement of the technical detail below it.
 
 <!-- cmru: release history -->
 
+## [7.15.2] - 2026-10-05
+<!-- cmru: generated -->
+<!-- cmru: source-end=bee6771d2cbd472c91b7a4c456af443706805412 -->
+
+### Fixed
+- fix(ciu): clarify unreadable root marker refusal (a43406e6c)
+- fix(ciu): preserve CIU-107 resume refusal tag (bb5252bd0)
+- fix(ciu): report moved legacy worktree head (83a7e3b32)
+- fix(ciu): complete profile-aware resolve and exec (70f853739)
+- fix(ciu): demote unverified legacy readiness (d00f89f76)
+- fix(ciu): guard worktree readiness against moved HEAD (84f286967)
+- fix(ciu): resolve root marker from CIU directory (ff322e000)
+- fix(ciu): cover cleanup launch error branch (37674d17e)
+- fix(ciu): keep worktree readiness behind nested roots (f21211707)
+- fix(ciu): keep worktree readiness behind nested root preparation (b8437c482)
+- fix(ciu): close worktree and resolve contract gaps (dba483853)
+- fix(ciu): reject malformed generic-root markers (06c719802)
+- fix(ciu): read generic ready worktree records (1eee3adae)
+- fix(ciu): make resource controls explicit opt-ins (7f83941de)
+
+### Changed
+- Merge current main into CIU-128 readiness fix (04390fae1)
+- Merge branch 'ciu-127-r2-fixes-20261004' into integrate/ciu-124-125-20261005 (4ba8e228f)
+- Merge branch 'ciu-124-125-worktree-up-20261004' into integrate/ciu-124-125-20261005 (bffd5cc54)
+- ciu: stop one stack through the lifecycle API (fd17c8283)
+- ciu: implement worktree and identity backlog (a6bdadc8f)
+- backlog(ciu): CIU-125 v7 backport as worktree create --up with profiles, v8 in 8.0; CIU-122 scheduling note (dstdns D-667) (408cf818b)
+- backlog(ciu): CIU-125 a worktree's declared test environment; CIU-115..119, 122..124 reviewed against SPEC-V8 draft.11 (dstdns D-666) (f4943af97)
+- backlog(ciu): CIU-124 ciu up --dir rejects --deploy/--healthcheck despite help listing them (dstdns P237) (3b52cc34e)
+- backlog(ciu,cmru): file the shipped CIU-93/KI-24 enrollment defects from v8 round 4 — CIU-122, CIU-123, KI-49, KI-50 (dstdns D-658) (6ccfffb98)
+- backlog(ciu): CIU-116..CIU-119 + v8 dstdns consumer input (2026-10) (5b78c3d8e)
+- backlog(ciu): CIU-115 -- operator ruling: an outdated-format identity record is repaired in place, not refused (e9eb0aac5)
+- backlog(ciu): CIU-115 -- pre-schema-2 instance identity file fail-closes worktree rm and sibling S16.3 scan (ec490ebcf)
+
+### Documentation
+- docs(ciu): record CIU-128 gate acceptance (8f978b4ab)
+- docs(ciu): map nested readiness to v8 (bb57e15d9)
+- docs(ciu): record readiness refusal follow-up (f0dfce178)
+- docs(ciu): update readiness verification follow-up (5db4d16c9)
+- docs(cli-extended): file planned adoptions in each tool's backlog (W10) (c8a56ad8f)
+- docs(ciu): name correct worktree gate path (ef8708a8f)
+- docs(ciu): specify rootless marker fact as on-disk state (2ad817d41)
+- docs(ciu): fold the three r6 LOW residues — default_bundles for linked worktrees only, pinned owner-label string forms, v8.2-only host keys INFO-inert in 8.0 (dstdns D-667) (a8ee4510e)
+- docs(ciu): SPEC-V8 draft.12 / proposal rev 4.10 — r5 repair R5-01..R5-09, fixed label encodings, default_bundles and instance init --up, no ciu 7 bridge (dstdns D-667) (ab6d19e4c)
+- docs(ciu): SPEC-V8 draft.11 / proposal rev 4.9 — remote deployment is v8.2, after v8.1; the 8.0 core re-checked independent of it (dstdns D-666) (e3efcf871)
+- docs(ciu): v8 adversarial review 2026-10-03 (r1 NOT-READY → r4 READY for sign-off) (dstdns D-656..D-661) (1e44e5f70)
+- docs(ciu): proposal rev 4.8 and coverage memo — r3 spot-check amendments, X157-X159, calls (a)-(d) settled, final counts, ready for operator sign-off (dstdns D-661) (48af4f54b)
+- docs(ciu): SPEC-V8 draft.10 r3 spot-check — run marker and liveness bound (R3-01), release-never-remove (R3-02), mixed 8.0/v8.1 rules (R3-03), always-validated [admission] (R3-04), one generation (R3-06), no unverified enrollment entry (R3-07); ready for operator sign-off (dstdns D-661) (c514c704a)
+- docs(ciu): realization graph and coverage memo for D-661 — D-661 rows 62-70, count-mode independence re-check, successor note (dstdns D-661) (811565b7e)
+- docs(ciu): proposal rev 4.8 — count mode in 8.0 (V8-38), grouped admission switch, plain-language §4.1.10b, 4.8 amendments, T4-07/O-31/R2-12 ruled (dstdns D-661) (1db165afd)
+- docs(ciu): SPEC-V8 draft.10 — T4-07 trust root in the controller's wheel; one grouped [admission] switch, default off; the ticket count mode and published count subset move into 8.0; enrollment proposal rev 4 (dstdns D-661) (1fe6e7564)
+- docs(ciu): coverage memo §8 round-3 note; correct line cites in CIU-122/KI-49 (dstdns D-658) (fe0fb5364)
+- docs(ciu): SPEC-V8 draft.9 / proposal rev 4.7 — r2 fix-verify R2-01..R2-16; T4-07, O-31, R2-12 left pending (dstdns D-658) (d773e0398)
+- docs(ciu): v8 coverage memo — clean D-658 counts (dstdns D-658) (97a59b575)
+- docs(ciu): v8 coverage memo — D-658 rows, round-4 table, new open items (dstdns D-658) (306e5285b)
+- docs(ciu): v8 proposal rev 4.6 — 8.0/8.1 split, tickets and placeholder, capacity object, round-4 fold; graph note (dstdns D-658) (986cf4036)
+- docs(ciu): enrollment proposal rev 3 (round-4 T4-05..T4-08, T4-10) and SPEC-V8 S20 retired numbers (dstdns D-658) (3a1a64925)
+- docs(ciu): SPEC-V8 draft.9 — 8.0/8.1 split (S21 annex, [ciu] admission), tickets, placeholder, capacity object, round-4 fold (dstdns D-658) (899de6d21)
+- docs(ciu): v8 rev 4.5 residue (peak, root-lock wording, CLI-EXT-05) and graph note V8R-34 (dstdns D-658) (d58b01ca7)
+- docs(ciu): v8 coverage memo — review dispositions, O-item resolutions, upstream amendments (dstdns D-658) (2471745eb)
+- docs(ciu): v8 proposal rev 4.5 — adversarial-review fixes; five PENDING-OPERATOR questions in §4.9 (dstdns D-658) (a2b035089)
+- docs(ciu): SPEC-V8 8.0.0-draft.9 WIP — adversarial-review fixes V8R-01/02/05/07/10..32; five PENDING-OPERATOR markers (dstdns D-658) (76b0d79a6)
+- docs(ciu): SPEC-V8 draft.8 — S2.3.4 id derivation and realness-record location (dstdns D-656) (06e2142d8)
+- docs(ciu): V8-REALIZATION-GRAPH — correct the v8 state mapping against SPEC-V8 draft.8 (dstdns D-656) (38590ac14)
+- docs(ciu): v8 coverage memo — draft.8 open items O-1..O-23 (dstdns D-656) (58a991de7)
+- docs(ciu): SPEC-V8 8.0.0-draft.8 from proposal rev 4.4 Appendix R (dstdns D-656) (0b904b3f0)
+- docs(ciu): V8-REALIZATION-GRAPH note read against proposal rev 4.4 / SPEC-V8 draft.8 (dstdns D-656) (594f286ca)
+- docs(ciu): v8 decision-coverage memo (D-647, D-651..D-655 vs proposal rev 4.3; dstdns D-656) (ae5adecfe)
+- docs(ciu): v8 proposal rev 4.4 — decision-coverage audit fixes: no admission lock, <instance_id> examples, BUDGET_EXCEEDED name (dstdns D-656) (c175e3d23)
+- docs(ciu): v8 proposal rev 4.3 — Q15 decided as A, Docker-object reservations; no open decisions (dstdns D-655) (c98be059a)
+- docs(ciu): v8 proposal rev 4.2 — Q11 decided as A, backported to run-gate as RG-78 (dstdns D-654) (b5a640184)
+- docs(ciu): v8 proposal rev 4.1 — apply the operator's round-3 answers (dstdns D-653) (1602bbbac)
+- docs(ciu): v8 proposal rev 4.0 — reconcile with ciu 7.15.1, run-gate rev 46, RG-55 and the 2026-10-03 rulings (177309c32)
+- docs(ciu): v8 reconciliation with ciu 7.15 / run-gate 23.9 and dstdns D-647 rulings (5160c0afa)
+- docs(ciu): v8 dstdns consumer input -- add RG-76 (51e294cc0)
+- docs(ciu): update CIU-113 (998a43552)
+- docs(ciu): add CIU-113, CIU-114 (54f1b08ac)
+
+### Testing
+- test(ciu): cover repairing ready worktrees with live networks (b588cd96e)
+- test(ciu): cover invalid saved allocation commit (f839e58aa)
+- test(ciu): match corrupt root marker refusal (45da52e57)
+- test(ciu): refuse readiness without a proven commit (71c56f00d)
+- test(ciu): refuse read-only identity repair (20b95e020)
+- test(ciu): discriminate surviving R2 mutants (a1f67c0e4)
+- test(ciu): forbid reset during readiness repair (a246bc2af)
+- test(ciu): pin admission grammar to shared module fixture (78acd6bb1)
+- test(ciu): preserve adopt guard across interrupted retry (afb1854b8)
+- test(ciu): enforce strict identity migration boundaries (402e43ffb)
+- test(ciu): close remaining registry scan survivors (1eb883032)
+- test(ciu): freeze worktree registry scan facts (31597f90f)
+- test(ciu): pin identity scan output contracts (0356e1a79)
+- test(ciu): require complete legacy identities and captured scans (f002f2aec)
+- test(ciu): retain stdout for identity cleanup failures (fc1e0c3a3)
+- test(ciu): pin read-only exec and exact target matching (d93cc8404)
+- test(ciu): require captured live resolution output (c4597faac)
+- test(ciu): cover nested root readiness guards (a95f4eb81)
+- test(ciu): model substring docker network filters (6c97c17b1)
+- test(ciu): include identity preflight record write (454aee117)
+- test(ciu): assert every rootless allocation write (1ff832309)
+- test(ciu): accept path scoped registry lookup (ac9553ad4)
+- test(ciu): pin single-stack healthcheck paths (695e27bec)
+- test(ciu): assert single-stack health selection (19644ed2f)
+- test(ciu): pin identity cleanup ownership and errors (b365d522c)
+- test(ciu): preserve identity cleanup exit codes (f0dad03e8)
+- test(ciu): distinguish dry-run hook declarations (234611cc0)
+- test(ciu): pin exec terminal and read-only contracts (5199cacda)
+- test(ciu): pin schema versions in documented identity examples (a18d5e214)
+- test(ciu): kill resolve and parser mutation survivors (3b73ca10d)
+- test(ciU): cover rejection and teardown paths (54b083232)
+- test(ciu): locate current cmru installer template (d0335c445)
+- test(ciu): pin single-stack shutdown docs (aa68c349f)
+- test(ciu): align governance fixtures with opt-in caps (467152fd7)
+
+### Changed
+- Governance injects per-container memory, CPU, and IO limits only when configured. Omitted read/write IOPS no longer add caps; `read_iops = 0` is an explicit derivation opt-in.
+- `ciu init` emits the complete, disabled governance table with no resource caps configured.
+- Generic Git-family worktree records may be ready with a null/null runtime pair only when their exact root marker path is absent; non-regular, dangling, unreadable, or partial identities refuse.
+
+### Added (detail)
+- **CIU-124/125 — start a worktree's test environment in one command.**
+  `ciu up --dir <stack>` accepts the shared deploy and healthcheck actions.
+  A project can declare the profiles a worktree needs in `[ciu.worktree].up`,
+  and `ciu worktree create <name> --up` starts them together in one deploy
+  invocation. This keeps cross-profile prerequisites in the same preflight.
+- **CIU-126 — keep rootless Git worktrees usable.** CIU reads its existing
+  ready-record format for a checkout without a CIU root marker and isolates an
+  unreadable sibling during registry scans. Unrelated worktree lifecycle
+  operations can proceed with a warning; records and sibling identities are
+  not rewritten.
+- **CIU-127 — stop one stack.** `ciu down --dir <stack>` resolves the exact
+  Compose project and stops only that project's running containers, preserving
+  volumes and neighboring stacks.
+- **CIU-128 — publish readiness after nested initialization.** A worktree stays
+  `allocating` until every committed CIU root has generated facts and the shared
+  workspace record has matching root entries. CIU refuses to guess the root set
+  when the allocation commit cannot be proven and leaves the checkout
+  `recovery-required`. `ensure` repairs from the saved allocation commit
+  without resetting later checkout commits; an older moved checkout with no
+  provable target is also marked `recovery-required` and refused.
+- **CIU-103/109/118 — make inspection and dry-run read-only.** `ciu profiles`
+  renders without persisting configuration, `ciu resolve --json` exposes the
+  v8-shaped service-identity data, and `ciu exec` runs an exact command in an
+  already-running service. `ciu up --dry-run` skips `post_compose` hooks unless
+  the hook declares `DRY_RUN_SAFE = True`.
+
+### Adoption / Migration Notes
+
+Most changes are additive. For a worktree-owned test stack, declare all
+required profiles together under `[ciu.worktree].up` (including prerequisite
+profiles) and use `ciu worktree create <name> --up`. Replace stack-specific
+`docker stop` calls with `ciu down --dir <stack>`; supply `--profile <name>`
+when selecting a stack that is optional. Consumers of the old `config_helper`
+identity flow should move to `ciu resolve --json` and `ciu exec`. If a script
+relied on `ciu profiles` writing `ciu.global.toml`, make that edit explicitly;
+if a dry-run hook is safe to execute, declare `DRY_RUN_SAFE = True` in that
+hook module. Existing rootless worktree records need no rewrite. When resuming
+an interrupted worktree, use `ciu worktree ensure NAME`; CIU preserves commits
+made after allocation and refuses a moved checkout when no saved allocation
+commit is available.
+
 ## [7.15.1] - 2026-09-25
 <!-- cmru: generated -->
 <!-- cmru: source-end=563ca7ce7345513b56b95e340f298bc8d4d0d812 -->
@@ -114,49 +275,6 @@ restatement of the technical detail below it.
 
 ### Documentation
 - docs(ciu): v8 third-party review, round 4 — draft.7 / rev 3.4 (d58d85df)
-
-## [Unreleased]
-<!-- hand-written ahead of release; fold into its own dated section (never
-     leave here) the moment that release is cut, per the process note above.
-     Check every ID here against the dated sections below BEFORE trusting
-     this block is actually unreleased -- see 2026-09-11's entry under
-     7.12.0 for why. -->
-
-### Changed
-- Governance injects per-container memory, CPU, and IO limits only when configured. Omitted read/write IOPS no longer add caps; `read_iops = 0` is an explicit derivation opt-in.
-- `ciu init` emits the complete, disabled governance table with no resource caps configured.
-
-### Added (detail)
-- **CIU-124/125 — start a worktree's test environment in one command.**
-  `ciu up --dir <stack>` accepts the shared deploy and healthcheck actions.
-  A project can declare the profiles a worktree needs in `[ciu.worktree].up`,
-  and `ciu worktree create <name> --up` starts them together in one deploy
-  invocation. This keeps cross-profile prerequisites in the same preflight.
-- **CIU-126 — keep rootless Git worktrees usable.** CIU reads its existing
-  ready-record format for a checkout without a CIU root marker and isolates an
-  unreadable sibling during registry scans. Unrelated worktree lifecycle
-  operations can proceed with a warning; records and sibling identities are
-  not rewritten.
-- **CIU-127 — stop one stack.** `ciu down --dir <stack>` resolves the exact
-  Compose project and stops only that project's running containers, preserving
-  volumes and neighboring stacks.
-- **CIU-103/109/118 — make inspection and dry-run read-only.** `ciu profiles`
-  renders without persisting configuration, `ciu resolve --json` exposes the
-  v8-shaped service-identity data, and `ciu exec` runs an exact command in an
-  already-running service. `ciu up --dry-run` skips `post_compose` hooks unless
-  the hook declares `DRY_RUN_SAFE = True`.
-
-### Adoption / Migration Notes
-
-Most changes are additive. For a worktree-owned test stack, declare all
-required profiles together under `[ciu.worktree].up` (including prerequisite
-profiles) and use `ciu worktree create <name> --up`. Replace stack-specific
-`docker stop` calls with `ciu down --dir <stack>`; supply `--profile <name>`
-when selecting a stack that is optional. Consumers of the old `config_helper`
-identity flow should move to `ciu resolve --json` and `ciu exec`. If a script
-relied on `ciu profiles` writing `ciu.global.toml`, make that edit explicitly;
-if a dry-run hook is safe to execute, declare `DRY_RUN_SAFE = True` in that
-hook module. Existing rootless worktree records need no rewrite.
 
 ## [7.13.0] - 2026-09-11
 <!-- cmru: generated -->

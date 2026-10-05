@@ -576,7 +576,7 @@ Last reconciled: 2026-08-17, automation-safe worktree lifecycle milestone.
 | CIU-125 | Worktree create cannot start a committed worktree-specific environment | Medium | FIXED 2026-10-04 |
 | CIU-126 | CIU rejects its own valid rootless worktree record and siblings can block lifecycle verbs | Medium | FIXED 2026-10-04 |
 | CIU-127 | `ciu down` cannot stop one stack without targeting the whole project | Medium | FIXED 2026-10-04 |
-| CIU-128 | Worktree reports `ready` before committed nested roots are prepared | High | IN PROGRESS — implementation and regression oracle pending gate |
+| CIU-128 | Worktree reports `ready` before committed nested roots are prepared | High | FIXED 2026-10-05 |
 
 
 The approved milestone decisions and serial package order are in
@@ -4828,10 +4828,14 @@ root at the allocated checkout's exact allocation commit has readable
 generated facts and its root entry is persisted in shared workspace metadata.
 On recoverable failure, retain the checkout as `recovery-required`; `ensure`
 repeats missing work and verifies older ready records before returning them.
-Root discovery uses the allocation's resolved commit, not a mutable base name
-in the primary checkout. For a legacy record without `fork_point_sha`, the
-neutral workspace `base_commit` is usable only while HEAD still equals it. If
-a symbolic base and moved HEAD make the allocation commit unknowable, refuse
+Root discovery uses the allocation's saved commit, not a mutable base name
+in the primary checkout. If creation cannot prove that exact commit, refuse
+and leave the allocation `recovery-required`; never publish `ready` with an
+unknown root set. A recorded full-SHA `base_ref` is authoritative for
+adopted or older records; if only a symbolic base remains without
+`fork_point_sha`, a full-SHA `base_ref` is used directly; otherwise the neutral
+workspace `base_commit` is usable only while HEAD still equals it. If a
+symbolic base and moved HEAD make the allocation commit unknowable, refuse
 rather than infer a new root set. Root-entry and lease-mirror changes are
 read-modify-write operations on the shared workspace record and must preserve
 each other's metadata under the Git-family lock.
@@ -4843,11 +4847,18 @@ restore generation and verify `ensure` creates the facts and returns `ready`
 only after root metadata is stored. (3) A pre-fix ready record missing root
 facts/metadata is repaired by `ensure`, not returned unchanged. (4) Moving a
 symbolic base after allocation cannot change the root set selected for that
-checkout. (5) `ensure` never hard-resets an adopted checkout; if HEAD moved
-after adoption was recorded, it refuses and preserves the newer commit. (6) A
-ready record without an exact allocation commit and with a moved HEAD refuses
-without being rewritten as a generation failure. (7) A stale lease-mirror
-read cannot erase root entries written concurrently to the shared record.
+checkout. (5) `ensure` never hard-resets an existing or adopted checkout. A
+fork-point-bearing partial allocation repairs roots against that saved commit
+while preserving later commits; a moved checkout without a fork point refuses.
+(6) A ready record without a provable allocation commit is
+demoted to `recovery-required` before refusal, so an unverified record is never
+left certified as ready. (7) A stale lease-mirror read cannot erase root
+entries written concurrently to the shared record. (8) If `rev-parse` fails or
+returns a non-SHA during create, creation refuses and leaves a
+`recovery-required` record; it never degrades to a false `ready` result. (9)
+Repairing an incomplete historical `ready` record with its recorded network
+still present succeeds for that same identity while sibling identity checks
+remain active; a `True -> False` mutation of the repair allowance is killed.
 
 **v8: absorb the readiness ordering.** SPEC-V8 S14.1.1 writes generated and
 host facts and establishes the instance file before writing the linked
@@ -4856,6 +4867,4 @@ initialize-before-record contract. The v7 aggregate `root_entries` list is
 specific to a generic Git worktree containing multiple CIU roots; v8 has one
 instance per checkout, so that aggregate metadata detail is not applicable.
 
-**Disposition (2026-10-04): IN PROGRESS.** The writer and reader are being
-changed together; keep this entry open until the registered CIU gate and the
-adversarial readiness/retry checks pass.
+**Disposition (2026-10-05): FIXED.** The ready transition now follows nested-root fact generation and locked shared metadata persistence. `ensure` verifies historical readiness and derives the original allocation commit from saved facts. A partial allocation with a recorded fork point repairs against that commit without resetting later work; an older no-fork-point record whose checkout moved is demoted to `recovery-required` and refused. The registered CIU gate passed on implementation commit `b588cd96ecf0f9e0fb2fa8f47654906e911def9a` (run `195b964ff850afc73eff9c6e708babb8`, 2026-10-05): R0/R1/R2/R3 PASS, 100% branch coverage, 28/28 mutation candidates killed, no budget overruns, and the import-break canary detected. The final gate covers this backlog disposition update.

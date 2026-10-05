@@ -39,13 +39,20 @@ fails, the record remains attributable as `recovery-required`; `ensure` repeats
 the missing work. This ordering avoids a false-ready window and lets recovery
 repair records written by older code. Discovery uses the allocated commit
 rather than resolving a symbolic base such as `main` again, since that name can
-move after checkout creation. v8 already writes generated and host facts plus
+move after checkout creation. Repairing a historical `ready` record preserves
+its recorded identity and tolerates its network remaining present; sibling
+identity collisions are still checked. This lets `ensure` restore generated
+facts without first tearing down a stack the record already identifies. v8
+already writes generated and host facts plus
 the instance file before its linked-worktree record (SPEC-V8 S14.1.1 and
 S14.7.1); it has no v7 multi-root aggregate list to persist. For old records
 without a fork-point SHA, CIU accepts the neutral record's base commit only if
-the checkout still points there. A moved HEAD with no exact allocation commit
-is indeterminate, so `ensure` refuses without changing the lifecycle record.
-The shared record also holds lease and root-entry metadata, so both writers
+the checkout still points there. If a new allocation cannot prove its exact
+commit, it stays `recovery-required` rather than guessing which roots to
+prepare. If a no-fork-point checkout moved or an allocation target cannot be
+proven, `ensure` demotes an unverified `ready` record to `recovery-required`
+before refusing. The shared record also holds
+lease and root-entry metadata, so both writers
 re-read and merge under the same Git-family lock; an old lease snapshot cannot
 erase newer root evidence.
 
@@ -161,6 +168,73 @@ record or reporting an inferred value — is precisely the silent-wrong-answer
 anti-pattern the estate doctrine forbids: an automation consumer that reads a
 "branch" from a stale record would run the wrong checkout's tests with a
 convincing-looking label on the result.
+
+### Aggregate family records and runtime identity
+
+The worktree root and a CIU root are related but not interchangeable. A Git
+family can contain several nested CIU roots, or none, while the family root
+itself has no `ciu.global.defaults.toml.j2`. CIU still needs one family record
+to own the Git checkout and lifecycle. That aggregate record is `ready` with
+`runtime.instance_id` and `runtime.network` both null: no runtime is attached
+to the aggregate root. Each discovered nested CIU root is prepared separately
+and receives identity facts derived from its own path. `ready` is the
+aggregate's completion claim: CIU writes it only after every marker discovered
+from the allocated checkout's exact `HEAD` has a readable generated-facts file
+and the matching root-entry list is persisted in the shared workspace record.
+
+The order is deliberate. An earlier implementation wrote the CIU `ready`
+record after preparing only the selected root, then prepared nested roots and
+their shared metadata afterward. A concurrent inspector could observe a false
+ready state, and a failure followed by `ensure` could take the generic-root
+shortcut and mark the allocation ready without retrying those roots. The
+writer now leaves the CIU record `allocating` across all root work, commits
+root metadata, and writes `ready` last. A caught failure becomes
+`recovery-required`; a hard interruption before the final write leaves a
+non-ready state. `ensure` repeats preparation for incomplete records and
+validates the recorded root evidence before fast-returning a historical ready
+record, repairing records left by the old ordering.
+
+The neutral workspace record also carries mutable lease and adapter metadata.
+Root-entry persistence therefore re-reads and updates that record while
+holding the Git-family workspace lock, changing only `root_entries`; CIU's
+lease-mirror writer uses the same lock and re-reads under it. Atomic file
+replacement alone would not serialize these read-modify-write operations and
+could silently discard a concurrent lease or opaque metadata field.
+
+Root discovery uses the allocated checkout's recorded commit rather than
+re-reading a symbolic base such as `main` in the primary checkout. New CIU
+records use their `fork_point_sha`; an adopted record uses its recorded full-SHA
+`base_ref`; an older record with only a symbolic base can use the shared
+workspace's `base_commit` only while the checkout still points there. A partial
+allocation with a saved fork point resumes against that exact commit and keeps
+later commits. If a no-fork-point target cannot be confirmed, `ensure` refuses
+instead of selecting roots from a later `HEAD`. Resume never runs
+`git reset --hard` on an existing checkout. If an older `ready` record cannot
+be verified, CIU demotes it before refusing so inspection does not continue to
+certify incomplete state. This adds no runtime identity to a generic family
+root and requires no record-schema change.
+
+The writer already emits this generic shape when the exact root marker is
+absent. The old reader then contradicted it by demanding a complete runtime
+identity for every `ready` record, so creation appeared successful but later
+inspect/list/create calls refused the persisted record. The reader now uses
+the same exact-root marker predicate as allocation. A CIU-root record still
+requires both runtime strings; a partial pair is always malformed; a marker
+lookup error refuses instead of turning uncertainty into “no CIU root.” Only
+a truly absent marker path permits the generic shape. If the path exists, its
+target must resolve to a regular file: directories, dangling symlinks, and
+unreadable entries refuse. This keeps an indeterminate or malformed marker
+from silently erasing the runtime identity requirement.
+
+Two alternatives are deliberately rejected. Requiring identity for every
+aggregate would make a generic Git workspace impossible to represent and
+would prevent discovery of nested roots. Inventing an identity for the family
+root would be worse: it would create an unowned runtime identity unrelated to
+any CIU configuration. The two-null representation already exists in the
+record schema, so this clarifies its constrained meaning without a schema
+bump or a fallback identity. The normative rule is [S16.4](SPEC.md#s164--structured-json-documents-d-009);
+the inspection example and operator interpretation are in
+[CONSUMERS.md](CONSUMERS.md#2-create-a-managed-workspace).
 
 The same refusal applies to `git status` being unreadable: an unknown state is
 reported as a refusal (`[S16] could not read git status`), never collapsed into

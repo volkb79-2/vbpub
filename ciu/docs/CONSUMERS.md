@@ -61,6 +61,11 @@ envelope. `status` is one of `allocating`, `ready`,
 `recovery_status` of `checkout-incomplete`, `env-generation-failed`, or
 `runtime-collision`. Resume a partial allocation with `ensure`.
 
+CIU must prove the checkout's exact commit before it can select the committed
+root set. If Git cannot provide that commit, creation leaves the allocated
+checkout `recovery-required` instead of reporting `ready`; after the Git
+problem is corrected, retry with `ciu worktree ensure NAME`.
+
 If root preparation fails, keep the checkout and retry through CIU:
 
 ```console
@@ -70,9 +75,15 @@ $ ciu worktree ensure pkg-under-test --json
 `ensure` regenerates missing root facts and metadata before returning `ready`.
 It also checks older ready records against their discovered roots, repairing
 ones that were interrupted before the ready-ordering fix when their allocation
-commit is still provable. If a legacy record has only a symbolic base and HEAD
-has moved past the neutral workspace's recorded base commit, `ensure` refuses
-instead of guessing which roots belonged to the original allocation.
+commit is still provable. Repair keeps the recorded identity and can proceed
+while that instance's network remains present; it does not ask you to tear down
+the stack first. Resume uses the saved fork point or full-SHA target;
+for older records with only a symbolic base, it uses the neutral workspace's
+`base_commit` only while checkout HEAD still equals it. If a no-fork-point
+checkout moved or the allocation target cannot be proven, `ensure` marks the
+record `recovery-required` and refuses. If a fork point was saved before the
+interruption, `ensure` repairs against that exact commit and preserves later
+commits. It never resets an existing checkout during resume.
 
 A Git family with no committed `ciu.global.defaults.toml.j2` is also valid.
 CIU records the Git worktree as ready with null runtime identity, because no
