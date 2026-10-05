@@ -54,6 +54,8 @@ CLOSED_PUBLIC_VALUES = {
     "adopt",
     # exec-target config vocabulary (S16.7)
     "exec_targets",
+    "up",
+    "DRY_RUN_SAFE",
     "requires_worktree_mount",
     "stack",
     "service",
@@ -176,6 +178,25 @@ def test_every_closed_public_value_appears_in_the_documents():
     corpus = "\n".join(doc.read_text(encoding="utf-8") for doc in DOCS)
     missing = sorted(v for v in CLOSED_PUBLIC_VALUES if v not in corpus)
     assert missing == []
+
+
+def test_new_v7_workflows_are_explained_in_all_three_user_documents():
+    readme, design, consumers = (
+        doc.read_text(encoding="utf-8") for doc in DOCS
+    )
+    assert "[ciu.worktree].up" in readme and "--up" in readme
+    assert "DRY_RUN_SAFE = True" in readme
+    assert "ciu resolve" in readme and "ciu exec" in readme
+
+    assert "DRY_RUN_SAFE = True" in design
+    assert "resolved.identities" in design
+    assert "ciu clean --identity <old-id>" in design
+    assert "resumes only if HEAD still matches" in design
+
+    assert "[ciu.worktree]" in consumers and "up = [\"test\"]" in consumers
+    assert "DRY_RUN_SAFE = True" in consumers
+    assert "ciu resolve --stack" in consumers and "ciu exec tools/test-runner" in consumers
+    assert "ciu clean --identity OLD_ID" in consumers
 
 
 def test_every_cross_document_anchor_resolves():

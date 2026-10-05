@@ -407,6 +407,8 @@ class TestIdempotentRerun:
         # Plant a post_compose hook that writes [state].marker via persist:state.
         hook = stack / "persist_state_hook.py"
         hook.write_text(
+            "DRY_RUN_SAFE = True\n"
+            "\n"
             "def run(config, ctx):\n"
             "    return {'marker': {'value': 'kept', 'persist': 'state'}}\n",
             encoding="utf-8",
@@ -422,7 +424,7 @@ class TestIdempotentRerun:
             encoding="utf-8",
         )
 
-        # Run 1 writes [state].marker (post_compose runs in dry-run, S8.3 note).
+        # Run 1 writes [state].marker; this hook explicitly permits dry-run.
         run_engine(stack, monkeypatch)
         doc1 = tomllib.loads((stack / "ciu.toml").read_text())
         assert doc1.get("state", {}).get("marker") == "kept"
