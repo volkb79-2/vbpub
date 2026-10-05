@@ -271,5 +271,5 @@ The invocation is an argv token list passed to the registered CLI, excluding the
 
 ### Open review findings
 
-None.
+- **minor** `SA-005` (route: route:entrypoint:scp-api/snapshots): snapshots dryrun and snapshots create print nothing when the API returns an empty body Remedy: Print a one-line confirmation ('snapshot creation is possible' / 'snapshot requested') when the response body is empty, as the other mutating verbs do.
 <!-- cli-extended-surface:end -->

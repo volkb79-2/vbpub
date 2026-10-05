@@ -67,5 +67,6 @@ The invocation is an argv token list passed to the registered CLI, excluding the
 
 ### Open review findings
 
-None.
+- **minor** `MT-003` (route: route:entrypoint:monitor-task/watch): monitor-task spells the polling option --poll while install-host spells it --poll-interval Remedy: Add --poll-interval as an alias of --poll in monitor-task (keep --poll for existing scripts) in a later change.
+- **minor** `MT-004` (route: route:entrypoint:monitor-task/watch): --poll help ends with a full stop and names a file rather than the effective default Remedy: Reword to 'seconds between task queries (default: monitor.poll_interval in monitor-task.toml)'; re-sync the surface and re-sign the affected rows.
 <!-- cli-extended-surface:end -->

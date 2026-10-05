@@ -1,2 +1,102 @@
 schema_version = 1
 cli_id = "install-host"
+
+[[findings]]
+id = "IH-001"
+status = "open"
+severity = "minor"
+category = "help"
+route = "route:entrypoint:install-host/wizard"
+summary = "--config/--payload help says 'config to install or output file to write' without saying which verb does which"
+remedy = "Reword per verb: wizard and configure 'file the reviewed config is written to', install 'config file to install'."
+
+[[findings]]
+id = "IH-002"
+status = "open"
+severity = "minor"
+category = "help"
+route = "route:entrypoint:install-host/install"
+summary = "--attach-custom-script and --no-attach-custom-script do not state which is the default"
+remedy = "State the default in both option texts (the install-host.toml setting decides it)."
+
+[[findings]]
+id = "IH-003"
+status = "open"
+severity = "minor"
+category = "semantics"
+route = "route:entrypoint:install-host/install"
+summary = "The dry-run plan prints nothing about the --ssh-host, --ssh-user and --ssh-identity-file values that a live run would use"
+remedy = "Include the resolved SSH target in the dry-run plan output so the plan shows everything a live run would do."
+
+[[findings]]
+id = "IH-004"
+status = "open"
+severity = "minor"
+category = "grammar"
+route = "route:entrypoint:install-host/attach"
+summary = "attach says --ssh-host is required but declares it optional (it may come from NETCUP_SCP_API_SSH_HOST), and the check is made by hand in the handler"
+remedy = "Keep the environment fallback; document 'required unless NETCUP_SCP_API_SSH_HOST is set' in the option text. A declarative rule cannot express the environment fallback."
+
+[[findings]]
+id = "IH-005"
+status = "open"
+severity = "minor"
+category = "help"
+route = "route:entrypoint:install-host/attach"
+summary = "--simulate-disconnect-seconds is a testing aid shown in normal help"
+remedy = "Declare it hidden=True with the reason in the catalog rationale, or keep it visible and say it is for testing only (the text already says so)."
+
+[[findings]]
+id = "IH-006"
+status = "open"
+severity = "minor"
+category = "consistency"
+route = "route:entrypoint:install-host/attach"
+summary = "install-host spells the polling option --poll-interval while monitor-task spells it --poll"
+remedy = "Add --poll-interval as an alias in monitor-task (see MT-003); install-host keeps its spelling."
+
+[[findings]]
+id = "IH-007"
+status = "wontfix"
+severity = "note"
+category = "grammar"
+route = "route:entrypoint:install-host/configure"
+summary = "configure is a deprecated compatibility alias of wizard and duplicates its whole option set"
+remedy = "Remove configure in a future major release."
+rationale = "Existing operator scripts use it; the help text already says new usage should prefer wizard and a replay test pins the compat banner."
+
+[[findings]]
+id = "IH-008"
+status = "wontfix"
+severity = "minor"
+category = "adoption"
+summary = "AC-04 synopsis-overrides: wizard, configure, install and attach keep an empty synopsis"
+remedy = "Keep the overrides."
+rationale = "The audit shows the derived synopsis is only '[options]' (or '[--monitor | --no-monitor] [options]' for wizard and configure); that adds nothing to the full usage block, so the empty override is harmless and changing it would re-sign every case of these four verbs."
+
+[[findings]]
+id = "IH-009"
+status = "wontfix"
+severity = "note"
+category = "adoption"
+summary = "AC-19 skills-packaged: no agent-facing skills ship"
+remedy = "None."
+rationale = "install-host is a standalone operator script in a monorepo; agents drive it through the repository docs, not packaged skills."
+
+[[findings]]
+id = "IH-010"
+status = "wontfix"
+severity = "note"
+category = "adoption"
+summary = "AC-20 doctor: no doctor verb"
+remedy = "A doctor verb could check .env credentials, netcup.toml, install-host.toml, the local ssh-keygen binary and API reachability."
+rationale = "Product decision for the controller; the dry-run preflight already validates the target and credentials before any mutation."
+
+[[findings]]
+id = "IH-011"
+status = "wontfix"
+severity = "note"
+category = "adoption"
+summary = "AC-24 dependency-declared: standalone script without pyproject.toml"
+remedy = "None."
+rationale = "Standalone scripts use the installed cli-extended library (CX-D3); the suite lane puts the worktree library on PYTHONPATH."

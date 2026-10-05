@@ -166,5 +166,10 @@ The invocation is an argv token list passed to the registered CLI, excluding the
 
 ### Open review findings
 
-None.
+- **minor** `IH-001` (route: route:entrypoint:install-host/wizard): --config/--payload help says 'config to install or output file to write' without saying which verb does which Remedy: Reword per verb: wizard and configure 'file the reviewed config is written to', install 'config file to install'.
+- **minor** `IH-002` (route: route:entrypoint:install-host/install): --attach-custom-script and --no-attach-custom-script do not state which is the default Remedy: State the default in both option texts (the install-host.toml setting decides it).
+- **minor** `IH-003` (route: route:entrypoint:install-host/install): The dry-run plan prints nothing about the --ssh-host, --ssh-user and --ssh-identity-file values that a live run would use Remedy: Include the resolved SSH target in the dry-run plan output so the plan shows everything a live run would do.
+- **minor** `IH-004` (route: route:entrypoint:install-host/attach): attach says --ssh-host is required but declares it optional (it may come from NETCUP_SCP_API_SSH_HOST), and the check is made by hand in the handler Remedy: Keep the environment fallback; document 'required unless NETCUP_SCP_API_SSH_HOST is set' in the option text. A declarative rule cannot express the environment fallback.
+- **minor** `IH-005` (route: route:entrypoint:install-host/attach): --simulate-disconnect-seconds is a testing aid shown in normal help Remedy: Declare it hidden=True with the reason in the catalog rationale, or keep it visible and say it is for testing only (the text already says so).
+- **minor** `IH-006` (route: route:entrypoint:install-host/attach): install-host spells the polling option --poll-interval while monitor-task spells it --poll Remedy: Add --poll-interval as an alias in monitor-task (see MT-003); install-host keeps its spelling.
 <!-- cli-extended-surface:end -->
