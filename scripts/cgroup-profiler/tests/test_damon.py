@@ -1074,7 +1074,9 @@ def test_pool_refuses_a_counter_that_shrank_before_a_fresh_acquire(fake_damon, m
 
 
 def test_pool_skips_foreign_indices_when_the_counter_grows_before_create(fake_damon, monkeypatch):
-    readings = iter((0, 2, 3, 3, 3))
+    # acquire reads the baseline, reconciles existing claims, reads before
+    # reserve, verifies the post-create count, then verifies the free slot.
+    readings = iter((0, 0, 2, 3, 3))
     monkeypatch.setattr(damon, "_read_nr_kdamonds", lambda: next(readings))
     pool = damon.KdamondPool()
     assert pool.acquire() == 2
@@ -1089,7 +1091,7 @@ def test_pool_records_foreign_growth_between_create_and_readback(fake_damon, mon
     def read_counter():
         nonlocal reads
         reads += 1
-        if reads == 3:
+        if reads == 4:
             return 2  # the pool's create succeeded, but another owner also grew
         return real_read()
 
@@ -1179,7 +1181,7 @@ def test_pool_quarantines_slot_when_post_create_count_is_unprovable(
     fake_damon, monkeypatch, after_count,
 ):
     real_read = damon._read_nr_kdamonds
-    readings = iter((0, 0, after_count))
+    readings = iter((0, 0, 0, after_count))
     monkeypatch.setattr(damon, "_read_nr_kdamonds", lambda: next(readings))
     pool = damon.KdamondPool()
 
@@ -1204,9 +1206,9 @@ def test_pool_does_not_claim_ambiguous_failed_create_side_effect(
     def read_counter():
         nonlocal reads
         reads += 1
-        if reads == 3 and failed_read is None:
+        if reads == 4 and failed_read is None:
             return None
-        if reads == 3 and failed_read == "growth":
+        if reads == 4 and failed_read == "growth":
             return 1
         return real_read()
 

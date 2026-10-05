@@ -292,6 +292,10 @@ class KdamondPool:
         current = _read_nr_kdamonds()
         if current is None:
             return
+        if current < 0:
+            raise DamonSessionError(
+                "cannot reconcile DAMON pool ownership from negative nr_kdamonds"
+            )
         for idx in tuple(self._live):
             if current <= idx:
                 self._live.remove(idx)

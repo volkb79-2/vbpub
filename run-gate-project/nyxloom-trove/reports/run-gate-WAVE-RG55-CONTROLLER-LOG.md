@@ -6733,3 +6733,20 @@ memory PSI is below the launch ceiling, so the next exact-tree registered gate
 is authorized by the standing RG-55 rule, not by RW-441's already-used one-run
 override. The failed `c8f7c70e` gate is not coverage or release evidence for the
 candidate.
+
+### RW-444 — 2026-10-05 06:07:27Z — counter-read test fixtures must model the added reconciliation read
+
+The registered `r0-r1` gate on `591c258d8d4d5088e427aca50b16cf73e1b9cd8e`
+completed FAIL (run `64a68db76d4a888d260f8111faac5a9f`, 2,293 passed, 6
+failed in 174.54 seconds; separate run-gate history records exit 1; log
+`/tmp/run-gate/lanes/r0-r1/64a68db76d4a888d260f8111faac5a9f.log`). All failures
+were in fake `_read_nr_kdamonds` sequences: the new acquire-time reconciliation
+adds one read, shifting the tests' synthetic shrink/growth/readback events
+before the intended operation. The failed assertions do not identify a new
+production failure; they show the fakes no longer placed their simulated
+conditions at the intended boundary. Update those sequences to target the
+post-create readback or free-slot check explicitly, and make a negative
+counter reading fail closed rather than classify every live slot as missing.
+This failed gate is not coverage or release evidence. No next gate is launched
+by this ruling; it requires a fresh PSI/container preflight after the test
+fixture correction is committed.
