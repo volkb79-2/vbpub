@@ -943,6 +943,65 @@ A skill you edited locally is reported `modified` and kept until you pass
 `--overwrite-modified`. Directories created by another tool, or by hand, are
 never replaced; remove them yourself if they are no longer wanted.
 
+## Add a `doctor` verb
+
+Replace a hand-rolled `doctor` with the shared one. Declare each probe as a
+`DoctorCheck`; the verb adds `--check NAME`, `--json`, exit codes and crash
+handling.
+
+```python
+import shutil
+
+from cli_extended import (
+    CheckResult, CliIdentity, CliRegistry, DoctorCheck,
+    register_doctor, register_skills_verbs,
+)
+
+
+def docker_check(runtime) -> CheckResult:
+    if shutil.which("docker") is None:
+        return CheckResult("fail", "docker not found on PATH",
+                           remedy="install docker or add it to PATH")
+    return CheckResult("ok", "docker found", details={"path": shutil.which("docker")})
+
+
+def cache_check(runtime) -> CheckResult:
+    return CheckResult("warn", "cache is empty", remedy="run 'example warm'")
+
+
+identity = CliIdentity("EXAMPLE", "1.2.3", "Example Tool", "example")
+registry = CliRegistry(identity, prog="example", description="Example tool.")
+register_doctor(registry, [
+    DoctorCheck("docker", "docker is installed", docker_check),
+    DoctorCheck("cache", "cache is warm", cache_check),
+])
+# Optional, in either order: adds the automatic `skills` check.
+register_skills_verbs(registry, package="example_tool")
+```
+
+`example doctor`, `example doctor --check docker --json` and CI use the same
+exit code (1 only for `fail`). Do not name a check `skills`.
+
+Mapping the existing doctors:
+
+- **cgprofile** (`scripts/cgroup-profiler/cgprofile.py` `cmd_doctor`): prints an
+  `access` key/value table, a reporting-venv state and a resolved mode, and
+  returns 1 only when the helper spec cannot be built. Express it as checks
+  `access` (key/value table into `details`), `reporting-venv` (`ok`, `warn` for
+  "present but this interpreter lacks the libraries", `fail` for missing with
+  remedy `run ./setup.sh`) and `mode` (`fail` on `AccessError`, helper image and
+  mounts in `details`). Its `--helper-image` and `--helper-cgroup-parent`
+  options cannot be passed to a check, so read them from the environment or keep
+  them out of the doctor.
+- **nyxloomctl** (`cli_registry.py` `doctor` and `route doctor`): the project
+  doctor yields findings with severities `critical`, `error`, `warn`. Map
+  `critical`/`error` to `fail` and the rest to `warn`, one check per finding
+  kind or per project, and put the finding rows in `details`. Its options
+  (`--project-id`, `--rebuild`, `--write`, `--liveness`) and the `route doctor`
+  `--no-probe` are not expressible, because `register_doctor` adds only
+  `--check`. Keep those as separate verbs, or use `--check` names such as
+  `liveness`. `route doctor` can be registered once on its own sub-registry.
+
 ## Consumer responsibilities
 
 | `cli-extended` guarantees | The adopting CLI must decide and implement |

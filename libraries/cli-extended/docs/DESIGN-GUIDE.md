@@ -519,6 +519,31 @@ Installation writes a temporary sibling and renames it into place, so a crash
 never leaves a half-written skill, and `check`/`list` read the same state
 machine so the answer cannot differ between the verbs.
 
+## One doctor verb; crashes are failures
+
+Every tool grew its own `doctor` with its own output and exit rule, so
+operators and CI could not rely on any of them. The shared verb fixes only the
+shell contract: named checks, four statuses, one text line per check, a JSON
+shape, and exit 1 exactly when something failed. What a check inspects stays
+the consumer's decision.
+
+A check that raises is reported as `fail` (`check crashed: <Type>: <message>`)
+and the remaining checks still run. The alternative, letting the exception end
+the run, hides every later check behind the first bug; swallowing it as `ok` or
+`skip` would make a broken probe look healthy, which is the one thing a doctor
+must never do. `KeyboardInterrupt` still propagates. Non-JSON `details` are
+also a `fail` instead of a crash of the whole report, since by then the other
+results are already known.
+
+The `skills` check is automatic because "installed skills are current" is the
+same question for every tool and `skills check` already defines it; a doctor
+that forgot it would pass while the agent runs a stale skill. It is resolved at
+run time because the two registration calls are independent and a consumer
+should not need to know which must come first. A consumer cannot reuse the name
+`skills`, so the built-in meaning is never ambiguous. Warnings and skips do not
+fail the run: they are for advice and inapplicable checks, and failing CI on
+them would train people to ignore the verb.
+
 ## Markdown is a documentation format
 
 `HelpCatalog.render(output_format="markdown")` renders the same verb metadata

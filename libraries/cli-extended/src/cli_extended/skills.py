@@ -391,6 +391,12 @@ def _leftovers(destination: Path, tool: str) -> list[Path]:
     ]
 
 
+def skill_leftovers(*, tool: str, destinations: Sequence[Path]) -> list[Path]:
+    """Return this tool's interrupted-install leftovers across ``destinations``."""
+
+    return [path for dest in destinations for path in _leftovers(dest, tool)]
+
+
 def _remove_path(path: Path) -> None:
     if path.is_dir() and not path.is_symlink():
         shutil.rmtree(path)
