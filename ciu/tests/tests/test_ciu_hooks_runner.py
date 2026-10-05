@@ -19,7 +19,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
-from ciu import engine as _engine  # noqa: E402
+from ciu import engine as _engine, hooks_runner  # noqa: E402
 from ciu.hooks_runner import (  # noqa: E402
     HOOK_POINTS,
     HookContext,
@@ -660,17 +660,68 @@ class TestDryRunPostComposeHooks:
         assert marker.read_text(encoding="utf-8") == "ran"
 
     def test_annotated_literal_safe_hook_runs_under_dry_run(self, tmp_path: Path) -> None:
+        marker = tmp_path / "side-effect"
         hook = _write_hook(
             tmp_path,
             "annotated_safe.py",
-            "DRY_RUN_SAFE: bool = True\n"
+            f"DRY_RUN_SAFE: bool = True\n"
+            f"from pathlib import Path\n"
             "def run(config, ctx):\n"
+            f"    Path({str(marker)!r}).write_text('ran')\n"
             "    return {}\n",
         )
         run_hooks(
             [str(hook)], "post_compose", {}, _ctx(tmp_path), tmp_path / "ciu.toml",
             dry_run=True,
         )
+        assert marker.read_text(encoding="utf-8") == "ran"
+
+    @pytest.mark.parametrize(
+        ("declaration", "should_run"),
+        [
+            ("UNRELATED = False\nDRY_RUN_SAFE = True\n", True),
+            ("DRY_RUN_SAFE = False\n", False),
+            ("DRY_RUN_SAFE: bool = False\n", False),
+        ],
+    )
+    def test_dry_run_safe_requires_the_exact_true_module_literal(
+        self, tmp_path: Path, declaration: str, should_run: bool,
+    ) -> None:
+        marker = tmp_path / "side-effect"
+        hook = _write_hook(
+            tmp_path,
+            "declaration.py",
+            declaration
+            + "from pathlib import Path\n"
+            + f"def run(config, ctx):\n    Path({str(marker)!r}).write_text('ran')\n    return {{}}\n",
+        )
+
+        run_hooks(
+            [str(hook)], "post_compose", {}, _ctx(tmp_path), tmp_path / "ciu.toml",
+            dry_run=True,
+        )
+
+        assert marker.exists() is should_run
+
+    def test_dry_run_skip_notice_flushes_immediately(self, tmp_path: Path, monkeypatch) -> None:
+        hook = _write_hook(
+            tmp_path,
+            "unsafe.py",
+            "def run(config, ctx):\n    return {}\n",
+        )
+        calls = []
+
+        def record_print(*args, **kwargs):
+            calls.append((args, kwargs))
+
+        monkeypatch.setattr(hooks_runner, "print", record_print, raising=False)
+        run_hooks(
+            [str(hook)], "post_compose", {}, _ctx(tmp_path), tmp_path / "ciu.toml",
+            dry_run=True,
+        )
+
+        assert len(calls) == 1
+        assert calls[0][1]["flush"] is True
 
     @pytest.mark.parametrize(
         ("body", "message"),

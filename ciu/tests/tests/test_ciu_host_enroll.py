@@ -1118,7 +1118,11 @@ class TestRenderedInstaller:
         pytest.importorskip("cmru")
         from cmru import getpy
 
-        template = getpy._TEMPLATE_PATH
+        template = getattr(getpy, "_TEMPLATE_PATH", None)
+        if template is None or not template.exists():
+            template = (
+                CIU_ROOT.parent / "cmru" / "src" / "cmru" / "templates" / "get.py.tmpl"
+            )
         if not template.exists():
             template = CIU_ROOT.parent / "cmru" / "templates" / "get.py.tmpl"
         if not template.exists():

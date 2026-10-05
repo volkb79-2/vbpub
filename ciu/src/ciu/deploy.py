@@ -405,13 +405,13 @@ def _resolve_identity_stack_paths(
             entry for entry in selection
             if Path(entry["path"]).name == selector
         ]
-        if len(matches) == 1:
-            return matches
         if len(matches) > 1:
             raise ValueError(
                 f"[S18] --stack {selector!r} matches multiple selected stacks: "
                 + ", ".join(sorted(entry["path"] for entry in matches))
             )
+        if len(matches) == 1:
+            return matches
     raise ValueError(
         f"[S18] --stack {selector!r} is not in the current deploy selection; "
         "use a selected repo-relative stack path or pass --profile for an "
@@ -695,6 +695,60 @@ def exec_service(
     docker_argv += [container_id, *argv]
     result = procutil.docker(docker_argv, capture=False, check=False)
     return result.returncode
+
+
+def stop_stack(
+    repo_root: Path,
+    selector: str,
+    *,
+    profiles: list[str] | None = None,
+) -> int:
+    """Stop one selected stack's running containers and preserve its volumes."""
+    repo_root = Path(repo_root).resolve()
+    stack_path = Path(selector)
+    candidate = stack_path.resolve() if stack_path.is_absolute() else (repo_root / stack_path).resolve()
+    try:
+        relative_stack = candidate.relative_to(repo_root).as_posix()
+    except ValueError as exc:
+        raise ValueError(
+            f"[S10] --dir {selector!r} must select a stack below CIU root {repo_root}"
+        ) from exc
+
+    document = resolve_identities(repo_root, stack=relative_stack, profiles=profiles)
+    identities = document["resolved"]["identities"]
+    rows = identities.get(relative_stack)
+    if not isinstance(rows, dict) or not rows:
+        raise ValueError(f"[S10] no resolved services for stack {relative_stack!r}")
+    projects = {row.get("compose_project") for row in rows.values()}
+    if None in projects or "" in projects or len(projects) != 1:
+        raise ValueError(
+            f"[S10] stack {relative_stack!r} does not resolve to one exact Compose project"
+        )
+    project = next(iter(projects))
+
+    listed = procutil.docker(
+        ["ps", "--filter", f"label=com.docker.compose.project={project}",
+         "--format", "{{.ID}}"],
+        capture=True,
+        check=False,
+    )
+    if listed.returncode != 0:
+        raise RuntimeError(
+            f"docker ps failed while resolving Compose project {project!r}: {listed.stderr}"
+        )
+    containers = [line.strip() for line in (listed.stdout or "").splitlines() if line.strip()]
+    if not containers:
+        info(f"No running containers for stack {relative_stack} (Compose project {project})")
+        return 0
+
+    stopped = procutil.docker(["stop", *containers], capture=True, check=False)
+    if stopped.returncode != 0:
+        raise RuntimeError(
+            f"docker stop failed for stack {relative_stack} / Compose project {project}: "
+            f"{stopped.stderr}"
+        )
+    success(f"stopped {len(containers)} container(s) for {relative_stack}")
+    return 0
 
 
 # ===========================================================================

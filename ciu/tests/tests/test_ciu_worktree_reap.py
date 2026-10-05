@@ -166,9 +166,15 @@ class FakeDocker:
             ))
         if args[:2] == ["network", "ls"]:
             if "--filter" in args:
-                wanted = args[args.index("--filter") + 1][len("name=^"):-1]
-                hit = any(n["name"] == wanted for n in self.networks)
-                return _R(0, stdout=f"{wanted}\n" if hit else "")
+                selector = args[args.index("--filter") + 1]
+                if not selector.startswith("name="):
+                    return _R(1, stderr=f"unsupported network filter: {selector}")
+                needle = selector[len("name="):]
+                return _R(0, stdout="".join(
+                    f"{network['name']}\n"
+                    for network in self.networks
+                    if needle in network["name"]
+                ))
             return _R(0, stdout="".join(
                 f"{n['name']}\t{n['project']}\t{n['instance']}\t{n['repo_root']}\n"
                 for n in self.networks

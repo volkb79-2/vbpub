@@ -15,7 +15,7 @@ surface reads:
 ```toml
 [ciu.worktree]
 max_concurrent_instances = 3
-up = ["test"]
+up = ["core", "db", "test"]
 
 [deploy]
 project_name = "myapp"
@@ -23,9 +23,20 @@ environment_tag = "dev"
 network_name = "$DOCKER_NETWORK_INTERNAL"
 landscape_id = "prod-eu"
 
+[deploy.profiles.core]
+stacks = ["infra/vault", "infra/consul-server", "infra/redis-core"]
+
+[deploy.profiles.db]
+stacks = ["infra/db-core", "infra/db-init"]
+
 [deploy.profiles.test]
-stacks = ["tools/test-runner"]
+stacks = ["infra/seeded-targets", "infra/pwmcp", "tools/test-runner"]
 ```
+
+This dstdns-shaped example keeps the database profile's `core` prerequisite
+inside the same deployment selection and includes the profile that starts
+`tools/test-runner`. CIU starts all three profiles in one `ciu up` process;
+see [why the startup is one combined deploy](DESIGN-GUIDE.md#why-worktree-startup-is-one-declared-combined-deploy).
 
 `landscape_id` is opt-in [S3.11](SPEC.md#s3--configuration-model): a
 DNS-label-safe slug (`^[a-z][a-z0-9-]{0,62}$`) that a consumer renders its
@@ -38,13 +49,30 @@ $ ciu worktree create pkg-under-test --base "$(git rev-parse HEAD)" --json
 {"schema_version": 1, "operation": "create", "status": "ready", "instance": {...}}
 ```
 
-Creation discovers every committed `ciu.global.defaults.toml.j2` in the base
-commit and prepares each root. The optional ignored
-`ciu.global.instance.toml.j2` overlay is not a discovery marker. Every lifecycle verb (`create`, `ensure`, `adopt`) with `--json` emits
-the same envelope. `status` is one of `allocating`, `ready`,
+Creation discovers every committed `ciu.global.defaults.toml.j2` from the
+allocated checkout's exact commit and prepares each root. A `ready` response
+means every discovered root has readable generated facts and the shared
+workspace record contains the matching root-entry list. CIU does not report
+`ready` while nested-root preparation is in progress. The optional ignored
+`ciu.global.instance.toml.j2` overlay is not a discovery marker. Every
+lifecycle verb (`create`, `ensure`, `adopt`) with `--json` emits the same
+envelope. `status` is one of `allocating`, `ready`,
 `recovery-required`; a `recovery-required` instance carries a closed
 `recovery_status` of `checkout-incomplete`, `env-generation-failed`, or
 `runtime-collision`. Resume a partial allocation with `ensure`.
+
+If root preparation fails, keep the checkout and retry through CIU:
+
+```console
+$ ciu worktree ensure pkg-under-test --json
+```
+
+`ensure` regenerates missing root facts and metadata before returning `ready`.
+It also checks older ready records against their discovered roots, repairing
+ones that were interrupted before the ready-ordering fix when their allocation
+commit is still provable. If a legacy record has only a symbolic base and HEAD
+has moved past the neutral workspace's recorded base commit, `ensure` refuses
+instead of guessing which roots belonged to the original allocation.
 
 A Git family with no committed `ciu.global.defaults.toml.j2` is also valid.
 CIU records the Git worktree as ready with null runtime identity, because no
@@ -63,6 +91,18 @@ ordinary stack verb. The canonical explicit selector is:
 $ ciu up --dir services/api --root-folder services/api
 ```
 
+To stop just one stack, preserve its volumes, and leave other profile stacks
+running, select its rendered Compose project:
+
+```console
+$ ROOT="$(git rev-parse --show-toplevel)"
+$ ciu down --dir tools/admin-debug --profile admin --root-folder "$ROOT"
+```
+
+`--profile` is required when the stack is optional. CIU uses the exact Compose
+project label from that selected stack and refuses a failed Docker query rather
+than treating it as an empty stack. See [why shutdown is scoped this way](DESIGN-GUIDE.md#stop-one-stack-without-stopping-its-neighbors).
+
 To start a worktree's committed test environment as part of creation, put its
 host profiles in `[ciu.worktree].up` (each profile can contribute one or more
 stacks) and run:
@@ -74,7 +114,9 @@ $ ciu worktree up pkg-under-test --all
 ```
 
 `--up` and `worktree up` run all declared profiles in one `ciu up` process, so
-cross-profile dependency checks see the full selection. `--all` explicitly
+cross-profile dependency checks see the full selection. [The design guide
+explains why splitting profiles into separate deploys is incorrect](DESIGN-GUIDE.md#why-worktree-startup-is-one-declared-combined-deploy).
+`--all` explicitly
 selects the default deploy set. Without `create --up`, creation remains
 prepare-only. If startup fails, CIU keeps the created worktree and tells you
 to retry with `ciu worktree up pkg-under-test`.

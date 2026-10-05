@@ -2265,7 +2265,7 @@ def main(argv: Optional[list] = None) -> int:
             return _exit_code_for(exc)
         status = result.get("status")
         rc = 0 if status == "success" else 1
-        if rc == 0 and _should_run_single_stack_healthcheck(args, result):
+        if _should_run_single_stack_healthcheck(args, result):
             try:
                 config = config_model.render_global_chain(
                     args.dir.resolve(),

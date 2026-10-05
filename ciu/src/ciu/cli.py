@@ -116,7 +116,7 @@ Exit codes: 0 success · 1 runtime failure · 2 configuration/validation error
 
   STACK ORCHESTRATION
     up   [--profile NAME | --dir PATH | --layout NAME]   start Docker Compose stack
-    down [--profile NAME]                stop stack (preserve volumes)
+    down [--profile NAME | --dir PATH]  stop stack (preserve volumes)
     clean                                remove containers and volumes
     health [--profile NAME]              health gate check
     health --preflight [--strict]        probe images for missing healthcheck tools
@@ -384,11 +384,13 @@ ciu up --host NAME --thin [--bootstrap | --rollback] [selection...] # docker-opt
 """,
     "down": """\
 ciu down [--profile NAME] [--phases N,M] [--root-folder PATH]
+ciu down --dir PATH [--profile NAME ...] [--root-folder PATH]
 ciu down --host NAME [--profile NAME]
   Stop project containers; volumes are preserved (use `ciu clean` to remove them).
 
   --profile NAME     restrict to the named host profile (repeatable)
   --phases N,M       restrict to the given phase numbers
+  --dir PATH         stop only the selected stack's running Compose project
   --root-folder PATH override repo root
   --host NAME        run the stop action on a configured remote host
 """,
@@ -1731,7 +1733,8 @@ def _worktree(rest: list[str]) -> int:
             else:
                 print(f"worktree ready: {record.git_worktree_path}")
                 print(f"  CIU root: {record.ciu_root}")
-                print(f"  next: cd {record.ciu_root} && ciu up")
+                if not (opts.action == "create" and opts.up):
+                    print(f"  next: cd {record.ciu_root} && ciu up")
 
         if opts.action in ("create", "ensure"):
             lifecycle = wt_mod.create if opts.action == "create" else wt_mod.ensure
@@ -1753,7 +1756,7 @@ def _worktree(rest: list[str]) -> int:
                         f"up {opts.logical_name}` failed (exit {rc}); the "
                         f"checkout is preserved. Retry with `ciu worktree up "
                         f"{opts.logical_name}`.",
-                        file=sys.stderr, flush=True,
+                        file=sys.stderr,
                     )
                     return rc
             return 0
@@ -2275,6 +2278,23 @@ def main() -> None:
             # an "sh -c" wrapper here would be re-split and break "&&"/cd. The login
             # shell ssh spawns already interprets the operators natively.
             raise SystemExit(ssh_exec(host_cfg, [remote_cmd], config=config, repo_root=repo_root))
+        if _flag_given(rest, "--dir"):
+            define_root, rest = _extract_define_root(rest)
+            parser = CiuArgumentParser(prog="ciu down --dir")
+            parser.add_argument("--dir", metavar="PATH")
+            parser.add_argument("--profile", action="append", default=None, metavar="NAME")
+            opts = parser.parse_args(rest)
+            repo_root = _resolve_repo_root_deploy(define_root)
+            from .deploy import stop_stack
+            try:
+                rc = stop_stack(repo_root, opts.dir, profiles=opts.profile)
+            except ValueError as exc:
+                print(f"[ERROR] {exc}", file=sys.stderr)
+                raise SystemExit(2)
+            except (OSError, RuntimeError) as exc:
+                print(f"[ERROR] {exc}", file=sys.stderr)
+                raise SystemExit(1)
+            raise SystemExit(rc)
         from .deploy import main as deploy_main
         raise SystemExit(deploy_main(["--stop"] + rest))
 
@@ -2282,8 +2302,8 @@ def main() -> None:
         if _flag_given(rest, "--identity"):
             import argparse as _ap
             define_root, rest = _extract_define_root(rest)
-            parser = CiuArgumentParser(prog="ciu clean --identity", add_help=False)
-            parser.add_argument("--identity", required=True, metavar="OLD_ID")
+            parser = CiuArgumentParser(prog="ciu clean --identity")
+            parser.add_argument("--identity", metavar="OLD_ID")
             parser.add_argument("-y", "--yes", action="store_true")
             opts, remaining = parser.parse_known_args(rest)
             if remaining:

@@ -31,6 +31,24 @@ unrelated checkout; the requested name or path still refuses when its own
 record cannot be trusted. Branch cleanup protects unreadable checkouts because
 a Git-only removal cannot prove that CIU owns no runtime state.
 
+The aggregate CIU record's `ready` state is a completion claim. CIU keeps it
+`allocating` while it discovers committed roots from the allocated checkout's
+exact commit, generates their facts, and persists the matching root-entry list
+in the shared workspace record. Only then does it write `ready`. If generation
+fails, the record remains attributable as `recovery-required`; `ensure` repeats
+the missing work. This ordering avoids a false-ready window and lets recovery
+repair records written by older code. Discovery uses the allocated commit
+rather than resolving a symbolic base such as `main` again, since that name can
+move after checkout creation. v8 already writes generated and host facts plus
+the instance file before its linked-worktree record (SPEC-V8 S14.1.1 and
+S14.7.1); it has no v7 multi-root aggregate list to persist. For old records
+without a fork-point SHA, CIU accepts the neutral record's base commit only if
+the checkout still points there. A moved HEAD with no exact allocation commit
+is indeterminate, so `ensure` refuses without changing the lifecycle record.
+The shared record also holds lease and root-entry metadata, so both writers
+re-read and merge under the same Git-family lock; an old lease snapshot cannot
+erase newer root evidence.
+
 Root selection is explicit or derived: `--root-folder` wins, then the nearest
 marker above `pwd`/`--dir`; a missing marker refuses. Ambient `REPO_ROOT` is an
 export for child processes, not a selector. This closes the cross-checkout
@@ -44,6 +62,39 @@ facts plus the complete `[ciu.instance.machine]` table. Reads are exact-path
 and strict; malformed or wrong-version facts are not replaced by a sibling
 file, ambient variables, or legacy `ciu.env`. `ciu.env` remains an export-only
 compatibility file for shell consumers.
+
+## Why worktree startup is one declared combined deploy
+
+A worktree's own test environment is committed policy, not an operator's
+remembered command. `[ciu.worktree].up` names the profiles CIU starts after
+creating the worktree, and `create --up` requests that startup as part of the
+same lifecycle operation.
+
+CIU passes all declared profiles to one `ciu up` process. Cross-profile
+preflights inspect the whole selected set; dstdns's `db` profile requires the
+services in `core` to be selected in the same invocation. Running one deploy
+per profile would make `db` fail its preflight even though `core` had just
+started. CIU keeps each profile's declared stack order.
+
+This maps to the v8 rule in SPEC-V8 S14.1.6: `[ciu.instances]
+default_bundles` supplies a new worktree instance's default bundles, and
+`ciu instance init --up` starts the selected bundles after initialization.
+See the [consumer declaration and create command](CONSUMERS.md#1-declare-the-config-a-consumer-needs-valid-toml).
+
+## Stop one stack without stopping its neighbors
+
+Profile-mode `ciu down` is project-wide, which is too broad for a helper that
+owns one stack inside a project. `ciu down --dir` resolves that stack through
+CIU's selected configuration, then filters running containers by the exact
+`com.docker.compose.project` label emitted for the stack. The Docker daemon
+returns container IDs for that exact project; CIU stops only those IDs and
+preserves volumes. A failed Docker query is an error, never an empty result.
+When a stack exists only in an optional profile, pass that profile explicitly
+so resolution does not substitute the default selection.
+
+The v8 interface selects a Realization for `ciu down`; a stack that is meant
+to stop independently maps to its own Realization. The v7 path is the scoped
+compatibility surface for existing stack-oriented projects.
 
 ## Governance resource limits
 

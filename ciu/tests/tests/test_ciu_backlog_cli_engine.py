@@ -66,7 +66,11 @@ def test_exec_cli_preserves_argv_and_child_status(monkeypatch, tmp_path):
 @pytest.mark.parametrize(("error", "expected"), [(RuntimeError("docker"), 1), (ValueError("bad"), 2), (OSError("exec"), 2)])
 def test_exec_cli_maps_expected_errors(monkeypatch, tmp_path, capsys, error, expected):
     monkeypatch.setattr(cli, "_resolve_repo_root_deploy", lambda _root: tmp_path)
-    monkeypatch.setattr(deploy, "exec_service", lambda *_a: (_ for _ in ()).throw(error))
+    monkeypatch.setattr(
+        deploy,
+        "exec_service",
+        lambda *_a, **_kw: (_ for _ in ()).throw(error),
+    )
     assert cli._exec_service_cli(["tools/api", "--", "true"]) == expected
     assert str(error) in capsys.readouterr().err
 
@@ -81,6 +85,47 @@ def test_main_dispatches_resolve_and_exec(monkeypatch, verb, rest):
         cli.main()
     assert exc.value.code == 6
     assert called == [rest]
+
+
+def test_down_dir_dispatches_exact_stack_and_profiles(monkeypatch, tmp_path):
+    called = []
+    monkeypatch.setattr(cli, "_resolve_repo_root_deploy", lambda _root: tmp_path)
+    monkeypatch.setattr(
+        deploy, "stop_stack",
+        lambda root, selector, *, profiles: called.append((root, selector, profiles)) or 0,
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["ciu", "down", "--dir", "tools/test-runner", "--profile", "test",
+         "--root-folder", str(tmp_path)],
+    )
+    with pytest.raises(SystemExit) as exc:
+        cli.main()
+    assert exc.value.code == 0
+    assert called == [(tmp_path, "tools/test-runner", ["test"])]
+
+
+@pytest.mark.parametrize(
+    ("error", "expected"),
+    [
+        (ValueError("outside root"), 2),
+        (OSError("docker unavailable"), 1),
+        (RuntimeError("docker stop failed"), 1),
+    ],
+)
+def test_down_dir_maps_stop_stack_errors(monkeypatch, tmp_path, capsys, error, expected):
+    monkeypatch.setattr(cli, "_resolve_repo_root_deploy", lambda _root: tmp_path)
+    monkeypatch.setattr(
+        deploy,
+        "stop_stack",
+        lambda *_a, **_kw: (_ for _ in ()).throw(error),
+    )
+    monkeypatch.setattr(sys, "argv", ["ciu", "down", "--dir", "tools/test-runner"])
+    with pytest.raises(SystemExit) as exc:
+        cli.main()
+    assert exc.value.code == expected
+    assert str(error) in capsys.readouterr().err
 
 
 def test_clean_identity_cli_routes_and_rejects_mixed_options(monkeypatch, tmp_path, capsys):
@@ -103,10 +148,14 @@ def test_clean_identity_cli_routes_and_rejects_mixed_options(monkeypatch, tmp_pa
     assert "cannot be combined" in capsys.readouterr().err
 
 
-def test_shipped_single_stack_healthcheck_success_and_failure_paths(monkeypatch, tmp_path):
+def test_shipped_single_stack_healthcheck_success_and_failure_paths(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(engine, "run_shipped", lambda **_kw: {"status": "success"})
     monkeypatch.setattr(engine, "resolve_env_root", lambda *_a, **_kw: tmp_path)
-    monkeypatch.setattr(engine.config_model, "render_global_chain", lambda *_a, **_kw: {"deploy": {}})
+    render_calls = []
+    monkeypatch.setattr(
+        engine.config_model, "render_global_chain",
+        lambda *args, **kwargs: render_calls.append((args, kwargs)) or {"deploy": {}},
+    )
     seen = []
     monkeypatch.setattr(
         engine, "_run_single_stack_healthcheck",
@@ -114,14 +163,34 @@ def test_shipped_single_stack_healthcheck_success_and_failure_paths(monkeypatch,
     )
     assert engine.main(["--dir", str(tmp_path), "--shipped", "--deploy", "--healthcheck"]) == 9
     assert seen == [(tmp_path, None, {"deploy": {}}, True)]
+    assert render_calls == [((tmp_path, tmp_path), {"write_rendered": False})]
 
     monkeypatch.setattr(engine.config_model, "render_global_chain", lambda *_a, **_kw: (_ for _ in ()).throw(RuntimeError("bad config")))
     assert engine.main(["--dir", str(tmp_path), "--shipped", "--deploy", "--healthcheck"]) == 1
+    assert "[ERROR] bad config" in capsys.readouterr().out
 
-    monkeypatch.setattr(engine.config_model, "render_global_chain", lambda *_a, **_kw: (_ for _ in ()).throw(SystemExit(12)))
+    monkeypatch.setattr(
+        engine.config_model, "render_global_chain",
+        lambda *_a, **_kw: (_ for _ in ()).throw(SystemExit(12)),
+    )
     with pytest.raises(SystemExit) as exc:
         engine.main(["--dir", str(tmp_path), "--shipped", "--deploy", "--healthcheck"])
     assert exc.value.code == 12
+
+    prints = []
+    monkeypatch.setattr(engine, "print", lambda *args, **kwargs: prints.append((args, kwargs)), raising=False)
+    monkeypatch.setattr(engine.config_model, "render_global_chain", lambda *_a, **_kw: (_ for _ in ()).throw(RuntimeError("bad config")))
+    assert engine.main(["--dir", str(tmp_path), "--shipped", "--deploy", "--healthcheck"]) == 1
+    assert prints == [(("[ERROR] bad config",), {"flush": True})]
+
+
+def test_shipped_single_stack_healthcheck_skips_unsuccessful_run(monkeypatch, tmp_path):
+    monkeypatch.setattr(engine, "run_shipped", lambda **_kw: {"status": "failed"})
+    monkeypatch.setattr(
+        engine, "_run_single_stack_healthcheck",
+        lambda *_a, **_kw: pytest.fail("healthcheck ran after an unsuccessful deploy"),
+    )
+    assert engine.main(["--dir", str(tmp_path), "--shipped", "--deploy", "--healthcheck"]) == 1
 
 
 def test_regular_single_stack_healthcheck_system_exit_propagates(monkeypatch, tmp_path):
@@ -136,3 +205,12 @@ def test_regular_single_stack_healthcheck_runtime_error_maps_to_failure(monkeypa
     monkeypatch.setattr(engine, "main_execution", lambda **_kw: {"status": "success", "config": {}})
     monkeypatch.setattr(engine, "_run_single_stack_healthcheck", lambda *_a, **_kw: (_ for _ in ()).throw(RuntimeError("probe failed")))
     assert engine.main(["--dir", str(tmp_path), "--deploy", "--healthcheck"]) == 1
+
+
+def test_regular_single_stack_healthcheck_errors_flush(monkeypatch, tmp_path):
+    monkeypatch.setattr(engine, "main_execution", lambda **_kw: {"status": "success", "config": {}})
+    monkeypatch.setattr(engine, "_run_single_stack_healthcheck", lambda *_a, **_kw: (_ for _ in ()).throw(RuntimeError("probe failed")))
+    prints = []
+    monkeypatch.setattr(engine, "print", lambda *args, **kwargs: prints.append((args, kwargs)), raising=False)
+    assert engine.main(["--dir", str(tmp_path), "--deploy", "--healthcheck"]) == 1
+    assert prints == [(("[ERROR] probe failed",), {"flush": True})]

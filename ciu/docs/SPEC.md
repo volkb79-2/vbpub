@@ -1851,6 +1851,15 @@ build-tool-agnostically; CIU carries no npm/Vite/uvicorn specifics (CIU-5).
   after that stack starts. A dry-run never invokes the live health gate.
   `--check` remains a profile/multi-stack action. Per-service `shipped = true`
   (S8.6) routes a stack through its pre-shipped `docker-compose.yml`.
+- **S10.2a** `ciu down --dir PATH [--profile NAME ...] [--root-folder PATH]`
+  stops only the running containers of the one selected stack, preserving
+  volumes. CIU resolves `PATH` below the selected CIU root to one exact
+  `compose_project`, lists containers by the exact
+  `com.docker.compose.project` label, then stops the returned IDs. A Docker
+  query failure is an error; it is never treated as an empty result. When the
+  stack is optional, callers pass the profile that declares it. Profile-mode
+  `ciu down` remains project-wide. In v8, independently stoppable stacks map
+  to separate Realizations and `ciu down --realization R` (SPEC-V8 S18).
 - **S10.3** Exit codes: `0` success · `1` runtime failure (compose, health,
   hooks, vault I/O) · `2` configuration/validation error (S3/S4/S7 static
   checks, argparse) · `3` environment/bootstrap error (S1/S2: missing env
@@ -4164,9 +4173,10 @@ adopted checkout during resume.
   Generated names are UTC `<prefix>-<YYYYMMDD_HHMMSS>-<feature>`; generated
   branch and directory basename are identical, with a suffix only on an actual
   same-second collision under the Git-family allocation lock.
-- **`worktree ensure LOGICAL [...]`** — returns an exact ready match without
-  rewriting it, creates when absent, or resumes only a mechanically recognized
-  CIU-owned partial allocation. Any requested identity mismatch refuses.
+- **`worktree ensure LOGICAL [...]`** — verifies the committed-root evidence
+  before returning an exact ready match without rewriting it; it creates when
+  absent, or resumes only a mechanically recognized CIU-owned partial
+  allocation. Any requested identity mismatch refuses.
 - **`worktree adopt LOGICAL PATH [...]`** — the sole operation allowed to take
   ownership of a registered unmanaged linked checkout.
 - There is no `worktree add` alias. `create` is the sole allocation verb; it
@@ -4219,15 +4229,28 @@ and `ciu.env` is the shell-export rendering of those facts.
 Create/adopt admission rejects an occupied path, branch, or six-character
 identity collision before allocation. The shared allocator holds one blocking
 Git-family lock, refuses any existing target path (empty or not), records the
-allocation atomically, and runs adapter cleanup before removal. CIU then
-discovers every committed root, acquires per-root locks in stable offset order,
-and prepares each root's generated facts and runtime names. A partial
-preparation remains attributable and is reported as recovery-required; no
-missing or malformed generated-facts file is silently treated as a fresh
-identity.
+allocation atomically, and runs adapter cleanup before removal. Once the
+allocated checkout's exact commit is established, CIU discovers every
+committed root from that commit, acquires per-root locks in stable offset
+order, and prepares each root's generated facts and runtime names. The CIU
+instance record MUST remain `allocating` until root facts and shared
+`root_entries` metadata are complete; only then may it transition to `ready`.
+A partial preparation remains attributable and is reported as
+`recovery-required`; `ensure` MUST retry incomplete preparation before
+returning `ready`. It MUST verify the discovered roots, generated facts, and
+recorded root entries before fast-returning a historical ready record. Root
+discovery uses the allocated checkout's resolved commit, not a mutable base
+reference re-read in the primary checkout. No missing or malformed
+generated-facts file is silently treated as a fresh identity. When a legacy
+record lacks a fork-point SHA, the neutral workspace's `base_commit` may stand
+in only while the checkout's HEAD still equals it; otherwise ensure MUST refuse
+without rewriting the ready record as a generation failure.
+Root-entry persistence and lease mirroring MUST re-read and merge the shared
+workspace record under its Git-family lock so concurrent updates preserve both
+metadata fields.
 
 The CIU record reader accepts a ready record with both runtime identity values
-null only when the record checkout itself has no committed CIU root marker.
+null only when the record checkout itself has no CIU root marker on disk.
 This preserves the format written for a generic Git worktree and derives its
 meaning from the filesystem; a CIU-root ready record with a null identity is
 still invalid. Family registry scans parse and cross-check each sibling

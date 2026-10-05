@@ -30,6 +30,7 @@ its verdict cannot depend on how fast the host is.
 from __future__ import annotations
 
 import fcntl
+import io
 import subprocess
 import sys
 import threading
@@ -40,6 +41,16 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
 from ciu import worktree  # noqa: E402
+
+
+class _FlushRecordingStream(io.StringIO):
+    def __init__(self):
+        super().__init__()
+        self.flush_count = 0
+
+    def flush(self):
+        self.flush_count += 1
+        return super().flush()
 
 
 # ---------------------------------------------------------------------------
@@ -707,6 +718,48 @@ class TestResolveBudgetCandidates:
         by_network = {c.network: c for c in candidates}
         assert by_network["net-primary"].project == "demo-primary-id-stack"
         assert by_network["net-linked"].project == "demo-linked-id-stack"
+
+    @pytest.mark.parametrize(
+        ("case", "warning"),
+        [
+            ("unparseable", "could not read/parse"),
+            ("missing-network", "declares no instance network"),
+            ("render-error", "could not render the global configuration"),
+            ("project-error", "could not derive the compose project"),
+        ],
+    )
+    def test_unknown_owner_warnings_flush_before_continuing(
+        self, tmp_git_repo, monkeypatch, case, warning,
+    ):
+        _write_ciu_env(tmp_git_repo, network="net-primary")
+        linked = _add_linked_worktree(tmp_git_repo, "linked")
+        _write_ciu_env(linked, network="net-linked")
+        if case == "unparseable":
+            (linked / "ciu.instance.generated.toml").write_text(
+                "[ciu.instance.generated]\nnetwork = not-valid-toml\n",
+                encoding="utf-8",
+            )
+        elif case == "missing-network":
+            _write_ciu_env(linked, network="")
+        elif case == "render-error":
+            (_ciu_root(linked) / "ciu.global.defaults.toml.j2").write_text(
+                "not [ valid toml\n", encoding="utf-8"
+            )
+        else:
+            (_ciu_root(linked) / "ciu.global.defaults.toml.j2").write_text(
+                "[ciu]\nx = 1\n", encoding="utf-8"
+            )
+
+        stream = _FlushRecordingStream()
+        monkeypatch.setattr(worktree.sys, "stderr", stream)
+        candidates = worktree._resolve_budget_candidates(
+            _ciu_root(tmp_git_repo), _stack_rel()
+        )
+
+        assert any(candidate.worktree_path == linked and candidate.unknown_owner
+                   for candidate in candidates)
+        assert warning in stream.getvalue()
+        assert stream.flush_count == 1
 
 
 # ---------------------------------------------------------------------------
