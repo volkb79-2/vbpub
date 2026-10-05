@@ -715,8 +715,7 @@ def render_cli_surface_markdown(
     lines.extend(("", "### Library common controls", ""))
     for route in surface["routes"]:
         lines.append(
-            f"- `{route['id']}`: Common controls (cli-extended contract "
-            f"v{surface['library_contract']['version']}): "
+            f"- `{route['id']}`: Common controls: "
             + (", ".join(route.get("common_controls", ())) or "none")
         )
     cases = catalog.cases_by_id
@@ -1125,6 +1124,27 @@ def _review_findings(
             return len(argv)
         return index + 1
 
+    def external_option_flags(external_option: Mapping[str, Any]) -> tuple[str, ...]:
+        """Spellings of a foreign option.
+
+        A library-owned control is signed by its canonical name only, so its
+        spellings come from the owner route's rebuilt record.
+        """
+
+        owner_route = routes_by_id.get(str(external_option.get("route_id")))
+        owner_action = next(
+            (
+                action
+                for action in (owner_route or {}).get("actions", ())
+                if action.get("id") == external_option.get("id")
+                and action.get("library_control")
+            ),
+            None,
+        )
+        if owner_action is not None:
+            return tuple(owner_action["flags"])
+        return tuple(external_option.get("flags", ()))
+
     def invocation_parts(
         argv: Sequence[str],
         route: Mapping[str, Any],
@@ -1151,7 +1171,7 @@ def _review_findings(
                 None,
             )
             if external_action is not None:
-                for flag in external_option.get("flags", ()):
+                for flag in external_option_flags(external_option):
                     external_by_flag[str(flag)] = external_action
         path_depth = 0
         options_enabled = {0: True}
@@ -1442,7 +1462,7 @@ def _review_findings(
         external_flags = {
             str(flag)
             for external_option in external_options
-            for flag in external_option.get("flags", ())
+            for flag in external_option_flags(external_option)
         }
         non_command_positions, option_occurrences, unknown_options = invocation_parts(
             case.invocation,
@@ -1725,7 +1745,7 @@ def _review_findings(
                         f"valid value shape for participating option {option_id}"
                     )
             for external_option in shape.get("external_options", ()):
-                flags = set(external_option.get("flags", ()))
+                flags = set(external_option_flags(external_option))
                 matching_occurrences = [
                     occurrence
                     for occurrence in unknown_options

@@ -1556,7 +1556,6 @@ def _route_common_actions(
                     "single_command_invocation": route["single_command"],
                 },
                 "parser_path": list(parser_path),
-                "before_nested_subcommand": len(parser_path) < len(path),
                 "hidden": False,
             }
         )
@@ -1941,20 +1940,31 @@ def _generate_candidates(
                 + ", ".join(ambiguous)
             )
             continue
-        external_options = [
-            {
+        def external_option_record(option_id: str) -> dict[str, Any]:
+            owner, action = selected_option_locations[option_id]
+            record: dict[str, Any] = {
                 "id": option_id,
-                "route_id": selected_option_locations[option_id][0]["id"],
-                "path": selected_option_locations[option_id][0].get("path", []),
-                "flags": selected_option_locations[option_id][1].get("flags", []),
-                "nargs": selected_option_locations[option_id][1].get("nargs"),
-                "minimum_values": selected_option_locations[option_id][1].get(
-                    "minimum_values",
-                    _minimum_values(selected_option_locations[option_id][1].get("nargs")),
-                ),
-                "choices": selected_option_locations[option_id][1].get("choices"),
-                "action": selected_option_locations[option_id][1].get("action"),
+                "route_id": owner["id"],
+                "path": owner.get("path", []),
             }
+            if action.get("library_control"):
+                # Library syntax is covered by the contract version, so only
+                # the canonical name enters the interaction's signature.
+                record["canonical"] = action["canonical"]
+                return record
+            return {
+                **record,
+                "flags": action.get("flags", []),
+                "nargs": action.get("nargs"),
+                "minimum_values": action.get(
+                    "minimum_values", _minimum_values(action.get("nargs"))
+                ),
+                "choices": action.get("choices"),
+                "action": action.get("action"),
+            }
+
+        external_options = [
+            external_option_record(option_id)
             for option_id in normalized_ids
             if str(selected_option_locations[option_id][0]["id"]) != route_id
         ]
@@ -1967,7 +1977,9 @@ def _generate_candidates(
         external_flag_owners: dict[str, str] = {}
         invalid_interaction: str | None = None
         for external_option in external_options:
-            for flag in external_option["flags"]:
+            for flag in selected_option_locations[external_option["id"]][1].get(
+                "flags", []
+            ):
                 if flag in target_flags:
                     invalid_interaction = (
                         f"interaction group {interaction_id!r} selects out-of-route "

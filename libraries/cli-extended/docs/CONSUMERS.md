@@ -437,7 +437,7 @@ catalog `interaction_groups`. It does not invent real argument values, decide
 whether a combination is valid, or expand the power set of all switches.
 Library-owned common controls such as `--quiet`, `--debug`, `--color`, and
 `--progress` are not in the grammar table. Each route lists the enabled ones on
-one `Common controls (cli-extended contract v1): ...` line, and the library's
+one `Common controls: ...` line (the contract version is in the region header), and the library's
 contract version (see
 [What a library upgrade does to your surface](#what-a-library-upgrade-does-to-your-surface))
 covers their syntax. `--json`, `--yes`, and `--debug-raw` are also consumer

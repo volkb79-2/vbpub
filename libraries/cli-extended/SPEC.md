@@ -1034,8 +1034,8 @@ reviewed grammar. The library exposes one integer `CONTRACT_VERSION`
    NOT appear in a route's `actions`. Help text, metavar, default, and action
    class of a library control MUST NOT appear anywhere in the manifest.
 3. **Markdown.** The generated region header MUST state the contract version
-   once. Each route renders exactly one line,
-   `Common controls (cli-extended contract v<N>): <flags>`, in sorted
+   once, in the region header. Each route renders exactly one line,
+   `Common controls: <flags>`, in sorted
    canonical order, and no option rows for library controls.
 4. **What signatures cover.** A consumer's candidate signatures cover only
    consumer-declared grammar. For the review candidates of

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import inspect
 import json
+import re
 import types
 from dataclasses import replace
 
@@ -33,7 +34,11 @@ from cli_extended.review import (
     _committed_contract_version,
     _review_findings,
 )
-from cli_extended.surface import _common_parser_path, _routes_by_path
+from cli_extended.surface import (
+    _common_parser_path,
+    _route_common_actions,
+    _routes_by_path,
+)
 
 IDENTITY = CliIdentity("CONTRACT", "1.0", "Contract Tool", command="contract-tool")
 DEPLOY = "route:entrypoint:contract-tool/deploy"
@@ -269,6 +274,26 @@ def test_single_command_cli_names_its_controls_on_the_root_route():
     (route,) = surface["routes"]
     assert route["single_command"] is True
     assert set(route["common_controls"]) == ALL_V1_FLAGS - {"--yes"}
+    rebuilt = {
+        item["canonical"]: item
+        for item in _route_common_actions(route, _routes_by_path(surface["routes"]))
+    }
+    assert rebuilt["--quiet"]["placement"] == {
+        "before_verb": False,
+        "after_verb": True,
+        "single_command_invocation": True,
+    }
+    multi = export_cli_surface(_build())
+    deploy = _routes(multi)[DEPLOY]
+    deploy_rebuilt = {
+        item["canonical"]: item
+        for item in _route_common_actions(deploy, _routes_by_path(multi["routes"]))
+    }
+    assert deploy_rebuilt["--quiet"]["placement"] == {
+        "before_verb": True,
+        "after_verb": True,
+        "single_command_invocation": False,
+    }
     minimum = _candidate(surface, route["id"], "minimum")
     assert _invocation_findings(surface, minimum, ["--quiet", "--log-level", "info"]) == []
     assert any(
@@ -448,11 +473,7 @@ def test_interaction_over_library_controls_resolves_by_id():
             "id": f"option:{DEPLOY}/--yes",
             "route_id": DEPLOY,
             "path": ["deploy"],
-            "flags": ["--yes"],
-            "nargs": 0,
-            "minimum_values": 0,
-            "choices": None,
-            "action": None,
+            "canonical": "--yes",
         }
     ]
     level = _candidate_by_id(surface, f"case:{DEPLOY}/interaction:quiet-and-level")
@@ -486,7 +507,7 @@ def test_markdown_renders_one_common_controls_line_per_route():
     lines = [line for line in markdown.splitlines() if "Common controls" in line]
     assert len(lines) == len(surface["routes"])
     expected = (
-        f"- `{DEPLOY}`: Common controls (cli-extended contract v1): "
+        f"- `{DEPLOY}`: Common controls: "
         "--color, --debug, --debug-raw, --help, --json, --log-level, "
         "--no-color, --progress, --quiet, --version, --yes"
     )
@@ -496,6 +517,7 @@ def test_markdown_renders_one_common_controls_line_per_route():
         assert f"/{flag} |" not in markdown
     assert "v1" in markdown.split("### Library common controls")[0]
     assert markdown.count("library contract:") == 1
+    assert len(re.findall(r"\bv1\b", markdown.split("### Semantic case review")[0])) == 1
 
 
 def test_markdown_lists_none_when_a_route_has_no_common_controls():
@@ -504,8 +526,8 @@ def test_markdown_lists_none_when_a_route_has_no_common_controls():
     del surface["routes"][1]["common_controls"]
     markdown = render_cli_surface_markdown(surface, _catalog())
     lines = [line for line in markdown.splitlines() if "Common controls" in line]
-    assert lines[0].endswith("contract v1): none")
-    assert lines[1].endswith("contract v1): none")
+    assert lines[0] == f"- `{surface['routes'][0]['id']}`: Common controls: none"
+    assert lines[1] == f"- `{surface['routes'][1]['id']}`: Common controls: none"
 
 
 @pytest.mark.parametrize(
@@ -601,7 +623,8 @@ def test_sync_writes_the_contract_fields(tmp_path):
     routes = {route["id"]: route for route in written["routes"]}
     assert "--log-level" in routes[DEPLOY]["common_controls"]
     spec = paths["spec_path"].read_text(encoding="utf-8")
-    assert "Common controls (cli-extended contract v1)" in spec
+    assert "library contract: `cli-extended` v1." in spec
+    assert f"- `{DEPLOY}`: Common controls: --color," in spec
     findings = check_cli_surface(app, **paths).findings
     assert findings
     assert all(item.startswith("missing semantic review case") for item in findings)
@@ -653,6 +676,159 @@ def test_manifest_without_a_usable_contract_record_keeps_stale_handling(tmp_path
     report = check_cli_surface(app, **paths)
     assert "generated CLI manifest is stale" in report.findings
     assert not any("contract changed" in item for item in report.findings)
+
+
+def _patch_library_syntax(monkeypatch, *, extra_flag=True):
+    original = contract.common_control_table
+
+    def patched():
+        table = original()
+        for entry in table.values():
+            entry.update(
+                nargs=3,
+                takes_value=True,
+                choices=["x", "y"],
+                help="PATCHED",
+                metavar="PATCHED",
+            )
+            if extra_flag:
+                entry["flags"] = [*entry["flags"], "--extra"]
+        return table
+
+    monkeypatch.setattr(contract, "common_control_table", patched)
+
+
+GOLDEN_JSON_SIGNATURE = (
+    "sha256:4c674c51a53b799d2cf385dae801ea250185ae5cc016a1045a5dca54514a867f"
+)
+
+
+def test_library_control_candidate_shape_and_signature_are_pinned(monkeypatch):
+    json_id = f"case:{DEPLOY}/option-spelling/option:{DEPLOY}/--json/--json"
+    surface = export_cli_surface(_build())
+    candidate = _candidate_by_id(surface, json_id)
+    assert candidate["shape"] == {
+        "option_id": f"option:{DEPLOY}/--json",
+        "spelling": "--json",
+    }
+    # The literal covers the signed member shape (id, kind, canonical, scope)
+    # and the route context, so any widening or narrowing changes it.
+    assert candidate["signature"] == GOLDEN_JSON_SIGNATURE
+
+    _patch_library_syntax(monkeypatch)
+    patched = export_cli_surface(_build())
+    assert _candidate_by_id(patched, json_id)["signature"] == GOLDEN_JSON_SIGNATURE
+    assert {c["id"]: c["signature"] for c in patched["candidates"]} == {
+        c["id"]: c["signature"] for c in surface["candidates"]
+    }
+    assert render_cli_surface_json(patched) == render_cli_surface_json(surface)
+
+
+def test_interaction_signature_ignores_library_control_syntax(monkeypatch):
+    interactions = (
+        {
+            "id": "yes-from-elsewhere",
+            "route_id": RAW,
+            "option_ids": (f"option:{RAW}/--json", f"option:{DEPLOY}/--yes"),
+        },
+    )
+    case_id = f"case:{RAW}/interaction:yes-from-elsewhere"
+    before = _candidate_by_id(
+        export_cli_surface(_build(), interaction_groups=interactions), case_id
+    )
+    _patch_library_syntax(monkeypatch, extra_flag=False)
+    after_surface = export_cli_surface(_build(), interaction_groups=interactions)
+    assert after_surface["interaction_issues"] == []
+    after = _candidate_by_id(after_surface, case_id)
+    assert after["signature"] == before["signature"]
+    assert after["shape"] == before["shape"]
+    (external,) = after["shape"]["external_options"]
+    assert set(external) == {"id", "route_id", "path", "canonical"}
+
+
+def test_foreign_library_control_still_checks_in_an_interaction_invocation():
+    interactions = (
+        {
+            "id": "yes-from-elsewhere",
+            "route_id": RAW,
+            "option_ids": (f"option:{RAW}/--json", f"option:{DEPLOY}/--yes"),
+        },
+    )
+    surface = export_cli_surface(_build(), interaction_groups=interactions)
+    candidate = _candidate_by_id(surface, f"case:{RAW}/interaction:yes-from-elsewhere")
+    assert _invocation_findings(surface, candidate, ["raw", "--json", "--yes"]) == []
+    missing = _invocation_findings(surface, candidate, ["raw", "--json"])
+    assert any("does not supply the out-of-route option" in item for item in missing)
+    inline = _invocation_findings(surface, candidate, ["raw", "--json", "--yes=1"])
+    assert any("inline value to flag-only out-of-route option" in item for item in inline)
+
+
+def _report_cli(*, single_command=False, delegate=None):
+    registry = CliRegistry(
+        IDENTITY,
+        prog="contract-tool",
+        description="Report mode.",
+        unexpected_exceptions="report",
+        single_command=single_command,
+    )
+    registry.register(
+        VerbSpec(
+            "go", description="go", mutating=True, dry_run=True, handler=lambda *_: 0
+        )
+    )
+    if not single_command:
+        registry.register(VerbSpec("stay", description="stay", handler=lambda *_: 0))
+    if delegate is not None:
+        registry.register(VerbSpec("leaf", description="leaf", delegate=delegate))
+    return registry.build()
+
+
+def _assert_report_controls_are_named_only(surface, *, present):
+    assert surface["routes"]
+    for route in surface["routes"]:
+        flags = {
+            flag for action in route["actions"] for flag in action.get("flags", ())
+        }
+        assert "--traceback" not in flags
+        assert "--dry-run" not in flags
+    for route_id, expected in present.items():
+        controls = _routes(surface)[route_id]["common_controls"]
+        for flag in expected:
+            assert flag in controls, (route_id, flag)
+
+
+def test_report_mode_controls_are_marked_for_multi_verb_and_single_command():
+    multi = export_cli_surface(_report_cli())
+    _assert_report_controls_are_named_only(
+        multi,
+        present={
+            "route:entrypoint:contract-tool/go": ("--traceback", "--dry-run"),
+            "route:entrypoint:contract-tool/stay": ("--traceback",),
+        },
+    )
+    assert "--dry-run" not in _routes(multi)["route:entrypoint:contract-tool/stay"][
+        "common_controls"
+    ]
+    single = export_cli_surface(_report_cli(single_command=True))
+    (route,) = single["routes"]
+    _assert_report_controls_are_named_only(
+        single, present={route["id"]: ("--traceback", "--dry-run")}
+    )
+
+
+def test_report_mode_controls_are_marked_in_a_delegated_child_cli():
+    child = _report_cli()
+    parent = _report_cli(delegate=child)
+    surface = export_cli_surface(parent)
+    leaf = "route:entrypoint:contract-tool/leaf"
+    _assert_report_controls_are_named_only(
+        surface,
+        present={
+            f"{leaf}/go": ("--traceback", "--dry-run"),
+            f"{leaf}/stay": ("--traceback",),
+        },
+    )
+    assert _routes(surface)[leaf]["common_controls"] == []
 
 
 def test_committed_contract_version_reads_only_integer_versions():

@@ -57,3 +57,16 @@ Hand-planted mutation: flipped `in` to `not in` for `contract.CONSUMER_REVIEWED_
 2. **Process slip:** two small repo edits were made by shell script instead of Edit/Write: a one-shot Python rewrite of `surface.py` for the import/schema/`_scope`/`_effective_default` changes, and a `cat >>` append of the SPEC subsection (content reviewed and unchanged since). Everything else used Edit/Write. No other effect.
 3. Interaction groups may still reference any enabled library control's option ID (all controls, not just the reviewed ones); this goes slightly beyond the brief but prevents breaking existing catalogs.
 4. `contract.py` also exports `canonical_flag` and `is_library_action` (surface imports them; `surface._canonical_flag` remains as an alias).
+
+## Review round 1
+
+Worked on top of `3a0a79c8a` (W1 merge plus reconciliation). All edits via Edit/Write.
+
+1. Candidate shape and signature pinned: `test_library_control_candidate_shape_and_signature_are_pinned` asserts the literal `shape` dict and a literal signature for the deploy `--json` candidate, then monkeypatches the control table (nargs, choices, flags, help, metavar) and asserts all candidate signatures and the manifest JSON are byte-identical. Probe: removing `"id"` from `shape_keys` fails it.
+2. Removed `before_nested_subcommand` from rebuilt library records (no test added, as directed).
+3. `test_single_command_cli_names_its_controls_on_the_root_route` asserts the exact placement: `before_verb` false on a single-command route, true on a multi-verb route. Probe: dropping `and not route["single_command"]` fails it.
+4. Interaction `external_options` for a library control is now `{id, route_id, path, canonical}` only. The checker recovers spellings and arity from the owner route's rebuilt record (`external_option_flags` in `review.py`); conflict detection in `surface.py` reads flags from the resolved record. Tests: `test_interaction_signature_ignores_library_control_syntax` (signature and shape unchanged after patching nargs and choices), `test_foreign_library_control_still_checks_in_an_interaction_invocation`; `test_interaction_over_library_controls_resolves_by_id` expectation updated to the stripped payload.
+5. Marking tests: `test_report_mode_controls_are_marked_for_multi_verb_and_single_command` and `test_report_mode_controls_are_marked_in_a_delegated_child_cli` (`unexpected_exceptions="report"`, `dry_run=True` verb; `--traceback`/`--dry-run` absent from every route's `actions`, present in `common_controls`).
+6. Markdown: the contract version appears once, in the region header; route lines are `- \`<route>\`: Common controls: ...`. SPEC rule 3, README, CONSUMERS updated; `test_markdown_renders_one_common_controls_line_per_route`, `test_markdown_lists_none_when_a_route_has_no_common_controls`, `test_sync_writes_the_contract_fields` updated.
+
+Gate after fixes: `run-gate: lane 'r0-r1' verdict PASS; exit_code 0` (100% statement and branch, 3599 statements / 1736 branches).

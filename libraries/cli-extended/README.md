@@ -319,8 +319,8 @@ follow-ups.
 ## Keep the canonical CLI spec in sync
 
 The generated surface names the library's own common controls per route
-(`Common controls (cli-extended contract v1): ...`) and records one integer
-contract version instead of signing their syntax, so a library upgrade leaves
+(`Common controls: ...`) and records one integer
+contract version, stated once in the region header, instead of signing their syntax, so a library upgrade leaves
 your manifest and review signatures untouched unless the contract version
 changes; then `check` reports a single finding telling you to read the contract
 notes and re-run `sync`. See
