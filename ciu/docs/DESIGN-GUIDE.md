@@ -550,10 +550,15 @@ facts CIU resolves from the selected config and identity record. Consumers
 that rebuild those formulas can silently select another instance after an
 identity change. `ciu resolve --json` returns those facts grouped by exact
 stack path and Compose service key, in a shape aligned with v8's
-`resolved.identities`; `--live` adds Docker state. `ciu exec` uses the same
-resolution, requires exactly one already-running container, and passes argv
-without a shell. It never starts a missing service. A declared exec target
-retains the worktree-mount proof for consumers that need it.
+`resolved.identities`; `--live` adds Docker state. Repeated `--profile`
+options select the same profile composition as `ciu up`, so an exact stack
+that belongs only to an optional profile can be resolved without silently
+falling back to the default selection. `ciu exec` uses the same resolution,
+requires exactly one already-running container, and passes argv without a
+shell. It never starts a missing service. When both stdin and stdout are
+terminals, it requests Docker's interactive terminal; scripted calls remain
+non-interactive. A declared exec target retains the worktree-mount proof for
+consumers that need it.
 
 ## Why identity migration checks Docker before rewriting
 

@@ -1920,21 +1920,27 @@ build-tool-agnostically; CIU carries no npm/Vite/uvicorn specifics (CIU-5).
 
 - **S10.7 (CIU-118)** `ciu profiles` is a read-only listing: it MUST render
   configuration in memory and MUST NOT write `ciu.global.toml` or other
-  generated files. `ciu resolve [--root-folder P] [--stack S] [--service X]
-  [--live] --json` reports resolved service identities grouped by exact
+  generated files. `ciu resolve [--root-folder P] [--profile NAME ...]
+  [--stack S] [--service X] [--live] --json` reports resolved service identities grouped by exact
   repo-relative stack path and Compose service key. It reads rendered config
   in memory, contacts no Docker daemon unless `--live`, and never repairs an
-  outdated identity record. Its versioned document uses `schema_version: 1`
+  outdated identity record. Repeated `--profile` options select and compose
+  deployment profiles; without them, the ordinary configured/ambient
+  selection applies. This lets an exact `--stack` name a stack that belongs
+  only to an optional profile without silently changing selection. Its
+  versioned document uses `schema_version: 1`
   and `resolved.identities`; each service contains its container name,
   hostname, Compose key/project, network, image, and configured internal
   host/port. `--live` adds state and health read from exact Compose
   project/service labels.
 
-  `ciu exec [--root-folder P] <stack>[:<service>] -- ARGV...` resolves the same
-  identity facts, selects one already-running container by exact Compose
+  `ciu exec [--root-folder P] [--profile NAME ...]
+  <stack>[:<service>] -- ARGV...` resolves the same identity facts, selects one already-running container by exact Compose
   project/service/network labels, and refuses zero or multiple matches. It
   never starts a service. The command after `--` is passed as argv without a
-  shell and its exact exit code is returned. A matching declared S16.7 exec
+  shell and its exact exit code is returned. When both stdin and stdout are
+  terminals, CIU requests Docker's interactive terminal; piped and scripted
+  calls remain non-interactive. A matching declared S16.7 exec
   target also requires its selected-checkout mount proof.
 
   The previous boolean `ciu.fail_fast` and env `CIU_WARNINGS_AS_ERRORS`

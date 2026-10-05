@@ -414,7 +414,8 @@ def _resolve_identity_stack_paths(
             )
     raise ValueError(
         f"[S18] --stack {selector!r} is not in the current deploy selection; "
-        "use a selected repo-relative stack path"
+        "use a selected repo-relative stack path or pass --profile for an "
+        "optional stack"
     )
 
 
@@ -423,13 +424,16 @@ def resolve_identities(
     *,
     stack: str | None = None,
     service: str | None = None,
+    profiles: list[str] | None = None,
     live: bool = False,
 ) -> dict:
     """Resolve rendered service identity facts without writing files.
 
     This is CIU-118's v7 counterpart to v8's ``[resolved.identities]``. It
-    renders the selected configuration in memory and consults Docker only for
-    ``live=True``. The returned document deliberately groups services by
+    renders the selected configuration in memory; ``profiles`` select the
+    same composition as ``ciu up`` (or the ordinary configured/ambient
+    selection is used). It consults Docker only for ``live=True``. The
+    returned document deliberately groups services by
     repo-relative stack path so duplicate service keys in different stacks
     remain unambiguous.
     """
@@ -439,7 +443,7 @@ def resolve_identities(
 
     repo_root = Path(repo_root).resolve()
     global_config = load_global_config(repo_root, write_rendered=False)
-    profile = resolve_profiles(global_config, None)
+    profile = resolve_profiles(global_config, profiles)
     selection = build_selection(profile)
     selected = _resolve_identity_stack_paths(repo_root, selection, stack)
     ciu_context = profiles_pkg.render_ciu_context(profile, selection)
@@ -616,7 +620,11 @@ def _resolve_identity_live_state(project: str, service: str) -> dict:
 
 
 def exec_service(
-    repo_root: Path, selector: str, argv: list[str],
+    repo_root: Path,
+    selector: str,
+    argv: list[str],
+    *,
+    profiles: list[str] | None = None,
 ) -> int:
     """Run exact argv in one already-running service of this checkout."""
     from .workspace_env import read_generated_facts
@@ -630,7 +638,7 @@ def exec_service(
     else:
         stack, service = selector, None
     repo_root = Path(repo_root).resolve()
-    document = resolve_identities(repo_root, stack=stack)
+    document = resolve_identities(repo_root, stack=stack, profiles=profiles)
     identities = document["resolved"]["identities"]
     stack_path = next(iter(identities), None)
     if stack_path is None:
@@ -677,6 +685,11 @@ def exec_service(
 
     workdir = target.workdir if target is not None else identity.get("working_dir")
     docker_argv = ["exec"]
+    # Preserve ordinary pipe/script behavior, but make a directly invoked
+    # shell usable from a terminal. Docker needs both flags together: `-i`
+    # keeps stdin open and `-t` supplies the terminal the shell expects.
+    if sys.stdin.isatty() and sys.stdout.isatty():
+        docker_argv.append("-it")
     if workdir:
         docker_argv += ["-w", workdir]
     docker_argv += [container_id, *argv]

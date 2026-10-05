@@ -1754,24 +1754,30 @@ rendered files or contact Docker unless `--live` is supplied:
 
 ```console
 $ ciu resolve --stack tools/test-runner --service test-runner --json
+$ ciu resolve --profile test --stack tools/test-runner --service test-runner --json
 $ ciu resolve --stack tools/test-runner --live --json
 ```
 
 The response groups service identities under `resolved.identities`, keyed by
-repo-relative stack path and exact Compose service key. It includes the
+repo-relative stack path and exact Compose service key. Pass `--profile` once
+per profile when the exact stack is declared only in an optional profile. The
+profiles compose in order, just as they do for `ciu up`; with no explicit
+profile, CIU uses the configured or ambient default selection. It includes the
 container name, Compose project, network, image, and any configured internal
 host and port. `--live` adds current Docker state and health.
 
 Run an exact command in one already-running service:
 
 ```console
-$ ciu exec tools/test-runner:test-runner -- python --version
+$ ciu exec --profile test tools/test-runner:test-runner -- python --version
 ```
 
 `exec` uses exact Compose project/service/network labels, refuses zero or
 multiple matches, never starts the service, and returns the command's exit
 status. Arguments after `--` are passed without a shell. A declared worktree
-exec target also gets the selected-checkout mount proof from S16.7.
+exec target also gets the selected-checkout mount proof from S16.7. When both
+stdin and stdout are terminals, `ciu exec` allocates a Docker terminal so an
+interactive shell works; scripted and piped calls stay non-interactive.
 
 ## 23. Migrate an outdated generated identity safely (CIU-115 / CIU-119)
 

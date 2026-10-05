@@ -24,10 +24,12 @@ def test_resolve_cli_requires_json_and_emits_document(monkeypatch, tmp_path, cap
     assert cli._resolve_identities_cli([]) == 2
     assert "requires --json" in capsys.readouterr().err
     assert cli._resolve_identities_cli([
+        "--profile", "apps", "--profile", "test",
         "--stack", "tools/api", "--service", "api", "--live", "--json",
     ]) == 0
     assert seen == {
-        "root": tmp_path, "stack": "tools/api", "service": "api", "live": True,
+        "root": tmp_path, "stack": "tools/api", "service": "api",
+        "profiles": ["apps", "test"], "live": True,
     }
     assert json.loads(capsys.readouterr().out)["schema_version"] == 1
 
@@ -52,12 +54,13 @@ def test_exec_cli_preserves_argv_and_child_status(monkeypatch, tmp_path):
     seen = []
     monkeypatch.setattr(
         deploy, "exec_service",
-        lambda root, selector, argv: seen.append((root, selector, argv)) or 7,
+        lambda root, selector, argv, **kwargs: seen.append((root, selector, argv, kwargs)) or 7,
     )
     assert cli._exec_service_cli([
-        "--root-folder", str(tmp_path), "tools/api:api", "--", "python", "--help",
+        "--root-folder", str(tmp_path), "--profile", "apps",
+        "tools/api:api", "--", "python", "--help",
     ]) == 7
-    assert seen == [(tmp_path, "tools/api:api", ["python", "--help"])]
+    assert seen == [(tmp_path, "tools/api:api", ["python", "--help"], {"profiles": ["apps"]})]
 
 
 @pytest.mark.parametrize(("error", "expected"), [(RuntimeError("docker"), 1), (ValueError("bad"), 2), (OSError("exec"), 2)])

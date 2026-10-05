@@ -118,6 +118,23 @@ def test_stack_selector_refuses_outside_ambiguous_and_unselected_paths(tmp_path)
         deploy._resolve_identity_stack_paths(tmp_path, selection, "missing")
 
 
+def test_explicit_profile_selects_a_profile_only_stack(resolvable_repo):
+    repo, _stack, global_config = resolvable_repo
+    global_config["deploy"]["phases"] = {}
+    global_config["deploy"]["profiles"] = {
+        "test": {"stacks": ["tools/test-runner"]},
+    }
+
+    with pytest.raises(ValueError, match="not in the current deploy selection"):
+        deploy.resolve_identities(repo, stack="tools/test-runner")
+
+    document = deploy.resolve_identities(
+        repo, stack="tools/test-runner", profiles=["test"]
+    )
+    identity = document["resolved"]["identities"]["tools/test-runner"]["test-runner"]
+    assert identity["container_name"] == "demo-test-runner"
+
+
 def test_resolve_refuses_missing_network_and_missing_service(resolvable_repo):
     repo, _stack, global_config = resolvable_repo
     global_config["deploy"].pop("network_name")
@@ -337,6 +354,27 @@ def test_exec_runs_verbatim_in_the_single_exact_service(resolvable_repo, monkeyp
         "--filter", "network=demo-test-net", "--format", "{{.ID}}",
     ]
     assert calls[1][0] == ["exec", "cid-api", "python", "--help"]
+
+
+def test_exec_requests_tty_only_when_stdin_and_stdout_are_terminals(
+    resolvable_repo, monkeypatch
+):
+    repo, _stack, _global = resolvable_repo
+    monkeypatch.setattr(deploy.sys, "stdin", SimpleNamespace(isatty=lambda: True))
+    monkeypatch.setattr(deploy.sys, "stdout", SimpleNamespace(isatty=lambda: True))
+    calls = []
+
+    def docker(argv, **kwargs):
+        calls.append(argv)
+        if argv[0] == "ps":
+            return SimpleNamespace(returncode=0, stdout="cid-api\n", stderr="")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(deploy.procutil, "docker", docker)
+    assert deploy.exec_service(
+        repo, "tools/test-runner:test-runner", ["bash"]
+    ) == 0
+    assert calls[1] == ["exec", "-it", "cid-api", "bash"]
 
 
 def test_exec_selects_the_only_service_when_no_service_suffix_is_given(resolvable_repo, monkeypatch):
