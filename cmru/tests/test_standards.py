@@ -127,9 +127,41 @@ def test_standards_requires_a_wheel_builder_image_for_wheel_build(tmp_path):
     config, project = _config(tmp_path)
     contents = project.read_text(encoding="utf-8").replace(
         'argv = ["true"]',
-        'argv = ["python3", "-m", "cmru.handlers", "wheel-build", "--cwd", "."]',
+        'argv = ["cmru", "handler", "wheel-build", "--cwd", "."]',
         1,
     )
     project.write_text(contents, encoding="utf-8")
 
     assert standards_main(["demo", "--config", str(config)]) == 2
+
+
+def test_standards_flags_python_module_handler_calls_in_steps(tmp_path, capsys):
+    # BG-04/REL-07: `python3 -m cmru.handlers` bypasses the bound launcher.
+    config, project = _config(tmp_path)
+    contents = project.read_text(encoding="utf-8").replace(
+        'argv = ["true"]',
+        'argv = ["python3", "-m", "cmru.handlers", "wheel-build", "--cwd", "."]',
+        1,
+    )
+    contents = contents.replace("[env]\n", '[env]\nCMRU_WHEEL_BUILDER_IMAGE = "wheel-builder:test"\n', 1)
+    contents = contents.replace("[project]\n", "[project]\ntemplate_revision = 4\n", 1)
+    project.write_text(contents, encoding="utf-8")
+
+    assert standards_main(["demo", "--config", str(config)]) == 2
+    captured = capsys.readouterr()
+    assert "cmru.handlers" in captured.out + captured.err
+    assert "bound cmru launcher" in captured.out + captured.err
+
+
+def test_standards_accepts_the_bound_cmru_handler_form(tmp_path):
+    config, project = _config(tmp_path)
+    contents = project.read_text(encoding="utf-8").replace(
+        'argv = ["true"]',
+        'argv = ["cmru", "handler", "wheel-build", "--cwd", "."]',
+        1,
+    )
+    contents = contents.replace("[env]\n", '[env]\nCMRU_WHEEL_BUILDER_IMAGE = "wheel-builder:test"\n', 1)
+    contents = contents.replace("[project]\n", "[project]\ntemplate_revision = 4\n", 1)
+    project.write_text(contents, encoding="utf-8")
+
+    assert standards_main(["demo", "--config", str(config)]) == 0

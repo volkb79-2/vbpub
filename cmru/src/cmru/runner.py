@@ -314,7 +314,9 @@ ERROR_LINES_ON_FAILURE = 20
 # Matches this codebase's own "[ERROR] ..." convention (wherever it appears in a line,
 # e.g. after a buildkit "#63 89.30 " progress prefix) and docker/buildkit's own
 # top-level "ERROR: target ... failed to solve" summary line.
-_ERROR_LINE_RE = re.compile(r"\[ERROR\]|^ERROR:")
+# pytest's short-summary lines ("FAILED tests/x.py::t - ...", "ERROR tests/x.py::t")
+# must surface too, or a quiet console never names the failing test (BG-03).
+_ERROR_LINE_RE = re.compile(r"\[ERROR\]|^ERROR:|^(?:FAILED|ERROR) ")
 _PYTEST_SUCCESS_RE = re.compile(r"=+ .*?\b\d+ passed(?:, \d+ skipped)? in [^=]+ =+")
 _UNITTEST_RUN_RE = re.compile(r"^Ran \d+ tests? in .+$")
 _UNITTEST_OK_RE = re.compile(r"^OK(?: \(.+\))?$")

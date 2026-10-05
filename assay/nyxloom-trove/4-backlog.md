@@ -144,6 +144,7 @@ items:
   - {id: B143, title: "Adopt cli-extended (unified adoption, order 6 of 8): real wheel dependency, zipapp bundles cli_extended, A-005 reworded", type: feature, component: cli, context_estimate: large}
   - {id: B144, title: "per-candidate covering-test selection for qualifying Python R2: a coverage-context map runs each mutant's covering tests first (kill fast) while every survivor still runs the full declared suite -- decision-gated against B110 D3", type: feature, component: mutation, context_estimate: large}
   - {id: B145, title: "fork exhaustion (pids.max) is classified as killed: a lane container at its pid limit turns every candidate into a false kill; detect via cgroup pids.events/memory.events and classify unresolved", type: bugfix, component: mutation, context_estimate: medium}
+  - {id: B146, title: "the verdict summary ranks NO_MEASUREMENT/EMPTY_COVERAGE above a failing R0 and never names the first failing test: a fail-fast pytest run (--maxfail) that suppresses coverage.json hides the real failure", type: bugfix, component: verdict, context_estimate: small}
 ---
 
 # assay — backlog
@@ -11956,3 +11957,18 @@ Fix: add both names in pytest's own precedence order, and check the order agains
 **Oracles.** In a test container with a low `--pids-limit`, a suite that forks per test produces `unresolved`/infrastructure outcomes, not kills, and the lane does not pass; a controlled wrong implementation that ignores `pids.events` reports kills and fails the oracle; a real kill with an unchanged `pids.events` stays `killed`; the verdict records the counter deltas as evidence and `assay verify` checks them.
 
 **Related:** cmru KI-52 (the no-init launcher and the git auto-maintenance mechanism, with the image-level `maintenance.autoDetach=false` hardening), run-gate RG-84, B107 (resource-stall liveness evidence), B108 (campaign summaries), dstdns D-670 TEST-RUNNER-INIT (same zombie mechanism, different launcher).
+
+## B146 — the verdict summary ranks `NO_MEASUREMENT/EMPTY_COVERAGE` above a failing R0 and never names the first failure
+
+**Status: OPEN, severity major (filed 2026-10-05 from the cmru program review, finding BG-03; reproduced with pytest 9.1.1 / coverage 7.16.2 / pytest-cov 7.1.0).**
+
+**Observed.** cmru's lane ran `pytest --maxfail=1 --cov ... --cov-report=json:coverage.json`. pytest-cov writes its report after the `yield` in its `pytest_runtestloop` hookwrapper; under `--maxfail`, `session.Failed` is raised before that code runs, so a failing run writes no `coverage.json`. Assay then reported `NO_MEASUREMENT/EMPTY_COVERAGE`, and the verdict summary ranked that above the R0 failure it had also observed. The headline never named the failing test, and 25 consecutive cmru release failures were diagnosed as "no measurement" until a full non-fail-fast run showed the real failures.
+
+**Expected.**
+1. When R0 (the lane's own command) failed, the verdict summary and `reason_code` ranking name the R0 `FAIL` first, with the first failing test id taken from the run's output; `NO_MEASUREMENT` caused by a missing coverage artifact after a failing R0 is secondary, because the absence is explained by the failure.
+2. The first failure (pytest `FAILED`/`ERROR` short-summary line, or the junit entry when a junit artifact is declared) is carried in the verdict itself, not only in `result_stdout_tail`.
+3. Optional hardening: when the declared argv contains `--maxfail`/`-x` together with a coverage report, the lane-declaration validator warns that fail-fast suppresses the coverage artifact.
+
+**Oracles.** A fake suite with one failing test under `--maxfail=1` and a declared coverage artifact yields an outcome and summary naming `FAIL` and that test's id, not `EMPTY_COVERAGE`; the same suite without `--maxfail` yields `FAIL` with the coverage evidence intact; a passing suite is unchanged; `assay verify` accepts the new field.
+
+**Found in:** vbpub cmru program 2026-10 (`cmru/docs/PROGRAM-2026-10-CMRU-6.md`), package W0-GATE. cmru's own side (no `--maxfail` outside the mutation lane, junit artifact, `tools/run_release_gate.py` printing the `FAILED`/`ERROR` lines from `result_stdout_tail`) shipped there.

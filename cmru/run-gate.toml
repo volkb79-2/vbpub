@@ -55,11 +55,11 @@ argv = [
 set -euo pipefail
 cd {worktree}/cmru
 /opt/tester-venv/bin/python -m pip install --quiet --disable-pip-version-check --no-input --no-deps --no-build-isolation --editable ../assay
-exec env PYTHONPATH=src:../libraries/cli-extended/src:../libraries/worktree/src /opt/tester-venv/bin/python -m pytest tests -q --maxfail=1 --cov=src/cmru --cov-branch --cov-fail-under=100 --cov-report=json:coverage.json
+exec env PYTHONPATH=src:../libraries/cli-extended/src:../libraries/worktree/src /opt/tester-venv/bin/python -m pytest tests -q --cov=src/cmru --cov-branch --cov-fail-under=100 --cov-report=json:coverage.json --junitxml=junit-coverage.xml
 ''',
 ]
 budget = "20m"
-artifacts = ["coverage.json"]       # disclosed after every run (RG-10)
+artifacts = ["coverage.json", "junit-coverage.xml"]     # disclosed after every run (RG-10)
 
 [lanes.coverage.resources]
 memory = "2g"
@@ -135,7 +135,7 @@ set -euo pipefail
 cd {worktree}/cmru
 /opt/tester-venv/bin/python -m pip install --quiet --disable-pip-version-check --no-input --no-deps --no-build-isolation --editable ../assay
 mkdir -p .assay
-exec /opt/tester-venv/bin/python tools/coverage_canary.py --repo-root {worktree} --project-root . --target src/cmru/config.py --evidence .assay/coverage-canary-cmru.json -- env PYTHONPATH=src:../libraries/cli-extended/src:../libraries/worktree/src /opt/tester-venv/bin/python -m pytest tests -q --maxfail=1 --cov=src/cmru --cov-branch --cov-fail-under=100 --cov-report=json:coverage.json
+exec /opt/tester-venv/bin/python tools/coverage_canary.py --repo-root {worktree} --project-root . --target src/cmru/config.py --evidence .assay/coverage-canary-cmru.json -- env PYTHONPATH=src:../libraries/cli-extended/src:../libraries/worktree/src /opt/tester-venv/bin/python -m pytest tests -q --cov=src/cmru --cov-branch --cov-fail-under=100 --cov-report=json:coverage.json
 ''',
 ]
 budget = "20m"

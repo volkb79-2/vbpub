@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import os
 import re
+import subprocess
 import tomllib
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -193,8 +194,29 @@ def _git_scope(path: Path) -> dict[str, Optional[Path]]:
     is therefore not an error; each selected project supplies its own family.
     """
     candidate = path.resolve()
-    if not any((directory / ".git").exists() for directory in (candidate, *candidate.parents)):
-        return {}
+    # Let Git decide whether this is a repository (REL-11). Walking parents for
+    # any ``.git`` entry mistook a stray empty ``/tmp/.git`` for a repository
+    # and then hard-failed every project below it.
+    try:
+        probe = subprocess.run(
+            ["git", "-C", str(candidate), "rev-parse", "--show-toplevel"],
+            capture_output=True, text=True, check=False,
+            env={**os.environ, "LC_ALL": "C"},
+        )
+    except OSError as exc:
+        raise ValueError(f"could not resolve Git context for CMRU project {path}: {exc}") from exc
+    if probe.returncode != 0:
+        if "not a git repository" in probe.stderr.lower():
+            return {}
+        # Git aborts (instead of walking on) at an unparseable ``.git`` FILE. One in
+        # a parent directory is a stray, not this project's repository; one in the
+        # project's own directory is a genuinely broken checkout and stays an error.
+        stray = re.search(r"invalid gitfile format: (.+)", probe.stderr)
+        if stray and Path(stray.group(1).strip()).parent != candidate:
+            return {}
+        raise ValueError(
+            f"could not resolve Git context for CMRU project {path}: {probe.stderr.strip()}"
+        )
     try:
         try:
             import worktree

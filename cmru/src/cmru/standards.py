@@ -111,8 +111,22 @@ def assess_projects(
                     "Docker-enabled tester-gate requires explicit CMRU_TESTER_DIND_IMAGE in [env]"
                 )
 
+        # BG-04/REL-07: `python3 -m cmru.handlers` resolves cmru from whatever
+        # interpreter/site-packages the step inherits, bypassing the bound
+        # launcher. It is bootstrap-only; project steps use `cmru handler <verb>`.
+        module_handler_steps = sorted(
+            step_name for step_name, step_commands in steps.items()
+            if any("cmru.handlers" in command.argv for command in step_commands)
+        )
+        if module_handler_steps:
+            problems.append(
+                "steps call `python -m cmru.handlers` (bypasses the bound cmru launcher); "
+                "use argv = [\"cmru\", \"handler\", <verb>, ...] in: "
+                + ", ".join(module_handler_steps)
+            )
         uses_wheel_build = any(
-            "cmru.handlers" in command.argv and "wheel-build" in command.argv
+            ("cmru.handlers" in command.argv or "handler" in command.argv)
+            and "wheel-build" in command.argv
             for command in commands
         )
         if uses_wheel_build and not str(getattr(project, "env", {}).get(

@@ -483,7 +483,7 @@ removed. `cmru run-step` remains the registered single-step operator verb.
 | Invocation or API | Support role | Intended use and boundary |
 |---|---|---|
 | `cmru`, `cmru-agent`, `cmru-controller` | Operator CLI | Canonical installed commands for product operations; registered verbs are the operator grammar. |
-| `python -m cmru.handlers` | Project-step and bootstrap CLI | Run explicit artifact handlers from project contracts. `build-initial-standalone.sh` uses it to build the first CMRU wheel before the installed `cmru` script exists. |
+| `python -m cmru.handlers` | Bootstrap-only CLI | `build-initial-standalone.sh` uses it to build the first CMRU wheel before the installed `cmru` script exists. Project steps use `cmru handler <verb>` (the bound launcher); `cmru standards` flags the module form (BG-04/REL-07). |
 | `cmru run-step` | Single-step diagnostic CLI | Preview or reproduce one declared project step with its normal project config and registered grammar. The `cmru.runner.run_step` API is also consumed by MDT. |
 | `cmru.bundle` | Python library | Build a stack bundle from its dedicated TOML through `run_bundle`; PWMCP consumes the library. No CLI exists because no distinct operator workflow needs one. |
 | `cmru.runner.run_step`, `cmru.bundle.run_bundle` | Supported Python APIs | Compose the documented component behavior from Python. Other module internals are not promised as public API. |

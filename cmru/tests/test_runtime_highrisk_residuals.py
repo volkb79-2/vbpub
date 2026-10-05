@@ -132,8 +132,11 @@ def test_runner_validates_and_scopes_runtime_environment(tmp_path, capsys, monke
 
 def test_runner_docker_login_uses_stdin_and_main_flags(monkeypatch, tmp_path):
     calls = []
-    monkeypatch.setattr(runner.subprocess, "run", lambda *args, **kwargs: calls.append((args, kwargs)))
-    runner._docker_login("registry", "user", "secret")
+    # `runner.subprocess` is the global subprocess module; scope the stub to the
+    # login call so config's own `git rev-parse` below is not swallowed by it.
+    with monkeypatch.context() as scoped:
+        scoped.setattr(runner.subprocess, "run", lambda *args, **kwargs: calls.append((args, kwargs)))
+        runner._docker_login("registry", "user", "secret")
     assert calls[0][0][0] == ["docker", "login", "registry", "-u", "user", "--password-stdin"]
     assert calls[0][1]["input"] == "secret\n"
     config = tmp_path / "cmru.toml"

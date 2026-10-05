@@ -663,9 +663,56 @@ def test_fresh_checkout_bootstrap_is_the_only_source_build_launcher():
     source = bootstrap.read_text(encoding="utf-8")
     assert "python3 -m cmru.handlers" not in source
     assert "-m cmru.handlers wheel-build" in source
+    # BG-10: fresh-host bootstrap needs both library roots, -s, and an epoch.
+    assert "libraries/cli-extended/src" in source
+    assert "libraries/worktree/src" in source
+    assert '"${python_bin}" -s -m cmru.handlers' in source
+    assert "SOURCE_DATE_EPOCH" in source and "log -1 --format=%ct" in source
     assert "CMRU_DOCKER_CGROUP_PARENT" in source
     assert 'CMRU_WHEEL_BUILDER_IMAGE:-wheel-builder:local' not in source
     assert 'CMRU_WHEEL_BUILDER_IMAGE' in source
+
+
+def test_bootstrap_script_runs_python_isolated_with_library_roots_and_commit_epoch(tmp_path):
+    repo_root = Path(__file__).resolve().parents[2]
+    bootstrap = repo_root / "cmru" / "build-initial-standalone.sh"
+    record = tmp_path / "record.txt"
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    docker = fake_bin / "docker"
+    docker.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    docker.chmod(0o755)
+    python = fake_bin / "fakepython"
+    python.write_text(
+        '#!/bin/sh\n{ echo "ARGS=$*"; echo "PP=$PYTHONPATH"; echo "EPOCH=$SOURCE_DATE_EPOCH"; } > '
+        f'"{record}"\nexit 0\n',
+        encoding="utf-8",
+    )
+    python.chmod(0o755)
+    env = {
+        **os.environ,
+        "PATH": f"{fake_bin}:{os.environ['PATH']}",
+        "CMRU_BOOTSTRAP_PYTHON": "fakepython",
+        "CMRU_WHEEL_BUILDER_IMAGE": "wheel-builder:test",
+        "CMRU_BOOTSTRAP_CGROUP_PARENT": "test.slice",
+        "SOURCE_DATE_EPOCH": "1",
+    }
+    # The stub builds nothing, so the script's final wheel check fails; the
+    # recorded launch is what is under test.
+    subprocess.run(["bash", str(bootstrap)], env=env, capture_output=True, text=True, check=False)
+    lines = dict(line.split("=", 1) for line in record.read_text(encoding="utf-8").splitlines())
+    assert lines["ARGS"].startswith("-s -m cmru.handlers wheel-build")
+    roots = lines["PP"].split(os.pathsep)
+    assert roots[:3] == [
+        str(repo_root / "cmru" / "src"),
+        str(repo_root / "libraries" / "cli-extended" / "src"),
+        str(repo_root / "libraries" / "worktree" / "src"),
+    ]
+    head = subprocess.run(
+        ["git", "-C", str(repo_root), "log", "-1", "--format=%ct"],
+        capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    assert lines["EPOCH"] == head
 
 
 def test_cleanup_delete_unmanaged_release_previews_then_refuses_without_confirmation(

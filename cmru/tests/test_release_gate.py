@@ -324,3 +324,73 @@ def test_release_gate_refuses_symlink_secret_and_restores_any_prior_mask(
     assert project_secret.is_symlink()
     assert target.read_text(encoding="utf-8") == "preserve\n"
     assert calls == []
+
+
+def _fake_lane_run(project: Path, writer, returncode: int):
+    def run(argv, **_kwargs):
+        writer(project)
+        return SimpleNamespace(returncode=returncode)
+
+    return run
+
+
+def test_failed_lane_names_the_failing_test_from_the_verdict_tail(tmp_path, monkeypatch, capsys):
+    project = tmp_path / "cmru"
+    (project / ".assay").mkdir(parents=True)
+    tail = "....F\nFAILED tests/test_x.py::test_boom - assert 1 == 2\nERROR tests/test_y.py::test_err\n1 failed"
+
+    def write(_project):
+        import json as _json
+
+        (_project / ".assay" / "verdict-cmru.json").write_text(
+            _json.dumps({"result_stdout_tail": tail}), encoding="utf-8",
+        )
+
+    monkeypatch.setattr(run_release_gate.subprocess, "run", _fake_lane_run(project, write, 1))
+    assert run_release_gate._invoke_lane(tmp_path, "assay", {}) == 1
+    err = capsys.readouterr().err
+    assert "FAILED tests/test_x.py::test_boom - assert 1 == 2" in err
+    assert "ERROR tests/test_y.py::test_err" in err
+    assert "1 failed" not in err
+
+
+def test_failed_lane_names_failures_from_junit_and_ignores_stale_or_bad_files(
+    tmp_path, monkeypatch, capsys,
+):
+    project = tmp_path / "cmru"
+    (project / ".assay").mkdir(parents=True)
+    stale = project / ".assay" / "verdict-old.json"
+    stale.write_text('{"result_stdout_tail": "FAILED tests/stale.py::t"}', encoding="utf-8")
+    os.utime(stale, ns=(1, 1))
+    (project / ".assay" / "verdict-bad.json").write_text("{not json", encoding="utf-8")
+    (project / ".assay" / "verdict-notail.json").write_text("{}", encoding="utf-8")
+
+    def write(_project):
+        (_project / ".assay" / "verdict-bad.json").write_text("{not json", encoding="utf-8")
+        (_project / "junit-coverage.xml").write_text(
+            '<testsuites><testsuite><testcase classname="tests.test_a" name="test_ok"/>'
+            '<testcase classname="tests.test_a" name="test_bad"><failure/></testcase>'
+            "</testsuite></testsuites>",
+            encoding="utf-8",
+        )
+
+    monkeypatch.setattr(run_release_gate.subprocess, "run", _fake_lane_run(project, write, 3))
+    assert run_release_gate._invoke_lane(tmp_path, "coverage", {}) == 3
+    err = capsys.readouterr().err
+    assert "FAILED tests.test_a::test_bad (junit)" in err
+    assert "test_ok" not in err
+    assert "stale.py" not in err
+
+
+def test_passing_lane_and_unreadable_reports_stay_silent(tmp_path, monkeypatch, capsys):
+    project = tmp_path / "cmru"
+    project.mkdir()
+
+    def write(_project):
+        (_project / "junit-coverage.xml").write_text("<broken", encoding="utf-8")
+
+    monkeypatch.setattr(run_release_gate.subprocess, "run", _fake_lane_run(project, write, 0))
+    assert run_release_gate._invoke_lane(tmp_path, "coverage", {}) == 0
+    monkeypatch.setattr(run_release_gate.subprocess, "run", _fake_lane_run(project, write, 2))
+    assert run_release_gate._invoke_lane(tmp_path, "coverage", {}) == 2
+    assert capsys.readouterr().err == ""

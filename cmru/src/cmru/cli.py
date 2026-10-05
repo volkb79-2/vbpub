@@ -833,6 +833,10 @@ def resolve_versions_from_git(
         if not project.prefix or not project.scm_dist:
             continue
         prefix_tag = f"{project.prefix}"
+        # setuptools-scm normalises every run of "-", "_" and "." in the dist name.
+        env_name = "SETUPTOOLS_SCM_PRETEND_VERSION_FOR_" + re.sub(
+            r"[-_.]+", "_", project.scm_dist,
+        ).upper()
         # git describe --exact-match legitimately exits non-zero (128) whenever HEAD
         # isn't exactly on one of THIS project's tags — the normal case for every
         # scm_dist project except whichever one is currently being tagged/built (with
@@ -842,13 +846,13 @@ def resolve_versions_from_git(
             ["git", "-C", str(repo_root), "describe", "--tags", "--exact-match", "--match", f"{prefix_tag}*"],
             capture_output=True, text=True,
         )
-        if probe.returncode != 0:
-            continue
-        exact = probe.stdout.strip()
+        exact = probe.stdout.strip() if probe.returncode == 0 else ""
         if not exact:
+            # BG-09: a stale inherited pretend-version would be forwarded into the
+            # wheel builder and let an untagged build claim a release version.
+            os.environ.pop(env_name, None)
             continue
         semver = exact[len(prefix_tag):]
-        env_name = "SETUPTOOLS_SCM_PRETEND_VERSION_FOR_" + project.scm_dist.upper().replace("-", "_")
         os.environ[env_name] = semver
         log_info(f"{project.scm_dist}: HEAD on {exact} → {env_name}={semver}")
 
