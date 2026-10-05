@@ -2317,7 +2317,44 @@ def test_missing_cleanup_confirmation_property_is_reported_as_unconfirmed(
         LegacyDamonSession(), session_id="s-legacy", context="test cleanup",
     )
 
-    assert "DAMON stop is unconfirmed" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert "DAMON stop is unconfirmed" in err
+    assert "no no-reuse guarantee is established" in err
+    assert "will not be reused" not in err
+
+
+@pytest.mark.parametrize(
+    ("slot_idx", "quarantined", "reuse_claim"),
+    [
+        (7, {7}, "will not be reused"),
+        (7, {8}, "no no-reuse guarantee is established"),
+    ],
+)
+def test_unconfirmed_cleanup_only_claims_no_reuse_for_matching_quarantine(
+    simple_server, capsys, slot_idx, quarantined, reuse_claim,
+):
+    class _Pool:
+        def __init__(self, indices):
+            self.quarantined_indices = indices
+
+    class _UnconfirmedDamon:
+        def __init__(self, index):
+            self.cleanup_confirmed = False
+            self.kdamond_idx = index
+
+        def __exit__(self, *_args):
+            return None
+
+    simple_server.damon_pool = _Pool(quarantined)
+    simple_server._close_damon_session(
+        _UnconfirmedDamon(slot_idx), session_id="s-unconfirmed", context="test cleanup",
+    )
+
+    err = capsys.readouterr().err
+    assert "DAMON stop is unconfirmed" in err
+    assert reuse_claim in err
+    if slot_idx not in quarantined:
+        assert "will not be reused" not in err
 
 
 def test_on_session_sample_discovery_due_and_not_due_and_status_damon_on(simple_server, monkeypatch):

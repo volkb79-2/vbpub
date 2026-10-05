@@ -262,17 +262,26 @@ def test_registry_lock_does_not_apply_host_permissions_to_an_override(
     fake_damon, monkeypatch, tmp_path,
 ):
     override = tmp_path / "explicit.lock"
-    calls = []
+    override.touch()
+    override.chmod(0o600)
+    before = override.stat()
     monkeypatch.setenv("CGPROFILE_DAMON_LOCK_PATH", str(override))
-    monkeypatch.setattr(
-        damon, "_set_registry_lock_permissions",
-        lambda _fd, path: calls.append(path),
-    )
 
     with damon._DamonRegistryLock():
-        assert override.is_file()
+        opened = override.stat()
+        assert opened.st_mode & 0o777 == 0o600
+        assert opened.st_gid == before.st_gid
 
-    assert calls == []
+
+def test_registry_lock_repairs_permissions_on_the_default_shared_file(fake_damon):
+    default = Path(damon.DAMON_REGISTRY_LOCK_PATH)
+    default.touch()
+    default.chmod(0o600)
+
+    with damon._DamonRegistryLock():
+        after = default.stat()
+        assert after.st_mode & 0o777 == 0o660
+        assert after.st_gid == default.parent.stat().st_gid
 
 
 def test_registry_lock_reports_missing_parent(fake_damon, monkeypatch, tmp_path):
@@ -1269,7 +1278,7 @@ def test_pool_retains_live_claim_when_counter_cannot_be_read(fake_damon, monkeyp
     assert pool.quarantined_indices == frozenset()
 
 
-def test_pool_marks_external_growth_while_reusing_a_free_slot(fake_damon):
+def test_pool_quarantines_replaced_free_slot_after_external_growth(fake_damon):
     pool = damon.KdamondPool(capacity=2)
     first = pool.acquire()
     second = pool.acquire()
@@ -1280,7 +1289,7 @@ def test_pool_marks_external_growth_while_reusing_a_free_slot(fake_damon):
     fake_damon.calls.clear()
     with pytest.raises(damon.DamonSessionError, match="no verified-off"):
         pool.acquire()
-    assert pool._foreign_growth is True
+    assert pool.quarantined_indices == frozenset({0, 1})
     assert fake_damon.nr_kdamonds() == 3
     assert marker.read_text() == "replacement"
     assert not [call for call in fake_damon.calls
