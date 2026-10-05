@@ -84,3 +84,78 @@ Remaining work, in order:
 4. `surface sync`/`check` and `audit --cli <id>` x3 transcripts; delete redundant `synopsis=` overrides the audit warns about.
 5. README/DESIGN-GUIDE: new test/config workflow (cli-extended.toml, per-CLI spec/catalog/findings files, plugin, `invoke_script`).
 6. `cd scripts/netcup && flock <scratchpad>/gate.lock ./run-gate.py --worktree <wt> suite > <scratchpad>/w9a-suite.log 2>&1`, then `grep verdict` separately; fill in the oracle evidence (O1-O5) and the deviations table.
+
+(Items 1 of this list is now DONE; see "Successor session" below, which is the current continuation brief and supersedes this list.)
+
+## Successor session (checkpoint 3)
+
+State at this checkpoint: branch `cli-ext-w9a-netcup`, HEAD `b30ca374e`. Ran: `pytest tests -q` in `scripts/netcup` (nice/ionice, serial): 306 passed. Netcup `suite` lane through the flock: `run-gate: lane 'suite' verdict PASS; exit_code 0` (log `/tmp/run-gate/lanes/suite/b9b6f0b43d91f03ca54403d206b8d019.log`). `cx surface check` passes for install-host (78 active cases) and monitor-task (13). scp-api: catalog still an empty stub (151 pending cases), manifest re-synced after the fix below.
+
+### Done
+
+1. **install-host catalog: 78 active rows, linked tests.**
+   - Rows are in `scripts/netcup/cli-review-install-host.toml`.
+   - Tests are in `scripts/netcup/tests/test_cli_cases_install_host.py` and use the in-process harness `scripts/netcup/tests/case_harness.py` (`run_install_host`).
+   - Design:
+     - The test module reads the catalog row (invocation, exit status, stdout/stderr substrings) and replays that exact invocation through the real `main()`.
+     - Replay: fake client, HOME and cwd under `tmp_path`, `load_env_file` patched out, `os.environ` replaced by a private copy (nothing leaks), SSH follower and `time.sleep` stubbed so `attach` ends with the simulated Ctrl-C (exit 130).
+     - `test_replayed_case_matches_catalog` is one parametrised test for all non-control options. It also asserts the parsed argument values and that the install POST happens only for a live, accepted run.
+     - `test_dry_run_plans_without_mutating`, `test_yes_is_the_only_consent_in_a_non_interactive_run` and `test_debug_raw_warns_and_is_off_by_default` are the three control tests. Each is parametrised across routes with its own `pytest.mark.cli_case` per param, and each proves a contrast (the run without the control behaves differently).
+     - Node ids: `tests/test_cli_cases_install_host.py::<test>[<route>-<option>]`.
+2. **Real defect found by replaying scp-api and fixed (blocker class: crash in the primary path).**
+   - Library-built `OptionSpec`s default to `argparse.SUPPRESS`, so an omitted option left no attribute on the namespace and handlers using `args.x` raised `AttributeError`.
+   - Observed before the fix: `metrics 42 cpu` (no `--hours`), `firewall-policies` (list, create, put; no `--query/--limit/--offset`) and `user-iso upload FILE` (no `--name/--multipart`) all exited 1 with `unexpected AttributeError`.
+   - Fix: explicit `default=None` (and `default=False` for `--multipart`) in `scp-api.py`; commit `b30ca374e`. Existing unit tests had missed it because they build `SimpleNamespace` args.
+   - Record as findings fixed in `cli-review-findings-scp-api.toml`, with the replay tests as regression evidence. Do not drop this when writing the findings file.
+3. **scp-api in-process harness**: `run_scp_api` + `RoutedClient` in `case_harness.py`.
+   - Replays against a fixed endpoint table (`SCP_ROUTES`). An unplanned GET fails the test.
+   - Records every call as `(method, endpoint, body-or-params)`.
+   - Stubs `build_client`, `run_device_code_login`, the SSH probe and reverse-DNS helpers.
+   - Writes `custom.iso` and `policy.json` fixtures into the cwd.
+4. The full list of 100 candidate scp-api invocations I probed, with their observed outputs, is saved outside the repo at `<scratchpad>/w9a/test_zz_probe_scp.py` and `<scratchpad>/w9a/probe-scp2.txt` (scratchpad = `/tmp/claude-1003/-workspaces-vbpub/384f276e-fadc-4611-bf1d-973b249d83c0/scratchpad`). Copy the invocation list into the new test table rather than re-deriving it. Observed behaviours worth knowing:
+   - `snapshots 42 dryrun` prints nothing (empty dict through `print_kv`).
+   - `login` with no tty prints "Login succeeded. Protected-server selection was skipped" and makes GET `/api/v1/servers`, `/api/v1/servers/42`.
+   - Non-tty without `--yes` always refuses with exit 2 "confirmation is required, but stdin is not interactive".
+   - Positional rules (`firewall 42 get`) work; the argparse "mac/action" swap is in the handler.
+   - Multipart upload needs the part endpoint `/api/v1/users/1/isos/custom.iso/up-1/parts/1`; it is already in `SCP_ROUTES`.
+
+### Remaining, in order
+
+1. **scp-api catalog (151 rows) + `tests/test_cli_cases_scp_api.py`.**
+   - Rows:
+     - Print the signatures with this scratch one-liner: `python3 -c` over `cli-surface-scp-api.json` (`candidates[].id`/`.signature`), or `cx surface template --config cli-extended.toml --cli scp-api`.
+     - After writing rows, run `cx surface sync` once (the generated spec region embeds catalog state), then `cx surface check`.
+   - Test design (same as install-host, per controller decision):
+     - Catalog-driven replay test for every non-control case (parse refusals, arguments, choices, exclusive groups, route options).
+     - One parametrised test per control across routes: `--json` (17 routes, all but login), `--debug-raw` (18), `--yes` (9 mutating routes: attach-iso, firewall-policies, firewall, iso-attached, power, rescuesystem, snapshots, tasks, user-iso).
+     - Use `pytest.param(..., marks=pytest.mark.cli_case(id), id=...)` and list each param node id in `test_ids`.
+     - Control contrast checks:
+       - `--json`: `json.loads(stdout)` equals the canned payload; the same call without `--json` prints a table. `metrics` prints JSON either way, so special-case it.
+       - `--debug-raw`: stderr warning present vs absent.
+       - `--yes`: with it, the mutation call is recorded; without it, exit 2 and no mutating call.
+     - Shared invariant (as in install-host): a mutating call (`post/put/patch/delete/upload_file`) appears only when the run exit status is 0 and the verb is not a pure read.
+   - Cases per route (kind counts from the manifest):
+     - attach-iso 11, disks 6, firewall-policies 17, firewall 17, guest-agent-status 4, imageflavours 5, iso-attached 7, iso-bootable 5, login 2, metrics 10, power 10, rescuesystem 7, server-details 4, servers 3, snapshots 9, status 5, tasks 19, user-iso 10.
+     - Argument-choice / option-choice case ids embed a 10-hex hash of the choice value (for example `5498a731a1` is `create`).
+   - Controller decisions that stand:
+     - scp-api positional-value rules and the ten `configure` callbacks stay hand-written; record the AC-07 manual items as `wontfix` adoption findings pointing at cli-extended backlog CLI-EXT-17.
+     - Repetitive library-control rows (CLI-EXT-18) each get a real row and a linked param, with shared rationale wording that must stay true per route.
+2. **Review, per `cli-extended-review/SKILL.md`**:
+   - `cx surface pack` for the three CLIs; perform the LLM review myself; write one findings file per CLI (`cli-review-findings-<id>.toml`).
+   - Fix blockers/majors in Netcup code. Candidate review observations already noted:
+     - `snapshots dryrun` prints nothing on success (minor/major UX).
+     - install-host `--attach-custom-script` is a no-op default.
+     - The `--ssh-*` options print nothing in the plan.
+     - The no-`--yes` non-tty refusal comes from the library, not Netcup code.
+3. **Gates**: `cx surface check` and `cx audit --cli <id>` for all three, transcripts into this report. Record AC-04/AC-07/AC-19/AC-20/AC-24 judgements as `adoption` findings (see "Judgements" above). Delete redundant `synopsis=` overrides only where the audit says they equal the derived synopsis (the hand synopses omit `[options]` on purpose; keep the informative ones).
+4. **Docs**: README / DESIGN-GUIDE paragraph for the new workflow (cli-extended.toml, per-CLI spec/catalog/findings files, plugin, replay-test harness `case_harness.py`, `invoke_script`). CLI-SPEC.md index already links the per-CLI specs.
+5. **Final gate**: rerun the `suite` lane through the flock, `grep verdict` in a separate step; fill O1-O5 evidence and the deviations table; include one hand-planted mutation killed by a replay test (not yet done; plant it in scp-api, e.g. flip a `default=None`, and show the kill).
+
+### Tooling notes for the successor
+
+- Environment: `. <scratchpad>/w9a-env.sh` defines `cx` (worktree library on PYTHONPATH + the scratch dist-info). Run pytest with `nice -n 19 ionice -c 3 /home/vscode/.venv/bin/python -m pytest tests -q -p no:cacheprovider`.
+- Running one test file alone fails the plugin's cross-catalog coverage check. Run the whole `tests` directory, or pass `-o cli_extended_config=<scratch toml without review entries>` (examples: `<scratchpad>/w9a/noreview.toml`, `noreview-scp.toml`).
+- Stdin must be non-tty (`</dev/null`) when running probes by hand, or interactive prompts hang.
+- Test oracle changes: none of the previously existing tests' assertions was changed; the only edits to existing test-support files are the new `case_harness.py` and the new case test modules.
+
+Co-Authored-By: Claude Sonnet <noreply@anthropic.com>
