@@ -501,3 +501,140 @@ def test_plugin_is_not_registered_as_an_entry_point():
     )
 
     assert "pytest11" not in pyproject
+
+
+# --- several reviewed CLIs in one project -------------------------------------
+
+
+def _catalog_text(cli_id: str, case_id: str, test_ids: list[str]) -> str:
+    return (
+        REVIEW.replace("audit-tool", cli_id)
+        .replace(CASE_ID, case_id)
+        .replace("{test_ids}", ", ".join(json.dumps(item) for item in test_ids))
+    )
+
+
+def _marked(case_id: str, name: str) -> str:
+    return f'@pytest.mark.cli_case("{case_id}")\ndef {name}():\n    pass\n\n'
+
+
+def _multi_project(pytester, *, cases, tests):
+    """``cases``: {cli_id: (case_id, [test ids])}; ``tests``: test source."""
+
+    pytester.makeconftest('pytest_plugins = ["cli_extended.pytest_plugin"]\n')
+    config = "schema_version = 1\n"
+    for cli_id, (case_id, test_ids) in cases.items():
+        config += (
+            f'\n[[clis]]\nid = "{cli_id}"\nfactory = "{cli_id}.py:build"\n'
+            f'review = "review-{cli_id}.toml"\n'
+        )
+        pytester.path.joinpath(f"review-{cli_id}.toml").write_text(
+            _catalog_text(cli_id, case_id, test_ids), encoding="utf-8"
+        )
+    pytester.path.joinpath("cli-extended.toml").write_text(config, encoding="utf-8")
+    pytester.makepyfile(test_multi="import pytest\n\n" + tests)
+
+
+def test_two_reviewed_clis_with_their_own_markers_pass(pytester):
+    _multi_project(
+        pytester,
+        cases={
+            "tool-a": ("case:a/one", ["test_multi.py::test_a"]),
+            "tool-b": ("case:b/one", ["test_multi.py::test_b"]),
+        },
+        tests=_marked("case:a/one", "test_a") + _marked("case:b/one", "test_b"),
+    )
+
+    result = pytester.runpytest_inprocess("-p", "no:cacheprovider")
+
+    result.assert_outcomes(passed=2)
+    assert result.ret == 0
+
+
+def test_marker_unknown_to_every_catalog_is_reported_once(pytester):
+    _multi_project(
+        pytester,
+        cases={
+            "tool-a": ("case:a/one", ["test_multi.py::test_a"]),
+            "tool-b": ("case:b/one", ["test_multi.py::test_b"]),
+        },
+        tests=_marked("case:a/one", "test_a")
+        + _marked("case:b/one", "test_b")
+        + _marked("case:nobody/x", "test_c"),
+    )
+
+    result = pytester.runpytest_inprocess("-p", "no:cacheprovider")
+
+    assert result.ret == pytest.ExitCode.USAGE_ERROR
+    assert result.stderr.str().count("unknown CLI case 'case:nobody/x'") == 1
+
+
+def test_case_id_in_two_catalogs_is_refused_naming_both_clis(pytester):
+    _multi_project(
+        pytester,
+        cases={
+            "tool-a": ("case:shared", ["test_multi.py::test_a"]),
+            "tool-b": ("case:shared", ["test_multi.py::test_a"]),
+        },
+        tests=_marked("case:shared", "test_a"),
+    )
+
+    result = pytester.runpytest_inprocess("-p", "no:cacheprovider")
+
+    assert result.ret == pytest.ExitCode.USAGE_ERROR
+    result.stderr.fnmatch_lines(
+        ["*case ID 'case:shared' appears in the review catalogs of both 'tool-a' and 'tool-b'*"]
+    )
+
+
+def test_errors_from_every_catalog_appear_in_one_failure(pytester):
+    _multi_project(
+        pytester,
+        cases={
+            "tool-a": ("case:a/one", ["test_multi.py::test_a", "test_gone.py::test_x"]),
+            "tool-b": ("case:b/one", ["test_multi.py::test_b", "test_gone.py::test_y"]),
+        },
+        tests=_marked("case:a/one", "test_a") + _marked("case:b/one", "test_b"),
+    )
+
+    result = pytester.runpytest_inprocess("-p", "no:cacheprovider")
+
+    assert result.ret == pytest.ExitCode.USAGE_ERROR
+    err = result.stderr.str()
+    assert err.count("CLI case test coverage failed") == 1
+    assert "uncollected test 'test_gone.py::test_x'" in err
+    assert "uncollected test 'test_gone.py::test_y'" in err
+
+
+def test_foreign_case_ids_skip_only_those_markers(tmp_path):
+    from cli_extended import assert_cli_case_tests, load_cli_review_catalog
+
+    path = tmp_path / "review.toml"
+    path.write_text(_catalog_text("tool-a", "case:a/one", ["t.py::test_a"]), encoding="utf-8")
+    catalog = load_cli_review_catalog(path)
+
+    class Marker:
+        def __init__(self, case_id):
+            self.args = (case_id,)
+
+    class Item:
+        def __init__(self, nodeid, *case_ids):
+            self.nodeid = nodeid
+            self._markers = [Marker(case_id) for case_id in case_ids]
+
+        def iter_markers(self, name):
+            return iter(self._markers)
+
+        def get_closest_marker(self, name):
+            return None
+
+    mine = Item("t.py::test_a", "case:a/one", "case:b/one")
+    assert_cli_case_tests([mine], catalog, foreign_case_ids={"case:b/one"})
+    with pytest.raises(AssertionError, match="unknown CLI case 'case:b/one'"):
+        assert_cli_case_tests([mine], catalog)
+    with pytest.raises(AssertionError, match="unknown CLI case 'case:b/one'"):
+        assert_cli_case_tests([mine], catalog, foreign_case_ids={"case:other"})
+    # A foreign ID never excuses this catalog's own cases.
+    own = Item("t.py::test_other", "case:a/one")
+    with pytest.raises(AssertionError, match="not listed in test_ids"):
+        assert_cli_case_tests([mine, own], catalog, foreign_case_ids={"case:a/one"})

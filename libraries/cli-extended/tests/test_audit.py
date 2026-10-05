@@ -269,12 +269,24 @@ def test_synopsis_redundant_is_warn_and_overrides_are_manual(tmp_path):
     '''
     item = _audit(tmp_path, body=body)["synopsis-overrides"]
     assert item.status == "warn"
-    assert item.summary == "1 redundant synopsis override(s)"
-    assert item.evidence == (
-        "alpha: synopsis '[options]' equals the derived synopsis",
-        "beta: synopsis '<thing> [options]' overrides derived '[options]'",
+    assert item.summary == (
+        "1 redundant synopsis override(s), 1 other override(s) need a justification"
     )
+    assert item.evidence == ("alpha: synopsis '[options]' equals the derived synopsis",)
     assert item.remedy == "Delete the synopsis= argument; the library derives it."
+
+
+def test_synopsis_redundant_only_has_plain_summary(tmp_path):
+    body = '''
+    registry.register(VerbSpec(
+        "alpha", description="alpha", synopsis="[options]", handler=lambda *_: 0,
+        options=(OptionSpec(("--mode",), "mode"),),
+    ))
+    '''
+    item = _audit(tmp_path, body=body)["synopsis-overrides"]
+    assert item.status == "warn"
+    assert item.summary == "1 redundant synopsis override(s)"
+    assert item.evidence == ("alpha: synopsis '[options]' equals the derived synopsis",)
 
 
 def test_synopsis_override_alone_is_manual(tmp_path):
