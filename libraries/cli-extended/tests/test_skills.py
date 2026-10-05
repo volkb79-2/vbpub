@@ -1302,3 +1302,12 @@ def test_w8b_dry_run_install_and_list_share_one_order(tmp_path, monkeypatch, iso
     code, planned, _ = run(package, "install", "--dry-run")
     assert code == 0
     assert planned.splitlines() == [f"would install {name} -> {dest}" for dest, name in expected]
+
+
+@pytest.mark.parametrize("verb", ["install", "uninstall"])
+def test_w8c_dry_run_notice_survives_quiet(pkg, tmp_path, verb):
+    dest = tmp_path / "dest"
+    code, out, err = run(pkg, verb, "--dest", str(dest), "--dry-run", "--quiet")
+    assert code == 0
+    assert "Dry run: no changes made." in err
+    assert not dest.exists()

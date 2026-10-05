@@ -158,3 +158,26 @@ Integration merged first. Test: case `indented line before any metadata key` add
 `SkillError`, `unsupported frontmatter syntax`, `line 2:`. Planted `in_meta = True`: killed.
 The `_Frontmatter` frozen survivor is already covered by the reflective table in
 `tests/test_w8c.py` (`cli_extended.skills` / `_Frontmatter` in `FROZEN`).
+
+## Batch 7 (last)
+
+Integration (with the W9a Netcup merge) merged first.
+
+1. **Dry-run notice under `--quiet`.** `test_w8c_dry_run_notice_survives_quiet` (install and uninstall) asserts
+   `Dry run: no changes made.` still reaches stderr. Planted `force=False`: killed for both verbs.
+2. **Dead data in the library common-control records** (`surface._route_common_actions`).
+   Trace: the records exist for the invocation checker (`review.py` appends them to a route's actions)
+   and for candidate generation (`export_cli_surface`). They are never serialized into the manifest.
+   Signatures read only `id/kind/canonical/scope` for a `library_control` action (`shape_keys`), the
+   `option-spelling` candidate payload carries only `option_id`/`spelling`, and the interaction records
+   keep only `canonical`. `_route_required_baseline` reads `route["actions"]` (the manifest's own, not these)
+   and every `exclusive_required` read is behind a non-None `exclusive_group`, which these records
+   never have. The `hidden` index at `review.py` (Markdown rendering) runs over the manifest's
+   actions, not these records. I confirmed it empirically: flipping `exclusive_required` to True and
+   `hidden` to True each survived the full suite, and an exported surface was byte-identical under both flips.
+   So both keys are unobservable and I removed them from the records; the full suite passes
+   (exit code 0) and the gate is green. Nothing to test for the removed keys, which cannot be mutated.
+3. Already covered: `skills._Action` is in the `FROZEN` table of `tests/test_w8c.py`; the
+   `skills.py` list-mode `return 0` became a bare `return` in batch 2 (no falsy constant remains).
+
+Rule deviation in this batch: none new (no `sed -i` on repository files; I used `sed -i` only on a scratch script).
