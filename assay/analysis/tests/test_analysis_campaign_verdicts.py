@@ -33,6 +33,14 @@ def _entry(row):
         "replacement_sha256": "c" * 64,
         "candidate_id": row["id"],
         "execution": {"mode": "full"},
+        "resource_limit_evidence": {
+            "cgroup_version": 2,
+            "pids_events": {"max": {"before": 0, "after": 0, "delta": 0}},
+            "memory_events": {
+                "oom_kill": {"before": 0, "after": 0, "delta": 0},
+                "oom_group_kill": {"before": 0, "after": 0, "delta": 0},
+            },
+        },
     }
 
 
