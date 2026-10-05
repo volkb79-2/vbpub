@@ -90,11 +90,11 @@ commands = [
 [steps.build]
 quiet = true
 commands = [
-  { label = "run-gate: build wheel", argv = ["python3", "-m", "cmru.handlers", "wheel-build", "--cwd", "."], cwd = "." },
+  { label = "run-gate: build wheel", argv = ["cmru", "handler", "wheel-build", "--cwd", "."], cwd = "." },
 ]
 
 [steps.push]
 quiet = true
 commands = [
-  { label = "run-gate: publish wheel", argv = ["python3", "-m", "cmru.handlers", "wheel-publish", "--prefix", "run-gate", "--cwd", ".", "--notes-env", "RUN_GATE_RELEASE_NOTES"], cwd = "." },
+  { label = "run-gate: publish wheel", argv = ["cmru", "handler", "wheel-publish", "--prefix", "run-gate", "--cwd", ".", "--notes-env", "RUN_GATE_RELEASE_NOTES"], cwd = "." },
 ]

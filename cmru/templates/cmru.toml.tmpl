@@ -61,11 +61,11 @@ commands = [
 [steps.build]
 quiet = true
 commands = [
-  { label = "example: build wheel", argv = ["python3", "-m", "cmru.handlers", "wheel-build", "--cwd", "."], cwd = "." },
+  { label = "example: build wheel", argv = ["cmru", "handler", "wheel-build", "--cwd", "."], cwd = "." },
 ]
 
 [steps.push]
 quiet = true
 commands = [
-  { label = "example: publish wheel", argv = ["python3", "-m", "cmru.handlers", "wheel-publish", "--prefix", "example", "--cwd", ".", "--notes-env", "EXAMPLE_RELEASE_NOTES"], cwd = "." },
+  { label = "example: publish wheel", argv = ["cmru", "handler", "wheel-publish", "--prefix", "example", "--cwd", ".", "--notes-env", "EXAMPLE_RELEASE_NOTES"], cwd = "." },
 ]

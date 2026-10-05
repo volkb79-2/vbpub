@@ -25,9 +25,9 @@ configuration diagnostics put that identity on line 1; shared
 then show relevant generated help, which begins with the same identity. Use
 `--help` or `cmru help <verb>`; CMRU's shared grammar deliberately does not add
 a separate short `-h` spelling.
-The documented `python3 -m cmru.handlers` calls are explicit project-step
-library adapters rather than a separately versioned operator entrypoint, so
-they are outside this top-level identity surface.
+`python3 -m cmru.handlers` is a bootstrap-only library adapter (the first-wheel
+build), not a separately versioned operator entrypoint, so it is outside this
+top-level identity surface. Project steps use `cmru handler <verb>`.
 
 ---
 
@@ -130,15 +130,21 @@ commands = [
 [steps.build]
 quiet = true
 commands = [
-  { label = "build wheel", argv = ["python3", "-m", "cmru.handlers", "wheel-build", "--cwd", "."], cwd = "." },
+  { label = "build wheel", argv = ["cmru", "handler", "wheel-build", "--cwd", "."], cwd = "." },
 ]
 
 [steps.push]
 quiet = true
 commands = [
-  { label = "publish wheel", argv = ["python3", "-m", "cmru.handlers", "wheel-publish", "--prefix", "example-wheel", "--cwd", ".", "--notes-env", "EXAMPLE_RELEASE_NOTES"], cwd = "." },
+  { label = "publish wheel", argv = ["cmru", "handler", "wheel-publish", "--prefix", "example-wheel", "--cwd", ".", "--notes-env", "EXAMPLE_RELEASE_NOTES"], cwd = "." },
 ]
 ```
+
+Project steps call handlers as `cmru handler <verb> ...`, never
+`python3 -m cmru.handlers`: inside a release transaction `cmru` resolves to the
+launcher bound to the running cmru (its own library roots), while the module form
+resolves cmru from whatever interpreter and `PYTHONPATH` the step inherits.
+`cmru standards` flags the module form in project steps.
 
 The runtime declaration is mandatory and closed. Paste `kind = "none"` for a
 self-contained project step; use `kind = "ciu"` when the step deliberately
@@ -226,9 +232,10 @@ python3 -m venv .venv-cmru
 ```
 
 Use installed console scripts for operator workflows. `python -m cmru.handlers`
-is the supported component CLI because project contracts and the first-wheel
-bootstrap need it. `cmru.bundle` and `cmru.runner` are library modules; they do
-not expose module commands. The `cmru.cli` module alias is retired. Use `cmru run-step` for
+is the bootstrap-only component CLI (the first-wheel build runs before an
+installed `cmru` exists); project contracts use `cmru handler <verb>` instead.
+`cmru.bundle` and `cmru.runner` are library modules; they do not expose module
+commands. The `cmru.cli` module alias is retired. Use `cmru run-step` for
 direct single-step CLI work, and use the documented Python functions to compose
 bundle or runner behavior:
 

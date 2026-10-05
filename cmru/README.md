@@ -58,8 +58,8 @@ The image is defined by [`wheel-builder/Dockerfile`](../wheel-builder/Dockerfile
 The script prints the manual virtual-environment install commands after it produces
 the wheel; once installed, all subsequent builds use the `cmru` console script.
 
-The wheel installs the operator command `cmru`. It also carries the supported `python -m cmru.handlers`
-project-step and bootstrap CLI, the `cmru.bundle` and `cmru.runner` Python libraries, and the
+The wheel installs the operator command `cmru`. It also carries the bootstrap-only `python -m cmru.handlers`
+CLI (project steps use `cmru handler <verb>`), the `cmru.bundle` and `cmru.runner` Python libraries, and the
 `cli-extended` and `worktree` libraries they use. Use installed console scripts
 for operator commands; the retired module CLI aliases for bundle, runner, and
 the operator scripts refuse and direct callers to the supported interface. See the
@@ -577,7 +577,7 @@ fits the work:
 | Need | Interface | Role |
 |---|---|---|
 | Release, inspect, or maintain a product | `cmru` and its registered verbs | Canonical operator workflow |
-| Register/build/publish an artifact handler from a project step | `python -m cmru.handlers …` | Explicit project-step adapter; also used by the fresh-checkout wheel bootstrap |
+| Register/build/publish an artifact handler from a project step | `cmru handler <verb> …` | Project-step adapter (bound launcher inside a release transaction); `python -m cmru.handlers` is bootstrap-only, used by the fresh-checkout wheel bootstrap |
 | Preview or reproduce one declared step | `cmru run-step …` | Direct single-step diagnostic using the project's normal `cmru.toml` |
 | Compose step or bundle behavior in Python | `cmru.runner.run_step` or `cmru.bundle.run_bundle` | Supported library entrypoints used by estate consumers |
 | Manage generic Git worktree lifecycles | `worktree` package in the CMRU wheel | Stable shared API, versioned with the CMRU wheel; see the [worktree consumer guide](../libraries/worktree/CONSUMERS.md) |

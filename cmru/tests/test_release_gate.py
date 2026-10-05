@@ -324,3 +324,120 @@ def test_release_gate_refuses_symlink_secret_and_restores_any_prior_mask(
     assert project_secret.is_symlink()
     assert target.read_text(encoding="utf-8") == "preserve\n"
     assert calls == []
+
+
+_STARTED_NS = 1_000_000
+_FRESH_NS = 2_000_000
+
+
+def _fake_lane_run(project: Path, writer, returncode: int, monkeypatch):
+    """Fake the lane subprocess with a deterministic clock.
+
+    ``_invoke_lane`` stamps ``time.time_ns()`` before running; the clock is pinned
+    to ``_STARTED_NS`` and every file the fake writes is stamped ``_FRESH_NS`` so
+    freshness never depends on real filesystem timestamp granularity.
+    """
+    monkeypatch.setattr(run_release_gate, "time", SimpleNamespace(time_ns=lambda: _STARTED_NS))
+
+    def run(argv, **_kwargs):
+        before = {p for p in project.rglob("*") if p.is_file()}
+        writer(project)
+        for written in (p for p in project.rglob("*") if p.is_file()):
+            if written not in before:
+                os.utime(written, ns=(_FRESH_NS, _FRESH_NS))
+        return SimpleNamespace(returncode=returncode)
+
+    return run
+
+
+def _stale(path: Path, text: str) -> None:
+    path.write_text(text, encoding="utf-8")
+    os.utime(path, ns=(1, 1))
+
+
+def test_failed_lane_names_the_failing_test_from_the_verdict_tail(tmp_path, monkeypatch, capsys):
+    project = tmp_path / "cmru"
+    (project / ".assay").mkdir(parents=True)
+    tail = (
+        "....F\nFAILED tests/test_x.py::test_boom - assert 1 == 2\n"
+        "ERROR tests/test_y.py::test_err\nFAILED tests/test_x.py::test_boom - assert 1 == 2\n1 failed"
+    )
+
+    def write(_project):
+        import json as _json
+
+        (_project / ".assay" / "verdict-cmru.json").write_text(
+            _json.dumps({"result_stdout_tail": tail}), encoding="utf-8",
+        )
+
+    monkeypatch.setattr(
+        run_release_gate.subprocess, "run", _fake_lane_run(project, write, 1, monkeypatch),
+    )
+    assert run_release_gate._invoke_lane(tmp_path, "assay", {}) == 1
+    err = capsys.readouterr().err
+    assert err.count("FAILED tests/test_x.py::test_boom - assert 1 == 2") == 1  # deduplicated
+    assert "ERROR tests/test_y.py::test_err" in err
+    assert "1 failed" not in err
+
+
+def test_failed_lane_names_failures_from_junit_and_ignores_stale_or_bad_files(
+    tmp_path, monkeypatch, capsys,
+):
+    project = tmp_path / "cmru"
+    (project / ".assay").mkdir(parents=True)
+    _stale(project / ".assay" / "verdict-old.json", '{"result_stdout_tail": "FAILED tests/stale.py::t"}')
+    _stale(project / ".assay" / "verdict-bad.json", "{not json")
+    _stale(project / ".assay" / "verdict-notail.json", "{}")
+
+    def write(_project):
+        (_project / ".assay" / "verdict-fresh-bad.json").write_text("{not json", encoding="utf-8")
+        (_project / "junit-coverage.xml").write_text(
+            '<testsuites><testsuite><testcase classname="tests.test_a" name="test_ok"/>'
+            '<testcase classname="tests.test_a" name="test_bad"><failure/></testcase>'
+            '<testcase classname="tests.test_a" name="test_err"><error/></testcase>'
+            "</testsuite></testsuites>",
+            encoding="utf-8",
+        )
+
+    monkeypatch.setattr(
+        run_release_gate.subprocess, "run", _fake_lane_run(project, write, 3, monkeypatch),
+    )
+    assert run_release_gate._invoke_lane(tmp_path, "coverage", {}) == 3
+    err = capsys.readouterr().err
+    assert "FAILED tests.test_a::test_bad (junit)" in err
+    assert "FAILED tests.test_a::test_err (junit)" in err
+    assert "test_ok" not in err
+    assert "stale.py" not in err
+
+
+def test_stale_junit_from_an_earlier_run_is_not_reported(tmp_path, monkeypatch, capsys):
+    project = tmp_path / "cmru"
+    project.mkdir()
+    _stale(
+        project / "junit-coverage.xml",
+        '<testsuites><testcase classname="tests.old" name="test_old"><failure/></testcase></testsuites>',
+    )
+    monkeypatch.setattr(
+        run_release_gate.subprocess, "run",
+        _fake_lane_run(project, lambda _p: None, 1, monkeypatch),
+    )
+    assert run_release_gate._invoke_lane(tmp_path, "coverage", {}) == 1
+    assert capsys.readouterr().err == ""
+
+
+def test_passing_lane_and_unreadable_reports_stay_silent(tmp_path, monkeypatch, capsys):
+    project = tmp_path / "cmru"
+    project.mkdir()
+
+    def write(_project):
+        (_project / "junit-coverage.xml").write_text("<broken", encoding="utf-8")
+
+    monkeypatch.setattr(
+        run_release_gate.subprocess, "run", _fake_lane_run(project, write, 0, monkeypatch),
+    )
+    assert run_release_gate._invoke_lane(tmp_path, "coverage", {}) == 0
+    monkeypatch.setattr(
+        run_release_gate.subprocess, "run", _fake_lane_run(project, write, 2, monkeypatch),
+    )
+    assert run_release_gate._invoke_lane(tmp_path, "coverage", {}) == 2
+    assert capsys.readouterr().err == ""

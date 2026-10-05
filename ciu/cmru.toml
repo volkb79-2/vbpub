@@ -60,7 +60,7 @@ commands = [
 [steps.build]
 quiet = true
 commands = [
-  { label = "CIU: build wheel", argv = ["python3", "-m", "cmru.handlers", "wheel-build", "--cwd", "."], cwd = "." },
+  { label = "CIU: build wheel", argv = ["cmru", "handler", "wheel-build", "--cwd", "."], cwd = "." },
 ]
 
 [steps.push]
@@ -69,7 +69,7 @@ commands = [
   # --extra-asset get.py (S14.7a): the enroll one-liner names
   # releases/download/ciu-v<version>/get.py, so the committed installer must
   # ride along on every ciu release as its own asset.
-  { label = "CIU: publish wheel", argv = ["python3", "-m", "cmru.handlers", "wheel-publish", "--prefix", "ciu", "--cwd", ".", "--notes-env", "CIU_RELEASE_NOTES", "--extra-asset", "get.py"], cwd = "." },
+  { label = "CIU: publish wheel", argv = ["cmru", "handler", "wheel-publish", "--prefix", "ciu", "--cwd", ".", "--notes-env", "CIU_RELEASE_NOTES", "--extra-asset", "get.py"], cwd = "." },
 ]
 
 [versions]

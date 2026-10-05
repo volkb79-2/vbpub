@@ -3407,6 +3407,28 @@ def test_resolve_versions_from_git_skips_projects_not_exactly_tagged_on_head():
             os.environ.pop(env_beta, None)
 
 
+def test_resolve_versions_from_git_clears_stale_pretend_version_and_normalises_dots():
+    """BG-09: an inherited pretend-version for a project whose HEAD is NOT on its
+    tag must be dropped (KI-53 forwards it into the wheel builder), and a dotted
+    dist name maps to the underscore-normalised variable setuptools-scm reads."""
+    with _OriginAndClone() as h:
+        workspace_path = h.clone_workspace("cmru/release/stale-pretend")
+        _git("tag", "-a", "dotted-v2.0.0", "-m", "dotted 2.0.0", cwd=workspace_path)
+        dotted = SimpleNamespace(prefix="dotted-v", scm_dist="my.dotted-dist")
+        untagged = SimpleNamespace(prefix="untagged-v", scm_dist="untagged")
+        env_dotted = "SETUPTOOLS_SCM_PRETEND_VERSION_FOR_MY_DOTTED_DIST"
+        env_untagged = "SETUPTOOLS_SCM_PRETEND_VERSION_FOR_UNTAGGED"
+        os.environ[env_untagged] = "9.9.9"
+        os.environ.pop(env_dotted, None)
+        try:
+            cli.resolve_versions_from_git(workspace_path, {"d": dotted, "u": untagged})
+            assert os.environ.get(env_dotted) == "2.0.0"
+            assert env_untagged not in os.environ
+        finally:
+            os.environ.pop(env_dotted, None)
+            os.environ.pop(env_untagged, None)
+
+
 def test_release_projects_sequentially_lets_a_later_project_see_an_earlier_ones_fresh_tag():
     """The actual bug this whole feature exists to fix: an OCI-image-style project
     (here 'beta', git_tag=False) that resolves a sibling wheel-style project's

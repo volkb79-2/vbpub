@@ -237,10 +237,11 @@ interface: `cmru`. It uses
 `cli-extended` to define grammar, options, help, and dispatch. CMRU does not
 maintain parallel hand-written parsers for that command.
 
-`python -m cmru.handlers` is the one supported component CLI. Project step
-contracts use it to invoke registered artifact handlers, and
-`build-initial-standalone.sh` needs it to build the first wheel before the
-installed `cmru` command exists. `python -m cmru.bundle`, `python -m
+`python -m cmru.handlers` is bootstrap-only: `build-initial-standalone.sh`
+needs it to build the first wheel before the installed `cmru` command exists.
+Project step contracts invoke registered artifact handlers as
+`cmru handler <verb>`, which inside a release transaction resolves to the
+bound launcher (`cmru standards` flags the module form). `python -m cmru.bundle`, `python -m
 cmru.runner`, and module aliases for the three operator scripts are retired;
 they now refuse with a pointer to the supported command or library API.
 

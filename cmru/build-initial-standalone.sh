@@ -62,10 +62,19 @@ fi
 echo "[INFO] Building the standalone CMRU wheel from ${project_dir}" >&2
 (
     cd "${project_dir}"
-    export PYTHONPATH="${project_dir}/src${PYTHONPATH:+:${PYTHONPATH}}"
+    # BG-10: cmru imports cli_extended and worktree, which live in sibling
+    # library roots; a fresh host has neither installed. Run with -s so a stale
+    # user-site copy can never shadow the checkout, and pin the epoch to the
+    # HEAD commit so the bootstrap wheel is reproducible.
+    export PYTHONPATH="${project_dir}/src:${repo_root}/libraries/cli-extended/src:${repo_root}/libraries/worktree/src${PYTHONPATH:+:${PYTHONPATH}}"
+    SOURCE_DATE_EPOCH="$(git -C "${repo_root}" log -1 --format=%ct)" || {
+        echo "[ERROR] could not read the HEAD commit time for SOURCE_DATE_EPOCH" >&2
+        exit 2
+    }
+    export SOURCE_DATE_EPOCH
     export CMRU_WHEEL_BUILDER_IMAGE="${builder_image}"
     export CMRU_DOCKER_CGROUP_PARENT="${cgroup_parent}"
-    exec "${python_bin}" -m cmru.handlers wheel-build --cwd .
+    exec "${python_bin}" -s -m cmru.handlers wheel-build --cwd .
 )
 
 shopt -s nullglob
