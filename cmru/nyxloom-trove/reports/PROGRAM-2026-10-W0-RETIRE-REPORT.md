@@ -62,7 +62,7 @@ Reviewer: run the same way (or from a venv without the editable `cmru`), otherwi
 
 | Finding | Change | Test | Plant / revert result |
 |---|---|---|---|
-| CLI-04 | `default_projects` no longer required (`config.py`), accepted with `[WARN] orchestration.default_projects is ignored and will be removed ...` on stderr, no longer validated, field removed from `OrchestrationConfig`, removed from both shipped templates and the SPEC/CONSUMERS examples. Five target help texts now say "omitted: the current project, or every orchestrated project at the estate root". `estate_scope` param deleted from `select_target_names` and its 6 callers; `step_project_order` handling deleted from `_orchestrate` (both branches). | `tests/test_default_projects_deprecation.py` (9 tests) | Run against the pre-change source tree (`git archive baf0ea295` in scratchpad): all 9 CLI-04 tests that apply fail there (6 of 9; the 3 that pass on old code are the parametrised-negative cases for modules already without the string). See section 4. |
+| CLI-04 | `default_projects` no longer required (`config.py`), accepted with `[WARN] orchestration.default_projects is ignored and will be removed ...` on stderr, no longer validated, field removed from `OrchestrationConfig`, removed from both shipped templates and the SPEC/CONSUMERS examples. Five target help texts now say "omitted: the current project, or every orchestrated project at the estate root". `estate_scope` param deleted from `select_target_names` and its 6 callers; `step_project_order` handling deleted from `_orchestrate` (both branches). | `tests/test_default_projects_deprecation.py` (9 tests) | Run against the pre-change source tree (`git archive baf0ea295` copied to the scratchpad, new test files copied in): 9 of 9 fail there. Revert evidence is therefore by running on the old tree, not by hand-planting each hunk. |
 | CLI-05 | `cleanup TARGET --remove-assets AGE` exits 2 with "--remove-assets applies estate-wide [cleanup] policy; omit the target" before any API call; help text and SPEC row updated | `test_cleanup_dry_run_yes.py::test_remove_assets_refuses_a_project_target_before_touching_anything` | Replaced the guard condition by `False`: that test fails (the run listed GHCR deletions); restored |
 | CLI-T1 | New `tests/test_cleanup_dry_run_yes.py`: for each of the 5 cleanup modes (policy, `--remove-assets`, `--delete-unmanaged-release-tag`, `--delete-build-output`, `--discard-build-worktree`) run the real `cmru cleanup ... --dry-run --yes` with a REAL `CleanupPlan` subclass that records itself and raises if `apply()` is called; only read-side GitHub/Git/retained-output boundaries are faked, any non-GET HTTP or non-dry transaction delete is a hard failure. Asserts exit 0 AND the preview captured actions. A control test proves the spy is live without `--dry-run`. | 7 tests | Replaced `if vargs.dry_run:` by `if False:`: 5 of the 5 mode tests fail; restored |
 | CLI-14 | `--repack` removed from `oci-image-build`/`oci-image-push`; `_reject_experimental_repack`/`_OCI_REPACK_DISABLED` deleted; SPEC rows/text and CHANGES updated; KI-02 stays in the backlog (option returns with its fix) | `test_boundary_contracts.py::test_repack_is_not_part_of_the_handler_grammar`, `test_cli_extended_semantics` and `test_cli_review_decisions` assert `unrecognized arguments: --repack` and no Docker call | old code accepted the option and printed "path is disabled", so the new assertions fail there (the helper was also asserted absent) |
@@ -79,7 +79,35 @@ Decision notes:
   subtests (they exercised only the deleted branch).
 
 ## 3. Test and gate results
-(see section 4 for the final numbers)
 
-## 4. Results
-Filled in below after the final runs.
+Commits: `f6fef1d6b` (main change), `059241d83` (draft report), `68884bb5c` (restored non-agent tests). Gates ran on `68884bb5c`; the commit
+that carries this final report only edits this file.
+
+Tests are run through `scratchpad/pt.py` (drops the editable-install finder, see the hazard note above), under the shared test lock,
+memory pressure checked first.
+
+| Run | Result |
+|---|---|
+| Baseline `cmru-wave-2026-10` (`baf0ea295`), full suite, with coverage | 2 failed, 2886 passed, 10 skipped; coverage 99.960%, 0 missing lines, 7 missing branches |
+| This branch, full suite, no `--maxfail`, with coverage | **2 failed, 2696 passed, 10 skipped**; 99.956%, 0 missing lines, the same 7 missing branches (`cli.py` 5, `transaction.py` 2) |
+| Failing tests (both pre-existing, KI-54/REL-01, W0-REL's) | `test_cli_release_snapshot_boundaries.py::test_release_rejects_internal_handoff_on_dry_run`, `...::test_release_rejects_an_internal_snapshot_spanning_multiple_git_families`. Nothing else is red. |
+| `coverage` lane (`run-gate.py --worktree <wt> coverage`) | **FAIL**, exit 1: `1 failed, 832 passed, 2 skipped` (the lane has `--maxfail=1`, so it stops at the first red; the failure is `test_release_rejects_internal_handoff_on_dry_run`, the REL-01 test). Because of `--maxfail=1` the 100% threshold was not evaluated by the lane; my own coverage run above is the evidence for coverage. |
+| `canary` lane | **FAIL**, exit 1, and NOT caused by this package: the lane's known-good control run fails `tests/test_cli_build_output_semantics.py::test_tls_edge_retained_tarball_inventory_contains_the_publisher_version_file` because `tools/project_fixture.py` copies `topos/cmru.toml` and `nyxloom/cmru.toml` into the disposable fixture but not `tls-edge/cmru.toml` or `tls-edge/scripts/build-artifact.sh`, which that test reads. The same lane on the untouched integration branch (clean `cmru-wave-2026-10`, `baf0ea295`) fails identically (log kept at `/tmp/run-gate/lanes/canary/3b8e8e0a65551e1c8afc6037d8be2a2b.log`). I did not fix it (`tools/project_fixture.py` is not in this package's scope; the fix is adding the two tls-edge paths to `ESTATE_CONFIG_FIXTURES`). **The controller needs to route this to a package; until it is fixed no package can get a green canary.** |
+
+Plant/revert summary: CLI-T1 (5 of 5 mode tests red with the early return removed), CLI-05 (guard test red with the guard disabled), the other new tests
+red on the pre-change tree. Each was restored and re-run green.
+
+Coverage note: deleting the 8 dedicated files wholesale first dropped coverage to 99.70% (21 uncovered lines in `release.py`,
+`tester_gate.py`, `version.py`, `resolve.py`) because `test_release_agent_exhaustive_adversarial.py`,
+`test_controller_cli_final_adversarial.py` and `test_noncli_release_rollout_branches.py` also held non-agent tests. They are restored (via `git checkout` +
+`git mv`) as `test_release_exhaustive_adversarial.py`, `test_cleanup_dispatch_modes.py`, `test_release_publish_existing.py`,
+minus the agent/controller functions. That brought coverage back to the baseline's exact residue.
+
+## 4. Deviations and notes
+- Editing rule: every file change was made with Edit/Write or `git rm`/`git checkout`/`git mv`. No sed, redirects or write-scripts touched the repo
+  (the `sed -i ... /dev/null` in one command was a typo that failed harmlessly; a stray no-op Edit with a junk string also errored harmlessly).
+- Version bump: removing two console scripts is a breaking change (memo R3 says major); CHANGES.md carries a `**Breaking:**` line under
+  `## [Unreleased]`, the bump itself is the controller's.
+- CLI-D3's `status` "read-only" row is deliberately left to W0-REL (CLI-01 owns the status block).
+- The `load_config` tuple keeps all 10 slots (see CLI-04 notes).
+- Not done, per scope: KI-49/50 untouched; `get.py.tmpl` content untouched; the leftover demo Consul items listed in section 1.
