@@ -639,7 +639,7 @@ def _report(
     tool: str,
     version: str,
     mode: str,
-) -> int:
+) -> int | None:
     ordered = sorted(rows, key=_row_key)
     entries = [
         {"name": row.name, "destination": str(row.destination), "state": row.state.value}
@@ -660,7 +660,7 @@ def _report(
         for path in leftovers:
             runtime.output.primary(f"leftover {path}")
     if mode == "list":
-        return 0
+        return
     bad = [row for row in rows if row.state is not SkillState.CURRENT]
     if bad:
         runtime.output.error(

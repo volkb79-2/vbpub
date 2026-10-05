@@ -636,6 +636,37 @@ def test_o5_pack_shows_catalog_rows_stale_cases_and_open_findings(tmp_path):
     assert "## Open findings\n\n- **major** `a` [help] (route: none): S a Remedy: R a\n" in text
 
 
+def test_w8b_pack_keeps_non_ascii_literal_in_catalog_rows_and_shapes(tmp_path):
+    extra = [
+        "[[cases]]", 'id = "case:gone"', 'state = "pending"',
+        'rationale = "für — é"', 'invocation = ["ü", "—"]',
+    ]
+    def mutate(text):
+        head, blocks = _split_cases(text)
+        blocks[0] = blocks[0].replace('state = "active"', 'state = "pending"', 1)
+        return _rejoin(head, blocks)
+
+    app, surface, catalog = _surface_and_catalog(tmp_path, mutate, extra)
+    surface = json.loads(json.dumps(surface))
+    surface["candidates"][0]["shape"] = {"label": "größe — ü"}
+    text = render_pack(app, surface, catalog, None)
+    assert 'rationale = "für — é"' in text
+    assert 'invocation = ["ü", "—"]' in text
+    assert '"label": "größe — ü"' in text
+    assert "\\u00" not in text and "\\u20" not in text
+
+
+@pytest.mark.parametrize("verb", ["sync", "check"])
+def test_w8b_sync_and_passing_check_exit_zero(tmp_path, monkeypatch, capsys, verb):
+    _project(tmp_path, monkeypatch)
+    assert _run(capsys, "surface", "sync")[0] == 0
+    code, out, err = _run(capsys, "surface", verb)
+    assert (code, err) == (0, "")
+    assert out.strip() in (
+        "CLI surface files synchronized.", "CLI surface check passed.",
+    )
+
+
 def test_o5_pack_with_no_cases_to_review_says_none(tmp_path):
     app, surface, catalog = _surface_and_catalog(tmp_path)
     text = render_pack(app, surface, catalog, None)

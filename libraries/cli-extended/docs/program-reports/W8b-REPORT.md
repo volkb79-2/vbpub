@@ -75,6 +75,29 @@ r2 was not run (controller's campaign is on the host).
 No equivalent mutants were found, so no code was restructured. Mutants 5-10 are my own
 additions, not from the campaign; I did not run assay's operators, only these hand plants.
 
+## Second batch (R2 survivors, pre-W8b tree)
+
+- **`ensure_ascii=False` in `_case_toml.encode` and the pack shape JSON** (False->True):
+  `test_w8b_pack_keeps_non_ascii_literal_in_catalog_rows_and_shapes` asserts the
+  literal `für — é` / `ü` / `—` appear in the pack's catalog row (rationale and
+  invocation) and shape JSON, with no `\u00`/`\u20` escapes. Both planted
+  mutants (m11, m12) killed. Note the `_case_toml` output is reached through `surface pack`,
+  not `surface template`.
+- **`return 0` in success paths (falsy-swap 0->None).** `parser.py` maps a handler
+  result with `0 if result is None else int(result)`, so `None` already means exit 0
+  and `0`->`None` is an equivalent mutant. assay's `falsy-swap` operator only
+  rewrites a `return <value>` whose value is `0`, `""`, `b""`, `None`, an empty
+  collection or an empty dict; `_falsy_swap_site` returns no site for a bare `return`.
+  Pattern applied: every handler success path whose only value was a literal `0` is a bare
+  `return` (or falls off the end), with the annotation widened to `int | None`.
+  Sites: `cli.py` sync, check-pass, `_template`, `_report`, `_pack`; `skills.py`
+  `_report` list mode. `audit.py` and `doctor.py` have no literal `return 0`; the
+  remaining `1 if ... else 0` expressions are not falsy-swap sites. `parser.py` was not touched (out of
+  the named files). Exit status 0 stays pinned by
+  `test_w8b_sync_and_passing_check_exit_zero[sync|check]` plus existing tests; mutant
+  m13 (passing-check `return` -> `return 1`) is killed. I did not run assay itself, so
+  the claim that no falsy site remains rests on reading `_falsy_swap_replacement`.
+
 ## Docs disposition
 
 | File | Change |
