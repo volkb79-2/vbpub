@@ -47,22 +47,13 @@ SETTINGS_PATH = Path(__file__).resolve().parent / "netcup.toml"
 INSTALL_HOST_SETTINGS_PATH = Path(__file__).resolve().parent / "install-host.toml"
 DEFAULT_SSH_TIMEOUT_SECONDS = 2.0
 STATUS_MAX_WORKERS = 4
-VERSION_PATH = Path(__file__).resolve().parent / "VERSION"
 
-
-def _cli_identity() -> CliIdentity:
-    version = VERSION_PATH.read_text(encoding="utf-8").strip()
-    if not re.fullmatch(r"\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?", version):
-        raise ValueError(f"invalid Netcup CLI version in {VERSION_PATH}: {version!r}")
-    return CliIdentity(
-        name="NETCUP SCP",
-        command="scp-api",
-        version=version,
-        long_name="Netcup Server Control Panel API client",
-    )
-
-
-IDENTITY = _cli_identity()
+IDENTITY = CliIdentity.resolve(
+    name="NETCUP SCP",
+    command="scp-api",
+    long_name="Netcup Server Control Panel API client",
+    version_file=Path(__file__).resolve().with_name("VERSION"),
+)
 _ACTIVE_RUNTIME: Any | None = None
 
 # Keep this in sync with install-host.py's closed SSH settings schema. The
@@ -2219,6 +2210,13 @@ def build_cli():
             "./scp-api.py help firewall",
         ),
         logging_logger="netcup.scp_api.client",
+        unexpected_exceptions="report",
+        expected_exceptions=(
+            OSError,
+            netcup_scp_client.NetcupAPIError,
+            netcup_scp_client.ProtectedServerError,
+            ResponseShapeError,
+        ),
     )
 
     def register(
@@ -2419,15 +2417,7 @@ def parse_args(argv=None):
 
 
 def main(argv=None) -> int:
-    return build_cli().run(
-        argv=argv,
-        expected_exceptions=(
-            OSError,
-            netcup_scp_client.NetcupAPIError,
-            netcup_scp_client.ProtectedServerError,
-            ResponseShapeError,
-        ),
-    )
+    return build_cli().run(argv=argv)
 
 
 if __name__ == "__main__":

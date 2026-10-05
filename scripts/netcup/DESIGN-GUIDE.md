@@ -158,7 +158,7 @@ client diagnostics can expose secret-bearing task data.
 
 The registered parser is the grammar source; a TOML catalog records the
 product decisions that argparse cannot express by itself. The canonical
-[`monitor-task CLI specification`](CLI-SPEC.md) embeds the generated inventory
+[`CLI specifications`](CLI-SPEC.md) (one per CLI) embed the generated inventory
 and accepted/refused invocation table. Its JSON manifest makes parser changes
 reviewable; synchronization cannot rewrite the human-owned decision catalog
 or the surrounding spec text.

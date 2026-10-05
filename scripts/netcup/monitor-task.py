@@ -31,23 +31,12 @@ _UUID_RE = re.compile(
 _TERMINAL_STATES = {"FINISHED", "ERROR", "CANCELED", "ROLLBACK"}
 _SETTINGS_EXPECTED_KEYS = {"monitor.poll_interval"}
 _SETTINGS_PATH = Path(__file__).resolve().parent / "monitor-task.toml"
-_VERSION_PATH = Path(__file__).resolve().parent / "VERSION"
 
-
-def _read_version() -> str:
-    """Read the explicit Netcup CLI family version; never invent a fallback."""
-
-    version = _VERSION_PATH.read_text(encoding="utf-8").strip()
-    if not re.fullmatch(r"\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?", version):
-        raise ValueError(f"invalid Netcup CLI version in {_VERSION_PATH}: {version!r}")
-    return version
-
-
-IDENTITY = CliIdentity(
+IDENTITY = CliIdentity.resolve(
     name="NETCUP SCP",
     command="monitor-task",
-    version=_read_version(),
     long_name="Netcup Server Control Panel task monitor",
+    version_file=Path(__file__).resolve().with_name("VERSION"),
 )
 
 
@@ -282,6 +271,8 @@ def build_cli():
             "monitor-task.py watch TASK_UUID",
         ),
         logging_logger="netcup.monitor_task",
+        unexpected_exceptions="report",
+        expected_exceptions=(OSError,),
     )
     task_argument = ArgumentSpec(
         "task_uuid",
@@ -332,7 +323,7 @@ def build_cli():
 
 
 def main(argv: list[str] | None = None) -> int:
-    return build_cli().run(argv=argv, expected_exceptions=(OSError,))
+    return build_cli().run(argv=argv)
 
 
 if __name__ == "__main__":

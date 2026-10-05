@@ -4,21 +4,16 @@ from __future__ import annotations
 
 import io
 import json
-import os
-import subprocess
-import sys
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
-from cli_extended import CliIdentity, assert_cli_contract
+from cli_extended import CliIdentity, assert_cli_contract, make_invoker
 from conftest import FakeHTTPResponse
 
 TASK_UUID = "3a27fe8e-e747-4f3b-80b0-f930c0d0db3f"
 SCRIPT = Path(__file__).resolve().parents[1] / "monitor-task.py"
-REPO_ROOT = SCRIPT.parents[2]
-CLI_LIBRARY = REPO_ROOT / "libraries" / "cli-extended" / "src"
 
 
 def _invoke_app(app, argv):
@@ -26,23 +21,6 @@ def _invoke_app(app, argv):
     code = app.run(argv=argv, stdout=stdout, stderr=stderr)
     return SimpleNamespace(
         returncode=code, stdout=stdout.getvalue(), stderr=stderr.getvalue()
-    )
-
-
-def _invoke_executable(argv, cwd: Path):
-    environment = os.environ.copy()
-    environment.pop("NETCUP_SCP_API_REFRESH_TOKEN", None)
-    existing = environment.get("PYTHONPATH")
-    environment["PYTHONPATH"] = str(CLI_LIBRARY) + (
-        os.pathsep + existing if existing else ""
-    )
-    return subprocess.run(
-        [sys.executable, str(SCRIPT), *argv],
-        cwd=cwd,
-        env=environment,
-        capture_output=True,
-        text=True,
-        check=False,
     )
 
 
@@ -83,15 +61,20 @@ def _stub_api(monkeypatch, mod, responses):
     "case:route:entrypoint:monitor-task/watch/argument-shape/argument:route:entrypoint:monitor-task/watch/task_uuid"
 )
 def test_real_executable_obeys_help_version_and_parse_contract(tmp_path):
-    identity = CliIdentity(
+    identity = CliIdentity.resolve(
         name="NETCUP SCP",
         command="monitor-task",
-        version=(SCRIPT.parent / "VERSION").read_text(encoding="utf-8").strip(),
         long_name="Netcup Server Control Panel task monitor",
+        version_file=SCRIPT.with_name("VERSION"),
     )
 
     assert_cli_contract(
-        lambda argv: _invoke_executable(argv, tmp_path),
+        make_invoker(
+            SCRIPT,
+            home=tmp_path / "home",
+            cwd=tmp_path,
+            scrub_prefixes=("NETCUP_SCP_API_",),
+        ),
         identity,
         ("show", "watch"),
         invalid_invocations={

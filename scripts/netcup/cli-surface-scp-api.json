@@ -1,0 +1,5198 @@
+{
+  "candidates": [
+    {
+      "id": "case:route:entrypoint:scp-api/attach-iso/argument-shape/argument:route:entrypoint:scp-api/attach-iso/server_id",
+      "kind": "argument-shape",
+      "members": [
+        "argument:route:entrypoint:scp-api/attach-iso/server_id"
+      ],
+      "route_id": "route:entrypoint:scp-api/attach-iso",
+      "shape": {
+        "argument_id": "argument:route:entrypoint:scp-api/attach-iso/server_id"
+      },
+      "signature": "sha256:0242cd1896480175ab89ce4a73efe42769a4623bb81a590edd3e79dff11fbf25"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/attach-iso/exclusive-conflict/parser-exclusive-ed5cad99d2f0/option:route:entrypoint:scp-api/attach-iso/--iso-id/option:route:entrypoint:scp-api/attach-iso/--user-iso-name",
+      "kind": "exclusive-conflict",
+      "members": [
+        "option:route:entrypoint:scp-api/attach-iso/--iso-id",
+        "option:route:entrypoint:scp-api/attach-iso/--user-iso-name"
+      ],
+      "route_id": "route:entrypoint:scp-api/attach-iso",
+      "shape": {
+        "group_id": "parser-exclusive-ed5cad99d2f0",
+        "options": [
+          "option:route:entrypoint:scp-api/attach-iso/--iso-id",
+          "option:route:entrypoint:scp-api/attach-iso/--user-iso-name"
+        ]
+      },
+      "signature": "sha256:753e55920393dbbf4092d57921122b4614cb32346fac16b369f12e777e94defd"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/attach-iso/exclusive-member/parser-exclusive-ed5cad99d2f0/option:route:entrypoint:scp-api/attach-iso/--iso-id",
+      "kind": "exclusive-member",
+      "members": [
+        "option:route:entrypoint:scp-api/attach-iso/--iso-id"
+      ],
+      "route_id": "route:entrypoint:scp-api/attach-iso",
+      "shape": {
+        "group_id": "parser-exclusive-ed5cad99d2f0",
+        "required": true,
+        "selected_option": "option:route:entrypoint:scp-api/attach-iso/--iso-id"
+      },
+      "signature": "sha256:9a6323cf67512aee8202e050297cc29fc6818d4df03c5e26edb167500af2dee4"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/attach-iso/exclusive-member/parser-exclusive-ed5cad99d2f0/option:route:entrypoint:scp-api/attach-iso/--user-iso-name",
+      "kind": "exclusive-member",
+      "members": [
+        "option:route:entrypoint:scp-api/attach-iso/--user-iso-name"
+      ],
+      "route_id": "route:entrypoint:scp-api/attach-iso",
+      "shape": {
+        "group_id": "parser-exclusive-ed5cad99d2f0",
+        "required": true,
+        "selected_option": "option:route:entrypoint:scp-api/attach-iso/--user-iso-name"
+      },
+      "signature": "sha256:703dd505f155afdd98485049343c855bf62ced94ddf3a7521910c271aefe6585"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/attach-iso/minimum",
+      "kind": "minimum",
+      "members": [
+        "argument:route:entrypoint:scp-api/attach-iso/server_id",
+        "option:route:entrypoint:scp-api/attach-iso/--change-boot-device-to-cdrom",
+        "option:route:entrypoint:scp-api/attach-iso/--iso-id",
+        "option:route:entrypoint:scp-api/attach-iso/--user-iso-name"
+      ],
+      "route_id": "route:entrypoint:scp-api/attach-iso",
+      "shape": {
+        "defaulted_options": [
+          "option:route:entrypoint:scp-api/attach-iso/--change-boot-device-to-cdrom"
+        ],
+        "required_argument_values": {
+          "argument:route:entrypoint:scp-api/attach-iso/server_id": 1
+        },
+        "required_arguments": [
+          "argument:route:entrypoint:scp-api/attach-iso/server_id"
+        ],
+        "required_exclusive_groups": {
+          "parser-exclusive-ed5cad99d2f0": [
+            "option:route:entrypoint:scp-api/attach-iso/--iso-id",
+            "option:route:entrypoint:scp-api/attach-iso/--user-iso-name"
+          ]
+        },
+        "required_options": []
+      },
+      "signature": "sha256:92d9407c07fde74da398d7881f137643b0dfacfdb4da08ad8634e7bec8dc1c52"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/attach-iso/option-spelling/option:route:entrypoint:scp-api/attach-iso/--change-boot-device-to-cdrom/--change-boot-device-to-cdrom",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:scp-api/attach-iso/--change-boot-device-to-cdrom"
+      ],
+      "route_id": "route:entrypoint:scp-api/attach-iso",
+      "shape": {
+        "option_id": "option:route:entrypoint:scp-api/attach-iso/--change-boot-device-to-cdrom",
+        "spelling": "--change-boot-device-to-cdrom"
+      },
+      "signature": "sha256:788d11fbe98d939ab1b45f97d3fa8cf7e2f1cb7da9c46bb04731baf2d1fa1a46"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/attach-iso/option-spelling/option:route:entrypoint:scp-api/attach-iso/--debug-raw/--debug-raw",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:scp-api/attach-iso/--debug-raw"
+      ],
+      "route_id": "route:entrypoint:scp-api/attach-iso",
+      "shape": {
+        "option_id": "option:route:entrypoint:scp-api/attach-iso/--debug-raw",
+        "spelling": "--debug-raw"
+      },
+      "signature": "sha256:5a0b8c1b0ad72690ae7df0c7ece6b5a89273114a95562f9dc283675ee920ee12"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/attach-iso/option-spelling/option:route:entrypoint:scp-api/attach-iso/--iso-id/--iso-id",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:scp-api/attach-iso/--iso-id"
+      ],
+      "route_id": "route:entrypoint:scp-api/attach-iso",
+      "shape": {
+        "option_id": "option:route:entrypoint:scp-api/attach-iso/--iso-id",
+        "spelling": "--iso-id"
+      },
+      "signature": "sha256:78d991add617c88d051b8d306a8a18c10b374af5c5f2cfff7d96e076541d493a"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/attach-iso/option-spelling/option:route:entrypoint:scp-api/attach-iso/--json/--json",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:scp-api/attach-iso/--json"
+      ],
+      "route_id": "route:entrypoint:scp-api/attach-iso",
+      "shape": {
+        "option_id": "option:route:entrypoint:scp-api/attach-iso/--json",
+        "spelling": "--json"
+      },
+      "signature": "sha256:5dc23b3db9e03d6893ec5159b444c086c636089c1802d1826851706e0a2f3f3a"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/attach-iso/option-spelling/option:route:entrypoint:scp-api/attach-iso/--user-iso-name/--user-iso-name",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:scp-api/attach-iso/--user-iso-name"
+      ],
+      "route_id": "route:entrypoint:scp-api/attach-iso",
+      "shape": {
+        "option_id": "option:route:entrypoint:scp-api/attach-iso/--user-iso-name",
+        "spelling": "--user-iso-name"
+      },
+      "signature": "sha256:cdcd005aa26775e02c5a2c45dc42e1b129c91679203d3af917dc27b3f58cee75"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/attach-iso/option-spelling/option:route:entrypoint:scp-api/attach-iso/--yes/--yes",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:scp-api/attach-iso/--yes"
+      ],
+      "route_id": "route:entrypoint:scp-api/attach-iso",
+      "shape": {
+        "option_id": "option:route:entrypoint:scp-api/attach-iso/--yes",
+        "spelling": "--yes"
+      },
+      "signature": "sha256:fe3b5311ae751a59fd239137caa884ab42f73dedb3969d97099ab54c77b7f392"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/disks/argument-choice/argument:route:entrypoint:scp-api/disks/action/d7e3e586da",
+      "kind": "argument-choice",
+      "members": [
+        "argument:route:entrypoint:scp-api/disks/action"
+      ],
+      "route_id": "route:entrypoint:scp-api/disks",
+      "shape": {
+        "argument_id": "argument:route:entrypoint:scp-api/disks/action",
+        "choice": "supported-drivers"
+      },
+      "signature": "sha256:ee374681e5ad450103b6142e57ade87f3c5a4cb36669516de946155ea5699738"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/disks/argument-shape/argument:route:entrypoint:scp-api/disks/action",
+      "kind": "argument-shape",
+      "members": [
+        "argument:route:entrypoint:scp-api/disks/action"
+      ],
+      "route_id": "route:entrypoint:scp-api/disks",
+      "shape": {
+        "argument_id": "argument:route:entrypoint:scp-api/disks/action"
+      },
+      "signature": "sha256:53df7da055e767b0cdeede4f3d3257ea22f33a0f8d4bf454d15e123a4c544166"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/disks/argument-shape/argument:route:entrypoint:scp-api/disks/server_id",
+      "kind": "argument-shape",
+      "members": [
+        "argument:route:entrypoint:scp-api/disks/server_id"
+      ],
+      "route_id": "route:entrypoint:scp-api/disks",
+      "shape": {
+        "argument_id": "argument:route:entrypoint:scp-api/disks/server_id"
+      },
+      "signature": "sha256:d1db5e6a50b3aa9ed02e6e788b1aba26125b4aa80e06a3cd3844c2f2b5788331"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/disks/minimum",
+      "kind": "minimum",
+      "members": [],
+      "route_id": "route:entrypoint:scp-api/disks",
+      "shape": {
+        "defaulted_options": [],
+        "required_argument_values": {},
+        "required_arguments": [],
+        "required_exclusive_groups": {},
+        "required_options": []
+      },
+      "signature": "sha256:3d46259653b7ced66a8fd4ef3c8a91efb9374834369274f4f2674e8591a1e83b"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/disks/option-spelling/option:route:entrypoint:scp-api/disks/--debug-raw/--debug-raw",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:scp-api/disks/--debug-raw"
+      ],
+      "route_id": "route:entrypoint:scp-api/disks",
+      "shape": {
+        "option_id": "option:route:entrypoint:scp-api/disks/--debug-raw",
+        "spelling": "--debug-raw"
+      },
+      "signature": "sha256:4fcda2caa19f2312bf3538dc13388031538f900d4bea7a42e9a7612218ebec32"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/disks/option-spelling/option:route:entrypoint:scp-api/disks/--json/--json",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:scp-api/disks/--json"
+      ],
+      "route_id": "route:entrypoint:scp-api/disks",
+      "shape": {
+        "option_id": "option:route:entrypoint:scp-api/disks/--json",
+        "spelling": "--json"
+      },
+      "signature": "sha256:4cdced5f5411bb41f3189a97ad979372f60dab15954c104bf69289adebc2b27f"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/firewall-policies/argument-choice/argument:route:entrypoint:scp-api/firewall-policies/action/5498a731a1",
+      "kind": "argument-choice",
+      "members": [
+        "argument:route:entrypoint:scp-api/firewall-policies/action"
+      ],
+      "route_id": "route:entrypoint:scp-api/firewall-policies",
+      "shape": {
+        "argument_id": "argument:route:entrypoint:scp-api/firewall-policies/action",
+        "choice": "create"
+      },
+      "signature": "sha256:757617408b6afabec0c8aa3ebac8c79e8d46b503988df563a3f9c7002029e189"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/firewall-policies/argument-choice/argument:route:entrypoint:scp-api/firewall-policies/action/904a70f064",
+      "kind": "argument-choice",
+      "members": [
+        "argument:route:entrypoint:scp-api/firewall-policies/action"
+      ],
+      "route_id": "route:entrypoint:scp-api/firewall-policies",
+      "shape": {
+        "argument_id": "argument:route:entrypoint:scp-api/firewall-policies/action",
+        "choice": "put"
+      },
+      "signature": "sha256:a43f03dd05d80ce95cb5e570aaaaacf988092865b5ee15b3f245567cb9381b1e"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/firewall-policies/argument-shape/argument:route:entrypoint:scp-api/firewall-policies/action",
+      "kind": "argument-shape",
+      "members": [
+        "argument:route:entrypoint:scp-api/firewall-policies/action"
+      ],
+      "route_id": "route:entrypoint:scp-api/firewall-policies",
+      "shape": {
+        "argument_id": "argument:route:entrypoint:scp-api/firewall-policies/action"
+      },
+      "signature": "sha256:6a8f0aa94a0d4f891767c9cc7ece5ac760436e4769168e9200ee7fd774528bd2"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/firewall-policies/argument-shape/argument:route:entrypoint:scp-api/firewall-policies/policy_id",
+      "kind": "argument-shape",
+      "members": [
+        "argument:route:entrypoint:scp-api/firewall-policies/policy_id"
+      ],
+      "route_id": "route:entrypoint:scp-api/firewall-policies",
+      "shape": {
+        "argument_id": "argument:route:entrypoint:scp-api/firewall-policies/policy_id"
+      },
+      "signature": "sha256:7d168e6be20bde088616519a4354b87fc89ff921cf15a91f8b8cdecc561bbd5e"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/firewall-policies/exclusive-conflict/parser-exclusive-680f7b6ad777/option:route:entrypoint:scp-api/firewall-policies/--policy-file/option:route:entrypoint:scp-api/firewall-policies/--policy-json",
+      "kind": "exclusive-conflict",
+      "members": [
+        "option:route:entrypoint:scp-api/firewall-policies/--policy-file",
+        "option:route:entrypoint:scp-api/firewall-policies/--policy-json"
+      ],
+      "route_id": "route:entrypoint:scp-api/firewall-policies",
+      "shape": {
+        "group_id": "parser-exclusive-680f7b6ad777",
+        "options": [
+          "option:route:entrypoint:scp-api/firewall-policies/--policy-file",
+          "option:route:entrypoint:scp-api/firewall-policies/--policy-json"
+        ]
+      },
+      "signature": "sha256:54bcae5f1db7449e14bedd9f6cf336e1d24259f727382939d8b7a947d799502f"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/firewall-policies/exclusive-member/parser-exclusive-680f7b6ad777/option:route:entrypoint:scp-api/firewall-policies/--policy-file",
+      "kind": "exclusive-member",
+      "members": [
+        "option:route:entrypoint:scp-api/firewall-policies/--policy-file"
+      ],
+      "route_id": "route:entrypoint:scp-api/firewall-policies",
+      "shape": {
+        "group_id": "parser-exclusive-680f7b6ad777",
+        "required": false,
+        "selected_option": "option:route:entrypoint:scp-api/firewall-policies/--policy-file"
+      },
+      "signature": "sha256:69ece2a253330743c412b60a1fba09cb9d3c2eeb15ebd2387b87b2eed8fb265c"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/firewall-policies/exclusive-member/parser-exclusive-680f7b6ad777/option:route:entrypoint:scp-api/firewall-policies/--policy-json",
+      "kind": "exclusive-member",
+      "members": [
+        "option:route:entrypoint:scp-api/firewall-policies/--policy-json"
+      ],
+      "route_id": "route:entrypoint:scp-api/firewall-policies",
+      "shape": {
+        "group_id": "parser-exclusive-680f7b6ad777",
+        "required": false,
+        "selected_option": "option:route:entrypoint:scp-api/firewall-policies/--policy-json"
+      },
+      "signature": "sha256:1960ad5234c7709c8e28f1ba5a81165cbd011aba44700e7b1c9431281db4b9fd"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/firewall-policies/minimum",
+      "kind": "minimum",
+      "members": [],
+      "route_id": "route:entrypoint:scp-api/firewall-policies",
+      "shape": {
+        "defaulted_options": [],
+        "required_argument_values": {},
+        "required_arguments": [],
+        "required_exclusive_groups": {},
+        "required_options": []
+      },
+      "signature": "sha256:70ed521d2c5ef776ba17f3d61ae6e26256fd7316621fa114c76802c308f91ff0"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/firewall-policies/option-spelling/option:route:entrypoint:scp-api/firewall-policies/--debug-raw/--debug-raw",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:scp-api/firewall-policies/--debug-raw"
+      ],
+      "route_id": "route:entrypoint:scp-api/firewall-policies",
+      "shape": {
+        "option_id": "option:route:entrypoint:scp-api/firewall-policies/--debug-raw",
+        "spelling": "--debug-raw"
+      },
+      "signature": "sha256:444e2a99498934a46ca14d31c7f1c4fff3b7e2710213fc19abb7ca1ee1cc3ab7"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/firewall-policies/option-spelling/option:route:entrypoint:scp-api/firewall-policies/--json/--json",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:scp-api/firewall-policies/--json"
+      ],
+      "route_id": "route:entrypoint:scp-api/firewall-policies",
+      "shape": {
+        "option_id": "option:route:entrypoint:scp-api/firewall-policies/--json",
+        "spelling": "--json"
+      },
+      "signature": "sha256:1f8e100a9b134e6f7b01457f01eb1a887ee67d2f0631d434feeaf2349dbb9f3e"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/firewall-policies/option-spelling/option:route:entrypoint:scp-api/firewall-policies/--limit/--limit",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:scp-api/firewall-policies/--limit"
+      ],
+      "route_id": "route:entrypoint:scp-api/firewall-policies",
+      "shape": {
+        "option_id": "option:route:entrypoint:scp-api/firewall-policies/--limit",
+        "spelling": "--limit"
+      },
+      "signature": "sha256:b269d7e5748708b038c5aad7883d22a57fcb8a0fb6180a006345e3403ca2aeb2"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/firewall-policies/option-spelling/option:route:entrypoint:scp-api/firewall-policies/--offset/--offset",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:scp-api/firewall-policies/--offset"
+      ],
+      "route_id": "route:entrypoint:scp-api/firewall-policies",
+      "shape": {
+        "option_id": "option:route:entrypoint:scp-api/firewall-policies/--offset",
+        "spelling": "--offset"
+      },
+      "signature": "sha256:8fcd60aa49dbc36686a39d8aeeee1a480ad7f2688749374ebd974397411a4d08"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/firewall-policies/option-spelling/option:route:entrypoint:scp-api/firewall-policies/--policy-file/--policy-file",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:scp-api/firewall-policies/--policy-file"
+      ],
+      "route_id": "route:entrypoint:scp-api/firewall-policies",
+      "shape": {
+        "option_id": "option:route:entrypoint:scp-api/firewall-policies/--policy-file",
+        "spelling": "--policy-file"
+      },
+      "signature": "sha256:a48287320af2c9c7c4e320efad760c3fa6b9b971b6b01936c3d87aaa96fbdd90"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/firewall-policies/option-spelling/option:route:entrypoint:scp-api/firewall-policies/--policy-json/--policy-json",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:scp-api/firewall-policies/--policy-json"
+      ],
+      "route_id": "route:entrypoint:scp-api/firewall-policies",
+      "shape": {
+        "option_id": "option:route:entrypoint:scp-api/firewall-policies/--policy-json",
+        "spelling": "--policy-json"
+      },
+      "signature": "sha256:da6708e42fc7b050e9f6e49afd28553e1213d6d59c0e0937fa76f11a5ec69b9b"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/firewall-policies/option-spelling/option:route:entrypoint:scp-api/firewall-policies/--query/--filter",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:scp-api/firewall-policies/--query"
+      ],
+      "route_id": "route:entrypoint:scp-api/firewall-policies",
+      "shape": {
+        "option_id": "option:route:entrypoint:scp-api/firewall-policies/--query",
+        "spelling": "--filter"
+      },
+      "signature": "sha256:31d1545250e36092a25e31f0ba86109e54a9181af260445cfd7dac464fc36a9b"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/firewall-policies/option-spelling/option:route:entrypoint:scp-api/firewall-policies/--query/--query",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:scp-api/firewall-policies/--query"
+      ],
+      "route_id": "route:entrypoint:scp-api/firewall-policies",
+      "shape": {
+        "option_id": "option:route:entrypoint:scp-api/firewall-policies/--query",
+        "spelling": "--query"
+      },
+      "signature": "sha256:c9597f68b7b8f7b8b1b8e3757b86aaa807119c57474b8333a5bbb9f61e7d2cf9"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/firewall-policies/option-spelling/option:route:entrypoint:scp-api/firewall-policies/--yes/--yes",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:scp-api/firewall-policies/--yes"
+      ],
+      "route_id": "route:entrypoint:scp-api/firewall-policies",
+      "shape": {
+        "option_id": "option:route:entrypoint:scp-api/firewall-policies/--yes",
+        "spelling": "--yes"
+      },
+      "signature": "sha256:a437250c8a2196e70fc86caf4c6106b050fa269ba85e75d788fd35c63316d5eb"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/firewall/argument-choice/argument:route:entrypoint:scp-api/firewall/action/306bcefe52",
+      "kind": "argument-choice",
+      "members": [
+        "argument:route:entrypoint:scp-api/firewall/action"
+      ],
+      "route_id": "route:entrypoint:scp-api/firewall",
+      "shape": {
+        "argument_id": "argument:route:entrypoint:scp-api/firewall/action",
+        "choice": "get"
+      },
+      "signature": "sha256:fbe41712ecd2b8a5671e8edcbe4b66c15b8289ff32213db255277a5834d96dc6"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/firewall/argument-choice/argument:route:entrypoint:scp-api/firewall/action/c7f5814b92",
+      "kind": "argument-choice",
+      "members": [
+        "argument:route:entrypoint:scp-api/firewall/action"
+      ],
+      "route_id": "route:entrypoint:scp-api/firewall",
+      "shape": {
+        "argument_id": "argument:route:entrypoint:scp-api/firewall/action",
+        "choice": "set"
+      },
+      "signature": "sha256:4ee08077fb97f634c5f2cb9be2d602207627770343b1d6d9381b504499f55728"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/firewall/argument-shape/argument:route:entrypoint:scp-api/firewall/action",
+      "kind": "argument-shape",
+      "members": [
+        "argument:route:entrypoint:scp-api/firewall/action"
+      ],
+      "route_id": "route:entrypoint:scp-api/firewall",
+      "shape": {
+        "argument_id": "argument:route:entrypoint:scp-api/firewall/action"
+      },
+      "signature": "sha256:8e31ee24fddf5e6949c2ed1e26cc78f522a78b869b6346cd282eedfc20be1178"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/firewall/argument-shape/argument:route:entrypoint:scp-api/firewall/mac",
+      "kind": "argument-shape",
+      "members": [
+        "argument:route:entrypoint:scp-api/firewall/mac"
+      ],
+      "route_id": "route:entrypoint:scp-api/firewall",
+      "shape": {
+        "argument_id": "argument:route:entrypoint:scp-api/firewall/mac"
+      },
+      "signature": "sha256:414c51b709b197829745915c297a78569102f20d12ea84a3856952dbdb99aeaf"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/firewall/argument-shape/argument:route:entrypoint:scp-api/firewall/server_id",
+      "kind": "argument-shape",
+      "members": [
+        "argument:route:entrypoint:scp-api/firewall/server_id"
+      ],
+      "route_id": "route:entrypoint:scp-api/firewall",
+      "shape": {
+        "argument_id": "argument:route:entrypoint:scp-api/firewall/server_id"
+      },
+      "signature": "sha256:9a3c92a716887bac01464d48be2ed7164d578e6d8b70e11b218f20b116aaeb06"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/firewall/exclusive-conflict/parser-exclusive-f2a32d4e9855/option:route:entrypoint:scp-api/firewall/--active/option:route:entrypoint:scp-api/firewall/--inactive",
+      "kind": "exclusive-conflict",
+      "members": [
+        "option:route:entrypoint:scp-api/firewall/--active",
+        "option:route:entrypoint:scp-api/firewall/--inactive"
+      ],
+      "route_id": "route:entrypoint:scp-api/firewall",
+      "shape": {
+        "group_id": "parser-exclusive-f2a32d4e9855",
+        "options": [
+          "option:route:entrypoint:scp-api/firewall/--active",
+          "option:route:entrypoint:scp-api/firewall/--inactive"
+        ]
+      },
+      "signature": "sha256:833eca8f9544617700e03fa445396929d002388732dd3616a6ba3b95413eb328"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/firewall/exclusive-member/parser-exclusive-f2a32d4e9855/option:route:entrypoint:scp-api/firewall/--active",
+      "kind": "exclusive-member",
+      "members": [
+        "option:route:entrypoint:scp-api/firewall/--active"
+      ],
+      "route_id": "route:entrypoint:scp-api/firewall",
+      "shape": {
+        "group_id": "parser-exclusive-f2a32d4e9855",
+        "required": false,
+        "selected_option": "option:route:entrypoint:scp-api/firewall/--active"
+      },
+      "signature": "sha256:ee6a15192d5658a16091bf34af54251e4f096430356bffb7a3919e994ad629b8"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/firewall/exclusive-member/parser-exclusive-f2a32d4e9855/option:route:entrypoint:scp-api/firewall/--inactive",
+      "kind": "exclusive-member",
+      "members": [
+        "option:route:entrypoint:scp-api/firewall/--inactive"
+      ],
+      "route_id": "route:entrypoint:scp-api/firewall",
+      "shape": {
+        "group_id": "parser-exclusive-f2a32d4e9855",
+        "required": false,
+        "selected_option": "option:route:entrypoint:scp-api/firewall/--inactive"
+      },
+      "signature": "sha256:c502cd88c3a1abc9c7955609a65e2e3fa6e1bc6e40fe019a7fa61058ad6b2cde"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/firewall/minimum",
+      "kind": "minimum",
+      "members": [
+        "argument:route:entrypoint:scp-api/firewall/server_id",
+        "option:route:entrypoint:scp-api/firewall/--consistency-check",
+        "option:route:entrypoint:scp-api/firewall/--copied-policy-id",
+        "option:route:entrypoint:scp-api/firewall/--user-policy-id"
+      ],
+      "route_id": "route:entrypoint:scp-api/firewall",
+      "shape": {
+        "defaulted_options": [
+          "option:route:entrypoint:scp-api/firewall/--consistency-check",
+          "option:route:entrypoint:scp-api/firewall/--copied-policy-id",
+          "option:route:entrypoint:scp-api/firewall/--user-policy-id"
+        ],
+        "required_argument_values": {
+          "argument:route:entrypoint:scp-api/firewall/server_id": 1
+        },
+        "required_arguments": [
+          "argument:route:entrypoint:scp-api/firewall/server_id"
+        ],
+        "required_exclusive_groups": {},
+        "required_options": []
+      },
+      "signature": "sha256:ec3c8657d6581f0b2d5af96ae82ceb36d923ca11970ef7276cbb5a9941bffb79"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/firewall/option-spelling/option:route:entrypoint:scp-api/firewall/--active/--active",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:scp-api/firewall/--active"
+      ],
+      "route_id": "route:entrypoint:scp-api/firewall",
+      "shape": {
+        "option_id": "option:route:entrypoint:scp-api/firewall/--active",
+        "spelling": "--active"
+      },
+      "signature": "sha256:761cd51e6ff6c4be1f391e300589ba715214da40a994be1c44c3036fe5ddc4ad"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/firewall/option-spelling/option:route:entrypoint:scp-api/firewall/--consistency-check/--consistency-check",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:scp-api/firewall/--consistency-check"
+      ],
+      "route_id": "route:entrypoint:scp-api/firewall",
+      "shape": {
+        "option_id": "option:route:entrypoint:scp-api/firewall/--consistency-check",
+        "spelling": "--consistency-check"
+      },
+      "signature": "sha256:53ff5fca64c5887de350e52583b87c88651b4b9370a08434d853b44a8f68b145"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/firewall/option-spelling/option:route:entrypoint:scp-api/firewall/--copied-policy-id/--copied-policy-id",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:scp-api/firewall/--copied-policy-id"
+      ],
+      "route_id": "route:entrypoint:scp-api/firewall",
+      "shape": {
+        "option_id": "option:route:entrypoint:scp-api/firewall/--copied-policy-id",
+        "spelling": "--copied-policy-id"
+      },
+      "signature": "sha256:32fd02d2eb87b3525d7ecd364eee2e457bfad98fad3dc1a79725b660eb731967"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/firewall/option-spelling/option:route:entrypoint:scp-api/firewall/--debug-raw/--debug-raw",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:scp-api/firewall/--debug-raw"
+      ],
+      "route_id": "route:entrypoint:scp-api/firewall",
+      "shape": {
+        "option_id": "option:route:entrypoint:scp-api/firewall/--debug-raw",
+        "spelling": "--debug-raw"
+      },
+      "signature": "sha256:94aa1463eb1700dbb9e92f426b7daabf082666a3f03b755ff67d57c9109dd473"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/firewall/option-spelling/option:route:entrypoint:scp-api/firewall/--inactive/--inactive",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:scp-api/firewall/--inactive"
+      ],
+      "route_id": "route:entrypoint:scp-api/firewall",
+      "shape": {
+        "option_id": "option:route:entrypoint:scp-api/firewall/--inactive",
+        "spelling": "--inactive"
+      },
+      "signature": "sha256:580bea7f998e250dbac0645572057a1f1d129c3caf7fe85c8831313ed70f5672"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/firewall/option-spelling/option:route:entrypoint:scp-api/firewall/--json/--json",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:scp-api/firewall/--json"
+      ],
+      "route_id": "route:entrypoint:scp-api/firewall",
+      "shape": {
+        "option_id": "option:route:entrypoint:scp-api/firewall/--json",
+        "spelling": "--json"
+      },
+      "signature": "sha256:b0ed1d438a57bb2c10add67d6e234ddc05ba6d10b73500642b879e9a77884155"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/firewall/option-spelling/option:route:entrypoint:scp-api/firewall/--user-policy-id/--user-policy-id",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:scp-api/firewall/--user-policy-id"
+      ],
+      "route_id": "route:entrypoint:scp-api/firewall",
+      "shape": {
+        "option_id": "option:route:entrypoint:scp-api/firewall/--user-policy-id",
+        "spelling": "--user-policy-id"
+      },
+      "signature": "sha256:c45436cbac2f9eb618725b9c385d01efee87354d256c3b2aee37939e3de54618"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/firewall/option-spelling/option:route:entrypoint:scp-api/firewall/--yes/--yes",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:scp-api/firewall/--yes"
+      ],
+      "route_id": "route:entrypoint:scp-api/firewall",
+      "shape": {
+        "option_id": "option:route:entrypoint:scp-api/firewall/--yes",
+        "spelling": "--yes"
+      },
+      "signature": "sha256:5956ebc1ff767f82dbe4462572bb388ed63b099c11874e9638eeb24892b28150"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/guest-agent-status/argument-shape/argument:route:entrypoint:scp-api/guest-agent-status/server_id",
+      "kind": "argument-shape",
+      "members": [
+        "argument:route:entrypoint:scp-api/guest-agent-status/server_id"
+      ],
+      "route_id": "route:entrypoint:scp-api/guest-agent-status",
+      "shape": {
+        "argument_id": "argument:route:entrypoint:scp-api/guest-agent-status/server_id"
+      },
+      "signature": "sha256:d4a70966bb7152f5f6b77cf16b84c1c6c7efdf3329e1de0d7613ae60322cb328"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/guest-agent-status/minimum",
+      "kind": "minimum",
+      "members": [
+        "argument:route:entrypoint:scp-api/guest-agent-status/server_id"
+      ],
+      "route_id": "route:entrypoint:scp-api/guest-agent-status",
+      "shape": {
+        "defaulted_options": [],
+        "required_argument_values": {
+          "argument:route:entrypoint:scp-api/guest-agent-status/server_id": 1
+        },
+        "required_arguments": [
+          "argument:route:entrypoint:scp-api/guest-agent-status/server_id"
+        ],
+        "required_exclusive_groups": {},
+        "required_options": []
+      },
+      "signature": "sha256:fe1ccd7dd7e06f10f30d924b2df77c151431fd7946093c2009e39361798aa717"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/guest-agent-status/option-spelling/option:route:entrypoint:scp-api/guest-agent-status/--debug-raw/--debug-raw",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:scp-api/guest-agent-status/--debug-raw"
+      ],
+      "route_id": "route:entrypoint:scp-api/guest-agent-status",
+      "shape": {
+        "option_id": "option:route:entrypoint:scp-api/guest-agent-status/--debug-raw",
+        "spelling": "--debug-raw"
+      },
+      "signature": "sha256:dd10b46d20fb00f6777999d5f929b1ddd63b2fb96f1795783e71ed3c9b37a751"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/guest-agent-status/option-spelling/option:route:entrypoint:scp-api/guest-agent-status/--json/--json",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:scp-api/guest-agent-status/--json"
+      ],
+      "route_id": "route:entrypoint:scp-api/guest-agent-status",
+      "shape": {
+        "option_id": "option:route:entrypoint:scp-api/guest-agent-status/--json",
+        "spelling": "--json"
+      },
+      "signature": "sha256:4e40fc26843441c3a7713d060816dc6b5a5f3f2304d6f555c51580b4c905f1e9"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/imageflavours/argument-shape/argument:route:entrypoint:scp-api/imageflavours/server_id",
+      "kind": "argument-shape",
+      "members": [
+        "argument:route:entrypoint:scp-api/imageflavours/server_id"
+      ],
+      "route_id": "route:entrypoint:scp-api/imageflavours",
+      "shape": {
+        "argument_id": "argument:route:entrypoint:scp-api/imageflavours/server_id"
+      },
+      "signature": "sha256:6c9c30d5300ae1f65462edfb7fff320044cba637112682458e54d17a77681479"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/imageflavours/minimum",
+      "kind": "minimum",
+      "members": [],
+      "route_id": "route:entrypoint:scp-api/imageflavours",
+      "shape": {
+        "defaulted_options": [],
+        "required_argument_values": {},
+        "required_arguments": [],
+        "required_exclusive_groups": {},
+        "required_options": []
+      },
+      "signature": "sha256:da0e9d1abdcf530649e383e1c8a43bcb71a64b759e2c1e3fb26d2ef965746a70"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/imageflavours/option-spelling/option:route:entrypoint:scp-api/imageflavours/--debug-raw/--debug-raw",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:scp-api/imageflavours/--debug-raw"
+      ],
+      "route_id": "route:entrypoint:scp-api/imageflavours",
+      "shape": {
+        "option_id": "option:route:entrypoint:scp-api/imageflavours/--debug-raw",
+        "spelling": "--debug-raw"
+      },
+      "signature": "sha256:a5c8ebe9b944f23470aaf910b19ddcac4787b75095f0c1d619cf9253f52769b4"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/imageflavours/option-spelling/option:route:entrypoint:scp-api/imageflavours/--filter/--filter",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:scp-api/imageflavours/--filter"
+      ],
+      "route_id": "route:entrypoint:scp-api/imageflavours",
+      "shape": {
+        "option_id": "option:route:entrypoint:scp-api/imageflavours/--filter",
+        "spelling": "--filter"
+      },
+      "signature": "sha256:75b1abecbb173062ada9dd91be172c15fb997ae154365653e33c404ca86b0e10"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/imageflavours/option-spelling/option:route:entrypoint:scp-api/imageflavours/--json/--json",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:scp-api/imageflavours/--json"
+      ],
+      "route_id": "route:entrypoint:scp-api/imageflavours",
+      "shape": {
+        "option_id": "option:route:entrypoint:scp-api/imageflavours/--json",
+        "spelling": "--json"
+      },
+      "signature": "sha256:0f29f84f7be5fa14ae9933689f85de8e879100c8f2351f76570ce4ac5c894d89"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/iso-attached/argument-choice/argument:route:entrypoint:scp-api/iso-attached/action/e5bdbdba96",
+      "kind": "argument-choice",
+      "members": [
+        "argument:route:entrypoint:scp-api/iso-attached/action"
+      ],
+      "route_id": "route:entrypoint:scp-api/iso-attached",
+      "shape": {
+        "argument_id": "argument:route:entrypoint:scp-api/iso-attached/action",
+        "choice": "detach"
+      },
+      "signature": "sha256:93f0ed7b756cd7cb7eda2d881cf4e036753015262cf65793edadf1eb542e645c"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/iso-attached/argument-shape/argument:route:entrypoint:scp-api/iso-attached/action",
+      "kind": "argument-shape",
+      "members": [
+        "argument:route:entrypoint:scp-api/iso-attached/action"
+      ],
+      "route_id": "route:entrypoint:scp-api/iso-attached",
+      "shape": {
+        "argument_id": "argument:route:entrypoint:scp-api/iso-attached/action"
+      },
+      "signature": "sha256:4c5908f718694f825deff53e304d1fb05138e592291cc75e0014d8a8ec373ad2"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/iso-attached/argument-shape/argument:route:entrypoint:scp-api/iso-attached/server_id",
+      "kind": "argument-shape",
+      "members": [
+        "argument:route:entrypoint:scp-api/iso-attached/server_id"
+      ],
+      "route_id": "route:entrypoint:scp-api/iso-attached",
+      "shape": {
+        "argument_id": "argument:route:entrypoint:scp-api/iso-attached/server_id"
+      },
+      "signature": "sha256:ce217c173e74d9ca73c2127fa9283deb8aab76927ab6bb0f1ac896550bf41c31"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/iso-attached/minimum",
+      "kind": "minimum",
+      "members": [],
+      "route_id": "route:entrypoint:scp-api/iso-attached",
+      "shape": {
+        "defaulted_options": [],
+        "required_argument_values": {},
+        "required_arguments": [],
+        "required_exclusive_groups": {},
+        "required_options": []
+      },
+      "signature": "sha256:2a2df9a999077ad93efdebce7c379b838ccd8d090e9b7c293ac18d309128aa7c"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/iso-attached/option-spelling/option:route:entrypoint:scp-api/iso-attached/--debug-raw/--debug-raw",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:scp-api/iso-attached/--debug-raw"
+      ],
+      "route_id": "route:entrypoint:scp-api/iso-attached",
+      "shape": {
+        "option_id": "option:route:entrypoint:scp-api/iso-attached/--debug-raw",
+        "spelling": "--debug-raw"
+      },
+      "signature": "sha256:520a18e5d3c24bdf2f6ad0368bc2f94c46e7ffdedb7386dd84bc7cfe83438008"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/iso-attached/option-spelling/option:route:entrypoint:scp-api/iso-attached/--json/--json",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:scp-api/iso-attached/--json"
+      ],
+      "route_id": "route:entrypoint:scp-api/iso-attached",
+      "shape": {
+        "option_id": "option:route:entrypoint:scp-api/iso-attached/--json",
+        "spelling": "--json"
+      },
+      "signature": "sha256:bde6ba6c1ec7110a80cbc526366e197c0bcd2494fd55d94bdf96480881f6f50c"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/iso-attached/option-spelling/option:route:entrypoint:scp-api/iso-attached/--yes/--yes",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:scp-api/iso-attached/--yes"
+      ],
+      "route_id": "route:entrypoint:scp-api/iso-attached",
+      "shape": {
+        "option_id": "option:route:entrypoint:scp-api/iso-attached/--yes",
+        "spelling": "--yes"
+      },
+      "signature": "sha256:6b755f2f734d7b7f02f1e4c7665fe5b6283d3a2b0743809583b131220324d989"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/iso-bootable/argument-shape/argument:route:entrypoint:scp-api/iso-bootable/server_id",
+      "kind": "argument-shape",
+      "members": [
+        "argument:route:entrypoint:scp-api/iso-bootable/server_id"
+      ],
+      "route_id": "route:entrypoint:scp-api/iso-bootable",
+      "shape": {
+        "argument_id": "argument:route:entrypoint:scp-api/iso-bootable/server_id"
+      },
+      "signature": "sha256:a3fabb1be51c06e9316a34c6614b86f00446cf1cdefc4701e9a9635679c20c10"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/iso-bootable/minimum",
+      "kind": "minimum",
+      "members": [],
+      "route_id": "route:entrypoint:scp-api/iso-bootable",
+      "shape": {
+        "defaulted_options": [],
+        "required_argument_values": {},
+        "required_arguments": [],
+        "required_exclusive_groups": {},
+        "required_options": []
+      },
+      "signature": "sha256:d8f510ffa1db79243f7776af85cd080b996d5d9cd9d930bb710ace4e6694b0f6"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/iso-bootable/option-spelling/option:route:entrypoint:scp-api/iso-bootable/--debug-raw/--debug-raw",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:scp-api/iso-bootable/--debug-raw"
+      ],
+      "route_id": "route:entrypoint:scp-api/iso-bootable",
+      "shape": {
+        "option_id": "option:route:entrypoint:scp-api/iso-bootable/--debug-raw",
+        "spelling": "--debug-raw"
+      },
+      "signature": "sha256:ecddb04fd85942ea1e85079ec508080dc70ddf2563df40338cf04e3b4d18fc90"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/iso-bootable/option-spelling/option:route:entrypoint:scp-api/iso-bootable/--filter/--filter",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:scp-api/iso-bootable/--filter"
+      ],
+      "route_id": "route:entrypoint:scp-api/iso-bootable",
+      "shape": {
+        "option_id": "option:route:entrypoint:scp-api/iso-bootable/--filter",
+        "spelling": "--filter"
+      },
+      "signature": "sha256:364d5f3b7fc2978767244300ace8d5bbfb4228ce5fdc2cebfb48e4fb0287bc1f"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/iso-bootable/option-spelling/option:route:entrypoint:scp-api/iso-bootable/--json/--json",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:scp-api/iso-bootable/--json"
+      ],
+      "route_id": "route:entrypoint:scp-api/iso-bootable",
+      "shape": {
+        "option_id": "option:route:entrypoint:scp-api/iso-bootable/--json",
+        "spelling": "--json"
+      },
+      "signature": "sha256:bcf6e28cdc06b5bb378c016e6ec977416b87ab78a74d092f471df99b31f769e4"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/login/minimum",
+      "kind": "minimum",
+      "members": [],
+      "route_id": "route:entrypoint:scp-api/login",
+      "shape": {
+        "defaulted_options": [],
+        "required_argument_values": {},
+        "required_arguments": [],
+        "required_exclusive_groups": {},
+        "required_options": []
+      },
+      "signature": "sha256:2fe5f12147d6526144c26507e09c1e9919bcc75d72b44d00293446474b83b757"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/login/option-spelling/option:route:entrypoint:scp-api/login/--debug-raw/--debug-raw",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:scp-api/login/--debug-raw"
+      ],
+      "route_id": "route:entrypoint:scp-api/login",
+      "shape": {
+        "option_id": "option:route:entrypoint:scp-api/login/--debug-raw",
+        "spelling": "--debug-raw"
+      },
+      "signature": "sha256:27ae1e6727b4dfbc27b068ae0ec71072c7f274ccac811cd546dbcf2f2fdcb890"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/metrics/argument-choice/argument:route:entrypoint:scp-api/metrics/metric/57b8970d2b",
+      "kind": "argument-choice",
+      "members": [
+        "argument:route:entrypoint:scp-api/metrics/metric"
+      ],
+      "route_id": "route:entrypoint:scp-api/metrics",
+      "shape": {
+        "argument_id": "argument:route:entrypoint:scp-api/metrics/metric",
+        "choice": "network"
+      },
+      "signature": "sha256:d874b8d19f1968b1b75912f15ff0ef8ace2dd60bbb41d08fcdc8824ed55e0ac4"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/metrics/argument-choice/argument:route:entrypoint:scp-api/metrics/metric/a3d67b9b2b",
+      "kind": "argument-choice",
+      "members": [
+        "argument:route:entrypoint:scp-api/metrics/metric"
+      ],
+      "route_id": "route:entrypoint:scp-api/metrics",
+      "shape": {
+        "argument_id": "argument:route:entrypoint:scp-api/metrics/metric",
+        "choice": "disk"
+      },
+      "signature": "sha256:907f95a3899e63842df6a25edb4e8f24699a1e28102115308f9e0407f927a96c"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/metrics/argument-choice/argument:route:entrypoint:scp-api/metrics/metric/c4fc787d1d",
+      "kind": "argument-choice",
+      "members": [
+        "argument:route:entrypoint:scp-api/metrics/metric"
+      ],
+      "route_id": "route:entrypoint:scp-api/metrics",
+      "shape": {
+        "argument_id": "argument:route:entrypoint:scp-api/metrics/metric",
+        "choice": "cpu"
+      },
+      "signature": "sha256:def6854ec1f1c422a6e8e2412fd2bbb30f933be02b6a48e7c505f66b0d369f67"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/metrics/argument-choice/argument:route:entrypoint:scp-api/metrics/metric/ced17b2ab6",
+      "kind": "argument-choice",
+      "members": [
+        "argument:route:entrypoint:scp-api/metrics/metric"
+      ],
+      "route_id": "route:entrypoint:scp-api/metrics",
+      "shape": {
+        "argument_id": "argument:route:entrypoint:scp-api/metrics/metric",
+        "choice": "network-packet"
+      },
+      "signature": "sha256:bce3655a187d0660d6878b1ff8ee9f48383b8a566f434b5e419a39ff7e65ee7b"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/metrics/argument-shape/argument:route:entrypoint:scp-api/metrics/metric",
+      "kind": "argument-shape",
+      "members": [
+        "argument:route:entrypoint:scp-api/metrics/metric"
+      ],
+      "route_id": "route:entrypoint:scp-api/metrics",
+      "shape": {
+        "argument_id": "argument:route:entrypoint:scp-api/metrics/metric"
+      },
+      "signature": "sha256:c4ac659678a8646dc1aad757d78c9a8be4cea423c6937e74367da3bae90ee424"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/metrics/argument-shape/argument:route:entrypoint:scp-api/metrics/server_id",
+      "kind": "argument-shape",
+      "members": [
+        "argument:route:entrypoint:scp-api/metrics/server_id"
+      ],
+      "route_id": "route:entrypoint:scp-api/metrics",
+      "shape": {
+        "argument_id": "argument:route:entrypoint:scp-api/metrics/server_id"
+      },
+      "signature": "sha256:51a078d588d315770f3f72bddc012978b24ef7e3231ace72ea325b0754b5513f"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/metrics/minimum",
+      "kind": "minimum",
+      "members": [
+        "argument:route:entrypoint:scp-api/metrics/server_id",
+        "argument:route:entrypoint:scp-api/metrics/metric"
+      ],
+      "route_id": "route:entrypoint:scp-api/metrics",
+      "shape": {
+        "defaulted_options": [],
+        "required_argument_values": {
+          "argument:route:entrypoint:scp-api/metrics/metric": 1,
+          "argument:route:entrypoint:scp-api/metrics/server_id": 1
+        },
+        "required_arguments": [
+          "argument:route:entrypoint:scp-api/metrics/server_id",
+          "argument:route:entrypoint:scp-api/metrics/metric"
+        ],
+        "required_exclusive_groups": {},
+        "required_options": []
+      },
+      "signature": "sha256:35221298cdd31186ae8b96ddca637dddf8cc8f04689cfd78f027ce26e60209eb"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/metrics/option-spelling/option:route:entrypoint:scp-api/metrics/--debug-raw/--debug-raw",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:scp-api/metrics/--debug-raw"
+      ],
+      "route_id": "route:entrypoint:scp-api/metrics",
+      "shape": {
+        "option_id": "option:route:entrypoint:scp-api/metrics/--debug-raw",
+        "spelling": "--debug-raw"
+      },
+      "signature": "sha256:2b36217e557473c535366f3326b9eb3104b7bcb7163a91876ae3edfecca0ad34"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/metrics/option-spelling/option:route:entrypoint:scp-api/metrics/--hours/--hours",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:scp-api/metrics/--hours"
+      ],
+      "route_id": "route:entrypoint:scp-api/metrics",
+      "shape": {
+        "option_id": "option:route:entrypoint:scp-api/metrics/--hours",
+        "spelling": "--hours"
+      },
+      "signature": "sha256:ec8f35d100ae8e167506d99b78819257e7e285153a8790deebf30f56182a2c62"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/metrics/option-spelling/option:route:entrypoint:scp-api/metrics/--json/--json",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:scp-api/metrics/--json"
+      ],
+      "route_id": "route:entrypoint:scp-api/metrics",
+      "shape": {
+        "option_id": "option:route:entrypoint:scp-api/metrics/--json",
+        "spelling": "--json"
+      },
+      "signature": "sha256:0d9cbbdb158d989a21f649d1f1868139d182d18892e0f3fd74dfed6611ae53c9"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/power/argument-choice/argument:route:entrypoint:scp-api/power/action/1c7a197350",
+      "kind": "argument-choice",
+      "members": [
+        "argument:route:entrypoint:scp-api/power/action"
+      ],
+      "route_id": "route:entrypoint:scp-api/power",
+      "shape": {
+        "argument_id": "argument:route:entrypoint:scp-api/power/action",
+        "choice": "reset"
+      },
+      "signature": "sha256:61b176461b3b6bfd061d3df3e69a40d7945bfb437823c7c3f0f05af82a07d5d9"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/power/argument-choice/argument:route:entrypoint:scp-api/power/action/990c23868b",
+      "kind": "argument-choice",
+      "members": [
+        "argument:route:entrypoint:scp-api/power/action"
+      ],
+      "route_id": "route:entrypoint:scp-api/power",
+      "shape": {
+        "argument_id": "argument:route:entrypoint:scp-api/power/action",
+        "choice": "on"
+      },
+      "signature": "sha256:12e8083ba306c1c779b0ba630304574a88ace0010c96b5726f5e9d0f365f0317"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/power/argument-choice/argument:route:entrypoint:scp-api/power/action/9f3becba6e",
+      "kind": "argument-choice",
+      "members": [
+        "argument:route:entrypoint:scp-api/power/action"
+      ],
+      "route_id": "route:entrypoint:scp-api/power",
+      "shape": {
+        "argument_id": "argument:route:entrypoint:scp-api/power/action",
+        "choice": "off"
+      },
+      "signature": "sha256:31c44e160531cf3a8ff0fd25749fd77e630da93beb518c247691c117f1025761"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/power/argument-choice/argument:route:entrypoint:scp-api/power/action/c1876cd5bc",
+      "kind": "argument-choice",
+      "members": [
+        "argument:route:entrypoint:scp-api/power/action"
+      ],
+      "route_id": "route:entrypoint:scp-api/power",
+      "shape": {
+        "argument_id": "argument:route:entrypoint:scp-api/power/action",
+        "choice": "cycle"
+      },
+      "signature": "sha256:e86f975d18769b90c03db304c50791d3d7315d270a3a24e5bef7e2c30df92831"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/power/argument-shape/argument:route:entrypoint:scp-api/power/action",
+      "kind": "argument-shape",
+      "members": [
+        "argument:route:entrypoint:scp-api/power/action"
+      ],
+      "route_id": "route:entrypoint:scp-api/power",
+      "shape": {
+        "argument_id": "argument:route:entrypoint:scp-api/power/action"
+      },
+      "signature": "sha256:576e1bab1f903235b2958f10bde979a53c39c1decd3426f02204dd239256cb33"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/power/argument-shape/argument:route:entrypoint:scp-api/power/server_id",
+      "kind": "argument-shape",
+      "members": [
+        "argument:route:entrypoint:scp-api/power/server_id"
+      ],
+      "route_id": "route:entrypoint:scp-api/power",
+      "shape": {
+        "argument_id": "argument:route:entrypoint:scp-api/power/server_id"
+      },
+      "signature": "sha256:cce6ee69e5a6c84864f5733c3499ae021504754ac5fa2e6327409c13054aa041"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/power/minimum",
+      "kind": "minimum",
+      "members": [
+        "argument:route:entrypoint:scp-api/power/action",
+        "argument:route:entrypoint:scp-api/power/server_id"
+      ],
+      "route_id": "route:entrypoint:scp-api/power",
+      "shape": {
+        "defaulted_options": [],
+        "required_argument_values": {
+          "argument:route:entrypoint:scp-api/power/action": 1,
+          "argument:route:entrypoint:scp-api/power/server_id": 1
+        },
+        "required_arguments": [
+          "argument:route:entrypoint:scp-api/power/action",
+          "argument:route:entrypoint:scp-api/power/server_id"
+        ],
+        "required_exclusive_groups": {},
+        "required_options": []
+      },
+      "signature": "sha256:ef65631f0d2710a3593bc4409d70909b8c409b19928a17c973374e01e2c7e182"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/power/option-spelling/option:route:entrypoint:scp-api/power/--debug-raw/--debug-raw",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:scp-api/power/--debug-raw"
+      ],
+      "route_id": "route:entrypoint:scp-api/power",
+      "shape": {
+        "option_id": "option:route:entrypoint:scp-api/power/--debug-raw",
+        "spelling": "--debug-raw"
+      },
+      "signature": "sha256:dff6e2194c51c5c51ed8d6d1563d730c273c7f5316b89c7ed09025ecd60648b5"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/power/option-spelling/option:route:entrypoint:scp-api/power/--json/--json",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:scp-api/power/--json"
+      ],
+      "route_id": "route:entrypoint:scp-api/power",
+      "shape": {
+        "option_id": "option:route:entrypoint:scp-api/power/--json",
+        "spelling": "--json"
+      },
+      "signature": "sha256:200918d05f44183d021114ca9d3ace71e535057f188312ea45e3e0ad63d0a34f"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/power/option-spelling/option:route:entrypoint:scp-api/power/--yes/--yes",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:scp-api/power/--yes"
+      ],
+      "route_id": "route:entrypoint:scp-api/power",
+      "shape": {
+        "option_id": "option:route:entrypoint:scp-api/power/--yes",
+        "spelling": "--yes"
+      },
+      "signature": "sha256:f3d81607c14d77c2d5053f27179be16ddf49912d4b1c9d2b55e962bf2ce4e570"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/rescuesystem/argument-choice/argument:route:entrypoint:scp-api/rescuesystem/action/509e597e13",
+      "kind": "argument-choice",
+      "members": [
+        "argument:route:entrypoint:scp-api/rescuesystem/action"
+      ],
+      "route_id": "route:entrypoint:scp-api/rescuesystem",
+      "shape": {
+        "argument_id": "argument:route:entrypoint:scp-api/rescuesystem/action",
+        "choice": "deactivate"
+      },
+      "signature": "sha256:70f838d6801c7e7648a02a582f202cc0476e00eb33ff33caeded0576c527fc75"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/rescuesystem/argument-shape/argument:route:entrypoint:scp-api/rescuesystem/action",
+      "kind": "argument-shape",
+      "members": [
+        "argument:route:entrypoint:scp-api/rescuesystem/action"
+      ],
+      "route_id": "route:entrypoint:scp-api/rescuesystem",
+      "shape": {
+        "argument_id": "argument:route:entrypoint:scp-api/rescuesystem/action"
+      },
+      "signature": "sha256:0b9ce4493fffbc33ba82647ee711ddc9ade4aca9e01bfbeb9005aa623d36a58b"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/rescuesystem/argument-shape/argument:route:entrypoint:scp-api/rescuesystem/server_id",
+      "kind": "argument-shape",
+      "members": [
+        "argument:route:entrypoint:scp-api/rescuesystem/server_id"
+      ],
+      "route_id": "route:entrypoint:scp-api/rescuesystem",
+      "shape": {
+        "argument_id": "argument:route:entrypoint:scp-api/rescuesystem/server_id"
+      },
+      "signature": "sha256:70c24cccab38016c7014ce22a8d9e72f2ef75c66bd709ba9d916603c35bd248e"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/rescuesystem/minimum",
+      "kind": "minimum",
+      "members": [],
+      "route_id": "route:entrypoint:scp-api/rescuesystem",
+      "shape": {
+        "defaulted_options": [],
+        "required_argument_values": {},
+        "required_arguments": [],
+        "required_exclusive_groups": {},
+        "required_options": []
+      },
+      "signature": "sha256:8f39f44fb8edccc427d426660ac97d6124bd5a287489f885eb345032d9792a2c"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/rescuesystem/option-spelling/option:route:entrypoint:scp-api/rescuesystem/--debug-raw/--debug-raw",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:scp-api/rescuesystem/--debug-raw"
+      ],
+      "route_id": "route:entrypoint:scp-api/rescuesystem",
+      "shape": {
+        "option_id": "option:route:entrypoint:scp-api/rescuesystem/--debug-raw",
+        "spelling": "--debug-raw"
+      },
+      "signature": "sha256:a9f6b0359c0eccda628b16fa51b2051072aa023849df37804926da4fbbebf6c6"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/rescuesystem/option-spelling/option:route:entrypoint:scp-api/rescuesystem/--json/--json",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:scp-api/rescuesystem/--json"
+      ],
+      "route_id": "route:entrypoint:scp-api/rescuesystem",
+      "shape": {
+        "option_id": "option:route:entrypoint:scp-api/rescuesystem/--json",
+        "spelling": "--json"
+      },
+      "signature": "sha256:e4c75cd290f7446849ff3b0aa426a35bc183f289daa2e4a98a45806b0a8bfb9d"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/rescuesystem/option-spelling/option:route:entrypoint:scp-api/rescuesystem/--yes/--yes",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:scp-api/rescuesystem/--yes"
+      ],
+      "route_id": "route:entrypoint:scp-api/rescuesystem",
+      "shape": {
+        "option_id": "option:route:entrypoint:scp-api/rescuesystem/--yes",
+        "spelling": "--yes"
+      },
+      "signature": "sha256:4d40f3d6935b2c8cc1450eda4c9b261d743e7054282e867e8a2e8154d42e821c"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/server-details/argument-shape/argument:route:entrypoint:scp-api/server-details/server_id",
+      "kind": "argument-shape",
+      "members": [
+        "argument:route:entrypoint:scp-api/server-details/server_id"
+      ],
+      "route_id": "route:entrypoint:scp-api/server-details",
+      "shape": {
+        "argument_id": "argument:route:entrypoint:scp-api/server-details/server_id"
+      },
+      "signature": "sha256:8b6ffd4bb683c1982c7a07c1b312e6185203a2f47d8d1b849ca8db31c301b8c3"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/server-details/minimum",
+      "kind": "minimum",
+      "members": [
+        "argument:route:entrypoint:scp-api/server-details/server_id"
+      ],
+      "route_id": "route:entrypoint:scp-api/server-details",
+      "shape": {
+        "defaulted_options": [],
+        "required_argument_values": {
+          "argument:route:entrypoint:scp-api/server-details/server_id": 1
+        },
+        "required_arguments": [
+          "argument:route:entrypoint:scp-api/server-details/server_id"
+        ],
+        "required_exclusive_groups": {},
+        "required_options": []
+      },
+      "signature": "sha256:f38587234725b057014a2b1bd7d547bc096621fec9272c0a48bdbe57ef28d43c"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/server-details/option-spelling/option:route:entrypoint:scp-api/server-details/--debug-raw/--debug-raw",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:scp-api/server-details/--debug-raw"
+      ],
+      "route_id": "route:entrypoint:scp-api/server-details",
+      "shape": {
+        "option_id": "option:route:entrypoint:scp-api/server-details/--debug-raw",
+        "spelling": "--debug-raw"
+      },
+      "signature": "sha256:2386e3594a2ad1b8d7ef73046c55d4dfa4bc980fa75545e3a68e91245af56c2b"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/server-details/option-spelling/option:route:entrypoint:scp-api/server-details/--json/--json",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:scp-api/server-details/--json"
+      ],
+      "route_id": "route:entrypoint:scp-api/server-details",
+      "shape": {
+        "option_id": "option:route:entrypoint:scp-api/server-details/--json",
+        "spelling": "--json"
+      },
+      "signature": "sha256:6db852073885c10f4d83563a8ee27b5e4a352eac570e420f55e6609e84ad12c1"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/servers/minimum",
+      "kind": "minimum",
+      "members": [],
+      "route_id": "route:entrypoint:scp-api/servers",
+      "shape": {
+        "defaulted_options": [],
+        "required_argument_values": {},
+        "required_arguments": [],
+        "required_exclusive_groups": {},
+        "required_options": []
+      },
+      "signature": "sha256:1a69b567b171ce02b2b155751f4ef8642e81ec21f007967160272249496e12f7"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/servers/option-spelling/option:route:entrypoint:scp-api/servers/--debug-raw/--debug-raw",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:scp-api/servers/--debug-raw"
+      ],
+      "route_id": "route:entrypoint:scp-api/servers",
+      "shape": {
+        "option_id": "option:route:entrypoint:scp-api/servers/--debug-raw",
+        "spelling": "--debug-raw"
+      },
+      "signature": "sha256:624cba64e4d020f5ec38e0b466dd6a7167026c4807d24cbee686711d721aa8b2"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/servers/option-spelling/option:route:entrypoint:scp-api/servers/--json/--json",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:scp-api/servers/--json"
+      ],
+      "route_id": "route:entrypoint:scp-api/servers",
+      "shape": {
+        "option_id": "option:route:entrypoint:scp-api/servers/--json",
+        "spelling": "--json"
+      },
+      "signature": "sha256:842d59eadb37dc050170a585e9633bea1113b2c3f727fb2694229d1a9afb8236"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/snapshots/argument-choice/argument:route:entrypoint:scp-api/snapshots/action/2b53b6eb1a",
+      "kind": "argument-choice",
+      "members": [
+        "argument:route:entrypoint:scp-api/snapshots/action"
+      ],
+      "route_id": "route:entrypoint:scp-api/snapshots",
+      "shape": {
+        "argument_id": "argument:route:entrypoint:scp-api/snapshots/action",
+        "choice": "dryrun"
+      },
+      "signature": "sha256:992bfcafafeda85446182bb7e3a631787002f988b07f3919f1a8d26db6270275"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/snapshots/argument-choice/argument:route:entrypoint:scp-api/snapshots/action/5498a731a1",
+      "kind": "argument-choice",
+      "members": [
+        "argument:route:entrypoint:scp-api/snapshots/action"
+      ],
+      "route_id": "route:entrypoint:scp-api/snapshots",
+      "shape": {
+        "argument_id": "argument:route:entrypoint:scp-api/snapshots/action",
+        "choice": "create"
+      },
+      "signature": "sha256:61798a2f46e11c403ae7898f00fb63aa913c73438488a10f23d46256cc50ca46"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/snapshots/argument-shape/argument:route:entrypoint:scp-api/snapshots/action",
+      "kind": "argument-shape",
+      "members": [
+        "argument:route:entrypoint:scp-api/snapshots/action"
+      ],
+      "route_id": "route:entrypoint:scp-api/snapshots",
+      "shape": {
+        "argument_id": "argument:route:entrypoint:scp-api/snapshots/action"
+      },
+      "signature": "sha256:596abcaa9fa7cafe717b60c645ec7040dcefd43c62bb9946e98357759a557b7b"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/snapshots/argument-shape/argument:route:entrypoint:scp-api/snapshots/server_id",
+      "kind": "argument-shape",
+      "members": [
+        "argument:route:entrypoint:scp-api/snapshots/server_id"
+      ],
+      "route_id": "route:entrypoint:scp-api/snapshots",
+      "shape": {
+        "argument_id": "argument:route:entrypoint:scp-api/snapshots/server_id"
+      },
+      "signature": "sha256:7f1f1f40e6dfa4e83713985c212daa33925a08dce1557914fcc90e3691895adf"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/snapshots/minimum",
+      "kind": "minimum",
+      "members": [],
+      "route_id": "route:entrypoint:scp-api/snapshots",
+      "shape": {
+        "defaulted_options": [],
+        "required_argument_values": {},
+        "required_arguments": [],
+        "required_exclusive_groups": {},
+        "required_options": []
+      },
+      "signature": "sha256:9ee9fd3d3f7a395d79da842c2c104320f75b77a415633e3080dc551b2e7a0045"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/snapshots/option-spelling/option:route:entrypoint:scp-api/snapshots/--debug-raw/--debug-raw",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:scp-api/snapshots/--debug-raw"
+      ],
+      "route_id": "route:entrypoint:scp-api/snapshots",
+      "shape": {
+        "option_id": "option:route:entrypoint:scp-api/snapshots/--debug-raw",
+        "spelling": "--debug-raw"
+      },
+      "signature": "sha256:c3edce81fe91732f2e01185b1db97ebe9956e25b6dc4271300b558b9a94f0e99"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/snapshots/option-spelling/option:route:entrypoint:scp-api/snapshots/--json/--json",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:scp-api/snapshots/--json"
+      ],
+      "route_id": "route:entrypoint:scp-api/snapshots",
+      "shape": {
+        "option_id": "option:route:entrypoint:scp-api/snapshots/--json",
+        "spelling": "--json"
+      },
+      "signature": "sha256:8fe5da20348b69faf93dc51c5b554c396cd2eba4105950d2b085365fbe7a99f7"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/snapshots/option-spelling/option:route:entrypoint:scp-api/snapshots/--name/--name",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:scp-api/snapshots/--name"
+      ],
+      "route_id": "route:entrypoint:scp-api/snapshots",
+      "shape": {
+        "option_id": "option:route:entrypoint:scp-api/snapshots/--name",
+        "spelling": "--name"
+      },
+      "signature": "sha256:aee3d09800ee83eaa652fef7cf8eeb5c1b3c9d7aac357df982cb6a4032120040"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/snapshots/option-spelling/option:route:entrypoint:scp-api/snapshots/--yes/--yes",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:scp-api/snapshots/--yes"
+      ],
+      "route_id": "route:entrypoint:scp-api/snapshots",
+      "shape": {
+        "option_id": "option:route:entrypoint:scp-api/snapshots/--yes",
+        "spelling": "--yes"
+      },
+      "signature": "sha256:3aa3c095faac3ceeaac021585f7e2dd9f4ec38fce0a109246dce7b1b3f28ea3c"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/status/argument-shape/argument:route:entrypoint:scp-api/status/server_id",
+      "kind": "argument-shape",
+      "members": [
+        "argument:route:entrypoint:scp-api/status/server_id"
+      ],
+      "route_id": "route:entrypoint:scp-api/status",
+      "shape": {
+        "argument_id": "argument:route:entrypoint:scp-api/status/server_id"
+      },
+      "signature": "sha256:896a77681abae0ee2235b02e4cb37a8c3890182bc751b399587ea4dff9e0123e"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/status/minimum",
+      "kind": "minimum",
+      "members": [
+        "option:route:entrypoint:scp-api/status/--ssh-timeout"
+      ],
+      "route_id": "route:entrypoint:scp-api/status",
+      "shape": {
+        "defaulted_options": [
+          "option:route:entrypoint:scp-api/status/--ssh-timeout"
+        ],
+        "required_argument_values": {},
+        "required_arguments": [],
+        "required_exclusive_groups": {},
+        "required_options": []
+      },
+      "signature": "sha256:357f2969f70e1d254e66600c50184e060fa7301f38bf7b4ffd338dca6e954f76"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/status/option-spelling/option:route:entrypoint:scp-api/status/--debug-raw/--debug-raw",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:scp-api/status/--debug-raw"
+      ],
+      "route_id": "route:entrypoint:scp-api/status",
+      "shape": {
+        "option_id": "option:route:entrypoint:scp-api/status/--debug-raw",
+        "spelling": "--debug-raw"
+      },
+      "signature": "sha256:9f3642d8b56d39f11c98e6f44e595f54f4632480a2acdfd8ba48147eafa4350e"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/status/option-spelling/option:route:entrypoint:scp-api/status/--json/--json",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:scp-api/status/--json"
+      ],
+      "route_id": "route:entrypoint:scp-api/status",
+      "shape": {
+        "option_id": "option:route:entrypoint:scp-api/status/--json",
+        "spelling": "--json"
+      },
+      "signature": "sha256:6a852ce3f54274c44604ecb6e5db853f0954d90218a9175be3b72168bd229746"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/status/option-spelling/option:route:entrypoint:scp-api/status/--ssh-timeout/--ssh-timeout",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:scp-api/status/--ssh-timeout"
+      ],
+      "route_id": "route:entrypoint:scp-api/status",
+      "shape": {
+        "option_id": "option:route:entrypoint:scp-api/status/--ssh-timeout",
+        "spelling": "--ssh-timeout"
+      },
+      "signature": "sha256:d4b6a777868efbf08bdb58c9bf3e58b3db05e8e04d0f2691181c04653dc4a365"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/tasks/argument-choice/argument:route:entrypoint:scp-api/tasks/action/5a83111e44",
+      "kind": "argument-choice",
+      "members": [
+        "argument:route:entrypoint:scp-api/tasks/action"
+      ],
+      "route_id": "route:entrypoint:scp-api/tasks",
+      "shape": {
+        "argument_id": "argument:route:entrypoint:scp-api/tasks/action",
+        "choice": "cancel"
+      },
+      "signature": "sha256:753ab1a4c3942deb5f22f5b9e927691be194d16e26027d5bdfcbcd9f4faba918"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/tasks/argument-shape/argument:route:entrypoint:scp-api/tasks/action",
+      "kind": "argument-shape",
+      "members": [
+        "argument:route:entrypoint:scp-api/tasks/action"
+      ],
+      "route_id": "route:entrypoint:scp-api/tasks",
+      "shape": {
+        "argument_id": "argument:route:entrypoint:scp-api/tasks/action"
+      },
+      "signature": "sha256:9301ad14e3e4cc0f021c6e2bd828a443f5d241f9f3d5de0b49663d810ce32924"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/tasks/argument-shape/argument:route:entrypoint:scp-api/tasks/uuid",
+      "kind": "argument-shape",
+      "members": [
+        "argument:route:entrypoint:scp-api/tasks/uuid"
+      ],
+      "route_id": "route:entrypoint:scp-api/tasks",
+      "shape": {
+        "argument_id": "argument:route:entrypoint:scp-api/tasks/uuid"
+      },
+      "signature": "sha256:451d52afd71c12ed5d698d48777d3fff0040787380912fde4bb7d02149e45cdc"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/tasks/minimum",
+      "kind": "minimum",
+      "members": [],
+      "route_id": "route:entrypoint:scp-api/tasks",
+      "shape": {
+        "defaulted_options": [],
+        "required_argument_values": {},
+        "required_arguments": [],
+        "required_exclusive_groups": {},
+        "required_options": []
+      },
+      "signature": "sha256:f1f2829ff075b7e7287242700f3ba3c527e4c912334457e6eae0c685591e7375"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/tasks/option-choice/option:route:entrypoint:scp-api/tasks/--state/20e8d2fc8d",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:scp-api/tasks/--state"
+      ],
+      "route_id": "route:entrypoint:scp-api/tasks",
+      "shape": {
+        "choice": "WAITING_FOR_CANCEL",
+        "option_id": "option:route:entrypoint:scp-api/tasks/--state"
+      },
+      "signature": "sha256:de6faac8ab2fcedd30537ddc656f1cae65c398f08bc97ad427f50de9017266a1"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/tasks/option-choice/option:route:entrypoint:scp-api/tasks/--state/294bdbf9fe",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:scp-api/tasks/--state"
+      ],
+      "route_id": "route:entrypoint:scp-api/tasks",
+      "shape": {
+        "choice": "RUNNING",
+        "option_id": "option:route:entrypoint:scp-api/tasks/--state"
+      },
+      "signature": "sha256:1f7721ada7e2f5e7ce80dc1f173336783745b46a0337adccdc3f3e07a96560b2"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/tasks/option-choice/option:route:entrypoint:scp-api/tasks/--state/33e202c61f",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:scp-api/tasks/--state"
+      ],
+      "route_id": "route:entrypoint:scp-api/tasks",
+      "shape": {
+        "choice": "FINISHED",
+        "option_id": "option:route:entrypoint:scp-api/tasks/--state"
+      },
+      "signature": "sha256:b6e290f26b965961e9a0a47e58d5c2e287321e03fb266fa40d19e64ffb395ed7"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/tasks/option-choice/option:route:entrypoint:scp-api/tasks/--state/78e030487c",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:scp-api/tasks/--state"
+      ],
+      "route_id": "route:entrypoint:scp-api/tasks",
+      "shape": {
+        "choice": "CANCELED",
+        "option_id": "option:route:entrypoint:scp-api/tasks/--state"
+      },
+      "signature": "sha256:846a8fe787b48aa047a27397cf425bed0068e821334ad05969714a3b4d19face"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/tasks/option-choice/option:route:entrypoint:scp-api/tasks/--state/b11db31f9f",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:scp-api/tasks/--state"
+      ],
+      "route_id": "route:entrypoint:scp-api/tasks",
+      "shape": {
+        "choice": "PENDING",
+        "option_id": "option:route:entrypoint:scp-api/tasks/--state"
+      },
+      "signature": "sha256:ff6f6f876745266c0aaea3ac89006598653ea7949370fe46c74a496b2bf29fde"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/tasks/option-choice/option:route:entrypoint:scp-api/tasks/--state/f717e7d817",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:scp-api/tasks/--state"
+      ],
+      "route_id": "route:entrypoint:scp-api/tasks",
+      "shape": {
+        "choice": "ERROR",
+        "option_id": "option:route:entrypoint:scp-api/tasks/--state"
+      },
+      "signature": "sha256:0e00a4e0df5e079e488773ef73290b9014be9054966aaffcd35499a0041fb034"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/tasks/option-spelling/option:route:entrypoint:scp-api/tasks/--debug-raw/--debug-raw",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:scp-api/tasks/--debug-raw"
+      ],
+      "route_id": "route:entrypoint:scp-api/tasks",
+      "shape": {
+        "option_id": "option:route:entrypoint:scp-api/tasks/--debug-raw",
+        "spelling": "--debug-raw"
+      },
+      "signature": "sha256:26ec2951149b8cb252f533c8f5d53124c21a6eda6e20e79e1429e1c00e3d6a83"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/tasks/option-spelling/option:route:entrypoint:scp-api/tasks/--json/--json",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:scp-api/tasks/--json"
+      ],
+      "route_id": "route:entrypoint:scp-api/tasks",
+      "shape": {
+        "option_id": "option:route:entrypoint:scp-api/tasks/--json",
+        "spelling": "--json"
+      },
+      "signature": "sha256:cecf289362b28b177f876cb67641ff220bf739fdf60b6fd0749ff0db4932d33b"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/tasks/option-spelling/option:route:entrypoint:scp-api/tasks/--limit/--limit",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:scp-api/tasks/--limit"
+      ],
+      "route_id": "route:entrypoint:scp-api/tasks",
+      "shape": {
+        "option_id": "option:route:entrypoint:scp-api/tasks/--limit",
+        "spelling": "--limit"
+      },
+      "signature": "sha256:836eb8dd95f2a578903c7ec61a28ab34dd6c77364e512020fa2635a81cca9c09"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/tasks/option-spelling/option:route:entrypoint:scp-api/tasks/--offset/--offset",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:scp-api/tasks/--offset"
+      ],
+      "route_id": "route:entrypoint:scp-api/tasks",
+      "shape": {
+        "option_id": "option:route:entrypoint:scp-api/tasks/--offset",
+        "spelling": "--offset"
+      },
+      "signature": "sha256:084636d6187ed16af9956a00ef2f1aca1409c7fc4bda54e0d1e9b897c08a304f"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/tasks/option-spelling/option:route:entrypoint:scp-api/tasks/--query/--filter",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:scp-api/tasks/--query"
+      ],
+      "route_id": "route:entrypoint:scp-api/tasks",
+      "shape": {
+        "option_id": "option:route:entrypoint:scp-api/tasks/--query",
+        "spelling": "--filter"
+      },
+      "signature": "sha256:cda8ace4a95a7e1ef6bc12ec27c0df8ca48e9637156a1549ec4d3f6a1bba681a"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/tasks/option-spelling/option:route:entrypoint:scp-api/tasks/--query/--query",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:scp-api/tasks/--query"
+      ],
+      "route_id": "route:entrypoint:scp-api/tasks",
+      "shape": {
+        "option_id": "option:route:entrypoint:scp-api/tasks/--query",
+        "spelling": "--query"
+      },
+      "signature": "sha256:509c823cd9f1c7b16b2b496bf36b7738273d676e9ec3b4ac05d82ee563519ba8"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/tasks/option-spelling/option:route:entrypoint:scp-api/tasks/--server-id/--server-id",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:scp-api/tasks/--server-id"
+      ],
+      "route_id": "route:entrypoint:scp-api/tasks",
+      "shape": {
+        "option_id": "option:route:entrypoint:scp-api/tasks/--server-id",
+        "spelling": "--server-id"
+      },
+      "signature": "sha256:5384ea5e66f68eac569df9fbaa5979be435c1602232dec10de51920bd25afd85"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/tasks/option-spelling/option:route:entrypoint:scp-api/tasks/--state/--state",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:scp-api/tasks/--state"
+      ],
+      "route_id": "route:entrypoint:scp-api/tasks",
+      "shape": {
+        "option_id": "option:route:entrypoint:scp-api/tasks/--state",
+        "spelling": "--state"
+      },
+      "signature": "sha256:e23da9cad2b8871e4235c65cb235592909efa74d882a7e9bd13a718bc6ac81e4"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/tasks/option-spelling/option:route:entrypoint:scp-api/tasks/--yes/--yes",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:scp-api/tasks/--yes"
+      ],
+      "route_id": "route:entrypoint:scp-api/tasks",
+      "shape": {
+        "option_id": "option:route:entrypoint:scp-api/tasks/--yes",
+        "spelling": "--yes"
+      },
+      "signature": "sha256:fcddf0f023e7216ed71c095b8c65e332fa258add7fd3a0f04ebd33b23b963b42"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/user-iso/argument-choice/argument:route:entrypoint:scp-api/user-iso/action/ca46c99db8",
+      "kind": "argument-choice",
+      "members": [
+        "argument:route:entrypoint:scp-api/user-iso/action"
+      ],
+      "route_id": "route:entrypoint:scp-api/user-iso",
+      "shape": {
+        "argument_id": "argument:route:entrypoint:scp-api/user-iso/action",
+        "choice": "upload"
+      },
+      "signature": "sha256:66416ef4f030a5e7f1e21129b25dfc14ba58d50dcea011c58bdd0902baec2045"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/user-iso/argument-shape/argument:route:entrypoint:scp-api/user-iso/action",
+      "kind": "argument-shape",
+      "members": [
+        "argument:route:entrypoint:scp-api/user-iso/action"
+      ],
+      "route_id": "route:entrypoint:scp-api/user-iso",
+      "shape": {
+        "argument_id": "argument:route:entrypoint:scp-api/user-iso/action"
+      },
+      "signature": "sha256:82a23bbdbf4a7a853c29bc7cf7268a421f44803b2815bf9a83f17c958d3211a3"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/user-iso/argument-shape/argument:route:entrypoint:scp-api/user-iso/file",
+      "kind": "argument-shape",
+      "members": [
+        "argument:route:entrypoint:scp-api/user-iso/file"
+      ],
+      "route_id": "route:entrypoint:scp-api/user-iso",
+      "shape": {
+        "argument_id": "argument:route:entrypoint:scp-api/user-iso/file"
+      },
+      "signature": "sha256:02fa8bc04701c1de4945919ef5ff15df26a309143b588c5791ccb60a27327654"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/user-iso/minimum",
+      "kind": "minimum",
+      "members": [],
+      "route_id": "route:entrypoint:scp-api/user-iso",
+      "shape": {
+        "defaulted_options": [],
+        "required_argument_values": {},
+        "required_arguments": [],
+        "required_exclusive_groups": {},
+        "required_options": []
+      },
+      "signature": "sha256:f40302cc1befeee4db58d50d9dc49432fa2d59fd8dfde738bbfdb7acfe21e059"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/user-iso/option-spelling/option:route:entrypoint:scp-api/user-iso/--debug-raw/--debug-raw",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:scp-api/user-iso/--debug-raw"
+      ],
+      "route_id": "route:entrypoint:scp-api/user-iso",
+      "shape": {
+        "option_id": "option:route:entrypoint:scp-api/user-iso/--debug-raw",
+        "spelling": "--debug-raw"
+      },
+      "signature": "sha256:c218187a7b81ed92a73687b3e24f094ff2ffd979689cc242ac6b38c3cca7d564"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/user-iso/option-spelling/option:route:entrypoint:scp-api/user-iso/--json/--json",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:scp-api/user-iso/--json"
+      ],
+      "route_id": "route:entrypoint:scp-api/user-iso",
+      "shape": {
+        "option_id": "option:route:entrypoint:scp-api/user-iso/--json",
+        "spelling": "--json"
+      },
+      "signature": "sha256:ea1abdf68ed2c6d57f9ca43aaf7e7c293a5d3ee291b873974b17ea4466eee702"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/user-iso/option-spelling/option:route:entrypoint:scp-api/user-iso/--multipart/--multipart",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:scp-api/user-iso/--multipart"
+      ],
+      "route_id": "route:entrypoint:scp-api/user-iso",
+      "shape": {
+        "option_id": "option:route:entrypoint:scp-api/user-iso/--multipart",
+        "spelling": "--multipart"
+      },
+      "signature": "sha256:5de782640761906b172903f1ff68eaf8c26d8010f4b328c82f7ccb297d67f244"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/user-iso/option-spelling/option:route:entrypoint:scp-api/user-iso/--name/--name",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:scp-api/user-iso/--name"
+      ],
+      "route_id": "route:entrypoint:scp-api/user-iso",
+      "shape": {
+        "option_id": "option:route:entrypoint:scp-api/user-iso/--name",
+        "spelling": "--name"
+      },
+      "signature": "sha256:75c0c9b05894c5012e3f962031fbfd3d4b9466de69b12f933e1b04e7f915f03d"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/user-iso/option-spelling/option:route:entrypoint:scp-api/user-iso/--part-size-mib/--part-size-mib",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:scp-api/user-iso/--part-size-mib"
+      ],
+      "route_id": "route:entrypoint:scp-api/user-iso",
+      "shape": {
+        "option_id": "option:route:entrypoint:scp-api/user-iso/--part-size-mib",
+        "spelling": "--part-size-mib"
+      },
+      "signature": "sha256:5f40e65d5e1c82ededd43d36eea3365c2d6800775fcb48b73247c62642ccaf4a"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/user-iso/option-spelling/option:route:entrypoint:scp-api/user-iso/--yes/--yes",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:scp-api/user-iso/--yes"
+      ],
+      "route_id": "route:entrypoint:scp-api/user-iso",
+      "shape": {
+        "option_id": "option:route:entrypoint:scp-api/user-iso/--yes",
+        "spelling": "--yes"
+      },
+      "signature": "sha256:13753882c15edfc7e0dfa5c07eecdffb3c859c9930bb10bbf8e654afd6565dda"
+    }
+  ],
+  "entrypoint": {
+    "allow_abbrev": false,
+    "builtins": [
+      "help",
+      "help <verb>",
+      "version",
+      "--help",
+      "--version"
+    ],
+    "command": "scp-api",
+    "display_name": "NETCUP SCP",
+    "fromfile_prefix_chars": null,
+    "id": "entrypoint:scp-api",
+    "long_name": "Netcup Server Control Panel API client",
+    "no_args_action": false,
+    "prefix_chars": "-",
+    "prog": "scp-api.py",
+    "single_command": false
+  },
+  "incomplete": [],
+  "interaction_issues": [],
+  "library_contract": {
+    "name": "cli-extended",
+    "version": 1
+  },
+  "routes": [
+    {
+      "actions": [
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "choices": null,
+          "const": null,
+          "default": null,
+          "description": "Netcup SCP server ID.",
+          "help_group": "positional arguments",
+          "hidden": false,
+          "id": "argument:route:entrypoint:scp-api/attach-iso/server_id",
+          "kind": "argument",
+          "metavar": "server_id",
+          "minimum_values": 1,
+          "name": "server_id",
+          "nargs": null,
+          "parser_kwargs": {
+            "type": {
+              "callable": "_cli_extended_surface_scp_api._positive_int"
+            }
+          },
+          "parser_path": [
+            "attach-iso"
+          ],
+          "required": true,
+          "scope": "positional",
+          "type": {
+            "callable": "_cli_extended_surface_scp_api._positive_int"
+          }
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--iso-id",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "ID returned by iso-bootable",
+          "dest": "iso_id",
+          "effective_default": null,
+          "exclusive_group": "parser-exclusive-ed5cad99d2f0",
+          "exclusive_required": true,
+          "flags": [
+            "--iso-id"
+          ],
+          "help_group": "ISO SOURCE",
+          "hidden": false,
+          "id": "option:route:entrypoint:scp-api/attach-iso/--iso-id",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {},
+          "parser_path": [
+            "attach-iso"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "custom",
+          "type": {
+            "callable": "_cli_extended_surface_scp_api._positive_int"
+          }
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--user-iso-name",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "name of an ISO uploaded to the account",
+          "dest": "user_iso_name",
+          "effective_default": null,
+          "exclusive_group": "parser-exclusive-ed5cad99d2f0",
+          "exclusive_required": true,
+          "flags": [
+            "--user-iso-name"
+          ],
+          "help_group": "ISO SOURCE",
+          "hidden": false,
+          "id": "option:route:entrypoint:scp-api/attach-iso/--user-iso-name",
+          "kind": "option",
+          "metavar": "NAME",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {},
+          "parser_path": [
+            "attach-iso"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "custom",
+          "type": {
+            "callable": "_cli_extended_surface_scp_api._nonempty_text"
+          }
+        },
+        {
+          "action": "argparse._StoreTrueAction",
+          "before_nested_subcommand": false,
+          "canonical": "--change-boot-device-to-cdrom",
+          "choices": null,
+          "const": true,
+          "default": false,
+          "default_present": true,
+          "description": "also make the virtual CD-ROM the next boot device",
+          "dest": "change_boot_device_to_cdrom",
+          "effective_default": false,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--change-boot-device-to-cdrom"
+          ],
+          "help_group": "BOOT OPTIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:scp-api/attach-iso/--change-boot-device-to-cdrom",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 0,
+          "nargs": 0,
+          "parser_kwargs": {},
+          "parser_path": [
+            "attach-iso"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "custom",
+          "type": null
+        }
+      ],
+      "aliases": [],
+      "behavior": [
+        "mutating"
+      ],
+      "common_controls": [
+        "--color",
+        "--debug",
+        "--debug-raw",
+        "--help",
+        "--json",
+        "--log-level",
+        "--no-color",
+        "--quiet",
+        "--traceback",
+        "--version",
+        "--yes"
+      ],
+      "confirmation": true,
+      "constraints": [],
+      "delegated_metadata": [],
+      "description": "Attach an ISO by ID from iso-bootable or a user ISO name. This changes attached media and is confirmed.",
+      "group": "MODIFICATION",
+      "id": "route:entrypoint:scp-api/attach-iso",
+      "kind": "invocation",
+      "no_args_action": false,
+      "opaque_fields": [
+        "argument:route:entrypoint:scp-api/attach-iso/server_id.type",
+        "option:route:entrypoint:scp-api/attach-iso/--iso-id.type",
+        "option:route:entrypoint:scp-api/attach-iso/--user-iso-name.type"
+      ],
+      "parser_configured_by_callback": true,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "attach-iso"
+          ],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "attach-iso"
+      ],
+      "single_command": false,
+      "subcommand_groups": [],
+      "subcommands": [],
+      "subcommands_required": false,
+      "summary": "attach a bootable or uploaded ISO to a server [mutating]",
+      "synopsis_override": "server_id",
+      "syntax_complete": true,
+      "usage_override": null
+    },
+    {
+      "actions": [
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "choices": null,
+          "const": null,
+          "default": null,
+          "description": "Netcup SCP server ID; omit to query all account servers.",
+          "help_group": "positional arguments",
+          "hidden": false,
+          "id": "argument:route:entrypoint:scp-api/disks/server_id",
+          "kind": "argument",
+          "metavar": "server_id",
+          "minimum_values": 0,
+          "name": "server_id",
+          "nargs": "?",
+          "parser_kwargs": {
+            "default": null,
+            "nargs": "?",
+            "type": {
+              "callable": "_cli_extended_surface_scp_api._positive_int"
+            }
+          },
+          "parser_path": [
+            "disks"
+          ],
+          "required": false,
+          "scope": "positional",
+          "type": {
+            "callable": "_cli_extended_surface_scp_api._positive_int"
+          }
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "choices": [
+            "supported-drivers"
+          ],
+          "const": null,
+          "default": null,
+          "description": "list storage drivers for one server",
+          "help_group": "ACTIONS",
+          "hidden": false,
+          "id": "argument:route:entrypoint:scp-api/disks/action",
+          "kind": "argument",
+          "metavar": "{supported-drivers}",
+          "minimum_values": 0,
+          "name": "action",
+          "nargs": "?",
+          "parser_kwargs": {},
+          "parser_path": [
+            "disks"
+          ],
+          "required": false,
+          "scope": "positional",
+          "type": null
+        }
+      ],
+      "aliases": [],
+      "behavior": [],
+      "common_controls": [
+        "--color",
+        "--debug",
+        "--debug-raw",
+        "--help",
+        "--json",
+        "--log-level",
+        "--no-color",
+        "--quiet",
+        "--traceback",
+        "--version"
+      ],
+      "confirmation": false,
+      "constraints": [],
+      "delegated_metadata": [],
+      "description": "List disk capacity/allocation and storage drivers for one or every server.",
+      "group": "EXPLORATION",
+      "id": "route:entrypoint:scp-api/disks",
+      "kind": "invocation",
+      "no_args_action": false,
+      "opaque_fields": [
+        "argument:route:entrypoint:scp-api/disks/server_id.type"
+      ],
+      "parser_configured_by_callback": true,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "disks"
+          ],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "disks"
+      ],
+      "single_command": false,
+      "subcommand_groups": [],
+      "subcommands": [],
+      "subcommands_required": false,
+      "summary": "list disks or supported storage drivers",
+      "synopsis_override": "[server_id] [supported-drivers]",
+      "syntax_complete": true,
+      "usage_override": null
+    },
+    {
+      "actions": [
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "choices": null,
+          "const": null,
+          "default": null,
+          "description": "Netcup SCP server ID",
+          "help_group": "positional arguments",
+          "hidden": false,
+          "id": "argument:route:entrypoint:scp-api/firewall/server_id",
+          "kind": "argument",
+          "metavar": "server_id",
+          "minimum_values": 1,
+          "name": "server_id",
+          "nargs": null,
+          "parser_kwargs": {},
+          "parser_path": [
+            "firewall"
+          ],
+          "required": true,
+          "scope": "positional",
+          "type": {
+            "callable": "_cli_extended_surface_scp_api._positive_int"
+          }
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "choices": null,
+          "const": null,
+          "default": null,
+          "description": "interface MAC; may be omitted only when the server has one interface",
+          "help_group": "positional arguments",
+          "hidden": false,
+          "id": "argument:route:entrypoint:scp-api/firewall/mac",
+          "kind": "argument",
+          "metavar": "mac",
+          "minimum_values": 0,
+          "name": "mac",
+          "nargs": "?",
+          "parser_kwargs": {},
+          "parser_path": [
+            "firewall"
+          ],
+          "required": false,
+          "scope": "positional",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "choices": [
+            "get",
+            "set"
+          ],
+          "const": null,
+          "default": null,
+          "description": "read an assignment or replace it",
+          "help_group": "ACTIONS",
+          "hidden": false,
+          "id": "argument:route:entrypoint:scp-api/firewall/action",
+          "kind": "argument",
+          "metavar": "{get,set}",
+          "minimum_values": 0,
+          "name": "action",
+          "nargs": "?",
+          "parser_kwargs": {},
+          "parser_path": [
+            "firewall"
+          ],
+          "required": false,
+          "scope": "positional",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreTrueAction",
+          "before_nested_subcommand": false,
+          "canonical": "--consistency-check",
+          "choices": null,
+          "const": true,
+          "default": false,
+          "default_present": true,
+          "description": "ask SCP to compare configured and applied firewall state",
+          "dest": "consistency_check",
+          "effective_default": false,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--consistency-check"
+          ],
+          "help_group": "GET OPTIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:scp-api/firewall/--consistency-check",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 0,
+          "nargs": 0,
+          "parser_kwargs": {},
+          "parser_path": [
+            "firewall"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "custom",
+          "type": null
+        },
+        {
+          "action": "argparse._AppendAction",
+          "before_nested_subcommand": false,
+          "canonical": "--copied-policy-id",
+          "choices": null,
+          "const": null,
+          "default": [],
+          "default_present": true,
+          "description": "repeat for copied policy IDs",
+          "dest": "copied_policy_ids",
+          "effective_default": [],
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--copied-policy-id"
+          ],
+          "help_group": "SET OPTIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:scp-api/firewall/--copied-policy-id",
+          "kind": "option",
+          "metavar": "ID",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {},
+          "parser_path": [
+            "firewall"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "custom",
+          "type": {
+            "callable": "_cli_extended_surface_scp_api._positive_int"
+          }
+        },
+        {
+          "action": "argparse._AppendAction",
+          "before_nested_subcommand": false,
+          "canonical": "--user-policy-id",
+          "choices": null,
+          "const": null,
+          "default": [],
+          "default_present": true,
+          "description": "repeat for user policy IDs",
+          "dest": "user_policy_ids",
+          "effective_default": [],
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--user-policy-id"
+          ],
+          "help_group": "SET OPTIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:scp-api/firewall/--user-policy-id",
+          "kind": "option",
+          "metavar": "ID",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {},
+          "parser_path": [
+            "firewall"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "custom",
+          "type": {
+            "callable": "_cli_extended_surface_scp_api._positive_int"
+          }
+        },
+        {
+          "action": "argparse._StoreTrueAction",
+          "before_nested_subcommand": false,
+          "canonical": "--active",
+          "choices": null,
+          "const": true,
+          "default": null,
+          "default_present": true,
+          "description": "enable the firewall",
+          "dest": "active",
+          "effective_default": null,
+          "exclusive_group": "parser-exclusive-f2a32d4e9855",
+          "exclusive_required": false,
+          "flags": [
+            "--active"
+          ],
+          "help_group": "SET OPTIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:scp-api/firewall/--active",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 0,
+          "nargs": 0,
+          "parser_kwargs": {},
+          "parser_path": [
+            "firewall"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "custom",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreFalseAction",
+          "before_nested_subcommand": false,
+          "canonical": "--inactive",
+          "choices": null,
+          "const": false,
+          "default": null,
+          "default_present": true,
+          "description": "disable the firewall",
+          "dest": "active",
+          "effective_default": null,
+          "exclusive_group": "parser-exclusive-f2a32d4e9855",
+          "exclusive_required": false,
+          "flags": [
+            "--inactive"
+          ],
+          "help_group": "SET OPTIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:scp-api/firewall/--inactive",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 0,
+          "nargs": 0,
+          "parser_kwargs": {},
+          "parser_path": [
+            "firewall"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "custom",
+          "type": null
+        }
+      ],
+      "aliases": [],
+      "behavior": [
+        "mutating"
+      ],
+      "common_controls": [
+        "--color",
+        "--debug",
+        "--debug-raw",
+        "--help",
+        "--json",
+        "--log-level",
+        "--no-color",
+        "--quiet",
+        "--traceback",
+        "--version",
+        "--yes"
+      ],
+      "confirmation": true,
+      "constraints": [],
+      "delegated_metadata": [],
+      "description": "get reads the assignment for one interface. MAC may be omitted only when the server has exactly one interface. set replaces copied/user policy assignments and requires --active or --inactive; policy creation/editing belongs to firewall-policies.",
+      "group": "MIXED OPERATIONS",
+      "id": "route:entrypoint:scp-api/firewall",
+      "kind": "invocation",
+      "no_args_action": false,
+      "opaque_fields": [
+        "argument:route:entrypoint:scp-api/firewall/server_id.type",
+        "option:route:entrypoint:scp-api/firewall/--copied-policy-id.type",
+        "option:route:entrypoint:scp-api/firewall/--user-policy-id.type"
+      ],
+      "parser_configured_by_callback": true,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "firewall"
+          ],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "firewall"
+      ],
+      "single_command": false,
+      "subcommand_groups": [],
+      "subcommands": [],
+      "subcommands_required": false,
+      "summary": "read or replace one interface's firewall assignment [mutating]",
+      "synopsis_override": "server_id [mac] [get|set]",
+      "syntax_complete": true,
+      "usage_override": null
+    },
+    {
+      "actions": [
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--query",
+          "choices": null,
+          "const": null,
+          "default": {
+            "kind": "suppressed"
+          },
+          "default_present": false,
+          "description": "search policy name/description",
+          "dest": "query",
+          "effective_default": {
+            "kind": "suppressed"
+          },
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--query",
+            "--filter"
+          ],
+          "help_group": "FILTERS",
+          "hidden": false,
+          "id": "option:route:entrypoint:scp-api/firewall-policies/--query",
+          "kind": "option",
+          "metavar": "TEXT",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "dest": "query",
+            "type": {
+              "callable": "_cli_extended_surface_scp_api._nonempty_text"
+            }
+          },
+          "parser_path": [
+            "firewall-policies"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": {
+            "callable": "_cli_extended_surface_scp_api._nonempty_text"
+          }
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--limit",
+          "choices": null,
+          "const": null,
+          "default": {
+            "kind": "suppressed"
+          },
+          "default_present": false,
+          "description": "maximum policies to return",
+          "dest": "limit",
+          "effective_default": {
+            "kind": "suppressed"
+          },
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--limit"
+          ],
+          "help_group": "FILTERS",
+          "hidden": false,
+          "id": "option:route:entrypoint:scp-api/firewall-policies/--limit",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "type": {
+              "callable": "_cli_extended_surface_scp_api._nonnegative_int"
+            }
+          },
+          "parser_path": [
+            "firewall-policies"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": {
+            "callable": "_cli_extended_surface_scp_api._nonnegative_int"
+          }
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--offset",
+          "choices": null,
+          "const": null,
+          "default": {
+            "kind": "suppressed"
+          },
+          "default_present": false,
+          "description": "matching policies to skip",
+          "dest": "offset",
+          "effective_default": {
+            "kind": "suppressed"
+          },
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--offset"
+          ],
+          "help_group": "FILTERS",
+          "hidden": false,
+          "id": "option:route:entrypoint:scp-api/firewall-policies/--offset",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "type": {
+              "callable": "_cli_extended_surface_scp_api._nonnegative_int"
+            }
+          },
+          "parser_path": [
+            "firewall-policies"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": {
+            "callable": "_cli_extended_surface_scp_api._nonnegative_int"
+          }
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "choices": [
+            "create",
+            "put"
+          ],
+          "const": null,
+          "default": null,
+          "description": "create a policy or replace an existing policy",
+          "help_group": "ACTIONS",
+          "hidden": false,
+          "id": "argument:route:entrypoint:scp-api/firewall-policies/action",
+          "kind": "argument",
+          "metavar": "{create,put}",
+          "minimum_values": 0,
+          "name": "action",
+          "nargs": "?",
+          "parser_kwargs": {},
+          "parser_path": [
+            "firewall-policies"
+          ],
+          "required": false,
+          "scope": "positional",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "choices": null,
+          "const": null,
+          "default": null,
+          "description": "existing policy ID; required with put",
+          "help_group": "positional arguments",
+          "hidden": false,
+          "id": "argument:route:entrypoint:scp-api/firewall-policies/policy_id",
+          "kind": "argument",
+          "metavar": "policy_id",
+          "minimum_values": 0,
+          "name": "policy_id",
+          "nargs": "?",
+          "parser_kwargs": {},
+          "parser_path": [
+            "firewall-policies"
+          ],
+          "required": false,
+          "scope": "positional",
+          "type": {
+            "callable": "_cli_extended_surface_scp_api._positive_int"
+          }
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--policy-json",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "validated FirewallPolicySave JSON object",
+          "dest": "policy_json",
+          "effective_default": null,
+          "exclusive_group": "parser-exclusive-680f7b6ad777",
+          "exclusive_required": false,
+          "flags": [
+            "--policy-json"
+          ],
+          "help_group": "POLICY INPUT",
+          "hidden": false,
+          "id": "option:route:entrypoint:scp-api/firewall-policies/--policy-json",
+          "kind": "option",
+          "metavar": "JSON",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {},
+          "parser_path": [
+            "firewall-policies"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "custom",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--policy-file",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "file containing validated FirewallPolicySave JSON",
+          "dest": "policy_file",
+          "effective_default": null,
+          "exclusive_group": "parser-exclusive-680f7b6ad777",
+          "exclusive_required": false,
+          "flags": [
+            "--policy-file"
+          ],
+          "help_group": "POLICY INPUT",
+          "hidden": false,
+          "id": "option:route:entrypoint:scp-api/firewall-policies/--policy-file",
+          "kind": "option",
+          "metavar": "PATH",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {},
+          "parser_path": [
+            "firewall-policies"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "custom",
+          "type": null
+        }
+      ],
+      "aliases": [],
+      "behavior": [
+        "mutating"
+      ],
+      "common_controls": [
+        "--color",
+        "--debug",
+        "--debug-raw",
+        "--help",
+        "--json",
+        "--log-level",
+        "--no-color",
+        "--quiet",
+        "--traceback",
+        "--version",
+        "--yes"
+      ],
+      "confirmation": true,
+      "constraints": [],
+      "delegated_metadata": [],
+      "description": "List policy IDs or create/update a FirewallPolicySave object after strict local JSON validation. put changes the policy definition; firewall SERVER set separately assigns policies to an interface.",
+      "group": "MIXED OPERATIONS",
+      "id": "route:entrypoint:scp-api/firewall-policies",
+      "kind": "invocation",
+      "no_args_action": false,
+      "opaque_fields": [
+        "argument:route:entrypoint:scp-api/firewall-policies/policy_id.type",
+        "option:route:entrypoint:scp-api/firewall-policies/--limit.type",
+        "option:route:entrypoint:scp-api/firewall-policies/--offset.type",
+        "option:route:entrypoint:scp-api/firewall-policies/--query.type"
+      ],
+      "parser_configured_by_callback": true,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "firewall-policies"
+          ],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "firewall-policies"
+      ],
+      "single_command": false,
+      "subcommand_groups": [],
+      "subcommands": [],
+      "subcommands_required": false,
+      "summary": "list, create, or replace account firewall policies [mutating]",
+      "synopsis_override": "[create|put]",
+      "syntax_complete": true,
+      "usage_override": null
+    },
+    {
+      "actions": [
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "choices": null,
+          "const": null,
+          "default": null,
+          "description": "Netcup SCP server ID.",
+          "help_group": "positional arguments",
+          "hidden": false,
+          "id": "argument:route:entrypoint:scp-api/guest-agent-status/server_id",
+          "kind": "argument",
+          "metavar": "server_id",
+          "minimum_values": 1,
+          "name": "server_id",
+          "nargs": null,
+          "parser_kwargs": {
+            "type": {
+              "callable": "_cli_extended_surface_scp_api._positive_int"
+            }
+          },
+          "parser_path": [
+            "guest-agent-status"
+          ],
+          "required": true,
+          "scope": "positional",
+          "type": {
+            "callable": "_cli_extended_surface_scp_api._positive_int"
+          }
+        }
+      ],
+      "aliases": [],
+      "behavior": [],
+      "common_controls": [
+        "--color",
+        "--debug",
+        "--debug-raw",
+        "--help",
+        "--json",
+        "--log-level",
+        "--no-color",
+        "--quiet",
+        "--traceback",
+        "--version"
+      ],
+      "confirmation": false,
+      "constraints": [],
+      "delegated_metadata": [],
+      "description": "Read guest-agent availability. This is not an SSH or bootstrap health check.",
+      "group": "EXPLORATION",
+      "id": "route:entrypoint:scp-api/guest-agent-status",
+      "kind": "invocation",
+      "no_args_action": false,
+      "opaque_fields": [
+        "argument:route:entrypoint:scp-api/guest-agent-status/server_id.type"
+      ],
+      "parser_configured_by_callback": false,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "guest-agent-status"
+          ],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "guest-agent-status"
+      ],
+      "single_command": false,
+      "subcommand_groups": [],
+      "subcommands": [],
+      "subcommands_required": false,
+      "summary": "show QEMU guest-agent availability",
+      "synopsis_override": "server_id",
+      "syntax_complete": true,
+      "usage_override": null
+    },
+    {
+      "actions": [
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "choices": null,
+          "const": null,
+          "default": null,
+          "description": "Netcup SCP server ID; omit to query all account servers.",
+          "help_group": "positional arguments",
+          "hidden": false,
+          "id": "argument:route:entrypoint:scp-api/imageflavours/server_id",
+          "kind": "argument",
+          "metavar": "server_id",
+          "minimum_values": 0,
+          "name": "server_id",
+          "nargs": "?",
+          "parser_kwargs": {
+            "default": null,
+            "nargs": "?",
+            "type": {
+              "callable": "_cli_extended_surface_scp_api._positive_int"
+            }
+          },
+          "parser_path": [
+            "imageflavours"
+          ],
+          "required": false,
+          "scope": "positional",
+          "type": {
+            "callable": "_cli_extended_surface_scp_api._positive_int"
+          }
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--filter",
+          "choices": null,
+          "const": null,
+          "default": {
+            "kind": "suppressed"
+          },
+          "default_present": false,
+          "description": "case-insensitive text filter across returned fields",
+          "dest": "filter",
+          "effective_default": {
+            "kind": "suppressed"
+          },
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--filter"
+          ],
+          "help_group": "FILTERS",
+          "hidden": false,
+          "id": "option:route:entrypoint:scp-api/imageflavours/--filter",
+          "kind": "option",
+          "metavar": "TEXT",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "type": {
+              "callable": "_cli_extended_surface_scp_api._nonempty_text"
+            }
+          },
+          "parser_path": [
+            "imageflavours"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": {
+            "callable": "_cli_extended_surface_scp_api._nonempty_text"
+          }
+        }
+      ],
+      "aliases": [],
+      "behavior": [],
+      "common_controls": [
+        "--color",
+        "--debug",
+        "--debug-raw",
+        "--help",
+        "--json",
+        "--log-level",
+        "--no-color",
+        "--quiet",
+        "--traceback",
+        "--version"
+      ],
+      "confirmation": false,
+      "constraints": [],
+      "delegated_metadata": [],
+      "description": "An image flavour is a server-compatible reinstallable OS/image variant, such as a Debian 13 UEFI amd64 image; it is not a VM template.",
+      "group": "EXPLORATION",
+      "id": "route:entrypoint:scp-api/imageflavours",
+      "kind": "invocation",
+      "no_args_action": false,
+      "opaque_fields": [
+        "argument:route:entrypoint:scp-api/imageflavours/server_id.type",
+        "option:route:entrypoint:scp-api/imageflavours/--filter.type"
+      ],
+      "parser_configured_by_callback": false,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "imageflavours"
+          ],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "imageflavours"
+      ],
+      "single_command": false,
+      "subcommand_groups": [],
+      "subcommands": [],
+      "subcommands_required": false,
+      "summary": "list reinstallable OS/image flavours",
+      "synopsis_override": "[server_id]",
+      "syntax_complete": true,
+      "usage_override": null
+    },
+    {
+      "actions": [
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "choices": null,
+          "const": null,
+          "default": null,
+          "description": "Netcup SCP server ID; omit to query all account servers.",
+          "help_group": "positional arguments",
+          "hidden": false,
+          "id": "argument:route:entrypoint:scp-api/iso-attached/server_id",
+          "kind": "argument",
+          "metavar": "server_id",
+          "minimum_values": 0,
+          "name": "server_id",
+          "nargs": "?",
+          "parser_kwargs": {
+            "default": null,
+            "nargs": "?",
+            "type": {
+              "callable": "_cli_extended_surface_scp_api._positive_int"
+            }
+          },
+          "parser_path": [
+            "iso-attached"
+          ],
+          "required": false,
+          "scope": "positional",
+          "type": {
+            "callable": "_cli_extended_surface_scp_api._positive_int"
+          }
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "choices": [
+            "detach"
+          ],
+          "const": null,
+          "default": null,
+          "description": "detach the currently attached ISO",
+          "help_group": "ACTIONS",
+          "hidden": false,
+          "id": "argument:route:entrypoint:scp-api/iso-attached/action",
+          "kind": "argument",
+          "metavar": "{detach}",
+          "minimum_values": 0,
+          "name": "action",
+          "nargs": "?",
+          "parser_kwargs": {},
+          "parser_path": [
+            "iso-attached"
+          ],
+          "required": false,
+          "scope": "positional",
+          "type": null
+        }
+      ],
+      "aliases": [],
+      "behavior": [
+        "mutating"
+      ],
+      "common_controls": [
+        "--color",
+        "--debug",
+        "--debug-raw",
+        "--help",
+        "--json",
+        "--log-level",
+        "--no-color",
+        "--quiet",
+        "--traceback",
+        "--version",
+        "--yes"
+      ],
+      "confirmation": true,
+      "constraints": [],
+      "delegated_metadata": [],
+      "description": "Show the ISO currently attached to one or every server. The detach action changes the server's media assignment and is confirmed.",
+      "group": "MIXED OPERATIONS",
+      "id": "route:entrypoint:scp-api/iso-attached",
+      "kind": "invocation",
+      "no_args_action": false,
+      "opaque_fields": [
+        "argument:route:entrypoint:scp-api/iso-attached/server_id.type"
+      ],
+      "parser_configured_by_callback": true,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "iso-attached"
+          ],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "iso-attached"
+      ],
+      "single_command": false,
+      "subcommand_groups": [],
+      "subcommands": [],
+      "subcommands_required": false,
+      "summary": "inspect attached ISOs or detach one [mutating]",
+      "synopsis_override": "[server_id] [detach]",
+      "syntax_complete": true,
+      "usage_override": null
+    },
+    {
+      "actions": [
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "choices": null,
+          "const": null,
+          "default": null,
+          "description": "Netcup SCP server ID; omit to query all account servers.",
+          "help_group": "positional arguments",
+          "hidden": false,
+          "id": "argument:route:entrypoint:scp-api/iso-bootable/server_id",
+          "kind": "argument",
+          "metavar": "server_id",
+          "minimum_values": 0,
+          "name": "server_id",
+          "nargs": "?",
+          "parser_kwargs": {
+            "default": null,
+            "nargs": "?",
+            "type": {
+              "callable": "_cli_extended_surface_scp_api._positive_int"
+            }
+          },
+          "parser_path": [
+            "iso-bootable"
+          ],
+          "required": false,
+          "scope": "positional",
+          "type": {
+            "callable": "_cli_extended_surface_scp_api._positive_int"
+          }
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--filter",
+          "choices": null,
+          "const": null,
+          "default": {
+            "kind": "suppressed"
+          },
+          "default_present": false,
+          "description": "case-insensitive text filter across returned fields",
+          "dest": "filter",
+          "effective_default": {
+            "kind": "suppressed"
+          },
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--filter"
+          ],
+          "help_group": "FILTERS",
+          "hidden": false,
+          "id": "option:route:entrypoint:scp-api/iso-bootable/--filter",
+          "kind": "option",
+          "metavar": "TEXT",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "type": {
+              "callable": "_cli_extended_surface_scp_api._nonempty_text"
+            }
+          },
+          "parser_path": [
+            "iso-bootable"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": {
+            "callable": "_cli_extended_surface_scp_api._nonempty_text"
+          }
+        }
+      ],
+      "aliases": [],
+      "behavior": [],
+      "common_controls": [
+        "--color",
+        "--debug",
+        "--debug-raw",
+        "--help",
+        "--json",
+        "--log-level",
+        "--no-color",
+        "--quiet",
+        "--traceback",
+        "--version"
+      ],
+      "confirmation": false,
+      "constraints": [],
+      "delegated_metadata": [],
+      "description": "These are bootable installer or recovery ISO images exposed by SCP. Use --filter to narrow names and descriptions.",
+      "group": "EXPLORATION",
+      "id": "route:entrypoint:scp-api/iso-bootable",
+      "kind": "invocation",
+      "no_args_action": false,
+      "opaque_fields": [
+        "argument:route:entrypoint:scp-api/iso-bootable/server_id.type",
+        "option:route:entrypoint:scp-api/iso-bootable/--filter.type"
+      ],
+      "parser_configured_by_callback": false,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "iso-bootable"
+          ],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "iso-bootable"
+      ],
+      "single_command": false,
+      "subcommand_groups": [],
+      "subcommands": [],
+      "subcommands_required": false,
+      "summary": "list provider bootable ISO choices",
+      "synopsis_override": "[server_id]",
+      "syntax_complete": true,
+      "usage_override": null
+    },
+    {
+      "actions": [],
+      "aliases": [],
+      "behavior": [],
+      "common_controls": [
+        "--color",
+        "--debug",
+        "--debug-raw",
+        "--help",
+        "--log-level",
+        "--no-color",
+        "--quiet",
+        "--traceback",
+        "--version"
+      ],
+      "confirmation": false,
+      "constraints": [],
+      "delegated_metadata": [],
+      "description": "Obtain an OAuth refresh token using the browser device-code flow. An interactive login may then select account servers named v<digits> for this checkout's local mutation denylist. This is local protection, not a provider-side lock.",
+      "group": "AUTHENTICATION / SETUP",
+      "id": "route:entrypoint:scp-api/login",
+      "kind": "invocation",
+      "no_args_action": false,
+      "opaque_fields": [],
+      "parser_configured_by_callback": false,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "login"
+          ],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "login"
+      ],
+      "single_command": false,
+      "subcommand_groups": [],
+      "subcommands": [],
+      "subcommands_required": false,
+      "summary": "authenticate and select locally protected servers",
+      "synopsis_override": "",
+      "syntax_complete": true,
+      "usage_override": null
+    },
+    {
+      "actions": [
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "choices": null,
+          "const": null,
+          "default": null,
+          "description": "Netcup SCP server ID.",
+          "help_group": "positional arguments",
+          "hidden": false,
+          "id": "argument:route:entrypoint:scp-api/metrics/server_id",
+          "kind": "argument",
+          "metavar": "server_id",
+          "minimum_values": 1,
+          "name": "server_id",
+          "nargs": null,
+          "parser_kwargs": {
+            "type": {
+              "callable": "_cli_extended_surface_scp_api._positive_int"
+            }
+          },
+          "parser_path": [
+            "metrics"
+          ],
+          "required": true,
+          "scope": "positional",
+          "type": {
+            "callable": "_cli_extended_surface_scp_api._positive_int"
+          }
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "choices": [
+            "cpu",
+            "disk",
+            "network",
+            "network-packet"
+          ],
+          "const": null,
+          "default": null,
+          "description": "metric series to return.",
+          "help_group": "positional arguments",
+          "hidden": false,
+          "id": "argument:route:entrypoint:scp-api/metrics/metric",
+          "kind": "argument",
+          "metavar": "{cpu,disk,network,network-packet}",
+          "minimum_values": 1,
+          "name": "metric",
+          "nargs": null,
+          "parser_kwargs": {
+            "choices": [
+              "cpu",
+              "disk",
+              "network",
+              "network-packet"
+            ]
+          },
+          "parser_path": [
+            "metrics"
+          ],
+          "required": true,
+          "scope": "positional",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--hours",
+          "choices": null,
+          "const": null,
+          "default": {
+            "kind": "suppressed"
+          },
+          "default_present": false,
+          "description": "look back this many hours (1-1440; API default if omitted)",
+          "dest": "hours",
+          "effective_default": {
+            "kind": "suppressed"
+          },
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--hours"
+          ],
+          "help_group": "TIME RANGE",
+          "hidden": false,
+          "id": "option:route:entrypoint:scp-api/metrics/--hours",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "type": {
+              "callable": "_cli_extended_surface_scp_api._hours"
+            }
+          },
+          "parser_path": [
+            "metrics"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": {
+            "callable": "_cli_extended_surface_scp_api._hours"
+          }
+        }
+      ],
+      "aliases": [],
+      "behavior": [],
+      "common_controls": [
+        "--color",
+        "--debug",
+        "--debug-raw",
+        "--help",
+        "--json",
+        "--log-level",
+        "--no-color",
+        "--quiet",
+        "--traceback",
+        "--version"
+      ],
+      "confirmation": false,
+      "constraints": [],
+      "delegated_metadata": [],
+      "description": "Return timestamped SCP metrics. --hours is a lookback window, not a sample interval.",
+      "group": "EXPLORATION",
+      "id": "route:entrypoint:scp-api/metrics",
+      "kind": "invocation",
+      "no_args_action": false,
+      "opaque_fields": [
+        "argument:route:entrypoint:scp-api/metrics/server_id.type",
+        "option:route:entrypoint:scp-api/metrics/--hours.type"
+      ],
+      "parser_configured_by_callback": false,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "metrics"
+          ],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "metrics"
+      ],
+      "single_command": false,
+      "subcommand_groups": [],
+      "subcommands": [],
+      "subcommands_required": false,
+      "summary": "show timestamped CPU, disk, or network metrics",
+      "synopsis_override": "server_id metric",
+      "syntax_complete": true,
+      "usage_override": null
+    },
+    {
+      "actions": [
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "choices": [
+            "on",
+            "off",
+            "cycle",
+            "reset"
+          ],
+          "const": null,
+          "default": null,
+          "description": "select the power operation",
+          "help_group": "ACTIONS",
+          "hidden": false,
+          "id": "argument:route:entrypoint:scp-api/power/action",
+          "kind": "argument",
+          "metavar": "{on,off,cycle,reset}",
+          "minimum_values": 1,
+          "name": "action",
+          "nargs": null,
+          "parser_kwargs": {},
+          "parser_path": [
+            "power"
+          ],
+          "required": true,
+          "scope": "positional",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "choices": null,
+          "const": null,
+          "default": null,
+          "description": "Netcup SCP server ID",
+          "help_group": "positional arguments",
+          "hidden": false,
+          "id": "argument:route:entrypoint:scp-api/power/server_id",
+          "kind": "argument",
+          "metavar": "server_id",
+          "minimum_values": 1,
+          "name": "server_id",
+          "nargs": null,
+          "parser_kwargs": {},
+          "parser_path": [
+            "power"
+          ],
+          "required": true,
+          "scope": "positional",
+          "type": {
+            "callable": "_cli_extended_surface_scp_api._positive_int"
+          }
+        }
+      ],
+      "aliases": [],
+      "behavior": [
+        "mutating"
+      ],
+      "common_controls": [
+        "--color",
+        "--debug",
+        "--debug-raw",
+        "--help",
+        "--json",
+        "--log-level",
+        "--no-color",
+        "--quiet",
+        "--traceback",
+        "--version",
+        "--yes"
+      ],
+      "confirmation": true,
+      "constraints": [],
+      "delegated_metadata": [],
+      "description": "Control a server's power state. Every operation is confirmed unless --yes is supplied.",
+      "group": "MODIFICATION",
+      "id": "route:entrypoint:scp-api/power",
+      "kind": "invocation",
+      "no_args_action": false,
+      "opaque_fields": [
+        "argument:route:entrypoint:scp-api/power/server_id.type"
+      ],
+      "parser_configured_by_callback": true,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "power"
+          ],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "power"
+      ],
+      "single_command": false,
+      "subcommand_groups": [],
+      "subcommands": [],
+      "subcommands_required": false,
+      "summary": "power on, off, cycle, or reset one server [mutating]",
+      "synopsis_override": "{on|off|cycle|reset} server_id",
+      "syntax_complete": true,
+      "usage_override": null
+    },
+    {
+      "actions": [
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "choices": null,
+          "const": null,
+          "default": null,
+          "description": "Netcup SCP server ID; omit to query all account servers.",
+          "help_group": "positional arguments",
+          "hidden": false,
+          "id": "argument:route:entrypoint:scp-api/rescuesystem/server_id",
+          "kind": "argument",
+          "metavar": "server_id",
+          "minimum_values": 0,
+          "name": "server_id",
+          "nargs": "?",
+          "parser_kwargs": {
+            "default": null,
+            "nargs": "?",
+            "type": {
+              "callable": "_cli_extended_surface_scp_api._positive_int"
+            }
+          },
+          "parser_path": [
+            "rescuesystem"
+          ],
+          "required": false,
+          "scope": "positional",
+          "type": {
+            "callable": "_cli_extended_surface_scp_api._positive_int"
+          }
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "choices": [
+            "deactivate"
+          ],
+          "const": null,
+          "default": null,
+          "description": "turn off provider-managed rescue mode",
+          "help_group": "ACTIONS",
+          "hidden": false,
+          "id": "argument:route:entrypoint:scp-api/rescuesystem/action",
+          "kind": "argument",
+          "metavar": "{deactivate}",
+          "minimum_values": 0,
+          "name": "action",
+          "nargs": "?",
+          "parser_kwargs": {},
+          "parser_path": [
+            "rescuesystem"
+          ],
+          "required": false,
+          "scope": "positional",
+          "type": null
+        }
+      ],
+      "aliases": [],
+      "behavior": [
+        "mutating"
+      ],
+      "common_controls": [
+        "--color",
+        "--debug",
+        "--debug-raw",
+        "--help",
+        "--json",
+        "--log-level",
+        "--no-color",
+        "--quiet",
+        "--traceback",
+        "--version",
+        "--yes"
+      ],
+      "confirmation": true,
+      "constraints": [],
+      "delegated_metadata": [],
+      "description": "Read Netcup's provider-managed rescue environment; this is distinct from attaching an arbitrary ISO. The deactivate action changes server state and is confirmed.",
+      "group": "MIXED OPERATIONS",
+      "id": "route:entrypoint:scp-api/rescuesystem",
+      "kind": "invocation",
+      "no_args_action": false,
+      "opaque_fields": [
+        "argument:route:entrypoint:scp-api/rescuesystem/server_id.type"
+      ],
+      "parser_configured_by_callback": true,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "rescuesystem"
+          ],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "rescuesystem"
+      ],
+      "single_command": false,
+      "subcommand_groups": [],
+      "subcommands": [],
+      "subcommands_required": false,
+      "summary": "inspect or deactivate provider rescue mode [mutating]",
+      "synopsis_override": "[server_id] [deactivate]",
+      "syntax_complete": true,
+      "usage_override": null
+    },
+    {
+      "actions": [
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "choices": null,
+          "const": null,
+          "default": null,
+          "description": "Netcup SCP server ID.",
+          "help_group": "positional arguments",
+          "hidden": false,
+          "id": "argument:route:entrypoint:scp-api/server-details/server_id",
+          "kind": "argument",
+          "metavar": "server_id",
+          "minimum_values": 1,
+          "name": "server_id",
+          "nargs": null,
+          "parser_kwargs": {
+            "type": {
+              "callable": "_cli_extended_surface_scp_api._positive_int"
+            }
+          },
+          "parser_path": [
+            "server-details"
+          ],
+          "required": true,
+          "scope": "positional",
+          "type": {
+            "callable": "_cli_extended_surface_scp_api._positive_int"
+          }
+        }
+      ],
+      "aliases": [],
+      "behavior": [],
+      "common_controls": [
+        "--color",
+        "--debug",
+        "--debug-raw",
+        "--help",
+        "--json",
+        "--log-level",
+        "--no-color",
+        "--quiet",
+        "--traceback",
+        "--version"
+      ],
+      "confirmation": false,
+      "constraints": [],
+      "delegated_metadata": [],
+      "description": "Show the complete server details record returned by SCP.",
+      "group": "EXPLORATION",
+      "id": "route:entrypoint:scp-api/server-details",
+      "kind": "invocation",
+      "no_args_action": false,
+      "opaque_fields": [
+        "argument:route:entrypoint:scp-api/server-details/server_id.type"
+      ],
+      "parser_configured_by_callback": false,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "server-details"
+          ],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "server-details"
+      ],
+      "single_command": false,
+      "subcommand_groups": [],
+      "subcommands": [],
+      "subcommands_required": false,
+      "summary": "show one server's detailed API record",
+      "synopsis_override": "server_id",
+      "syntax_complete": true,
+      "usage_override": null
+    },
+    {
+      "actions": [],
+      "aliases": [],
+      "behavior": [],
+      "common_controls": [
+        "--color",
+        "--debug",
+        "--debug-raw",
+        "--help",
+        "--json",
+        "--log-level",
+        "--no-color",
+        "--quiet",
+        "--traceback",
+        "--version"
+      ],
+      "confirmation": false,
+      "constraints": [],
+      "delegated_metadata": [],
+      "description": "List all servers known to the authenticated Netcup SCP account.",
+      "group": "EXPLORATION",
+      "id": "route:entrypoint:scp-api/servers",
+      "kind": "invocation",
+      "no_args_action": false,
+      "opaque_fields": [],
+      "parser_configured_by_callback": false,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "servers"
+          ],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "servers"
+      ],
+      "single_command": false,
+      "subcommand_groups": [],
+      "subcommands": [],
+      "subcommands_required": false,
+      "summary": "list the account's known servers",
+      "synopsis_override": "",
+      "syntax_complete": true,
+      "usage_override": null
+    },
+    {
+      "actions": [
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "choices": null,
+          "const": null,
+          "default": null,
+          "description": "Netcup SCP server ID; omit to query all account servers.",
+          "help_group": "positional arguments",
+          "hidden": false,
+          "id": "argument:route:entrypoint:scp-api/snapshots/server_id",
+          "kind": "argument",
+          "metavar": "server_id",
+          "minimum_values": 0,
+          "name": "server_id",
+          "nargs": "?",
+          "parser_kwargs": {
+            "default": null,
+            "nargs": "?",
+            "type": {
+              "callable": "_cli_extended_surface_scp_api._positive_int"
+            }
+          },
+          "parser_path": [
+            "snapshots"
+          ],
+          "required": false,
+          "scope": "positional",
+          "type": {
+            "callable": "_cli_extended_surface_scp_api._positive_int"
+          }
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--name",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "snapshot name for create (default is timestamped)",
+          "dest": "name",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--name"
+          ],
+          "help_group": "SNAPSHOT OPTIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:scp-api/snapshots/--name",
+          "kind": "option",
+          "metavar": "NAME",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null
+          },
+          "parser_path": [
+            "snapshots"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "choices": [
+            "create",
+            "dryrun"
+          ],
+          "const": null,
+          "default": null,
+          "description": "create a snapshot, or check whether creation is currently possible",
+          "help_group": "ACTIONS",
+          "hidden": false,
+          "id": "argument:route:entrypoint:scp-api/snapshots/action",
+          "kind": "argument",
+          "metavar": "{create,dryrun}",
+          "minimum_values": 0,
+          "name": "action",
+          "nargs": "?",
+          "parser_kwargs": {},
+          "parser_path": [
+            "snapshots"
+          ],
+          "required": false,
+          "scope": "positional",
+          "type": null
+        }
+      ],
+      "aliases": [],
+      "behavior": [
+        "mutating"
+      ],
+      "common_controls": [
+        "--color",
+        "--debug",
+        "--debug-raw",
+        "--help",
+        "--json",
+        "--log-level",
+        "--no-color",
+        "--quiet",
+        "--traceback",
+        "--version",
+        "--yes"
+      ],
+      "confirmation": true,
+      "constraints": [],
+      "delegated_metadata": [],
+      "description": "List snapshots for one or every server. dryrun asks SCP whether creation is possible; create makes a snapshot and is confirmed.",
+      "group": "MIXED OPERATIONS",
+      "id": "route:entrypoint:scp-api/snapshots",
+      "kind": "invocation",
+      "no_args_action": false,
+      "opaque_fields": [
+        "argument:route:entrypoint:scp-api/snapshots/server_id.type"
+      ],
+      "parser_configured_by_callback": true,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "snapshots"
+          ],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "snapshots"
+      ],
+      "single_command": false,
+      "subcommand_groups": [],
+      "subcommands": [],
+      "subcommands_required": false,
+      "summary": "list, check, or create server snapshots [mutating]",
+      "synopsis_override": "[server_id] [create|dryrun]",
+      "syntax_complete": true,
+      "usage_override": null
+    },
+    {
+      "actions": [
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "choices": null,
+          "const": null,
+          "default": null,
+          "description": "Netcup SCP server ID; omit to query all account servers.",
+          "help_group": "positional arguments",
+          "hidden": false,
+          "id": "argument:route:entrypoint:scp-api/status/server_id",
+          "kind": "argument",
+          "metavar": "server_id",
+          "minimum_values": 0,
+          "name": "server_id",
+          "nargs": "?",
+          "parser_kwargs": {
+            "default": null,
+            "nargs": "?",
+            "type": {
+              "callable": "_cli_extended_surface_scp_api._positive_int"
+            }
+          },
+          "parser_path": [
+            "status"
+          ],
+          "required": false,
+          "scope": "positional",
+          "type": {
+            "callable": "_cli_extended_surface_scp_api._positive_int"
+          }
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--ssh-timeout",
+          "choices": null,
+          "const": null,
+          "default": 2.0,
+          "default_present": true,
+          "description": "per-address SSH service/key timeout (default: 2 seconds)",
+          "dest": "ssh_timeout",
+          "effective_default": 2.0,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--ssh-timeout"
+          ],
+          "help_group": "SSH PROBE",
+          "hidden": false,
+          "id": "option:route:entrypoint:scp-api/status/--ssh-timeout",
+          "kind": "option",
+          "metavar": "SECONDS",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": 2.0,
+            "type": {
+              "callable": "_cli_extended_surface_scp_api._positive_float"
+            }
+          },
+          "parser_path": [
+            "status"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": {
+            "callable": "_cli_extended_surface_scp_api._positive_float"
+          }
+        }
+      ],
+      "aliases": [],
+      "behavior": [],
+      "common_controls": [
+        "--color",
+        "--debug",
+        "--debug-raw",
+        "--help",
+        "--json",
+        "--log-level",
+        "--no-color",
+        "--quiet",
+        "--traceback",
+        "--version"
+      ],
+      "confirmation": false,
+      "constraints": [],
+      "delegated_metadata": [],
+      "description": "Fetch server details and show vname, hostname, run state, architecture, CPU, RAM, disk, SSH authentication, and reverse DNS for the provider's ipv4Addresses/ipv6Addresses. SSH probing creates no key. It probes the service once per address, then tries recognizable private keys in ~/.ssh and the configured install-host identity, preferring host/hostname-matched filenames. The default per-address timeout is 2 seconds. Results distinguish accepted key names, no keys match, rejected, and no answer. With no ID, a bounded four-worker pool queries all servers; reverse-DNS lookups are concurrent and duplicate addresses are not cached.",
+      "group": "EXPLORATION",
+      "id": "route:entrypoint:scp-api/status",
+      "kind": "invocation",
+      "no_args_action": false,
+      "opaque_fields": [
+        "argument:route:entrypoint:scp-api/status/server_id.type",
+        "option:route:entrypoint:scp-api/status/--ssh-timeout.type"
+      ],
+      "parser_configured_by_callback": false,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "status"
+          ],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "status"
+      ],
+      "single_command": false,
+      "subcommand_groups": [],
+      "subcommands": [],
+      "subcommands_required": false,
+      "summary": "show compact live status and SSH reachability",
+      "synopsis_override": "[server_id]",
+      "syntax_complete": true,
+      "usage_override": null
+    },
+    {
+      "actions": [
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "choices": null,
+          "const": null,
+          "default": null,
+          "description": "Task UUID; omit to list tasks.",
+          "help_group": "positional arguments",
+          "hidden": false,
+          "id": "argument:route:entrypoint:scp-api/tasks/uuid",
+          "kind": "argument",
+          "metavar": "task_uuid",
+          "minimum_values": 0,
+          "name": "uuid",
+          "nargs": "?",
+          "parser_kwargs": {
+            "default": null,
+            "nargs": "?",
+            "type": {
+              "callable": "_cli_extended_surface_scp_api._nonempty_text"
+            }
+          },
+          "parser_path": [
+            "tasks"
+          ],
+          "required": false,
+          "scope": "positional",
+          "type": {
+            "callable": "_cli_extended_surface_scp_api._nonempty_text"
+          }
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--query",
+          "choices": null,
+          "const": null,
+          "default": {
+            "kind": "suppressed"
+          },
+          "default_present": false,
+          "description": "search task name, UUID, or server fields (API q filter)",
+          "dest": "query",
+          "effective_default": {
+            "kind": "suppressed"
+          },
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--query",
+            "--filter"
+          ],
+          "help_group": "FILTERS",
+          "hidden": false,
+          "id": "option:route:entrypoint:scp-api/tasks/--query",
+          "kind": "option",
+          "metavar": "TEXT",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "dest": "query",
+            "type": {
+              "callable": "_cli_extended_surface_scp_api._nonempty_text"
+            }
+          },
+          "parser_path": [
+            "tasks"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": {
+            "callable": "_cli_extended_surface_scp_api._nonempty_text"
+          }
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--server-id",
+          "choices": null,
+          "const": null,
+          "default": {
+            "kind": "suppressed"
+          },
+          "default_present": false,
+          "description": "filter by server; required to cancel with protected-server policy",
+          "dest": "server_filter_id",
+          "effective_default": {
+            "kind": "suppressed"
+          },
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--server-id"
+          ],
+          "help_group": "FILTERS",
+          "hidden": false,
+          "id": "option:route:entrypoint:scp-api/tasks/--server-id",
+          "kind": "option",
+          "metavar": "ID",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "dest": "server_filter_id",
+            "type": {
+              "callable": "_cli_extended_surface_scp_api._positive_int"
+            }
+          },
+          "parser_path": [
+            "tasks"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": {
+            "callable": "_cli_extended_surface_scp_api._positive_int"
+          }
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--state",
+          "choices": [
+            "PENDING",
+            "RUNNING",
+            "FINISHED",
+            "ERROR",
+            "WAITING_FOR_CANCEL",
+            "CANCELED"
+          ],
+          "const": null,
+          "default": {
+            "kind": "suppressed"
+          },
+          "default_present": false,
+          "description": "filter by task state",
+          "dest": "state",
+          "effective_default": {
+            "kind": "suppressed"
+          },
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--state"
+          ],
+          "help_group": "FILTERS",
+          "hidden": false,
+          "id": "option:route:entrypoint:scp-api/tasks/--state",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "choices": [
+              "PENDING",
+              "RUNNING",
+              "FINISHED",
+              "ERROR",
+              "WAITING_FOR_CANCEL",
+              "CANCELED"
+            ]
+          },
+          "parser_path": [
+            "tasks"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--limit",
+          "choices": null,
+          "const": null,
+          "default": {
+            "kind": "suppressed"
+          },
+          "default_present": false,
+          "description": "maximum tasks to return",
+          "dest": "limit",
+          "effective_default": {
+            "kind": "suppressed"
+          },
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--limit"
+          ],
+          "help_group": "FILTERS",
+          "hidden": false,
+          "id": "option:route:entrypoint:scp-api/tasks/--limit",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "type": {
+              "callable": "_cli_extended_surface_scp_api._nonnegative_int"
+            }
+          },
+          "parser_path": [
+            "tasks"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": {
+            "callable": "_cli_extended_surface_scp_api._nonnegative_int"
+          }
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--offset",
+          "choices": null,
+          "const": null,
+          "default": {
+            "kind": "suppressed"
+          },
+          "default_present": false,
+          "description": "matching tasks to skip",
+          "dest": "offset",
+          "effective_default": {
+            "kind": "suppressed"
+          },
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--offset"
+          ],
+          "help_group": "FILTERS",
+          "hidden": false,
+          "id": "option:route:entrypoint:scp-api/tasks/--offset",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "type": {
+              "callable": "_cli_extended_surface_scp_api._nonnegative_int"
+            }
+          },
+          "parser_path": [
+            "tasks"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": {
+            "callable": "_cli_extended_surface_scp_api._nonnegative_int"
+          }
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "choices": [
+            "cancel"
+          ],
+          "const": null,
+          "default": null,
+          "description": "cancel a task; this does not undo completed work",
+          "help_group": "ACTIONS",
+          "hidden": false,
+          "id": "argument:route:entrypoint:scp-api/tasks/action",
+          "kind": "argument",
+          "metavar": "{cancel}",
+          "minimum_values": 0,
+          "name": "action",
+          "nargs": "?",
+          "parser_kwargs": {},
+          "parser_path": [
+            "tasks"
+          ],
+          "required": false,
+          "scope": "positional",
+          "type": null
+        }
+      ],
+      "aliases": [],
+      "behavior": [
+        "mutating"
+      ],
+      "common_controls": [
+        "--color",
+        "--debug",
+        "--debug-raw",
+        "--help",
+        "--json",
+        "--log-level",
+        "--no-color",
+        "--quiet",
+        "--traceback",
+        "--version",
+        "--yes"
+      ],
+      "confirmation": true,
+      "constraints": [],
+      "delegated_metadata": [],
+      "description": "List tasks with optional filters, fetch one task by UUID, or cancel a task. Cancellation requires an explicit --server-id when a protected-server denylist is configured.",
+      "group": "MIXED OPERATIONS",
+      "id": "route:entrypoint:scp-api/tasks",
+      "kind": "invocation",
+      "no_args_action": false,
+      "opaque_fields": [
+        "argument:route:entrypoint:scp-api/tasks/uuid.type",
+        "option:route:entrypoint:scp-api/tasks/--limit.type",
+        "option:route:entrypoint:scp-api/tasks/--offset.type",
+        "option:route:entrypoint:scp-api/tasks/--query.type",
+        "option:route:entrypoint:scp-api/tasks/--server-id.type"
+      ],
+      "parser_configured_by_callback": true,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "tasks"
+          ],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "tasks"
+      ],
+      "single_command": false,
+      "subcommand_groups": [],
+      "subcommands": [],
+      "subcommands_required": false,
+      "summary": "list/filter tasks, inspect one, or cancel one [mutating]",
+      "synopsis_override": "[task_uuid] [cancel]",
+      "syntax_complete": true,
+      "usage_override": null
+    },
+    {
+      "actions": [
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--name",
+          "choices": null,
+          "const": null,
+          "default": {
+            "kind": "suppressed"
+          },
+          "default_present": false,
+          "description": "object name (defaults to the local filename)",
+          "dest": "name",
+          "effective_default": {
+            "kind": "suppressed"
+          },
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--name"
+          ],
+          "help_group": "UPLOAD OPTIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:scp-api/user-iso/--name",
+          "kind": "option",
+          "metavar": "KEY",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "type": {
+              "callable": "_cli_extended_surface_scp_api._nonempty_text"
+            }
+          },
+          "parser_path": [
+            "user-iso"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": {
+            "callable": "_cli_extended_surface_scp_api._nonempty_text"
+          }
+        },
+        {
+          "action": "argparse._StoreTrueAction",
+          "before_nested_subcommand": false,
+          "canonical": "--multipart",
+          "choices": null,
+          "const": true,
+          "default": {
+            "kind": "suppressed"
+          },
+          "default_present": false,
+          "description": "use multipart upload for large ISO files",
+          "dest": "multipart",
+          "effective_default": {
+            "kind": "suppressed"
+          },
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--multipart"
+          ],
+          "help_group": "UPLOAD OPTIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:scp-api/user-iso/--multipart",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 0,
+          "nargs": 0,
+          "parser_kwargs": {
+            "action": "store_true"
+          },
+          "parser_path": [
+            "user-iso"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--part-size-mib",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "multipart part size in MiB (default 64; minimum 5)",
+          "dest": "part_size_mib",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--part-size-mib"
+          ],
+          "help_group": "UPLOAD OPTIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:scp-api/user-iso/--part-size-mib",
+          "kind": "option",
+          "metavar": "N",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null,
+            "type": {
+              "callable": "_cli_extended_surface_scp_api._part_size_mib"
+            }
+          },
+          "parser_path": [
+            "user-iso"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": {
+            "callable": "_cli_extended_surface_scp_api._part_size_mib"
+          }
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "choices": [
+            "upload"
+          ],
+          "const": null,
+          "default": null,
+          "description": "upload one local ISO (confirmed)",
+          "help_group": "ACTIONS",
+          "hidden": false,
+          "id": "argument:route:entrypoint:scp-api/user-iso/action",
+          "kind": "argument",
+          "metavar": "{upload}",
+          "minimum_values": 0,
+          "name": "action",
+          "nargs": "?",
+          "parser_kwargs": {},
+          "parser_path": [
+            "user-iso"
+          ],
+          "required": false,
+          "scope": "positional",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "choices": null,
+          "const": null,
+          "default": null,
+          "description": "local ISO path; required with upload",
+          "help_group": "positional arguments",
+          "hidden": false,
+          "id": "argument:route:entrypoint:scp-api/user-iso/file",
+          "kind": "argument",
+          "metavar": "FILE",
+          "minimum_values": 0,
+          "name": "file",
+          "nargs": "?",
+          "parser_kwargs": {},
+          "parser_path": [
+            "user-iso"
+          ],
+          "required": false,
+          "scope": "positional",
+          "type": null
+        }
+      ],
+      "aliases": [],
+      "behavior": [
+        "mutating"
+      ],
+      "common_controls": [
+        "--color",
+        "--debug",
+        "--debug-raw",
+        "--help",
+        "--json",
+        "--log-level",
+        "--no-color",
+        "--quiet",
+        "--traceback",
+        "--version",
+        "--yes"
+      ],
+      "confirmation": true,
+      "constraints": [],
+      "delegated_metadata": [],
+      "description": "List account-level ISO objects or upload a local ISO through the provider's signed single-part/multipart object-storage flow. Upload does not attach or boot the ISO; use attach-iso, then select CD-ROM boot/power as needed.",
+      "group": "MIXED OPERATIONS",
+      "id": "route:entrypoint:scp-api/user-iso",
+      "kind": "invocation",
+      "no_args_action": false,
+      "opaque_fields": [
+        "option:route:entrypoint:scp-api/user-iso/--name.type",
+        "option:route:entrypoint:scp-api/user-iso/--part-size-mib.type"
+      ],
+      "parser_configured_by_callback": true,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "user-iso"
+          ],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "user-iso"
+      ],
+      "single_command": false,
+      "subcommand_groups": [],
+      "subcommands": [],
+      "subcommands_required": false,
+      "summary": "list account user ISOs or upload one [mutating]",
+      "synopsis_override": "[upload FILE]",
+      "syntax_complete": true,
+      "usage_override": null
+    }
+  ],
+  "schema_version": 7,
+  "syntax_complete": true
+}

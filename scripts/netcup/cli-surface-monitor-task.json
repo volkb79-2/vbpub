@@ -1,0 +1,534 @@
+{
+  "candidates": [
+    {
+      "id": "case:route:entrypoint:monitor-task/show/argument-shape/argument:route:entrypoint:monitor-task/show/task_uuid",
+      "kind": "argument-shape",
+      "members": [
+        "argument:route:entrypoint:monitor-task/show/task_uuid"
+      ],
+      "route_id": "route:entrypoint:monitor-task/show",
+      "shape": {
+        "argument_id": "argument:route:entrypoint:monitor-task/show/task_uuid"
+      },
+      "signature": "sha256:af4dac39bc314322c1765da7360d0656273e3e59217d72e0ebf4ab7d970c558e"
+    },
+    {
+      "id": "case:route:entrypoint:monitor-task/show/interaction:raw-json-opt-out/json-and-debug-raw",
+      "kind": "interaction",
+      "members": [
+        "option:route:entrypoint:monitor-task/show/--debug-raw",
+        "option:route:entrypoint:monitor-task/show/--json"
+      ],
+      "route_id": "route:entrypoint:monitor-task/show",
+      "shape": {
+        "external_options": [],
+        "interaction_id": "raw-json-opt-out/json-and-debug-raw",
+        "option_ids": [
+          "option:route:entrypoint:monitor-task/show/--debug-raw",
+          "option:route:entrypoint:monitor-task/show/--json"
+        ],
+        "required_argument_values": {
+          "argument:route:entrypoint:monitor-task/show/task_uuid": 1
+        },
+        "required_arguments": [
+          "argument:route:entrypoint:monitor-task/show/task_uuid"
+        ],
+        "required_exclusive_groups": {},
+        "required_options": []
+      },
+      "signature": "sha256:3417c7433652455c4d3b08eac79b92bcc8bd113eadeacb0efe4798e176971554"
+    },
+    {
+      "id": "case:route:entrypoint:monitor-task/show/interaction:show-poll-refusal/foreign-watch-poll",
+      "kind": "interaction",
+      "members": [
+        "option:route:entrypoint:monitor-task/watch/--poll"
+      ],
+      "route_id": "route:entrypoint:monitor-task/show",
+      "shape": {
+        "external_options": [
+          {
+            "action": "argparse._StoreAction",
+            "choices": null,
+            "flags": [
+              "--poll"
+            ],
+            "id": "option:route:entrypoint:monitor-task/watch/--poll",
+            "minimum_values": 1,
+            "nargs": null,
+            "path": [
+              "watch"
+            ],
+            "route_id": "route:entrypoint:monitor-task/watch"
+          }
+        ],
+        "interaction_id": "show-poll-refusal/foreign-watch-poll",
+        "option_ids": [
+          "option:route:entrypoint:monitor-task/watch/--poll"
+        ],
+        "required_argument_values": {
+          "argument:route:entrypoint:monitor-task/show/task_uuid": 1
+        },
+        "required_arguments": [
+          "argument:route:entrypoint:monitor-task/show/task_uuid"
+        ],
+        "required_exclusive_groups": {},
+        "required_options": []
+      },
+      "signature": "sha256:05034b5ecf6e9c097c6faf995007088d04d8f76b9f95cd11d0c6b41ee14d4fe0"
+    },
+    {
+      "id": "case:route:entrypoint:monitor-task/show/minimum",
+      "kind": "minimum",
+      "members": [
+        "argument:route:entrypoint:monitor-task/show/task_uuid"
+      ],
+      "route_id": "route:entrypoint:monitor-task/show",
+      "shape": {
+        "defaulted_options": [],
+        "required_argument_values": {
+          "argument:route:entrypoint:monitor-task/show/task_uuid": 1
+        },
+        "required_arguments": [
+          "argument:route:entrypoint:monitor-task/show/task_uuid"
+        ],
+        "required_exclusive_groups": {},
+        "required_options": []
+      },
+      "signature": "sha256:2555e343a538bd6dcddc6264283939d8aef423dd826c77b9bf3a8354929906ae"
+    },
+    {
+      "id": "case:route:entrypoint:monitor-task/show/option-spelling/option:route:entrypoint:monitor-task/show/--debug-raw/--debug-raw",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:monitor-task/show/--debug-raw"
+      ],
+      "route_id": "route:entrypoint:monitor-task/show",
+      "shape": {
+        "option_id": "option:route:entrypoint:monitor-task/show/--debug-raw",
+        "spelling": "--debug-raw"
+      },
+      "signature": "sha256:28d605a04d8fd262721b6f7e70f5ac7dc44e0fa26177903e6ac6287f9d6e89a3"
+    },
+    {
+      "id": "case:route:entrypoint:monitor-task/show/option-spelling/option:route:entrypoint:monitor-task/show/--json/--json",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:monitor-task/show/--json"
+      ],
+      "route_id": "route:entrypoint:monitor-task/show",
+      "shape": {
+        "option_id": "option:route:entrypoint:monitor-task/show/--json",
+        "spelling": "--json"
+      },
+      "signature": "sha256:0b3bdd82e40e492327becd986d6e80f88d7ec639ec1a29f0a9d476ba410cd108"
+    },
+    {
+      "id": "case:route:entrypoint:monitor-task/watch/argument-shape/argument:route:entrypoint:monitor-task/watch/task_uuid",
+      "kind": "argument-shape",
+      "members": [
+        "argument:route:entrypoint:monitor-task/watch/task_uuid"
+      ],
+      "route_id": "route:entrypoint:monitor-task/watch",
+      "shape": {
+        "argument_id": "argument:route:entrypoint:monitor-task/watch/task_uuid"
+      },
+      "signature": "sha256:a1109cdc751339b060c51f8dc235db13022b5165c1b77be9a33a4db8ca6a078a"
+    },
+    {
+      "id": "case:route:entrypoint:monitor-task/watch/interaction:poll-repeat/repeated-poll-last-wins",
+      "kind": "interaction",
+      "members": [
+        "option:route:entrypoint:monitor-task/watch/--poll"
+      ],
+      "route_id": "route:entrypoint:monitor-task/watch",
+      "shape": {
+        "external_options": [],
+        "interaction_id": "poll-repeat/repeated-poll-last-wins",
+        "option_ids": [
+          "option:route:entrypoint:monitor-task/watch/--poll"
+        ],
+        "required_argument_values": {
+          "argument:route:entrypoint:monitor-task/watch/task_uuid": 1
+        },
+        "required_arguments": [
+          "argument:route:entrypoint:monitor-task/watch/task_uuid"
+        ],
+        "required_exclusive_groups": {},
+        "required_options": []
+      },
+      "signature": "sha256:a234187dd370eb5cd3ca0d99aec97d215f4b4f16f5ed7c954556f7a3edc5691b"
+    },
+    {
+      "id": "case:route:entrypoint:monitor-task/watch/interaction:poll-validation/refuse-invalid",
+      "kind": "interaction",
+      "members": [
+        "option:route:entrypoint:monitor-task/watch/--poll"
+      ],
+      "route_id": "route:entrypoint:monitor-task/watch",
+      "shape": {
+        "external_options": [],
+        "interaction_id": "poll-validation/refuse-invalid",
+        "option_ids": [
+          "option:route:entrypoint:monitor-task/watch/--poll"
+        ],
+        "required_argument_values": {
+          "argument:route:entrypoint:monitor-task/watch/task_uuid": 1
+        },
+        "required_arguments": [
+          "argument:route:entrypoint:monitor-task/watch/task_uuid"
+        ],
+        "required_exclusive_groups": {},
+        "required_options": []
+      },
+      "signature": "sha256:d94f09943452d9a2720f0292318e131f1ecdd261cf7c9a5cf774e29a1ff172af"
+    },
+    {
+      "id": "case:route:entrypoint:monitor-task/watch/interaction:watch-json-refusal/show-json",
+      "kind": "interaction",
+      "members": [
+        "option:route:entrypoint:monitor-task/show/--json"
+      ],
+      "route_id": "route:entrypoint:monitor-task/watch",
+      "shape": {
+        "external_options": [
+          {
+            "canonical": "--json",
+            "id": "option:route:entrypoint:monitor-task/show/--json",
+            "path": [
+              "show"
+            ],
+            "route_id": "route:entrypoint:monitor-task/show"
+          }
+        ],
+        "interaction_id": "watch-json-refusal/show-json",
+        "option_ids": [
+          "option:route:entrypoint:monitor-task/show/--json"
+        ],
+        "required_argument_values": {
+          "argument:route:entrypoint:monitor-task/watch/task_uuid": 1
+        },
+        "required_arguments": [
+          "argument:route:entrypoint:monitor-task/watch/task_uuid"
+        ],
+        "required_exclusive_groups": {},
+        "required_options": []
+      },
+      "signature": "sha256:c2d96dbae598a239fdf11e47037bc0cd0850eb4434db92552785950e4eae5b40"
+    },
+    {
+      "id": "case:route:entrypoint:monitor-task/watch/minimum",
+      "kind": "minimum",
+      "members": [
+        "argument:route:entrypoint:monitor-task/watch/task_uuid"
+      ],
+      "route_id": "route:entrypoint:monitor-task/watch",
+      "shape": {
+        "defaulted_options": [],
+        "required_argument_values": {
+          "argument:route:entrypoint:monitor-task/watch/task_uuid": 1
+        },
+        "required_arguments": [
+          "argument:route:entrypoint:monitor-task/watch/task_uuid"
+        ],
+        "required_exclusive_groups": {},
+        "required_options": []
+      },
+      "signature": "sha256:32f43416dec5f2eca9e0c299a209daf411942f0d78125e01a9bd4f994317093b"
+    },
+    {
+      "id": "case:route:entrypoint:monitor-task/watch/option-spelling/option:route:entrypoint:monitor-task/watch/--debug-raw/--debug-raw",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:monitor-task/watch/--debug-raw"
+      ],
+      "route_id": "route:entrypoint:monitor-task/watch",
+      "shape": {
+        "option_id": "option:route:entrypoint:monitor-task/watch/--debug-raw",
+        "spelling": "--debug-raw"
+      },
+      "signature": "sha256:f5a7a72e6f728aa37d7a626eca735ca807f007e7ab2b8fbae7a333f9ffa2e015"
+    },
+    {
+      "id": "case:route:entrypoint:monitor-task/watch/option-spelling/option:route:entrypoint:monitor-task/watch/--poll/--poll",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:monitor-task/watch/--poll"
+      ],
+      "route_id": "route:entrypoint:monitor-task/watch",
+      "shape": {
+        "option_id": "option:route:entrypoint:monitor-task/watch/--poll",
+        "spelling": "--poll"
+      },
+      "signature": "sha256:ed1581cb350465948a2cf3b701c23fc7d3a2cc4e8758a434c2ed0aaf34c90364"
+    }
+  ],
+  "entrypoint": {
+    "allow_abbrev": false,
+    "builtins": [
+      "help",
+      "help <verb>",
+      "version",
+      "--help",
+      "--version"
+    ],
+    "command": "monitor-task",
+    "display_name": "NETCUP SCP",
+    "fromfile_prefix_chars": null,
+    "id": "entrypoint:monitor-task",
+    "long_name": "Netcup Server Control Panel task monitor",
+    "no_args_action": false,
+    "prefix_chars": "-",
+    "prog": "monitor-task.py",
+    "single_command": false
+  },
+  "incomplete": [],
+  "interaction_issues": [],
+  "library_contract": {
+    "name": "cli-extended",
+    "version": 1
+  },
+  "routes": [
+    {
+      "actions": [
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "choices": null,
+          "const": null,
+          "default": null,
+          "description": "UUID returned when the install or API operation created this task.",
+          "help_group": "positional arguments",
+          "hidden": false,
+          "id": "argument:route:entrypoint:monitor-task/show/task_uuid",
+          "kind": "argument",
+          "metavar": "TASK_UUID",
+          "minimum_values": 1,
+          "name": "task_uuid",
+          "nargs": null,
+          "parser_kwargs": {
+            "type": {
+              "callable": "_cli_extended_surface_monitor_task._task_uuid"
+            }
+          },
+          "parser_path": [
+            "show"
+          ],
+          "required": true,
+          "scope": "positional",
+          "type": {
+            "callable": "_cli_extended_surface_monitor_task._task_uuid"
+          }
+        }
+      ],
+      "aliases": [],
+      "behavior": [],
+      "common_controls": [
+        "--color",
+        "--debug",
+        "--debug-raw",
+        "--help",
+        "--json",
+        "--log-level",
+        "--no-color",
+        "--quiet",
+        "--traceback",
+        "--version"
+      ],
+      "confirmation": false,
+      "constraints": [],
+      "delegated_metadata": [],
+      "description": "Fetch a task once and print its current state or JSON response.",
+      "group": "EXPLORATION",
+      "id": "route:entrypoint:monitor-task/show",
+      "kind": "invocation",
+      "no_args_action": false,
+      "opaque_fields": [
+        "argument:route:entrypoint:monitor-task/show/task_uuid.type"
+      ],
+      "parser_configured_by_callback": false,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "show"
+          ],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "show"
+      ],
+      "single_command": false,
+      "subcommand_groups": [],
+      "subcommands": [],
+      "subcommands_required": false,
+      "summary": "Fetch a task once and print its current state or JSON response.",
+      "synopsis_override": "TASK_UUID",
+      "syntax_complete": true,
+      "usage_override": null
+    },
+    {
+      "actions": [
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "choices": null,
+          "const": null,
+          "default": null,
+          "description": "UUID returned when the install or API operation created this task.",
+          "help_group": "positional arguments",
+          "hidden": false,
+          "id": "argument:route:entrypoint:monitor-task/watch/task_uuid",
+          "kind": "argument",
+          "metavar": "TASK_UUID",
+          "minimum_values": 1,
+          "name": "task_uuid",
+          "nargs": null,
+          "parser_kwargs": {
+            "type": {
+              "callable": "_cli_extended_surface_monitor_task._task_uuid"
+            }
+          },
+          "parser_path": [
+            "watch"
+          ],
+          "required": true,
+          "scope": "positional",
+          "type": {
+            "callable": "_cli_extended_surface_monitor_task._task_uuid"
+          }
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--poll",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "Seconds between task queries (default: monitor-task.toml).",
+          "dest": "poll",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--poll"
+          ],
+          "help_group": "STOP CONDITIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:monitor-task/watch/--poll",
+          "kind": "option",
+          "metavar": "SECONDS",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null,
+            "type": {
+              "callable": "builtins.float"
+            }
+          },
+          "parser_path": [
+            "watch"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": {
+            "callable": "builtins.float"
+          }
+        }
+      ],
+      "aliases": [],
+      "behavior": [],
+      "common_controls": [
+        "--color",
+        "--debug",
+        "--debug-raw",
+        "--help",
+        "--log-level",
+        "--no-color",
+        "--progress",
+        "--quiet",
+        "--traceback",
+        "--version"
+      ],
+      "confirmation": false,
+      "constraints": [],
+      "delegated_metadata": [],
+      "description": "Poll a task and report changes until it reaches a terminal state.",
+      "group": "EXPLORATION",
+      "id": "route:entrypoint:monitor-task/watch",
+      "kind": "invocation",
+      "no_args_action": false,
+      "opaque_fields": [
+        "argument:route:entrypoint:monitor-task/watch/task_uuid.type"
+      ],
+      "parser_configured_by_callback": false,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "watch"
+          ],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "watch"
+      ],
+      "single_command": false,
+      "subcommand_groups": [],
+      "subcommands": [],
+      "subcommands_required": false,
+      "summary": "Poll a task and report changes until it reaches a terminal state.",
+      "synopsis_override": "TASK_UUID",
+      "syntax_complete": true,
+      "usage_override": null
+    }
+  ],
+  "schema_version": 7,
+  "syntax_complete": true
+}

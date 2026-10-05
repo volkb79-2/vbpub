@@ -1,0 +1,3420 @@
+{
+  "candidates": [
+    {
+      "id": "case:route:entrypoint:install-host/attach/minimum",
+      "kind": "minimum",
+      "members": [],
+      "route_id": "route:entrypoint:install-host/attach",
+      "shape": {
+        "defaulted_options": [],
+        "required_argument_values": {},
+        "required_arguments": [],
+        "required_exclusive_groups": {},
+        "required_options": []
+      },
+      "signature": "sha256:7e1db8698d723f41716f7f57280bb3c7e5e3dd704ee6acc3c3c49c9b150a841f"
+    },
+    {
+      "id": "case:route:entrypoint:install-host/attach/option-spelling/option:route:entrypoint:install-host/attach/--attach-initial-delay/--attach-initial-delay",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:install-host/attach/--attach-initial-delay"
+      ],
+      "route_id": "route:entrypoint:install-host/attach",
+      "shape": {
+        "option_id": "option:route:entrypoint:install-host/attach/--attach-initial-delay",
+        "spelling": "--attach-initial-delay"
+      },
+      "signature": "sha256:b1c48d5db2a022f4ba74bc053474095eec606a9bc25422b07b5c6ec5594c8a82"
+    },
+    {
+      "id": "case:route:entrypoint:install-host/attach/option-spelling/option:route:entrypoint:install-host/attach/--attach-max-wait-seconds/--attach-max-wait-seconds",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:install-host/attach/--attach-max-wait-seconds"
+      ],
+      "route_id": "route:entrypoint:install-host/attach",
+      "shape": {
+        "option_id": "option:route:entrypoint:install-host/attach/--attach-max-wait-seconds",
+        "spelling": "--attach-max-wait-seconds"
+      },
+      "signature": "sha256:2f39ca7623ec4af7219664037ba70c607a5ef3af1be879787984118e26455bf0"
+    },
+    {
+      "id": "case:route:entrypoint:install-host/attach/option-spelling/option:route:entrypoint:install-host/attach/--attach-task-uuid/--attach-task-uuid",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:install-host/attach/--attach-task-uuid"
+      ],
+      "route_id": "route:entrypoint:install-host/attach",
+      "shape": {
+        "option_id": "option:route:entrypoint:install-host/attach/--attach-task-uuid",
+        "spelling": "--attach-task-uuid"
+      },
+      "signature": "sha256:4ad695e3ff32d1ffa1447496c07981b0efc6c4d2aa505921c6055c93fc72da6a"
+    },
+    {
+      "id": "case:route:entrypoint:install-host/attach/option-spelling/option:route:entrypoint:install-host/attach/--debug-raw/--debug-raw",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:install-host/attach/--debug-raw"
+      ],
+      "route_id": "route:entrypoint:install-host/attach",
+      "shape": {
+        "option_id": "option:route:entrypoint:install-host/attach/--debug-raw",
+        "spelling": "--debug-raw"
+      },
+      "signature": "sha256:bf231712a0bbbb73f7fb37eb8475822aab90469798a0efd1e4c8a5a6520ce922"
+    },
+    {
+      "id": "case:route:entrypoint:install-host/attach/option-spelling/option:route:entrypoint:install-host/attach/--poll-interval/--poll-interval",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:install-host/attach/--poll-interval"
+      ],
+      "route_id": "route:entrypoint:install-host/attach",
+      "shape": {
+        "option_id": "option:route:entrypoint:install-host/attach/--poll-interval",
+        "spelling": "--poll-interval"
+      },
+      "signature": "sha256:20f5a9c6f6270bc6a4f1a9a2ee82dca79d88709bf087a13d79f10b80ca3dcefa"
+    },
+    {
+      "id": "case:route:entrypoint:install-host/attach/option-spelling/option:route:entrypoint:install-host/attach/--simulate-disconnect-seconds/--simulate-disconnect-seconds",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:install-host/attach/--simulate-disconnect-seconds"
+      ],
+      "route_id": "route:entrypoint:install-host/attach",
+      "shape": {
+        "option_id": "option:route:entrypoint:install-host/attach/--simulate-disconnect-seconds",
+        "spelling": "--simulate-disconnect-seconds"
+      },
+      "signature": "sha256:6e4d66241287406588b48c128c66748803b623437e3e2e9c4ecd70e7e897e1e9"
+    },
+    {
+      "id": "case:route:entrypoint:install-host/attach/option-spelling/option:route:entrypoint:install-host/attach/--ssh-host/--ssh-host",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:install-host/attach/--ssh-host"
+      ],
+      "route_id": "route:entrypoint:install-host/attach",
+      "shape": {
+        "option_id": "option:route:entrypoint:install-host/attach/--ssh-host",
+        "spelling": "--ssh-host"
+      },
+      "signature": "sha256:aec0d7fdd91296678963075cecf91b8148b69da17ff3c5d0f6bb13186d4f9631"
+    },
+    {
+      "id": "case:route:entrypoint:install-host/attach/option-spelling/option:route:entrypoint:install-host/attach/--ssh-identity-file/--ssh-identity-file",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:install-host/attach/--ssh-identity-file"
+      ],
+      "route_id": "route:entrypoint:install-host/attach",
+      "shape": {
+        "option_id": "option:route:entrypoint:install-host/attach/--ssh-identity-file",
+        "spelling": "--ssh-identity-file"
+      },
+      "signature": "sha256:da846797f937647cffb24bfb0e6085191fc7c302c2bf4fa43691f2bb1f3d96a7"
+    },
+    {
+      "id": "case:route:entrypoint:install-host/attach/option-spelling/option:route:entrypoint:install-host/attach/--ssh-user/--ssh-user",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:install-host/attach/--ssh-user"
+      ],
+      "route_id": "route:entrypoint:install-host/attach",
+      "shape": {
+        "option_id": "option:route:entrypoint:install-host/attach/--ssh-user",
+        "spelling": "--ssh-user"
+      },
+      "signature": "sha256:0a78bc402a24f6f57fffc887a1e995f5a3bc76db668c35a9a1548b45fc66aaf9"
+    },
+    {
+      "id": "case:route:entrypoint:install-host/configure/exclusive-conflict/task-monitor-mode/option:route:entrypoint:install-host/configure/--monitor/option:route:entrypoint:install-host/configure/--no-monitor",
+      "kind": "exclusive-conflict",
+      "members": [
+        "option:route:entrypoint:install-host/configure/--monitor",
+        "option:route:entrypoint:install-host/configure/--no-monitor"
+      ],
+      "route_id": "route:entrypoint:install-host/configure",
+      "shape": {
+        "group_id": "task-monitor-mode",
+        "options": [
+          "option:route:entrypoint:install-host/configure/--monitor",
+          "option:route:entrypoint:install-host/configure/--no-monitor"
+        ]
+      },
+      "signature": "sha256:b9cd69fc0eee3ea842c857581248e8a9389f040c86f6ae8b10b7365a0aa7a803"
+    },
+    {
+      "id": "case:route:entrypoint:install-host/configure/exclusive-member/task-monitor-mode/option:route:entrypoint:install-host/configure/--monitor",
+      "kind": "exclusive-member",
+      "members": [
+        "option:route:entrypoint:install-host/configure/--monitor"
+      ],
+      "route_id": "route:entrypoint:install-host/configure",
+      "shape": {
+        "group_id": "task-monitor-mode",
+        "required": false,
+        "selected_option": "option:route:entrypoint:install-host/configure/--monitor"
+      },
+      "signature": "sha256:319a6a5cf5ddc266de5d9dd074cbacd747acf1d925149959c9d7e6f4aedcdddc"
+    },
+    {
+      "id": "case:route:entrypoint:install-host/configure/exclusive-member/task-monitor-mode/option:route:entrypoint:install-host/configure/--no-monitor",
+      "kind": "exclusive-member",
+      "members": [
+        "option:route:entrypoint:install-host/configure/--no-monitor"
+      ],
+      "route_id": "route:entrypoint:install-host/configure",
+      "shape": {
+        "group_id": "task-monitor-mode",
+        "required": false,
+        "selected_option": "option:route:entrypoint:install-host/configure/--no-monitor"
+      },
+      "signature": "sha256:dad773d8ee5ab9823299cdde2b65ff20b39849bd3652f8f34733c2dded390662"
+    },
+    {
+      "id": "case:route:entrypoint:install-host/configure/minimum",
+      "kind": "minimum",
+      "members": [],
+      "route_id": "route:entrypoint:install-host/configure",
+      "shape": {
+        "defaulted_options": [],
+        "required_argument_values": {},
+        "required_arguments": [],
+        "required_exclusive_groups": {},
+        "required_options": []
+      },
+      "signature": "sha256:a4363f065dbef5354bcb95d2e0c6c45c0a8318e20cb1d8cc099f82cd3194821f"
+    },
+    {
+      "id": "case:route:entrypoint:install-host/configure/option-choice/option:route:entrypoint:install-host/configure/--local-controller-key/66f3d68b76",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:install-host/configure/--local-controller-key"
+      ],
+      "route_id": "route:entrypoint:install-host/configure",
+      "shape": {
+        "choice": "remove",
+        "option_id": "option:route:entrypoint:install-host/configure/--local-controller-key"
+      },
+      "signature": "sha256:6b247ac57e74a6588549d8fc3df11526db925caa83a9ec7951c7f60bc38cc03c"
+    },
+    {
+      "id": "case:route:entrypoint:install-host/configure/option-choice/option:route:entrypoint:install-host/configure/--local-controller-key/689680efe3",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:install-host/configure/--local-controller-key"
+      ],
+      "route_id": "route:entrypoint:install-host/configure",
+      "shape": {
+        "choice": "retain",
+        "option_id": "option:route:entrypoint:install-host/configure/--local-controller-key"
+      },
+      "signature": "sha256:5cbd91554acd41254e1ca19d90df571eca9746a5c4901570e9d2fa1fe5dda924"
+    },
+    {
+      "id": "case:route:entrypoint:install-host/configure/option-spelling/option:route:entrypoint:install-host/configure/--attach-custom-script/--attach-custom-script",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:install-host/configure/--attach-custom-script"
+      ],
+      "route_id": "route:entrypoint:install-host/configure",
+      "shape": {
+        "option_id": "option:route:entrypoint:install-host/configure/--attach-custom-script",
+        "spelling": "--attach-custom-script"
+      },
+      "signature": "sha256:c7e723ebef79610563d4ecbd0c901c62ef99763a234b21c8ed558e9221a1f5fb"
+    },
+    {
+      "id": "case:route:entrypoint:install-host/configure/option-spelling/option:route:entrypoint:install-host/configure/--completion-marker/--completion-marker",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:install-host/configure/--completion-marker"
+      ],
+      "route_id": "route:entrypoint:install-host/configure",
+      "shape": {
+        "option_id": "option:route:entrypoint:install-host/configure/--completion-marker",
+        "spelling": "--completion-marker"
+      },
+      "signature": "sha256:4eb7857d62252ddaf723ba1d4e792b03d4267b1e06d29856159d25a6ecf4f694"
+    },
+    {
+      "id": "case:route:entrypoint:install-host/configure/option-spelling/option:route:entrypoint:install-host/configure/--completion-wait-seconds/--completion-wait-seconds",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:install-host/configure/--completion-wait-seconds"
+      ],
+      "route_id": "route:entrypoint:install-host/configure",
+      "shape": {
+        "option_id": "option:route:entrypoint:install-host/configure/--completion-wait-seconds",
+        "spelling": "--completion-wait-seconds"
+      },
+      "signature": "sha256:c3c7bbe6706f9561b4e551d921ff2b84444126486d42e94eeb1dfc42bad5fcef"
+    },
+    {
+      "id": "case:route:entrypoint:install-host/configure/option-spelling/option:route:entrypoint:install-host/configure/--config/--config",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:install-host/configure/--config"
+      ],
+      "route_id": "route:entrypoint:install-host/configure",
+      "shape": {
+        "option_id": "option:route:entrypoint:install-host/configure/--config",
+        "spelling": "--config"
+      },
+      "signature": "sha256:1a6838a0988cc9722bb0d853a20de0b685fd52378ca9f6d8a8dbe74baf98155c"
+    },
+    {
+      "id": "case:route:entrypoint:install-host/configure/option-spelling/option:route:entrypoint:install-host/configure/--config/--payload",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:install-host/configure/--config"
+      ],
+      "route_id": "route:entrypoint:install-host/configure",
+      "shape": {
+        "option_id": "option:route:entrypoint:install-host/configure/--config",
+        "spelling": "--payload"
+      },
+      "signature": "sha256:b08f4e650b7d1946d068d53b836f0280a0a960744ba2b9b3985d98956b6af8c7"
+    },
+    {
+      "id": "case:route:entrypoint:install-host/configure/option-spelling/option:route:entrypoint:install-host/configure/--custom-script-file/--custom-script-file",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:install-host/configure/--custom-script-file"
+      ],
+      "route_id": "route:entrypoint:install-host/configure",
+      "shape": {
+        "option_id": "option:route:entrypoint:install-host/configure/--custom-script-file",
+        "spelling": "--custom-script-file"
+      },
+      "signature": "sha256:a0c236907543fd7842ec60795f200d3cb0a9dfa214a1279d94effb8cd10cf477"
+    },
+    {
+      "id": "case:route:entrypoint:install-host/configure/option-spelling/option:route:entrypoint:install-host/configure/--debug-raw/--debug-raw",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:install-host/configure/--debug-raw"
+      ],
+      "route_id": "route:entrypoint:install-host/configure",
+      "shape": {
+        "option_id": "option:route:entrypoint:install-host/configure/--debug-raw",
+        "spelling": "--debug-raw"
+      },
+      "signature": "sha256:8c9de4a479ecfc66f43e8c07724594fed5e8b4da88d00f09f814c5b1b029c300"
+    },
+    {
+      "id": "case:route:entrypoint:install-host/configure/option-spelling/option:route:entrypoint:install-host/configure/--dry-run/--dry-run",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:install-host/configure/--dry-run"
+      ],
+      "route_id": "route:entrypoint:install-host/configure",
+      "shape": {
+        "option_id": "option:route:entrypoint:install-host/configure/--dry-run",
+        "spelling": "--dry-run"
+      },
+      "signature": "sha256:d9025267191a3e985fd5d5dcb7832c666945372c7cd8345083f2de91332df42d"
+    },
+    {
+      "id": "case:route:entrypoint:install-host/configure/option-spelling/option:route:entrypoint:install-host/configure/--local-controller-key/--local-controller-key",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:install-host/configure/--local-controller-key"
+      ],
+      "route_id": "route:entrypoint:install-host/configure",
+      "shape": {
+        "option_id": "option:route:entrypoint:install-host/configure/--local-controller-key",
+        "spelling": "--local-controller-key"
+      },
+      "signature": "sha256:c9197dcac3d6550231e025b4ee7089aab093afaa217f7940f88d17e555c2d8fd"
+    },
+    {
+      "id": "case:route:entrypoint:install-host/configure/option-spelling/option:route:entrypoint:install-host/configure/--monitor/--monitor",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:install-host/configure/--monitor"
+      ],
+      "route_id": "route:entrypoint:install-host/configure",
+      "shape": {
+        "option_id": "option:route:entrypoint:install-host/configure/--monitor",
+        "spelling": "--monitor"
+      },
+      "signature": "sha256:d95766d2cfcd8d8c2281c82a1b78f8bd4094adee04ef3be9dc94400c0301fbc0"
+    },
+    {
+      "id": "case:route:entrypoint:install-host/configure/option-spelling/option:route:entrypoint:install-host/configure/--no-attach-custom-script/--no-attach-custom-script",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:install-host/configure/--no-attach-custom-script"
+      ],
+      "route_id": "route:entrypoint:install-host/configure",
+      "shape": {
+        "option_id": "option:route:entrypoint:install-host/configure/--no-attach-custom-script",
+        "spelling": "--no-attach-custom-script"
+      },
+      "signature": "sha256:237e833dcb6d11fc1ef148c0256a64a6d2d75e25f9af8001a149eb41add8efa8"
+    },
+    {
+      "id": "case:route:entrypoint:install-host/configure/option-spelling/option:route:entrypoint:install-host/configure/--no-monitor/--no-monitor",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:install-host/configure/--no-monitor"
+      ],
+      "route_id": "route:entrypoint:install-host/configure",
+      "shape": {
+        "option_id": "option:route:entrypoint:install-host/configure/--no-monitor",
+        "spelling": "--no-monitor"
+      },
+      "signature": "sha256:5b4dcbab2e7d5cd98dfcb220521925667b9e6e7d6d5b8e131279ed61b16b73f6"
+    },
+    {
+      "id": "case:route:entrypoint:install-host/configure/option-spelling/option:route:entrypoint:install-host/configure/--poll-interval/--poll-interval",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:install-host/configure/--poll-interval"
+      ],
+      "route_id": "route:entrypoint:install-host/configure",
+      "shape": {
+        "option_id": "option:route:entrypoint:install-host/configure/--poll-interval",
+        "spelling": "--poll-interval"
+      },
+      "signature": "sha256:5171bcca0ed0b54d7b459148302e02e523d66cb79cea0f0dd5ef2f25030e52a6"
+    },
+    {
+      "id": "case:route:entrypoint:install-host/configure/option-spelling/option:route:entrypoint:install-host/configure/--server-id/--server-id",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:install-host/configure/--server-id"
+      ],
+      "route_id": "route:entrypoint:install-host/configure",
+      "shape": {
+        "option_id": "option:route:entrypoint:install-host/configure/--server-id",
+        "spelling": "--server-id"
+      },
+      "signature": "sha256:bd2f0c4a692256af68826d4f0a677663b0a86fa22262f63c85857b71972d5f50"
+    },
+    {
+      "id": "case:route:entrypoint:install-host/configure/option-spelling/option:route:entrypoint:install-host/configure/--ssh-host/--ssh-host",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:install-host/configure/--ssh-host"
+      ],
+      "route_id": "route:entrypoint:install-host/configure",
+      "shape": {
+        "option_id": "option:route:entrypoint:install-host/configure/--ssh-host",
+        "spelling": "--ssh-host"
+      },
+      "signature": "sha256:b601a94ceb585225e24c80a6e2b6f7dd9d0ac799f213d075d2adf45593239bef"
+    },
+    {
+      "id": "case:route:entrypoint:install-host/configure/option-spelling/option:route:entrypoint:install-host/configure/--ssh-identity-file/--ssh-identity-file",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:install-host/configure/--ssh-identity-file"
+      ],
+      "route_id": "route:entrypoint:install-host/configure",
+      "shape": {
+        "option_id": "option:route:entrypoint:install-host/configure/--ssh-identity-file",
+        "spelling": "--ssh-identity-file"
+      },
+      "signature": "sha256:40c0606451c09b0a8be5d9cb3c8d69bc0da696798c207cf1d8f8747681fb1b05"
+    },
+    {
+      "id": "case:route:entrypoint:install-host/configure/option-spelling/option:route:entrypoint:install-host/configure/--ssh-key-id/--ssh-key-id",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:install-host/configure/--ssh-key-id"
+      ],
+      "route_id": "route:entrypoint:install-host/configure",
+      "shape": {
+        "option_id": "option:route:entrypoint:install-host/configure/--ssh-key-id",
+        "spelling": "--ssh-key-id"
+      },
+      "signature": "sha256:4e3443ac70d149b2d81d497b0619e1835bfe4fd74d8b16f2747bc33d9de5f978"
+    },
+    {
+      "id": "case:route:entrypoint:install-host/configure/option-spelling/option:route:entrypoint:install-host/configure/--ssh-user/--ssh-user",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:install-host/configure/--ssh-user"
+      ],
+      "route_id": "route:entrypoint:install-host/configure",
+      "shape": {
+        "option_id": "option:route:entrypoint:install-host/configure/--ssh-user",
+        "spelling": "--ssh-user"
+      },
+      "signature": "sha256:1c835c7ccbac88ae8bae0d6893c21524c6a2b7663b4cdb56d31f17783af2c08c"
+    },
+    {
+      "id": "case:route:entrypoint:install-host/configure/option-spelling/option:route:entrypoint:install-host/configure/--yes/--yes",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:install-host/configure/--yes"
+      ],
+      "route_id": "route:entrypoint:install-host/configure",
+      "shape": {
+        "option_id": "option:route:entrypoint:install-host/configure/--yes",
+        "spelling": "--yes"
+      },
+      "signature": "sha256:2bdffbe56bc6912f0a22aa0547c1e6a905115d717e0dacc1259b5ede3bdaf4ac"
+    },
+    {
+      "id": "case:route:entrypoint:install-host/install/minimum",
+      "kind": "minimum",
+      "members": [],
+      "route_id": "route:entrypoint:install-host/install",
+      "shape": {
+        "defaulted_options": [],
+        "required_argument_values": {},
+        "required_arguments": [],
+        "required_exclusive_groups": {},
+        "required_options": []
+      },
+      "signature": "sha256:729941a641dc9b0c57f64578a3b2a19ae891b17623e87b4b6511e81fb9779670"
+    },
+    {
+      "id": "case:route:entrypoint:install-host/install/option-choice/option:route:entrypoint:install-host/install/--local-controller-key/66f3d68b76",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:install-host/install/--local-controller-key"
+      ],
+      "route_id": "route:entrypoint:install-host/install",
+      "shape": {
+        "choice": "remove",
+        "option_id": "option:route:entrypoint:install-host/install/--local-controller-key"
+      },
+      "signature": "sha256:a49183125c1f77f696a6311bcedb8d8126d9070196a15d4536451c6fb0e4e20a"
+    },
+    {
+      "id": "case:route:entrypoint:install-host/install/option-choice/option:route:entrypoint:install-host/install/--local-controller-key/689680efe3",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:install-host/install/--local-controller-key"
+      ],
+      "route_id": "route:entrypoint:install-host/install",
+      "shape": {
+        "choice": "retain",
+        "option_id": "option:route:entrypoint:install-host/install/--local-controller-key"
+      },
+      "signature": "sha256:9dc6753d9836be97c9df86589efe9defe01c5d744e92db888a0993985bdecd6c"
+    },
+    {
+      "id": "case:route:entrypoint:install-host/install/option-spelling/option:route:entrypoint:install-host/install/--attach-custom-script/--attach-custom-script",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:install-host/install/--attach-custom-script"
+      ],
+      "route_id": "route:entrypoint:install-host/install",
+      "shape": {
+        "option_id": "option:route:entrypoint:install-host/install/--attach-custom-script",
+        "spelling": "--attach-custom-script"
+      },
+      "signature": "sha256:63c2c8ed771305f0076ac96e2d790e43a22184b4384ccde0332350c9eb44b0d6"
+    },
+    {
+      "id": "case:route:entrypoint:install-host/install/option-spelling/option:route:entrypoint:install-host/install/--completion-wait-seconds/--completion-wait-seconds",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:install-host/install/--completion-wait-seconds"
+      ],
+      "route_id": "route:entrypoint:install-host/install",
+      "shape": {
+        "option_id": "option:route:entrypoint:install-host/install/--completion-wait-seconds",
+        "spelling": "--completion-wait-seconds"
+      },
+      "signature": "sha256:bcd116872d4a8859618e872c0700248e6055b5ed6f66dca6919e0571f1376d2d"
+    },
+    {
+      "id": "case:route:entrypoint:install-host/install/option-spelling/option:route:entrypoint:install-host/install/--config/--config",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:install-host/install/--config"
+      ],
+      "route_id": "route:entrypoint:install-host/install",
+      "shape": {
+        "option_id": "option:route:entrypoint:install-host/install/--config",
+        "spelling": "--config"
+      },
+      "signature": "sha256:1e3175e1d9b7ec5be1a5c519c29af65e0c4aa55c5d7e5a8eb049916db1d4ce5c"
+    },
+    {
+      "id": "case:route:entrypoint:install-host/install/option-spelling/option:route:entrypoint:install-host/install/--config/--payload",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:install-host/install/--config"
+      ],
+      "route_id": "route:entrypoint:install-host/install",
+      "shape": {
+        "option_id": "option:route:entrypoint:install-host/install/--config",
+        "spelling": "--payload"
+      },
+      "signature": "sha256:2293ed1dd8e8224a887899cf747b61c3488fa07750386059a0f6adb1ecabfb8b"
+    },
+    {
+      "id": "case:route:entrypoint:install-host/install/option-spelling/option:route:entrypoint:install-host/install/--debug-raw/--debug-raw",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:install-host/install/--debug-raw"
+      ],
+      "route_id": "route:entrypoint:install-host/install",
+      "shape": {
+        "option_id": "option:route:entrypoint:install-host/install/--debug-raw",
+        "spelling": "--debug-raw"
+      },
+      "signature": "sha256:036974ddaec21eaef74648f5fef69a1de36e3d71a0c4efc96e0019eecaa9aa5e"
+    },
+    {
+      "id": "case:route:entrypoint:install-host/install/option-spelling/option:route:entrypoint:install-host/install/--dry-run/--dry-run",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:install-host/install/--dry-run"
+      ],
+      "route_id": "route:entrypoint:install-host/install",
+      "shape": {
+        "option_id": "option:route:entrypoint:install-host/install/--dry-run",
+        "spelling": "--dry-run"
+      },
+      "signature": "sha256:1ec8717bf1e28e98eb7e514cb7ad50b98b037a07fbd370f12f09567638eb8b32"
+    },
+    {
+      "id": "case:route:entrypoint:install-host/install/option-spelling/option:route:entrypoint:install-host/install/--local-controller-key/--local-controller-key",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:install-host/install/--local-controller-key"
+      ],
+      "route_id": "route:entrypoint:install-host/install",
+      "shape": {
+        "option_id": "option:route:entrypoint:install-host/install/--local-controller-key",
+        "spelling": "--local-controller-key"
+      },
+      "signature": "sha256:a1833004eefe089ac06b9d33539c3b5fa5a57b7cb6c8ffd69ec4d44201a12772"
+    },
+    {
+      "id": "case:route:entrypoint:install-host/install/option-spelling/option:route:entrypoint:install-host/install/--no-attach-custom-script/--no-attach-custom-script",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:install-host/install/--no-attach-custom-script"
+      ],
+      "route_id": "route:entrypoint:install-host/install",
+      "shape": {
+        "option_id": "option:route:entrypoint:install-host/install/--no-attach-custom-script",
+        "spelling": "--no-attach-custom-script"
+      },
+      "signature": "sha256:72cc78e632a89cd6b2be7a330e083fa3b9c6fd2aa0d47eb7284b978d55d5c017"
+    },
+    {
+      "id": "case:route:entrypoint:install-host/install/option-spelling/option:route:entrypoint:install-host/install/--no-monitor/--no-monitor",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:install-host/install/--no-monitor"
+      ],
+      "route_id": "route:entrypoint:install-host/install",
+      "shape": {
+        "option_id": "option:route:entrypoint:install-host/install/--no-monitor",
+        "spelling": "--no-monitor"
+      },
+      "signature": "sha256:9c63f433eea0ee6bafb8df1317baf5783b0ecaa5cd344bd009fb7752b4df8e8f"
+    },
+    {
+      "id": "case:route:entrypoint:install-host/install/option-spelling/option:route:entrypoint:install-host/install/--poll-interval/--poll-interval",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:install-host/install/--poll-interval"
+      ],
+      "route_id": "route:entrypoint:install-host/install",
+      "shape": {
+        "option_id": "option:route:entrypoint:install-host/install/--poll-interval",
+        "spelling": "--poll-interval"
+      },
+      "signature": "sha256:959c794bc673202473fa6bfbb0dd4ede6b21a062fa924722b1dcec33dd268463"
+    },
+    {
+      "id": "case:route:entrypoint:install-host/install/option-spelling/option:route:entrypoint:install-host/install/--ssh-host/--ssh-host",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:install-host/install/--ssh-host"
+      ],
+      "route_id": "route:entrypoint:install-host/install",
+      "shape": {
+        "option_id": "option:route:entrypoint:install-host/install/--ssh-host",
+        "spelling": "--ssh-host"
+      },
+      "signature": "sha256:8c22ca7a934c37381c110b2b75e70ac8a7a262e5c0f03852aa2c3b39957f7ebb"
+    },
+    {
+      "id": "case:route:entrypoint:install-host/install/option-spelling/option:route:entrypoint:install-host/install/--ssh-identity-file/--ssh-identity-file",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:install-host/install/--ssh-identity-file"
+      ],
+      "route_id": "route:entrypoint:install-host/install",
+      "shape": {
+        "option_id": "option:route:entrypoint:install-host/install/--ssh-identity-file",
+        "spelling": "--ssh-identity-file"
+      },
+      "signature": "sha256:14e0fea0bb0d638f014d5e6ebf1a6d5bb2568ae4228644688f513ff794b74360"
+    },
+    {
+      "id": "case:route:entrypoint:install-host/install/option-spelling/option:route:entrypoint:install-host/install/--ssh-key-id/--ssh-key-id",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:install-host/install/--ssh-key-id"
+      ],
+      "route_id": "route:entrypoint:install-host/install",
+      "shape": {
+        "option_id": "option:route:entrypoint:install-host/install/--ssh-key-id",
+        "spelling": "--ssh-key-id"
+      },
+      "signature": "sha256:0a1aab85cafa6d941a2c39c29126e28d814e8dccb5d749f1f77b6344473fd8fc"
+    },
+    {
+      "id": "case:route:entrypoint:install-host/install/option-spelling/option:route:entrypoint:install-host/install/--ssh-user/--ssh-user",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:install-host/install/--ssh-user"
+      ],
+      "route_id": "route:entrypoint:install-host/install",
+      "shape": {
+        "option_id": "option:route:entrypoint:install-host/install/--ssh-user",
+        "spelling": "--ssh-user"
+      },
+      "signature": "sha256:cc93bec0bb0cf149d174ab2628cc3f2f98c73f72d6f76428415aeb2f7abcd983"
+    },
+    {
+      "id": "case:route:entrypoint:install-host/install/option-spelling/option:route:entrypoint:install-host/install/--yes/--yes",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:install-host/install/--yes"
+      ],
+      "route_id": "route:entrypoint:install-host/install",
+      "shape": {
+        "option_id": "option:route:entrypoint:install-host/install/--yes",
+        "spelling": "--yes"
+      },
+      "signature": "sha256:c466e402a96156da67d3b0ae6cc3f295b7d6246d11e5079b3c97d71081f77cc3"
+    },
+    {
+      "id": "case:route:entrypoint:install-host/wizard/exclusive-conflict/task-monitor-mode/option:route:entrypoint:install-host/wizard/--monitor/option:route:entrypoint:install-host/wizard/--no-monitor",
+      "kind": "exclusive-conflict",
+      "members": [
+        "option:route:entrypoint:install-host/wizard/--monitor",
+        "option:route:entrypoint:install-host/wizard/--no-monitor"
+      ],
+      "route_id": "route:entrypoint:install-host/wizard",
+      "shape": {
+        "group_id": "task-monitor-mode",
+        "options": [
+          "option:route:entrypoint:install-host/wizard/--monitor",
+          "option:route:entrypoint:install-host/wizard/--no-monitor"
+        ]
+      },
+      "signature": "sha256:6074448b819d496a3cf198c4beef44139ef06d8d1c91799592d925019815bb19"
+    },
+    {
+      "id": "case:route:entrypoint:install-host/wizard/exclusive-member/task-monitor-mode/option:route:entrypoint:install-host/wizard/--monitor",
+      "kind": "exclusive-member",
+      "members": [
+        "option:route:entrypoint:install-host/wizard/--monitor"
+      ],
+      "route_id": "route:entrypoint:install-host/wizard",
+      "shape": {
+        "group_id": "task-monitor-mode",
+        "required": false,
+        "selected_option": "option:route:entrypoint:install-host/wizard/--monitor"
+      },
+      "signature": "sha256:7927481d794e8487f582cfb76b56c18a5bd51d2eda37fff09380a4daead207f8"
+    },
+    {
+      "id": "case:route:entrypoint:install-host/wizard/exclusive-member/task-monitor-mode/option:route:entrypoint:install-host/wizard/--no-monitor",
+      "kind": "exclusive-member",
+      "members": [
+        "option:route:entrypoint:install-host/wizard/--no-monitor"
+      ],
+      "route_id": "route:entrypoint:install-host/wizard",
+      "shape": {
+        "group_id": "task-monitor-mode",
+        "required": false,
+        "selected_option": "option:route:entrypoint:install-host/wizard/--no-monitor"
+      },
+      "signature": "sha256:83c5592a20ea218e5493bf7654bbb54c385228d85f1f64c737bc002df412a028"
+    },
+    {
+      "id": "case:route:entrypoint:install-host/wizard/minimum",
+      "kind": "minimum",
+      "members": [],
+      "route_id": "route:entrypoint:install-host/wizard",
+      "shape": {
+        "defaulted_options": [],
+        "required_argument_values": {},
+        "required_arguments": [],
+        "required_exclusive_groups": {},
+        "required_options": []
+      },
+      "signature": "sha256:6b7c17a178f9caa6a56317122e32335cf3825436a539787b8ce5d89a7b4022dc"
+    },
+    {
+      "id": "case:route:entrypoint:install-host/wizard/option-choice/option:route:entrypoint:install-host/wizard/--local-controller-key/66f3d68b76",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:install-host/wizard/--local-controller-key"
+      ],
+      "route_id": "route:entrypoint:install-host/wizard",
+      "shape": {
+        "choice": "remove",
+        "option_id": "option:route:entrypoint:install-host/wizard/--local-controller-key"
+      },
+      "signature": "sha256:f4c8d808c048bbad7f33b848734b1f9f025413b9e922053eea57b3e30d96c572"
+    },
+    {
+      "id": "case:route:entrypoint:install-host/wizard/option-choice/option:route:entrypoint:install-host/wizard/--local-controller-key/689680efe3",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:install-host/wizard/--local-controller-key"
+      ],
+      "route_id": "route:entrypoint:install-host/wizard",
+      "shape": {
+        "choice": "retain",
+        "option_id": "option:route:entrypoint:install-host/wizard/--local-controller-key"
+      },
+      "signature": "sha256:93cfe73bc4084e931f48659554f914d6d73c76a1fa5dd860a9980eb08c148aaa"
+    },
+    {
+      "id": "case:route:entrypoint:install-host/wizard/option-spelling/option:route:entrypoint:install-host/wizard/--attach-custom-script/--attach-custom-script",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:install-host/wizard/--attach-custom-script"
+      ],
+      "route_id": "route:entrypoint:install-host/wizard",
+      "shape": {
+        "option_id": "option:route:entrypoint:install-host/wizard/--attach-custom-script",
+        "spelling": "--attach-custom-script"
+      },
+      "signature": "sha256:f6dd01b9b82756786b19ff9c6e9ddf9536bd3fedd66a392b6dfb221e3ab0cf95"
+    },
+    {
+      "id": "case:route:entrypoint:install-host/wizard/option-spelling/option:route:entrypoint:install-host/wizard/--completion-marker/--completion-marker",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:install-host/wizard/--completion-marker"
+      ],
+      "route_id": "route:entrypoint:install-host/wizard",
+      "shape": {
+        "option_id": "option:route:entrypoint:install-host/wizard/--completion-marker",
+        "spelling": "--completion-marker"
+      },
+      "signature": "sha256:a9901a2776adb1784256bcce5f37bd40ac8e9387ee76891d9871a9230df8f744"
+    },
+    {
+      "id": "case:route:entrypoint:install-host/wizard/option-spelling/option:route:entrypoint:install-host/wizard/--completion-wait-seconds/--completion-wait-seconds",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:install-host/wizard/--completion-wait-seconds"
+      ],
+      "route_id": "route:entrypoint:install-host/wizard",
+      "shape": {
+        "option_id": "option:route:entrypoint:install-host/wizard/--completion-wait-seconds",
+        "spelling": "--completion-wait-seconds"
+      },
+      "signature": "sha256:1589c835e3223aa7e94b491afcd9ebe0edd81466d41ddad4cc33c767896dbcfe"
+    },
+    {
+      "id": "case:route:entrypoint:install-host/wizard/option-spelling/option:route:entrypoint:install-host/wizard/--config/--config",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:install-host/wizard/--config"
+      ],
+      "route_id": "route:entrypoint:install-host/wizard",
+      "shape": {
+        "option_id": "option:route:entrypoint:install-host/wizard/--config",
+        "spelling": "--config"
+      },
+      "signature": "sha256:9a3139e731b3fd2e7ca46cd2d8d77df8dd76197138e0583945a8dad5978ddecb"
+    },
+    {
+      "id": "case:route:entrypoint:install-host/wizard/option-spelling/option:route:entrypoint:install-host/wizard/--config/--payload",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:install-host/wizard/--config"
+      ],
+      "route_id": "route:entrypoint:install-host/wizard",
+      "shape": {
+        "option_id": "option:route:entrypoint:install-host/wizard/--config",
+        "spelling": "--payload"
+      },
+      "signature": "sha256:da9420bfec4b6624246b5d2e906ceab0c7710583cf8a311a29736b6e38df6b05"
+    },
+    {
+      "id": "case:route:entrypoint:install-host/wizard/option-spelling/option:route:entrypoint:install-host/wizard/--custom-script-file/--custom-script-file",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:install-host/wizard/--custom-script-file"
+      ],
+      "route_id": "route:entrypoint:install-host/wizard",
+      "shape": {
+        "option_id": "option:route:entrypoint:install-host/wizard/--custom-script-file",
+        "spelling": "--custom-script-file"
+      },
+      "signature": "sha256:62c70ed8551529a7be372216494b73880fc02d42e6e393627e21cf0c13932845"
+    },
+    {
+      "id": "case:route:entrypoint:install-host/wizard/option-spelling/option:route:entrypoint:install-host/wizard/--debug-raw/--debug-raw",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:install-host/wizard/--debug-raw"
+      ],
+      "route_id": "route:entrypoint:install-host/wizard",
+      "shape": {
+        "option_id": "option:route:entrypoint:install-host/wizard/--debug-raw",
+        "spelling": "--debug-raw"
+      },
+      "signature": "sha256:235dd8138e0f7b6df5d32434e67c994bf1e68621dec1cb7bce22fdf1b8a2585c"
+    },
+    {
+      "id": "case:route:entrypoint:install-host/wizard/option-spelling/option:route:entrypoint:install-host/wizard/--dry-run/--dry-run",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:install-host/wizard/--dry-run"
+      ],
+      "route_id": "route:entrypoint:install-host/wizard",
+      "shape": {
+        "option_id": "option:route:entrypoint:install-host/wizard/--dry-run",
+        "spelling": "--dry-run"
+      },
+      "signature": "sha256:78187da8e0a2ba3a4f66ff90f0e09c6099837e969cbf29afcd216763697b8340"
+    },
+    {
+      "id": "case:route:entrypoint:install-host/wizard/option-spelling/option:route:entrypoint:install-host/wizard/--local-controller-key/--local-controller-key",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:install-host/wizard/--local-controller-key"
+      ],
+      "route_id": "route:entrypoint:install-host/wizard",
+      "shape": {
+        "option_id": "option:route:entrypoint:install-host/wizard/--local-controller-key",
+        "spelling": "--local-controller-key"
+      },
+      "signature": "sha256:d41461dd22607f33d2f84dc61c33eb196a1aeed49eef3dfec741b9d29dcd2706"
+    },
+    {
+      "id": "case:route:entrypoint:install-host/wizard/option-spelling/option:route:entrypoint:install-host/wizard/--monitor/--monitor",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:install-host/wizard/--monitor"
+      ],
+      "route_id": "route:entrypoint:install-host/wizard",
+      "shape": {
+        "option_id": "option:route:entrypoint:install-host/wizard/--monitor",
+        "spelling": "--monitor"
+      },
+      "signature": "sha256:e8872e0084014bdfe035e99f1338ed923d864dc3972ae94d0fd571f4ec2cde0a"
+    },
+    {
+      "id": "case:route:entrypoint:install-host/wizard/option-spelling/option:route:entrypoint:install-host/wizard/--no-attach-custom-script/--no-attach-custom-script",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:install-host/wizard/--no-attach-custom-script"
+      ],
+      "route_id": "route:entrypoint:install-host/wizard",
+      "shape": {
+        "option_id": "option:route:entrypoint:install-host/wizard/--no-attach-custom-script",
+        "spelling": "--no-attach-custom-script"
+      },
+      "signature": "sha256:52098b9cab0c03fdf2204edbdaa3a44e835ef953eb89de297a5677ca91ad70d9"
+    },
+    {
+      "id": "case:route:entrypoint:install-host/wizard/option-spelling/option:route:entrypoint:install-host/wizard/--no-monitor/--no-monitor",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:install-host/wizard/--no-monitor"
+      ],
+      "route_id": "route:entrypoint:install-host/wizard",
+      "shape": {
+        "option_id": "option:route:entrypoint:install-host/wizard/--no-monitor",
+        "spelling": "--no-monitor"
+      },
+      "signature": "sha256:3cd5753b7d0a5106ebdf0f55afa6e897b17c640f6e71d38caf282224e75d9b73"
+    },
+    {
+      "id": "case:route:entrypoint:install-host/wizard/option-spelling/option:route:entrypoint:install-host/wizard/--poll-interval/--poll-interval",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:install-host/wizard/--poll-interval"
+      ],
+      "route_id": "route:entrypoint:install-host/wizard",
+      "shape": {
+        "option_id": "option:route:entrypoint:install-host/wizard/--poll-interval",
+        "spelling": "--poll-interval"
+      },
+      "signature": "sha256:c1470b22458b8c01173c8af648cdde7ad611259ac874367229811b72e36a8b44"
+    },
+    {
+      "id": "case:route:entrypoint:install-host/wizard/option-spelling/option:route:entrypoint:install-host/wizard/--server-id/--server-id",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:install-host/wizard/--server-id"
+      ],
+      "route_id": "route:entrypoint:install-host/wizard",
+      "shape": {
+        "option_id": "option:route:entrypoint:install-host/wizard/--server-id",
+        "spelling": "--server-id"
+      },
+      "signature": "sha256:abd4094ef1ccfc8439121d3d50e948d660dd38706f493406ca71f7e5a7aa6532"
+    },
+    {
+      "id": "case:route:entrypoint:install-host/wizard/option-spelling/option:route:entrypoint:install-host/wizard/--ssh-host/--ssh-host",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:install-host/wizard/--ssh-host"
+      ],
+      "route_id": "route:entrypoint:install-host/wizard",
+      "shape": {
+        "option_id": "option:route:entrypoint:install-host/wizard/--ssh-host",
+        "spelling": "--ssh-host"
+      },
+      "signature": "sha256:a3c24ef59470d3cdf95a74f5e80e0cd8d0c888573a1bece5062b8ba6bf294d43"
+    },
+    {
+      "id": "case:route:entrypoint:install-host/wizard/option-spelling/option:route:entrypoint:install-host/wizard/--ssh-identity-file/--ssh-identity-file",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:install-host/wizard/--ssh-identity-file"
+      ],
+      "route_id": "route:entrypoint:install-host/wizard",
+      "shape": {
+        "option_id": "option:route:entrypoint:install-host/wizard/--ssh-identity-file",
+        "spelling": "--ssh-identity-file"
+      },
+      "signature": "sha256:20fe6d790eefe40ad5b0d076a4da6cf1599193853b73e5a4794035b5570f55ce"
+    },
+    {
+      "id": "case:route:entrypoint:install-host/wizard/option-spelling/option:route:entrypoint:install-host/wizard/--ssh-key-id/--ssh-key-id",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:install-host/wizard/--ssh-key-id"
+      ],
+      "route_id": "route:entrypoint:install-host/wizard",
+      "shape": {
+        "option_id": "option:route:entrypoint:install-host/wizard/--ssh-key-id",
+        "spelling": "--ssh-key-id"
+      },
+      "signature": "sha256:b301d2cf67a048505c223774f34869699261ca8c2c2a4decb56d03e9e2420f8d"
+    },
+    {
+      "id": "case:route:entrypoint:install-host/wizard/option-spelling/option:route:entrypoint:install-host/wizard/--ssh-user/--ssh-user",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:install-host/wizard/--ssh-user"
+      ],
+      "route_id": "route:entrypoint:install-host/wizard",
+      "shape": {
+        "option_id": "option:route:entrypoint:install-host/wizard/--ssh-user",
+        "spelling": "--ssh-user"
+      },
+      "signature": "sha256:32914af412d924ed02d20db0aff51959abaf4bbc5f941f125e4c3bd8d894eb63"
+    },
+    {
+      "id": "case:route:entrypoint:install-host/wizard/option-spelling/option:route:entrypoint:install-host/wizard/--yes/--yes",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:install-host/wizard/--yes"
+      ],
+      "route_id": "route:entrypoint:install-host/wizard",
+      "shape": {
+        "option_id": "option:route:entrypoint:install-host/wizard/--yes",
+        "spelling": "--yes"
+      },
+      "signature": "sha256:e3ec7602ba471a08564b31bfb364e0fe1640c3c6728600fcd720723538e11dcc"
+    }
+  ],
+  "entrypoint": {
+    "allow_abbrev": false,
+    "builtins": [
+      "help",
+      "help <verb>",
+      "version",
+      "--help",
+      "--version"
+    ],
+    "command": "install-host",
+    "display_name": "NETCUP SCP",
+    "fromfile_prefix_chars": null,
+    "id": "entrypoint:install-host",
+    "long_name": "Netcup Server Control Panel installer",
+    "no_args_action": false,
+    "prefix_chars": "-",
+    "prog": "install-host.py",
+    "single_command": false
+  },
+  "incomplete": [],
+  "interaction_issues": [],
+  "library_contract": {
+    "name": "cli-extended",
+    "version": 1
+  },
+  "routes": [
+    {
+      "actions": [
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--attach-task-uuid",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "identifier used for local capture files (default: timestamp)",
+          "dest": "attach_task_uuid",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--attach-task-uuid"
+          ],
+          "help_group": "ATTACH SESSION",
+          "hidden": false,
+          "id": "option:route:entrypoint:install-host/attach/--attach-task-uuid",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null
+          },
+          "parser_path": [
+            "attach"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--simulate-disconnect-seconds",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "testing aid: force an SSH reconnect after this many seconds",
+          "dest": "simulate_disconnect_seconds",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--simulate-disconnect-seconds"
+          ],
+          "help_group": "ATTACH SESSION",
+          "hidden": false,
+          "id": "option:route:entrypoint:install-host/attach/--simulate-disconnect-seconds",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null,
+            "type": {
+              "callable": "builtins.float"
+            }
+          },
+          "parser_path": [
+            "attach"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": {
+            "callable": "builtins.float"
+          }
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--attach-initial-delay",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "delay before the first SSH probe (default: install-host.toml)",
+          "dest": "attach_initial_delay",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--attach-initial-delay"
+          ],
+          "help_group": "STOP CONDITIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:install-host/attach/--attach-initial-delay",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null,
+            "type": {
+              "callable": "_cli_extended_surface_install_host._positive_finite"
+            }
+          },
+          "parser_path": [
+            "attach"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": {
+            "callable": "_cli_extended_surface_install_host._positive_finite"
+          }
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--attach-max-wait-seconds",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "maximum time to wait for SSH (default: install-host.toml)",
+          "dest": "attach_max_wait_seconds",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--attach-max-wait-seconds"
+          ],
+          "help_group": "STOP CONDITIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:install-host/attach/--attach-max-wait-seconds",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null,
+            "type": {
+              "callable": "_cli_extended_surface_install_host._positive_finite"
+            }
+          },
+          "parser_path": [
+            "attach"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": {
+            "callable": "_cli_extended_surface_install_host._positive_finite"
+          }
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--poll-interval",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "retry interval for SSH attachment (default: install-host.toml)",
+          "dest": "poll_interval",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--poll-interval"
+          ],
+          "help_group": "STOP CONDITIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:install-host/attach/--poll-interval",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null,
+            "type": {
+              "callable": "_cli_extended_surface_install_host._positive_finite"
+            }
+          },
+          "parser_path": [
+            "attach"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": {
+            "callable": "_cli_extended_surface_install_host._positive_finite"
+          }
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--ssh-host",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "required SSH host/IP; may come from NETCUP_SCP_API_SSH_HOST",
+          "dest": "ssh_host",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--ssh-host"
+          ],
+          "help_group": "SSH ACCESS",
+          "hidden": false,
+          "id": "option:route:entrypoint:install-host/attach/--ssh-host",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null
+          },
+          "parser_path": [
+            "attach"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--ssh-user",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "SSH login user (default: install-host.toml or NETCUP_SCP_API_SSH_USER)",
+          "dest": "ssh_user",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--ssh-user"
+          ],
+          "help_group": "SSH ACCESS",
+          "hidden": false,
+          "id": "option:route:entrypoint:install-host/attach/--ssh-user",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null
+          },
+          "parser_path": [
+            "attach"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--ssh-identity-file",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "exact existing local controller private key for this host",
+          "dest": "ssh_identity_file",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--ssh-identity-file"
+          ],
+          "help_group": "SSH ACCESS",
+          "hidden": false,
+          "id": "option:route:entrypoint:install-host/attach/--ssh-identity-file",
+          "kind": "option",
+          "metavar": "PATH",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null
+          },
+          "parser_path": [
+            "attach"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        }
+      ],
+      "aliases": [],
+      "behavior": [
+        "potentially expensive"
+      ],
+      "common_controls": [
+        "--color",
+        "--debug",
+        "--debug-raw",
+        "--help",
+        "--log-level",
+        "--no-color",
+        "--quiet",
+        "--traceback",
+        "--version"
+      ],
+      "confirmation": false,
+      "constraints": [],
+      "delegated_metadata": [],
+      "description": "SSH to an already installing/installed host and stream the provider's customScript output, reconnecting across SSH loss and reboots. This command makes no Netcup API calls and never creates an identity key.",
+      "group": "EXPLORATION",
+      "id": "route:entrypoint:install-host/attach",
+      "kind": "invocation",
+      "no_args_action": false,
+      "opaque_fields": [
+        "option:route:entrypoint:install-host/attach/--attach-initial-delay.type",
+        "option:route:entrypoint:install-host/attach/--attach-max-wait-seconds.type",
+        "option:route:entrypoint:install-host/attach/--poll-interval.type"
+      ],
+      "parser_configured_by_callback": false,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "attach"
+          ],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "attach"
+      ],
+      "single_command": false,
+      "subcommand_groups": [],
+      "subcommands": [],
+      "subcommands_required": false,
+      "summary": "reattach to a host and follow the provider customScript log [potentially expensive]",
+      "synopsis_override": "",
+      "syntax_complete": true,
+      "usage_override": null
+    },
+    {
+      "actions": [
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--config",
+          "choices": null,
+          "const": null,
+          "default": {
+            "kind": "suppressed"
+          },
+          "default_present": false,
+          "description": "config to install or output file to write; --payload is a deprecated alias",
+          "dest": "config_path",
+          "effective_default": {
+            "kind": "suppressed"
+          },
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--config",
+            "--payload"
+          ],
+          "help_group": "INPUT AND OUTPUT",
+          "hidden": false,
+          "id": "option:route:entrypoint:install-host/configure/--config",
+          "kind": "option",
+          "metavar": "FILE",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "dest": "config_path"
+          },
+          "parser_path": [
+            "configure"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._AppendAction",
+          "before_nested_subcommand": false,
+          "canonical": "--ssh-key-id",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "reuse an existing Netcup account key ID; repeat to select multiple keys",
+          "dest": "ssh_key_ids",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--ssh-key-id"
+          ],
+          "help_group": "SSH ACCESS",
+          "hidden": false,
+          "id": "option:route:entrypoint:install-host/configure/--ssh-key-id",
+          "kind": "option",
+          "metavar": "ID",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "action": "append",
+            "default": null,
+            "dest": "ssh_key_ids",
+            "type": {
+              "callable": "_cli_extended_surface_install_host._positive_integer"
+            }
+          },
+          "parser_path": [
+            "configure"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": {
+            "callable": "_cli_extended_surface_install_host._positive_integer"
+          }
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--local-controller-key",
+          "choices": [
+            "remove",
+            "retain"
+          ],
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "retain or remove the local controller key after the declared completion marker",
+          "dest": "local_controller_key",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--local-controller-key"
+          ],
+          "help_group": "SSH ACCESS",
+          "hidden": false,
+          "id": "option:route:entrypoint:install-host/configure/--local-controller-key",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "choices": [
+              "remove",
+              "retain"
+            ],
+            "default": null
+          },
+          "parser_path": [
+            "configure"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--poll-interval",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "task-monitor polling interval in seconds (default: install-host.toml)",
+          "dest": "poll_interval",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--poll-interval"
+          ],
+          "help_group": "MONITORING",
+          "hidden": false,
+          "id": "option:route:entrypoint:install-host/configure/--poll-interval",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null,
+            "type": {
+              "callable": "_cli_extended_surface_install_host._positive_finite"
+            }
+          },
+          "parser_path": [
+            "configure"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": {
+            "callable": "_cli_extended_surface_install_host._positive_finite"
+          }
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--completion-wait-seconds",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "maximum wait for the declared completion marker (default: install-host.toml)",
+          "dest": "completion_wait_seconds",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--completion-wait-seconds"
+          ],
+          "help_group": "MONITORING",
+          "hidden": false,
+          "id": "option:route:entrypoint:install-host/configure/--completion-wait-seconds",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null,
+            "type": {
+              "callable": "_cli_extended_surface_install_host._positive_finite"
+            }
+          },
+          "parser_path": [
+            "configure"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": {
+            "callable": "_cli_extended_surface_install_host._positive_finite"
+          }
+        },
+        {
+          "action": "argparse._StoreTrueAction",
+          "before_nested_subcommand": false,
+          "canonical": "--attach-custom-script",
+          "choices": null,
+          "const": true,
+          "default": {
+            "kind": "suppressed"
+          },
+          "default_present": false,
+          "description": "tail the provider customScript log over SSH while monitoring",
+          "dest": "attach_custom_script",
+          "effective_default": {
+            "kind": "suppressed"
+          },
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--attach-custom-script"
+          ],
+          "help_group": "MONITORING",
+          "hidden": false,
+          "id": "option:route:entrypoint:install-host/configure/--attach-custom-script",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 0,
+          "nargs": 0,
+          "parser_kwargs": {
+            "action": "store_true",
+            "default": {
+              "kind": "suppressed"
+            },
+            "dest": "attach_custom_script"
+          },
+          "parser_path": [
+            "configure"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreFalseAction",
+          "before_nested_subcommand": false,
+          "canonical": "--no-attach-custom-script",
+          "choices": null,
+          "const": false,
+          "default": {
+            "kind": "suppressed"
+          },
+          "default_present": false,
+          "description": "disable SSH customScript log attachment",
+          "dest": "attach_custom_script",
+          "effective_default": {
+            "kind": "suppressed"
+          },
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--no-attach-custom-script"
+          ],
+          "help_group": "MONITORING",
+          "hidden": false,
+          "id": "option:route:entrypoint:install-host/configure/--no-attach-custom-script",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 0,
+          "nargs": 0,
+          "parser_kwargs": {
+            "action": "store_false",
+            "default": {
+              "kind": "suppressed"
+            },
+            "dest": "attach_custom_script"
+          },
+          "parser_path": [
+            "configure"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--ssh-host",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "SSH host/IP; defaults to the resolved server address or NETCUP_SCP_API_SSH_HOST",
+          "dest": "ssh_host",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--ssh-host"
+          ],
+          "help_group": "SSH ACCESS",
+          "hidden": false,
+          "id": "option:route:entrypoint:install-host/configure/--ssh-host",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null
+          },
+          "parser_path": [
+            "configure"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--ssh-user",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "SSH login user (default: install-host.toml or NETCUP_SCP_API_SSH_USER)",
+          "dest": "ssh_user",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--ssh-user"
+          ],
+          "help_group": "SSH ACCESS",
+          "hidden": false,
+          "id": "option:route:entrypoint:install-host/configure/--ssh-user",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null
+          },
+          "parser_path": [
+            "configure"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--ssh-identity-file",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "local controller private key; a valid host-specific key is reused when available",
+          "dest": "ssh_identity_file",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--ssh-identity-file"
+          ],
+          "help_group": "SSH ACCESS",
+          "hidden": false,
+          "id": "option:route:entrypoint:install-host/configure/--ssh-identity-file",
+          "kind": "option",
+          "metavar": "PATH",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null
+          },
+          "parser_path": [
+            "configure"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--server-id",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "explicit wizard target; otherwise use configured name or interactive server picker",
+          "dest": "server_id",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--server-id"
+          ],
+          "help_group": "TARGET SELECTION",
+          "hidden": false,
+          "id": "option:route:entrypoint:install-host/configure/--server-id",
+          "kind": "option",
+          "metavar": "ID",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null,
+            "type": {
+              "callable": "_cli_extended_surface_install_host._positive_integer"
+            }
+          },
+          "parser_path": [
+            "configure"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": {
+            "callable": "_cli_extended_surface_install_host._positive_integer"
+          }
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--custom-script-file",
+          "choices": null,
+          "const": null,
+          "default": {
+            "kind": "suppressed"
+          },
+          "default_present": false,
+          "description": "consume an opaque customScript command or producer JSON bundle",
+          "dest": "custom_script_file",
+          "effective_default": {
+            "kind": "suppressed"
+          },
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--custom-script-file"
+          ],
+          "help_group": "CUSTOMSCRIPT INPUT",
+          "hidden": false,
+          "id": "option:route:entrypoint:install-host/configure/--custom-script-file",
+          "kind": "option",
+          "metavar": "FILE",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {},
+          "parser_path": [
+            "configure"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--completion-marker",
+          "choices": null,
+          "const": null,
+          "default": {
+            "kind": "suppressed"
+          },
+          "default_present": false,
+          "description": "absolute remote completion path declared by the consumed customScript",
+          "dest": "completion_marker",
+          "effective_default": {
+            "kind": "suppressed"
+          },
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--completion-marker"
+          ],
+          "help_group": "CUSTOMSCRIPT INPUT",
+          "hidden": false,
+          "id": "option:route:entrypoint:install-host/configure/--completion-marker",
+          "kind": "option",
+          "metavar": "PATH",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {},
+          "parser_path": [
+            "configure"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreTrueAction",
+          "before_nested_subcommand": false,
+          "canonical": "--monitor",
+          "choices": null,
+          "const": true,
+          "default": {
+            "kind": "suppressed"
+          },
+          "default_present": false,
+          "description": "explicitly poll the task after wizard installation",
+          "dest": "monitor",
+          "effective_default": {
+            "kind": "suppressed"
+          },
+          "exclusive_group": "task-monitor-mode",
+          "exclusive_required": false,
+          "flags": [
+            "--monitor"
+          ],
+          "help_group": "MONITORING",
+          "hidden": false,
+          "id": "option:route:entrypoint:install-host/configure/--monitor",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 0,
+          "nargs": 0,
+          "parser_kwargs": {
+            "action": "store_true"
+          },
+          "parser_path": [
+            "configure"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreTrueAction",
+          "before_nested_subcommand": false,
+          "canonical": "--no-monitor",
+          "choices": null,
+          "const": true,
+          "default": {
+            "kind": "suppressed"
+          },
+          "default_present": false,
+          "description": "return after task creation instead of following it",
+          "dest": "no_monitor",
+          "effective_default": {
+            "kind": "suppressed"
+          },
+          "exclusive_group": "task-monitor-mode",
+          "exclusive_required": false,
+          "flags": [
+            "--no-monitor"
+          ],
+          "help_group": "MONITORING",
+          "hidden": false,
+          "id": "option:route:entrypoint:install-host/configure/--no-monitor",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 0,
+          "nargs": 0,
+          "parser_kwargs": {
+            "action": "store_true"
+          },
+          "parser_path": [
+            "configure"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        }
+      ],
+      "aliases": [],
+      "behavior": [
+        "mutating",
+        "dry-run",
+        "interactive"
+      ],
+      "common_controls": [
+        "--color",
+        "--debug",
+        "--debug-raw",
+        "--dry-run",
+        "--help",
+        "--log-level",
+        "--no-color",
+        "--quiet",
+        "--traceback",
+        "--version",
+        "--yes"
+      ],
+      "confirmation": true,
+      "constraints": [],
+      "delegated_metadata": [],
+      "description": "Run the same interactive gather-and-install workflow as wizard. New usage should prefer wizard.",
+      "group": "AUTHENTICATION / SETUP",
+      "id": "route:entrypoint:install-host/configure",
+      "kind": "invocation",
+      "no_args_action": false,
+      "opaque_fields": [
+        "option:route:entrypoint:install-host/configure/--completion-wait-seconds.type",
+        "option:route:entrypoint:install-host/configure/--poll-interval.type",
+        "option:route:entrypoint:install-host/configure/--server-id.type",
+        "option:route:entrypoint:install-host/configure/--ssh-key-id.type"
+      ],
+      "parser_configured_by_callback": false,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "configure"
+          ],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "configure"
+      ],
+      "single_command": false,
+      "subcommand_groups": [],
+      "subcommands": [],
+      "subcommands_required": false,
+      "summary": "compatibility alias for wizard [mutating; dry-run; interactive]",
+      "synopsis_override": "",
+      "syntax_complete": true,
+      "usage_override": null
+    },
+    {
+      "actions": [
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--config",
+          "choices": null,
+          "const": null,
+          "default": {
+            "kind": "suppressed"
+          },
+          "default_present": false,
+          "description": "config to install or output file to write; --payload is a deprecated alias",
+          "dest": "config_path",
+          "effective_default": {
+            "kind": "suppressed"
+          },
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--config",
+            "--payload"
+          ],
+          "help_group": "INPUT AND OUTPUT",
+          "hidden": false,
+          "id": "option:route:entrypoint:install-host/install/--config",
+          "kind": "option",
+          "metavar": "FILE",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "dest": "config_path"
+          },
+          "parser_path": [
+            "install"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._AppendAction",
+          "before_nested_subcommand": false,
+          "canonical": "--ssh-key-id",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "reuse an existing Netcup account key ID; repeat to select multiple keys",
+          "dest": "ssh_key_ids",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--ssh-key-id"
+          ],
+          "help_group": "SSH ACCESS",
+          "hidden": false,
+          "id": "option:route:entrypoint:install-host/install/--ssh-key-id",
+          "kind": "option",
+          "metavar": "ID",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "action": "append",
+            "default": null,
+            "dest": "ssh_key_ids",
+            "type": {
+              "callable": "_cli_extended_surface_install_host._positive_integer"
+            }
+          },
+          "parser_path": [
+            "install"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": {
+            "callable": "_cli_extended_surface_install_host._positive_integer"
+          }
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--local-controller-key",
+          "choices": [
+            "remove",
+            "retain"
+          ],
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "retain or remove the local controller key after the declared completion marker",
+          "dest": "local_controller_key",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--local-controller-key"
+          ],
+          "help_group": "SSH ACCESS",
+          "hidden": false,
+          "id": "option:route:entrypoint:install-host/install/--local-controller-key",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "choices": [
+              "remove",
+              "retain"
+            ],
+            "default": null
+          },
+          "parser_path": [
+            "install"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--poll-interval",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "task-monitor polling interval in seconds (default: install-host.toml)",
+          "dest": "poll_interval",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--poll-interval"
+          ],
+          "help_group": "MONITORING",
+          "hidden": false,
+          "id": "option:route:entrypoint:install-host/install/--poll-interval",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null,
+            "type": {
+              "callable": "_cli_extended_surface_install_host._positive_finite"
+            }
+          },
+          "parser_path": [
+            "install"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": {
+            "callable": "_cli_extended_surface_install_host._positive_finite"
+          }
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--completion-wait-seconds",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "maximum wait for the declared completion marker (default: install-host.toml)",
+          "dest": "completion_wait_seconds",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--completion-wait-seconds"
+          ],
+          "help_group": "MONITORING",
+          "hidden": false,
+          "id": "option:route:entrypoint:install-host/install/--completion-wait-seconds",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null,
+            "type": {
+              "callable": "_cli_extended_surface_install_host._positive_finite"
+            }
+          },
+          "parser_path": [
+            "install"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": {
+            "callable": "_cli_extended_surface_install_host._positive_finite"
+          }
+        },
+        {
+          "action": "argparse._StoreTrueAction",
+          "before_nested_subcommand": false,
+          "canonical": "--attach-custom-script",
+          "choices": null,
+          "const": true,
+          "default": {
+            "kind": "suppressed"
+          },
+          "default_present": false,
+          "description": "tail the provider customScript log over SSH while monitoring",
+          "dest": "attach_custom_script",
+          "effective_default": {
+            "kind": "suppressed"
+          },
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--attach-custom-script"
+          ],
+          "help_group": "MONITORING",
+          "hidden": false,
+          "id": "option:route:entrypoint:install-host/install/--attach-custom-script",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 0,
+          "nargs": 0,
+          "parser_kwargs": {
+            "action": "store_true",
+            "default": {
+              "kind": "suppressed"
+            },
+            "dest": "attach_custom_script"
+          },
+          "parser_path": [
+            "install"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreFalseAction",
+          "before_nested_subcommand": false,
+          "canonical": "--no-attach-custom-script",
+          "choices": null,
+          "const": false,
+          "default": {
+            "kind": "suppressed"
+          },
+          "default_present": false,
+          "description": "disable SSH customScript log attachment",
+          "dest": "attach_custom_script",
+          "effective_default": {
+            "kind": "suppressed"
+          },
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--no-attach-custom-script"
+          ],
+          "help_group": "MONITORING",
+          "hidden": false,
+          "id": "option:route:entrypoint:install-host/install/--no-attach-custom-script",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 0,
+          "nargs": 0,
+          "parser_kwargs": {
+            "action": "store_false",
+            "default": {
+              "kind": "suppressed"
+            },
+            "dest": "attach_custom_script"
+          },
+          "parser_path": [
+            "install"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--ssh-host",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "SSH host/IP; defaults to the resolved server address or NETCUP_SCP_API_SSH_HOST",
+          "dest": "ssh_host",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--ssh-host"
+          ],
+          "help_group": "SSH ACCESS",
+          "hidden": false,
+          "id": "option:route:entrypoint:install-host/install/--ssh-host",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null
+          },
+          "parser_path": [
+            "install"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--ssh-user",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "SSH login user (default: install-host.toml or NETCUP_SCP_API_SSH_USER)",
+          "dest": "ssh_user",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--ssh-user"
+          ],
+          "help_group": "SSH ACCESS",
+          "hidden": false,
+          "id": "option:route:entrypoint:install-host/install/--ssh-user",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null
+          },
+          "parser_path": [
+            "install"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--ssh-identity-file",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "local controller private key; a valid host-specific key is reused when available",
+          "dest": "ssh_identity_file",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--ssh-identity-file"
+          ],
+          "help_group": "SSH ACCESS",
+          "hidden": false,
+          "id": "option:route:entrypoint:install-host/install/--ssh-identity-file",
+          "kind": "option",
+          "metavar": "PATH",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null
+          },
+          "parser_path": [
+            "install"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreTrueAction",
+          "before_nested_subcommand": false,
+          "canonical": "--no-monitor",
+          "choices": null,
+          "const": true,
+          "default": {
+            "kind": "suppressed"
+          },
+          "default_present": false,
+          "description": "return after task creation instead of following it",
+          "dest": "no_monitor",
+          "effective_default": {
+            "kind": "suppressed"
+          },
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--no-monitor"
+          ],
+          "help_group": "MONITORING",
+          "hidden": false,
+          "id": "option:route:entrypoint:install-host/install/--no-monitor",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 0,
+          "nargs": 0,
+          "parser_kwargs": {
+            "action": "store_true"
+          },
+          "parser_path": [
+            "install"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        }
+      ],
+      "aliases": [],
+      "behavior": [
+        "mutating",
+        "dry-run",
+        "potentially expensive"
+      ],
+      "common_controls": [
+        "--color",
+        "--debug",
+        "--debug-raw",
+        "--dry-run",
+        "--help",
+        "--log-level",
+        "--no-color",
+        "--quiet",
+        "--traceback",
+        "--version",
+        "--yes"
+      ],
+      "confirmation": true,
+      "constraints": [],
+      "delegated_metadata": [],
+      "description": "Read target-host.jsonc (or --config FILE), validate it without gathering missing fields, submit the image install, and monitor by default. Use --no-monitor to return after task creation.",
+      "group": "MODIFICATION",
+      "id": "route:entrypoint:install-host/install",
+      "kind": "invocation",
+      "no_args_action": false,
+      "opaque_fields": [
+        "option:route:entrypoint:install-host/install/--completion-wait-seconds.type",
+        "option:route:entrypoint:install-host/install/--poll-interval.type",
+        "option:route:entrypoint:install-host/install/--ssh-key-id.type"
+      ],
+      "parser_configured_by_callback": false,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "install"
+          ],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "install"
+      ],
+      "single_command": false,
+      "subcommand_groups": [],
+      "subcommands": [],
+      "subcommands_required": false,
+      "summary": "install a validated config and monitor its task [mutating; dry-run; potentially expensive]",
+      "synopsis_override": "",
+      "syntax_complete": true,
+      "usage_override": null
+    },
+    {
+      "actions": [
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--config",
+          "choices": null,
+          "const": null,
+          "default": {
+            "kind": "suppressed"
+          },
+          "default_present": false,
+          "description": "config to install or output file to write; --payload is a deprecated alias",
+          "dest": "config_path",
+          "effective_default": {
+            "kind": "suppressed"
+          },
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--config",
+            "--payload"
+          ],
+          "help_group": "INPUT AND OUTPUT",
+          "hidden": false,
+          "id": "option:route:entrypoint:install-host/wizard/--config",
+          "kind": "option",
+          "metavar": "FILE",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "dest": "config_path"
+          },
+          "parser_path": [
+            "wizard"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._AppendAction",
+          "before_nested_subcommand": false,
+          "canonical": "--ssh-key-id",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "reuse an existing Netcup account key ID; repeat to select multiple keys",
+          "dest": "ssh_key_ids",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--ssh-key-id"
+          ],
+          "help_group": "SSH ACCESS",
+          "hidden": false,
+          "id": "option:route:entrypoint:install-host/wizard/--ssh-key-id",
+          "kind": "option",
+          "metavar": "ID",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "action": "append",
+            "default": null,
+            "dest": "ssh_key_ids",
+            "type": {
+              "callable": "_cli_extended_surface_install_host._positive_integer"
+            }
+          },
+          "parser_path": [
+            "wizard"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": {
+            "callable": "_cli_extended_surface_install_host._positive_integer"
+          }
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--local-controller-key",
+          "choices": [
+            "remove",
+            "retain"
+          ],
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "retain or remove the local controller key after the declared completion marker",
+          "dest": "local_controller_key",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--local-controller-key"
+          ],
+          "help_group": "SSH ACCESS",
+          "hidden": false,
+          "id": "option:route:entrypoint:install-host/wizard/--local-controller-key",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "choices": [
+              "remove",
+              "retain"
+            ],
+            "default": null
+          },
+          "parser_path": [
+            "wizard"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--poll-interval",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "task-monitor polling interval in seconds (default: install-host.toml)",
+          "dest": "poll_interval",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--poll-interval"
+          ],
+          "help_group": "MONITORING",
+          "hidden": false,
+          "id": "option:route:entrypoint:install-host/wizard/--poll-interval",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null,
+            "type": {
+              "callable": "_cli_extended_surface_install_host._positive_finite"
+            }
+          },
+          "parser_path": [
+            "wizard"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": {
+            "callable": "_cli_extended_surface_install_host._positive_finite"
+          }
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--completion-wait-seconds",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "maximum wait for the declared completion marker (default: install-host.toml)",
+          "dest": "completion_wait_seconds",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--completion-wait-seconds"
+          ],
+          "help_group": "MONITORING",
+          "hidden": false,
+          "id": "option:route:entrypoint:install-host/wizard/--completion-wait-seconds",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null,
+            "type": {
+              "callable": "_cli_extended_surface_install_host._positive_finite"
+            }
+          },
+          "parser_path": [
+            "wizard"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": {
+            "callable": "_cli_extended_surface_install_host._positive_finite"
+          }
+        },
+        {
+          "action": "argparse._StoreTrueAction",
+          "before_nested_subcommand": false,
+          "canonical": "--attach-custom-script",
+          "choices": null,
+          "const": true,
+          "default": {
+            "kind": "suppressed"
+          },
+          "default_present": false,
+          "description": "tail the provider customScript log over SSH while monitoring",
+          "dest": "attach_custom_script",
+          "effective_default": {
+            "kind": "suppressed"
+          },
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--attach-custom-script"
+          ],
+          "help_group": "MONITORING",
+          "hidden": false,
+          "id": "option:route:entrypoint:install-host/wizard/--attach-custom-script",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 0,
+          "nargs": 0,
+          "parser_kwargs": {
+            "action": "store_true",
+            "default": {
+              "kind": "suppressed"
+            },
+            "dest": "attach_custom_script"
+          },
+          "parser_path": [
+            "wizard"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreFalseAction",
+          "before_nested_subcommand": false,
+          "canonical": "--no-attach-custom-script",
+          "choices": null,
+          "const": false,
+          "default": {
+            "kind": "suppressed"
+          },
+          "default_present": false,
+          "description": "disable SSH customScript log attachment",
+          "dest": "attach_custom_script",
+          "effective_default": {
+            "kind": "suppressed"
+          },
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--no-attach-custom-script"
+          ],
+          "help_group": "MONITORING",
+          "hidden": false,
+          "id": "option:route:entrypoint:install-host/wizard/--no-attach-custom-script",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 0,
+          "nargs": 0,
+          "parser_kwargs": {
+            "action": "store_false",
+            "default": {
+              "kind": "suppressed"
+            },
+            "dest": "attach_custom_script"
+          },
+          "parser_path": [
+            "wizard"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--ssh-host",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "SSH host/IP; defaults to the resolved server address or NETCUP_SCP_API_SSH_HOST",
+          "dest": "ssh_host",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--ssh-host"
+          ],
+          "help_group": "SSH ACCESS",
+          "hidden": false,
+          "id": "option:route:entrypoint:install-host/wizard/--ssh-host",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null
+          },
+          "parser_path": [
+            "wizard"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--ssh-user",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "SSH login user (default: install-host.toml or NETCUP_SCP_API_SSH_USER)",
+          "dest": "ssh_user",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--ssh-user"
+          ],
+          "help_group": "SSH ACCESS",
+          "hidden": false,
+          "id": "option:route:entrypoint:install-host/wizard/--ssh-user",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null
+          },
+          "parser_path": [
+            "wizard"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--ssh-identity-file",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "local controller private key; a valid host-specific key is reused when available",
+          "dest": "ssh_identity_file",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--ssh-identity-file"
+          ],
+          "help_group": "SSH ACCESS",
+          "hidden": false,
+          "id": "option:route:entrypoint:install-host/wizard/--ssh-identity-file",
+          "kind": "option",
+          "metavar": "PATH",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null
+          },
+          "parser_path": [
+            "wizard"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--server-id",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "explicit wizard target; otherwise use configured name or interactive server picker",
+          "dest": "server_id",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--server-id"
+          ],
+          "help_group": "TARGET SELECTION",
+          "hidden": false,
+          "id": "option:route:entrypoint:install-host/wizard/--server-id",
+          "kind": "option",
+          "metavar": "ID",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null,
+            "type": {
+              "callable": "_cli_extended_surface_install_host._positive_integer"
+            }
+          },
+          "parser_path": [
+            "wizard"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": {
+            "callable": "_cli_extended_surface_install_host._positive_integer"
+          }
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--custom-script-file",
+          "choices": null,
+          "const": null,
+          "default": {
+            "kind": "suppressed"
+          },
+          "default_present": false,
+          "description": "consume an opaque customScript command or producer JSON bundle",
+          "dest": "custom_script_file",
+          "effective_default": {
+            "kind": "suppressed"
+          },
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--custom-script-file"
+          ],
+          "help_group": "CUSTOMSCRIPT INPUT",
+          "hidden": false,
+          "id": "option:route:entrypoint:install-host/wizard/--custom-script-file",
+          "kind": "option",
+          "metavar": "FILE",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {},
+          "parser_path": [
+            "wizard"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--completion-marker",
+          "choices": null,
+          "const": null,
+          "default": {
+            "kind": "suppressed"
+          },
+          "default_present": false,
+          "description": "absolute remote completion path declared by the consumed customScript",
+          "dest": "completion_marker",
+          "effective_default": {
+            "kind": "suppressed"
+          },
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--completion-marker"
+          ],
+          "help_group": "CUSTOMSCRIPT INPUT",
+          "hidden": false,
+          "id": "option:route:entrypoint:install-host/wizard/--completion-marker",
+          "kind": "option",
+          "metavar": "PATH",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {},
+          "parser_path": [
+            "wizard"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreTrueAction",
+          "before_nested_subcommand": false,
+          "canonical": "--monitor",
+          "choices": null,
+          "const": true,
+          "default": {
+            "kind": "suppressed"
+          },
+          "default_present": false,
+          "description": "explicitly poll the task after wizard installation",
+          "dest": "monitor",
+          "effective_default": {
+            "kind": "suppressed"
+          },
+          "exclusive_group": "task-monitor-mode",
+          "exclusive_required": false,
+          "flags": [
+            "--monitor"
+          ],
+          "help_group": "MONITORING",
+          "hidden": false,
+          "id": "option:route:entrypoint:install-host/wizard/--monitor",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 0,
+          "nargs": 0,
+          "parser_kwargs": {
+            "action": "store_true"
+          },
+          "parser_path": [
+            "wizard"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreTrueAction",
+          "before_nested_subcommand": false,
+          "canonical": "--no-monitor",
+          "choices": null,
+          "const": true,
+          "default": {
+            "kind": "suppressed"
+          },
+          "default_present": false,
+          "description": "return after task creation instead of following it",
+          "dest": "no_monitor",
+          "effective_default": {
+            "kind": "suppressed"
+          },
+          "exclusive_group": "task-monitor-mode",
+          "exclusive_required": false,
+          "flags": [
+            "--no-monitor"
+          ],
+          "help_group": "MONITORING",
+          "hidden": false,
+          "id": "option:route:entrypoint:install-host/wizard/--no-monitor",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 0,
+          "nargs": 0,
+          "parser_kwargs": {
+            "action": "store_true"
+          },
+          "parser_path": [
+            "wizard"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        }
+      ],
+      "aliases": [],
+      "behavior": [
+        "mutating",
+        "dry-run",
+        "interactive"
+      ],
+      "common_controls": [
+        "--color",
+        "--debug",
+        "--debug-raw",
+        "--dry-run",
+        "--help",
+        "--log-level",
+        "--no-color",
+        "--quiet",
+        "--traceback",
+        "--version",
+        "--yes"
+      ],
+      "confirmation": true,
+      "constraints": [],
+      "delegated_metadata": [],
+      "description": "Resolve the target, image flavour, account SSH keys, and optional producer customScript; write the reviewed config, then request confirmation before installation.",
+      "group": "AUTHENTICATION / SETUP",
+      "id": "route:entrypoint:install-host/wizard",
+      "kind": "invocation",
+      "no_args_action": false,
+      "opaque_fields": [
+        "option:route:entrypoint:install-host/wizard/--completion-wait-seconds.type",
+        "option:route:entrypoint:install-host/wizard/--poll-interval.type",
+        "option:route:entrypoint:install-host/wizard/--server-id.type",
+        "option:route:entrypoint:install-host/wizard/--ssh-key-id.type"
+      ],
+      "parser_configured_by_callback": false,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "wizard"
+          ],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "wizard"
+      ],
+      "single_command": false,
+      "subcommand_groups": [],
+      "subcommands": [],
+      "subcommands_required": false,
+      "summary": "gather a reviewed install plan and optionally install it [mutating; dry-run; interactive]",
+      "synopsis_override": "",
+      "syntax_complete": true,
+      "usage_override": null
+    }
+  ],
+  "schema_version": 7,
+  "syntax_complete": true
+}

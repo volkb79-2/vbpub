@@ -405,22 +405,13 @@ _SETTINGS_EXPECTED_KEYS = {
 
 SETTINGS_PATH = Path(__file__).resolve().parent / "install-host.toml"
 SETTINGS: Dict[str, Any] = {}
-VERSION_PATH = Path(__file__).resolve().parent / "VERSION"
 
-
-def _cli_identity() -> CliIdentity:
-    version = VERSION_PATH.read_text(encoding="utf-8").strip()
-    if not re.fullmatch(r"\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?", version):
-        raise ValueError(f"invalid Netcup CLI version in {VERSION_PATH}: {version!r}")
-    return CliIdentity(
-        name="NETCUP SCP",
-        command="install-host",
-        version=version,
-        long_name="Netcup Server Control Panel installer",
-    )
-
-
-IDENTITY = _cli_identity()
+IDENTITY = CliIdentity.resolve(
+    name="NETCUP SCP",
+    command="install-host",
+    long_name="Netcup Server Control Panel installer",
+    version_file=Path(__file__).resolve().with_name("VERSION"),
+)
 _ACTIVE_RUNTIME: Any | None = None
 
 # Server configuration
@@ -510,7 +501,6 @@ def _option(
 def _workflow_options(*, target_picker: bool, monitor: bool):
     options = [
         _option(("--config", "--payload"), "config to install or output file to write; --payload is a deprecated alias", group="INPUT AND OUTPUT", metavar="FILE", dest="config_path"),
-        _option(("--dry-run",), "validate and display the plan without submitting the image-install request", group="EXECUTION", action="store_true"),
         _option(("--ssh-key-id",), "reuse an existing Netcup account key ID; repeat to select multiple keys", group="SSH ACCESS", metavar="ID", dest="ssh_key_ids", action="append", type=_positive_integer, default=None),
         _option(("--local-controller-key",), "retain or remove the local controller key after the declared completion marker", group="SSH ACCESS", choices=("remove", "retain"), default=None),
         _option(("--poll-interval",), "task-monitor polling interval in seconds (default: install-host.toml)", group="MONITORING", type=_positive_finite, default=None),
@@ -575,6 +565,12 @@ def build_cli():
             "./install-host.py install --config target-host.jsonc --dry-run",
         ),
         logging_logger="netcup.install_host",
+        unexpected_exceptions="report",
+        expected_exceptions=(
+            netcup_scp_client.NetcupAPIError,
+            OSError,
+            subprocess.SubprocessError,
+        ),
     )
 
     def register(name, synopsis, summary, description, group, handler, *, options=(), examples=(), mutating=False, interactive=False, expensive=False):
@@ -586,6 +582,7 @@ def build_cli():
                 group=group,
                 examples=examples,
                 mutating=mutating,
+                dry_run=mutating,
                 interactive=interactive,
                 expensive=expensive,
                 include_json=False,
@@ -1560,7 +1557,7 @@ def install_from_payload(
     API request; all other customScript content is opaque here.
     """
     print("=" * 70)
-    print("DIRECT INSTALLATION MODE" + ("  [DRY RUN]" if getattr(args, "dry_run", False) else ""))
+    print("DIRECT INSTALLATION MODE" + ("  [DRY RUN]" if args.dry_run else ""))
     print("=" * 70)
     print()
 
@@ -1638,13 +1635,13 @@ def install_from_payload(
     except HTTPStatusError as exc:
         raise CliFailure(f"could not fetch target server details: {exc}") from exc
     except OSError as exc:
-        if _protected_server_policy_configured() and not getattr(args, "dry_run", False):
+        if _protected_server_policy_configured() and not args.dry_run:
             raise CliFailure(
                 f"cannot verify server {server_id} against the protected-server denylist: {exc}",
                 exit_code=2,
             )
         raise
-    if _protected_server_policy_configured() and not getattr(args, "dry_run", False):
+    if _protected_server_policy_configured() and not args.dry_run:
         if not isinstance(server_details, dict):
             raise CliFailure(
                 f"cannot verify server {server_id} against the protected-server denylist: "
@@ -1672,7 +1669,7 @@ def install_from_payload(
             client, user_id, None,
             getattr(args, "ssh_identity_file", None),
             interactive=interactive,
-            dry_run=getattr(args, "dry_run", False),
+            dry_run=args.dry_run,
         )
         if installation_payload["sshKeyIds"] is None:
             installation_payload.pop("sshKeyIds")
@@ -1692,7 +1689,7 @@ def install_from_payload(
     print(json.dumps(_display_redaction(installation_payload), indent=2))
     print()
 
-    if getattr(args, "dry_run", False):
+    if args.dry_run:
         print("=" * 70)
         print(f"[dry-run] Preflight OK. NOT calling POST /api/v1/servers/{server_id}/image.")
         print("=" * 70)
@@ -2017,7 +2014,7 @@ def _prepare_runtime_arguments(cli_args, runtime):
         raise CliFailure(
             f"invalid --completion-marker: {exc}", exit_code=2, show_help=True
         ) from exc
-    cli_args.dry_run = bool(getattr(cli_args, "dry_run", False))
+    cli_args.dry_run = runtime.dry_run
     cli_args.ssh_key_ids = getattr(cli_args, "ssh_key_ids", None)
     cli_args.no_monitor = bool(getattr(cli_args, "no_monitor", False))
     cli_args.monitor = bool(getattr(cli_args, "monitor", False))
@@ -2059,12 +2056,6 @@ def _prepare_runtime_arguments(cli_args, runtime):
     if cli_args.command == "install" and cli_args.server_id is not None:
         raise CliFailure(
             "install reads its target from --config/target-host.jsonc; do not combine it with --server-id",
-            exit_code=2,
-            show_help=True,
-        )
-    if cli_args.custom_script_file and cli_args.command not in {"wizard", "configure"}:
-        raise CliFailure(
-            "--custom-script-file is only valid with wizard or configure",
             exit_code=2,
             show_help=True,
         )
@@ -2233,7 +2224,7 @@ def _run_install_workflow_body(args, runtime):
         raise CliFailure(f"server-details for server ID {server_id} was not an object")
     merged_target = {**target_record, **server_details}
     server_lookup = [merged_target]
-    if not getattr(args, "dry_run", False):
+    if not args.dry_run:
         _ensure_server_mutation_allowed(server_id, merged_target.get("name"), "Netcup image installation")
     SERVER_NAME = str(merged_target.get("name") or SERVER_NAME or f"netcup{server_id}")
     os.environ["NETCUP_SCP_API_SERVER_NAME"] = SERVER_NAME
@@ -2451,7 +2442,7 @@ def _run_install_workflow_body(args, runtime):
             client, user_id, getattr(args, "ssh_key_ids", None),
             getattr(args, "ssh_identity_file", None),
             interactive=interactive,
-            dry_run=getattr(args, "dry_run", False),
+            dry_run=args.dry_run,
         )
         print()
 
@@ -2488,7 +2479,7 @@ def _run_install_workflow_body(args, runtime):
         print(json.dumps(_display_redaction(installation_payload), indent=2))
         print()
 
-        if getattr(args, "dry_run", False):
+        if args.dry_run:
             print("=" * 70)
             print(
                 f"[dry-run] NOT saving to {getattr(args, 'config_path', None) or DEFAULT_TARGET_CONFIG_NAME} "
@@ -2596,14 +2587,7 @@ def _run_install_workflow_body(args, runtime):
 
 
 def main(argv=None) -> int:
-    return build_cli().run(
-        argv=argv,
-        expected_exceptions=(
-            netcup_scp_client.NetcupAPIError,
-            OSError,
-            subprocess.SubprocessError,
-        ),
-    )
+    return build_cli().run(argv=argv)
 
 
 if __name__ == "__main__":

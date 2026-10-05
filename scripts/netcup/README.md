@@ -34,8 +34,9 @@ union supported by the CLI. Use `help VERB` or `VERB --help` for detailed
 command help; that selected-verb help shows which options such as `--json`
 actually apply.
 
-[`CLI-SPEC.md`](CLI-SPEC.md) is the canonical `monitor-task` grammar and
-semantic review. Its generated inventory follows the live registry; the
+[`CLI-SPEC.md`](CLI-SPEC.md) indexes the canonical grammar and semantic review
+of all three CLIs (one `CLI-SPEC-<cli>.md` each, declared in
+`cli-extended.toml`). Each generated inventory follows the live registry; the
 product-owned catalog records accepted/refused combinations, effects, and the
 behavior tests that keep each reviewed call linked to executable evidence.
 See the [`cli-extended` design guide](../../libraries/cli-extended/docs/DESIGN-GUIDE.md#keep-a-generated-surface-and-a-human-semantic-record)
