@@ -211,6 +211,9 @@ def test_baseline_statuses_for_a_minimal_project(tmp_path):
         ({".venv/a.py": "CliIdentity(\nimportlib.metadata\n"}, "manual"),
         ({".worktrees/w/a.py": "CliIdentity(\nimportlib.metadata\n"}, "manual"),
         ({"a.py": "CliIdentity.resolve(name='x')\n"}, "pass"),
+        # Only a call counts: a longer name that merely starts with the
+        # method name is not a use of CliIdentity.resolve.
+        ({"a.py": "x = CliIdentity.resolved_name\n"}, "manual"),
         (
             {"a.py": "CliIdentity.resolve(name='x')\n", "b.py": "CliIdentity(\nimportlib.metadata\n"},
             "fail",
