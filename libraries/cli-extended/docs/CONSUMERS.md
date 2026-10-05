@@ -1281,3 +1281,69 @@ All gate lanes execute in `tester-unified`. R1 enforces 100% statement and
 branch coverage over every shipped `cli_extended` module. R3 deliberately
 breaks JSON redaction in a disposable copy and requires the focused regression
 test to reject it. Ruff remains a separate static check: `ruff check src tests`.
+
+## Adopting cli-extended end to end
+
+The ordered steps a tool follows. Each ends in something `cli-extended audit`
+can check or an agent can judge from the
+[adoption checklist](ADOPTION-CHECKLIST.md) (row ids in brackets).
+
+1. **Dependency** [AC-24, AC-25]. Declare the released library with a floor and
+   a reason; never vendor it or put its checkout on a path.
+
+   ```toml
+   [project]
+   dependencies = [
+       "cli-extended>=0.2.0",  # audit verb and adoption skill
+   ]
+   ```
+
+2. **Identity** [AC-01, AC-02]. One resolver, no fallback; see
+   [Install and choose a version source](#install-and-choose-a-version-source).
+
+   ```python
+   IDENTITY = CliIdentity.resolve(
+       name="EXAMPLE", long_name="Example tool", command="example",
+       distribution="example-tool",
+   )
+   ```
+
+3. **Runtime policy** [AC-10, AC-11]. Report unexpected exceptions and raise
+   `CliFailure` for domain errors.
+
+   ```python
+   registry = CliRegistry(
+       IDENTITY, prog="example", description="Example tool.",
+       unexpected_exceptions="report",
+   )
+   ```
+
+4. **Registration** [AC-03, AC-04, AC-09]. Declare verbs once; see
+   [Turn an interface inventory into registrations](#turn-an-interface-inventory-into-registrations).
+5. **Dry-run and confirmation** [AC-12, AC-13]. Mark mutating verbs
+   `mutating=True, dry_run=True`; see
+   [Replacing hand-rolled version lookup, exception wrappers, and --dry-run](#replacing-hand-rolled-version-lookup-exception-wrappers-and---dry-run).
+6. **Constraints** [AC-05, AC-06, AC-07]. Declare conflicts and requirements
+   instead of checking in handlers; see
+   [Replacing handler-side option checks and name-list parsing](#replacing-handler-side-option-checks-and-name-list-parsing).
+7. **Surface lifecycle and LLM review** [AC-16, AC-17, AC-18]. Configure
+   `review`, `manifest` and `spec`, then run the loop in
+   [The review loop](#the-review-loop): `cli-extended surface sync`, `pack`,
+   judge, `check`.
+8. **Skills** [AC-19]. Package skills and register the `skills` verbs; see
+   [Ship your agent skills](#ship-your-agent-skills).
+9. **Doctor** [AC-20]. Register a `doctor` verb when the tool has an
+   environment to verify; see [Add a `doctor` verb](#add-a-doctor-verb).
+10. **Tests** [AC-21, AC-22, AC-23]. Follow
+    [Tests required for an adoption](#tests-required-for-an-adoption).
+11. **Audit** [all rows]. Run the audit, fix every `fail`, and let the
+    `cli-extended-adoption` skill judge the `manual` items.
+
+    ```bash
+    cli-extended audit --json
+    cli-extended skills install --harness claude   # installs cli-extended-adoption
+    ```
+
+    Exit status is 1 only when an item fails. Text lines read
+    `[FAIL] AC-05 shadowed-controls: 1 consumer option(s) shadow library controls`,
+    followed by indented `evidence:` and `remedy:` lines.

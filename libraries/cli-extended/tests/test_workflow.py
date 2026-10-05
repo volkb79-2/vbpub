@@ -739,14 +739,19 @@ def test_o8_review_skill_validates_and_installs_into_a_tmp_destination(tmp_path,
     dest = tmp_path / "skills-dest"
     code, out, _err = _run(capsys, "skills", "list", "--dest", str(dest))
     assert code == 0
-    assert out.split()[:2] == ["absent", "cli-extended-review"]
+    assert [line.split()[:2] for line in out.splitlines()] == [
+        ["absent", "cli-extended-adoption"],
+        ["absent", "cli-extended-review"],
+    ]
     code, _out, _err = _run(capsys, "skills", "install", "--dest", str(dest))
     assert code == 0
     installed = (dest / "cli-extended-review" / "SKILL.md").read_text(encoding="utf-8")
     assert "name: cli-extended-review" in installed
     assert "cli-extended-tool: cli-extended" in installed
     assert not (tmp_path / "home" / ".claude").exists()
-    assert _run(capsys, "skills", "list", "--dest", str(dest))[1].split()[0] == "current"
+    assert [
+        line.split()[0] for line in _run(capsys, "skills", "list", "--dest", str(dest))[1].splitlines()
+    ] == ["current", "current"]
 
 
 # ---- O9: help, version, contract, identity --------------------------------
@@ -832,7 +837,7 @@ def test_o9_in_process_help_version_and_registry_policy(capsys):
     app = cli_module.build_cli()
     assert app.unexpected_exceptions == "report"
     assert app.identity.command_name == "cli-extended"
-    assert sorted(app.command_parsers) == ["skills", "surface"]
+    assert sorted(app.command_parsers) == ["audit", "skills", "surface"]
     assert sorted(app.delegates["surface"].command_parsers) == [
         "check", "pack", "report", "sync", "template",
     ]

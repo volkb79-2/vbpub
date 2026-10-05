@@ -21,7 +21,11 @@ CANONICAL_DOCS = (
     PACKAGE_ROOT / "docs" / "DESIGN-GUIDE.md",
     PACKAGE_ROOT / "docs" / "CONSUMERS.md",
 )
-LINK_CHECK_DOCS = (*CANONICAL_DOCS, PACKAGE_ROOT / "BACKLOG.md")
+LINK_CHECK_DOCS = (
+    *CANONICAL_DOCS,
+    PACKAGE_ROOT / "BACKLOG.md",
+    PACKAGE_ROOT / "docs" / "ADOPTION-CHECKLIST.md",
+)
 FENCED_BLOCK = re.compile(r"^```([\w-]*)[^\n]*\n(.*?)^```\s*$", re.MULTILINE | re.DOTALL)
 INLINE_LINK = re.compile(r"(?<!!)\[[^\]]*\]\(([^)]+)\)")
 HEADING = re.compile(r"^#{1,6}\s+(.+?)\s*#*\s*$", re.MULTILINE)

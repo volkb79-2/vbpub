@@ -1215,6 +1215,22 @@ always present.
 10. **Deprecation.** `python -m cli_extended.surface_cli` keeps its flags and
    behaviour, writes `[WARN] ... is deprecated` to stderr first, and is
    removed in a later release.
+11. **Audit.** `cli-extended audit [--config PATH] [--cli ID] [--json]` is
+    read-only and takes the same project options as the surface verbs. It
+    loads the configured CLI and reports one item per mechanical check, in the
+    order of `docs/ADOPTION-CHECKLIST.md`. An item has `check` (the
+    `audit:<name>` of exactly one checklist row), `checklist_id` (`AC-NN`),
+    `status` (`pass`, `warn`, `fail` or `manual`), `summary`, `evidence` (a
+    list of strings) and `remedy` (a string or null). Checks that scan source
+    text begin their summary with `heuristic:`; anything needing judgement is
+    `manual`, never `pass`. Text output is one
+    `[PASS|WARN|FAIL|MANUAL] AC-NN <check>: <summary>` line per item, each
+    followed by indented `evidence:` lines and one `remedy:` line when present,
+    then `audit: N pass, N warn, N fail, N manual`. `--json` prints
+    `{"cli": id, "items": [...], "summary": {"pass": N, "warn": N, "fail": N,
+    "manual": N}}`. Exit status: 1 when any item is `fail`, otherwise 0
+    (`warn` and `manual` never fail); any configuration, factory, catalog or
+    import error is 2.
 
 ### Constraints and selector lists in the surface
 

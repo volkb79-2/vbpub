@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from . import contract
+from .audit import STATUSES, AuditItem, run_audit
 from .config import ConfigError, CliConfig, load_cli, load_project_config
 from .findings import FindingsError, FindingsFile
 from .identity import CliIdentity, VersionLookupError
@@ -369,6 +370,39 @@ def _pack(args: argparse.Namespace, runtime: CliRuntime) -> int:
     return 0
 
 
+def _audit_lines(items: Sequence[AuditItem], counts: Mapping[str, int]) -> list[str]:
+    lines: list[str] = []
+    for item in items:
+        lines.append(
+            f"[{item.status.upper()}] {item.checklist_id} {item.check}: {item.summary}"
+        )
+        lines.extend(f"    evidence: {line}" for line in item.evidence)
+        if item.remedy:
+            lines.append(f"    remedy: {item.remedy}")
+    lines.append(
+        f"audit: {counts['pass']} pass, {counts['warn']} warn, "
+        f"{counts['fail']} fail, {counts['manual']} manual"
+    )
+    return lines
+
+
+def _audit(args: argparse.Namespace, runtime: CliRuntime) -> int:
+    project = load_project_config(args.config)
+    cli = project.select(args.cli)
+    items = run_audit(cli, project)
+    counts = {
+        status: sum(1 for item in items if item.status == status) for status in STATUSES
+    }
+    if runtime.json_mode:
+        runtime.output.primary(
+            {"cli": cli.id, "items": [item.as_dict() for item in items], "summary": counts}
+        )
+    else:
+        for line in _audit_lines(items, counts):
+            runtime.output.primary(line)
+    return 1 if counts["fail"] else 0
+
+
 def _positive_int(value: str) -> int:
     try:
         number = int(value)
@@ -491,6 +525,13 @@ def build_cli(identity: CliIdentity | None = None) -> RegisteredCli:
         description="sync, check, template, pack or report a CLI's reviewed surface",
         group="REVIEW",
         delegate=_surface_group(registry),
+    ))
+    registry.register(VerbSpec(
+        "audit",
+        description="audit a configured CLI against the adoption checklist (read-only)",
+        options=_project_options(),
+        handler=_guarded(_audit),
+        include_progress=False,
     ))
     register_skills_verbs(registry, package="cli_extended")
     return registry.build()
