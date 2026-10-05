@@ -12122,7 +12122,7 @@ class TestJsonFlagScope:
     def test_usage_says_where_json_is_accepted(self, tmp_path):
         _, proj = make_history_repo(tmp_path)
         out = run_tool(proj, "--help")
-        assert "`history`/`footprint`/`status` ONLY" in out.stdout
+        assert "`history`/`footprint`/`status`: emit one JSON" in out.stdout
         assert "REFUSES it by name" in out.stdout
         assert "run-gate.py history [LANE] [--worktree PATH] [--json]" \
             in out.stdout
@@ -15989,6 +15989,8 @@ class TestInflightRecordStore:
         monkeypatch.setattr(run_gate, "physical_path", lambda _repo: Path("/phys"))
         monkeypatch.setattr(run_gate, "dual_mount_flags", lambda *_args: [])
         monkeypatch.setattr(run_gate, "verify_slice_loaded", lambda _slice: None)
+        monkeypatch.setattr(run_gate, "assure_assay_state_root",
+                            lambda *_args, **_kwargs: None)
         monkeypatch.setattr(run_gate, "build_assay_inner", lambda *_args, **_kw: "true")
         monkeypatch.setattr(run_gate, "subprocess", SimpleNamespace(run=lambda *_a, **_kw:
                             SimpleNamespace(returncode=0, stdout="id-1\n", stderr="")))
@@ -16029,6 +16031,8 @@ class TestInflightRecordStore:
                             lambda _repo, **_kwargs: Path("/phys"))
         monkeypatch.setattr(run_gate, "dual_mount_flags", lambda *_args: [])
         monkeypatch.setattr(run_gate, "verify_slice_loaded", lambda _slice: None)
+        monkeypatch.setattr(run_gate, "assure_assay_state_root",
+                            lambda *_args, **_kwargs: None)
         monkeypatch.setattr(run_gate, "print_lane_bounds", lambda *_args: None)
         monkeypatch.setattr(run_gate, "log_forwarded_env", lambda *_args: None)
         monkeypatch.setattr(run_gate, "save_container_logs", lambda *_args: None)
@@ -23828,9 +23832,9 @@ class TestFinalChangedLineCoverageOracles:
 
     def test_promoted_follower_keeps_mode_until_dispatch_parses_verdict(
             self, tmp_path, monkeypatch):
-        _repo, project, record, verdict, _progress = \
+        repo, project, record, verdict, _progress = \
             TestDispatchAssayEvidenceAndAdmissionOracles._project(
-                tmp_path, monkeypatch)
+                tmp_path, monkeypatch, mode="ephemeral")
         provenance = {
             "name": "assay", "version": "8.0.0",
             "artifact": "assay.pyz", "digest_algorithm": "sha256",
@@ -23863,12 +23867,16 @@ class TestFinalChangedLineCoverageOracles:
         monkeypatch.setattr(run_gate, "adopt_inflight_start", lambda *_args: None)
         monkeypatch.setattr(run_gate, "clear_inflight_record", lambda *_args: None)
         monkeypatch.setattr(run_gate, "flush_run_record", finish_and_capture)
+        monkeypatch.setattr(run_gate, "_git_toplevel_if_available",
+                            lambda _project: repo)
+        monkeypatch.setattr(run_gate, "resolve_repo_and_worktree",
+                            lambda _project, _override: (repo, repo, repo))
         monkeypatch.setattr(run_gate, "subprocess",
                             SimpleNamespace(run=lambda *_args, **_kwargs: None))
         monkeypatch.setattr(run_gate, "resolve_slice",
                             lambda *_args: ("run-gates.slice", "fixture"))
         monkeypatch.setattr(run_gate, "verify_slice_loaded", lambda _slice: None)
-        monkeypatch.setattr(run_gate, "run_bare_host_lane", promote_during_lane)
+        monkeypatch.setattr(run_gate, "run_container_lane", promote_during_lane)
         record.update({"_started_monotonic": time.monotonic(), "dirty": False,
                        "git_operation": None, "verdict": "PASS"})
 
@@ -23882,9 +23890,9 @@ class TestFinalChangedLineCoverageOracles:
 
     def test_promoted_source_follower_history_uses_parsed_verdict(
             self, tmp_path, monkeypatch):
-        _repo, project, record, verdict, progress = \
+        repo, project, record, verdict, progress = \
             TestDispatchAssayEvidenceAndAdmissionOracles._project(
-                tmp_path, monkeypatch)
+                tmp_path, monkeypatch, mode="ephemeral")
         pending = {
             "schema": 2, "runner": "container", "container": "runner",
             "assay_identity_mode": "source",
@@ -23913,12 +23921,16 @@ class TestFinalChangedLineCoverageOracles:
         monkeypatch.setattr(run_gate, "adopt_inflight_start", lambda *_args: None)
         monkeypatch.setattr(run_gate, "clear_inflight_record", lambda *_args: None)
         monkeypatch.setattr(run_gate, "flush_run_record", finish_and_capture)
+        monkeypatch.setattr(run_gate, "_git_toplevel_if_available",
+                            lambda _project: repo)
+        monkeypatch.setattr(run_gate, "resolve_repo_and_worktree",
+                            lambda _project, _override: (repo, repo, repo))
         monkeypatch.setattr(run_gate, "subprocess",
                             SimpleNamespace(run=lambda *_args, **_kwargs: None))
         monkeypatch.setattr(run_gate, "resolve_slice",
                             lambda *_args: ("run-gates.slice", "fixture"))
         monkeypatch.setattr(run_gate, "verify_slice_loaded", lambda _slice: None)
-        monkeypatch.setattr(run_gate, "run_bare_host_lane", promote_during_lane)
+        monkeypatch.setattr(run_gate, "run_container_lane", promote_during_lane)
         record.update({"_started_monotonic": time.monotonic(), "dirty": False,
                        "git_operation": None, "verdict": "PASS"})
 
