@@ -3859,7 +3859,7 @@ def _allocated_commit_sha(
                 commit = workspace_base
             elif valid_workspace_base and _FULL_SHA_RE.fullmatch(current):
                 raise WorktreeError(
-                    f"[S16] worktree HEAD moved from recorded allocation commit "
+                    f"[CIU-107] [S16] worktree HEAD moved from recorded allocation commit "
                     f"{workspace_base!r} (current HEAD is {current}); refusing "
                     "to infer roots or reset the checkout"
                 )
@@ -3875,7 +3875,7 @@ def _allocated_commit_sha(
                 )
         elif not _FULL_SHA_RE.fullmatch(current) or current != commit:
             raise WorktreeError(
-                f"[S16] worktree HEAD moved from recorded allocation commit "
+                f"[CIU-107] [S16] worktree HEAD moved from recorded allocation commit "
                 f"{commit!r} (current HEAD is {current or 'unreadable'}); "
                 "refusing to infer roots or reset the checkout"
             )
