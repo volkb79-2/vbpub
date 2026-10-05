@@ -496,6 +496,25 @@ The longer budget is based on that measured throughput and preserves enough
 headroom to finish the full campaign. The combined gate budget is 180 minutes
 to include lane startup and the R0/R1 and R3 steps.
 
+## Keep consumer tests hermetic and the plugin opt-in
+
+Every adopter had copied the same `_invoke`, and each copy decided differently
+what to scrub. The shared helper makes `home` a required keyword rather than a
+default: the 2026-10-04 run-gate test that leaked a fake `assay` into the real
+`~/.local/bin` is what a convenient default produces. It also prepends the
+imported library's directory to `PYTHONPATH` so the child runs the revision
+under test, not whatever is installed. Rejected: defaulting `home` to a
+temporary directory, which hides the isolation decision and makes failures
+harder to inspect.
+
+The pytest plugin is not a `pytest11` entry point. Entry points load into every
+pytest run in the environment, so merely installing the library would change
+collection for unrelated projects; one `pytest_plugins` line is a visible,
+reviewable opt-in. It is strict by default because a silently uncollected case
+test is exactly the drift the catalog exists to catch; `--cli-case-partial` is
+the explicit, local-only escape for running one file, and it still enforces
+every error about a test that was collected.
+
 ## Make long operations automation-safe
 
 Progress is a presentation policy, not the operation's result. `auto` chooses

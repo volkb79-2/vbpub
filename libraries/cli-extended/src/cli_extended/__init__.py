@@ -65,7 +65,7 @@ from .skills import (
     skill_states,
     validate_skill_source,
 )
-from .testing import assert_cli_contract
+from .testing import assert_cli_contract, invoke_module, invoke_script, make_invoker
 from .values import SelectorList
 
 __all__ = [
@@ -125,6 +125,9 @@ __all__ = [
     "check_cli_surface",
     "discover_command_parsers",
     "install_logging",
+    "invoke_module",
+    "invoke_script",
+    "make_invoker",
     "load_cli_review_catalog",
     "logging_context",
     "redact_text",

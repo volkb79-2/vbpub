@@ -2224,8 +2224,15 @@ def render_cli_review_template(
     return "\n".join(lines)
 
 
-def assert_cli_case_tests(collected_items: Sequence[Any], catalog: ReviewCatalog) -> None:
-    """Assert active review cases reference collected, correctly marked tests."""
+def assert_cli_case_tests(
+    collected_items: Sequence[Any], catalog: ReviewCatalog, *, partial: bool = False
+) -> None:
+    """Assert active review cases reference collected, correctly marked tests.
+
+    With ``partial=True`` (a focused run that collected only some tests) the
+    "node not collected" and "no collected marked test" errors are not raised;
+    every error about a collected item is still enforced.
+    """
 
     by_nodeid = {
         getattr(item, "nodeid", None): item
@@ -2272,13 +2279,14 @@ def assert_cli_case_tests(collected_items: Sequence[Any], catalog: ReviewCatalog
         for nodeid in case.test_ids:
             item = by_nodeid.get(nodeid)
             if item is None:
-                errors.append(f"CLI case {case_id!r} references uncollected test {nodeid!r}")
+                if not partial:
+                    errors.append(f"CLI case {case_id!r} references uncollected test {nodeid!r}")
                 continue
             if nodeid not in marked.get(case_id, set()):
                 errors.append(f"test {nodeid!r} lacks cli_case({case_id!r}) marker")
             if _statically_skipped(item):
                 errors.append(f"CLI case {case_id!r} references a statically skipped test {nodeid!r}")
-        if not marked.get(case_id):
+        if not partial and not marked.get(case_id):
             errors.append(f"active CLI case {case_id!r} has no collected marked test")
     if errors:
         raise AssertionError("CLI case test coverage failed:\n- " + "\n- ".join(errors))
