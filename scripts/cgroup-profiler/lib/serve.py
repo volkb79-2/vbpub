@@ -97,7 +97,6 @@ _ISO_FMT = "%Y-%m-%dT%H:%M:%SZ"
 _SESSION_ID_TS_FMT = "%Y%m%dT%H%M%SZ"
 _SESSION_ID_RE = re.compile(r"^s-\d{8}T\d{6}Z-[0-9a-f]{4}$")
 _TOKEN_RE = re.compile(r"^[A-Za-z0-9._-]{8,64}$")
-_CONTAINER_ID_RE = re.compile(r"^[0-9a-f]{64}$")
 
 # ── contract §8.1: the socket carrier ───────────────────────────────────
 # The ONLY top-level keys a request line may carry. Anything else is a
@@ -443,9 +442,10 @@ class SessionServer:
         """Refuse any write whose target does not resolve under one of
         :meth:`_writable_roots`. Every raw write this class issues directly
         goes through this first — see the module docstring."""
-        real = os.path.realpath(path)
         roots = self._writable_roots()
-        if not any(real == root or real.startswith(root + os.sep) for root in roots):
+        if not any(
+            util.realpath_is_within(path, root, allow_root=True) for root in roots
+        ):
             raise HostWriteError(
                 f"refusing to write outside WRITABLE_ROOTS {roots!r}: {path!r}"
             )
@@ -772,7 +772,7 @@ class SessionServer:
         if not isinstance(target_spec, str) or not target_spec.startswith("containerid:"):
             raise RequestError("bad-argument", "--target must be 'containerid:<64 hex>'")
         container_id = target_spec[len("containerid:"):]
-        if not _CONTAINER_ID_RE.match(container_id):
+        if not util.is_container_id(container_id):
             raise RequestError("bad-argument", "containerid must be 64 lowercase hex characters")
         if scope not in ("container", "container-shared"):
             raise RequestError("bad-argument", "--scope must be 'container' or 'container-shared'")

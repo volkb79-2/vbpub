@@ -19,7 +19,7 @@ from __future__ import annotations
 import os
 from typing import Any, Dict, Optional, Set, Tuple
 
-from . import util
+from . import proc_stat, util
 from .access import PROC_ROOT
 
 GROUPS: tuple[str, ...] = ("mem", "memstat", "memev", "psi", "cpu", "io", "pids", "cgstat")
@@ -117,10 +117,10 @@ def _proc_cpu_usec(stat_path: str) -> Tuple[Optional[int], Optional[int]]:
     text = util.read_text(stat_path)
     if not text:
         return (None, None)
-    close = text.rfind(")")
-    if close == -1:
+    parsed = proc_stat.split_after_comm(text)
+    if parsed is None:
         return (None, None)
-    fields = text[close + 1 :].split()
+    _close, fields = parsed
     if len(fields) < 13:
         return (None, None)
     try:
