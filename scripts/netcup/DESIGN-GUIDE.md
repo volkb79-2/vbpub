@@ -158,7 +158,7 @@ client diagnostics can expose secret-bearing task data.
 
 The registered parser is the grammar source; a TOML catalog records the
 product decisions that argparse cannot express by itself. The canonical
-[`monitor-task CLI specification`](CLI-SPEC.md) embeds the generated inventory
+[`CLI specifications`](CLI-SPEC.md) (one per CLI) embed the generated inventory
 and accepted/refused invocation table. Its JSON manifest makes parser changes
 reviewable; synchronization cannot rewrite the human-owned decision catalog
 or the surrounding spec text.
@@ -250,6 +250,40 @@ actions in their own group, separates list/write/confirmation options, and
 shows an executable example for each action family. The public spelling is
 `--help` (there is no short `-h` alias), so generated usage cannot hide the
 documented interface behind argparse's shorthand.
+
+### Why the case tests replay the catalog
+
+Each CLI has its own spec, catalog, manifest and findings file because `sync`
+supports one marked region per spec file; `CLI-SPEC.md` is only an index. The
+case tests (`tests/test_cli_cases_install_host.py`,
+`tests/test_cli_cases_scp_api.py`) read the catalog row and replay the row's own
+invocation through the real `main()` with a fake client, then compare exit
+status, output and the exact API calls with what the row claims. That keeps the
+documented invocation and the executed one identical; a hand-written argv in a
+test could drift from the row. The library controls (`--json`, `--debug-raw`,
+`--yes`, `--dry-run`) are each one parametrised test across routes, because
+every route shares the same contract, and each proves a contrast against the
+same argv without the control. The rejected alternative was one bespoke test
+per row, which for scp-api would be about 150 near-identical functions.
+
+Review findings were fixed where the fix was local: `watch` now exits 1 when
+the task ends in ERROR, CANCELED or ROLLBACK (0 only for FINISHED), each
+`--filter` help line states its semantics (server-side API query on `tasks` and
+`firewall-policies`, client-side case-insensitive text match on `imageflavours`
+and `iso-bootable`), the install-host dry-run plan prints the SSH target and key
+choice a live run would use, and the purely structural `attach-iso` and `power`
+`configure` callbacks became declarative specs. The remaining scp-api
+`configure` callbacks stay hand-written until the library can declare optional
+action positionals and rules conditioned on a positional's value (cli-extended
+CLI-EXT-17); `power` keeping its action-first argument order is recorded as a
+`wontfix` compatibility finding.
+
+A reviewed row must never claim more than its linked tests prove. The case
+replay therefore checks each row's `effects` against what a replay can observe
+(plan lines, API calls, files written, followers started); where an effect is
+not observable under `--dry-run`, the row says so and names the live-run test
+that covers it (for example the controller-key retention and monitor-argument
+tests).
 
 ## Test boundary
 
