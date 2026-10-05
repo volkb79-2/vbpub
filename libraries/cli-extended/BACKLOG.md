@@ -33,7 +33,9 @@ cli-extended's existing TTY/`NO_COLOR` policy.
 
 ## CLI-EXT-02 — evaluate declarative conditional option constraints
 
-**Status:** Reopened 2026-10-05 — scheduled as program package W2 (operator
+**Status:** Implemented (W2) — see [the design guide](docs/DESIGN-GUIDE.md#declare-option-constraints-structurally)
+and [SPEC declared option constraints](SPEC.md#declared-option-constraints).
+Reopened 2026-10-05 as program package W2 (operator
 decision CX-D10, [unified-adoption program](docs/PROGRAM-2026-10-UNIFIED-ADOPTION.md#w2-declarative-constraints-and-selector-type-cli-ext-02-cli-ext-12)).
 The evidence gate below is superseded: every vbpub CLI now adopts the
 library, and CMRU and nyxloom `validate=` callbacks already supply the shapes.

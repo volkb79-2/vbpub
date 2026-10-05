@@ -109,6 +109,115 @@ def install(args, runtime):
 Until a CLI migrates, its own `--dry-run` stays legal as long as no verb in
 that CLI sets `dry_run=True`.
 
+## Replacing handler-side option checks and name-list parsing
+
+**Declared constraints.** CMRU's `tool-deps` handler refused `--dry-run`
+without a mode and `--refresh` with `--json` after parsing. Before:
+
+```python
+def tool_deps(args, runtime):
+    if args.dry_run and not (args.update or args.write or args.refresh):
+        raise CliFailure(
+            "--dry-run requires --update or --write or --refresh",
+            exit_code=2, show_help=True,
+        )
+    if args.refresh and args.json:
+        raise CliFailure("--refresh cannot be combined with --json",
+                         exit_code=2, show_help=True)
+    ...
+```
+
+After: delete both checks and declare them once. The flags must be accepted
+by the verb (local, global, or a library control such as `--json` or
+`--dry-run`), and every referenced option must default to `None`, `False` or
+an empty list, or `build()` raises `ValueError`.
+
+```python
+from cli_extended import Conflicts, Requires, VerbSpec
+
+VerbSpec(
+    "tool-deps", description="Report or update tool dependencies.",
+    mutating=True, dry_run=True, handler=tool_deps,
+    options=(
+        OptionSpec(("--update",), "Update pins.", parser_kwargs={"action": "store_true"}),
+        OptionSpec(("--write",), "Write the lock.", parser_kwargs={"action": "store_true"}),
+        OptionSpec(("--refresh",), "Refresh metadata.", parser_kwargs={"action": "store_true"}),
+    ),
+    constraints=(
+        Requires("--dry-run", ("--update", "--write", "--refresh"),
+                 "a dry run needs a mode to preview"),
+        Conflicts(("--refresh", "--json"), "refresh output is not JSON"),
+    ),
+)
+```
+
+`tool-deps --dry-run` now exits `2` with
+`--dry-run requires --update or --write or --refresh: a dry run needs a mode
+to preview`, followed by the verb's help, whose `CONSTRAINTS` section lists
+both rules. `RequiresChoice("--timeout-scope", "--mode", ("fast",), reason)`
+covers "this option applies only in that mode". Leave rules that read loaded
+configuration or runtime state in the handler. Run `cli-extended surface sync`
+afterwards: each constraint is a new review candidate
+(`constraint-requires`, `constraint-conflict`, `constraint-choice`), and the
+catalog records the product decision and a test for each refusal. A case must
+include the rule's trigger (the `option` of a requires/choice rule, any member
+of a conflict) or check reports it as not exercising its constraint.
+
+Referenced options must have a readable presence: `build()` also refuses an
+option that shares its `dest` with another option (`--color`/`--no-color`, a
+`store_true`/`store_false` pair), `nargs="*"`, `nargs="?"` whose `const`
+equals its default, and a `RequiresChoice` target that is list-valued
+(`append`, `extend`, or `nargs` other than none or `"?"`).
+
+**One-time re-sync.** Every route in the manifest now carries a
+`"constraints"` key (empty when none), so every committed manifest and
+generated spec region is stale until it is re-synced. Do that once, together
+with the schema-7 re-sync, with `cli-extended surface sync`; unconstrained
+routes keep their existing signatures.
+
+**Selector lists.** CMRU parsed `all`, one name, or `a,b` with
+`parse_target_names` and resolved it later in `select_target_names`. Register
+the type instead and keep the resolution against loaded data in the handler:
+
+```python
+from cli_extended import ArgumentSpec, SelectorList
+
+ArgumentSpec(
+    "targets", "Project names, comma-separated, or 'all'.",
+    parser_kwargs={"type": SelectorList(), "nargs": "?"},
+)
+
+def handler(args, runtime):
+    if args.targets is None:
+        names = default_targets()
+    elif args.targets is SelectorList.ALL:
+        names = every_project()
+    else:
+        names = list(args.targets)   # given order, validated structure
+```
+
+Differences from `parse_target_names` to account for when adopting:
+
+1. It returns a tuple, not a list; the absent argument stays `None` (argparse's
+   default) instead of being passed through the parser.
+2. `all` yields `SelectorList.ALL` (no `choices`) or the full `choices` tuple,
+   not `["all"]`.
+3. Failures raise `argparse.ArgumentTypeError`, which becomes a usage error
+   with exit `2` and the verb's help, not `TargetSelectionError`; the message
+   wording differs (`empty selector item in 'a,'`, `duplicate selector 'a'`,
+   `'all' cannot be combined with other names`).
+4. The check order is empty item, then `all` mixed, then duplicate. For
+   `all,all` CMRU reports a duplicate; `SelectorList` reports the mix.
+5. Unknown names are rejected at parse time only when `choices` is given. CMRU
+   validates names against the loaded registry in `select_target_names`, so
+   keep that check (or pass the loaded names as `choices`).
+6. `select_target_names` also reorders to declared project order and applies
+   the context-project and estate-scope defaults; `SelectorList` returns names
+   in the order given and applies no defaults.
+7. Surrounding whitespace is stripped from each item in both; `SelectorList`
+   additionally refuses `choices` or an `all_token` that carry surrounding
+   whitespace, since such a name could never match.
+
 ## Turn an interface inventory into registrations
 
 Before editing parser code, write down the operator-facing verbs/actions and
@@ -1005,6 +1114,73 @@ shared verb group.
 A skill you edited locally is reported `modified` and kept until you pass
 `--overwrite-modified`. Directories created by another tool, or by hand, are
 never replaced; remove them yourself if they are no longer wanted.
+
+## Add a `doctor` verb
+
+Replace a hand-rolled `doctor` with the shared one. Declare each probe as a
+`DoctorCheck`; the verb adds `--check NAME`, `--json`, exit codes and crash
+handling.
+
+```python
+import shutil
+
+from cli_extended import (
+    CheckResult, CliIdentity, CliRegistry, DoctorCheck,
+    register_doctor, register_skills_verbs,
+)
+
+
+def docker_check(runtime, args) -> CheckResult:
+    if shutil.which("docker") is None:
+        return CheckResult("fail", "docker not found on PATH",
+                           remedy="install docker or add it to PATH")
+    return CheckResult("ok", "docker found", details={"path": shutil.which("docker")})
+
+
+def cache_check(runtime, args) -> CheckResult:
+    return CheckResult("warn", "cache is empty", remedy="run 'example warm'")
+
+
+identity = CliIdentity("EXAMPLE", "1.2.3", "Example Tool", "example")
+registry = CliRegistry(identity, prog="example", description="Example tool.")
+register_doctor(registry, [
+    DoctorCheck("docker", "docker is installed", docker_check),
+    DoctorCheck("cache", "cache is warm", cache_check),
+])
+# Optional, in either order: adds the automatic `skills` check.
+register_skills_verbs(registry, package="example_tool")
+```
+
+A check can read its own options. Pass them with
+`register_doctor(registry, checks, options=[OptionSpec(("--helper-image",),
+"helper image", metavar="IMAGE")])` and use `args.helper_image` inside
+`run(runtime, args)`.
+
+`example doctor`, `example doctor --check docker --json` and CI use the same
+exit code (1 only for `fail`). Do not name a check `skills`.
+
+Mapping the existing doctors:
+
+- **cgprofile** (`scripts/cgroup-profiler/cgprofile.py` `cmd_doctor`): prints an
+  `access` key/value table, a reporting-venv state and a resolved mode, and
+  returns 1 only when the helper spec cannot be built. Express it as checks
+  `access` (key/value table into `details`), `reporting-venv` (`ok`, `warn` for
+  "present but this interpreter lacks the libraries", `fail` for missing with
+  remedy `run ./setup.sh`) and `mode` (`fail` on `AccessError`, helper image and
+  mounts in `details`). Its `--helper-image` and `--helper-cgroup-parent`
+  options now fit: pass them as `options=[OptionSpec(("--helper-image",), ...),
+  OptionSpec(("--helper-cgroup-parent",), ...)]` and read
+  `args.helper_image` / `args.helper_cgroup_parent` in the `mode` check.
+- **nyxloomctl** (`cli_registry.py` `doctor` and `route doctor`): the project
+  doctor yields findings with severities `critical`, `error`, `warn`. Map
+  `critical`/`error` to `fail` and the rest to `warn`, one check per finding
+  kind or per project, and put the finding rows in `details`. Its options
+  (`--project-id`, `--rebuild`, `--write`, `--liveness`) and the `route doctor`
+  `--no-probe` are passed as `options=[...]` and read from `args`; a
+  `--liveness` flag is read by the checks that should run only in that mode
+  (return `skip` otherwise), or use `--check liveness`. `route doctor` is
+  registered on its own sub-registry with `--no-probe`. Option flags may not
+  reuse `--check` or a library control such as `--json` (`ValueError`).
 
 ## Consumer responsibilities
 

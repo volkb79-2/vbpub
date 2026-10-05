@@ -1,6 +1,7 @@
 """Reusable command-line contract helpers for vbpub projects."""
 
 from .config import CliConfig, ConfigError, ProjectConfig, load_project_config
+from .constraints import Conflicts, Constraint, Requires, RequiresChoice
 from .contract import CONTRACT_VERSION
 from .findings import Finding, FindingsError, FindingsFile, load_review_findings
 from .identity import CliIdentity, VersionLookupError
@@ -55,6 +56,7 @@ from .surface import (
     export_cli_surface,
     render_cli_surface_json,
 )
+from .doctor import CheckResult, DoctorCheck, register_doctor
 from .skills import (
     SkillError,
     SkillState,
@@ -63,10 +65,12 @@ from .skills import (
     validate_skill_source,
 )
 from .testing import assert_cli_contract
+from .values import SelectorList
 
 __all__ = [
     "CONTRACT_VERSION",
     "ArgumentSpec",
+    "CheckResult",
     "CliConfig",
     "CliFailure",
     "CliIdentity",
@@ -81,6 +85,8 @@ __all__ = [
     "CliOutput",
     "CliRegistry",
     "CliRuntime",
+    "Conflicts",
+    "Constraint",
     "ExtendedArgumentParser",
     "HelpCatalog",
     "HelpFormat",
@@ -92,11 +98,15 @@ __all__ = [
     "PromptDriver",
     "REVIEW_SCHEMA_VERSION",
     "RegisteredCli",
+    "Requires",
+    "RequiresChoice",
     "ReviewCatalog",
     "ReviewCatalogError",
     "ReviewCase",
     "DEFAULT_MAX_CANDIDATES",
+    "DoctorCheck",
     "SURFACE_SCHEMA_VERSION",
+    "SelectorList",
     "SkillError",
     "SkillState",
     "SurfaceError",
@@ -117,6 +127,7 @@ __all__ = [
     "logging_context",
     "redact_text",
     "redact_value",
+    "register_doctor",
     "register_skills_verbs",
     "render_cli_review_template",
     "render_cli_surface_json",

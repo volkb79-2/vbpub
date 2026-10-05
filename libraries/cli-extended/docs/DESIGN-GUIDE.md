@@ -420,6 +420,57 @@ invocations is derived from the same function with every `include_*` option
 enabled, so the contract list cannot drift from the parser. See
 [Library contract and contract version](../SPEC.md#library-contract-and-contract-version).
 
+## Declare option constraints structurally
+
+Adopting CLIs kept re-implementing the same post-parse checks in handlers
+("`--dry-run` needs a mode", "`--refresh` is not JSON"). Each copy chose its own
+wording, ran after some setup, and was invisible to help, the reference and the
+review catalog. Declaring the rule on the verb makes the registry refuse it
+first, with one wording, before any runtime exists, and lets help, Markdown
+and the surface list it. See [Declared option constraints](../SPEC.md#declared-option-constraints).
+
+**Presence is "the parsed value differs from the default".** argparse does not
+record whether the user typed an option, so the only portable signal is the
+value. That signal is reliable only when the default is `None`, `False` or an
+empty list or tuple; for a defaulted option such as `--retries 3`, "present"
+would silently mean "different from 3". Rather than guess, `build()` refuses a
+constraint that references such an option. The failure is at registration, in
+the developer's first run, not as a rule that never fires in production.
+Rejected alternatives: tracking the raw argv tokens (breaks abbreviations,
+`--opt=value`, and options repeated before and after the verb) and a
+custom `Namespace` that records assignment (breaks consumer parsers and
+delegates, and changes what handlers receive).
+
+**Constraints stay structural.** Only relationships between options of one
+verb are expressible: requires, conflicts, and "requires this value of
+that option". A rule that needs loaded configuration, runtime state, a
+filesystem check, or domain data stays in the handler, where it can read them.
+A general predicate or expression DSL was rejected: it would be a second
+grammar to review, and the existing `validate=` callbacks that already carry
+such logic would simply move into it.
+
+**The checker never evaluates constraints.** A constraint candidate's case is
+an invocation that usually breaks the rule on purpose, and the structural
+checker only proves that an invocation parses. Whether the product then
+refuses it, with which status, is a catalog decision backed by a real-CLI
+test, the same as for exclusive groups. Evaluating constraints in the checker
+would make the manifest a second implementation that could drift from the
+runtime. Constraints do participate in signatures: they are consumer-declared
+grammar, so changing a rule or its reason asks for re-review.
+Library controls referenced by a constraint are named by their canonical flag
+only, so a library syntax change never moves a consumer signature.
+
+### Selector lists as a value type
+
+`all`, one name, or `a,b` appears in several adopting CLIs, each with its own
+parser and its own error wording. `SelectorList` is an argparse `type`, so a bad
+value is an ordinary usage error, the surface records its `choices`, `all_token`
+and `separator` exactly (it is not opaque), and the checker applies the same
+rules to a catalog invocation. It deliberately returns structure only: the
+given-order tuple, or the `SelectorList.ALL` sentinel when the full set is only
+known at run time. Resolving names against loaded data, ordering, and defaults
+stay in the consumer.
+
 ## Prove the shared contract at each rigor level
 
 The package gate separates ordinary behavior and coverage (R0/R1), mutation
@@ -545,6 +596,31 @@ one of them is the surprising case; `--dest` covers everything else.
 Installation writes a temporary sibling and renames it into place, so a crash
 never leaves a half-written skill, and `check`/`list` read the same state
 machine so the answer cannot differ between the verbs.
+
+## One doctor verb; crashes are failures
+
+Every tool grew its own `doctor` with its own output and exit rule, so
+operators and CI could not rely on any of them. The shared verb fixes only the
+shell contract: named checks, four statuses, one text line per check, a JSON
+shape, and exit 1 exactly when something failed. What a check inspects stays
+the consumer's decision.
+
+A check that raises is reported as `fail` (`check crashed: <Type>: <message>`)
+and the remaining checks still run. The alternative, letting the exception end
+the run, hides every later check behind the first bug; swallowing it as `ok` or
+`skip` would make a broken probe look healthy, which is the one thing a doctor
+must never do. `KeyboardInterrupt` still propagates. Non-JSON `details` are
+also a `fail` instead of a crash of the whole report, since by then the other
+results are already known.
+
+The `skills` check is automatic because "installed skills are current" is the
+same question for every tool and `skills check` already defines it; a doctor
+that forgot it would pass while the agent runs a stale skill. It is resolved at
+run time because the two registration calls are independent and a consumer
+should not need to know which must come first. A consumer cannot reuse the name
+`skills`, so the built-in meaning is never ambiguous. Warnings and skips do not
+fail the run: they are for advice and inapplicable checks, and failing CI on
+them would train people to ignore the verb.
 
 ## Markdown is a documentation format
 

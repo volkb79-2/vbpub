@@ -391,6 +391,18 @@ def _leftovers(destination: Path, tool: str) -> list[Path]:
     ]
 
 
+def default_skill_destinations() -> list[Path]:
+    """Return the ``--harness all`` skill destinations for the current HOME."""
+
+    return _destinations(None, None)
+
+
+def skill_leftovers(*, tool: str, destinations: Sequence[Path]) -> list[Path]:
+    """Return this tool's interrupted-install leftovers across ``destinations``."""
+
+    return [path for dest in destinations for path in _leftovers(dest, tool)]
+
+
 def _remove_path(path: Path) -> None:
     if path.is_dir() and not path.is_symlink():
         shutil.rmtree(path)
@@ -684,6 +696,13 @@ def register_skills_verbs(
 
     if hasattr(registry, "_cli_extended_skills"):
         raise ValueError("skills verbs are already registered on this registry")
+    if any(
+        getattr(check, "name", None) == "skills"
+        for check in getattr(registry, "_cli_extended_doctor", ())
+    ):
+        raise ValueError(
+            "doctor check name 'skills' is reserved for the built-in skills check"
+        )
     parent = registry.identity
     child = CliRegistry(
         CliIdentity(
