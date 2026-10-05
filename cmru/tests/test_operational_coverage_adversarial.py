@@ -140,7 +140,7 @@ def test_tester_gate_mountinfo_decoding_and_resource_flags(monkeypatch, tmp_path
     monkeypatch.setattr(tester_gate, "_git_common_dir", lambda p: None)
     argv = tester_gate.build_docker_command(
         tmp_path, ".", ["true"], image="tester", cgroup_parent="dev.slice",
-        memory="1g", memory_swap="2g", cpus="1", device_read_iops="/dev/vda:10",
+        memory="1g", memory_swap="2g", cpus="1", pids_limit="64", device_read_iops="/dev/vda:10",
         device_write_iops="/dev/vda:20", device_read_bps="/dev/vda:30",
         device_write_bps="/dev/vda:40",
     )

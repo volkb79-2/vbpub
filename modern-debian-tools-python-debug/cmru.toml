@@ -4,7 +4,13 @@ schema_version = 1
 kind = "none"
 
 [env]
-CMRU_TESTER_DIND_IMAGE = "docker:dind"
+# Privileged sidecar: digest-pinned, started --pull=never (must be local).
+# `docker image inspect --format '{{index .RepoDigests 0}}' docker:dind`, 2026-10-05.
+CMRU_TESTER_DIND_IMAGE = "docker@sha256:5efed980cba3fc126cf54e21a5a6ff8849d05b6e0623d6e7612f48e9cd6cd17e"
+# Required DinD limits (nested containers draw on these, separate from the workload's).
+CMRU_TESTER_DIND_MEMORY = "2g"
+CMRU_TESTER_DIND_CPUS = "1.5"
+CMRU_TESTER_DIND_PIDS_LIMIT = "2048"
 RELEASE_IMAGE_FLOW = "load"
 IMAGE_COMPRESSION = "zstd"
 IMAGE_COMPRESSION_LEVEL = "3"

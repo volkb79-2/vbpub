@@ -210,9 +210,10 @@ def test_tester_gate_docker_command_contains_mount_limits_and_command(tmp_path, 
     argv = tester_gate.build_docker_command(
         tmp_path, "cmru", ["pytest", "-q"], image="tester:test",
         cgroup_parent="build.slice", memory="1g", memory_swap="2g", cpus="1.5",
-        cgroup_parent_dev_background="background.slice",
+        pids_limit="512", cgroup_parent_dev_background="background.slice",
     )
     assert "--memory" in argv and "1g" in argv
+    assert argv[argv.index("--pids-limit") + 1] == "512"
     assert "--cgroup-parent=build.slice" in argv
     assert "CGROUP_PARENT_DEV_BACKGROUND=background.slice" in argv
     assert argv[-3:] == ["tester:test", "pytest", "-q"]

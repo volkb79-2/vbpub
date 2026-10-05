@@ -593,7 +593,7 @@ def test_scaffold_monorepo_path_and_standards_failure(monkeypatch, tmp_path, cap
 def test_tester_gate_forwards_gate_slice(monkeypatch):
     argv = tester_gate.build_docker_command(
         repo_root=Path("/repo"), relative_cwd=".", memory="1g", memory_swap="2g",
-        cpus="1", image="tester", command=["true"],
+        cpus="1", pids_limit="64", image="tester", command=["true"],
         cgroup_parent_dev_gates="dev-gates.slice",
         cgroup_parent="dev-gates.slice",
     )

@@ -150,7 +150,17 @@ def test_bundle_build_wheel_command_uses_find_links_and_project_cwd(tmp_path):
         bundle.build_wheel(cfg)
     argv = run.call_args.args[0]
     assert argv[-4:] == ["-w", str(tmp_path / "client-dist"), "--find-links", str(tmp_path / "wheelhouse")]
+    # BG-05: a declared wheelhouse is the ONLY source; and deps are still
+    # collected (no --no-deps: the bundle needs the dependency wheels).
+    assert "--no-index" in argv and "--no-deps" not in argv
     assert run.call_args.kwargs["cwd"] == str(tmp_path / "client")
+    # Without a wheelhouse the default-index behaviour is unchanged.
+    no_links = bundle.BundleConfig(tmp_path, tmp_path / "client", tmp_path / "dist", tmp_path / "bundle",
+                                   tmp_path / "client-dist", True, "python", None,
+                                   "x-{version}.tar.xz", "VERSION", "xztar", [], [])
+    with patch.object(bundle.subprocess, "run") as run:
+        bundle.build_wheel(no_links)
+    assert "--no-index" not in run.call_args.args[0]
 
 
 def test_bundle_non_xz_archive_requires_version_and_produces_tarball(tmp_path, monkeypatch):

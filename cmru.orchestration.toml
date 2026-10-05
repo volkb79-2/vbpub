@@ -74,6 +74,13 @@ CMRU_TESTER_MEMORY_SWAP = "16g"
 # CPU ceiling per gate container (docker --cpus), same per-container rule.
 CMRU_TESTER_CPUS = "2.5"
 
+# Process ceiling per gate container (docker --pids-limit). Required, no code
+# default: without it the ceiling is systemd's DefaultTasksMax (~19k here), a
+# host-wide default shared with the production game server (2026-10-05: 19,108
+# zombies exhausted it). The gate also runs under --init and fails with exit 3
+# if the in-container pids.events 'max' counter is non-zero afterwards.
+CMRU_TESTER_PIDS_LIMIT = "4096"
+
 # Minimal image for the HOST-systemd preflight probes below (needs nsenter;
 # deliberately NOT tester-unified). tester-gate runs it --privileged
 # --pid=host and nsenters PID 1 to ask the real host systemd/kernel:
@@ -82,7 +89,11 @@ CMRU_TESTER_CPUS = "2.5"
 #     unit from Docker's fail-open transient), and
 #   - IO check: cgroup v2 with the io controller delegated (required before
 #     any --device-* cap is passed).
-CMRU_TESTER_CGROUP_PROBE_IMAGE = "debian:trixie-slim"
+# Runs --privileged --pid=host with --pull=never, so it MUST be digest-pinned
+# and already present locally (tester-gate refuses a non-@sha256 reference).
+# Digest = `docker image inspect --format '{{index .RepoDigests 0}}' debian:trixie-slim`
+# read 2026-10-05.
+CMRU_TESTER_CGROUP_PROBE_IMAGE = "debian@sha256:d7e12182ce18b85b93007c1dedf31f2d29e01ccf3182cc4017c709b6259bc132"
 
 # GOVERNANCE SLICE for gate containers. Gate/lane containers belong to the
 # dedicated admission tier, not the long-running background tier. The value
