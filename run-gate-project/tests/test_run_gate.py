@@ -7485,6 +7485,12 @@ class TestDoctorAndCheckEnvWorktreeReadScope:
 class TestShippedGateFullDeclaration:
     """RG-26: pin the real project's conjunction declaration, not a fixture."""
 
+    def test_assay_test_commands_use_the_tester_unified_python(self):
+        cfg = tomllib.loads((RUN_GATE_DIR / "assay.toml").read_text())
+        for name in ("r1", "r2"):
+            assert cfg["lanes"][name]["argv"][0] \
+                == "/opt/tester-venv/bin/python"
+
     def test_gate_full_forwards_base_only_to_assay_r1_in_order(self):
         cfg_path = RUN_GATE_DIR / "run-gate.toml"
         cfg = tomllib.loads(cfg_path.read_text())

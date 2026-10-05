@@ -17,6 +17,9 @@
 # requirement needs.
 schema_version = 2
 
+# The registered assay lanes run inside tester-unified. Its system Python has
+# no pytest; use the same dedicated tester venv as run-gate.toml's selftest.
+
 # This is a monorepo lane: assay's snapshot walks the whole resolved commit,
 # not just this project's own source roots, so a tracked hostile symlink
 # anywhere else in vbpub (Topos's fixtures) would otherwise refuse every
@@ -29,7 +32,7 @@ schema_version = 2
 scope = "S1"
 rigor = ["R0", "R1"]
 enforcement = "gate"
-argv = ["python3", "-m", "pytest", "tests", "-q", "--cov=.", "--cov-branch",
+argv = ["/opt/tester-venv/bin/python", "-m", "pytest", "tests", "-q", "--cov=.", "--cov-branch",
         "--cov-report=json:coverage.json"]
 env = { PYTHONDONTWRITEBYTECODE = "1" }
 env_passthrough = ["PATH"]
@@ -70,7 +73,7 @@ artifact = "coverage.json"
 scope = "S1"
 rigor = ["R0", "R2"]
 enforcement = "gate"
-argv = ["python3", "-m", "pytest", "tests", "-q", "-x", "--cov=.", "--cov-branch",
+argv = ["/opt/tester-venv/bin/python", "-m", "pytest", "tests", "-q", "-x", "--cov=.", "--cov-branch",
         "--cov-report=json:coverage.json"]
 env = { PYTHONDONTWRITEBYTECODE = "1" }
 env_passthrough = ["PATH"]
