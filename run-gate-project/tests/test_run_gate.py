@@ -7490,6 +7490,8 @@ class TestShippedGateFullDeclaration:
         for name in ("r1", "r2"):
             assert cfg["lanes"][name]["argv"][0] \
                 == "/opt/tester-venv/bin/python"
+            assert "--basetemp=.assay/pytest-tmp-" + name \
+                in cfg["lanes"][name]["argv"]
 
     def test_gate_full_forwards_base_only_to_assay_r1_in_order(self):
         cfg_path = RUN_GATE_DIR / "run-gate.toml"

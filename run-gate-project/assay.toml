@@ -28,11 +28,14 @@ schema_version = 2
 # and the maintenance obligation this list creates (identical list to
 # cmru/assay.toml and scripts/cgroup-profiler/assay.toml — same repository,
 # same three fixtures).
+# These lanes also run in tester-unified, where `/tmp` is private to the
+# container. Keep pytest's synthetic repositories under each materialized
+# project so run-gate's real mountinfo checks can resolve their host paths.
 [lanes.r1]
 scope = "S1"
 rigor = ["R0", "R1"]
 enforcement = "gate"
-argv = ["/opt/tester-venv/bin/python", "-m", "pytest", "tests", "-q", "--cov=.", "--cov-branch",
+argv = ["/opt/tester-venv/bin/python", "-m", "pytest", "tests", "-q", "--basetemp=.assay/pytest-tmp-r1", "--cov=.", "--cov-branch",
         "--cov-report=json:coverage.json"]
 env = { PYTHONDONTWRITEBYTECODE = "1" }
 env_passthrough = ["PATH"]
@@ -73,7 +76,7 @@ artifact = "coverage.json"
 scope = "S1"
 rigor = ["R0", "R2"]
 enforcement = "gate"
-argv = ["/opt/tester-venv/bin/python", "-m", "pytest", "tests", "-q", "-x", "--cov=.", "--cov-branch",
+argv = ["/opt/tester-venv/bin/python", "-m", "pytest", "tests", "-q", "-x", "--basetemp=.assay/pytest-tmp-r2", "--cov=.", "--cov-branch",
         "--cov-report=json:coverage.json"]
 env = { PYTHONDONTWRITEBYTECODE = "1" }
 env_passthrough = ["PATH"]
