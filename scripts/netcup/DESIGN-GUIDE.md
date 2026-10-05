@@ -266,11 +266,24 @@ every route shares the same contract, and each proves a contrast against the
 same argv without the control. The rejected alternative was one bespoke test
 per row, which for scp-api would be about 150 near-identical functions.
 
-Findings that are product decisions (for example `watch` exiting 0 for a failed
-task, or `--filter` meaning different things on different verbs) are recorded
-as `wontfix` with their rationale instead of being changed inside an adoption
-change; the scp-api `configure` callbacks stay hand-written until the library
-can declare rules conditioned on a positional's value (cli-extended CLI-EXT-17).
+Review findings were fixed where the fix was local: `watch` now exits 1 when
+the task ends in ERROR, CANCELED or ROLLBACK (0 only for FINISHED), each
+`--filter` help line states its semantics (server-side API query on `tasks` and
+`firewall-policies`, client-side case-insensitive text match on `imageflavours`
+and `iso-bootable`), the install-host dry-run plan prints the SSH target and key
+choice a live run would use, and the purely structural `attach-iso` and `power`
+`configure` callbacks became declarative specs. The remaining scp-api
+`configure` callbacks stay hand-written until the library can declare optional
+action positionals and rules conditioned on a positional's value (cli-extended
+CLI-EXT-17); `power` keeping its action-first argument order is recorded as a
+`wontfix` compatibility finding.
+
+A reviewed row must never claim more than its linked tests prove. The case
+replay therefore checks each row's `effects` against what a replay can observe
+(plan lines, API calls, files written, followers started); where an effect is
+not observable under `--dry-run`, the row says so and names the live-run test
+that covers it (for example the controller-key retention and monitor-argument
+tests).
 
 ## Test boundary
 

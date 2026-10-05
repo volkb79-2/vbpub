@@ -21,12 +21,13 @@ remedy = "State the default in both option texts (the install-host.toml setting 
 
 [[findings]]
 id = "IH-003"
-status = "open"
-severity = "minor"
+status = "fixed"
+severity = "major"
 category = "semantics"
 route = "route:entrypoint:install-host/install"
-summary = "The dry-run plan prints nothing about the --ssh-host, --ssh-user and --ssh-identity-file values that a live run would use"
-remedy = "Include the resolved SSH target in the dry-run plan output so the plan shows everything a live run would do."
+summary = "The dry-run plan printed nothing about the SSH target, identity, polling and key-retention values a live run would use"
+remedy = "Print the resolved SSH target (user@host:port), the identity choice, monitoring, customScript-log attachment, poll interval, completion marker/wait and local-key retention in the dry-run plan."
+rationale = "Fixed: _print_dry_run_ssh_plan prints all of these for install, wizard and configure (the port is always 22; there is no port option). Evidence: test_dry_run_plan_shows_the_ssh_target_a_live_run_would_use and the per-row plan-line assertions in test_replayed_case_matches_catalog."
 
 [[findings]]
 id = "IH-004"
@@ -39,12 +40,13 @@ remedy = "Keep the environment fallback; document 'required unless NETCUP_SCP_AP
 
 [[findings]]
 id = "IH-005"
-status = "open"
+status = "fixed"
 severity = "minor"
 category = "help"
 route = "route:entrypoint:install-host/attach"
 summary = "--simulate-disconnect-seconds is a testing aid shown in normal help"
-remedy = "Declare it hidden=True with the reason in the catalog rationale, or keep it visible and say it is for testing only (the text already says so)."
+remedy = "Declare it hidden=True with the reason recorded."
+rationale = "Fixed: the option is hidden=True. Reason (AC-08, also in the code comment): it is a test/debug hook that forces an SSH reconnect to exercise the reattach logic and is not part of the supported operator interface; it is still accepted (test_replayed_case_matches_catalog[attach-simulate-disconnect-seconds])."
 
 [[findings]]
 id = "IH-006"
@@ -72,7 +74,7 @@ severity = "minor"
 category = "adoption"
 summary = "AC-04 synopsis-overrides: wizard, configure, install and attach keep an empty synopsis"
 remedy = "Keep the overrides."
-rationale = "The audit shows the derived synopsis is only '[options]' (or '[--monitor | --no-monitor] [options]' for wizard and configure); that adds nothing to the full usage block, so the empty override is harmless and changing it would re-sign every case of these four verbs."
+rationale = "Judged cosmetic: the derived synopsis is only '[options]' (or '[--monitor | --no-monitor] [options]' for wizard and configure), which carries no information beyond the full usage block, so the empty override is kept to preserve the pre-adoption help layout."
 
 [[findings]]
 id = "IH-009"

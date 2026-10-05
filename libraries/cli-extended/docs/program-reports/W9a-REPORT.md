@@ -218,21 +218,21 @@ Branch `cli-ext-w9a-netcup`, HEAD `d1d95294f` at the time of writing (this repor
 5. **Docs**: README (workflow paragraph after the CLI-SPEC index paragraph) and DESIGN-GUIDE (new section "Why the case tests replay the catalog"), commit `d1d95294f`.
 6. **Gate**: `flock gate.lock ./run-gate.py --worktree <wt> suite > w9a-suite.log`, then in a separate step `grep -i verdict`: `run-gate: lane 'suite' verdict PASS; exit_code 0; log /tmp/run-gate/lanes/suite/c0bbfc1ae662e724da1785594f736a43.log`. No mutation lane was run.
 
-### Findings the controller should look at (product decisions, all recorded as `wontfix` with rationale)
+### Findings (state after the controller rulings; the first two are FIXED, not wontfix)
 
-- MT-001 (major): `monitor-task watch` exits 0 when the task ends in ERROR/CANCELED/ROLLBACK. An existing test (`test_watch_accepts_explicit_poll_and_debug_raw`) pins exit 0. Decision needed: change the exit code?
-- SA-002 (major): `--filter` is a server-side `q` query alias on `tasks`/`firewall-policies` but a client-side text filter on `imageflavours`/`iso-bootable`.
+- MT-001 (major): FIXED. `monitor-task watch` now exits 1 when the task ends in ERROR/CANCELED/ROLLBACK and 0 only for FINISHED.
+- SA-002 (major): FIXED as documentation. Each `--filter` help line states its semantics (server-side API query on `tasks`/`firewall-policies`, client-side case-insensitive match on `imageflavours`/`iso-bootable`).
 - SA-003: `power` takes the action first, all other scp-api verbs the server first.
 - SA-004: optional MAC positional on `firewall` (handler swap).
 - SA-007: no scp-api verb has `--dry-run` (confirmation-only; AC-12 passes).
-- SA-008 / SA-013: the `attach-iso` and `power` configure callbacks are in fact expressible declaratively (no positional-value rule); kept because the controller decided scp-api's callbacks stay. The other eight (SA-009..SA-012 and SA-014..SA-017) wait on CLI-EXT-17.
+- SA-008 / SA-013: FIXED. The `attach-iso` and `power` configure callbacks are now declarative. The other eight (SA-009..SA-012 and SA-014..SA-017) wait on CLI-EXT-17.
 - AC-20 doctor is a `wontfix` note on all three (product decision).
 - Open minor findings (not fixed, no blocker/major open): IH-001..IH-006, MT-003, MT-004, SA-005.
 - SA-001 is the `fixed` blocker for the `AttributeError` crash (commit `b30ca374e`) with replay tests as regression evidence.
 
 ### Controller rulings applied after this section (MT-001, SA-002)
 
-MT-001 FIXED: `watch` returns 0 only for FINISHED, 1 for ERROR/CANCELED/ROLLBACK (final-state line unchanged); exit codes in verb help and README; `test_watch_accepts_explicit_poll_and_debug_raw` now expects 1, new tests `test_watch_exits_1_for_every_unsuccessful_terminal_state` (4 params) and `test_watch_exits_0_only_for_finished_even_in_lower_case`; the two catalog rows that replay an ERROR run (`--poll`, `--debug-raw`) now say `expected_exit_status = 1`. SA-002 FIXED as documentation only: per-verb `--filter` help states server-side query vs client-side casefolded substring over every field. Neither change altered a surface signature (sync reported no re-sign). The two sections above that list MT-001/SA-002 as `wontfix` are superseded. The final gate verdict is in the commit message of the ruling commit and the summary returned to the controller.
+MT-001 FIXED: `watch` returns 0 only for FINISHED, 1 for ERROR/CANCELED/ROLLBACK (final-state line unchanged); exit codes in verb help and README; `test_watch_accepts_explicit_poll_and_debug_raw` now expects 1, new tests `test_watch_exits_1_for_every_unsuccessful_terminal_state` (4 params) and `test_watch_exits_0_only_for_finished_even_in_lower_case`; the two catalog rows that replay an ERROR run (`--poll`, `--debug-raw`) now say `expected_exit_status = 1`. SA-002 FIXED as documentation only: per-verb `--filter` help states server-side query vs client-side casefolded substring over every field. Neither change altered a surface signature (sync reported no re-sign). Both are FIXED (see the Findings list above); no section of this report treats them as `wontfix` any more.
 
 ### Oracles
 
@@ -254,7 +254,7 @@ The scratch copy has 3 unrelated failures in `tests/test_cli_contract.py` (doc-l
 
 ### Deviations from the brief
 
-- Brief item 7 asked to FIX every blocker/major in Netcup code or mark wontfix for product decisions: the only blocker (SA-001) was fixed earlier; the two majors (MT-001, SA-002) are wontfix product decisions listed above.
+- Brief item 7 asked to FIX every blocker/major in Netcup code or mark wontfix for product decisions: the only blocker (SA-001) was fixed earlier; the two majors (MT-001, SA-002) were then FIXED on controller ruling (watch exit codes; per-verb `--filter` documentation).
 - `CLI-SPEC.md` is an index with one `CLI-SPEC-<id>.md` per CLI (sync supports one region per spec file).
 - Library-tree files other than this report were not touched.
 

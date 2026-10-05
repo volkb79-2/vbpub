@@ -63,7 +63,7 @@ invocation = ["attach", "--ssh-host", "192.0.2.10", "--debug-raw"]
 expected_exit_status = 130
 expected_stdout_contains = "[attach] Streaming until Ctrl-C."
 expected_stderr_contains = "--debug-raw is active"
-effects = ["Starts the SSH log follower and streams until interrupted with redaction disabled and a warning on stderr; makes no Netcup API call."]
+effects = ["Starts the SSH log follower and streams until interrupted, warning on stderr that raw diagnostic data may expose secrets (the redaction switch itself is only observable on install); makes no Netcup API call."]
 test_ids = ["tests/test_cli_cases_install_host.py::test_debug_raw_warns_and_is_off_by_default[attach]"]
 
 [[cases]]
@@ -115,7 +115,7 @@ invocation = ["attach", "--ssh-host", "192.0.2.10", "--ssh-identity-file", "cont
 expected_exit_status = 130
 expected_stdout_contains = "[attach] Streaming until Ctrl-C."
 expected_stderr_contains = "Cancelled."
-effects = ["Validates that the named key exists and is readable, then starts the follower with it and streams until interrupted; never generates or overwrites a key."]
+effects = ["Requires the named key file to exist (a missing file is refused with exit 2), then starts the follower with it and streams until interrupted; writes no key material."]
 test_ids = ["tests/test_cli_cases_install_host.py::test_replayed_case_matches_catalog[attach-ssh-identity-file]"]
 
 [[cases]]
@@ -141,7 +141,7 @@ invocation = ["configure", "--dry-run", "--yes", "--monitor", "--no-monitor"]
 expected_exit_status = 2
 expected_stdout_contains = ""
 expected_stderr_contains = "not allowed with argument --monitor"
-effects = ["Refuses during argument parsing; reads no credentials and makes no request."]
+effects = ["Refuses during argument parsing (exit 2); makes no request."]
 test_ids = ["tests/test_cli_cases_install_host.py::test_replayed_case_matches_catalog[configure-conflict-monitor]"]
 
 [[cases]]
@@ -297,7 +297,7 @@ invocation = ["configure", "--dry-run", "--yes", "--no-monitor", "--debug-raw"]
 expected_exit_status = 0
 expected_stdout_contains = "[dry-run] Preflight OK"
 expected_stderr_contains = "--debug-raw is active"
-effects = ["Plans the install with redaction disabled and a warning on stderr; the dry-run stops before saving or the install POST."]
+effects = ["Plans the install and warns on stderr that raw diagnostic data may expose secrets; whether the plan summary is unredacted is only observable when a customScript is present (proven for install), not under this wizard invocation. The dry-run stops before saving or the install POST."]
 test_ids = ["tests/test_cli_cases_install_host.py::test_debug_raw_warns_and_is_off_by_default[configure]"]
 
 [[cases]]
@@ -414,7 +414,7 @@ invocation = ["configure", "--dry-run", "--yes", "--no-monitor", "--ssh-identity
 expected_exit_status = 0
 expected_stdout_contains = "[dry-run] Preflight OK"
 expected_stderr_contains = ""
-effects = ["Validates that the named key exists and is readable; never generates or overwrites it; the dry-run stops before saving or the install POST."]
+effects = ["Requires the named key file to exist (a missing file is refused with exit 2), shows it as the plan's SSH identity and leaves it unmodified with no .pub written; the dry-run stops before saving or the install POST."]
 test_ids = ["tests/test_cli_cases_install_host.py::test_replayed_case_matches_catalog[configure-ssh-identity-file]"]
 
 [[cases]]
@@ -648,7 +648,7 @@ invocation = ["install", "--dry-run", "--yes", "--no-monitor", "--ssh-identity-f
 expected_exit_status = 0
 expected_stdout_contains = "[dry-run] Preflight OK"
 expected_stderr_contains = ""
-effects = ["Validates that the named key exists and is readable; never generates or overwrites it; the dry-run sends no install POST."]
+effects = ["Requires the named key file to exist (a missing file is refused with exit 2), shows it as the plan's SSH identity and leaves it unmodified with no .pub written; the dry-run sends no install POST."]
 test_ids = ["tests/test_cli_cases_install_host.py::test_replayed_case_matches_catalog[install-ssh-identity-file]"]
 
 [[cases]]
@@ -700,7 +700,7 @@ invocation = ["wizard", "--dry-run", "--yes", "--monitor", "--no-monitor"]
 expected_exit_status = 2
 expected_stdout_contains = ""
 expected_stderr_contains = "not allowed with argument --monitor"
-effects = ["Refuses during argument parsing; reads no credentials and makes no request."]
+effects = ["Refuses during argument parsing (exit 2); makes no request."]
 test_ids = ["tests/test_cli_cases_install_host.py::test_replayed_case_matches_catalog[wizard-conflict-monitor]"]
 
 [[cases]]
@@ -856,7 +856,7 @@ invocation = ["wizard", "--dry-run", "--yes", "--no-monitor", "--debug-raw"]
 expected_exit_status = 0
 expected_stdout_contains = "[dry-run] Preflight OK"
 expected_stderr_contains = "--debug-raw is active"
-effects = ["Plans the install with redaction disabled and a warning on stderr; the dry-run stops before saving or the install POST."]
+effects = ["Plans the install and warns on stderr that raw diagnostic data may expose secrets; whether the plan summary is unredacted is only observable when a customScript is present (proven for install), not under this wizard invocation. The dry-run stops before saving or the install POST."]
 test_ids = ["tests/test_cli_cases_install_host.py::test_debug_raw_warns_and_is_off_by_default[wizard]"]
 
 [[cases]]
@@ -973,7 +973,7 @@ invocation = ["wizard", "--dry-run", "--yes", "--no-monitor", "--ssh-identity-fi
 expected_exit_status = 0
 expected_stdout_contains = "[dry-run] Preflight OK"
 expected_stderr_contains = ""
-effects = ["Validates that the named key exists and is readable; never generates or overwrites it; the dry-run stops before saving or the install POST."]
+effects = ["Requires the named key file to exist (a missing file is refused with exit 2), shows it as the plan's SSH identity and leaves it unmodified with no .pub written; the dry-run stops before saving or the install POST."]
 test_ids = ["tests/test_cli_cases_install_host.py::test_replayed_case_matches_catalog[wizard-ssh-identity-file]"]
 
 [[cases]]

@@ -65,17 +65,17 @@ severity = "minor"
 category = "semantics"
 summary = "No scp-api verb offers --dry-run; the mutating verbs rely on the confirmation prompt (or --yes) only"
 remedy = "Add VerbSpec(dry_run=True) where a plan can be shown."
-rationale = "AC-12 passes: every mutating verb needs confirmation, and a non-interactive run without --yes refuses with exit 2 (test_yes_is_the_only_consent_in_a_non_interactive_run, 9 routes). A server-side plan exists only for snapshots (dryrun action). Listed for the controller."
+rationale = "Controller-confirmed: snapshots dryrun plus --yes confirmation is sufficient. AC-12 passes: every mutating verb needs confirmation, and a non-interactive run without --yes refuses with exit 2 (test_yes_is_the_only_consent_in_a_non_interactive_run, 9 routes). A server-side plan exists only for snapshots (dryrun action)."
 
 [[findings]]
 id = "SA-008"
-status = "wontfix"
+status = "fixed"
 severity = "minor"
 category = "adoption"
 route = "route:entrypoint:scp-api/attach-iso"
 summary = "AC-07 configure callback on attach-iso (required exclusive group --iso-id | --user-iso-name plus --change-boot-device-to-cdrom)"
-remedy = "Move to OptionSpec plus an exclusive-group constraint."
-rationale = "Judgement for the controller: unlike the other nine this callback is structural only (no positional-value rule) and could be declarative. The controller decision for this package is that scp-api's configure callbacks stay hand-written; the surface already reports the exclusive group (parser-exclusive case) and replay tests cover both members and the conflict. Revisit together with cli-extended CLI-EXT-17."
+remedy = "Move to OptionSpec with a required mutually exclusive group."
+rationale = "Fixed per controller ruling: the callback was removed; --iso-id and --user-iso-name are OptionSpecs in the required exclusive group 'iso-source' and --change-boot-device-to-cdrom is a declared option. The three exclusive-group case ids changed from parser-exclusive-... to iso-source and every attach-iso decision was re-confirmed: replay tests attach-iso-conflict-iso, -member-iso-id, -member-user-iso-name, -minimum and -change-boot pass unchanged."
 
 [[findings]]
 id = "SA-009"
@@ -119,13 +119,13 @@ rationale = "Optional action positional after another optional positional; track
 
 [[findings]]
 id = "SA-013"
-status = "wontfix"
+status = "fixed"
 severity = "minor"
 category = "adoption"
 route = "route:entrypoint:scp-api/power"
 summary = "AC-07 configure callback on power (required action choice, then server_id)"
 remedy = "Move to two ArgumentSpecs (choices, then server_id)."
-rationale = "Judgement for the controller: this callback only adds two plain required positionals and is expressible declaratively. The controller decision for this package is that scp-api's configure callbacks stay hand-written (see also SA-003 on the action-first order); the replay tests (power-choice-*, power-shape-*) pin the behaviour so a later migration is safe. Revisit with cli-extended CLI-EXT-17."
+rationale = "Fixed per controller ruling: the callback was removed; action (choices on, off, cycle, reset) and server_id are ArgumentSpecs in the same order, so the action-first spelling of SA-003 is unchanged. No power case signature changed; the replay tests power-choice-*, power-shape-* and the invalid-argument tests pass unchanged."
 
 [[findings]]
 id = "SA-014"

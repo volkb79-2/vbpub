@@ -49,12 +49,12 @@ remedy = "Removed synopsis= from show; the derived synopsis is identical."
 
 [[findings]]
 id = "MT-006"
-status = "wontfix"
+status = "fixed"
 severity = "minor"
 category = "adoption"
-summary = "AC-04 synopsis-overrides: watch keeps synopsis 'TASK_UUID'"
-remedy = "Keep the override."
-rationale = "The derived synopsis appends [options], which the hand-written verb lines in this suite deliberately omit; the override is informative, not redundant."
+summary = "AC-04 synopsis-overrides: watch kept the synopsis 'TASK_UUID'"
+remedy = "Delete the override and use the derived synopsis ('TASK_UUID [options]')."
+rationale = "Reconsidered: the derived synopsis is accurate (watch has the --poll and --progress options), so the override was removed and the 7 affected case signatures were re-confirmed (behaviour unchanged)."
 
 [[findings]]
 id = "MT-007"

@@ -279,8 +279,11 @@ def _assert_effects_are_observed(row, run, args, tmp_path):
         )
         return
     if status == 2 and not row["id"].endswith("install/minimum"):
-        # Refusals made while parsing or before any work reach no API.
+        # Refusals made while parsing or before any work reach no API, start no
+        # SSH follower and leave no file behind.
         assert run.calls == []
+        assert run.followers == []
+        assert list(tmp_path.iterdir()) == []
         return
     if "--dry-run" not in invocation or status != 0:
         return

@@ -298,7 +298,7 @@ def build_cli():
     registry.register(
         VerbSpec(
             "watch",
-            "TASK_UUID",
+            None,
             "Poll a task and report changes until it reaches a terminal state. "
             "Exit 0 when the final state is FINISHED, 1 when it is ERROR, CANCELED or ROLLBACK "
             "(the final-state line is printed either way), 2 for usage errors.",
