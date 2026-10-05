@@ -837,11 +837,21 @@ def test_resource_limited_witness_replay_stops_before_full_fallback(
     second_head = git_repo.commit_all("add a passing test before the witness")
     samples = iter(
         (
-            ResourceLimitCounters(0, 0, 0),  # mutation preflight
-            ResourceLimitCounters(0, 0, 0),  # replay before
-            ResourceLimitCounters(1, 0, 0),  # replay after: pids.max hit
-            ResourceLimitCounters(1, 0, 0),  # fallback before, if incorrectly run
-            ResourceLimitCounters(1, 0, 0),  # fallback after, falsely clean
+            ResourceLimitCounters(
+                pids_max=0, memory_oom_kill=0, memory_oom_group_kill=0
+            ),  # mutation preflight
+            ResourceLimitCounters(
+                pids_max=0, memory_oom_kill=0, memory_oom_group_kill=0
+            ),  # replay before
+            ResourceLimitCounters(
+                pids_max=1, memory_oom_kill=0, memory_oom_group_kill=0
+            ),  # replay after: pids.max hit
+            ResourceLimitCounters(
+                pids_max=1, memory_oom_kill=0, memory_oom_group_kill=0
+            ),  # fallback before, if incorrectly run
+            ResourceLimitCounters(
+                pids_max=1, memory_oom_kill=0, memory_oom_group_kill=0
+            ),  # fallback after, falsely clean
         )
     )
     monkeypatch.setattr(

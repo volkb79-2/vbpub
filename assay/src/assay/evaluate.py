@@ -429,8 +429,11 @@ def _is_considered(
         for root in source_root_paths
     )
     lexical_path = (repo_top / path).absolute()
-    in_file = path in source_root_files or any(
-        root.is_file() and lexical_path == root for root in source_root_paths
+    in_file = path in source_root_files or (
+        not source_root_files
+        and any(
+            root.is_file() and lexical_path == root for root in source_root_paths
+        )
     )
     if not (in_directory or in_file):
         return False

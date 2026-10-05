@@ -397,6 +397,38 @@ def test_report_path_outside_repository_is_refused_even_under_a_source_root(
     assert caught.value.reason_code is ReasonCode.UNREADABLE_ARTIFACT
 
 
+def test_report_path_through_symlink_file_root_requires_declared_lexical_key(
+    tmp_path,
+):
+    repo_top = tmp_path / "repo"
+    run_cwd = repo_top / "app"
+    run_cwd.mkdir(parents=True)
+    target = run_cwd / "target.py"
+    target.write_text("value = 1\n", encoding="utf-8")
+    declared = run_cwd / "declared.py"
+    declared.symlink_to(target.name)
+
+    with pytest.raises(
+        AssayError, match="not under any declared judge.source_roots"
+    ) as caught:
+        mutation._resolve_report_paths(
+            SimpleNamespace(sources={"target.py": object()}),
+            run_cwd=run_cwd,
+            repo_top=repo_top,
+            source_root_paths=(declared.resolve(),),
+            source_root_files=("app/declared.py",),
+        )
+
+    assert caught.value.reason_code is ReasonCode.UNREADABLE_ARTIFACT
+    assert mutation._resolve_report_paths(
+        SimpleNamespace(sources={"declared.py": object()}),
+        run_cwd=run_cwd,
+        repo_top=repo_top,
+        source_root_paths=(declared.resolve(),),
+        source_root_files=("app/declared.py",),
+    ) == {"declared.py": "app/target.py"}
+
+
 def test_mutation_worker_propagates_non_timeout_post_execution_git_failure(
     git_repo: GitRepo, tmp_path, monkeypatch
 ):

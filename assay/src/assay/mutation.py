@@ -559,8 +559,12 @@ def resolve_mutation_targets(
             for root in source_root_paths
         )
         lexical_path = (repo_top / path).absolute()
-        in_file = path in source_root_files or any(
-            root.is_file() and lexical_path == root for root in source_root_paths
+        in_file = path in source_root_files or (
+            not source_root_files
+            and any(
+                root.is_file() and lexical_path == root
+                for root in source_root_paths
+            )
         )
         if not (in_directory or in_file):
             continue
@@ -3865,9 +3869,12 @@ def _resolve_report_paths(
             lexical_repo_path = None
         under_declared_file = (
             lexical_repo_path in source_root_files
-            or any(
-                Path(root).is_file() and lexical_absolute == Path(root)
-                for root in source_root_paths
+            or (
+                not source_root_files
+                and any(
+                    Path(root).is_file() and lexical_absolute == Path(root)
+                    for root in source_root_paths
+                )
             )
         )
         under_declared_directory = any(

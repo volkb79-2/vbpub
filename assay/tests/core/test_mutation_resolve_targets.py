@@ -86,6 +86,33 @@ def test_a_changed_symlink_sibling_to_a_file_root_is_excluded(repo_top: Path):
     assert seen == ["src/owned.zzz"]
 
 
+def test_a_symlink_file_root_does_not_admit_its_resolved_target(repo_top: Path):
+    (repo_top / "src").mkdir()
+    target = repo_top / "src" / "target.zzz"
+    target.write_text("TARGET\n", encoding="utf-8")
+    declared = repo_top / "src" / "declared.zzz"
+    declared.symlink_to(target.name)
+    added = _added(
+        {
+            "src/declared.zzz": frozenset({1}),
+            "src/target.zzz": frozenset({1}),
+        }
+    )
+    seen: list[str] = []
+
+    targets = resolve_mutation_targets(
+        added,
+        repo_top=repo_top,
+        source_root_paths=(declared.resolve(),),
+        source_root_files=("src/declared.zzz",),
+        adapter=FakeAdapter(),
+        read_source_text=_reader(repo_top, seen),
+    )
+
+    assert [target.path for target in targets] == ["src/declared.zzz"]
+    assert seen == ["src/declared.zzz"]
+
+
 def test_a_file_outside_every_source_root_is_excluded(repo_top: Path):
     (repo_top / "other").mkdir()
     (repo_top / "other" / "mod.zzz").write_text("x\n", encoding="utf-8")

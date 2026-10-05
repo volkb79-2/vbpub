@@ -254,6 +254,39 @@ def test_a_changed_symlink_sibling_to_a_file_root_stays_outside_r1(tmp_path: Pat
     assert result.missing_lines == {"pkg/owned.zzz": frozenset({1})}
 
 
+def test_a_symlink_file_root_does_not_admit_its_resolved_target_into_r1(
+    tmp_path: Path,
+):
+    repo_top = tmp_path / "repo"
+    package = repo_top / "pkg"
+    package.mkdir(parents=True)
+    target = package / "target.zzz"
+    target.write_text("target\n", encoding="utf-8")
+    declared = package / "declared.zzz"
+    declared.symlink_to(target.name)
+    paths = ("pkg/declared.zzz", "pkg/target.zzz")
+    added = AddedLines(
+        by_file=MappingProxyType({path: frozenset({1}) for path in paths})
+    )
+    profile = CoverageProfile(files=MappingProxyType({}))
+
+    result = evaluate_coverage(
+        added=added,
+        profile=profile,
+        adapter=FakeAdapter(),
+        repo_top=repo_top,
+        project_root=repo_top,
+        source_root_paths=(declared.resolve(),),
+        source_root_files=("pkg/declared.zzz",),
+        fail_under=100.0,
+        allow_excluded=False,
+        read_source_text=lambda path: (repo_top / path).read_text(encoding="utf-8"),
+    )
+
+    assert result.considered == 1
+    assert result.missing_lines == {"pkg/declared.zzz": frozenset({1})}
+
+
 def test_normalize_coverage_key_reconciles_a_language_specific_prefix():
     """The coverage artifact's own key spelling (a stand-in for Go's module
     path) is stripped by the adapter's own hook before matching against the
