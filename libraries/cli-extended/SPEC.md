@@ -465,7 +465,14 @@ reason)` (exported from `cli_extended`; `Constraint` names the union).
    action's default: not `None` for a `None` default, not `False` for a
    `False` default, non-empty for an empty list or tuple default. A value left
    at a suppressed default (a repeated global or library control) is absent.
-   Rule 2 exists so presence cannot be misdetected.
+   Rule 2 exists so presence cannot be misdetected. A verb option without an
+   explicit `default` keeps argparse's own default (`None`, `False` for
+   `store_true`, and so on), so a handler can read every declared option as an
+   attribute whether or not it was given. The one exception is an option whose
+   `dest` equals a destination the root parser defines (a global option or a
+   library control): its default is suppressed so the verb parser cannot
+   overwrite the value the root already parsed. An explicit `default=` is
+   always honoured.
 4. **Enforcement.** After argparse succeeds and after the refusals for
    unsupported `--json`, `--dry-run` and `--progress`, and before the runtime
    is built or the handler runs, the first violated constraint in declaration
@@ -1145,7 +1152,10 @@ reviewed grammar. The library exposes one integer `CONTRACT_VERSION`
    unchanged and the signature context contains only the control's canonical
    flag, the route, and the route's required baseline. No other library
    control produces a candidate. Upgrading the library without changing
-   `CONTRACT_VERSION` MUST leave every consumer's signatures unchanged.
+   `CONTRACT_VERSION` MUST leave every consumer's signatures unchanged. This
+   binds every release after 0.2.0, the first release of contract version 1;
+   the 0.2.0 export (manifest schema 7, including verb options exported with
+   their real `None`/`False` defaults) is the version-1 baseline.
 5. **A contract bump is one finding.** `CONTRACT_VERSION` MUST change when a
    library control's accepted syntax or meaning changes in a way consumers must
    re-review (a flag added, removed, renamed; arity, choices, or placement

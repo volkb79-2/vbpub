@@ -223,7 +223,6 @@ class OptionSpec:
         self,
         parser: Any,
         *,
-        suppress_default: bool = False,
         force_suppress_default: bool = False,
     ) -> Any:
         """Register this option with argparse and return its action."""
@@ -234,8 +233,6 @@ class OptionSpec:
             kwargs.setdefault("metavar", self.metavar)
         if force_suppress_default:
             kwargs["default"] = argparse.SUPPRESS
-        elif suppress_default:
-            kwargs.setdefault("default", argparse.SUPPRESS)
         return parser.add_argument(*self.flags, **kwargs)
 
 
@@ -1468,9 +1465,18 @@ class CliRegistry:
         parser: ExtendedArgumentParser,
         options: Sequence[OptionSpec],
         *,
-        suppress_defaults: bool = False,
+        suppress_dests: frozenset[str] = frozenset(),
         force_suppress_defaults: bool = False,
     ) -> None:
+        """Add ``options``; ``suppress_dests`` names destinations the root also owns.
+
+        An option without an explicit ``default`` keeps argparse's own default
+        (``None``, ``False`` for ``store_true``) so a handler can always read it,
+        except when its destination collides with ``suppress_dests``: the
+        verb parser then suppresses the default so it cannot overwrite the
+        value the root parser already parsed.
+        """
+
         groups: dict[str, Any] = {
             group.title: group for group in parser._action_groups
         }
@@ -1505,11 +1511,11 @@ class CliRegistry:
                         required=option.mutually_exclusive_required
                     )
                 target = exclusive_groups[name]
-            option.add_to(
-                target,
-                suppress_default=suppress_defaults,
-                force_suppress_default=force_suppress_defaults,
+            action = option.add_to(
+                target, force_suppress_default=force_suppress_defaults
             )
+            if action.dest in suppress_dests and "default" not in option.parser_kwargs:
+                action.default = argparse.SUPPRESS
 
     @staticmethod
     def _add_argument_specs(
@@ -1628,6 +1634,7 @@ class CliRegistry:
             subparsers = parser.add_subparsers(
                 dest="verb", metavar="VERB", required=True
             )
+            root_dests = frozenset(action.dest for action in parser._actions)
             for verb in self._verbs:
                 command_parser = subparsers.add_parser(
                     verb.name,
@@ -1667,7 +1674,7 @@ class CliRegistry:
                 )
                 self._add_argument_specs(command_parser, verb.arguments)
                 self._add_option_specs(
-                    command_parser, verb.options, suppress_defaults=True
+                    command_parser, verb.options, suppress_dests=root_dests
                 )
                 if verb.configure is not None:
                     verb.configure(command_parser)
