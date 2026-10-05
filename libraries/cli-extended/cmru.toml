@@ -1,0 +1,64 @@
+# =============================================================================
+# cli-extended release contract — parsed ONLY by cmru. The central
+# orchestration file supplies [github]/[targets]; this file carries the
+# [project]/[steps] release contract for the pure-Python wheel.
+#
+# Distribution (unified-adoption program CX-D1/CX-D2): every vbpub CLI
+# depends on this wheel. It is published to GitHub Releases only (never PyPI —
+# the bare name is unclaimed there, so a default index lookup would be a
+# dependency-confusion hole). Installers fetch
+# `cli-extended-latest/latest.json` (url + sha256), install this wheel first,
+# then install tool wheels with `--no-index --find-links <cache>`.
+#
+# Versioning: setuptools-scm derives the version from the `cli-extended-v*`
+# tag this config's strategy mints. The FIRST release has no prior tag and
+# must pass `--set-version 0.2.0` (bare semver, no prefix). The library stays
+# on 0.x until every planned adoption has landed (CX-D4).
+# =============================================================================
+schema_version = 1
+
+[runtime]
+kind = "none"
+
+[env]
+CLI_EXTENDED_RELEASE_NOTES = "## cli-extended wheel\n\nShared, stdlib-only CLI contract layer for vbpub tools: registration, generated help, common controls, dry-run, constraints, the generated CLI surface and semantic-review workflow, packaged agent skills, and a shared doctor. Console script: `cli-extended`.\n\n**Install** (never from PyPI)\n```bash\npython -m pip install --no-index ./<wheel-file>\n```"
+
+[project]
+id = "cli-extended"
+description = "cli-extended — shared CLI contract layer for vbpub Python tools"
+template_revision = 4
+prefix = "cli-extended-v"
+artifacts = ["wheel"]
+scm_dist = "cli_extended"
+
+[project.version]
+strategy = "scm"
+bump = "conventional"
+
+[project.release]
+git_tag = true
+build_step = "build"
+artifact_dirs = ["dist"]
+evidence_paths = ["coverage.json"]
+
+# Release gate: R0/R1 (100% statement+branch, docs) and the R3 canary. The R2
+# mutation campaign (~3 h) runs on the integration branch before the merge to
+# main, not inside every release transaction.
+[steps.run-tests]
+quiet = true
+commands = [
+  { label = "cli-extended: r0-r1 (unit + 100% line/branch coverage + docs)", argv = ["./run-gate.py", "r0-r1"], cwd = "." },
+  { label = "cli-extended: r3 (canary rejection)", argv = ["./run-gate.py", "r3"], cwd = "." },
+]
+
+[steps.build]
+quiet = true
+commands = [
+  { label = "cli-extended: build wheel", argv = ["python3", "-m", "cmru.handlers", "wheel-build", "--cwd", "."], cwd = "." },
+]
+
+[steps.push]
+quiet = true
+commands = [
+  { label = "cli-extended: publish wheel", argv = ["python3", "-m", "cmru.handlers", "wheel-publish", "--prefix", "cli-extended", "--cwd", ".", "--notes-env", "CLI_EXTENDED_RELEASE_NOTES"], cwd = "." },
+]

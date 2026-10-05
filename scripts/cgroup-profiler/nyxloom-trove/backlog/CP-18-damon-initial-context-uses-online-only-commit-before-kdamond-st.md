@@ -1,7 +1,7 @@
 ---
 kind: backlog-entry
 schema_version: 1
-id: CP-17
+id: CP-18
 title: "DAMON initial context uses online-only commit before kdamond startup"
 status: open
 type: "bugfix"

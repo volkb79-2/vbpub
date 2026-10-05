@@ -763,6 +763,7 @@ def _patch_main_for_interactive_dry_run(install_host_mod, monkeypatch, client, a
         identity=install_host_mod.IDENTITY,
         output=CliOutput(install_host_mod.IDENTITY),
         yes=bool(getattr(args, "yes", False)),
+        dry_run=bool(vars(args).get("dry_run", False)),
     )
 
     def run(**_kwargs):

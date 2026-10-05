@@ -6766,3 +6766,18 @@ failure paths and makes `_reserve_capacity` receive the already-validated
 baseline from `acquire`, removing its otherwise unreachable duplicate baseline
 capture. A fresh exact-tree `r0-r1` run is required after commit; current PSI
 has fallen below the launch threshold, but it must be checked again at launch.
+
+### RW-446 — 2026-10-05 14:42:59Z — reconcile P1 with current main and preserve colliding backlog IDs
+
+Main advanced from `c0d1f4410a4a10a5d9635775e43dec74c2a000fd` to
+`251c3eff5fb2e5b528c9e0ae3acff59fa99c2def` (RG-84 PID/cgroup guard and
+intervening estate work). Before any further exact-tree evidence, merge that
+current main into the P1 candidate. The merge brings 150 paths of main-only
+work into its history; under `scripts/cgroup-profiler`, main added the
+cli-extended adoption item using CP-17 while the P1 branch had independently
+used CP-17 for the DAMON-startup defect. Preserve both records: keep main's
+adoption item at CP-17, renumber the P1 DAMON item to CP-18, and regenerate
+the generated backlog index with `nyxloom backlog index`. No cgroup-profiler
+implementation code changed on main. Run all final P1 gates and review on the
+resolved merge tip; earlier receipts do not transfer. The separate CIU gate
+was left running untouched while this source reconciliation was done.

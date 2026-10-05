@@ -1675,3 +1675,20 @@ runs, so they used coarse `rusage` profiling, not live DAMON data. Exact-tree
 R0/R1, R3, doctor, R2, full gate, same-reviewer fix verification, real DAMON
 sample and overhead probes, current-main reconciliation, integration, release,
 and singleton activation remain open.
+
+### Session 43 — 2026-10-05 14:42:59Z — reconcile P1 with latest main
+
+Main had advanced from `c0d1f4410a4a10a5d9635775e43dec74c2a000fd` to
+`251c3eff5fb2e5b528c9e0ae3acff59fa99c2def`; it was merged into the P1
+candidate before any further gates. The merge brings current run-gate, CIU,
+and estate changes into the candidate's history. No cgroup-profiler source
+or test code changed on main; the only cgroup-profiler conflict was a
+generated backlog-index collision because both branches had independently
+assigned CP-17. Main's cli-extended adoption entry remains CP-17; the P1
+DAMON startup defect is now CP-18, and the index was regenerated with
+`nyxloom backlog index`. Historical review artifacts retain their original
+CP-17 references; this session records the renumbering for current readers.
+The merge is being finalized on this branch. No gate receipt applies to the
+resolved merge tip: fresh `r0-r1`, `r3`, doctor, R2, full gate, review
+fix-verification, live DAMON samples/overhead, merge/release, and daemon
+activation remain pending.

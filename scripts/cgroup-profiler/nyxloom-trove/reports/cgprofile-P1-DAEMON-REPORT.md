@@ -2031,3 +2031,17 @@ DAMON sample or overhead has been measured in these runs: the daemon was down
 and profiling fell back to coarse `rusage`. Current-tree R2, full gate, R3,
 doctor, same-Sol fix verification, live DAMON samples/overhead, current-main
 reconciliation, merge, release, and CIU singleton activation remain pending.
+
+## Controller addendum — reconcile with current main (2026-10-05)
+
+Before additional evidence, the P1 candidate was reconciled with current main
+`251c3eff5fb2e5b528c9e0ae3acff59fa99c2def` (previous P1 base
+`c0d1f4410a4a10a5d9635775e43dec74c2a000fd`). Main's broad intervening
+changes are included in the candidate history; no cgroup-profiler source or
+test code changed. Main added a CP-17 cli-extended adoption backlog item,
+colliding with the P1 DAMON-startup item. Both are preserved: adoption stays
+CP-17, the DAMON issue is CP-18, and `nyxloom backlog index` regenerated the
+index. Historical review artifacts keep their contemporaneous CP-17 wording.
+This merge invalidates any prior exact-tree gate result. Fresh package gates,
+mutation evidence, review fix-verification, and live DAMON sample/overhead
+measurement are still required; this addendum claims none of them.

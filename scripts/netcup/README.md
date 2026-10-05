@@ -34,12 +34,30 @@ union supported by the CLI. Use `help VERB` or `VERB --help` for detailed
 command help; that selected-verb help shows which options such as `--json`
 actually apply.
 
-[`CLI-SPEC.md`](CLI-SPEC.md) is the canonical `monitor-task` grammar and
-semantic review. Its generated inventory follows the live registry; the
+[`CLI-SPEC.md`](CLI-SPEC.md) indexes the canonical grammar and semantic review
+of all three CLIs (one `CLI-SPEC-<cli>.md` each, declared in
+`cli-extended.toml`). Each generated inventory follows the live registry; the
 product-owned catalog records accepted/refused combinations, effects, and the
 behavior tests that keep each reviewed call linked to executable evidence.
 See the [`cli-extended` design guide](../../libraries/cli-extended/docs/DESIGN-GUIDE.md#keep-a-generated-surface-and-a-human-semantic-record)
 for why grammar and semantic decisions have separate sources.
+
+Workflow for a change to any CLI's surface (run from `scripts/netcup`, with the
+library installed or on `PYTHONPATH`): edit the registry, then
+`cli-extended surface sync --cli <id>` regenerates
+`cli-surface-<id>.json` and the marked region of `CLI-SPEC-<id>.md`;
+`cli-extended surface check --cli <id>` lists the cases whose signature changed
+or that lack a decision. Decisions live in `cli-review-<id>.toml` and problems
+in `cli-review-findings-<id>.toml`, both edited by hand
+(`cli-extended surface pack --cli <id> --output FILE` prints the review bundle).
+Every active case links a behavior test through `cli_case` markers; the pytest
+plugin (`pytest_plugins = ["cli_extended.pytest_plugin"]` in `tests/conftest.py`)
+fails collection when a link is missing, so run the whole `tests/` directory,
+not a single module. The CLI-level tests call `cli_extended.testing.invoke_script`
+with `HOME` under `tmp_path`, and the catalog case tests
+(`tests/test_cli_cases_*.py`) replay each reviewed invocation in-process through
+`tests/case_harness.py` with a fake Netcup client. `cli-extended audit --cli <id>`
+must report no `fail`.
 
 Then create the local secret file. A target is optional in an interactive
 terminal: the installer can ask the authenticated API for a server list later.
@@ -214,11 +232,14 @@ Run the gather-and-install wizard and monitor the provider task:
 ./install-host.py wizard --monitor
 ```
 
+`install` takes its target only from the payload; `NETCUP_SCP_API_SERVER_ID` is
+ignored (it still selects the target for `wizard` and `configure`).
 Use `install --config FILE` for a separately prepared complete payload. The
 file-driven command monitors the task by default; `--no-monitor` returns after
 task creation. To inspect or monitor a task after the installer has exited,
 use the standalone task CLI. `show` fetches once; `watch` polls until the
-provider reports a terminal state. Bare invocation prints usage and performs
+provider reports a terminal state and exits 0 for `FINISHED`, 1 for `ERROR`,
+`CANCELED` or `ROLLBACK` (the final-state line is printed either way). Bare invocation prints usage and performs
 no credential or API work.
 
 ```bash

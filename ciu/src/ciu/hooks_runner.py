@@ -19,6 +19,7 @@ set_nested(d, dotted, value)  helper shared with the engine
 
 from __future__ import annotations
 
+import ast
 import importlib.util
 import os
 import sys
@@ -266,6 +267,36 @@ def load_hook_for_check(path: Path) -> tuple[Callable, Callable | None]:
     return _resolve_hook_callables(module, path)
 
 
+def _declares_dry_run_safe(path: Path) -> bool:
+    """Read a literal module-level opt-in without importing the hook.
+
+    Importing an unsafe hook merely to inspect its declaration could itself
+    run side effects. The opt-in therefore has one small closed form:
+    ``DRY_RUN_SAFE = True`` as a literal assignment in the module body.
+    """
+    try:
+        source = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        raise ValueError(f"[S9.2] cannot inspect dry-run hook {path}: {exc}") from exc
+    try:
+        module = ast.parse(source, filename=str(path))
+    except SyntaxError as exc:
+        raise ValueError(f"[S9.2] invalid hook syntax in {path}: {exc}") from exc
+    for node in module.body:
+        if isinstance(node, ast.Assign) and any(
+            isinstance(target, ast.Name) and target.id == "DRY_RUN_SAFE"
+            for target in node.targets
+        ):
+            return isinstance(node.value, ast.Constant) and node.value.value is True
+        if (
+            isinstance(node, ast.AnnAssign)
+            and isinstance(node.target, ast.Name)
+            and node.target.id == "DRY_RUN_SAFE"
+        ):
+            return isinstance(node.value, ast.Constant) and node.value.value is True
+    return False
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -396,6 +427,7 @@ def run_hooks(
     stack_toml_path: Path,
     *,
     declared_secret_names: frozenset[str] | set[str] | None = None,
+    dry_run: bool = False,
 ) -> None:
     """Validate and run all hooks for one hook point.
 
@@ -417,6 +449,9 @@ def run_hooks(
         Every secret name this stack declares via an S4.1 directive, used ONLY
         by S9.4a's uniqueness rule. ``None``/empty means "nothing declared" —
         a bare/unit construction, never a licence to skip the check.
+    dry_run:
+        For ``post_compose`` only, skip hooks unless their source declares the
+        literal opt-in ``DRY_RUN_SAFE = True``. Unsafe hooks are not imported.
 
     Behaviour
     ---------
@@ -440,17 +475,30 @@ def run_hooks(
     declared = frozenset(declared_secret_names or ())
 
     # --- Phase 1: resolve and validate all paths before running any hook ---
-    resolved: list[tuple[str, Path, Callable]] = []
+    resolved: list[tuple[str, Path, Callable | None]] = []
     for raw in hook_paths:
         p = Path(raw)
         if not p.is_absolute():
             p = ctx.stack_dir / p
+        if dry_run and point == "post_compose":
+            if not p.is_file():
+                raise FileNotFoundError(f"[S9.2] Hook file not found: {p}")
+            if not _declares_dry_run_safe(p):
+                print(
+                    f"[INFO] [S9.2] --dry-run skipped post_compose hook {p}; "
+                    "declare DRY_RUN_SAFE = True to opt in",
+                    flush=True,
+                )
+                resolved.append((raw, p, None))
+                continue
         # Raises FileNotFoundError if missing — abort before any hook runs (S9.2)
         hook_fn = load_hook(p)
         resolved.append((raw, p, hook_fn))
 
     # --- Phase 2: execute hooks sequentially ---
     for _raw, _p, hook_fn in resolved:
+        if hook_fn is None:
+            continue
         # Snapshot process environment before each hook (S9.4)
         env_snapshot = dict(os.environ)
 

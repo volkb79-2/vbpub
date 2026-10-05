@@ -1,0 +1,84 @@
+schema_version = 1
+cli_id = "monitor-task"
+
+[[findings]]
+id = "MT-001"
+status = "fixed"
+severity = "major"
+category = "semantics"
+route = "route:entrypoint:monitor-task/watch"
+summary = "watch exited 0 when the task reached the terminal state ERROR, CANCELED or ROLLBACK"
+remedy = "Exit 1 when the final state is not FINISHED and document the codes in the verb help."
+rationale = "Fixed per controller ruling: watch returns 0 only for FINISHED and 1 for any other terminal state, still printing the final-state line; the exit codes are in the verb help and README. Tests: test_watch_exits_1_for_every_unsuccessful_terminal_state, test_watch_exits_0_only_for_finished_even_in_lower_case and the updated test_watch_accepts_explicit_poll_and_debug_raw."
+
+[[findings]]
+id = "MT-002"
+status = "wontfix"
+severity = "minor"
+category = "grammar"
+route = "route:entrypoint:monitor-task/watch"
+summary = "watch has no --json output"
+remedy = "Keep include_json=False; use --progress rawjson for machine consumption."
+rationale = "watch is a streaming follower, not a one-shot read; --progress rawjson already provides machine-readable updates and show --json covers the one-shot read."
+
+[[findings]]
+id = "MT-003"
+status = "open"
+severity = "minor"
+category = "consistency"
+route = "route:entrypoint:monitor-task/watch"
+summary = "monitor-task spells the polling option --poll while install-host spells it --poll-interval"
+remedy = "Add --poll-interval as an alias of --poll in monitor-task (keep --poll for existing scripts) in a later change."
+
+[[findings]]
+id = "MT-004"
+status = "open"
+severity = "minor"
+category = "help"
+route = "route:entrypoint:monitor-task/watch"
+summary = "--poll help ends with a full stop and names a file rather than the effective default"
+remedy = "Reword to 'seconds between task queries (default: monitor.poll_interval in monitor-task.toml)'; re-sync the surface and re-sign the affected rows."
+
+[[findings]]
+id = "MT-005"
+status = "fixed"
+severity = "minor"
+category = "adoption"
+summary = "show carried a redundant synopsis override (AC-04)"
+remedy = "Removed synopsis= from show; the derived synopsis is identical."
+
+[[findings]]
+id = "MT-006"
+status = "fixed"
+severity = "minor"
+category = "adoption"
+summary = "AC-04 synopsis-overrides: watch kept the synopsis 'TASK_UUID'"
+remedy = "Delete the override and use the derived synopsis ('TASK_UUID [options]')."
+rationale = "Reconsidered: the derived synopsis is accurate (watch has the --poll and --progress options), so the override was removed and the 7 affected case signatures were re-confirmed (behaviour unchanged)."
+
+[[findings]]
+id = "MT-007"
+status = "wontfix"
+severity = "note"
+category = "adoption"
+summary = "AC-19 skills-packaged: no agent-facing skills ship"
+remedy = "None."
+rationale = "monitor-task is a standalone operator script in a monorepo; agents drive it through the repository docs, not packaged skills."
+
+[[findings]]
+id = "MT-008"
+status = "wontfix"
+severity = "note"
+category = "adoption"
+summary = "AC-20 doctor: no doctor verb"
+remedy = "A doctor verb could check the API credentials, monitor-task.toml and API reachability."
+rationale = "Product decision for the controller; credential and reachability failures already surface as actionable CliFailure messages with exit code 2 or 1."
+
+[[findings]]
+id = "MT-009"
+status = "wontfix"
+severity = "note"
+category = "adoption"
+summary = "AC-24 dependency-declared: standalone script without pyproject.toml"
+remedy = "None."
+rationale = "Standalone scripts use the installed cli-extended library (CX-D3); the suite lane puts the worktree library on PYTHONPATH."

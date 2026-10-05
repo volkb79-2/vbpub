@@ -3,39 +3,14 @@
 from __future__ import annotations
 
 import json
-import os
 import re
-import subprocess
-import sys
 from pathlib import Path
 
 import pytest
-from cli_extended import assert_cli_contract
+from cli_extended import CliIdentity, assert_cli_contract, make_invoker
 
 NETCUP_DIR = Path(__file__).resolve().parents[1]
 REPO_ROOT = NETCUP_DIR.parents[1]
-CLI_LIBRARY = REPO_ROOT / "libraries" / "cli-extended" / "src"
-
-
-def _invoke(script: Path, argv: list[str], cwd: Path, home: Path):
-    environment = os.environ.copy()
-    for name in tuple(environment):
-        if name.startswith("NETCUP_SCP_API_"):
-            environment.pop(name)
-    environment["HOME"] = str(home)
-    environment["NO_COLOR"] = "1"
-    existing_path = environment.get("PYTHONPATH")
-    environment["PYTHONPATH"] = str(CLI_LIBRARY) + (
-        os.pathsep + existing_path if existing_path else ""
-    )
-    return subprocess.run(
-        [sys.executable, str(script), *argv],
-        cwd=cwd,
-        env=environment,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
 
 
 @pytest.mark.parametrize(
@@ -75,37 +50,32 @@ def test_real_executable_obeys_cli_contract_without_reading_or_changing_local_st
     env_file.write_text(env_content, encoding="utf-8")
     env_mode = env_file.stat().st_mode & 0o777
 
-    def invoke(argv):
-        return _invoke(script, list(argv), workdir, home)
+    invoke = make_invoker(
+        script, home=home, cwd=workdir, scrub_prefixes=("NETCUP_SCP_API_",)
+    )
 
     if verbs is None:
         # Derive the command vocabulary from the same registry used to build
         # argparse and help, rather than maintaining a second test list.
         import importlib.util
 
-        monkeypatch.syspath_prepend(str(CLI_LIBRARY))
         monkeypatch.syspath_prepend(str(NETCUP_DIR))
         spec = importlib.util.spec_from_file_location("netcup_scp_cli_contract", script)
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
         verbs = tuple(module.build_cli().command_parsers)
 
-    # Installation of cli-extended into the test process may differ from the
-    # child environment; use the script's version source and identity only.
     if script_name == "scp-api.py":
         command = "scp-api"
         long_name = "Netcup Server Control Panel API client"
     else:
         command = "install-host"
         long_name = "Netcup Server Control Panel installer"
-    version = (NETCUP_DIR / "VERSION").read_text(encoding="utf-8").strip()
-    from cli_extended import CliIdentity
-
-    identity = CliIdentity(
+    identity = CliIdentity.resolve(
         name="NETCUP SCP",
         command=command,
-        version=version,
         long_name=long_name,
+        version_file=NETCUP_DIR / "VERSION",
     )
     known_verb_errors = (
         {
@@ -138,7 +108,6 @@ def test_real_executable_obeys_cli_contract_without_reading_or_changing_local_st
 def test_registered_netcup_verbs_remain_findable_in_user_guides(monkeypatch):
     import importlib.util
 
-    monkeypatch.syspath_prepend(str(CLI_LIBRARY))
     monkeypatch.syspath_prepend(str(NETCUP_DIR))
     guide_paths = (
         NETCUP_DIR / "README.md",
@@ -172,6 +141,9 @@ def test_cli_guides_have_resolving_local_markdown_links():
         NETCUP_DIR / "README.md",
         NETCUP_DIR / "DESIGN-GUIDE.md",
         NETCUP_DIR / "CLI-SPEC.md",
+        NETCUP_DIR / "CLI-SPEC-install-host.md",
+        NETCUP_DIR / "CLI-SPEC-monitor-task.md",
+        NETCUP_DIR / "CLI-SPEC-scp-api.md",
         REPO_ROOT / "docs" / "CONSUMERS.md",
         REPO_ROOT / "libraries" / "cli-extended" / "SPEC.md",
         REPO_ROOT / "libraries" / "cli-extended" / "README.md",

@@ -1,0 +1,204 @@
+schema_version = 1
+cli_id = "scp-api"
+
+[[findings]]
+id = "SA-001"
+status = "fixed"
+severity = "blocker"
+category = "semantics"
+summary = "Omitting an option crashed with 'unexpected AttributeError' (library-built options defaulted to argparse.SUPPRESS, so handlers using args.x found no attribute): metrics without --hours, firewall-policies list/create/put without --query/--limit/--offset, user-iso upload without --name/--multipart"
+remedy = "Give the affected OptionSpecs explicit defaults (None, and False for --multipart)."
+rationale = "Fixed in commit b30ca374e (explicit defaults in scp-api.py); the library has since made verb options default to None/False as well. Regression evidence: test_replayed_case_matches_catalog[metrics-minimum], [firewall-policies-minimum], [user-iso-choice-upload] replay those invocations through main() and assert exit 0 and the exact API calls; the earlier unit tests missed the crash because they build SimpleNamespace args."
+
+[[findings]]
+id = "SA-002"
+status = "fixed"
+severity = "major"
+category = "consistency"
+summary = "--filter means a server-side API query on tasks and firewall-policies (alias of --query) and a client-side text filter on imageflavours and iso-bootable; the semantics are now documented per verb"
+remedy = "State each --filter's semantics in its help line."
+rationale = "Fixed per controller ruling (behaviour kept): tasks and firewall-policies help says 'server-side query (API search)', imageflavours and iso-bootable say 'client-side filter: keep rows where the text appears, ignoring case, in any returned field' (matches _filter_rows: casefolded substring over every field). Each spelling keeps its replay test."
+
+[[findings]]
+id = "SA-003"
+status = "wontfix"
+severity = "minor"
+category = "grammar"
+route = "route:entrypoint:scp-api/power"
+summary = "power takes the action first ('power on 42') while every other verb takes the server first ('rescuesystem 42 deactivate')"
+remedy = "Accept both orders in power, document the server-first form as preferred, and deprecate the action-first form."
+rationale = "Breaking change to existing operator scripts and to documented examples; kept for compatibility and listed for the controller."
+
+[[findings]]
+id = "SA-004"
+status = "wontfix"
+severity = "minor"
+category = "grammar"
+route = "route:entrypoint:scp-api/firewall"
+summary = "firewall takes an optional MAC positional between server_id and the action, so 'firewall 42 get' and 'firewall 42 aa:bb:cc:dd:ee:ff get' differ only by position; argparse's optional-positional matching needs a hand-written swap in the handler"
+remedy = "Make the interface an option (--mac MAC) and keep the positional MAC as a deprecated form."
+rationale = "Compatibility with existing scripts; the swap is covered by replay tests (firewall-shape-mac, firewall-shape-action, firewall-choice-get) and a bad MAC is refused with exit 2 before any API call. Declarative support is tracked as cli-extended CLI-EXT-17."
+
+[[findings]]
+id = "SA-005"
+status = "open"
+severity = "minor"
+category = "help"
+route = "route:entrypoint:scp-api/snapshots"
+summary = "snapshots dryrun and snapshots create print nothing when the API returns an empty body"
+remedy = "Print a one-line confirmation ('snapshot creation is possible' / 'snapshot requested') when the response body is empty, as the other mutating verbs do."
+
+[[findings]]
+id = "SA-006"
+status = "wontfix"
+severity = "minor"
+category = "grammar"
+route = "route:entrypoint:scp-api/metrics"
+summary = "metrics prints a JSON document with and without --json (--json only switches to the compact form)"
+remedy = "Keep as is, or make the default a table."
+rationale = "The provider payload is a nested time series with no useful table form; both outputs parse as the same JSON document (asserted by test_json_output_is_machine_readable[metrics])."
+
+[[findings]]
+id = "SA-007"
+status = "wontfix"
+severity = "minor"
+category = "semantics"
+summary = "No scp-api verb offers --dry-run; the mutating verbs rely on the confirmation prompt (or --yes) only"
+remedy = "Add VerbSpec(dry_run=True) where a plan can be shown."
+rationale = "Controller-confirmed: snapshots dryrun plus --yes confirmation is sufficient. AC-12 passes: every mutating verb needs confirmation, and a non-interactive run without --yes refuses with exit 2 (test_yes_is_the_only_consent_in_a_non_interactive_run, 9 routes). A server-side plan exists only for snapshots (dryrun action)."
+
+[[findings]]
+id = "SA-008"
+status = "fixed"
+severity = "minor"
+category = "adoption"
+route = "route:entrypoint:scp-api/attach-iso"
+summary = "AC-07 configure callback on attach-iso (required exclusive group --iso-id | --user-iso-name plus --change-boot-device-to-cdrom)"
+remedy = "Move to OptionSpec with a required mutually exclusive group."
+rationale = "Fixed per controller ruling: the callback was removed; --iso-id and --user-iso-name are OptionSpecs in the required exclusive group 'iso-source' and --change-boot-device-to-cdrom is a declared option. The three exclusive-group case ids changed from parser-exclusive-... to iso-source and every attach-iso decision was re-confirmed: replay tests attach-iso-conflict-iso, -member-iso-id, -member-user-iso-name, -minimum and -change-boot pass unchanged."
+
+[[findings]]
+id = "SA-009"
+status = "wontfix"
+severity = "minor"
+category = "adoption"
+route = "route:entrypoint:scp-api/disks"
+summary = "AC-07 configure callback on disks (optional 'supported-drivers' action positional after an optional server_id)"
+remedy = "Move to declarative specs once the library can express it (cli-extended CLI-EXT-17)."
+rationale = "Optional action positional after another optional positional needs the handler swap; tracked as cli-extended CLI-EXT-17."
+
+[[findings]]
+id = "SA-010"
+status = "wontfix"
+severity = "minor"
+category = "adoption"
+route = "route:entrypoint:scp-api/firewall"
+summary = "AC-07 configure callback on firewall (optional MAC and action positionals, --active/--inactive only with set)"
+remedy = "Move to declarative specs once the library can express it (cli-extended CLI-EXT-17)."
+rationale = "Constraints conditioned on a positional's value are not declarable; tracked as cli-extended CLI-EXT-17."
+
+[[findings]]
+id = "SA-011"
+status = "wontfix"
+severity = "minor"
+category = "adoption"
+route = "route:entrypoint:scp-api/firewall-policies"
+summary = "AC-07 configure callback on firewall-policies (optional action and policy_id positionals, policy options only with create/put)"
+remedy = "Move to declarative specs once the library can express it (cli-extended CLI-EXT-17)."
+rationale = "Constraints conditioned on a positional's value are not declarable; tracked as cli-extended CLI-EXT-17."
+
+[[findings]]
+id = "SA-012"
+status = "wontfix"
+severity = "minor"
+category = "adoption"
+route = "route:entrypoint:scp-api/iso-attached"
+summary = "AC-07 configure callback on iso-attached (optional 'detach' action after optional server_id)"
+remedy = "Move to declarative specs once the library can express it (cli-extended CLI-EXT-17)."
+rationale = "Optional action positional after another optional positional; tracked as cli-extended CLI-EXT-17."
+
+[[findings]]
+id = "SA-013"
+status = "fixed"
+severity = "minor"
+category = "adoption"
+route = "route:entrypoint:scp-api/power"
+summary = "AC-07 configure callback on power (required action choice, then server_id)"
+remedy = "Move to two ArgumentSpecs (choices, then server_id)."
+rationale = "Fixed per controller ruling: the callback was removed; action (choices on, off, cycle, reset) and server_id are ArgumentSpecs in the same order, so the action-first spelling of SA-003 is unchanged. No power case signature changed; the replay tests power-choice-*, power-shape-* and the invalid-argument tests pass unchanged."
+
+[[findings]]
+id = "SA-014"
+status = "wontfix"
+severity = "minor"
+category = "adoption"
+route = "route:entrypoint:scp-api/rescuesystem"
+summary = "AC-07 configure callback on rescuesystem (optional 'deactivate' action after optional server_id)"
+remedy = "Move to declarative specs once the library can express it (cli-extended CLI-EXT-17)."
+rationale = "Optional action positional after another optional positional; tracked as cli-extended CLI-EXT-17."
+
+[[findings]]
+id = "SA-015"
+status = "wontfix"
+severity = "minor"
+category = "adoption"
+route = "route:entrypoint:scp-api/snapshots"
+summary = "AC-07 configure callback on snapshots (optional action after optional server_id, --name only with create)"
+remedy = "Move to declarative specs once the library can express it (cli-extended CLI-EXT-17)."
+rationale = "Constraints conditioned on a positional's value are not declarable; tracked as cli-extended CLI-EXT-17."
+
+[[findings]]
+id = "SA-016"
+status = "wontfix"
+severity = "minor"
+category = "adoption"
+route = "route:entrypoint:scp-api/tasks"
+summary = "AC-07 configure callback on tasks (optional task_uuid and 'cancel' action, --server-id needed to cancel under a protected-server policy)"
+remedy = "Move to declarative specs once the library can express it (cli-extended CLI-EXT-17)."
+rationale = "Constraints conditioned on a positional's value and on local configuration are not declarable; tracked as cli-extended CLI-EXT-17."
+
+[[findings]]
+id = "SA-017"
+status = "wontfix"
+severity = "minor"
+category = "adoption"
+route = "route:entrypoint:scp-api/user-iso"
+summary = "AC-07 configure callback on user-iso (optional 'upload' action and FILE, --name/--multipart/--part-size-mib only with upload)"
+remedy = "Move to declarative specs once the library can express it (cli-extended CLI-EXT-17)."
+rationale = "Constraints conditioned on a positional's value are not declarable; tracked as cli-extended CLI-EXT-17."
+
+[[findings]]
+id = "SA-018"
+status = "wontfix"
+severity = "minor"
+category = "adoption"
+summary = "AC-04 synopsis-overrides: 14 verbs keep a hand-written synopsis such as '[server_id] [detach]'"
+remedy = "Keep the overrides."
+rationale = "They name the optional action positionals ('[server_id] [detach]', '[task_uuid] [cancel]') that the derived '[server_id] [options]' hides because those positionals come from configure callbacks (see SA-008 to SA-017). The four redundant overrides (login, servers, server-details, guest-agent-status) were removed."
+
+[[findings]]
+id = "SA-019"
+status = "wontfix"
+severity = "note"
+category = "adoption"
+summary = "AC-19 skills-packaged: no agent-facing skills ship"
+remedy = "None."
+rationale = "scp-api is a standalone operator script in a monorepo; agents drive it through the repository docs, not packaged skills."
+
+[[findings]]
+id = "SA-020"
+status = "wontfix"
+severity = "note"
+category = "adoption"
+summary = "AC-20 doctor: no doctor verb"
+remedy = "A doctor verb could check the .env refresh token, netcup.toml and API reachability (login and status already cover most of it)."
+rationale = "Product decision for the controller."
+
+[[findings]]
+id = "SA-021"
+status = "wontfix"
+severity = "note"
+category = "adoption"
+summary = "AC-24 dependency-declared: standalone script without pyproject.toml"
+remedy = "None."
+rationale = "Standalone scripts use the installed cli-extended library (CX-D3); the suite lane puts the worktree library on PYTHONPATH."

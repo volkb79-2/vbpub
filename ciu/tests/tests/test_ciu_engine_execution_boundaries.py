@@ -11,6 +11,7 @@ interrupted ``compose up``.
 from __future__ import annotations
 
 import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -88,6 +89,20 @@ def _write_repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         "def run(config, ctx):\n"
         "    raise AssertionError('post_compose must not run after interruption')\n"
     )
+    # Identity bootstrap records the selected checkout's Git facts. Keep this
+    # fixture a real repository so unrelated `.git` directories above pytest's
+    # temporary root cannot be mistaken for its Git context.
+    commands = (
+        ["git", "init", "-b", "main"],
+        ["git", "add", "."],
+        ["git", "-c", "user.name=CIU tests", "-c", "user.email=ciu-tests@example.invalid",
+         "commit", "-m", "test fixture"],
+    )
+    for argv in commands:
+        result = subprocess.run(
+            argv, cwd=tmp_path, capture_output=True, text=True, check=False
+        )
+        assert result.returncode == 0, result.stderr
     return stack
 
 

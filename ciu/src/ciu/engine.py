@@ -36,7 +36,7 @@ and ``render_utils.py`` is deleted.
 
 from __future__ import annotations
 
-from .cli_utils import CiuArgumentParser
+from .cli_utils import CiuArgumentParser, build_up_action_parent
 
 import argparse
 import json
@@ -300,11 +300,12 @@ class ComposeError(RuntimeError):
 # ===========================================================================
 
 
-def parse_arguments(argv: Optional[list] = None) -> argparse.Namespace:
-    """Parse command-line arguments for ``ciu`` (the non-subcommand surface)."""
+def build_argument_parser() -> CiuArgumentParser:
+    """Build the parser for the single-stack ``ciu up --dir`` surface."""
     parser = CiuArgumentParser(
         description=f"CIU {get_cli_version()}: TOML-based Docker Compose orchestration",
         formatter_class=argparse.RawDescriptionHelpFormatter,
+        parents=[build_up_action_parent()],
         epilog="""
 Examples:
   # Start service in current directory
@@ -368,7 +369,12 @@ Examples:
                              f"(env+network+DooD preflight, no secrets/overlay; S8.5). "
                              f"Override the file with -f.")
 
-    return parser.parse_args(argv)
+    return parser
+
+
+def parse_arguments(argv: Optional[list] = None) -> argparse.Namespace:
+    """Parse command-line arguments for ``ciu`` (the non-subcommand surface)."""
+    return build_argument_parser().parse_args(argv)
 
 
 def _build_secrets_subparser() -> argparse.ArgumentParser:
@@ -947,7 +953,9 @@ def compose_project_name(config: dict, stack_dir: Path) -> str:
     return f"{project}-{env_tag}-{Path(stack_dir).name}"
 
 
-def identity_compose_project_name(repo_root: Path, stack_dir: Path) -> str:
+def identity_compose_project_name(
+    repo_root: Path, stack_dir: Path, *, allow_identity_repair: bool = True,
+) -> str:
     """Workspace-identity compose project for config-less deployments (CIU-46).
 
     ``{repo_name}-{instance_id}-{stack_basename}``, derived from THIS
@@ -969,7 +977,9 @@ def identity_compose_project_name(repo_root: Path, stack_dir: Path) -> str:
     with an alphanumeric, else ValueError.
     """
     facts_path = generated_facts_path(repo_root)
-    values = read_generated_facts(Path(repo_root))
+    values = read_generated_facts(
+        Path(repo_root), allow_repair=allow_identity_repair
+    )
     repo_name = values.get("repo_name", "")
     instance_id = values.get("instance_id", "")
     if not repo_name or not instance_id:
@@ -1867,6 +1877,7 @@ def main_execution(
                 hooks_runner.run_hooks(
                     post_compose, "post_compose", merged, ctx, stack_toml_path,
                     declared_secret_names=declared_secret_names,
+                    dry_run=dry_run,
                 )
 
         result["config"] = composefile.redact_config(merged, specs)
@@ -2253,7 +2264,23 @@ def main(argv: Optional[list] = None) -> int:
             print(f"[ERROR] {exc}", flush=True)
             return _exit_code_for(exc)
         status = result.get("status")
-        return 0 if status == "success" else 1
+        rc = 0 if status == "success" else 1
+        if _should_run_single_stack_healthcheck(args, result):
+            try:
+                config = config_model.render_global_chain(
+                    args.dir.resolve(),
+                    resolve_env_root(args.dir, args.define_root, GLOBAL_CONFIG_DEFAULTS),
+                    write_rendered=False,
+                )
+                return _run_single_stack_healthcheck(
+                    args.dir, args.define_root, config, shipped=True,
+                )
+            except SystemExit:
+                raise
+            except BaseException as exc:  # noqa: BLE001
+                print(f"[ERROR] {exc}", flush=True)
+                return _exit_code_for(exc)
+        return rc
 
     try:
         result = main_execution(
@@ -2281,10 +2308,64 @@ def main(argv: Optional[list] = None) -> int:
 
     status = result.get("status")
     if status == "success":
+        if _should_run_single_stack_healthcheck(args, result):
+            try:
+                return _run_single_stack_healthcheck(
+                    args.dir, args.define_root, result.get("config", {}),
+                )
+            except SystemExit:
+                raise
+            except BaseException as exc:  # noqa: BLE001
+                print(f"[ERROR] {exc}", flush=True)
+                return _exit_code_for(exc)
         return 0
     if status == "interrupted":
         return 1
     return 1
+
+
+def _should_run_single_stack_healthcheck(
+    args: argparse.Namespace, result: dict,
+) -> bool:
+    """Only gate a stack that this invocation actually started."""
+    return bool(
+        args.healthcheck
+        and not args.dry_run
+        and not args.render_toml
+        and not args.print_context
+        and result.get("status") == "success"
+    )
+
+
+def _run_single_stack_healthcheck(
+    stack_dir: Path,
+    define_root: Path | None,
+    config: dict,
+    *,
+    shipped: bool = False,
+) -> int:
+    """Apply the deploy module's S7.7 gate to this one stack only."""
+    from . import deploy
+    from .deploy_pkg.profiles import Profile
+
+    stack_dir = Path(stack_dir).resolve()
+    repo_root = resolve_env_root(stack_dir, define_root, GLOBAL_CONFIG_DEFAULTS)
+    selection = [{
+        "phase_num": 1,
+        "phase_key": "single-stack",
+        "path": str(stack_dir),
+        "name": stack_dir.name,
+        "service": {
+            "path": str(stack_dir),
+            "name": stack_dir.name,
+            "enabled": True,
+            "health": True,
+            "shipped": shipped,
+        },
+    }]
+    return deploy.action_healthcheck(
+        repo_root, Profile(config=config), selection,
+    )
 
 
 if __name__ == "__main__":

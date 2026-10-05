@@ -25,6 +25,206 @@ installed. For source-run tools, pass the version from that project's checked-in
 version module/metadata. Do not invent a fallback. `cli-extended` itself uses
 its explicit `[project].version` in its `pyproject.toml`.
 
+## Replacing hand-rolled version lookup, exception wrappers, and --dry-run
+
+Three patterns recur in adopted CLIs and are now library features.
+
+**Version lookup.** Netcup's `monitor-task.py` read a `VERSION` file with its
+own regex. Before:
+
+```python
+_VERSION_PATH = Path(__file__).resolve().parent / "VERSION"
+
+def _read_version() -> str:
+    version = _VERSION_PATH.read_text(encoding="utf-8").strip()
+    if not re.fullmatch(r"\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?", version):
+        raise ValueError(f"invalid Netcup CLI version in {_VERSION_PATH}: {version!r}")
+    return version
+
+IDENTITY = CliIdentity(name="NETCUP SCP", command="monitor-task",
+                       version=_read_version(), long_name="Netcup task monitor")
+```
+
+After (add `distribution=` as well once the script ships as a wheel):
+
+```python
+IDENTITY = CliIdentity.resolve(
+    name="NETCUP SCP",
+    command="monitor-task",
+    long_name="Netcup task monitor",
+    version_file=Path(__file__).resolve().parent / "VERSION",
+)
+```
+
+**Exception wrapper.** nyxloom's `_invoke` wrapped every handler to print
+`error: ...` and return `1` unless `--traceback` was given, and declared its
+own `--traceback` option. Before:
+
+```python
+try:
+    return handler(args)
+except (CliFailure, PromptCancelled, KeyboardInterrupt, SystemExit):
+    raise
+except Exception as exc:
+    if bool(getattr(args, "traceback", False)):
+        raise
+    print(f"error: {exc}", file=runtime.output.stderr)
+    return 1
+```
+
+After: delete the wrapper and the consumer `--traceback` option (the library
+refuses a duplicate), and register the policy once:
+
+```python
+registry = CliRegistry(
+    identity, prog="nyxloom", description="...",
+    unexpected_exceptions="report",
+    expected_exceptions=(DomainError,),
+)
+```
+
+**`--dry-run`.** Netcup's `install-host.py` declares its own `--dry-run` and
+reads it with `getattr(args, "dry_run", False)` in many places. Before:
+
+```python
+if getattr(args, "dry_run", False):
+    print("DRY RUN: would reinstall", server)
+    return 0
+```
+
+After: mark the verb and let the confirmation gate do the work. Remove the
+consumer `OptionSpec(("--dry-run",), ...)` first; `build()` refuses both.
+
+```python
+VerbSpec("install", description="Install a host.", mutating=True,
+         dry_run=True, handler=install)
+
+def install(args, runtime):
+    runtime.output.info(f"would reinstall {args.server}")  # preview first
+    if not runtime.confirm(f"Reinstall {args.server}?"):
+        return 0  # --dry-run prints "Dry run: no changes made." and lands here
+    reinstall(args.server)
+```
+
+Until a CLI migrates, its own `--dry-run` stays legal as long as no verb in
+that CLI sets `dry_run=True`.
+
+## Replacing handler-side option checks and name-list parsing
+
+**Every declared option is an attribute.** A handler can read each option of
+its verb as `args.<dest>` whether or not it was given: `None` (or `False` for
+`store_true`) when omitted, or your explicit `parser_kwargs={"default": ...}`.
+Do not add `default=None` or `getattr(args, "hours", None)` guards. The one
+exception is an option whose `dest` equals a global option's or a library
+control's: it keeps the value parsed before the verb.
+
+**Declared constraints.** CMRU's `tool-deps` handler refused `--dry-run`
+without a mode and `--refresh` with `--json` after parsing. Before:
+
+```python
+def tool_deps(args, runtime):
+    if args.dry_run and not (args.update or args.write or args.refresh):
+        raise CliFailure(
+            "--dry-run requires --update or --write or --refresh",
+            exit_code=2, show_help=True,
+        )
+    if args.refresh and args.json:
+        raise CliFailure("--refresh cannot be combined with --json",
+                         exit_code=2, show_help=True)
+    ...
+```
+
+After: delete both checks and declare them once. The flags must be accepted
+by the verb (local, global, or a library control such as `--json` or
+`--dry-run`), and every referenced option must default to `None`, `False` or
+an empty list, or `build()` raises `ValueError`.
+
+```python
+from cli_extended import Conflicts, Requires, VerbSpec
+
+VerbSpec(
+    "tool-deps", description="Report or update tool dependencies.",
+    mutating=True, dry_run=True, handler=tool_deps,
+    options=(
+        OptionSpec(("--update",), "Update pins.", parser_kwargs={"action": "store_true"}),
+        OptionSpec(("--write",), "Write the lock.", parser_kwargs={"action": "store_true"}),
+        OptionSpec(("--refresh",), "Refresh metadata.", parser_kwargs={"action": "store_true"}),
+    ),
+    constraints=(
+        Requires("--dry-run", ("--update", "--write", "--refresh"),
+                 "a dry run needs a mode to preview"),
+        Conflicts(("--refresh", "--json"), "refresh output is not JSON"),
+    ),
+)
+```
+
+`tool-deps --dry-run` now exits `2` with
+`--dry-run requires --update or --write or --refresh: a dry run needs a mode
+to preview`, followed by the verb's help, whose `CONSTRAINTS` section lists
+both rules. `RequiresChoice("--timeout-scope", "--mode", ("fast",), reason)`
+covers "this option applies only in that mode". Leave rules that read loaded
+configuration or runtime state in the handler. Run `cli-extended surface sync`
+afterwards: each constraint is a new review candidate
+(`constraint-requires`, `constraint-conflict`, `constraint-choice`), and the
+catalog records the product decision and a test for each refusal. A case must
+include the rule's trigger (the `option` of a requires/choice rule, any member
+of a conflict) or check reports it as not exercising its constraint.
+
+Referenced options must have a readable presence: `build()` also refuses an
+option that shares its `dest` with another option (`--color`/`--no-color`, a
+`store_true`/`store_false` pair), `nargs="*"`, `nargs="?"` whose `const`
+equals its default, and a `RequiresChoice` target that is list-valued
+(`append`, `extend`, or `nargs` other than none or `"?"`).
+
+**One-time re-sync.** Every route in the manifest now carries a
+`"constraints"` key (empty when none), so every committed manifest and
+generated spec region is stale until it is re-synced. Do that once, together
+with the schema-7 re-sync, with `cli-extended surface sync`; unconstrained
+routes keep their existing signatures.
+
+**Selector lists.** CMRU parsed `all`, one name, or `a,b` with
+`parse_target_names` and resolved it later in `select_target_names`. Register
+the type instead and keep the resolution against loaded data in the handler:
+
+```python
+from cli_extended import ArgumentSpec, SelectorList
+
+ArgumentSpec(
+    "targets", "Project names, comma-separated, or 'all'.",
+    parser_kwargs={"type": SelectorList(), "nargs": "?"},
+)
+
+def handler(args, runtime):
+    if args.targets is None:
+        names = default_targets()
+    elif args.targets is SelectorList.ALL:
+        names = every_project()
+    else:
+        names = list(args.targets)   # given order, validated structure
+```
+
+Differences from `parse_target_names` to account for when adopting:
+
+1. It returns a tuple, not a list; the absent argument stays `None` (argparse's
+   default) instead of being passed through the parser.
+2. `all` yields `SelectorList.ALL` (no `choices`) or the full `choices` tuple,
+   not `["all"]`.
+3. Failures raise `argparse.ArgumentTypeError`, which becomes a usage error
+   with exit `2` and the verb's help, not `TargetSelectionError`; the message
+   wording differs (`empty selector item in 'a,'`, `duplicate selector 'a'`,
+   `'all' cannot be combined with other names`).
+4. The check order is empty item, then `all` mixed, then duplicate. For
+   `all,all` CMRU reports a duplicate; `SelectorList` reports the mix.
+5. Unknown names are rejected at parse time only when `choices` is given. CMRU
+   validates names against the loaded registry in `select_target_names`, so
+   keep that check (or pass the loaded names as `choices`).
+6. `select_target_names` also reorders to declared project order and applies
+   the context-project and estate-scope defaults; `SelectorList` returns names
+   in the order given and applies no defaults.
+7. Surrounding whitespace is stripped from each item in both; `SelectorList`
+   additionally refuses `choices` or an `all_token` that carry surrounding
+   whitespace, since such a name could never match.
+
 ## Turn an interface inventory into registrations
 
 Before editing parser code, write down the operator-facing verbs/actions and
@@ -161,7 +361,7 @@ The library exposes a stable machine-readable CLI manifest and a merge-aware
 specification generator alongside Markdown help. Generated help is not a
 substitute for the semantic audit. The live catalog pilot is Netcup's
 [`monitor-task.py` CLI spec](../../../scripts/netcup/CLI-SPEC.md), with its
-[`cli-review.toml`](../../../scripts/netcup/cli-review.toml), generated JSON
+[`cli-review-monitor-task.toml`](../../../scripts/netcup/cli-review-monitor-task.toml), generated JSON
 manifest, and pytest collection hook. It demonstrates regeneration and test
 linkage on a real hyphenated script. CMRU's
 [`S-CLI.9`](../../../cmru/docs/SPEC.md#s-cli9-canonical-cli-grammar-and-semantic-audit)
@@ -170,24 +370,25 @@ compare the documented grammar to the live registered parsers. Its owner can
 adopt the shared catalog/generator separately after assessing the generated
 surface against the full CMRU interface.
 
-The first-party pilot uses the script-path factory form directly:
+The first-party pilot declares its CLI in a standalone `cli-extended.toml`
+(it has no pyproject) that uses the script-path factory form, and runs the
+shared command from that directory with the installed `cli-extended` console
+script (from a library worktree, see
+[Running the cli-extended CLI from a source checkout](#running-the-cli-extended-cli-from-a-source-checkout)):
 
 ```bash
-PYTHONPATH=libraries/cli-extended/src${PYTHONPATH:+:$PYTHONPATH} \
-python -m cli_extended.surface_cli \
-  --factory scripts/netcup/monitor-task.py:build_cli \
-  --review scripts/netcup/cli-review.toml \
-  --manifest scripts/netcup/cli-surface.json \
-  --spec scripts/netcup/CLI-SPEC.md check
+cd scripts/netcup
+cli-extended surface check
 ```
 
-When a registry changes, run `template` to discover new or stale review rows,
-review their invocations and effects, and edit the TOML decisions. Run `sync`
-to refresh only the manifest and marked Markdown region, then link collected
-behavior tests with `cli_case` markers. The consumer's gate checks both catalog
-coverage at collection and behavior by executing the tests. Finish with
-read-only `check` and review its diff. The marker proves linkage only; each
-referenced test must assert the promised output, status, and effects.
+When a registry changes, run `surface template` to discover new or stale review
+rows, review their invocations and effects, and edit the TOML decisions. Run
+`surface sync` to refresh only the manifest and marked Markdown region, then
+link collected behavior tests with `cli_case` markers. The consumer's gate
+checks both catalog coverage at collection and behavior by executing the tests.
+Finish with read-only `surface check` and review its diff. The marker proves
+linkage only; each referenced test must assert the promised output, status, and
+effects.
 
 Surface export and test helpers start from the built registry and
 publish a stable interface for verbs, delegated command paths, positional
@@ -224,26 +425,92 @@ not call `app.run()` while being imported. A dotted `python.module:callable`
 factory works for importable modules. For a single-file command that is not an
 importable Python module (for example a hyphenated script), use
 `path/to/command.py:callable`; the loader makes the script's sibling directory
-available for imports, matching direct script execution. Then use the shared
-command from the project root:
+available for imports, matching direct script execution.
+
+Declare the CLI once in the project configuration. A project with a
+`pyproject.toml` puts it under `[tool.cli-extended]`; a project without one
+(like the Netcup scripts) uses a standalone `cli-extended.toml` with the same
+keys at the top level. Relative paths resolve against the config file's
+directory, `id` must equal the registered executable name, and `manifest` and
+`spec` are given together.
+
+```toml
+# pyproject.toml
+[tool.cli-extended]
+schema_version = 1
+
+[[tool.cli-extended.clis]]
+id = "example"
+factory = "example.cli:build_cli"
+review = "docs/cli-review.toml"
+manifest = "docs/cli-surface.json"
+spec = "docs/SPEC.md"
+findings = "docs/cli-review-findings.toml"
+```
+
+```toml
+# cli-extended.toml (projects without a pyproject)
+schema_version = 1
+
+[[clis]]
+id = "monitor-task"
+factory = "monitor-task.py:build_cli"
+review = "cli-review.toml"
+manifest = "cli-surface.json"
+spec = "CLI-SPEC.md"
+```
+
+The `findings` file is optional. Discovery walks up from the current directory
+to the first directory holding either file (both in one directory is an error);
+a malformed or unreadable `pyproject.toml` or `cli-extended.toml` met on the
+way is an error naming the file, never skipped (pass `--config PATH` to bypass
+it); `--config PATH` names one explicitly, and `--cli ID` picks a CLI when several
+are configured. Then run the shared command from anywhere inside the project:
 
 ```bash
-python -m cli_extended.surface_cli \
-  --factory example.cli:build_cli \
-  --review docs/cli-review.toml \
-  --manifest docs/cli-surface.json \
-  --spec docs/SPEC.md sync
-
-python -m cli_extended.surface_cli \
-  --factory example.cli:build_cli \
-  --review docs/cli-review.toml template
-
-python -m cli_extended.surface_cli \
-  --factory example.cli:build_cli \
-  --review docs/cli-review.toml \
-  --manifest docs/cli-surface.json \
-  --spec docs/SPEC.md check
+cli-extended surface sync
+cli-extended surface template
+cli-extended surface pack
+cli-extended surface check
+cli-extended surface report
 ```
+
+`python -m cli_extended.surface_cli --factory ... --review ... --manifest ...
+--spec ... {sync,check,template}` still works with its old flags, but prints a
+deprecation warning; move to the config file.
+
+#### The review loop
+
+An agent (or a person) reviews the surface by a fixed loop, packaged as the
+`cli-extended-review` skill (install it with `cli-extended skills install`):
+
+1. `cli-extended surface sync` refreshes the generated manifest and spec region.
+2. `cli-extended surface pack --output /tmp/review-bundle.md` writes one
+   Markdown bundle: the rubric, every route's plain help, and every pending,
+   changed, reappeared and stale case with its shape and current catalog row.
+3. The reviewer judges each case and help block against the rubric and edits the
+   catalog rows and the findings file by hand. The library never rewrites them.
+4. `cli-extended surface sync`, then `surface check` (an open `blocker` or
+   `major` finding, or a finding naming a route that no longer exists, fails it),
+   then `surface report` for what is still open.
+
+A findings file records what is wrong, with a concrete remedy:
+
+```toml
+schema_version = 1
+cli_id = "example"
+
+[[findings]]
+id = "F-001"
+status = "open"            # open | fixed | wontfix
+severity = "major"         # blocker | major | minor | note
+category = "semantics"     # grammar | help | semantics | consistency | adoption
+route = "route:entrypoint:example/purge"
+summary = "purge deletes without confirmation or --dry-run"
+remedy = "declare mutating=True with dry_run=True"
+```
+
+A `wontfix` finding needs a `rationale`; an `open` one needs a `remedy`.
 
 The catalog has two closed vocabularies. `state` is `pending` while a generated
 case awaits review, `active` once its decision and test evidence match the
@@ -352,9 +619,85 @@ alternatives and conflicts, parser subcommand aliases, plus combinations in
 catalog `interaction_groups`. It does not invent real argument values, decide
 whether a combination is valid, or expand the power set of all switches.
 Library-owned common controls such as `--quiet`, `--debug`, `--color`, and
-`--progress` stay in the grammar table and rely on the library's normative
-contract. `--json`, `--yes`, and `--debug-raw` are also consumer review cases;
-declare an interaction when any common option participates in a product rule.
+`--progress` are not in the grammar table. Each route lists the enabled ones on
+one `Common controls: ...` line (the contract version is in the region header), and the library's
+contract version (see
+[What a library upgrade does to your surface](#what-a-library-upgrade-does-to-your-surface))
+covers their syntax. `--json`, `--yes`, and `--debug-raw` are also consumer
+review cases; declare an interaction when any common option participates in a
+product rule. An interaction may still name a library control by its usual
+option ID, for example `option:route:entrypoint:example-tool/publish/--json`.
+
+#### What a library upgrade does to your surface
+
+Your signatures cover only what your product declared. The library's own
+controls (`--help`, `--version`, `--log-level`, `--quiet`, `--debug`,
+`--debug-raw`, `--color`, `--no-color`, `--json`, `--progress`, `--yes`) are
+named in the manifest, per route, and versioned by one integer, the *contract
+version*. Upgrading the library normally leaves your manifest, spec region,
+and every `reviewed_signature` byte-identical. An option of your own that
+happens to be spelled `--json` is your grammar and stays in the table.
+
+When a library release changes a control's syntax or meaning, it bumps
+`CONTRACT_VERSION` and lists the change under the contract notes in the
+library's `CHANGES.md`. Your next `check` then reports exactly one finding and
+fails, with no per-case noise:
+
+```text
+cli-extended contract changed v1 → v2; read cli-extended CHANGES.md contract notes, then run sync
+```
+
+Re-sync like this:
+
+1. Read the contract notes for the versions you skipped. Decide whether any
+   product decision depends on a changed control.
+2. Run `sync` (the command shown above). It writes the new
+   `library_contract` version, each route's `common_controls`, and the
+   Markdown region.
+3. Run `check`. Any signature that really changed (for the reviewed
+   `--json`, `--yes`, `--debug-raw` candidates, only their identity and route
+   baseline are signed) now appears as an ordinary `signature changed`
+   finding; review it and update `reviewed_signature` as usual.
+4. Commit the manifest and spec together.
+
+A manifest written before contract versions existed (no `library_contract`
+record) is treated as an ordinary stale manifest: `check` reports
+`generated CLI manifest is stale`; run `sync` once.
+
+### A project with several CLIs
+
+List every executable as its own `[[clis]]` entry (the key is `clis`, in
+`cli-extended.toml` or `[[tool.cli-extended.clis]]`):
+
+```toml
+# cli-extended.toml
+schema_version = 1
+
+[[clis]]
+id = "scp-api"
+factory = "scp-api.py:build_cli"
+review = "cli-review-scp-api.toml"
+manifest = "cli-surface-scp-api.json"
+spec = "CLI-SPEC-scp-api.md"
+findings = "cli-findings-scp-api.toml"
+
+[[clis]]
+id = "monitor-task"
+factory = "monitor-task.py:build_cli"
+review = "cli-review-monitor-task.toml"
+manifest = "cli-surface-monitor-task.json"
+spec = "CLI-SPEC-monitor-task.md"
+findings = "cli-findings-monitor-task.toml"
+```
+
+Keep one spec file per CLI: `surface sync` owns exactly one generated region
+(the marker pair) per spec file, so two CLIs cannot share one. An optional
+hand-written index spec may link the per-CLI specs; it carries no markers and
+is not listed in the config. Each CLI also has its own review catalog (its
+`cli_id` must equal that executable) and its own findings file. Address one
+CLI with `--cli ID` (`cli-extended surface sync --cli scp-api`); it is required
+when several are configured. A single `pytest_plugins =
+["cli_extended.pytest_plugin"]` line covers them all (see below).
 
 ## Review cross-route and arity interactions
 
@@ -776,6 +1119,118 @@ Cancellation is distinct from valid answers such as `False` or an empty
 checkbox list. Prompt collection must not write state or decide whether
 collected values satisfy the product schema.
 
+## Ship your agent skills
+
+Skills that live in a repository's `.claude/skills/<name>` are only visible to
+people working in that checkout. To make them follow the installed tool (the
+version always matches the wheel), move them into the package and register the
+shared verb group.
+
+1. Move each skill: `git mv .claude/skills/<name> src/<pkg>/skills/<name>`.
+   The frontmatter must satisfy [SPEC §14](../SPEC.md#14-packaged-agent-skills)
+   (single-line `name`/`description`, `name` equal to the directory name).
+2. Ship it as package data in `pyproject.toml`:
+
+   ```toml
+   [tool.setuptools.package-data]
+   "example_tool" = ["skills/**/*"]
+   ```
+
+3. Register once, on the same registry as your other verbs:
+
+   ```python
+   from cli_extended import CliIdentity, CliRegistry, register_skills_verbs
+
+   identity = CliIdentity.resolve(
+       name="EXAMPLE", command="example", long_name="Example Tool",
+       distribution="example-tool",
+   )
+   registry = CliRegistry(identity, prog="example", description="Example tool.")
+   register_skills_verbs(registry, package="example_tool")
+   ```
+
+4. Add `example skills install` to the mdt or devcontainer finalize step, and
+   `example skills check` to the tool's doctor or CI. Re-run `install` after
+   every upgrade: wheels cannot run post-install hooks.
+5. For a project-level install (skills committed or mounted for one checkout
+   only) use `example skills install --dest <project>/.claude/skills`;
+   `--dest` is exactly that directory and cannot be combined with `--harness`.
+   Use `--dry-run` first to see the plan.
+
+A skill you edited locally is reported `modified` and kept until you pass
+`--overwrite-modified`. Directories created by another tool, or by hand, are
+never replaced; remove them yourself if they are no longer wanted.
+
+## Add a `doctor` verb
+
+Replace a hand-rolled `doctor` with the shared one. Declare each probe as a
+`DoctorCheck`; the verb adds `--check NAME`, `--json`, exit codes and crash
+handling.
+
+```python
+import shutil
+
+from cli_extended import (
+    CheckResult, CliIdentity, CliRegistry, DoctorCheck,
+    register_doctor, register_skills_verbs,
+)
+
+
+def docker_check(runtime, args) -> CheckResult:
+    if shutil.which("docker") is None:
+        return CheckResult("fail", "docker not found on PATH",
+                           remedy="install docker or add it to PATH")
+    return CheckResult("ok", "docker found", details={"path": shutil.which("docker")})
+
+
+def cache_check(runtime, args) -> CheckResult:
+    return CheckResult("warn", "cache is empty", remedy="run 'example warm'")
+
+
+identity = CliIdentity("EXAMPLE", "1.2.3", "Example Tool", "example")
+registry = CliRegistry(identity, prog="example", description="Example tool.")
+register_doctor(registry, [
+    DoctorCheck("docker", "docker is installed", docker_check),
+    DoctorCheck("cache", "cache is warm", cache_check),
+])
+# Optional, in either order: adds the automatic `skills` check.
+register_skills_verbs(registry, package="example_tool")
+```
+
+A check can read its own options. Pass them with
+`register_doctor(registry, checks, options=[OptionSpec(("--helper-image",),
+"helper image", metavar="IMAGE")])` and use `args.helper_image` inside
+`run(runtime, args)`.
+
+`example doctor`, `example doctor --check docker --json` and CI use the same
+exit code (1 only for `fail`). Do not name a check `skills`. The automatic
+`skills` check is a `warn` when the skills were never installed and a `fail`
+when any installed skill is stale, modified, foreign or orphaned, or an
+interrupted install left files behind.
+
+Mapping the existing doctors:
+
+- **cgprofile** (`scripts/cgroup-profiler/cgprofile.py` `cmd_doctor`): prints an
+  `access` key/value table, a reporting-venv state and a resolved mode, and
+  returns 1 only when the helper spec cannot be built. Express it as checks
+  `access` (key/value table into `details`), `reporting-venv` (`ok`, `warn` for
+  "present but this interpreter lacks the libraries", `fail` for missing with
+  remedy `run ./setup.sh`) and `mode` (`fail` on `AccessError`, helper image and
+  mounts in `details`). Its `--helper-image` and `--helper-cgroup-parent`
+  options now fit: pass them as `options=[OptionSpec(("--helper-image",), ...),
+  OptionSpec(("--helper-cgroup-parent",), ...)]` and read
+  `args.helper_image` / `args.helper_cgroup_parent` in the `mode` check.
+- **nyxloomctl** (`cli_registry.py` `doctor` and `route doctor`): the project
+  doctor yields findings with severities `critical`, `error`, `warn`. Map
+  `critical`/`error` to `fail` and the rest to `warn`, one check per finding
+  kind or per project, and put the finding rows in `details`. Its options
+  (`--project-id`, `--rebuild`, `--write`, `--liveness`) and the `route doctor`
+  `--no-probe` are passed as `options=[...]` and read from `args`; a
+  `--liveness` flag is read by the checks that should run only in that mode
+  (return `skip` otherwise), or use `--check liveness`. `route doctor` is
+  registered on its own sub-registry with `--no-probe`. Option flags may not
+  reuse `--check` or a library control such as `--json` (`ValueError`).
+
 ## Consumer responsibilities
 
 | `cli-extended` guarantees | The adopting CLI must decide and implement |
@@ -837,6 +1292,11 @@ stderr. When `--json` owns stdout, `--progress=rawjson` is intentionally muted;
 `--debug-raw` was explicitly requested. Consumers still own the JSON schema
 and must not print ad-hoc progress directly to stdout.
 
+`--debug-raw` is never silent: it writes a `[WARN] --debug-raw is active ...`
+line and enables `[DEBUG]` diagnostics on stderr. A test asserting that
+`--debug-raw` leaves output unchanged compares stdout, or filters those stderr
+lines first.
+
 ## Tests required for an adoption
 
 Use `assert_cli_contract()` against the real executable/subprocess for bare
@@ -873,3 +1333,174 @@ All gate lanes execute in `tester-unified`. R1 enforces 100% statement and
 branch coverage over every shipped `cli_extended` module. R3 deliberately
 breaks JSON redaction in a disposable copy and requires the focused regression
 test to reject it. Ruff remains a separate static check: `ruff check src tests`.
+
+## Adopting cli-extended end to end
+
+The ordered steps a tool follows. Each ends in something `cli-extended audit`
+can check or an agent can judge from the
+[adoption checklist](ADOPTION-CHECKLIST.md) (row ids in brackets).
+
+1. **Dependency** [AC-24, AC-25]. Declare the released library with a floor and
+   a reason; never vendor it or put its checkout on a path.
+
+   ```toml
+   [project]
+   dependencies = [
+       "cli-extended>=0.2.0",  # audit verb and adoption skill
+   ]
+   ```
+
+2. **Identity** [AC-01, AC-02]. One resolver, no fallback; see
+   [Install and choose a version source](#install-and-choose-a-version-source).
+
+   ```python
+   IDENTITY = CliIdentity.resolve(
+       name="EXAMPLE", long_name="Example tool", command="example",
+       distribution="example-tool",
+   )
+   ```
+
+3. **Runtime policy** [AC-10, AC-11]. Report unexpected exceptions and raise
+   `CliFailure` for domain errors.
+
+   ```python
+   registry = CliRegistry(
+       IDENTITY, prog="example", description="Example tool.",
+       unexpected_exceptions="report",
+   )
+   ```
+
+4. **Registration** [AC-03, AC-04, AC-09]. Declare verbs once; see
+   [Turn an interface inventory into registrations](#turn-an-interface-inventory-into-registrations).
+5. **Dry-run and confirmation** [AC-12, AC-13]. Mark mutating verbs
+   `mutating=True, dry_run=True`; see
+   [Replacing hand-rolled version lookup, exception wrappers, and --dry-run](#replacing-hand-rolled-version-lookup-exception-wrappers-and---dry-run).
+6. **Constraints** [AC-05, AC-06, AC-07]. Declare conflicts and requirements
+   instead of checking in handlers; see
+   [Replacing handler-side option checks and name-list parsing](#replacing-handler-side-option-checks-and-name-list-parsing).
+7. **Surface lifecycle and LLM review** [AC-16, AC-17, AC-18]. Configure
+   `review`, `manifest` and `spec`, then run the loop in
+   [The review loop](#the-review-loop): `cli-extended surface sync`, `pack`,
+   judge, `check`.
+8. **Skills** [AC-19]. Package skills and register the `skills` verbs; see
+   [Ship your agent skills](#ship-your-agent-skills).
+9. **Doctor** [AC-20]. Register a `doctor` verb when the tool has an
+   environment to verify; see [Add a `doctor` verb](#add-a-doctor-verb).
+10. **Tests** [AC-21, AC-22, AC-23]. Follow
+    [Tests required for an adoption](#tests-required-for-an-adoption).
+11. **Audit** [all rows]. Run the audit, fix every `fail`, and let the
+    `cli-extended-adoption` skill judge the `manual` items.
+
+    ```bash
+    cli-extended audit --json
+    cli-extended skills install --harness claude   # installs cli-extended-adoption
+    ```
+
+    Exit status is 1 only when an item fails. Text lines read
+    `[FAIL] AC-05 shadowed-controls: 1 consumer option(s) shadow library controls`,
+    followed by indented `evidence:` and `remedy:` lines.
+
+### Running the cli-extended CLI from a source checkout
+
+The `cli-extended` command takes its identity from installed distribution
+metadata and deliberately refuses to run without it; there is no literal
+fallback version. From a checkout or worktree, install it editable into a
+scratch virtual environment:
+
+```bash
+python3 -m venv /tmp/cx-venv
+/tmp/cx-venv/bin/pip install --no-deps -e libraries/cli-extended
+/tmp/cx-venv/bin/cli-extended --version
+```
+
+setuptools_scm derives the version from the `cli-extended-v*` tags. Before the
+first such tag exists (or in a checkout without tags), set a pretend version
+for the install:
+
+```bash
+SETUPTOOLS_SCM_PRETEND_VERSION_FOR_CLI_EXTENDED=0.2.0 \
+  /tmp/cx-venv/bin/pip install --no-deps -e libraries/cli-extended
+```
+
+## Test helpers and review-case linking
+
+### Test helpers: invoke_script
+
+Replace a hand-rolled `_invoke` (copy the environment, scrub variables, set
+`HOME`, prepend the library to `PYTHONPATH`, `subprocess.run`) with
+`invoke_script`, `invoke_module` or `make_invoker`:
+
+```python
+from pathlib import Path
+
+from cli_extended import assert_cli_contract, make_invoker
+
+SCRIPT = Path(__file__).resolve().parents[1] / "scp-api.py"
+
+
+def test_real_executable_obeys_cli_contract(tmp_path, identity):
+    invoke = make_invoker(
+        SCRIPT,
+        home=tmp_path / "home",          # required
+        cwd=tmp_path,
+        scrub_prefixes=("NETCUP_SCP_API_",),
+    )
+    assert_cli_contract(invoke, identity, ("power", "login"))
+```
+
+`invoke_script(script, argv, *, home, ...)` returns a `CompletedProcess`;
+`invoke_module("pkg.cli", argv, home=..., pythonpath=[src])` runs
+`python -m`. The child gets `HOME` and the four `XDG_*_HOME` directories under
+`home`, `NO_COLOR=1`, and no `FORCE_COLOR`, `CLICOLOR_FORCE` or
+`CLAUDE_CONFIG_DIR`; variables starting with a `scrub_prefixes` entry are
+removed; `PYTHONPATH` starts with the directory of the `cli_extended` you
+imported, so the child runs the library revision under test. That prefix is
+added only for the same interpreter (`python=None`); with an explicit
+`python=`, pass `pythonpath=[...]` yourself, since an installed library
+directory is a whole `site-packages` that must not leak into a foreign
+interpreter. `env={"K": None}` deletes a key, but `env` may not set `HOME` or
+any `XDG_*_HOME` (`ValueError`; `home` is the only source), `home` must be
+absolute, and an empty string in `scrub_prefixes` is refused (it would scrub
+`PATH` too). `timeout` is a failsafe, not an oracle.
+
+`home` is mandatory because a helper that defaults to the real home lets a test
+write there: on 2026-10-04 a run-gate test leaked a fake `assay` shim into the
+real `~/.local/bin`. Always pass a `tmp_path` subdirectory.
+
+### Linking review cases with the pytest plugin
+
+Replace the `pytest_collection_finish` / `pytest_configure` pair in your
+conftest with one line in the root `conftest.py`:
+
+```python
+pytest_plugins = ["cli_extended.pytest_plugin"]
+```
+
+```toml
+# pyproject.toml (optional; default is discovery upward from the rootdir)
+[tool.pytest.ini_options]
+cli_extended_config = "cli-extended.toml"
+```
+
+The plugin registers the `cli_case` marker and, for every CLI in the project
+config that has a `review` catalog, runs `assert_cli_case_tests` after
+collection. It is strict: an active case whose test is not collected fails the
+run (exit status 4). The gate lane that runs the whole suite must use strict
+mode, so every active case is proven linked somewhere. A lane that by design
+collects a subset (a fake-integration lane, a canary that runs one test, a
+focused local run) passes `--cli-case-partial`, e.g. `pytest --cli-case-partial
+tests/test_one.py`; that still rejects unknown, inactive, unlisted or unmarked
+cases among the collected tests. A config where no CLI has `review` is a no-op.
+
+Catalog `test_ids` are pytest node IDs, which are relative to the pytest
+rootdir. Give the project a `pytest.ini` (or `[tool.pytest.ini_options]`) at
+the directory the IDs are written against; without one the rootdir, and
+therefore every node ID, can change with the arguments pytest is invoked with.
+
+Several reviewed CLIs in one project work with the same single line. The
+plugin loads every reviewed catalog first and refuses a case ID that appears
+in two catalogs (naming both CLI IDs). It then checks each catalog while
+ignoring markers that belong to the other catalogs (`foreign_case_ids`), so a
+test marked for `monitor-task` is not "unknown" to `scp-api`. A marker that no
+catalog knows is still an error, and all errors from all catalogs are
+collected, deduplicated and reported in one failure.

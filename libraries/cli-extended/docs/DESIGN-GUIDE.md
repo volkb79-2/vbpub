@@ -391,6 +391,86 @@ replacements is visible as drift on the next check.
 This boundary makes semantic review auditable without asking a generic library
 to invent product truth.
 
+### Version the library's own controls, don't sign them
+
+The library's common controls (`--log-level`, `--quiet`, `--color`, ...) are
+not product decisions, yet the first generator signed them into every
+consumer's candidates. A copy edit to a library help string, or a new library
+control, then changed signatures in every adopting repository at once; each
+consumer had to re-review something it never decided (decision CX-D5).
+
+The manifest now records only a per-route list of enabled control names and one
+`library_contract` version, and consumer signatures cover consumer-declared
+grammar alone. Library releases that do not change a control's syntax or
+meaning leave every consumer byte-identical. When one does, the library bumps
+`CONTRACT_VERSION` and `check` reports a single finding that points at the
+contract notes; the consumer reads, re-syncs, and reviews only genuine
+signature changes.
+
+Rejected alternative: re-sign everything on any library change. It is simple
+and makes drift impossible to miss, but it turns every library release into a
+repository-wide review of unrelated text, which trains reviewers to approve
+signature changes unread. The version number keeps the "something you must read
+changed" signal rare and meaningful.
+
+Ownership is decided by the action's creation (a marker set in
+`add_common_options`), never by flag spelling, so a product option that happens
+to be called `--json` remains product grammar. The control table used to check
+invocations is derived from the same function with every `include_*` option
+enabled, so the contract list cannot drift from the parser. See
+[Library contract and contract version](../SPEC.md#library-contract-and-contract-version).
+
+## Declare option constraints structurally
+
+Adopting CLIs kept re-implementing the same post-parse checks in handlers
+("`--dry-run` needs a mode", "`--refresh` is not JSON"). Each copy chose its own
+wording, ran after some setup, and was invisible to help, the reference and the
+review catalog. Declaring the rule on the verb makes the registry refuse it
+first, with one wording, before any runtime exists, and lets help, Markdown
+and the surface list it. See [Declared option constraints](../SPEC.md#declared-option-constraints).
+
+**Presence is "the parsed value differs from the default".** argparse does not
+record whether the user typed an option, so the only portable signal is the
+value. That signal is reliable only when the default is `None`, `False` or an
+empty list or tuple; for a defaulted option such as `--retries 3`, "present"
+would silently mean "different from 3". Rather than guess, `build()` refuses a
+constraint that references such an option. The failure is at registration, in
+the developer's first run, not as a rule that never fires in production.
+Rejected alternatives: tracking the raw argv tokens (breaks abbreviations,
+`--opt=value`, and options repeated before and after the verb) and a
+custom `Namespace` that records assignment (breaks consumer parsers and
+delegates, and changes what handlers receive).
+
+**Constraints stay structural.** Only relationships between options of one
+verb are expressible: requires, conflicts, and "requires this value of
+that option". A rule that needs loaded configuration, runtime state, a
+filesystem check, or domain data stays in the handler, where it can read them.
+A general predicate or expression DSL was rejected: it would be a second
+grammar to review, and the existing `validate=` callbacks that already carry
+such logic would simply move into it.
+
+**The checker never evaluates constraints.** A constraint candidate's case is
+an invocation that usually breaks the rule on purpose, and the structural
+checker only proves that an invocation parses. Whether the product then
+refuses it, with which status, is a catalog decision backed by a real-CLI
+test, the same as for exclusive groups. Evaluating constraints in the checker
+would make the manifest a second implementation that could drift from the
+runtime. Constraints do participate in signatures: they are consumer-declared
+grammar, so changing a rule or its reason asks for re-review.
+Library controls referenced by a constraint are named by their canonical flag
+only, so a library syntax change never moves a consumer signature.
+
+### Selector lists as a value type
+
+`all`, one name, or `a,b` appears in several adopting CLIs, each with its own
+parser and its own error wording. `SelectorList` is an argparse `type`, so a bad
+value is an ordinary usage error, the surface records its `choices`, `all_token`
+and `separator` exactly (it is not opaque), and the checker applies the same
+rules to a catalog invocation. It deliberately returns structure only: the
+given-order tuple, or the `SelectorList.ALL` sentinel when the full set is only
+known at run time. Resolving names against loaded data, ordering, and defaults
+stay in the consumer.
+
 ## Prove the shared contract at each rigor level
 
 The package gate separates ordinary behavior and coverage (R0/R1), mutation
@@ -416,6 +496,25 @@ The longer budget is based on that measured throughput and preserves enough
 headroom to finish the full campaign. The combined gate budget is 180 minutes
 to include lane startup and the R0/R1 and R3 steps.
 
+## Keep consumer tests hermetic and the plugin opt-in
+
+Every adopter had copied the same `_invoke`, and each copy decided differently
+what to scrub. The shared helper makes `home` a required keyword rather than a
+default: the 2026-10-04 run-gate test that leaked a fake `assay` into the real
+`~/.local/bin` is what a convenient default produces. It also prepends the
+imported library's directory to `PYTHONPATH` so the child runs the revision
+under test, not whatever is installed. Rejected: defaulting `home` to a
+temporary directory, which hides the isolation decision and makes failures
+harder to inspect.
+
+The pytest plugin is not a `pytest11` entry point. Entry points load into every
+pytest run in the environment, so merely installing the library would change
+collection for unrelated projects; one `pytest_plugins` line is a visible,
+reviewable opt-in. It is strict by default because a silently uncollected case
+test is exactly the drift the catalog exists to catch; `--cli-case-partial` is
+the explicit, local-only escape for running one file, and it still enforces
+every error about a test that was collected.
+
 ## Make long operations automation-safe
 
 Progress is a presentation policy, not the operation's result. `auto` chooses
@@ -424,6 +523,160 @@ interactive redraw only for a TTY and plain newline events otherwise;
 start threads, own a signal handler, or decide when an operation is complete:
 the owning command retains control of retries, cancellation, and state
 transitions.
+
+## Version sources must agree and failures must be explicit
+
+`CliIdentity.resolve()` accepts an installed distribution and a checked-in
+version file together because a source checkout and an installed wheel can
+silently drift: whichever source happens to be read first would win and the
+other would be quietly wrong. Requiring agreement turns that drift into an
+immediate `VersionLookupError` at startup. A missing source is "unresolved",
+but a malformed version file is an error, since treating garbage as absent
+would let the other source mask a broken release. A literal fallback version
+was rejected for the same reason `from_distribution` has none.
+
+`unexpected_exceptions` defaults to `"raise"` because changing what an
+existing consumer does with an uncaught bug is a behavior change that the
+consumer should choose explicitly. The adoption audit recommends `"report"`:
+operators see one line and an exit status of `1` instead of a stack, and
+`--traceback` restores the original exception for whoever is debugging. The
+option exists only in `"report"` mode so that `"raise"` consumers see no
+interface change, and a consumer-declared `--traceback` is refused so two
+options cannot share one spelling with different meanings.
+
+`--dry-run` is hooked into `runtime.confirm()` rather than being a flag each
+handler must interpret. Handlers already gate a mutation on consent, so making
+consent answer "no" while dry-running makes every existing handler safe
+without new branches, and a forgotten `if args.dry_run` cannot mutate. The
+cost is that a handler wanting a preview must print it before calling
+`confirm()`. `--yes` deliberately does not override it: previewing is the
+stronger statement. It is only valid on mutating verbs because a read-only
+verb has nothing to preview, and a consumer's own `--dry-run` is refused once
+a verb opts in so the two meanings cannot diverge.
+
+## Review the surface with the agent harness and keep findings separate
+
+Judging whether a help text is clear or a verb needs a dry-run is a language
+task, and the library is stdlib-only with no model access. So the library
+collects the evidence deterministically (`surface pack`: rubric, every route's
+plain help, every case awaiting review) and the agent harness, which already
+has a model and a conversation, does the judging. The alternative of calling a
+model from inside `cli-extended` was rejected: it would add a network
+dependency, a credential, and nondeterminism to a gate command.
+
+The judgment lands in two hand-edited files. The review catalog records
+per-case decisions keyed to stable surface IDs. The findings file records
+what is wrong, with a remedy, and survives the case being accepted: a case can
+be correctly refused while a finding about its help text stays open. Keeping
+them apart lets `check` treat them differently. An open `blocker` or `major`
+finding fails `check`; `minor` and `note` findings are reported but do not,
+because a gate that fails on every style remark gets switched off. Findings
+that name a route which no longer exists fail as stale, so closed-out work
+cannot silently point at nothing.
+
+`surface sync`, `check` and `template` are deliberately not marked `mutating`.
+The exemption criterion: they write only generated, idempotent files the
+library owns (the manifest and the marked spec region), re-running them
+changes nothing, and they never touch the catalog or findings. A confirmation
+or `--dry-run` there would only get in the way of `check`-style gating.
+Any verb that changes state it does not own or cannot regenerate still needs
+`mutating` with a confirmation or dry-run.
+
+The library never rewrites the catalog or the findings file. A tool that
+rewrites reviewed text turns every regeneration into a diff nobody wrote and
+loses comments, ordering and the author's wording; hand edits by the reviewer,
+checked by the library, keep the record attributable. `sync` therefore
+renders open findings into the marked spec region (read-only echo) but never
+the other way round.
+
+## Ship agent skills per tool and stamp them
+
+Each tool packages its own skills instead of a central repository syncing them
+into every harness. A per-tool package keeps the skill version equal to the
+installed tool version, and a consumer-only checkout needs neither a vbpub
+clone nor symlinks. The cost is one explicit `skills install` step, because a
+wheel cannot run post-install hooks.
+
+An installed copy carries three markers. The `metadata` keys in the frontmatter
+and a visible banner tell a human or an agent reading the file which tool and
+version wrote it and how to check for drift. They are not trusted, though: the
+sidecar `.cli-extended-stamp.json` records a hash per installed file, and that
+is what separates `modified` (the user edited it) from `stale` (the tool moved
+on). Putting the integrity record outside `SKILL.md` means editing the file
+cannot silently rewrite its own evidence.
+
+`foreign` and `unmanaged` directories are never overwritten, not even with
+`--overwrite-modified`. Two tools that ship a skill with the same name would
+otherwise take turns destroying each other, and a hand-written skill with a
+colliding name is exactly what a user would be upset to lose. Refusing is
+cheap; the owner can remove the directory deliberately. `--overwrite-modified`
+is a dedicated flag rather than `--yes` because `--yes` is generic consent
+to a prompt and must not also mean "discard my local edits".
+
+The source schema is deliberately a subset of YAML (single-line scalars plus
+one `metadata:` block) so the library can validate and extend the frontmatter
+without a YAML parser, which keeps the runtime dependency-free. Folded and
+literal scalars are rejected with a line number instead of being guessed at.
+`--harness all` is the default (dstdns D-647 #6) because most operators run
+both Claude Code and an `~/.agents` harness and a skill that exists for only
+one of them is the surprising case; `--dest` covers everything else.
+Installation writes a temporary sibling and renames it into place, so a crash
+never leaves a half-written skill, and `check`/`list` read the same state
+machine so the answer cannot differ between the verbs.
+
+## Audit mechanically, judge with a skill
+
+`cli-extended audit` only reports what a program can decide: whether a surface
+is configured and current, whether a library control is shadowed, whether a
+dependency is declared. It never says a CLI is well designed. Anything that
+needs a decision, such as whether a `configure` callback could be declarative or
+whether a mutating verb really needs no dry-run, is `manual`, and the packaged
+`cli-extended-adoption` skill hands those to an agent that records each judgement
+as an `adoption` finding. The alternative, an audit that guesses with ever more
+elaborate rules, produces confident wrong answers; a `pass` must mean something.
+
+The few checks that read project source text (version reader, dependency
+declaration, path hacks, plugin enablement) are plain substring scans and say so
+with a `heuristic:` prefix, name the files they matched, and stay deliberately
+small. A false positive costs one finding with a `wontfix` rationale; a clever
+parser would cost a maintenance burden and still be wrong sometimes. The scan
+skips virtualenvs, build output and `.worktrees`, and exempts `run-gate.toml`
+from the path check because gate lanes legitimately point at the tested source.
+
+Every check maps to exactly one stable checklist row (`AC-NN`), and a test keeps
+the document and the code in step, so a feature cannot be audited without being
+documented or the reverse. A `warn` marks a policy the library recommends but a
+tool may keep on purpose (`unexpected_exceptions="raise"`); only a `fail` sets
+exit status 1, so CI can gate on the unambiguous problems and let judgement items
+flow through findings.
+
+## One doctor verb; crashes are failures
+
+Every tool grew its own `doctor` with its own output and exit rule, so
+operators and CI could not rely on any of them. The shared verb fixes only the
+shell contract: named checks, four statuses, one text line per check, a JSON
+shape, and exit 1 exactly when something failed. What a check inspects stays
+the consumer's decision.
+
+A check that raises is reported as `fail` (`check crashed: <Type>: <message>`)
+and the remaining checks still run. The alternative, letting the exception end
+the run, hides every later check behind the first bug; swallowing it as `ok` or
+`skip` would make a broken probe look healthy, which is the one thing a doctor
+must never do. `KeyboardInterrupt` still propagates. Non-JSON `details` are
+also a `fail` instead of a crash of the whole report, since by then the other
+results are already known.
+
+The `skills` check is automatic because "installed skills are current" is the
+same question for every tool and `skills check` already defines it; a doctor
+that forgot it would pass while the agent runs a stale skill. It is resolved at
+run time because the two registration calls are independent and a consumer
+should not need to know which must come first. A consumer cannot reuse the name
+`skills`, so the built-in meaning is never ambiguous. Skills that were never
+installed are a `warn`, not a `fail`: a tool whose skills were never installed
+is not broken, whereas a stale, modified, foreign or orphaned install, or an
+interrupted-install leftover, is. Warnings and skips do not
+fail the run: they are for advice and inapplicable checks, and failing CI on
+them would train people to ignore the verb.
 
 ## Markdown is a documentation format
 
