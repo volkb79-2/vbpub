@@ -455,6 +455,41 @@ stronger statement. It is only valid on mutating verbs because a read-only
 verb has nothing to preview, and a consumer's own `--dry-run` is refused once
 a verb opts in so the two meanings cannot diverge.
 
+## Ship agent skills per tool and stamp them
+
+Each tool packages its own skills instead of a central repository syncing them
+into every harness. A per-tool package keeps the skill version equal to the
+installed tool version, and a consumer-only checkout needs neither a vbpub
+clone nor symlinks. The cost is one explicit `skills install` step, because a
+wheel cannot run post-install hooks.
+
+An installed copy carries three markers. The `metadata` keys in the frontmatter
+and a visible banner tell a human or an agent reading the file which tool and
+version wrote it and how to check for drift. They are not trusted, though: the
+sidecar `.cli-extended-stamp.json` records a hash per installed file, and that
+is what separates `modified` (the user edited it) from `stale` (the tool moved
+on). Putting the integrity record outside `SKILL.md` means editing the file
+cannot silently rewrite its own evidence.
+
+`foreign` and `unmanaged` directories are never overwritten, not even with
+`--overwrite-modified`. Two tools that ship a skill with the same name would
+otherwise take turns destroying each other, and a hand-written skill with a
+colliding name is exactly what a user would be upset to lose. Refusing is
+cheap; the owner can remove the directory deliberately. `--overwrite-modified`
+is a dedicated flag rather than `--yes` because `--yes` is generic consent
+to a prompt and must not also mean "discard my local edits".
+
+The source schema is deliberately a subset of YAML (single-line scalars plus
+one `metadata:` block) so the library can validate and extend the frontmatter
+without a YAML parser, which keeps the runtime dependency-free. Folded and
+literal scalars are rejected with a line number instead of being guessed at.
+`--harness all` is the default (dstdns D-647 #6) because most operators run
+both Claude Code and an `~/.agents` harness and a skill that exists for only
+one of them is the surprising case; `--dest` covers everything else.
+Installation writes a temporary sibling and renames it into place, so a crash
+never leaves a half-written skill, and `check`/`list` read the same state
+machine so the answer cannot differ between the verbs.
+
 ## Markdown is a documentation format
 
 `HelpCatalog.render(output_format="markdown")` renders the same verb metadata

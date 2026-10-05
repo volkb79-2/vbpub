@@ -250,11 +250,17 @@ remain outside this library pilot.
 **Related:** CLI-EXT-02 — declarative conditional option constraints.
 ## CLI-EXT-05 — a shared `skills` verb group: install a tool's packaged agent skills into each harness
 
-**Status:** Scheduled — program package W4 (CX-D9); design pinned in
-[the program](docs/PROGRAM-2026-10-UNIFIED-ADOPTION.md#w4-packaged-agent-skills-cli-ext-05-new-skillspy).
+**Status:** Implemented in program package W4 (CX-D9), pending integration and
+release; design pinned in
+[the program](docs/PROGRAM-2026-10-UNIFIED-ADOPTION.md#w4-packaged-agent-skills-cli-ext-05-new-skillspy);
+normative rules in [SPEC §14](SPEC.md#14-packaged-agent-skills).
 The stamp also goes into the SKILL.md frontmatter `metadata` and a visible
 banner (operator choice), with an integrity sidecar for modified-state
-detection; there is no global cross-tool sync.  
+detection; there is no global cross-tool sync. Controller decision during W4:
+overwriting a locally modified skill uses its own `--overwrite-modified` flag,
+not `--yes`, because the library's `--yes` is generic consent and must not
+also carry a destructive-overwrite meaning (the oracle text below that says
+`--yes` is superseded).  
 **Type:** Feature  
 **Area:** Command registration (shared verbs)
 
@@ -288,7 +294,7 @@ Oracles:
 - Installing twice changes nothing on the second run.
 - An upgraded wheel makes `check` report stale and `install` refresh the skill.
 - A locally edited skill is reported as modified and not overwritten without
-  `--yes`.
+  `--overwrite-modified` (was `--yes`; see Status).
 - A skill stamped by another tool is refused.
 - A controlled wrong implementation that copies without stamping must fail
   the foreign-tool refusal oracle.

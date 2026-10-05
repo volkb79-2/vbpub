@@ -448,6 +448,26 @@ check reject equal paths and symlink or hard-link aliases.
 Each generated file is replaced atomically; a stop between the manifest and
 spec updates leaves a detectable mismatch for `check`, not a half-written file.
 
+## Ship agent skills with your tool
+
+A tool that carries agent skills (`SKILL.md` trees for Claude Code and the
+`~/.agents` harnesses) packages them as package data and registers one shared
+`skills` verb group: `<tool> skills install|uninstall|check|list`. Installed
+copies are stamped, so a version bump is reported `stale`, a local edit
+`modified`, and a directory of another tool or without a stamp is never
+overwritten. The [design guide](docs/DESIGN-GUIDE.md#ship-agent-skills-per-tool-and-stamp-them)
+explains the choices; the contract is [SPEC §14](SPEC.md#14-packaged-agent-skills).
+
+```python
+from cli_extended import CliIdentity, CliRegistry, register_skills_verbs
+
+identity = CliIdentity("EXAMPLE", "1.2.3", "Example Operator Tool", "example")
+registry = CliRegistry(identity, prog="example", description="Example tool.")
+# ... register your own verbs ...
+register_skills_verbs(registry, package="example_tool")  # <pkg>/skills/<name>/SKILL.md
+app = registry.build()
+```
+
 ## Test and gate
 
 The package gate covers R0/R1/R2 plus an independent R3 canary. R1 requires
