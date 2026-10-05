@@ -63,3 +63,7 @@ Verdict was REJECT; all items fixed.
 | 5 | docs decisions | non-mutating exemption in DESIGN-GUIDE and the rubric's mutating item; loud discovery failure on a malformed config in SPEC and CONSUMERS (remedy `--config`); SPEC rules 9 (colour) and the 100-column pack width | `tests/test_docs.py` |
 
 `parser.py` touched only for the fixed width and `color=False`. Gate after the last edit: `run-gate: lane 'r0-r1' verdict PASS; exit_code 0`.
+
+## Review round 2
+
+Three surviving mutants killed and one equivalent mutant removed: `fixed_help_width` now validates `columns` (int, not bool, at least `MIN_HELP_COLUMNS` = 60, else `ValueError`); `test_fixed_help_width_pins_exactly_nests_and_restores_on_error` (exact 87/60, nesting 100/70/100/unpinned, restore after an exception), `test_fixed_help_width_rejects_values_below_the_floor_or_not_ints`, `test_pack_help_width_is_100_and_no_help_line_exceeds_it`. SPEC rule 9 notes the native argparse palette is disabled on Pythons that colour it. Gate: `run-gate: lane 'r0-r1' verdict PASS; exit_code 0`.

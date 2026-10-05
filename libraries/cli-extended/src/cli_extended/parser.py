@@ -892,6 +892,7 @@ class HelpCatalog:
             raise ValueError("help catalog/parser mismatch; " + "; ".join(details))
 
 
+MIN_HELP_COLUMNS = 60
 _FIXED_HELP_COLUMNS: ContextVar[int | None] = ContextVar(
     "cli_extended_fixed_help_columns", default=None
 )
@@ -911,8 +912,16 @@ def help_columns() -> int:
 
 @contextmanager
 def fixed_help_width(columns: int) -> Iterator[None]:
-    """Render help at exactly ``columns`` (machine-independent) inside the block."""
+    """Render help at exactly ``columns`` (machine-independent) inside the block.
 
+    ``columns`` must be an int of at least ``MIN_HELP_COLUMNS``, the narrowest
+    width help ever renders at, so a pinned value is always the value used.
+    """
+
+    if type(columns) is not int or columns < MIN_HELP_COLUMNS:
+        raise ValueError(
+            f"columns must be an integer of at least {MIN_HELP_COLUMNS}, got {columns!r}"
+        )
     token = _FIXED_HELP_COLUMNS.set(columns)
     try:
         yield

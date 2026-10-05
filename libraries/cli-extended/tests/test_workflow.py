@@ -970,3 +970,52 @@ def test_backslash_alone_does_not_make_a_factory_a_file_path(monkeypatch):
     assert seen == ["pkg\\mod"]
     assert config._is_file_target("a/b") and config._is_file_target("x.py")
     assert not config._is_file_target("a\\b")
+
+
+def test_fixed_help_width_pins_exactly_nests_and_restores_on_error(monkeypatch):
+    from cli_extended.parser import MIN_HELP_COLUMNS, help_columns
+
+    monkeypatch.setenv("COLUMNS", "133")
+    unpinned = help_columns()
+    assert unpinned == 133
+    with fixed_help_width(100):
+        assert help_columns() == 100
+        with fixed_help_width(70):
+            assert help_columns() == 70
+        assert help_columns() == 100
+    assert help_columns() == unpinned
+    with fixed_help_width(87):
+        assert help_columns() == 87
+    with fixed_help_width(MIN_HELP_COLUMNS):
+        assert help_columns() == 60
+    with pytest.raises(RuntimeError):
+        with fixed_help_width(90):
+            assert help_columns() == 90
+            raise RuntimeError("boom")
+    assert help_columns() == unpinned
+
+
+@pytest.mark.parametrize("bad", (0, -1, 59, 60.0, "100", None, True))
+def test_fixed_help_width_rejects_values_below_the_floor_or_not_ints(bad):
+    from cli_extended.parser import help_columns
+
+    before = help_columns()
+    with pytest.raises(ValueError, match="integer of at least 60"):
+        with fixed_help_width(bad):
+            raise AssertionError("must not enter")
+    assert help_columns() == before
+
+
+def test_pack_help_width_is_100_and_no_help_line_exceeds_it(tmp_path, monkeypatch, capsys):
+    assert cli_module.PACK_HELP_COLUMNS == 100
+    _project(tmp_path, monkeypatch, catalog=False)
+    monkeypatch.setenv("COLUMNS", "300")
+    _code, out, _err = _run(capsys, "surface", "pack")
+    blocks = [part.split("\n```")[0] for part in out.split("```text\n")[1:]]
+    lines = [line for block in blocks for line in block.splitlines()]
+    assert lines
+    assert max(len(line) for line in lines) <= 100
+    # With a wide terminal the same help would use longer lines.
+    wide = io.StringIO()
+    _build_cli().run(argv=["help", "inspect"], stdout=wide, stderr=io.StringIO())
+    assert max(len(line) for line in wide.getvalue().splitlines()) > 100

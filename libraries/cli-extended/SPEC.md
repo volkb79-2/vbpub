@@ -1209,7 +1209,9 @@ always present.
    `color` argument, `ExtendedArgumentParser` passes `color=False`, so the
    library's own policy (`--color`, `--no-color`, `NO_COLOR`, TTY detection) is
    the only source of colour; `FORCE_COLOR` MUST NOT colour argparse's `usage:`
-   or section headings.
+   or section headings. On Python versions whose `argparse` colours its own
+   output, that native palette is disabled, so every colour comes from the
+   cli-extended policy; this is a visible palette change on a TTY.
 10. **Deprecation.** `python -m cli_extended.surface_cli` keeps its flags and
    behaviour, writes `[WARN] ... is deprecated` to stderr first, and is
    removed in a later release.
