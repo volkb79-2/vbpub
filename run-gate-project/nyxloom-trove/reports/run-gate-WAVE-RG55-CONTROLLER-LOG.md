@@ -7092,3 +7092,39 @@ The controller's seven focused regression cases passed (1.95 seconds) and
 and doctor will be refreshed after that commit. The c24 P1 R2 campaign remains
 active only as old-tree triage and cannot certify the repaired/reconciled
 tree. Do not change its judged checkout.
+
+### RW-461 — 2026-10-05 23:47:58 UTC — P1 provisionally merged; exact short gates pass
+
+P1 repair candidate `ca352d8cdcda1c8014d0f782624bfc5be079192f` passed the
+registered `r0-r1` lane (run `0e08e959e351ba0220ff3192a5c45dac`, 2,369 tests,
+100% line and branch coverage, 199.96 s) and `r3` (run
+`17aaedfe4b71cc68dab204606fb21c0a`, seven canaries rejected, zero survived,
+14.113 s). Separate run-gate history records both PASS, exit 0, `dirty:false`,
+and `history_eligible:true` on the same commit. Doctor on that candidate had
+zero failures (9 OK, 2 warnings, 2 info); the warnings are linked-worktree
+host-lane visibility and the intentionally stopped profiler daemon. With the
+same Sol reviewer accepting the repairs for provisional integration, the
+controller merged it `--no-ff` as `664663a52afa2fa444cee046640cc8b33296f6bb`.
+The merge tree `98b0605ac9a5d813e78cbfee74f39fc3428c27b0` is byte-identical
+to the reviewed/gated candidate tree. Main was clean before merge; the merge
+contains only the P1 repair/tests/reports and this controller log.
+
+This is provisional integration only. P1's active R2 on predecessor tree
+`c24b0d2b` is diagnostic, not final evidence; at 23:36:25Z it had judged
+45/114 candidates. P6's R2 remains active on tree `324eac95`; at 23:36:16Z it
+had judged 547/1,251. Both containers remain separately isolated and capped
+at three CPUs in `dev-gates.slice`. The next progress sample is not before
+00:01:25Z (P1) / 00:01:16Z (P6). After a slot opens, plan one fresh combined
+P1+P6 R2 from explicit request base `db29266f8a006b22a30609a74de7645d1e4c50b7`
+on the final quiet tree; the existing P6 request covers the package source
+set, so a duplicate P1-only campaign is not planned. Verify the plan against
+the merged tree before launch.
+
+Release remains blocked on acceptable exact-tree R2 disposition, the
+registered full gate, live daemon/carrier/placement/restoration probes, and
+measured DAMON overhead. The run-gate RG-55 feature surface is already in
+published tag `run-gate-v23.9.1` (its wheel is present locally); the cockpit
+currently has a newer development build (`23.9.2.dev1126+g998a43552`, rev
+46), so no redundant 23.10.0 release is inferred from this wave. Reconcile
+the installed release wheel at closeout. cgroup-profiler has no release tag;
+the agreed combined P1+P6 first release remains `1.0.0`.
