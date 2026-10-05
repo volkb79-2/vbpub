@@ -69,7 +69,7 @@ import time
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Sequence, Set
 
-from . import access, util
+from . import access, proc_stat, util
 
 
 def _systemd_attach_process(
@@ -428,10 +428,12 @@ def _process_start_time_ticks(proc_root: str, pid: int) -> Optional[str]:
     text = util.read_text(os.path.join(proc_root, str(pid), "stat"))
     if not text:
         return None
-    close = text.rfind(")")
+    parsed = proc_stat.split_after_comm(text)
+    if parsed is None:
+        return None
+    close, fields = parsed
     if close <= 0:
         return None
-    fields = text[close + 1 :].split()
     # The suffix starts at stat field 3 (state), so field 22 is index 19.
     if len(fields) <= 19 or not fields[19].isdigit():
         return None
@@ -443,10 +445,12 @@ def _process_parent_pid(proc_root: str, pid: int) -> Optional[int]:
     text = util.read_text(os.path.join(proc_root, str(pid), "stat"))
     if not text:
         return None
-    close = text.rfind(")")
+    parsed = proc_stat.split_after_comm(text)
+    if parsed is None:
+        return None
+    close, fields = parsed
     if close <= 0:
         return None
-    fields = text[close + 1 :].split()
     if len(fields) < 2 or not fields[1].isdigit():
         return None
     return int(fields[1])
@@ -568,13 +572,12 @@ def bounded_slice_capacity(cgroup_root: str, gates_cgroup: str) -> bool:
     return quota > 0 and period > 0
 
 
-_CONTAINER_ID_RE = re.compile(r"^[0-9a-f]{64}$")
 _CONTAINER_SCOPE_PREFIXES = ("docker", "crio", "containerd", "libpod")
 
 
 def container_cgroup_matches_id(cgroup: str, container_id: str) -> bool:
     """Recognize only the two supported runtime cgroup leaf spellings."""
-    if not isinstance(container_id, str) or not _CONTAINER_ID_RE.fullmatch(container_id):
+    if not util.is_container_id(container_id):
         return False
     if not isinstance(cgroup, str) or not cgroup.startswith("/"):
         return False
@@ -699,15 +702,10 @@ class CgroupWriteGuard:
             return
         if not container_cgroup_matches_id(container_cgroup, container_id):
             return
-        gates_real = os.path.realpath(self.gates_abs)
         target_abs = abs_path(cgroup_root, target_path)
         target_real = os.path.realpath(target_abs)
-        try:
-            below_gates = os.path.commonpath((gates_real, target_real)) == gates_real
-        except ValueError:
-            below_gates = False
         if (
-            below_gates and target_real != gates_real
+            util.realpath_is_within(target_abs, self.gates_abs, allow_root=False)
             and container_cgroup_matches_id(target_real, container_id)
         ):
             self.container_kill_abs = target_real

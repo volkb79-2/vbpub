@@ -101,6 +101,7 @@ class TestHandlerSafetyContracts:
         monkeypatch.setattr(h, "_git_common_dir", lambda p: Path("/repo/.git"))
         monkeypatch.setattr(h, "_host_bind_source", lambda p: "/host" + str(p))
         monkeypatch.setattr(h, "_wheel_builder_git_mount_args", lambda *a, **k: [])
+        monkeypatch.setattr(h, "_git_toplevel", lambda _cwd: None)
         seen = []
         monkeypatch.setattr(h.subprocess, "run", lambda argv, **kw: seen.append(argv))
         h.cmd_wheel_build(argparse.Namespace(cwd=str(tmp_path)))

@@ -829,6 +829,8 @@ def test_usage_error_render_and_common_option_declarations():
         include_json=False,
         include_progress=False,
         include_confirmation=False,
+        include_traceback=False,
+        include_dry_run=False,
     )
     assert {option.flags for option in options}.isdisjoint(
         {("--json",), ("--progress",), ("--yes",)}

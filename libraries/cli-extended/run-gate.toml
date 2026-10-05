@@ -21,14 +21,15 @@ kind = "command"
 environment = "tester-unified"
 argv = [
   "bash", "-c",
-  "export PYTHONPATH={worktree}/assay/src && cd {worktree}/libraries/cli-extended && mkdir -p .assay && exec /opt/tester-venv/bin/python3 -m assay.cli run cli-extended --resume --state-dir .assay/mutation-state-r2-choice-semantics --progress .assay/progress-r2-choice-semantics.jsonl --verdict-json .assay/verdict-r2-choice-semantics.json",
+  "export PYTHONPATH={worktree}/assay/src && cd {worktree}/libraries/cli-extended && mkdir -p .assay && exec /opt/tester-venv/bin/python3 -m assay.cli run cli-extended --resume --state-dir .assay/mutation-state-r2 --progress .assay/progress-r2.jsonl --verdict-json .assay/verdict-r2.json",
 ]
 clean_tree = false
-budget = "180m"
-artifacts = [".assay/verdict-r2-choice-semantics.json", ".assay/progress-r2-choice-semantics.jsonl"]
+budget = "720m"
+artifacts = [".assay/verdict-r2.json", ".assay/progress-r2.jsonl"]
 
 [lanes.r2.resources]
-memory = "1g"
+# jobs = 3 workers at ~240 MB peak RSS each, plus the assay parent.
+memory = "1536m"
 
 [lanes.r3]
 kind = "command"
@@ -51,4 +52,4 @@ argv = [
   "cd {worktree}/libraries/cli-extended && ./run-gate.py --worktree {worktree} r0-r1 && ./run-gate.py --worktree {worktree} r2 && ./run-gate.py --worktree {worktree} r3",
 ]
 clean_tree = false
-budget = "210m"
+budget = "750m"

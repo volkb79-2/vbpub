@@ -142,7 +142,9 @@ items:
   - {id: B140, title: "no project-level default for a lane's env_passthrough: every new lane must repeat the project's common names, and a missing one fails the lane's first run COMMAND_FAILED", type: feature, component: config, context_estimate: small}
   - {id: B141, title: "changed-lines lanes cannot scope to files: judge.source_roots must be directories, so a later-HEAD run judges other packages' changed lines with the wrong tests", type: feature, component: config, context_estimate: small}
   - {id: B142, title: "passthrough secrets and command-output echoes land in verdict JSON", type: bugfix, component: security, context_estimate: medium}
-  - {id: B145, title: "fork exhaustion (pids.max) is classified as killed: detect cgroup pids.events and memory.events and classify affected candidates as unresolved", type: bugfix, component: mutation, context_estimate: medium}
+  - {id: B143, title: "Adopt cli-extended (unified adoption, order 6 of 8): real wheel dependency, zipapp bundles cli_extended, A-005 reworded", type: feature, component: cli, context_estimate: large}
+  - {id: B144, title: "per-candidate covering-test selection for qualifying Python R2: a coverage-context map runs each mutant's covering tests first (kill fast) while every survivor still runs the full declared suite -- decision-gated against B110 D3", type: feature, component: mutation, context_estimate: large}
+  - {id: B145, title: "fork exhaustion (pids.max) is classified as killed: a lane at its process limit cannot produce a valid R2 kill", type: bugfix, component: mutation, context_estimate: medium}
 ---
 
 # assay — backlog
@@ -189,6 +191,9 @@ the per-entry evidence table, WIP-branch findings, and ID collisions.
 - B087 — JavaScript/TypeScript canary (R3) has no CLI producer path — OPEN (JS/R3 wave)
 - B078 — R0 trusts only the wrapped target's exit code — PARTIAL (checkpoints 2/3: pytest, go test)
 - B103 — execution-interruption boundary (reserved stub; ID collision with an unmerged branch's own B099/A-448 only) — OPEN (owned by the RG-55 continuation)
+- B143 — adopt cli-extended (unified adoption, order 6 of 8; A-005 reworded) — PLANNED (filed 2026-10-05; requires cli-extended 0.2.0 released)
+- B144 — per-candidate covering-test selection for qualifying Python R2 (covering tests first, full suite on survival) — OPEN, decision-gated against B110 D3/A-467 (filed 2026-10-05 from the cli-extended 0.2.0 wave; measured on a real campaign)
+- B145 — fork exhaustion classified as `killed` (false kills at `pids.max`) — OPEN, critical (filed 2026-10-05; the contaminated run-gate-project R2 state, progress, post-03:11Z outcomes, and final verdict were discarded)
 - B105 — full-source R0-R3 Assay self-qualification — OPEN (next package after the single Wave C release; required before M7; pre-release Wave C gate remains R0-only; full gate must meet B110's 8-hour ceiling; suite scope amended by A-468; equivalents only via the A-465 ledger)
 
 **Filed after the 2026-09-23 triage**
@@ -11845,16 +11850,105 @@ Fix: add both names in pytest's own precedence order, and check the order agains
 
 **Found in:** dstdns 2026-10-04, P241 composite `assay` lane diagnosis (`.assay/verdict-mock.json`); decision record D-670.
 
-## B145 — fork exhaustion is classified as `killed`: a lane at `pids.max` can produce false R2 kills
+## B143 — Adopt cli-extended (unified adoption, order 6 of 8)
 
-**Status: OPEN, critical (filed 2026-10-05 from a live `assay-r2` campaign; post-limit results are invalid).** A false kill certifies tests that catch nothing and violates Assay's rule that host pressure cannot decide a mutation result.
+**Status: PLANNED (filed 2026-10-05 by cli-extended unified-adoption W10; adoption order 6 of 8; assay 7.2.0 observed).**
 
-**Observed:** `run-gate-project`'s `assay-r2` campaign ran in a CMRU tester-gate container without init. Git's detached maintenance left enough zombies to reach `pids.current=19,115` of `pids.max=19,117` at 03:11Z. The campaign had 18 candidates before the limit: 13 killed after a median of 155 tests and 5 survived. Afterward it recorded 192/192 killed, median 2 tests, with 91 killed at the first test. The final campaign verdict is not usable.
+**Source documents.** `libraries/cli-extended/docs/PROGRAM-2026-10-UNIFIED-ADOPTION.md` (decisions CX-D1..CX-D12; section "W10 - planned adoptions") and `libraries/cli-extended/docs/ADOPTION-CHECKLIST.md` (AC-01..AC-25). **Dependency:** cli-extended 0.2.0 released first (W8, the controller). Not executed in the program's session.
 
-**Expected:** a process-limit refusal or OOM during a candidate's test command is infrastructure evidence, never a kill or survivor. The affected R2 lane cannot pass. If the cgroup counters are unavailable, Assay refuses the native R2 run before starting candidates.
+**Path correction and A-005.** The W10 table names `assay/nyxloom-trove/4-backlog.md` (correct) and says "reword A-005". A-005 is a decision row in `nyxloom-trove/decisions.md`, not a backlog item; there is no cli-extended entry in this file and no `A-005` text in it. A-005 was therefore reworded in place in `decisions.md` on 2026-10-05 (CX-D1: "no third-party runtime dependencies"; the original is quoted in the row) and this entry is the single backlog item for the adoption. Still to update when B143 ships (not done by W10): the `pyproject.toml` comment block above `dependencies = []` ("ZERO RUNTIME DEPENDENCIES (decision A-005)", ending at line 23) and the declaration at `:24`, `nyxloom-trove/1-north-star.md:66` ("Zero runtime dependencies, stdlib only (A-005)"), `README.md` and `docs/CONSUMERS.md` statements of the standalone claim, and the test below.
 
-**Chosen contract:** sample cgroup v2 `pids.events.max`, `memory.events.oom_kill`, and `memory.events.oom_group_kill` immediately before and after each native candidate command. The verdict and resume record carry before/after/delta evidence for every native candidate. Any positive delta classifies that candidate as `crashed`, making R2 `ERROR/EXEC_FAILED`; `assay verify` re-derives each delta and rejects a positive one on any other bucket. A record with a positive delta is never reused. The judge-identity label advances to `/4` so pre-B145 state is rejected and re-executed. The R2 path fails closed if the kernel does not expose all required counters.
+**Observed mechanism (verified in source).**
 
-**Oracles:** a live low-`--pids-limit` container creates a real `pids.events.max` delta and proves the command's failure cannot become `killed`; a real command failure with unchanged counters remains `killed`; OOM counter deltas receive the same infrastructure classification; a controlled wrong implementation that ignores counter changes fails; `assay verify` rejects malformed deltas, arithmetic mismatch, or resource-limited outcomes listed under `killed`.
+- Mechanical A-005 enforcement that must change (AC-24): `gate/tests/test_dependency_purity.py:177-178` asserts `load_pyproject()["project"]["dependencies"] == []`; `:228-241` walks the wheel metadata asserting every `Requires-Dist` is extra-guarded and reports "assay declares runtime dependencies"; the module's AST walk (`:70-75`, `scan_package`) rejects any third-party import. `gate/tests/test_standalone.py:7` and `:2051` restate "zero `Requires-Dist`". The adoption must replace "empty" with "exactly `cli-extended>=0.2.0` and nothing else", keep the AST walk meaningful (allow only stdlib, `assay`, `assay_analysis`, `cli_extended`), and keep the scratch-venv offline test (`gate/tests/test_standalone.py`, the `standalone` fixture) green with the library supplied from a local wheel.
+- Zipapp build (CX-D1: "the assay zipapp build bundles the pure-stdlib `cli_extended`"): `gate/distribution/build_release.py:349` `build_zipapp` stages the assay wheel with `pip install --no-index --no-deps --target <staging> <wheel>` (`:374`), so a declared dependency would NOT be pulled into the `.pyz`; the staging step must also install the pinned cli-extended wheel from the hash-checked closure. The wheel build itself is `pip wheel --no-index --no-build-isolation --no-deps` (`:264-267`), unchanged. The build closure is hash-pinned (`gate/distribution/build-requirements.txt`, `build-wheelhouse/`, `build-wheelhouse-manifest.json`); cli-extended joins it as a sixth wheel with its sha256 (CX-D2). The `.pyz` must stay byte-reproducible (B003); verify that after bundling.
+- Version reader (AC-01): `src/assay/__init__.py:19,41-45` reads `importlib.metadata.version("assay")` and falls back to the literal `"0+unknown"`; `gate/distribution/build_release.py` already treats that fallback as an error for the zipapp (module docstring item 1, lines 29-35). `src/assay/cli.py:73` imports `__version__` for `--version` (`:218`) and for the verdict's `assay_version` (`:1340, 1424, 1465, 1503, 1556, 2102`); `CliIdentity.resolve` replaces the reader, keeping verdict provenance identical.
+- Parser (AC-03, AC-04, AC-07): `src/assay/cli.py` is 2189 lines. `AssayArgumentParser(argparse.ArgumentParser)` at `:106-122`, `build_parser()` at `:213` with `add_subparsers` (`:219`, four `add_parser` call sites), `_add_request_base_argument` (`:165`), and a separate analysis entrypoint reached by `_run_analyze` for `raw[:1] == ["analyze"]` (`:477-478`) with its own parser in `assay_analysis`. Argument appending is split by hand (`_split_appended_argv`, `:479`): lane argv after `--` must keep its exact semantics.
+- Injected streams (AC-21): `main(argv, *, stdin, stdout, stderr)` at `:463-473` is the contract tests rely on; the library runtime must keep that injectability (or the library must offer an equivalent) without changing exit codes. Many tests drive it in-process (`tests/core/*` define local `_run` helpers, e.g. `test_runner_run_lane.py`, `test_environment_preflight.py`, `test_runner_ingested_r2.py`).
+- Exception boundary (AC-10, AC-11): no `except Exception` and no `--traceback` in `src/assay/cli.py`; assay's refusals are verdict outcomes with closed reason codes and exit codes, not generic errors. Decide per path which become `CliFailure` and which stay verdict-owned; `unexpected_exceptions="report"` must not rewrite a verdict-bearing failure.
+- `--dry-run` / `--yes` (AC-05, AC-12): none found in `src/assay/cli.py`.
+- `sys.path` / `PYTHONPATH` (AC-25): none found toward `libraries/cli-extended`. Existing path edits are assay's own: `gate/python/qualify_sql.py:75` and `:491` (`sys.path.insert` of assay's own `src`), `gate/distribution/build_release.py:503` (its own directory), and `tools/tester-unified-gate.sh:402,448,486-487` (`PYTHONPATH` management for the standalone proof; the gate's source-backed lane will need the library on the path or in the venv, per CX-D3, decided in the carve).
+- `package-dir` (AC-24): `pyproject.toml:48` is `package-dir = {"" = "src"}` plus `packages.find where = ["src", "analysis/src"]`; there is no `cli_extended` vendoring to remove.
+- Skills (AC-19): `assay/.claude/skills/assay-cli/SKILL.md` is the only source tree (the README and `B139` already track drift in its text). Move to package data via `register_skills_verbs`.
+- Doctor (AC-20): no `doctor` verb found in `cli.py`; assay has external prerequisites (git, coverage tool outputs, Node/Go toolchains for adapters), so decide whether the shared `doctor` applies.
 
-**Related:** CMRU KI-52, run-gate RG-83, Assay B107/B108, and dstdns D-670 TEST-RUNNER-INIT.
+**Common shape (tick each, cite the AC row).**
+
+- [ ] Declare `cli-extended>=0.2.0` in `[project].dependencies`; update `test_dependency_purity.py`/`test_standalone.py` (AC-24).
+- [ ] Zipapp bundles `cli_extended`; `.pyz` still byte-reproducible and pip-less runnable (CX-D1); wheel/zipapp release assets unchanged otherwise.
+- [ ] No library checkout on `sys.path`/`PYTHONPATH` in project sources; gate-lane path per CX-D3 (AC-25).
+- [ ] `CliIdentity.resolve(...)` (AC-01, AC-02); `unexpected_exceptions="report"` without swallowing verdict-owned failures (AC-10, AC-11).
+- [ ] Re-register the grammar (verbs, `analyze` family, lane-argv `--` appending) with `CliRegistry`; delete `AssayArgumentParser` (AC-03, AC-04, AC-07); constraints/`SelectorList` where the handlers do their own checks (AC-06, AC-09).
+- [ ] Surface lifecycle: review/manifest/spec configured, `surface sync`, catalog and findings, `surface check` (AC-16, AC-17, AC-18).
+- [ ] Skills via `register_skills_verbs` (AC-19); `doctor` decision (AC-20).
+- [ ] Tests: `assert_cli_contract` (AC-21), plugin if a catalog exists (AC-22), `invoke_script` for subprocess tests (AC-23).
+
+**Acceptance.** `cli-extended audit` reports no `fail`; `cli-extended surface check` passes; assay's own registered gate passes (tester-unified, per `run-gate.toml`); a released assay version is deployed (merge + cmru release with wheel and `.pyz` + devcontainer install + dstdns release notification via `.assay-inbox/release.json`, per the estate's "shipped" definition). Verdict-schema output for an unchanged lane must be byte-identical apart from `assay_version`.
+
+**Oracles for the carver.** A scratch venv with only the assay wheel and the cli-extended wheel runs `assay lanes`; the `.pyz` runs `assay --version` on a Python with no pip and no site-packages; a controlled wrong implementation that omits `cli_extended` from the `.pyz` staging fails the pip-less run; `gate/tests/test_dependency_purity.py` fails if a second third-party dependency is added.
+
+**Why assay owns it.** The change is to assay's packaging, release build, tests and CLI; the program only supplies the library and the decision (CX-D1, CX-D11).
+
+## B144 — per-candidate covering-test selection for qualifying Python R2: covering tests first, full declared suite on survival
+
+**Status: OPEN, decision-gated (filed 2026-10-05 from the cli-extended 0.2.0 wave, measured on a real campaign). Needs an operator decision before a carve:** B110 **D3 (A-467)** fixes the qualifying execution model as one process running the full declared suite *in declared order*. This item changes the per-candidate **order** of a qualifying attempt — never its membership on survival — so it amends D3 or is refused.
+
+**How it relates to what is already filed (none of them covers it):**
+- **B114 / P3b cold witness** — runs the declared order without coverage. Orthogonal: it makes each test cheaper; this item makes the kill arrive earlier. They compose.
+- **B112 / P1 tiered declared order** (`tests/zz_slow/` last) — static, one order per lane. It cannot help when the tests that own a module are simply collected late; this item is per candidate.
+- **B110 plan RP1** (`reports/assay-B110-PLAN-2026-09-28.md`, proposals table) — covering-test selection in the **non-qualifying survivor screen only**. This item asks for the **qualifying kill path**; RP1's screen is still wanted (requirement R8 below).
+- **B121 / P11 isolation units** — coverage-guided order of per-file *processes*, decision-gated. This item stays single-process and needs no unit model.
+- **B109 carry-forward of unaffected kills** — reuses old verdicts across commits; this item speeds a first-time candidate. They compose.
+
+**Observed (measured, not estimated).** Lane `cli-extended` (`libraries/cli-extended/assay.toml`: `whole_target`, 20 targets, `max_mutants = 3000`, `jobs = 2`, argv `pytest tests -q --maxfail=1 --cov...`), commit `86993acd1`, tester-unified capped at 3 CPUs on the shared 8-core host (load ~9 from other sessions), progress file `libraries/cli-extended/.assay/progress-r2.jsonl` on branch `cli-extended-unified`:
+- 1,403 candidates; baseline 42.4 s; derived `budget_per_candidate` 127.3 s.
+- First 66 candidates (all in `cli.py`/`audit.py`), 25 min: **53 killed** (median command 8.1 s) — but **21 of the 53 were killed only after more than 500 of the 1,180 tests had run, and those 21 consumed 1,077 of the 1,274 command-seconds spent on kills (85%)**; **11 survived** (full suite, median command 57.6 s); **2 `budget_exceeded`** (full suite, 128 s under contention — probably survivors).
+- Fixed per-candidate overhead (materialize + integrity + teardown) median 8.7 s.
+- Throughput ~2.6 candidates/min → ~9 h projected for 1,403 candidates, **over the lane's 480 m budget**.
+- **Cause:** `--maxfail=1` plus declared (alphabetical file) order. The tests that own `cli.py`/`audit.py` live in `tests/test_workflow.py`/`tests/test_audit.py`, collected near the end, so every mutant in those modules first runs ~1,100 tests that cannot touch it. A library that grows new modules makes this worse with every module whose test file sorts late. Renaming test files to game the order is the only consumer-side workaround, and it is a hack.
+
+**What the consumer needs (requirements, in priority order):**
+- **R1 — kill cost proportional to the covering tests**, not to where they happen to sit in collection order.
+- **R2 — the survivor claim is unchanged.** `survived` still means "the full declared suite ran and passed". Nothing is skipped for a survivor.
+- **R3 — no weaker kill.** A kill found by a reordered attempt must be one B110 would accept: the failing test fails *because of the mutant*, not because the reorder changed test pollution (see "kill attribution" below).
+- **R4 — zero per-test annotations.** One opt-in lane key (e.g. `judge.mutation.test_order = "covering-first"`, default `"declared"`); the map is derived, never hand-maintained.
+- **R5 — deterministic.** Same tree, same judge identity → same per-candidate order → same verdict.
+- **R6 — composes with** `--resume`, `--shard`, `jobs`, B106 prefix replay, B114 cold witness, `whole_target` and `changed_lines`.
+- **R7 — visible in the verdict.** Per-candidate evidence of which attempt killed (a new evidence `mode`, e.g. `covering-first`), the index of the failing test, and run-level counts, so `assay verify` can audit it.
+- **R8 — a fast non-qualifying dev-loop screen** (the RP1 half): `assay run --candidates-file` (B118/P7) plus a **path filter** (e.g. `--candidates-path 'src/cli_extended/{cli,audit}.py'`) using covering-test *selection*, so a developer harvests the survivors of the modules they just wrote in minutes, before paying for a qualifying campaign. Today the only way to find survivors is the full campaign; in this wave that meant three restarts of a multi-hour run because each fix changed the tree (resume is per-tree by design).
+
+**Proposed mechanism (for the carve — not decided):**
+1. **Coverage map.** The coverage baseline (the R0/R1 run R2 already performs) runs with coverage.py dynamic contexts (`--cov-context=test`; JSON with contexts). assay derives `(file, line) → sorted node ids`, bound to the tree/judge identity and stored with the resume state; a map from another tree is refused. Lines whose only context is the empty/import context map to "no covering test" → that candidate uses the declared order (no regression).
+2. **Covering-first attempt.** The same single pytest process and the same collected membership, with `session.items` reordered by an assay plugin: the candidate's covering tests first (in their declared relative order), then every other test in declared order. The plugin asserts the reordered collection has the same `collection_sha256` *membership* as the baseline (B110 §5), or the attempt is refused and the declared attempt runs.
+3. **On survival:** the attempt already ran the full membership. **Decision D-a:** accept it as the survival run (cheapest; the order differs from declared), or re-run survivors in declared order (survivors cost 2×; survivors are already the dominant cost, about 17% of candidates here).
+4. **Kill attribution (decision D-b)** — the R3 risk is order-dependent tests. Options:
+   - **K1** confirm each covering-first kill by re-running the failing node alone, in a fresh process, on the mutant, with its isolated pass on the unmutated tree cached once per node id; an inconclusive confirmation falls back to the declared attempt. Sound, adds ~5–8 s per kill.
+   - **K2** a lane-level order-independence gate: the coverage baseline is additionally run once in reversed declared order; if anything fails, the lane refuses `covering-first` (or falls back to declared) for that tree. Cheap; it proves reversal-independence, not all orders.
+   - **K3** both: K2 gates the feature, and K1 confirms only kills by a test K2 could not exercise.
+
+**Expected effect on the measured sample:** the 21 late kills drop from ~51 s to roughly 8–12 s each (~900 s saved per 66 candidates, ~35% of the sample's wall time). Survivors are untouched by design (R2), so the campaign still needs B114's cold witness and the R8 screen to drop survivor counts *before* the qualifying run.
+
+**Oracles:**
+- The reordered collection's membership equals the declared collection; a controlled wrong implementation that **drops** non-covering tests (true selection) must fail the "survivor ran the full suite" oracle.
+- A mutant killed only by a non-covering test (an import-time effect) is still killed.
+- An order-dependent fixture pair (B passes only after A; A does not cover the mutant) must not yield a kill attributed to the reorder, under the chosen K option.
+- The same tree twice produces identical per-candidate orders and an identical verdict.
+- A map bound to another tree is refused; `--shard` and `--resume` produce the same buckets as a single declared-order run on a fixed candidate set.
+
+**Acceptance:** on the `cli-extended` lane at a fixed commit, identical outcome buckets to a declared-order run on the same candidate set, and at least 30% less wall time; B105 self-qualification measured the same way; `assay verify` checks the new evidence; docs (CONSUMERS: when to enable it, what it does not change).
+
+**Found in:** vbpub cli-extended unified-adoption wave (`libraries/cli-extended/docs/PROGRAM-2026-10-UNIFIED-ADOPTION.md`), R2 campaign on `cli-extended-unified@86993acd1`, 2026-10-05.
+
+## B145 — fork exhaustion is classified as `killed`: a lane at its process limit cannot produce a valid R2 kill
+
+**Status: IMPLEMENTED on branch `assay-b136-b141` (2026-10-05; final review and registered gate pending).** A false kill certifies tests that catch nothing and violates Assay's rule that host pressure cannot decide a mutation result.
+
+**Observed:** `run-gate-project`'s `assay-r2` campaign ran in CMRU tester-gate container `pedantic_antonelli` without init. Git's detached maintenance left enough zombies to reach `pids.current=19,115` of `pids.max=19,117` at 03:11:18Z. Before the limit, 18 candidates had produced 13 kills after a median of 155 tests and 5 survivors. Afterwards, it recorded 192/192 kills, a median of 2 tests, and 91 first-test kills; those post-limit outcomes and the final verdict are invalid. The affected worktree was `.worktrees/run-gate-r2-assay-venv-20261005`. This task did not inspect or delete that other session's `.assay` state. Discard its state and progress before retrying.
+
+**Expected:** a process-limit refusal or OOM during a candidate's test command is infrastructure evidence, never a kill or survivor. The affected R2 lane cannot pass. If required cgroup counters are unavailable, Assay refuses native R2 before starting candidates.
+
+**Chosen contract:** sample cgroup v2 `pids.events.max`, `memory.events.oom_kill`, and `memory.events.oom_group_kill` immediately before and after each native candidate command. Verdict and resume records carry before/after/delta evidence for every native candidate. Any positive delta classifies that candidate as `crashed`, making R2 `ERROR/EXEC_FAILED`; `assay verify` re-derives each delta and rejects a positive one on another bucket. A record with a positive delta is never reused. Judge identity advances to `/4` so pre-B145 state is rejected and re-executed. Native R2 refuses with `ERROR/EXEC_FAILED` if the kernel does not expose every required counter.
+
+**Oracles:** a low-`--pids-limit` tester-unified container creates a real `pids.events.max` delta and proves the command's failure cannot become `killed`; a real command failure with unchanged counters remains `killed`; OOM counter deltas receive the same infrastructure classification; a controlled wrong implementation that ignores counter changes fails; `assay verify` rejects malformed deltas, arithmetic mismatch, or resource-limited outcomes listed under `killed`.
+
+**Related:** CMRU KI-52, run-gate RG-83/RG-84, Assay B107/B108, and dstdns D-670 TEST-RUNNER-INIT.

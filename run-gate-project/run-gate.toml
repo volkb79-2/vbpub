@@ -10,6 +10,8 @@
 # The lane uses `bare-host` so its tests exercise run-gate's direct host
 # subprocess path instead of starting a second judged container. The suite
 # itself is launched inside tester-unified by the repository's gate runner.
+# Use tester-unified's dedicated venv explicitly; its system python does not
+# carry pytest.
 # `host` continues to mean an ephemeral container by default (R-38).
 # test_run_gate.py's own suite is self-referential: many tests exercise
 # physical_path()'s REAL /proc/self/mountinfo lookup against pytest's own
@@ -43,7 +45,7 @@ schema_version = 1
 [lanes.selftest]
 kind = "command"
 environment = "bare-host"
-argv = ["bash", "-c", "GIT_CEILING_DIRECTORIES=\"$PWD/.run-gate/selftest-tmp\" python3 -m pytest tests -q --basetemp .run-gate/selftest-tmp --cov=. --cov-branch --cov-report=json:coverage.json && exec python3 tools/coverage_gate.py --repo . --base main --coverage-json coverage.json --source run-gate.py"]
+argv = ["bash", "-c", "GIT_CEILING_DIRECTORIES=\"$PWD/.run-gate/selftest-tmp\" /opt/tester-venv/bin/python -m pytest tests -q --basetemp .run-gate/selftest-tmp --cov=. --cov-branch --cov-report=json:coverage.json && exec /opt/tester-venv/bin/python tools/coverage_gate.py --repo . --base main --coverage-json coverage.json --source run-gate.py"]
 budget = "20m"
 artifacts = ["coverage.json"]       # disclosed after every run (RG-10)
 

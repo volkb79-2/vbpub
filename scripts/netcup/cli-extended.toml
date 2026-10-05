@@ -1,0 +1,32 @@
+# cli-extended.toml
+#
+# Standalone project configuration (the Netcup scripts have no pyproject).
+# Declares the three Netcup CLIs for the shared `cli-extended surface` /
+# `cli-extended audit` commands and for the pytest plugin. Each spec file holds
+# exactly one generated region, so every CLI has its own CLI-SPEC-<id>.md;
+# CLI-SPEC.md is the index.
+schema_version = 1
+
+[[clis]]
+id = "install-host"
+factory = "install-host.py:build_cli"
+review = "cli-review-install-host.toml"
+manifest = "cli-surface-install-host.json"
+spec = "CLI-SPEC-install-host.md"
+findings = "cli-review-findings-install-host.toml"
+
+[[clis]]
+id = "monitor-task"
+factory = "monitor-task.py:build_cli"
+review = "cli-review-monitor-task.toml"
+manifest = "cli-surface-monitor-task.json"
+spec = "CLI-SPEC-monitor-task.md"
+findings = "cli-review-findings-monitor-task.toml"
+
+[[clis]]
+id = "scp-api"
+factory = "scp-api.py:build_cli"
+review = "cli-review-scp-api.toml"
+manifest = "cli-surface-scp-api.json"
+spec = "CLI-SPEC-scp-api.md"
+findings = "cli-review-findings-scp-api.toml"

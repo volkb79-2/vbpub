@@ -133,6 +133,118 @@ class TestSchemaVersionConstants:
 
 
 class TestReadingV1AndV2Records:
+    @pytest.mark.ciu_no_auto_root
+    def test_ready_aggregate_record_without_a_root_marker_allows_null_runtime(self, tmp_path):
+        assert not (tmp_path / worktree.GLOBAL_CONFIG_DEFAULTS).exists()
+        raw = _raw_v1(tmp_path)
+        raw["runtime"] = {"instance_id": None, "network": None}
+
+        record = worktree._record_from_dict(
+            raw, tmp_path / worktree.WORKTREE_INSTANCE_RECORD
+        )
+
+        assert record.state == "ready"
+        assert record.instance_id is None and record.network is None
+        assert record.to_dict() == raw
+
+    def test_ready_ciuroot_with_null_runtime_is_refused(self, tmp_path):
+        (tmp_path / worktree.GLOBAL_CONFIG_DEFAULTS).write_text(
+            "[ciu]\n", encoding="utf-8"
+        )
+        raw = _raw_v1(tmp_path)
+        raw["runtime"] = {"instance_id": None, "network": None}
+
+        with pytest.raises(worktree.WorktreeError, match="lacks a closed runtime identity"):
+            worktree._record_from_dict(
+                raw, tmp_path / worktree.WORKTREE_INSTANCE_RECORD
+            )
+
+    def test_ready_ciuroot_with_complete_runtime_remains_valid(self, tmp_path):
+        (tmp_path / worktree.GLOBAL_CONFIG_DEFAULTS).write_text(
+            "[ciu]\n", encoding="utf-8"
+        )
+        raw = _raw_v1(tmp_path)
+
+        record = worktree._record_from_dict(
+            raw, tmp_path / worktree.WORKTREE_INSTANCE_RECORD
+        )
+
+        assert record.instance_id == "abc123"
+        assert record.network == "repo-network"
+
+    @pytest.mark.ciu_no_auto_root
+    def test_ready_ciuroot_symlink_to_regular_marker_requires_identity(self, tmp_path):
+        target = tmp_path / "defaults.toml.j2"
+        target.write_text("[ciu]\n", encoding="utf-8")
+        (tmp_path / worktree.GLOBAL_CONFIG_DEFAULTS).symlink_to(target)
+        raw = _raw_v1(tmp_path)
+        raw["runtime"] = {"instance_id": None, "network": None}
+
+        with pytest.raises(
+            worktree.WorktreeError, match="lacks a closed runtime identity"
+        ):
+            worktree._record_from_dict(
+                raw, tmp_path / worktree.WORKTREE_INSTANCE_RECORD
+            )
+
+    @pytest.mark.ciu_no_auto_root
+    def test_directory_root_marker_is_not_treated_as_absent(self, tmp_path):
+        (tmp_path / worktree.GLOBAL_CONFIG_DEFAULTS).mkdir()
+
+        with pytest.raises(worktree.WorktreeError, match="not a regular file"):
+            worktree._ciu_root_marker_present(tmp_path)
+
+    @pytest.mark.ciu_no_auto_root
+    def test_broken_root_marker_symlink_is_not_treated_as_absent(self, tmp_path):
+        marker = tmp_path / worktree.GLOBAL_CONFIG_DEFAULTS
+        marker.symlink_to(tmp_path / "missing-target")
+        raw = _raw_v1(tmp_path)
+        raw["runtime"] = {"instance_id": None, "network": None}
+
+        with pytest.raises(
+            worktree.WorktreeError, match="could not inspect CIU root marker"
+        ):
+            worktree._record_from_dict(
+                raw, tmp_path / worktree.WORKTREE_INSTANCE_RECORD
+            )
+
+    def test_ready_record_cannot_carry_recovery_status(self, tmp_path):
+        raw = _raw_v1(tmp_path)
+        raw["recovery_status"] = "env-generation-failed"
+
+        with pytest.raises(
+            worktree.WorktreeError, match="ready record carries recovery_status"
+        ):
+            worktree._record_from_dict(
+                raw, tmp_path / worktree.WORKTREE_INSTANCE_RECORD
+            )
+
+    def test_partial_runtime_identity_is_refused_even_for_aggregate_root(self, tmp_path):
+        raw = _raw_v1(tmp_path)
+        raw["runtime"] = {"instance_id": "abc123", "network": None}
+
+        with pytest.raises(worktree.WorktreeError, match="incomplete runtime identity"):
+            worktree._record_from_dict(
+                raw, tmp_path / worktree.WORKTREE_INSTANCE_RECORD
+            )
+
+    def test_unreadable_root_marker_is_not_treated_as_absent(self, monkeypatch, tmp_path):
+        raw = _raw_v1(tmp_path)
+        raw["runtime"] = {"instance_id": None, "network": None}
+        marker = tmp_path / worktree.GLOBAL_CONFIG_DEFAULTS
+        real_lstat = Path.lstat
+
+        def denied(path, *args, **kwargs):
+            if path == marker:
+                raise PermissionError("marker lstat denied")
+            return real_lstat(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "lstat", denied)
+        with pytest.raises(worktree.WorktreeError, match="could not determine.*CIU root"):
+            worktree._record_from_dict(
+                raw, tmp_path / worktree.WORKTREE_INSTANCE_RECORD
+            )
+
     def test_v1_record_reads_as_lease_none_at_version_one(self, tmp_path):
         record = worktree._record_from_dict(_raw_v1(tmp_path), tmp_path / "r.json")
         assert record.lease is None
@@ -463,9 +575,9 @@ class TestOwnRecordOperations:
 
 
 class TestLeaseTtlConfig:
-    def test_the_table_key_set_is_closed_and_now_holds_three_keys(self):
+    def test_the_table_key_set_is_closed_and_now_holds_four_keys(self):
         assert worktree.WORKTREE_TABLE_KEYS == {
-            "max_concurrent_instances", "lease_ttl_hours", "exec_targets",
+            "max_concurrent_instances", "lease_ttl_hours", "exec_targets", "up",
         }
 
     def test_absent_table_means_no_lease_behavior_at_all(self):
@@ -502,25 +614,23 @@ class TestLeaseTtlConfig:
             {"max_concurrent_instances": 2, "lease_ttl_hours": 24}
         ) == 2
 
-    def test_all_three_families_coexist_in_one_table(self):
-        """CIU-69: `[ciu.worktree]` is documented as carrying THREE key
-        families (S16.3 `max_concurrent_instances`, S16.9 `lease_ttl_hours`,
-        S16.7 `exec_targets.<alias>`), but `WORKTREE_TABLE_KEYS` used to omit
-        `exec_targets` — so a consumer who declared a budget or a lease TTL
-        in the SAME table as an exec target got a spurious
-        `[S16.3] unknown key(s)` refusal, even though `exec_targets`'s own
-        per-alias grammar is validated separately by
-        `resolve_exec_targets_config`. Declare all three together and prove
-        budget resolution, lease resolution, AND exec-target resolution all
-        accept the table without refusing."""
+    def test_all_four_families_coexist_in_one_table(self):
+        """CIU-69/125: `[ciu.worktree]` carries four key families (S16.3
+        `max_concurrent_instances`, S16.9 `lease_ttl_hours`, S16.7
+        `exec_targets.<alias>`, and S16.1 `up`). The closed key set must
+        accept them together while each reader validates its own contract."""
         worktree_table = {
             "max_concurrent_instances": 2,
             "lease_ttl_hours": 24,
             "exec_targets": {
                 "tester": {"stack": "test", "service": "tester", "workdir": "/workspace"},
             },
+            "up": ["core"],
         }
-        global_config = {"ciu": {"worktree": worktree_table}}
+        global_config = {
+            "ciu": {"worktree": worktree_table},
+            "deploy": {"profiles": {"core": {}}},
+        }
 
         assert worktree.resolve_max_concurrent_instances(worktree_table) == 2
         assert worktree.resolve_lease_ttl_hours(worktree_table) == 24.0
@@ -529,6 +639,7 @@ class TestLeaseTtlConfig:
         assert (targets["tester"].stack, targets["tester"].service, targets["tester"].workdir) == (
             "test", "tester", "/workspace",
         )
+        assert worktree.resolve_worktree_up_profiles(global_config) == ("core",)
 
     def test_resolve_from_a_repo_reads_the_primary_ciu_roots_table(
         self, tmp_repo, monkeypatch

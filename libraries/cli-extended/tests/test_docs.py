@@ -5,7 +5,10 @@ import tomllib
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
-from cli_extended import load_cli_review_catalog
+from cli_extended import CONTRACT_VERSION, load_cli_review_catalog
+from cli_extended.config import load_project_config
+from cli_extended.contract import common_control_table
+from cli_extended.findings import load_review_findings
 from cli_extended.review import (
     REVIEW_SCHEMA_VERSION,
     _REVIEW_CASE_STATES,
@@ -18,7 +21,11 @@ CANONICAL_DOCS = (
     PACKAGE_ROOT / "docs" / "DESIGN-GUIDE.md",
     PACKAGE_ROOT / "docs" / "CONSUMERS.md",
 )
-LINK_CHECK_DOCS = (*CANONICAL_DOCS, PACKAGE_ROOT / "BACKLOG.md")
+LINK_CHECK_DOCS = (
+    *CANONICAL_DOCS,
+    PACKAGE_ROOT / "BACKLOG.md",
+    PACKAGE_ROOT / "docs" / "ADOPTION-CHECKLIST.md",
+)
 FENCED_BLOCK = re.compile(r"^```([\w-]*)[^\n]*\n(.*?)^```\s*$", re.MULTILINE | re.DOTALL)
 INLINE_LINK = re.compile(r"(?<!!)\[[^\]]*\]\(([^)]+)\)")
 HEADING = re.compile(r"^#{1,6}\s+(.+?)\s*#*\s*$", re.MULTILINE)
@@ -47,12 +54,26 @@ def _heading_ids(document: str) -> set[str]:
 
 def test_canonical_document_toml_examples_parse_and_review_catalogs_load(tmp_path):
     review_examples = 0
+    config_examples = []
+    findings_examples = []
     for document_path in CANONICAL_DOCS:
         document = document_path.read_text(encoding="utf-8")
         for block_index, (language, source) in enumerate(_fenced_blocks(document)):
             if language.lower() != "toml":
                 continue
             parsed = tomllib.loads(source)
+            if "clis" in parsed or "cli-extended" in parsed.get("tool", {}):
+                name = "pyproject.toml" if "tool" in parsed else "cli-extended.toml"
+                project = tmp_path / f"{document_path.stem}-{block_index}"
+                project.mkdir()
+                (project / name).write_text(source, encoding="utf-8")
+                config_examples.append(load_project_config(project / name))
+                continue
+            if "findings" in parsed:
+                findings_path = tmp_path / f"{document_path.stem}-{block_index}-findings.toml"
+                findings_path.write_text(source, encoding="utf-8")
+                findings_examples.append(load_review_findings(findings_path))
+                continue
             if "cli_id" not in parsed:
                 continue
 
@@ -66,12 +87,32 @@ def test_canonical_document_toml_examples_parse_and_review_catalogs_load(tmp_pat
             load_cli_review_catalog(catalog_path)
 
     assert review_examples, "canonical docs must include a loader-valid review catalog example"
+    assert {path.path.name for path in config_examples} == {
+        "cli-extended.toml", "pyproject.toml",
+    }, "CONSUMERS.md must show both a cli-extended.toml and a [tool.cli-extended] example"
+    assert findings_examples, "canonical docs must include a loader-valid findings example"
 
 
 def test_review_catalog_closed_vocabularies_are_documented():
     corpus = "\n".join(path.read_text(encoding="utf-8") for path in CANONICAL_DOCS)
     for value in (*_REVIEW_CASE_STATES, *_REVIEW_DECISIONS):
         assert f"`{value}`" in corpus, f"review catalog value {value!r} is undocumented"
+
+
+def test_spec_contract_subsection_names_every_library_control():
+    """The documented contract list is checked against the code-derived table."""
+
+    spec = (PACKAGE_ROOT / "SPEC.md").read_text(encoding="utf-8")
+    start = spec.index("#### Contract v1 controls")
+    following = re.search(r"^#{1,4} ", spec[start + 5 :], re.MULTILINE)
+    section = spec[start : start + 5 + following.start()] if following else spec[start:]
+    table = common_control_table()
+    assert table
+    for canonical, entry in table.items():
+        for flag in entry["flags"]:
+            assert f"`{flag}`" in section, f"contract v1 omits {flag} ({canonical})"
+    assert "library_contract" in spec
+    assert f"version `{CONTRACT_VERSION}`" in section
 
 
 def test_library_document_markdown_links_and_anchors_resolve():
@@ -99,3 +140,15 @@ def test_library_document_markdown_links_and_anchors_resolve():
                 assert fragment in _heading_ids(target), (
                     f"{source_path} links to missing anchor #{fragment} in {target_path}"
                 )
+
+
+def test_mutation_targets_cover_every_module():
+    # A module missing from the R2 targets is never mutated, so the 100% kill
+    # gate would say nothing about it.
+    lane = tomllib.loads((PACKAGE_ROOT / "assay.toml").read_text(encoding="utf-8"))
+    targets = lane["lanes"]["cli-extended"]["judge"]["targets"]
+    modules = sorted(
+        path.relative_to(PACKAGE_ROOT).as_posix()
+        for path in (PACKAGE_ROOT / "src" / "cli_extended").glob("*.py")
+    )
+    assert targets == modules

@@ -104,6 +104,10 @@ Exit codes: 0 success · 1 runtime failure · 2 configuration/validation error
 
   MACHINE INTERFACES (D-009)
     capabilities [--json]       versioned, closed capability allowlist
+    resolve [--stack S] [--service X] [--live] --json
+                                read this instance's service identities
+    exec <stack>[:<service>] -- ARGV...
+                                run exact argv in one already-running service
 
   EVIDENCE
     provenance [--ignore-mismatch | --no-preflight] [--json]
@@ -112,7 +116,7 @@ Exit codes: 0 success · 1 runtime failure · 2 configuration/validation error
 
   STACK ORCHESTRATION
     up   [--profile NAME | --dir PATH | --layout NAME]   start Docker Compose stack
-    down [--profile NAME]                stop stack (preserve volumes)
+    down [--profile NAME | --dir PATH]  stop stack (preserve volumes)
     clean                                remove containers and volumes
     health [--profile NAME]              health gate check
     health --preflight [--strict]        probe images for missing healthcheck tools
@@ -167,8 +171,29 @@ Exit codes: 0 success · 1 runtime failure · 2 configuration/validation error
 # ---------------------------------------------------------------------------
 
 _VERB_HELP: dict[str, str] = {
+    "resolve": """\
+ciu resolve [--root-folder PATH] [--profile NAME ...] [--stack S]
+            [--service X] [--live] --json
+  Read service identities from the rendered config without writing generated
+  files or contacting Docker. The JSON shape mirrors v8's
+  `resolved.identities.<stack>.<service>` data (S18 / CIU-118).
+
+  --stack S       selected repo-relative stack path; a unique basename works
+  --profile NAME  select a deployment profile; repeat to compose profiles
+  --service X     exact Compose service key (not a substring)
+  --live          add container state and health from exact Compose labels
+  --root-folder   override the CIU repo root
+  --json          emit one versioned JSON document on stdout (required)
+""",
+    "exec": """\
+ciu exec [--root-folder PATH] [--profile NAME ...] <stack>[:<service>] -- ARGV...
+  Run exact argv in exactly one already-running service of this instance.
+  CIU does not start the stack. A matching declared
+  [ciu.worktree.exec_targets] entry applies its workdir and mount proof
+  (S16.7 / CIU-118).
+""",
     "worktree": """\
-ciu worktree create LOGICAL [--base REF]
+ciu worktree create LOGICAL [--base REF] [--up]
                              [--name DISPLAY | --prefix P --feature F]
                              [--branch BRANCH] [--path PATH]
                              [--worktree-dir DIR] [--json]
@@ -183,12 +208,13 @@ ciu worktree inspect LOGICAL [--json]
 ciu worktree lease LOGICAL (--extend DURATION | --perpetual | --release) [--json]
 ciu worktree branches [--base REF] [-y] [--json]
 ciu worktree reap [-y] [--category C1,C2] [--dry-run] [--json]
-ciu worktree up LOGICAL
+ciu worktree up LOGICAL [--all]
 ciu worktree exec LOGICAL [--target ALIAS] -- ARGV...
   Manage durable, family-scoped worktree identities. `create` is the canonical
-  operation: it creates a managed linked checkout and its CIU identity; it does
-  NOT deploy or start containers. Pass `--base REF` to choose the branch, tag,
-  or exact commit SHA under test (default: `main`). Generated UTC
+  operation: it creates a managed linked checkout and its CIU identity; it
+  does NOT deploy or start containers unless `--up` is supplied. `--up` starts
+  the project's declared selection after creation. Pass `--base REF` to choose
+  the branch, tag, or exact commit SHA under test (default: `main`). Generated UTC
   branch/directory names are identical.
 
   `ensure` is the idempotent spelling for automation: it reuses an exact ready
@@ -197,8 +223,10 @@ ciu worktree exec LOGICAL [--target ALIAS] -- ARGV...
   `adopt` is the only operation that takes ownership of an existing unmanaged
   linked checkout and prepares every committed CIU root in that checkout.
 
-  Creation, ensure, and adopt prepare an instance; use `up` as the
-  explicit start/deployment step. `exec` runs exact argv (no shell) in the
+  Creation, ensure, and adopt prepare an instance. Use `create --up` or the
+  explicit `up` verb to start it; `up --all` forces the default deploy set,
+  otherwise a declared `[ciu.worktree].up` profile list is started together.
+  `exec` runs exact argv (no shell) in the
   selected root or its declared container target and never starts anything
   implicitly. `rm` runs `ciu clean` and then removes the checkout.
 
@@ -207,6 +235,7 @@ ciu worktree exec LOGICAL [--target ALIAS] -- ARGV...
     ciu worktree ensure pkg-under-test --json
     ciu worktree inspect pkg-under-test
     ciu worktree up pkg-under-test
+    ciu worktree up pkg-under-test --all
     ciu worktree exec pkg-under-test -- pytest -q
     ciu worktree rm pkg-under-test -y
 
@@ -306,10 +335,10 @@ ciu up --host NAME --thin [--bootstrap | --rollback] [selection...] # docker-opt
   --healthcheck      run the S7.7 health gate. Combined as
                      `--deploy --healthcheck` it gates AFTER each phase, so a
                      later phase's `stack:<name>:healthy|completed`
-                     requirement is met before that phase starts. Since
+                     requirement is met before that phase starts; with `--dir`
+                     it gates the one selected stack after it starts. Since
                      CIU-68 you rarely need to type it: the gate turns itself
                      on whenever a selected stack declares such a requirement
-  --check            run the static config-validation pipeline (S13.4a)
 
   Profile/multi-stack mode:
   --profile NAME     deploy the named host profile (repeatable; default: active profile)
@@ -324,6 +353,7 @@ ciu up --host NAME --thin [--bootstrap | --rollback] [selection...] # docker-opt
   --root-folder PATH override repo root
   -y, --yes          assume yes to prompts
   --ignore-errors    continue past a failing stack
+  --check            run the static config-validation pipeline (S13.4a)
 
   Layout mode (S7.5c) — push-deploy a named host→bundles plan:
   --layout NAME      resolve [deploy.layouts.<name>] and push to each host in
@@ -333,7 +363,8 @@ ciu up --host NAME --thin [--bootstrap | --rollback] [selection...] # docker-opt
                      exported (S7.5c). A host failure aborts the sequence.
                      Mutually exclusive with --host and --profile.
 
-  Single-stack mode (`--dir`) additionally accepts engine options:
+  Single-stack mode (`--dir`) also accepts the shared `--deploy` and
+  `--healthcheck` actions, plus these engine options:
   --dir PATH         deploy one stack directory
   --render-toml      stop after rendering TOML
   --print-context    print the template context
@@ -353,16 +384,19 @@ ciu up --host NAME --thin [--bootstrap | --rollback] [selection...] # docker-opt
 """,
     "down": """\
 ciu down [--profile NAME] [--phases N,M] [--root-folder PATH]
+ciu down --dir PATH [--profile NAME ...] [--root-folder PATH]
 ciu down --host NAME [--profile NAME]
   Stop project containers; volumes are preserved (use `ciu clean` to remove them).
 
   --profile NAME     restrict to the named host profile (repeatable)
   --phases N,M       restrict to the given phase numbers
+  --dir PATH         stop only the selected stack's running Compose project
   --root-folder PATH override repo root
   --host NAME        run the stop action on a configured remote host
 """,
     "clean": """\
 ciu clean [--profile NAME] [--phases N,M] [-y] [--ignore-errors]
+ciu clean --identity OLD_ID [-y] [--root-folder PATH]
   Tear down completely: remove ALL project containers (running AND exited, incl.
   init/sidecars), `docker compose down -v --remove-orphans`, remove project
   volumes and `vol-*` hostdirs, and remove rendered artifacts. The post-clean
@@ -380,6 +414,8 @@ ciu clean [--profile NAME] [--phases N,M] [-y] [--ignore-errors]
                      freshly-cloned state. Without it they are left untouched,
                      exactly as before. Only runs when the teardown above
                      succeeded; a failed clean keeps them for the retry.
+  --identity OLD_ID  remove resources carrying a retired instance id by
+                     exact Compose labels, without loading the old config.
 """,
     "health": """\
 ciu health [--profile NAME] [--phases N,M] [--root-folder PATH]
@@ -931,6 +967,10 @@ def _wants_verb_help(verb: str, rest: list[str]) -> bool:
     `env generate --help` / `env print --help` are excluded so their own
     argparse help is reachable.
     """
+    # A command after the required separator belongs to the child verb. In
+    # particular, `ciu exec stack -- python --help` must pass --help through.
+    if verb == "exec" and "--" in rest:
+        rest = rest[:rest.index("--")]
     if "-h" not in rest and "--help" not in rest:
         return False
     if verb == "env" and rest and rest[0] in ("generate", "print"):
@@ -1486,6 +1526,71 @@ def _worktree_exec(rest: list[str], resolve_repo_root) -> int:
     return wt_mod.exec_instance(repo_root, logical_name, argv)
 
 
+def _resolve_identities_cli(rest: list[str]) -> int:
+    """CLI adapter for the read-only ``ciu resolve`` data surface."""
+    define_root, rest = _extract_define_root(rest)
+    parser = CiuArgumentParser(prog="ciu resolve", add_help=False, allow_abbrev=False)
+    parser.add_argument("--profile", action="append", default=None, metavar="NAME")
+    parser.add_argument("--stack", default=None)
+    parser.add_argument("--service", default=None)
+    parser.add_argument("--live", action="store_true")
+    parser.add_argument("--json", dest="json_output", action="store_true")
+    opts = parser.parse_args(rest)
+    if not opts.json_output:
+        print("[S18] `ciu resolve` requires --json", file=sys.stderr)
+        return 2
+    repo_root = _resolve_repo_root_deploy(define_root)
+    from .deploy import resolve_identities
+    try:
+        document = resolve_identities(
+            repo_root,
+            stack=opts.stack,
+            service=opts.service,
+            profiles=opts.profile,
+            live=opts.live,
+        )
+    except (OSError, RuntimeError, ValueError) as exc:
+        print(f"[ERROR] {exc}", file=sys.stderr)
+        return 1 if isinstance(exc, RuntimeError) else 2
+    print(json.dumps(document, indent=2, sort_keys=True))
+    return 0
+
+
+def _exec_service_cli(rest: list[str]) -> int:
+    """Parse CIU-owned flags and preserve every post-``--`` argv byte."""
+    if "--" not in rest:
+        print(
+            "[S18] `ciu exec <stack>[:<service>] -- ARGV...` requires `--`",
+            file=sys.stderr,
+        )
+        return 2
+    split = rest.index("--")
+    command_args = rest[split + 1:]
+    define_root, before_separator = _extract_define_root(rest[:split])
+    # Keep the explicit no-help and no-abbreviation contract: `--help`
+    # belongs to the top-level dispatcher and child argv stays untouched.
+    parser = CiuArgumentParser(prog="ciu exec", add_help=False, allow_abbrev=False)
+    parser.add_argument("--profile", action="append", default=None, metavar="NAME")
+    parser.add_argument("selector", nargs="?")
+    opts = parser.parse_args(before_separator)
+    if not opts.selector or not command_args:
+        print(
+            "[S18] `ciu exec <stack>[:<service>] -- ARGV...` requires a selector "
+            "and at least one command argument",
+            file=sys.stderr,
+        )
+        return 2
+    repo_root = _resolve_repo_root_deploy(define_root)
+    from .deploy import exec_service
+    try:
+        return exec_service(
+            repo_root, opts.selector, command_args, profiles=opts.profile
+        )
+    except (OSError, RuntimeError, ValueError) as exc:
+        print(f"[ERROR] {exc}", file=sys.stderr)
+        return 1 if isinstance(exc, RuntimeError) else 2
+
+
 def _worktree(rest: list[str]) -> int:
     """Handle the S16 managed-worktree lifecycle."""
     import argparse as _ap
@@ -1522,6 +1627,10 @@ def _worktree(rest: list[str]) -> int:
 
     p_create = sub.add_parser("create", add_help=False)
     p_create.add_argument("logical_name")
+    p_create.add_argument(
+        "--up", action="store_true", default=False,
+        help="start the worktree's declared environment after creation",
+    )
     add_create_options(p_create)
 
     p_ensure = sub.add_parser("ensure", add_help=False)
@@ -1591,6 +1700,10 @@ def _worktree(rest: list[str]) -> int:
 
     p_up = sub.add_parser("up", add_help=False)
     p_up.add_argument("logical_name")
+    p_up.add_argument(
+        "--all", action="store_true", default=False,
+        help="start the full default deploy set, ignoring [ciu.worktree].up",
+    )
 
     # `exec` is parsed manually in `_worktree_exec` (argparse REMAINDER can
     # neither consume a `--target` option nor keep a `--` separator intact),
@@ -1620,7 +1733,8 @@ def _worktree(rest: list[str]) -> int:
             else:
                 print(f"worktree ready: {record.git_worktree_path}")
                 print(f"  CIU root: {record.ciu_root}")
-                print(f"  next: cd {record.ciu_root} && ciu up")
+                if not (opts.action == "create" and opts.up):
+                    print(f"  next: cd {record.ciu_root} && ciu up")
 
         if opts.action in ("create", "ensure"):
             lifecycle = wt_mod.create if opts.action == "create" else wt_mod.ensure
@@ -1634,6 +1748,17 @@ def _worktree(rest: list[str]) -> int:
                 shared_infra_ref_services=opts.shared_infra_ref_services,
             )
             emit_record(opts.action, record)
+            if opts.action == "create" and opts.up:
+                rc = wt_mod.up_instance(repo_root, opts.logical_name)
+                if rc != 0:
+                    print(
+                        f"[ERROR] worktree creation succeeded but `ciu worktree "
+                        f"up {opts.logical_name}` failed (exit {rc}); the "
+                        f"checkout is preserved. Retry with `ciu worktree up "
+                        f"{opts.logical_name}`.",
+                        file=sys.stderr,
+                    )
+                    return rc
             return 0
 
         if opts.action == "adopt":
@@ -1699,6 +1824,10 @@ def _worktree(rest: list[str]) -> int:
             return 0
 
         if opts.action == "up":
+            if opts.all:
+                return wt_mod.up_instance(
+                    repo_root, opts.logical_name, all_profiles=True,
+                )
             return wt_mod.up_instance(repo_root, opts.logical_name)
 
         if opts.action == "branches":
@@ -2149,10 +2278,46 @@ def main() -> None:
             # an "sh -c" wrapper here would be re-split and break "&&"/cd. The login
             # shell ssh spawns already interprets the operators natively.
             raise SystemExit(ssh_exec(host_cfg, [remote_cmd], config=config, repo_root=repo_root))
+        if _flag_given(rest, "--dir"):
+            define_root, rest = _extract_define_root(rest)
+            parser = CiuArgumentParser(prog="ciu down --dir")
+            parser.add_argument("--dir", metavar="PATH")
+            parser.add_argument("--profile", action="append", default=None, metavar="NAME")
+            opts = parser.parse_args(rest)
+            repo_root = _resolve_repo_root_deploy(define_root)
+            from .deploy import stop_stack
+            try:
+                rc = stop_stack(repo_root, opts.dir, profiles=opts.profile)
+            except ValueError as exc:
+                print(f"[ERROR] {exc}", file=sys.stderr)
+                raise SystemExit(2)
+            except (OSError, RuntimeError) as exc:
+                print(f"[ERROR] {exc}", file=sys.stderr)
+                raise SystemExit(1)
+            raise SystemExit(rc)
         from .deploy import main as deploy_main
         raise SystemExit(deploy_main(["--stop"] + rest))
 
     elif verb == "clean":
+        if _flag_given(rest, "--identity"):
+            import argparse as _ap
+            define_root, rest = _extract_define_root(rest)
+            parser = CiuArgumentParser(prog="ciu clean --identity")
+            parser.add_argument("--identity", metavar="OLD_ID")
+            parser.add_argument("-y", "--yes", action="store_true")
+            opts, remaining = parser.parse_known_args(rest)
+            if remaining:
+                print(
+                    "[ERROR] --identity cannot be combined with ordinary clean "
+                    f"options: {' '.join(remaining)}",
+                    file=sys.stderr,
+                )
+                raise SystemExit(2)
+            repo_root = _resolve_repo_root_deploy(define_root)
+            from .deploy import action_clean_identity
+            raise SystemExit(
+                action_clean_identity(repo_root, opts.identity, yes=opts.yes)
+            )
         from .deploy import main as deploy_main
         raise SystemExit(deploy_main(["--clean"] + rest))
 
@@ -2219,6 +2384,12 @@ def main() -> None:
 
     elif verb == "worktree":
         raise SystemExit(_worktree(rest))
+
+    elif verb == "resolve":
+        raise SystemExit(_resolve_identities_cli(rest))
+
+    elif verb == "exec":
+        raise SystemExit(_exec_service_cli(rest))
 
     elif verb == "capabilities":
         import argparse as _ap

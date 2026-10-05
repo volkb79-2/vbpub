@@ -23,15 +23,11 @@
 # tags/releases are the publish identity, derived by setuptools-scm from the
 # tag this config's strategy mints.
 #
-# ONE-TIME TRANSITIONAL GOTCHA for the FIRST release only: `strategy = "scm"`
-# asks cmru to auto-bump the version from the last matching tag, but the
-# pre-existing tag `run-gate-v22` is a bare integer, not semver — cmru's
-# `bump_version()` cannot parse it and `cmru status`/`cmru release` CRASH
-# (`ValueError: Cannot parse version: '22'`) without an explicit override.
-# The first release MUST pass `--set-version 23.0.0` (bare semver, NO
-# `run-gate-v` prefix — passing the prefixed form double-prefixes the tag).
-# Every release after that resolves normally: the new tag is real semver, so
-# auto-bump has something parseable to work from.
+# Historical bootstrap note: the first semver release followed the bare
+# integer tag `run-gate-v22`, so it used `--set-version 23.0.0`. Semver tags
+# have existed since then; routine releases should omit `--set-version` and
+# let SCM apply the configured conventional bump. For a deliberate override,
+# pass a bare semver (never the `run-gate-v`-prefixed tag).
 # =============================================================================
 schema_version = 1
 

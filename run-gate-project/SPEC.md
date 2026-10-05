@@ -59,16 +59,37 @@ launcher installs Assay from the selected worktree and records the runtime
 judge identity, while explicit command-plus-pin mode remains for external
 consumers. The tester-unified image supplies the declared build backend and a
 writable runtime venv for that source install.
-Rev 13 (run-gate rev 50): RG-49 state-root preflight and declarable durable
-mount; an unavailable root is NOT_RUN/`state-mount` before Assay.
 Rev 12 (run-gate rev 49): RG-66 selective assay requests; RG-68 completed FAIL
 footprints; RG-69 merged lane manifest updates; RG-71 declared command args;
 RG-72 failure digests and retained artifacts; RG-74 trunk bases and native
 sequences; RG-76 v8-shaped assay inventory imports; RG-77 documents the
 existing durable state-dir contract; RG-78's closed result table and explicit
 modes; RG-80's off-by-default Docker-name count admission, owner tuple,
-deadlines, and janitor. RG-49's durable-root preflight and `state_root` setting
-follow in rev 13 (run-gate rev 50).
+deadlines, and janitor.
+Rev 13 (run-gate rev 50): RG-49 state-root preflight and declarable durable
+mount; an unavailable root is NOT_RUN/`state-mount` before Assay.
+Rev 14 (run-gate rev 51): RG-64 `status` reads internal exec locks, selected
+tree inflight records, and RG-80 admission state; `doctor` checks enabled
+admission image and published count policy.
+Rev 15 (run-gate rev 52): RG-81 verifies source imports without executing a
+project-local shadow package, compares full SHA-1/SHA-256 IDs at Run-Gate's
+source-identity boundary (Assay P22 snapshots still require SHA-1), and
+records the Assay identity mode in inflight schema 2 so re-attachment uses the
+launch-time verdict contract; external artifact mode retains `judge_provenance`.
+Recovery preflight checks the requested lane, sequence nodes, and all sequence
+members before imported Assay inventory or admission; foreign-runner records
+and records left under a lane now configured as a sequence refuse there too.
+Rev 16 (run-gate rev 53): RG-81 recovery also refuses container records when a
+leaf's current mode changed to host or exec, applies lane mounts and user to
+ephemeral Assay inventory probes, and returns a closed refusal for malformed
+sequence-record identity values.
+Rev 17 (run-gate rev 54): RG-49 hashes an external project's resolved path for
+its durable Assay state key; project paths inside the checkout keep their
+existing relative layout.
+Rev 18 (run-gate rev 55): RG-84 refuses to run as container PID 1 and compares
+the run-gate cgroup's `pids.events:max` and `memory.events:oom_kill` around
+each real lane; any resource event or unreadable comparison returns
+infrastructure ERROR with the raw lane status retained.
 Distilled from `README.md` (design
 authority), `CONSUMERS.md` (adoption contract), `HANDOFF-P01` (build contract)
 and the controller's session amendments (§8). Requirement IDs (`R-xx`) are the
@@ -135,7 +156,10 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   `footprint --include-failed` admits completed profiled FAIL measurements;
   repeatable `footprint --write --lane NAME` merges selected entries (RG-68/69).
   `admission set|show`, `--admission-wait`, and `--override-admission` are
-  the RG-80 daemon-wide count-cap interface.
+  the RG-80 daemon-wide count-cap interface. `status [--worktree PATH]
+  [--json]` reports selected-tree inflight records plus host-wide internal
+  exec locks and Docker admission tickets/tombstones (RG-64/RG-80); it is a
+  reserved lane name.
 - `R-02` `--worktree PATH` overrides the judged worktree (daemon substitutes
   its attempt path textually before invoking) AND the source of every config
   read. First discover the invoking project as usual, then preserve its path
@@ -143,7 +167,7 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   `<worktree>/<project-relative-to-toplevel>`. Load that project's
   `run-gate.toml` and the nearest ancestor `run-gate.root.toml` inside the
   selected tree before resolving lanes, including for `--help`, `--list`,
-  `doctor`, `history`, `footprint`, and `--check-env`. A missing selected
+  `doctor`, `history`, `footprint`, `status`, and `--check-env`. A missing selected
   `run-gate.toml` is a configuration refusal naming the path; never fall back
   to the invoking checkout's project or central config. This preserves
   monorepo project layout while making CWD irrelevant to the judged policy.
@@ -186,6 +210,18 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   `log_path`, `assay_outcome`, and `admission`. The human lane summary names
   verdict, raw code when present, reason when present, and log path when one
   exists.
+- `R-04c` run-gate refuses to start as PID 1, because no init process exists
+  to reap orphaned lane processes. The one `--version` operation remains
+  available without configuration; other invocations return ERROR with the
+  remedy to start Docker containers with `--init` or Compose services with
+  `init: true`. Before and after every real lane execution, run-gate reads
+  `pids.events` (`max`) and `memory.events` (`oom_kill`) from the cgroup
+  containing this run-gate process, resolving its cgroup v2 path from
+  `/proc/self/cgroup`. An increment in either counter forces ERROR regardless
+  of the lane's raw status, retaining that status as `exit_code`. If the
+  post-lane counters cannot be read, the cgroup changes, or either counter
+  moves backwards, run-gate returns infrastructure ERROR and retains the raw
+  status when it was available. Dry runs do not sample counters.
 - `R-05` The tool prints, before executing: the selected project config path
   (`run-gate: config: <path>`), revision, lane name, environment source,
   resolved slice + its source (on exec lanes this is naming-only disclosure
@@ -421,7 +457,8 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   dir>` still reaches the right files while the container's network/env are
   wrong. A missing worktree config is a refusal naming that path and telling
   the operator to start this worktree's own test-runner with
-  `ciu up --dir <test-runner stack> --deploy --healthcheck`. A declared
+  `ciu up --dir <test-runner stack> --deploy --healthcheck`; this remedy
+  requires CIU 7.15.2 or newer (CIU-124). A declared
   `container_name` remains an explicit alternative and uses the project's
   own deployment authority. The resolved name source names the judged
   worktree config. Before `docker exec`, `docker ps` must confirm a
@@ -591,6 +628,32 @@ disagree, §8 amendments win, then README, then CONSUMERS.
     PSI, stack placeholders, and the stacks tier remain outside the v7
     contract. The object names, ticket labels, owner grammar, and count
     semantics are the CIU v8 S21 port surface.
+
+- `R-51` **Runner occupancy status (RG-64/RG-80).** `status
+  [--worktree PATH] [--json]` is read-only and returns one result using the
+  closed exit table. Its project-scoped source is the selected project's
+  `.run-gate/inflight/*.json`; its host-wide sources are run-gate's
+  `/tmp/run-gate-exec-<container>.lock` files plus `/proc/locks`, and the
+  local Docker daemon's published `ciu-admission-<g>` object, ticket labels,
+  run markers, and tombstones. The lock files contain no owner metadata, so
+  status joins their device/inode identities to `FLOCK` records in the
+  configured proc root. It reports holder and waiter PIDs and liveness; a
+  lane name comes from a matching inflight record or process argv when
+  readable. Missing PID visibility is `unknown`, not an empty or dead owner.
+  Inflight and admission owners are dead only when the reader proves the same
+  boot and PID namespace and the pid is absent, a zombie, or has different
+  start ticks. Docker status reads labels through the RG-80 shared grammar;
+  it never calls `reap`, `create`, `start`, `stop`, or `rm`. No source error is
+  treated as an empty list: JSON reports partial sources, `verdict = ERROR`,
+  and exit code 2. `--worktree` changes the config and inflight scope, not the
+  host lock or Docker daemon scope. `doctor`, only when `[admission]
+  enabled = true`, checks the configured `ticket_image` with `docker image
+  inspect`, requires a valid published object, and requires a readable
+  positive `max_concurrent`; the image check does not run a container. Each
+  failed check names a safe local repair when one exists. If a visible
+  publication has unreadable identity labels, doctor names it and says that
+  `admission set` refuses to replace it rather than prescribing that command
+  as a false repair.
 
 - `R-19a` **safe.directory scope:** both ephemeral and exec inner commands set
   `GIT_CONFIG_GLOBAL=/tmp/run-gate-gitconfig` before running `git config
@@ -1457,8 +1520,10 @@ disagree, §8 amendments win, then README, then CONSUMERS.
     plus the effective project path relative to that checkout. Thus a
     removed CIU-managed worktree can be recreated without losing resumable
     candidate state, and nested projects with the same basename stay
-    separate. When the effective project is outside that checkout, the key
-    is derived from its sanitized resolved path. An environment may declare
+    separate. When the effective project is outside that checkout, it uses
+    `assay-state-external/<sha256>` keyed by the resolved absolute path. This
+    separate namespace avoids both separator collisions and aliases with
+    in-checkout project keys. An environment may declare
     `state_root` to name the in-container mount point when it differs from
     `<repo>/.run-gate`; the same helper builds the argv and disclosed
     state-directory line.

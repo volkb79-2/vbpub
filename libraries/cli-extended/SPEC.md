@@ -19,6 +19,18 @@ tool's package metadata, declared version module, or another checked-in source
 of truth. A CLI must not invent a fallback version that can silently become
 false.
 
+`CliIdentity.resolve(name=, long_name=, command=, distribution=,
+version_file=)` is the shared resolver for a CLI that has an installed
+distribution, a checked-in version file, or both. At least one source is
+required (`ValueError` otherwise) and a `version_file` must be an absolute
+path. Every given source is consulted: a distribution that is not installed or
+a version file that does not exist is "unresolved", while a version file whose
+stripped content is not `MAJOR.MINOR.PATCH` with an optional `-`/`+`/`.`
+suffix is an error. When both sources resolve they must agree; a disagreement
+raises `VersionLookupError` naming both sources and values. When none resolve,
+`VersionLookupError` lists every source tried. There is never a literal
+fallback.
+
 The first line of every human-facing help or usage document is the product's
 short name, version, and long name:
 
@@ -252,6 +264,14 @@ secrets may be exposed and must not be copied into shared logs. Raw mode must
 remain opt-in per invocation; it must not be enabled by a persistent default,
 ordinary debug environment variable, or a config-file default.
 
+`--traceback` exists only when the registry sets `unexpected_exceptions="report"`
+(see section 6). It is a library-owned DEBUGGING option accepted before or
+after the verb, exactly like `--debug-raw`. When given, an unexpected
+exception is re-raised unchanged instead of being reported. In the default
+`"raise"` policy the option does not exist and is a usage error (exit `2`).
+A consumer must not declare its own `--traceback` in `"report"` mode;
+`build()` refuses it with `ValueError`.
+
 ### Severity and verbosity
 
 Human-readable diagnostic and progress messages use a small, stable severity
@@ -335,6 +355,20 @@ The shared confirmation helper may own default-no prompting, TTY refusal, and
 EOF handling, but the CLI owner must validate the exact target/change first
 and call confirmation immediately before making that change.
 
+`--dry-run` is a library-owned CONFIRMATION option added to a verb declared
+with `VerbSpec(mutating=True, dry_run=True)`; `dry_run=True` without
+`mutating=True` raises `ValueError`. It behaves like `--json` in every
+respect: the root parser accepts it before the verb when any verb has it, and
+a verb without it refuses it with exit `2` and that verb's help (before the
+verb with `--dry-run is not supported for verb 'x'`). It sets
+`runtime.dry_run`. While `runtime.dry_run` is true, `runtime.confirm()` is
+checked first: it never prompts, never reads stdin and never honors `--yes`;
+it emits `Dry run: no changes made.` (info, forced) and returns `False`, so a
+handler that gates its mutation on `confirm()` is dry-run-safe. A handler
+still owns any preview output it wants to print before calling `confirm()`.
+When any verb uses `dry_run=True`, a consumer option declaring `--dry-run`
+is refused at `build()`; otherwise a consumer's own `--dry-run` stays legal.
+
 The normal interactive prompt must clearly state what will change. A declined
 prompt and an intentional Ctrl-C are clean cancellations, not tracebacks.
 When stdin is not interactive, a command must not attempt a prompt that will
@@ -398,6 +432,91 @@ on both sides of a verb, validation must span the whole invocation: mutually
 exclusive controls such as `--quiet` and `--debug` must not become
 last-one-wins merely because they were parsed by different command levels.
 
+### Declared option constraints
+
+A verb MAY declare structural relationships between its options in
+`VerbSpec.constraints`, a tuple of `Requires(option, any_of, reason)`,
+`Conflicts(options, reason)` and `RequiresChoice(option, target, values,
+reason)` (exported from `cli_extended`; `Constraint` names the union).
+
+1. **Shape.** Every flag is a string starting with `--`. `reason` is a
+   non-empty single line owned by the consumer. `Requires.any_of` has at least
+   one flag, `Conflicts.options` at least two, `RequiresChoice.values` is a
+   non-empty tuple of strings; no flag list repeats a flag and `option` never
+   appears in its own lists (`RequiresChoice.option` differs from `target`).
+   A violation raises `ValueError` when the constraint is constructed.
+   `VerbSpec.constraints` that is not a tuple of constraints raises
+   `TypeError`; a verb that delegates to another CLI MUST NOT declare
+   constraints (`ValueError`): the child CLI carries its own.
+2. **Registration-time validation.** `CliRegistry.build()` MUST raise
+   `ValueError` naming the verb and the flag when a referenced flag is not
+   accepted by that verb's parser (verb-local, global, or an enabled library
+   control such as `--json`, `--dry-run`, `--yes`); when a referenced action's
+   default is not `None`, `False`, or an empty list or tuple; when a
+   `RequiresChoice` target declares no `choices`; or when a `RequiresChoice`
+   value is not equal to one of the target's `choices`. It MUST also raise
+   when presence of a referenced option cannot be read from its value: its
+   `dest` is shared with a different action of that parser (for example
+   `--color`/`--no-color`, or a consumer `store_true`/`store_false` pair);
+   its `nargs` is `"*"`; or its `nargs` is `"?"` and its `const` equals its
+   default. A `RequiresChoice` target that is list-valued (`append`/`extend`
+   action, or `nargs` other than none or `"?"`) MUST also raise.
+3. **Presence.** An option is *present* when its parsed value differs from the
+   action's default: not `None` for a `None` default, not `False` for a
+   `False` default, non-empty for an empty list or tuple default. A value left
+   at a suppressed default (a repeated global or library control) is absent.
+   Rule 2 exists so presence cannot be misdetected. A verb option without an
+   explicit `default` keeps argparse's own default (`None`, `False` for
+   `store_true`, and so on), so a handler can read every declared option as an
+   attribute whether or not it was given. The one exception is an option whose
+   `dest` equals a destination the root parser defines (a global option or a
+   library control): its default is suppressed so the verb parser cannot
+   overwrite the value the root already parsed. An explicit `default=` is
+   always honoured.
+4. **Enforcement.** After argparse succeeds and after the refusals for
+   unsupported `--json`, `--dry-run` and `--progress`, and before the runtime
+   is built or the handler runs, the first violated constraint in declaration
+   order MUST be refused with exit status `2` and the verb's help (a
+   `CliFailure(exit_code=2, show_help=True)`). A global option behaves the same
+   before and after the verb. Constraints are evaluated once per invocation and
+   never read configuration or runtime state.
+5. **Refusal text.** The first stderr line is `[ERROR] ` followed by exactly:
+   - `Requires`: `<option> requires <any_of joined by " or ">: <reason>`
+   - `Conflicts`: `<present options in declared order joined by " and "> cannot
+     be used together: <reason>`
+   - `RequiresChoice`: `<option> requires <target> <values joined by "|">:
+     <reason>`
+6. **Help and reference.** Command help MUST gain a `CONSTRAINTS` section
+   after the options, one line per constraint in declaration order, using the
+   same three templates (a `Conflicts` line lists all of its options). The
+   Markdown reference renders the same lines under a `Constraints` heading for
+   that verb.
+7. **Scope.** Constraints are structural. A rule that depends on loaded
+   configuration, runtime state, or domain data stays in the handler. See
+   [the design guide](docs/DESIGN-GUIDE.md#declare-option-constraints-structurally).
+
+### Selector lists
+
+`SelectorList(choices=None, *, all_token="all", separator=",")` is a callable
+argparse `type` for "all, or these names".
+
+1. `text.strip() == all_token` returns `tuple(choices)` when `choices` is set,
+   otherwise the sentinel `SelectorList.ALL` (`repr` is `SelectorList.ALL`).
+2. Otherwise the text is split on `separator` and each item stripped. In this
+   order: an empty item raises `ArgumentTypeError("empty selector item in
+   '<text>'")`; `all_token` among several items raises `"'<all_token>' cannot be
+   combined with other names"`; a repeated name raises `"duplicate selector
+   '<name>'"`; with `choices`, an unknown name raises `"unknown selector
+   '<name>'; choose from <choices joined by ', '> or <all_token>"`.
+3. The result is a tuple of the names in the order given.
+4. The constructor raises `ValueError` unless `choices` is `None` or a
+   non-empty sequence of unique non-empty strings without surrounding
+   whitespace, not equal to `all_token` and not containing `separator`;
+   `separator` is a single non-space character; `all_token` is a non-empty
+   string without surrounding whitespace or the separator.
+5. Because it raises `ArgumentTypeError`, a bad value is an ordinary argparse
+   usage error: exit `2` and the verb's help.
+
 ## 6. Errors, exceptions, and cancellation
 
 The CLI distinguishes expected operator errors from programming failures.
@@ -416,6 +535,15 @@ The CLI distinguishes expected operator errors from programming failures.
   programming or environment failure and may print its traceback to stderr.
   This distinction must not be hidden by a broad `except Exception` that turns
   every bug into an uninformative message.
+- The registry's `unexpected_exceptions` policy chooses what happens to an
+  exception that is not handled by the boundary. `"raise"` (the default)
+  keeps the behavior above. `"report"` renders it as
+  `[ERROR] unexpected <Type>: <message>` with the hint
+  `rerun with --traceback to see the stack`, exits `1`, and adds the
+  library-owned `--traceback` option, which re-raises the original exception.
+  Any other value is a `ValueError`. A delegated CLI must use the same policy
+  as its parent. `CliRegistry(expected_exceptions=...)` and the
+  `expected_exceptions=` argument of `run()` are unioned.
 - `--debug` may add diagnostic context for handled failures, but normal
   operation still uses the same meaningful error and exit status. It does not
   authorize raw tracebacks for exceptions the CLI has deliberately handled.
@@ -530,6 +658,29 @@ The test suite for every adopted CLI must prove at least:
 Tests should exercise the real entrypoint or module invocation, not only helper
 functions. A controlled bad input must demonstrate that each safety/error
 oracle actually goes red before the fix.
+
+Subprocess test helpers (`cli_extended.testing`):
+
+- `invoke_script(script, argv, *, home, python=None, scrub_prefixes=(),
+  env=None, cwd=None, timeout=60, pythonpath=())`, `invoke_module(module,
+  argv, ...)` and `make_invoker(target, *, module=False, **kwargs)` run the
+  real executable and return `subprocess.CompletedProcess[str]` (or the
+  one-argument callable `assert_cli_contract` expects).
+- `home` is a required keyword and MUST be non-empty (`TypeError` when absent,
+  `ValueError` when empty). The child gets `HOME` and `XDG_CONFIG_HOME`,
+  `XDG_DATA_HOME`, `XDG_CACHE_HOME`, `XDG_STATE_HOME` under it and `NO_COLOR=1`.
+- The child environment is the parent's minus `FORCE_COLOR`, `CLICOLOR_FORCE`,
+  `CLAUDE_CONFIG_DIR` and every key starting with a `scrub_prefixes` entry.
+- `home` MUST be absolute (`ValueError` otherwise). `env` MUST NOT contain
+  `HOME` or any `XDG_*_HOME` key (`ValueError` naming the key); `home` is the
+  only source. An empty string in `scrub_prefixes` is a `ValueError`.
+- `PYTHONPATH` is the directory of the imported `cli_extended` package, then
+  `pythonpath`, then any inherited value, but the library directory is added
+  only when `python` is None (the same interpreter). With an explicit `python`
+  the caller supplies `pythonpath` itself, because an installed library
+  directory is a whole `site-packages` that must not leak into a foreign
+  interpreter. `env` is applied last; a `None` value deletes the key.
+  `timeout` is a failsafe only.
 
 Every adoption MUST keep two contracts distinct: the generated grammar
 inventory and the product's semantic command inventory. The product's
@@ -716,7 +867,10 @@ delegated paths, positional and option IDs/shapes, option aliases, defaults,
 choices, requiredness, scope/placement, exclusive groups, synopsis, behavior
 and confirmation policy, parser-scoped `allow_abbrev`, argparse's
 negative-number matcher and whether that parser registers negative-number-like
-options, and actions added by parser callbacks. The JSON surface schema version is `6`; each route records
+options, and actions added by parser callbacks. The syntax of library-owned
+common controls is not part of this inventory; see
+[Library contract and contract version](#library-contract-and-contract-version).
+The JSON surface schema version is `7`; each route records
 `single_command` and `no_args_action`, and those values participate in
 candidate signatures so a change to empty-invocation behavior requires review.
 Both route fields MUST be booleans. Markdown rendering MUST refuse a route
@@ -855,10 +1009,10 @@ different product meaning. It MUST NOT enumerate the
 full power set of switches. The default cap is 512 candidates; a product may
 raise the cap explicitly. The exporter MUST fail on overflow instead of
 truncating. The standard library owns its common controls such as verbosity,
-color, and progress behavior; their syntax remains in the manifest, while
-product-sensitive common options (`--json`, `--yes`, and `--debug-raw`) remain
-review candidates. A product-specific common-option interaction belongs in
-its TOML catalog.
+color, and progress behavior; they are covered by the library contract version,
+not by the consumer's signatures, while product-sensitive common options
+(`--json`, `--yes`, `--debug-raw`, and `--dry-run`) remain review candidates.
+A product-specific common-option interaction belongs in its TOML catalog.
 
 Callable converters and custom argparse actions are reported by stable import
 label and marked opaque. An opaque validator does not make otherwise visible
@@ -967,3 +1121,384 @@ defaulted value does, which options conflict or depend on one another, and
 which files, state, network, credentials, confirmation, and output each case
 can affect. The generic library reports surface facts; it does not decide
 whether a product supports the right use cases.
+
+### Library contract and contract version
+
+Library-owned common controls are versioned separately from a consumer's
+reviewed grammar. The library exposes one integer `CONTRACT_VERSION`
+(`cli_extended.contract`), starting at `1`, and one name,
+`LIBRARY_CONTRACT_NAME = "cli-extended"`.
+
+1. **Ownership by creation.** A control is library-owned when
+   `add_common_options` created its argparse action; the action carries an
+   internal marker. Ownership MUST NOT be inferred from flag spelling. A
+   consumer `OptionSpec` spelled `--json` or `--dry-run` is consumer grammar:
+   it appears in the route's `actions` with its real scope and is covered by
+   the consumer's signatures.
+2. **Manifest.** The manifest MUST record a top-level
+   `library_contract: {"name": "cli-extended", "version": <int>}` and, per
+   route, a sorted `common_controls` list of the canonical flags of the
+   library-owned controls enabled on that route. Library-owned controls MUST
+   NOT appear in a route's `actions`. Help text, metavar, default, and action
+   class of a library control MUST NOT appear anywhere in the manifest.
+3. **Markdown.** The generated region header MUST state the contract version
+   once, in the region header. Each route renders exactly one line,
+   `Common controls: <flags>`, in sorted
+   canonical order, and no option rows for library controls.
+4. **What signatures cover.** A consumer's candidate signatures cover only
+   consumer-declared grammar. For the review candidates of
+   `--json`, `--yes`, `--debug-raw`, and `--dry-run` (the
+   `CONSUMER_REVIEWED_COMMON_FLAGS`), the candidate `id` and `kind` are
+   unchanged and the signature context contains only the control's canonical
+   flag, the route, and the route's required baseline. No other library
+   control produces a candidate. Upgrading the library without changing
+   `CONTRACT_VERSION` MUST leave every consumer's signatures unchanged. This
+   binds every release after 0.2.0, the first release of contract version 1;
+   the 0.2.0 export (manifest schema 7, including verb options exported with
+   their real `None`/`False` defaults) is the version-1 baseline.
+5. **A contract bump is one finding.** `CONTRACT_VERSION` MUST change when a
+   library control's accepted syntax or meaning changes in a way consumers must
+   re-review (a flag added, removed, renamed; arity, choices, or placement
+   changed). When the committed manifest records a different
+   `library_contract.version`, check MUST report exactly one finding,
+   `cli-extended contract changed v<old> → v<new>; read cli-extended CHANGES.md
+   contract notes, then run sync`, fail, and omit per-case signature and
+   stale-file findings that stem from the change. A manifest with no
+   `library_contract` record, or an unusable one, falls through to the ordinary
+   stale-manifest comparison.
+6. **Invocation checking.** Check mode MUST validate invocations that use
+   library controls from the library's control table (arity, value choices,
+   placement) together with the route's `common_controls`. A control that the
+   route does not enable is an unrecognized option.
+7. **Single source.** The control table MUST be derived by building a scratch
+   parser with `add_common_options` and every `include_*` option enabled. No
+   other module may restate the control list.
+
+#### Contract v1 controls
+
+Contract version `1` covers these controls: `--help`, `--version`,
+`--log-level`, `--quiet`, `--debug` (alias `--verbose`), `--debug-raw`,
+`--color`, `--no-color`, `--json`, `--progress`, `--yes`, `--dry-run`, and
+`--traceback`. Whether a route enables `--json`, `--progress`, `--yes`, and
+`--dry-run` follows its verb registration, and `--traceback` is present only
+when the registry uses `unexpected_exceptions="report"`; the other controls are
+always present.
+
+### Project configuration, findings and the `cli-extended` command
+
+1. **Config schema.** `[tool.cli-extended]` in `pyproject.toml`, or the same
+   keys at the top level of a standalone `cli-extended.toml`: `schema_version`
+   (integer, MUST be `1`) and one or more `[[clis]]` tables with `id` and
+   `factory` (required) and `review`, `manifest`, `spec`, `findings`
+   (optional; `manifest` and `spec` MUST be given together). An unknown key at
+   any level, a duplicate `id`, or a wrong `schema_version` is a `ConfigError`
+   naming the key and the file. Relative paths resolve against the config
+   file's directory.
+2. **Discovery.** `--config PATH` loads exactly that file (a file named
+   `pyproject.toml` MUST have the `tool.cli-extended` table; any other name
+   uses the standalone schema). Otherwise discovery walks up from the current
+   directory; the first directory holding `cli-extended.toml` or a
+   `pyproject.toml` with the table wins. Both in one directory is an error;
+   none found is an error listing the searched directories. `--cli ID` is
+   required when several CLIs are configured, and `id` MUST equal the registered
+   executable name. A malformed or unreadable `pyproject.toml` or
+   `cli-extended.toml` met during the walk is a `ConfigError` naming the file
+   (it is never skipped); the remedy is `--config PATH`. A `factory` target is a
+   file path when it contains `/` or ends in `.py`; Windows path separators are
+   unsupported, so a target with only a backslash is a module name.
+3. **Findings file.** `schema_version = 1`, `cli_id`, and `[[findings]]` with a
+   unique `id` (`[A-Za-z0-9][A-Za-z0-9._-]*`), `status` (`open`, `fixed`,
+   `wontfix`), `severity` (`blocker`, `major`, `minor`, `note`), `category`
+   (`grammar`, `help`, `semantics`, `consistency`, `adoption`), `summary`, an
+   optional `route` ID, `remedy` (required when `open`) and `rationale`
+   (required when `wontfix`). Unknown keys or values are a `FindingsError`.
+4. **Check semantics.** With a findings file, `cli_id` MUST match the
+   executable. A finding (any status) whose `route` is not a current route ID
+   is `stale finding <id>: route <r> no longer exists`. Each open `blocker` or
+   `major` is `open <severity> finding <id>: <summary>` and fails the check;
+   open `minor`/`note` findings are returned in `SurfaceReport.notes` and do
+   not fail it. `sync` renders `### Open review findings` at the end of the
+   marked region (severity order blocker to note, then id; `None.` when none)
+   and omits it when no findings file is configured.
+5. **Commands.** `cli-extended surface sync|check|template|pack|report` and
+   `cli-extended skills ...`, each surface verb taking `--config` and `--cli`
+   (`sync`/`check`/`template` also `--max-candidates N`, `N >= 1`). Exit
+   status: `sync` 0, `check` 0 or 1, `template` 0, any config, catalog,
+   findings, surface or import error 2. A failure while importing or calling
+   the configured factory (any exception, whatever its type) is a configuration
+   error, exit 2:
+   `cannot load CLI factory '<factory>' for '<id>': <ExcType>: <message>`; a
+   missing factory file names the file in the message. Findings print as `[REVIEW] ...` and
+   non-failing notes as `[NOTE] ...` on stderr.
+6. **Report.** `surface report` prints Markdown: `# CLI review report: <id>`,
+   then `## Open findings`, `## Cases awaiting review` (new, pending, changed,
+   reappeared), `## Stale cases` and `## Incomplete syntax`, each `None.` when
+   empty.
+7. **Pack.** `surface pack [--output FILE]` writes one deterministic Markdown
+   bundle: the packaged rubric verbatim, `## CLI` (identity, contract version,
+   surface schema version), `## Help` (the plain `help` output of the root and
+   every route), `## Cases to review` (id, kind, shape and current catalog row
+   of every awaiting and stale case), `## Open findings` and `## Your task`.
+   Two runs over the same inputs MUST produce identical bytes: help is rendered
+   at a fixed width of 100 columns regardless of `COLUMNS` or the terminal, and
+   without colour.
+9. **No library-independent colour.** On Pythons whose `argparse` accepts a
+   `color` argument, `ExtendedArgumentParser` passes `color=False`, so the
+   library's own policy (`--color`, `--no-color`, `NO_COLOR`, TTY detection) is
+   the only source of colour; `FORCE_COLOR` MUST NOT colour argparse's `usage:`
+   or section headings. On Python versions whose `argparse` colours its own
+   output, that native palette is disabled, so every colour comes from the
+   cli-extended policy; this is a visible palette change on a TTY.
+10. **Deprecation.** `python -m cli_extended.surface_cli` keeps its flags and
+   behaviour, writes `[WARN] ... is deprecated` to stderr first, and is
+   removed in a later release.
+11. **Audit.** `cli-extended audit [--config PATH] [--cli ID] [--json]` is
+    read-only and takes the same project options as the surface verbs. It
+    loads the configured CLI and reports one item per mechanical check, in the
+    order of `docs/ADOPTION-CHECKLIST.md`. An item has `check` (the
+    `audit:<name>` of exactly one checklist row), `checklist_id` (`AC-NN`),
+    `status` (`pass`, `warn`, `fail` or `manual`), `summary`, `evidence` (a
+    list of strings) and `remedy` (a string or null). Checks that scan source
+    text begin their summary with `heuristic:`; anything needing judgement is
+    `manual`, never `pass`. Text output is one
+    `[PASS|WARN|FAIL|MANUAL] AC-NN <check>: <summary>` line per item, each
+    followed by indented `evidence:` lines and one `remedy:` line when present,
+    then `audit: N pass, N warn, N fail, N manual`. `--json` prints
+    `{"cli": id, "items": [...], "summary": {"pass": N, "warn": N, "fail": N,
+    "manual": N}}`. Exit status: 1 when any item is `fail`, otherwise 0
+    (`warn` and `manual` never fail); any configuration, factory, catalog or
+    import error is 2.
+12. **Pytest plugin.** `cli_extended.pytest_plugin` is opt-in
+   (`pytest_plugins = ["cli_extended.pytest_plugin"]`) and is never registered
+   as a `pytest11` entry point; importing it does not require pytest. It
+   registers the `cli_case(case_id)` marker and the ini option
+   `cli_extended_config` (path relative to the rootdir; default is discovery
+   upward from the rootdir). At collection finish it loads every configured
+   CLI's `review` catalog, refuses a case ID present in two catalogs (usage
+   error naming both CLI IDs), then calls `assert_cli_case_tests` per catalog
+   with `foreign_case_ids` set to the union of the other catalogs' case IDs
+   (such markers are skipped for that catalog; a marker known to no catalog is
+   still an error). Errors from all catalogs are collected, deduplicated in
+   order and raised as one pytest usage error (exit 4), as is any config or
+   catalog error. It is strict by default; CI and gate runs MUST use strict mode. `--cli-case-partial` passes `partial=True`,
+   which skips only the "test not collected" and "no collected marked test"
+   errors; every error about a collected item still applies. A config with no
+   `review` is a no-op.
+
+### Constraints and selector lists in the surface
+
+1. **Route records.** Each route MUST carry a `constraints` list (empty when
+   none) of the verb's declared constraints in declaration order. A record is
+   `{"kind": "requires", "option", "any_of", "reason"}`,
+   `{"kind": "conflicts", "options", "reason"}`, or
+   `{"kind": "requires-choice", "option", "target", "values", "reason"}`. A
+   nested route inherits its verb's constraints. A library control is named by
+   its canonical flag only, never its library syntax (CX-D5). Surface schema
+   stays `7`.
+2. **Candidates.** Each constraint of an invocable route produces one
+   candidate, kind `constraint-requires`, `constraint-conflict` or
+   `constraint-choice`, id `case:<route>/<kind>/<n>` with `<n>` the 1-based
+   declaration index. Its members are the route-local IDs of the referenced
+   options in the order of the record and its shape is the record. A flag that
+   resolves to no option of the route makes generation fail with
+   `SurfaceError`. Constraints are consumer-declared grammar, so a non-empty
+   `constraints` list is part of the signed route context of every candidate of
+   that route; an empty list is omitted so unconstrained routes keep their
+   signatures.
+3. **Checker.** Check mode MUST treat an invocation that violates a declared
+   constraint as syntactically valid and MUST NOT evaluate constraints. It
+   still checks the arity, conversion and choices of each option present. A
+   constraint case MUST exercise its rule: the invocation MUST contain the
+   trigger (the `option` of a requires or requires-choice rule, at least one
+   member of a conflicts rule), otherwise check reports that the case does not
+   exercise its constraint. The other members need not appear, because the case
+   may break the rule on purpose.
+4. **Markdown.** When any route declares constraints, the region MUST contain
+   a `### Constraints` list: one bullet per such route, with one nested line
+   per constraint using the help wording of the declared-constraints rules.
+5. **Selector converter.** An action whose `type` is exactly `SelectorList`
+   MUST be recorded as `{"callable": "cli_extended.SelectorList", "choices":
+   <list or null>, "all_token", "separator"}` and MUST NOT be opaque. A
+   subclass, or another callable whose import label collides, stays opaque. The
+   checker MUST apply the same accept and reject rules as the class to every
+   value of such an option or positional; a record that cannot rebuild a valid
+   `SelectorList` is treated as an opaque converter.
+
+## 14. Packaged agent skills
+
+A tool that ships agent skills (`SKILL.md` trees read by Claude Code and by
+the `~/.agents` harnesses) MUST package them inside its own distribution and
+expose them through the shared `skills` verb group registered by
+`register_skills_verbs(registry, package=..., resource_dir="skills")`. The
+tool name is `identity.command_name` and the version is `identity.version`.
+
+1. **Layout.** Skills live at `<package>/<resource_dir>/<skill-name>/SKILL.md`,
+   plus any other files, as package data. They are read only through
+   `importlib.resources`, so wheels, editable installs and zipapps behave the
+   same. A child directory without `SKILL.md`, a missing resource directory, or
+   a missing package is a `SkillError`; loose files next to the skill
+   directories are ignored, and so is any entry whose name starts with `.` or
+   `_` (for example `__pycache__`). `SKILL.md` MUST be non-empty, LF-terminated
+   (CRLF is rejected as "uses CRLF line endings") and without a UTF-8 BOM
+   (rejected as "starts with a UTF-8 BOM").
+2. **Source schema.** The frontmatter is the first `---` line through the next
+   `---` line. It MAY contain only single-line `key: value` scalars (plain, or
+   wrapped in matching single or double quotes), blank lines, and one optional
+   `metadata:` line followed by lines of exactly two-space indent
+   `  key: value`. Folded or literal scalars, list items, deeper indentation,
+   tabs and carriage returns are rejected with the line number. `name` is
+   required, 1-64 characters, full-matches `[a-z0-9]+(-[a-z0-9]+)*` and equals
+   the directory name. `description` is required, 1-1024 characters.
+   Duplicate keys are rejected, and `metadata` keys starting `cli-extended-`
+   are reserved. The source MUST NOT contain `.cli-extended-stamp.json`.
+3. **Source hash.** `sha256` over the records `relpath, NUL, decimal length, NUL,
+   bytes` for every source file in sorted POSIX-relative-path order, written
+   `sha256:<hex>`.
+4. **Installed tree.** Every file is copied byte for byte except `SKILL.md`,
+   which gains `metadata` keys `cli-extended-tool`, `cli-extended-version` and
+   `cli-extended-source-hash` (appended to an existing `metadata:` block, or a
+   new block at the end of the frontmatter) and, directly after the closing
+   `---`, the banner line ``> Installed by <tool> <version> via cli-extended.
+   If this disagrees with `<tool> --help`, run `<tool> skills check`.`` followed
+   by a blank line.
+5. **Stamp sidecar.** `.cli-extended-stamp.json` (sorted keys, indent 2,
+   trailing newline) holds `schema_version` (1), `tool`, `version`,
+   `source_hash` and `files`, a `sha256:<hex>` for every installed file except
+   the sidecar. A missing, unparsable or structurally invalid sidecar means the
+   directory is not managed by this mechanism.
+6. **Destinations.** `--harness claude` is `$CLAUDE_CONFIG_DIR/skills` when that
+   variable is set and non-empty, else `~/.claude/skills`; `--harness agents`
+   is `~/.agents/skills`; `--harness all` (the default) is both. `--dest DIR`
+   is exactly `DIR` and is mutually exclusive with `--harness` (usage error,
+   exit 2). `install` creates a missing destination including parents.
+7. **States.** Per skill and destination: `absent` (no directory); `unmanaged`
+   (directory without a valid sidecar, not a directory, or any symlink, which
+   is never followed, overwritten or removed); `foreign` (sidecar
+   names another tool); `modified` (an installed file's hash differs from the
+   sidecar, or a file was added or removed); `stale` (unmodified but version or
+   source hash differs from the packaged skill); `current`; `orphaned`
+   (stamped by this tool, unmodified, no longer packaged). A modified directory
+   of this tool that is no longer packaged is reported `modified`. Checks are
+   made in the order above. Directories starting with `.` are ignored.
+8. **`install`** (mutating, `--dry-run`, no `--yes`, no `--json`). Every packaged
+   skill and every orphan is processed, one output line per action:
+   `installed|updated|unchanged|removed|skipped <skill> -> <dest>`. `absent` is
+   installed; `stale` is updated; `current` is rewritten only when the rendered
+   bytes differ from the installed bytes, otherwise `unchanged` (no file is
+   touched); orphans are removed. Writes go to a temporary sibling directory
+   renamed into place, with the previous tree restored if the swap fails. The
+   staging directory is created with the process umask (never a private
+   `mkdtemp` mode), so installed modes are the umask's. Hidden
+   `.<skill>.cli-extended-<tool>-(tmp|old)-<16 hex>` staging and backup paths
+   (`<tool>` is the command name) are this tool's leftovers of an interrupted
+   install. `install` and `uninstall` remove every leftover of this tool in the
+   selected destinations, whether or not its skill is still packaged
+   (`removed leftover <path>`; `would remove leftover <path>` under
+   `--dry-run`). Another tool's leftovers share the directory and are neither
+   reported nor removed.
+   `modified` is refused unless `--overwrite-modified` is given. `foreign` and
+   `unmanaged` are always refused and never touched, even with
+   `--overwrite-modified`. A refusal is an `[ERROR]` naming skill and
+   destination with a hint; the remaining skills are still processed.
+   A filesystem failure while writing or removing (`OSError` from creating the
+   destination, writing the staged copy, or removing a skill or leftover) is a
+   domain failure, not an unexpected exception: one `[ERROR] <skill> -> <dest>:
+   <os error>` line, exit 1, and processing stops (a leftover is named by its
+   directory name). Dry run and listing order is the `list` order: destination
+   path, then skill name.
+9. **`uninstall`** (mutating, `--dry-run`). Removes only directories whose sidecar
+   names this tool (packaged skills and orphans). `modified` needs
+   `--overwrite-modified`, otherwise it is refused like in `install`.
+   `absent`, `foreign` and `unmanaged` are reported as
+   `skipped <skill> -> <dest> (<state>)` and are not errors. It also removes
+   this tool's interrupted-install leftovers (rule 8).
+10. **Dry run.** Under `--dry-run` the same plan is printed as
+    `would install|update|remove|skip <skill> -> <dest>` and nothing on disk
+    changes, not even a missing destination directory. The exit status is the
+    one the real run would produce.
+11. **`check`** (read-only, `--json`). Prints `<state> <skill> <dest>` per row.
+    Exit 0 only when every packaged skill is `current` in every selected
+    destination and there is no orphan or modified leftover; otherwise exit 1.
+    This tool's interrupted-install leftovers are listed one per line as `leftover <path>`
+    and also make `check` exit 1.
+12. **`list`** (read-only, `--json`). Same rows as `check`; always exit 0.
+    With `--json` both verbs print
+    `{"tool", "version", "skills": [{"name", "destination", "state"}],
+    "leftovers": [path]}` with `skills` sorted by `(destination, name)`.
+13. **Exit codes.** 0 success; 1 any refusal, failed check or source error
+    (`SkillError` is reported as a clean `[ERROR]`); 2 usage error.
+14. **Registration.** `register_skills_verbs` adds one `skills` verb (group
+    MAINTENANCE) delegating to a child registry that shares the parent's
+    `unexpected_exceptions` and logging logger, and records
+    `registry._cli_extended_skills = (package, resource_dir)` for the shared
+    `doctor`; `CliRegistry.build()` copies it to the last field of the built
+    `RegisteredCli`, `skills_package: tuple[str, str] | None` (`None` when
+    skills were not registered), which `cli-extended audit` reads. A second call on one registry raises `ValueError`. The pure
+    function `skill_states(package=, resource_dir=, tool=, version=,
+    destinations=)` returns `(skill, destination, SkillState)` rows for
+    consumers such as `doctor`.
+
+## 15. Doctor
+
+A tool reports on its own environment through the shared `doctor` verb
+registered by `register_doctor(registry, checks, *, description=...)` with
+`DoctorCheck(name, description, run)` objects. `run(runtime, args)` receives
+the `CliRuntime` and the parsed `argparse.Namespace` (so it can read
+consumer options) and returns a
+`CheckResult(status, summary, remedy=None, details={})`. `register_doctor`
+also takes `options: Sequence[OptionSpec] = ()`, added to the `doctor` verb;
+an option flag equal to `--check`, `-h` or any library-owned control flag
+raises `ValueError`.
+
+1. **Result.** `status` is one of `ok`, `warn`, `fail`, `skip`; anything else
+   raises `ValueError`. `summary` is a non-empty single line. `details` MUST be
+   JSON-serialisable; this is checked when the result is rendered, and a
+   non-serialisable value turns that one check into `fail` with summary
+   `check returned non-JSON details`.
+2. **Check names.** `[a-z0-9]+(-[a-z0-9]+)*` and a non-empty description, else
+   `ValueError`. Duplicate names, a second `register_doctor` on one registry,
+   and a user check named `skills` while the skills verbs are registered raise
+   `ValueError` at registration.
+3. **Verb.** `doctor` is read-only (group MAINTENANCE) and has `--json`,
+   no progress options, and `--check NAME` (repeatable). `--check` runs only the
+   named checks, still in declared order. An unknown name is a usage error:
+   `unknown doctor check 'x'; available: a, b`, exit 2, with help.
+4. **Order and crashes.** Checks run in declared order, the automatic `skills`
+   check last. A check that raises `Exception` (or returns something other than
+   a `CheckResult`) becomes `fail` with summary
+   `check crashed: <Type>: <message>` and the remaining checks still run.
+   `KeyboardInterrupt` propagates.
+5. **Text output** (stdout via the primary stream): one line per check
+   `[OK]|[WARN]|[FAIL]|[SKIP] <name>: <summary>`, an indented
+   `    remedy: <text>` line when a remedy is set, then
+   `doctor: <n> ok, <n> warn, <n> fail, <n> skip`.
+6. **JSON output.** `{"tool", "version", "checks": [{"name", "status",
+   "summary", "remedy", "details"}], "summary": {"ok", "warn", "fail",
+   "skip"}}`; `remedy` is `null` when absent.
+7. **Exit code.** 0 when no check is `fail` (warnings and skips do not fail the
+   run); 1 when any check is `fail`; 2 for a usage error.
+8. **Automatic `skills` check.** At run time, not registration time, so the
+   order of `register_skills_verbs` and `register_doctor` does not matter, a
+   registry carrying `_cli_extended_skills` gets a built-in check `skills`
+   appended. It evaluates the default destinations (`--harness all`,
+   `default_skill_destinations()`) with `skill_states` and `skill_leftovers`:
+   `ok` (`all skills current`) when every skill is `current` and there is no
+   orphan and no leftover of this tool; `warn` with summary
+   `N skill(s) not installed` when the only departures are `absent` rows (a
+   tool whose skills were never installed is not broken); otherwise `fail`
+   (any `stale`, `modified`, `foreign`, `unmanaged` or `orphaned` row, or any
+   leftover) with summary
+   `N skill(s) not current` (plus `; M leftover path(s)` when leftovers exist,
+   or just `M leftover path(s)`; N counts every non-`current` row, absent ones
+   included), remedy `run '<tool> skills install'` and
+   details `{"skills": [{"name", "destination", "state"}], "leftovers": [path]}`.
+   A user check named `skills` is refused at registration in either order:
+   `register_doctor` raises `ValueError` when the skills verbs are already
+   registered, and `register_skills_verbs` raises `ValueError` when the
+   registry's doctor already holds a check named `skills`.
+9. **Single-line output.** A check can never break the report through its own
+   text. A crash message is collapsed to one line (whitespace runs become one
+   space) and, when empty, the summary is just `check crashed: <Type>`. A
+   `remedy` is collapsed the same way and omitted when empty. `details` are
+   serialised with `allow_nan=False`, so NaN and infinity also give
+   `check returned non-JSON details`.

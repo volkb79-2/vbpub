@@ -1075,6 +1075,8 @@ def render_stack(
     global_config: dict,
     preserve_state: bool = True,
     ciu_context: Mapping[str, object] | None = None,
+    *,
+    write_rendered: bool = True,
 ) -> dict:
     """Render stack templates into ciu.toml and return the merged stack config.
 
@@ -1093,7 +1095,8 @@ def render_stack(
       3. S3.4: if preserve_state and a rendered ciu.toml already exists,
          carry over ONLY its top-level [state] table.
          [secrets] is explicitly NOT carried (S3.4 withdrawal).
-      4. Write ciu.toml and return.
+      4. Write ciu.toml and return, unless ``write_rendered=False`` for a
+         read-only consumer such as ``ciu resolve``.
 
     Raises FileNotFoundError when ciu.defaults.toml.j2 is missing.
     Raises ValueError when ciu.toml.j2 contains a raw credential (S3.1a).
@@ -1132,7 +1135,8 @@ def render_stack(
             merged_stack["state"] = state
         # secrets are explicitly NOT carried (S3.4)
 
-    write_rendered_toml(output_path, merged_stack)
+    if write_rendered:
+        write_rendered_toml(output_path, merged_stack)
     return merged_stack
 
 
@@ -1439,6 +1443,10 @@ def validate_declared_features(global_cfg: dict, hosts_cfg: dict) -> None:
     from . import worktree
 
     worktree.resolve_exec_targets_config(global_cfg)
+    # A worktree's committed startup profile list is read by both
+    # `ciu worktree up` and `ciu worktree create --up`; validate names during
+    # `ciu check` before either lifecycle path can start a stack.
+    worktree.resolve_worktree_up_profiles(global_cfg)
 
     # Step 3 (S17.5): [deploy.provenance].vendor_images shape. Absent key is
     # a no-op. A bare string is explicitly rejected before any iteration —

@@ -47,22 +47,13 @@ SETTINGS_PATH = Path(__file__).resolve().parent / "netcup.toml"
 INSTALL_HOST_SETTINGS_PATH = Path(__file__).resolve().parent / "install-host.toml"
 DEFAULT_SSH_TIMEOUT_SECONDS = 2.0
 STATUS_MAX_WORKERS = 4
-VERSION_PATH = Path(__file__).resolve().parent / "VERSION"
 
-
-def _cli_identity() -> CliIdentity:
-    version = VERSION_PATH.read_text(encoding="utf-8").strip()
-    if not re.fullmatch(r"\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?", version):
-        raise ValueError(f"invalid Netcup CLI version in {VERSION_PATH}: {version!r}")
-    return CliIdentity(
-        name="NETCUP SCP",
-        command="scp-api",
-        version=version,
-        long_name="Netcup Server Control Panel API client",
-    )
-
-
-IDENTITY = _cli_identity()
+IDENTITY = CliIdentity.resolve(
+    name="NETCUP SCP",
+    command="scp-api",
+    long_name="Netcup Server Control Panel API client",
+    version_file=Path(__file__).resolve().with_name("VERSION"),
+)
 _ACTIVE_RUNTIME: Any | None = None
 
 # Keep this in sync with install-host.py's closed SSH settings schema. The
@@ -2030,24 +2021,6 @@ def _add_actions(parser, choices, description: str, *, required: bool = False):
     )
 
 
-def _configure_attach_iso(parser):
-    source = parser.add_argument_group("ISO SOURCE").add_mutually_exclusive_group(
-        required=True
-    )
-    source.add_argument("--iso-id", type=_positive_int, help="ID returned by iso-bootable")
-    source.add_argument(
-        "--user-iso-name",
-        type=_nonempty_text,
-        metavar="NAME",
-        help="name of an ISO uploaded to the account",
-    )
-    parser.add_argument_group("BOOT OPTIONS").add_argument(
-        "--change-boot-device-to-cdrom",
-        action="store_true",
-        help="also make the virtual CD-ROM the next boot device",
-    )
-
-
 def _configure_iso_attached(parser):
     _add_actions(parser, ("detach",), "detach the currently attached ISO")
 
@@ -2136,11 +2109,6 @@ def _configure_firewall(parser):
     parser.set_defaults(active=None)
 
 
-def _configure_power(parser):
-    _add_actions(parser, ("on", "off", "cycle", "reset"), "select the power operation", required=True)
-    parser.add_argument("server_id", type=_positive_int, metavar="server_id", help="Netcup SCP server ID")
-
-
 def _command_handler(command: str, implementation):
     def invoke(args, runtime):
         global _ACTIVE_RUNTIME
@@ -2219,6 +2187,13 @@ def build_cli():
             "./scp-api.py help firewall",
         ),
         logging_logger="netcup.scp_api.client",
+        unexpected_exceptions="report",
+        expected_exceptions=(
+            OSError,
+            netcup_scp_client.NetcupAPIError,
+            netcup_scp_client.ProtectedServerError,
+            ResponseShapeError,
+        ),
     )
 
     def register(
@@ -2255,7 +2230,7 @@ def build_cli():
         )
 
     register(
-        "login", "", "authenticate and select locally protected servers",
+        "login", None, "authenticate and select locally protected servers",
         "Obtain an OAuth refresh token using the browser device-code flow. An interactive login may then select account servers named v<digits> for this checkout's local mutation denylist. This is local protection, not a provider-side lock.",
         VerbGroup.AUTHENTICATION.value, cmd_login, examples=("./scp-api.py login",), json=False,
     )
@@ -2265,7 +2240,7 @@ def build_cli():
         metavar="server_id", nargs="?", type=_positive_int, default=None,
     )
     register(
-        "servers", "", "list the account's known servers",
+        "servers", None, "list the account's known servers",
         "List all servers known to the authenticated Netcup SCP account.",
         VerbGroup.EXPLORATION.value, cmd_servers,
         examples=("./scp-api.py servers",),
@@ -2279,7 +2254,7 @@ def build_cli():
         examples=("./scp-api.py status", "./scp-api.py status 799611 --json"),
     )
     register(
-        "server-details", "server_id", "show one server's detailed API record",
+        "server-details", None, "show one server's detailed API record",
         "Show the complete server details record returned by SCP.",
         VerbGroup.EXPLORATION.value, cmd_server_details,
         arguments=(_argument("server_id", "Netcup SCP server ID.", metavar="server_id", type=_positive_int),),
@@ -2294,7 +2269,7 @@ def build_cli():
             VerbGroup.EXPLORATION.value,
             cmd_imageflavours if name == "imageflavours" else cmd_iso_bootable,
             arguments=(server_id_optional,),
-            options=(_option(("--filter",), "case-insensitive text filter across returned fields", group="FILTERS", metavar="TEXT", type=_nonempty_text),),
+            options=(_option(("--filter",), "client-side filter: keep rows where the text appears, ignoring case, in any returned field", group="FILTERS", metavar="TEXT", type=_nonempty_text),),
             examples=(example,),
         )
     register(
@@ -2333,7 +2308,7 @@ def build_cli():
         arguments=(_argument("uuid", "Task UUID; omit to list tasks.", metavar="task_uuid", nargs="?", type=_nonempty_text, default=None),),
         configure=_configure_tasks,
         options=(
-            _option(("--query", "--filter"), "search task name, UUID, or server fields (API q filter)", group="FILTERS", metavar="TEXT", dest="query", type=_nonempty_text),
+            _option(("--query", "--filter"), "server-side query (API search) over task name, UUID, or server fields; --filter is an alias", group="FILTERS", metavar="TEXT", dest="query", type=_nonempty_text),
             _option(("--server-id",), "filter by server; required to cancel with protected-server policy", group="FILTERS", metavar="ID", dest="server_filter_id", type=_positive_int),
             _option(("--state",), "filter by task state", group="FILTERS", choices=_TASK_STATES),
             _option(("--limit",), "maximum tasks to return", group="FILTERS", type=_nonnegative_int),
@@ -2349,11 +2324,11 @@ def build_cli():
             _argument("server_id", "Netcup SCP server ID.", metavar="server_id", type=_positive_int),
             _argument("metric", "metric series to return.", metavar="{cpu,disk,network,network-packet}", choices=tuple(_METRIC_ENDPOINTS)),
         ),
-        options=(_option(("--hours",), "look back this many hours (1-1440; API default if omitted)", group="TIME RANGE", type=_hours),),
+        options=(_option(("--hours",), "look back this many hours (1-1440; API default if omitted)", group="TIME RANGE", type=_hours, default=None),),
         examples=("./scp-api.py metrics 799611 cpu --hours 24",),
     )
     register(
-        "guest-agent-status", "server_id", "show QEMU guest-agent availability",
+        "guest-agent-status", None, "show QEMU guest-agent availability",
         "Read guest-agent availability. This is not an SSH or bootstrap health check.",
         VerbGroup.EXPLORATION.value, cmd_guest_agent_status,
         arguments=(_argument("server_id", "Netcup SCP server ID.", metavar="server_id", type=_positive_int),),
@@ -2365,8 +2340,8 @@ def build_cli():
         "MIXED OPERATIONS", cmd_user_iso,
         configure=_configure_user_iso,
         options=(
-            _option(("--name",), "object name (defaults to the local filename)", group="UPLOAD OPTIONS", metavar="KEY", type=_nonempty_text),
-            _option(("--multipart",), "use multipart upload for large ISO files", group="UPLOAD OPTIONS", action="store_true"),
+            _option(("--name",), "object name (defaults to the local filename)", group="UPLOAD OPTIONS", metavar="KEY", type=_nonempty_text, default=None),
+            _option(("--multipart",), "use multipart upload for large ISO files", group="UPLOAD OPTIONS", action="store_true", default=False),
             _option(("--part-size-mib",), "multipart part size in MiB (default 64; minimum 5)", group="UPLOAD OPTIONS", metavar="N", type=_part_size_mib, default=None),
         ),
         examples=("./scp-api.py user-iso", "./scp-api.py user-iso upload ./custom.iso --name custom.iso --yes", "./scp-api.py attach-iso 799611 --user-iso-name custom.iso --yes", "./scp-api.py power cycle 799611 --yes"), mutating=True,
@@ -2377,9 +2352,9 @@ def build_cli():
         "MIXED OPERATIONS", cmd_firewall_policies,
         configure=_configure_firewall_policies,
         options=(
-            _option(("--query", "--filter"), "search policy name/description", group="FILTERS", metavar="TEXT", dest="query", type=_nonempty_text),
-            _option(("--limit",), "maximum policies to return", group="FILTERS", type=_nonnegative_int),
-            _option(("--offset",), "matching policies to skip", group="FILTERS", type=_nonnegative_int),
+            _option(("--query", "--filter"), "server-side query (API search) over policy name/description; --filter is an alias", group="FILTERS", metavar="TEXT", dest="query", type=_nonempty_text, default=None),
+            _option(("--limit",), "maximum policies to return", group="FILTERS", type=_nonnegative_int, default=None),
+            _option(("--offset",), "matching policies to skip", group="FILTERS", type=_nonnegative_int, default=None),
         ),
         examples=("./scp-api.py firewall-policies", "./scp-api.py firewall-policies create --policy-json '{\"name\":\"ssh\",\"rules\":[]}' --yes", "./scp-api.py firewall-policies put 12 --policy-file firewall-policy.json --yes"), mutating=True,
     )
@@ -2394,7 +2369,13 @@ def build_cli():
         "power", "{on|off|cycle|reset} server_id", "power on, off, cycle, or reset one server",
         "Control a server's power state. Every operation is confirmed unless --yes is supplied.",
         VerbGroup.MODIFICATION.value, cmd_power,
-        configure=_configure_power,
+        arguments=(
+            _argument(
+                "action", "select the power operation", metavar="{on,off,cycle,reset}",
+                choices=("on", "off", "cycle", "reset"),
+            ),
+            _argument("server_id", "Netcup SCP server ID", metavar="server_id", type=_positive_int),
+        ),
         examples=("./scp-api.py power cycle 799611 --yes", "./scp-api.py power on 799611 --yes"), mutating=True,
     )
     register(
@@ -2402,7 +2383,23 @@ def build_cli():
         "Attach an ISO by ID from iso-bootable or a user ISO name. This changes attached media and is confirmed.",
         VerbGroup.MODIFICATION.value, cmd_attach_iso,
         arguments=(_argument("server_id", "Netcup SCP server ID.", metavar="server_id", type=_positive_int),),
-        configure=_configure_attach_iso,
+        options=(
+            OptionSpec(
+                ("--iso-id",), "ID returned by iso-bootable", group="ISO SOURCE",
+                parser_kwargs={"type": _positive_int, "default": None},
+                mutually_exclusive_group="iso-source", mutually_exclusive_required=True,
+            ),
+            OptionSpec(
+                ("--user-iso-name",), "name of an ISO uploaded to the account", group="ISO SOURCE",
+                metavar="NAME", parser_kwargs={"type": _nonempty_text, "default": None},
+                mutually_exclusive_group="iso-source", mutually_exclusive_required=True,
+            ),
+            _option(
+                ("--change-boot-device-to-cdrom",),
+                "also make the virtual CD-ROM the next boot device",
+                group="BOOT OPTIONS", action="store_true", default=False,
+            ),
+        ),
         examples=("./scp-api.py attach-iso 799611 --iso-id 1234 --yes", "./scp-api.py attach-iso 799611 --user-iso-name custom.iso --change-boot-device-to-cdrom --yes"), mutating=True,
     )
     return registry.build()
@@ -2419,15 +2416,7 @@ def parse_args(argv=None):
 
 
 def main(argv=None) -> int:
-    return build_cli().run(
-        argv=argv,
-        expected_exceptions=(
-            OSError,
-            netcup_scp_client.NetcupAPIError,
-            netcup_scp_client.ProtectedServerError,
-            ResponseShapeError,
-        ),
-    )
+    return build_cli().run(argv=argv)
 
 
 if __name__ == "__main__":
