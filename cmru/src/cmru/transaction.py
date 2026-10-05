@@ -704,6 +704,12 @@ def assert_resume_workspace_committed(path: Path) -> None:
         )
 
 
+def _close_fd_if_open(fd: int) -> None:
+    """Close *fd* unless it is the ``-1`` "never opened" sentinel."""
+    if fd >= 0:
+        os.close(fd)
+
+
 def _copy_secret_overlay(
     source: Path, workspace_root: Path, relative_target: Path,
 ) -> None:
@@ -816,10 +822,9 @@ def _copy_secret_overlay(
                 os.unlink(temporary_name, dir_fd=parent_fd)
             except FileNotFoundError:
                 pass
-        if parent_fd >= 0 and parent_fd != root_fd:
-            os.close(parent_fd)
-        if root_fd >= 0:
-            os.close(root_fd)
+        if parent_fd != root_fd:
+            _close_fd_if_open(parent_fd)
+        _close_fd_if_open(root_fd)
 
 
 def copy_secret_overlays(

@@ -44,9 +44,28 @@ passes `project_paths=()`, so it now stops at "paths unknown", not at a conflict
 ## Not in scope of this package (left untouched)
 REL-07 (`cmru.toml` resolution), REL-09 (KI-35 retire/sweep), REL-11 (`config.py`): other packages per the program plan.
 
+## Coverage lane: what it found (important for the controller)
+The first `coverage` run FAILED at 99.64%, with the suite itself green. Two causes:
+1. **My package's own code** was exercised only by the end-to-end suite, whose subprocess runs the lane cannot see. Closed with in-process
+   branch tests in `tests/test_w0_rel_branch_closure.py` (rollback failure branches, `_run_tagged_build_and_publish` ordering,
+   `_report_publication_started`, trailer label fallback, `pending_release_tag`, REL-02 helper arcs, REL-13 helper, the launcher's
+   dry-run/untagged arcs) and real-git in-process promotion tests in the end-to-end file (fetch failure, uncomparable main,
+   project-path touch, unknown paths), plus two REL-03 legacy-abandon arcs in `tests/test_cli_abandon.py`.
+2. **Seven branch arcs that were ALREADY missing on `cmru-wave-2026-10`** (the W0-GATE report records the identical set on the
+   unmodified integration worktree: `cli.py` 3174/3170, 4710/4754, 4711/4754, 4725/4733, 5283/5272; `transaction.py` 814/-700,
+   1029/1033). The controller's expectation that KI-54 alone had kept the lane red was incomplete: the old `--maxfail=1` hid them.
+   Closed here: the launcher and abandon arcs by tests; `_resolve_git_file_at_commit`'s loop-exhaustion arc by a test that forces an
+   empty pending path (the loop can otherwise never be exhausted); `transaction.py` 1029/1033 by
+   `test_rotating_two_attempted_tags_reads_the_absence_proofs_once`; and `814/-700` (the `finally` of `_copy_secret_overlay`, an arc that
+   Python 3.14's coverage only records when the "never opened" branch is hit on NORMAL completion, which is impossible) by a tiny
+   production change: `_close_fd_if_open(fd)` replaces the two inline `if fd >= 0` closes, behaviour identical. This is a change to
+   product code made purely to satisfy the coverage tool; the reviewer should confirm it is acceptable. W0-GATE did not touch these.
+   Also `_release_or_status` now ends in `if not transaction_child: ... else: ...` instead of a `return` after the launcher call
+   (the launcher always `sys.exit`s, so that `return` was unreachable).
+
 ## Test and gate results
-- Full suite, no `--maxfail`, under the test lock: **2913 passed, 10 skipped, 20 subtests passed** (last run after the final edit,
-  before the REPORT commit; the REPORT adds no code).
+- Full suite, no `--maxfail`, under the test lock, with `--cov=src/cmru --cov-branch`: **2945 passed, 10 skipped, 20 subtests passed;
+  total coverage 100.0%** (local run on python 3.14.7).
 - Gates (from `cmru/`, through the gate lock, verdict read in a separate step): see the section at the end of this file.
 
 ## Deviations

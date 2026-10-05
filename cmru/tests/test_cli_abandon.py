@@ -649,6 +649,39 @@ def test_abandon_legacy_snapshot_refuses_when_a_remote_tag_cannot_be_inspected(
     assert "could not inspect remote tag alpha-v9" in capsys.readouterr().out
 
 
+def test_rel03_legacy_abandon_ignores_a_tag_that_is_not_on_the_candidate(
+    monkeypatch, tmp_path, capsys,
+):
+    # A tag on a commit the candidate cannot reach was not made by this transaction.
+    repo, branch, _first, base = _legacy_candidate_repo(tmp_path)
+    (repo / "side.txt").write_text("side", encoding="utf-8")
+    _real_git(repo, "add", ".")
+    _real_git(repo, "commit", "-m", "side commit on main")
+    side = _real_git(repo, "rev-parse", "HEAD")
+    candidate = _legacy_inspect(monkeypatch, repo, branch, base, side)
+
+    assert _invoke_abandon(candidate, branch=branch) == 0
+    assert "no pre-attempt origin tag snapshot" not in capsys.readouterr().out
+
+
+def test_rel03_legacy_abandon_refuses_when_the_base_ancestry_cannot_be_inspected(
+    monkeypatch, tmp_path, capsys,
+):
+    repo, branch, first, base = _legacy_candidate_repo(tmp_path)
+    candidate = _legacy_inspect(monkeypatch, repo, branch, base, first)
+    real = cli.run_local_git
+
+    def fake(path, *args, **kwargs):
+        if args[:3] == ("merge-base", "--is-ancestor", first) and args[-1] == base:
+            return subprocess.CompletedProcess(args, 128, "", "fatal")
+        return real(path, *args, **kwargs)
+
+    monkeypatch.setattr(cli, "run_local_git", fake)
+
+    assert _invoke_abandon(candidate, branch=branch) == 2
+    assert "could not inspect remote tag alpha-v9" in capsys.readouterr().out
+
+
 def test_abandon_refuses_selected_scope_tag_changes_since_snapshot(monkeypatch, tmp_path, capsys):
     candidate = _workspace(tmp_path, "cmru-release-20260924_120000-alpha-ab12cd")
     _install_abandon_inspection(

@@ -4866,15 +4866,16 @@ def _release_or_status(verb: str, args, rest: List[str]) -> None:
             sys.exit(exit_codes.FAILURE)
 
     if not transaction_child:
+        # Never returns: the launcher always ends in ``sys.exit``.
         _release_launcher(
             rest, vargs, cfg_path, repo_root, configs, ordered, project_order,
             selected_names, resume_scope, git_auth, preflight_snapshot_handoff,
         )
-        return
-    _release_child(
-        vargs, repo_root, configs, ordered, project_order, selected_names,
-        github_config, env_config, git_auth,
-    )
+    else:
+        _release_child(
+            vargs, repo_root, configs, ordered, project_order, selected_names,
+            github_config, env_config, git_auth,
+        )
 
 
 def _status(vargs, repo_root: Path, configs, selected_names: List[str]) -> None:

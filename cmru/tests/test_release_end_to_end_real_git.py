@@ -422,6 +422,57 @@ exit 1
     assert Path(launcher_tail.split(" ", 1)[0]).is_dir()
 
 
+def test_rel04_project_path_touch_is_detected_by_promote_in_process(e2e):
+    workspace = _real_candidate(e2e, "cmru/release/touch")
+    e2e.advance_main_hook("demo/a.txt")
+    subprocess.run(["sh", e2e.env["GATE_HOOK"]], check=True, env=e2e.env)
+
+    with pytest.raises(RuntimeError, match="changed the released project's own paths") as raised:
+        transaction.promote_workspace(
+            workspace, project_paths=("demo",), release_label="demo-v9",
+        )
+
+    assert "demo/a.txt" in str(raised.value)
+    assert "git push origin HEAD:refs/heads/main" in str(raised.value)
+    assert e2e.out("status", "--porcelain=v1", cwd=workspace.path) == ""
+
+
+def test_rel04_unknown_project_paths_stop_the_merge(e2e):
+    workspace = _real_candidate(e2e, "cmru/release/unknown")
+    e2e.advance_main_hook("other.txt")
+    subprocess.run(["sh", e2e.env["GATE_HOOK"]], check=True, env=e2e.env)
+
+    with pytest.raises(RuntimeError, match="paths are unknown"):
+        transaction.promote_workspace(workspace, release_label="demo-v9")
+
+
+def test_rel04_an_unreachable_origin_stops_before_any_merge(e2e):
+    workspace = _real_candidate(e2e, "cmru/release/offline")
+    e2e.git("remote", "set-url", "origin", str(e2e.root / "missing.git"), cwd=workspace.path)
+
+    with pytest.raises(RuntimeError, match="fetching origin/main failed"):
+        transaction._merge_origin_main_into_candidate(
+            workspace, git_auth=None, project_paths=("demo",), release_label="x",
+        )
+
+
+def test_rel04_an_uncomparable_origin_main_stops_before_any_merge(e2e, monkeypatch):
+    workspace = _real_candidate(e2e, "cmru/release/uncomparable")
+    real = transaction.run_local_git
+
+    def fake(path, *args, **kwargs):
+        if "--is-ancestor" in args:
+            return subprocess.CompletedProcess(args, 128, "", "fatal")
+        return real(path, *args, **kwargs)
+
+    monkeypatch.setattr(transaction, "run_local_git", fake)
+
+    with pytest.raises(RuntimeError, match="could not compare the candidate"):
+        transaction._merge_origin_main_into_candidate(
+            workspace, git_auth=None, project_paths=("demo",), release_label="x",
+        )
+
+
 def test_cli01_status_does_not_touch_the_release_log_or_redirect_output(e2e):
     log = e2e.project / "cmru.release.log"
     log.write_text("SENTINEL from the previous release\n")
