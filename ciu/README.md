@@ -8,9 +8,11 @@ console entrypoint, **`ciu`**, a flat verb dispatcher:
 - **Cross-profile secret producers are declarable** (`produced_by`, S13.6): an ASK_VAULT directive names the profile whose deployment provisions its Vault path, so a partial selection refuses upfront naming producer + path + remedies instead of failing mid-deploy with only the path.
 - **Honest provenance for mixed fleets** (`[deploy.provenance] vendor_images`, S17.5): declare third-party image references; running pins report `vendor-pinned`, drifted pins report `mismatch`, and `verified-match` becomes reachable on all-vendor deployments (provenance JSON at schema_version 2).
 - **Guided repo scaffolding** (`ciu init`, S19): generates a validated global defaults template, gitignore entries, and optional stack skeletons — templates ship inside the wheel, existing files are never overwritten. `--hooks NAME1,NAME2` (S19.1) additionally copies shipped, revision-stamped hook templates into every scaffolded stack.
-- managed instances: `ciu worktree create|adopt|ensure|rm|list|inspect|up|exec|lease|branches|reap` — `create` allocates one Git workspace and prepares every committed CIU root inside it; root-specific profile work remains an ordinary stack command from that root. `branches` surveys local branches against a base, proves which are fully merged and safe to remove, and prunes exactly those on `-y` (never age-based; the mainline and the primary checkout's branch are never candidates); `reap` is the same survey-then-act shape for DOCKER resources — it sorts every resource group into seven closed categories and on `-y` destroys exactly the four that a record, a lease or a `ciu.instance` label proves are disposable, never the unattributable or ambiguous ones (which no flag can select), and disposes of a surviving checkout by running `ciu clean` there rather than by a bare docker removal
+- read-only service data: `ciu resolve [--profile P ...] [--stack S] [--service X] [--live] --json` reports identities from rendered config, including an explicitly selected optional profile, and `ciu exec [--profile P ...] <stack>[:<service>] -- ARGV...` runs exact argv in one already-running service. Interactive terminal use gets a TTY automatically. `ciu profiles` also lists without persisting rendered config.
+- dry-run hooks: `ciu up --dry-run` skips `post_compose` hooks unless the hook module has the literal `DRY_RUN_SAFE = True` declaration; skipped modules are not imported. See [the hook guide](docs/CONSUMERS.md#14-preflight-a-config-change-without-deploying-ciu-check-s134a--s95) and [the design rationale](docs/DESIGN-GUIDE.md#why-reporting-and-dry-run-paths-do-not-run-live-hooks).
+- managed instances: `ciu worktree create|adopt|ensure|rm|list|inspect|up|exec|lease|branches|reap` — `create` allocates one Git workspace and prepares every committed CIU root inside it; `create --up` also starts profiles declared in `[ciu.worktree].up` in one deploy invocation, preserving the checkout if startup fails. [The profiles run together so cross-profile preflights see the full selection](docs/DESIGN-GUIDE.md#why-worktree-startup-is-one-declared-combined-deploy). Markerless Git families remain valid record-only worktrees with no fabricated CIU runtime. `worktree up --all` starts the full default deploy set. Root-specific profile work remains an ordinary stack command from that root. `branches` surveys local branches against a base, proves which are fully merged and safe to remove, and prunes exactly those on `-y` (never age-based; the mainline and the primary checkout's branch are never candidates); `reap` is the same survey-then-act shape for DOCKER resources — it sorts every resource group into seven closed categories and on `-y` destroys exactly the four that a record, a lease or a `ciu.instance` label proves are disposable, never the unattributable or ambiguous ones (which no flag can select), and disposes of a surviving checkout by running `ciu clean` there rather than by a bare docker removal
 - machine interfaces: `ciu capabilities [--json]` — a versioned, closed capability allowlist
-- single stack: `ciu up --dir <stack>`, `ciu render`, `ciu dev <stack>`
+- single stack: `ciu up --dir <stack>` accepts the shared `--deploy` and `--healthcheck` actions (`--healthcheck` gates that stack after it starts); `ciu down --dir <stack>` stops only that stack's running Compose project ([why](docs/DESIGN-GUIDE.md#stop-one-stack-without-stopping-its-neighbors)); also `ciu render` and `ciu dev <stack>`
 - multi-stack / multi-host: `ciu up`, `ciu down`, `ciu clean`, `ciu health` (by host profile)
 - failure explanation: `ciu diagnose [--project NAME] [--json]` (read-only)
 - per-stack status: `ciu status [--profile NAME] [--json]` — compose project, containers, health (read-only)
@@ -44,6 +46,18 @@ identities when they differ, which keeps same-named stacks under two roots
 isolated. The rationale and collision/namespace rules are in
 [docs/DESIGN-GUIDE.md#workspace-and-root-identity](docs/DESIGN-GUIDE.md#workspace-and-root-identity);
 copyable commands and config are in [docs/CONSUMERS.md](docs/CONSUMERS.md).
+When an older generated identity format is read, CIU migrates it only after
+checking that no Docker resource still carries the old identity; if resources
+remain, `ciu clean --identity <old-id>` removes only resources labeled for that
+identity. An interrupted `worktree adopt` resume also compares HEAD with the
+recorded target and refuses if the checkout moved, preserving newer commits.
+`ciu worktree create` reports `ready` only after every CIU root committed at
+the allocated checkout's exact commit has generated facts and a matching entry
+in the shared workspace record. While those roots are being prepared,
+inspection reports `allocating`; a recoverable failure reports
+`recovery-required`, and `ciu worktree ensure NAME` retries it. See the
+[readiness rationale](docs/DESIGN-GUIDE.md#workspace-and-root-identity) and
+[worktree example](docs/CONSUMERS.md#2-create-a-managed-workspace).
 
 > **ciu builds-and-runs; cmru releases.** ciu is the **inner loop** (build local images,
 > run the stack on this host); its sibling **cmru** is the **outer loop** (version + publish
@@ -67,7 +81,8 @@ copyable commands and config are in [docs/CONSUMERS.md](docs/CONSUMERS.md).
   letting Docker create an unbounded transient one.
 
 CIU governance does not add per-container RAM, swap, reservation, CPU, IOPS,
-or bandwidth caps by default. Set the corresponding keys in a stack's
+or bandwidth caps by default. Set keys such as `mem_limit`, `mem_reservation`,
+`read_iops`, and `write_iops` in a stack's
 `[<root>.governance]` table or the global `[governance]` table only when the
 project wants those limits; service-authored Compose keys remain authoritative.
 The host's parent-slice limits continue to apply independently. See the
@@ -182,7 +197,9 @@ Automation surfaces are versioned and closed: `ciu worktree
 inspect|list|rm --json` (and the lifecycle verbs with `--json`) emit one
 `schema_version: 1` document with a closed `operation`/`status` vocabulary and
 freshly derived Git facts — never inferred from a name or stale record —
-`ciu worktree up` starts one selected instance under its own identity,
+`ciu worktree up` starts one selected instance under its own identity; a
+committed `[ciu.worktree].up` profile list is started as one combined deploy,
+and `ciu worktree create NAME --up` combines creation and startup,
 `ciu worktree exec LOGICAL [--target ALIAS] -- ARGV...` runs exact argv
 (no shell) in that root or inside its declared already-running container
 target (S16.7). `ciu capabilities --json` lists the shipped machine

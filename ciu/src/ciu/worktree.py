@@ -40,7 +40,9 @@ import json
 import os
 import re
 import subprocess
-from collections.abc import Iterator, Mapping
+import stat
+import sys
+from collections.abc import Callable, Iterator, Mapping
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
@@ -163,7 +165,12 @@ def _sync_shared_lease(ciu_root: Path, lease) -> None:
         shared = _shared_worktree()
         record = _shared_record_for_checkout(ciu_root)
         if record is not None:
-            shared.write_record(replace(record, lease=lease))
+            # Lease and root-entry updates share one neutral record. Re-read
+            # inside the Git-family lock so this mirror cannot overwrite a
+            # concurrent root-entry update with the stale copy above.
+            with shared.workspace_lock(record.git_common_dir):
+                current = shared.read_record(record.record_path)
+                shared.write_record(replace(current, lease=lease))
     except Exception as exc:
         raise WorktreeError(
             f"[S16.9] could not update shared workspace lease for {ciu_root}: {exc}"
@@ -366,6 +373,38 @@ def _lease_from_dict(raw: Any, path: Path) -> WorktreeLease:
     )
 
 
+def _ciu_root_marker_present(root: Path) -> bool:
+    """Read the checkout's committed CIU-root fact from the filesystem.
+
+    A CIU-created generic Git worktree has a ready lifecycle record but no CIU
+    runtime identity. The distinction is the marker file in the record's own
+    CIU-root directory, never an absent identity value by itself.
+    """
+    marker = Path(root) / GLOBAL_CONFIG_DEFAULTS
+    try:
+        mode = marker.lstat().st_mode
+    except FileNotFoundError:
+        return False
+    except OSError as exc:
+        raise WorktreeError(
+            f"[S16] could not inspect CIU root marker {marker}: {exc}"
+        ) from exc
+    if stat.S_ISLNK(mode):
+        try:
+            target_mode = marker.stat().st_mode
+        except OSError as exc:
+            raise WorktreeError(
+                f"[S16] could not inspect CIU root marker {marker}: {exc}"
+            ) from exc
+        if stat.S_ISREG(target_mode):
+            return True
+    elif stat.S_ISREG(mode):
+        return True
+    raise WorktreeError(
+        f"[S16] CIU root marker {marker} is not a regular file"
+    )
+
+
 def _record_from_dict(raw: Any, path: Path) -> WorktreeInstanceRecord:
     if not isinstance(raw, dict):
         raise WorktreeError(f"[S16] {path} must contain one JSON object")
@@ -421,10 +460,18 @@ def _record_from_dict(raw: Any, path: Path) -> WorktreeInstanceRecord:
     for key, value in runtime.items():
         if value is not None and (not isinstance(value, str) or not value):
             raise WorktreeError(f"[S16] malformed runtime.{key} in {path}")
-    if state == "ready" and (
-        not runtime["instance_id"] or not runtime["network"] or recovery is not None
-    ):
-        raise WorktreeError(f"[S16] ready record lacks a closed runtime identity in {path}")
+    if state == "ready":
+        has_identity = bool(runtime["instance_id"] and runtime["network"])
+        rootless_identity = (
+            runtime["instance_id"] is None and runtime["network"] is None
+        )
+        if recovery is not None or (
+            not has_identity
+            and (not rootless_identity or _ciu_root_marker_present(path.parent))
+        ):
+            raise WorktreeError(
+                f"[S16] ready record lacks a closed runtime identity in {path}"
+            )
     if state != "recovery-required" and recovery is not None:
         raise WorktreeError(f"[S16] {state!r} record carries recovery_status in {path}")
     offset = Path(raw["ciu_root_offset"])
@@ -460,9 +507,16 @@ def _record_from_dict(raw: Any, path: Path) -> WorktreeInstanceRecord:
 def read_instance_record(path: Path) -> WorktreeInstanceRecord:
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise WorktreeError(f"[S16] could not read valid instance record {path}: {exc}") from exc
-    return _record_from_dict(raw, path)
+    try:
+        return _record_from_dict(raw, path)
+    except WorktreeError:
+        raise
+    except (OSError, ValueError, TypeError, RuntimeError) as exc:
+        raise WorktreeError(
+            f"[S16] could not read valid instance record {path}: {exc}"
+        ) from exc
 
 
 def _write_instance_record(record: WorktreeInstanceRecord) -> None:
@@ -1384,8 +1438,32 @@ def _clean_in(worktree: Path, *, yes: bool) -> int:
     from .workspace_env import (
         WorkspaceEnvError,
         generated_facts_path,
+        outdated_generated_identity,
         read_instance_identity_env,
     )
+
+    try:
+        outdated = outdated_generated_identity(worktree)
+    except WorkspaceEnvError as exc:
+        raise WorktreeError(f"[S16] could not read {worktree}: {exc}") from exc
+    if outdated is not None:
+        # A migration read would create the replacement identity and, later,
+        # its network. This checkout is being removed, so clean resources
+        # under the old identity directly and leave its generated file alone.
+        env = {k: v for k, v in os.environ.items() if k not in _CIU_IDENTITY_ENV_KEYS}
+        argv = [
+            sys.executable, "-m", "ciu.cli", "clean", "--identity",
+            outdated["instance_id"], "-y" if yes else "--yes",
+        ]
+        try:
+            return subprocess.run(
+                argv, cwd=str(worktree), env=env, check=False
+            ).returncode
+        except OSError as exc:
+            raise WorktreeError(
+                f"[S16] could not run `ciu clean --identity "
+                f"{outdated['instance_id']}`: {exc}"
+            ) from exc
 
     try:
         identity = read_instance_identity_env(worktree)
@@ -1456,46 +1534,193 @@ def _ensure_record_is_excluded(repo_root: Path, offset: Path) -> None:
         ) from exc
 
 
-def list_instance_records(repo_root: Path) -> list[WorktreeInstanceRecord]:
-    """Read and cross-check every managed record in one Git family."""
+@dataclass(frozen=True)
+class _InstanceRecordProblem:
+    record_path: Path
+    worktree_path: Path
+    logical_name: str | None
+    detail: str
+
+
+@dataclass(frozen=True)
+class _InstanceRegistryScan:
+    records: tuple[WorktreeInstanceRecord, ...]
+    problems: tuple[_InstanceRecordProblem, ...]
+
+
+def _record_logical_name_hint(path: Path) -> str | None:
+    """Recover only the name needed to protect a requested record from a
+    failing parse. This hint never makes a malformed record usable.
+    """
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, RuntimeError):
+        return None
+    if isinstance(raw, dict):
+        value = raw.get("logical_name")
+        if isinstance(value, str) and value:
+            return value
+    return None
+
+
+def _registered_record_problem(
+    record: WorktreeInstanceRecord, wt: WorktreeInfo, offset: Path,
+) -> str | None:
+    if record.git_worktree_path.resolve() != wt.path.resolve():
+        return (
+            f"record claims Git path {record.git_worktree_path}, but Git "
+            f"registers {wt.path}"
+        )
+    if record.ciu_root_offset != offset:
+        return (
+            f"record claims CIU-root offset {record.ciu_root_offset}, but "
+            f"this family derives {offset}"
+        )
+    if record.branch != wt.branch:
+        return (
+            f"record claims branch {record.branch!r}, but Git registers "
+            f"{wt.branch!r}"
+        )
+    return None
+
+
+def _scan_instance_records(repo_root: Path) -> _InstanceRegistryScan:
+    """Parse and cross-check each sibling independently.
+
+    A sibling that cannot be trusted is retained as a finding for warnings,
+    branch hygiene, and target-specific refusals. It does not erase the rest
+    of the family inventory.
+    """
     offset = _ciu_root_offset(repo_root)
     records: list[WorktreeInstanceRecord] = []
-    logical_names: set[str] = set()
+    problems: list[_InstanceRecordProblem] = []
+    seen_logical: dict[str, Path] = {}
     for wt in list_worktrees(repo_root):
         path = wt.path / offset / WORKTREE_INSTANCE_RECORD
-        if not path.is_file():
+        try:
+            try:
+                mode = path.stat().st_mode
+            except FileNotFoundError:
+                continue
+            except OSError as exc:
+                raise WorktreeError(
+                    f"[S16] could not inspect instance record {path}: {exc}"
+                ) from exc
+            if not stat.S_ISREG(mode):
+                raise WorktreeError(f"[S16] instance record path {path} is not a file")
+            record = read_instance_record(path)
+            detail = _registered_record_problem(record, wt, offset)
+            if detail is not None:
+                raise WorktreeError(f"[S16] {path} {detail}")
+        except WorktreeError as exc:
+            problems.append(_InstanceRecordProblem(
+                record_path=path,
+                worktree_path=wt.path,
+                logical_name=_record_logical_name_hint(path),
+                detail=str(exc),
+            ))
             continue
-        record = read_instance_record(path)
-        if record.git_worktree_path.resolve() != wt.path.resolve():
-            raise WorktreeError(
-                f"[S16] {path} claims Git path {record.git_worktree_path}, "
-                f"but Git registers {wt.path}"
-            )
-        if record.ciu_root_offset != offset:
-            raise WorktreeError(
-                f"[S16] {path} claims CIU-root offset {record.ciu_root_offset}, "
-                f"but this family derives {offset}"
-            )
-        if record.branch != wt.branch:
-            raise WorktreeError(
-                f"[S16] {path} claims branch {record.branch!r}, "
-                f"but Git registers {wt.branch!r}"
-            )
-        if record.logical_name in logical_names:
-            raise WorktreeError(
-                f"[S16] duplicate logical worktree identity {record.logical_name!r} "
-                "within one Git family"
-            )
-        logical_names.add(record.logical_name)
+        except (OSError, ValueError, TypeError, RuntimeError) as exc:
+            problems.append(_InstanceRecordProblem(
+                record_path=path,
+                worktree_path=wt.path,
+                logical_name=_record_logical_name_hint(path),
+                detail=f"[S16] could not validate instance record {path}: {exc}",
+            ))
+            continue
+
+        previous = seen_logical.get(record.logical_name)
+        if previous is not None:
+            problems.append(_InstanceRecordProblem(
+                record_path=path,
+                worktree_path=wt.path,
+                logical_name=record.logical_name,
+                detail=(
+                    f"[S16] duplicate logical worktree identity "
+                    f"{record.logical_name!r} within one Git family "
+                    f"(also claimed by {previous})"
+                ),
+            ))
+        else:
+            seen_logical[record.logical_name] = path
         records.append(record)
-    return records
+    return _InstanceRegistryScan(tuple(records), tuple(problems))
 
 
-def find_instance_record(repo_root: Path, logical_name: str) -> WorktreeInstanceRecord | None:
-    matches = [
-        record for record in list_instance_records(repo_root)
-        if record.logical_name == logical_name
+def _warn_registry_problems(problems: tuple[_InstanceRecordProblem, ...]) -> None:
+    if not problems:
+        return
+    print(
+        f"[WARN] [S16] {len(problems)} sibling instance record(s) could not be "
+        "used for identity checks; continuing with the readable records.",
+        file=sys.stderr,
+        flush=True,
+    )
+    for problem in problems:
+        print(f"[WARN] [S16] {problem.record_path}: {problem.detail}",
+              file=sys.stderr, flush=True)
+
+
+def list_instance_records(
+    repo_root: Path,
+    *,
+    target_logical_name: str | None = None,
+    target_path: Path | None = None,
+) -> list[WorktreeInstanceRecord]:
+    """Read every sibling independently and warn about unusable records.
+
+    When a caller names a target, an unreadable/inconsistent record at that
+    logical name or checkout path remains a hard refusal. An unrelated
+    sibling is warned about and excluded from the returned identity set.
+    """
+    scan = _scan_instance_records(repo_root)
+    resolved_target_path = Path(target_path).resolve() if target_path is not None else None
+    target_problems = [
+        problem for problem in scan.problems
+        if (
+            target_logical_name is not None
+            and problem.logical_name == target_logical_name
+        ) or (
+            resolved_target_path is not None
+            and problem.worktree_path.resolve() == resolved_target_path
+        )
     ]
+    other_problems = tuple(
+        problem for problem in scan.problems if problem not in target_problems
+    )
+    _warn_registry_problems(other_problems)
+    if target_problems:
+        problem = target_problems[0]
+        target = (
+            f"logical identity {target_logical_name!r}"
+            if problem.logical_name == target_logical_name
+            else f"checkout path {problem.worktree_path}"
+        )
+        raise WorktreeError(
+            f"[S16] requested {target} has an unreadable or inconsistent "
+            f"instance record at {problem.record_path}: {problem.detail}"
+        )
+    return list(scan.records)
+
+
+def find_instance_record(
+    repo_root: Path,
+    logical_name: str,
+    *,
+    target_path: Path | None = None,
+) -> WorktreeInstanceRecord | None:
+    records = list_instance_records(
+        repo_root,
+        target_logical_name=logical_name,
+        target_path=target_path,
+    )
+    matches = [record for record in records if record.logical_name == logical_name]
+    if not matches and target_path is not None:
+        target = Path(target_path).resolve()
+        matches = [
+            record for record in records
+            if record.git_worktree_path.resolve() == target
+        ]
     if len(matches) > 1:
         raise WorktreeError(f"[S16] ambiguous logical identity {logical_name!r}")
     return matches[0] if matches else None
@@ -1926,8 +2151,11 @@ def branch_hygiene(repo_root: Path, *, base: str = "main") -> dict[str, Any]:
         checkout_map.setdefault(wt.branch, []).append(wt.path)
         if wt.is_primary:
             guarded_paths.add(wt.path.resolve())
-    records = {
-        r.git_worktree_path.resolve(): r for r in list_instance_records(repo_root)
+    registry = _scan_instance_records(repo_root)
+    _warn_registry_problems(registry.problems)
+    records = {r.git_worktree_path.resolve(): r for r in registry.records}
+    untrusted_paths = {
+        problem.worktree_path.resolve() for problem in registry.problems
     }
     default_branch = _default_branch(repo_root)
 
@@ -1970,6 +2198,11 @@ def branch_hygiene(repo_root: Path, *, base: str = "main") -> dict[str, Any]:
             # (clean-then-remove), never by this git-half prune's bare
             # `git worktree remove` — see the vocabulary comment above.
             category = "managed-instance"
+        elif checkout and Path(checkout).resolve() in untrusted_paths:
+            # A record that cannot be parsed or cross-checked still means CIU
+            # may own this checkout. Preserve it for `ciu worktree rm` or
+            # explicit operator repair; git pruning cannot prove it safe.
+            category = "managed-instance"
         elif fact["merged"]:
             if checkout and dirty:
                 category = "merged-dirty"
@@ -2001,6 +2234,11 @@ def branch_hygiene(repo_root: Path, *, base: str = "main") -> dict[str, Any]:
             f" {managed_n} branch(es) carry a CIU-managed instance and are "
             "never pruned here — dispose of each with `ciu worktree rm NAME`, "
             "which runs `ciu clean` BEFORE removing the checkout."
+        )
+    if registry.problems:
+        hint += (
+            f" {len(registry.problems)} sibling record(s) were unreadable or "
+            "inconsistent; their branches are protected from pruning."
         )
     return {
         "schema_version": BRANCHES_SCHEMA_VERSION,
@@ -2317,11 +2555,9 @@ def _reap_record_inconsistencies(
 def survey_instance_records(repo_root: Path) -> ReapIdentities:
     """:func:`list_instance_records` for a DESTRUCTIVE reader — never raises.
 
-    ``list_instance_records`` refuses the whole family on the first
-    inconsistency it meets (branch mismatch, offset mismatch, duplicate
-    logical identity, an unreadable file). That is exactly right for
-    ``add``/``rm``/``inspect``, which act on ONE named instance and must not
-    proceed over a contradiction. It is exactly wrong for a reap survey,
+    This survey reads every checkout independently so one inconsistency
+    cannot hide the remaining host state. That is exactly right for a reap
+    survey,
     which is most needed precisely when something is already broken: one bad
     record would blind the operator to every other instance on the host, and
     "the survey crashed" is the worst possible answer to "what is safe to
@@ -2398,9 +2634,17 @@ def survey_instance_records(repo_root: Path) -> ReapIdentities:
         if identity is not None:
             checkouts[identity[0]] = str(wt.path)
             networks[identity[0]] = identity[1]
-        elif has_record_file:
+        elif has_record_file and not (
+            record is not None
+            and record.state == "ready"
+            and record.instance_id is None
+            and record.network is None
+        ):
             # This checkout WAS a managed instance, so it may well have
             # stamped `ciu.instance` labels — and we cannot say which id.
+            # A ready record with no runtime identity is the explicit rootless
+            # Git-worktree case; it has no CIU marker and could not have
+            # created CIU-labeled resources.
             unresolved.append(str(wt.path))
 
     findings.sort(key=lambda f: (f["kind"], f["path"], f["detail"]))
@@ -3161,7 +3405,9 @@ def _run_child(
     return subprocess.run(list(argv), cwd=str(cwd), env=dict(env), check=False)
 
 
-def up_instance(repo_root: Path, logical_name: str) -> int:
+def up_instance(
+    repo_root: Path, logical_name: str, *, all_profiles: bool = False,
+) -> int:
     """``ciu worktree up LOGICAL`` — start the selected ready instance exactly.
 
     Reads that instance's OWN ``[ciu.instance.generated]`` facts by
@@ -3177,12 +3423,23 @@ def up_instance(repo_root: Path, logical_name: str) -> int:
     env = _sanitized_target_env(repo_root, record)
     import sys
 
+    global_config = config_model.render_global_chain(
+        record.ciu_root, record.ciu_root, write_rendered=False, environ=env,
+    )
+    declared_profiles = resolve_worktree_up_profiles(global_config)
     argv = [sys.executable, "-m", "ciu.cli", "up"]
+    if declared_profiles and not all_profiles:
+        for profile_name in declared_profiles:
+            argv.extend(["--profile", profile_name])
+        # Keep profiles in one deploy process. Several dstdns stacks rely on
+        # requires/provides checks across profile boundaries before any start.
+        argv.extend(["--deploy", "--healthcheck"])
     try:
         res = _run_child(argv, record.ciu_root, env)
     except OSError as exc:
         raise WorktreeError(
-            f"[S16] could not run `ciu up` in {record.ciu_root}: {exc}"
+            f"[S16] could not run `ciu worktree up {logical_name}` in "
+            f"{record.ciu_root}: {exc}"
         ) from exc
     return res.returncode
 
@@ -3360,6 +3617,26 @@ def _verify_worktree_mount(
     against the declared workdir. No local filesystem predicate is ever run on
     a path belonging to the other namespace.
     """
+    physical = os.path.normpath(str(to_physical_path(
+        record.git_worktree_path,
+        repo_root=Path(env["REPO_ROOT"]),
+        physical_root=Path(env["PHYSICAL_REPO_ROOT"]),
+    )))
+    _verify_checkout_mount(container_id, physical, workdir)
+
+
+def _verify_checkout_mount(
+    container_id: str,
+    physical_checkout: str | Path,
+    workdir: str,
+) -> None:
+    """Prove an already-running container mounts this checkout at *workdir*.
+
+    Shared by the managed-worktree alias and CIU-118's general ``ciu exec``.
+    The caller supplies the Docker-visible checkout path from CIU's generated
+    identity facts; this function compares Docker's mount source and never
+    asks the local kernel to validate a path from another namespace.
+    """
     try:
         res = procutil.docker(
             ["inspect", "--format", "{{json .Mounts}}", container_id],
@@ -3382,11 +3659,7 @@ def _verify_worktree_mount(
             f"[S16.7] `docker inspect` returned unparseable mounts for "
             f"{container_id}"
         ) from exc
-    physical = os.path.normpath(str(to_physical_path(
-        record.git_worktree_path,
-        repo_root=Path(env["REPO_ROOT"]),
-        physical_root=Path(env["PHYSICAL_REPO_ROOT"]),
-    )))
+    physical = os.path.normpath(str(physical_checkout))
     for mount in mounts:
         if not isinstance(mount, dict):
             continue
@@ -3533,7 +3806,10 @@ def _docker_network_exists(network: str) -> bool:
     """Check one exact host network name; Docker absence means local-only CIU."""
     try:
         result = procutil.docker(
-            ["network", "ls", "--filter", f"name=^{network}$", "--format", "{{.Name}}"],
+            # Docker's network name filter is substring-based, not a regular
+            # expression. Ask for candidates by substring and prove exact
+            # membership from the returned names below.
+            ["network", "ls", "--filter", f"name={network}", "--format", "{{.Name}}"],
             capture=True, check=False,
         )
     except (FileNotFoundError, OSError):
@@ -3552,13 +3828,205 @@ def _mark_recovery(record: WorktreeInstanceRecord, status: str) -> WorktreeInsta
     return failed
 
 
+def _allocated_commit_sha(
+    record: WorktreeInstanceRecord,
+    workspace_context: object,
+) -> str:
+    """Resolve the checkout's allocation commit without guessing from a moved HEAD."""
+    if record.fork_point_sha and _FULL_SHA_RE.fullmatch(record.fork_point_sha):
+        return record.fork_point_sha
+    if _FULL_SHA_RE.fullmatch(record.base_ref):
+        return record.base_ref
+
+    head = _git(["rev-parse", "HEAD^{commit}"], record.git_worktree_path)
+    current_head = head.stdout.strip() if head.returncode == 0 else ""
+    head_detail = (head.stderr or head.stdout).strip()
+    workspace_base = str(getattr(workspace_context, "base_commit", ""))
+    if (
+        _FULL_SHA_RE.fullmatch(workspace_base)
+        and current_head == workspace_base
+    ):
+        return workspace_base
+    provenance = head_detail or (
+        f"workspace base={workspace_base or 'missing'}, "
+        f"current HEAD={current_head or 'unreadable'}"
+    )
+    raise WorktreeError(
+        f"[S16] could not determine the allocated worktree commit at "
+        f"{record.git_worktree_path}; refusing to infer it from the current "
+        "checkout"
+        + f": {provenance}"
+    )
+
+
+def _committed_root_entries(
+    repo_root: Path,
+    record: WorktreeInstanceRecord,
+    workspace_context: object | None,
+    *,
+    prepare: bool,
+    persist: bool,
+    allocation_commit: str | None = None,
+    verify_persisted: bool = False,
+    preflight_selected_root: Callable[[], None] | None = None,
+    prepare_selected_root: Callable[[], None] | None = None,
+    publish_ready: Callable[[], None] | None = None,
+) -> tuple[list[dict[str, Any]], bool | None]:
+    """Read or prepare every CIU root committed at this checkout's exact HEAD."""
+    from . import workspace as workspace_adapter
+    from .workspace_env import generate_ciu_env, read_generated_facts
+
+    if workspace_context is None:
+        raise WorktreeError(
+            "[S16] cannot certify worktree readiness without its shared "
+            "workspace record for committed-root metadata"
+        )
+    # The fork point is the checkout selected by this allocation. A later
+    # ensure may run after the branch has acquired commits of its own; using
+    # today's HEAD would silently change which roots the original allocation
+    # was required to prepare. Adopt records have no fork point, but their
+    # durable base_ref is the exact HEAD captured before the first write.
+    commit = allocation_commit or _allocated_commit_sha(record, workspace_context)
+
+    primary = primary_worktree_root(repo_root).resolve()
+    discovered_roots = workspace_adapter.discover_committed_roots(primary, base=commit)
+    physical_primary = Path(workspace_context.physical_worktree_path)
+    specs: list[tuple[Path, Path, object]] = []
+    for discovered in discovered_roots:
+        relative = discovered.relative_to(primary)
+        target_root = (record.git_worktree_path / relative).resolve()
+        if not _ciu_root_marker_present(target_root):
+            raise WorktreeError(
+                f"[S16] committed CIU root marker did not materialize at {target_root}"
+            )
+        root_context = workspace_adapter.context_for_root(
+            target_root, physical_git_root=physical_primary
+        )
+        specs.append((relative, target_root, root_context))
+
+    workspace_adapter.assert_root_identity_distinct(
+        [root_context for _relative, _target_root, root_context in specs]
+    )
+    ordered_specs = sorted(specs, key=lambda item: str(item[0]))
+    selected_root_found = any(
+        target_root.resolve() == record.ciu_root.resolve()
+        for _relative, target_root, _root_context in ordered_specs
+    )
+    if (preflight_selected_root or prepare_selected_root) and not selected_root_found:
+        raise WorktreeError(
+            f"[S16] selected CIU root {record.ciu_root} is absent from the "
+            f"committed root set at {commit}"
+        )
+
+    root_entries: list[dict[str, Any]] = []
+    with ExitStack() as locks:
+        for _relative, _target_root, root_context in ordered_specs:
+            locks.enter_context(workspace_adapter.root_lock(root_context))
+        if prepare and preflight_selected_root is not None:
+            # Validate the selected root's identity collision before creating
+            # generated files in any sibling root.
+            preflight_selected_root()
+        for relative, target_root, root_context in ordered_specs:
+            selected_root = target_root.resolve() == record.ciu_root.resolve()
+            if prepare and selected_root:
+                if prepare_selected_root is not None:
+                    prepare_selected_root()
+            elif prepare:
+                generate_ciu_env(target_root, notice_stream=None)
+            facts = read_generated_facts(target_root)
+            root_entries.append({
+                "offset": relative.as_posix() if relative != Path(".") else ".",
+                "generated_facts_path": str(
+                    workspace_adapter._shared().canonical_path(
+                        target_root / "ciu.instance.generated.toml"
+                    )
+                ),
+                "root_instance_id": root_context.root_instance_id,
+                "workspace_id": root_context.workspace_id,
+                "network": facts.get("network", ""),
+                "state": "ready",
+            })
+        if persist:
+            # Keep per-root locks until the matching aggregate metadata is
+            # committed, so no generated identity can change between read and
+            # the readiness evidence write.
+            _write_committed_root_entries(workspace_context, root_entries)
+            if publish_ready is not None:
+                # Keep every root lock until the CIU-facing completion claim
+                # is durable as well as the shared aggregate evidence.
+                publish_ready()
+        elif verify_persisted:
+            # Read the aggregate metadata before releasing root locks. A
+            # concurrent root regeneration cannot invalidate the facts
+            # between this comparison and ensure()'s ready fast return.
+            shared = _shared_worktree()
+            with shared.workspace_lock(workspace_context.git_common_dir):
+                generic_record = shared.read_record(workspace_context.record_path)
+            return root_entries, generic_record.metadata.get("root_entries") == root_entries
+    return root_entries, True if persist else None
+
+
+def _write_committed_root_entries(
+    workspace_context: object | None,
+    root_entries: list[dict[str, Any]],
+) -> None:
+    if workspace_context is None:
+        raise WorktreeError(
+            "[S16] cannot persist committed-root metadata without a shared "
+            "workspace context"
+        )
+    shared = _shared_worktree()
+    # Preserve opaque metadata and lease updates across this atomic read-modify-write.
+    with shared.workspace_lock(workspace_context.git_common_dir):
+        generic_record = shared.read_record(workspace_context.record_path)
+        shared.write_record(
+            replace(
+                generic_record,
+                metadata={
+                    **dict(generic_record.metadata),
+                    "root_entries": root_entries,
+                },
+            )
+        )
+
+
+def _ready_roots_are_complete(
+    repo_root: Path,
+    record: WorktreeInstanceRecord,
+    workspace_context: object | None,
+) -> bool:
+    """Recognize historical ready records before ensure fast-returns."""
+    if workspace_context is None:
+        return False
+    # If provenance itself is unavailable, propagate the refusal without
+    # rewriting an otherwise-ready record as a failed preparation.
+    commit = _allocated_commit_sha(record, workspace_context)
+    try:
+        _entries, matches = _committed_root_entries(
+            repo_root, record, workspace_context, prepare=False, persist=False,
+            allocation_commit=commit, verify_persisted=True,
+        )
+        return matches is True
+    except Exception:
+        # ensure() repairs through the normal path, which gives a concrete
+        # refusal if the missing evidence cannot be regenerated.
+        return False
+
+
 def _finish_allocation(
     repo_root: Path,
     record: WorktreeInstanceRecord,
     *,
     checkout_required: bool,
     allow_existing_network: bool = False,
+    workspace_context: object | None = None,
 ) -> WorktreeInstanceRecord:
+    if workspace_context is None:
+        _mark_recovery(record, "env-generation-failed")
+        raise WorktreeError(
+            "[S16] cannot certify worktree readiness without its shared "
+            "workspace record"
+        )
     if checkout_required:
         checkout = _git(["reset", "--hard", record.base_ref], record.git_worktree_path)
         if checkout.returncode != 0:
@@ -3592,60 +4060,99 @@ def _finish_allocation(
         if _FULL_SHA_RE.fullmatch(candidate):
             record = replace(record, fork_point_sha=candidate)
 
-    # A generic Git worktree is valid even when the selected family contains no
-    # CIU root marker.  Worktree creation must report that there are no CIU
-    # roots to prepare; it must not reinterpret the Git top level as a root or
-    # fail before `discover_committed_roots` can inspect nested markers.
-    if not (record.ciu_root / GLOBAL_CONFIG_DEFAULTS).is_file():
-        ready = replace(record, state="ready", recovery_status=None)
-        _write_instance_record(ready)
-        return ready
-
-    rc = _generate_env_in(record.ciu_root, identity_only=True)
-    if rc != 0:
-        _mark_recovery(record, "env-generation-failed")
-        raise WorktreeError(
-            f"[S16] worktree exists at {record.git_worktree_path}, but "
-            f"`ciu env generate` failed in {record.ciu_root} (exit {rc}). "
-            f"Resume with `ciu worktree ensure {record.logical_name}`."
-        )
-    try:
-        instance_id, network = _runtime_identity(record.ciu_root)
-        _check_runtime_collision(repo_root, record, instance_id, network)
-        if not allow_existing_network and _docker_network_exists(network):
-            raise WorktreeError(
-                f"[S16] host runtime network {network!r} already exists before "
-                "this allocation; refusing a possible independent-clone collision"
-            )
-    except WorktreeError:
-        _mark_recovery(record, "runtime-collision")
-        raise
+    # An adopt record carries a durable no-reset marker from its first write.
+    # Keep it through all initialization, including nested-root preparation.
+    adopting = (
+        record.state == "recovery-required"
+        and record.recovery_status == "env-generation-failed"
+        and record.fork_point_sha is None
+        and _FULL_SHA_RE.fullmatch(record.base_ref) is not None
+    )
     allocating = replace(
-        record, state="allocating", instance_id=instance_id, network=network,
-        recovery_status=None,
+        record,
+        state="recovery-required" if adopting else "allocating",
+        recovery_status="env-generation-failed" if adopting else None,
     )
     _write_instance_record(allocating)
+    recovery_status = "env-generation-failed"
 
-    rc = _generate_env_in(record.ciu_root)
-    if rc != 0:
-        _mark_recovery(allocating, "env-generation-failed")
-        raise WorktreeError(
-            f"[S16] worktree exists at {record.git_worktree_path}, but full "
-            f"`ciu env generate` failed in {record.ciu_root} (exit {rc}). "
-            f"Resume with `ciu worktree ensure {record.logical_name}`."
+    try:
+        # A generic Git worktree can lack a root marker while still containing
+        # committed nested CIU roots. Prepare all of them before publishing
+        # this aggregate record as ready.
+        selected_root_identity: tuple[str, str] | None = None
+
+        def preflight_selected_root() -> None:
+            nonlocal allocating, recovery_status, selected_root_identity
+            rc = _generate_env_in(record.ciu_root, identity_only=True)
+            if rc != 0:
+                raise WorktreeError(
+                    f"[S16] worktree exists at {record.git_worktree_path}, but "
+                    f"`ciu env generate` failed in {record.ciu_root} (exit {rc}). "
+                    f"Resume with `ciu worktree ensure {record.logical_name}`."
+                )
+            instance_id, network = _runtime_identity(record.ciu_root)
+            try:
+                _check_runtime_collision(repo_root, allocating, instance_id, network)
+                if not allow_existing_network and _docker_network_exists(network):
+                    raise WorktreeError(
+                        f"[S16] host runtime network {network!r} already exists before "
+                        "this allocation; refusing a possible independent-clone collision"
+                    )
+            except WorktreeError:
+                recovery_status = "runtime-collision"
+                raise
+            allocating = replace(
+                allocating, instance_id=instance_id, network=network,
+            )
+            _write_instance_record(allocating)
+
+            selected_root_identity = (instance_id, network)
+
+        def prepare_selected_root() -> None:
+            nonlocal recovery_status
+            if selected_root_identity is None:
+                raise WorktreeError(
+                    "[S16] selected root identity preflight did not complete"
+                )
+            instance_id, network = selected_root_identity
+            rc = _generate_env_in(record.ciu_root)
+            if rc != 0:
+                raise WorktreeError(
+                    f"[S16] worktree exists at {record.git_worktree_path}, but full "
+                    f"`ciu env generate` failed in {record.ciu_root} (exit {rc}). "
+                    f"Resume with `ciu worktree ensure {record.logical_name}`."
+                )
+            confirmed_id, confirmed_network = _runtime_identity(record.ciu_root)
+            if (confirmed_id, confirmed_network) != (instance_id, network):
+                recovery_status = "runtime-collision"
+                raise WorktreeError(
+                    "[S16] runtime identity changed between identity-only and full env generation"
+                )
+
+        _committed_root_entries(
+            repo_root, allocating, workspace_context, prepare=True, persist=True,
+            preflight_selected_root=(
+                preflight_selected_root
+                if _ciu_root_marker_present(record.ciu_root) else None
+            ),
+            prepare_selected_root=(
+                prepare_selected_root
+                if _ciu_root_marker_present(record.ciu_root) else None
+            ),
+            publish_ready=lambda: _write_instance_record(
+                replace(allocating, state="ready", recovery_status=None)
+            ),
         )
-    confirmed_id, confirmed_network = _runtime_identity(record.ciu_root)
-    if (confirmed_id, confirmed_network) != (instance_id, network):
-        _mark_recovery(allocating, "runtime-collision")
+    except Exception as exc:
+        _mark_recovery(allocating, recovery_status)
+        if isinstance(exc, WorktreeError):
+            raise
         raise WorktreeError(
-            "[S16] runtime identity changed between identity-only and full env generation"
-        )
-    ready = replace(
-        allocating, state="ready", instance_id=instance_id, network=network,
-        recovery_status=None,
-    )
-    _write_instance_record(ready)
-    return ready
+            f"[S16] multi-root preparation failed in {record.git_worktree_path}: {exc}"
+        ) from exc
+
+    return replace(allocating, state="ready", recovery_status=None)
 
 
 def create(
@@ -3747,7 +4254,20 @@ def create(
     )
 
     with _allocation_lock(repo_root):
-        if find_instance_record(repo_root, logical_name) is not None:
+        candidate_display = display_name or generated_base or logical_name
+        _validate_name(candidate_display, label="display name")
+        requested_path = (
+            (path if path.is_absolute() else primary / path)
+            if path is not None else primary / worktree_dir / candidate_display
+        ).resolve()
+        suffixable_generated_name = (
+            generated_base is not None and branch is None and path is None
+        )
+        if find_instance_record(
+            repo_root,
+            logical_name,
+            target_path=None if suffixable_generated_name else requested_path,
+        ) is not None:
             raise WorktreeError(
                 f"[S16] logical worktree identity {logical_name!r} already exists; "
                 "use `ciu worktree ensure` to resume it"
@@ -3830,91 +4350,10 @@ def create(
         except WorktreeError:
             _mark_recovery(record, "checkout-incomplete")
             raise
-        ready = _finish_allocation(repo_root, record, checkout_required=True)
-        # Worktree creation is a workspace operation: every committed CIU root
-        # in the selected Git tree is prepared with its own generated facts.
-        # The root selected by the legacy CIU record has already been prepared
-        # by _finish_allocation; the remaining roots are generated by exact
-        # root-relative translation and never by ignored overlays or ambient
-        # REPO_ROOT.
-        root_entries: list[dict[str, Any]] = []
-        try:
-            from . import workspace as workspace_adapter
-            from .workspace_env import generate_ciu_env, read_generated_facts
-
-            discovered_roots = workspace_adapter.discover_committed_roots(primary, base=base)
-            specs: list[tuple[Path, Path, object]] = []
-            physical_primary = shared_context.physical_worktree_path
-            for discovered in discovered_roots:
-                relative = discovered.relative_to(primary)
-                target_root = (target / relative).resolve()
-                if not (target_root / GLOBAL_CONFIG_DEFAULTS).is_file():
-                    raise WorktreeError(
-                        f"[S16] committed CIU root marker did not materialize at {target_root}"
-                    )
-                root_context = workspace_adapter.context_for_root(
-                    target_root, physical_git_root=physical_primary
-                )
-                specs.append((relative, target_root, root_context))
-
-            workspace_adapter.assert_root_identity_distinct(
-                [root_context for _relative, _target_root, root_context in specs]
-            )
-
-            with ExitStack() as locks:
-                for _relative, _target_root, root_context in sorted(
-                    specs, key=lambda item: str(item[0])
-                ):
-                    locks.enter_context(workspace_adapter.root_lock(root_context))
-                for relative, target_root, root_context in specs:
-                    if target_root.resolve() != ready.ciu_root.resolve():
-                        generate_ciu_env(target_root, notice_stream=None)
-                    facts = read_generated_facts(target_root)
-                    root_entries.append({
-                        "offset": relative.as_posix() if relative != Path(".") else ".",
-                        "generated_facts_path": str(
-                            workspace_adapter._shared().canonical_path(
-                                target_root / "ciu.instance.generated.toml"
-                            )
-                        ),
-                        "root_instance_id": root_context.root_instance_id,
-                        "workspace_id": root_context.workspace_id,
-                        "network": facts.get("network", ""),
-                        "state": "ready",
-                    })
-
-            generic_record = _shared_worktree().read_record(shared_context.record_path)
-            _shared_worktree().write_record(
-                replace(
-                    generic_record,
-                    metadata={
-                        **dict(generic_record.metadata),
-                        "root_entries": root_entries,
-                    },
-                )
-            )
-        except Exception as exc:
-            if root_entries:
-                try:
-                    generic_record = _shared_worktree().read_record(shared_context.record_path)
-                    _shared_worktree().write_record(
-                        replace(
-                            generic_record,
-                            metadata={
-                                **dict(generic_record.metadata),
-                                "root_entries": root_entries,
-                            },
-                        )
-                    )
-                except Exception:
-                    pass
-            _mark_recovery(ready, "env-generation-failed")
-            if isinstance(exc, WorktreeError):
-                raise
-            raise WorktreeError(
-                f"[S16] multi-root preparation failed in {target}: {exc}"
-            ) from exc
-        return ready
+        return _finish_allocation(
+            repo_root, record, checkout_required=True,
+            workspace_context=shared_context,
+        )
 
 
 def ensure(
@@ -3968,13 +4407,44 @@ def ensure(
                         f"[S16] ensure mismatch for {field}: record has "
                         f"{actual!r}, caller requested {expected!r}"
                     )
-            _ensure_shared_record(repo_root, record)
+            workspace_context = _ensure_shared_record(repo_root, record)
             if record.state == "ready":
-                return record
-            checkout_required = record.recovery_status in (None, "checkout-incomplete")
+                if _ready_roots_are_complete(
+                    repo_root, record, workspace_context
+                ):
+                    return record
+                checkout_required = False
+            else:
+                checkout_required = record.recovery_status in (
+                    None, "checkout-incomplete"
+                )
+            if (
+                record.recovery_status == "env-generation-failed"
+                and record.fork_point_sha is None
+                and _FULL_SHA_RE.fullmatch(record.base_ref) is not None
+            ):
+                head = _git(
+                    ["rev-parse", "--verify", "--quiet", "HEAD^{commit}"],
+                    record.git_worktree_path,
+                )
+                current = head.stdout.strip() if head.returncode == 0 else ""
+                if current != record.base_ref:
+                    raise WorktreeError(
+                        f"[CIU-107] refusing to resume adopt for "
+                        f"{record.logical_name!r}: HEAD is {current or 'unreadable'}, "
+                        f"but the recorded target is {record.base_ref}; HEAD moved "
+                        "after adoption began. Preserve the checkout and review "
+                        "its commits before running `ciu worktree adopt` again."
+                    )
+                return _finish_allocation(
+                    repo_root, record, checkout_required=False,
+                    allow_existing_network=True,
+                    workspace_context=workspace_context,
+                )
             return _finish_allocation(
                 repo_root, record, checkout_required=checkout_required,
                 allow_existing_network=record.recovery_status == "env-generation-failed",
+                workspace_context=workspace_context,
             )
     return create(repo_root, logical_name, **create_kwargs)
 
@@ -4012,11 +4482,11 @@ def adopt(
             shared_infra_ref_services=shared_infra_ref_services,
         )
     with _allocation_lock(repo_root):
-        if find_instance_record(repo_root, logical_name) is not None:
-            raise WorktreeError(f"[S16] logical identity {logical_name!r} is already managed")
         wt = find_worktree(repo_root, target)
         if wt is None:
             raise WorktreeError(f"[S16] {target!r} is not a registered worktree")
+        if find_instance_record(repo_root, logical_name) is not None:
+            raise WorktreeError(f"[S16] logical identity {logical_name!r} is already managed")
         if wt.is_primary or wt.branch in ("(detached)", "(unknown)"):
             raise WorktreeError("[S16] adopt requires one non-primary attached-branch worktree")
         offset = _ciu_root_offset(repo_root)
@@ -4031,10 +4501,11 @@ def adopt(
             logical_name=logical_name, display_name=wt.path.name, branch=wt.branch,
             git_worktree_path=wt.path.resolve(), ciu_root_offset=offset,
             created_at_utc=_utc_now().isoformat().replace("+00:00", "Z"),
-            base_ref=head.stdout.strip(), state="allocating",
+            base_ref=head.stdout.strip(), state="recovery-required",
+            recovery_status="env-generation-failed",
         )
         _write_instance_record(record)
-        _ensure_shared_record(repo_root, record)
+        workspace_context = _ensure_shared_record(repo_root, record)
         if (record.ciu_root / GLOBAL_CONFIG_INSTANCE_OVERRIDES).exists() and (
             profile or shared_infra_intent is not None
         ):
@@ -4043,28 +4514,19 @@ def adopt(
                 f"[S16] {record.ciu_root} already has an instance override; "
                 "refusing to replace it with adopt flags"
             )
-        # An adopt record must never be resumed as if it needed a CHECKOUT.
-        # `ensure` decides that from `recovery_status` alone
-        # (`in (None, "checkout-incomplete")`), and the record written just
-        # above carries `None` — so an overlay write that raises used to leave
-        # behind a record whose resume would `git reset --hard <the adopted
-        # HEAD>` in the operator's own checkout, destroying anything committed
-        # there since, and (CIU-106) record a fork point on an adopt-shaped
-        # record. Marking it is what `create` does one level up for its own
-        # overlay write; the marker is the same one adopt's instance-override
-        # refusal below already uses, and it means exactly "resume WITHOUT a
-        # checkout, and tolerate the existing network" — adopt's own normal
-        # `_finish_allocation` shape. `OSError` is caught too because this
-        # writes a file: ENOSPC and a read-only mount are not `WorktreeError`.
-        # A HARD kill in the same window cannot be caught here at all and is
-        # the pre-existing lifecycle gap CIU-107 tracks.
+        # An adopt record carries a durable recovery marker from its first
+        # write. `ensure` compares HEAD with this recorded target and resumes
+        # without a checkout; it never resets an adopted tree. Keeping the
+        # marker through `_finish_allocation` also covers a hard interruption
+        # after identity generation has started.
         try:
             _write_worktree_overlay(record.ciu_root, profile, shared_infra_intent)
         except (WorktreeError, OSError):
             _mark_recovery(record, "env-generation-failed")
             raise
         return _finish_allocation(
-            repo_root, record, checkout_required=False, allow_existing_network=True
+            repo_root, record, checkout_required=False, allow_existing_network=True,
+            workspace_context=workspace_context,
         )
 
 
@@ -4083,7 +4545,11 @@ def remove(
     root-owned volume dirs no unprivileged operator can delete.
 
     """
-    managed = find_instance_record(repo_root, name)
+    path_hint = find_worktree(repo_root, name)
+    managed = find_instance_record(
+        repo_root, name,
+        target_path=path_hint.path if path_hint is not None else None,
+    )
     wt = (
         find_worktree(repo_root, str(managed.git_worktree_path))
         if managed is not None else find_worktree(repo_root, name)
@@ -4100,7 +4566,14 @@ def remove(
         )
 
     ciu_root = managed.ciu_root if managed is not None else wt.path / _ciu_root_offset(repo_root)
-    rc = _clean_in(ciu_root, yes=yes)
+    rootless_managed = (
+        managed is not None
+        and managed.state == "ready"
+        and managed.instance_id is None
+        and managed.network is None
+        and not _ciu_root_marker_present(managed.ciu_root)
+    )
+    rc = 0 if rootless_managed else _clean_in(ciu_root, yes=yes)
     if rc != 0 and not force:
         raise WorktreeError(
             f"[S16] `ciu clean` failed (exit {rc}) in {ciu_root}; NOT removing the "
@@ -4117,7 +4590,7 @@ def remove(
     # means --force was passed: the checkout is about to be destroyed with
     # resources possibly still standing, which is precisely when the ownership
     # record must NOT be erased.
-    if rc == 0:
+    if rc == 0 and not rootless_managed:
         release_own_lease(ciu_root)
 
     # New allocations have a neutral family record.  CIU has already completed
@@ -4431,7 +4904,7 @@ _BUDGET_LOCK_NAME = "ciu-worktree-budget.lock"
 # same table too (CIU-69) — its own contents are NOT re-validated here, only
 # its presence as a top-level key is accepted rather than refused.
 WORKTREE_TABLE_KEYS = frozenset(
-    {"max_concurrent_instances", "lease_ttl_hours", "exec_targets"}
+    {"max_concurrent_instances", "lease_ttl_hours", "exec_targets", "up"}
 )
 
 
@@ -4448,6 +4921,49 @@ def _validate_worktree_table(raw: Any) -> None:
             f"[S16.3] unknown key(s) in [ciu.worktree]: "
             f"{', '.join(sorted(unknown))}"
         )
+    if "up" in raw:
+        profiles = raw["up"]
+        if (
+            not isinstance(profiles, list)
+            or not profiles
+            or any(not isinstance(name, str) or not name.strip() for name in profiles)
+        ):
+            raise WorktreeError(
+                "[S16.1] [ciu.worktree] up must be a non-empty array of "
+                "profile names"
+            )
+        normalized = [name.strip() for name in profiles]
+        if len(set(normalized)) != len(normalized):
+            raise WorktreeError(
+                "[S16.1] [ciu.worktree] up contains a duplicate profile name"
+            )
+
+
+def resolve_worktree_up_profiles(
+    global_config: Mapping[str, Any],
+) -> tuple[str, ...] | None:
+    """Validate and return the committed profile list for ``worktree up``."""
+    ciu = global_config.get("ciu", {})
+    if not isinstance(ciu, Mapping):
+        raise WorktreeError("[S16.1] [ciu] must be a table")
+    worktree_cfg = ciu.get("worktree")
+    if worktree_cfg is None:
+        return None
+    _validate_worktree_table(worktree_cfg)
+    if "up" not in worktree_cfg:
+        return None
+    names = tuple(name.strip() for name in worktree_cfg["up"])
+    from .deploy_pkg.profiles import resolve_profiles
+
+    # An explicit empty env prevents this config check from accidentally
+    # validating against a shell's CIU_SERVICES_PROFILE.
+    try:
+        resolve_profiles(dict(global_config), list(names), env={})
+    except ValueError as exc:
+        raise WorktreeError(
+            f"[S16.1] invalid [ciu.worktree].up profile list: {exc}"
+        ) from exc
+    return names
 
 
 def primary_worktree_root(repo_root: Path) -> Path:
@@ -4648,8 +5164,9 @@ class _BudgetCandidate:
 
     worktree_path: Path
     stack: Path
-    network: str
-    project: str
+    network: str | None
+    project: str | None
+    unknown_owner: bool = False
 
 
 def _candidate_project(candidate_global: dict, candidate_stack: Path) -> str:
@@ -4715,19 +5232,31 @@ def _resolve_budget_candidates(
         # a malformed table are three distinct failures; the reader normalizes
         # all three to WorkspaceEnvError so covering them here is one name.
         except WorkspaceEnvError as exc:
-            raise WorktreeError(
-                f"[S16.3] could not read/parse {facts_path}: {exc}"
-            ) from exc
+            print(
+                f"[WARN] [S16.3] could not read/parse {facts_path}: {exc}; "
+                "counting this sibling as a possible active instance.",
+                file=sys.stderr, flush=True,
+            )
+            candidates.append(_BudgetCandidate(
+                worktree_path=entry.path, stack=candidate_stack,
+                network=None, project=None, unknown_owner=True,
+            ))
+            continue
         if not candidate_facts:
             # A raw git worktree, never registered as a CIU instance.
             continue
         network = candidate_facts.get("network", "")
         if not network:
-            raise WorktreeError(
-                f"[S16.3] {facts_path} declares no instance network; "
-                f"{entry.path} looks like a registered CIU instance whose "
-                "deployment state cannot be truthfully counted."
+            print(
+                f"[WARN] [S16.3] {facts_path} declares no instance network; "
+                "counting this sibling as a possible active instance.",
+                file=sys.stderr, flush=True,
             )
+            candidates.append(_BudgetCandidate(
+                worktree_path=entry.path, stack=candidate_stack,
+                network=None, project=None, unknown_owner=True,
+            ))
+            continue
         candidate_env = {
             k: v for k, v in os.environ.items() if k not in _CIU_IDENTITY_ENV_KEYS
         }
@@ -4747,17 +5276,31 @@ def _resolve_budget_candidates(
                 write_rendered=False, environ=candidate_env,
             )
         except ValueError as exc:
-            raise WorktreeError(
-                f"[S16.3] could not render the global configuration for "
-                f"candidate {candidate_stack}: {exc}"
-            ) from exc
+            print(
+                f"[WARN] [S16.3] could not render the global configuration "
+                f"for candidate {candidate_stack}: {exc}; counting this "
+                "sibling as a possible active instance.",
+                file=sys.stderr, flush=True,
+            )
+            candidates.append(_BudgetCandidate(
+                worktree_path=entry.path, stack=candidate_stack,
+                network=None, project=None, unknown_owner=True,
+            ))
+            continue
         try:
             project = _candidate_project(candidate_global, candidate_stack)
         except ValueError as exc:
-            raise WorktreeError(
-                f"[S16.3] could not derive the compose project for "
-                f"candidate {candidate_stack}: {exc}"
-            ) from exc
+            print(
+                f"[WARN] [S16.3] could not derive the compose project for "
+                f"candidate {candidate_stack}: {exc}; counting this sibling "
+                "as a possible active instance.",
+                file=sys.stderr, flush=True,
+            )
+            candidates.append(_BudgetCandidate(
+                worktree_path=entry.path, stack=candidate_stack,
+                network=None, project=None, unknown_owner=True,
+            ))
+            continue
 
         candidates.append(_BudgetCandidate(
             worktree_path=entry.path, stack=candidate_stack,
@@ -4849,7 +5392,7 @@ def worktree_budget_slot(
         )
 
     candidates = _resolve_budget_candidates(repo_root, stack_rel)
-    networks = {c.network for c in candidates}
+    networks = {c.network for c in candidates if c.network is not None}
     if current_network not in networks:
         raise WorktreeError(
             f"[S16.3] current network {current_network!r} is not among the "
@@ -4863,9 +5406,13 @@ def worktree_budget_slot(
     try:
         fcntl.flock(lock_fh.fileno(), fcntl.LOCK_EX)
         try:
-            deployed_count = 0
+            deployed_count = sum(1 for c in candidates if c.unknown_owner)
             current_deployed = False
             for candidate in candidates:
+                if candidate.unknown_owner:
+                    continue
+                assert candidate.network is not None
+                assert candidate.project is not None
                 is_deployed = _candidate_deployed(candidate)
                 if candidate.network == current_network:
                     current_deployed = is_deployed

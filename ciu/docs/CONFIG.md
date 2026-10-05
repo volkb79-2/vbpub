@@ -220,13 +220,22 @@ user_tables = ["authentik", "auth", "workflow", "pubsub", "load_control"]
   undeclared top-level table becomes an error even without an explicit
   opt-in.
 
-### `[ciu.worktree]` — repository-wide instance capacity and lease policy [S16.3/S16.7/S16.9]
+### `[ciu.worktree]` — worktree startup, capacity, leases and targets [S16.1/S16.3/S16.7/S16.9]
 
 | Key | Default | Spec | Example |
 |---|---|---|---|
 | `max_concurrent_instances` | absent (no cap) | S16.3 | `3` — refuse a 4th simultaneous `ciu worktree` deployment |
 | `lease_ttl_hours` | absent (**no lease at all**) | S16.9 | `24` — `ciu up` claims a 24-hour `held` lease on this instance |
 | `exec_targets` | absent (no declared targets) | S16.7 | see [S16.7](SPEC.md#s167--declared-worktree-container-targets-exec---target) — per-alias sub-tables, own four-key grammar |
+| `up` | absent (whole default deploy set) | S16.1 | `["core", "db", "test"]` — profile list started together by `ciu worktree up` |
+
+`up` is a non-empty, duplicate-free array of names from `[deploy.profiles]`.
+`ciu check` validates every name before deployment. `ciu worktree up NAME`
+passes the full list as repeated `--profile` flags in one `ciu up --deploy
+--healthcheck` process so preflight can see dependencies across profiles;
+`--all` explicitly selects the default deploy set instead. `ciu worktree
+create NAME --up` creates first, then starts that selection. A failed start
+returns the child's status and preserves the checkout for retry.
 
 `lease_ttl_hours` is a positive number of hours. **Absent means no lease is
 ever acquired — not "some default TTL".** A consumer who configures nothing
