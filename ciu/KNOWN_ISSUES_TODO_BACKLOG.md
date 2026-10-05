@@ -4440,8 +4440,39 @@ the wrapper now lets CIU perform that work. Include this in the recipe's
 
 `ciu init --wizard` could enter questionaire for setup. 
 
-## CIU-114 adopt `cli-extended` 
-for CLI grammer, usage(), wizard, ... 
+## CIU-114 Adopt cli-extended (unified adoption, order 8 of 8)
+
+**Status: OPEN — planned.** Originally filed as a one-line idea ("adopt `cli-extended` for CLI grammar, usage(), wizard, ..."); **updated 2026-10-05 by the cli-extended unified-adoption program (W10)** into the planned, evidenced adoption entry below. This is the single ciu entry for the adoption; do not file a parallel one.
+
+**Source documents.** [`libraries/cli-extended/docs/PROGRAM-2026-10-UNIFIED-ADOPTION.md`](../libraries/cli-extended/docs/PROGRAM-2026-10-UNIFIED-ADOPTION.md) (decisions CX-D1..CX-D12, section "W10 - planned adoptions") and [`libraries/cli-extended/docs/ADOPTION-CHECKLIST.md`](../libraries/cli-extended/docs/ADOPTION-CHECKLIST.md) (AC-01..AC-25). **Dependency:** cli-extended 0.2.0 released first (W8, the controller). Not executed in the program's session. ciu is last in the order (CX-D11) because the v8 spec (`docs/SPEC-V8.md`) already assumes the shared verbs; the v7 line is maintenance-only, so the carve must decide whether the adoption lands in v7 or only in the v8 line.
+
+**Observed mechanism (verified in source). ciu does not use cli-extended at all today.** `grep -rn "cli_extended\|cli-extended" src pyproject.toml` finds nothing; the only matches under `ciu/` are in v8 design documents (`docs/SPEC-V8.md` and four `CIU-V8-*` documents).
+
+- Manual dispatch (AC-03, AC-04, AC-07): `src/ciu/cli.py` is 2424 lines. `main()` (`:1901`) consumes the global presentation flag with `consume_cli_flags` (`src/ciu/output.py:114`), prints the hand-written `_USAGE` (`:17`) for no argument or `-h/--help`, special-cases `version`/`--version` (`:1909-1912`), strips `--ksm/--no-ksm` by hand (`:1920-1923`), then dispatches on the verb through 27 `if verb == ...` / `elif verb == ...` branches (`grep -c` over `cli.py`), each building its own `argparse` parser (`add_subparsers` at `:1503` and `:1840`; hand-written flag-abbreviation machinery, `_DISPATCH_FLAGS`, `_ABBREV_DISPATCH_FLAGS` and `_flag_given` at `:805-819`, pinned by `test_dispatch_flags_have_distinct_second_characters`). The usage text, the flag-abbreviation machinery and the per-verb parsers are what `CliRegistry`/`VerbSpec` replace, across `ciu worktree`, `ciu env`, `ciu host enroll` and `ciu init` (the wizard idea in this entry's original text maps to the library's prompt driver, AC-13).
+- Version (AC-01): `src/ciu/__init__.py:5-16` tries a generated `_version.py` (setuptools-scm, `version_file = "src/ciu/_version.py"`), then `importlib.metadata`, then the literal `"0.0.0+unknown"`; `src/ciu/cli_utils.py:10-22` (`get_cli_version`) tries `importlib.metadata.version("ciu")`, then `__version__`, then the literal `"unknown"`, and feeds `cli_headline()` (`:25`) and `ciu --version`. Two readers, two different literal fallbacks. `CliIdentity.resolve` replaces both.
+- Exception wrapper (AC-10, AC-11): no `unexpected_exceptions` equivalent and no `--traceback`; `except Exception` at `src/ciu/cli.py:731` and `:1167` and in both version readers above. Errors are printed ad hoc (`print("ciu: --ksm and --no-ksm are mutually exclusive.", file=sys.stderr)` followed by `raise SystemExit(2)`, `cli.py:1923-1924`), which AC-11 maps to `CliFailure(exit_code=2)`.
+- `--yes` / `--dry-run` copies (AC-05, AC-12): `-y/--yes` declared by hand at `cli.py:1545` (`p_rm`), `:1571`, `:1582`, `:2290`; `--dry-run` declared by hand at `:1587` (`p_reap`, "with -y: print the exact commands instead of running them"). Every mutating verb must be audited for AC-12 (confirmation, `dry_run=True` or a recorded reason); CIU-105 (no confirmation gate on the owner's own down/clean) is directly related.
+- `sys.path` (AC-25): `src/ciu/workspace.py:31` and `src/ciu/worktree.py:83` insert `libraries/worktree/src` when `import worktree` fails, and `pyproject.toml:46-50` vendors the worktree library through `[tool.setuptools.package-dir] worktree = "../libraries/worktree/src/worktree"`. None toward `libraries/cli-extended`. This is the same pattern CX-D1 forbids for cli-extended; the worktree library needs its own decision, but the carve for this entry must not copy the pattern for the new dependency.
+- Dependencies (AC-24): `pyproject.toml:15-19` declares `Jinja2>=3.1.2`, `PyYAML>=6.0.1`, `tomli_w>=1.0.0`; `cli-extended>=0.2.0` is added as a fourth runtime requirement.
+- Installer (CX-D2): `cmru.toml:41-52` configures `[project.installer]` with `[[project.installer.wheels]] path = "vendor/ciu-*.whl"`, `distribution = "ciu"`; the installer bundle must carry the cli-extended wheel and install it first, then ciu with `--no-index --find-links` (see the cmru adoption entry, KI-51 in `cmru/KNOWN_ISSUES_TODO_BACKLOG.md`, which owns the `get.py` change). `ciu/get.py` exists at the project root and must be reviewed as the other install surface (its role was not examined when this was filed).
+- Skills (AC-19): `.claude/skills/ciu-cli/SKILL.md` and `.claude/skills/ciu-stack/SKILL.md` are source trees; the package-data stanza (`pyproject.toml:59-60`) lists only `data/*.c`, `templates/*`, `hook_templates/*`. Move to package data and use `register_skills_verbs`. SPEC-V8 already specifies `ciu skills install [--harness claude|agents|all] [--dest DIR] [--dry-run] | list | check | uninstall` (`docs/SPEC-V8.md:770`, "the verb group is `libraries/cli-extended`'s shared registration") and `ciu doctor [--json]` (`:773`, with `skills check` as part of the report). In v7 there is no `skills` or `doctor` verb (`grep` over `cli.py` finds neither), so both are net-new from the library.
+- Tests (AC-21, AC-23): `tests/tests/test_ciu_worktree_branches.py:632` defines `_run_ciu(args, cwd)` (a subprocess wrapper); 22 test files invoke the CLI by subprocess (`grep -rln`). Candidates for `invoke_script(home=...)` and `assert_cli_contract`.
+
+**Common shape (tick each, cite the AC row).**
+
+- [ ] Declare `cli-extended>=0.2.0` in `[project].dependencies`; no vendoring or path hack for it (AC-24, AC-25).
+- [ ] Installer bundle installs cli-extended first, `--no-index --find-links` (CX-D2).
+- [ ] `CliIdentity.resolve(...)` replaces `__init__.py` and `cli_utils.get_cli_version` (AC-01, AC-02).
+- [ ] Re-register the grammar (verbs, `worktree`, `env`, `host`, `init`, `ksm` flags, `--root`/`--layout`/`--host` globals) with `CliRegistry`; delete the hand dispatch and `_USAGE` (AC-03, AC-04, AC-07).
+- [ ] `unexpected_exceptions="report"`; `CliFailure` for domain errors (AC-10, AC-11).
+- [ ] Shared `--yes`/`--dry-run` and `runtime.confirm` for every mutating verb (AC-05, AC-12, AC-13).
+- [ ] Surface lifecycle: review/manifest/spec, `surface check` (AC-16, AC-17, AC-18).
+- [ ] `ciu skills` and `ciu doctor` become the shared verbs per SPEC-V8 §770/§773 (AC-19, AC-20).
+- [ ] Tests: `assert_cli_contract`, `invoke_script`, plugin if a catalog exists (AC-21, AC-22, AC-23).
+
+**Acceptance.** `cli-extended audit` reports no `fail`; `cli-extended surface check` passes; ciu's own registered gate passes (`run-gate.py` symlink, lanes in `run-gate.toml`); a released ciu version is deployed (merge + `cmru release` + devcontainer install).
+
+**Oracles.** Every existing verb's `--help` keeps its flags (surface manifest diff reviewed); `ciu --version` and `ciu version` agree and fail loudly (`VersionLookupError`) with no metadata and no VERSION file, instead of printing `0.0.0+unknown`/`unknown`; installing the built ciu wheel without the library fails with the dependency named; a controlled wrong implementation that keeps a literal version fallback fails the no-metadata test.
 
 ## CIU-115 a pre-schema-2 `ciu.instance.generated.toml` (CIU's OWN regenerable artifact) fail-closes teardown and unrelated stacks' `ciu up`
 
