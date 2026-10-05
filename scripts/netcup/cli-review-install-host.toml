@@ -89,7 +89,7 @@ invocation = ["attach", "--ssh-host", "192.0.2.10", "--simulate-disconnect-secon
 expected_exit_status = 130
 expected_stdout_contains = "[attach] Streaming until Ctrl-C."
 expected_stderr_contains = "Cancelled."
-effects = ["Starts the SSH log follower, which drops and re-establishes its own SSH connection after 5 seconds; makes no Netcup API call."]
+effects = ["Passes the 5 second value to the SSH log follower and streams until interrupted (the reconnect itself is not exercised by the replay); the option is hidden from --help but accepted; makes no Netcup API call."]
 test_ids = ["tests/test_cli_cases_install_host.py::test_replayed_case_matches_catalog[attach-simulate-disconnect-seconds]"]
 
 [[cases]]

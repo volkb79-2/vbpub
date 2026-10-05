@@ -232,6 +232,8 @@ Run the gather-and-install wizard and monitor the provider task:
 ./install-host.py wizard --monitor
 ```
 
+`install` takes its target only from the payload; `NETCUP_SCP_API_SERVER_ID` is
+ignored (it still selects the target for `wizard` and `configure`).
 Use `install --config FILE` for a separately prepared complete payload. The
 file-driven command monitors the task by default; `--no-monitor` returns after
 task creation. To inspect or monitor a task after the installer has exited,

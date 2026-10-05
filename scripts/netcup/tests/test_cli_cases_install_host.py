@@ -615,3 +615,76 @@ def test_missing_identity_file_is_refused_not_generated(
     assert "post" not in run.methods
     assert not (tmp_path / "missing-key").exists()
     assert not (tmp_path / "missing-key.pub").exists()
+
+
+@pytest.mark.parametrize("extra", [[], ["--config", "target-host.jsonc"]], ids=["bare", "config"])
+def test_install_ignores_the_server_id_environment_variable(
+    extra, install_host_mod, tmp_path, monkeypatch, capsys, fake_client
+):
+    run = run_install_host(
+        install_host_mod, ["install", "--dry-run", "--yes", "--no-monitor", *extra],
+        tmp_path=tmp_path, monkeypatch=monkeypatch, capsys=capsys, fake_client=fake_client,
+        scenario="file", env={"NETCUP_SCP_API_SERVER_ID": "99"},
+    )
+    assert run.status == 0
+    endpoints = [str(call[1]) for call in run.calls if len(call) > 1]
+    assert "/api/v1/servers/42" in endpoints
+    assert not any("/servers/99" in endpoint for endpoint in endpoints)
+    assert "NOT calling POST /api/v1/servers/42/image" in run.out
+
+
+def test_target_server_prefers_the_payload_over_any_requested_id(install_host_mod, fake_client):
+    mod = install_host_mod
+    record = {"id": 42, "name": "v42"}
+    client = fake_client(get_responses=[dict(record)])
+    args = type("Args", (), {"server_id": 99})()
+    assert mod._target_server(client, args, {"serverId": 42}) == (42, record)
+    assert [call[1] for call in client.calls] == ["/api/v1/servers/42"]
+    # A payload without serverId resolves by hostname; the namespace id is not used.
+    client = fake_client(get_responses=[[{"id": 42, "name": "v42"}], dict(record)])
+    found = mod._target_server(client, args, {"hostname": "target.example"})
+    assert found[0] == 42
+    assert not any("/servers/99" in str(call[1]) for call in client.calls)
+
+
+def test_simulate_disconnect_is_hidden_from_help_but_still_accepted(
+    install_host_mod, tmp_path, monkeypatch, capsys, fake_client
+):
+    helped = run_install_host(
+        install_host_mod, ["attach", "--help"], tmp_path=tmp_path, monkeypatch=monkeypatch,
+        capsys=capsys, fake_client=fake_client, scenario="none",
+    )
+    assert helped.status == 0
+    assert "--attach-task-uuid" in helped.out
+    assert "simulate-disconnect" not in helped.out + helped.err
+    accepted = run_install_host(
+        install_host_mod, ["attach", "--ssh-host", "192.0.2.10", "--simulate-disconnect-seconds", "5"],
+        tmp_path=tmp_path, monkeypatch=monkeypatch, capsys=capsys, fake_client=fake_client,
+        scenario="none",
+    )
+    assert accepted.status == 130
+    assert accepted.followers[0].kwargs["simulate_disconnect_seconds"] == 5.0
+
+
+@pytest.mark.parametrize(("route", "scenario"), [("wizard", "gather"), ("install", "file")])
+def test_dry_run_plan_leaks_no_token_key_or_script_text(
+    route, scenario, install_host_mod, tmp_path, monkeypatch, capsys, fake_client
+):
+    argv = [route, "--dry-run", "--yes", "--ssh-identity-file", "controller-key"]
+    if route == "wizard":
+        argv += ["--custom-script-file", "custom-script.sh"]
+    run = run_install_host(
+        install_host_mod, argv, tmp_path=tmp_path, monkeypatch=monkeypatch, capsys=capsys,
+        fake_client=fake_client, scenario=scenario,
+    )
+    assert run.status == 0
+    assert "[dry-run] SSH identity: controller-key (explicit)" in run.out
+    combined = run.out + run.err
+    for secret in (
+        "fake-refresh-token",
+        "fake-access-token",
+        "not a real private key",
+        "echo from-custom-script-file",
+        "echo hi",  # the install config's customScript text
+    ):
+        assert secret not in combined

@@ -289,6 +289,13 @@ Reviewer survivors planted again by hand in the scratch copy (`<scratchpad>/w9a-
 
 Not killed on purpose: S13/S14/S15 (dropping an explicit `default=None`/`False` on an option): the library now defaults verb options to None/False, so those are equivalent mutants. I11 and the first I6 copy no longer exist (code deleted as redundant).
 
+### Final round (ACCEPT-conditional)
+
+- `install` no longer fills `server_id` from `NETCUP_SCP_API_SERVER_ID` (still used by wizard/configure); documented in install's help and README. `test_install_ignores_the_server_id_environment_variable[bare|config]` (env 99, config 42): exit 0, requests for server 42 only. `test_target_server_prefers_the_payload_over_any_requested_id` kills N16.
+- N15: `test_simulate_disconnect_is_hidden_from_help_but_still_accepted`; the row's effect now says what the test proves (value reaches the follower; hidden from help).
+- `test_dry_run_plan_leaks_no_token_key_or_script_text` (wizard and install): no refresh/access token, private-key text or customScript text in stdout/stderr.
+- Hand-planted, all KILLED: N16 (`payload.get("serverId") or requested_id`), env fill restored for install (`[config]` case), `hidden=True` dropped, plan printing the identity file's content.
+
 ### Deviations from the brief
 
 - Brief item 7 asked to FIX every blocker/major in Netcup code or mark wontfix for product decisions: the only blocker (SA-001) was fixed earlier; the two majors (MT-001, SA-002) were then FIXED on controller ruling (watch exit codes; per-verb `--filter` documentation).

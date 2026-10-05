@@ -2642,7 +2642,7 @@
       "confirmation": true,
       "constraints": [],
       "delegated_metadata": [],
-      "description": "Read target-host.jsonc (or --config FILE), validate it without gathering missing fields, submit the image install, and monitor by default. Use --no-monitor to return after task creation.",
+      "description": "Read target-host.jsonc (or --config FILE), validate it without gathering missing fields, submit the image install, and monitor by default. Use --no-monitor to return after task creation. install takes its target only from the payload; NETCUP_SCP_API_SERVER_ID is ignored.",
       "group": "MODIFICATION",
       "id": "route:entrypoint:install-host/install",
       "kind": "invocation",

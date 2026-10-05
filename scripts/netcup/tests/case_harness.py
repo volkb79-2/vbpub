@@ -72,6 +72,7 @@ def _status(callable_) -> Any:
 def run_install_host(
     mod, argv, *, tmp_path, monkeypatch, capsys, fake_client, scenario, monitor_calls=None,
     create_inputs=True,
+    env=None,
 ):
     """Replay one install-host invocation.
 
@@ -83,6 +84,8 @@ def run_install_host(
     """
     _isolate(monkeypatch, tmp_path)
     monkeypatch.setenv("NETCUP_SCP_API_REFRESH_TOKEN", "fake-refresh-token")
+    for key, value in (env or {}).items():
+        monkeypatch.setenv(key, value)
     monkeypatch.setattr(mod, "load_env_file", lambda: None)
     monkeypatch.setattr(mod, "get_access_token", lambda _refresh: "fake-access-token")
     live = "--dry-run" not in argv

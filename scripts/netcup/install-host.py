@@ -627,7 +627,7 @@ def build_cli():
     )
     register(
         "install", "", "install a validated config and monitor its task",
-        "Read target-host.jsonc (or --config FILE), validate it without gathering missing fields, submit the image install, and monitor by default. Use --no-monitor to return after task creation.",
+        "Read target-host.jsonc (or --config FILE), validate it without gathering missing fields, submit the image install, and monitor by default. Use --no-monitor to return after task creation. install takes its target only from the payload; NETCUP_SCP_API_SERVER_ID is ignored.",
         VerbGroup.MODIFICATION.value,
         workflow_handler,
         options=_workflow_options(target_picker=False, monitor=False),
@@ -2078,7 +2078,9 @@ def _prepare_runtime_arguments(cli_args, runtime):
         or SETTINGS["ssh.identity_file"]
     )
     cli_args.server_id = getattr(cli_args, "server_id", None)
-    if cli_args.server_id is None:
+    # install takes its target only from the payload (--config or the default
+    # target-host.jsonc); NETCUP_SCP_API_SERVER_ID is deliberately ignored there.
+    if cli_args.server_id is None and cli_args.command != "install":
         configured_server_id = os.environ.get("NETCUP_SCP_API_SERVER_ID")
         if configured_server_id:
             try:
