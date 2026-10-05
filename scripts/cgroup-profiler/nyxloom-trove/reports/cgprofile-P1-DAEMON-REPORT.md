@@ -1992,3 +1992,57 @@ specific to its old tree; the reconciled candidate still requires a fresh
 exact-tree R2 and registered full gate. A fresh supplemental review of the
 survivor dispositions and test oracles is pending. No gate or release is
 claimed for `e0ce67dc`.
+
+## Controller addendum — Sol round-2 DAMON lifecycle repair (2026-10-05)
+
+Sol round 2 rejected the P1 candidate on two lifecycle blockers, recorded in
+controller ruling RW-442: Linux rejects any `nr_kdamonds` resize while any
+kdamond is running, including a foreign monitor, and an unconfirmed stop must
+not be treated as successful release, reuse, or cleanup. The repair reserves
+the configured pool before the first owned monitor starts, admits only
+verified-off slots, quarantines ambiguous stop/readback outcomes, and retries
+cleanup at the next acquisition or shutdown. A foreign monitor that prevents
+reservation makes optional DAMON unavailable; ordinary profiling and its
+verdict continue.
+
+The repaired one-shot collector also treats DAMON startup as optional
+evidence: a `DamonSessionError` before or during context entry is logged, the
+READY sentinel is still written, and ordinary sampling proceeds so `cgprofile
+run` can launch its wrapped command under R-36h.
+
+Three registered `r0-r1` attempts have failed and are not transferable to the
+current candidate: run `2ada30366c4d4394cb79c20b12a2b59f` on `c8f7c70e` had
+2,292 passes and four stale expectation/fixture failures; run
+`64a68db76d4a888d260f8111faac5a9f` on `591c258d` had 2,293 passes and six
+fake-counter call-sequence failures; run
+`2fba4b01b6a3b08b8729711c682e2752` on `b30eca82` passed 2,299 tests but
+failed coverage at 99% total (15 statements and six partial branches missing
+in `lib/damon.py`). Details and log paths are in P1 LOG session 41 and
+controller rulings RW-443–RW-445.
+
+Commit `b9ea6080` adds behavioral tests for those lifecycle failure paths and
+removes `_reserve_capacity`'s unreachable duplicate baseline-capture branch;
+the exact tree still needs the registered 100% line/branch gate. Latest main
+`c0d1f4410a4a10a5d9635775e43dec74c2a000fd` was then merged without conflict
+as `4e4df5a86088a7fbb7c82b3aead473c2b18ca203` (the only main-only change was
+run-gate-project test code). That merge changes the Git tree, so all final
+evidence must use the reconciled tip. No live
+DAMON sample or overhead has been measured in these runs: the daemon was down
+and profiling fell back to coarse `rusage`. Current-tree R2, full gate, R3,
+doctor, same-Sol fix verification, live DAMON samples/overhead, current-main
+reconciliation, merge, release, and CIU singleton activation remain pending.
+
+## Controller addendum — reconcile with current main (2026-10-05)
+
+Before additional evidence, the P1 candidate was reconciled with current main
+`251c3eff5fb2e5b528c9e0ae3acff59fa99c2def` (previous P1 base
+`c0d1f4410a4a10a5d9635775e43dec74c2a000fd`). Main's broad intervening
+changes are included in the candidate history; no cgroup-profiler source or
+test code changed. Main added a CP-17 cli-extended adoption backlog item,
+colliding with the P1 DAMON-startup item. Both are preserved: adoption stays
+CP-17, the DAMON issue is CP-18, and `nyxloom backlog index` regenerated the
+index. The no-ff merge was finalized as `f0cf27517`. Historical review
+artifacts keep their contemporaneous CP-17 wording. This merge invalidates
+any prior exact-tree gate result. Fresh package gates,
+mutation evidence, review fix-verification, and live DAMON sample/overhead
+measurement are still required; this addendum claims none of them.

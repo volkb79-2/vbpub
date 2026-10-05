@@ -378,7 +378,10 @@ class SessionServer:
         self.max_request_line_bytes = max_request_line_bytes
         self.request_clock = request_clock
         self._session_id_fn = session_id_fn or self._default_session_id
-        self.damon_pool = damon_pool if damon_pool is not None else damon_mod.KdamondPool()
+        self.damon_pool = (
+            damon_pool if damon_pool is not None
+            else damon_mod.KdamondPool(capacity=max_sessions)
+        )
         # RW-14: resolved once at construction (a long-lived daemon's venv,
         # baked into the image at build time in C6, never appears mid-run) —
         # `None` means "not found", checked at `ctl report` time so the
@@ -898,7 +901,10 @@ class SessionServer:
                 # In particular, do not strand the kdamond acquired at start.
                 try:
                     if sess.damon_session is not None:
-                        sess.damon_session.__exit__(None, None, None)
+                        self._close_damon_session(
+                            sess.damon_session, session_id=sess.session_id,
+                            context="sampler startup failed",
+                        )
                 finally:
                     self._remove_session_dir(sess.session_id)
                 raise
@@ -1076,7 +1082,10 @@ class SessionServer:
                         # per-session unavailability, never a start fault.
                         candidate.collect()
                     except Exception as exc:  # noqa: BLE001 - degrade DAMON only
-                        candidate.__exit__(None, None, None)
+                        self._close_damon_session(
+                            candidate, session_id=session_id,
+                            context="initial DAMON collection failed",
+                        )
                         damon_unavailable_reason = f"{type(exc).__name__}: {exc}"
                         damon_status = f"unavailable:{damon_unavailable_reason}"
                     else:
@@ -1159,7 +1168,10 @@ class SessionServer:
             # even when storage or summary assembly fails after acquisition.
             try:
                 if damon_session_obj is not None:
-                    damon_session_obj.__exit__(None, None, None)
+                    self._close_damon_session(
+                        damon_session_obj, session_id=session_id,
+                        context="session start failed",
+                    )
             finally:
                 self._remove_session_dir(session_id)
             raise
@@ -1379,10 +1391,17 @@ class SessionServer:
                 or (mono - sess.last_discovery_mono) >= DISCOVERY_INTERVAL_SECONDS
             )
             if due:
+                previous_pids = set(sess.subtree_resolver.current_pids)
                 pids = list(sess.subtree_resolver.refresh())
                 sess.last_discovery_mono = mono
-                if sess.damon_session is not None:
-                    sess.damon_session.recommit_targets(pids)
+                if (
+                    sess.damon_session is not None
+                    and set(pids) != previous_pids
+                ):
+                    try:
+                        sess.damon_session.recommit_targets(pids)
+                    except Exception as exc:  # noqa: BLE001 - profiling is best-effort
+                        self._disable_damon_for_session(sess, exc)
             else:
                 pids = list(sess.subtree_resolver.current_pids)
         else:
@@ -1405,7 +1424,10 @@ class SessionServer:
                 )
                 sess.last_discovery_mono = mono
                 if sess.damon_session is not None and set(new_pids) != set(sess.no_token_pids):
-                    sess.damon_session.recommit_targets(new_pids)
+                    try:
+                        sess.damon_session.recommit_targets(new_pids)
+                    except Exception as exc:  # noqa: BLE001 - profiling is best-effort
+                        self._disable_damon_for_session(sess, exc)
                 sess.no_token_pids = new_pids
             pids = sess.no_token_pids
 
@@ -1436,8 +1458,12 @@ class SessionServer:
 
         damon_bytes: Optional[Dict[str, int]] = None
         if sess.damon_session is not None:
-            sess.damon_session.collect()
-            damon_bytes = sess.damon_session.last_class_bytes
+            damon_session = sess.damon_session
+            try:
+                damon_session.collect()
+                damon_bytes = damon_session.last_class_bytes
+            except Exception as exc:  # noqa: BLE001 - profiling is best-effort
+                self._disable_damon_for_session(sess, exc)
 
         with sess.lock:
             sess.summary_acc.add_sample(
@@ -1521,6 +1547,51 @@ class SessionServer:
                 # sampler sequence; retain the historical flat shape for
                 # those synthetic records.
                 sess.rundir.append("damon", damon_bytes)
+
+    def _close_damon_session(
+        self, damon_session: Any, *, session_id: str, context: str,
+    ) -> None:
+        """Close one DAMON owner without letting optional cleanup alter a verdict."""
+        try:
+            damon_session.__exit__(None, None, None)
+        except Exception as cleanup_exc:  # noqa: BLE001 - cleanup cannot affect verdict
+            self._log(
+                f"session {session_id}: DAMON cleanup raised during {context}: "
+                f"{type(cleanup_exc).__name__}: {cleanup_exc}"
+            )
+        if not getattr(damon_session, "cleanup_confirmed", True):
+            pool = self.damon_pool
+            quarantined = sorted(getattr(pool, "quarantined_indices", ()))
+            self._log(
+                f"session {session_id}: DAMON stop is unconfirmed during {context}; "
+                f"owned slot quarantined={quarantined} and will not be reused"
+            )
+
+    def _disable_damon_for_session(self, sess: _Session, exc: Exception) -> None:
+        """Stop only DAMON after a runtime profiling failure.
+
+        DAMON is optional evidence, not part of the measured program's
+        verdict. A late sysfs error (for example, a PID disappearing during
+        an online target commit) must therefore leave cgroup, CPU, memory,
+        and liveness sampling active. Detach the session before teardown so
+        finalization cannot close it twice, and persist the unavailable
+        reason in the eventual summary/manifest.
+        """
+        reason = f"{type(exc).__name__}: {exc}"
+        with sess.lock:
+            damon_session = sess.damon_session
+            if damon_session is None:
+                return
+            sess.damon_session = None
+            sess.damon_status = f"unavailable:{reason}"
+            sess.damon_unavailable_reason = reason
+            sess.summary_acc.mark_damon_unavailable(reason)
+
+        self._close_damon_session(
+            damon_session, session_id=sess.session_id,
+            context=f"runtime failure ({reason})",
+        )
+        self._log(f"session {sess.session_id}: DAMON disabled after runtime failure: {reason}")
 
     # ── CP-8: liveness, the watch state machine, enforcement (§8.4) ──────
 
@@ -1979,7 +2050,11 @@ class SessionServer:
                 sess.placement.release()
                 summary_doc["placement"] = sess.placement.block()
         if sess.damon_session is not None:
-            sess.damon_session.__exit__(None, None, None)
+            self._close_damon_session(
+                sess.damon_session,
+                session_id=sess.session_id,
+                context="session finalization",
+            )
         sess.ended_at = ended_at
         sess.summary_doc = summary_doc
         sess.finished = True
@@ -2574,8 +2649,27 @@ class SessionServer:
                     break
                 self._handle_connection(conn)
         finally:
-            self._stop_all_sessions(aborted_reason="daemon-stopped")
-            self._close_socket()
+            try:
+                self._stop_all_sessions(aborted_reason="daemon-stopped")
+            finally:
+                try:
+                    self._close_socket()
+                finally:
+                    try:
+                        pool_closed = self.damon_pool.close()
+                    except Exception as exc:  # noqa: BLE001 - shutdown remains best-effort
+                        pool_closed = False
+                        self._log(
+                            f"DAMON pool shutdown raised: {type(exc).__name__}: {exc}"
+                        )
+                    if not pool_closed:
+                        quarantined = sorted(
+                            getattr(self.damon_pool, "quarantined_indices", ())
+                        )
+                        self._log(
+                            "DAMON pool shutdown could not confirm every owned slot off "
+                            f"or restore its original count; quarantined={quarantined}"
+                        )
 
     def serve_forever(self) -> None:
         """Blocks until :meth:`request_shutdown` is called or a signal

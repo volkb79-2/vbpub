@@ -652,6 +652,8 @@ class HelperSpec:
     out_host_path: str
     out_mount_path: str
     cgroup_parent: str
+    damon_lock_host_path: Optional[str] = None
+    damon_lock_container_path: Optional[str] = None
 
     def docker_args(self, name: Optional[str] = None) -> List[str]:
         args = [
@@ -692,6 +694,22 @@ class HelperSpec:
             "-e",
             "PYTHONUNBUFFERED=1",
         ]
+        if self.damon_lock_host_path is not None:
+            if (
+                not os.path.isabs(self.damon_lock_host_path)
+                or not self.damon_lock_container_path
+                or not os.path.isabs(self.damon_lock_container_path)
+            ):
+                raise AccessError("shared DAMON lock bind source must be an absolute host path")
+            args.append(
+                "--mount=type=bind,"
+                f"source={self.damon_lock_host_path},"
+                f"target={self.damon_lock_container_path}"
+            )
+            args.extend([
+                "-e",
+                f"CGPROFILE_DAMON_LOCK_PATH={self.damon_lock_container_path}",
+            ])
         if name:
             args.extend(["--name", name])
         args.append(self.image)
@@ -732,6 +750,8 @@ def build_helper_spec(
     out_dir: str,
     image: Optional[str] = None,
     cgroup_parent: Optional[str] = None,
+    damon_lock_host_path: Optional[str] = None,
+    damon_lock_container_path: Optional[str] = None,
 ) -> HelperSpec:
     """Resolve image + host paths for the helper, or explain why we cannot."""
     mapping = host_path_map()
@@ -762,6 +782,8 @@ def build_helper_spec(
         out_host_path=out_host,
         out_mount_path=out_dir,
         cgroup_parent=helper_parent,
+        damon_lock_host_path=damon_lock_host_path,
+        damon_lock_container_path=damon_lock_container_path,
     )
 
 

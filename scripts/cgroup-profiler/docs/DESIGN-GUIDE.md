@@ -87,8 +87,12 @@ The detailed metric-source and disclosure rules are in the
 
 The daemon's host system bus is separate from the consumer control socket. The
 cockpit receives only the cgprofile ctl surface; it does not need the system
-bus. Version 1.0.0 did not mount the system bus or a writable host cgroup
-tree; v1.1.0 adds both for explicit placement. An operator with unrestricted
+bus. P1 and P6 introduced the observer and opt-in placement capabilities in
+separate implementation tranches. RW-434 settles their combined tree as the
+first 1.0.0 release, including the system-bus manager bridge and writable host
+cgroup view required for explicit placement; there is no separate planned
+1.1.0 release for those capabilities. Any later version increment requires
+genuine post-1.0.0 changes. An operator with unrestricted
 Docker access already has host-administrator authority, but that does not
 make these daemon mounts irrelevant: a compromised daemon process can exercise
 the mounted cgroupfs and systemd manager authority directly, beyond normal
@@ -159,7 +163,7 @@ container IDs; the daemon locates those IDs in its explicit host cgroup view.
 The daemon is not a general capability-changing tool: it has no capability
 mutation option, imports no `TempCaps`, and has no Docker socket. It writes its
 session volume and the DAMON admin sysfs state required for observation, in
-addition to the v1.1 placement authority described above. A consumer that
+addition to the placement authority described above. A consumer that
 needs another cap change must use a separate, explicitly authorized tool;
 adding a hidden fallback here would make the observer change the workload it
 is measuring. These code and deployment choices are not kernel-enforced
@@ -203,33 +207,110 @@ finite positive memory and CPU ceilings. A bare directory is not a capacity
 object. If proof is absent, the host snapshot reports the slice absent and
 placement refuses it without failing the profiling session.
 
-The DAMON pool treats the `nr_kdamonds` value read at pool creation as an
-ownership boundary. Indices below that baseline are foreign. New sessions use
-only indices proven to have been created after the baseline, and teardown
-touches only indices that the pool actually handed out. If the baseline cannot
-be read, acquisition refuses; index zero is never a placeholder default.
+The DAMON `nr_kdamonds` attribute is a global registry, not an append-only
+array. A successful count write removes and rebuilds every kdamond directory,
+including when the written value is unchanged. Consequently, treating the
+initial count as a foreign-prefix boundary was incorrect: appending one
+cgprofile slot could erase a stopped foreign monitor's staged operations,
+targets, intervals, and schemes, and shrinking back to the original number
+would not restore that configuration. The sysfs interface has no per-slot
+owner marker or atomic lease.
 
-The same rule applies to a bare session: it must prove that its requested
-index is the first slot beyond the observed count before it configures or turns
-the kdamond on. This keeps a pre-existing monitor on even when a new session
-fails part-way through setup.
+RG-55 therefore chooses preservation over partial DAMON availability. Both
+the daemon pool and the one-shot collector refuse to write `nr_kdamonds` when
+the observed baseline is nonzero, whether those existing monitors are on or
+off. DAMON is optional, so the refusal is reported as unavailable while normal
+profiling and command execution continue (R-36h). The daemon reserves its
+entire configured capacity (`max_sessions`) with a single count write from
+zero before any monitor starts; there is no sequence of per-slot growth writes
+that could repeatedly rebuild already-reserved entries. Linux also refuses a
+resize while any kdamond is running, including a monitor owned by another
+program; see upstream v7.1 [`nr_kdamonds_store()` and directory growth
+path](https://github.com/torvalds/linux/blob/v7.1/mm/damon/sysfs.c#L1923-L1944).
+
+Each newly reserved `state` node is held open as an identity pin. The kernel's
+kernfs identity lets cgprofile detect a later same-count rewrite that leaves
+the numeric count and replacement `state=off` unchanged. Before reuse, stop,
+or shrink, the current path must still resolve to the pinned inode; a missing
+or replaced node is quarantined and cgprofile neither stops it nor shrinks
+across it. Teardown additionally verifies that every owned monitor is off and
+the registry count exactly matches the reserved pool before restoring zero.
+An ambiguous write/readback or failed identity proof is a refusal, not
+permission to invent ownership. This favors an observable leftover empty slot
+over deleting or reusing a configuration whose owner cannot be proved.
+
+The inode check detects an out-of-band replacement between operations; it is
+not a kernel-enforced lease and cannot make a privileged count writer racing
+between a check and a sysfs write atomic. cgprofile closes its own
+cross-process race with an advisory `flock` on the host-shared
+`/run/cgprofile/damon.lock`: a one-shot collector holds the lock for its full
+session, while daemon-pool reserve/release/restore operations take it around
+the registry transaction. This serializes the daemon and cgprofile helper
+processes without making one-shot profiling wait behind another DAMON run.
+The privileged helper bind-mounts this single lock file at
+`/tmp/cgprofile-damon.lock`; it does not receive `/run/cgprofile/ctl.sock`.
+When a daemon pool already occupies the registry, a one-shot collector takes
+the lock, observes the nonempty table, and declines DAMON without changing
+ordinary sampling.
+
+The advisory lock only works among writers that honor it. It is not a
+kernel-enforced lease and cannot protect against `damo` or another privileged
+program that ignores the lock, nor eliminate the inode-check/sysfs-write race
+against such a writer. Operators must not run unrelated privileged DAMON
+configurators concurrently. A future kernel ownership API or broker that
+actually owns the DAMON registry could remove that limitation; a broker with
+the same raw sysfs access but no exclusive ownership would not.
+
+Before a newly owned monitor is started, cgprofile writes the exact
+`nr_targets` count and then every target PID. DAMON recreates target-input
+directories when the target count changes; this is safe only after the slot's
+identity is still proven as pool-owned. During a session, target recommits
+rebuild the exact array, preventing a shrinking subtree or reused slot from
+continuing to watch former lane PIDs.
+
+The one-shot `run`/`attach` collector follows the same nonzero-baseline refusal
+and optional-evidence rule. A startup or later collection error closes only
+DAMON, writes ordinary samples and the normal finished manifest, and lets the
+wrapped command run to completion. In particular, `cgprofile run` must not
+wait for DAMON before launching the user's command or let a missing optional
+series alter its verdict.
 
 ### DAMON availability is not session readiness
 
 The `damon` field in `ctl version` answers a narrow capability question:
 cgprofile loaded its DAMON analysis library and can see the admin sysfs
 interface. It does not create a kdamond, configure an operation, or prove that
-the kernel accepts a monitoring context. The sysfs `state=commit` operation
-re-reads and validates the configured context, so a visible interface can
-still reject a real session (for example, with `EINVAL`). See the
+the kernel accepts a monitoring context. Initial configuration is written
+while the kdamond is off, including an exact target count and every target PID,
+then `state=on` creates and starts it. `state=commit` is an online update for
+an already-running kdamond; issuing it before the first `on` returns `EINVAL`.
+When the discovered PID set changes, cgprofile rebuilds the sysfs target input
+array to the exact new count, writes every PID, then commits. DAMON maps that
+source array onto the live target list and removes live targets with no source
+entry; this prevents a shrinking subtree or reused pool slot from continuing
+to monitor departed lane PIDs. An unchanged set does not recommit, and a
+temporary empty discovery remains a no-op rather than stopping monitoring.
+See the
 [kernel DAMON usage documentation](https://docs.kernel.org/6.19/admin-guide/mm/damon/usage.html)
-for the interface and commit semantics.
+for the interface and commit semantics. The kernel's
+[`damon_sysfs_commit_input()`](https://github.com/torvalds/linux/blob/master/mm/damon/sysfs.c#L2008-L2024)
+explicitly refuses a stopped kdamond; its
+[`state=on` path](https://github.com/torvalds/linux/blob/master/mm/damon/sysfs.c#L2113-L2142)
+builds and starts the context from those initial inputs. The same sysfs
+implementation rejects `nr_kdamonds` changes while any kdamond is running;
+the pool's pre-reservation and verified teardown above are the lifecycle
+response to that global constraint.
 
-Starting DAMON is best-effort for profiling: inspect the session's `start`
-response for `damon: "on"` versus `unavailable:<reason>`, and treat a
-persisted `damon.jsonl` series as the evidence that samples were collected.
-Neither `ctl version` reporting `available` nor a request with `--damon on`
-proves that DAMON ran. In particular, do not report a DAMON overhead
+DAMON remains optional profiling evidence throughout the session, not just at
+startup. If a later target recommit or collector read fails, cgprofile stops
+and releases only that DAMON session, records `unavailable:<reason>` in the
+summary and manifest, and continues the ordinary cgroup/CPU/memory/liveness
+samples. That runtime failure must not abort the profiling session or affect
+the measured program's verdict (R-36h). Inspect the session's `start` response
+for `damon: "on"` versus `unavailable:<reason>`, then inspect the final summary
+and persisted `damon.jsonl` series to establish whether DAMON samples were
+actually collected. Neither `ctl version` reporting `available` nor a request
+with `--damon on` proves that DAMON ran. Do not report a DAMON overhead
 measurement unless the compared run actually produced DAMON samples.
 
 ## Session identity and start semantics
@@ -284,7 +365,7 @@ malformed input with a policy fact owned by the daemon.
 {
   "ok": true,
   "contract": 1,
-  "cgprofile": "1.1.0",
+  "cgprofile": "1.0.0",
   "daemon": {
     "name": "cgprofile-host-daemon",
     "started_at": "2026-09-12T10:15:00Z",

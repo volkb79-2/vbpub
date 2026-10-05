@@ -1124,6 +1124,38 @@ class TestCmdCollect:
         assert cg.cmd_collect(args) == 0
         assert "unavailable" in capsys.readouterr().err
 
+    @pytest.mark.parametrize("failure_stage", ["construct", "enter"])
+    def test_damon_start_failure_still_signals_ready_and_collects(
+        self, collect_env, tmp_path: Path, monkeypatch, capsys, failure_stage,
+    ):
+        run_dir = tmp_path / f"run-damon-start-failure-{failure_stage}"
+
+        class FailingDamonSession:
+            def __init__(self, targets):
+                if failure_stage == "construct":
+                    raise damon_lib.DamonSessionError("synthetic kernel EBUSY")
+
+            def __enter__(self):
+                raise damon_lib.DamonSessionError("synthetic kernel EBUSY")
+
+            def __exit__(self, *_exc):
+                return False
+
+        monkeypatch.setattr(damon_lib, "available", lambda: True)
+        monkeypatch.setattr(damon_lib, "DamonSession", FailingDamonSession)
+        monkeypatch.setattr(
+            sampler_lib, "Sampler", make_fake_sampler([("sample", 0, 0.0)]),
+        )
+        args = make_collect_args(run_dir, damon=True)
+
+        assert cg.cmd_collect(args) == 0
+        assert (run_dir / cg.READY_FILE).is_file()
+        assert (run_dir / cg.DONE_FILE).is_file()
+        run = store_lib.RunDir(str(tmp_path), run_id=run_dir.name, create=False)
+        assert len(list(run.read("samples"))) == 1
+        assert list(run.read("damon")) == []
+        assert "could not start" in capsys.readouterr().err
+
     def test_damon_available_collects_on_every_twentieth_sample(self, collect_env, tmp_path: Path, monkeypatch):
         run_dir = tmp_path / "run-damon-ok"
 
@@ -1160,6 +1192,60 @@ class TestCmdCollect:
         run = store_lib.RunDir(str(tmp_path), run_id="run-damon-ok", create=False)
         damon_records = list(run.read("damon"))
         assert len(damon_records) == 1
+
+    @pytest.mark.parametrize("cleanup_fails", [False, True])
+    def test_damon_collection_failure_disables_only_damon_and_finishes_run(
+        self, collect_env, tmp_path: Path, monkeypatch, capsys, cleanup_fails,
+    ):
+        run_dir = tmp_path / f"run-damon-collect-failure-{cleanup_fails}"
+
+        class FailingDamonSession:
+            instances: List["FailingDamonSession"] = []
+
+            def __init__(self, targets):
+                self.collect_calls = 0
+                self.exit_calls = 0
+                FailingDamonSession.instances.append(self)
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_exc):
+                self.exit_calls += 1
+                if cleanup_fails:
+                    raise RuntimeError("synthetic DAMON cleanup failure")
+                return False
+
+            def collect(self):
+                self.collect_calls += 1
+                raise OSError("synthetic DAMON read failure")
+
+        monkeypatch.setattr(damon_lib, "available", lambda: True)
+        monkeypatch.setattr(damon_lib, "DamonSession", FailingDamonSession)
+        monkeypatch.setattr(
+            sampler_lib,
+            "Sampler",
+            make_fake_sampler([("sample", seq, float(seq)) for seq in range(22)]),
+        )
+        args = make_collect_args(run_dir, damon=True)
+
+        assert cg.cmd_collect(args) == 0
+
+        session = FailingDamonSession.instances[0]
+        assert session.collect_calls == 1  # seq 20 is skipped after DAMON is disabled
+        assert session.exit_calls == 1
+        assert (run_dir / cg.READY_FILE).is_file()
+        assert (run_dir / cg.DONE_FILE).is_file()
+        run = store_lib.RunDir(str(tmp_path), run_id=run_dir.name, create=False)
+        assert len(list(run.read("samples"))) == 22
+        assert list(run.read("damon")) == []
+        manifest = run.read_manifest()
+        assert manifest["ended"] is not None
+        assert manifest["duration"] >= 0
+        stderr = capsys.readouterr().err
+        assert "DAMON collection failed" in stderr
+        if cleanup_fails:
+            assert "DAMON cleanup after collection failure also failed" in stderr
 
     def test_damon_available_with_pid_targets_uses_vaddr_targets(self, collect_env, tmp_path: Path, monkeypatch):
         run_dir = tmp_path / "run-damon-pid"
@@ -1240,6 +1326,109 @@ class TestCmdCollect:
 # ── _launch_helper / _start_run ─────────────────────────────────────────
 
 class TestLaunchHelper:
+    def test_damon_helper_prepares_and_mounts_only_the_registry_lock(
+        self, monkeypatch, tmp_path: Path,
+    ):
+        from lib import damon as damon_mod
+
+        spec = access.HelperSpec(
+            image="cgprofile-self:local", repo_host_path="/host/repo",
+            repo_mount_path=cg.HERE, out_host_path="/host/out",
+            out_mount_path=str(tmp_path), cgroup_parent="dev-interactive.slice",
+            damon_lock_host_path="/run/cgprofile/damon.lock",
+            damon_lock_container_path=damon_mod.DAMON_HELPER_LOCK_PATH,
+        )
+        captured = {}
+        monkeypatch.setattr(
+            damon_mod, "prepare_registry_lock_file",
+            lambda: "/run/cgprofile/damon.lock",
+        )
+
+        def build_spec(repo, out, image, cgroup_parent=None, **kwargs):
+            captured["lock"] = kwargs
+            return spec
+
+        monkeypatch.setattr(access, "build_helper_spec", build_spec)
+        monkeypatch.setattr(access, "docker_bin", lambda: "/usr/bin/docker")
+        monkeypatch.setattr(
+            cg, "_start_named_helper",
+            lambda command, helper_name, helper_image, **kwargs:
+                captured.update(command=command) or FakePopen(command),
+        )
+        run_path = str(tmp_path / "run-damon")
+
+        child = cg._launch_helper(
+            run_path, ["--run-dir", run_path, "--damon"], None, damon=True,
+        )
+
+        assert isinstance(child, FakePopen)
+        assert captured["lock"] == {
+            "damon_lock_host_path": "/run/cgprofile/damon.lock",
+            "damon_lock_container_path": damon_mod.DAMON_HELPER_LOCK_PATH,
+        }
+        command = captured["command"]
+        assert (
+            "--mount=type=bind,source=/run/cgprofile/damon.lock,"
+            f"target={damon_mod.DAMON_HELPER_LOCK_PATH}"
+        ) in command
+        assert f"CGPROFILE_DAMON_LOCK_PATH={damon_mod.DAMON_HELPER_LOCK_PATH}" in command
+        assert not any("ctl.sock" in item for item in command)
+
+    def test_damon_lock_preflight_failure_still_runs_wrapped_command(
+        self, monkeypatch, tmp_path: Path, capsys,
+    ):
+        from lib import damon as damon_mod
+
+        spec = access.HelperSpec(
+            image="cgprofile-self:local", repo_host_path="/host/repo",
+            repo_mount_path=cg.HERE, out_host_path="/host/out",
+            out_mount_path=str(tmp_path), cgroup_parent="dev-interactive.slice",
+        )
+        captured = {}
+
+        def unavailable_lock():
+            raise damon_mod.DamonSessionError(
+                "permission denied on daemon-created lock"
+            )
+
+        monkeypatch.setattr(damon_mod, "prepare_registry_lock_file", unavailable_lock)
+        def build_spec(repo, out, image, cgroup_parent=None, **kwargs):
+            captured["spec_kwargs"] = kwargs
+            return spec
+
+        monkeypatch.setattr(access, "build_helper_spec", build_spec)
+        monkeypatch.setattr(access, "choose_mode", lambda requested: "helper")
+        monkeypatch.setattr(access, "docker_bin", lambda: "/usr/bin/docker")
+        monkeypatch.setattr(cg, "_start_log_tailers", lambda *_args: [])
+        monkeypatch.setattr(
+            cg.subprocess, "run",
+            lambda command, **kwargs: subprocess.CompletedProcess(
+                command, returncode=23
+            ),
+        )
+
+        def start_helper(command, helper_name, helper_image, **kwargs):
+            captured["command"] = command
+            run_path = command[command.index("--run-dir") + 1]
+            Path(run_path, cg.READY_FILE).touch()
+            return FakePopen(command)
+
+        monkeypatch.setattr(cg, "_start_named_helper", start_helper)
+        args = run_args(
+            ["synthetic-command"], target=["cgroup:/dev.slice"],
+            out_dir=str(tmp_path), run_id="run-no-damon-lock", mode="helper",
+            damon=True, helper_image="cgprofile-self:local", no_report=True,
+        )
+
+        assert cg.cmd_run(args) == 23
+        assert captured["spec_kwargs"] == {}
+        assert "--damon" not in captured["command"]
+        assert not any(
+            "damon.lock" in value or "ctl.sock" in value
+            for value in captured["command"]
+        )
+        assert "continuing without optional DAMON" in capsys.readouterr().err
+
     def test_builds_the_docker_command_and_notes_the_image(self, monkeypatch, tmp_path: Path, capsys):
         spec = access.HelperSpec(
             image="cgprofile-self:local", repo_host_path="/host/repo", repo_mount_path=cg.HERE,
@@ -1623,10 +1812,11 @@ class TestStartRun:
         holder: Dict[str, str] = {}
         called = {}
 
-        def fake_launch(run_path, collect_args, image, cgroup_parent=None):
+        def fake_launch(run_path, collect_args, image, cgroup_parent=None, damon=False):
             called["run_path"] = run_path
             called["image"] = image
             called["cgroup_parent"] = cgroup_parent
+            called["damon"] = damon
             open(os.path.join(run_path, cg.READY_FILE), "w").close()
             return FakePopen(collect_args)
 
@@ -1642,6 +1832,7 @@ class TestStartRun:
         assert called["run_path"] == run.path
         assert called["image"] == "img:local"
         assert called["cgroup_parent"] == "dev-interactive.slice"
+        assert called["damon"] is False
 
     def test_ready_wait_timeout_terminates_the_child(self, monkeypatch, tmp_path: Path):
         # Regression test: if the collector never signals ready within
@@ -1716,8 +1907,9 @@ class TestStartRun:
         # caller ever builds args without it.
         called = {}
 
-        def fake_launch(run_path, collect_args, image, cgroup_parent=None):
+        def fake_launch(run_path, collect_args, image, cgroup_parent=None, damon=False):
             called["cgroup_parent"] = cgroup_parent
+            called["damon"] = damon
             open(os.path.join(run_path, cg.READY_FILE), "w").close()
             return FakePopen(collect_args)
 
@@ -1731,6 +1923,7 @@ class TestStartRun:
         )
         cg._start_run(args)
         assert called["cgroup_parent"] is None
+        assert called["damon"] is False
 
 
 # ── cmd_run ───────────────────────────────────────────────────────────────

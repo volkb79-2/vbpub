@@ -34,6 +34,8 @@ argv = [
 ]
 clean_tree = false
 budget = "5m"
+[lanes.r0-r1.resources]
+cpus = "3"
 
 # Mutation testing via a live worktree assay (never a pinned zipapp for an
 # in-repo consumer — assay/docs/INTERNAL-CONSUMERS.md). The judge policy
@@ -49,6 +51,8 @@ argv = [
 clean_tree = false
 budget = "30m"
 artifacts = [".assay/verdict-r2.json", ".assay/r2-progress.jsonl"]
+[lanes.r2.resources]
+cpus = "3"
 
 # Proves the gate REJECTS known-bad code — each canary breaks exactly one
 # contract a named test claims to assert, and that test must go red.
@@ -63,6 +67,8 @@ argv = [
 ]
 clean_tree = false
 budget = "5m"
+[lanes.r3.resources]
+cpus = "3"
 
 # The implementation/release gate: every consumer (release steps, agents,
 # humans) runs THIS lane; none duplicates the sub-lane sequence. RG-1: every

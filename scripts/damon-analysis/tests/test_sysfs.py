@@ -41,6 +41,51 @@ class TestSysfsReadOnly:
         assert val >= 0
 
 
+class TestSysfsTargetArray:
+    def test_set_nr_targets_writes_exact_count(self, tmp_path, monkeypatch):
+        monkeypatch.setattr('damon_analysis.KDAMONDS_DIR', str(tmp_path))
+        writes = []
+        monkeypatch.setattr(
+            SysfsInterface, '_write_int',
+            staticmethod(lambda path, value: writes.append((path, value))),
+        )
+
+        SysfsInterface.set_nr_targets(3, 2, 1)
+
+        assert writes == [(
+            os.path.join(str(tmp_path), '3', 'contexts', '2', 'targets', 'nr_targets'),
+            1,
+        )]
+
+    @pytest.mark.parametrize('count', [0, 2])
+    def test_set_nr_targets_accepts_empty_and_nonempty_arrays(
+        self, count, tmp_path, monkeypatch,
+    ):
+        monkeypatch.setattr('damon_analysis.KDAMONDS_DIR', str(tmp_path))
+        writes = []
+        monkeypatch.setattr(
+            SysfsInterface, '_write_int',
+            staticmethod(lambda path, value: writes.append((path, value))),
+        )
+
+        SysfsInterface.set_nr_targets(0, 0, count)
+
+        assert writes[0][1] == count
+
+    @pytest.mark.parametrize('count', [True, 1.5, '2'])
+    def test_set_nr_targets_rejects_non_integer_count(
+        self, count, tmp_path, monkeypatch,
+    ):
+        monkeypatch.setattr('damon_analysis.KDAMONDS_DIR', str(tmp_path))
+        with pytest.raises(TypeError, match='integer'):
+            SysfsInterface.set_nr_targets(0, 0, count)
+
+    def test_set_nr_targets_rejects_negative_count(self, tmp_path, monkeypatch):
+        monkeypatch.setattr('damon_analysis.KDAMONDS_DIR', str(tmp_path))
+        with pytest.raises(ValueError, match='non-negative'):
+            SysfsInterface.set_nr_targets(0, 0, -1)
+
+
 # ---------------------------------------------------------------------------
 # disable_damon_stat — root needed for the write but readable without
 # ---------------------------------------------------------------------------

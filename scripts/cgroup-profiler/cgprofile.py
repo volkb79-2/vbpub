@@ -29,6 +29,7 @@ because a file survives the driver being suspended mid-run.
 from __future__ import annotations
 
 import argparse
+from contextlib import ExitStack
 import json
 import math
 import os
@@ -437,14 +438,25 @@ def cmd_collect(args: argparse.Namespace) -> int:
             damon_targets = [damon_mod.DamonTarget(kind="vaddr", pid=p, label=str(p))
                              for p in pids] or [damon_mod.DamonTarget(kind="paddr", pid=None,
                                                                      label="physical")]
-            damon_session = damon_mod.DamonSession(damon_targets)
+            try:
+                damon_session = damon_mod.DamonSession(damon_targets)
+            except damon_mod.DamonSessionError as exc:
+                _note(f"DAMON requested but could not start ({exc}) — continuing without it")
         else:
             _note("DAMON requested but unavailable here — continuing without it")
 
     sampler = sampler_mod.Sampler(membership, config, sample_fn)
 
     with caps_mod.TempCaps(cap_changes, root) if cap_changes else _nullcontext():
-        with damon_session if damon_session else _nullcontext():
+        with ExitStack() as resources:
+            damon_resources = ExitStack()
+            resources.enter_context(damon_resources)
+            if damon_session is not None:
+                try:
+                    damon_session = damon_resources.enter_context(damon_session)
+                except damon_mod.DamonSessionError as exc:
+                    _note(f"DAMON requested but could not start ({exc}) — continuing without it")
+                    damon_session = None
             open(os.path.join(run.path, READY_FILE), "w").close()
             _note(f"collecting into {run.path}")
             prev = None
@@ -452,7 +464,7 @@ def cmd_collect(args: argparse.Namespace) -> int:
             marks_seen = 0
 
             def on_sample(record):
-                nonlocal prev, prev_mono, marks_seen
+                nonlocal prev, prev_mono, marks_seen, damon_session
                 run.append("samples", record)
                 if prev is not None:
                     dt = record["mono"] - prev_mono
@@ -460,8 +472,25 @@ def cmd_collect(args: argparse.Namespace) -> int:
                         run.append("events", event.to_dict())
                 prev, prev_mono = record, record["mono"]
                 if damon_session and record["seq"] % 20 == 0:
-                    for region in damon_session.collect():
-                        run.append("damon", {"mono": record["mono"], **region})
+                    try:
+                        regions = damon_session.collect()
+                    except Exception as exc:
+                        _note(
+                            f"DAMON collection failed ({type(exc).__name__}: {exc}) — "
+                            "continuing without DAMON"
+                        )
+                        damon_session = None
+                        try:
+                            damon_resources.close()
+                        except Exception as cleanup_exc:
+                            _note(
+                                "DAMON cleanup after collection failure also failed "
+                                f"({type(cleanup_exc).__name__}: {cleanup_exc}) — "
+                                "continuing ordinary profiling"
+                            )
+                    else:
+                        for region in regions:
+                            run.append("damon", {"mono": record["mono"], **region})
                 # A phase mark can be written by a different process sharing
                 # this run directory (cgprofile mark, a wrapper boundary, a
                 # log-tail match — see DESIGN.md §3) — this sampler has no
@@ -555,8 +584,29 @@ def _start_named_helper(
 
 def _launch_helper(run_path: str, collect_args: List[str],
                    image: Optional[str],
-                   cgroup_parent: Optional[str] = None) -> subprocess.Popen:
-    spec = access.build_helper_spec(HERE, os.path.dirname(run_path), image, cgroup_parent)
+                   cgroup_parent: Optional[str] = None,
+                   damon: bool = False) -> subprocess.Popen:
+    spec_args = {}
+    helper_collect_args = list(collect_args)
+    if damon:
+        from lib import damon as damon_mod
+
+        try:
+            lock_path = damon_mod.prepare_registry_lock_file()
+        except damon_mod.DamonSessionError as exc:
+            _note(
+                "DAMON lock unavailable; continuing without optional DAMON: "
+                f"{exc}"
+            )
+            helper_collect_args = [arg for arg in helper_collect_args if arg != "--damon"]
+        else:
+            spec_args = {
+                "damon_lock_host_path": lock_path,
+                "damon_lock_container_path": damon_mod.DAMON_HELPER_LOCK_PATH,
+            }
+    spec = access.build_helper_spec(
+        HERE, os.path.dirname(run_path), image, cgroup_parent, **spec_args,
+    )
     helper_name = f"cgprofile-helper-{os.getpid()}-{time.time_ns()}"
     docker_args = spec.docker_args(name=helper_name)
     # Plain python3, not the venv: the collector is standard-library only by
@@ -567,7 +617,7 @@ def _launch_helper(run_path: str, collect_args: List[str],
         "python3",
         os.path.join(HERE, "cgprofile.py"),
         "_collect",
-        *collect_args,
+        *helper_collect_args,
     ]
     return _start_named_helper(
         command, helper_name, spec.image, stdout=sys.stderr, stderr=sys.stderr,
@@ -722,7 +772,8 @@ def _start_run(args: argparse.Namespace):
         )
     else:
         child = _launch_helper(run.path, collect_args, args.helper_image,
-                               getattr(args, "helper_cgroup_parent", None))
+                               getattr(args, "helper_cgroup_parent", None),
+                               damon=args.damon)
 
     try:
         _wait_for(os.path.join(run.path, READY_FILE), args.start_timeout, "the collector to start")
