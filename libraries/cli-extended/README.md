@@ -549,6 +549,16 @@ register_doctor(registry, [
 app = registry.build()
 ```
 
+## Consumer test helpers
+
+`invoke_script`, `invoke_module` and `make_invoker` run a real executable with
+a hermetic environment (required `home`, `XDG_*`, `NO_COLOR`, the tested
+library first on `PYTHONPATH`), and `cli_extended.pytest_plugin` (one
+`pytest_plugins` line) registers the `cli_case` marker and checks reviewed
+cases at collection; `--cli-case-partial` relaxes it for focused runs. See the
+[consumer guide](docs/CONSUMERS.md#test-helpers-invoke_script) and the
+[design guide](docs/DESIGN-GUIDE.md#keep-consumer-tests-hermetic-and-the-plugin-opt-in).
+
 ## Test and gate
 
 The package gate covers R0/R1/R2 plus an independent R3 canary. R1 requires

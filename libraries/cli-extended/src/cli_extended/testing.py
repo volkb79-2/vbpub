@@ -2,12 +2,142 @@
 
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
 from collections.abc import Callable, Mapping, Sequence
+from functools import partial
+from pathlib import Path
 from typing import Any
 
 from .identity import CliIdentity
 
 CliInvoker = Callable[[Sequence[str]], Any]
+
+_LIBRARY_ROOT = Path(__file__).resolve().parents[1]
+_ALWAYS_REMOVED = ("FORCE_COLOR", "CLICOLOR_FORCE", "CLAUDE_CONFIG_DIR")
+
+
+def _child_environment(
+    home: Path | str,
+    scrub_prefixes: Sequence[str],
+    env: Mapping[str, str | None] | None,
+    pythonpath: Sequence[Path | str],
+) -> dict[str, str]:
+    if not str(home):
+        raise ValueError("home must be a non-empty directory")
+    home_path = Path(home)
+    prefixes = tuple(scrub_prefixes)
+    child = {
+        key: value
+        for key, value in os.environ.items()
+        if not key.startswith(prefixes) and key not in _ALWAYS_REMOVED
+    }
+    child["HOME"] = str(home_path)
+    child["XDG_CONFIG_HOME"] = str(home_path / ".config")
+    child["XDG_DATA_HOME"] = str(home_path / ".local" / "share")
+    child["XDG_CACHE_HOME"] = str(home_path / ".cache")
+    child["XDG_STATE_HOME"] = str(home_path / ".local" / "state")
+    child["NO_COLOR"] = "1"
+    paths = [str(_LIBRARY_ROOT), *(str(item) for item in pythonpath)]
+    if child.get("PYTHONPATH"):
+        paths.append(child["PYTHONPATH"])
+    child["PYTHONPATH"] = os.pathsep.join(paths)
+    for key, value in (env or {}).items():
+        if value is None:
+            child.pop(key, None)
+        else:
+            child[key] = value
+    return child
+
+
+def _run(
+    command: list[str],
+    *,
+    home: Path | str,
+    scrub_prefixes: Sequence[str],
+    env: Mapping[str, str | None] | None,
+    cwd: Path | str | None,
+    timeout: float,
+    pythonpath: Sequence[Path | str],
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        command,
+        env=_child_environment(home, scrub_prefixes, env, pythonpath),
+        cwd=cwd,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=timeout,
+    )
+
+
+def invoke_script(
+    script: Path | str,
+    argv: Sequence[str],
+    *,
+    home: Path | str,
+    python: str | None = None,
+    scrub_prefixes: Sequence[str] = (),
+    env: Mapping[str, str | None] | None = None,
+    cwd: Path | str | None = None,
+    timeout: float = 60,
+    pythonpath: Sequence[Path | str] = (),
+) -> subprocess.CompletedProcess[str]:
+    """Run ``script`` in a subprocess with a hermetic, tested-library environment.
+
+    ``home`` is required: the child gets ``HOME`` and the four ``XDG_*_HOME``
+    directories under it, so a test can never read or write the real home.
+    ``NO_COLOR=1`` is set; ``FORCE_COLOR``, ``CLICOLOR_FORCE`` and
+    ``CLAUDE_CONFIG_DIR`` and every variable starting with a ``scrub_prefixes``
+    entry are removed. ``PYTHONPATH`` begins with the directory of the imported
+    ``cli_extended`` package, then ``pythonpath``, then the inherited value.
+    ``env`` is applied last; a ``None`` value deletes the key. ``timeout`` is
+    only a failsafe.
+    """
+
+    return _run(
+        [python or sys.executable, str(script), *argv],
+        home=home,
+        scrub_prefixes=scrub_prefixes,
+        env=env,
+        cwd=cwd,
+        timeout=timeout,
+        pythonpath=pythonpath,
+    )
+
+
+def invoke_module(
+    module: str,
+    argv: Sequence[str],
+    *,
+    home: Path | str,
+    python: str | None = None,
+    scrub_prefixes: Sequence[str] = (),
+    env: Mapping[str, str | None] | None = None,
+    cwd: Path | str | None = None,
+    timeout: float = 60,
+    pythonpath: Sequence[Path | str] = (),
+) -> subprocess.CompletedProcess[str]:
+    """The ``python -m MODULE`` twin of :func:`invoke_script`."""
+
+    return _run(
+        [python or sys.executable, "-m", module, *argv],
+        home=home,
+        scrub_prefixes=scrub_prefixes,
+        env=env,
+        cwd=cwd,
+        timeout=timeout,
+        pythonpath=pythonpath,
+    )
+
+
+def make_invoker(
+    target: Path | str, *, module: bool = False, **kwargs: Any
+) -> Callable[[Sequence[str]], subprocess.CompletedProcess[str]]:
+    """Return the ``invoke`` callable :func:`assert_cli_contract` expects."""
+
+    return partial(invoke_module if module else invoke_script, target, **kwargs)
 
 
 def assert_cli_contract(
