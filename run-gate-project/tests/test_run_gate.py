@@ -5695,6 +5695,262 @@ def test_status_reports_inflight_directory_removed_during_listing(
     assert "directory disappeared during scan" in errors[0]
 
 
+def test_status_proc_liveness_requires_matching_owner_identity(tmp_path):
+    proc_root = tmp_path / "proc"
+    proc = proc_root / "321"
+    (proc / "ns").mkdir(parents=True)
+    (proc_root / "sys/kernel/random").mkdir(parents=True)
+    (proc_root / "self/ns").mkdir(parents=True)
+    (proc_root / "sys/kernel/random/boot_id").write_text("boot-a\n")
+    (proc_root / "self/ns/pid").write_text("")
+    pid_ns = os.stat(proc_root / "self/ns/pid").st_ino
+
+    def write_stat(state="S", start_ticks=456):
+        fields = [state, *(["0"] * 18), str(start_ticks)]
+        (proc / "stat").write_text(
+            f"321 (status process) {' '.join(fields)}\n")
+
+    record = {"owner_pid": 321, "pid_ns": pid_ns,
+              "owner_start": 456, "boot_id": "boot-a"}
+    write_stat()
+    assert run_gate._proc_stat_identity(321, proc_root) == ("S", 456)
+    assert run_gate._status_pid_liveness(321, proc_root) == "alive"
+    assert run_gate._status_inflight_owner_liveness(record, proc_root) == "alive"
+
+    write_stat(start_ticks=457)
+    assert run_gate._status_inflight_owner_liveness(record, proc_root) == "dead"
+    write_stat(state="Z")
+    assert run_gate._status_pid_liveness(321, proc_root) == "dead"
+    assert run_gate._status_inflight_owner_liveness(record, proc_root) == "dead"
+
+    (proc / "stat").unlink()
+    assert run_gate._status_pid_liveness(321, proc_root) == "unknown"
+    assert run_gate._status_inflight_owner_liveness(record, proc_root) == "dead"
+    assert run_gate._status_inflight_owner_liveness(
+        {**record, "boot_id": "boot-b"}, proc_root) == "unknown"
+    assert run_gate._status_inflight_owner_liveness(
+        {**record, "pid_ns": pid_ns + 1}, proc_root) == "unknown"
+    assert run_gate._status_inflight_owner_liveness(
+        {**record, "owner_pid": True}, proc_root) == "unknown"
+
+    proc.mkdir(exist_ok=True)
+    (proc / "stat").write_text("malformed\n")
+    assert run_gate._proc_stat_identity(321, proc_root) is None
+    assert run_gate._status_pid_liveness(321, proc_root) == "unknown"
+    assert run_gate._status_inflight_owner_liveness(record, proc_root) == "unknown"
+
+
+def test_status_inflight_reader_preserves_malformed_records(tmp_path):
+    project = tmp_path / "project"
+    directory = project / ".run-gate" / "inflight"
+    directory.mkdir(parents=True)
+    cases = {
+        "bad-json.json": ("{", "unreadable"),
+        "not-object.json": ("[]", "unreadable"),
+        "wrong-schema.json": (json.dumps({"schema": 999}), "unknown-schema"),
+        "bad-fields.json": (json.dumps({
+            "schema": run_gate.INFLIGHT_SCHEMA, "lane": "lane",
+            "runner": "exec", "container": "",
+        }), "unreadable"),
+    }
+    for name, (content, _state) in cases.items():
+        (directory / name).write_text(content)
+    (directory / "not-utf8.json").write_bytes(b"\xff")
+    (directory / "non-file.json").mkdir()
+    (directory / "ignored.txt").write_text("not a record")
+
+    records, errors = run_gate._read_inflight_status(project, tmp_path)
+
+    by_name = {Path(record["path"]).name: record for record in records}
+    for name, (_content, state) in cases.items():
+        assert by_name[name]["state"] == state
+    assert by_name["not-utf8.json"]["state"] == "unreadable"
+    assert by_name["non-file.json"]["state"] == "unreadable"
+    assert "ignored.txt" not in by_name
+    assert len(errors) == len(cases) + 2
+
+
+def test_status_parses_proc_lock_holders_waiters_and_ignores_other_rows():
+    locks = run_gate._parse_proc_lock_rows("\n".join([
+        "1: FLOCK ADVISORY WRITE 111 00:2a:42 0 EOF",
+        "2: -> FLOCK ADVISORY WRITE 222 00:2a:42 0 EOF",
+        "3: FLOCK ADVISORY READ - 00:2a:43 0 EOF",
+        "4: POSIX ADVISORY WRITE 333 00:2a:44 0 EOF",
+        "5: FLOCK MANDATORY WRITE 444 00:2a:45 0 EOF",
+        "6: FLOCK ADVISORY READ nope bad-key 0 EOF",
+        "7: FLOCK ADVISORY WRITE 0 00:2a:46 0 EOF",
+    ]))
+
+    assert locks[(0, 42, 42)] == {"holders": [111], "waiters": [222]}
+    assert locks[(0, 42, 43)] == {"holders": [None], "waiters": []}
+    assert (0, 42, 44) not in locks
+
+
+def test_status_exec_lock_reader_joins_running_queued_idle_and_bad_lock_files(
+        tmp_path):
+    lock_dir = tmp_path / "locks"
+    lock_dir.mkdir()
+    proc_root = tmp_path / "proc"
+    proc_root.mkdir()
+    runner_path = lock_dir / "run-gate-exec-running.lock"
+    queued_path = lock_dir / "run-gate-exec-queued.lock"
+    idle_path = lock_dir / "run-gate-exec-idle.lock"
+    broken_path = lock_dir / "run-gate-exec-broken.lock"
+    for path in (runner_path, queued_path, idle_path):
+        path.touch()
+    broken_path.symlink_to(idle_path)
+    (proc_root / "111").mkdir()
+    fields = ["S", *(["0"] * 18), "456"]
+    (proc_root / "111/stat").write_text(f"111 (runner) {' '.join(fields)}\n")
+    (proc_root / "222").mkdir()
+    (proc_root / "222/stat").write_text(f"222 (runner) {' '.join(fields)}\n")
+    (proc_root / "locks").write_text("\n".join([
+        f"1: FLOCK ADVISORY WRITE 111 "
+        f"{os.major(runner_path.stat().st_dev):x}:"
+        f"{os.minor(runner_path.stat().st_dev):x}:"
+        f"{runner_path.stat().st_ino} 0 EOF",
+        f"2: -> FLOCK ADVISORY WRITE 222 "
+        f"{os.major(runner_path.stat().st_dev):x}:"
+        f"{os.minor(runner_path.stat().st_dev):x}:"
+        f"{runner_path.stat().st_ino} 0 EOF",
+        f"3: -> FLOCK ADVISORY WRITE 222 "
+        f"{os.major(queued_path.stat().st_dev):x}:"
+        f"{os.minor(queued_path.stat().st_dev):x}:"
+        f"{queued_path.stat().st_ino} 0 EOF",
+    ]))
+
+    locks, errors = run_gate._read_exec_lock_status(lock_dir, proc_root)
+
+    by_runner = {lock["runner"]: lock for lock in locks}
+    assert errors and "run-gate-exec-broken.lock" in errors[0]
+    assert by_runner["running"]["state"] == "running"
+    assert by_runner["running"]["holders"] == [
+        {"pid": 111, "liveness": "alive"}]
+    assert by_runner["running"]["waiters"] == [
+        {"pid": 222, "liveness": "alive"}]
+    assert by_runner["queued"]["state"] == "queued"
+    assert by_runner["idle"]["state"] == "idle"
+    assert by_runner["broken"]["state"] == "unreadable"
+
+
+def test_status_lane_name_can_be_recovered_from_proc_cmdline(tmp_path):
+    proc = tmp_path / "789"
+    proc.mkdir()
+    cmdline = proc / "cmdline"
+    cmdline.write_bytes(
+        b"/usr/bin/python\0/workspaces/vbpub/run-gate-project/run-gate.py\0"
+        b"--worktree\0/worktrees/feature\0--base\0main\0schema\0")
+
+    assert run_gate._status_command_lane(789, tmp_path) == "schema"
+    cmdline.write_bytes(b"run-gate.py\0--\0schema\0")
+    assert run_gate._status_command_lane(789, tmp_path) is None
+    assert run_gate._status_command_lane(790, tmp_path) is None
+
+
+def test_status_human_output_reports_lock_and_admission_occupancy(
+        tmp_path, monkeypatch, capsys):
+    project = tmp_path / "project"
+    project.mkdir()
+    monkeypatch.setattr(run_gate, "_read_exec_lock_status", lambda *_args: ([
+        {"runner": "test-runner", "state": "running",
+         "holders": [{"pid": 10, "liveness": "alive", "lane": "schema"}],
+         "waiters": [{"pid": 11, "liveness": "alive", "lane": "unit"}]},
+        {"runner": "idle-runner", "state": "idle",
+         "holders": [], "waiters": []},
+    ], []))
+    monkeypatch.setattr(run_gate, "_read_inflight_status", lambda *_args: ([
+        {"path": "/project/.run-gate/inflight/schema.json", "lane": "schema",
+         "runner": "exec", "container": "test-runner", "owner_pid": 10,
+         "owner_liveness": "alive"},
+        {"path": "/project/.run-gate/inflight/bad.json", "state": "unreadable"},
+    ], []))
+    monkeypatch.setattr(run_gate.shutil, "which", lambda _name: "/usr/bin/docker")
+    monkeypatch.setattr(run_gate, "local_docker_endpoint",
+                        lambda: (True, "local Docker Unix endpoint"))
+
+    class HumanStatusAdmission:
+        def __init__(self, **_kwargs):
+            pass
+
+        def status_snapshot(self):
+            return {
+                "published": {"name": "ciu-admission-2",
+                              "max_concurrent": 2,
+                              "max_concurrent_readable": True},
+                "visible_admission_objects": [{
+                    "name": "ciu-admission-1", "generation": 1,
+                    "docker_status": "created", "identity_readable": False,
+                    "max_concurrent_readable": False}],
+                "tickets": [
+                    {"name": "ciu-res-gates-1", "state": "running",
+                     "owner": {"lane": "schema", "pid": 10},
+                     "owner_liveness": "alive", "deadline": 1800000300},
+                    {"name": "ciu-res-gates-2", "state": "unreadable-live",
+                     "owner": None, "owner_liveness": "unknown",
+                     "deadline": None},
+                ],
+            }
+
+    monkeypatch.setattr(run_gate, "DockerAdmission", HumanStatusAdmission)
+    code = run_gate.cmd_status(project, {"admission": {"enabled": True}},
+                               tmp_path / "run-gate.toml")
+    out = capsys.readouterr().out
+
+    assert code == 0
+    assert "test-runner: running pid=10" in out
+    assert "test-runner: queued pid=11" in out
+    assert "1 idle lock file(s)" in out
+    assert "schema: exec runner=test-runner" in out
+    assert "unreadable:" in out
+    assert "published=ciu-admission-2 cap=2 cap_readable=true" in out
+    assert "unreadable admission object: ciu-admission-1" in out
+    assert "ciu-res-gates-1: running lane=schema pid=10" in out
+    assert "ciu-res-gates-2: unreadable-live lane=(unreadable)" in out
+
+
+@pytest.mark.parametrize("failure", ["no-docker", "remote", "unavailable", "docker-error"])
+def test_status_json_reports_partial_data_on_admission_source_failures(
+        tmp_path, monkeypatch, capsys, failure):
+    project = tmp_path / "project"
+    project.mkdir()
+    monkeypatch.setattr(run_gate, "_read_exec_lock_status", lambda *_args: ([
+        {"runner": "test-runner", "state": "idle",
+         "holders": [], "waiters": []}], []))
+    inflight = [{"path": "/project/.run-gate/inflight/schema.json",
+                 "lane": "schema", "runner": "exec",
+                 "container": "test-runner", "owner_pid": 10,
+                 "owner_liveness": "alive"}]
+    monkeypatch.setattr(run_gate, "_read_inflight_status",
+                        lambda *_args: (inflight, []))
+    docker_path = None if failure == "no-docker" else "/usr/bin/docker"
+    monkeypatch.setattr(run_gate.shutil, "which", lambda _name: docker_path)
+    monkeypatch.setattr(run_gate, "local_docker_endpoint", lambda: (
+        (False, "remote Docker context") if failure == "remote"
+        else (True, "local Docker Unix endpoint")))
+    monkeypatch.setattr(run_gate, "_git_toplevel_if_available", lambda _path: None)
+
+    class FailingStatusAdmission:
+        def __init__(self, **_kwargs):
+            pass
+
+        def status_snapshot(self):
+            if failure == "unavailable":
+                raise run_gate.AdmissionDockerUnavailable("daemon unavailable")
+            raise run_gate.AdmissionError("status labels malformed")
+
+    monkeypatch.setattr(run_gate, "DockerAdmission", FailingStatusAdmission)
+    code = run_gate.cmd_status(project, {}, tmp_path / "run-gate.toml",
+                               json_mode=True)
+    result = json.loads(capsys.readouterr().out)
+
+    assert code == 2
+    assert result["verdict"] == "ERROR"
+    assert result["exit_code"] == 2
+    assert result["inflight"] == inflight
+    assert result["exec_locks"][0]["runner"] == "test-runner"
+    assert result["errors"]
+
+
 def test_status_worktree_selects_its_config_and_inflight_scope(
         tmp_path, monkeypatch, capsys):
     repo = make_repo(tmp_path)
