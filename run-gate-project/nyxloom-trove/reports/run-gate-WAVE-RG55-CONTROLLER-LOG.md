@@ -7128,3 +7128,26 @@ currently has a newer development build (`23.9.2.dev1126+g998a43552`, rev
 46), so no redundant 23.10.0 release is inferred from this wave. Reconcile
 the installed release wheel at closeout. cgroup-profiler has no release tag;
 the agreed combined P1+P6 first release remains `1.0.0`.
+
+### RW-462 — 2026-10-05 23:49:40 UTC — full combined R2 plan validated; wait for a mutation slot
+
+Using the exact `bec813081d84972bbd15b5eb525e438b063eff4c` tree and this
+worktree's source-backed Assay 7.2.0, `assay plan r2 --request-base
+db29266f8a006b22a30609a74de7645d1e4c50b7` returned `status: ok` with 1,253
+candidates across all 13 changed `lib/*.py` modules, four configured
+operators, two workers, and a 1,500-candidate cap. The P1 repair adds two
+candidates versus the older P6 plan's 1,251; this combined plan covers the
+P1 `damon.py`/`serve.py` source delta and its new oracles. The printed
+375,900-second wall estimate is the 600-second-per-candidate budget divided
+between workers, not measured runtime. The active P6 campaign's observed
+pace (547/1,251 at 23:36Z; last interval 30 candidates/25 minutes) suggests
+a much lower but variable empirical ETA; re-estimate from the next scheduled
+sample rather than treating the plan estimate as a forecast.
+
+No mutant was executed by this planning command. Both mutation slots remain
+occupied by the diagnostic P1 predecessor and the older P6 tree. Once one
+finishes, re-run the plan against the then-final quiet tree and start one
+combined R2 from explicit base `db29266…`; keep that worktree unchanged
+until completion. The current-main tree changed only for controller records
+after the P1 short-gate receipts, so refresh short gates after the slot
+becomes free and before launching the combined campaign.
