@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import subprocess
 import sys
 from dataclasses import replace
 from pathlib import Path
@@ -35,6 +36,7 @@ from assay.mutation_witness import (
 from assay.reuse import classify_candidate, load_reuse_source, prior_only_candidates
 from assay import verify as raw_verify
 from assay.verify import verify_document
+from assay.resource_limits import ResourceLimitCounters
 
 FIXTURES = TESTS_ROOT / "fixtures" / "verdicts"
 
@@ -794,6 +796,82 @@ def test_replay_requires_a_current_kill_and_falls_back_to_a_full_run(
     assert stale_witness.claims[1].mutation.survived
     assert stale_witness.claims[1].mutation.survived[0].execution.mode == "full"
     assert verify_document(stale_witness.to_dict()) == []
+
+
+def test_resource_limited_witness_replay_stops_before_full_fallback(
+    git_repo: GitRepo, tmp_path: Path, monkeypatch
+):
+    base, first_head = _seed_pytest_mutation(git_repo)
+    lane = make_lane(
+        rigor=("R0", "R2"),
+        argv=(sys.executable, "-m", "pytest", "tests", "-q", "-p", "no:cacheprovider"),
+        judge=make_r2_judge(
+            source_root_paths=(git_repo.path / "src",),
+            base=base,
+            mutation=MutationConfig(
+                jobs=1,
+                max_mutants=10,
+                operators=("python:compare-swap",),
+                liveness="false",
+            ),
+        ),
+        budget="2m",
+        budget_seconds=120,
+    )
+    original = runner.run_lane(
+        lane,
+        commit=first_head,
+        repo=git_repo.path,
+        project_root=git_repo.path,
+        adapter=PythonAdapter(),
+        assay_version="0.1.0",
+    )
+    assert original.outcome is Outcome.PASS
+    prior = tmp_path / "prior.json"
+    prior.write_text(json.dumps(original.to_dict()), encoding="utf-8")
+
+    git_repo.write(
+        "tests/test_a_pass_before_witness.py",
+        "def test_before_witness():\n    assert 2 + 2 == 4\n",
+    )
+    second_head = git_repo.commit_all("add a passing test before the witness")
+    samples = iter(
+        (
+            ResourceLimitCounters(0, 0, 0),  # mutation preflight
+            ResourceLimitCounters(0, 0, 0),  # replay before
+            ResourceLimitCounters(1, 0, 0),  # replay after: pids.max hit
+            ResourceLimitCounters(1, 0, 0),  # fallback before, if incorrectly run
+            ResourceLimitCounters(1, 0, 0),  # fallback after, falsely clean
+        )
+    )
+    monkeypatch.setattr(
+        mutation, "read_current_cgroup_counters", lambda: next(samples)
+    )
+    commands: list[tuple[str, ...]] = []
+
+    def resource_limited_replay_runner(argv, *, env, cwd, timeout):
+        commands.append(tuple(argv))
+        # Baseline passes. The replay and any erroneous full fallback fail; a
+        # zero-delta fallback would otherwise turn the prior resource hit into
+        # a reported mutation kill.
+        return subprocess.CompletedProcess(
+            list(argv), returncode=0 if len(commands) == 1 else 1
+        )
+
+    replayed = runner.run_lane(
+        lane,
+        commit=second_head,
+        repo=git_repo.path,
+        project_root=git_repo.path,
+        adapter=PythonAdapter(),
+        assay_version="0.1.0",
+        process_runner=resource_limited_replay_runner,
+        reuse_from=prior,
+    )
+
+    assert replayed.outcome is Outcome.ERROR
+    assert replayed.reason_code is ReasonCode.EXEC_FAILED
+    assert len(commands) == 2  # baseline plus replay; no zero-delta full fallback
 
 
 def test_witness_capture_works_with_the_existing_liveness_plugin(git_repo: GitRepo):

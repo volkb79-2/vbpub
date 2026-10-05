@@ -3240,6 +3240,22 @@ def _execute_mutation_jobs(
             else None
         )
         if target_node_id is not None:
+            # A prefix replay is only an optimization when its result can be
+            # verified against the saved witness. If a cgroup limit event
+            # happened during that command, the replay is infrastructure-
+            # affected and must not be discarded before `_run_one` falls back
+            # to a fresh full command. Stop the R2 claim instead of letting a
+            # later zero-delta retry hide this candidate's resource failure.
+            if (
+                run.resource_limit_evidence is not None
+                and run.resource_limit_evidence.limit_hit
+            ):
+                raise AssayError(
+                    "cgroup resource-limit event during native R2 witness-prefix "
+                    "replay; refusing to retry the candidate",
+                    outcome=Outcome.ERROR,
+                    reason_code=ReasonCode.EXEC_FAILED,
+                )
             witness = _replay_witness_from_receipt(
                 receipt,
                 process_exit_status=result.returncode,
@@ -3287,15 +3303,6 @@ def _execute_mutation_jobs(
                 prior_verdict_sha256=prior_verdict_sha256,
                 attempt_name="replay",
             )
-            if (
-                replay is not None
-                and replay.resource_limit_evidence is not None
-                and replay.resource_limit_evidence.limit_hit
-            ):
-                return _dataclass_replace(
-                    replay,
-                    elapsed_seconds=max(0.0, time.monotonic() - started_total),
-                )
             if replay is not None and _classified_bucket(replay) == "killed":
                 return _dataclass_replace(
                     replay,
