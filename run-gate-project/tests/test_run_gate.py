@@ -424,7 +424,23 @@ def lane_execs(log: Path) -> list[list[str]]:
 
 
 def shim_dir_of(monkeypatch) -> Path:
-    return Path(os.environ["PATH"].split(":")[0])
+    first = Path(os.environ["PATH"].split(":")[0])
+    try:
+        probe_fd, probe_name = tempfile.mkstemp(
+            prefix="run-gate-test-write-probe-", dir=first)
+    except OSError:
+        pass
+    else:
+        os.close(probe_fd)
+        os.unlink(probe_name)
+        return first
+    # tester-unified's estate venv bin is intentionally read-only. Tests that
+    # install a PATH shim must own a writable directory, even when they do not
+    # also install fake_docker().
+    private = Path(tempfile.mkdtemp(prefix="run-gate-test-bin-"))
+    atexit.register(shutil.rmtree, private, ignore_errors=True)
+    monkeypatch.setenv("PATH", f"{private}:{os.environ['PATH']}")
+    return private
 
 
 def _shared_lock_dir() -> Path:
@@ -570,7 +586,7 @@ class TestEarlyMutationSentinels:
         assert "1 entry older than 1 day" in capsys.readouterr().out
 
     def test_foreign_record_dry_run_is_terminal_before_fresh_preflight(
-            self, tmp_path, monkeypatch):
+            self, tmp_path, monkeypatch, capsys):
         repo = make_repo(tmp_path)
         proj = make_project(repo, SIMPLE_LANE)
         record = plant_inflight(proj, repo, None, runner="exec")
@@ -583,7 +599,8 @@ class TestEarlyMutationSentinels:
 
         monkeypatch.setattr(run_gate, "physical_path",
                             fresh_preflight_must_not_run)
-        assert run_gate.main(["suite", "--dry-run"]) == 0
+        assert run_gate.main(["suite", "--dry-run"]) == 2
+        assert "foreign record" in capsys.readouterr().err
         assert record.read_bytes() == before
 
     def test_foreign_record_refusal_is_visible_before_the_process_exits(
@@ -3204,7 +3221,9 @@ def test_source_backed_assay_inner_installs_selected_worktree_source():
     assert "pip install" in inner
     assert "--editable /tree/assay" in inner
     assert "importlib.machinery.PathFinder.find_spec" in inner
-    assert "spec=importlib.util.find_spec('assay')" in inner
+    # shlex.quote changes the literal quote characters around "assay"; pin
+    # the selected resolver call without pinning that shell-encoding detail.
+    assert "spec=importlib.util.find_spec" in inner
     assert "import assay" not in inner
     assert "assay/src/assay/__init__.py" in inner
     assert "/tree" in inner
@@ -9666,6 +9685,7 @@ class TestRG76AssayLaneImports:
             self, tmp_path, monkeypatch, bad_field):
         _repo, project, _fake = self._project(
             tmp_path, monkeypatch, imported=["alpha"])
+        self._use_ephemeral_import_environment(project)
         record_path = run_gate.inflight_path(project, "alpha")
         record_path.parent.mkdir(parents=True)
         pending = {"schema": 2, "runner": "container",
@@ -9699,6 +9719,7 @@ class TestRG76AssayLaneImports:
             self, tmp_path, monkeypatch):
         _repo, project, _fake = self._project(
             tmp_path, monkeypatch, imported=["alpha"])
+        self._use_ephemeral_import_environment(project)
         config_path = project / run_gate.CONFIG_NAME
         config_path.write_text(config_path.read_text() + "\n" +
                                '[lanes.gate]\nkind = "sequence"\n'
@@ -12068,7 +12089,7 @@ class TestHistoryFlushIsAtMostOnce:
 
 
 class TestJsonFlagScope:
-    """`--json` belongs to history/footprint queries and lane results; every
+    """`--json` belongs to history/footprint/status queries and lane results; every
     other use refuses by name instead of silently returning a human table."""
 
     @pytest.mark.parametrize("args", [["--list", "--json"],
@@ -12078,7 +12099,7 @@ class TestJsonFlagScope:
         _, proj = make_history_repo(tmp_path)
         out = run_tool(proj, *args)
         assert out.returncode == 2, out.stdout + out.stderr
-        assert "--json is honored by the `history`/`footprint` verbs only" \
+        assert "--json is honored by the `history`/`footprint`/`status` verbs only" \
             in out.stderr
         assert "Traceback" not in out.stderr
 
@@ -12101,7 +12122,7 @@ class TestJsonFlagScope:
     def test_usage_says_where_json_is_accepted(self, tmp_path):
         _, proj = make_history_repo(tmp_path)
         out = run_tool(proj, "--help")
-        assert "`history`/`footprint` ONLY" in out.stdout
+        assert "`history`/`footprint`/`status` ONLY" in out.stdout
         assert "REFUSES it by name" in out.stdout
         assert "run-gate.py history [LANE] [--worktree PATH] [--json]" \
             in out.stdout
@@ -12172,7 +12193,7 @@ class TestHistoryReadScopeInProcess:
         repo, proj = make_history_repo(tmp_path)
         monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
         assert run_gate.main(args) == 2
-        assert "--json is honored by the `history`/`footprint` verbs only" \
+        assert "--json is honored by the `history`/`footprint`/`status` verbs only" \
             in capsys.readouterr().err
 
 
@@ -12196,7 +12217,8 @@ class TestResumeAndProgressAlways:
              "assay_command": ["./tools/assay/assay.pyz"], "pins": {}}
 
     def test_inner_carries_resume_progress_and_state_dir_after_the_verdict(self):
-        inner = run_gate.build_assay_inner(self._LANE, Path("/proj"), Path("/repo"))
+        inner = run_gate.build_assay_inner(
+            self._LANE, Path("/repo/proj"), Path("/repo"))
         assert ("run sql_mutation --file assay.toml "
                 "--verdict-json .assay/verdict-sql_mutation.json "
                 "--resume --progress .assay/progress-sql_mutation.jsonl") in inner
@@ -12206,7 +12228,7 @@ class TestResumeAndProgressAlways:
         """RG-26's flag keeps its position: appended only for a delegating
         lane, after everything the lane always gets (including RG-38's
         --state-dir, which sits between --progress and --request-base)."""
-        inner = run_gate.build_assay_inner(self._LANE, Path("/proj"), Path("/repo"),
+        inner = run_gate.build_assay_inner(self._LANE, Path("/repo/proj"), Path("/repo"),
                                            request_base="deadbeef")
         assert inner.rstrip().endswith("--request-base deadbeef")
         assert ("--progress .assay/progress-sql_mutation.jsonl "
@@ -12219,7 +12241,8 @@ class TestResumeAndProgressAlways:
         adopter git-ignores (R-32). A progress file anywhere in the judged
         tree would make assay refuse NO_MEASUREMENT/DIRTY_TREE on the lane's
         NEXT run, so the location is not a style choice."""
-        inner = run_gate.build_assay_inner(self._LANE, Path("/proj"), Path("/repo"))
+        inner = run_gate.build_assay_inner(
+            self._LANE, Path("/repo/proj"), Path("/repo"))
         assert inner.index("mkdir -p .assay") < inner.index(
             "--progress .assay/progress-sql_mutation.jsonl")
         assert "--progress .assay/" in inner and "--progress /" not in inner
@@ -12229,7 +12252,8 @@ class TestResumeAndProgressAlways:
         shared .git, outside an ephemeral judged worktree. The lane may
         create keyed descendants but must never recreate the mount root in a
         runner's disposable layer."""
-        inner = run_gate.build_assay_inner(self._LANE, Path("/proj"), Path("/repo"))
+        inner = run_gate.build_assay_inner(
+            self._LANE, Path("/repo/proj"), Path("/repo"))
         state_dir = "/repo/.run-gate/assay-state/proj"
         assert "[ ! -d /repo/.run-gate ]" in inner
         assert "[ ! -w /repo/.run-gate ]" in inner
@@ -12657,11 +12681,15 @@ class TestResumeAndProgressAlways:
 
         monkeypatch.setattr(run_gate.shutil, "which", lambda _name: "/bin/docker")
         monkeypatch.setattr(run_gate.subprocess, "run", run)
+        repo = tmp_path / "repo"
+        project = repo / "project"
+        repo.mkdir()
+        project.mkdir()
         lane = {**self._LANE, "kind": "assay", "environment": "runner"}
         env = {"mode": "exec", "image": "runner", "state_root": "/persist/.run-gate"}
         assert run_gate.run_exec_lane(
-            lane, "mutation", tmp_path / "project", tmp_path / "repo",
-            tmp_path / "repo", env, "[environments.runner]", "runner-1",
+            lane, "mutation", project, repo,
+            repo, env, "[environments.runner]", "runner-1",
             "worktree config", "ciu up --dir tools/test-runner", None,
             "exec runner", dry_run=True, run_record=None,
             profile_plan={"enabled": False, "disabled_reason": "disabled",
@@ -12730,7 +12758,7 @@ class TestResumeAndProgressAlways:
         from it until this fix."""
         run_gate.print_lane_artifacts(
             {**self._LANE, "kind": "assay"}, "sql_mutation",
-            Path("/proj"), Path("/repo"), Path("/proj"))
+            Path("/repo/proj"), Path("/repo"), Path("/repo/proj"))
         out = capsys.readouterr().out
         assert "run-gate: state directory: /repo/.run-gate/assay-state/proj" in out
 
@@ -13122,6 +13150,10 @@ def plant_inflight(proj: Path, repo: Path, state: Path | None, *,
                "assay_identity_mode": run_gate.assay_identity_mode(
                    lane_config),
                "revision": run_gate.__revision__}
+    if lane_config.get("kind") == "assay":
+        assay_lane = lane_config["assay_lane"]
+        payload["verdict"] = str(proj / run_gate.assay_verdict_rel(assay_lane))
+        payload["progress"] = str(proj / run_gate.assay_progress_rel(assay_lane))
     payload.update(over)
     path.write_text(json.dumps(payload))
     # A running assay has already written its verdict before run-gate can
@@ -13784,12 +13816,12 @@ class TestInflightRecordDecisions:
         record = plant_inflight(proj, repo, state, container="dstdns-98535c-test-runner",
                                 runner="exec")
         before = record.read_text()
-        assert run_gate.main(["suite", "--dry-run"]) == 0
-        out = capsys.readouterr().out
-        assert ("foreign record — refusing to attach, follow, collect, "
-                "or remove it") in out
-        assert "dstdns-98535c-test-runner" in out
-        assert "written by runner 'exec'" in out
+        assert run_gate.main(["suite", "--dry-run"]) == 2
+        captured = capsys.readouterr()
+        output = captured.out + captured.err
+        assert "foreign record" in output
+        assert "dstdns-98535c-test-runner" in output
+        assert "written by runner 'exec'" in output
         assert lane_runs(log) == []
         assert record.read_text() == before    # not cleared, not rewritten
         assert (state / "dstdns-98535c-test-runner").exists()   # not removed
@@ -14136,29 +14168,28 @@ class TestInflightRecordDecisions:
         clean_tree = false
     """
 
-    def test_a_re_attached_run_discloses_the_verdict_the_record_declared(
+    def test_a_re_attached_run_uses_the_exact_verdict_path_for_its_lane(
             self, tmp_path, monkeypatch, capsys):
-        """N3. `verdict` and `progress` were written into the record and
-        never read back: the re-attach path recomputed both from the LIVE
-        config. They are the artifacts THAT run declared, and the live config
-        is not the authority for a run already in flight — retarget the lane
-        between the two invocations and the operator is sent to a file
-        nothing wrote."""
+        """Schema 2 binds an Assay record to the exact evidence path derived
+        from its lane identity; a redirected path must not be interpreted."""
         repo, proj, log, state = self._fixture(
             tmp_path, monkeypatch, config=self.ASSAY_ARTIFACT_LANE)
-        recorded_verdict = str(tmp_path / "the-run-that-is-running.json")
+        recorded_verdict = str(proj / ".assay" /
+                               "verdict-cw2b_schema.json")
         plant_inflight(proj, repo, state, lane="mutation", status="running",
-                       verdict=recorded_verdict, progress=None)
+                       verdict=recorded_verdict)
         assert run_gate.main(["mutation"]) == 0
         out = capsys.readouterr().out
         assert f"run-gate: verdict artifact: {recorded_verdict}" in out
-        assert "verdict-cw2b_schema.json" not in out   # NOT the live config's
+        assert "verdict-cw2b_schema.json" in out
 
     def test_a_re_attached_run_watches_the_progress_file_the_record_declared(
             self, tmp_path, monkeypatch, capsys):
         repo, proj, log, state = self._fixture(
             tmp_path, monkeypatch, config=self.ASSAY_ARTIFACT_LANE)
-        recorded_progress = tmp_path / "that-runs-progress.jsonl"
+        recorded_progress = proj / ".assay" / \
+            "progress-cw2b_schema.jsonl"
+        recorded_progress.parent.mkdir(parents=True, exist_ok=True)
         write_progress(recorded_progress, candidate(41))
         monkeypatch.setattr(run_gate, "PROGRESS_POLL_SECONDS", 0.2)
         observed = threading.Event()
@@ -14173,7 +14204,7 @@ class TestInflightRecordDecisions:
         monkeypatch.setattr(run_gate.ProgressWatch, "poll",
                             observe_recorded_progress)
         plant_inflight(proj, repo, state, lane="mutation", status="running",
-                       verdict=None, progress=str(recorded_progress))
+                       progress=str(recorded_progress))
         (state / ".hang").write_text("")
 
         def release():
@@ -14187,64 +14218,34 @@ class TestInflightRecordDecisions:
         out = capsys.readouterr().out
         assert "run-gate: progress mutation: candidate 41/172" in out
 
-    def test_a_recorded_null_progress_falls_back_to_the_config(
+    def test_a_recorded_null_progress_is_malformed_and_refuses(
             self, tmp_path, monkeypatch, capsys):
-        """Review round 2, N-a. PRESENCE of the key used to decide, so a
-        record whose `progress` is present-but-`null` silently disabled the
-        stall watch on every re-attach and follow. A COMMAND lane's own
-        record always writes that `null` (its liveness is `LogStreamWatch`
-        since RG-41, unrelated to this path), so an ASSAY lane's record only
-        reaches this branch the instant a lane's `kind` changes between two
-        invocations — rare, but it used to fail SILENT, which is the shape
-        R-40 exists to end. A record that names no path falls back to the
-        config."""
+        """Schema 2 always names an Assay progress path. A null is corrupt,
+        so recovery must refuse before attaching to the container."""
         repo, proj, log, state = self._fixture(
             tmp_path, monkeypatch, config=self.ASSAY_ARTIFACT_LANE)
-        monkeypatch.setattr(run_gate, "PROGRESS_POLL_SECONDS", 0.2)
-        configured_progress = proj / ".assay" / \
-            "progress-cw2b_schema.jsonl"
-        write_progress(configured_progress, candidate(41))
-        observed = threading.Event()
-        original_poll = run_gate.ProgressWatch.poll
-
-        def observe_configured_progress(watch):
-            result = original_poll(watch)
-            if watch.path == configured_progress:
-                observed.set()
-            return result
-
-        monkeypatch.setattr(run_gate.ProgressWatch, "poll",
-                            observe_configured_progress)
         plant_inflight(proj, repo, state, lane="mutation", status="running",
                        progress=None)
-        (state / ".hang").write_text("")
+        assert run_gate.main(["mutation"]) == 2
+        assert "valid progress path" in capsys.readouterr().err
+        assert lane_runs(log) == []
 
-        def release():
-            observed.wait(5.0)
-            (state / ".hang").unlink(missing_ok=True)
-
-        releaser = threading.Thread(target=release, daemon=True)
-        releaser.start()
-        assert run_gate.main(["mutation"]) == 0
-        releaser.join(timeout=10)
-        assert "run-gate: progress mutation: candidate 41/172" in \
-            capsys.readouterr().out
-
-    def test_a_pre_rev_34_record_without_the_keys_falls_back_to_the_config(
+    def test_a_pre_rev_34_record_schema_is_refused_without_guessing(
             self, tmp_path, monkeypatch, capsys):
-        """A record written before rev 34 named no artifacts at all and must
-        still get the config's answer. Since N-a a recorded `null` is the
-        same answer — "this record names no path" — rather than "there is no
-        path"."""
+        """An old record has no schema-2 artifact contract; do not infer
+        paths from today's config when deciding what its run judged."""
         repo, proj, log, state = self._fixture(
             tmp_path, monkeypatch, config=self.ASSAY_ARTIFACT_LANE)
         record = plant_inflight(proj, repo, state, lane="mutation",
                                status="running")
         payload = json.loads(record.read_text())
+        payload["schema"] = 1
         del payload["verdict"], payload["progress"]
         record.write_text(json.dumps(payload))
-        assert run_gate.main(["mutation"]) == 0
-        assert "verdict-cw2b_schema.json" in capsys.readouterr().out
+        before = record.read_bytes()
+        assert run_gate.main(["mutation"]) == 2
+        assert "declares schema 1" in capsys.readouterr().err
+        assert record.read_bytes() == before
 
     def test_a_docker_failure_that_is_not_gone_leaves_the_record_alone(
             self, tmp_path, monkeypatch, capsys):
@@ -15954,9 +15955,9 @@ class TestInflightRecordStore:
         lane = {"kind": "assay", "assay_lane": "sql_mutation",
                 "assay_command": ["./a.pyz"]}
         verdict, progress, state_dir = run_gate.assay_artifact_paths(
-            lane, Path("/p"), Path("/repo"))
-        assert verdict == "/p/.assay/verdict-sql_mutation.json"
-        assert progress == "/p/.assay/progress-sql_mutation.jsonl"
+            lane, Path("/repo/p"), Path("/repo"))
+        assert verdict == "/repo/p/.assay/verdict-sql_mutation.json"
+        assert progress == "/repo/p/.assay/progress-sql_mutation.jsonl"
         assert state_dir == "/repo/.run-gate/assay-state/p"
         assert run_gate.assay_artifact_paths(
             {"kind": "command"}, Path("/p"), Path("/repo")) == (None, None, None)
@@ -15966,7 +15967,7 @@ class TestInflightRecordStore:
             "_assay_identity_mode": "artifact",
             "_started_monotonic": time.monotonic(),
             "dirty": False, "git_operation": None, "commit": "a" * 40,
-            "verdict": "PASS",
+            "verdict": "PASS", "excluded_reason": None,
         }
         finished = run_gate.finish_run_record(record, exit_code=0)
         assert "_assay_identity_mode" not in finished
@@ -15974,9 +15975,9 @@ class TestInflightRecordStore:
 
     @pytest.mark.parametrize(
         ("lane", "expected"),
-        [({"kind": "assay", "assay_lane": "unit"}, "source"),
+        [({"kind": "assay", "assay_lane": "unit", "environment": "runner"}, "source"),
          ({"kind": "assay", "assay_lane": "unit",
-           "assay_command": ["assay"]}, "artifact")])
+           "assay_command": ["assay"], "environment": "runner"}, "artifact")])
     def test_container_inflight_record_names_assay_identity_mode(
             self, tmp_path, monkeypatch, lane, expected):
         repo = make_repo(tmp_path)
@@ -16007,7 +16008,8 @@ class TestInflightRecordStore:
     def test_fresh_launch_failure_cannot_reuse_stale_pass_but_attach_keeps_it(
             self, tmp_path, monkeypatch):
         repo = make_repo(tmp_path)
-        lane = {"kind": "assay", "assay_lane": "unit"}
+        lane = {"kind": "assay", "assay_lane": "unit",
+                "environment": "runner"}
         verdict, _progress, _state_dir = run_gate.assay_artifact_paths(
             lane, repo, repo)
         verdict_path = Path(verdict)
@@ -16242,8 +16244,8 @@ class TestFreshFlagScope:
         """)
         assert run_gate.main(["suite", "--fresh"]) == 2
         err = capsys.readouterr().err
-        assert "host-mode environment 'suite'" in err
-        assert "nothing to re-attach to or replace" in err
+        assert "--fresh applies only to an ephemeral-container lane" in err
+        assert "lane 'suite' does not use one" in err
 
     def test_a_host_lane_no_longer_refuses_it(self, tmp_path, monkeypatch):
         """RG-43 (rev 36): 'host' now routes through run_container_lane(),
@@ -16265,7 +16267,8 @@ class TestFreshFlagScope:
     def test_an_exec_lane_refuses_it(self, tmp_path, monkeypatch, capsys):
         self._project(tmp_path, monkeypatch, EXEC_LANE)
         assert run_gate.main(["suite", "--fresh"]) == 2
-        assert "exec-mode environment" in capsys.readouterr().err
+        assert "--fresh applies only to an ephemeral-container lane" \
+            in capsys.readouterr().err
 
     def test_the_usage_text_documents_it(self, tmp_path, monkeypatch, capsys):
         self._project(tmp_path, monkeypatch)
@@ -21458,7 +21461,7 @@ class TestDispatchOptionRefusals:
          "either the positional footprint query lane"),
         (["suite", "--rejudge-outcome", "FAIL"],
          "requires at least one --rejudge ID"),
-        (["doctor", "--json"], "honored by the `history`/`footprint`"),
+        (["doctor", "--json"], "honored by the `history`/`footprint`/`status"),
         (["suite", "--write"], "honored by the `footprint` verb only"),
         (["doctor", "--lock-wait", "1m"], "applies to a lane run only"),
         (["validate-pointers"], "requires the consumer file to certify"),
@@ -21933,16 +21936,19 @@ class TestClosedDispatcherAndMigrationOracles:
 
 class TestDispatchAssayEvidenceAndAdmissionOracles:
     @staticmethod
-    def _project(tmp_path, monkeypatch, *, admission=False, repo=None):
+    def _project(tmp_path, monkeypatch, *, admission=False, repo=None,
+                 mode="host"):
         policy = ('[admission]\nenabled = true\nticket_image = "ticket:v1"\n'
                   if admission else "")
+        image = 'image = "runner:v1"\n' if mode == "ephemeral" else ""
         repo = repo or make_repo(tmp_path)
         (repo / ".run-gate").mkdir(exist_ok=True)
         project = make_project(repo, f"""\
             schema_version = 1
             {policy}
             [environments.local]
-            mode = "host"
+            mode = "{mode}"
+            {image}
             [lanes.unit]
             kind = "assay"
             environment = "local"
@@ -22017,7 +22023,7 @@ class TestDispatchAssayEvidenceAndAdmissionOracles:
     def test_malformed_inflight_contract_refuses_before_enabled_admission(
             self, tmp_path, monkeypatch):
         _repo, project, _record, _verdict, _progress = self._project(
-            tmp_path, monkeypatch, admission=True)
+            tmp_path, monkeypatch, admission=True, mode="ephemeral")
         record_path = run_gate.inflight_path(project, "unit")
         record_path.parent.mkdir(parents=True)
         record_path.write_text(json.dumps({"schema": 2,
@@ -22041,7 +22047,8 @@ class TestDispatchAssayEvidenceAndAdmissionOracles:
             enabled = true
             ticket_image = "ticket:v1"
             [environments.local]
-            mode = "host"
+            mode = "ephemeral"
+            image = "runner:v1"
             [lanes.gate]
             kind = "sequence"
             lanes = ["unit"]
@@ -22066,7 +22073,6 @@ class TestDispatchAssayEvidenceAndAdmissionOracles:
 
         assert result.verdict == "ERROR"
         assert "assay_identity_mode" in result.reason
-        assert "current lane environment cannot use --fresh" in result.reason
 
     def test_unknown_schema_on_host_lane_gives_lifecycle_recovery(
             self, tmp_path, monkeypatch):
@@ -23822,8 +23828,9 @@ class TestFinalChangedLineCoverageOracles:
 
     def test_promoted_follower_keeps_mode_until_dispatch_parses_verdict(
             self, tmp_path, monkeypatch):
-        _repo, project, record, verdict, _progress = self._project(
-            tmp_path, monkeypatch)
+        _repo, project, record, verdict, _progress = \
+            TestDispatchAssayEvidenceAndAdmissionOracles._project(
+                tmp_path, monkeypatch)
         provenance = {
             "name": "assay", "version": "8.0.0",
             "artifact": "assay.pyz", "digest_algorithm": "sha256",
@@ -23875,8 +23882,9 @@ class TestFinalChangedLineCoverageOracles:
 
     def test_promoted_source_follower_history_uses_parsed_verdict(
             self, tmp_path, monkeypatch):
-        _repo, project, record, verdict, progress = self._project(
-            tmp_path, monkeypatch)
+        _repo, project, record, verdict, progress = \
+            TestDispatchAssayEvidenceAndAdmissionOracles._project(
+                tmp_path, monkeypatch)
         pending = {
             "schema": 2, "runner": "container", "container": "runner",
             "assay_identity_mode": "source",
