@@ -6836,3 +6836,19 @@ ruling's preflight, memory PSI full avg10 was 0.00 and two pre-existing tester
 containers were running; they were inspected only and left untouched. Run the
 registered package gates on a committed exact tip, then ask the same Sol
 reviewer for fix verification.
+
+### RW-451 — 2026-10-05 17:14:08 UTC — lock/deployment docs fix passes exact-tree R0/R1
+
+The first detached wrapper attempt for `r0-r1` exited without a log, gate
+container, or verdict; it did not run tests and is not a failure. The lane was
+restarted as a tracked foreground command on commit
+`d8056454e1723b948a2591a5ac4ae3ce70c1c8ea`. At +90s the exact 3-CPU
+`cgprofile-gate-1866324-1791220221` was running in `dev-gates.slice`; pytest
+was at 79% and memory PSI full avg10 was 0.00. It completed in 132.44s with
+2,348 tests passing and 100% line and branch coverage for every module. The
+separate run-gate history verdict is PASS, exit 0, `dirty:false`,
+`history_eligible:true`, run `bc0c3e6c390907394d1735190e150cb1`. Because this
+ruling changes the controller log in the judged worktree, that commit-bound
+receipt no longer qualifies the new tree; after committing this ruling, rerun
+the required short gates and then request Sol fix verification. R3 is still
+pending.
