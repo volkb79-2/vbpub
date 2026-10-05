@@ -30,6 +30,7 @@ dispatch, `--yes` availability, and Markdown reference generation:
 
 ```python
 import argparse
+from pathlib import Path
 
 from cli_extended import (
     ArgumentSpec,
@@ -40,10 +41,13 @@ from cli_extended import (
     VerbSpec,
 )
 
-identity = CliIdentity.from_distribution(
+# Installed distribution and/or a checked-in VERSION file (absolute path);
+# when both exist they must agree, and there is never a fallback version.
+identity = CliIdentity.resolve(
     name="EXAMPLE",
     command="example",
     distribution="example-tool",  # replace with this CLI's installed distribution
+    version_file=Path(__file__).resolve().parent / "VERSION",
     long_name="Example Operator Tool",
 )
 
@@ -55,6 +59,8 @@ def status(args: argparse.Namespace, runtime) -> None:
 
 def apply(args: argparse.Namespace, runtime) -> None:
     # A real handler loads and validates its complete change before consent.
+    # With --dry-run, confirm() prints "Dry run: no changes made." and returns
+    # False without prompting, so this gate makes the handler dry-run-safe.
     if not runtime.confirm(f"Apply {args.path} to production?"):
         return
     # A real handler performs exactly the confirmed domain mutation here.
@@ -67,6 +73,7 @@ cli = CliRegistry(
     description="Inspect state and apply reviewed changes.",
     getting_started=("example status",),
     logging_logger="example",
+    unexpected_exceptions="report",  # bugs become "[ERROR] unexpected ..."; --traceback re-raises
 )
 cli.register(
     VerbSpec(
@@ -99,6 +106,7 @@ cli.register(
         description="apply a validated change",
         group=VerbGroup.MODIFICATION.value,
         mutating=True,
+        dry_run=True,
         examples=("example apply reviewed-change.json",),
         arguments=(ArgumentSpec("path", "change file", metavar="FILE"),),
         handler=apply,
@@ -124,6 +132,13 @@ The default `None` keeps the existing rule that mutating verbs require
 confirmation. `True` explicitly requires confirmation and is valid only on a
 mutating verb. Existing consumers may continue using `include_confirmation`;
 when both fields are set, they must agree.
+`VerbSpec(mutating=True, dry_run=True)` adds a library-owned `--dry-run`: it
+sets `runtime.dry_run`, and `runtime.confirm()` then declines without prompting
+(see the `apply` handler above). `CliIdentity.resolve()` checks an installed
+distribution and a version file against each other, and
+`unexpected_exceptions="report"` turns unexpected exceptions into a one-line
+error with a `--traceback` escape hatch. The reasons are in the
+[design guide](docs/DESIGN-GUIDE.md#version-sources-must-agree-and-failures-must-be-explicit).
 Handlers may return `None` for success; `RegisteredCli.run()` converts that to
 process status `0`. Prefer this shared behavior over repeating `return 0` in
 each successful handler. Return a status explicitly only when the command has

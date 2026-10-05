@@ -19,6 +19,18 @@ tool's package metadata, declared version module, or another checked-in source
 of truth. A CLI must not invent a fallback version that can silently become
 false.
 
+`CliIdentity.resolve(name=, long_name=, command=, distribution=,
+version_file=)` is the shared resolver for a CLI that has an installed
+distribution, a checked-in version file, or both. At least one source is
+required (`ValueError` otherwise) and a `version_file` must be an absolute
+path. Every given source is consulted: a distribution that is not installed or
+a version file that does not exist is "unresolved", while a version file whose
+stripped content is not `MAJOR.MINOR.PATCH` with an optional `-`/`+`/`.`
+suffix is an error. When both sources resolve they must agree; a disagreement
+raises `VersionLookupError` naming both sources and values. When none resolve,
+`VersionLookupError` lists every source tried. There is never a literal
+fallback.
+
 The first line of every human-facing help or usage document is the product's
 short name, version, and long name:
 
@@ -252,6 +264,14 @@ secrets may be exposed and must not be copied into shared logs. Raw mode must
 remain opt-in per invocation; it must not be enabled by a persistent default,
 ordinary debug environment variable, or a config-file default.
 
+`--traceback` exists only when the registry sets `unexpected_exceptions="report"`
+(see section 6). It is a library-owned DEBUGGING option accepted before or
+after the verb, exactly like `--debug-raw`. When given, an unexpected
+exception is re-raised unchanged instead of being reported. In the default
+`"raise"` policy the option does not exist and is a usage error (exit `2`).
+A consumer must not declare its own `--traceback` in `"report"` mode;
+`build()` refuses it with `ValueError`.
+
 ### Severity and verbosity
 
 Human-readable diagnostic and progress messages use a small, stable severity
@@ -335,6 +355,20 @@ The shared confirmation helper may own default-no prompting, TTY refusal, and
 EOF handling, but the CLI owner must validate the exact target/change first
 and call confirmation immediately before making that change.
 
+`--dry-run` is a library-owned CONFIRMATION option added to a verb declared
+with `VerbSpec(mutating=True, dry_run=True)`; `dry_run=True` without
+`mutating=True` raises `ValueError`. It behaves like `--json` in every
+respect: the root parser accepts it before the verb when any verb has it, and
+a verb without it refuses it with exit `2` and that verb's help (before the
+verb with `--dry-run is not supported for verb 'x'`). It sets
+`runtime.dry_run`. While `runtime.dry_run` is true, `runtime.confirm()` is
+checked first: it never prompts, never reads stdin and never honors `--yes`;
+it emits `Dry run: no changes made.` (info, forced) and returns `False`, so a
+handler that gates its mutation on `confirm()` is dry-run-safe. A handler
+still owns any preview output it wants to print before calling `confirm()`.
+When any verb uses `dry_run=True`, a consumer option declaring `--dry-run`
+is refused at `build()`; otherwise a consumer's own `--dry-run` stays legal.
+
 The normal interactive prompt must clearly state what will change. A declined
 prompt and an intentional Ctrl-C are clean cancellations, not tracebacks.
 When stdin is not interactive, a command must not attempt a prompt that will
@@ -416,6 +450,15 @@ The CLI distinguishes expected operator errors from programming failures.
   programming or environment failure and may print its traceback to stderr.
   This distinction must not be hidden by a broad `except Exception` that turns
   every bug into an uninformative message.
+- The registry's `unexpected_exceptions` policy chooses what happens to an
+  exception that is not handled by the boundary. `"raise"` (the default)
+  keeps the behavior above. `"report"` renders it as
+  `[ERROR] unexpected <Type>: <message>` with the hint
+  `rerun with --traceback to see the stack`, exits `1`, and adds the
+  library-owned `--traceback` option, which re-raises the original exception.
+  Any other value is a `ValueError`. A delegated CLI must use the same policy
+  as its parent. `CliRegistry(expected_exceptions=...)` and the
+  `expected_exceptions=` argument of `run()` are unioned.
 - `--debug` may add diagnostic context for handled failures, but normal
   operation still uses the same meaningful error and exit status. It does not
   authorize raw tracebacks for exceptions the CLI has deliberately handled.
