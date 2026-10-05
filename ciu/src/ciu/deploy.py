@@ -3791,13 +3791,24 @@ def _check_stack_config(
         )
 
     if rendered_compose is not None:
+        import yaml
+
         try:
-            rendered_compose = engine.scope_worktree_compose_images(
-                repo_root, rendered_compose
-            )
-        except (RuntimeError, ValueError) as exc:
-            report.fail("compose-render", f"[CIU-117] {exc}", stack=rel)
-            rendered_compose = None
+            yaml.safe_load(rendered_compose)
+        except yaml.YAMLError:
+            # Keep malformed YAML on the established per-stack validation
+            # path below. In particular, validate_consumption records it as a
+            # finding and continues checking later stacks; image scoping must
+            # not turn that report into an early abort.
+            pass
+        else:
+            try:
+                rendered_compose = engine.scope_worktree_compose_images(
+                    repo_root, rendered_compose
+                )
+            except (RuntimeError, ValueError) as exc:
+                report.fail("compose-render", f"[CIU-117] {exc}", stack=rel)
+                rendered_compose = None
 
     # ---- stages 8 + 9: hooks load + validate_config preflight (S9) ----
     _check_hooks_for_stack(
