@@ -219,9 +219,9 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   containing this run-gate process, resolving its cgroup v2 path from
   `/proc/self/cgroup`. An increment in either counter forces ERROR regardless
   of the lane's raw status, retaining that status as `exit_code`. If the
-  counters cannot be read, the cgroup changes, or either counter moves
-  backwards, run-gate returns an infrastructure ERROR rather than claiming a
-  clean lane. Dry runs do not sample counters.
+  post-lane counters cannot be read, the cgroup changes, or either counter
+  moves backwards, run-gate returns infrastructure ERROR and retains the raw
+  status when it was available. Dry runs do not sample counters.
 - `R-05` The tool prints, before executing: the selected project config path
   (`run-gate: config: <path>`), revision, lane name, environment source,
   resolved slice + its source (on exec lanes this is naming-only disclosure

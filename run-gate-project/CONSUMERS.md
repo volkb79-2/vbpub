@@ -237,9 +237,9 @@ For each real lane, run-gate compares the `pids.events` `max` and
 process. A counter increase forces ERROR/2 even when the raw lane command
 returns zero; `--json` retains that raw status in `exit_code`. If the cgroup
 path or counters cannot be read, run-gate returns an infrastructure ERROR
-instead of certifying an unobserved run. `--dry-run` does not read or change
-these counters. The read-only `--version` operation remains available when
-run-gate is PID 1.
+instead of certifying an unobserved run, retaining any raw status already
+known. `--dry-run` does not read or change these counters. The read-only
+`--version` operation remains available when run-gate is PID 1.
 
 An older config can be migrated without reserializing its TOML or dropping
 comments:

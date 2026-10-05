@@ -24358,9 +24358,11 @@ def test_cgroup_event_guard_detects_moved_and_decreasing_counters(tmp_path):
         proc.write_text("0::/other\n")
         return 0
 
-    with pytest.raises(run_gate.GateInfraError, match="moved from cgroup"):
+    with pytest.raises(run_gate.LaneCgroupEventError,
+                       match="moved from cgroup") as moved_error:
         run_gate.run_lane_with_cgroup_event_guard(
             "moved", move_cgroup, proc_cgroup=proc, cgroup_root=root)
+    assert moved_error.value.lane_exit_code == 0
 
     proc.write_text("0::/worker\n")
     (current / "pids.events").write_text("max 2\n")
@@ -24369,10 +24371,28 @@ def test_cgroup_event_guard_detects_moved_and_decreasing_counters(tmp_path):
         (current / "pids.events").write_text("max 1\n")
         return 0
 
-    with pytest.raises(run_gate.GateInfraError, match="moved backwards"):
+    with pytest.raises(run_gate.LaneCgroupEventError,
+                       match="moved backwards") as backwards_error:
         run_gate.run_lane_with_cgroup_event_guard(
             "decreased", decrease_counter,
             proc_cgroup=proc, cgroup_root=root)
+    assert backwards_error.value.lane_exit_code == 0
+
+
+def test_cgroup_event_guard_preserves_raw_status_when_after_read_fails(
+        tmp_path):
+    proc, root, current = _cgroup_event_fixture(tmp_path)
+
+    def lane_removes_event_file():
+        (current / "memory.events").unlink()
+        return 0
+
+    with pytest.raises(run_gate.LaneCgroupEventError,
+                       match="events could not be read after execution") as caught:
+        run_gate.run_lane_with_cgroup_event_guard(
+            "unreadable-after", lane_removes_event_file,
+            proc_cgroup=proc, cgroup_root=root)
+    assert caught.value.lane_exit_code == 0
 
 
 def test_cgroup_event_guard_overrides_lane_error_but_preserves_raw_code(

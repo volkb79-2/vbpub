@@ -648,16 +648,19 @@ def _cgroup_event_error(before: CgroupEventSnapshot,
                         after: CgroupEventSnapshot, lane_name: str,
                         exit_code: int | None) -> LaneCgroupEventError | None:
     if before.cgroup != after.cgroup:
-        raise GateInfraError(
+        return LaneCgroupEventError(
+            exit_code,
             f"lane {lane_name!r}: run-gate moved from cgroup "
             f"{before.cgroup!r} to {after.cgroup!r} during execution; "
-            "resource events could not be compared")
+            "resource events could not be compared; lane verdict forced to ERROR")
     pids_delta = after.pids_max - before.pids_max
     oom_delta = after.oom_kill - before.oom_kill
     if pids_delta < 0 or oom_delta < 0:
-        raise GateInfraError(
+        return LaneCgroupEventError(
+            exit_code,
             f"lane {lane_name!r}: cgroup event counters moved backwards "
-            "during execution; resource events could not be compared")
+            "during execution; resource events could not be compared; "
+            "lane verdict forced to ERROR")
     if not pids_delta and not oom_delta:
         return None
     details = []
@@ -671,6 +674,18 @@ def _cgroup_event_error(before: CgroupEventSnapshot,
         f"({'; '.join(details)}; lane verdict forced to ERROR)")
 
 
+def _read_cgroup_events_after_lane(
+        lane_name: str, exit_code: int | None, proc_cgroup: Path,
+        cgroup_root: Path) -> CgroupEventSnapshot:
+    try:
+        return read_current_cgroup_events(proc_cgroup, cgroup_root)
+    except GateInfraError as exc:
+        raise LaneCgroupEventError(
+            exit_code,
+            f"lane {lane_name!r}: cgroup resource events could not be read "
+            f"after execution ({exc}; lane verdict forced to ERROR)") from exc
+
+
 def run_lane_with_cgroup_event_guard(
         lane_name: str, runner: Callable[[], int], *, enabled: bool = True,
         proc_cgroup: Path = Path("/proc/self/cgroup"),
@@ -682,15 +697,17 @@ def run_lane_with_cgroup_event_guard(
     try:
         exit_code = runner()
     except Exception as exc:
-        after = read_current_cgroup_events(proc_cgroup, cgroup_root)
         lane_exit_code = (exc.exit_code
                           if isinstance(exc, GateBudgetExceeded) else None)
+        after = _read_cgroup_events_after_lane(
+            lane_name, lane_exit_code, proc_cgroup, cgroup_root)
         event_error = _cgroup_event_error(
             before, after, lane_name, lane_exit_code)
         if event_error is not None:
             raise event_error from exc
         raise
-    after = read_current_cgroup_events(proc_cgroup, cgroup_root)
+    after = _read_cgroup_events_after_lane(
+        lane_name, exit_code, proc_cgroup, cgroup_root)
     event_error = _cgroup_event_error(before, after, lane_name, exit_code)
     if event_error is not None:
         raise event_error

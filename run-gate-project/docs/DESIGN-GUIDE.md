@@ -73,9 +73,10 @@ OOM kill may look like a test failure. run-gate compares the same cgroup's
 v2 `pids.events:max` and `memory.events:oom_kill` counters immediately before
 and after each real lane. Those monotone kernel counters identify resource
 events without parsing test output. Any increment forces ERROR/2 and retains
-the lane's raw status for diagnosis. Unreadable or inconsistent counters also
-produce ERROR because run-gate cannot certify the run. A dry run starts no
-lane and does not sample these counters.
+the lane's raw status for diagnosis. Unreadable or inconsistent post-lane
+counters also produce ERROR and retain the raw status when available, because
+run-gate cannot certify the run. A dry run starts no lane and does not sample
+these counters.
 
 ## Preflight probes preserve lane context
 
