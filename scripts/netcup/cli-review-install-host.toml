@@ -1,2 +1,1016 @@
 schema_version = 1
 cli_id = "install-host"
+
+[[cases]]
+id = "case:route:entrypoint:install-host/attach/minimum"
+state = "active"
+decision = "refuse"
+reviewed_signature = "sha256:7e1db8698d723f41716f7f57280bb3c7e5e3dd704ee6acc3c3c49c9b150a841f"
+rationale = "attach has no Netcup API fallback for the host address: without --ssh-host (or NETCUP_SCP_API_SSH_HOST) there is nothing to attach to, so it refuses with a usage error instead of guessing a host."
+invocation = ["attach"]
+expected_exit_status = 2
+expected_stdout_contains = ""
+expected_stderr_contains = "attach requires --ssh-host or NETCUP_SCP_API_SSH_HOST"
+effects = ["Refuses before any SSH, key or API activity; starts no follower and makes no request."]
+test_ids = ["tests/test_cli_cases_install_host.py::test_replayed_case_matches_catalog[attach-minimum]"]
+
+[[cases]]
+id = "case:route:entrypoint:install-host/attach/option-spelling/option:route:entrypoint:install-host/attach/--attach-initial-delay/--attach-initial-delay"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:b1c48d5db2a022f4ba74bc053474095eec606a9bc25422b07b5c6ec5594c8a82"
+rationale = "Delays the first SSH probe so a host that is still rebooting is not probed immediately; a finite number greater than zero, defaulting to install-host.toml."
+invocation = ["attach", "--ssh-host", "192.0.2.10", "--attach-initial-delay", "1.5"]
+expected_exit_status = 130
+expected_stdout_contains = "[attach] Streaming until Ctrl-C."
+expected_stderr_contains = "Cancelled."
+effects = ["Starts the SSH log follower with a 1.5 second initial delay and streams until interrupted; makes no Netcup API call."]
+test_ids = ["tests/test_cli_cases_install_host.py::test_replayed_case_matches_catalog[attach-attach-initial-delay]"]
+
+[[cases]]
+id = "case:route:entrypoint:install-host/attach/option-spelling/option:route:entrypoint:install-host/attach/--attach-max-wait-seconds/--attach-max-wait-seconds"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:2f39ca7623ec4af7219664037ba70c607a5ef3af1be879787984118e26455bf0"
+rationale = "Bounds how long the follower waits for SSH to become reachable before giving up; a finite number greater than zero, defaulting to install-host.toml."
+invocation = ["attach", "--ssh-host", "192.0.2.10", "--attach-max-wait-seconds", "90"]
+expected_exit_status = 130
+expected_stdout_contains = "[attach] Streaming until Ctrl-C."
+expected_stderr_contains = "Cancelled."
+effects = ["Starts the SSH log follower with a 90 second reachability bound and streams until interrupted; makes no Netcup API call."]
+test_ids = ["tests/test_cli_cases_install_host.py::test_replayed_case_matches_catalog[attach-attach-max-wait-seconds]"]
+
+[[cases]]
+id = "case:route:entrypoint:install-host/attach/option-spelling/option:route:entrypoint:install-host/attach/--attach-task-uuid/--attach-task-uuid"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:4ad695e3ff32d1ffa1447496c07981b0efc6c4d2aa505921c6055c93fc72da6a"
+rationale = "Names the local capture files for this attach session; free text, defaulting to an attach-only timestamp so two sessions do not share capture files."
+invocation = ["attach", "--ssh-host", "192.0.2.10", "--attach-task-uuid", "task-7"]
+expected_exit_status = 130
+expected_stdout_contains = "[attach] Streaming until Ctrl-C."
+expected_stderr_contains = "Cancelled."
+effects = ["Starts the SSH log follower labelled task-7 for its local capture files and streams until interrupted; makes no Netcup API call."]
+test_ids = ["tests/test_cli_cases_install_host.py::test_replayed_case_matches_catalog[attach-attach-task-uuid]"]
+
+[[cases]]
+id = "case:route:entrypoint:install-host/attach/option-spelling/option:route:entrypoint:install-host/attach/--debug-raw/--debug-raw"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:bf231712a0bbbb73f7fb37eb8475822aab90469798a0efd1e4c8a5a6520ce922"
+rationale = "The shared raw-diagnostics escape hatch is available on attach; it warns on stderr that secrets may be exposed and is off unless asked for."
+invocation = ["attach", "--ssh-host", "192.0.2.10", "--debug-raw"]
+expected_exit_status = 130
+expected_stdout_contains = "[attach] Streaming until Ctrl-C."
+expected_stderr_contains = "--debug-raw is active"
+effects = ["Starts the SSH log follower and streams until interrupted with redaction disabled and a warning on stderr; makes no Netcup API call."]
+test_ids = ["tests/test_cli_cases_install_host.py::test_debug_raw_warns_and_is_off_by_default[attach]"]
+
+[[cases]]
+id = "case:route:entrypoint:install-host/attach/option-spelling/option:route:entrypoint:install-host/attach/--poll-interval/--poll-interval"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:20f5a9c6f6270bc6a4f1a9a2ee82dca79d88709bf087a13d79f10b80ca3dcefa"
+rationale = "Sets the retry interval for SSH attachment; a finite number greater than zero, defaulting to install-host.toml."
+invocation = ["attach", "--ssh-host", "192.0.2.10", "--poll-interval", "2.5"]
+expected_exit_status = 130
+expected_stdout_contains = "[attach] Streaming until Ctrl-C."
+expected_stderr_contains = "Cancelled."
+effects = ["Starts the SSH log follower retrying every 2.5 seconds and streams until interrupted; makes no Netcup API call."]
+test_ids = ["tests/test_cli_cases_install_host.py::test_replayed_case_matches_catalog[attach-poll-interval]"]
+
+[[cases]]
+id = "case:route:entrypoint:install-host/attach/option-spelling/option:route:entrypoint:install-host/attach/--simulate-disconnect-seconds/--simulate-disconnect-seconds"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:6e4d66241287406588b48c128c66748803b623437e3e2e9c4ecd70e7e897e1e9"
+rationale = "A documented testing aid that forces one SSH reconnect after the given number of seconds so the reconnect path can be exercised; it never runs unless asked for."
+invocation = ["attach", "--ssh-host", "192.0.2.10", "--simulate-disconnect-seconds", "5"]
+expected_exit_status = 130
+expected_stdout_contains = "[attach] Streaming until Ctrl-C."
+expected_stderr_contains = "Cancelled."
+effects = ["Starts the SSH log follower, which drops and re-establishes its own SSH connection after 5 seconds; makes no Netcup API call."]
+test_ids = ["tests/test_cli_cases_install_host.py::test_replayed_case_matches_catalog[attach-simulate-disconnect-seconds]"]
+
+[[cases]]
+id = "case:route:entrypoint:install-host/attach/option-spelling/option:route:entrypoint:install-host/attach/--ssh-host/--ssh-host"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:aec0d7fdd91296678963075cecf91b8148b69da17ff3c5d0f6bb13186d4f9631"
+rationale = "The host to attach to is required here and may instead come from NETCUP_SCP_API_SSH_HOST; the flag wins over the environment."
+invocation = ["attach", "--ssh-host", "192.0.2.10"]
+expected_exit_status = 130
+expected_stdout_contains = "[attach] Streaming until Ctrl-C."
+expected_stderr_contains = "Cancelled."
+effects = ["Starts the SSH log follower for 192.0.2.10 and streams until interrupted; makes no Netcup API call and never creates a key."]
+test_ids = ["tests/test_cli_cases_install_host.py::test_replayed_case_matches_catalog[attach-ssh-host]"]
+
+[[cases]]
+id = "case:route:entrypoint:install-host/attach/option-spelling/option:route:entrypoint:install-host/attach/--ssh-identity-file/--ssh-identity-file"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:da846797f937647cffb24bfb0e6085191fc7c302c2bf4fa43691f2bb1f3d96a7"
+rationale = "attach never creates a key: the named identity must already exist and be a readable private key, otherwise it is refused rather than replaced."
+invocation = ["attach", "--ssh-host", "192.0.2.10", "--ssh-identity-file", "controller-key"]
+expected_exit_status = 130
+expected_stdout_contains = "[attach] Streaming until Ctrl-C."
+expected_stderr_contains = "Cancelled."
+effects = ["Validates that the named key exists and is readable, then starts the follower with it and streams until interrupted; never generates or overwrites a key."]
+test_ids = ["tests/test_cli_cases_install_host.py::test_replayed_case_matches_catalog[attach-ssh-identity-file]"]
+
+[[cases]]
+id = "case:route:entrypoint:install-host/attach/option-spelling/option:route:entrypoint:install-host/attach/--ssh-user/--ssh-user"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:0a78bc402a24f6f57fffc887a1e995f5a3bc76db668c35a9a1548b45fc66aaf9"
+rationale = "Sets the SSH login user for the follower; defaults to install-host.toml or NETCUP_SCP_API_SSH_USER."
+invocation = ["attach", "--ssh-host", "192.0.2.10", "--ssh-user", "ops"]
+expected_exit_status = 130
+expected_stdout_contains = "[attach] Streaming until Ctrl-C."
+expected_stderr_contains = "Cancelled."
+effects = ["Starts the SSH log follower logging in as ops and streams until interrupted; makes no Netcup API call."]
+test_ids = ["tests/test_cli_cases_install_host.py::test_replayed_case_matches_catalog[attach-ssh-user]"]
+
+[[cases]]
+id = "case:route:entrypoint:install-host/configure/exclusive-conflict/task-monitor-mode/option:route:entrypoint:install-host/configure/--monitor/option:route:entrypoint:install-host/configure/--no-monitor"
+state = "active"
+decision = "refuse"
+reviewed_signature = "sha256:b9cd69fc0eee3ea842c857581248e8a9389f040c86f6ae8b10b7365a0aa7a803"
+rationale = "--monitor and --no-monitor contradict each other, so argparse refuses the pair instead of letting one silently win."
+invocation = ["configure", "--dry-run", "--yes", "--monitor", "--no-monitor"]
+expected_exit_status = 2
+expected_stdout_contains = ""
+expected_stderr_contains = "not allowed with argument --monitor"
+effects = ["Refuses during argument parsing; reads no credentials and makes no request."]
+test_ids = ["tests/test_cli_cases_install_host.py::test_replayed_case_matches_catalog[configure-conflict-monitor]"]
+
+[[cases]]
+id = "case:route:entrypoint:install-host/configure/exclusive-member/task-monitor-mode/option:route:entrypoint:install-host/configure/--monitor"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:319a6a5cf5ddc266de5d9dd074cbacd747acf1d925149959c9d7e6f4aedcdddc"
+rationale = "--monitor alone selects explicit task monitoring after installation; it is one of the two mutually exclusive task-monitor-mode choices."
+invocation = ["configure", "--dry-run", "--yes", "--monitor"]
+expected_exit_status = 0
+expected_stdout_contains = "[dry-run] Preflight OK"
+expected_stderr_contains = ""
+effects = ["Resolves the server, image flavour and account SSH keys with GET requests, prints the plan, and stops before saving or the install POST; monitoring is selected but nothing is started."]
+test_ids = ["tests/test_cli_cases_install_host.py::test_replayed_case_matches_catalog[configure-exclusive-monitor]"]
+
+[[cases]]
+id = "case:route:entrypoint:install-host/configure/exclusive-member/task-monitor-mode/option:route:entrypoint:install-host/configure/--no-monitor"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:dad773d8ee5ab9823299cdde2b65ff20b39849bd3652f8f34733c2dded390662"
+rationale = "--no-monitor alone returns after task creation instead of following the task; it is the other task-monitor-mode choice."
+invocation = ["configure", "--dry-run", "--yes", "--no-monitor"]
+expected_exit_status = 0
+expected_stdout_contains = "[dry-run] Preflight OK"
+expected_stderr_contains = ""
+effects = ["Resolves the server, image flavour and account SSH keys with GET requests, prints the plan, and stops before saving or the install POST."]
+test_ids = ["tests/test_cli_cases_install_host.py::test_replayed_case_matches_catalog[configure-exclusive-no-monitor]"]
+
+[[cases]]
+id = "case:route:entrypoint:install-host/configure/minimum"
+state = "active"
+decision = "refuse"
+reviewed_signature = "sha256:a4363f065dbef5354bcb95d2e0c6c45c0a8318e20cb1d8cc099f82cd3194821f"
+rationale = "configure is the compatibility alias of wizard. Its minimum form is interactive; without a terminal and without a configured or given target it refuses instead of guessing which server to reinstall."
+invocation = ["configure"]
+expected_exit_status = 2
+expected_stdout_contains = "[compat] configure is the interactive installer wizard"
+expected_stderr_contains = "no target server supplied"
+effects = ["Prints the compatibility notice, then refuses before any API request or key work; no mutation."]
+test_ids = ["tests/test_cli_cases_install_host.py::test_replayed_case_matches_catalog[configure-minimum]"]
+
+[[cases]]
+id = "case:route:entrypoint:install-host/configure/option-choice/option:route:entrypoint:install-host/configure/--local-controller-key/66f3d68b76"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:6b247ac57e74a6588549d8fc3df11526db925caa83a9ec7951c7f60bc38cc03c"
+rationale = "remove deletes the local controller key after the declared completion marker, the cleanup-by-default choice."
+invocation = ["configure", "--dry-run", "--yes", "--no-monitor", "--local-controller-key", "remove"]
+expected_exit_status = 0
+expected_stdout_contains = "[dry-run] Preflight OK"
+expected_stderr_contains = ""
+effects = ["Plans the install with removal of the local controller key after completion; the dry-run stops before saving or the install POST."]
+test_ids = ["tests/test_cli_cases_install_host.py::test_replayed_case_matches_catalog[configure-local-controller-key-remove]"]
+
+[[cases]]
+id = "case:route:entrypoint:install-host/configure/option-choice/option:route:entrypoint:install-host/configure/--local-controller-key/689680efe3"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:5cbd91554acd41254e1ca19d90df571eca9746a5c4901570e9d2fa1fe5dda924"
+rationale = "retain keeps the local controller key after the completion marker so the operator can still reach the host."
+invocation = ["configure", "--dry-run", "--yes", "--no-monitor", "--local-controller-key", "retain"]
+expected_exit_status = 0
+expected_stdout_contains = "[dry-run] Preflight OK"
+expected_stderr_contains = ""
+effects = ["Plans the install keeping the local controller key after completion; the dry-run stops before saving or the install POST."]
+test_ids = ["tests/test_cli_cases_install_host.py::test_replayed_case_matches_catalog[configure-local-controller-key-retain]"]
+
+[[cases]]
+id = "case:route:entrypoint:install-host/configure/option-spelling/option:route:entrypoint:install-host/configure/--attach-custom-script/--attach-custom-script"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:c7e723ebef79610563d4ecbd0c901c62ef99763a234b21c8ed558e9221a1f5fb"
+rationale = "Tailing the provider customScript log over SSH while monitoring is already the default; the positive spelling lets a caller state it explicitly."
+invocation = ["configure", "--dry-run", "--yes", "--no-monitor", "--attach-custom-script"]
+expected_exit_status = 0
+expected_stdout_contains = "[dry-run] Preflight OK"
+expected_stderr_contains = ""
+effects = ["Plans the install with customScript log attachment enabled for the monitoring phase; the dry-run stops before saving, the install POST or any monitoring."]
+test_ids = ["tests/test_cli_cases_install_host.py::test_replayed_case_matches_catalog[configure-attach-custom-script]"]
+
+[[cases]]
+id = "case:route:entrypoint:install-host/configure/option-spelling/option:route:entrypoint:install-host/configure/--completion-marker/--completion-marker"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:4eb7857d62252ddaf723ba1d4e792b03d4267b1e06d29856159d25a6ecf4f694"
+rationale = "Declares the absolute remote path the installed host writes when its customScript has finished; a relative path is refused during validation."
+invocation = ["configure", "--dry-run", "--yes", "--no-monitor", "--completion-marker", "/var/tmp/netcup-install-done"]
+expected_exit_status = 0
+expected_stdout_contains = "[dry-run] Preflight OK"
+expected_stderr_contains = ""
+effects = ["Plans the install with the given completion marker for controller-key retention; the dry-run stops before saving or the install POST."]
+test_ids = ["tests/test_cli_cases_install_host.py::test_replayed_case_matches_catalog[configure-completion-marker]"]
+
+[[cases]]
+id = "case:route:entrypoint:install-host/configure/option-spelling/option:route:entrypoint:install-host/configure/--completion-wait-seconds/--completion-wait-seconds"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:c3c7bbe6706f9561b4e551d921ff2b84444126486d42e94eeb1dfc42bad5fcef"
+rationale = "Caps how long monitoring waits for the completion marker; a finite number greater than zero, defaulting to install-host.toml."
+invocation = ["configure", "--dry-run", "--yes", "--no-monitor", "--completion-wait-seconds", "45"]
+expected_exit_status = 0
+expected_stdout_contains = "[dry-run] Preflight OK"
+expected_stderr_contains = ""
+effects = ["Plans the install with a 45 second completion-marker wait; the dry-run stops before saving, the install POST or any monitoring."]
+test_ids = ["tests/test_cli_cases_install_host.py::test_replayed_case_matches_catalog[configure-completion-wait-seconds]"]
+
+[[cases]]
+id = "case:route:entrypoint:install-host/configure/option-spelling/option:route:entrypoint:install-host/configure/--config/--config"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:1a6838a0988cc9722bb0d853a20de0b685fd52378ca9f6d8a8dbe74baf98155c"
+rationale = "In the wizard flow --config names the file the reviewed plan is written to; the dry-run reports the path it would write instead of writing it."
+invocation = ["configure", "--dry-run", "--yes", "--no-monitor", "--config", "reviewed-target.jsonc"]
+expected_exit_status = 0
+expected_stdout_contains = "[dry-run] NOT saving to reviewed-target.jsonc"
+expected_stderr_contains = ""
+effects = ["Resolves the server and flavour with GET requests and reports that it would write reviewed-target.jsonc; writes nothing and sends no install POST."]
+test_ids = ["tests/test_cli_cases_install_host.py::test_replayed_case_matches_catalog[configure-config]"]
+
+[[cases]]
+id = "case:route:entrypoint:install-host/configure/option-spelling/option:route:entrypoint:install-host/configure/--config/--payload"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:b08f4e650b7d1946d068d53b836f0280a0a960744ba2b9b3985d98956b6af8c7"
+rationale = "--payload is the deprecated alias of --config, kept so existing scripts keep working; it resolves to the same setting."
+invocation = ["configure", "--dry-run", "--yes", "--no-monitor", "--payload", "reviewed-target.jsonc"]
+expected_exit_status = 0
+expected_stdout_contains = "[dry-run] NOT saving to reviewed-target.jsonc"
+expected_stderr_contains = ""
+effects = ["Behaves exactly as --config: reports that it would write reviewed-target.jsonc and sends no install POST."]
+test_ids = ["tests/test_cli_cases_install_host.py::test_replayed_case_matches_catalog[configure-payload]"]
+
+[[cases]]
+id = "case:route:entrypoint:install-host/configure/option-spelling/option:route:entrypoint:install-host/configure/--custom-script-file/--custom-script-file"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:a0c236907543fd7842ec60795f200d3cb0a9dfa214a1279d94effb8cd10cf477"
+rationale = "Consumes an opaque customScript command or a producer JSON bundle into the plan; its text is redacted in printed output unless --debug-raw is given."
+invocation = ["configure", "--dry-run", "--yes", "--no-monitor", "--custom-script-file", "custom-script.sh"]
+expected_exit_status = 0
+expected_stdout_contains = "REDACTED customScript (len=28)"
+expected_stderr_contains = ""
+effects = ["Reads the local script file into the plan summary (redacted); the dry-run stops before saving or the install POST."]
+test_ids = ["tests/test_cli_cases_install_host.py::test_replayed_case_matches_catalog[configure-custom-script-file]"]
+
+[[cases]]
+id = "case:route:entrypoint:install-host/configure/option-spelling/option:route:entrypoint:install-host/configure/--debug-raw/--debug-raw"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:8c9de4a479ecfc66f43e8c07724594fed5e8b4da88d00f09f814c5b1b029c300"
+rationale = "The shared raw-diagnostics escape hatch is available on configure; it warns on stderr that secrets may be exposed and is off unless asked for."
+invocation = ["configure", "--dry-run", "--yes", "--no-monitor", "--debug-raw"]
+expected_exit_status = 0
+expected_stdout_contains = "[dry-run] Preflight OK"
+expected_stderr_contains = "--debug-raw is active"
+effects = ["Plans the install with redaction disabled and a warning on stderr; the dry-run stops before saving or the install POST."]
+test_ids = ["tests/test_cli_cases_install_host.py::test_debug_raw_warns_and_is_off_by_default[configure]"]
+
+[[cases]]
+id = "case:route:entrypoint:install-host/configure/option-spelling/option:route:entrypoint:install-host/configure/--dry-run/--dry-run"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:d9025267191a3e985fd5d5dcb7832c666945372c7cd8345083f2de91332df42d"
+rationale = "The library dry-run control: the workflow reads the account and prints the plan, but never saves the config or sends the install POST."
+invocation = ["configure", "--dry-run", "--yes", "--no-monitor"]
+expected_exit_status = 0
+expected_stdout_contains = "[dry-run] Preflight OK. NOT calling POST /api/v1/servers/42/image."
+expected_stderr_contains = ""
+effects = ["Resolves the server, image flavour and account SSH keys with GET requests, prints the plan, and stops before saving or the install POST."]
+test_ids = ["tests/test_cli_cases_install_host.py::test_dry_run_plans_without_mutating[configure]"]
+
+[[cases]]
+id = "case:route:entrypoint:install-host/configure/option-spelling/option:route:entrypoint:install-host/configure/--local-controller-key/--local-controller-key"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:c9197dcac3d6550231e025b4ee7089aab093afaa217f7940f88d17e555c2d8fd"
+rationale = "Chooses whether the local controller key is retained or removed after the completion marker; exactly remove or retain is accepted."
+invocation = ["configure", "--dry-run", "--yes", "--no-monitor", "--local-controller-key", "retain"]
+expected_exit_status = 0
+expected_stdout_contains = "[dry-run] Preflight OK"
+expected_stderr_contains = ""
+effects = ["Plans the install with the chosen key-retention policy; the dry-run stops before saving or the install POST."]
+test_ids = ["tests/test_cli_cases_install_host.py::test_replayed_case_matches_catalog[configure-local-controller-key]"]
+
+[[cases]]
+id = "case:route:entrypoint:install-host/configure/option-spelling/option:route:entrypoint:install-host/configure/--monitor/--monitor"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:d95766d2cfcd8d8c2281c82a1b78f8bd4094adee04ef3be9dc94400c0301fbc0"
+rationale = "Explicitly polls the install task after the wizard installs; mutually exclusive with --no-monitor."
+invocation = ["configure", "--dry-run", "--yes", "--monitor"]
+expected_exit_status = 0
+expected_stdout_contains = "[dry-run] Preflight OK"
+expected_stderr_contains = ""
+effects = ["Plans the install with task monitoring selected; the dry-run stops before saving, the install POST or any polling."]
+test_ids = ["tests/test_cli_cases_install_host.py::test_replayed_case_matches_catalog[configure-monitor]"]
+
+[[cases]]
+id = "case:route:entrypoint:install-host/configure/option-spelling/option:route:entrypoint:install-host/configure/--no-attach-custom-script/--no-attach-custom-script"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:237e833dcb6d11fc1ef148c0256a64a6d2d75e25f9af8001a149eb41add8efa8"
+rationale = "Disables the SSH customScript log attachment for hosts where the controller cannot or should not log in."
+invocation = ["configure", "--dry-run", "--yes", "--no-monitor", "--no-attach-custom-script"]
+expected_exit_status = 0
+expected_stdout_contains = "[dry-run] Preflight OK"
+expected_stderr_contains = ""
+effects = ["Plans the install with customScript log attachment disabled for the monitoring phase; the dry-run stops before saving, the install POST or any monitoring."]
+test_ids = ["tests/test_cli_cases_install_host.py::test_replayed_case_matches_catalog[configure-no-attach-custom-script]"]
+
+[[cases]]
+id = "case:route:entrypoint:install-host/configure/option-spelling/option:route:entrypoint:install-host/configure/--no-monitor/--no-monitor"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:5b4dcbab2e7d5cd98dfcb220521925667b9e6e7d6d5b8e131279ed61b16b73f6"
+rationale = "Returns after task creation instead of following the task; mutually exclusive with --monitor."
+invocation = ["configure", "--dry-run", "--yes", "--no-monitor"]
+expected_exit_status = 0
+expected_stdout_contains = "[dry-run] Preflight OK"
+expected_stderr_contains = ""
+effects = ["Plans the install without monitoring; the dry-run stops before saving or the install POST."]
+test_ids = ["tests/test_cli_cases_install_host.py::test_replayed_case_matches_catalog[configure-no-monitor]"]
+
+[[cases]]
+id = "case:route:entrypoint:install-host/configure/option-spelling/option:route:entrypoint:install-host/configure/--poll-interval/--poll-interval"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:5171bcca0ed0b54d7b459148302e02e523d66cb79cea0f0dd5ef2f25030e52a6"
+rationale = "Sets the task-monitor polling interval in seconds; a finite number greater than zero, defaulting to install-host.toml."
+invocation = ["configure", "--dry-run", "--yes", "--no-monitor", "--poll-interval", "2.5"]
+expected_exit_status = 0
+expected_stdout_contains = "[dry-run] Preflight OK"
+expected_stderr_contains = ""
+effects = ["Plans the install with a 2.5 second polling interval; the dry-run stops before saving, the install POST or any polling."]
+test_ids = ["tests/test_cli_cases_install_host.py::test_replayed_case_matches_catalog[configure-poll-interval]"]
+
+[[cases]]
+id = "case:route:entrypoint:install-host/configure/option-spelling/option:route:entrypoint:install-host/configure/--server-id/--server-id"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:bd2f0c4a692256af68826d4f0a677663b0a86fa22262f63c85857b71972d5f50"
+rationale = "Selects the install target by Netcup server ID, skipping the configured name and the interactive picker; must be a positive integer."
+invocation = ["configure", "--dry-run", "--yes", "--no-monitor", "--server-id", "42"]
+expected_exit_status = 0
+expected_stdout_contains = "Server ID: 42"
+expected_stderr_contains = ""
+effects = ["Reads server 42 with a GET request and plans the install for it; the dry-run stops before saving or the install POST."]
+test_ids = ["tests/test_cli_cases_install_host.py::test_replayed_case_matches_catalog[configure-server-id]"]
+
+[[cases]]
+id = "case:route:entrypoint:install-host/configure/option-spelling/option:route:entrypoint:install-host/configure/--ssh-host/--ssh-host"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:b601a94ceb585225e24c80a6e2b6f7dd9d0ac799f213d075d2adf45593239bef"
+rationale = "Overrides the SSH host used for post-install monitoring; otherwise the resolved server address or NETCUP_SCP_API_SSH_HOST is used."
+invocation = ["configure", "--dry-run", "--yes", "--no-monitor", "--ssh-host", "192.0.2.10"]
+expected_exit_status = 0
+expected_stdout_contains = "[dry-run] Preflight OK"
+expected_stderr_contains = ""
+effects = ["Plans the install with 192.0.2.10 as the monitoring SSH host; the dry-run stops before saving, the install POST or any SSH."]
+test_ids = ["tests/test_cli_cases_install_host.py::test_replayed_case_matches_catalog[configure-ssh-host]"]
+
+[[cases]]
+id = "case:route:entrypoint:install-host/configure/option-spelling/option:route:entrypoint:install-host/configure/--ssh-identity-file/--ssh-identity-file"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:40c0606451c09b0a8be5d9cb3c8d69bc0da696798c207cf1d8f8747681fb1b05"
+rationale = "Names an existing local controller private key to reuse; an explicit key that is missing or unreadable is refused rather than silently replaced."
+invocation = ["configure", "--dry-run", "--yes", "--no-monitor", "--ssh-identity-file", "controller-key"]
+expected_exit_status = 0
+expected_stdout_contains = "[dry-run] Preflight OK"
+expected_stderr_contains = ""
+effects = ["Validates that the named key exists and is readable; never generates or overwrites it; the dry-run stops before saving or the install POST."]
+test_ids = ["tests/test_cli_cases_install_host.py::test_replayed_case_matches_catalog[configure-ssh-identity-file]"]
+
+[[cases]]
+id = "case:route:entrypoint:install-host/configure/option-spelling/option:route:entrypoint:install-host/configure/--ssh-key-id/--ssh-key-id"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:4e3443ac70d149b2d81d497b0619e1835bfe4fd74d8b16f2747bc33d9de5f978"
+rationale = "Reuses an existing Netcup account key by ID instead of looking keys up; repeat the option for several keys, and duplicates are refused."
+invocation = ["configure", "--dry-run", "--yes", "--no-monitor", "--ssh-key-id", "7"]
+expected_exit_status = 0
+expected_stdout_contains = "[dry-run] Preflight OK"
+expected_stderr_contains = ""
+effects = ["Plans the install with account key 7 in sshKeyIds and skips the account-key lookup; the dry-run stops before saving or the install POST."]
+test_ids = ["tests/test_cli_cases_install_host.py::test_replayed_case_matches_catalog[configure-ssh-key-id]"]
+
+[[cases]]
+id = "case:route:entrypoint:install-host/configure/option-spelling/option:route:entrypoint:install-host/configure/--ssh-user/--ssh-user"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:1c835c7ccbac88ae8bae0d6893c21524c6a2b7663b4cdb56d31f17783af2c08c"
+rationale = "Sets the SSH login user for monitoring; defaults to install-host.toml or NETCUP_SCP_API_SSH_USER."
+invocation = ["configure", "--dry-run", "--yes", "--no-monitor", "--ssh-user", "ops"]
+expected_exit_status = 0
+expected_stdout_contains = "[dry-run] Preflight OK"
+expected_stderr_contains = ""
+effects = ["Plans the install with ops as the monitoring SSH user; the dry-run stops before saving, the install POST or any SSH."]
+test_ids = ["tests/test_cli_cases_install_host.py::test_replayed_case_matches_catalog[configure-ssh-user]"]
+
+[[cases]]
+id = "case:route:entrypoint:install-host/configure/option-spelling/option:route:entrypoint:install-host/configure/--yes/--yes"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:2bdffbe56bc6912f0a22aa0547c1e6a905115d717e0dacc1259b5ede3bdaf4ac"
+rationale = "The library consent control: --yes answers the install confirmation, which a non-interactive run otherwise refuses. It is the only consent, never a way to skip the plan output."
+invocation = ["configure", "--yes", "--no-monitor"]
+expected_exit_status = 0
+expected_stdout_contains = "Starting installation..."
+expected_stderr_contains = "Confirmation accepted via --yes."
+effects = ["Resolves the server, saves target-host.jsonc, then sends one image-install POST for the target server."]
+test_ids = ["tests/test_cli_cases_install_host.py::test_yes_is_the_only_consent_in_a_non_interactive_run[configure]"]
+
+[[cases]]
+id = "case:route:entrypoint:install-host/install/minimum"
+state = "active"
+decision = "refuse"
+reviewed_signature = "sha256:729941a641dc9b0c57f64578a3b2a19ae891b17623e87b4b6511e81fb9779670"
+rationale = "install replaces a server's operating system. Its minimum form reads and validates target-host.jsonc and shows the plan, but without --yes and without a terminal it refuses rather than assume consent."
+invocation = ["install"]
+expected_exit_status = 2
+expected_stdout_contains = "PAYLOAD SUMMARY"
+expected_stderr_contains = "confirmation is required, but stdin is not interactive"
+effects = ["Reads the config and the target server with GET requests, prints the payload summary, then refuses at the confirmation; sends no install POST."]
+test_ids = ["tests/test_cli_cases_install_host.py::test_replayed_case_matches_catalog[install-minimum]"]
+
+[[cases]]
+id = "case:route:entrypoint:install-host/install/option-choice/option:route:entrypoint:install-host/install/--local-controller-key/66f3d68b76"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:a49183125c1f77f696a6311bcedb8d8126d9070196a15d4536451c6fb0e4e20a"
+rationale = "remove deletes the local controller key after the declared completion marker, the cleanup-by-default choice."
+invocation = ["install", "--dry-run", "--yes", "--no-monitor", "--local-controller-key", "remove"]
+expected_exit_status = 0
+expected_stdout_contains = "[dry-run] Preflight OK"
+expected_stderr_contains = ""
+effects = ["Validates the config with GET requests and plans removal of the local controller key after completion; the dry-run sends no install POST."]
+test_ids = ["tests/test_cli_cases_install_host.py::test_replayed_case_matches_catalog[install-local-controller-key-remove]"]
+
+[[cases]]
+id = "case:route:entrypoint:install-host/install/option-choice/option:route:entrypoint:install-host/install/--local-controller-key/689680efe3"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:9dc6753d9836be97c9df86589efe9defe01c5d744e92db888a0993985bdecd6c"
+rationale = "retain keeps the local controller key after the completion marker so the operator can still reach the host."
+invocation = ["install", "--dry-run", "--yes", "--no-monitor", "--local-controller-key", "retain"]
+expected_exit_status = 0
+expected_stdout_contains = "[dry-run] Preflight OK"
+expected_stderr_contains = ""
+effects = ["Validates the config with GET requests and plans keeping the local controller key after completion; the dry-run sends no install POST."]
+test_ids = ["tests/test_cli_cases_install_host.py::test_replayed_case_matches_catalog[install-local-controller-key-retain]"]
+
+[[cases]]
+id = "case:route:entrypoint:install-host/install/option-spelling/option:route:entrypoint:install-host/install/--attach-custom-script/--attach-custom-script"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:63c2c8ed771305f0076ac96e2d790e43a22184b4384ccde0332350c9eb44b0d6"
+rationale = "Tailing the provider customScript log over SSH while monitoring is already the default; the positive spelling lets a caller state it explicitly."
+invocation = ["install", "--dry-run", "--yes", "--no-monitor", "--attach-custom-script"]
+expected_exit_status = 0
+expected_stdout_contains = "[dry-run] Preflight OK"
+expected_stderr_contains = ""
+effects = ["Validates the config with GET requests and plans customScript log attachment for the monitoring phase; the dry-run sends no install POST and starts no monitoring."]
+test_ids = ["tests/test_cli_cases_install_host.py::test_replayed_case_matches_catalog[install-attach-custom-script]"]
+
+[[cases]]
+id = "case:route:entrypoint:install-host/install/option-spelling/option:route:entrypoint:install-host/install/--completion-wait-seconds/--completion-wait-seconds"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:bcd116872d4a8859618e872c0700248e6055b5ed6f66dca6919e0571f1376d2d"
+rationale = "Caps how long monitoring waits for the completion marker; a finite number greater than zero, defaulting to install-host.toml."
+invocation = ["install", "--dry-run", "--yes", "--no-monitor", "--completion-wait-seconds", "45"]
+expected_exit_status = 0
+expected_stdout_contains = "[dry-run] Preflight OK"
+expected_stderr_contains = ""
+effects = ["Validates the config with GET requests and plans a 45 second completion-marker wait; the dry-run sends no install POST and starts no monitoring."]
+test_ids = ["tests/test_cli_cases_install_host.py::test_replayed_case_matches_catalog[install-completion-wait-seconds]"]
+
+[[cases]]
+id = "case:route:entrypoint:install-host/install/option-spelling/option:route:entrypoint:install-host/install/--config/--config"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:1e3175e1d9b7ec5be1a5c519c29af65e0c4aa55c5d7e5a8eb049916db1d4ce5c"
+rationale = "In install --config names the validated config file to read instead of the default target-host.jsonc; the target comes from that file."
+invocation = ["install", "--dry-run", "--yes", "--no-monitor", "--config", "target-host.jsonc"]
+expected_exit_status = 0
+expected_stdout_contains = "Loading payload from: target-host.jsonc"
+expected_stderr_contains = ""
+effects = ["Reads the named config file and the target server it names with GET requests, prints the payload summary; the dry-run sends no install POST."]
+test_ids = ["tests/test_cli_cases_install_host.py::test_replayed_case_matches_catalog[install-config]"]
+
+[[cases]]
+id = "case:route:entrypoint:install-host/install/option-spelling/option:route:entrypoint:install-host/install/--config/--payload"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:2293ed1dd8e8224a887899cf747b61c3488fa07750386059a0f6adb1ecabfb8b"
+rationale = "--payload is the deprecated alias of --config, kept so existing scripts keep working; it resolves to the same setting."
+invocation = ["install", "--dry-run", "--yes", "--no-monitor", "--payload", "target-host.jsonc"]
+expected_exit_status = 0
+expected_stdout_contains = "Loading payload from: target-host.jsonc"
+expected_stderr_contains = ""
+effects = ["Behaves exactly as --config: reads target-host.jsonc and the target server with GET requests; the dry-run sends no install POST."]
+test_ids = ["tests/test_cli_cases_install_host.py::test_replayed_case_matches_catalog[install-payload]"]
+
+[[cases]]
+id = "case:route:entrypoint:install-host/install/option-spelling/option:route:entrypoint:install-host/install/--debug-raw/--debug-raw"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:036974ddaec21eaef74648f5fef69a1de36e3d71a0c4efc96e0019eecaa9aa5e"
+rationale = "The shared raw-diagnostics escape hatch: it warns on stderr that secrets may be exposed and is the only way the customScript text is printed unredacted."
+invocation = ["install", "--dry-run", "--yes", "--no-monitor", "--debug-raw"]
+expected_exit_status = 0
+expected_stdout_contains = "[dry-run] Preflight OK"
+expected_stderr_contains = "--debug-raw is active"
+effects = ["Prints the payload summary with the customScript unredacted and a warning on stderr; the dry-run sends no install POST."]
+test_ids = ["tests/test_cli_cases_install_host.py::test_debug_raw_warns_and_is_off_by_default[install]"]
+
+[[cases]]
+id = "case:route:entrypoint:install-host/install/option-spelling/option:route:entrypoint:install-host/install/--dry-run/--dry-run"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:1ec8717bf1e28e98eb7e514cb7ad50b98b037a07fbd370f12f09567638eb8b32"
+rationale = "The library dry-run control: install validates the config and the target and prints the plan, but never sends the image-install POST."
+invocation = ["install", "--dry-run", "--yes", "--no-monitor"]
+expected_exit_status = 0
+expected_stdout_contains = "[dry-run] Preflight OK. NOT calling POST /api/v1/servers/42/image."
+expected_stderr_contains = ""
+effects = ["Reads the config and the target server with GET requests, prints the payload summary, and stops before the install POST."]
+test_ids = ["tests/test_cli_cases_install_host.py::test_dry_run_plans_without_mutating[install]"]
+
+[[cases]]
+id = "case:route:entrypoint:install-host/install/option-spelling/option:route:entrypoint:install-host/install/--local-controller-key/--local-controller-key"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:a1833004eefe089ac06b9d33539c3b5fa5a57b7cb6c8ffd69ec4d44201a12772"
+rationale = "Chooses whether the local controller key is retained or removed after the completion marker; exactly remove or retain is accepted."
+invocation = ["install", "--dry-run", "--yes", "--no-monitor", "--local-controller-key", "retain"]
+expected_exit_status = 0
+expected_stdout_contains = "[dry-run] Preflight OK"
+expected_stderr_contains = ""
+effects = ["Validates the config with GET requests and plans the chosen key-retention policy; the dry-run sends no install POST."]
+test_ids = ["tests/test_cli_cases_install_host.py::test_replayed_case_matches_catalog[install-local-controller-key]"]
+
+[[cases]]
+id = "case:route:entrypoint:install-host/install/option-spelling/option:route:entrypoint:install-host/install/--no-attach-custom-script/--no-attach-custom-script"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:72cc78e632a89cd6b2be7a330e083fa3b9c6fd2aa0d47eb7284b978d55d5c017"
+rationale = "Disables the SSH customScript log attachment for hosts where the controller cannot or should not log in."
+invocation = ["install", "--dry-run", "--yes", "--no-monitor", "--no-attach-custom-script"]
+expected_exit_status = 0
+expected_stdout_contains = "[dry-run] Preflight OK"
+expected_stderr_contains = ""
+effects = ["Validates the config with GET requests and plans without customScript log attachment; the dry-run sends no install POST and starts no monitoring."]
+test_ids = ["tests/test_cli_cases_install_host.py::test_replayed_case_matches_catalog[install-no-attach-custom-script]"]
+
+[[cases]]
+id = "case:route:entrypoint:install-host/install/option-spelling/option:route:entrypoint:install-host/install/--no-monitor/--no-monitor"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:9c63f433eea0ee6bafb8df1317baf5783b0ecaa5cd344bd009fb7752b4df8e8f"
+rationale = "install follows the task by default; --no-monitor is the explicit escape hatch that returns right after task creation."
+invocation = ["install", "--dry-run", "--yes", "--no-monitor"]
+expected_exit_status = 0
+expected_stdout_contains = "[dry-run] Preflight OK"
+expected_stderr_contains = ""
+effects = ["Validates the config with GET requests and plans without monitoring; the dry-run sends no install POST."]
+test_ids = ["tests/test_cli_cases_install_host.py::test_replayed_case_matches_catalog[install-no-monitor]"]
+
+[[cases]]
+id = "case:route:entrypoint:install-host/install/option-spelling/option:route:entrypoint:install-host/install/--poll-interval/--poll-interval"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:959c794bc673202473fa6bfbb0dd4ede6b21a062fa924722b1dcec33dd268463"
+rationale = "Sets the task-monitor polling interval in seconds; a finite number greater than zero, defaulting to install-host.toml."
+invocation = ["install", "--dry-run", "--yes", "--no-monitor", "--poll-interval", "2.5"]
+expected_exit_status = 0
+expected_stdout_contains = "[dry-run] Preflight OK"
+expected_stderr_contains = ""
+effects = ["Validates the config with GET requests and plans a 2.5 second polling interval; the dry-run sends no install POST and starts no polling."]
+test_ids = ["tests/test_cli_cases_install_host.py::test_replayed_case_matches_catalog[install-poll-interval]"]
+
+[[cases]]
+id = "case:route:entrypoint:install-host/install/option-spelling/option:route:entrypoint:install-host/install/--ssh-host/--ssh-host"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:8c22ca7a934c37381c110b2b75e70ac8a7a262e5c0f03852aa2c3b39957f7ebb"
+rationale = "Overrides the SSH host used for post-install monitoring; otherwise the resolved server address or NETCUP_SCP_API_SSH_HOST is used."
+invocation = ["install", "--dry-run", "--yes", "--no-monitor", "--ssh-host", "192.0.2.10"]
+expected_exit_status = 0
+expected_stdout_contains = "[dry-run] Preflight OK"
+expected_stderr_contains = ""
+effects = ["Validates the config with GET requests and plans 192.0.2.10 as the monitoring SSH host; the dry-run sends no install POST and makes no SSH connection."]
+test_ids = ["tests/test_cli_cases_install_host.py::test_replayed_case_matches_catalog[install-ssh-host]"]
+
+[[cases]]
+id = "case:route:entrypoint:install-host/install/option-spelling/option:route:entrypoint:install-host/install/--ssh-identity-file/--ssh-identity-file"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:14e0fea0bb0d638f014d5e6ebf1a6d5bb2568ae4228644688f513ff794b74360"
+rationale = "Names an existing local controller private key to reuse; an explicit key that is missing or unreadable is refused rather than silently replaced."
+invocation = ["install", "--dry-run", "--yes", "--no-monitor", "--ssh-identity-file", "controller-key"]
+expected_exit_status = 0
+expected_stdout_contains = "[dry-run] Preflight OK"
+expected_stderr_contains = ""
+effects = ["Validates that the named key exists and is readable; never generates or overwrites it; the dry-run sends no install POST."]
+test_ids = ["tests/test_cli_cases_install_host.py::test_replayed_case_matches_catalog[install-ssh-identity-file]"]
+
+[[cases]]
+id = "case:route:entrypoint:install-host/install/option-spelling/option:route:entrypoint:install-host/install/--ssh-key-id/--ssh-key-id"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:0a1aab85cafa6d941a2c39c29126e28d814e8dccb5d749f1f77b6344473fd8fc"
+rationale = "Overrides the sshKeyIds in the config with existing Netcup account key IDs; repeat the option for several keys, and duplicates are refused."
+invocation = ["install", "--dry-run", "--yes", "--no-monitor", "--ssh-key-id", "7"]
+expected_exit_status = 0
+expected_stdout_contains = "[dry-run] Preflight OK"
+expected_stderr_contains = ""
+effects = ["Validates the config with GET requests and shows account key 7 as the sshKeyIds of the plan; the dry-run sends no install POST."]
+test_ids = ["tests/test_cli_cases_install_host.py::test_replayed_case_matches_catalog[install-ssh-key-id]"]
+
+[[cases]]
+id = "case:route:entrypoint:install-host/install/option-spelling/option:route:entrypoint:install-host/install/--ssh-user/--ssh-user"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:cc93bec0bb0cf149d174ab2628cc3f2f98c73f72d6f76428415aeb2f7abcd983"
+rationale = "Sets the SSH login user for monitoring; defaults to install-host.toml or NETCUP_SCP_API_SSH_USER."
+invocation = ["install", "--dry-run", "--yes", "--no-monitor", "--ssh-user", "ops"]
+expected_exit_status = 0
+expected_stdout_contains = "[dry-run] Preflight OK"
+expected_stderr_contains = ""
+effects = ["Validates the config with GET requests and plans ops as the monitoring SSH user; the dry-run sends no install POST and makes no SSH connection."]
+test_ids = ["tests/test_cli_cases_install_host.py::test_replayed_case_matches_catalog[install-ssh-user]"]
+
+[[cases]]
+id = "case:route:entrypoint:install-host/install/option-spelling/option:route:entrypoint:install-host/install/--yes/--yes"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:c466e402a96156da67d3b0ae6cc3f295b7d6246d11e5079b3c97d71081f77cc3"
+rationale = "The library consent control: --yes answers the install confirmation, which a non-interactive run otherwise refuses. It is the only consent, never a way to skip the plan output."
+invocation = ["install", "--yes", "--no-monitor"]
+expected_exit_status = 0
+expected_stdout_contains = "Starting installation..."
+expected_stderr_contains = "Confirmation accepted via --yes."
+effects = ["Validates the config and target with GET requests, prints the payload summary, then sends one image-install POST for the target server."]
+test_ids = ["tests/test_cli_cases_install_host.py::test_yes_is_the_only_consent_in_a_non_interactive_run[install]"]
+
+[[cases]]
+id = "case:route:entrypoint:install-host/wizard/exclusive-conflict/task-monitor-mode/option:route:entrypoint:install-host/wizard/--monitor/option:route:entrypoint:install-host/wizard/--no-monitor"
+state = "active"
+decision = "refuse"
+reviewed_signature = "sha256:6074448b819d496a3cf198c4beef44139ef06d8d1c91799592d925019815bb19"
+rationale = "--monitor and --no-monitor contradict each other, so argparse refuses the pair instead of letting one silently win."
+invocation = ["wizard", "--dry-run", "--yes", "--monitor", "--no-monitor"]
+expected_exit_status = 2
+expected_stdout_contains = ""
+expected_stderr_contains = "not allowed with argument --monitor"
+effects = ["Refuses during argument parsing; reads no credentials and makes no request."]
+test_ids = ["tests/test_cli_cases_install_host.py::test_replayed_case_matches_catalog[wizard-conflict-monitor]"]
+
+[[cases]]
+id = "case:route:entrypoint:install-host/wizard/exclusive-member/task-monitor-mode/option:route:entrypoint:install-host/wizard/--monitor"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:7927481d794e8487f582cfb76b56c18a5bd51d2eda37fff09380a4daead207f8"
+rationale = "--monitor alone selects explicit task monitoring after installation; it is one of the two mutually exclusive task-monitor-mode choices."
+invocation = ["wizard", "--dry-run", "--yes", "--monitor"]
+expected_exit_status = 0
+expected_stdout_contains = "[dry-run] Preflight OK"
+expected_stderr_contains = ""
+effects = ["Resolves the server, image flavour and account SSH keys with GET requests, prints the plan, and stops before saving or the install POST; monitoring is selected but nothing is started."]
+test_ids = ["tests/test_cli_cases_install_host.py::test_replayed_case_matches_catalog[wizard-exclusive-monitor]"]
+
+[[cases]]
+id = "case:route:entrypoint:install-host/wizard/exclusive-member/task-monitor-mode/option:route:entrypoint:install-host/wizard/--no-monitor"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:83c5592a20ea218e5493bf7654bbb54c385228d85f1f64c737bc002df412a028"
+rationale = "--no-monitor alone returns after task creation instead of following the task; it is the other task-monitor-mode choice."
+invocation = ["wizard", "--dry-run", "--yes", "--no-monitor"]
+expected_exit_status = 0
+expected_stdout_contains = "[dry-run] Preflight OK"
+expected_stderr_contains = ""
+effects = ["Resolves the server, image flavour and account SSH keys with GET requests, prints the plan, and stops before saving or the install POST."]
+test_ids = ["tests/test_cli_cases_install_host.py::test_replayed_case_matches_catalog[wizard-exclusive-no-monitor]"]
+
+[[cases]]
+id = "case:route:entrypoint:install-host/wizard/minimum"
+state = "active"
+decision = "refuse"
+reviewed_signature = "sha256:6b7c17a178f9caa6a56317122e32335cf3825436a539787b8ce5d89a7b4022dc"
+rationale = "The minimum wizard form is interactive. Without a terminal and without a configured or given target it refuses instead of guessing which server to reinstall."
+invocation = ["wizard"]
+expected_exit_status = 2
+expected_stdout_contains = ""
+expected_stderr_contains = "no target server supplied"
+effects = ["Refuses before any API request or key work; no mutation."]
+test_ids = ["tests/test_cli_cases_install_host.py::test_replayed_case_matches_catalog[wizard-minimum]"]
+
+[[cases]]
+id = "case:route:entrypoint:install-host/wizard/option-choice/option:route:entrypoint:install-host/wizard/--local-controller-key/66f3d68b76"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:f4c8d808c048bbad7f33b848734b1f9f025413b9e922053eea57b3e30d96c572"
+rationale = "remove deletes the local controller key after the declared completion marker, the cleanup-by-default choice."
+invocation = ["wizard", "--dry-run", "--yes", "--no-monitor", "--local-controller-key", "remove"]
+expected_exit_status = 0
+expected_stdout_contains = "[dry-run] Preflight OK"
+expected_stderr_contains = ""
+effects = ["Plans the install with removal of the local controller key after completion; the dry-run stops before saving or the install POST."]
+test_ids = ["tests/test_cli_cases_install_host.py::test_replayed_case_matches_catalog[wizard-local-controller-key-remove]"]
+
+[[cases]]
+id = "case:route:entrypoint:install-host/wizard/option-choice/option:route:entrypoint:install-host/wizard/--local-controller-key/689680efe3"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:93cfe73bc4084e931f48659554f914d6d73c76a1fa5dd860a9980eb08c148aaa"
+rationale = "retain keeps the local controller key after the completion marker so the operator can still reach the host."
+invocation = ["wizard", "--dry-run", "--yes", "--no-monitor", "--local-controller-key", "retain"]
+expected_exit_status = 0
+expected_stdout_contains = "[dry-run] Preflight OK"
+expected_stderr_contains = ""
+effects = ["Plans the install keeping the local controller key after completion; the dry-run stops before saving or the install POST."]
+test_ids = ["tests/test_cli_cases_install_host.py::test_replayed_case_matches_catalog[wizard-local-controller-key-retain]"]
+
+[[cases]]
+id = "case:route:entrypoint:install-host/wizard/option-spelling/option:route:entrypoint:install-host/wizard/--attach-custom-script/--attach-custom-script"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:f6dd01b9b82756786b19ff9c6e9ddf9536bd3fedd66a392b6dfb221e3ab0cf95"
+rationale = "Tailing the provider customScript log over SSH while monitoring is already the default; the positive spelling lets a caller state it explicitly."
+invocation = ["wizard", "--dry-run", "--yes", "--no-monitor", "--attach-custom-script"]
+expected_exit_status = 0
+expected_stdout_contains = "[dry-run] Preflight OK"
+expected_stderr_contains = ""
+effects = ["Plans the install with customScript log attachment enabled for the monitoring phase; the dry-run stops before saving, the install POST or any monitoring."]
+test_ids = ["tests/test_cli_cases_install_host.py::test_replayed_case_matches_catalog[wizard-attach-custom-script]"]
+
+[[cases]]
+id = "case:route:entrypoint:install-host/wizard/option-spelling/option:route:entrypoint:install-host/wizard/--completion-marker/--completion-marker"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:a9901a2776adb1784256bcce5f37bd40ac8e9387ee76891d9871a9230df8f744"
+rationale = "Declares the absolute remote path the installed host writes when its customScript has finished; a relative path is refused during validation."
+invocation = ["wizard", "--dry-run", "--yes", "--no-monitor", "--completion-marker", "/var/tmp/netcup-install-done"]
+expected_exit_status = 0
+expected_stdout_contains = "[dry-run] Preflight OK"
+expected_stderr_contains = ""
+effects = ["Plans the install with the given completion marker for controller-key retention; the dry-run stops before saving or the install POST."]
+test_ids = ["tests/test_cli_cases_install_host.py::test_replayed_case_matches_catalog[wizard-completion-marker]"]
+
+[[cases]]
+id = "case:route:entrypoint:install-host/wizard/option-spelling/option:route:entrypoint:install-host/wizard/--completion-wait-seconds/--completion-wait-seconds"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:1589c835e3223aa7e94b491afcd9ebe0edd81466d41ddad4cc33c767896dbcfe"
+rationale = "Caps how long monitoring waits for the completion marker; a finite number greater than zero, defaulting to install-host.toml."
+invocation = ["wizard", "--dry-run", "--yes", "--no-monitor", "--completion-wait-seconds", "45"]
+expected_exit_status = 0
+expected_stdout_contains = "[dry-run] Preflight OK"
+expected_stderr_contains = ""
+effects = ["Plans the install with a 45 second completion-marker wait; the dry-run stops before saving, the install POST or any monitoring."]
+test_ids = ["tests/test_cli_cases_install_host.py::test_replayed_case_matches_catalog[wizard-completion-wait-seconds]"]
+
+[[cases]]
+id = "case:route:entrypoint:install-host/wizard/option-spelling/option:route:entrypoint:install-host/wizard/--config/--config"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:9a3139e731b3fd2e7ca46cd2d8d77df8dd76197138e0583945a8dad5978ddecb"
+rationale = "In the wizard --config names the file the reviewed plan is written to; the dry-run reports the path it would write instead of writing it."
+invocation = ["wizard", "--dry-run", "--yes", "--no-monitor", "--config", "reviewed-target.jsonc"]
+expected_exit_status = 0
+expected_stdout_contains = "[dry-run] NOT saving to reviewed-target.jsonc"
+expected_stderr_contains = ""
+effects = ["Resolves the server and flavour with GET requests and reports that it would write reviewed-target.jsonc; writes nothing and sends no install POST."]
+test_ids = ["tests/test_cli_cases_install_host.py::test_replayed_case_matches_catalog[wizard-config]"]
+
+[[cases]]
+id = "case:route:entrypoint:install-host/wizard/option-spelling/option:route:entrypoint:install-host/wizard/--config/--payload"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:da9420bfec4b6624246b5d2e906ceab0c7710583cf8a311a29736b6e38df6b05"
+rationale = "--payload is the deprecated alias of --config, kept so existing scripts keep working; it resolves to the same setting."
+invocation = ["wizard", "--dry-run", "--yes", "--no-monitor", "--payload", "reviewed-target.jsonc"]
+expected_exit_status = 0
+expected_stdout_contains = "[dry-run] NOT saving to reviewed-target.jsonc"
+expected_stderr_contains = ""
+effects = ["Behaves exactly as --config: reports that it would write reviewed-target.jsonc and sends no install POST."]
+test_ids = ["tests/test_cli_cases_install_host.py::test_replayed_case_matches_catalog[wizard-payload]"]
+
+[[cases]]
+id = "case:route:entrypoint:install-host/wizard/option-spelling/option:route:entrypoint:install-host/wizard/--custom-script-file/--custom-script-file"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:62c70ed8551529a7be372216494b73880fc02d42e6e393627e21cf0c13932845"
+rationale = "Consumes an opaque customScript command or a producer JSON bundle into the plan; its text is redacted in printed output unless --debug-raw is given."
+invocation = ["wizard", "--dry-run", "--yes", "--no-monitor", "--custom-script-file", "custom-script.sh"]
+expected_exit_status = 0
+expected_stdout_contains = "REDACTED customScript (len=28)"
+expected_stderr_contains = ""
+effects = ["Reads the local script file into the plan summary (redacted); the dry-run stops before saving or the install POST."]
+test_ids = ["tests/test_cli_cases_install_host.py::test_replayed_case_matches_catalog[wizard-custom-script-file]"]
+
+[[cases]]
+id = "case:route:entrypoint:install-host/wizard/option-spelling/option:route:entrypoint:install-host/wizard/--debug-raw/--debug-raw"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:235dd8138e0f7b6df5d32434e67c994bf1e68621dec1cb7bce22fdf1b8a2585c"
+rationale = "The shared raw-diagnostics escape hatch is available on the wizard; it warns on stderr that secrets may be exposed and is off unless asked for."
+invocation = ["wizard", "--dry-run", "--yes", "--no-monitor", "--debug-raw"]
+expected_exit_status = 0
+expected_stdout_contains = "[dry-run] Preflight OK"
+expected_stderr_contains = "--debug-raw is active"
+effects = ["Plans the install with redaction disabled and a warning on stderr; the dry-run stops before saving or the install POST."]
+test_ids = ["tests/test_cli_cases_install_host.py::test_debug_raw_warns_and_is_off_by_default[wizard]"]
+
+[[cases]]
+id = "case:route:entrypoint:install-host/wizard/option-spelling/option:route:entrypoint:install-host/wizard/--dry-run/--dry-run"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:78187da8e0a2ba3a4f66ff90f0e09c6099837e969cbf29afcd216763697b8340"
+rationale = "The library dry-run control: the wizard reads the account and prints the plan, but never saves the config or sends the install POST."
+invocation = ["wizard", "--dry-run", "--yes", "--no-monitor"]
+expected_exit_status = 0
+expected_stdout_contains = "[dry-run] Preflight OK. NOT calling POST /api/v1/servers/42/image."
+expected_stderr_contains = ""
+effects = ["Resolves the server, image flavour and account SSH keys with GET requests, prints the plan, and stops before saving or the install POST."]
+test_ids = ["tests/test_cli_cases_install_host.py::test_dry_run_plans_without_mutating[wizard]"]
+
+[[cases]]
+id = "case:route:entrypoint:install-host/wizard/option-spelling/option:route:entrypoint:install-host/wizard/--local-controller-key/--local-controller-key"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:d41461dd22607f33d2f84dc61c33eb196a1aeed49eef3dfec741b9d29dcd2706"
+rationale = "Chooses whether the local controller key is retained or removed after the completion marker; exactly remove or retain is accepted."
+invocation = ["wizard", "--dry-run", "--yes", "--no-monitor", "--local-controller-key", "retain"]
+expected_exit_status = 0
+expected_stdout_contains = "[dry-run] Preflight OK"
+expected_stderr_contains = ""
+effects = ["Plans the install with the chosen key-retention policy; the dry-run stops before saving or the install POST."]
+test_ids = ["tests/test_cli_cases_install_host.py::test_replayed_case_matches_catalog[wizard-local-controller-key]"]
+
+[[cases]]
+id = "case:route:entrypoint:install-host/wizard/option-spelling/option:route:entrypoint:install-host/wizard/--monitor/--monitor"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:e8872e0084014bdfe035e99f1338ed923d864dc3972ae94d0fd571f4ec2cde0a"
+rationale = "Explicitly polls the install task after the wizard installs; mutually exclusive with --no-monitor."
+invocation = ["wizard", "--dry-run", "--yes", "--monitor"]
+expected_exit_status = 0
+expected_stdout_contains = "[dry-run] Preflight OK"
+expected_stderr_contains = ""
+effects = ["Plans the install with task monitoring selected; the dry-run stops before saving, the install POST or any polling."]
+test_ids = ["tests/test_cli_cases_install_host.py::test_replayed_case_matches_catalog[wizard-monitor]"]
+
+[[cases]]
+id = "case:route:entrypoint:install-host/wizard/option-spelling/option:route:entrypoint:install-host/wizard/--no-attach-custom-script/--no-attach-custom-script"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:52098b9cab0c03fdf2204edbdaa3a44e835ef953eb89de297a5677ca91ad70d9"
+rationale = "Disables the SSH customScript log attachment for hosts where the controller cannot or should not log in."
+invocation = ["wizard", "--dry-run", "--yes", "--no-monitor", "--no-attach-custom-script"]
+expected_exit_status = 0
+expected_stdout_contains = "[dry-run] Preflight OK"
+expected_stderr_contains = ""
+effects = ["Plans the install with customScript log attachment disabled for the monitoring phase; the dry-run stops before saving, the install POST or any monitoring."]
+test_ids = ["tests/test_cli_cases_install_host.py::test_replayed_case_matches_catalog[wizard-no-attach-custom-script]"]
+
+[[cases]]
+id = "case:route:entrypoint:install-host/wizard/option-spelling/option:route:entrypoint:install-host/wizard/--no-monitor/--no-monitor"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:3cd5753b7d0a5106ebdf0f55afa6e897b17c640f6e71d38caf282224e75d9b73"
+rationale = "Returns after task creation instead of following the task; mutually exclusive with --monitor."
+invocation = ["wizard", "--dry-run", "--yes", "--no-monitor"]
+expected_exit_status = 0
+expected_stdout_contains = "[dry-run] Preflight OK"
+expected_stderr_contains = ""
+effects = ["Plans the install without monitoring; the dry-run stops before saving or the install POST."]
+test_ids = ["tests/test_cli_cases_install_host.py::test_replayed_case_matches_catalog[wizard-no-monitor]"]
+
+[[cases]]
+id = "case:route:entrypoint:install-host/wizard/option-spelling/option:route:entrypoint:install-host/wizard/--poll-interval/--poll-interval"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:c1470b22458b8c01173c8af648cdde7ad611259ac874367229811b72e36a8b44"
+rationale = "Sets the task-monitor polling interval in seconds; a finite number greater than zero, defaulting to install-host.toml."
+invocation = ["wizard", "--dry-run", "--yes", "--no-monitor", "--poll-interval", "2.5"]
+expected_exit_status = 0
+expected_stdout_contains = "[dry-run] Preflight OK"
+expected_stderr_contains = ""
+effects = ["Plans the install with a 2.5 second polling interval; the dry-run stops before saving, the install POST or any polling."]
+test_ids = ["tests/test_cli_cases_install_host.py::test_replayed_case_matches_catalog[wizard-poll-interval]"]
+
+[[cases]]
+id = "case:route:entrypoint:install-host/wizard/option-spelling/option:route:entrypoint:install-host/wizard/--server-id/--server-id"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:abd4094ef1ccfc8439121d3d50e948d660dd38706f493406ca71f7e5a7aa6532"
+rationale = "Selects the install target by Netcup server ID, skipping the configured name and the interactive picker; must be a positive integer."
+invocation = ["wizard", "--dry-run", "--yes", "--no-monitor", "--server-id", "42"]
+expected_exit_status = 0
+expected_stdout_contains = "Server ID: 42"
+expected_stderr_contains = ""
+effects = ["Reads server 42 with a GET request and plans the install for it; the dry-run stops before saving or the install POST."]
+test_ids = ["tests/test_cli_cases_install_host.py::test_replayed_case_matches_catalog[wizard-server-id]"]
+
+[[cases]]
+id = "case:route:entrypoint:install-host/wizard/option-spelling/option:route:entrypoint:install-host/wizard/--ssh-host/--ssh-host"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:a3c24ef59470d3cdf95a74f5e80e0cd8d0c888573a1bece5062b8ba6bf294d43"
+rationale = "Overrides the SSH host used for post-install monitoring; otherwise the resolved server address or NETCUP_SCP_API_SSH_HOST is used."
+invocation = ["wizard", "--dry-run", "--yes", "--no-monitor", "--ssh-host", "192.0.2.10"]
+expected_exit_status = 0
+expected_stdout_contains = "[dry-run] Preflight OK"
+expected_stderr_contains = ""
+effects = ["Plans the install with 192.0.2.10 as the monitoring SSH host; the dry-run stops before saving, the install POST or any SSH."]
+test_ids = ["tests/test_cli_cases_install_host.py::test_replayed_case_matches_catalog[wizard-ssh-host]"]
+
+[[cases]]
+id = "case:route:entrypoint:install-host/wizard/option-spelling/option:route:entrypoint:install-host/wizard/--ssh-identity-file/--ssh-identity-file"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:20fe6d790eefe40ad5b0d076a4da6cf1599193853b73e5a4794035b5570f55ce"
+rationale = "Names an existing local controller private key to reuse; an explicit key that is missing or unreadable is refused rather than silently replaced."
+invocation = ["wizard", "--dry-run", "--yes", "--no-monitor", "--ssh-identity-file", "controller-key"]
+expected_exit_status = 0
+expected_stdout_contains = "[dry-run] Preflight OK"
+expected_stderr_contains = ""
+effects = ["Validates that the named key exists and is readable; never generates or overwrites it; the dry-run stops before saving or the install POST."]
+test_ids = ["tests/test_cli_cases_install_host.py::test_replayed_case_matches_catalog[wizard-ssh-identity-file]"]
+
+[[cases]]
+id = "case:route:entrypoint:install-host/wizard/option-spelling/option:route:entrypoint:install-host/wizard/--ssh-key-id/--ssh-key-id"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:b301d2cf67a048505c223774f34869699261ca8c2c2a4decb56d03e9e2420f8d"
+rationale = "Reuses an existing Netcup account key by ID instead of looking keys up; repeat the option for several keys, and duplicates are refused."
+invocation = ["wizard", "--dry-run", "--yes", "--no-monitor", "--ssh-key-id", "7"]
+expected_exit_status = 0
+expected_stdout_contains = "[dry-run] Preflight OK"
+expected_stderr_contains = ""
+effects = ["Plans the install with account key 7 in sshKeyIds and skips the account-key lookup; the dry-run stops before saving or the install POST."]
+test_ids = ["tests/test_cli_cases_install_host.py::test_replayed_case_matches_catalog[wizard-ssh-key-id]"]
+
+[[cases]]
+id = "case:route:entrypoint:install-host/wizard/option-spelling/option:route:entrypoint:install-host/wizard/--ssh-user/--ssh-user"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:32914af412d924ed02d20db0aff51959abaf4bbc5f941f125e4c3bd8d894eb63"
+rationale = "Sets the SSH login user for monitoring; defaults to install-host.toml or NETCUP_SCP_API_SSH_USER."
+invocation = ["wizard", "--dry-run", "--yes", "--no-monitor", "--ssh-user", "ops"]
+expected_exit_status = 0
+expected_stdout_contains = "[dry-run] Preflight OK"
+expected_stderr_contains = ""
+effects = ["Plans the install with ops as the monitoring SSH user; the dry-run stops before saving, the install POST or any SSH."]
+test_ids = ["tests/test_cli_cases_install_host.py::test_replayed_case_matches_catalog[wizard-ssh-user]"]
+
+[[cases]]
+id = "case:route:entrypoint:install-host/wizard/option-spelling/option:route:entrypoint:install-host/wizard/--yes/--yes"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:e3ec7602ba471a08564b31bfb364e0fe1640c3c6728600fcd720723538e11dcc"
+rationale = "The library consent control: --yes answers the install confirmation, which a non-interactive run otherwise refuses. It is the only consent, never a way to skip the plan output."
+invocation = ["wizard", "--yes", "--no-monitor"]
+expected_exit_status = 0
+expected_stdout_contains = "Starting installation..."
+expected_stderr_contains = "Confirmation accepted via --yes."
+effects = ["Resolves the server, saves target-host.jsonc, then sends one image-install POST for the target server."]
+test_ids = ["tests/test_cli_cases_install_host.py::test_yes_is_the_only_consent_in_a_non_interactive_run[wizard]"]
