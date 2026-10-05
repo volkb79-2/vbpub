@@ -59,19 +59,33 @@ launcher installs Assay from the selected worktree and records the runtime
 judge identity, while explicit command-plus-pin mode remains for external
 consumers. The tester-unified image supplies the declared build backend and a
 writable runtime venv for that source install.
-Rev 13 (run-gate rev 50): RG-49 state-root preflight and declarable durable
-mount; an unavailable root is NOT_RUN/`state-mount` before Assay.
-Rev 14 (run-gate rev 51): RG-64 `status` reads internal exec locks, selected
-tree inflight records, and RG-80 admission state; `doctor` checks enabled
-admission image and published count policy.
 Rev 12 (run-gate rev 49): RG-66 selective assay requests; RG-68 completed FAIL
 footprints; RG-69 merged lane manifest updates; RG-71 declared command args;
 RG-72 failure digests and retained artifacts; RG-74 trunk bases and native
 sequences; RG-76 v8-shaped assay inventory imports; RG-77 documents the
 existing durable state-dir contract; RG-78's closed result table and explicit
 modes; RG-80's off-by-default Docker-name count admission, owner tuple,
-deadlines, and janitor. RG-49's durable-root preflight and `state_root` setting
-follow in rev 13 (run-gate rev 50).
+deadlines, and janitor.
+Rev 13 (run-gate rev 50): RG-49 state-root preflight and declarable durable
+mount; an unavailable root is NOT_RUN/`state-mount` before Assay.
+Rev 14 (run-gate rev 51): RG-64 `status` reads internal exec locks, selected
+tree inflight records, and RG-80 admission state; `doctor` checks enabled
+admission image and published count policy.
+Rev 15 (run-gate rev 52): RG-81 verifies source imports without executing a
+project-local shadow package, compares full SHA-1/SHA-256 IDs at Run-Gate's
+source-identity boundary (Assay P22 snapshots still require SHA-1), and
+records the Assay identity mode in inflight schema 2 so re-attachment uses the
+launch-time verdict contract; external artifact mode retains `judge_provenance`.
+Recovery preflight checks the requested lane, sequence nodes, and all sequence
+members before imported Assay inventory or admission; foreign-runner records
+and records left under a lane now configured as a sequence refuse there too.
+Rev 16 (run-gate rev 53): RG-81 recovery also refuses container records when a
+leaf's current mode changed to host or exec, applies lane mounts and user to
+ephemeral Assay inventory probes, and returns a closed refusal for malformed
+sequence-record identity values.
+Rev 17 (run-gate rev 54): RG-49 hashes an external project's resolved path for
+its durable Assay state key; project paths inside the checkout keep their
+existing relative layout.
 Distilled from `README.md` (design
 authority), `CONSUMERS.md` (adoption contract), `HANDOFF-P01` (build contract)
 and the controller's session amendments (§8). Requirement IDs (`R-xx`) are the
@@ -1489,8 +1503,10 @@ disagree, §8 amendments win, then README, then CONSUMERS.
     plus the effective project path relative to that checkout. Thus a
     removed CIU-managed worktree can be recreated without losing resumable
     candidate state, and nested projects with the same basename stay
-    separate. When the effective project is outside that checkout, the key
-    is derived from its sanitized resolved path. An environment may declare
+    separate. When the effective project is outside that checkout, it uses
+    `assay-state-external/<sha256>` keyed by the resolved absolute path. This
+    separate namespace avoids both separator collisions and aliases with
+    in-checkout project keys. An environment may declare
     `state_root` to name the in-container mount point when it differs from
     `<repo>/.run-gate`; the same helper builds the argv and disclosed
     state-directory line.

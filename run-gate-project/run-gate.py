@@ -14,7 +14,7 @@ Judgment policy is NOT here: assay lanes reference assay.toml by name.
 See run-gate-project/README.md (design authority) and CONSUMERS.md (adoption).
 """
 # stdlib only — this launcher must run on a fresh clone with zero installs.
-__revision__ = 51  # rev 51: RG-64 runner occupancy and RG-80 doctor checks
+__revision__ = 54  # rev 54: RG-49 external-key collision fix
 # selective assay and command requests; failed-assay evidence; completed-fail
 # and partial footprint manifests; native sequences with trunk bases; shared
 # assay inventory import; documented durable --state-dir; closed results,
@@ -177,6 +177,7 @@ ASSAY_OUTCOMES = frozenset({
     "PASS", "FAIL", "ERROR", "NO_MEASUREMENT", "BUDGET_EXCEEDED",
     "INCONCLUSIVE",
 })
+ASSAY_IDENTITY_MODES = frozenset({"source", "artifact"})
 DEFAULT_LOCK_WAIT = "10m"
 DEFAULT_ADMISSION_WAIT = "10m"
 LOCK_POLL_SECONDS = 0.1
@@ -241,9 +242,13 @@ def command_lane_result(exit_code: int, lane: dict | None = None,
 
 def assay_lane_result(exit_code: int, outcome: str | None,
                       *, judge_provenance: object = None,
+                      source_mode: bool = False,
+                      source_version: object = None,
+                      source_commit: object = None,
+                      expected_source_commit: object = None,
                       reason: str | None = None,
                       log_path: str | None = None) -> LaneResult:
-    """Use assay's artifact as the authority; absence/provenance failure is ERROR."""
+    """Map Assay's verdict only when its configured judge identity is verified."""
     provenance_keys = {"name", "version", "artifact", "digest_algorithm", "digest"}
     provenance_ok = (isinstance(judge_provenance, dict)
                      and set(judge_provenance) == provenance_keys
@@ -253,9 +258,28 @@ def assay_lane_result(exit_code: int, outcome: str | None,
                      and judge_provenance["digest_algorithm"] == "sha256"
                      and re.fullmatch(r"[0-9a-f]{64}",
                                       judge_provenance["digest"]) is not None)
-    if outcome not in ASSAY_OUTCOMES or not provenance_ok:
+    if not isinstance(outcome, str) or outcome not in ASSAY_OUTCOMES:
+        return LaneResult("ERROR", exit_code, "invalid-assay-outcome", log_path,
+                          assay_outcome=outcome)
+    if source_mode:
+        source_commit_ok = (isinstance(source_commit, str)
+                            and re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})",
+                                             source_commit) is not None)
+        expected_commit_ok = (
+            isinstance(expected_source_commit, str)
+            and re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})",
+                             expected_source_commit) is not None)
+        if not isinstance(source_version, str) or not source_version.strip() \
+                or not source_commit_ok or not expected_commit_ok:
+            return LaneResult("ERROR", exit_code,
+                              "missing-or-invalid-source-identity", log_path,
+                              assay_outcome=outcome)
+        if source_commit != expected_source_commit:
+            return LaneResult("ERROR", exit_code, "source-commit-mismatch",
+                              log_path, assay_outcome=outcome)
+    elif not provenance_ok:
         return LaneResult("ERROR", exit_code,
-                          reason or "missing-or-invalid-judge-provenance", log_path,
+                          "missing-or-invalid-judge-provenance", log_path,
                           assay_outcome=outcome)
     verdict = {
         "PASS": "PASS",
@@ -437,7 +461,7 @@ FOOTPRINT_SCHEMA = 1
 # container it is about to duplicate already exists.
 INFLIGHT_DIR_NAME = "inflight"
 INFLIGHT_LOCK_NAME = "inflight.lock"
-INFLIGHT_SCHEMA = 1
+INFLIGHT_SCHEMA = 2
 
 # RW-20: the ONE state a live owner and a gone container can both be true in
 # is the owner's own `docker rm -f` -> `clear_inflight_record` window, which
@@ -3587,7 +3611,8 @@ def head_commit(worktree: Path) -> str | None:
     except OSError:
         return None
     sha = proc.stdout.strip()
-    return sha if proc.returncode == 0 and re.fullmatch(r"[0-9a-f]{40}", sha) \
+    return sha if proc.returncode == 0 and re.fullmatch(
+        r"(?:[0-9a-f]{40}|[0-9a-f]{64})", sha) \
         else None
 
 
@@ -3666,6 +3691,7 @@ def finish_run_record(record: dict, *, exit_code: int | None = None,
     # facts used to judge and archive that run, not public history fields.
     record.pop("_verdict_path", None)
     record.pop("_progress_path", None)
+    record.pop("_assay_identity_mode", None)
     # RG-35 (RW-3): a re-attached or collected run is ONE run, and its
     # duration belongs to the CONTAINER, not to the client that happened to
     # attach to it — `adopt_inflight_start` swaps this invocation's monotonic
@@ -3987,7 +4013,8 @@ def inflight_written_paths(project_dir: Path, lane_name: str) -> list[Path]:
             idir / f"{lane_name}.json.tmp.{os.getpid()}"]
 
 
-def load_inflight_record(path: Path, fresh: bool = False) -> dict | None:
+def load_inflight_record(path: Path, fresh: bool = False,
+                        fresh_supported: bool = True) -> dict | None:
     """A missing, unreadable, corrupt or container-less record reads as "no
     inflight run": the record is a HINT that saves a duplicate container, and
     a gate that died because its hint was malformed would be a worse tool
@@ -3999,11 +4026,14 @@ def load_inflight_record(path: Path, fresh: bool = False) -> dict | None:
     that already has one and writes its own record OVER the newer one. That
     is exactly the loss `R-39` exists to end, performed by the tool, and a
     warning printed before the damage does not undo it. The refusal names
-    both schema numbers and every way out; `fresh` is one of them, and it
-    has to work, so under `--fresh` a record whose container NAME is
-    readable degrades to that name (plus `started_at`, for the disclosure)
-    and nothing else — never its commit, its owner or its artifacts, whose
-    meaning under an unknown grammar is unknown."""
+    both schema numbers and every way out; `fresh` is one of them on a lane
+    with an ephemeral container environment, so under `--fresh` a record
+    whose container NAME is readable degrades to that name (plus
+    `started_at`, for the disclosure) and nothing else — never its commit,
+    its owner or its artifacts, whose meaning under an unknown grammar is
+    unknown. The stable `runner` marker is checked only as a refusal guard:
+    a non-container value is never removed as though it were this lane's
+    disposable container."""
     try:
         data = json.loads(path.read_text())
     except (OSError, ValueError):
@@ -4021,11 +4051,22 @@ def load_inflight_record(path: Path, fresh: bool = False) -> dict | None:
         # `pending["started_at"]` subscript and raise an unhandled KeyError
         # when that field was also missing.
         return None
-    schema = data.get("schema")
-    if schema is not None and schema != INFLIGHT_SCHEMA:
+    schema = data["schema"]
+    if isinstance(schema, bool) or not isinstance(schema, int) \
+            or schema != INFLIGHT_SCHEMA:
         container = data.get("container")
         named = container if isinstance(container, str) and container else None
+        runner = data.get("runner")
+        foreign_runner = ("runner" in data
+                          and runner not in (None, "container"))
         if fresh and named:
+            if foreign_runner:
+                fail(f"the inflight record at {path} declares schema "
+                     f"{schema!r} and names runner {runner!r}; --fresh will "
+                     f"not remove a container from a foreign or unknown "
+                     f"runner. The record and named runner are untouched. "
+                     f"Use the runner's lifecycle owner to verify that run "
+                     f"has ended before removing this recovery record")
             started = data.get("started_at")
             print(f"{PROG}: WARNING: the inflight record at {path} declares "
                   f"schema {schema!r} and this run-gate (rev {__revision__}) "
@@ -4035,12 +4076,24 @@ def load_inflight_record(path: Path, fresh: bool = False) -> dict | None:
                   f"delete the record", file=sys.stderr, flush=True)
             return {"schema": schema, "container": named,
                     "started_at": started if isinstance(started, str) else None}
-        escape = (f"re-run with --fresh, which removes the container this "
-                  f"record names ({named}) and starts anew"
-                  if named else f"delete {path} once you know the run it "
-                  f"describes is over — this record does not even name a "
-                  f"container, so there is nothing run-gate can remove for "
-                  f"you")
+        if named and foreign_runner:
+            escape = (f"--fresh is refused because this record names runner "
+                      f"{runner!r}; let that runner's lifecycle owner verify "
+                      f"the run has ended before removing {path}")
+        elif named and fresh_supported:
+            escape = (f"once the old run is no longer live, re-run with "
+                      f"--fresh, which removes the container this record "
+                      f"names ({named}) and starts anew")
+        elif named:
+            escape = (f"the current lane environment cannot use --fresh; "
+                      f"keep this record until container {named!r} is "
+                      f"confirmed stopped by its lifecycle owner, then "
+                      f"remove the recovery record at {path}")
+        else:
+            escape = (f"ask the lane's lifecycle owner to confirm the run is "
+                      f"over, then delete {path} — this record does not even "
+                      f"name a container, so there is nothing run-gate can "
+                      f"remove for you")
         fail(f"the inflight record for this lane declares schema {schema!r} "
              f"and this run-gate (rev {__revision__}) reads schema "
              f"{INFLIGHT_SCHEMA} — refusing to act on a record whose grammar "
@@ -5804,7 +5857,8 @@ def build_env_probe_argv(docker: str, env: dict, env_name: str, repo: Path,
     `[OK]`/`[FAIL]`/`[SKIP]` line in a preflight report, never a lane's
     pass/fail. Ephemeral probes still pass `--cgroup-parent`: a container
     THIS tool starts is placed on the host, never left at Docker's unconfined
-    default next to production work (AGENTS "Host cgroup placement").
+    default next to production work (AGENTS "Host cgroup placement"). Their
+    bind mounts and user also match the full ephemeral lane.
     """
     if not env:
         # The built-in 'bare-host' environment IS this machine: there is no
@@ -5847,10 +5901,11 @@ def assay_inventory(docker: str, lane: dict, env: dict, env_name: str,
     path returns a reason a report can print verbatim.
     """
     command = assay_command_text(lane)
-    setup = assay_source_setup(lane, worktree)
-    probe = " && ".join([*setup,
-                          f"cd {shlex.quote(str(project_dir))} && "
-                          f"{command} lanes --json --file assay.toml"])
+    setup = assay_source_setup(lane, worktree, project_dir)
+    probe = " && ".join([
+        f"cd {shlex.quote(str(project_dir))}", *setup,
+        f"{command} lanes --json --file assay.toml",
+    ])
     argv = build_env_probe_argv(
         docker, env, env_name, repo, worktree, env_source,
         _probe_slice(env, env_source),
@@ -6123,12 +6178,11 @@ BASE_TOKEN = "{base}"
 ASSAY_INVENTORY_FLOOR = "3.2.0"  # the assay that first ships `lanes --json` (B044)
 
 # Internal vbpub consumers deliberately do not carry a versioned assay
-# artifact.  A missing `assay_command` means: install the assay package from
-# the SELECTED worktree and invoke the resulting console script.  The
-# explicit-command branch remains for external/copy-of-run-gate consumers,
+# artifact. A missing `assay_command` means: install the assay package from
+# the SELECTED worktree and invoke it through that same Python interpreter.
+# The explicit-command branch remains for external/copy-of-run-gate consumers,
 # where an immutable artifact is the correct boundary.
 ASSAY_SOURCE_PYTHON = "/opt/tester-venv/bin/python"
-ASSAY_SOURCE_BIN = "/opt/tester-venv/bin/assay"
 
 
 def assay_command_text(lane: dict) -> str:
@@ -6141,40 +6195,69 @@ def assay_command_text(lane: dict) -> str:
     """
     if lane.get("assay_command") is not None:
         return shlex.join(lane["assay_command"])
-    return '"$RUN_GATE_ASSAY_BIN"'
+    return '"$ASSAY_PYTHON" -I -m assay.cli'
 
 
-def assay_source_setup(lane: dict, worktree: Path) -> list[str]:
+def assay_identity_mode(lane: dict) -> str | None:
+    """Name the evidence contract selected for an Assay lane."""
+    if lane.get("kind") != "assay":
+        return None
+    return "source" if lane.get("assay_command") is None else "artifact"
+
+
+def assay_source_setup(lane: dict, worktree: Path,
+                       project_dir: Path) -> list[str]:
     """Shell setup for the source-backed internal assay command.
 
     The setup runs inside the actual lane environment, after the selected
     worktree has been mounted.  It uses the tester-unified venv when present;
     the python3 fallback keeps bare-host run-gate invocations honest.  No
     network or dependency resolution is allowed: assay's runtime closure is
-    stdlib-only and the editable install is from the mounted worktree.
+    stdlib-only and the editable install is from the mounted worktree. The
+    installer runs in isolated mode from `/` so a project-local `pip.py` or
+    `PYTHONPATH` cannot replace pip; Assay's import identity is checked without
+    importing package code, after returning to the consumer directory.
     """
     if lane.get("assay_command") is not None:
         return []
     source = shlex.quote(str(worktree / "assay"))
+    source_root = shlex.quote(str(worktree))
+    consumer = shlex.quote(str(project_dir))
+    source_python = shlex.quote(ASSAY_SOURCE_PYTHON)
+    verify_import = shlex.quote(
+        "import importlib.machinery,importlib.util,pathlib,sys; "
+        "consumer=pathlib.Path(sys.argv[1]).resolve(); "
+        "source_root=pathlib.Path(sys.argv[2]).resolve(); "
+        "shadow=importlib.machinery.PathFinder.find_spec("
+        "'assay',[str(consumer)]); "
+        "spec=importlib.util.find_spec('assay'); "
+        "expected=source_root/'assay/src/assay/__init__.py'; "
+        "actual=(pathlib.Path(spec.origin).resolve() "
+        "if spec is not None and spec.origin else None); "
+        "namespace=(shadow is not None and shadow.origin is None and "
+        "shadow.loader is None and shadow.submodule_search_locations is not None); "
+        "raise SystemExit((shadow is not None and not namespace) or "
+        "actual != expected)")
     return [
-        'if [ -x /opt/tester-venv/bin/python ]; then '
-        f'ASSAY_PYTHON={ASSAY_SOURCE_PYTHON}; '
-        f'RUN_GATE_ASSAY_BIN={ASSAY_SOURCE_BIN}; '
+        f'if [ -x {source_python} ]; then '
+        f'ASSAY_PYTHON={source_python}; '
         'elif command -v python3 >/dev/null 2>&1; then '
-        'ASSAY_PYTHON=$(command -v python3); RUN_GATE_ASSAY_BIN=assay; '
+        'ASSAY_PYTHON=$(command -v python3); '
         'else echo "run-gate: source-backed assay needs python3 or '
         '/opt/tester-venv/bin/python" >&2; exit 2; fi',
         f'test -f {source}/pyproject.toml || '
         f'{{ echo "run-gate: selected worktree has no assay/pyproject.toml" '
         f'>&2; exit 2; }}',
         'echo "run-gate: installing assay from the selected worktree source" >&2',
-        f'if ! "$ASSAY_PYTHON" -m pip install --quiet '
+        f'if ! (cd / && "$ASSAY_PYTHON" -I -m pip install --quiet '
         f'--disable-pip-version-check --no-input --no-deps '
-        f'--no-build-isolation --editable {source}; then '
+        f'--no-build-isolation --editable {source}); then '
         'echo "run-gate: editable assay install failed" >&2; exit 2; fi',
-        'command -v "$RUN_GATE_ASSAY_BIN" >/dev/null 2>&1 || '
-        '{ echo "run-gate: editable assay install did not provide an assay '
-        'executable" >&2; exit 2; }',
+        f'cd {consumer}',
+        f'if ! "$ASSAY_PYTHON" -I -c {verify_import} '
+        f'{consumer} {source_root}; then '
+        'echo "run-gate: imported assay package is not from the selected '
+        'worktree source" >&2; exit 2; fi',
     ]
 
 
@@ -6203,7 +6286,7 @@ WORKTREE_INSTANCE_RECORD = "ciu.worktree-instance.json"
 GATE_SAFE_BASE_RE = re.compile(r"\A[A-Za-z0-9._/+@][A-Za-z0-9._/+@-]*\Z")
 #: The only shape ciu's `fork_point_sha` (CIU-106) may take. Always inside
 #: GATE_SAFE_BASE_RE, so handing it downstream needs no separate guard.
-FULL_SHA_RE = re.compile(r"[0-9a-f]{40}")
+FULL_SHA_RE = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})")
 
 
 def read_instance_record(record: Path) -> dict | None:
@@ -7967,17 +8050,21 @@ def assay_state_dir(repo: Path, project_dir: Path,
     override): a bare basename key would let two projects that happen to
     share a directory NAME (e.g. two nested `backend/` projects) collide.
     A --worktree override can relocate `project_dir` outside `repo`
-    entirely; that rarer case falls back to the full resolved path made
-    filesystem-safe, which likewise cannot collide with another project's
-    key. `build_assay_inner` and `assay_artifact_paths` both call this —
+    entirely; that rarer case uses a separate namespace keyed by the SHA-256
+    digest of the full resolved path. This avoids collisions between distinct
+    external paths and keeps their keys separate from in-repo relative
+    paths. `build_assay_inner` and `assay_artifact_paths` both call this —
     one construction, so the two can never drift apart (R-38's own rule for
     verdict/progress, extended here)."""
-    try:
-        key = project_dir.relative_to(repo).as_posix()
-    except ValueError:
-        key = str(project_dir.resolve()).lstrip("/").replace("/", "-")
     root = Path(state_root) if state_root is not None else repo / ".run-gate"
-    return root / "assay-state" / key
+    resolved_repo = repo.resolve()
+    resolved_project = project_dir.resolve()
+    try:
+        relative = resolved_project.relative_to(resolved_repo)
+    except ValueError:
+        key = hashlib.sha256(os.fsencode(str(resolved_project))).hexdigest()
+        return root / "assay-state-external" / key
+    return root / "assay-state" / relative.as_posix()
 
 
 ASSAY_STATE_READY = "RUN_GATE_STATE_ROOT_READY"
@@ -8157,6 +8244,262 @@ def assay_artifact_paths(lane: dict, project_dir: Path, repo: Path,
             str(assay_state_dir(repo, project_dir, state_root)))
 
 
+def inflight_recovery_action(pending: dict, lane_name: str,
+                             project_dir: Path,
+                             fresh_supported: bool) -> str:
+    record_path = inflight_path(project_dir, lane_name)
+    container = pending.get("container")
+    if fresh_supported:
+        return (f"after verifying container {container!r} is no longer live, "
+                f"re-run with --fresh")
+    return (f"the current lane environment cannot use --fresh; keep this "
+            f"record until container {container!r} is confirmed stopped by "
+            f"its lifecycle owner, then remove {record_path} and retry")
+
+
+def validate_inflight_assay_contract(pending: dict, lane_name: str,
+                                     project_dir: Path,
+                                     lane: dict,
+                                     fresh_supported: bool = True) -> None:
+    """Refuse malformed schema-2 Assay identity fields before they can
+    trigger an inventory/Docker probe or be read as a lane verdict.
+
+    Imported lane names are resolved from the configured import declaration
+    before inventory runs, so every call can bind artifact paths to the exact
+    current lane.
+    """
+    record_path = inflight_path(project_dir, lane_name)
+    recovery = inflight_recovery_action(
+        pending, lane_name, project_dir, fresh_supported)
+    if "assay_identity_mode" not in pending:
+        fail(f"the inflight record for lane {lane_name!r} does not contain a "
+             f"valid assay_identity_mode field (schema 2 requires the key); "
+             f"refusing to infer its run contract; {recovery}. The record is "
+             f"at {record_path}")
+
+    identity_mode = pending.get("assay_identity_mode")
+    lane_kind = lane.get("kind")
+    if identity_mode is None:
+        if lane_kind == "assay":
+            fail(f"the inflight Assay record for lane {lane_name!r} does not "
+                 f"contain a valid assay_identity_mode; refusing to interpret "
+                 f"its verdict under the current config; {recovery}. The record is at "
+                 f"{record_path}")
+        for artifact in ("verdict", "progress"):
+            if pending.get(artifact) is not None:
+                fail(f"the inflight record for non-Assay lane {lane_name!r} "
+                     f"contains an Assay {artifact} path; refusing to "
+                     f"reinterpret it as a command result; {recovery}. The "
+                     f"record is at "
+                     f"{record_path}")
+        return
+
+    if not isinstance(identity_mode, str) \
+            or identity_mode not in ASSAY_IDENTITY_MODES:
+        fail(f"the inflight Assay record for lane {lane_name!r} does not "
+             f"contain a valid assay_identity_mode; refusing to interpret its "
+             f"verdict; {recovery}. The record is at {record_path}")
+    if lane_kind != "assay":
+        fail(f"the inflight record for lane {lane_name!r} describes an Assay "
+             f"run ({identity_mode!r}), but the current lane kind is "
+             f"{lane_kind!r}; refusing to interpret its result under the "
+             f"changed lane config; {recovery}. The record is at "
+             f"{record_path}")
+
+    assay_lane = lane.get("assay_lane")
+    if not isinstance(assay_lane, str) \
+            or not re.fullmatch(r"[A-Za-z0-9_.-]+", assay_lane):
+        fail(f"the current Assay lane {lane_name!r} has no safe assay_lane "
+             f"identity for its inflight artifacts")
+    expected_paths = {
+        "verdict": str(project_dir / assay_verdict_rel(assay_lane)),
+        "progress": str(project_dir / assay_progress_rel(assay_lane)),
+    }
+    for artifact in ("verdict", "progress"):
+        value = pending.get(artifact)
+        if not isinstance(value, str) or not value.strip() or "\0" in value:
+            fail(f"the inflight Assay record for lane {lane_name!r} does not "
+                 f"contain a valid {artifact} path; refusing to interpret its "
+                 f"result; {recovery}. The record is at {record_path}")
+        if value != expected_paths[artifact]:
+            fail(f"the inflight Assay record for lane {lane_name!r} names "
+                 f"{artifact} path {value!r}, not the path for the recorded "
+                 f"Assay lane {lane.get('assay_lane')!r} "
+                 f"({expected_paths[artifact]}); refusing to read unrelated "
+                 f"evidence; {recovery}. The record is at {record_path}")
+
+
+def lane_supports_fresh(lane: dict, cfg: dict, central: dict,
+                        assay_settings: dict) -> bool:
+    """Whether this configured leaf can use run-gate's container --fresh."""
+    environment = lane.get("environment")
+    if environment is None and lane.get("kind") == "assay":
+        environment = assay_settings.get("environment")
+    if not isinstance(environment, str):
+        return False
+    resolved = cfg.get("environments", {}).get(environment)
+    if resolved is None:
+        resolved = central.get("environments", {}).get(environment)
+    return isinstance(resolved, dict) and resolved.get("mode") == "ephemeral"
+
+
+def preflight_inflight_assay_contract(args: argparse.Namespace,
+                                      cfg: dict, central: dict,
+                                      assay_settings: dict,
+                                      project_dir: Path) -> None:
+    """Validate requested recovery records before inventory/admission.
+
+    Imported Assay lane inventory and sequence admission can both contact
+    Docker before a lane is dispatched. Resolve local, inherited and imported
+    lane policy here and walk a requested sequence, checking its own record
+    and every member record before either operation.
+    """
+    lane_name = args.lane
+    if (args.help or args.list or args.check_env
+            or lane_name in (None, "admission", "doctor", "history",
+                             "footprint", "validate-pointers",
+                             "migrate-modes")
+            or not isinstance(lane_name, str)
+            or not re.fullmatch(r"[A-Za-z0-9_.-]+", lane_name)):
+        return
+
+    project_lanes = cfg.get("lanes", {})
+    central_lanes = central.get("lanes", {})
+    import_spec = assay_settings.get("import")
+    imported = import_spec.get("lanes") if isinstance(import_spec, dict) else None
+
+    def declared_lane(name: str) -> dict | None:
+        lane = project_lanes.get(name)
+        if lane is None:
+            lane = central_lanes.get(name)
+        if lane is not None:
+            return lane
+        if imported == "all" or (isinstance(imported, list)
+                                  and name in imported):
+            import_environment = (import_spec.get("environment")
+                                  if isinstance(import_spec, dict) else None)
+            return {"kind": "assay", "assay_lane": name,
+                    "environment": import_environment}
+        return None
+
+    requested_lane = declared_lane(lane_name)
+    sequence_request = (isinstance(requested_lane, dict)
+                        and requested_lane.get("kind") == "sequence")
+    checked: dict[str, bool] = {}
+
+    def refuse_foreign_record(name: str, pending: dict) -> None:
+        runner = pending.get("runner")
+        if runner is None or runner == "container":
+            return
+        fail(f"the inflight record for lane {name!r} names container "
+             f"{pending.get('container')!r}, written by runner {runner!r} — "
+             f"foreign record — refusing to continue to Assay inventory, "
+             f"sequence admission, or lane execution; --fresh cannot remove "
+             f"it. Ask that runner's lifecycle owner to confirm the run has "
+             f"ended, then remove {inflight_path(project_dir, name)}")
+
+    def visit(name: str, ancestors: frozenset[str]) -> bool:
+        if name in ancestors:
+            return False
+        if name in checked:
+            return checked[name]
+        lane = declared_lane(name)
+        if not isinstance(lane, dict):
+            checked[name] = False
+            return False
+        if lane.get("kind") == "sequence":
+            pending = load_inflight_record(
+                inflight_path(project_dir, name), fresh_supported=False)
+            if pending is not None:
+                refuse_foreign_record(name, pending)
+                identity_mode = pending.get("assay_identity_mode")
+                if identity_mode is None:
+                    prior = "belongs to a previous container lane"
+                elif (isinstance(identity_mode, str)
+                      and identity_mode in ASSAY_IDENTITY_MODES):
+                    prior = f"describes an Assay run in {identity_mode!r} mode"
+                else:
+                    fail(f"the inflight record for sequence lane {name!r} has "
+                         f"an invalid assay_identity_mode; refusing to "
+                         f"interpret its result or start its members. Ask the "
+                         f"prior runner's lifecycle owner to confirm the run "
+                         f"has ended, then remove "
+                         f"{inflight_path(project_dir, name)}")
+                fail(f"the inflight record for lane {name!r} names container "
+                     f"{pending['container']!r} and {prior}, but the current "
+                     f"lane kind is 'sequence'; refusing to interpret its "
+                     f"result under the changed lane config or start its "
+                     f"members. Ask the prior runner's lifecycle owner to "
+                     f"confirm the run has ended, then remove "
+                     f"{inflight_path(project_dir, name)}")
+            members = lane.get("lanes", [])
+            has_ephemeral_member = False
+            if isinstance(members, list):
+                next_ancestors = ancestors | {name}
+                for member in members:
+                    if isinstance(member, str):
+                        has_ephemeral_member = (
+                            visit(member, next_ancestors)
+                            or has_ephemeral_member)
+            checked[name] = has_ephemeral_member
+            return has_ephemeral_member
+        if lane.get("kind") not in ("assay", "command"):
+            checked[name] = False
+            return False
+        fresh_supported = lane_supports_fresh(
+            lane, cfg, central, assay_settings)
+        if args.fresh and not sequence_request and not fresh_supported:
+            fail(f"--fresh applies only to an ephemeral-container lane; "
+                 f"lane {name!r} does not use one")
+        fresh_for_lane = args.fresh and fresh_supported
+        pending = load_inflight_record(
+            inflight_path(project_dir, name),
+            fresh=fresh_for_lane, fresh_supported=fresh_supported)
+        if pending is None:
+            checked[name] = fresh_supported
+            return fresh_supported
+        refuse_foreign_record(name, pending)
+        # `--fresh` discards only an owned ephemeral container record. Every
+        # other path validates its saved contract before inventory/admission.
+        if not fresh_supported and pending.get("runner") in (None, "container"):
+            fail(f"the inflight record for lane {name!r} names container "
+                 f"{pending.get('container')!r}, written by the container "
+                 f"runner, but the current lane environment is not "
+                 f"ephemeral-container mode; "
+                 f"run-gate cannot re-attach to it or replace it here. Ask "
+                 f"the prior container's lifecycle owner to confirm the run "
+                 f"has ended, then remove {inflight_path(project_dir, name)} "
+                 f"and retry. --fresh applies only to ephemeral-container lanes")
+        if not fresh_for_lane:
+            validate_inflight_assay_contract(
+                pending, name, project_dir, lane,
+                fresh_supported=fresh_supported)
+        checked[name] = fresh_supported
+        return fresh_supported
+
+    has_ephemeral_member = visit(lane_name, frozenset())
+    if args.fresh and sequence_request and not has_ephemeral_member:
+        fail(f"--fresh on sequence {lane_name!r} has no ephemeral member "
+             f"container to replace")
+
+
+def clear_previous_assay_verdict(lane: dict, project_dir: Path, repo: Path,
+                                 run_record: dict | None = None) -> None:
+    """Remove old output only for a fresh Assay attempt, before setup starts."""
+    if lane.get("kind") != "assay":
+        return
+    recorded = (run_record.get("_verdict_path")
+                if run_record and isinstance(run_record.get("_verdict_path"), str)
+                else None)
+    paths = assay_artifact_paths(lane, project_dir, repo)
+    verdict_path = Path(recorded or paths[0])
+    try:
+        verdict_path.unlink(missing_ok=True)
+    except OSError as exc:
+        raise GateError(f"cannot remove previous assay verdict at "
+                        f"{verdict_path}: {exc}") from exc
+
+
 def build_assay_inner(lane: dict, project_dir: Path, repo: Path,
                       request_base: str | None = None,
                       worktree: Path | None = None,
@@ -8183,11 +8526,13 @@ def build_assay_inner(lane: dict, project_dir: Path, repo: Path,
                     f"or the lane would fail inside the container with "
                     f"assay's own 'unrecognized arguments' line")
     parts = ["set -euo pipefail",
+             f"cd {shlex.quote(str(project_dir))}",
+             "mkdir -p .assay",
+             f"rm -f -- {shlex.quote(verdict)}",
              "export GIT_CONFIG_GLOBAL=/tmp/run-gate-gitconfig",
              shlex.join(["git", "config", "--global", "--replace-all",
                         "safe.directory", "*"]),
-             *assay_source_setup(lane, selected_worktree),
-             f"cd {shlex.quote(str(project_dir))}"]
+             *assay_source_setup(lane, selected_worktree, project_dir)]
     for pin_name, pin in lane.get("pins", {}).items():
         sha = Path(pin["sha256"])
         # verify FROM the pin file's own directory (bare-filename resolution trap)
@@ -8217,11 +8562,6 @@ def build_assay_inner(lane: dict, project_dir: Path, repo: Path,
                 f"echo \"run-gate: pin '{pin_name}' version mismatch: declared "
                 f"{declared}, artifact reports: $reported — fix pins.{pin_name}.version "
                 f"or republish the artifact\" >&2; exit 2; fi; }}")
-    # A killed run may leave the previous invocation's verdict in place.
-    # Never let that stale PASS certify the current run, and let RG-72 archive
-    # only an artifact produced by this invocation.
-    parts.append("mkdir -p .assay")
-    parts.append(f"rm -f -- {shlex.quote(verdict)}")
     # RG-33 (R-38): EVERY assay-kind lane runs with `--resume` and
     # `--progress`, unconditionally. Both are no-ops on a lane that declares
     # no R2 (assay's own `--progress` help: "Ignored by a lane that declares
@@ -9065,8 +9405,10 @@ def promote_follower(docker: str, name: str, lane_name: str,
     So the duties are re-decided on a fresh read at the end: the owner is
     asked again, and if it is gone THIS client finishes the cleanup —
     disclosing by name, because a follower that suddenly removes a container
-    it promised not to touch owes the reason. Returns (promoted, evidence
-    path), the second for the caller's failure disclosure: `rm -f` destroys
+    it promised not to touch owes the reason. The caller receives the run's
+    status and records the single final result after parsing any Assay verdict.
+    Returns (promoted, evidence path), the second for the caller's failure
+    disclosure: `rm -f` destroys
     the logs and the client that would have saved them first is no longer
     here, so a promotion that skipped `R-26` would be worse than the
     self-heal it replaces."""
@@ -9077,9 +9419,8 @@ def promote_follower(docker: str, name: str, lane_name: str,
         return False, None      # still there: none of this is ours to do
     print(f"run-gate: the owning client (pid {pending.get('owner_pid')}) is "
           f"gone; this client is finishing its cleanup — removing {name}, "
-          f"clearing its record and recording the run it watched complete "
-          f"(exit {code}), so the lane is not left with an orphaned "
-          f"container and no history entry", flush=True)
+          f"clearing its record and returning the completed run to its "
+          f"caller for result/history recording (exit {code})", flush=True)
     saved_log = save_container_logs(docker, name) if code != 0 else None
     # RG-55/contract Sec 4 obligation 2: the owner's OWN `finally` never ran
     # (it is gone) — THIS client is now the one finishing the session, using
@@ -9113,14 +9454,12 @@ def promote_follower(docker: str, name: str, lane_name: str,
     subprocess.run([docker, "rm", "-f", name], capture_output=True)
     clear_inflight_record(project_dir, lane_name)
     if run_record is not None:
-        # RE-CLAIM the record this client disowned when it began following.
-        # `disown_run_record` set the flush sentinel so a follower records
-        # nothing; the owner it deferred to is gone, so the ONE entry
-        # `R-39c` promises is now this client's to write — with the
-        # CONTAINER's start, never this invocation's (RW-3).
+        # RE-CLAIM the run record this client disowned when it began
+        # following. `finish(result)` writes its single history entry only
+        # after `_dispatch` has parsed the result (notably an Assay verdict).
+        # Keep the CONTAINER's start, never this invocation's (RW-3).
         run_record.pop("_flushed", None)
         adopt_inflight_start(run_record, pending)
-        flush_run_record(run_record, exit_code=code)
     return True, saved_log
 
 
@@ -9222,6 +9561,12 @@ def resolve_inflight(docker: str, lane: dict, lane_name: str,
                   f"(exit 2)", flush=True)
             return 0
         fail(message)
+    # Schema 2 carries one closed artifact contract. Validate it before any
+    # Docker access so a damaged record cannot turn an Assay result into a
+    # command PASS or redirect verdict/progress reads to unrelated evidence.
+    # `--fresh` deliberately discards the old result and uses current config.
+    if not fresh:
+        validate_inflight_assay_contract(pending, lane_name, project_dir, lane)
     # RW-14: the FIRST question, before any of RW-1's five, is whether the
     # client that started this container is still alive. If it is, this
     # invocation is a second terminal on someone else's run and may only
@@ -9365,6 +9710,12 @@ def resolve_inflight(docker: str, lane: dict, lane_name: str,
              f"but {worktree} is now at {head} — run-gate will not attach "
              f"that run to this commit, and will not start a second "
              f"container for the same lane. {remedy}")
+    # A lost container or a `--fresh` discard starts under today's config and
+    # must keep the fresh run's mode. Arm the recorded identity only after
+    # this call has committed to following, re-attaching to, or collecting
+    # that exact container.
+    if lane.get("kind") == "assay" and not fresh and run_record is not None:
+        run_record["_assay_identity_mode"] = pending["assay_identity_mode"]
     if run_record is not None and pending.get("log_path"):
         run_record["log_path"] = pending["log_path"]
     if owner is not None:
@@ -9489,6 +9840,8 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
                                 worktree, fresh, dry_run, run_record)
     if attached is not None:
         return attached
+    if not dry_run:
+        clear_previous_assay_verdict(lane, project_dir, repo, run_record)
     phys = physical_path(repo)
     # dual: worktree gitfiles (RG-3); the same explicit mounts also reach
     # doctor and Assay-state probes through build_env_probe_argv().
@@ -9624,6 +9977,7 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
         "verdict": verdict_path,
         "progress": progress_path,
         "state_dir": state_dir,
+        "assay_identity_mode": assay_identity_mode(lane),
         "revision": __revision__,
         # RG-55/contract Sec 4.1: recorded as soon as it is known — a client
         # that dies between here and `start` still leaves enough for a
@@ -9800,6 +10154,8 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
             "environment-down",
             f"persistent runner '{name}' ({name_src}) is not running — "
             f"{start_remedy}")
+    if not dry_run:
+        clear_previous_assay_verdict(lane, project_dir, repo, run_record)
     inner = build_assay_inner(lane, project_dir, repo, request_base,
                               worktree=worktree,
                               state_root=env.get("state_root")) \
@@ -9935,6 +10291,7 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
         "verdict": verdict_path,
         "progress": progress_path,
         "state_dir": state_dir,
+        "assay_identity_mode": assay_identity_mode(lane),
         "revision": __revision__,
         "profile_token": profile_plan["token"] if profiling else None,
         "profile_daemon": profile_plan["daemon"] if profiling else None,
@@ -10104,6 +10461,7 @@ def run_bare_host_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
         print(f"run-gate: DRY RUN — would run in {project_dir}: "
               f"{shlex.join(argv)}", flush=True)
         return 0
+    clear_previous_assay_verdict(lane, project_dir, repo, run_record)
     # RG-55/RG-57 (RW-27b): a bare-host lane IS profiled once profiling is
     # enabled — there is no fresh container/cgroup of run-gate's own to
     # sample, so the daemon path (when reachable) targets run-gate's OWN
@@ -11172,6 +11530,8 @@ def _dispatch(argv: list[str] | None = None, *,
                 project_dir, cfg, cfg_path, args.json,
                 worktree_override=args.worktree), "status-query-failed")
         assay_defaults = cfg.get("assay", central.get("assay", {}))
+        preflight_inflight_assay_contract(args, cfg, central, assay_defaults,
+                                          project_dir)
         imported_lanes = {}
         if "import" in assay_defaults:
             import_repo, import_worktree, import_toplevel = \
@@ -11405,6 +11765,8 @@ def _dispatch(argv: list[str] | None = None, *,
                 central_config_path=central_path,
                 central_config_sha256=central_cfg_sha256)
             record["_project_dir"] = eff_proj
+            if lane.get("kind") == "assay":
+                record["_assay_identity_mode"] = assay_identity_mode(lane)
             if _admission_ticket is not None:
                 record["admission"] = _admission_ticket.result()
                 record["admission_deadline"] = _admission_ticket.run_deadline
@@ -11658,20 +12020,28 @@ def _dispatch(argv: list[str] | None = None, *,
                 result = LaneResult("ERROR", code,
                                     f"assay verdict unavailable at {verdict_path}: {exc}")
             else:
-                provenance = verdict_doc.get("judge_provenance") \
-                    if isinstance(verdict_doc, dict) else None
-                outcome = verdict_doc.get("outcome") \
-                    if isinstance(verdict_doc, dict) else None
-                if not isinstance(provenance, dict) or not {
-                        "name", "version", "artifact", "digest_algorithm", "digest"
-                } <= set(provenance):
+                if not isinstance(verdict_doc, dict):
                     result = LaneResult("ERROR", code,
-                                        "assay verdict has no complete judge_provenance",
-                                        assay_outcome=outcome)
+                                        "assay verdict is not a JSON object")
                 else:
-                    result = assay_lane_result(
-                        code, outcome, judge_provenance=provenance,
-                        reason=verdict_doc.get("reason_code"))
+                    identity_mode = (record.get("_assay_identity_mode")
+                                     if record else None)
+                    if not isinstance(identity_mode, str) \
+                            or identity_mode not in ASSAY_IDENTITY_MODES:
+                        result = LaneResult(
+                            "ERROR", code,
+                            "missing-or-invalid-assay-identity-mode")
+                    else:
+                        provenance = verdict_doc.get("judge_provenance")
+                        result = assay_lane_result(
+                            code, verdict_doc.get("outcome"),
+                            judge_provenance=provenance,
+                            source_mode=identity_mode == "source",
+                            source_version=verdict_doc.get("assay_version"),
+                            source_commit=verdict_doc.get("commit"),
+                            expected_source_commit=(record.get("commit")
+                                                    if record else None),
+                            reason=verdict_doc.get("reason_code"))
         elif lane["kind"] == "assay":
             result = LaneResult("PASS" if code == 0 else "FAIL", code)
         else:
@@ -11688,6 +12058,11 @@ def _dispatch(argv: list[str] | None = None, *,
                 progress_path)
             archive_failed_assay(args.lane, record, eff_proj, repo, lane,
                                  result.verdict)
+        # A promoted follower retains the private identity mode through this
+        # parser. Remove it before returning; finish() records the parsed
+        # result and must never persist the launch-only mode.
+        if record is not None:
+            record.pop("_assay_identity_mode", None)
         return LaneResult(result.verdict, result.exit_code, result.reason,
                           result.log_path, result.assay_outcome,
                           admission_value, record, args.lane, args.json)

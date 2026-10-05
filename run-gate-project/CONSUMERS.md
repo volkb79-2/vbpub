@@ -374,8 +374,60 @@ sha256 = "tools/assay/assay-<version>.pyz.sha256"
 
 The internal source mode is selected by omitting both fields. The source is
 installed with `--no-deps` from the selected tree, so no registry or ambient
-Assay installation is consulted. The resulting Assay verdict records its
-actual `assay_version`; the selected tree's commit is the source identity.
+Assay installation is consulted. Run-gate uses Python isolated mode (`-I`)
+for both the source check and the actual `assay.cli` command, so `PYTHONPATH`
+does not select another package. Before the lane runs, it inspects the
+consumer directory without executing its contents: a regular local `assay`
+module or package is rejected, while a namespace-only `assay/` directory is
+allowed. It then resolves the installed package spec to the selected tree's
+`assay/src/assay/__init__.py`. Afterward it requires a non-empty
+`assay_version` and a full Git `commit` in the verdict that matches the run
+record's selected commit. Missing identity or a different commit makes the
+lane ERROR. This is source identity, not an artifact digest; external
+immutable mode continues to require `judge_provenance`. Run-Gate accepts full
+SHA-1 and SHA-256 commit IDs here; Assay's P22 snapshot source still requires
+SHA-1 object storage for high-rigor snapshot lanes.
+
+An inflight Assay record stores whether that run launched in source or
+artifact mode. Re-attachment uses the recorded mode even if `run-gate.toml`
+has changed since launch; it does not reinterpret an old verdict under the
+current config. If the lane has changed from Assay to another kind, it also
+refuses rather than treating the old Assay result as a command result.
+Inflight schema 2 adds this field, so an older schema is
+refused instead of guessed. For a container-runner record, a missing or
+invalid mode, or an Assay artifact path that differs from the lane's derived
+verdict/progress paths, is refused before the Assay inventory Docker probe
+or admission, and the record is preserved. An Assay artifact path on a
+non-Assay record is also refused. A
+lost container's old mode does not carry over to its fresh
+replacement. A promoted follower retains the launch-time mode until its
+caller parses the verdict; the history record and parsed result do not expose
+that private field. For an ephemeral-container lane, after confirming the old
+container has stopped, `./run-gate.py <lane> --fresh` discards that record and
+starts under the current config. Host and exec lanes cannot use `--fresh`; ask
+the named runner's lifecycle owner to confirm it has stopped, then remove the
+stale recovery record at the path named in the refusal. On an older-schema
+record marked with a non-container `runner` (such as `exec`), `--fresh` also
+refuses; use that runner's lifecycle owner to confirm the run is over before
+removing the record.
+Before imported Assay inventory or sequence admission, Run-Gate checks the
+requested lane's recovery record and every sequence node and member. If a
+lane was changed to `kind = "sequence"` while its old Assay or command
+container record remains, Run-Gate refuses before starting members. Ask the
+prior runner's lifecycle owner to confirm it has stopped, then remove the
+record at the path named in the refusal. A record owned by `exec` is also
+refused before inventory or admission, including when `--fresh` was requested.
+
+If a lane changes from an ephemeral container to host or exec while its old
+container record remains, Run-Gate refuses before imported Assay inventory or
+lane execution. The current mode cannot safely re-attach to or replace that
+container; ask its prior lifecycle owner to confirm it has stopped, then
+remove the recovery record named in the refusal.
+
+Assay inventory and toolchain probes in ephemeral environments receive the
+same configured container user and RUN_GATE_EXTRA_MOUNTS as the judged lane.
+An imported command or tool mounted there can therefore be checked before the
+lane starts, under the permissions it will actually have.
 
 Division of labor, spelled out:
 
@@ -401,7 +453,8 @@ judged worktree so a deleted or recreated worktree can resume:
 
 For a nested project, the key includes its path relative to the checkout, so
 two projects named `backend` do not share state. A project outside that
-checkout uses a sanitized resolved path key. By default the state root is
+checkout uses the separate `assay-state-external/<sha256>` namespace, keyed
+by its resolved absolute path. By default the state root is
 `<checkout owning the shared .git>/.run-gate`. A container environment whose
 durable mount is at another in-container path declares that exact path as
 `state_root` in its `[environments.<name>]` table. The runner owner must mount

@@ -7,7 +7,7 @@ moves. Normative behavior lives in SPEC.md; entry-by-entry rationale lives in
 KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 
 ## [Unreleased]
-<!-- This unreleased block describes source rev 51. At release, fold these entries into the generated dated section by hand; the release generator does not clear this block. -->
+<!-- This unreleased block describes source rev 54. At release, fold these entries into the generated dated section by hand; the release generator does not clear this block. -->
 
 - **Runner occupancy and admission preflight (RG-64/RG-80, rev 51).**
   `run-gate status [--worktree PATH] [--json]` joins selected-tree inflight
@@ -23,6 +23,19 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
   `[environments.<name>].state_root` names a different container mount point,
   `doctor` checks once per assay environment, and `--dry-run` prints the probe.
   run-gate leaves durable-root creation and mounting to the environment owner.
+
+- **RG-81 recovery and inventory follow-up (rev 53).** Container-runner
+  records left after a lane changes to host or exec mode refuse before
+  imported inventory, admission, or execution. Ephemeral inventory probes use
+  the lane's configured user and extra mounts. Malformed sequence identity
+  values produce a recovery-safe refusal.
+
+- **Collision-resistant Assay state keys (RG-49, rev 54).** In-repository
+  project paths keep their existing relative state layout. External worktree
+  project paths use a SHA-256 key so distinct resolved paths cannot collapse
+  to the same directory after slash replacement.
+
+- **Source-backed Assay identity and recovery (RG-81, rev 54; introduced in rev 50 and corrected in rev 53).** Internal editable installs use isolated Python to verify the selected worktree package and bind the verdict to its commit. Inflight schema 2 preserves source/artifact mode and exact verdict/progress paths across re-attachment. Older schemas refuse rather than being guessed or overwritten; recover with `--fresh` only for an ephemeral-container lane after confirming the run is no longer live. Host and exec records require the lifecycle owner's confirmation before removal. Recovery checks sequence records, members, and foreign runners before imported inventory or admission. External artifact lanes continue to require `judge_provenance`.
 
 - **Closed results and explicit environment modes (RG-78, rev 49).** All
   normal CLI outcomes now pass through `finish(LaneResult)` and the closed
