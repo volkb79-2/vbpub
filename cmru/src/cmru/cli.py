@@ -4691,16 +4691,18 @@ def _release_or_status(verb: str, args, rest: List[str]) -> None:
     preflight_snapshot_handoff = _ACTIVE_RELEASE_PREFLIGHT_SNAPSHOT
     if preflight_snapshot_handoff is not None:
         if transaction_child or vargs.dry_run or vargs.resume:
-            raise RuntimeError(
+            log_error(
                 "the internal origin/main snapshot handoff is valid only for a "
                 "new family release launcher"
             )
+            sys.exit(exit_codes.FAILURE)
         if len(transaction.project_git_family_groups(
             repo_root, [configs[name] for name in release_scope],
         )) != 1:
-            raise RuntimeError(
+            log_error(
                 "the internal origin/main snapshot handoff cannot span Git families"
             )
+            sys.exit(exit_codes.FAILURE)
 
     if not transaction_child:
         _release_launcher(

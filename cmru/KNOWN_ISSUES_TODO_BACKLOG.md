@@ -1645,9 +1645,11 @@ gate exercises the regression; README, DESIGN-GUIDE, CONSUMERS, and SPEC documen
 
 **Oracles:** `tests/test_builtin_handlers.py::test_wheel_build_nested_project_mounts_the_worktree_root` (real linked worktree, `libraries/pkg`: mount is the worktree root, none of only `libraries`), `..._top_level_project_argv_is_unchanged`, `..._copied_one_project_repo_mounts_the_parent`, `..._forwards_build_env_by_name_only`, `..._forwards_no_env_when_unset`; each fix was reverted by hand and a test failed.
 
-### KI-54 — `release --dry-run` with an internal snapshot handoff escapes as an uncaught `RuntimeError` instead of exit 1, and its test has been red on main since 2026-10-04 — *open, severity: major (the coverage and canary lanes stop on it with `--maxfail=1`, so no cmru change can earn a green gate)*
+### KI-54 — `release --dry-run` with an internal snapshot handoff escapes as an uncaught `RuntimeError` instead of exit 1, and its test has been red on main since 2026-10-04 — *FIXED 2026-10-05 (program 2026-10 W0-REL, REL-01), severity: major*
 
-**Status:** open (filed 2026-10-05 by the cli-extended program while gating KI-53; not caused by that program — reproduced identically at main `c0d1f4410`, before the cli-extended merge).
+**Fixed:** BOTH handoff guards in `_release_or_status` (`cli.py`: "valid only for a new family release launcher" and "cannot span Git families") now `log_error(msg); sys.exit(exit_codes.FAILURE)` instead of raising `RuntimeError`. The review found the sibling guard had the identical defect (its test was also red). Tests: `tests/test_cli_release_snapshot_boundaries.py::test_release_rejects_internal_handoff_on_dry_run` and `::test_release_rejects_an_internal_snapshot_spanning_multiple_git_families`.
+
+**Status (historical):** was open (filed 2026-10-05 by the cli-extended program while gating KI-53; not caused by that program — reproduced identically at main `c0d1f4410`, before the cli-extended merge).
 
 **Observed:** `tests/test_cli_release_snapshot_boundaries.py::test_release_rejects_internal_handoff_on_dry_run` (`:137`) expects `cli.main(["release", "demo", "--dry-run", "--config", "cmru.orchestration.toml"]) == 1` and the message "valid only for a new family release launcher" on stderr. `cli.py` (around `:4581`) raises `RuntimeError("the internal origin/main snapshot handoff is valid only for a new family release launcher")` when `_ACTIVE_RELEASE_PREFLIGHT_SNAPSHOT` is set and `transaction_child or vargs.dry_run or vargs.resume`; the exception propagates out of `cli.main` uncaught, so the test fails. The guard and test arrived with the 2026-10-04 snapshot-boundary work (`071046398`, `fccd44be3`, `0f96d124f`).
 
