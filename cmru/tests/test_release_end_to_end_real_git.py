@@ -48,7 +48,7 @@ artifacts = ["wheel"]
 scm_dist = "demo"
 
 [project.version]
-strategy = "scm"
+strategy = "@STRATEGY@"
 bump = "conventional"
 
 [project.release]
@@ -84,7 +84,7 @@ def _run(*args, cwd, env=None, check=True):
 class _Env:
     """A seeded bare origin, a caller clone and the fake-publisher knobs."""
 
-    def __init__(self, root: Path) -> None:
+    def __init__(self, root: Path, strategy: str = "scm") -> None:
         self.root = root
         self.origin = root / "origin.git"
         self.repo = root / "repo"
@@ -122,7 +122,9 @@ class _Env:
         seed.mkdir()
         self.git("init", "-q", "-b", "main", cwd=seed)
         (seed / "demo").mkdir()
-        (seed / "demo" / "cmru.toml").write_text(_CMRU_TOML)
+        (seed / "demo" / "cmru.toml").write_text(
+            _CMRU_TOML.replace("@STRATEGY@", strategy)
+        )
         (seed / "demo" / "CHANGES.md").write_text(
             "# Changes\n\n## [Unreleased]\n\n<!-- cmru: release history -->\n"
         )
@@ -206,9 +208,9 @@ git push -q origin HEAD:refs/heads/main
         return self.mark.read_text().split() if self.mark.exists() else []
 
 
-@pytest.fixture
-def e2e(tmp_path, monkeypatch):
-    env = _Env(tmp_path)
+@pytest.fixture(params=["scm"])
+def e2e(request, tmp_path, monkeypatch):
+    env = _Env(tmp_path, strategy=request.param)
     # Tests that call transaction.promote_workspace in-process make merge commits
     # too; they must not depend on the host having a global git identity.
     for key in ("GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME",
@@ -379,6 +381,66 @@ def test_rel05_failed_build_rolls_the_tag_back_and_resume_proceeds(e2e):
     assert f"refs/tags/{_TAG}" in e2e.origin_tags()
     assert e2e.published() == ["pub"]
     assert len(e2e.worktrees()) == 1
+
+
+@pytest.mark.parametrize("e2e", ["file:VERSION"], indirect=True)
+def test_rel05_file_strategy_resume_retags_the_same_commit_without_a_self_entry(e2e):
+    e2e.fail_build.write_text("")
+    failed = e2e.release()
+    assert failed.returncode != 0, failed.log
+    assert e2e.origin_tags() == {}
+    workspace = e2e.retained_workspace()
+    candidate = e2e.out("rev-parse", "HEAD", cwd=workspace)
+    assert "chore: bump demo-v to 0.1.0" in e2e.out(
+        "log", "--format=%s", cwd=workspace
+    )
+
+    e2e.fail_build.unlink()
+    resumed = e2e.release("--resume", str(workspace))
+
+    assert resumed.returncode == 0, resumed.log
+    assert f"refs/tags/{_TAG}" in e2e.origin_tags()
+    e2e.git("fetch", "-q", "origin", "--tags")
+    # The tag is the exact commit the failed attempt had gated, not a new prepare commit.
+    assert e2e.out("rev-list", "-n1", _TAG) == candidate
+    history = e2e.out("show", f"{_TAG}:demo/CHANGES.md")
+    assert "chore: bump" not in history
+    assert history.count("## [0.1.0]") == 1
+
+
+def test_m16_a_non_race_push_failure_fails_at_once_without_merging(e2e, monkeypatch):
+    workspace = _real_candidate(e2e, "cmru/release/auth")
+    merges: list[str] = []
+    monkeypatch.setattr(
+        transaction, "_merge_origin_main_into_candidate",
+        lambda *a, **k: merges.append("merge") or True,
+    )
+    real = transaction.run_remote_git
+
+    def failing(path, *args, **kwargs):
+        if args[:1] == ("push",):
+            return subprocess.CompletedProcess(args, 1, "", "remote: Permission denied (auth)")
+        return real(path, *args, **kwargs)
+
+    monkeypatch.setattr(transaction, "run_remote_git", failing)
+
+    with pytest.raises(RuntimeError, match="was not promoted") as raised:
+        transaction.promote_workspace(workspace, project_paths=("demo",))
+
+    assert merges == []
+    assert "Permission denied" in str(raised.value)
+    assert "Gave up" not in str(raised.value)
+
+
+def test_m14_a_candidate_already_containing_origin_main_needs_no_merge(e2e):
+    workspace = _real_candidate(e2e, "cmru/release/contained")
+
+    merged = transaction._merge_origin_main_into_candidate(
+        workspace, git_auth=None, project_paths=("demo",), release_label="x",
+    )
+
+    assert merged is False  # origin/main is already an ancestor: nothing to merge
+    assert e2e.out("rev-list", "--merges", "--count", "HEAD", cwd=workspace.path) == "0"
 
 
 def test_rel05_failed_publish_keeps_the_tag_and_prints_recovery(e2e):

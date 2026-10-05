@@ -250,6 +250,21 @@ then `git push origin HEAD:refs/heads/main` from the retained worktree.
 > cause of a stale generated changelog section (REL-02). Merge `origin/main` into the
 > candidate, never the other way round.
 
+### Release history behaviour changes (REL-02, REL-10)
+
+- **A tagged release is refused while a plain `## [Unreleased]` section has a non-empty body**
+  (KI-30). cmru generates the notes for the release, so hand-written text left under
+  `[Unreleased]` would be silently dropped or duplicated. Remedy: move the text into the
+  generated notes of the release (or the project's own release-notes source), or empty the
+  section (a comment may stay). A comment-only body is accepted.
+- **Regenerating a stale generated section overwrites hand edits inside it.** When project
+  commits landed after a generated section's `source-end` cursor (for example on `--resume`
+  of a candidate that was prepared earlier), the section is rebuilt in place from the project
+  commit range. Anything edited by hand inside that section is lost; keep hand-written prose
+  outside `<!-- cmru: generated -->` sections. A current section stays byte-identical. cmru's
+  own `file:` version-bump commit (`chore: bump <prefix> to <version>`) is not project work
+  and never makes a section stale, so a resumed `file:` release re-tags the same commit.
+
 ### Post-publication recovery
 
 Once the publish (`push`) step has begun, cmru does not roll the tag back: public artifacts

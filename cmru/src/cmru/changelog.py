@@ -233,7 +233,16 @@ def _project_commits_after_cursor(
         )
     except RuntimeError:
         return False
-    return bool(newer)
+    # cmru's own ``file:`` version-bump commit lands AFTER the section is generated
+    # and is release machinery, not project work: a resumed release must not count it
+    # (it would regenerate the section with a self-referential "chore: bump" entry
+    # and re-tag a new commit).
+    bump_subject = f"chore: bump {getattr(project, 'prefix', None) or project.name + '-v'} to "
+    return any(
+        not item.startswith(bump_subject)
+        for items in newer.values()
+        for item in items
+    )
 
 
 def _generated_outputs_changed(repo_root: Path, project: Any) -> bool:

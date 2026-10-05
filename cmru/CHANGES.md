@@ -10,8 +10,9 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
      KI-19/20/21/23/25 write-up that was here is now [5.2.0] below. -->
 
 <!-- cleared for 6.0.0; content regenerated (the generated release section is built
-     from the project commit range; the pre-clear hand-written text is carried in
-     nyxloom-trove/reports/PROGRAM-2026-10-W0-REL-REPORT.md for the 6.0.0 notes). -->
+     from the project commit range). The pre-clear hand-written text is recoverable
+     from git history at `68a03b4fe^:cmru/CHANGES.md`; the controller folds it into
+     the 6.0.0 notes. -->
 
 <!-- cmru: release history -->
 

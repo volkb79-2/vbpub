@@ -1656,3 +1656,35 @@ gate exercises the regression; README, DESIGN-GUIDE, CONSUMERS, and SPEC documen
 **Fix direction:** either convert the refusal to the CLI's failure type (exit 1 with the message on stderr, matching the sibling multi-family refusal at the next guard) or, if escaping is intended for an internal-only path, correct the test; whichever the snapshot-boundary owner intended. Then re-run the `coverage` and `canary` lanes on main.
 
 **Oracle:** the test passes; a controlled wrong implementation that lets the `RuntimeError` escape fails it; the `coverage` lane on main is green.
+
+### KI-55 — The durable candidate backup branch is not re-pushed after a merge-promote (REL-04 follow-up) — *open, severity: minor*
+
+**Observed:** `transaction.promote_workspace` now merges `origin/main` into the candidate when main advanced (`_merge_origin_main_into_candidate`), then pushes `HEAD` to `main`. The origin backup branch `cmru-release-...` (refreshed by `push_backup_branch` before the gate and after each tag commit) still points at the pre-merge tip until the transaction is cleaned up. If promotion then stops (a later retry fails, or the process dies between merge and push), the durable copy on origin lacks the merge commit that exists only in the local retained worktree.
+
+**Fix direction:** call `push_backup_branch` after each successful merge inside the promote loop, before the retry push.
+
+**Oracle:** an end-to-end case where main advances twice and the second promotion attempt fails: the origin candidate branch equals the local worktree tip. Fails on the current code.
+
+### KI-56 — Nothing prevents a publishing step inside the REL-05 tag-rollback window (`build_step = "push"`) — *open, severity: minor*
+
+**Observed:** the REL-05 rollback treats the `build_step` phase as non-publishing and deletes the freshly pushed tag when it fails. A project that sets `build_step = "push"` (or whose build step publishes) would have already published when the rollback runs, so the rollback could delete a tag whose artifacts are public. Config validation accepts it today.
+
+**Fix direction:** refuse `build_step = "push"` (and any step the project declares as publishing) at config validation, with a message naming the rollback guarantee.
+
+**Oracle:** a config with `build_step = "push"` is rejected at load; a normal `build` step is accepted.
+
+### KI-57 — No multi-project or nested-project end-to-end case for merge-promote (REL-15 follow-up) — *open, severity: minor*
+
+**Observed:** `tests/test_release_end_to_end_real_git.py` drives a single project under `demo/`. Merge-promote's project-path check (`project_paths`), the per-project promotion order and the checkpointing are never exercised with two projects in one transaction or a project nested more than one level deep.
+
+**Fix direction:** add an end-to-end case with two projects (one gated while main advances touching only the other project's path) and one nested project.
+
+**Oracle:** the new tests pass; planting the path check as always-true or always-false fails one of them.
+
+### KI-58 — Non-empty `## [Unreleased]` bodies in three estate changelogs will make their next tagged releases fail (KI-30 follow-up, estate) — *open, severity: major (blocks releases)*
+
+**Observed:** since W0-REL (REL-10 / KI-30) a tagged release is refused while a plain `## [Unreleased]` section has a non-empty body. `assay/CHANGES.md`, `run-gate-project/CHANGES.md` and `scripts/cgroup-profiler/CHANGES.md` carry non-empty bodies today, so their next releases will be refused.
+
+**Fix direction:** per project, move the text into the release notes (generated section) or empty it, keeping a comment. Out of W0-REL's scope; an estate follow-up for the controller.
+
+**Oracle:** `cmru release --dry-run` for each of the three projects passes the changelog check.
