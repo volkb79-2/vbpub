@@ -217,6 +217,30 @@ statuses map to PASS only at zero, and pytest 5 is FAIL with reason
 outcomes are FAIL. Use verdict plus the raw code; never infer that run-gate
 itself returned an ERROR from a raw lane code of 2.
 
+### Init reaping and resource events
+
+When another tool starts run-gate inside a container, give it an init reaper.
+Without one, run-gate refuses to start as PID 1. A Docker launcher adds
+`--init` to its existing `docker run` options. In Compose, add `init: true`
+to the existing service while keeping its mounts and cgroup placement:
+
+```yaml
+services:
+  test-runner:
+    image: tester-unified:local
+    init: true
+    # Keep the service's existing cgroup_parent, mounts and command here.
+```
+
+For each real lane, run-gate compares the `pids.events` `max` and
+`memory.events` `oom_kill` counters in the cgroup containing the run-gate
+process. A counter increase forces ERROR/2 even when the raw lane command
+returns zero; `--json` retains that raw status in `exit_code`. If the cgroup
+path or counters cannot be read, run-gate returns an infrastructure ERROR
+instead of certifying an unobserved run. `--dry-run` does not read or change
+these counters. The read-only `--version` operation remains available when
+run-gate is PID 1.
+
 An older config can be migrated without reserializing its TOML or dropping
 comments:
 

@@ -58,6 +58,25 @@ and requiring the operator to review the resulting diff. It migrates one
 file per call so a project config and an ancestor `run-gate.root.toml` can be
 checked independently.
 
+## PID 1 and cgroup resource events
+
+A Python supervisor running as container PID 1 does not reap orphaned
+grandchildren. Process-heavy tests can therefore fill the container's process
+limit with zombies while the lane keeps running. run-gate refuses that
+process placement and names Docker `--init` or Compose `init: true` as the
+remedy. A read-only version query remains available because it starts no
+supervisor work.
+
+Exit status alone cannot establish that a lane had enough process and memory
+capacity: a test command can ignore a failed fork and still exit zero, and an
+OOM kill may look like a test failure. run-gate compares the same cgroup's
+v2 `pids.events:max` and `memory.events:oom_kill` counters immediately before
+and after each real lane. Those monotone kernel counters identify resource
+events without parsing test output. Any increment forces ERROR/2 and retains
+the lane's raw status for diagnosis. Unreadable or inconsistent counters also
+produce ERROR because run-gate cannot certify the run. A dry run starts no
+lane and does not sample these counters.
+
 ## Preflight probes preserve lane context
 
 An Assay inventory or toolchain probe must reach the same ephemeral

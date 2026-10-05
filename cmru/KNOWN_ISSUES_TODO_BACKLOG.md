@@ -1576,7 +1576,7 @@ gate exercises the regression; README, DESIGN-GUIDE, CONSUMERS, and SPEC documen
 - 19,108 zombies had one parent: PID 1414479, `python3 ./run-gate.py --base main assay-r2`, which is PID 1 of container `pedantic_antonelli` (`tester-unified:local`, cgroup `dev.slice/dev-gates.slice/docker-df361f8a….scope`). 19,057 of them are `git`, 42 `sleep`, 9 `docker`.
 - The container matches `cmru tester-gate`'s argv exactly: `--rm`, worktree bind-mounted at `/worktree`, a relative `--workdir`, `--memory 1g`, `--cpus 2.5`, `CGROUP_PARENT_*` env, the command as the image CMD. `docker inspect` shows `HostConfig.Init = <nil>`.
 - Zombies accrued from 02:40:55Z to 03:11:18Z (~10/s). At 03:11Z the container's `pids.current` reached **19,115 of `pids.max` 19,117** and zombie growth stopped — because nothing could fork any more. `docker exec pedantic_antonelli sh -c true` then failed with `OCI runtime exec failed: … procReady not received`.
-- **Consequence (filed separately as assay B145):** the assay R2 campaign inside kept running and recorded fork failures as kills. Before 03:11Z: 18 candidates, 13 killed (median 155 tests to the kill), 5 survived. After: **192 of 192 killed, median 2 tests, 91 killed by the first test** — a false 100% in the making.
+- **Consequence (filed separately as assay B145):** run-gate and Assay cannot certify a campaign after the runner cgroup reaches its process limit. Per the operator's contamination notice, the campaign's state and progress were discarded; post-03:11Z candidate outcomes and its final verdict are invalid and are not used as evidence here.
 
 **Root cause (reproduced):**
 1. `src/cmru/tester_gate.py:150` `_docker_run_argv` builds `docker run --cgroup-parent=… --rm --mount … <image> <command>` with no `--init` (the tester-gate call at `:577`; the dind sidecar at `:472` and the probes at `:233`/`:297` are separate). The image has no init in its ENTRYPOINT, so the gate command is PID 1, and an ordinary program as PID 1 never `wait()`s for orphans it did not spawn.
@@ -1590,6 +1590,6 @@ gate exercises the regression; README, DESIGN-GUIDE, CONSUMERS, and SPEC documen
 
 **Oracles:** the tester-gate argv contains `--init` (a controlled wrong implementation without it fails); in a scratch tester-gate run whose command makes 200 `git commit`s in a temp repo and then exits, the container ends with zero zombies (`ps -eo stat` inside, before exit); with (b) and no `--init`, the same run also leaves zero; a command that exhausts a low `--pids-limit` makes the step fail infrastructure-red via `pids.events`.
 
-**Immediate operator action (not done here — the container belongs to another session):** the campaign in `pedantic_antonelli` (worktree `.worktrees/run-gate-r2-assay-venv-20261005`, lane `assay-r2`) must be stopped and its R2 evidence after 03:11Z discarded; zombies clear when its PID 1 exits.
+**Immediate operator action (completed 2026-10-05):** the operator confirmed the campaign container is gone and no zombies remain, discarded its Assay state and progress, and invalidated all post-03:11Z candidate outcomes and the final verdict. This notice is recorded here; none of that campaign's post-event results are evidence.
 
 **Related:** assay B145 (false kills under fork exhaustion), run-gate RG-83 (refuse to run as an unreaping PID 1), dstdns D-670 TEST-RUNNER-INIT.

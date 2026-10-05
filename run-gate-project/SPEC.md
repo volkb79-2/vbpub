@@ -86,6 +86,10 @@ sequence-record identity values.
 Rev 17 (run-gate rev 54): RG-49 hashes an external project's resolved path for
 its durable Assay state key; project paths inside the checkout keep their
 existing relative layout.
+Rev 18 (run-gate rev 55): RG-83 refuses to run as container PID 1 and compares
+the run-gate cgroup's `pids.events:max` and `memory.events:oom_kill` around
+each real lane; any resource event or unreadable comparison returns
+infrastructure ERROR with the raw lane status retained.
 Distilled from `README.md` (design
 authority), `CONSUMERS.md` (adoption contract), `HANDOFF-P01` (build contract)
 and the controller's session amendments (§8). Requirement IDs (`R-xx`) are the
@@ -206,6 +210,18 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   `log_path`, `assay_outcome`, and `admission`. The human lane summary names
   verdict, raw code when present, reason when present, and log path when one
   exists.
+- `R-04c` run-gate refuses to start as PID 1, because no init process exists
+  to reap orphaned lane processes. The one `--version` operation remains
+  available without configuration; other invocations return ERROR with the
+  remedy to start Docker containers with `--init` or Compose services with
+  `init: true`. Before and after every real lane execution, run-gate reads
+  `pids.events` (`max`) and `memory.events` (`oom_kill`) from the cgroup
+  containing this run-gate process, resolving its cgroup v2 path from
+  `/proc/self/cgroup`. An increment in either counter forces ERROR regardless
+  of the lane's raw status, retaining that status as `exit_code`. If the
+  counters cannot be read, the cgroup changes, or either counter moves
+  backwards, run-gate returns an infrastructure ERROR rather than claiming a
+  clean lane. Dry runs do not sample counters.
 - `R-05` The tool prints, before executing: the selected project config path
   (`run-gate: config: <path>`), revision, lane name, environment source,
   resolved slice + its source (on exec lanes this is naming-only disclosure

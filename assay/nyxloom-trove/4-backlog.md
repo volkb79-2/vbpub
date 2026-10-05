@@ -192,7 +192,7 @@ the per-entry evidence table, WIP-branch findings, and ID collisions.
 
 **Filed after the 2026-09-23 triage**
 - B106 — provenance-safe selective mutation reruns across source/test changes — DONE (`assay-v7.1.0`, merge `e5e9b95c`, A-461; registered tester-unified PASS). Inert for B105 until B112 drops `--override-ini` and B114 removes pytest-cov from the R2 command. It is listed here for one cycle only, since this section otherwise lists non-DONE items. Its acceptance boxes were not individually re-audited; the evidence is the Wave C P5 report.
-- B145 — fork exhaustion classified as `killed` (false kills at `pids.max`) — OPEN, critical (filed 2026-10-05; 192/192 false kills observed on run-gate-project's assay-r2 campaign)
+- B145 — fork exhaustion classified as `killed` (false kills at `pids.max`) — OPEN, critical (filed 2026-10-05; the post-03:11Z R2 campaign results and final verdict were discarded)
 - B107 — time-aligned candidate liveness evidence to distinguish hangs from resource stalls — OPEN (filed 2026-09-26 from RG-55 P6 exact-tree R2 campaigns)
 - B108 — deterministic campaign summaries and automatic post-lane closeout — OPEN (filed 2026-09-26 from repeated manual analyses across Assay consumer campaigns)
 - B109 — opt-in, dependency-aware carry-forward of unaffected B106 kills — OPEN (filed 2026-09-26 at operator request)
@@ -11849,10 +11849,7 @@ Fix: add both names in pytest's own precedence order, and check the order agains
 
 **Status: OPEN, severity critical (filed 2026-10-05; observed on a live campaign, investigated read-only with `host-escape`).** A false kill is the worst R2 error: it certifies tests that catch nothing. This violates the estate's contention-agnostic rule — a pressure-affected run is infrastructure/inconclusive, never a product verdict.
 
-**Observed.** Lane `assay-r2` of `run-gate-project` (worktree `.worktrees/run-gate-r2-assay-venv-20261005`, progress `run-gate-project/.assay/progress-r2.jsonl`, state `.run-gate/assay-state/run-gate-project/`), running in a `cmru tester-gate` container without an init (cmru KI-52). git's detached auto-maintenance leaked one zombie per commit until the container's `pids.current` reached 19,115 of `pids.max` 19,117 at 03:11:18Z; from then on, no process could be forked reliably (`docker exec … sh -c true` → `procReady not received`).
-- Before 03:11Z: 18 candidates — 13 killed (median **155** tests completed before the kill), 5 survived.
-- After 03:11Z: **192 candidates — 192 killed, 0 survived; median 2 tests to the kill; 91 killed at the first test.**
-- The state records carry `execution.mode: "full"`, `outcome_bucket: "killed"`, and no stderr, so nothing in the verdict distinguishes these from real kills.
+**Observed.** Lane `assay-r2` of `run-gate-project` (worktree `.worktrees/run-gate-r2-assay-venv-20261005`) ran in a `cmru tester-gate` container without an init (cmru KI-52). git's detached auto-maintenance leaked one zombie per commit until the container's `pids.current` reached 19,115 of `pids.max` 19,117 at 03:11:18Z; from then on, no process could be forked reliably (`docker exec … sh -c true` → `procReady not received`). Per the operator's 2026-10-05 contamination notice, the campaign's state and progress were discarded; all post-03:11Z candidate outcomes and the final verdict are invalid and are not used as evidence here.
 
 **Expected.** A candidate whose execution hit a resource limit outside the mutant's control is never `killed`: it is unresolved (retried, or reported as an infrastructure outcome) and the lane cannot pass on it.
 

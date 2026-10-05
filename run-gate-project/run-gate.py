@@ -14,7 +14,7 @@ Judgment policy is NOT here: assay lanes reference assay.toml by name.
 See run-gate-project/README.md (design authority) and CONSUMERS.md (adoption).
 """
 # stdlib only — this launcher must run on a fresh clone with zero installs.
-__revision__ = 54  # rev 54: RG-49 external-key collision fix
+__revision__ = 55  # rev 55: RG-83 PID 1 and cgroup resource-event guard
 # selective assay and command requests; failed-assay evidence; completed-fail
 # and partial footprint manifests; native sequences with trunk bases; shared
 # assay inventory import; documented durable --state-dir; closed results,
@@ -123,6 +123,7 @@ import ast
 import calendar
 import copy
 import contextlib
+from collections.abc import Callable
 from dataclasses import dataclass, field
 import fcntl
 import hashlib
@@ -141,7 +142,7 @@ import sys
 import threading
 import time
 import tomllib
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 # A console-script import (including the unit suite's file-based loader) may
 # not put this module's sibling directory on sys.path. The canonical launcher
@@ -566,6 +567,134 @@ class GateBudgetExceeded(GateError):
         self.exit_code = exit_code
         self.log_path = log_path
         super().__init__("lane budget exceeded; assay state is resumable")
+
+
+class LaneCgroupEventError(GateInfraError):
+    """A lane's cgroup rejected forks or killed a process for memory pressure."""
+
+    def __init__(self, lane_exit_code: int | None, message: str):
+        self.lane_exit_code = lane_exit_code
+        super().__init__(message)
+
+
+@dataclass(frozen=True)
+class CgroupEventSnapshot:
+    cgroup: str
+    pids_max: int
+    oom_kill: int
+
+
+def _read_cgroup_event(path: Path, key: str) -> int:
+    try:
+        text = path.read_text(encoding="ascii")
+    except (OSError, UnicodeError) as exc:
+        raise GateInfraError(
+            f"cannot read cgroup event file {path}: {exc}") from exc
+    values: dict[str, int] = {}
+    for line_number, line in enumerate(text.splitlines(), 1):
+        fields = line.split()
+        if (len(fields) != 2 or not re.fullmatch(r"[a-z_]+", fields[0])
+                or not re.fullmatch(r"[0-9]+", fields[1])
+                or fields[0] in values):
+            raise GateInfraError(
+                f"malformed cgroup event file {path}, line {line_number}")
+        values[fields[0]] = int(fields[1], 10)
+    if key not in values:
+        raise GateInfraError(
+            f"cgroup event file {path} does not report {key!r}")
+    return values[key]
+
+
+def read_current_cgroup_events(
+        proc_cgroup: Path = Path("/proc/self/cgroup"),
+        cgroup_root: Path = Path("/sys/fs/cgroup")) -> CgroupEventSnapshot:
+    """Read v2 event counters for this process's cgroup, mapping private
+    namespaces (`0::/`) and host cgroup paths without guessing a directory.
+    """
+    try:
+        rows = proc_cgroup.read_text(encoding="ascii").splitlines()
+    except (OSError, UnicodeError) as exc:
+        raise GateInfraError(
+            f"cannot identify run-gate's cgroup from {proc_cgroup}: {exc}") from exc
+    paths = []
+    for row in rows:
+        parts = row.split(":", 2)
+        if len(parts) == 3 and parts[0] == "0" and parts[1] == "":
+            paths.append(parts[2])
+    if len(paths) != 1:
+        raise GateInfraError(
+            f"cannot identify one cgroup v2 path in {proc_cgroup}; "
+            "run-gate requires readable pids.events and memory.events")
+    cgroup_path = PurePosixPath(paths[0])
+    if (not cgroup_path.is_absolute()
+            or any(part in ("..", ".") for part in cgroup_path.parts)):
+        raise GateInfraError(
+            f"invalid cgroup v2 path {paths[0]!r} in {proc_cgroup}")
+    try:
+        root = cgroup_root.resolve(strict=True)
+        current = root.joinpath(*cgroup_path.parts[1:]).resolve(strict=True)
+        current.relative_to(root)
+    except (OSError, ValueError) as exc:
+        raise GateInfraError(
+            f"cannot map run-gate's cgroup {paths[0]!r} under "
+            f"{cgroup_root}: {exc}") from exc
+    pids_max = _read_cgroup_event(current / "pids.events", "max")
+    oom_kill = _read_cgroup_event(current / "memory.events", "oom_kill")
+    return CgroupEventSnapshot(
+        "/" + "/".join(cgroup_path.parts[1:]), pids_max, oom_kill)
+
+
+def _cgroup_event_error(before: CgroupEventSnapshot,
+                        after: CgroupEventSnapshot, lane_name: str,
+                        exit_code: int | None) -> LaneCgroupEventError | None:
+    if before.cgroup != after.cgroup:
+        raise GateInfraError(
+            f"lane {lane_name!r}: run-gate moved from cgroup "
+            f"{before.cgroup!r} to {after.cgroup!r} during execution; "
+            "resource events could not be compared")
+    pids_delta = after.pids_max - before.pids_max
+    oom_delta = after.oom_kill - before.oom_kill
+    if pids_delta < 0 or oom_delta < 0:
+        raise GateInfraError(
+            f"lane {lane_name!r}: cgroup event counters moved backwards "
+            "during execution; resource events could not be compared")
+    if not pids_delta and not oom_delta:
+        return None
+    details = []
+    if pids_delta:
+        details.append(f"pids.events max +{pids_delta}")
+    if oom_delta:
+        details.append(f"memory.events oom_kill +{oom_delta}")
+    return LaneCgroupEventError(
+        exit_code,
+        f"lane {lane_name!r}: cgroup resource event during execution "
+        f"({'; '.join(details)}; lane verdict forced to ERROR)")
+
+
+def run_lane_with_cgroup_event_guard(
+        lane_name: str, runner: Callable[[], int], *, enabled: bool = True,
+        proc_cgroup: Path = Path("/proc/self/cgroup"),
+        cgroup_root: Path = Path("/sys/fs/cgroup")) -> int:
+    """Run one lane and refuse to certify it after a cgroup resource event."""
+    if not enabled:
+        return runner()
+    before = read_current_cgroup_events(proc_cgroup, cgroup_root)
+    try:
+        exit_code = runner()
+    except Exception as exc:
+        after = read_current_cgroup_events(proc_cgroup, cgroup_root)
+        lane_exit_code = (exc.exit_code
+                          if isinstance(exc, GateBudgetExceeded) else None)
+        event_error = _cgroup_event_error(
+            before, after, lane_name, lane_exit_code)
+        if event_error is not None:
+            raise event_error from exc
+        raise
+    after = read_current_cgroup_events(proc_cgroup, cgroup_root)
+    event_error = _cgroup_event_error(before, after, lane_name, exit_code)
+    if event_error is not None:
+        raise event_error
+    return exit_code
 
 
 def fail(msg: str) -> None:
@@ -7976,6 +8105,18 @@ def archive_failed_assay(lane_name: str, record: dict | None,
         return None
 
 
+def _report_failed_assay(lane_name: str, record: dict | None,
+                         project_dir: Path, repo: Path, lane: dict,
+                         verdict: str) -> None:
+    recorded_progress = record.get("_progress_path") if record else None
+    progress_path = (Path(recorded_progress)
+                     if isinstance(recorded_progress, str)
+                     else project_dir / assay_progress_rel(lane["assay_lane"]))
+    print_assay_failure_digest(
+        verdict, record.get("log_path") if record else None, progress_path)
+    archive_failed_assay(lane_name, record, project_dir, repo, lane, verdict)
+
+
 def print_assay_failure_digest(verdict: str, log_path: str | None,
                                progress_path: Path) -> None:
     failures, summary = _assay_failure_summary(log_path, progress_path)
@@ -11922,13 +12063,17 @@ def _dispatch(argv: list[str] | None = None, *,
                 if record is not None:
                     record["admission_started_at"] = _iso_utc(
                         budget_started_epoch)
-                code = run_bare_host_lane(lane, args.lane, eff_proj, repo, worktree,
-                                     dry_run=args.dry_run,
-                                     request_base=request_base,
-                                     run_record=record,
-                                     profile_plan=profile_plan,
-                                     budget_deadline=budget_deadline,
-                                     env_source=f"{env_source} (mode host)")
+                code = run_lane_with_cgroup_event_guard(
+                    args.lane,
+                    lambda: run_bare_host_lane(
+                        lane, args.lane, eff_proj, repo, worktree,
+                        dry_run=args.dry_run,
+                        request_base=request_base,
+                        run_record=record,
+                        profile_plan=profile_plan,
+                        budget_deadline=budget_deadline,
+                        env_source=f"{env_source} (mode host)"),
+                    enabled=not args.dry_run)
             elif env.get("mode") == "exec":
                 # Resolved HERE, not inside run_exec_lane: the lock key and
                 # the eventual `docker exec` target must be the SAME
@@ -11947,17 +12092,21 @@ def _dispatch(argv: list[str] | None = None, *,
                 if record is not None:
                     record["admission_started_at"] = _iso_utc(
                         budget_started_epoch)
-                code = run_exec_lane(lane, args.lane, eff_proj, repo, worktree,
-                                     env, env_source,
-                                     container_name, container_name_src,
-                                     container_start_remedy,
-                                     slice_name, slice_src,
-                                     dry_run=args.dry_run,
-                                     request_base=request_base,
-                                     run_record=record,
-                                     profile_plan=profile_plan,
-                                     budget_deadline=budget_deadline,
-                                     budget_started_epoch=budget_started_epoch)
+                code = run_lane_with_cgroup_event_guard(
+                    args.lane,
+                    lambda: run_exec_lane(
+                        lane, args.lane, eff_proj, repo, worktree,
+                        env, env_source,
+                        container_name, container_name_src,
+                        container_start_remedy,
+                        slice_name, slice_src,
+                        dry_run=args.dry_run,
+                        request_base=request_base,
+                        run_record=record,
+                        profile_plan=profile_plan,
+                        budget_deadline=budget_deadline,
+                        budget_started_epoch=budget_started_epoch),
+                    enabled=not args.dry_run)
             else:
                 budget_started_epoch, budget_started_monotonic = admit_now()
                 budget_deadline = (budget_started_monotonic
@@ -11966,19 +12115,22 @@ def _dispatch(argv: list[str] | None = None, *,
                 if record is not None:
                     record["admission_started_at"] = _iso_utc(
                         budget_started_epoch)
-                code = run_container_lane(lane, args.lane, eff_proj, repo,
-                                          worktree, env, env_source,
-                                          slice_name, slice_src,
-                                          dry_run=args.dry_run,
-                                          request_base=request_base,
-                                          fresh=args.fresh,
-                                          run_record=record,
-                                          profile_plan=profile_plan,
-                                          budget_deadline=budget_deadline,
-                                          budget_started_epoch=budget_started_epoch,
-                                          admission_group=(admission_ticket.name
-                                                           if admission_ticket
-                                                           else None))
+                code = run_lane_with_cgroup_event_guard(
+                    args.lane,
+                    lambda: run_container_lane(
+                        lane, args.lane, eff_proj, repo,
+                        worktree, env, env_source,
+                        slice_name, slice_src,
+                        dry_run=args.dry_run,
+                        request_base=request_base,
+                        fresh=args.fresh,
+                        run_record=record,
+                        profile_plan=profile_plan,
+                        budget_deadline=budget_deadline,
+                        budget_started_epoch=budget_started_epoch,
+                        admission_group=(admission_ticket.name
+                                         if admission_ticket else None)),
+                    enabled=not args.dry_run)
         finally:
             active_exception = sys.exc_info()[0] is not None
             admission_release_error = None
@@ -12048,15 +12200,7 @@ def _dispatch(argv: list[str] | None = None, *,
             result = command_lane_result(code, lane)
         if (lane["kind"] == "assay" and not args.dry_run
                 and result.verdict != "PASS"):
-            recorded_progress = record.get("_progress_path") if record else None
-            progress_path = (Path(recorded_progress)
-                             if isinstance(recorded_progress, str)
-                             else eff_proj / assay_progress_rel(
-                                 lane["assay_lane"]))
-            print_assay_failure_digest(
-                result.verdict, record.get("log_path") if record else None,
-                progress_path)
-            archive_failed_assay(args.lane, record, eff_proj, repo, lane,
+            _report_failed_assay(args.lane, record, eff_proj, repo, lane,
                                  result.verdict)
         # A promoted follower retains the private identity mode through this
         # parser. Remove it before returning; finish() records the parsed
@@ -12078,10 +12222,7 @@ def _dispatch(argv: list[str] | None = None, *,
                 and active_lane.get("kind") == "assay"
                 and isinstance(active_project, Path)
                 and isinstance(active_repo, Path)):
-            print_assay_failure_digest(
-                result.verdict, record.get("log_path"),
-                active_project / assay_progress_rel(active_lane["assay_lane"]))
-            archive_failed_assay(getattr(args, "lane", ""), record,
+            _report_failed_assay(getattr(args, "lane", ""), record,
                                  active_project, active_repo, active_lane,
                                  result.verdict)
         return LaneResult(result.verdict, result.exit_code, result.reason,
@@ -12091,7 +12232,19 @@ def _dispatch(argv: list[str] | None = None, *,
                           _json=bool(getattr(args, "json", False)))
     except GateError as exc:
         print(f"{PROG}: {exc}", file=sys.stderr)
-        if isinstance(exc, GateNotRunError):
+        if isinstance(exc, LaneCgroupEventError):
+            result = LaneResult("ERROR", exc.lane_exit_code, str(exc))
+            active_lane = locals().get("lane")
+            active_project = locals().get("eff_proj")
+            active_repo = locals().get("repo")
+            if (record is not None and isinstance(active_lane, dict)
+                    and active_lane.get("kind") == "assay"
+                    and isinstance(active_project, Path)
+                    and isinstance(active_repo, Path)):
+                _report_failed_assay(
+                    getattr(args, "lane", ""), record, active_project,
+                    active_repo, active_lane, result.verdict)
+        elif isinstance(exc, GateNotRunError):
             result = LaneResult("NOT_RUN", reason=exc.reason)
         else:
             result = LaneResult("ERROR", reason=str(exc))
@@ -12119,7 +12272,22 @@ def _sigterm_as_exit(signum, _frame) -> None:
     raise SystemExit(128 + signum)
 
 
+def is_pid1_without_init() -> bool:
+    """PID 1 in a container has no init reaper in front of run-gate."""
+    return os.getpid() == 1
+
+
 def main(argv: list[str] | None = None) -> int:
+    arguments = list(sys.argv[1:] if argv is None else argv)
+    option_argv = (arguments[:arguments.index("--")]
+                   if "--" in arguments else arguments)
+    if is_pid1_without_init() and "--version" not in option_argv:
+        print(f"{PROG}: run-gate is PID 1 with no init: start the container "
+              "with `--init` (Docker) or `init: true` (Compose)",
+              file=sys.stderr, flush=True)
+        return finish(LaneResult(
+            "ERROR", reason="pid1-without-init",
+            _json="--json" in option_argv))
     previous_sigterm = None
     try:
         previous_sigterm = signal.getsignal(signal.SIGTERM)
@@ -12129,9 +12297,8 @@ def main(argv: list[str] | None = None) -> int:
         # ownership belongs to that embedding process in that case.
         previous_sigterm = None
     try:
-        arguments = list(sys.argv[1:] if argv is None else argv)
         try:
-            if "--json" not in arguments:
+            if "--json" not in option_argv:
                 result = _dispatch(arguments)
             else:
                 # Lane JSON is one machine-readable stdout document. Keep the
