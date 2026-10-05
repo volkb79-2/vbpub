@@ -277,3 +277,51 @@ def test_explicit_default_on_a_colliding_dest_is_honoured():
     code = registry.build().run(argv=["go"], stdout=io.StringIO(), stderr=io.StringIO())
     assert code == 0
     assert seen[0].config == "dflt"
+
+
+# -------------------------------------- add_common_options defaults (batch 5)
+
+
+def _common_flags(**kwargs):
+    from cli_extended import ExtendedArgumentParser, add_common_options
+
+    identity = CliIdentity("T", "1.0", "T", command="t")
+    parser = ExtendedArgumentParser(prog="t", identity=identity, top_level=True)
+    add_common_options(parser, identity, **kwargs)
+    return set(parser._option_string_actions)
+
+
+def test_add_common_options_defaults_include_json_progress_yes_but_not_traceback_or_dry_run():
+    flags = _common_flags()
+    assert {"--json", "--progress", "--yes"} <= flags
+    assert "--traceback" not in flags
+    assert "--dry-run" not in flags
+
+
+def test_add_common_options_each_opt_in_flag_adds_only_its_control():
+    assert "--traceback" in _common_flags(include_traceback=True)
+    assert "--dry-run" not in _common_flags(include_traceback=True)
+    assert "--dry-run" in _common_flags(include_dry_run=True)
+    assert "--traceback" not in _common_flags(include_dry_run=True)
+
+
+# ------------------------------- Markdown reference shows --dry-run per verb (H4)
+
+
+def test_markdown_reference_lists_dry_run_only_under_verbs_that_enable_it():
+    from cli_extended import HelpCatalog
+
+    identity = CliIdentity("T", "1.0", "T", command="t")
+    catalog = HelpCatalog(
+        identity,
+        prog="t",
+        verbs=(
+            VerbSpec("plans", description="plans things", mutating=True, dry_run=True),
+            VerbSpec("plain", description="does not plan"),
+        ),
+    )
+    text = catalog.render_markdown()
+    plans = text.split("### `plans`")[1].split("### `plain`")[0]
+    plain = text.split("### `plain`")[1]
+    assert "--dry-run" in plans
+    assert "--dry-run" not in plain
