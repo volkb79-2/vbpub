@@ -346,6 +346,10 @@ def test_pids_limit_refuses_unlimited_or_malformed_values(value):
         tester_gate.resolve_pids_limit(value)
 
 
+@pytest.mark.skipif(
+    not (REPO_ROOT / "cmru.orchestration.toml").exists(),
+    reason="repository-root configs absent (isolated canary tree)",
+)
 def test_estate_configs_declare_the_pids_limit_and_pinned_helper_images():
     orchestration = tomllib.loads((REPO_ROOT / "cmru.orchestration.toml").read_text())
     env = orchestration["orchestration"]["defaults"]["env"]
