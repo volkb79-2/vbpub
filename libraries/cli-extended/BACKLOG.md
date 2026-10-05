@@ -33,7 +33,10 @@ cli-extended's existing TTY/`NO_COLOR` policy.
 
 ## CLI-EXT-02 — evaluate declarative conditional option constraints
 
-**Status:** Open — evidence gap
+**Status:** Reopened 2026-10-05 — scheduled as program package W2 (operator
+decision CX-D10, [unified-adoption program](docs/PROGRAM-2026-10-UNIFIED-ADOPTION.md#w2--declarative-constraints-and-selector-type-cli-ext-02-cli-ext-12)).
+The evidence gate below is superseded: every vbpub CLI now adopts the
+library, and CMRU and nyxloom `validate=` callbacks already supply the shapes.
 
 **Type:** Feature investigation
 
@@ -247,7 +250,11 @@ remain outside this library pilot.
 **Related:** CLI-EXT-02 — declarative conditional option constraints.
 ## CLI-EXT-05 — a shared `skills` verb group: install a tool's packaged agent skills into each harness
 
-**Status:** Open  
+**Status:** Scheduled — program package W4 (CX-D9); design pinned in
+[the program](docs/PROGRAM-2026-10-UNIFIED-ADOPTION.md#w4--packaged-agent-skills-cli-ext-05-new-skillspy).
+The stamp also goes into the SKILL.md frontmatter `metadata` and a visible
+banner (operator choice), with an integrity sidecar for modified-state
+detection; there is no global cross-tool sync.  
 **Type:** Feature  
 **Area:** Command registration (shared verbs)
 
@@ -289,3 +296,30 @@ Oracles:
 **Provenance:** dstdns, 2026-10-03: D-647 #6, and the D-651 v8 interview,
 where the operator chose `<tool> skills install` provided through
 cli-extended for DRY. Per-tool adoption entries follow once this exists.
+
+## CLI-EXT-06 … CLI-EXT-16 — unified-adoption program (2026-10-05)
+
+**Status:** Scheduled. Operator interview 2026-10-04/05 decided that every
+vbpub Python CLI adopts cli-extended as a real wheel dependency. The library
+first absorbs the boilerplate consumers hand-roll today. Each item's full
+design and oracles are in
+[`docs/PROGRAM-2026-10-UNIFIED-ADOPTION.md`](docs/PROGRAM-2026-10-UNIFIED-ADOPTION.md).
+This list is the index:
+
+| ID | Item | Package | Replaces (evidence) |
+|---|---|---|---|
+| CLI-EXT-06 | `CliIdentity.resolve` version resolver | W1 | Netcup VERSION regex ×3; cmru/nyxloom metadata lookups with invented fallbacks |
+| CLI-EXT-07 | `unexpected_exceptions="report"` + `--traceback`; registry-level `expected_exceptions` | W1 | nyxloom `_invoke`; per-`main` exception tuples |
+| CLI-EXT-08 | `VerbSpec.dry_run` + dry-run-safe `confirm()` | W1 | Netcup hand-added `--dry-run` and ~10 `getattr(args, "dry_run")` sites |
+| CLI-EXT-09 | Library `contract_version`; consumer signatures exclude library-owned controls | W3a | A library upgrade would otherwise re-sign every consumer surface (CX-D5) |
+| CLI-EXT-10 | `[tool.cli-extended]` / `cli-extended.toml` config + `cli-extended` console script | W3b | Four repeated `surface_cli` flags; no CLI to install the library's own skills |
+| CLI-EXT-11 | `surface pack`/`report`, findings file, `cli-extended-review` skill | W3b | No supported LLM-review step or actionable-items output |
+| CLI-EXT-12 | `SelectorList` value type | W2 | cmru `parse_target_names` |
+| CLI-EXT-13 | Shared `doctor` verb | W5 | nyxloom, cgprofile, planned ciu doctors |
+| CLI-EXT-14 | `invoke_script`/`invoke_module` + opt-in pytest plugin | W6 | Netcup's two `_invoke` helpers; conftest marker wiring |
+| CLI-EXT-15 | `ADOPTION-CHECKLIST.md`, `cli-extended audit`, `cli-extended-adoption` skill | W7 | No way for a consumer to verify complete, correct adoption |
+| CLI-EXT-16 | Wheel release via cmru, GitHub Releases + `--no-index` resolution | W8 | Four incompatible import mechanisms; PyPI dependency-confusion risk (CX-D2) |
+
+**Provenance:** controller survey 2026-10-04 of cmru, nyxloom, Netcup,
+debian-install-v2 and the five non-adopting CLIs (ciu, assay, run-gate,
+pwmcp, cgprofile).
