@@ -261,9 +261,9 @@ def native_outcome(**fields):
         mutated_file_sha256=mutated_file_sha256,
         execution=MutationExecution(mode="full"),
         resource_limit_evidence=ResourceLimitEvidence(
-            pids_events_max=CounterDelta(0, 0, 0),
-            memory_events_oom_kill=CounterDelta(0, 0, 0),
-            memory_events_oom_group_kill=CounterDelta(0, 0, 0),
+            pids_events_max=CounterDelta(before=0, after=0, delta=0),
+            memory_events_oom_kill=CounterDelta(before=0, after=0, delta=0),
+            memory_events_oom_group_kill=CounterDelta(before=0, after=0, delta=0),
         ),
     )
 
@@ -272,7 +272,7 @@ def zero_resource_limit_evidence_dict() -> dict:
     """Return a fresh raw-wire sample for a native candidate with no event."""
     from assay.resource_limits import CounterDelta, ResourceLimitEvidence
 
-    zero = CounterDelta(0, 0, 0)
+    zero = CounterDelta(before=0, after=0, delta=0)
     return ResourceLimitEvidence(
         pids_events_max=zero,
         memory_events_oom_kill=zero,

@@ -9,16 +9,17 @@ the kernel's own cgroup and mount records rather than assuming a host path.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, Mapping
+
+from .records import record
 
 
 class ResourceLimitObservationError(RuntimeError):
     """The current cgroup's resource-limit counters could not be observed."""
 
 
-@dataclass(frozen=True)
+@record
 class ResourceLimitCounters:
     pids_max: int
     memory_oom_kill: int
@@ -31,7 +32,7 @@ class ResourceLimitCounters:
                 raise ValueError(f"{name} must be a non-negative integer")
 
 
-@dataclass(frozen=True)
+@record
 class CounterDelta:
     before: int
     after: int
@@ -56,7 +57,7 @@ class CounterDelta:
         return {"before": self.before, "after": self.after, "delta": self.delta}
 
 
-@dataclass(frozen=True)
+@record
 class ResourceLimitEvidence:
     pids_events_max: CounterDelta
     memory_events_oom_kill: CounterDelta

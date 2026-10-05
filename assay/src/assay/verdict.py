@@ -62,7 +62,7 @@ from .records import record
 from datetime import datetime, timezone
 from importlib.resources import files
 from types import MappingProxyType
-from typing import Any, ClassVar, Iterable, Mapping, Sequence
+from typing import Any, ClassVar, Iterable, Mapping
 
 from .config import (
     ENFORCEMENTS,

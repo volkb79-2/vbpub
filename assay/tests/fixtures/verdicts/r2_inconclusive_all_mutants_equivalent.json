@@ -86,6 +86,28 @@
       "mutated_file_sha256": "b22a3a7a633ab47e66b4cf50cd341944ebe99422f692a52a67c99bbf16e5b98b",
       "execution": {
        "mode": "full"
+      },
+      "resource_limit_evidence": {
+       "cgroup_version": 2,
+       "pids_events": {
+        "max": {
+         "before": 0,
+         "after": 0,
+         "delta": 0
+        }
+       },
+       "memory_events": {
+        "oom_kill": {
+         "before": 0,
+         "after": 0,
+         "delta": 0
+        },
+        "oom_group_kill": {
+         "before": 0,
+         "after": 0,
+         "delta": 0
+        }
+       }
       }
      }
     ],

@@ -84,6 +84,28 @@
       "mutated_file_sha256": "d2c8bc7abd0cab9dfdcb88e0941fb907cc40d9127450ca5aa208db085d1c39cd",
       "execution": {
        "mode": "full"
+      },
+      "resource_limit_evidence": {
+       "cgroup_version": 2,
+       "pids_events": {
+        "max": {
+         "before": 0,
+         "after": 0,
+         "delta": 0
+        }
+       },
+       "memory_events": {
+        "oom_kill": {
+         "before": 0,
+         "after": 0,
+         "delta": 0
+        },
+        "oom_group_kill": {
+         "before": 0,
+         "after": 0,
+         "delta": 0
+        }
+       }
       }
      }
     ],
@@ -103,6 +125,28 @@
       "mutated_file_sha256": "ffe4ea8f4b0c5853de7c01b9707300318ba868eb64193573160cec9619c4ebd6",
       "execution": {
        "mode": "full"
+      },
+      "resource_limit_evidence": {
+       "cgroup_version": 2,
+       "pids_events": {
+        "max": {
+         "before": 0,
+         "after": 0,
+         "delta": 0
+        }
+       },
+       "memory_events": {
+        "oom_kill": {
+         "before": 0,
+         "after": 0,
+         "delta": 0
+        },
+        "oom_group_kill": {
+         "before": 0,
+         "after": 0,
+         "delta": 0
+        }
+       }
       }
      }
     ],

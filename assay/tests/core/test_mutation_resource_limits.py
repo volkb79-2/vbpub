@@ -69,7 +69,9 @@ def test_reader_resolves_current_cgroup_from_kernel_mount_records(tmp_path: Path
 
     assert read_current_cgroup_counters(
         cgroup_file=cgroup_file, mountinfo_file=mountinfo_file
-    ) == ResourceLimitCounters(3, 2, 0)
+    ) == ResourceLimitCounters(
+        pids_max=3, memory_oom_kill=2, memory_oom_group_kill=0
+    )
 
 
 def test_reader_fails_closed_when_a_required_controller_counter_is_missing(
@@ -289,9 +291,15 @@ def test_candidate_counter_delta_is_persisted_and_overrides_a_kill(
 
     samples = iter(
         (
-            ResourceLimitCounters(0, 0, 0),  # mutation preflight
-            ResourceLimitCounters(0, 0, 0),  # before candidate
-            ResourceLimitCounters(1, 0, 0),  # after candidate
+            ResourceLimitCounters(
+                pids_max=0, memory_oom_kill=0, memory_oom_group_kill=0
+            ),  # mutation preflight
+            ResourceLimitCounters(
+                pids_max=0, memory_oom_kill=0, memory_oom_group_kill=0
+            ),  # before candidate
+            ResourceLimitCounters(
+                pids_max=1, memory_oom_kill=0, memory_oom_group_kill=0
+            ),  # after candidate
         )
     )
     monkeypatch.setattr(

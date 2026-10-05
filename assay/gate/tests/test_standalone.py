@@ -691,6 +691,16 @@ def _expected_r2_artifact(
                 )
                 for item in mutation.get(name, [])
             ]
+            zero_resource_limit_evidence = {
+                "cgroup_version": 2,
+                "pids_events": {"max": {"before": 0, "after": 0, "delta": 0}},
+                "memory_events": {
+                    "oom_kill": {"before": 0, "after": 0, "delta": 0},
+                    "oom_group_kill": {"before": 0, "after": 0, "delta": 0},
+                },
+            }
+            for item in outcomes:
+                item["resource_limit_evidence"] = zero_resource_limit_evidence
             mutation["candidate_ids"] = [
                 item["candidate_id"]
                 for item in sorted(

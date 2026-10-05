@@ -128,9 +128,9 @@ def _native_outcome(**overrides) -> MutantOutcome:
         ),
         execution=MutationExecution(mode="full"),
         resource_limit_evidence=ResourceLimitEvidence(
-            pids_events_max=CounterDelta(0, 0, 0),
-            memory_events_oom_kill=CounterDelta(0, 0, 0),
-            memory_events_oom_group_kill=CounterDelta(0, 0, 0),
+            pids_events_max=CounterDelta(before=0, after=0, delta=0),
+            memory_events_oom_kill=CounterDelta(before=0, after=0, delta=0),
+            memory_events_oom_group_kill=CounterDelta(before=0, after=0, delta=0),
         ),
     )
     fields.update(overrides)
