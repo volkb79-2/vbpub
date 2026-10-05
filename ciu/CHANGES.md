@@ -135,6 +135,53 @@ restatement of the technical detail below it.
 - test(ciu): pin single-stack shutdown docs (aa68c349f)
 - test(ciu): align governance fixtures with opt-in caps (467152fd7)
 
+### Changed
+- Governance injects per-container memory, CPU, and IO limits only when configured. Omitted read/write IOPS no longer add caps; `read_iops = 0` is an explicit derivation opt-in.
+- `ciu init` emits the complete, disabled governance table with no resource caps configured.
+- Generic Git-family worktree records may be ready with a null/null runtime pair only when their exact root marker path is absent; non-regular, dangling, unreadable, or partial identities refuse.
+
+### Added (detail)
+- **CIU-124/125 — start a worktree's test environment in one command.**
+  `ciu up --dir <stack>` accepts the shared deploy and healthcheck actions.
+  A project can declare the profiles a worktree needs in `[ciu.worktree].up`,
+  and `ciu worktree create <name> --up` starts them together in one deploy
+  invocation. This keeps cross-profile prerequisites in the same preflight.
+- **CIU-126 — keep rootless Git worktrees usable.** CIU reads its existing
+  ready-record format for a checkout without a CIU root marker and isolates an
+  unreadable sibling during registry scans. Unrelated worktree lifecycle
+  operations can proceed with a warning; records and sibling identities are
+  not rewritten.
+- **CIU-127 — stop one stack.** `ciu down --dir <stack>` resolves the exact
+  Compose project and stops only that project's running containers, preserving
+  volumes and neighboring stacks.
+- **CIU-128 — publish readiness after nested initialization.** A worktree stays
+  `allocating` until every committed CIU root has generated facts and the shared
+  workspace record has matching root entries. CIU refuses to guess the root set
+  when the allocation commit cannot be proven and leaves the checkout
+  `recovery-required`. `ensure` repairs from the saved allocation commit
+  without resetting later checkout commits; an older moved checkout with no
+  provable target is also marked `recovery-required` and refused.
+- **CIU-103/109/118 — make inspection and dry-run read-only.** `ciu profiles`
+  renders without persisting configuration, `ciu resolve --json` exposes the
+  v8-shaped service-identity data, and `ciu exec` runs an exact command in an
+  already-running service. `ciu up --dry-run` skips `post_compose` hooks unless
+  the hook declares `DRY_RUN_SAFE = True`.
+
+### Adoption / Migration Notes
+
+Most changes are additive. For a worktree-owned test stack, declare all
+required profiles together under `[ciu.worktree].up` (including prerequisite
+profiles) and use `ciu worktree create <name> --up`. Replace stack-specific
+`docker stop` calls with `ciu down --dir <stack>`; supply `--profile <name>`
+when selecting a stack that is optional. Consumers of the old `config_helper`
+identity flow should move to `ciu resolve --json` and `ciu exec`. If a script
+relied on `ciu profiles` writing `ciu.global.toml`, make that edit explicitly;
+if a dry-run hook is safe to execute, declare `DRY_RUN_SAFE = True` in that
+hook module. Existing rootless worktree records need no rewrite. When resuming
+an interrupted worktree, use `ciu worktree ensure NAME`; CIU preserves commits
+made after allocation and refuses a moved checkout when no saved allocation
+commit is available.
+
 ## [7.15.1] - 2026-09-25
 <!-- cmru: generated -->
 <!-- cmru: source-end=563ca7ce7345513b56b95e340f298bc8d4d0d812 -->
@@ -228,60 +275,6 @@ restatement of the technical detail below it.
 
 ### Documentation
 - docs(ciu): v8 third-party review, round 4 — draft.7 / rev 3.4 (d58d85df)
-
-## [Unreleased]
-<!-- hand-written ahead of release; fold into its own dated section (never
-     leave here) the moment that release is cut, per the process note above.
-     Check every ID here against the dated sections below BEFORE trusting
-     this block is actually unreleased -- see 2026-09-11's entry under
-     7.12.0 for why. -->
-
-### Changed
-- Governance injects per-container memory, CPU, and IO limits only when configured. Omitted read/write IOPS no longer add caps; `read_iops = 0` is an explicit derivation opt-in.
-- `ciu init` emits the complete, disabled governance table with no resource caps configured.
-- Generic Git-family worktree records may be ready with a null/null runtime pair only when their exact root marker path is absent; non-regular, dangling, unreadable, or partial identities refuse.
-
-### Added (detail)
-- **CIU-124/125 — start a worktree's test environment in one command.**
-  `ciu up --dir <stack>` accepts the shared deploy and healthcheck actions.
-  A project can declare the profiles a worktree needs in `[ciu.worktree].up`,
-  and `ciu worktree create <name> --up` starts them together in one deploy
-  invocation. This keeps cross-profile prerequisites in the same preflight.
-- **CIU-126 — keep rootless Git worktrees usable.** CIU reads its existing
-  ready-record format for a checkout without a CIU root marker and isolates an
-  unreadable sibling during registry scans. Unrelated worktree lifecycle
-  operations can proceed with a warning; records and sibling identities are
-  not rewritten.
-- **CIU-127 — stop one stack.** `ciu down --dir <stack>` resolves the exact
-  Compose project and stops only that project's running containers, preserving
-  volumes and neighboring stacks.
-- **CIU-128 — publish readiness after nested initialization.** A worktree stays
-  `allocating` until every committed CIU root has generated facts and the shared
-  workspace record has matching root entries. CIU refuses to guess the root set
-  when the allocation commit cannot be proven and leaves the checkout
-  `recovery-required`. `ensure` repairs from the saved allocation commit
-  without resetting later checkout commits; an older moved checkout with no
-  provable target is also marked `recovery-required` and refused.
-- **CIU-103/109/118 — make inspection and dry-run read-only.** `ciu profiles`
-  renders without persisting configuration, `ciu resolve --json` exposes the
-  v8-shaped service-identity data, and `ciu exec` runs an exact command in an
-  already-running service. `ciu up --dry-run` skips `post_compose` hooks unless
-  the hook declares `DRY_RUN_SAFE = True`.
-
-### Adoption / Migration Notes
-
-Most changes are additive. For a worktree-owned test stack, declare all
-required profiles together under `[ciu.worktree].up` (including prerequisite
-profiles) and use `ciu worktree create <name> --up`. Replace stack-specific
-`docker stop` calls with `ciu down --dir <stack>`; supply `--profile <name>`
-when selecting a stack that is optional. Consumers of the old `config_helper`
-identity flow should move to `ciu resolve --json` and `ciu exec`. If a script
-relied on `ciu profiles` writing `ciu.global.toml`, make that edit explicitly;
-if a dry-run hook is safe to execute, declare `DRY_RUN_SAFE = True` in that
-hook module. Existing rootless worktree records need no rewrite. When resuming
-an interrupted worktree, use `ciu worktree ensure NAME`; CIU preserves commits
-made after allocation and refuses a moved checkout when no saved allocation
-commit is available.
 
 ## [7.13.0] - 2026-09-11
 <!-- cmru: generated -->
