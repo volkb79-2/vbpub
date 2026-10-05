@@ -6664,3 +6664,13 @@ started. The fix candidate remains clean at `a3735a42e`; run its registered
 gates after a later preflight meets the memory limit and existing tester
 containers have released their resources. This is a resource-safety deferral,
 not a gate result.
+
+### RW-440 — 2026-10-05 03:16:15Z — repeated launch preflight remains over the memory limit
+
+After the operator's resume instruction, the 03:14:25Z preflight still read
+memory `full avg10=19.39` (CPU `full avg10=0.00`), above the RG-55 launch
+ceiling. No RG-55 gate or synthetic workload was started. The only newly
+visible tester container inspected belonged to `cli-extended`'s worktree, not
+this wave; it was left untouched and is not RG-55 evidence. Startup-fix HEAD
+`38291bb58f20f5d4dd4dbeab397ac456ef810801` is clean and passes `git diff
+--check`; registered gates remain pending.
