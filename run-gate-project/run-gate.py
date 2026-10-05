@@ -4124,14 +4124,18 @@ def _read_inflight_status(project_dir: Path, proc_root: Path
     directory = inflight_dir(project_dir)
     try:
         info = directory.lstat()
-        if not stat.S_ISDIR(info.st_mode):
-            raise OSError("not a directory")
+    except FileNotFoundError:
+        return [], []
+    except OSError as exc:
+        return [], [f"cannot list inflight directory {directory}: {exc}"]
+    if not stat.S_ISDIR(info.st_mode):
+        return [], [f"cannot list inflight directory {directory}: "
+                    "not a directory"]
+    try:
         with os.scandir(directory) as entries:
             paths = sorted((Path(entry.path) for entry in entries
                             if entry.name.endswith(".json")),
                            key=lambda path: path.name)
-    except FileNotFoundError:
-        return [], []
     except OSError as exc:
         return [], [f"cannot list inflight directory {directory}: {exc}"]
     records: list[dict] = []

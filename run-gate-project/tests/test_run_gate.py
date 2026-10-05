@@ -5678,6 +5678,23 @@ def test_status_reports_unreadable_inflight_directory(tmp_path, monkeypatch):
     assert "directory scan denied" in errors[0]
 
 
+def test_status_reports_inflight_directory_removed_during_listing(
+        tmp_path, monkeypatch):
+    project = tmp_path / "project"
+    directory = project / ".run-gate" / "inflight"
+    directory.mkdir(parents=True)
+
+    def disappeared(_path):
+        raise FileNotFoundError("directory disappeared during scan")
+
+    monkeypatch.setattr(run_gate.os, "scandir", disappeared)
+    records, errors = run_gate._read_inflight_status(project, tmp_path)
+
+    assert records == []
+    assert len(errors) == 1
+    assert "directory disappeared during scan" in errors[0]
+
+
 def test_status_worktree_selects_its_config_and_inflight_scope(
         tmp_path, monkeypatch, capsys):
     repo = make_repo(tmp_path)
