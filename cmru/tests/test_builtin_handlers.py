@@ -6,6 +6,8 @@ orchestrator never infers a step from an artifact label. Stdlib + tmp files only
 from __future__ import annotations
 
 import argparse
+import os
+import subprocess
 import zipfile
 from pathlib import Path
 
@@ -173,6 +175,7 @@ def test_cmd_wheel_build_container_mode(tmp_path, monkeypatch):
     monkeypatch.setattr(handlers, "_git_common_dir", lambda _cwd: tmp_path / ".git")
     monkeypatch.setattr(handlers, "_host_bind_source", lambda p: f"/host{p}")
     monkeypatch.setattr(handlers, "_wheel_builder_git_mount_args", lambda _source, **_kw: [])
+    monkeypatch.setattr(handlers, "_git_toplevel", lambda _cwd: None)
     calls = []
     monkeypatch.setattr(
         handlers.subprocess, "run",
@@ -204,6 +207,7 @@ def test_cmd_wheel_build_container_mode_mounts_the_git_common_dir_too(tmp_path, 
         handlers, "_wheel_builder_git_mount_args",
         lambda _source, **_kw: ["-v", f"/host/common-git-dir:{tmp_path / '.gitcommon'}"],
     )
+    monkeypatch.setattr(handlers, "_git_toplevel", lambda _cwd: None)
     calls = []
     monkeypatch.setattr(
         handlers.subprocess, "run",
@@ -213,6 +217,138 @@ def test_cmd_wheel_build_container_mode_mounts_the_git_common_dir_too(tmp_path, 
     argv, _kw = calls[0]
     assert f"-v" in argv
     assert f"/host/common-git-dir:{tmp_path / '.gitcommon'}" in argv
+
+
+def _git_run(cwd, *args):
+    subprocess.run(
+        ["git", "-C", str(cwd), "-c", "user.name=t", "-c", "user.email=t@t", *args],
+        check=True, capture_output=True,
+    )
+
+
+def _wheel_build_argv(project, monkeypatch):
+    monkeypatch.setenv(handlers._WHEEL_BUILDER_IMAGE_ENV, "wheel-builder:local")
+    monkeypatch.setenv(handlers._DOCKER_CGROUP_PARENT_ENV, "dev-background.slice")
+    monkeypatch.setattr(handlers, "_host_bind_source", lambda p: f"/host{p}")
+    calls = []
+    real_run = subprocess.run
+
+    def fake_run(argv, **kw):
+        if argv and argv[0] == "docker":
+            calls.append(argv)
+            return None
+        return real_run(argv, **kw)  # real git for toplevel discovery
+
+    monkeypatch.setattr(handlers.subprocess, "run", fake_run)
+    handlers.cmd_wheel_build(argparse.Namespace(cwd=str(project)))
+    assert len(calls) == 1
+    return calls[0]
+
+
+def _mounts(argv):
+    return [argv[i + 1] for i, a in enumerate(argv) if a == "-v"]
+
+
+def _clean_build_env(monkeypatch):
+    monkeypatch.delenv("SOURCE_DATE_EPOCH", raising=False)
+    for name in [n for n in os.environ if n.startswith("SETUPTOOLS_SCM_PRETEND_VERSION")]:
+        monkeypatch.delenv(name, raising=False)
+
+
+def test_wheel_build_nested_project_mounts_the_worktree_root(tmp_path, monkeypatch):
+    """KI-53: libraries/pkg in a linked worktree must see the worktree root."""
+    _clean_build_env(monkeypatch)
+    main = tmp_path / "main"
+    main.mkdir()
+    _git_run(main, "init", "-q")
+    (main / "README").write_text("x")
+    _git_run(main, "add", "README")
+    _git_run(main, "commit", "-q", "-m", "init")
+    wt = tmp_path / "wt"
+    _git_run(main, "worktree", "add", "-q", str(wt), "-b", "feat")
+    project = wt / "libraries" / "pkg"
+    project.mkdir(parents=True)
+    argv = _wheel_build_argv(project, monkeypatch)
+    wt_real = wt.resolve()
+    mounts = _mounts(argv)
+    assert f"/host{wt_real}:{wt_real}" in mounts
+    assert not any(m.endswith(f":{wt_real / 'libraries'}") for m in mounts)
+    # the linked worktree's common git dir is outside the root: mounted separately
+    assert any(m.endswith(f":{(main / '.git').resolve()}") for m in mounts)
+    assert argv[argv.index("-w") + 1] == str(project.parent)
+    assert argv[-1] == str(project)
+
+
+def test_wheel_build_top_level_project_argv_is_unchanged(tmp_path, monkeypatch):
+    _clean_build_env(monkeypatch)
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git_run(repo, "init", "-q")
+    project = repo / "cmru"
+    project.mkdir()
+    argv = _wheel_build_argv(project, monkeypatch)
+    repo_real = repo.resolve()
+    assert argv == [
+        "docker", "run", "--rm", "--cgroup-parent", "dev-background.slice",
+        "-v", f"/host{repo_real}:{repo_real}",
+        "-w", str(project.parent),
+        "wheel-builder:local",
+        "/opt/wheel-builder-venv/bin/python", "-m", "build",
+        "--wheel", "--outdir", str(project / "dist"), str(project),
+    ]
+
+
+def test_wheel_build_copied_one_project_repo_mounts_the_parent(tmp_path, monkeypatch):
+    _clean_build_env(monkeypatch)
+    project = tmp_path / "copied"
+    project.mkdir()
+    _git_run(project, "init", "-q")
+    argv = _wheel_build_argv(project, monkeypatch)
+    root = project.resolve().parent
+    assert _mounts(argv) == [f"/host{root}:{root}"]
+    assert argv[argv.index("-w") + 1] == str(project.parent)
+
+
+def test_wheel_build_forwards_build_env_by_name_only(tmp_path, monkeypatch):
+    _clean_build_env(monkeypatch)
+    monkeypatch.setenv("SOURCE_DATE_EPOCH", "1700000000")
+    monkeypatch.setenv("SETUPTOOLS_SCM_PRETEND_VERSION_FOR_X", "9.9.9")
+    project = tmp_path / "cmru"
+    project.mkdir()
+    monkeypatch.setattr(handlers, "_git_common_dir", lambda _cwd: tmp_path / ".git")
+    argv = _wheel_build_argv(project, monkeypatch)
+    pairs = [(argv[i], argv[i + 1]) for i in range(len(argv) - 1) if argv[i] == "-e"]
+    assert pairs == [
+        ("-e", "SETUPTOOLS_SCM_PRETEND_VERSION_FOR_X"),
+        ("-e", "SOURCE_DATE_EPOCH"),
+    ]
+    assert not any("=" in a and a.split("=")[0].startswith(("SOURCE_DATE", "SETUPTOOLS")) for a in argv)
+    assert "1700000000" not in argv and "9.9.9" not in argv
+
+
+def test_git_toplevel_is_none_outside_a_repo_and_mount_root_falls_back(tmp_path, monkeypatch):
+    shared = cli.transaction._shared_worktree()
+    monkeypatch.setattr(
+        shared, "discover_git_root",
+        lambda _p: (_ for _ in ()).throw(shared.WorkspaceError("no repo", category="git-error")),
+    )
+    project = tmp_path / "pkg"
+    assert handlers._git_toplevel(project) is None
+    assert handlers._wheel_builder_mount_root(project) == tmp_path
+
+
+def test_wheel_builder_mount_root_ignores_a_toplevel_not_containing_the_parent(tmp_path, monkeypatch):
+    project = tmp_path / "a" / "pkg"
+    monkeypatch.setattr(handlers, "_git_toplevel", lambda _cwd: tmp_path / "elsewhere")
+    assert handlers._wheel_builder_mount_root(project) == project.parent
+
+
+def test_wheel_build_forwards_no_env_when_unset(tmp_path, monkeypatch):
+    _clean_build_env(monkeypatch)
+    project = tmp_path / "cmru"
+    project.mkdir()
+    monkeypatch.setattr(handlers, "_git_common_dir", lambda _cwd: tmp_path / ".git")
+    assert "-e" not in _wheel_build_argv(project, monkeypatch)
 
 
 def test_git_common_dir_returns_none_outside_a_repo(tmp_path, monkeypatch):

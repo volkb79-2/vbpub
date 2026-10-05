@@ -18,6 +18,7 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 - Extend strict root/project config with `[versions]`; project overlays resolve and store state project-side, while root targets retain root policy/state.
 
 ### Fixed
+- Mount the git worktree root in the wheel-builder container (not just the project's parent) so projects nested below the top level resolve their git version, and forward `SOURCE_DATE_EPOCH` / `SETUPTOOLS_SCM_PRETEND_VERSION*` by name into the build (KI-53).
 - Add the monorepo's sibling `cli-extended` and `worktree` source roots to
   bound CMRU subprocesses, so system-Python release scripts can import the
   matching runtime dependencies.

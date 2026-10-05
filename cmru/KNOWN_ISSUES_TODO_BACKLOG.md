@@ -1627,3 +1627,30 @@ gate exercises the regression; README, DESIGN-GUIDE, CONSUMERS, and SPEC documen
 **Immediate operator action (not done here — the container belongs to another session):** the campaign in `pedantic_antonelli` (worktree `.worktrees/run-gate-r2-assay-venv-20261005`, lane `assay-r2`) must be stopped and its R2 evidence after 03:11Z discarded; zombies clear when its PID 1 exits.
 
 **Related:** assay B145 (false kills under fork exhaustion), run-gate RG-84 (refuse to run as an unreaping PID 1), dstdns D-670 TEST-RUNNER-INIT.
+
+### KI-53 — `cmru wheel-build` mounts only `cwd.parent` and forwards no build env: a project nested two levels deep (`libraries/cli-extended`) cannot resolve its git version in the wheel-builder, and `SOURCE_DATE_EPOCH` / `SETUPTOOLS_SCM_PRETEND_VERSION_FOR_<DIST>` never reach the container — *fixed in this change, severity: high (blocks a release after the tag is pushed)*
+
+**Status:** fixed (2026-10-05, branch `cmru-ki53-nested-wheel`).
+
+**Observed (2026-10-05):** `cmru release cli-extended --set-version 0.2.0` (transaction `cmru-release-20261005_084103-cli-extended-bmluh2`) tagged and pushed `cli-extended-v0.2.0`, then failed in `cmru.handlers wheel-build`: setuptools-scm could not detect a version. Nothing was published; the tag was already pushed.
+
+**Defect (a) — mount root.** `cmd_wheel_build` bind-mounted only `cwd.parent` (plus the git common dir). cli-extended is the estate's first wheel project nested two levels deep (`libraries/cli-extended`, `[tool.setuptools_scm] root = "../.."`). For every top-level project `cwd.parent` is the worktree root; here the linked worktree's root and its `.git` gitfile were outside the mount, so git discovery failed inside `wheel-builder:local`. Mounting the worktree root makes `git describe` resolve `cli-extended-v0.2.0` there (controller-verified).
+
+**Defect (b) — environment not forwarded.** `resolve_versions_from_git` exports `SOURCE_DATE_EPOCH` and `SETUPTOOLS_SCM_PRETEND_VERSION_FOR_<DIST>` into cmru's own environment for reproducible timestamps and the exact tag version. Since the build moved into the `wheel-builder` container, the `docker run` passed no `-e`, so neither reached the build (a regression from the retired local build path, which inherited the environment).
+
+**Fix:**
+- `handlers._wheel_builder_mount_root(cwd)`: the git top-level (`discover_git_root`) when it contains `cwd.parent`, else `cwd.parent` (copied one-project repo where top-level is `cwd` itself, or no top-level). Mounted at its host bind source; passed as `mount_root` to `_wheel_builder_git_mount_args`. `-w cwd.parent` and the positional source are unchanged, so top-level projects get an identical command.
+- `handlers._wheel_builder_env_args()`: name-only `-e NAME` for `SOURCE_DATE_EPOCH` and every `SETUPTOOLS_SCM_PRETEND_VERSION*` present, sorted; nothing for absent names, never `NAME=value` on argv.
+- Audit: no other cmru container launch uses the `cwd.parent` mount (`docker buildx bake` image builds, `docker login`, `tester_gate` docker runs).
+
+**Oracles:** `tests/test_builtin_handlers.py::test_wheel_build_nested_project_mounts_the_worktree_root` (real linked worktree, `libraries/pkg`: mount is the worktree root, none of only `libraries`), `..._top_level_project_argv_is_unchanged`, `..._copied_one_project_repo_mounts_the_parent`, `..._forwards_build_env_by_name_only`, `..._forwards_no_env_when_unset`; each fix was reverted by hand and a test failed.
+
+### KI-54 — `release --dry-run` with an internal snapshot handoff escapes as an uncaught `RuntimeError` instead of exit 1, and its test has been red on main since 2026-10-04 — *open, severity: major (the coverage and canary lanes stop on it with `--maxfail=1`, so no cmru change can earn a green gate)*
+
+**Status:** open (filed 2026-10-05 by the cli-extended program while gating KI-53; not caused by that program — reproduced identically at main `c0d1f4410`, before the cli-extended merge).
+
+**Observed:** `tests/test_cli_release_snapshot_boundaries.py::test_release_rejects_internal_handoff_on_dry_run` (`:137`) expects `cli.main(["release", "demo", "--dry-run", "--config", "cmru.orchestration.toml"]) == 1` and the message "valid only for a new family release launcher" on stderr. `cli.py` (around `:4581`) raises `RuntimeError("the internal origin/main snapshot handoff is valid only for a new family release launcher")` when `_ACTIVE_RELEASE_PREFLIGHT_SNAPSHOT` is set and `transaction_child or vargs.dry_run or vargs.resume`; the exception propagates out of `cli.main` uncaught, so the test fails. The guard and test arrived with the 2026-10-04 snapshot-boundary work (`071046398`, `fccd44be3`, `0f96d124f`).
+
+**Fix direction:** either convert the refusal to the CLI's failure type (exit 1 with the message on stderr, matching the sibling multi-family refusal at the next guard) or, if escaping is intended for an internal-only path, correct the test; whichever the snapshot-boundary owner intended. Then re-run the `coverage` and `canary` lanes on main.
+
+**Oracle:** the test passes; a controlled wrong implementation that lets the `RuntimeError` escape fails it; the `coverage` lane on main is green.
