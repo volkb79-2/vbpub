@@ -4083,9 +4083,9 @@ def _finish_allocation(
         head = _git(["rev-parse", "--verify", "--quiet", "HEAD^{commit}"],
                     record.git_worktree_path)
         candidate = head.stdout.strip() if head.returncode == 0 else ""
-        # Degrades to leaving it unset rather than failing the allocation:
-        # provenance is a nice-to-have for a downstream gate, and consumers
-        # fail closed on absence anyway.
+        # Record only a verified object id. Root discovery below must use the
+        # exact allocated tree; if neither this value nor a checked legacy
+        # target proves it, preparation leaves the record recovery-required.
         if _FULL_SHA_RE.fullmatch(candidate):
             record = replace(record, fork_point_sha=candidate)
 

@@ -55,7 +55,9 @@ recorded target and refuses if the checkout moved, preserving newer commits.
 the allocated checkout's exact commit has generated facts and a matching entry
 in the shared workspace record. While those roots are being prepared,
 inspection reports `allocating`; a recoverable failure reports
-`recovery-required`, and `ciu worktree ensure NAME` retries it. See the
+`recovery-required`, and `ciu worktree ensure NAME` retries it. If CIU cannot
+prove the checkout's exact commit, it keeps the allocation non-ready rather
+than guessing which roots to prepare. See the
 [readiness rationale](docs/DESIGN-GUIDE.md#workspace-and-root-identity) and
 [worktree example](docs/CONSUMERS.md#2-create-a-managed-workspace).
 

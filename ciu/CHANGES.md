@@ -143,9 +143,11 @@ restatement of the technical detail below it.
   volumes and neighboring stacks.
 - **CIU-128 — publish readiness after nested initialization.** A worktree stays
   `allocating` until every committed CIU root has generated facts and the shared
-  workspace record has matching root entries. `ensure` repairs from the saved
-  allocation commit without resetting later checkout commits; an older moved
-  checkout with no provable target is marked `recovery-required` and refused.
+  workspace record has matching root entries. CIU refuses to guess the root set
+  when the allocation commit cannot be proven and leaves the checkout
+  `recovery-required`. `ensure` repairs from the saved allocation commit
+  without resetting later checkout commits; an older moved checkout with no
+  provable target is also marked `recovery-required` and refused.
 - **CIU-103/109/118 — make inspection and dry-run read-only.** `ciu profiles`
   renders without persisting configuration, `ciu resolve --json` exposes the
   v8-shaped service-identity data, and `ciu exec` runs an exact command in an

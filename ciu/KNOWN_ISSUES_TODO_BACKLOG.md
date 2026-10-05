@@ -4829,7 +4829,9 @@ generated facts and its root entry is persisted in shared workspace metadata.
 On recoverable failure, retain the checkout as `recovery-required`; `ensure`
 repeats missing work and verifies older ready records before returning them.
 Root discovery uses the allocation's saved commit, not a mutable base name
-in the primary checkout. A recorded full-SHA `base_ref` is authoritative for
+in the primary checkout. If creation cannot prove that exact commit, refuse
+and leave the allocation `recovery-required`; never publish `ready` with an
+unknown root set. A recorded full-SHA `base_ref` is authoritative for
 adopted or older records; if only a symbolic base remains without
 `fork_point_sha`, a full-SHA `base_ref` is used directly; otherwise the neutral
 workspace `base_commit` is usable only while HEAD still equals it. If a
@@ -4851,7 +4853,9 @@ while preserving later commits; a moved checkout without a fork point refuses.
 (6) A ready record without a provable allocation commit is
 demoted to `recovery-required` before refusal, so an unverified record is never
 left certified as ready. (7) A stale lease-mirror read cannot erase root
-entries written concurrently to the shared record.
+entries written concurrently to the shared record. (8) If `rev-parse` fails or
+returns a non-SHA during create, creation refuses and leaves a
+`recovery-required` record; it never degrades to a false `ready` result.
 
 **v8: absorb the readiness ordering.** SPEC-V8 S14.1.1 writes generated and
 host facts and establishes the instance file before writing the linked

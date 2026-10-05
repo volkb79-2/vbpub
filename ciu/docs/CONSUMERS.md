@@ -61,6 +61,11 @@ envelope. `status` is one of `allocating`, `ready`,
 `recovery_status` of `checkout-incomplete`, `env-generation-failed`, or
 `runtime-collision`. Resume a partial allocation with `ensure`.
 
+CIU must prove the checkout's exact commit before it can select the committed
+root set. If Git cannot provide that commit, creation leaves the allocated
+checkout `recovery-required` instead of reporting `ready`; after the Git
+problem is corrected, retry with `ciu worktree ensure NAME`.
+
 If root preparation fails, keep the checkout and retry through CIU:
 
 ```console

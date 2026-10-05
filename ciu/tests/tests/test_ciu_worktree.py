@@ -799,12 +799,11 @@ class TestForkPointProvenance:
         with pytest.raises(worktree.WorktreeError, match="unknown"):
             worktree._record_from_dict(raw, tmp_path / "r.json")
 
-    def test_create_degrades_to_none_when_the_head_cannot_be_resolved(
+    def test_create_refuses_when_the_allocated_head_cannot_be_resolved(
         self, tmp_repo, fake_generate_env, monkeypatch
     ):
-        """Provenance is a nice-to-have for a downstream gate; a worktree the
-        operator asked for must not be refused because an extra `rev-parse`
-        did not answer."""
+        """Without an exact commit CIU cannot prove which nested roots need
+        preparation, so the allocated worktree must never become ready."""
         real = worktree._git
 
         def flaky(args, cwd, **kwargs):
@@ -813,9 +812,16 @@ class TestForkPointProvenance:
             return real(args, cwd, **kwargs)
 
         monkeypatch.setattr(worktree, "_git", flaky)
-        record = worktree.create(tmp_repo, "logical-one", base="main")
+        with pytest.raises(
+            worktree.WorktreeError,
+            match="could not determine the allocated worktree commit",
+        ):
+            worktree.create(tmp_repo, "logical-one", base="main")
+        record = worktree.find_instance_record(tmp_repo, "logical-one")
+        assert record is not None
         assert record.fork_point_sha is None
-        assert record.state == "ready"          # the create still succeeded
+        assert record.state == "recovery-required"
+        assert record.recovery_status == "env-generation-failed"
 
     @pytest.mark.parametrize(
         "output", ["", "   \n", "not-a-sha", "deadbeef",
@@ -823,14 +829,12 @@ class TestForkPointProvenance:
                    "0123456789abcdef0123456789abcdef01234567 extra",
                    "0123456789abcdef0123456789abcdef01234567junk"],
     )
-    def test_create_degrades_when_rev_parse_succeeds_with_a_non_sha(
+    def test_create_refuses_when_rev_parse_succeeds_with_a_non_sha(
         self, tmp_repo, fake_generate_env, monkeypatch, output
     ):
-        """Exit 0 is not the test — the OUTPUT has to be a real object name.
-        `rev-parse --verify --quiet` exits 0 while printing something else in
-        more than one situation, and a stored value that could never equal a
-        real `merge-base` would make the consumer distrust the record forever
-        instead of reporting a problem.
+        """Exit 0 is not proof — the OUTPUT has to be a real object name.
+        A malformed answer cannot identify the tree whose nested roots must
+        be prepared, so create leaves a recoverable non-ready record.
 
         The last two cases are a valid 40-hex PREFIX with a tail: they pin
         `fullmatch` specifically, which `match` would wave through."""
@@ -842,12 +846,16 @@ class TestForkPointProvenance:
             return real(args, cwd, **kwargs)
 
         monkeypatch.setattr(worktree, "_git", odd)
-        record = worktree.create(tmp_repo, "logical-one", base="main")
+        with pytest.raises(
+            worktree.WorktreeError,
+            match="could not determine the allocated worktree commit",
+        ):
+            worktree.create(tmp_repo, "logical-one", base="main")
+        record = worktree.find_instance_record(tmp_repo, "logical-one")
+        assert record is not None
         assert record.fork_point_sha is None
-        assert record.state == "ready"
-        assert "fork_point_sha" not in json.loads(
-            record.record_path.read_text(encoding="utf-8")
-        )
+        assert record.state == "recovery-required"
+        assert record.recovery_status == "env-generation-failed"
 
     def test_the_fork_point_is_the_CHECKED_OUT_tip_not_base_at_entry(
         self, tmp_repo, fake_generate_env, monkeypatch

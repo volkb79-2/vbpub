@@ -43,9 +43,11 @@ move after checkout creation. v8 already writes generated and host facts plus
 the instance file before its linked-worktree record (SPEC-V8 S14.1.1 and
 S14.7.1); it has no v7 multi-root aggregate list to persist. For old records
 without a fork-point SHA, CIU accepts the neutral record's base commit only if
-the checkout still points there. If a no-fork-point checkout moved or an
-allocation target cannot be proven, `ensure` demotes an unverified `ready`
-record to `recovery-required` before refusing. The shared record also holds
+the checkout still points there. If a new allocation cannot prove its exact
+commit, it stays `recovery-required` rather than guessing which roots to
+prepare. If a no-fork-point checkout moved or an allocation target cannot be
+proven, `ensure` demotes an unverified `ready` record to `recovery-required`
+before refusing. The shared record also holds
 lease and root-entry metadata, so both writers
 re-read and merge under the same Git-family lock; an old lease snapshot cannot
 erase newer root evidence.
