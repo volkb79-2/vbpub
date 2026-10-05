@@ -2785,6 +2785,136 @@ def _assert_release_candidate_unchanged(
         )
 
 
+def _project_release_paths(project: "ProjectConfig", name: str) -> list[str]:
+    """Repo-relative paths whose change would alter what a release gated and built."""
+    return list(
+        getattr(project, "paths", None) or [getattr(project, "cwd", None) or name]
+    )
+
+
+def _release_tag_recovery_commands(tag: str, oid: str | None, branch: str) -> str:
+    pinned = f":{oid}" if oid else ""
+    return (
+        f"  git push --force-with-lease=refs/tags/{tag}{pinned} origin :refs/tags/{tag}\n"
+        f"  git tag -d {tag}\n"
+        f"  cmru abandon {branch} --yes\n"
+        "then start a fresh release"
+    )
+
+
+def _rollback_unpublished_release_tag(
+    repo_root: Path,
+    workspace: transaction.ReleaseWorkspace,
+    tag: str,
+    *,
+    git_auth: GitHubGitAuth | None,
+    cause: BaseException,
+) -> bool:
+    """Undo a release tag after a NON-publishing step failed (REL-05).
+
+    Both deletions are pinned to the exact object CMRU pushed, and an absence
+    proof is recorded, so the candidate is resumable afterwards. Returns whether
+    the rollback completed; on failure it prints the manual recovery commands.
+    """
+    ref = f"refs/tags/{tag}"
+    attempts = transaction.read_release_tag_attempts(repo_root, workspace) or {}
+    oid = attempts.get(ref)
+    log_error(
+        f"{tag}: a build step failed before any publication ({cause}); rolling the "
+        "release tag back so the candidate stays resumable"
+    )
+    try:
+        if oid is None:
+            raise RuntimeError(f"no recorded push attempt for {tag}")
+        delete_git_tag_remote(
+            repo_root, tag, False, git_auth=git_auth,
+            expected_present=True, expected_oid=oid,
+        )
+        remote_oid = list_remote_tag_refs_matching(
+            repo_root, tag, git_auth=git_auth,
+        ).get(tag)
+        if remote_oid is not None:
+            raise RuntimeError(f"origin still has {tag} at {remote_oid}")
+        delete_git_tag_local(
+            repo_root, tag, False, expected_present=True, expected_oid=oid,
+        )
+        local_oid = local_git_tag_oid(repo_root, tag, action="recheck")
+        if local_oid is not None:
+            raise RuntimeError(f"the local tag remains at {local_oid}")
+        transaction.write_confirmed_absent_release_tag_attempts(
+            repo_root, workspace, {ref: oid},
+        )
+    except Exception as exc:
+        log_error(
+            f"Could not roll back release tag {tag}: {exc}. The tag was kept; nothing was "
+            "published. Recover by hand:\n"
+            + _release_tag_recovery_commands(tag, oid, workspace.branch)
+        )
+        return False
+    log_info(
+        f"Rolled back release tag {tag} (local and origin); nothing was published. "
+        f"Fix the build, then resume: cmru release --resume {workspace.path}"
+    )
+    return True
+
+
+def _report_publication_started(
+    repo_root: Path, workspace: transaction.ReleaseWorkspace, tag: str,
+) -> None:
+    """Print the tag, its object id and exact recovery once publishing has begun."""
+    oid = (transaction.read_release_tag_attempts(repo_root, workspace) or {}).get(
+        f"refs/tags/{tag}"
+    )
+    log_error(
+        f"Publishing of {tag} had started when this release failed, so CMRU does NOT "
+        f"roll the tag back (public artifacts may already exist). Tag: {tag}, object "
+        f"id: {oid or 'unknown (see `git rev-parse refs/tags/' + tag + '`)'}. "
+        "`--resume` refuses this candidate. Recovery, from the source checkout:\n"
+        + _release_tag_recovery_commands(tag, oid, workspace.branch)
+        + "\nAssets already published under the tag are removed with `cmru cleanup`."
+    )
+
+
+def _run_tagged_build_and_publish(
+    repo_root: Path,
+    configs: Mapping[str, "ProjectConfig"],
+    name: str,
+    workspace: transaction.ReleaseWorkspace,
+    tag: str,
+    artifact_phases: List[str],
+    *,
+    candidate_sha: str,
+    git_auth: GitHubGitAuth | None,
+    github_config: GitHubConfig,
+    env_config: ReleaseEnvConfig,
+) -> None:
+    """Build (non-publishing), then publish, with the right failure handling.
+
+    A failed build rolls the freshly pushed tag back (the candidate stays
+    resumable). Once the publishing step has begun, the tag is never touched.
+    """
+    if artifact_phases:
+        try:
+            _run_project_steps(
+                repo_root, configs, [name], artifact_phases,
+                github_config=github_config, env_config=env_config,
+            )
+        except Exception as exc:
+            _rollback_unpublished_release_tag(
+                repo_root, workspace, tag, git_auth=git_auth, cause=exc,
+            )
+            raise
+    try:
+        _run_project_steps(
+            repo_root, configs, [name], ["push"],
+            github_config=github_config, env_config=env_config,
+        )
+        _assert_release_candidate_unchanged(repo_root, name, candidate_sha)
+    except Exception:
+        _report_publication_started(repo_root, workspace, tag)
+        raise
+
+
 def _release_projects_sequentially(
     repo_root: Path,
     configs: Mapping[str, "ProjectConfig"],
@@ -2856,7 +2986,11 @@ def _release_projects_sequentially(
                 )
             else:
                 log_info(f"{name}: --no-build — skipped build/push")
-            transaction.promote_workspace(workspace, git_auth=git_auth)
+            transaction.promote_workspace(
+                workspace, git_auth=git_auth,
+                project_paths=_project_release_paths(project, name),
+                release_label=name,
+            )
             log_info(f"{name}: promoted release candidate to origin/main")
         else:
             release_cmd(repo_root, {name: project}, minor=minor, major=major, set_version=set_version)
@@ -2878,17 +3012,21 @@ def _release_projects_sequentially(
                     log_info(f"Building + publishing {name} ({tag})")
                     candidate_sha = _git(repo_root, "rev-parse", "HEAD")
                     artifact_phases = [] if project.build_step == "prepare" else [project.build_step]
-                    _run_project_steps(
-                        repo_root, configs, [name], [*artifact_phases, "push"],
+                    _run_tagged_build_and_publish(
+                        repo_root, configs, name, workspace, tag, artifact_phases,
+                        candidate_sha=candidate_sha, git_auth=git_auth,
                         github_config=github_config, env_config=env_config,
                     )
-                    _assert_release_candidate_unchanged(repo_root, name, candidate_sha)
                     released.append(f"{name} ({tag})")
                     transaction.write_release_result(repo_root, workspace, name, tag)
                 else:
                     log_info(f"{name}: --no-build — tagged {tag}, skipped build/publish")
                     transaction.write_release_result(repo_root, workspace, name, tag)
-                transaction.promote_workspace(workspace, git_auth=git_auth)
+                transaction.promote_workspace(
+                    workspace, git_auth=git_auth,
+                    project_paths=_project_release_paths(project, name),
+                    release_label=tag,
+                )
                 log_info(f"{name}: promoted release candidate to origin/main")
             elif not no_build:
                 raise RuntimeError(
@@ -2897,7 +3035,11 @@ def _release_projects_sequentially(
                     "build/publish) — this should not happen; investigate before retrying"
                 )
             else:
-                transaction.promote_workspace(workspace, git_auth=git_auth)
+                transaction.promote_workspace(
+                    workspace, git_auth=git_auth,
+                    project_paths=_project_release_paths(project, name),
+                    release_label=name,
+                )
                 log_info(f"{name}: promoted release candidate to origin/main")
 
         # This project's whole cycle succeeded — checkpoint it so a LATER
@@ -4964,11 +5106,17 @@ def _release_launcher(
                     "at the last fully completed project. The durable candidate "
                     f"branch {workspace.branch} was retained for inspection."
                 )
-                _sync_local_main_and_report(transaction_root, git_auth=git_auth)
+                # REL-06: say where the candidate is BEFORE the best-effort caller
+                # sync, so the path is never lost behind a sync problem.
                 log_error(
                     f"Release transaction failed; retained {workspace.path} "
-                    f"on branch {workspace.branch} for inspection/resume."
+                    f"on branch {workspace.branch} for inspection. Follow the recovery "
+                    "steps printed above: `cmru release --resume` works only when no "
+                    "release tag was left behind (a failed build rolls its tag back "
+                    "automatically); once publishing has started the tag is kept and "
+                    "the candidate must be abandoned and re-released."
                 )
+                _sync_local_main_and_report(transaction_root, git_auth=git_auth)
             sys.exit(rc)
     except Exception as exc:
         log_error(str(exc))

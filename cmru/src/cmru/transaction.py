@@ -2923,32 +2923,146 @@ def _tag_refs_for_prefixes(
     return selected
 
 
-def promote_workspace(
-    workspace: ReleaseWorkspace, *, git_auth: GitHubGitAuth | None = None,
-) -> None:
-    """Fast-forward ``origin/main`` from the exact release candidate tip.
+PROMOTE_MERGE_ATTEMPTS = 3
+# Git's stderr for a push that lost a fast-forward race.
+_NON_FAST_FORWARD_MARKERS = ("non-fast-forward", "fetch first", "[rejected]")
 
-    The candidate is built and published before this function is called. It is
-    therefore unsafe to fetch and rebase here: rebasing would change the commit
-    that was gated and used to produce the public artifact. A concurrent update
-    is a deliberate, fail-closed outcome. The candidate branch and its durable
-    backup remain available for inspection; a later attempt can start from a
-    freshly fetched main without pretending that the already-published artifact
-    came from a different commit.
+
+def _promotion_recovery(workspace: ReleaseWorkspace) -> str:
+    return (
+        "The release itself is complete and must NOT be repeated: its tag and published "
+        "artifacts stay as they are. To land the candidate by hand, run in the retained "
+        f"worktree:\n  cd {workspace.path}\n  git fetch origin main\n"
+        "  git merge --no-ff origin/main     # resolve any conflict, then commit\n"
+        "  git push origin HEAD:refs/heads/main\n"
+        "Never force-push main."
+    )
+
+
+def _merge_origin_main_into_candidate(
+    workspace: ReleaseWorkspace,
+    *,
+    git_auth: GitHubGitAuth | None,
+    project_paths: Sequence[str],
+    release_label: str,
+) -> bool:
+    """Fetch origin/main and merge it into the candidate (``--no-ff``).
+
+    Returns False when origin/main is already contained in the candidate (the
+    rejection then had another cause). Raises, leaving the candidate unchanged,
+    when the merge would conflict or when origin/main changed the released
+    project's own paths (the gated and published content would then differ from
+    what lands on main).
     """
-    result = run_remote_git(
-        workspace.path, "push", "origin", "HEAD:refs/heads/main",
-        auth=git_auth, capture_output=True, text=True,
+    path = workspace.path
+    fetched = run_remote_git(
+        path, "fetch", "--prune", "origin", "main",
+        auth=git_auth, capture_output=True, text=True, check=False,
     )
-    if result.returncode == 0:
-        return
-    stderr = result.stderr or ""
-    raise RuntimeError(
-        "release candidate was not promoted to origin/main; the candidate may "
-        "have lost a fast-forward race or the remote rejected the push. The "
-        f"candidate branch {getattr(workspace, 'branch', '<unknown>')} was retained "
-        f"for inspection.\n{stderr}"
+    if fetched.returncode != 0:
+        raise RuntimeError(
+            "release candidate was not promoted: fetching origin/main failed "
+            f"({(fetched.stderr or '').strip()}). {_promotion_recovery(workspace)}"
+        )
+    origin_main = _git(path, "rev-parse", "origin/main")
+    contained = run_local_git(
+        path, "merge-base", "--is-ancestor", origin_main, "HEAD",
+        capture_output=True, text=True, check=False,
     )
+    if contained.returncode == 0:
+        return False
+    if contained.returncode != 1:
+        raise RuntimeError(
+            "release candidate was not promoted: could not compare the candidate with "
+            f"origin/main. {_promotion_recovery(workspace)}"
+        )
+    merge_base = _git(path, "merge-base", "HEAD", origin_main)
+    if not project_paths:
+        raise RuntimeError(
+            "release candidate was not promoted: origin/main advanced and the released "
+            "project's paths are unknown, so CMRU cannot prove the merge leaves the "
+            f"gated content unchanged. {_promotion_recovery(workspace)}"
+        )
+    touched = _git(
+        path, "diff", "--name-only", merge_base, origin_main, "--", *project_paths,
+    )
+    if touched:
+        raise RuntimeError(
+            "release candidate was not promoted: origin/main advanced AND changed the "
+            "released project's own paths, so merging would land content that differs "
+            f"from what was gated and published ({', '.join(touched.splitlines()[:5])}"
+            f"{'...' if len(touched.splitlines()) > 5 else ''}). Review those changes "
+            f"first; if they are acceptable, merge by hand. {_promotion_recovery(workspace)}"
+        )
+    label = release_label or workspace.branch
+    merged = run_local_git(
+        path, "merge", "--no-ff", "-m",
+        f"Merge origin/main into release candidate {label}\n\n"
+        "origin/main advanced while the release ran; none of the released "
+        "project's paths changed.",
+        origin_main,
+        capture_output=True, text=True, check=False,
+    )
+    if merged.returncode != 0:
+        run_local_git(path, "merge", "--abort", capture_output=True, text=True, check=False)
+        detail = (merged.stdout or merged.stderr or "").strip()
+        raise RuntimeError(
+            "release candidate was not promoted: merging origin/main into the candidate "
+            f"conflicted ({detail}); the merge was aborted and the candidate is unchanged. "
+            f"{_promotion_recovery(workspace)}"
+        )
+    return True
+
+
+def promote_workspace(
+    workspace: ReleaseWorkspace,
+    *,
+    git_auth: GitHubGitAuth | None = None,
+    project_paths: Sequence[str] = (),
+    release_label: str = "",
+    max_attempts: int = PROMOTE_MERGE_ATTEMPTS,
+) -> None:
+    """Land the release candidate on ``origin/main`` without ever force-pushing.
+
+    The candidate is built and published before this function is called, so the
+    gated commit must stay an ancestor of what lands: the candidate is never
+    rebased. When origin/main advanced during the (long) gate, the push is
+    rejected as non-fast-forward; REL-04: fetch, merge origin/main into the
+    candidate (``--no-ff``, naming the release), and push again, at most
+    ``max_attempts`` times. A conflict, or a merge that would touch the released
+    project's own paths, stops with recovery instructions; the tag and published
+    state are kept.
+    """
+    attempts = 0
+    while True:
+        result = run_remote_git(
+            workspace.path, "push", "origin", "HEAD:refs/heads/main",
+            auth=git_auth, capture_output=True, text=True,
+        )
+        if result.returncode == 0:
+            return
+        stderr = result.stderr or ""
+        failure = (
+            "release candidate was not promoted to origin/main; the candidate may "
+            "have lost a fast-forward race or the remote rejected the push. The "
+            f"candidate branch {getattr(workspace, 'branch', '<unknown>')} was retained "
+            f"for inspection.\n{stderr}"
+        )
+        if not any(marker in stderr for marker in _NON_FAST_FORWARD_MARKERS):
+            # Authentication, hook or network failures are not a lost race:
+            # merging main into the candidate cannot help, so fail immediately.
+            raise RuntimeError(failure)
+        if attempts >= max_attempts:
+            raise RuntimeError(
+                f"{failure}\nGave up after {attempts} merge attempt(s) because origin/main "
+                f"kept advancing. {_promotion_recovery(workspace)}"
+            )
+        attempts += 1
+        if not _merge_origin_main_into_candidate(
+            workspace, git_auth=git_auth, project_paths=project_paths,
+            release_label=release_label,
+        ):
+            raise RuntimeError(failure)
 
 
 def push_backup_branch(
@@ -3090,6 +3204,30 @@ _SYNC_DIRTY_REASON = (
 )
 
 
+_SYNC_IGNORED_COLLISION_REASON = (
+    "Could not sync local main automatically: origin/main adds file(s) at path(s) that "
+    "are ignored (and present) in the caller checkout, which a checkout would silently "
+    "overwrite (or they could not be inspected). Local main and those files were left "
+    "untouched. Move them away (or `git stash -a`), then run `git rebase origin/main`."
+)
+
+
+def _ignored_paths_origin_would_overwrite(repo_root: Path) -> list[str] | None:
+    """Ignored local files that updating to origin/main would create-over (None: unknown)."""
+    try:
+        added = _git(
+            repo_root, "diff", "--name-only", "--diff-filter=ACR", "-z",
+            "HEAD", "origin/main",
+        )
+        ignored = _git(
+            repo_root, "ls-files", "--others", "--ignored", "--exclude-standard", "-z",
+        )
+    except RuntimeError:
+        return None
+    incoming = {name for name in added.split("\0") if name}
+    return sorted(name for name in ignored.split("\0") if name in incoming)
+
+
 def _git_path_exists(repo_root: Path, name: str) -> bool | None:
     """Return whether a Git state path exists, or ``None`` if it is unreadable."""
     try:
@@ -3120,25 +3258,38 @@ def _sync_local_main_result(
     repo_root: Path, *, git_auth: GitHubGitAuth | None = None,
 ) -> _SyncLocalMainResult:
     """Perform caller-main synchronization and retain its exact per-call outcome."""
-    run_remote_git(
-        repo_root, "fetch", "--prune", "origin", "main", auth=git_auth, check=True,
-    )
+    try:
+        run_remote_git(
+            repo_root, "fetch", "--prune", "origin", "main", auth=git_auth, check=True,
+        )
+    except (subprocess.CalledProcessError, OSError, RuntimeError) as exc:
+        # REL-06: this runs after the release already completed (or failed and was
+        # reported). A transient fetch failure must not change that outcome.
+        return _SyncLocalMainResult(
+            False,
+            "Could not sync local main automatically: fetching origin/main failed "
+            f"({exc}). Local main was left untouched; run `git fetch origin main` and "
+            "`git rebase origin/main` from the caller checkout when origin is reachable.",
+        )
     current = _git(repo_root, "branch", "--show-current", check=False)
     if current == "main":
         # ``git rebase`` refuses a dirty checkout itself, but calling it first
-        # would produce a misleading secondary ``rebase --abort`` error. The
-        # ignored-inclusive status guard is deliberately broader than the
-        # release preflight: a later remote checkout can overwrite any local
-        # untracked path, even one hidden by .gitignore.
+        # would produce a misleading secondary ``rebase --abort`` error.
+        # Tracked and untracked (non-ignored) changes always block. Ignored files
+        # (REL-13) block only where origin/main would actually create a file at
+        # an ignored path: a checkout silently overwrites those, but ordinary
+        # ignored build output must not make every release warn.
         status = _git(
             repo_root,
             "status",
             "--porcelain",
             "--untracked-files=all",
-            "--ignored",
         )
         if status:
             return _SyncLocalMainResult(False, _SYNC_DIRTY_REASON)
+        collisions = _ignored_paths_origin_would_overwrite(repo_root)
+        if collisions is None or collisions:
+            return _SyncLocalMainResult(False, _SYNC_IGNORED_COLLISION_REASON)
         if _rebase_in_progress(repo_root) is True:
             return _SyncLocalMainResult(
                 False,

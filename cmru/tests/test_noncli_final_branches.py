@@ -108,12 +108,25 @@ def test_retain_outputs_rolls_back_when_destination_setup_fails(tmp_path):
 
 def test_promote_fails_closed_on_a_non_fast_forward(tmp_path):
     workspace = SimpleNamespace(repo_root=tmp_path, path=tmp_path, branch="cmru/release/x")
-    responses = iter([SimpleNamespace(returncode=1, stderr="[rejected] non-fast-forward", stdout="")])
+    # The rejection is classified by fetching origin/main: when origin/main is
+    # already contained in the candidate the push failed for another reason and
+    # nothing is merged (REL-04 covers the real merge path with a real origin).
+    responses = iter([
+        SimpleNamespace(returncode=1, stderr="[rejected] non-fast-forward", stdout=""),
+        SimpleNamespace(returncode=0, stderr="", stdout=""),
+        SimpleNamespace(returncode=0, stderr="", stdout="o" * 40 + "\n"),
+        SimpleNamespace(returncode=0, stderr="", stdout=""),
+    ])
     commands = []
     with patch.object(transaction.subprocess, "run", side_effect=lambda argv, **kwargs: commands.append(argv) or next(responses)):
         with pytest.raises(RuntimeError, match="candidate was not promoted"):
             transaction.promote_workspace(workspace)
-    assert commands == [["git", "push", "origin", "HEAD:refs/heads/main"]]
+    assert commands == [
+        ["git", "push", "origin", "HEAD:refs/heads/main"],
+        ["git", "fetch", "--prune", "origin", "main"],
+        ["git", "rev-parse", "origin/main"],
+        ["git", "merge-base", "--is-ancestor", "o" * 40, "HEAD"],
+    ]
 
 
 def test_sync_local_main_creates_missing_local_main_from_origin(tmp_path):
