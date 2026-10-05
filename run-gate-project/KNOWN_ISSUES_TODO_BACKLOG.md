@@ -5639,19 +5639,6 @@ identity boundary; Assay's P22 snapshot source still requires SHA-1 object
 storage for high-rigor snapshot lanes. External explicit-command mode
 continues to require full artifact `judge_provenance`; no artifact digest is
 
-## RG-83 — run-gate runs happily as an unreaping PID 1 and reports lane verdicts from a container that can no longer fork
-
-**Status:** IN PROGRESS (rev 55 implementation; selftest and low-pids acceptance pending; severity major — it let a false-green R2 campaign continue; investigated read-only with `host-escape`).
-
-**Observed.** `cmru tester-gate` started `tester-unified:local` without `--init` (cmru KI-52), so `./run-gate.py --base main assay-r2` ran as PID 1 of container `pedantic_antonelli`. git's detached auto-maintenance orphaned one `git` per commit to that PID 1, which never reaps; 19,108 zombies filled `pids.max` (19,115/19,117) at 03:11Z. The operator's contamination notice invalidated the R2 state, progress, all post-03:11Z candidate outcomes, and the final verdict; none are used as RG-83 evidence. run-gate's own `docker run` launches already pass `--init` (`run-gate.py:5873`, `:9856`); the gap is run-gate *being* PID 1 under someone else's launcher.
-
-**Expected / fix.**
-- (a) At start-up, when `os.getpid() == 1`, refuse with an infrastructure error naming the remedy ("run-gate is PID 1 with no init: start the container with `--init` (docker) or `init: true` (compose)"). An explicit opt-out is acceptable only if documented, but defaults-are-hazards argues for refusal: an unreaping PID 1 is never correct for a supervisor of process-heavy lanes.
-- (b) After each real lane, read `pids.events` (`max`) and `memory.events` (`oom_kill`) from the cgroup containing run-gate, which also contains its direct bare-host lane processes; any increment during execution makes the lane verdict an infrastructure error regardless of the raw status (generic guard; assay B145 is the in-judge guard).
-
-**Oracles.** run-gate started as PID 1 in a no-init container refuses with the remedy text (a controlled wrong implementation that only warns fails); a lane run with a deliberately low `--pids-limit` whose command forks past it yields an infrastructure verdict even if the command exits 0; a normal lane is unaffected.
-
-**Related:** cmru KI-52 (launcher without `--init`; git `maintenance.autoDetach` mechanism and image hardening), assay B145, dstdns D-670 TEST-RUNNER-INIT (same mechanism under a `sleep infinity` runner).
 synthesized for editable source. Integer inflight schema 2 stores `source` or
 `artifact`, and re-attachment uses that launch-time mode. Schema 2 requires
 the mode key; Assay records also require non-empty verdict and progress paths,
