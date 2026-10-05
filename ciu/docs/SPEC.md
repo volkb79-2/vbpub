@@ -4502,10 +4502,12 @@ facts, and recorded root entries agree. Root discovery uses the allocated
 checkout's recorded commit, not a mutable base-ref name in the primary
 checkout. On resume, `ensure` MUST compare `HEAD` with the recorded allocation
 commit and refuse if they differ; it MUST NOT reset the existing checkout.
-Root-entry updates MUST re-read and merge the neutral workspace
-record under its Git-family workspace lock, preserving unrelated metadata and
-lease fields; CIU's lease mirror MUST use that same lock for its own
-read-modify-write. No runtime identity is invented for an aggregate root.
+If an older `ready` record cannot be verified, `ensure` MUST first demote it
+to `allocating` and then record `recovery-required` if the allocation commit
+cannot be established. Root-entry updates MUST re-read and merge the neutral
+workspace record under its Git-family workspace lock, preserving unrelated
+metadata and lease fields; CIU's lease mirror MUST use that same lock for its
+own read-modify-write. No runtime identity is invented for an aggregate root.
 
 Git facts are freshly read from Git, never inferred from a name or a stale
 record: `git.registered` (the record's checkout is a current registered

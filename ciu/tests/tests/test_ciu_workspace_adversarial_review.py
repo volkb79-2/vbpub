@@ -686,6 +686,32 @@ def test_legacy_root_discovery_uses_saved_commit_and_refuses_a_moved_checkout(
         )
 
 
+def test_ensure_demotes_unverifiable_legacy_ready_record_before_refusing(
+    monkeypatch, tmp_path
+):
+    primary, target, _shared = _create_setup(
+        monkeypatch, tmp_path, roots=[tmp_path / "primary" / "nested"]
+    )
+    record = _record(target, state="ready")
+    context = SimpleNamespace(
+        physical_worktree_path=target, record_path=tmp_path / "generic.json",
+        git_common_dir=tmp_path / ".git", base_commit="a" * 40,
+    )
+    writes = []
+    monkeypatch.setattr(worktree, "find_instance_record", lambda *_args: record)
+    monkeypatch.setattr(worktree, "_ensure_shared_record", lambda *_args: context)
+    monkeypatch.setattr(worktree, "_write_instance_record", writes.append)
+    monkeypatch.setattr(worktree, "_git", lambda *_args, **_kwargs: SimpleNamespace(
+        returncode=0, stdout="b" * 40, stderr=""
+    ))
+
+    with pytest.raises(worktree.WorktreeError, match="HEAD moved from recorded allocation commit"):
+        worktree.ensure(primary, "demo")
+
+    assert [item.state for item in writes] == ["allocating", "recovery-required"]
+    assert writes[-1].recovery_status == "env-generation-failed"
+
+
 def test_finish_allocation_requires_shared_context_to_certify_ready(tmp_path):
     record = worktree.WorktreeInstanceRecord(
         logical_name="demo", display_name="demo", branch="demo",

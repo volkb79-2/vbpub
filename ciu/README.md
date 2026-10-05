@@ -59,7 +59,9 @@ recorded in the shared workspace metadata. Until then inspection reports
 `ciu worktree ensure` command retries incomplete preparation and checks older
 ready records for the same evidence before returning them. If a partial
 checkout's `HEAD` moved from its saved target, `ensure` refuses and preserves
-it; it never hard-resets an existing worktree during resume.
+it; it never hard-resets an existing worktree during resume. An older `ready`
+record that cannot be verified is demoted to `recovery-required` before
+refusal.
 See the [aggregate-record rationale](docs/DESIGN-GUIDE.md#aggregate-family-records-and-runtime-identity)
 and [consumer example](docs/CONSUMERS.md#2-create-a-managed-workspace).
 

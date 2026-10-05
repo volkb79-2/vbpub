@@ -140,8 +140,10 @@ workspace record's `base_commit` only while the checkout still points there.
 If that target cannot be confirmed, `ensure` refuses instead of selecting a
 root set from a later `HEAD`. Resume never runs `git reset --hard` on an
 existing checkout: an interrupted adopt may contain operator commits, and a
-fresh ref resolution is not authority to discard them. This adds no runtime
-identity to a generic family root and requires no record-schema change.
+fresh ref resolution is not authority to discard them. If an older `ready`
+record cannot be verified, CIU demotes it before refusing so inspection does
+not continue to certify incomplete state. This adds no runtime identity to a
+generic family root and requires no record-schema change.
 
 The writer already emits this generic shape when the exact root marker is
 absent. The old reader then contradicted it by demanding a complete runtime

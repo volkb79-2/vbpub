@@ -59,6 +59,9 @@ accepted on its stale status alone. It uses the recorded allocation commit
 (`fork_point_sha`, or the shared workspace's `base_commit` for older records).
 If a partial worktree's `HEAD` moved from that target, `ensure` refuses and
 preserves the checkout; it never resets an existing worktree during resume.
+An older `ready` record that cannot be verified is demoted to
+`recovery-required` before CIU refuses, so inspection does not keep certifying
+an unverified allocation.
 
 If the Git worktree root itself has no `ciu.global.defaults.toml.j2`, its
 aggregate `ready` record correctly has

@@ -4120,14 +4120,18 @@ def ensure(
             if record.state == "ready":
                 if _ready_roots_are_complete(repo_root, record, workspace_context):
                     return record
-                _allocation_commit(
-                    record, workspace_context, require_current_head=True
-                )
                 # Older writers exposed ready before nested-root metadata was
                 # committed. Demote such records and repair them through the
                 # same non-ready lifecycle as a fresh allocation.
                 record = replace(record, state="allocating", recovery_status=None)
                 _write_instance_record(record)
+                try:
+                    _allocation_commit(
+                        record, workspace_context, require_current_head=True
+                    )
+                except WorktreeError:
+                    _mark_recovery(record, "env-generation-failed")
+                    raise
                 allow_existing_network = True
             else:
                 # ensure() is a resume path. Verify the exact allocation target
