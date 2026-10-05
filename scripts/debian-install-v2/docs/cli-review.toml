@@ -1,0 +1,836 @@
+schema_version = 1
+cli_id = "debian-install-v2"
+
+# ---------------------------------------------------------------- build-customscript
+
+[[cases]]
+id = "case:route:entrypoint:debian-install-v2/build-customscript/constraint-requires/1"
+state = "active"
+decision = "refuse"
+reviewed_signature = "sha256:769274d94d3c9732c1b49def5e83ec856af610ba0a964713ae41f81ea2ac99db"
+rationale = "A custom repository cannot be mapped to a raw bootstrap-remote.py URL by convention, so the operator must name the script; refusing at parse time beats a handler error after the config was read."
+invocation = ["build-customscript", "--config", "install.json", "--repo-url", "https://git.example.test/ops/vbpub"]
+expected_exit_status = 2
+expected_stdout_contains = ""
+expected_stderr_contains = "--repo-url requires --bootstrap-url"
+effects = ["None: refused before the configuration is read; the verb's help follows the diagnostic"]
+test_ids = ["debian_install_v2/tests/test_cli_review_cases.py::test_custom_repository_without_a_bootstrap_url_is_refused_with_help"]
+
+[[cases]]
+id = "case:route:entrypoint:debian-install-v2/build-customscript/exclusive-conflict/configuration-source/option:route:entrypoint:debian-install-v2/build-customscript/--config/option:route:entrypoint:debian-install-v2/build-customscript/--config-json"
+state = "active"
+decision = "refuse"
+reviewed_signature = "sha256:fe8361ff460d5b87f270f6db4ed6a81733e303cc6f3174c904f37b1095f55555"
+rationale = "Two settings sources would need a precedence rule that hides mistakes; exactly one is required."
+invocation = ["build-customscript", "--config", "install.json", "--config-json", "{}"]
+expected_exit_status = 2
+expected_stdout_contains = ""
+expected_stderr_contains = "not allowed with argument --config"
+effects = ["None: refused by the parser before any file is read"]
+test_ids = ["debian_install_v2/tests/test_cli_review_cases.py::test_both_configuration_sources_are_refused[build-customscript]"]
+
+[[cases]]
+id = "case:route:entrypoint:debian-install-v2/build-customscript/exclusive-member/configuration-source/option:route:entrypoint:debian-install-v2/build-customscript/--config"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:da479f10cb24ea7efab6a2a2c910ab3da7cd60ec516296e06530a44a54e8f8b2"
+rationale = "A settings file is the preferred source because argv is visible to other users."
+invocation = ["build-customscript", "--config", "install.json"]
+expected_exit_status = 0
+expected_stdout_contains = "customScript"
+expected_stderr_contains = ""
+effects = ["Reads the settings file; prints one JSON bundle (config, customScript, completionMarker)"]
+test_ids = ["debian_install_v2/tests/test_cli_review_cases.py::test_config_file_source_is_read[build-customscript]"]
+
+[[cases]]
+id = "case:route:entrypoint:debian-install-v2/build-customscript/exclusive-member/configuration-source/option:route:entrypoint:debian-install-v2/build-customscript/--config-json"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:add6a8ee06fa3678b3cd1e85f231a0622abd17a284f795fddd645cf289960de1"
+rationale = "Inline JSON is a convenience for scripted use; its help warns that argv may be visible."
+invocation = ["build-customscript", "--config-json", "{\"schema_version\": 1}"]
+expected_exit_status = 0
+expected_stdout_contains = "customScript"
+expected_stderr_contains = ""
+effects = ["Validates the inline settings; prints one JSON bundle"]
+test_ids = ["debian_install_v2/tests/test_cli_review_cases.py::test_inline_json_source_is_read[build-customscript]"]
+
+[[cases]]
+id = "case:route:entrypoint:debian-install-v2/build-customscript/minimum"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:c808cfa7ab5dd59e955fbd1cd8ecd895469abfc3eea378dfd35a5c50e59a1f0d"
+rationale = "Rendering the canonical-repository bundle needs only the settings; every source option has a default."
+invocation = ["build-customscript", "--config", "install.json"]
+expected_exit_status = 0
+expected_stdout_contains = "customScript"
+expected_stderr_contains = ""
+effects = ["No host or network effect; prints JSON that contains the Telegram token when one is configured"]
+test_ids = ["debian_install_v2/tests/test_cli_review_cases.py::test_config_file_source_is_read[build-customscript]"]
+
+[[cases]]
+id = "case:route:entrypoint:debian-install-v2/build-customscript/option-spelling/option:route:entrypoint:debian-install-v2/build-customscript/--bootstrap-url/--bootstrap-url"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:5239c88400b37756b8f0cf72793bd6775dc3ebbcd17807f12b35684aa5d51c8b"
+rationale = "The explicit script URL is the only way to bootstrap from a mirror or fork; it may also be used with the canonical repository."
+invocation = ["build-customscript", "--config", "install.json", "--bootstrap-url", "https://git.example.test/ops/vbpub/raw/main/bootstrap-remote.py"]
+expected_exit_status = 0
+expected_stdout_contains = "customScript"
+expected_stderr_contains = ""
+effects = ["The launcher in customScript downloads this URL instead of the canonical raw URL"]
+test_ids = [
+  "debian_install_v2/tests/test_cli_review_cases.py::test_bootstrap_url_alone_overrides_only_the_fetched_script",
+  "debian_install_v2/tests/test_cli_review_cases.py::test_custom_repository_with_its_bootstrap_url_is_rendered",
+]
+
+[[cases]]
+id = "case:route:entrypoint:debian-install-v2/build-customscript/option-spelling/option:route:entrypoint:debian-install-v2/build-customscript/--config-json/--config-json"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:a14becbe0e0cf26053854e7c1e4e9627d432e0b6fb925b26ff432a9a6cf4239d"
+rationale = "Spelling is the product's established one; no abbreviation is accepted."
+invocation = ["build-customscript", "--config-json", "{\"schema_version\": 1}"]
+expected_exit_status = 0
+expected_stdout_contains = "customScript"
+expected_stderr_contains = ""
+effects = ["Validates the inline settings; prints one JSON bundle"]
+test_ids = ["debian_install_v2/tests/test_cli_review_cases.py::test_inline_json_source_is_read[build-customscript]"]
+
+[[cases]]
+id = "case:route:entrypoint:debian-install-v2/build-customscript/option-spelling/option:route:entrypoint:debian-install-v2/build-customscript/--config/--config"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:7bedfaab70d1d2a35a53691619171e85f3dcc038f1c75308a11ee445ba66f760"
+rationale = "Spelling is the product's established one; no abbreviation is accepted."
+invocation = ["build-customscript", "--config", "install.json"]
+expected_exit_status = 0
+expected_stdout_contains = "customScript"
+expected_stderr_contains = ""
+effects = ["Reads the settings file; prints one JSON bundle"]
+test_ids = ["debian_install_v2/tests/test_cli_review_cases.py::test_config_file_source_is_read[build-customscript]"]
+
+[[cases]]
+id = "case:route:entrypoint:debian-install-v2/build-customscript/option-spelling/option:route:entrypoint:debian-install-v2/build-customscript/--controller-ssh-placeholder/--controller-ssh-placeholder"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:2aa8db787b3e81fdc33cf33bbf83c36af66c31364c654f156937bbab2df907a7"
+rationale = "A provider substitutes the controller's ephemeral key at install time, so the bundle carries a marker instead of a key."
+invocation = ["build-customscript", "--config", "install.json", "--controller-ssh-placeholder"]
+expected_exit_status = 0
+expected_stdout_contains = "{{CONTROLLER_SSH_PUBKEY}}"
+expected_stderr_contains = ""
+effects = ["Sets controller_ssh_pubkey in the bundled config to the provider marker; refused if the settings already carry a key"]
+test_ids = ["debian_install_v2/tests/test_cli_review_cases.py::test_controller_ssh_placeholder_emits_the_provider_marker"]
+
+[[cases]]
+id = "case:route:entrypoint:debian-install-v2/build-customscript/option-spelling/option:route:entrypoint:debian-install-v2/build-customscript/--debug-raw/--debug-raw"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:45240abc13901b24796ca476cf1ec515d1db7643b0a94be7ab5e7c6c39dfeb34"
+rationale = "The bundle must contain the Telegram token to work, so redacted output is refused and --debug-raw is the explicit, warned opt-in."
+invocation = ["build-customscript", "--config", "install.json", "--debug-raw"]
+expected_exit_status = 0
+expected_stdout_contains = "customScript"
+expected_stderr_contains = "--debug-raw is active"
+effects = ["Prints the bundle with the token unredacted and a warning on stderr; without it a configured token makes the verb exit 2"]
+test_ids = ["debian_install_v2/tests/test_cli_review_cases.py::test_debug_raw_reveals_the_token_only_when_asked[build-customscript]"]
+
+[[cases]]
+id = "case:route:entrypoint:debian-install-v2/build-customscript/option-spelling/option:route:entrypoint:debian-install-v2/build-customscript/--repo-branch/--repo-branch"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:7e3ebf2a251c16a941c1f91980b0b5c78bd1e99933023b84fc3ac1148b56081b"
+rationale = "A branch selects both the archive bootstrap-remote.py downloads and, for the canonical repository, the raw script URL."
+invocation = ["build-customscript", "--config", "install.json", "--repo-branch", "feature/install-v2"]
+expected_exit_status = 0
+expected_stdout_contains = "REPO_BRANCH=feature/install-v2"
+expected_stderr_contains = ""
+effects = ["customScript exports REPO_BRANCH and downloads the script from that branch"]
+test_ids = ["debian_install_v2/tests/test_cli_review_cases.py::test_repo_branch_selects_the_archive_and_the_default_bootstrap_url"]
+
+[[cases]]
+id = "case:route:entrypoint:debian-install-v2/build-customscript/option-spelling/option:route:entrypoint:debian-install-v2/build-customscript/--repo-url/--repo-url"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:0e2d341b5987bd029e0c56557cf03ad103c66a4f11d32d9698a451e2637679dc"
+rationale = "A fork or mirror is a supported source, provided the operator also names its bootstrap script."
+invocation = ["build-customscript", "--config", "install.json", "--repo-url", "https://git.example.test/ops/vbpub", "--bootstrap-url", "https://git.example.test/ops/vbpub/raw/main/bootstrap-remote.py"]
+expected_exit_status = 0
+expected_stdout_contains = "REPO_URL=https://git.example.test/ops/vbpub"
+expected_stderr_contains = ""
+effects = ["customScript exports REPO_URL so bootstrap-remote.py downloads the archive from that repository"]
+test_ids = ["debian_install_v2/tests/test_cli_review_cases.py::test_custom_repository_with_its_bootstrap_url_is_rendered"]
+
+# ---------------------------------------------------------------- disable-stage2
+
+[[cases]]
+id = "case:route:entrypoint:debian-install-v2/disable-stage2/exclusive-conflict/configuration-source/option:route:entrypoint:debian-install-v2/disable-stage2/--config/option:route:entrypoint:debian-install-v2/disable-stage2/--config-json"
+state = "active"
+decision = "refuse"
+reviewed_signature = "sha256:63859a814a4d6d47c7b199ced2006ac5f403e1cb11ca7ebce48dafa9b717913f"
+rationale = "Two settings sources would need a precedence rule that hides mistakes; exactly one is required."
+invocation = ["disable-stage2", "--config", "install.json", "--config-json", "{}"]
+expected_exit_status = 2
+expected_stdout_contains = ""
+expected_stderr_contains = "not allowed with argument --config"
+effects = ["None: refused by the parser before any file is read or unit touched"]
+test_ids = ["debian_install_v2/tests/test_cli_review_cases.py::test_both_configuration_sources_are_refused[disable-stage2]"]
+
+[[cases]]
+id = "case:route:entrypoint:debian-install-v2/disable-stage2/exclusive-member/configuration-source/option:route:entrypoint:debian-install-v2/disable-stage2/--config"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:a538263a7f71e45710d638459edab872f43ad86df7899da20feddad0f80161dd"
+rationale = "The settings supply the state directory that holds the completion marker."
+invocation = ["disable-stage2", "--config", "install.json", "--dry-run"]
+expected_exit_status = 0
+expected_stdout_contains = "planned"
+expected_stderr_contains = ""
+effects = ["Loads the settings; with --dry-run records the planned systemctl action and prints it as JSON"]
+test_ids = ["debian_install_v2/tests/test_cli_review_cases.py::test_config_file_source_is_read[disable-stage2]"]
+
+[[cases]]
+id = "case:route:entrypoint:debian-install-v2/disable-stage2/exclusive-member/configuration-source/option:route:entrypoint:debian-install-v2/disable-stage2/--config-json"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:4b2957d5490c4676009eacd41427a9e58bf276457dd33af13e701ac07ddf47eb"
+rationale = "Inline JSON is a convenience for scripted use."
+invocation = ["disable-stage2", "--config-json", "{\"schema_version\": 1}", "--dry-run"]
+expected_exit_status = 0
+expected_stdout_contains = "planned"
+expected_stderr_contains = ""
+effects = ["Validates the inline settings; with --dry-run prints the planned actions"]
+test_ids = ["debian_install_v2/tests/test_cli_review_cases.py::test_inline_json_source_is_read[disable-stage2]"]
+
+[[cases]]
+id = "case:route:entrypoint:debian-install-v2/disable-stage2/minimum"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:024d8c158c8f443027259fb5059b51792b0182cce345fa2a4870c6c56cc8d79a"
+rationale = "Disabling the unit is a recovery step; the smallest safe invocation previews it."
+invocation = ["disable-stage2", "--config", "install.json", "--dry-run"]
+expected_exit_status = 0
+expected_stdout_contains = "planned"
+expected_stderr_contains = ""
+effects = ["Dry run: records the systemctl disable action and the completion marker plan, executes nothing"]
+test_ids = ["debian_install_v2/tests/test_cli_review_cases.py::test_config_file_source_is_read[disable-stage2]"]
+
+[[cases]]
+id = "case:route:entrypoint:debian-install-v2/disable-stage2/option-spelling/option:route:entrypoint:debian-install-v2/disable-stage2/--config-json/--config-json"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:bd1e7cfe43f0e94c63878f8dfd40e1955cf9657c873e33ae2efae62883300801"
+rationale = "Spelling is the product's established one; no abbreviation is accepted."
+invocation = ["disable-stage2", "--config-json", "{\"schema_version\": 1}", "--dry-run"]
+expected_exit_status = 0
+expected_stdout_contains = "planned"
+expected_stderr_contains = ""
+effects = ["Validates the inline settings"]
+test_ids = ["debian_install_v2/tests/test_cli_review_cases.py::test_inline_json_source_is_read[disable-stage2]"]
+
+[[cases]]
+id = "case:route:entrypoint:debian-install-v2/disable-stage2/option-spelling/option:route:entrypoint:debian-install-v2/disable-stage2/--config/--config"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:b6a4974920d356174e1e88666a86ed66475bc447828a68b787924901a405fb96"
+rationale = "Spelling is the product's established one; no abbreviation is accepted."
+invocation = ["disable-stage2", "--config", "install.json", "--dry-run"]
+expected_exit_status = 0
+expected_stdout_contains = "planned"
+expected_stderr_contains = ""
+effects = ["Loads the settings file"]
+test_ids = ["debian_install_v2/tests/test_cli_review_cases.py::test_config_file_source_is_read[disable-stage2]"]
+
+[[cases]]
+id = "case:route:entrypoint:debian-install-v2/disable-stage2/option-spelling/option:route:entrypoint:debian-install-v2/disable-stage2/--debug-raw/--debug-raw"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:b93063ed4a4d25d57017eba7c8c5c7783a8e4f47a7e4981b1fd2893bdae64e17"
+rationale = "Library-owned control; this verb prints no secret, so it only adds the warning and debug lines."
+invocation = ["disable-stage2", "--config", "install.json", "--dry-run", "--debug-raw"]
+expected_exit_status = 0
+expected_stdout_contains = "planned"
+expected_stderr_contains = "--debug-raw is active"
+effects = ["Unredacted diagnostics on stderr; stdout and exit status unchanged"]
+test_ids = ["debian_install_v2/tests/test_cli_review_cases.py::test_debug_raw_only_adds_the_warning_and_debug_lines_without_a_secret[disable-stage2]"]
+
+[[cases]]
+id = "case:route:entrypoint:debian-install-v2/disable-stage2/option-spelling/option:route:entrypoint:debian-install-v2/disable-stage2/--dry-run/--dry-run"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:f7035de43c910e4c0255b716f799aeb727497ef87880d2bd0ff438cb3218fe36"
+rationale = "A mutating verb must be previewable; the dry run prints the planned actions as JSON instead of claiming the unit was disabled."
+invocation = ["disable-stage2", "--config", "install.json", "--dry-run"]
+expected_exit_status = 0
+expected_stdout_contains = "planned"
+expected_stderr_contains = ""
+effects = ["Records the planned actions and prints them; asks nothing and executes nothing"]
+test_ids = ["debian_install_v2/tests/test_cli_review_cases.py::test_dry_run_prints_the_planned_actions_and_asks_nothing[disable-stage2]"]
+
+[[cases]]
+id = "case:route:entrypoint:debian-install-v2/disable-stage2/option-spelling/option:route:entrypoint:debian-install-v2/disable-stage2/--yes/--yes"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:c2bb8a133e3ba9753d1681f11c587ff49e6904334d49115fcafd809d6bd549c3"
+rationale = "Scripted recovery needs a way to skip only the confirmation; without it a non-interactive run refuses with exit 2."
+invocation = ["disable-stage2", "--config", "install.json", "--yes"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = "Stage-two service disabled and completion marker recorded."
+effects = ["Skips the default-no prompt; disables the stage-two unit and records the completion marker"]
+test_ids = [
+  "debian_install_v2/tests/test_cli_review_cases.py::test_without_yes_a_non_interactive_run_refuses_before_acting[disable-stage2]",
+  "debian_install_v2/tests/test_cli_review_cases.py::test_yes_skips_only_the_confirmation_and_runs_the_step[disable-stage2]",
+]
+
+# ---------------------------------------------------------------- install
+
+[[cases]]
+id = "case:route:entrypoint:debian-install-v2/install/exclusive-conflict/configuration-source/option:route:entrypoint:debian-install-v2/install/--config/option:route:entrypoint:debian-install-v2/install/--config-json"
+state = "active"
+decision = "refuse"
+reviewed_signature = "sha256:20ee0368a297669a45b3cd946c6a5b3b9b1767935f303fc0d5a8e24aeddc22bb"
+rationale = "Two settings sources would need a precedence rule that hides mistakes; exactly one is required."
+invocation = ["install", "--config", "install.json", "--config-json", "{}"]
+expected_exit_status = 2
+expected_stdout_contains = ""
+expected_stderr_contains = "not allowed with argument --config"
+effects = ["None: refused by the parser before the host is inspected"]
+test_ids = ["debian_install_v2/tests/test_cli_review_cases.py::test_both_configuration_sources_are_refused[install]"]
+
+[[cases]]
+id = "case:route:entrypoint:debian-install-v2/install/exclusive-member/configuration-source/option:route:entrypoint:debian-install-v2/install/--config"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:5a672c4375f42b6161044ab5f3474b09ed2d5a41be88eb37c43dfa4283c30353"
+rationale = "A settings file is the preferred source because argv is visible to other users."
+invocation = ["install", "--config", "install.json", "--dry-run"]
+expected_exit_status = 0
+expected_stdout_contains = "planned"
+expected_stderr_contains = ""
+effects = ["Loads and validates the settings file, then plans stage one"]
+test_ids = ["debian_install_v2/tests/test_cli_review_cases.py::test_config_file_source_is_read[install]"]
+
+[[cases]]
+id = "case:route:entrypoint:debian-install-v2/install/exclusive-member/configuration-source/option:route:entrypoint:debian-install-v2/install/--config-json"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:fe23334913dc6c53405dd63998c3e11444e1e4b702c0a7dce08f2345a03fedd1"
+rationale = "Inline JSON is a convenience for scripted use; its help warns that argv may be visible."
+invocation = ["install", "--config-json", "{\"schema_version\": 1}", "--dry-run"]
+expected_exit_status = 0
+expected_stdout_contains = "planned"
+expected_stderr_contains = ""
+effects = ["Validates the inline settings, then plans stage one"]
+test_ids = ["debian_install_v2/tests/test_cli_review_cases.py::test_inline_json_source_is_read[install]"]
+
+[[cases]]
+id = "case:route:entrypoint:debian-install-v2/install/minimum"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:2f071618d79c5d77c5017a9b154df43100a57b1169fb8d3da9de7429b6f557ad"
+rationale = "install repartitions the root disk, so its previewed form is the supported way to try it."
+invocation = ["install", "--config", "install.json", "--dry-run"]
+expected_exit_status = 0
+expected_stdout_contains = "planned"
+expected_stderr_contains = ""
+effects = ["Dry run: reads the host, records every planned privileged action as JSON, executes nothing"]
+test_ids = ["debian_install_v2/tests/test_cli_review_cases.py::test_config_file_source_is_read[install]"]
+
+[[cases]]
+id = "case:route:entrypoint:debian-install-v2/install/option-spelling/option:route:entrypoint:debian-install-v2/install/--config-json/--config-json"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:13b2331e8b25cec159f930db7ad60aaf579bdbfb4b2a33cc0b714d838fbacbc3"
+rationale = "Spelling is the product's established one; no abbreviation is accepted."
+invocation = ["install", "--config-json", "{\"schema_version\": 1}", "--dry-run"]
+expected_exit_status = 0
+expected_stdout_contains = "planned"
+expected_stderr_contains = ""
+effects = ["Validates the inline settings"]
+test_ids = ["debian_install_v2/tests/test_cli_review_cases.py::test_inline_json_source_is_read[install]"]
+
+[[cases]]
+id = "case:route:entrypoint:debian-install-v2/install/option-spelling/option:route:entrypoint:debian-install-v2/install/--config/--config"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:ef384e7f1fb36f71d2315399b2a56c9f46a63c2e6235b0be5dba5c164ffe3963"
+rationale = "Spelling is the product's established one; no abbreviation is accepted."
+invocation = ["install", "--config", "install.json", "--dry-run"]
+expected_exit_status = 0
+expected_stdout_contains = "planned"
+expected_stderr_contains = ""
+effects = ["Loads the settings file"]
+test_ids = ["debian_install_v2/tests/test_cli_review_cases.py::test_config_file_source_is_read[install]"]
+
+[[cases]]
+id = "case:route:entrypoint:debian-install-v2/install/option-spelling/option:route:entrypoint:debian-install-v2/install/--debug-raw/--debug-raw"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:a9ad06f59564d176285a3ec2590d3c5d4cc3ff78a8c86cbb541d2a84aec73de1"
+rationale = "Library-owned control; install prints no secret, so it only adds the warning and debug lines."
+invocation = ["install", "--config", "install.json", "--dry-run", "--debug-raw"]
+expected_exit_status = 0
+expected_stdout_contains = "planned"
+expected_stderr_contains = "--debug-raw is active"
+effects = ["Unredacted diagnostics on stderr; stdout and exit status unchanged"]
+test_ids = ["debian_install_v2/tests/test_cli_review_cases.py::test_debug_raw_only_adds_the_warning_and_debug_lines_without_a_secret[install]"]
+
+[[cases]]
+id = "case:route:entrypoint:debian-install-v2/install/option-spelling/option:route:entrypoint:debian-install-v2/install/--dry-run/--dry-run"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:1582a386e963c69ec660195ea8ba46d7482742b55c0ddd61e4441a0b67aa4a6b"
+rationale = "A fresh install is destructive and expensive; a dry run that prints the planned actions is the review step before it."
+invocation = ["install", "--config", "install.json", "--dry-run"]
+expected_exit_status = 0
+expected_stdout_contains = "planned"
+expected_stderr_contains = ""
+effects = ["Records the planned actions and prints them as JSON; asks nothing and executes nothing"]
+test_ids = ["debian_install_v2/tests/test_cli_review_cases.py::test_dry_run_prints_the_planned_actions_and_asks_nothing[install]"]
+
+[[cases]]
+id = "case:route:entrypoint:debian-install-v2/install/option-spelling/option:route:entrypoint:debian-install-v2/install/--yes/--yes"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:a3ee68084a50a2351c7873b3986672ae0cae0387877c2d2c74b806ed16fb865b"
+rationale = "Unattended bootstrap (cloud-init) cannot answer a prompt; --yes skips only that prompt, and a non-interactive run without it refuses with exit 2."
+invocation = ["install", "--config", "install.json", "--yes"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = "Stage-one installation completed"
+effects = ["Skips the default-no prompt, then runs stage one: repartitions the root disk, writes swap, units and state, may reboot"]
+test_ids = [
+  "debian_install_v2/tests/test_cli_review_cases.py::test_without_yes_a_non_interactive_run_refuses_before_acting[install]",
+  "debian_install_v2/tests/test_cli_review_cases.py::test_yes_skips_only_the_confirmation_and_runs_the_step[install]",
+]
+
+# ---------------------------------------------------------------- plan
+
+[[cases]]
+id = "case:route:entrypoint:debian-install-v2/plan/exclusive-conflict/configuration-source/option:route:entrypoint:debian-install-v2/plan/--config/option:route:entrypoint:debian-install-v2/plan/--config-json"
+state = "active"
+decision = "refuse"
+reviewed_signature = "sha256:f0b2f264c637f70d13b7a43577720caf54702eebdbcf4905c58bd8b1a5c31bc5"
+rationale = "Two settings sources would need a precedence rule that hides mistakes; exactly one is required."
+invocation = ["plan", "--config", "install.json", "--config-json", "{}"]
+expected_exit_status = 2
+expected_stdout_contains = ""
+expected_stderr_contains = "not allowed with argument --config"
+effects = ["None: refused by the parser"]
+test_ids = ["debian_install_v2/tests/test_cli_review_cases.py::test_both_configuration_sources_are_refused[plan]"]
+
+[[cases]]
+id = "case:route:entrypoint:debian-install-v2/plan/exclusive-member/configuration-source/option:route:entrypoint:debian-install-v2/plan/--config"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:3ac9108515e1f6510413d1e0995112c9da9897ce06ab9b07066944c5f66c9c84"
+rationale = "A settings file is the preferred source because argv is visible to other users."
+invocation = ["plan", "--config", "install.json"]
+expected_exit_status = 0
+expected_stdout_contains = "Release:"
+expected_stderr_contains = ""
+effects = ["Loads the settings file; reads the host's disks; changes nothing"]
+test_ids = ["debian_install_v2/tests/test_cli_review_cases.py::test_config_file_source_is_read[plan]"]
+
+[[cases]]
+id = "case:route:entrypoint:debian-install-v2/plan/exclusive-member/configuration-source/option:route:entrypoint:debian-install-v2/plan/--config-json"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:be18e92d19c5b55577419bc579ee81289cdd8267200b64dabad91218d7db5313"
+rationale = "Inline JSON is a convenience for scripted use."
+invocation = ["plan", "--config-json", "{\"schema_version\": 1}"]
+expected_exit_status = 0
+expected_stdout_contains = "Release:"
+expected_stderr_contains = ""
+effects = ["Validates the inline settings; reads the host's disks; changes nothing"]
+test_ids = ["debian_install_v2/tests/test_cli_review_cases.py::test_inline_json_source_is_read[plan]"]
+
+[[cases]]
+id = "case:route:entrypoint:debian-install-v2/plan/minimum"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:1fcd8324b6ab93f14b4514d31dbfce68083d222745220d9ac025a88bcc44eb8c"
+rationale = "plan is the read-only review of the target host; it needs only the settings."
+invocation = ["plan", "--config", "install.json"]
+expected_exit_status = 0
+expected_stdout_contains = "Release:"
+expected_stderr_contains = ""
+effects = ["Reads the host's disks and releases; writes nothing"]
+test_ids = ["debian_install_v2/tests/test_cli_review_cases.py::test_config_file_source_is_read[plan]"]
+
+[[cases]]
+id = "case:route:entrypoint:debian-install-v2/plan/option-spelling/option:route:entrypoint:debian-install-v2/plan/--config-json/--config-json"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:28befa9094800921594d5b44d449d8d5b291bbb3e29d41d393084f34e860822c"
+rationale = "Spelling is the product's established one; no abbreviation is accepted."
+invocation = ["plan", "--config-json", "{\"schema_version\": 1}"]
+expected_exit_status = 0
+expected_stdout_contains = "Release:"
+expected_stderr_contains = ""
+effects = ["Validates the inline settings"]
+test_ids = ["debian_install_v2/tests/test_cli_review_cases.py::test_inline_json_source_is_read[plan]"]
+
+[[cases]]
+id = "case:route:entrypoint:debian-install-v2/plan/option-spelling/option:route:entrypoint:debian-install-v2/plan/--config/--config"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:5c39af952257ddee37973dfbb2bdf35c165713313f73fe260899727b4a672be1"
+rationale = "Spelling is the product's established one; no abbreviation is accepted."
+invocation = ["plan", "--config", "install.json"]
+expected_exit_status = 0
+expected_stdout_contains = "Release:"
+expected_stderr_contains = ""
+effects = ["Loads the settings file"]
+test_ids = ["debian_install_v2/tests/test_cli_review_cases.py::test_config_file_source_is_read[plan]"]
+
+[[cases]]
+id = "case:route:entrypoint:debian-install-v2/plan/option-spelling/option:route:entrypoint:debian-install-v2/plan/--debug-raw/--debug-raw"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:dd65dddc076fc713e2a85f17534308b60dd942108b5d37887439cc5cc4bd8bab"
+rationale = "Library-owned control; the plan holds no secret, so it only adds the warning and debug lines."
+invocation = ["plan", "--config", "install.json", "--debug-raw"]
+expected_exit_status = 0
+expected_stdout_contains = "Release:"
+expected_stderr_contains = "--debug-raw is active"
+effects = ["Unredacted diagnostics on stderr; stdout and exit status unchanged"]
+test_ids = ["debian_install_v2/tests/test_cli_review_cases.py::test_debug_raw_only_adds_the_warning_and_debug_lines_without_a_secret[plan]"]
+
+[[cases]]
+id = "case:route:entrypoint:debian-install-v2/plan/option-spelling/option:route:entrypoint:debian-install-v2/plan/--json/--json"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:b27ed23326fadaab14e60764f8c389d54b91f999dbe3acf738b0c13d677e5ded"
+rationale = "Controllers parse the plan; --json replaces the text rendering with one JSON object on stdout."
+invocation = ["plan", "--config", "install.json", "--json"]
+expected_exit_status = 0
+expected_stdout_contains = "\"release\""
+expected_stderr_contains = ""
+effects = ["Prints the plan as JSON; same read-only host inspection"]
+test_ids = ["debian_install_v2/tests/test_cli_review_cases.py::test_json_replaces_the_text_rendering[plan]"]
+
+# ---------------------------------------------------------------- resume
+
+[[cases]]
+id = "case:route:entrypoint:debian-install-v2/resume/minimum"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:6508d0985667a5ee9e1cdace5d74d1a57b5c671bce6c7459d3dc45e9ce8b990a"
+rationale = "systemd invokes stage two after reboot with only VBPUB_STATE_DIR set and --yes, so no other argument may be required."
+invocation = ["resume", "--yes"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = "Stage-two installation completed."
+effects = ["Loads the saved settings from the state directory and applies the remaining host changes"]
+test_ids = ["debian_install_v2/tests/test_cli_review_cases.py::test_yes_skips_only_the_confirmation_and_runs_the_step[resume]"]
+
+[[cases]]
+id = "case:route:entrypoint:debian-install-v2/resume/option-spelling/option:route:entrypoint:debian-install-v2/resume/--debug-raw/--debug-raw"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:05aab13bf7c8b70489748f89c9431d6dd324961847f7465f70b270f28141e104"
+rationale = "Library-owned control; resume prints no secret, so it only adds the warning and debug lines."
+invocation = ["resume", "--dry-run", "--debug-raw"]
+expected_exit_status = 0
+expected_stdout_contains = "planned"
+expected_stderr_contains = "--debug-raw is active"
+effects = ["Unredacted diagnostics on stderr; stdout and exit status unchanged"]
+test_ids = ["debian_install_v2/tests/test_cli_review_cases.py::test_debug_raw_only_adds_the_warning_and_debug_lines_without_a_secret[resume]"]
+
+[[cases]]
+id = "case:route:entrypoint:debian-install-v2/resume/option-spelling/option:route:entrypoint:debian-install-v2/resume/--dry-run/--dry-run"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:3db5cb6856fb98c21d257a43dfc1549cf9d32c7bd30121b113f1b2e4be08e674"
+rationale = "Stage two changes the running host; an operator can preview what resume would do."
+invocation = ["resume", "--dry-run"]
+expected_exit_status = 0
+expected_stdout_contains = "planned"
+expected_stderr_contains = ""
+effects = ["Records the planned actions and prints them as JSON; asks nothing and executes nothing"]
+test_ids = ["debian_install_v2/tests/test_cli_review_cases.py::test_dry_run_prints_the_planned_actions_and_asks_nothing[resume]"]
+
+[[cases]]
+id = "case:route:entrypoint:debian-install-v2/resume/option-spelling/option:route:entrypoint:debian-install-v2/resume/--yes/--yes"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:c6771107d9f4e0f0d90bcbd68929c71b2c5204126d38d0a2f45c21a7a4c9aff1"
+rationale = "The systemd unit cannot answer a prompt; --yes skips only that prompt, and a non-interactive run without it refuses with exit 2."
+invocation = ["resume", "--yes"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = "Confirmation accepted via --yes."
+effects = ["Skips the default-no prompt, then applies the remaining host changes"]
+test_ids = [
+  "debian_install_v2/tests/test_cli_review_cases.py::test_without_yes_a_non_interactive_run_refuses_before_acting[resume]",
+  "debian_install_v2/tests/test_cli_review_cases.py::test_yes_skips_only_the_confirmation_and_runs_the_step[resume]",
+]
+
+# ---------------------------------------------------------------- status
+
+[[cases]]
+id = "case:route:entrypoint:debian-install-v2/status/exclusive-conflict/configuration-source/option:route:entrypoint:debian-install-v2/status/--config/option:route:entrypoint:debian-install-v2/status/--config-json"
+state = "active"
+decision = "refuse"
+reviewed_signature = "sha256:0cd3b1b06c41b87e984b272637479bdd2ac46286fe54ae95a17a4b1966fa4dab"
+rationale = "Two settings sources would need a precedence rule that hides mistakes; exactly one is required."
+invocation = ["status", "--config", "install.json", "--config-json", "{}"]
+expected_exit_status = 2
+expected_stdout_contains = ""
+expected_stderr_contains = "not allowed with argument --config"
+effects = ["None: refused by the parser"]
+test_ids = ["debian_install_v2/tests/test_cli_review_cases.py::test_both_configuration_sources_are_refused[status]"]
+
+[[cases]]
+id = "case:route:entrypoint:debian-install-v2/status/exclusive-member/configuration-source/option:route:entrypoint:debian-install-v2/status/--config"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:c57f5d57fc17c19b16f9049a17ce83dcc8fdd91fa876db540c79d9c10e17c4b0"
+rationale = "The settings name the state directory whose status is shown."
+invocation = ["status", "--config", "install.json"]
+expected_exit_status = 0
+expected_stdout_contains = "status:"
+expected_stderr_contains = ""
+effects = ["Loads the settings file; reads the persisted state; writes nothing"]
+test_ids = ["debian_install_v2/tests/test_cli_review_cases.py::test_config_file_source_is_read[status]"]
+
+[[cases]]
+id = "case:route:entrypoint:debian-install-v2/status/exclusive-member/configuration-source/option:route:entrypoint:debian-install-v2/status/--config-json"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:a92f02d611298fa5bc8825d076cd0f48a52c75d55f0785e921f6e47fb5854089"
+rationale = "Inline JSON is a convenience for scripted use."
+invocation = ["status", "--config-json", "{\"schema_version\": 1}"]
+expected_exit_status = 0
+expected_stdout_contains = "status:"
+expected_stderr_contains = ""
+effects = ["Validates the inline settings; reads the persisted state"]
+test_ids = ["debian_install_v2/tests/test_cli_review_cases.py::test_inline_json_source_is_read[status]"]
+
+[[cases]]
+id = "case:route:entrypoint:debian-install-v2/status/minimum"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:7906315a8725996057a2ee66ff02671a9c7a7b5fc2091439be66fa28b9333a10"
+rationale = "status is read-only and needs only the settings that locate the state."
+invocation = ["status", "--config", "install.json"]
+expected_exit_status = 0
+expected_stdout_contains = "status:"
+expected_stderr_contains = ""
+effects = ["Reads the persisted state and log paths; writes nothing"]
+test_ids = ["debian_install_v2/tests/test_cli_review_cases.py::test_config_file_source_is_read[status]"]
+
+[[cases]]
+id = "case:route:entrypoint:debian-install-v2/status/option-spelling/option:route:entrypoint:debian-install-v2/status/--config-json/--config-json"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:0d9e9f4e9f315173dc64081eeff9c96f148cf010fb7ef021218ce680c03aaadd"
+rationale = "Spelling is the product's established one; no abbreviation is accepted."
+invocation = ["status", "--config-json", "{\"schema_version\": 1}"]
+expected_exit_status = 0
+expected_stdout_contains = "status:"
+expected_stderr_contains = ""
+effects = ["Validates the inline settings"]
+test_ids = ["debian_install_v2/tests/test_cli_review_cases.py::test_inline_json_source_is_read[status]"]
+
+[[cases]]
+id = "case:route:entrypoint:debian-install-v2/status/option-spelling/option:route:entrypoint:debian-install-v2/status/--config/--config"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:b17abb235589a0041a61528a2140a940e4067031653687b81a9c55419994ef87"
+rationale = "Spelling is the product's established one; no abbreviation is accepted."
+invocation = ["status", "--config", "install.json"]
+expected_exit_status = 0
+expected_stdout_contains = "status:"
+expected_stderr_contains = ""
+effects = ["Loads the settings file"]
+test_ids = ["debian_install_v2/tests/test_cli_review_cases.py::test_config_file_source_is_read[status]"]
+
+[[cases]]
+id = "case:route:entrypoint:debian-install-v2/status/option-spelling/option:route:entrypoint:debian-install-v2/status/--debug-raw/--debug-raw"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:19c8658e01f0694c14df89b9e6fd3b691bf3b4e14702403902d01909f2882460"
+rationale = "Recorded errors may quote credentials; they are redacted unless the operator opts out with the warned --debug-raw."
+invocation = ["status", "--config", "install.json", "--debug-raw"]
+expected_exit_status = 0
+expected_stdout_contains = "status:"
+expected_stderr_contains = "--debug-raw is active"
+effects = ["Prints the recorded last_error unredacted; by default the configured Telegram token is masked"]
+test_ids = ["debian_install_v2/tests/test_cli_review_cases.py::test_debug_raw_reveals_the_token_only_when_asked[status]"]
+
+[[cases]]
+id = "case:route:entrypoint:debian-install-v2/status/option-spelling/option:route:entrypoint:debian-install-v2/status/--json/--json"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:ff94e20c32d39b4b79bdf8a028d0ff2f62b45d9d66689887ca869503251f702b"
+rationale = "Controllers poll the installation; --json replaces the text rendering with the status object."
+invocation = ["status", "--config", "install.json", "--json"]
+expected_exit_status = 0
+expected_stdout_contains = "\"status\""
+expected_stderr_contains = ""
+effects = ["Prints the persisted status as JSON; read-only"]
+test_ids = ["debian_install_v2/tests/test_cli_review_cases.py::test_json_replaces_the_text_rendering[status]"]
+
+# ---------------------------------------------------------------- verify
+
+[[cases]]
+id = "case:route:entrypoint:debian-install-v2/verify/exclusive-conflict/configuration-source/option:route:entrypoint:debian-install-v2/verify/--config/option:route:entrypoint:debian-install-v2/verify/--config-json"
+state = "active"
+decision = "refuse"
+reviewed_signature = "sha256:802481e4d1b99d222ffe73d82e7992210ddf3541d54959fd0a5705996cbffefa"
+rationale = "Two settings sources would need a precedence rule that hides mistakes; exactly one is required."
+invocation = ["verify", "--config", "install.json", "--config-json", "{}"]
+expected_exit_status = 2
+expected_stdout_contains = ""
+expected_stderr_contains = "not allowed with argument --config"
+effects = ["None: refused by the parser"]
+test_ids = ["debian_install_v2/tests/test_cli_review_cases.py::test_both_configuration_sources_are_refused[verify]"]
+
+[[cases]]
+id = "case:route:entrypoint:debian-install-v2/verify/exclusive-member/configuration-source/option:route:entrypoint:debian-install-v2/verify/--config"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:1c351e915b491e0971c0a901bf16cd2011a7276d8d7ca9328a5397da4a215821"
+rationale = "A settings file is the preferred source because argv is visible to other users."
+invocation = ["verify", "--config", "install.json"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = "health checks passed"
+effects = ["Loads the settings file; runs live host checks; writes no state"]
+test_ids = ["debian_install_v2/tests/test_cli_review_cases.py::test_config_file_source_is_read[verify]"]
+
+[[cases]]
+id = "case:route:entrypoint:debian-install-v2/verify/exclusive-member/configuration-source/option:route:entrypoint:debian-install-v2/verify/--config-json"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:41d1dfdf44b490695429918f77503d1469b86afd4cd626f4ac7287688b733950"
+rationale = "Inline JSON is a convenience for scripted use."
+invocation = ["verify", "--config-json", "{\"schema_version\": 1}"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = "health checks passed"
+effects = ["Validates the inline settings; runs live host checks"]
+test_ids = ["debian_install_v2/tests/test_cli_review_cases.py::test_inline_json_source_is_read[verify]"]
+
+[[cases]]
+id = "case:route:entrypoint:debian-install-v2/verify/minimum"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:6ca84fcf69c554c6df12045988d6f81783629ed7836276eefbb955ffb774d703"
+rationale = "verify only reads the host and has no dry-run form, because a preview of a check is meaningless."
+invocation = ["verify", "--config", "install.json"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = "health checks passed"
+effects = ["Runs the live disk-transaction and health checks; writes nothing"]
+test_ids = ["debian_install_v2/tests/test_cli_review_cases.py::test_config_file_source_is_read[verify]"]
+
+[[cases]]
+id = "case:route:entrypoint:debian-install-v2/verify/option-spelling/option:route:entrypoint:debian-install-v2/verify/--config-json/--config-json"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:07c5ab81be858e6c4865bb9e183b1eb98b243a69d30ddd11627c875e8efd6031"
+rationale = "Spelling is the product's established one; no abbreviation is accepted."
+invocation = ["verify", "--config-json", "{\"schema_version\": 1}"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = "health checks passed"
+effects = ["Validates the inline settings"]
+test_ids = ["debian_install_v2/tests/test_cli_review_cases.py::test_inline_json_source_is_read[verify]"]
+
+[[cases]]
+id = "case:route:entrypoint:debian-install-v2/verify/option-spelling/option:route:entrypoint:debian-install-v2/verify/--config/--config"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:05e3dfc0d62e66fb8e4baa6762daaaffedfa313f6bedf69ea70d9ba75aea1448"
+rationale = "Spelling is the product's established one; no abbreviation is accepted."
+invocation = ["verify", "--config", "install.json"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = "health checks passed"
+effects = ["Loads the settings file"]
+test_ids = ["debian_install_v2/tests/test_cli_review_cases.py::test_config_file_source_is_read[verify]"]
+
+[[cases]]
+id = "case:route:entrypoint:debian-install-v2/verify/option-spelling/option:route:entrypoint:debian-install-v2/verify/--debug-raw/--debug-raw"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:9e02798c08c929e2fe83ab86255b948ee6b3aa31ca961d44eb7862f519dbb6e2"
+rationale = "Library-owned control; verify prints no secret, so it only adds the warning and debug lines."
+invocation = ["verify", "--config", "install.json", "--debug-raw"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = "--debug-raw is active"
+effects = ["Unredacted diagnostics on stderr; stdout and exit status unchanged"]
+test_ids = ["debian_install_v2/tests/test_cli_review_cases.py::test_debug_raw_only_adds_the_warning_and_debug_lines_without_a_secret[verify]"]
+
+# ---------------------------------------------------------------- wizard
+
+[[cases]]
+id = "case:route:entrypoint:debian-install-v2/wizard/minimum"
+state = "active"
+decision = "refuse"
+reviewed_signature = "sha256:c778be36889a7a4a5df0d4de99c04444e12ae928a45532f11ed2ec0bf2f50d08"
+rationale = "The wizard is interactive by contract: without a terminal it refuses before prompting and points scripted users at JSON plus plan."
+invocation = ["wizard", "--output", "install.json"]
+expected_exit_status = 2
+expected_stdout_contains = ""
+expected_stderr_contains = "wizard requires an interactive terminal"
+effects = ["None: refused before any prompt; nothing is written"]
+test_ids = ["debian_install_v2/tests/test_cli_review_cases.py::test_wizard_without_a_terminal_refuses_before_prompting"]
+
+[[cases]]
+id = "case:route:entrypoint:debian-install-v2/wizard/option-spelling/option:route:entrypoint:debian-install-v2/wizard/--debug-raw/--debug-raw"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:8d0824c2e02ecb2229213fb59d7ace81802e6fdf0cef96c3d056e9da3059962e"
+rationale = "Library-owned control; the wizard summary hides secrets either way, so it only adds the warning and debug lines."
+invocation = ["wizard", "--output", "install.json", "--debug-raw"]
+expected_exit_status = 2
+expected_stdout_contains = ""
+expected_stderr_contains = "--debug-raw is active"
+effects = ["Unredacted diagnostics on stderr; stdout and exit status unchanged (here: the non-interactive refusal)"]
+test_ids = ["debian_install_v2/tests/test_cli_review_cases.py::test_debug_raw_only_adds_the_warning_and_debug_lines_without_a_secret[wizard]"]
+
+[[cases]]
+id = "case:route:entrypoint:debian-install-v2/wizard/option-spelling/option:route:entrypoint:debian-install-v2/wizard/--from-config/--from-config"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:b1861a09b455d38c50c352367259717257514f68ce05aec4d037c61178143080"
+rationale = "Editing an existing settings file is the common case; the file seeds every prompt's default and must itself validate."
+invocation = ["wizard", "--output", "install.json", "--from-config", "previous.json"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Reads previous.json as the starting point; the result is written only to --output"]
+test_ids = ["debian_install_v2/tests/test_cli_review_cases.py::test_wizard_passes_output_and_starting_configuration_through"]
+
+[[cases]]
+id = "case:route:entrypoint:debian-install-v2/wizard/option-spelling/option:route:entrypoint:debian-install-v2/wizard/--output/--output"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:f56b6e9168b5d9f3ac2236bc52b9c4a20901515d6ec2389b8077695ead273734"
+rationale = "The destination is always explicit so a wizard run can never overwrite a file by default."
+invocation = ["wizard", "--output", "install.json"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Writes one mode-0600 validated JSON file at this path after confirmation"]
+test_ids = ["debian_install_v2/tests/test_cli_review_cases.py::test_wizard_passes_output_and_starting_configuration_through"]
+
+[[cases]]
+id = "case:route:entrypoint:debian-install-v2/wizard/option-spelling/option:route:entrypoint:debian-install-v2/wizard/--yes/--yes"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:062b57f69bee6bb068ba1eac870fc984d59770dd6731160523cfd71fd3f55019"
+rationale = "--yes answers only the final write confirmation (also the authorization to replace an existing file); every prompt still needs a terminal."
+invocation = ["wizard", "--output", "install.json", "--yes"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = "Confirmation accepted via --yes."
+effects = ["Skips the default-no write prompt; writes the validated settings mode 0600; without it a non-TTY stdin refuses with exit 2 and writes nothing"]
+test_ids = ["debian_install_v2/tests/test_cli_review_cases.py::test_wizard_yes_writes_the_validated_file_and_without_it_refuses"]

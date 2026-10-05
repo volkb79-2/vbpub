@@ -89,7 +89,7 @@ kind = "command"
 environment = "tester-unified"
 argv = [
     "bash", "-c",
-    "cd {worktree}/scripts/debian-install-v2 && DEBIAN_INSTALL_V2_PYTHON=/opt/tester-venv/bin/python3 exec tools/canary-run.sh",
+    "cd {worktree}/scripts/debian-install-v2 && PYTHONPATH={worktree}/libraries/cli-extended/src DEBIAN_INSTALL_V2_PYTHON=/opt/tester-venv/bin/python3 exec tools/canary-run.sh",
 ]
 clean_tree = false
 budget = "5m"
@@ -99,7 +99,7 @@ kind = "command"
 environment = "tester-unified"
 argv = [
     "bash", "-c",
-    "cd {worktree}/scripts/debian-install-v2 && PYTHONPATH=.:../../libraries/cli-extended/src /opt/tester-venv/bin/python3 -m pytest debian_install_v2/tests/test_fake_integration.py -q",
+    "cd {worktree}/scripts/debian-install-v2 && PYTHONPATH=.:../../libraries/cli-extended/src /opt/tester-venv/bin/python3 -m pytest debian_install_v2/tests/test_fake_integration.py -q --cli-case-partial",
 ]
 clean_tree = false
 budget = "3m"

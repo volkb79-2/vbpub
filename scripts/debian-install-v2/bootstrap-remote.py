@@ -2,9 +2,10 @@
 """
 vbpub debian-install v2 — remote bootstrap.
 
-Fetches scripts/debian-install-v2/ and the stdlib-only cli-extended runtime
-from the public volkb79-2/vbpub repo (one codeload tarball — no git, no `tar`
-binary, stdlib only: urllib + tarfile), translates a small set of env vars
+Fetches scripts/debian-install-v2/ from the public volkb79-2/vbpub repo (one
+codeload tarball — no git, no `tar` binary, stdlib only: urllib + tarfile) and
+the RELEASED cli-extended wheel (sha256-verified, from the release manifest
+`cli-extended-latest/latest.json` or pinned by env), translates a small set of env vars
 into v2's strict-JSON config, and runs the installer. This is the v2 equivalent of v1's
 scripts/debian-install/bootstrap.sh one-liner, not a continuation of it:
 v2's own CLI is strict-JSON only (see debian_install_v2/config.py) and
@@ -18,8 +19,10 @@ installs git/curl/docker for itself, once it starts).
 This file is an intentional cli-extended exception: it must be fetched and
 executed before the target has downloaded cli-extended, so importing that
 shared library here would create a bootstrap cycle. Keep this first-stage
-adapter stdlib-only; after it fetches the installer tree, the actual
-debian-install-v2.py entrypoint uses the shared CLI contract.
+adapter stdlib-only; after it fetches the installer tree and the cli-extended
+wheel (written beside the entrypoint under its release filename, the only
+cli_extended-*.whl kept there), the actual debian-install-v2.py entrypoint
+imports the wheel directly (zipimport; no pip) and uses the shared CLI contract.
 
 Usage (root):
   BOOTSTRAP_URL=https://raw.githubusercontent.com/volkb79-2/vbpub/main/scripts/debian-install-v2/bootstrap-remote.py \\
@@ -76,6 +79,12 @@ merged in last (wins over the named vars above):
              entirely; the operator's own persistent access key is never
              touched by this either way.
   Paths:     STATE_DIR, LOG_DIR, STAGE2_OUTPUT
+  Library:   CLI_EXTENDED_WHEEL_URL + CLI_EXTENDED_WHEEL_SHA256 pin one exact
+             cli-extended wheel (set both or neither; the URL's last path
+             segment must be a cli_extended-*.whl filename). With neither,
+             the release manifest at CLI_EXTENDED_LATEST_URL (default
+             https://github.com/volkb79-2/vbpub/releases/download/cli-extended-latest/latest.json)
+             supplies the wheel's `url` and `sha256`.
 
   DRY_RUN=yes    — pass --dry-run through to the installer
   DEBUG_MODE=yes — verbose fetch/translate logging from this wrapper itself
@@ -87,23 +96,31 @@ no.
 """
 from __future__ import annotations
 
+import hashlib
+import io
 import json
 import os
+import re
 import subprocess
 import sys
 import tarfile
+import urllib.error
+import urllib.parse
 import urllib.request
+import zipfile
 from pathlib import Path
 
 REPO_URL_DEFAULT = "https://github.com/volkb79-2/vbpub"
 REPO_BRANCH_DEFAULT = "main"
 INSTALL_DIR_DEFAULT = "/opt/vbpub-debian-install-v2"
 SUBTREE = ("scripts", "debian-install-v2")
-CLI_LIBRARY_SUBTREE = ("libraries", "cli-extended", "src", "cli_extended")
-SUBTREES = (
-    (SUBTREE, ()),
-    (CLI_LIBRARY_SUBTREE, ("cli_extended",)),
+LATEST_URL_DEFAULT = (
+    "https://github.com/volkb79-2/vbpub/releases/download/cli-extended-latest/latest.json"
 )
+WHEEL_GLOB = "cli_extended-*.whl"
+WHEEL_MARKER = "cli_extended/__init__.py"
+USER_AGENT = "vbpub-bootstrap-remote"
+_SHA256 = re.compile(r"[0-9a-f]{64}")
 
 _TRUE = {"yes", "true", "1", "on"}
 _FALSE = {"no", "false", "0", "off"}
@@ -230,8 +247,7 @@ def fetch_subtree(repo_url: str, branch: str, install_dir: Path, *, debug: bool)
     tarball_url = f"{repo_url}/archive/refs/heads/{branch}.tar.gz"
     if debug:
         print(f"[bootstrap-remote] downloading {tarball_url}", file=sys.stderr)
-    request = urllib.request.Request(tarball_url, headers={"User-Agent": "vbpub-bootstrap-remote"})
-    counts = {source: 0 for source, _ in SUBTREES}
+    request = urllib.request.Request(tarball_url, headers={"User-Agent": USER_AGENT})
     written = 0
     try:
         with urllib.request.urlopen(request, timeout=60) as response:
@@ -239,21 +255,9 @@ def fetch_subtree(repo_url: str, branch: str, install_dir: Path, *, debug: bool)
             with tarfile.open(fileobj=response, mode="r|gz") as archive:
                 for member in archive:
                     parts = Path(member.name).parts
-                    matched = next(
-                        (
-                            (source, destination)
-                            for source, destination in SUBTREES
-                            if len(parts) >= 1 + len(source)
-                            and parts[1:1 + len(source)] == source
-                        ),
-                        None,
-                    )
-                    if matched is None:
+                    if parts[1:1 + len(SUBTREE)] != SUBTREE or not member.isfile():
                         continue
-                    if not member.isfile():
-                        continue
-                    source, destination_parts = matched
-                    relative_parts = parts[1 + len(source):]
+                    relative_parts = parts[1 + len(SUBTREE):]
                     if not relative_parts or ".." in relative_parts or any(
                         Path(part).is_absolute() for part in relative_parts
                     ):
@@ -263,8 +267,7 @@ def fetch_subtree(repo_url: str, branch: str, install_dir: Path, *, debug: bool)
                         # touches the real filesystem -- this process runs as
                         # root (enforced in main()).
                         raise BootstrapError(f"refusing archive member with an unsafe path: {member.name!r}")
-                    relative = Path(*destination_parts, *relative_parts)
-                    target = install_dir / relative
+                    target = install_dir.joinpath(*relative_parts)
                     target.parent.mkdir(parents=True, exist_ok=True)
                     extracted = archive.extractfile(member)
                     if extracted is None:
@@ -273,7 +276,6 @@ def fetch_subtree(repo_url: str, branch: str, install_dir: Path, *, debug: bool)
                     if member.mode & 0o111:
                         target.chmod(target.stat().st_mode | 0o111)
                     written += 1
-                    counts[source] += 1
     except urllib.error.URLError as exc:
         raise BootstrapError(f"could not fetch {tarball_url}: {exc}") from None
     except tarfile.TarError as exc:
@@ -282,17 +284,101 @@ def fetch_subtree(repo_url: str, branch: str, install_dir: Path, *, debug: bool)
         # not URLError subclasses, and would otherwise surface as a bare
         # traceback instead of this tool's own diagnostic.
         raise BootstrapError(f"corrupt or truncated download from {tarball_url}: {exc}") from None
-    missing = ["/".join(source) for source, count in counts.items() if count == 0]
-    if missing:
+    if written == 0:
         raise BootstrapError(
-            f"downloaded {tarball_url} but required source tree(s) were empty or missing: "
-            f"{', '.join(missing)} — wrong REPO_URL/REPO_BRANCH, or a required tree moved"
+            f"downloaded {tarball_url} but required source tree was empty or missing: "
+            f"{'/'.join(SUBTREE)} — wrong REPO_URL/REPO_BRANCH, or the tree moved"
         )
     if debug:
         print(
-            f"[bootstrap-remote] wrote {written} installer/runtime files under {install_dir}",
+            f"[bootstrap-remote] wrote {written} installer files under {install_dir}",
             file=sys.stderr,
         )
+
+
+def _download(url: str, what: str) -> bytes:
+    request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+    try:
+        with urllib.request.urlopen(request, timeout=60) as response:
+            return response.read()
+    except OSError as exc:
+        # URLError and HTTPError are OSError subclasses, and so is a socket
+        # timeout -- all are "could not fetch", one diagnostic.
+        raise BootstrapError(f"could not fetch {what} {url}: {exc}") from None
+
+
+def _manifest_field(manifest: dict, name: str, url: str) -> str:
+    value = manifest.get(name)
+    if not isinstance(value, str) or not value:
+        raise BootstrapError(f"release manifest {url} has no usable {name!r} field")
+    return value
+
+
+def resolve_wheel(*, debug: bool = False) -> tuple[str, str]:
+    """Return (wheel url, lowercase sha256) for the cli-extended wheel to install.
+
+    Both CLI_EXTENDED_WHEEL_URL and CLI_EXTENDED_WHEEL_SHA256 pin a wheel;
+    with neither, the release manifest's `url` and `sha256` are used.
+    """
+    pinned_url = os.environ.get("CLI_EXTENDED_WHEEL_URL")
+    pinned_sha = os.environ.get("CLI_EXTENDED_WHEEL_SHA256")
+    if bool(pinned_url) != bool(pinned_sha):
+        raise BootstrapError(
+            "CLI_EXTENDED_WHEEL_URL and CLI_EXTENDED_WHEEL_SHA256 must be set together "
+            "(or both unset to use the latest release)"
+        )
+    if pinned_url and pinned_sha:
+        url, sha256 = pinned_url, pinned_sha
+    else:
+        latest_url = os.environ.get("CLI_EXTENDED_LATEST_URL") or LATEST_URL_DEFAULT
+        if debug:
+            print(f"[bootstrap-remote] reading release manifest {latest_url}", file=sys.stderr)
+        raw = _download(latest_url, "the cli-extended release manifest")
+        try:
+            manifest = json.loads(raw)
+        except ValueError as exc:
+            raise BootstrapError(f"release manifest {latest_url} is not valid JSON: {exc}") from None
+        if not isinstance(manifest, dict):
+            raise BootstrapError(f"release manifest {latest_url} must be a JSON object")
+        url = _manifest_field(manifest, "url", latest_url)
+        sha256 = _manifest_field(manifest, "sha256", latest_url)
+    sha256 = sha256.strip().lower()
+    if not _SHA256.fullmatch(sha256):
+        raise BootstrapError(f"cli-extended wheel sha256 {sha256!r} is not 64 hexadecimal digits")
+    return url, sha256
+
+
+def install_wheel(url: str, sha256: str, install_dir: Path, *, debug: bool) -> Path:
+    """Download, verify and write the wheel; keep it as the only cli_extended wheel."""
+    name = urllib.parse.unquote(urllib.parse.urlparse(url).path.rsplit("/", 1)[-1])
+    if not (name.startswith("cli_extended-") and name.endswith(".whl")) or "/" in name:
+        raise BootstrapError(
+            f"cli-extended wheel URL {url} must end in a cli_extended-*.whl filename, got {name!r}"
+        )
+    if debug:
+        print(f"[bootstrap-remote] downloading {url}", file=sys.stderr)
+    data = _download(url, "the cli-extended wheel")
+    actual = hashlib.sha256(data).hexdigest()
+    if actual != sha256:
+        raise BootstrapError(
+            f"cli-extended wheel sha256 mismatch for {url}: expected {sha256}, got {actual}"
+        )
+    try:
+        with zipfile.ZipFile(io.BytesIO(data)) as archive:
+            members = set(archive.namelist())
+    except zipfile.BadZipFile:
+        raise BootstrapError(f"cli-extended wheel {url} is not a zip archive") from None
+    if WHEEL_MARKER not in members:
+        raise BootstrapError(f"cli-extended wheel {url} does not contain {WHEEL_MARKER}")
+    install_dir.mkdir(parents=True, exist_ok=True)
+    for stale in install_dir.glob(WHEEL_GLOB):
+        if stale.name != name:
+            stale.unlink()
+    target = install_dir / name
+    target.write_bytes(data)
+    if debug:
+        print(f"[bootstrap-remote] wrote {target} ({actual})", file=sys.stderr)
+    return target
 
 
 def main() -> int:
@@ -304,7 +390,9 @@ def main() -> int:
     if os.geteuid() != 0:
         raise BootstrapError("must run as root")
 
+    wheel_url, wheel_sha256 = resolve_wheel(debug=debug)
     fetch_subtree(repo_url, branch, install_dir, debug=debug)
+    install_wheel(wheel_url, wheel_sha256, install_dir, debug=debug)
 
     entrypoint = install_dir / "debian-install-v2.py"
     if not entrypoint.is_file():

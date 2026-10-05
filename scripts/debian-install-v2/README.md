@@ -38,6 +38,33 @@ Verbs that consume settings require exactly one of `--config FILE` and
 The generated remote custom-script launcher uses Python’s standard-library
 HTTPS client and fails nonzero if it cannot retrieve the bootstrap.
 
+### Library dependency and remote bootstrap
+
+`debian-install-v2.py` needs the `cli_extended` library, resolved from exactly
+one place: a single `cli_extended-*.whl` beside the script (imported directly
+from the wheel; pure Python, no pip), otherwise an installed `cli_extended`.
+With neither it exits 2 with
+`[ERROR] debian-install-v2: cli-extended is not installed; run via bootstrap-remote.py or install the cli-extended wheel`;
+two wheels beside it is also exit 2. The repository’s library source is never
+used as a fallback. The product version is the single line in
+[`VERSION`](VERSION).
+
+`bootstrap-remote.py` (stdlib only) downloads the installer tree plus the
+**released** cli-extended wheel and verifies its sha256 before writing it:
+
+| Environment | Meaning |
+| --- | --- |
+| *(none)* | read `https://github.com/volkb79-2/vbpub/releases/download/cli-extended-latest/latest.json` and use its `url` and `sha256` |
+| `CLI_EXTENDED_LATEST_URL` | read that release pointer instead |
+| `CLI_EXTENDED_WHEEL_URL` + `CLI_EXTENDED_WHEEL_SHA256` | pin one exact wheel (set both or neither; the URL must end in a `cli_extended-*.whl` filename) |
+
+A digest mismatch, a non-zip payload or a wheel without `cli_extended/__init__.py`
+aborts before anything is written; any other `cli_extended-*.whl` in the install
+directory is removed so only one remains. See
+[docs/DESIGN-GUIDE.md](docs/DESIGN-GUIDE.md#remote-bootstrap-stays-self-contained)
+for the rationale and [docs/CLI-SPEC.md](docs/CLI-SPEC.md) for the reviewed CLI
+surface and its semantic decisions.
+
 Terminal help and diagnostic tags use `cli-extended`'s shared color policy:
 automatic color on a TTY, `NO_COLOR`/`--no-color` to disable, and `--color` to
 force it. JSON and primary status/plan results remain uncolored. The installer

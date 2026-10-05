@@ -151,7 +151,25 @@ stage-one invocation exits (successfully or with an error).
 To test the remote fetch/translation path without applying host operations,
 set `DRY_RUN=yes` in the cloud-init environment. A remote dry run still needs
 root to exercise the real bootstrap flow and will download the installer
-archive, but the installer records rather than executes privileged actions.
+archive and the released cli-extended wheel, but the installer records rather
+than executes privileged actions.
+
+The bootstrap resolves the cli-extended wheel from the
+`cli-extended-latest/latest.json` release pointer and verifies its sha256. To
+make a fleet install reproducible, pin one wheel in the same cloud-init
+environment (both variables, or neither; take the real URL and digest from the
+release's `latest.json` or its versioned manifest, the URL below is only the
+shape):
+
+```bash
+CLI_EXTENDED_WHEEL_URL=https://github.com/volkb79-2/vbpub/releases/download/cli-extended-v0.2.0/cli_extended-0.2.0-py3-none-any.whl \
+CLI_EXTENDED_WHEEL_SHA256=<64 lowercase hex digits from that release's manifest> \
+python3 bootstrap-remote.py
+```
+
+`CLI_EXTENDED_LATEST_URL` points the lookup at a different pointer (a mirror).
+A digest mismatch, a payload that is not the library, or a half-set pin aborts
+the bootstrap before the installer runs.
 
 ## Finding help
 

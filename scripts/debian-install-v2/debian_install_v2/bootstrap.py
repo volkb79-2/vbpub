@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import asdict
+from pathlib import Path
 from typing import Any
 
 from cli_extended import (
@@ -10,11 +11,11 @@ from cli_extended import (
     CliIdentity,
     CliRegistry,
     OptionSpec,
+    Requires,
     VerbGroup,
     VerbSpec,
 )
 
-from . import __version__
 from .actions import ActionError, HostActions
 from .config import Config, ConfigError, load_config, save_config
 from .customscript import build_customscript_bundle
@@ -22,11 +23,23 @@ from .installer import Installer, InstallerError
 from .state import StateError, StateStore
 
 PROG = "debian-install-v2"
-IDENTITY = CliIdentity(
+VERSION_FILE = Path(__file__).resolve().parents[1] / "VERSION"
+IDENTITY = CliIdentity.resolve(
     name="DEBIAN-INSTALL-V2",
     command=PROG,
-    version=__version__,
     long_name="Debian host installer",
+    version_file=VERSION_FILE,
+)
+# Domain failures that become one `[ERROR]` line. Anything else is an
+# unexpected exception: the registry's "report" policy prints it as one
+# `[ERROR]` line too, with --traceback for the stack.
+DOMAIN_ERRORS = (
+    ActionError,
+    ConfigError,
+    InstallerError,
+    OSError,
+    StateError,
+    json.JSONDecodeError,
 )
 
 
@@ -48,15 +61,6 @@ def _config_options() -> tuple[OptionSpec, ...]:
             mutually_exclusive_group="configuration-source",
             mutually_exclusive_required=True,
         ),
-    )
-
-
-def _dry_run_option() -> OptionSpec:
-    return OptionSpec(
-        ("--dry-run",),
-        "record intended host operations without executing them",
-        group="EXECUTION",
-        parser_kwargs={"action": "store_true", "default": False},
     )
 
 
@@ -109,12 +113,12 @@ def _make_installer(
     config = _load_config(args, runtime)
     return Installer(
         config,
-        HostActions(dry_run=bool(getattr(args, "dry_run", False))),
+        HostActions(dry_run=runtime.dry_run),
         inspect_host=inspect_host,
     )
 
 
-def _make_resume_installer(args: Any) -> Installer:
+def _make_resume_installer(runtime: Any) -> Installer:
     state_dir = os.environ.get("VBPUB_STATE_DIR", "")
     if not state_dir.startswith("/"):
         raise CliFailure(
@@ -126,7 +130,7 @@ def _make_resume_installer(args: Any) -> Installer:
         config = _stage2_config(state_dir)
     except StateError as exc:
         raise CliFailure(str(exc), exit_code=2) from exc
-    return Installer(config, HostActions(dry_run=bool(getattr(args, "dry_run", False))))
+    return Installer(config, HostActions(dry_run=runtime.dry_run))
 
 
 def _render_status(status: dict[str, Any]) -> str:
@@ -211,7 +215,7 @@ def _install(args: Any, runtime: Any) -> int:
 
 
 def _resume(args: Any, runtime: Any) -> int:
-    installer = _make_resume_installer(args)
+    installer = _make_resume_installer(runtime)
     if not installer.actions.dry_run and not runtime.confirm(
         "Resume stage two and apply the remaining host changes?"
     ):
@@ -248,7 +252,12 @@ def _disable_stage2(args: Any, runtime: Any) -> int:
     ):
         return 0
     installer.disable_stage2()
-    runtime.output.info("Stage-two service disabled and completion marker recorded.")
+    if installer.actions.dry_run:
+        runtime.output.primary_json(
+            {"result": "planned", "actions": _planned_actions(installer.actions)}
+        )
+    else:
+        runtime.output.info("Stage-two service disabled and completion marker recorded.")
     return 0
 
 
@@ -302,6 +311,8 @@ def build_cli():
             f"{PROG}.py install --config install.json",
         ),
         logging_logger="debian_install_v2",
+        expected_exceptions=DOMAIN_ERRORS,
+        unexpected_exceptions="report",
     )
 
     configuration = _config_options()
@@ -340,17 +351,22 @@ def build_cli():
     registry.register(
         VerbSpec(
             name="install",
-            description="run stage one of a fresh Debian host installation",
+            description=(
+                "run stage one of a fresh Debian host installation: partition and "
+                "configure the host, then schedule the reboot that starts stage two"
+            ),
+            summary_description="run stage one of a fresh Debian host installation",
             group=VerbGroup.MODIFICATION.value,
             examples=(
                 f"{PROG}.py install --config install.json --dry-run",
                 f"{PROG}.py install --config install.json --yes",
             ),
             mutating=True,
+            dry_run=True,
             expensive=True,
             include_json=False,
             include_progress=False,
-            options=(*configuration, _dry_run_option()),
+            options=configuration,
             handler=_install,
         )
     )
@@ -359,12 +375,15 @@ def build_cli():
             name="resume",
             description="continue stage two after reboot from state under VBPUB_STATE_DIR (normally systemd-invoked)",
             group=VerbGroup.MODIFICATION.value,
-            examples=(f"{PROG}.py resume --yes",),
+            examples=(
+                f"{PROG}.py resume --dry-run",
+                f"{PROG}.py resume --yes",
+            ),
             mutating=True,
+            dry_run=True,
             expensive=True,
             include_json=False,
             include_progress=False,
-            options=(_dry_run_option(),),
             handler=_resume,
         )
     )
@@ -377,7 +396,10 @@ def build_cli():
             ),
             summary_description="show installation status",
             group=VerbGroup.EXPLORATION.value,
-            examples=(f"{PROG}.py status --config install.json",),
+            examples=(
+                f"{PROG}.py status --config install.json",
+                f"{PROG}.py status --config install.json --json",
+            ),
             include_json=True,
             include_progress=False,
             options=configuration,
@@ -421,9 +443,10 @@ def build_cli():
                 f"{PROG}.py disable-stage2 --config install.json --yes",
             ),
             mutating=True,
+            dry_run=True,
             include_json=False,
             include_progress=False,
-            options=(*configuration, _dry_run_option()),
+            options=configuration,
             handler=_disable_stage2,
         )
     )
@@ -442,17 +465,15 @@ def build_cli():
                 *configuration,
                 OptionSpec(
                     ("--repo-url",),
-                    "repository containing bootstrap-remote.py",
+                    "repository containing bootstrap-remote.py (default: the canonical vbpub repository; requires --bootstrap-url)",
                     group="BOOTSTRAP SOURCE",
                     metavar="URL",
-                    parser_kwargs={"default": "https://github.com/volkb79-2/vbpub"},
                 ),
                 OptionSpec(
                     ("--repo-branch",),
-                    "branch fetched by bootstrap-remote.py",
+                    "branch fetched by bootstrap-remote.py (default: main)",
                     group="BOOTSTRAP SOURCE",
                     metavar="BRANCH",
-                    parser_kwargs={"default": "main"},
                 ),
                 OptionSpec(
                     ("--bootstrap-url",),
@@ -467,6 +488,13 @@ def build_cli():
                     parser_kwargs={"action": "store_true", "default": False},
                 ),
             ),
+            constraints=(
+                Requires(
+                    "--repo-url",
+                    ("--bootstrap-url",),
+                    "a custom repository needs its own bootstrap-remote.py URL",
+                ),
+            ),
             handler=_build_customscript,
         )
     )
@@ -474,17 +502,7 @@ def build_cli():
 
 
 def main(argv: list[str] | None = None) -> int:
-    return build_cli().run(
-        argv=argv,
-        expected_exceptions=(
-            ActionError,
-            ConfigError,
-            InstallerError,
-            OSError,
-            StateError,
-            json.JSONDecodeError,
-        ),
-    )
+    return build_cli().run(argv=argv)
 
 
 if __name__ == "__main__":
