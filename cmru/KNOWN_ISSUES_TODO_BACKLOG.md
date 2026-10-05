@@ -1644,3 +1644,13 @@ gate exercises the regression; README, DESIGN-GUIDE, CONSUMERS, and SPEC documen
 - Audit: no other cmru container launch uses the `cwd.parent` mount (`docker buildx bake` image builds, `docker login`, `tester_gate` docker runs).
 
 **Oracles:** `tests/test_builtin_handlers.py::test_wheel_build_nested_project_mounts_the_worktree_root` (real linked worktree, `libraries/pkg`: mount is the worktree root, none of only `libraries`), `..._top_level_project_argv_is_unchanged`, `..._copied_one_project_repo_mounts_the_parent`, `..._forwards_build_env_by_name_only`, `..._forwards_no_env_when_unset`; each fix was reverted by hand and a test failed.
+
+### KI-54 — `release --dry-run` with an internal snapshot handoff escapes as an uncaught `RuntimeError` instead of exit 1, and its test has been red on main since 2026-10-04 — *open, severity: major (the coverage and canary lanes stop on it with `--maxfail=1`, so no cmru change can earn a green gate)*
+
+**Status:** open (filed 2026-10-05 by the cli-extended program while gating KI-53; not caused by that program — reproduced identically at main `c0d1f4410`, before the cli-extended merge).
+
+**Observed:** `tests/test_cli_release_snapshot_boundaries.py::test_release_rejects_internal_handoff_on_dry_run` (`:137`) expects `cli.main(["release", "demo", "--dry-run", "--config", "cmru.orchestration.toml"]) == 1` and the message "valid only for a new family release launcher" on stderr. `cli.py` (around `:4581`) raises `RuntimeError("the internal origin/main snapshot handoff is valid only for a new family release launcher")` when `_ACTIVE_RELEASE_PREFLIGHT_SNAPSHOT` is set and `transaction_child or vargs.dry_run or vargs.resume`; the exception propagates out of `cli.main` uncaught, so the test fails. The guard and test arrived with the 2026-10-04 snapshot-boundary work (`071046398`, `fccd44be3`, `0f96d124f`).
+
+**Fix direction:** either convert the refusal to the CLI's failure type (exit 1 with the message on stderr, matching the sibling multi-family refusal at the next guard) or, if escaping is intended for an internal-only path, correct the test; whichever the snapshot-boundary owner intended. Then re-run the `coverage` and `canary` lanes on main.
+
+**Oracle:** the test passes; a controlled wrong implementation that lets the `RuntimeError` escape fails it; the `coverage` lane on main is green.
