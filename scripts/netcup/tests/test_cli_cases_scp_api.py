@@ -279,6 +279,46 @@ def test_replayed_case_matches_catalog(case_id, node, explore_mod, tmp_path, mon
         assert run.calls == []
 
 
+def _row_ending(suffix):
+    return next(i for i in ROWS if i.endswith(suffix))
+
+
+# route, catalog row, row that must stay, text that proves the other row is gone
+FILTER_CASES = [
+    pytest.param(
+        "imageflavours", "Debian 13", "Ubuntu",
+        marks=pytest.mark.cli_case(_row_ending("imageflavours/--filter/--filter")),
+        id="imageflavours",
+    ),
+    pytest.param(
+        "iso-bootable", "recovery ISO", "netinst",
+        marks=pytest.mark.cli_case(_row_ending("iso-bootable/--filter/--filter")),
+        id="iso-bootable",
+    ),
+]
+
+
+@pytest.mark.parametrize(("route", "kept", "dropped"), FILTER_CASES)
+def test_client_side_filter_keeps_only_matching_rows(
+    route, kept, dropped, explore_mod, tmp_path, monkeypatch, capsys
+):
+    row = ROWS[_row_ending(f"{route}/--filter/--filter")]
+    value = row["invocation"][row["invocation"].index("--filter") + 1]
+    unfiltered = _run(["%s" % route, "42"], tmp_path, monkeypatch, capsys, explore_mod, "all")
+    assert kept in unfiltered.out and dropped in unfiltered.out
+    # The reviewed value, and the same value in another case, keep one row only.
+    for variant, name in ((value, "as-reviewed"), (value.upper(), "upper"), (value.capitalize(), "cap")):
+        run = _run([route, "42", "--filter", variant], tmp_path, monkeypatch, capsys, explore_mod, name)
+        assert run.status == 0
+        assert kept in run.out
+        assert dropped not in run.out
+        # Filtering is local: the same single GET as the unfiltered listing.
+        assert run.calls == unfiltered.calls
+    # A value that matches nothing leaves no data rows.
+    empty = _run([route, "42", "--filter", "no-such-text"], tmp_path, monkeypatch, capsys, explore_mod, "none")
+    assert kept not in empty.out and dropped not in empty.out
+
+
 PART_SIZE_CASE = next(i for i in ROWS if i.endswith("--part-size-mib/--part-size-mib"))
 
 
@@ -295,7 +335,7 @@ def test_part_size_changes_how_a_large_iso_is_split(explore_mod, tmp_path, monke
     sized = _run(base + ["--part-size-mib", "5"], tmp_path, monkeypatch, capsys, explore_mod,
                  "sized", iso_size=11 * mib, routes=routes)
     default = _run(base, tmp_path, monkeypatch, capsys, explore_mod, "default",
-                   iso_size=11 * mib, routes=routes)
+                   iso_size=65 * mib, routes=routes)
     assert sized.status == 0
     assert [c[2] for c in sized.calls if c[0] == "upload_file"] == [
         ("custom.iso", 0, 5 * mib),
@@ -303,7 +343,11 @@ def test_part_size_changes_how_a_large_iso_is_split(explore_mod, tmp_path, monke
         ("custom.iso", 10 * mib, 1 * mib),
     ]
     assert default.status == 0
-    assert [c[2] for c in default.calls if c[0] == "upload_file"] == [("custom.iso", 0, 11 * mib)]
+    # The default part size is 64 MiB: a 65 MiB file is split 64 + 1.
+    assert [c[2] for c in default.calls if c[0] == "upload_file"] == [
+        ("custom.iso", 0, 64 * mib),
+        ("custom.iso", 64 * mib, 1 * mib),
+    ]
 
 
 @pytest.mark.parametrize(("case_id", "node"), _params("test_invalid_argument_is_refused"))
@@ -383,6 +427,7 @@ def test_catalog_links_only_known_test_functions():
     known = {
         "test_replayed_case_matches_catalog",
         "test_part_size_changes_how_a_large_iso_is_split",
+        "test_client_side_filter_keeps_only_matching_rows",
         "test_invalid_argument_is_refused",
         "test_json_output_is_machine_readable",
         "test_debug_raw_warns_and_is_off_by_default",

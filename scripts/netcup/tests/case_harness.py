@@ -168,9 +168,15 @@ SCP_ROUTES = {
             "interfaces": [{"mac": MAC}],
         },
     },
-    S42 + "/imageflavours": [{"id": 2, "alias": "debian", "image": {"name": "Debian 13"}}],
+    # Each filterable listing has a second row that matches no reviewed filter
+    # value, so a filter that keeps everything is observable.
+    S42 + "/imageflavours": [
+        {"id": 2, "alias": "debian", "image": {"name": "Debian 13"}},
+        {"id": 3, "alias": "ubuntu", "image": {"name": "Ubuntu 24"}},
+    ],
     S42 + "/isoimages": [
-        {"id": 1234, "name": "rescue", "description": "recovery ISO", "architecture": "AMD64"}
+        {"id": 1234, "name": "rescue", "description": "recovery ISO", "architecture": "AMD64"},
+        {"id": 99, "name": "installer", "description": "netinst medium", "architecture": "AMD64"},
     ],
     S42 + "/iso": {"isoAttached": False},
     S42 + "/disks": [{"name": "vda", "capacityInMiB": 10240, "storageDriver": "VIRTIO"}],

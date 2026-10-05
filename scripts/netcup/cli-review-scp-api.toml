@@ -802,7 +802,7 @@ expected_exit_status = 0
 expected_stdout_contains = "Debian 13"
 expected_stderr_contains = ""
 effects = ["Reads GET /api/v1/servers/42/imageflavours and prints only rows matching 'debian'."]
-test_ids = ["tests/test_cli_cases_scp_api.py::test_replayed_case_matches_catalog[imageflavours-filter]"]
+test_ids = ["tests/test_cli_cases_scp_api.py::test_replayed_case_matches_catalog[imageflavours-filter]", "tests/test_cli_cases_scp_api.py::test_client_side_filter_keeps_only_matching_rows[imageflavours]"]
 
 [[cases]]
 id = "case:route:entrypoint:scp-api/imageflavours/option-spelling/option:route:entrypoint:scp-api/imageflavours/--json/--json"
@@ -967,7 +967,7 @@ expected_exit_status = 0
 expected_stdout_contains = "rescue"
 expected_stderr_contains = ""
 effects = ["Reads GET /api/v1/servers/42/isoimages and prints only rows matching 'rescue'."]
-test_ids = ["tests/test_cli_cases_scp_api.py::test_replayed_case_matches_catalog[iso-bootable-filter]"]
+test_ids = ["tests/test_cli_cases_scp_api.py::test_replayed_case_matches_catalog[iso-bootable-filter]", "tests/test_cli_cases_scp_api.py::test_client_side_filter_keeps_only_matching_rows[iso-bootable]"]
 
 [[cases]]
 id = "case:route:entrypoint:scp-api/iso-bootable/option-spelling/option:route:entrypoint:scp-api/iso-bootable/--json/--json"
