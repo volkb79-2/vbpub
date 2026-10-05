@@ -203,53 +203,73 @@ finite positive memory and CPU ceilings. A bare directory is not a capacity
 object. If proof is absent, the host snapshot reports the slice absent and
 placement refuses it without failing the profiling session.
 
-The DAMON pool treats the `nr_kdamonds` value read at pool creation as an
-ownership boundary. Indices below that baseline are foreign. New sessions use
-only indices proven to have been created after the baseline, and teardown
-touches only indices that the pool actually handed out. If the baseline cannot
-be read, acquisition refuses; index zero is never a placeholder default.
+The DAMON `nr_kdamonds` attribute is a global registry, not an append-only
+array. A successful count write removes and rebuilds every kdamond directory,
+including when the written value is unchanged. Consequently, treating the
+initial count as a foreign-prefix boundary was incorrect: appending one
+cgprofile slot could erase a stopped foreign monitor's staged operations,
+targets, intervals, and schemes, and shrinking back to the original number
+would not restore that configuration. The sysfs interface has no per-slot
+owner marker or atomic lease.
 
-The pool reserves its configured capacity (`max_sessions`) before starting
-its first monitor. This is not merely an optimization: Linux DAMON sysfs
-refuses every `nr_kdamonds` resize while *any* kdamond is running, including
-growth and including a monitor owned by another program. Lazy allocation
-would therefore make the second session fail after the first had started.
-This is enforced in the upstream v7.1 [`nr_kdamonds_store()` and directory
-growth path](https://github.com/torvalds/linux/blob/v7.1/mm/damon/sysfs.c#L1923-L1944).
-Pre-reservation gives the pool a fixed set of off slots to reuse without
-changing the shared count while monitoring is active. If a foreign kdamond is
-already on when the daemon first needs capacity, the kernel refuses the
-reservation; if the requested capacity cannot be fully reserved, the pool
-uses the slots it did reserve and does not grow while one may be running.
-Sessions still start and collect ordinary metrics when no DAMON slot is
-available; their start response marks DAMON `unavailable` rather than making
-profiling readiness depend on this optional evidence (R-36h).
+RG-55 therefore chooses preservation over partial DAMON availability. Both
+the daemon pool and the one-shot collector refuse to write `nr_kdamonds` when
+the observed baseline is nonzero, whether those existing monitors are on or
+off. DAMON is optional, so the refusal is reported as unavailable while normal
+profiling and command execution continue (R-36h). The daemon reserves its
+entire configured capacity (`max_sessions`) with a single count write from
+zero before any monitor starts; there is no sequence of per-slot growth writes
+that could repeatedly rebuild already-reserved entries. Linux also refuses a
+resize while any kdamond is running, including a monitor owned by another
+program; see upstream v7.1 [`nr_kdamonds_store()` and directory growth
+path](https://github.com/torvalds/linux/blob/v7.1/mm/damon/sysfs.c#L1923-L1944).
 
-Release is a verified state transition, not bookkeeping alone. The session
-asks its owned kdamond to stop and reads `state` back. An on or unreadable slot
-is quarantined: it is never reused and the pool never shrinks across it. At
-pool shutdown the daemon retries every owned stop. The shared count is restored
-only when all owned slots are confirmed off, all remaining kdamonds (including
-foreign ones) are off, and the count still matches the pool's ownership
-boundary. If a foreign monitor is active or a write/readback fails, the pool
-retains ownership and leaves the count alone for a later retry; it never stops
-or removes a foreign monitor. This favors a visible leftover off slot over
-silently abandoning or reusing a monitor whose state is uncertain.
+Each newly reserved `state` node is held open as an identity pin. The kernel's
+kernfs identity lets cgprofile detect a later same-count rewrite that leaves
+the numeric count and replacement `state=off` unchanged. Before reuse, stop,
+or shrink, the current path must still resolve to the pinned inode; a missing
+or replaced node is quarantined and cgprofile neither stops it nor shrinks
+across it. Teardown additionally verifies that every owned monitor is off and
+the registry count exactly matches the reserved pool before restoring zero.
+An ambiguous write/readback or failed identity proof is a refusal, not
+permission to invent ownership. This favors an observable leftover empty slot
+over deleting or reusing a configuration whose owner cannot be proved.
 
-The same rule applies to a bare session: it must prove that its requested
-index is the first slot beyond the observed count before it configures or turns
-the kdamond on. This keeps a pre-existing monitor on even when a new session
-fails part-way through setup. Before `state=on`, startup writes the exact
-`nr_targets` count and then every target PID. DAMON's sysfs count write
-recreates the input directories; this is required because a pooled kdamond
-index can carry the previous session's target array even after it is stopped.
+The inode check detects an out-of-band replacement between operations; it is
+not a kernel-enforced lease and cannot make a privileged count writer racing
+between a check and a sysfs write atomic. cgprofile closes its own
+cross-process race with an advisory `flock` on the host-shared
+`/run/cgprofile/damon.lock`: a one-shot collector holds the lock for its full
+session, while daemon-pool reserve/release/restore operations take it around
+the registry transaction. This serializes the daemon and cgprofile helper
+processes without making one-shot profiling wait behind another DAMON run.
+The privileged helper bind-mounts this single lock file at
+`/tmp/cgprofile-damon.lock`; it does not receive `/run/cgprofile/ctl.sock`.
+When a daemon pool already occupies the registry, a one-shot collector takes
+the lock, observes the nonempty table, and declines DAMON without changing
+ordinary sampling.
 
-The one-shot `run`/`attach` collector shares the same host DAMON registry, so
-it can also be refused when a foreign monitor is already running. That failure
-disables only DAMON: the collector logs the reason, writes its ready sentinel,
-and continues cgroup/CPU/memory sampling. In particular, `cgprofile run` must
-not wait for a DAMON context before launching the user's command; otherwise a
-host profiling condition would alter the command's verdict, violating R-36h.
+The advisory lock only works among writers that honor it. It is not a
+kernel-enforced lease and cannot protect against `damo` or another privileged
+program that ignores the lock, nor eliminate the inode-check/sysfs-write race
+against such a writer. Operators must not run unrelated privileged DAMON
+configurators concurrently. A future kernel ownership API or broker that
+actually owns the DAMON registry could remove that limitation; a broker with
+the same raw sysfs access but no exclusive ownership would not.
+
+Before a newly owned monitor is started, cgprofile writes the exact
+`nr_targets` count and then every target PID. DAMON recreates target-input
+directories when the target count changes; this is safe only after the slot's
+identity is still proven as pool-owned. During a session, target recommits
+rebuild the exact array, preventing a shrinking subtree or reused slot from
+continuing to watch former lane PIDs.
+
+The one-shot `run`/`attach` collector follows the same nonzero-baseline refusal
+and optional-evidence rule. A startup or later collection error closes only
+DAMON, writes ordinary samples and the normal finished manifest, and lets the
+wrapped command run to completion. In particular, `cgprofile run` must not
+wait for DAMON before launching the user's command or let a missing optional
+series alter its verdict.
 
 ### DAMON availability is not session readiness
 

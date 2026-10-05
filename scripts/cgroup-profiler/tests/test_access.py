@@ -1112,6 +1112,33 @@ class TestHelperSpecDockerArgs:
         assert "--name" in args
         assert args[args.index("--name") + 1] == "cgprofile-helper-1"
 
+    def test_damon_helper_mounts_only_the_shared_lock_file(self):
+        spec = access.HelperSpec(
+            image="img:local", repo_host_path="/h/repo", repo_mount_path="/repo",
+            out_host_path="/h/out", out_mount_path="/out",
+            cgroup_parent="dev-interactive.slice",
+            damon_lock_host_path="/run/cgprofile/damon.lock",
+            damon_lock_container_path="/tmp/cgprofile-damon.lock",
+        )
+        args = spec.docker_args()
+        assert (
+            "--mount=type=bind,source=/run/cgprofile/damon.lock,"
+            "target=/tmp/cgprofile-damon.lock"
+        ) in args
+        assert "CGPROFILE_DAMON_LOCK_PATH=/tmp/cgprofile-damon.lock" in args
+        assert not any("ctl.sock" in argument for argument in args)
+
+    def test_damon_helper_refuses_an_incomplete_lock_mount(self):
+        spec = access.HelperSpec(
+            image="img:local", repo_host_path="/h/repo", repo_mount_path="/repo",
+            out_host_path="/h/out", out_mount_path="/out",
+            cgroup_parent="dev-interactive.slice",
+            damon_lock_host_path="relative.lock",
+            damon_lock_container_path="/tmp/cgprofile-damon.lock",
+        )
+        with pytest.raises(access.AccessError, match="absolute"):
+            spec.docker_args()
+
     def test_cgroup_parent_is_always_passed_explicitly(self):
         # The bug this exists to prevent: no --cgroup-parent means Docker's
         # daemon default wins, and on this estate that default is the exact

@@ -2964,6 +2964,33 @@ def test_accept_loop_closes_pool_even_if_session_finalization_raises(tmp_path, m
     assert calls == ["socket", "pool"]
 
 
+def test_accept_loop_returns_cleanly_when_pool_shutdown_is_confirmed(
+    tmp_path, monkeypatch,
+):
+    server = serve.SessionServer(sessions_dir=str(tmp_path / "sessions"))
+    calls = []
+
+    class _FakeSock:
+        def accept(self):
+            raise OSError("done")
+
+    class _Pool:
+        quarantined_indices = frozenset()
+
+        def close(self):
+            calls.append("pool")
+            return True
+
+    monkeypatch.setattr(server, "_bind", lambda: setattr(server, "_sock", _FakeSock()))
+    monkeypatch.setattr(server, "_close_socket", lambda: calls.append("socket"))
+    monkeypatch.setattr(server, "_stop_all_sessions", lambda **_kwargs: None)
+    server.damon_pool = _Pool()
+
+    server._accept_loop()
+
+    assert calls == ["socket", "pool"]
+
+
 # ── a real Unix socket round trip ────────────────────────────────────────
 
 def test_real_socket_round_trip_version_and_bad_request(tmp_path):

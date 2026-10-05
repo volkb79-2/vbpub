@@ -11,20 +11,25 @@ here. ``SysfsInterface`` and ``Classifier`` are pure sysfs I/O and pure
 Python respectively; those are the parts to reuse, called directly.
 
 **DAMON is one shared kernel facility, not a per-process resource.** There is
-exactly one ``nr_kdamonds`` knob for the whole host, so acquiring a kdamond
-slot and forgetting to release it leaks a live monitoring thread against
-whatever the kernel happens to be watching next. ``DamonSession`` therefore
-follows the same discipline as ``caps.TempCaps``: remember what was there
-before, touch only the slot this session adds, and guarantee release on
-normal exit, on an exception raised anywhere inside the ``with`` block, and
-on SIGINT/SIGTERM — a killed profiling run must never leave a kdamond running
-against production.
+exactly one ``nr_kdamonds`` knob for the whole host, and every write rebuilds
+the complete kdamond array (including same-value writes). There is no safe
+append operation across an existing monitor configuration. DAMON remains
+optional: this module refuses to mutate a nonempty registry, reserves all
+slots in one write only from an empty registry, and pins each owned sysfs
+state inode so a later same-count replacement is not mistaken for the same
+slot. A host-shared advisory lock serializes cgprofile's one-shot sessions
+and daemon-pool registry changes; one-shot sessions hold it for their full
+lifetime. This coordinates cgprofile processes only: Linux exposes no atomic
+ownership lease, so non-cooperating privileged DAMON writers must not run
+concurrently.
 """
 
 from __future__ import annotations
 
+import fcntl
 import os
 import signal
+import stat
 import sys
 import threading
 from dataclasses import dataclass
@@ -55,6 +60,9 @@ except Exception:
     SysfsInterface = None  # type: ignore[assignment]
     Classifier = None  # type: ignore[assignment]
     KDAMONDS_DIR = "/sys/kernel/mm/damon/admin/kdamonds"
+
+DAMON_REGISTRY_LOCK_PATH = "/run/cgprofile/damon.lock"
+DAMON_HELPER_LOCK_PATH = "/tmp/cgprofile-damon.lock"
 
 
 def available() -> bool:
@@ -107,6 +115,109 @@ class DamonTarget:
 
 class DamonSessionError(RuntimeError):
     """Raised when a session cannot be safely entered, or used out of turn."""
+
+
+class _DamonRegistryLock:
+    """Nonblocking inter-process coordination for cooperating DAMON writers.
+
+    The lock is advisory; it prevents our daemon and one-shot helpers from
+    racing each other, not a privileged external writer that ignores it.
+    """
+
+    def __init__(self) -> None:
+        self.fd: Optional[int] = None
+
+    @staticmethod
+    def _path() -> str:
+        path = os.environ.get("CGPROFILE_DAMON_LOCK_PATH", DAMON_REGISTRY_LOCK_PATH)
+        if not os.path.isabs(path):
+            raise DamonSessionError("CGPROFILE_DAMON_LOCK_PATH must be absolute")
+        return os.path.normpath(path)
+
+    def acquire(self) -> None:
+        path = self._path()
+        flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_CLOEXEC", 0)
+        flags |= getattr(os, "O_NOFOLLOW", 0)
+        fd = None
+        try:
+            fd = os.open(path, flags, 0o660)
+            if not stat.S_ISREG(os.fstat(fd).st_mode):
+                raise DamonSessionError(
+                    f"shared DAMON lock is not a regular file: {path}"
+                )
+            if path == DAMON_REGISTRY_LOCK_PATH:
+                _set_registry_lock_permissions(fd, path)
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise DamonSessionError(
+                "another cgprofile process currently owns the shared DAMON registry"
+            ) from exc
+        except DamonSessionError:
+            raise
+        except OSError as exc:
+            raise DamonSessionError(
+                f"cannot acquire shared DAMON lock {path}: {exc}"
+            ) from exc
+        else:
+            self.fd = fd
+            fd = None
+        finally:
+            if fd is not None:
+                os.close(fd)
+
+    def release(self) -> None:
+        fd, self.fd = self.fd, None
+        if fd is None:
+            return
+        try:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        finally:
+            os.close(fd)
+
+    def __enter__(self) -> "_DamonRegistryLock":
+        self.acquire()
+        return self
+
+    def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
+        self.release()
+
+
+def prepare_registry_lock_file() -> str:
+    """Create/validate the shared file before a helper bind-mounts it.
+
+    The host-setup `/run/cgprofile` directory must already exist. The helper
+    binds only this file, not the daemon control socket.
+    """
+    flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_CLOEXEC", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    try:
+        fd = os.open(DAMON_REGISTRY_LOCK_PATH, flags, 0o660)
+    except OSError as exc:
+        raise DamonSessionError(
+            f"cannot prepare shared DAMON lock {DAMON_REGISTRY_LOCK_PATH}: {exc}"
+        ) from exc
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise DamonSessionError(
+                f"shared DAMON lock is not a regular file: {DAMON_REGISTRY_LOCK_PATH}"
+            )
+        _set_registry_lock_permissions(fd, DAMON_REGISTRY_LOCK_PATH)
+    except DamonSessionError:
+        raise
+    except OSError as exc:
+        raise DamonSessionError(
+            f"cannot prepare shared DAMON lock {DAMON_REGISTRY_LOCK_PATH}: {exc}"
+        ) from exc
+    finally:
+        os.close(fd)
+    return DAMON_REGISTRY_LOCK_PATH
+
+
+def _set_registry_lock_permissions(fd: int, path: str) -> None:
+    """Make the shared file usable by the host daemon and docker-group caller."""
+    directory = os.stat(os.path.dirname(path))
+    os.fchown(fd, -1, directory.st_gid)
+    os.fchmod(fd, 0o660)
 
 
 # ── signal handling: identical contract to caps.TempCaps ───────────────────
@@ -177,6 +288,49 @@ def _read_nr_kdamonds() -> Optional[int]:
         return None
 
 
+@dataclass
+class _KdamondIdentity:
+    """Pin one sysfs state node so a same-count rewrite is detectable.
+
+    Linux DAMON rebuilds the kdamond directory tree on every
+    ``nr_kdamonds`` write, including a write that leaves the numeric count
+    unchanged. Keeping the state node open pins its kernfs identity; comparing
+    that descriptor with the current path detects a removed-and-recreated
+    slot even when its index, count, and ``state=off`` all look unchanged.
+    """
+
+    fd: int
+    device: int
+    inode: int
+
+    @classmethod
+    def pin(cls, idx: int) -> "_KdamondIdentity":
+        path = os.path.join(KDAMONDS_DIR, str(idx), "state")
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_CLOEXEC", 0))
+        try:
+            info = os.fstat(fd)
+            return cls(fd=fd, device=info.st_dev, inode=info.st_ino)
+        except Exception:
+            os.close(fd)
+            raise
+
+    def matches(self, idx: int) -> bool:
+        path = os.path.join(KDAMONDS_DIR, str(idx), "state")
+        try:
+            pinned = os.fstat(self.fd)
+            current = os.stat(path)
+        except OSError:
+            return False
+        identity = (self.device, self.inode)
+        return (
+            (pinned.st_dev, pinned.st_ino) == identity
+            and (current.st_dev, current.st_ino) == identity
+        )
+
+    def close(self) -> None:
+        os.close(self.fd)
+
+
 class HostWriteError(RuntimeError):
     """Raised when this module is about to write outside the one host
     location it is allowed to mutate: the DAMON admin sysfs root
@@ -236,16 +390,21 @@ class KdamondPool:
     while every owned kdamond is still off, before the first session starts.
     A running session only claims one of those pre-created indices; it never
     grows the shared counter. If the kernel cannot reserve the requested
-    capacity, the pool uses any slots it did successfully reserve, and a
-    later session degrades DAMON rather than attempting a live resize.
+    capacity, reservation fails as a whole; a later session degrades DAMON
+    rather than treating a partial capacity as usable or attempting a resize.
 
-    The pool's initial count is an ownership boundary: indices below it were
-    already present and are foreign, so they are never configured, stopped,
-    or removed here. A released index is reusable only after sysfs confirms
-    its state is ``off``. If stopping or confirming a slot fails, it is
-    quarantined: the pool neither reuses it nor shrinks the count across it.
-    The next acquisition and daemon shutdown retry cleanup. An unreadable
-    baseline is a refusal, not permission to invent index zero.
+    DAMON count writes remove and recreate every indexed object, not just the
+    added tail. Therefore the only safe dynamic reservation is from an empty
+    registry: a nonzero baseline is refused even when every existing monitor
+    is stopped, because its staged configuration would otherwise be lost.
+    The pool writes its full configured capacity once, then pins each state
+    inode. A same-count rewrite is detected by comparing the current path to
+    that pinned inode; a changed or missing object is quarantined and never
+    stopped, reused, or crossed by a shrink. A released index is reusable
+    only after ownership still matches and sysfs confirms ``state=off``.
+    The next acquisition and daemon shutdown retry cleanup only while the
+    pinned object remains present. An unreadable baseline is a refusal, not
+    permission to invent index zero.
     """
 
     def __init__(self, capacity: int = 1) -> None:
@@ -258,9 +417,16 @@ class KdamondPool:
         self._quarantined: set = set()
         self._baseline: Optional[int] = None
         self._foreign_growth = False
+        self._identities: Dict[int, _KdamondIdentity] = {}
         self._lock = threading.RLock()
 
     def _clear_if_restored(self) -> None:
+        for identity in self._identities.values():
+            try:
+                identity.close()
+            except OSError:
+                pass
+        self._identities.clear()
         self._baseline = None
         self._owned.clear()
         self._free.clear()
@@ -268,18 +434,34 @@ class KdamondPool:
         self._foreign_growth = False
 
     def _confirm_off(self, idx: int) -> bool:
+        identity = self._identities.get(idx)
+        if identity is None or not identity.matches(idx):
+            return False
         try:
-            return SysfsInterface.kdamond_state(idx) == "off"
+            is_off = SysfsInterface.kdamond_state(idx) == "off"
+            return is_off and identity.matches(idx)
         except Exception:
             return False
 
     def _stop_and_confirm_off(self, idx: int) -> bool:
+        identity = self._identities.get(idx)
+        if identity is None or not identity.matches(idx):
+            return False
         try:
-            if SysfsInterface.kdamond_state(idx) != "off":
+            state = SysfsInterface.kdamond_state(idx)
+            if not identity.matches(idx):
+                return False
+            if state != "off":
                 SysfsInterface.kdamond_off(idx)
             return self._confirm_off(idx)
         except Exception:
             return False
+
+    def owns_slot(self, idx: int) -> bool:
+        """Whether ``idx`` is still the exact sysfs object this pool created."""
+        with self._lock:
+            identity = self._identities.get(idx)
+            return idx in self._owned and identity is not None and identity.matches(idx)
 
     def _recover_quarantined(self) -> None:
         for idx in sorted(self._quarantined):
@@ -296,9 +478,15 @@ class KdamondPool:
             raise DamonSessionError(
                 "cannot reconcile DAMON pool ownership from negative nr_kdamonds"
             )
+        if self._owned and current > max(self._owned) + 1:
+            self._foreign_growth = True
         for idx in tuple(self._live):
             if current <= idx:
                 self._live.remove(idx)
+                self._quarantined.add(idx)
+        for idx in self._owned:
+            if current <= idx or not self.owns_slot(idx):
+                self._free.discard(idx)
                 self._quarantined.add(idx)
 
     def _all_kdamonds_off(self, count: int) -> bool:
@@ -316,58 +504,60 @@ class KdamondPool:
             raise DamonSessionError(
                 "cannot grow the DAMON pool while an owned kdamond may be running"
             )
-
-        while len(self._owned) < self.capacity:
-            current = _read_nr_kdamonds()
-            expected = max(self._owned, default=baseline - 1) + 1
-            if current is None or current < expected:
-                raise DamonSessionError(
-                    f"cannot prove the next pool-owned kdamond slot from nr_kdamonds={current!r}"
-                )
-            idx = expected
-            if current > expected:
-                # Preserve intervening indices created by another owner.
+        if baseline != 0:
+            raise DamonSessionError(
+                f"refusing DAMON pool reservation with pre-existing nr_kdamonds={baseline}; "
+                "a DAMON count write replaces every existing kdamond configuration"
+            )
+        if self._foreign_growth:
+            raise DamonSessionError(
+                "cannot reserve DAMON capacity after an ambiguous external registry change"
+            )
+        current = _read_nr_kdamonds()
+        if current != baseline:
+            self._foreign_growth = True
+            raise DamonSessionError(
+                f"DAMON registry changed before reservation (expected {baseline}, got {current!r})"
+            )
+        target = baseline + self.capacity
+        try:
+            # One count write creates the complete pool. The kernel removes
+            # and rebuilds every entry on each write, so growing one slot at
+            # a time would invalidate the slots created by earlier writes.
+            _write_nr_kdamonds(target)
+        except Exception as exc:
+            after_failure = _read_nr_kdamonds()
+            if after_failure != baseline:
                 self._foreign_growth = True
-                idx = current
+            raise DamonSessionError(
+                f"cannot reserve DAMON pool capacity {self.capacity}: "
+                f"{type(exc).__name__}: {exc}"
+            ) from exc
+
+        after = _read_nr_kdamonds()
+        if after != target:
+            self._foreign_growth = True
+            raise DamonSessionError(
+                f"cannot prove DAMON pool capacity {target}; nr_kdamonds={after!r}"
+            )
+
+        indices = set(range(baseline, target))
+        self._owned.update(indices)
+        self._quarantined.update(indices)
+        for idx in sorted(indices):
             try:
-                SysfsInterface.create_kdamond(idx)
+                self._identities[idx] = _KdamondIdentity.pin(idx)
             except Exception as exc:
-                after_failure = _read_nr_kdamonds()
-                if after_failure is None or after_failure > current:
-                    # The write failed, but the counter's final state is
-                    # ambiguous. Do not claim the possibly-created index or
-                    # later shrink across it; a fresh read may still show the
-                    # original baseline and clear this conservative marker.
-                    self._foreign_growth = True
-                if self._free:
-                    # A partial reservation remains usable, but its actual
-                    # capacity is lower; never try to grow it while active.
-                    break
-                if not self._owned and not self._foreign_growth:
-                    self._baseline = None
                 raise DamonSessionError(
-                    f"cannot reserve DAMON pool slot {idx}: {type(exc).__name__}: {exc}"
+                    f"cannot pin identity of reserved DAMON slot {idx}: "
+                    f"{type(exc).__name__}: {exc}"
                 ) from exc
-
-            after = _read_nr_kdamonds()
-            if after is None or after <= idx:
-                # create_kdamond returned, so retain ownership conservatively
-                # even though the counter read cannot prove the slot is
-                # usable. Shutdown retries state=off but never reuses or
-                # shrinks across this ambiguous slot.
-                self._owned.add(idx)
-                self._quarantined.add(idx)
-                raise DamonSessionError(
-                    f"cannot prove reserved DAMON pool slot {idx} exists"
-                )
-            if after > idx + 1:
-                self._foreign_growth = True
-            self._owned.add(idx)
+            self._quarantined.discard(idx)
             self._free.add(idx)
 
     def acquire(self) -> int:
         """Claim a verified-off pool-owned index without resizing live sysfs."""
-        with self._lock:
+        with self._lock, _DamonRegistryLock():
             baseline = self._baseline
             if baseline is None:
                 baseline = _read_nr_kdamonds()
@@ -375,13 +565,18 @@ class KdamondPool:
                     raise DamonSessionError(
                         "cannot determine nr_kdamonds baseline; refusing to claim a slot"
                     )
+                if baseline != 0:
+                    raise DamonSessionError(
+                        f"refusing DAMON pool reservation with pre-existing nr_kdamonds={baseline}; "
+                        "DAMON is optional and existing configurations must remain untouched"
+                    )
                 self._baseline = baseline
 
             self._reconcile_live_indices()
             self._recover_quarantined()
             # Reserve the configured concurrency before any owned monitor is
-            # turned on. A partial reservation can be used, but capacity is
-            # immutable until every owned monitor is confirmed off again.
+            # turned on. Capacity is immutable until every owned monitor is
+            # confirmed off again.
             if len(self._owned) < self.capacity and not self._free:
                 self._reserve_capacity(baseline)
 
@@ -414,6 +609,9 @@ class KdamondPool:
         if baseline is None:
             return True
         if not self._owned:
+            current = _read_nr_kdamonds()
+            if current != baseline:
+                return False
             self._clear_if_restored()
             return True
         try:
@@ -426,6 +624,7 @@ class KdamondPool:
                 self._foreign_growth
                 or current != expected_end
                 or current <= baseline
+                or any(not self.owns_slot(idx) for idx in self._owned)
             ):
                 return False
             # The kernel rejects *any* nr_kdamonds resize while any monitor
@@ -455,15 +654,22 @@ class KdamondPool:
         with self._lock:
             if idx not in self._live:
                 return idx in self._free
-            self._live.remove(idx)
-            if not self._confirm_off(idx):
+            try:
+                with _DamonRegistryLock():
+                    self._live.remove(idx)
+                    if not self._confirm_off(idx):
+                        self._quarantined.add(idx)
+                        return False
+                    self._quarantined.discard(idx)
+                    self._free.add(idx)
+                    if not self._live and not self._quarantined:
+                        self._restore_baseline()
+                    return True
+            except DamonSessionError:
+                self._live.discard(idx)
+                self._free.discard(idx)
                 self._quarantined.add(idx)
                 return False
-            self._quarantined.discard(idx)
-            self._free.add(idx)
-            if not self._live and not self._quarantined:
-                self._restore_baseline()
-            return True
 
     def close(self) -> bool:
         """Retry stopping every owned slot and restore the original count.
@@ -473,20 +679,24 @@ class KdamondPool:
         shrinks the registry across a monitor whose stopped state is unknown.
         """
         with self._lock:
-            stopped = True
-            for idx in sorted(self._owned):
-                if self._stop_and_confirm_off(idx):
-                    self._live.discard(idx)
-                    self._quarantined.discard(idx)
-                    self._free.add(idx)
-                else:
-                    self._live.discard(idx)
-                    self._free.discard(idx)
-                    self._quarantined.add(idx)
-                    stopped = False
-            if not stopped:
+            try:
+                with _DamonRegistryLock():
+                    stopped = True
+                    for idx in sorted(self._owned):
+                        if self._stop_and_confirm_off(idx):
+                            self._live.discard(idx)
+                            self._quarantined.discard(idx)
+                            self._free.add(idx)
+                        else:
+                            self._live.discard(idx)
+                            self._free.discard(idx)
+                            self._quarantined.add(idx)
+                            stopped = False
+                    if not stopped:
+                        return False
+                    return self._restore_baseline()
+            except DamonSessionError:
                 return False
-            return self._restore_baseline()
 
     @property
     def live_indices(self) -> frozenset:
@@ -541,6 +751,8 @@ class DamonSession:
         self._ctx_idx = 0
         self._scheme_idx = 0
         self._prev_nr_kdamonds: Optional[int] = None
+        self._solo_identity: Optional[_KdamondIdentity] = None
+        self._registry_lock: Optional[_DamonRegistryLock] = None
         self._acquired_from_pool = False
         self._owns_kdamond = False
         self._prev_handlers: Dict[int, Any] = {}
@@ -601,19 +813,41 @@ class DamonSession:
                 self._owns_kdamond = True
                 self._cleanup_confirmed = False
             else:
+                registry_lock = _DamonRegistryLock()
+                registry_lock.acquire()
+                self._registry_lock = registry_lock
                 self._prev_nr_kdamonds = _read_nr_kdamonds()
                 if self._prev_nr_kdamonds is None:
                     raise DamonSessionError(
                         "cannot determine nr_kdamonds baseline; refusing to claim a slot"
+                    )
+                if self._prev_nr_kdamonds != 0:
+                    raise DamonSessionError(
+                        f"refusing one-shot DAMON session with pre-existing "
+                        f"nr_kdamonds={self._prev_nr_kdamonds}; DAMON is optional and "
+                        "existing configurations must remain untouched"
                     )
                 if self.kdamond_idx != self._prev_nr_kdamonds:
                     raise DamonSessionError(
                         f"refusing to claim foreign kdamond slot {self.kdamond_idx}; "
                         f"fresh slot is {self._prev_nr_kdamonds}"
                     )
+                if _read_nr_kdamonds() != self._prev_nr_kdamonds:
+                    raise DamonSessionError(
+                        "DAMON registry changed before one-shot reservation"
+                    )
                 SysfsInterface.create_kdamond(self.kdamond_idx)
                 self._owns_kdamond = True
                 self._cleanup_confirmed = False
+                if _read_nr_kdamonds() != self._prev_nr_kdamonds + 1:
+                    raise DamonSessionError(
+                        "cannot prove the one-shot DAMON slot was created"
+                    )
+                self._solo_identity = _KdamondIdentity.pin(self.kdamond_idx)
+            if not self._ownership_matches():
+                raise DamonSessionError(
+                    f"DAMON slot {self.kdamond_idx} changed before configuration"
+                )
             SysfsInterface.create_context(self.kdamond_idx, self._ctx_idx)
             SysfsInterface.set_operations(self.kdamond_idx, self._ctx_idx, self.targets[0].kind)
             SysfsInterface.set_intervals(
@@ -646,6 +880,10 @@ class DamonSession:
             # `commit` updates a running kdamond's existing context; it is
             # invalid before first start and returns EINVAL from the kernel.
             # Initial sysfs inputs are consumed by `on` itself.
+            if not self._ownership_matches():
+                raise DamonSessionError(
+                    f"DAMON slot {self.kdamond_idx} changed during configuration"
+                )
             SysfsInterface.kdamond_on(self.kdamond_idx)
         except Exception as exc:
             self._teardown()
@@ -666,6 +904,14 @@ class DamonSession:
             raise DamonSessionError(f"{type(exc).__name__}: {exc}") from exc
         self._entered = True
         return self
+
+    def _ownership_matches(self) -> bool:
+        if self.pool is not None:
+            return self.pool.owns_slot(self.kdamond_idx)
+        return (
+            self._solo_identity is not None
+            and self._solo_identity.matches(self.kdamond_idx)
+        )
 
     def collect(self) -> List[Dict]:
         """Classified regions for right now: each region's ``nr_accesses``/
@@ -738,13 +984,16 @@ class DamonSession:
         if self._torn_down:
             return self._cleanup_confirmed
         off_confirmed = not self._owns_kdamond
-        if self._owns_kdamond:
+        if self._owns_kdamond and self._ownership_matches():
             try:
-                SysfsInterface.kdamond_off(self.kdamond_idx)
-            except Exception:
-                pass
-            try:
-                off_confirmed = SysfsInterface.kdamond_state(self.kdamond_idx) == "off"
+                state = SysfsInterface.kdamond_state(self.kdamond_idx)
+                if self._ownership_matches() and state != "off":
+                    SysfsInterface.kdamond_off(self.kdamond_idx)
+                off_confirmed = (
+                    self._ownership_matches()
+                    and SysfsInterface.kdamond_state(self.kdamond_idx) == "off"
+                    and self._ownership_matches()
+                )
             except Exception:
                 off_confirmed = False
         if self.pool is not None:
@@ -757,11 +1006,17 @@ class DamonSession:
             if prev is not None:
                 try:
                     current = _read_nr_kdamonds()
-                    if current == prev + 1:
+                    if current == prev + 1 and self._ownership_matches():
                         _write_nr_kdamonds(prev)
+                        off_confirmed = _read_nr_kdamonds() == prev
                 except Exception:
                     pass
         self._cleanup_confirmed = off_confirmed
+        if self._registry_lock is not None:
+            try:
+                self._registry_lock.release()
+            finally:
+                self._registry_lock = None
         self._torn_down = True
         return off_confirmed
 

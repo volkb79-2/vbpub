@@ -6781,3 +6781,39 @@ the generated backlog index with `nyxloom backlog index`. No cgroup-profiler
 implementation code changed on main. Run all final P1 gates and review on the
 resolved merge tip; earlier receipts do not transfer. The separate CIU gate
 was left running untouched while this source reconciliation was done.
+
+### RW-447 — 2026-10-05 16:14:35 UTC — first final-repair R0/R1 run found six fixture failures
+
+The registered `r0-r1` run on P1 candidate HEAD `e2e077fbd7680105ad203d3ef407371d799a21b0`
+completed FAIL (run `41ed5886b1454ef6419f43b72d7a9a16`; 2,316 passed, 6
+failed in 130 seconds). The two `TestStartRun` failures were fake helper
+launchers whose signatures did not accept the new `damon` option. Four
+`test_damon` failures were counter-read fixtures still assuming the old
+sequence, before the added pre-reservation reconciliation read; the ambiguous
+resize test also referenced `_write_int` on the wrong object. No runtime
+product assertion failed. The fixtures are corrected in the candidate worktree;
+the failed run is not coverage evidence. Re-run `r0-r1` after checking PSI and
+the gate-container inventory.
+
+### RW-448 — 2026-10-05 16:29:46 UTC — DAMON lifecycle coverage is complete; one shutdown arc remains
+
+The next registered `r0-r1` run on the dirty P1 candidate completed with
+2,343 tests passing and FAIL on coverage only (run
+`fe8e9f04513456b1d8848370ff8d4b98`, 132.96 seconds; history records
+`exit_code=2`; log
+`/tmp/run-gate/lanes/r0-r1/fe8e9f04513456b1d8848370ff8d4b98.log`). The newly
+changed `lib/damon.py` reached 100% line and branch coverage. The sole
+remaining gap was the false arc at `lib/serve.py:2665`, where a clean daemon
+shutdown has already confirmed that the DAMON pool closed and therefore does
+not emit a quarantine warning. A clean-success shutdown regression test has
+been added; the gate must pass anew before this candidate has R0/R1 evidence.
+
+### RW-449 — 2026-10-05 16:34:17 UTC — full package coverage restored on the dirty P1 candidate
+
+After adding a direct clean-shutdown assertion, registered `r0-r1` passed
+(run `97446e632ab9c9b1d6d7d6d44ef74047`, 2,344 tests, 100% line and branch
+coverage across all modules, 132.97 seconds; history verdict PASS, wrapper
+exit 0; log `/tmp/run-gate/lanes/r0-r1/97446e632ab9c9b1d6d7d6d44ef74047.log`).
+The judged checkout was dirty, so the run is not commit-bound evidence and
+did not enter eligible history. Commit the reviewed source/tests/docs, merge
+current main, and rerun gates on the final clean merge tip.

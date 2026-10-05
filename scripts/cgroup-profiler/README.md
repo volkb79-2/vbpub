@@ -68,15 +68,21 @@ Every daemon session records sample zero at start. A no-token start is always a
 new session (subject to `--max-sessions`); only the same non-null token is
 idempotent. A token scopes its roots to exact-token processes directly in the
 selected cgroup; their descendants remain attributed if they move elsewhere.
-DAMON capacity is pre-reserved before its first monitor starts because the
-kernel forbids resizing the shared kdamond table while any monitor is running.
-If another monitor prevents reservation, that session reports DAMON
-unavailable; if a stop cannot be verified, its slot is logged and quarantined.
-Neither condition stops ordinary profiling; see the
+DAMON capacity is pre-reserved in one write before its first monitor starts.
+Linux rebuilds the entire shared kdamond table on every `nr_kdamonds` write,
+so cgprofile refuses DAMON when that table is already nonempty—even if the
+existing monitor is stopped—rather than erase another tool's staged
+configuration. An observed replacement of an owned sysfs slot is quarantined
+and never reused or removed. cgprofile's one-shot collectors and daemon pool
+coordinate through a host-shared advisory lock; helper containers receive
+only the lock-file bind, not the daemon control socket. This does not serialize
+unrelated privileged DAMON tools. DAMON setup, collection, or cleanup failure
+only disables that optional series; ordinary profiling and the wrapped
+command continue. See the
 [design rationale](docs/DESIGN-GUIDE.md#damon-availability-is-not-session-readiness).
-The one-shot collector follows the same optional-evidence rule: if DAMON cannot
-start, it still becomes ready and launches the wrapped command while collecting
-the ordinary metrics.
+The one-shot collector follows the same zero-baseline and optional-evidence
+rules: it still becomes ready and launches the wrapped command if DAMON cannot
+start or later stops collecting.
 The daemon control contract is major version 1, and `ctl` refuses
 to print a response whose object, major, `ok`, or verb-specific shape is not
 valid.

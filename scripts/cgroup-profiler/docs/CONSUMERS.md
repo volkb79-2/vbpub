@@ -41,13 +41,21 @@ unqualified local alias to Docker Hub.
 
 ## One-shot collector behavior
 
-If `cgprofile run` or `attach` requests DAMON but the kernel refuses to start
-its kdamond (for example, another host monitor is already running), the
-collector logs that DAMON is unavailable, signals readiness, and continues
-ordinary cgroup/CPU/memory sampling. `cgprofile run` still launches the wrapped
-command; a DAMON setup problem must not change the command's exit status
-(R-36h). Confirm actual DAMON collection from a persisted `damon.jsonl` series,
-not from `cgprofile doctor` or a visible DAMON sysfs directory alone.
+If `cgprofile run` or `attach` requests DAMON while the host's `nr_kdamonds`
+registry is nonempty, the collector refuses to resize it—even when its
+existing monitors are stopped—because Linux rebuilds every kdamond entry on a
+count write. The collector logs DAMON as unavailable, signals readiness, and
+continues ordinary cgroup/CPU/memory sampling. A later DAMON collection or
+cleanup failure also disables only DAMON and still writes the normal finished
+manifest. `cgprofile run` still launches the wrapped command; a DAMON problem
+must not change the command's exit status (R-36h). Confirm actual DAMON
+collection from a persisted `damon.jsonl` series, not from `cgprofile doctor`
+or a visible DAMON sysfs directory alone. cgprofile's independent one-shot
+processes coordinate with the daemon using the host-shared
+`/run/cgprofile/damon.lock`; an in-container helper bind-mounts only that file
+at `/tmp/cgprofile-damon.lock`, not the control socket. If another cgprofile
+writer holds the lock, the optional DAMON series is refused rather than
+waiting or racing; ordinary profiling proceeds.
 
 ## Deploy a published daemon image with CIU
 
@@ -197,14 +205,20 @@ top-level `series.damon` field for `damon.jsonl` before claiming DAMON samples
 or overhead. See the
 [design rationale](DESIGN-GUIDE.md#damon-availability-is-not-session-readiness).
 
-The daemon pre-reserves its configured DAMON session capacity before starting
-the first kdamond. Linux refuses to resize that shared table while any monitor
-is running, including one owned by another program. If a foreign monitor is
-already on, or the kernel permits only a partial reservation, affected starts
-still profile normally but report DAMON as unavailable. A stop that cannot be
-verified quarantines its slot; the daemon will not reuse it or remove it, and
-shutdown retries cleanup. Treat `damon: "on"` plus a persisted `damon.jsonl`
-series as the evidence that DAMON actually ran, not `ctl version` alone.
+The daemon reserves its configured DAMON session capacity with one count write
+from an empty registry before starting the first kdamond. A nonempty registry
+is refused regardless of whether its monitors are on or off: every count
+write replaces all entries and can erase foreign staged configuration. The
+daemon pins each owned state inode and quarantines any missing or replaced
+slot rather than stopping, reusing, or shrinking across an object whose
+identity no longer matches. cgprofile's shared advisory lock serializes its
+own pool reservation/teardown against one-shot collectors. It cannot govern
+unrelated privileged tools: the kernel exposes no atomic ownership lease for
+this global sysfs registry, so do not run `damo` or another non-cooperating
+privileged DAMON configurator concurrently. Ordinary profiling continues with
+DAMON marked unavailable when reservation is refused. Treat `damon: "on"` plus a persisted
+`damon.jsonl` series as the evidence that DAMON actually ran, not `ctl version`
+alone.
 
 ## Attach a run-gate lane
 
