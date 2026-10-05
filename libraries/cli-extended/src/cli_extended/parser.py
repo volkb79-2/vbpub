@@ -321,6 +321,7 @@ class VerbSpec:
     include_confirmation: bool | None = None
     confirmation_required: bool | None = None
     surface_id: str | None = None
+    dry_run: bool = False
 
     def __post_init__(self) -> None:
         if not self.name or self.name.startswith("-"):
@@ -354,6 +355,12 @@ class VerbSpec:
                 f"verb {self.name!r} has conflicting confirmation_required and "
                 "include_confirmation values"
             )
+        if not isinstance(self.dry_run, bool):
+            raise TypeError("dry_run must be a bool")
+        if self.dry_run and not self.mutating:
+            raise ValueError(
+                f"verb {self.name!r} declares dry_run but is not marked mutating"
+            )
         if self.confirmation_required is True and not self.mutating:
             raise ValueError(
                 f"verb {self.name!r} requires confirmation but is not marked mutating"
@@ -364,6 +371,8 @@ class VerbSpec:
         labels = []
         if self.mutating:
             labels.append("mutating")
+        if self.dry_run:
+            labels.append("dry-run")
         if self.interactive:
             labels.append("interactive")
         if self.expensive:
@@ -453,7 +462,12 @@ class VerbSpec:
 
 
 def _common_option_specs(
-    *, include_json: bool, include_progress: bool, include_confirmation: bool
+    *,
+    include_json: bool,
+    include_progress: bool,
+    include_confirmation: bool,
+    include_traceback: bool = False,
+    include_dry_run: bool = False,
 ) -> tuple[OptionSpec, ...]:
     """Return common option metadata for generated help surfaces."""
 
@@ -494,13 +508,24 @@ def _common_option_specs(
             group="DEBUGGING",
             parser_kwargs={"action": "store_true"},
         ),
+    ]
+    if include_traceback:
+        options.append(
+            OptionSpec(
+                ("--traceback",),
+                "show the Python stack for an unexpected error",
+                group="DEBUGGING",
+                parser_kwargs={"action": "store_true"},
+            )
+        )
+    options.append(
         OptionSpec(
             ("--color", "--no-color"),
             "control terminal colour",
             group="OUTPUT CONTROL",
             parser_kwargs={"action": "store_true"},
-        ),
-    ]
+        )
+    )
     if include_json:
         options.append(
             OptionSpec(
@@ -528,6 +553,15 @@ def _common_option_specs(
                 parser_kwargs={"action": "store_true"},
             )
         )
+    if include_dry_run:
+        options.append(
+            OptionSpec(
+                ("--dry-run",),
+                "show what would change without changing anything",
+                group="CONFIRMATION",
+                parser_kwargs={"action": "store_true"},
+            )
+        )
     return tuple(options)
 
 
@@ -545,7 +579,9 @@ class HelpCatalog:
         verbs: Iterable[VerbSpec] = (),
         global_options: Sequence[OptionSpec | tuple[str, str]] = (),
         width: int | None = None,
+        include_traceback: bool = False,
     ) -> None:
+        self.include_traceback = include_traceback
         self.identity = identity
         self.prog = prog
         self.description = description
@@ -765,6 +801,8 @@ class HelpCatalog:
                         include_json=verb.include_json,
                         include_progress=verb.include_progress,
                         include_confirmation=verb.confirmation_enabled,
+                        include_traceback=self.include_traceback,
+                        include_dry_run=verb.dry_run,
                     ),
                     *(option for option in verb.options if not option.hidden),
                 )
@@ -1045,6 +1083,8 @@ def add_common_options(
     include_progress: bool = True,
     include_confirmation: bool = True,
     suppress_defaults: bool = False,
+    include_traceback: bool = False,
+    include_dry_run: bool = False,
 ) -> None:
     """Add the standard long options without introducing ``-h`` aliases."""
 
@@ -1059,6 +1099,8 @@ def add_common_options(
                 include_json=include_json,
                 include_progress=include_progress,
                 include_confirmation=include_confirmation,
+                include_traceback=include_traceback,
+                include_dry_run=include_dry_run,
             )
         )
     help_group = parser.add_argument_group("HELP AND VERSION")
@@ -1096,6 +1138,13 @@ def add_common_options(
         default=default,
         help="show supported raw diagnostic data without redaction (dangerous)",
     )
+    if include_traceback:
+        debug_group.add_argument(
+            "--traceback",
+            action="store_true",
+            default=default,
+            help="show the Python stack for an unexpected error",
+        )
     output_group = parser.add_argument_group("OUTPUT CONTROL")
     color_group = output_group.add_mutually_exclusive_group()
     color_group.add_argument(
@@ -1126,13 +1175,22 @@ def add_common_options(
             default=default,
             help="choose progress presentation",
         )
-    if include_confirmation:
-        parser.add_argument_group("CONFIRMATION").add_argument(
-            "--yes",
-            action="store_true",
-            default=default,
-            help="accept confirmation prompts",
-        )
+    if include_confirmation or include_dry_run:
+        confirmation_group = parser.add_argument_group("CONFIRMATION")
+        if include_confirmation:
+            confirmation_group.add_argument(
+                "--yes",
+                action="store_true",
+                default=default,
+                help="accept confirmation prompts",
+            )
+        if include_dry_run:
+            confirmation_group.add_argument(
+                "--dry-run",
+                action="store_true",
+                default=default,
+                help="show what would change without changing anything",
+            )
     for library_action in parser._actions[first_library_action:]:
         library_action._cli_extended_common = True
 
@@ -1147,6 +1205,7 @@ class CliRuntime:
     debug: bool = False
     debug_raw: bool = False
     json_mode: bool = False
+    dry_run: bool = False
     progress_mode: ProgressMode = ProgressMode.AUTO
     raw_argv: tuple[str, ...] = ()
     command_argv: tuple[str, ...] = ()
@@ -1171,6 +1230,9 @@ class CliRuntime:
         fail with EOF. EOF and an explicit negative answer are clean declines.
         """
 
+        if self.dry_run:
+            self.output.emit(LogLevel.INFO, "Dry run: no changes made.", force=True)
+            return False
         if self.yes:
             self.output.info("Confirmation accepted via --yes.")
             return True
@@ -1234,6 +1296,8 @@ class RegisteredCli:
     global_options: tuple[OptionSpec, ...] = ()
     single_command: bool = False
     allow_abbrev: bool = False
+    expected_exceptions: tuple[type[BaseException], ...] = ()
+    unexpected_exceptions: str = "raise"
 
     @property
     def catalog(self) -> HelpCatalog | None:
@@ -1250,6 +1314,11 @@ class RegisteredCli:
     ) -> int:
         """Run this registration with the shared boundary."""
 
+        if "unexpected_exceptions" in kwargs:
+            raise TypeError("unexpected_exceptions is set on CliRegistry, not run()")
+        expected = self.expected_exceptions + tuple(
+            kwargs.pop("expected_exceptions", ())
+        )
         return run_cli(
             self.parser,
             self.handlers,
@@ -1261,7 +1330,19 @@ class RegisteredCli:
             delegates=self.delegates,
             prompt_driver=prompt_driver,
             interactive_extra=interactive_extra,
+            expected_exceptions=expected,
+            unexpected_exceptions=self.unexpected_exceptions,
             **kwargs,
+        )
+
+
+_UNEXPECTED_POLICIES = ("raise", "report")
+
+
+def _check_unexpected_policy(value: str) -> None:
+    if value not in _UNEXPECTED_POLICIES:
+        raise ValueError(
+            f"unexpected_exceptions must be 'raise' or 'report', got {value!r}"
         )
 
 
@@ -1285,7 +1366,14 @@ class CliRegistry:
         logging_logger: str | None = None,
         no_args_action: bool = False,
         allow_abbrev: bool = False,
+        expected_exceptions: tuple[type[BaseException], ...] = (),
+        unexpected_exceptions: str = "raise",
     ) -> None:
+        if not isinstance(expected_exceptions, tuple):
+            raise TypeError("expected_exceptions must be a tuple of exception types")
+        _check_unexpected_policy(unexpected_exceptions)
+        self.expected_exceptions = expected_exceptions
+        self.unexpected_exceptions = unexpected_exceptions
         self.identity = identity
         self.prog = prog
         self.description = description
@@ -1376,12 +1464,36 @@ class CliRegistry:
             )
         if self.no_args_action and not self.single_command:
             raise ValueError("no_args_action is only valid for a single-command CLI")
+        any_dry_run = any(verb.dry_run for verb in self._verbs)
         missing_handlers = [
             verb.name for verb in self._verbs
             if verb.handler is None and verb.delegate is None
         ]
         if missing_handlers:
             raise ValueError("verbs missing handlers: " + ", ".join(missing_handlers))
+
+        report_mode = self.unexpected_exceptions == "report"
+        for verb in self._verbs:
+            if (
+                verb.delegate is not None
+                and verb.delegate.unexpected_exceptions != self.unexpected_exceptions
+            ):
+                raise ValueError(
+                    f"verb {verb.name!r} delegates to a CLI whose unexpected_exceptions "
+                    f"policy {verb.delegate.unexpected_exceptions!r} differs from "
+                    f"{self.unexpected_exceptions!r}"
+                )
+            for option in (*verb.options, *self.global_options):
+                if report_mode and "--traceback" in option.flags:
+                    raise ValueError(
+                        f"verb {verb.name!r} declares --traceback; remove it because "
+                        "the library provides it when unexpected_exceptions='report'"
+                    )
+                if any_dry_run and "--dry-run" in option.flags:
+                    raise ValueError(
+                        f"verb {verb.name!r} sees a consumer --dry-run option; remove it "
+                        "and use VerbSpec(dry_run=True) instead"
+                    )
 
         catalog = None
         if not self.single_command:
@@ -1391,6 +1503,7 @@ class CliRegistry:
                 description=self.description,
                 getting_started=self.getting_started,
                 verbs=self._verbs,
+                include_traceback=report_mode,
             )
         parser_description = self.description
         if self.single_command:
@@ -1424,6 +1537,8 @@ class CliRegistry:
             include_confirmation=(
                 self.single_command and self._verbs[0].confirmation_enabled
             ),
+            include_traceback=report_mode,
+            include_dry_run=any_dry_run,
         )
         self._add_option_specs(parser, self.global_options)
         if catalog is not None:
@@ -1458,6 +1573,8 @@ class CliRegistry:
                     include_progress=verb.include_progress,
                     include_confirmation=verb.confirmation_enabled,
                     suppress_defaults=True,
+                    include_traceback=report_mode,
+                    include_dry_run=verb.dry_run,
                 )
                 verb_flags = {
                     flag for option in verb.options for flag in option.flags
@@ -1505,6 +1622,8 @@ class CliRegistry:
             self.global_options,
             self.single_command,
             self.allow_abbrev,
+            self.expected_exceptions,
+            self.unexpected_exceptions,
         )
 
 
@@ -1572,6 +1691,7 @@ def _runtime_from_args(
         debug=debug,
         debug_raw=debug_raw,
         json_mode=output.json_mode,
+        dry_run=bool(getattr(args, "dry_run", False)),
         progress_mode=progress,
         raw_argv=tuple(raw_argv),
         command_argv=tuple(command_argv),
@@ -1656,6 +1776,7 @@ def run_cli(
     no_args_action: bool = False,
     delegates: Mapping[str, RegisteredCli] | None = None,
     expected_exceptions: tuple[type[BaseException], ...] = (),
+    unexpected_exceptions: str = "raise",
     secrets: Sequence[str] = (),
     stdout: TextIO | None = None,
     stderr: TextIO | None = None,
@@ -1665,6 +1786,8 @@ def run_cli(
 ) -> int:
     """Run a conventional CLI while keeping parser and exception policy shared."""
 
+    _check_unexpected_policy(unexpected_exceptions)
+    report = unexpected_exceptions == "report"
     stdout = stdout if stdout is not None else sys.stdout
     stderr = stderr if stderr is not None else sys.stderr
     stdin = stdin if stdin is not None else sys.stdin
@@ -1825,6 +1948,15 @@ def run_cli(
                     show_help=True,
                 )
             if (
+                bool(getattr(args, "dry_run", False))
+                and "--dry-run" not in command_parser._option_string_actions
+            ):
+                raise CliFailure(
+                    f"--dry-run is not supported for verb {verb!r}",
+                    exit_code=2,
+                    show_help=True,
+                )
+            if (
                 getattr(args, "progress", None) is not None
                 and "--progress" not in command_parser._option_string_actions
             ):
@@ -1911,8 +2043,16 @@ def run_cli(
         else:
             help_output.error(str(exc))
         return 1
-    except Exception:
-        # Unexpected programming failures intentionally remain tracebacks. The
-        # outer Python entrypoint prints one traceback; do not print a second
-        # copy here when --debug is active.
-        raise
+    except Exception as exc:
+        # In the default "raise" policy unexpected programming failures remain
+        # tracebacks: the outer Python entrypoint prints one traceback, so do
+        # not print a second copy here when --debug is active.
+        if not report or getattr(args, "traceback", False):
+            raise
+        message = f"unexpected {type(exc).__name__}: {exc}"
+        hint = "rerun with --traceback to see the stack"
+        if "runtime" in locals():
+            runtime.output.error(message, hint=hint)
+        else:
+            help_output.error(message, hint=hint)
+        return 1

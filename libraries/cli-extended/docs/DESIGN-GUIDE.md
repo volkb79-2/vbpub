@@ -454,6 +454,36 @@ start threads, own a signal handler, or decide when an operation is complete:
 the owning command retains control of retries, cancellation, and state
 transitions.
 
+## Version sources must agree and failures must be explicit
+
+`CliIdentity.resolve()` accepts an installed distribution and a checked-in
+version file together because a source checkout and an installed wheel can
+silently drift: whichever source happens to be read first would win and the
+other would be quietly wrong. Requiring agreement turns that drift into an
+immediate `VersionLookupError` at startup. A missing source is "unresolved",
+but a malformed version file is an error, since treating garbage as absent
+would let the other source mask a broken release. A literal fallback version
+was rejected for the same reason `from_distribution` has none.
+
+`unexpected_exceptions` defaults to `"raise"` because changing what an
+existing consumer does with an uncaught bug is a behavior change that the
+consumer should choose explicitly. The adoption audit recommends `"report"`:
+operators see one line and an exit status of `1` instead of a stack, and
+`--traceback` restores the original exception for whoever is debugging. The
+option exists only in `"report"` mode so that `"raise"` consumers see no
+interface change, and a consumer-declared `--traceback` is refused so two
+options cannot share one spelling with different meanings.
+
+`--dry-run` is hooked into `runtime.confirm()` rather than being a flag each
+handler must interpret. Handlers already gate a mutation on consent, so making
+consent answer "no" while dry-running makes every existing handler safe
+without new branches, and a forgotten `if args.dry_run` cannot mutate. The
+cost is that a handler wanting a preview must print it before calling
+`confirm()`. `--yes` deliberately does not override it: previewing is the
+stronger statement. It is only valid on mutating verbs because a read-only
+verb has nothing to preview, and a consumer's own `--dry-run` is refused once
+a verb opts in so the two meanings cannot diverge.
+
 ## Markdown is a documentation format
 
 `HelpCatalog.render(output_format="markdown")` renders the same verb metadata
