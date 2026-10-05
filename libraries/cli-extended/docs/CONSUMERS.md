@@ -1281,3 +1281,69 @@ All gate lanes execute in `tester-unified`. R1 enforces 100% statement and
 branch coverage over every shipped `cli_extended` module. R3 deliberately
 breaks JSON redaction in a disposable copy and requires the focused regression
 test to reject it. Ruff remains a separate static check: `ruff check src tests`.
+
+### Test helpers: invoke_script
+
+Replace a hand-rolled `_invoke` (copy the environment, scrub variables, set
+`HOME`, prepend the library to `PYTHONPATH`, `subprocess.run`) with
+`invoke_script`, `invoke_module` or `make_invoker`:
+
+```python
+from pathlib import Path
+
+from cli_extended import assert_cli_contract, make_invoker
+
+SCRIPT = Path(__file__).resolve().parents[1] / "scp-api.py"
+
+
+def test_real_executable_obeys_cli_contract(tmp_path, identity):
+    invoke = make_invoker(
+        SCRIPT,
+        home=tmp_path / "home",          # required
+        cwd=tmp_path,
+        scrub_prefixes=("NETCUP_SCP_API_",),
+    )
+    assert_cli_contract(invoke, identity, ("power", "login"))
+```
+
+`invoke_script(script, argv, *, home, ...)` returns a `CompletedProcess`;
+`invoke_module("pkg.cli", argv, home=..., pythonpath=[src])` runs
+`python -m`. The child gets `HOME` and the four `XDG_*_HOME` directories under
+`home`, `NO_COLOR=1`, and no `FORCE_COLOR`, `CLICOLOR_FORCE` or
+`CLAUDE_CONFIG_DIR`; variables starting with a `scrub_prefixes` entry are
+removed; `PYTHONPATH` starts with the directory of the `cli_extended` you
+imported, so the child runs the library revision under test. That prefix is
+added only for the same interpreter (`python=None`); with an explicit
+`python=`, pass `pythonpath=[...]` yourself, since an installed library
+directory is a whole `site-packages` that must not leak into a foreign
+interpreter. `env={"K": None}` deletes a key, but `env` may not set `HOME` or
+any `XDG_*_HOME` (`ValueError`; `home` is the only source), `home` must be
+absolute, and an empty string in `scrub_prefixes` is refused (it would scrub
+`PATH` too). `timeout` is a failsafe, not an oracle.
+
+`home` is mandatory because a helper that defaults to the real home lets a test
+write there: on 2026-10-04 a run-gate test leaked a fake `assay` shim into the
+real `~/.local/bin`. Always pass a `tmp_path` subdirectory.
+
+### Linking review cases with the pytest plugin
+
+Replace the `pytest_collection_finish` / `pytest_configure` pair in your
+conftest with one line in the root `conftest.py`:
+
+```python
+pytest_plugins = ["cli_extended.pytest_plugin"]
+```
+
+```toml
+# pyproject.toml (optional; default is discovery upward from the rootdir)
+[tool.pytest.ini_options]
+cli_extended_config = "cli-extended.toml"
+```
+
+The plugin registers the `cli_case` marker and, for every CLI in the project
+config that has a `review` catalog, runs `assert_cli_case_tests` after
+collection. It is strict: an active case whose test is not collected fails the
+run (exit status 4). CI and gate runs must use strict mode;
+`--cli-case-partial` is only for focused local runs. For a focused local run use `pytest --cli-case-partial
+tests/test_one.py`, which still rejects unknown, inactive, unlisted or unmarked
+cases among the collected tests. A config where no CLI has `review` is a no-op.
