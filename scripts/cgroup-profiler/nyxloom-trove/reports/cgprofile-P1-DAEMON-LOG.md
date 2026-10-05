@@ -1635,3 +1635,32 @@ evidence from the current candidate and directs the reviewer not to open
 numbered round 7. It does not authorize a merge, release, install, or long
 gate; those remain controller actions after review. No review or gate has yet
 run on this packet's candidate.
+
+### Session 41 — 2026-10-05 06:20:09Z — implement Sol round-2 DAMON lifecycle repair
+
+Resumed P1 after Sol round 2 rejected the candidate on F1 (Linux forbids
+`nr_kdamonds` resize while any kdamond is on) and F2 (an unconfirmed stop must
+not release/reuse/shrink an owned slot). RW-442 records the binding design.
+Commit `c8f7c70e` pre-reserves configured pool capacity before first start,
+checks global off state before baseline restoration, quarantines ambiguous
+stops, and makes optional DAMON teardown non-fatal to summary finalization.
+
+Three exact-tree registered `r0-r1` attempts have not yet produced a gate
+PASS. Run `2ada30366c4d4394cb79c20b12a2b59f` on `c8f7c70e` had 2,292 passed
+and four stale/fixture failures; inspecting it also found the one-shot R-36h
+readiness gap, fixed in `591c258d`. Run
+`64a68db76d4a888d260f8111faac5a9f` on `591c258d` had 2,293 passed and six
+scripted-counter fixture failures after acquire gained a reconciliation read;
+the sequences were corrected in `b30eca82`. Run
+`2fba4b01b6a3b08b8729711c682e2752` on `b30eca82` passed 2,299 tests but failed
+the 100% coverage gate: `lib/damon.py` had 15 uncovered statements and six
+partial branches. `b9ea6080` adds failure-path oracles and removes an
+unreachable duplicate baseline-capture branch from `_reserve_capacity`.
+
+The exact current candidate is `b9ea60801da83abd488d0ae0a6ba88b3332f5c40`;
+it is clean, but no registered gate has run on it. The earlier three failures
+are historical, not evidence for this tree. The daemon was down during those
+runs, so they used coarse `rusage` profiling, not live DAMON data. Exact-tree
+R0/R1, R3, doctor, R2, full gate, same-reviewer fix verification, real DAMON
+sample and overhead probes, current-main reconciliation, integration, release,
+and singleton activation remain open.

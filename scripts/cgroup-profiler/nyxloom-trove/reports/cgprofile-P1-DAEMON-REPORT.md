@@ -1992,3 +1992,38 @@ specific to its old tree; the reconciled candidate still requires a fresh
 exact-tree R2 and registered full gate. A fresh supplemental review of the
 survivor dispositions and test oracles is pending. No gate or release is
 claimed for `e0ce67dc`.
+
+## Controller addendum — Sol round-2 DAMON lifecycle repair (2026-10-05)
+
+Sol round 2 rejected the P1 candidate on two lifecycle blockers, recorded in
+controller ruling RW-442: Linux rejects any `nr_kdamonds` resize while any
+kdamond is running, including a foreign monitor, and an unconfirmed stop must
+not be treated as successful release, reuse, or cleanup. The repair reserves
+the configured pool before the first owned monitor starts, admits only
+verified-off slots, quarantines ambiguous stop/readback outcomes, and retries
+cleanup at the next acquisition or shutdown. A foreign monitor that prevents
+reservation makes optional DAMON unavailable; ordinary profiling and its
+verdict continue.
+
+The repaired one-shot collector also treats DAMON startup as optional
+evidence: a `DamonSessionError` before or during context entry is logged, the
+READY sentinel is still written, and ordinary sampling proceeds so `cgprofile
+run` can launch its wrapped command under R-36h.
+
+Three registered `r0-r1` attempts have failed and are not transferable to the
+current candidate: run `2ada30366c4d4394cb79c20b12a2b59f` on `c8f7c70e` had
+2,292 passes and four stale expectation/fixture failures; run
+`64a68db76d4a888d260f8111faac5a9f` on `591c258d` had 2,293 passes and six
+fake-counter call-sequence failures; run
+`2fba4b01b6a3b08b8729711c682e2752` on `b30eca82` passed 2,299 tests but
+failed coverage at 99% total (15 statements and six partial branches missing
+in `lib/damon.py`). Details and log paths are in P1 LOG session 41 and
+controller rulings RW-443–RW-445.
+
+Commit `b9ea6080` adds behavioral tests for those lifecycle failure paths and
+removes `_reserve_capacity`'s unreachable duplicate baseline-capture branch;
+this exact tree still needs the registered 100% line/branch gate. No live
+DAMON sample or overhead has been measured in these runs: the daemon was down
+and profiling fell back to coarse `rusage`. Current-tree R2, full gate, R3,
+doctor, same-Sol fix verification, live DAMON samples/overhead, current-main
+reconciliation, merge, release, and CIU singleton activation remain pending.
