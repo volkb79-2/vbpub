@@ -24,6 +24,16 @@ Hand mutation: in `run_cli` I changed `unexpected_exceptions == "raise" or getat
 | `docs/CONSUMERS.md` | new migration section "Replacing hand-rolled version lookup, exception wrappers, and --dry-run" |
 | `docs/DESIGN-GUIDE.md` | new section "Version sources must agree and failures must be explicit" (agreement, why `raise` stays default, why dry-run hooks `confirm()`) |
 
+## Review round 1
+
+Verdict was REJECT (2 blockers, 3 hardening items). All fixed with Edit only:
+
+1. `force=True` pinned: `test_dry_run_message_is_forced_past_verbosity[quiet|log-level-error]` run `apply --dry-run` with `--quiet` and `--log-level error`, assert the message is on stderr and stdin is unread. Planted `force=False` in `CliRuntime.confirm`: both parametrizations failed; restored.
+2. `--traceback` magic index removed: `_common_option_specs` now ends its literal after `--debug-raw`, appends `--traceback` (when enabled), then appends the colour entry. `test_traceback_is_listed_directly_after_debug_raw` asserts adjacency in text help and in the Markdown Debugging group.
+3. `build()` passes `include_dry_run=any_dry_run` (no single-command ternary).
+4. `run_cli` computes `report = unexpected_exceptions == "report"` once after validation and uses `if not report or getattr(args, "traceback", False): raise`. Pinned by `test_run_cli_policy_values_decide_reporting` (both values, direct `run_cli`) plus the existing report/raise tests.
+5. `RegisteredCli.run(unexpected_exceptions=...)` raises `TypeError("unexpected_exceptions is set on CliRegistry, not run()")`, tested by `test_run_policy_is_set_on_the_registry_not_on_run`. `test_unexpected_policy_validation` now also rejects `""`, `"Report"`, `"RAISE"` and accepts exactly `"raise"`/`"report"`.
+
 ## Deviations and notes
 
 - `--dry-run` after the verb on a verb without it fails with argparse's `unrecognized arguments: --dry-run` (exit 2, that verb's help); before the verb it gets the `CliFailure` message `--dry-run is not supported for verb 'x'`. This is exactly how `--json` behaves today (verified), so I mirrored rather than diverged. Both are exit 2 with the verb's help.

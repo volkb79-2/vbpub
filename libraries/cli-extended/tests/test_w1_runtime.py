@@ -176,12 +176,48 @@ def test_unexpected_policy_validation():
         CliRegistry(IDENT, prog="t", description="d", unexpected_exceptions="swallow")
     with pytest.raises(TypeError, match="tuple"):
         CliRegistry(IDENT, prog="t", description="d", expected_exceptions=[KeyError])
-    cli = _cli(lambda a, r: 0)
     with pytest.raises(ValueError, match="'raise' or 'report'"):
+        CliRegistry(IDENT, prog="t", description="d", unexpected_exceptions="")
+    cli = _cli(lambda a, r: 0)
+    for bad in ("nope", "Report", "RAISE"):
+        with pytest.raises(ValueError, match="'raise' or 'report'"):
+            parser_module.run_cli(
+                cli.parser, cli.handlers, identity=IDENT, argv=["go"],
+                unexpected_exceptions=bad,
+            )
+    for good in ("raise", "report"):
+        assert parser_module.run_cli(
+            cli.parser, cli.handlers, identity=IDENT, argv=["go"],
+            stdout=io.StringIO(), stderr=io.StringIO(), unexpected_exceptions=good,
+        ) == 0
+
+
+def test_run_policy_is_set_on_the_registry_not_on_run():
+    cli = _cli(lambda a, r: 0, unexpected_exceptions="report")
+    with pytest.raises(TypeError) as info:
+        cli.run(argv=["go"], unexpected_exceptions="raise")
+    assert str(info.value) == "unexpected_exceptions is set on CliRegistry, not run()"
+
+
+def test_run_cli_policy_values_decide_reporting():
+    def boom_cli():
+        registry = CliRegistry(IDENT, prog="tool", description="Tool.")
+        registry.register(VerbSpec("go", description="Go.", handler=_boom))
+        return registry.build()
+
+    cli = boom_cli()
+    with pytest.raises(RuntimeError, match="boom"):
         parser_module.run_cli(
             cli.parser, cli.handlers, identity=IDENT, argv=["go"],
-            unexpected_exceptions="nope",
+            stdout=io.StringIO(), stderr=io.StringIO(),
+            unexpected_exceptions="raise",
         )
+    err = io.StringIO()
+    code = parser_module.run_cli(
+        cli.parser, cli.handlers, identity=IDENT, argv=["go"],
+        stdout=io.StringIO(), stderr=err, unexpected_exceptions="report",
+    )
+    assert code == 1 and "unexpected RuntimeError: boom" in err.getvalue()
 
 
 def test_registered_cli_stores_policies():
@@ -252,6 +288,18 @@ def test_dry_run_sets_runtime_and_confirm_declines(argv):
     assert seen == [True, False]
     assert "Dry run: no changes made." in err
     assert "[y/N]" not in err and "--yes" not in err
+    assert stdin.read() == "y\n"
+
+
+@pytest.mark.parametrize(
+    "extra", (["--quiet"], ["--log-level", "error"]), ids=("quiet", "log-level-error")
+)
+def test_dry_run_message_is_forced_past_verbosity(extra):
+    seen: list = []
+    stdin = _TtyIn("y\n")
+    code, _, err = _run(_dry_cli(seen), ["apply", "--dry-run", *extra], stdin=stdin)
+    assert code == 0 and seen == [True, False]
+    assert "Dry run: no changes made." in err
     assert stdin.read() == "y\n"
 
 
@@ -342,6 +390,25 @@ def test_delegate_policy_mismatch():
 
 
 # ------------------------------------------------------------ O5 help
+
+
+def test_traceback_is_listed_directly_after_debug_raw():
+    registry = CliRegistry(IDENT, prog="tool", description="Tool.",
+                           unexpected_exceptions="report")
+    registry.register(VerbSpec("show", description="Show.", handler=lambda a, r: 0))
+    cli = registry.build()
+    _, text, _ = _run(cli, ["show", "--help"])
+    flags = [
+        line.split()[0] for line in text.splitlines()
+        if line.strip().startswith("--")
+    ]
+    assert flags[flags.index("--debug-raw") + 1] == "--traceback"
+    md = cli.catalog.render(output_format="markdown")
+    rows = [line for line in md.splitlines() if line.startswith("| `--")]
+    names = [line.split("`")[1] for line in rows]
+    assert names[names.index("--debug-raw") + 1] == "--traceback"
+    debugging = md.split("#### Debugging")[1].split("####")[0]
+    assert "--traceback" in debugging
 
 
 def test_help_and_markdown_show_new_controls():

@@ -508,23 +508,24 @@ def _common_option_specs(
             group="DEBUGGING",
             parser_kwargs={"action": "store_true"},
         ),
-        OptionSpec(
-            ("--color", "--no-color"),
-            "control terminal colour",
-            group="OUTPUT CONTROL",
-            parser_kwargs={"action": "store_true"},
-        ),
     ]
     if include_traceback:
-        options.insert(
-            6,
+        options.append(
             OptionSpec(
                 ("--traceback",),
                 "show the Python stack for an unexpected error",
                 group="DEBUGGING",
                 parser_kwargs={"action": "store_true"},
-            ),
+            )
         )
+    options.append(
+        OptionSpec(
+            ("--color", "--no-color"),
+            "control terminal colour",
+            group="OUTPUT CONTROL",
+            parser_kwargs={"action": "store_true"},
+        )
+    )
     if include_json:
         options.append(
             OptionSpec(
@@ -1310,6 +1311,8 @@ class RegisteredCli:
     ) -> int:
         """Run this registration with the shared boundary."""
 
+        if "unexpected_exceptions" in kwargs:
+            raise TypeError("unexpected_exceptions is set on CliRegistry, not run()")
         expected = self.expected_exceptions + tuple(
             kwargs.pop("expected_exceptions", ())
         )
@@ -1532,9 +1535,7 @@ class CliRegistry:
                 self.single_command and self._verbs[0].confirmation_enabled
             ),
             include_traceback=report_mode,
-            include_dry_run=(
-                self._verbs[0].dry_run if self.single_command else any_dry_run
-            ),
+            include_dry_run=any_dry_run,
         )
         self._add_option_specs(parser, self.global_options)
         if catalog is not None:
@@ -1783,6 +1784,7 @@ def run_cli(
     """Run a conventional CLI while keeping parser and exception policy shared."""
 
     _check_unexpected_policy(unexpected_exceptions)
+    report = unexpected_exceptions == "report"
     stdout = stdout if stdout is not None else sys.stdout
     stderr = stderr if stderr is not None else sys.stderr
     stdin = stdin if stdin is not None else sys.stdin
@@ -2042,7 +2044,7 @@ def run_cli(
         # In the default "raise" policy unexpected programming failures remain
         # tracebacks: the outer Python entrypoint prints one traceback, so do
         # not print a second copy here when --debug is active.
-        if unexpected_exceptions == "raise" or getattr(args, "traceback", False):
+        if not report or getattr(args, "traceback", False):
             raise
         message = f"unexpected {type(exc).__name__}: {exc}"
         hint = "rerun with --traceback to see the stack"
