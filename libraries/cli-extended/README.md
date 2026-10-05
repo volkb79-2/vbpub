@@ -506,6 +506,23 @@ check reject equal paths and symlink or hard-link aliases.
 Each generated file is replaced atomically; a stop between the manifest and
 spec updates leaves a detectable mismatch for `check`, not a half-written file.
 
+## Audit your adoption
+
+`cli-extended audit` inspects the configured CLI, the project configuration and
+a text scan of the project sources against the
+[adoption checklist](docs/ADOPTION-CHECKLIST.md). Each item reports `pass`,
+`warn`, `fail` or `manual` with evidence and a remedy, and the command exits 1
+only on `fail`. Mechanical checks stay mechanical; judgement items are left to
+the packaged `cli-extended-adoption` skill, which records its decisions as
+`adoption` findings. The [consumer guide](docs/CONSUMERS.md#adopting-cli-extended-end-to-end)
+orders the steps; the [design guide](docs/DESIGN-GUIDE.md#audit-mechanically-judge-with-a-skill)
+explains the split and the contract is [SPEC §13](SPEC.md#project-configuration-findings-and-the-cli-extended-command).
+
+```bash
+cli-extended audit            # text report
+cli-extended audit --json     # machine-readable items and summary
+```
+
 ## Ship agent skills with your tool
 
 A tool that carries agent skills (`SKILL.md` trees for Claude Code and the

@@ -1,5 +1,6 @@
 """Reusable command-line contract helpers for vbpub projects."""
 
+from .audit import AuditItem, run_audit
 from .config import CliConfig, ConfigError, ProjectConfig, load_project_config
 from .constraints import Conflicts, Constraint, Requires, RequiresChoice
 from .contract import CONTRACT_VERSION
@@ -70,6 +71,7 @@ from .values import SelectorList
 __all__ = [
     "CONTRACT_VERSION",
     "ArgumentSpec",
+    "AuditItem",
     "CheckResult",
     "CliConfig",
     "CliFailure",
@@ -135,6 +137,7 @@ __all__ = [
     "render_cli_review_template",
     "render_cli_surface_json",
     "render_cli_surface_markdown",
+    "run_audit",
     "run_cli",
     "skill_states",
     "sync_cli_surface",

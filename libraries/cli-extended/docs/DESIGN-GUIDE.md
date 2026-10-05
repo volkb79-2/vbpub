@@ -624,6 +624,32 @@ Installation writes a temporary sibling and renames it into place, so a crash
 never leaves a half-written skill, and `check`/`list` read the same state
 machine so the answer cannot differ between the verbs.
 
+## Audit mechanically, judge with a skill
+
+`cli-extended audit` only reports what a program can decide: whether a surface
+is configured and current, whether a library control is shadowed, whether a
+dependency is declared. It never says a CLI is well designed. Anything that
+needs a decision, such as whether a `configure` callback could be declarative or
+whether a mutating verb really needs no dry-run, is `manual`, and the packaged
+`cli-extended-adoption` skill hands those to an agent that records each judgement
+as an `adoption` finding. The alternative, an audit that guesses with ever more
+elaborate rules, produces confident wrong answers; a `pass` must mean something.
+
+The few checks that read project source text (version reader, dependency
+declaration, path hacks, plugin enablement) are plain substring scans and say so
+with a `heuristic:` prefix, name the files they matched, and stay deliberately
+small. A false positive costs one finding with a `wontfix` rationale; a clever
+parser would cost a maintenance burden and still be wrong sometimes. The scan
+skips virtualenvs, build output and `.worktrees`, and exempts `run-gate.toml`
+from the path check because gate lanes legitimately point at the tested source.
+
+Every check maps to exactly one stable checklist row (`AC-NN`), and a test keeps
+the document and the code in step, so a feature cannot be audited without being
+documented or the reverse. A `warn` marks a policy the library recommends but a
+tool may keep on purpose (`unexpected_exceptions="raise"`); only a `fail` sets
+exit status 1, so CI can gate on the unambiguous problems and let judgement items
+flow through findings.
+
 ## One doctor verb; crashes are failures
 
 Every tool grew its own `doctor` with its own output and exit rule, so

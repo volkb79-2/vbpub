@@ -1238,7 +1238,23 @@ always present.
 10. **Deprecation.** `python -m cli_extended.surface_cli` keeps its flags and
    behaviour, writes `[WARN] ... is deprecated` to stderr first, and is
    removed in a later release.
-11. **Pytest plugin.** `cli_extended.pytest_plugin` is opt-in
+11. **Audit.** `cli-extended audit [--config PATH] [--cli ID] [--json]` is
+    read-only and takes the same project options as the surface verbs. It
+    loads the configured CLI and reports one item per mechanical check, in the
+    order of `docs/ADOPTION-CHECKLIST.md`. An item has `check` (the
+    `audit:<name>` of exactly one checklist row), `checklist_id` (`AC-NN`),
+    `status` (`pass`, `warn`, `fail` or `manual`), `summary`, `evidence` (a
+    list of strings) and `remedy` (a string or null). Checks that scan source
+    text begin their summary with `heuristic:`; anything needing judgement is
+    `manual`, never `pass`. Text output is one
+    `[PASS|WARN|FAIL|MANUAL] AC-NN <check>: <summary>` line per item, each
+    followed by indented `evidence:` lines and one `remedy:` line when present,
+    then `audit: N pass, N warn, N fail, N manual`. `--json` prints
+    `{"cli": id, "items": [...], "summary": {"pass": N, "warn": N, "fail": N,
+    "manual": N}}`. Exit status: 1 when any item is `fail`, otherwise 0
+    (`warn` and `manual` never fail); any configuration, factory, catalog or
+    import error is 2.
+12. **Pytest plugin.** `cli_extended.pytest_plugin` is opt-in
    (`pytest_plugins = ["cli_extended.pytest_plugin"]`) and is never registered
    as a `pytest11` entry point; importing it does not require pytest. It
    registers the `cli_case(case_id)` marker and the ini option
@@ -1391,7 +1407,9 @@ tool name is `identity.command_name` and the version is `identity.version`.
     MAINTENANCE) delegating to a child registry that shares the parent's
     `unexpected_exceptions` and logging logger, and records
     `registry._cli_extended_skills = (package, resource_dir)` for the shared
-    `doctor`. A second call on one registry raises `ValueError`. The pure
+    `doctor`; `CliRegistry.build()` copies it to the last field of the built
+    `RegisteredCli`, `skills_package: tuple[str, str] | None` (`None` when
+    skills were not registered), which `cli-extended audit` reads. A second call on one registry raises `ValueError`. The pure
     function `skill_states(package=, resource_dir=, tool=, version=,
     destinations=)` returns `(skill, destination, SkillState)` rows for
     consumers such as `doctor`.
