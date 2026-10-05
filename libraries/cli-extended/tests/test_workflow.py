@@ -549,6 +549,22 @@ def test_o6_report_tolerates_broken_interaction_references(tmp_path, monkeypatch
     assert "## Stale cases" in out
 
 
+def test_w8b_template_refuses_broken_interaction_references(tmp_path, monkeypatch, capsys):
+    root = _project(tmp_path, monkeypatch)
+    text = (root / "cli-review.toml").read_text(encoding="utf-8")
+    broken = text.replace(
+        f'route_id = "{ROUTE_ID}"', 'route_id = "route:entrypoint:audit-tool/gone"'
+    )
+    assert broken != text
+    (root / "cli-review.toml").write_text(broken, encoding="utf-8")
+    code, out, err = _run(capsys, "surface", "template")
+    assert (code, out) == (2, "")
+    assert "[ERROR]" in err
+    assert "interaction group 'mode-and-dry-run/both' names an unknown route" in err
+    # the tolerant views of the same catalog still succeed
+    assert _run(capsys, "surface", "report")[0] == 0
+
+
 # ---- O5: pack --------------------------------------------------------------
 
 

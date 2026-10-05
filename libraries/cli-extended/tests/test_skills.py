@@ -564,8 +564,8 @@ def test_o8_dry_run_install_prints_plan_and_changes_nothing(tmp_path, monkeypatc
     assert out.splitlines() == [
         f"would skip a -> {dest} (unchanged)",
         f"would update b -> {dest}",
-        f"would install e -> {dest}",
         f"would remove d -> {dest}",
+        f"would install e -> {dest}",
     ]
     assert f"c -> {dest}: locally modified" in err
     assert "Dry run: no changes made." in err
@@ -588,8 +588,8 @@ def test_o8_dry_run_uninstall_prints_plan_and_changes_nothing(tmp_path, monkeypa
         f"would remove a -> {dest}",
         f"would remove b -> {dest}",
         f"would remove c -> {dest}",
-        f"would skip e -> {dest} (absent)",
         f"would remove d -> {dest}",
+        f"would skip e -> {dest} (absent)",
     ]
     assert "Dry run: no changes made." in err
 
@@ -837,8 +837,9 @@ def test_failed_write_leaves_no_temp_dir_and_keeps_the_old_install(pkg, tmp_path
         return real_rename(src, dst)
 
     monkeypatch.setattr(skills_module.os, "rename", flaky)
-    with pytest.raises(OSError, match="disk says no"):
-        run(pkg, "install", "--dest", str(dest))
+    code, _out, err = run(pkg, "install", "--dest", str(dest))
+    assert code == 1
+    assert f"alpha -> {dest}: disk says no" in err
     monkeypatch.undo()
     assert snapshot(dest) == before
     assert sorted(p.name for p in dest.iterdir()) == ["alpha", "beta"]
@@ -852,8 +853,9 @@ def test_failed_first_install_leaves_nothing_behind(pkg, tmp_path, monkeypatch):
         raise OSError("nope")
 
     monkeypatch.setattr(skills_module.os, "rename", boom)
-    with pytest.raises(OSError, match="nope"):
-        run(pkg, "install", "--dest", str(dest))
+    code, _out, err = run(pkg, "install", "--dest", str(dest))
+    assert code == 1
+    assert f"alpha -> {dest}: nope" in err
     monkeypatch.undo()
     assert list(dest.iterdir()) == []
 
@@ -1197,3 +1199,103 @@ def test_leftover_symlink_is_unlinked_not_followed(pkg, tmp_path):
     assert run(pkg, "install", "--dest", str(dest))[0] == 0
     assert not link.is_symlink()
     assert (keep / "f").read_text() == "x"
+
+
+# ------------------------------------------- W8b: filesystem errors are domain failures
+
+needs_non_root = pytest.mark.skipif(
+    os.geteuid() == 0, reason="root ignores directory permission bits"
+)
+
+
+def assert_domain_failure(code, out, err, name, dest):
+    assert code == 1
+    assert out == ""
+    error_lines = [line for line in err.splitlines() if line.startswith("[ERROR]")]
+    assert len(error_lines) == 1
+    assert error_lines[0].startswith(f"[ERROR] {name} -> {dest}: ")
+    assert "unexpected" not in err.lower()
+    assert "Traceback" not in err
+
+
+@needs_non_root
+def test_w8b_install_into_read_only_destination_is_exit_one(pkg, tmp_path):
+    dest = tmp_path / "dest"
+    dest.mkdir()
+    dest.chmod(0o555)
+    try:
+        code, out, err = run(pkg, "install", "--dest", str(dest))
+    finally:
+        dest.chmod(0o755)
+    assert_domain_failure(code, out, err, "alpha", dest)
+    assert "Permission denied" in err
+    assert list(dest.iterdir()) == []
+
+
+def test_w8b_install_under_a_regular_file_is_exit_one(pkg, tmp_path):
+    blocker = tmp_path / "file"
+    blocker.write_text("not a directory")
+    dest = blocker / "sub"
+    code, out, err = run(pkg, "install", "--dest", str(dest))
+    assert_domain_failure(code, out, err, "alpha", dest)
+    assert blocker.read_text() == "not a directory"
+
+
+@needs_non_root
+def test_w8b_uninstall_where_removal_fails_is_exit_one(pkg, tmp_path):
+    dest = tmp_path / "dest"
+    assert run(pkg, "install", "--dest", str(dest))[0] == 0
+    dest.chmod(0o555)
+    try:
+        code, out, err = run(pkg, "uninstall", "--dest", str(dest))
+    finally:
+        dest.chmod(0o755)
+    assert_domain_failure(code, out, err, "alpha", dest)
+    assert (dest / "beta" / "SKILL.md").is_file()
+
+
+@needs_non_root
+def test_w8b_leftover_removal_failure_is_exit_one(pkg, tmp_path):
+    dest = tmp_path / "dest"
+    assert run(pkg, "install", "--dest", str(dest))[0] == 0
+    leftover = dest / ".alpha.cli-extended-mytool-tmp-0123456789abcdef"
+    write_tree(leftover, {"x": "y"})
+    dest.chmod(0o555)
+    try:
+        code, out, err = run(pkg, "install", "--dest", str(dest))
+    finally:
+        dest.chmod(0o755)
+    assert_domain_failure(code, out, err, leftover.name, dest)
+    assert leftover.is_dir()
+
+
+def test_w8b_non_filesystem_bugs_still_report_as_unexpected(pkg, tmp_path, monkeypatch):
+    def broken(*_args, **_kwargs):
+        raise ValueError("a bug, not a filesystem error")
+
+    monkeypatch.setattr(skills_module, "_write_atomic", broken)
+    with pytest.raises(ValueError, match="a bug"):
+        run(pkg, "install", "--dest", str(tmp_path / "dest"))
+
+
+# ------------------------------------------------ W8b: one ordering for list and install
+
+
+def test_w8b_dry_run_install_and_list_share_one_order(tmp_path, monkeypatch, isolated_home):
+    package = make_pkg(tmp_path, monkeypatch, {
+        n: {"SKILL.md": md(n)} for n in ("zeta", "alpha", "mid")
+    })
+    code, listed, _ = run(package, "list")
+    assert code == 0
+    claude = isolated_home / ".claude" / "skills"
+    agents = isolated_home / ".agents" / "skills"
+    expected = [
+        (agents, "alpha"), (agents, "mid"), (agents, "zeta"),
+        (claude, "alpha"), (claude, "mid"), (claude, "zeta"),
+    ]
+    assert listed.splitlines() == [
+        f"{'absent':<10} {name}  {dest}" for dest, name in expected
+    ]
+    code, planned, _ = run(package, "install", "--dry-run")
+    assert code == 0
+    assert planned.splitlines() == [f"would install {name} -> {dest}" for dest, name in expected]

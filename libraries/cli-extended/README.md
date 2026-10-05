@@ -523,6 +523,28 @@ cli-extended audit            # text report
 cli-extended audit --json     # machine-readable items and summary
 ```
 
+### Project, audit and findings API
+
+All importable from `cli_extended`; the contract is
+[SPEC §13](SPEC.md#project-configuration-findings-and-the-cli-extended-command)
+and worked examples are in the
+[consumer guide](docs/CONSUMERS.md#adopting-cli-extended-end-to-end).
+
+- `load_project_config(path)` returns a `ProjectConfig` from `cli-extended.toml`
+  or the `[tool.cli-extended]` table of `pyproject.toml`.
+- `ProjectConfig` holds the configured CLIs; `select(cli_id)` picks one.
+- `CliConfig` is one `[[clis]]` entry: `id`, `factory`, and the optional
+  `review`, `manifest`, `spec` and `findings` paths.
+- `run_audit(cli, project)` returns the list of `AuditItem` results, one per
+  mechanical checklist row.
+- `AuditItem` is one immutable audit result: `check`, `checklist_id`, `status`,
+  `summary`, `evidence` and `remedy`.
+- `load_review_findings(path)` reads and validates a findings file into a
+  `FindingsFile`.
+- `FindingsFile` is the validated findings file (`cli_id` plus its findings).
+- `Finding` is one entry: `id`, `status`, `severity`, `category`, `summary`,
+  and the optional `route`, `remedy` and `rationale`.
+
 ## Ship agent skills with your tool
 
 A tool that carries agent skills (`SKILL.md` trees for Claude Code and the
@@ -550,7 +572,8 @@ app = registry.build()
 summary and optional remedy and JSON details; a crashing check is reported as
 `fail`, never swallowed. It supports `--check NAME` and `--json`, and exits 1
 only when a check failed. A registry that also ships agent skills gets a
-`skills` check automatically. The
+`skills` check automatically: `warn` when the skills are merely not installed,
+`fail` when any is stale, modified, foreign, orphaned or left over. The
 [design guide](docs/DESIGN-GUIDE.md#one-doctor-verb-crashes-are-failures)
 explains the choices; the contract is [SPEC §15](SPEC.md#15-doctor).
 

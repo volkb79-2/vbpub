@@ -16,7 +16,10 @@ dependencies = []
 dynamic = ["version"]
 
 [project.optional-dependencies]
-interactive = ["questionary==2.1.1"]
+# Floor 2.1.1: the version prompts.py was verified against. It calls
+# questionary.text/password/confirm/select/checkbox with the `input=` and
+# `output=` stream keywords and dict checkbox choices carrying `checked`.
+interactive = ["questionary>=2.1.1"]
 test = ["pytest>=8", "pytest-cov>=6"]
 
 [project.scripts]

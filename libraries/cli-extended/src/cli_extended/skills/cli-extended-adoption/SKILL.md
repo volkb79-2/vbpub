@@ -65,7 +65,7 @@ skip a `manual` item: each one needs a decision recorded in the findings file.
 - `doctor`: decide whether the tool has an environment to verify (dependencies,
   services, credentials, paths). If yes, a `doctor` verb is required; if no,
   record `wontfix`.
-- `pytest-plugin`: when a review catalog exists, tests must run through the
+- `pytest-plugin`: when a review catalog is configured, tests must run through the
   `cli_extended.pytest_plugin` plugin so every active review case is linked to a
   real test. Without a catalog there is nothing to link.
 - `dependency-declared`: scripts that are not packaged use the installed library

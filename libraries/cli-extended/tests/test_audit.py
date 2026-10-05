@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import os
 import re
@@ -549,6 +550,64 @@ def test_surface_check_and_complete_fail_on_a_broken_catalog(tmp_path, monkeypat
         item = items[name]
         assert (item.status, item.summary, item.remedy) == ("fail", summary, remedy)
         assert len(item.evidence) == 1 and "cli-review.toml" in item.evidence[0]
+
+
+def test_w8b_audit_item_is_immutable():
+    item = AuditItem("version-source", "AC-01", "pass", "ok")
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        item.status = "fail"
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        item.summary = "changed"
+    assert (item.status, item.summary) == ("pass", "ok")
+
+
+@pytest.mark.parametrize(
+    "configured",
+    [(), ("review",), ("manifest", "spec")],
+)
+def test_w8b_surface_check_is_manual_for_each_valid_partial_config(tmp_path, configured):
+    values = {"review": "r.toml", "manifest": "m.json", "spec": "s.md"}
+    config = "".join(f'{name} = "{values[name]}"\n' for name in configured)
+    item = _audit(tmp_path, config=config)["surface-check"]
+    assert (item.status, item.summary) == (
+        "manual", "surface not configured; nothing to check",
+    )
+
+
+@pytest.mark.parametrize("missing", ["review", "manifest", "spec"])
+def test_w8b_surface_check_is_manual_when_any_single_path_is_missing(tmp_path, missing):
+    root = _setup(tmp_path)
+    project = load_project_config(root / "cli-extended.toml")
+    cli = dataclasses.replace(
+        project.select(None),
+        review=root / "r.toml",
+        manifest=root / "m.json",
+        spec=root / "s.md",
+    )
+    cli = dataclasses.replace(cli, **{missing: None})
+    # `app` is never touched: the check must return before using it
+    item = audit_module._surface_check(cli, None, project)
+    assert (item.status, item.summary) == (
+        "manual", "surface not configured; nothing to check",
+    )
+
+
+def test_w8b_surface_complete_tolerates_an_invalid_interaction(tmp_path, monkeypatch):
+    root = workflow_project(tmp_path, monkeypatch)
+    text = (root / "cli-review.toml").read_text(encoding="utf-8")
+    assert 'route_id = "route:entrypoint:audit-tool/inspect"' in text
+    (root / "cli-review.toml").write_text(
+        text.replace(
+            'route_id = "route:entrypoint:audit-tool/inspect"',
+            'route_id = "route:entrypoint:audit-tool/gone"',
+        ),
+        encoding="utf-8",
+    )
+    items = _run_audit(root / "cli-extended.toml")
+    complete = items["surface-complete"]
+    assert (complete.status, complete.summary) == (
+        "pass", "the exported surface is syntax-complete",
+    )
 
 
 def test_surface_complete_lists_incomplete_entries_and_routes(tmp_path):

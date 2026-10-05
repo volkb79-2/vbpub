@@ -297,14 +297,55 @@ def test_skills_check_present_in_either_registration_order(
         tmp_path, monkeypatch, skills_first=skills_first, checks=[check("a", ok())]
     )
     code, out, _ = invoke(reg)
-    assert code == 1
+    assert code == 0
     skills_dir = isolated_home / ".claude" / "skills"
     lines = out.splitlines()
     assert lines[0] == "[OK] a: fine"
-    assert lines[1] == "[FAIL] skills: 2 skill(s) not current"
+    assert lines[1] == "[WARN] skills: 2 skill(s) not installed"
     assert lines[2] == "    remedy: run 'mytool skills install'"
-    assert lines[3] == "doctor: 1 ok, 0 warn, 1 fail, 0 skip"
+    assert lines[3] == "doctor: 1 ok, 1 warn, 0 fail, 0 skip"
     assert not skills_dir.exists()
+
+
+def test_skills_absent_and_stale_mix_fails(tmp_path, monkeypatch, isolated_home):
+    reg = build_with_skills(tmp_path, monkeypatch, skills_first=True)
+    run_install(reg, "--harness", "agents")  # claude stays absent
+    source = next((tmp_path / "pkgs").rglob("SKILL.md"))
+    source.write_text(source.read_text() + "more\n")  # agents copy goes stale
+    code, out, _ = invoke(reg, "--check", "skills", "--json")
+    assert code == 1
+    entry = json.loads(out)["checks"][0]
+    assert entry["status"] == "fail"
+    assert entry["summary"] == "2 skill(s) not current"
+    assert sorted(row["state"] for row in entry["details"]["skills"]) == ["absent", "stale"]
+
+
+def test_skills_absent_with_a_leftover_fails_not_warns(tmp_path, monkeypatch, isolated_home):
+    reg = build_with_skills(tmp_path, monkeypatch, skills_first=True)
+    run_install(reg, "--harness", "agents")
+    leftover = isolated_home / ".agents" / "skills" / (
+        ".alpha.cli-extended-mytool-tmp-0123456789abcdef"
+    )
+    leftover.mkdir()
+    code, out, _ = invoke(reg, "--check", "skills", "--json")
+    assert code == 1
+    entry = json.loads(out)["checks"][0]
+    assert entry["status"] == "fail"
+    assert entry["summary"] == "1 skill(s) not current; 1 leftover path(s)"
+
+
+def test_skills_modified_install_fails(
+    tmp_path, monkeypatch, isolated_home
+):
+    reg = build_with_skills(tmp_path, monkeypatch, skills_first=True)
+    run_install(reg)
+    installed = isolated_home / ".claude" / "skills" / "alpha" / "SKILL.md"
+    installed.write_text(installed.read_text() + "edited\n")
+    code, out, _ = invoke(reg, "--check", "skills", "--json")
+    assert code == 1
+    entry = json.loads(out)["checks"][0]
+    assert entry["status"] == "fail"
+    assert "modified" in {row["state"] for row in entry["details"]["skills"]}
 
 
 def test_skills_check_ok_when_all_current(tmp_path, monkeypatch, isolated_home):
@@ -321,10 +362,11 @@ def test_skills_check_ok_when_all_current(tmp_path, monkeypatch, isolated_home):
 def test_skills_json_details_and_selection(tmp_path, monkeypatch, isolated_home):
     reg = build_with_skills(tmp_path, monkeypatch, skills_first=False)
     code, out, _ = invoke(reg, "--check", "skills", "--json")
-    assert code == 1
+    assert code == 0
     data = json.loads(out)
     (entry,) = data["checks"]
     assert entry["name"] == "skills"
+    assert entry["status"] == "warn"
     assert entry["remedy"] == "run 'mytool skills install'"
     claude = str(isolated_home / ".claude" / "skills")
     agents = str(isolated_home / ".agents" / "skills")
@@ -460,9 +502,10 @@ def test_skills_details_order_is_destination_then_name(
     register_skills_verbs(reg, package=package)
     register_doctor(reg, [])
     code, out, _ = invoke(reg, "--check", "skills", "--json")
-    assert code == 1
+    assert code == 0
     entry = json.loads(out)["checks"][0]
-    assert entry["summary"] == "4 skill(s) not current"
+    assert entry["status"] == "warn"
+    assert entry["summary"] == "4 skill(s) not installed"
     agents = str(isolated_home / ".agents" / "skills")
     claude = str(isolated_home / ".claude" / "skills")
     assert [(r["destination"], r["name"]) for r in entry["details"]["skills"]] == [

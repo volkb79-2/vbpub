@@ -671,7 +671,10 @@ same question for every tool and `skills check` already defines it; a doctor
 that forgot it would pass while the agent runs a stale skill. It is resolved at
 run time because the two registration calls are independent and a consumer
 should not need to know which must come first. A consumer cannot reuse the name
-`skills`, so the built-in meaning is never ambiguous. Warnings and skips do not
+`skills`, so the built-in meaning is never ambiguous. Skills that were never
+installed are a `warn`, not a `fail`: a tool whose skills were never installed
+is not broken, whereas a stale, modified, foreign or orphaned install, or an
+interrupted-install leftover, is. Warnings and skips do not
 fail the run: they are for advice and inapplicable checks, and failing CI on
 them would train people to ignore the verb.
 

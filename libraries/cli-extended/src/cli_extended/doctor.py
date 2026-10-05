@@ -96,9 +96,17 @@ def _skills_check(package: str, resource_dir: str) -> DoctorCheck:
             )
         ]
         bad = [row for row in rows if row[2] is not SkillState.CURRENT]
+        broken = [row for row in bad if row[2] is not SkillState.ABSENT]
         details = {"skills": entries, "leftovers": [str(path) for path in leftovers]}
         if not bad and not leftovers:
             return CheckResult("ok", "all skills current", details=details)
+        if not broken and not leftovers:
+            return CheckResult(
+                "warn",
+                f"{len(bad)} skill(s) not installed",
+                remedy=f"run '{tool} skills install'",
+                details=details,
+            )
         parts = []
         if bad:
             parts.append(f"{len(bad)} skill(s) not current")
