@@ -6978,3 +6978,117 @@ cmru.orchestration.toml`), not the historical `--project` form. Status shows
 no `cgprofile-v*` tag; the config's first release remains the explicitly
 chosen `1.0.0`, not its default `0.1.0` suggestion. No release or daemon
 activation has occurred.
+
+### RW-457 — 2026-10-05 22:03:18 UTC — P1 R2 survivor triage and oracle repair
+
+The exact P1 R2 on commit `33cfb15085cd259f2811731c377ec3879458f038`
+(tree `980863d4e3395d1d538a5cfb874af2e60a9c14aa`) ended at
+`2026-10-05T19:33:13.152801Z`: 114 candidates, 89 killed, 25 survived,
+zero equivalent/budget-exceeded/crashed/hung; R0 PASS and R2
+`FAIL/MUTANTS_SURVIVED`, exit 1. The exact judged worktree and its Assay
+records remain preserved and untouched.
+
+The survivor table in the P1 daemon report
+(`scripts/cgroup-profiler/nyxloom-trove/reports/cgprofile-P1-DAEMON-REPORT.md`)
+dispositions all 25: 19 behavioral oracle gaps now have focused assertions,
+while six are justified equivalents
+under the reachable-state guards and the kernel's remove/recreate behavior
+for `nr_kdamonds` writes. Assay itself does not label these equivalent, so
+the original verdict remains mechanically FAIL; no claim of a green final
+R2 is made. The successor candidate is based on current main
+`67c4c27328a76ded1cb0b8ac192382386d65e796`, whose P1 target files were
+byte-identical to the old judged tree before the new oracles. Its ownership
+invariant parametrization was tightened after the initial short-gate runs to
+test membership and identity independently; those earlier results are
+non-transferable.
+
+The preliminary registered `r0-r1` run passed 2,366 tests with 100% line
+and branch coverage; preliminary `r3` rejected 7/7 canaries. Both preceded
+that final test-only adjustment. Re-run `r0-r1`, `r3`, doctor, and the full
+gate on the exact committed successor. The next exact-tree R2 must follow
+the final committed tests/report, with its verdict read separately. P6 R2
+continues in its separate quiet tree; do not edit or inspect that tree before
+the next 25-minute progress interval.
+
+### RW-458 — 2026-10-05 23:24:20 UTC — Sol supplemental review finds bounded P1 corrections
+
+A fresh Sol/xhigh supplemental review of P1 candidate
+`c24b0d2b882df96ee6549cf357a713943398a564` returned
+`ACCEPT-CONDITIONAL` for provisional integration, not release approval. The
+reviewer independently checked the exact 25-survivor table against the old
+R2 records (114 candidates, 89 killed, 25 survived) and the six-file direct
+delta from `67c4c27328a76ded1cb0b8ac192382386d65e796`; no tests, gates,
+containers, or live probes were run in review.
+
+Two corrections were required before the review could support provisional
+merge. First, `ffbf084aaf44dc23` (`damon.py:495`, `True` to `False`) was
+incorrectly described as a behavioral gap because its test asserted only the
+private `_foreign_growth` flag. Under the supported DAMON sysfs count-write
+behavior, every indexed object is replaced; identity reconciliation already
+quarantines the changed slots and blocks reuse/shrink. Reclassify this as a
+sixth contract-equivalent and retain only the observable refusal,
+quarantine, and foreign-marker-preservation assertions: 19 behavioral gaps,
+six human-reviewed equivalents. The raw Assay verdict remains FAIL until
+its real survivors are dispositioned; prose does not relabel the lane.
+
+Second, `_close_damon_session()` treated missing `cleanup_confirmed` as
+unconfirmed but logged that the slot “will not be reused” even when no
+matching slot appeared in the pool quarantine. The repair now says no
+no-reuse guarantee is established unless the session's identified index is
+actually present in `quarantined_indices`; tests cover missing identity,
+matching quarantine, and an unrelated quarantine. The override-lock oracle
+was also changed from a helper-call spy to file mode/group observations, with
+a separate default-path repair test. The seven focused changed-behavior tests
+passed in 1.95 seconds. Repairs are isolated at
+`.worktrees/rg55-p1-review-repairs-20261005`; the judged `c24b0d2b` worktree
+was not modified. The same Sol reviewer was asked to retain context for
+fix-verification. Exact gates and doctor on the repair tree remain pending.
+
+Main advanced to `faa812f169a540d4ac206d1440751d12ef28be60` while the P1
+candidate still forks at `67c4c273`; reconcile this movement before
+integration. `/run/cgprofile` is mounted in the current devcontainer, but
+`/run/cgprofile/ctl.sock` is absent, so socket-carrier acceptance remains
+unavailable and no live daemon probe was launched.
+
+### RW-459 — 2026-10-05 23:24:20 UTC — keep exact P1 R2 running; record startup and P6 pace
+
+The first detached P1 launch attempt used the monorepo root as cwd and left
+an empty log, no process/container, and no run-gate history entry; it was not
+a test result. The corrected registered launch started at 23:09:35 UTC from
+the P1 package directory against exact HEAD
+`c24b0d2b882df96ee6549cf357a713943398a564`, base
+`1882887511202d7e39f72599fcaa9fcc5e55b466`, in container
+`run-gate-vbpub-r2-2803529-1791241775`. Docker inspection verified
+`NanoCpus=3000000000` and `CgroupParent=dev-gates.slice`. At the required
+23:11:35 UTC health check it was alive in the baseline command with no
+candidate yet judged; the previous exact P1 R2 took about 90 minutes for
+114 candidates, so current ETA is provisionally 1.5–2 hours, to be revised
+from the next scheduled progress sample. The campaign tree remains clean and
+must not be changed; this c24 campaign is useful survivor triage but cannot
+certify the separate repair tree.
+
+The separate P6 R2 progress read at 23:11:48 UTC showed 517/1,251 candidates
+judged. From the 432-candidate sample at 22:16Z this is about 1.55
+candidates/minute; roughly 7h50m remained at that observed rate. No verdict
+was read, and no P6 tree/container was changed. Next progress inspection for
+both campaigns is not before 23:36Z unless a concrete error/completion signal
+arrives sooner.
+
+### RW-460 — 2026-10-05 23:26:40 UTC — Sol fix-verification accepts P1 for provisional integration
+
+The same fresh Sol reviewer verified the corrections on the reconciled P1
+repair tree `99cffbe09d9fe72d45ee34ad61b4c767b950a1c1` and returned `ACCEPT`
+for provisional integration, not release. It confirmed the 19-gap/six-
+equivalent survivor disposition; the cleanup diagnostic withholds a no-reuse
+claim unless the identified index is actually quarantined; and the lock tests
+assert file mode/group behavior rather than a helper call. No new blocker was
+found. The reviewer did not rerun tests or doctor; its full disposition and
+evidence limits are recorded in
+`scripts/cgroup-profiler/nyxloom-trove/reports/cgprofile-P1-R2-SURVIVOR-SOL-REVIEW-20261005.md`.
+
+The controller's seven focused regression cases passed (1.95 seconds) and
+`run-gate.py doctor` on `99cffbe` reported 9 OK, 2 warnings, 0 failures, and
+2 info. Both were before the review-record commit; exact-tip `r0-r1`, `r3`,
+and doctor will be refreshed after that commit. The c24 P1 R2 campaign remains
+active only as old-tree triage and cannot certify the repaired/reconciled
+tree. Do not change its judged checkout.
