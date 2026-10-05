@@ -286,9 +286,10 @@ def proc_start_time_ticks(pid: int, proc_root: str = PROC_ROOT) -> Optional[int]
     prefix = f"{pid} ("
     if not text.startswith(prefix):
         return None
-    fields = proc_stat.split_after_comm(text)
-    if fields is None:
+    parsed = proc_stat.split_after_comm(text)
+    if parsed is None:
         return None
+    _, fields = parsed
     # fields[0] is stat field 3 (state); starttime is field 22.
     if len(fields) <= 19:
         return None

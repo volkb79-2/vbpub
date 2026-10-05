@@ -7,14 +7,14 @@ from typing import Optional, Tuple
 
 def split_after_comm(
     text: str,
-) -> Optional[Tuple[str, ...]]:
-    """Return fields beginning at stat field 3 after the final ``)``.
+) -> Optional[Tuple[int, Tuple[str, ...]]]:
+    """Return the final ``)`` offset and fields beginning at stat field 3.
 
     Field 2 (``comm``) may contain whitespace and closing parentheses. The
     final closing parenthesis is therefore the delimiter for the fixed fields
-    that follow it.
+    that follow it. The offset lets callers validate the record prefix.
     """
     close = text.rfind(")")
     if close < 0:
         return None
-    return tuple(text[close + 1 :].split())
+    return close, tuple(text[close + 1 :].split())
