@@ -275,6 +275,8 @@ def pid_namespace_number(pid: int, proc_root: str = PROC_ROOT) -> Optional[int]:
 
 def proc_start_time_ticks(pid: int, proc_root: str = PROC_ROOT) -> Optional[int]:
     """Read field 22 of proc stat, robust to spaces/parentheses in comm."""
+    if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
+        return None
     text = util.read_text(os.path.join(proc_root, str(pid), "stat"))
     if not text:
         return None
@@ -284,11 +286,8 @@ def proc_start_time_ticks(pid: int, proc_root: str = PROC_ROOT) -> Optional[int]
     prefix = f"{pid} ("
     if not text.startswith(prefix):
         return None
-    parsed = proc_stat.split_after_comm(text)
-    if parsed is None:
-        return None
-    close, fields = parsed
-    if close < len(prefix):
+    fields = proc_stat.split_after_comm(text)
+    if fields is None:
         return None
     # fields[0] is stat field 3 (state); starttime is field 22.
     if len(fields) <= 19:
