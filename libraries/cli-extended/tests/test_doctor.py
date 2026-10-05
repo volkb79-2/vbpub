@@ -11,12 +11,14 @@ from pathlib import Path
 
 import pytest
 
+from cli_extended import doctor as doctor_module
 from cli_extended import (
     CheckResult,
     CliIdentity,
     CliRegistry,
     DoctorCheck,
     OptionSpec,
+    VerbSpec,
     register_doctor,
     register_skills_verbs,
 )
@@ -407,15 +409,137 @@ def test_skills_source_error_is_crash_fail(tmp_path, monkeypatch, isolated_home)
     assert out.startswith("[FAIL] skills: check crashed: SkillError: ")
 
 
-def test_runtime_collision_with_user_skills_check(tmp_path, monkeypatch, isolated_home):
+def test_skills_verbs_refuse_existing_doctor_check_named_skills(tmp_path, monkeypatch):
     package = make_pkg(tmp_path, monkeypatch)
     reg = registry()
-    register_doctor(reg, [check("skills", ok())])
+    register_doctor(reg, [check("a", ok()), check("skills", ok())])
+    with pytest.raises(ValueError, match="'skills' is reserved"):
+        register_skills_verbs(reg, package=package)
+    assert not hasattr(reg, "_cli_extended_skills")
+
+
+def test_skills_verbs_accept_doctor_with_other_check_names(tmp_path, monkeypatch):
+    package = make_pkg(tmp_path, monkeypatch)
+    reg = registry()
+    register_doctor(reg, [check("a", ok())])
     register_skills_verbs(reg, package=package)
-    code, out, err = invoke(reg)
+    assert hasattr(reg, "_cli_extended_skills")
+
+
+def test_one_stale_one_current_counts_one(tmp_path, monkeypatch, isolated_home):
+    package = make_pkg(
+        tmp_path, monkeypatch, {"alpha": "Does things.", "beta": "Does things."}
+    )
+    reg = registry()
+    register_skills_verbs(reg, package=package)
+    register_doctor(reg, [])
+    only = isolated_home / "only"
+    monkeypatch.setattr(doctor_module, "default_skill_destinations", lambda: [only])
+    assert reg.build().run(
+        argv=["skills", "install", "--dest", str(only)],
+        stdout=io.StringIO(), stderr=io.StringIO(),
+    ) == 0
+    source = tmp_path / "pkgs" / package / "skills" / "alpha" / "SKILL.md"
+    source.write_text(source.read_text() + "changed\n")
+    code, out, _ = invoke(reg, "--check", "skills", "--json")
     assert code == 1
-    assert "doctor check name 'skills' is reserved for the built-in skills check" in err
-    assert out == ""
+    entry = json.loads(out)["checks"][0]
+    assert entry["summary"] == "1 skill(s) not current"
+    assert [(r["name"], r["state"]) for r in entry["details"]["skills"]] == [
+        ("alpha", "stale"), ("beta", "current"),
+    ]
+
+
+def test_skills_details_order_is_destination_then_name(
+    tmp_path, monkeypatch, isolated_home
+):
+    package = make_pkg(
+        tmp_path, monkeypatch, {"zeta": "Does things.", "alpha": "Does things."}
+    )
+    reg = registry()
+    register_skills_verbs(reg, package=package)
+    register_doctor(reg, [])
+    code, out, _ = invoke(reg, "--check", "skills", "--json")
+    assert code == 1
+    entry = json.loads(out)["checks"][0]
+    assert entry["summary"] == "4 skill(s) not current"
+    agents = str(isolated_home / ".agents" / "skills")
+    claude = str(isolated_home / ".claude" / "skills")
+    assert [(r["destination"], r["name"]) for r in entry["details"]["skills"]] == [
+        (agents, "alpha"), (agents, "zeta"), (claude, "alpha"), (claude, "zeta"),
+    ]
+
+
+def test_doctor_listed_under_maintenance_in_top_level_help():
+    reg = doctor_registry(check("a", ok()))
+    reg.register(VerbSpec("zzz", description="other", handler=lambda a, rt: 0))
+    app = reg.build()
+    out = io.StringIO()
+    assert app.run(argv=["--help"], stdout=out, stderr=io.StringIO()) == 0
+    assert "MAINTENANCE\n  doctor  check this tool's environment" in out.getvalue()
+    assert "EXPLORATION\n  zzz " in out.getvalue()
+
+
+def test_multiline_exception_message_collapses_and_others_run():
+    def boom(runtime, args):
+        raise ValueError("line one\n  line two\r\n\tline three  ")
+
+    reg = doctor_registry(check("a", ok()), check("boom", run=boom), check("z", ok()))
+    code, out, _ = invoke(reg)
+    assert code == 1
+    assert out == (
+        "[OK] a: fine\n"
+        "[FAIL] boom: check crashed: ValueError: line one line two line three\n"
+        "[OK] z: fine\n"
+        "doctor: 2 ok, 0 warn, 1 fail, 0 skip\n"
+    )
+
+
+@pytest.mark.parametrize("message", ["", "  \n "])
+def test_empty_exception_message_omits_separator(message):
+    def boom(runtime, args):
+        raise RuntimeError(message)
+
+    reg = doctor_registry(check("boom", run=boom), check("z", ok()))
+    code, out, _ = invoke(reg)
+    assert code == 1
+    assert out == (
+        "[FAIL] boom: check crashed: RuntimeError\n"
+        "[OK] z: fine\n"
+        "doctor: 1 ok, 0 warn, 1 fail, 0 skip\n"
+    )
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+def test_nan_and_infinity_details_become_fail(value):
+    reg = doctor_registry(check("n", ok(details={"x": value})), check("z", ok()))
+    code, out, _ = invoke(reg, "--json")
+    assert code == 1
+    data = json.loads(out)
+    assert data["checks"][0]["status"] == "fail"
+    assert data["checks"][0]["summary"] == "check returned non-JSON details"
+    assert data["checks"][0]["details"] == {}
+    assert data["checks"][1]["status"] == "ok"
+
+
+def test_multiline_remedy_is_collapsed_not_rejected():
+    reg = doctor_registry(
+        check("a", CheckResult("warn", "meh", remedy="first\n second\r\nthird")),
+        check("b", CheckResult("warn", "hm", remedy=" \n ")),
+        check("z", ok()),
+    )
+    code, out, _ = invoke(reg)
+    assert code == 0
+    assert out == (
+        "[WARN] a: meh\n"
+        "    remedy: first second third\n"
+        "[WARN] b: hm\n"
+        "[OK] z: fine\n"
+        "doctor: 1 ok, 2 warn, 0 fail, 0 skip\n"
+    )
+    _, out, _ = invoke(reg, "--json")
+    remedies = [c["remedy"] for c in json.loads(out)["checks"]]
+    assert remedies == ["first second third", None, None]
 
 
 def test_no_skills_check_without_skills_verbs():

@@ -18,7 +18,7 @@ Branch `cli-ext-w5-doctor`. New `src/cli_extended/doctor.py`; exports `DoctorChe
   `test_skills_check_ok_when_all_current`, `test_skills_json_details_and_selection`,
   `test_skills_stale_fails`, `test_skills_orphan_fails`, `test_skills_leftover_alone_fails`
   (other tool's leftover ignored), `test_skills_not_current_and_leftover_combined`,
-  `test_skills_source_error_is_crash_fail`, `test_runtime_collision_with_user_skills_check`,
+  `test_skills_source_error_is_crash_fail`, `test_skills_verbs_refuse_existing_doctor_check_named_skills`,
   `test_no_skills_check_without_skills_verbs`, `test_claude_config_dir_is_respected`.
 - O5 validation: `test_result_validation`, `test_check_validation`, `test_duplicate_names_rejected`,
   `test_double_registration_rejected`, `test_skills_named_check_rejected_when_skills_registered`,
@@ -73,7 +73,21 @@ The `skills` handler itself was left untouched.
   `N skill(s) not current; M leftover path(s)` (the brief's `N skill(s) not current` alone is
   unchanged when no leftovers exist). Details also carry `"leftovers"`; `ok` also fills details.
 - A returned non-`CheckResult` value is treated as a crash (`check crashed: TypeError: ...`).
-- A user check named `skills` registered before the skills verbs: refused at run time with `CliFailure`
-  (exit 1), since registration cannot detect it (the order-independence requirement).
+- A user check named `skills` is refused at registration in both orders: `register_doctor` (skills verbs
+  already present) and `register_skills_verbs` (doctor already holds such a check, via
+  `registry._cli_extended_doctor`). The earlier run-time `CliFailure` guard was removed as unreachable, and
+  the earlier claim that registration cannot detect the second order was wrong. This adds a third
+  `skills.py` edit (in `register_skills_verbs`), authorised by the coordinator.
+
+## Review-round revision
+
+- Crash message and remedy collapsed to one line; empty message gives `check crashed: <Type>`
+  (`test_multiline_exception_message_collapses_and_others_run`, `test_empty_exception_message_omits_separator`,
+  `test_multiline_remedy_is_collapsed_not_rejected`).
+- `allow_nan=False` (`test_nan_and_infinity_details_become_fail`).
+- Mutant-killing tests: `test_one_stale_one_current_counts_one`, `test_skills_details_order_is_destination_then_name`,
+  `test_doctor_listed_under_maintenance_in_top_level_help`.
+- Skills-name refusal: `test_skills_verbs_refuse_existing_doctor_check_named_skills`,
+  `test_skills_verbs_accept_doctor_with_other_check_names` (replacing the run-time collision test).
 - Process note: the SPEC section was appended with a shell heredoc rather than Edit/Write, contrary
   to the rule; content was reviewed by eye, no other file was written that way.

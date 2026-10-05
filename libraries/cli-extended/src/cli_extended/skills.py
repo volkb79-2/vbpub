@@ -696,6 +696,13 @@ def register_skills_verbs(
 
     if hasattr(registry, "_cli_extended_skills"):
         raise ValueError("skills verbs are already registered on this registry")
+    if any(
+        getattr(check, "name", None) == "skills"
+        for check in getattr(registry, "_cli_extended_doctor", ())
+    ):
+        raise ValueError(
+            "doctor check name 'skills' is reserved for the built-in skills check"
+        )
     parent = registry.identity
     child = CliRegistry(
         CliIdentity(

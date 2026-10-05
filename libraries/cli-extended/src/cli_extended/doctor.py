@@ -12,7 +12,7 @@ import argparse
 import json
 import re
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from .parser import (
@@ -114,6 +114,10 @@ def _skills_check(package: str, resource_dir: str) -> DoctorCheck:
     return DoctorCheck(SKILLS_CHECK, "packaged agent skills are installed and current", run)
 
 
+def _one_line(value: object) -> str:
+    return " ".join(str(value).split())
+
+
 def _execute(
     check: DoctorCheck, runtime: CliRuntime, args: argparse.Namespace
 ) -> CheckResult:
@@ -122,11 +126,15 @@ def _execute(
         if not isinstance(result, CheckResult):
             raise TypeError(f"returned {type(result).__name__}, not CheckResult")
     except Exception as exc:
-        return CheckResult("fail", f"check crashed: {type(exc).__name__}: {exc}")
+        message = _one_line(exc)
+        suffix = f": {message}" if message else ""
+        return CheckResult("fail", f"check crashed: {type(exc).__name__}{suffix}")
     try:
-        json.dumps(result.details)
+        json.dumps(result.details, allow_nan=False)
     except (TypeError, ValueError):
         return CheckResult("fail", "check returned non-JSON details")
+    if result.remedy is not None:
+        return replace(result, remedy=_one_line(result.remedy) or None)
     return result
 
 
@@ -135,10 +143,6 @@ def _make_handler(registry: CliRegistry, checks: tuple[DoctorCheck, ...]):
         available = list(checks)
         skills = getattr(registry, "_cli_extended_skills", None)
         if skills is not None:
-            if any(check.name == SKILLS_CHECK for check in available):
-                raise CliFailure(
-                    "doctor check name 'skills' is reserved for the built-in skills check"
-                )
             available.append(_skills_check(*skills))
         names = [check.name for check in available]
         chosen = args.check

@@ -1228,5 +1228,13 @@ raises `ValueError`.
    `N skill(s) not current` (plus `; M leftover path(s)` when leftovers exist,
    or just `M leftover path(s)`), remedy `run '<tool> skills install'` and
    details `{"skills": [{"name", "destination", "state"}], "leftovers": [path]}`.
-   If a user check named `skills` exists when the skills verbs are registered
-   after the doctor, the run is refused with `CliFailure` (exit 1).
+   A user check named `skills` is refused at registration in either order:
+   `register_doctor` raises `ValueError` when the skills verbs are already
+   registered, and `register_skills_verbs` raises `ValueError` when the
+   registry's doctor already holds a check named `skills`.
+9. **Single-line output.** A check can never break the report through its own
+   text. A crash message is collapsed to one line (whitespace runs become one
+   space) and, when empty, the summary is just `check crashed: <Type>`. A
+   `remedy` is collapsed the same way and omitted when empty. `details` are
+   serialised with `allow_nan=False`, so NaN and infinity also give
+   `check returned non-JSON details`.
