@@ -23,7 +23,7 @@ from ciu import (  # noqa: E402
     workspace_env,
     workspace_env,
 )
-from ciu.config_constants import SHIPPED_COMPOSE  # noqa: E402
+from ciu.config_constants import CIU_COMPOSE_TEMPLATE, SHIPPED_COMPOSE  # noqa: E402
 
 
 @pytest.mark.parametrize(
@@ -873,6 +873,84 @@ def test_primary_image_map_skips_services_without_images(monkeypatch, tmp_path):
         lambda *_a, **_kw: {"resolved": {"identities": {"stack": {"app": {"image": None}}}}},
     )
     assert deploy.resolve_primary_image_references(tmp_path) == set()
+
+
+def test_action_deploy_caches_primary_image_map_for_the_compose_pipeline(
+    monkeypatch, tmp_path
+):
+    profile = SimpleNamespace(name="test", config={}, compose_profiles=[])
+    entry = {
+        "path": "tools/app",
+        "name": "app",
+        "service": {"profiles": [], "env_overrides": {}},
+    }
+    calls = []
+    monkeypatch.setattr(deploy, "profile_env", lambda _profile: {})
+    monkeypatch.setattr(deploy, "group_by_phase", lambda _selection: [("1", [entry])])
+    monkeypatch.setattr(deploy.profiles_pkg, "render_ciu_context", lambda *_a: {})
+    monkeypatch.setattr(deploy, "resolve_primary_image_references", lambda root: calls.append(root) or {"app:main"})
+    monkeypatch.setattr(deploy.phases_pkg, "service_shipped", lambda _service: False)
+
+    def run_stack(*_args, primary_image_references, **_kwargs):
+        assert primary_image_references() == {"app:main"}
+        assert primary_image_references() == {"app:main"}
+        return True
+
+    monkeypatch.setattr(deploy, "_run_stack", run_stack)
+    assert deploy.action_deploy(
+        tmp_path,
+        profile,
+        [entry],
+        dry_run=False,
+        ignore_errors=False,
+        health_after_phase=False,
+        update_cert_permission=False,
+        no_preflight=True,
+    ) == 0
+    assert calls == [tmp_path]
+
+
+def test_check_records_image_scoping_refusal_for_one_stack(monkeypatch, tmp_path):
+    repo = tmp_path / "repo"
+    stack = repo / "tools" / "app"
+    stack.mkdir(parents=True)
+    (stack / CIU_COMPOSE_TEMPLATE).write_text("template", encoding="utf-8")
+    profile = SimpleNamespace(config={"deploy": {}}, name="test")
+    monkeypatch.setattr(deploy.config_model, "deep_merge", lambda *_a, **_kw: {"app": {}})
+    monkeypatch.setattr(deploy.secret_directives, "discover", lambda *_a, **_kw: [])
+    monkeypatch.setattr(deploy.secret_directives, "find_misplaced", lambda *_a, **_kw: [])
+    monkeypatch.setattr(deploy.config_model, "find_secret_shaped_keys", lambda *_a, **_kw: [])
+    monkeypatch.setattr(deploy.governance_mod, "resolve_stack_governance", lambda *_a, **_kw: None)
+    monkeypatch.setattr(deploy, "_check_configfile_declarations", lambda *_a, **_kw: [])
+    monkeypatch.setattr(deploy.engine, "auto_generate_values", lambda *_a, **_kw: None)
+    monkeypatch.setattr(deploy, "_resolve_hostdirs_for_render", lambda *_a, **_kw: None)
+    monkeypatch.setattr(composefile, "guard_config", lambda config, _specs: config)
+    monkeypatch.setattr(composefile, "render_compose", lambda *_a, **_kw: "services: {}\n")
+    monkeypatch.setattr(
+        deploy.engine,
+        "scope_worktree_compose_images",
+        lambda *_a, **_kw: (_ for _ in ()).throw(ValueError("no image identity")),
+    )
+    monkeypatch.setattr(deploy, "_check_hooks_for_stack", lambda **_kwargs: None)
+    report = deploy._CheckReport()
+
+    deploy._check_stack_config(
+        rel="tools/app",
+        stack_cfg={"app": {}},
+        profile=profile,
+        repo_root=repo,
+        root_key="app",
+        ciu_context={},
+        identity={},
+        identity_unreadable=False,
+        report=report,
+        cache={},
+    )
+
+    assert report._stages["compose-render"]["status"] == "fail"
+    assert report._stages["compose-render"]["findings"][0]["message"] == (
+        "[CIU-117] no image identity"
+    )
 
 
 def _linked_identity_tree(monkeypatch, tmp_path, *, shared_table=None, record=None, facts=None):
