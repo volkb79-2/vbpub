@@ -2022,7 +2022,11 @@ controller rulings RW-443–RW-445.
 
 Commit `b9ea6080` adds behavioral tests for those lifecycle failure paths and
 removes `_reserve_capacity`'s unreachable duplicate baseline-capture branch;
-this exact tree still needs the registered 100% line/branch gate. No live
+the exact tree still needs the registered 100% line/branch gate. Latest main
+`c0d1f4410a4a10a5d9635775e43dec74c2a000fd` was then merged without conflict
+as `4e4df5a86088a7fbb7c82b3aead473c2b18ca203` (the only main-only change was
+run-gate-project test code). That merge changes the Git tree, so all final
+evidence must use the reconciled tip. No live
 DAMON sample or overhead has been measured in these runs: the daemon was down
 and profiling fell back to coarse `rusage`. Current-tree R2, full gate, R3,
 doctor, same-Sol fix verification, live DAMON samples/overhead, current-main

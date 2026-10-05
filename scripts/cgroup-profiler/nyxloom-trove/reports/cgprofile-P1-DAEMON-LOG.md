@@ -1636,6 +1636,17 @@ numbered round 7. It does not authorize a merge, release, install, or long
 gate; those remain controller actions after review. No review or gate has yet
 run on this packet's candidate.
 
+### Session 42 — 2026-10-05 06:23:32Z — reconcile latest main before final P1 evidence
+
+Main advanced from the P1 candidate's base by two commits and is now
+`c0d1f4410a4a10a5d9635775e43dec74c2a000fd`. Merged it with `--no-ff` into
+the P1 branch as `4e4df5a86088a7fbb7c82b3aead473c2b18ca203`, without
+conflicts. Main's only delta from the previous candidate base was 61 lines of
+new tests in `run-gate-project/tests/test_run_gate.py`; no cgprofile source,
+test, config, or documentation path changed. This merge changes the exact Git
+tree nevertheless, so no prior gate receipt applies. The candidate is clean;
+all final gates and review remain pending on the reconciled tip.
+
 ### Session 41 — 2026-10-05 06:20:09Z — implement Sol round-2 DAMON lifecycle repair
 
 Resumed P1 after Sol round 2 rejected the candidate on F1 (Linux forbids
