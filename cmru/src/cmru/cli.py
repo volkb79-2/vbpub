@@ -4517,439 +4517,7 @@ def _dispatch(args, runtime):
 
 
     elif verb in ("release", "status"):
-        vargs = args
-        _apply_output_options(vargs)
-        cfg_path = _resolve_config(vargs.config)
-        (repo_root, configs, project_order, *_rest) = load_config(cfg_path)
-        github_config, env_config = _rest[-2], _rest[-1]
-        git_auth = _git_auth_for_repository(github_config)
-        transaction_child = transaction.is_transaction_child(repo_root)
-        if not transaction_child:
-            _configure_native_release_logging(repo_root, append=vargs.log_append)
-        apply_release_env(github_config, env_config)
-        # Restrict versioning verbs to the orchestrated set so un-migrated projects
-        # with their own pipelines (tls-edge, empyrion) are never auto-tagged.
-        ordered = _ordered_configs(configs, project_order)
-        selection_target = vargs.target
-        resume_scope = None
-        if verb == "release" and vargs.resume:
-            resume_scope = transaction.read_release_scope_for_path(
-                Path(vargs.resume).expanduser()
-            )
-            selection_target = _release_resume_target(
-                cfg_path, selection_target, resume_scope, ordered, project_order,
-            )
-            if vargs.target is None:
-                log_info(f"Resuming recorded project scope: {selection_target}")
-        selected_names = _select_projects(cfg_path, selection_target, ordered, project_order)
-        selected_ordered = {name: ordered[name] for name in selected_names}
-
-        if vargs.minor or vargs.major or vargs.set_version:
-            ignored_overrides = [
-                name for name in selected_names
-                if not configs[name].git_tag
-                or _version_strategy(configs[name]).startswith("external:")
-            ]
-            if ignored_overrides:
-                _usage_error(
-                    "version overrides (--minor, --major, --set-version) do not apply "
-                    "to external-version or no-tag project(s): "
-                    + ", ".join(ignored_overrides)
-                )
-
-        from cmru.version import status_cmd, release_cmd
-        if verb == "status":
-            groups = transaction.project_git_family_groups(
-                repo_root, [configs[name] for name in selected_names]
-            )
-            for family_root, members in groups.items():
-                family_names = [getattr(project, "name") for project in members]
-                family_configs = _configs_for_git_family(configs, family_names, family_root)
-                status_cmd(
-                    family_root,
-                    {name: family_configs[name] for name in family_names},
-                    minor=vargs.minor, major=vargs.major, set_version=vargs.set_version,
-                    ref=vargs.ref or "HEAD",
-                )
-            return
-
-        release_scope = selected_names
-        if not vargs.dry_run:
-            require_project_publish_credentials(configs, release_scope)
-
-        preflight_snapshot_handoff = _ACTIVE_RELEASE_PREFLIGHT_SNAPSHOT
-        if preflight_snapshot_handoff is not None:
-            if transaction_child or vargs.dry_run or vargs.resume:
-                raise RuntimeError(
-                    "the internal origin/main snapshot handoff is valid only for a "
-                    "new family release launcher"
-                )
-            if len(transaction.project_git_family_groups(
-                repo_root, [configs[name] for name in release_scope],
-            )) != 1:
-                raise RuntimeError(
-                    "the internal origin/main snapshot handoff cannot span Git families"
-                )
-
-        origin_main_snapshots = None
-        if (
-            verb == "release"
-            and not transaction_child
-            and not vargs.dry_run
-            and not vargs.resume
-        ):
-            try:
-                origin_main_snapshots = _preflight_multi_family_release_tag_support(
-                    repo_root, configs, release_scope,
-                    config_path=cfg_path, git_auth=git_auth,
-                )
-            except Exception as exc:
-                log_error(str(exc))
-                _sys.exit(1)
-
-        if not transaction_child:
-            dispatched = _dispatch_independent_git_families(
-                verb,
-                rest,
-                cfg_path,
-                repo_root,
-                configs,
-                release_scope,
-                original_target=vargs.target,
-                origin_main_snapshots=origin_main_snapshots,
-            )
-            if dispatched is not None:
-                _sys.exit(dispatched)
-
-        # The normal command is a launcher, never a publisher from the caller's
-        # checkout: origin/main is the only release source, built in an isolated
-        # worktree. Local-only *commits* are a fail-closed condition (they are
-        # likely intended release inputs — see assert_local_main_not_ahead below).
-        # Uncommitted work is fail-closed too, but only when it touches a released
-        # project's own path (--allow-uncommitted overrides): otherwise it would be
-        # silently left out with no warning, since the build never looks at it.
-        if not transaction_child:
-            try:
-                candidate_project_config_paths: list[Path] | None = None
-                transaction_root = transaction.source_git_root_for_projects(
-                    repo_root, [configs[name] for name in release_scope]
-                )
-                preflighted_base = _consume_release_snapshot_handoff(
-                    transaction_root, preflight_snapshot_handoff,
-                )
-                child_args = _child_release_args(
-                    rest, cfg_path, repo_root, source_git_root=transaction_root,
-                    target_override=",".join(release_scope), original_target=vargs.target,
-                )
-                with transaction.release_lock(transaction_root):
-                    if preflighted_base is not None:
-                        verified_base = transaction.fetch_origin_main(
-                            transaction_root, git_auth=git_auth,
-                        )
-                        if verified_base != preflighted_base:
-                            raise RuntimeError(
-                                "origin/main changed after the multi-family release preflight "
-                                f"(checked {preflighted_base}, now {verified_base}); "
-                                "rerun the release so every family is checked against "
-                                "one consistent snapshot"
-                            )
-                    scope = release_scope
-                    # Not --dry-run: a preview has no publish step to protect, and "I have
-                    # local edits I haven't committed yet" is exactly when you'd run one.
-                    if not vargs.dry_run and not vargs.allow_uncommitted:
-                        # release actually iterates `ordered` (== project_order), which is
-                        # independently configurable from the default target — check
-                        # what will really run, not a possibly different default.
-                        release_scope = selected_names
-                        dirty = _uncommitted_release_paths(transaction_root, ordered, release_scope)
-                        if dirty:
-                            for name, files in dirty.items():
-                                log_error(f"{name}: uncommitted changes — {', '.join(files)}")
-                            log_error(
-                                "Uncommitted local changes touch the project path(s) above. "
-                                "origin/main is the only release source, so this run would "
-                                "silently leave them out. Commit (and push) them first, or "
-                                "pass --allow-uncommitted to release without them."
-                            )
-                            _sys.exit(2)
-
-                    if getattr(vargs, "resume", None):
-                        workspace = transaction.resume_workspace(
-                            transaction_root, Path(vargs.resume), git_auth=git_auth,
-                        )
-                        current_scope = transaction.read_release_scope_for_path(workspace.path)
-                        if current_scope != resume_scope:
-                            raise RuntimeError(
-                                "retained release scope changed while acquiring its lock; "
-                                "inspect the candidate and retry"
-                            )
-                        transaction.assert_resume_workspace_committed(workspace.path)
-                        candidate_config_paths = _project_config_paths_in_candidate(
-                            transaction_root, workspace.path, cfg_path, configs,
-                            release_scope,
-                        )
-                        candidate_release_policies = {
-                            name: _project_release_policy_in_candidate(
-                                workspace.path, name, candidate_config_paths[name],
-                            )
-                            for name in release_scope
-                        }
-                        _assert_resume_candidate_is_safe_to_replay(
-                            transaction_root, workspace, release_scope, configs,
-                            git_auth=git_auth,
-                            release_policies=candidate_release_policies,
-                        )
-                        candidate_project_config_paths = [
-                            candidate_config_paths[name] for name in release_scope
-                            if configs[name].project_root is not None
-                        ]
-                        if not vargs.dry_run:
-                            if any(policy[1] for policy in candidate_release_policies.values()):
-                                _require_local_tag_inspection_support(transaction_root)
-                    else:
-                        base = preflighted_base or transaction.fetch_origin_main(
-                            transaction_root, git_auth=git_auth,
-                        )
-                        snapshot_config_paths = _project_config_paths_at_snapshot(
-                            transaction_root, base, cfg_path, configs, release_scope,
-                        )
-                        candidate_project_config_paths = [
-                            snapshot_config_paths[name] for name in release_scope
-                            if configs[name].project_root is not None
-                        ]
-                        if not vargs.dry_run:
-                            if any(
-                                _project_git_tag_policy_at_snapshot(
-                                    transaction_root, base, configs[name],
-                                    project_config_rel=snapshot_config_paths[name],
-                                )
-                                for name in release_scope
-                            ):
-                                _require_local_tag_inspection_support(transaction_root)
-                        initial_tag_refs = None
-                        if not vargs.dry_run:
-                            initial_tag_refs = _read_origin_tag_refs(
-                                transaction_root,
-                                git_auth=git_auth,
-                                context="capture origin release tags before the transaction",
-                            )
-                        behind = transaction.assert_local_main_not_ahead(transaction_root, ref=vargs.ref or "main")
-                        if behind:
-                            log_warn(
-                                f"Local main is {behind} commit(s) behind origin/main; "
-                                f"release uses fetched origin/main {base[:12]}."
-                            )
-                        workspace = transaction.create_workspace(
-                            repo_root, base=base, scope=','.join(release_scope),
-                            source_git_root=transaction_root,
-                        )
-                        if initial_tag_refs is not None:
-                            transaction.write_release_tag_snapshot(
-                                transaction_root, workspace, initial_tag_refs,
-                            )
-                    transaction.copy_secret_overlays(
-                        repo_root,
-                        workspace,
-                        [Path(configs[name].project_root) / PROJECT_CONFIG_FILENAME for name in release_scope
-                         if configs[name].project_root is not None],
-                        candidate_config_paths=candidate_project_config_paths,
-                    )
-                    log_info(
-                        f"Release transaction {workspace.branch}: "
-                        f"snapshot {workspace.base[:12]} at {workspace.path}"
-                    )
-                    transaction.clear_plan_refused(transaction_root, workspace)
-                    rc = transaction.run_child(
-                        workspace, child_args, project_names=release_scope,
-                    )
-                    if rc == 0:
-                        retained: list[Path] = []
-                        retain_logs = not vargs.discard_logs_on_release
-                        retain_artifacts = not vargs.discard_artifacts_on_release
-                        retain_evidence = not vargs.discard_evidence_on_release
-                        has_declared_evidence = any(
-                            bool(getattr(configs.get(name), "evidence_paths", ()) or ())
-                            for name in configs
-                        )
-                        if retain_logs or retain_artifacts or (retain_evidence and has_declared_evidence):
-                            release_results = transaction.read_release_results(transaction_root, workspace)
-                            retained = transaction.retain_success_outputs(
-                                repo_root,
-                                workspace,
-                                configs,
-                                release_results,
-                                retain_logs=retain_logs,
-                                retain_artifacts=retain_artifacts,
-                                retain_evidence=retain_evidence,
-                            )
-                        for path in retained:
-                            log_info(f"Retained release output: {path}")
-                        transaction.remove_backup_branch(workspace, git_auth=git_auth)
-                        transaction.remove_workspace(workspace)
-                        transaction.forget_release_scope(transaction_root, workspace)
-                        if _sync_local_main_and_report(transaction_root, git_auth=git_auth):
-                            log_info("Local main synced with origin/main.")
-                        log_info("Release transaction complete; isolated worktree removed.")
-                    elif transaction.plan_was_refused(transaction_root, workspace):
-                        if vargs.resume:
-                            log_error(
-                                "Release plan refused before any project started; the "
-                                f"existing candidate {workspace.path} on branch "
-                                f"{workspace.branch} was retained for inspection. "
-                                "Resolve the refusal before retrying or abandoning it."
-                            )
-                        else:
-                            # A new workspace has no prior work or remote backup to
-                            # preserve when its first release-plan check refuses.
-                            transaction.remove_workspace(workspace)
-                            transaction.forget_release_scope(transaction_root, workspace)
-                            _sync_local_main_and_report(transaction_root, git_auth=git_auth)
-                            log_error(
-                                "Release plan refused before any project started; no changes "
-                                "were made (see the error above). Worktree discarded."
-                            )
-                    else:
-                        # Promotion is now the final step of every project's
-                        # candidate cycle. A failed project therefore leaves its
-                        # source commit on the retained candidate branch while
-                        # origin/main contains only earlier, fully completed
-                        # projects. Never manufacture a revert commit for a
-                        # candidate whose public artifact may already exist.
-                        log_error(
-                            "Release candidate was not promoted; origin/main was left "
-                            "at the last fully completed project. The durable candidate "
-                            f"branch {workspace.branch} was retained for inspection."
-                        )
-                        _sync_local_main_and_report(transaction_root, git_auth=git_auth)
-                        log_error(
-                            f"Release transaction failed; retained {workspace.path} "
-                            f"on branch {workspace.branch} for inspection/resume."
-                        )
-                    _sys.exit(rc)
-            except Exception as exc:
-                log_error(str(exc))
-                _sys.exit(1)
-
-        # --- release: detect → tag → push → build → publish -------------------
-        from cmru.version import ReleasePlanRefused, release_cmd, detect_changed_projects
-
-        # Scope to what this run will actually touch *before* computing the plan
-        # (not by filtering the result afterward): an unrelated orchestrated
-        # project's degenerate tag state must not abort a target-scoped run
-        # that never touches it.
-        release_scope = selected_names
-        scoped_for_plan = {name: ordered[name] for name in release_scope}
-        if vargs.dry_run:
-            # External version strategies read a fact emitted by prepare. Run
-            # only that declared input-discovery step in this disposable
-            # transaction before the single release-plan comparison below.
-            _prepare_dry_run_external_versions(
-                repo_root, configs, release_scope,
-                github_config=github_config, env_config=env_config,
-            )
-        # S12.2a/S12.2b (KI-12): the release plan — unlike a read-only `status`
-        # preview or a `changelog` migration — MUST be a function of the pushed
-        # repository, and a tag pushed but strictly ahead of the snapshot commit
-        # MUST abort loudly rather than look identical to a genuinely unchanged
-        # project (S-CLI.5: continuing here would silently produce an empty
-        # release). `--allow-tag-ahead-of-head` downgrades only that one check;
-        # a tag exactly AT the snapshot commit is always reported and skipped,
-        # never an error. A refusal here means no project's cycle ever started
-        # -- nothing was gated, promoted, or tagged -- so the parent discards
-        # this worktree exactly like a success, never retaining it for
-        # inspection (there would be nothing there to inspect).
-        try:
-            changed = detect_changed_projects(
-                repo_root, scoped_for_plan,
-                require_pushed_baseline=True,
-                check_tag_at_head=True,
-                allow_tag_ahead_of_head=vargs.allow_tag_ahead_of_head,
-                git_auth=git_auth,
-            )
-        except ReleasePlanRefused as exc:
-            log_error(str(exc))
-            transaction.mark_plan_refused(repo_root, _transaction_workspace_from_env(repo_root))
-            _sys.exit(exit_codes.FAILURE)
-        changed_names = {c[0] for c in changed}
-
-        release_names = [name for name in project_order if name in changed_names]
-        if release_names:
-            log_info(
-                f"Release plan: {len(release_names)}/{len(project_order)} project(s) changed "
-                f"— releasing in order: {', '.join(release_names)}"
-            )
-        else:
-            log_info("Release plan: no changed projects detected; nothing to release.")
-        # KI-13/S12.2e: every unchanged project already printed its own specific
-        # "[INFO] Unchanged, skipping: <name> (<baseline tag> @ <reason>)" line
-        # above, from inside detect_changed_projects (this isolated transaction
-        # always passes check_tag_at_head=True) -- one line per project naming
-        # its exact baseline and reason, not a second, bare name-only list here.
-        # This also runs identically whether or not --dry-run is set (KI-14):
-        # the plan above is computed once, before the dry-run/real branch below.
-
-        # S15: declared tool dependencies for external/copy consumers
-        # are verified here, alongside the tag-preflight above -- same phase (no
-        # project's cycle has started), same network-touching plan-computation
-        # step, same typed refusal. This is deliberately scoped to `release_names`
-        # (what THIS run will actually ship), so an unrelated orchestrated
-        # project's stale/unreachable tool dependency never blocks a run that
-        # never touches it -- and NEVER runs when nothing changed (no network
-        # call for a no-op run). It runs identically for --dry-run too, for the
-        # same S-CLI.5c reason the tag preflight above does.
-        try:
-            _check_release_tool_dependencies(
-                {name: configs[name] for name in release_names},
-                configs,
-                github_config=github_config,
-                allow_stale=vargs.allow_stale_tool_deps,
-            )
-        except ReleasePlanRefused as exc:
-            log_error(str(exc))
-            transaction.mark_plan_refused(repo_root, _transaction_workspace_from_env(repo_root))
-            _sys.exit(exit_codes.FAILURE)
-
-        if vargs.dry_run:
-            # Preview only: show what would be tagged for every changed project, no
-            # commits/gates/promotion/tags — nothing here has side effects.
-            release_cmd(
-                repo_root, selected_ordered,
-                minor=vargs.minor, major=vargs.major, set_version=vargs.set_version,
-                dry_run=True,
-            )
-            log_info("[DRY RUN] No tags pushed, nothing built/published.")
-            return
-
-        if not release_names:
-            log_info("Nothing to release (no changed projects).")
-            return
-
-        # Build all projects after another (S-REL): each project's own
-        # prepare → gate → tag → build → publish → promote cycle runs to completion
-        # before the next project starts. This is what lets a later project (e.g. an
-        # OCI image) resolve an earlier project's (e.g. a wheel) brand-new release
-        # within this SAME `cmru release` run, instead of always trailing one run
-        # behind. If project N fails, its exact candidate remains on the retained
-        # transaction branch and already-published projects before it are left alone.
-        workspace = _transaction_workspace_from_env(repo_root)
-        transaction.write_release_scope(repo_root, workspace, release_names)
-        transaction.push_backup_branch(workspace, git_auth=git_auth)
-        log_info(f"Pushed release candidate {workspace.branch} to origin (durability).")
-
-        released = _release_projects_sequentially(
-            repo_root, configs, workspace, release_names,
-            github_config=github_config, env_config=env_config,
-            git_auth=git_auth,
-            no_build=vargs.no_build, minor=vargs.minor, major=vargs.major,
-            set_version=vargs.set_version,
-        )
-
-        if released:
-            log_info(f"Released: {', '.join(released)}")
-        elif vargs.no_build:
-            log_info("Tagged only (--no-build); nothing built or published.")
-        else:
-            log_info("Nothing built or published (see per-project log above for why).")
+        _release_or_status(verb, args, rest)
 
     elif verb == "cleanup":
         vargs = args
@@ -5063,6 +4631,474 @@ def _dispatch(args, runtime):
     else:
         write_config_diagnostic(f"Unknown verb '{verb}'. Run 'cmru --help' for usage.")
         _sys.exit(2)
+
+
+def _release_or_status(verb: str, args, rest: List[str]) -> None:
+    """Shared prefix of ``release`` and ``status``, then route to the right role.
+
+    ``status`` is read-only (:func:`_status`). ``release`` is either the
+    launcher (:func:`_release_launcher`, never publishes from the caller's
+    checkout) or, inside the isolated transaction worktree, the child
+    (:func:`_release_child`).
+    """
+    vargs = args
+    _apply_output_options(vargs)
+    cfg_path = _resolve_config(vargs.config)
+    (repo_root, configs, project_order, *_rest) = load_config(cfg_path)
+    github_config, env_config = _rest[-2], _rest[-1]
+    git_auth = _git_auth_for_repository(github_config)
+    transaction_child = transaction.is_transaction_child(repo_root)
+    if not transaction_child:
+        _configure_native_release_logging(repo_root, append=vargs.log_append)
+    apply_release_env(github_config, env_config)
+    # Restrict versioning verbs to the orchestrated set so un-migrated projects
+    # with their own pipelines (tls-edge, empyrion) are never auto-tagged.
+    ordered = _ordered_configs(configs, project_order)
+    selection_target = vargs.target
+    resume_scope = None
+    if verb == "release" and vargs.resume:
+        resume_scope = transaction.read_release_scope_for_path(
+            Path(vargs.resume).expanduser()
+        )
+        selection_target = _release_resume_target(
+            cfg_path, selection_target, resume_scope, ordered, project_order,
+        )
+        if vargs.target is None:
+            log_info(f"Resuming recorded project scope: {selection_target}")
+    selected_names = _select_projects(cfg_path, selection_target, ordered, project_order)
+
+    if vargs.minor or vargs.major or vargs.set_version:
+        ignored_overrides = [
+            name for name in selected_names
+            if not configs[name].git_tag
+            or _version_strategy(configs[name]).startswith("external:")
+        ]
+        if ignored_overrides:
+            _usage_error(
+                "version overrides (--minor, --major, --set-version) do not apply "
+                "to external-version or no-tag project(s): "
+                + ", ".join(ignored_overrides)
+            )
+
+    if verb == "status":
+        _status(vargs, repo_root, configs, selected_names)
+        return
+
+    release_scope = selected_names
+    if not vargs.dry_run:
+        require_project_publish_credentials(configs, release_scope)
+
+    preflight_snapshot_handoff = _ACTIVE_RELEASE_PREFLIGHT_SNAPSHOT
+    if preflight_snapshot_handoff is not None:
+        if transaction_child or vargs.dry_run or vargs.resume:
+            raise RuntimeError(
+                "the internal origin/main snapshot handoff is valid only for a "
+                "new family release launcher"
+            )
+        if len(transaction.project_git_family_groups(
+            repo_root, [configs[name] for name in release_scope],
+        )) != 1:
+            raise RuntimeError(
+                "the internal origin/main snapshot handoff cannot span Git families"
+            )
+
+    if not transaction_child:
+        _release_launcher(
+            rest, vargs, cfg_path, repo_root, configs, ordered, project_order,
+            selected_names, resume_scope, git_auth, preflight_snapshot_handoff,
+        )
+        return
+    _release_child(
+        vargs, repo_root, configs, ordered, project_order, selected_names,
+        github_config, env_config, git_auth,
+    )
+
+
+def _status(vargs, repo_root: Path, configs, selected_names: List[str]) -> None:
+    """Read-only version/plan preview for each selected Git family."""
+    from cmru.version import status_cmd
+
+    groups = transaction.project_git_family_groups(
+        repo_root, [configs[name] for name in selected_names]
+    )
+    for family_root, members in groups.items():
+        family_names = [getattr(project, "name") for project in members]
+        family_configs = _configs_for_git_family(configs, family_names, family_root)
+        status_cmd(
+            family_root,
+            {name: family_configs[name] for name in family_names},
+            minor=vargs.minor, major=vargs.major, set_version=vargs.set_version,
+            ref=vargs.ref or "HEAD",
+        )
+
+
+def _release_launcher(
+    rest: List[str], vargs, cfg_path: Path, repo_root: Path, configs, ordered,
+    project_order, selected_names: List[str], resume_scope, git_auth,
+    preflight_snapshot_handoff,
+) -> None:
+    """The caller-side half of ``release``: set up and drive the transaction.
+
+    Always exits the process (``sys.exit``); it never returns normally.
+    """
+    release_scope = selected_names
+    origin_main_snapshots = None
+    if not vargs.dry_run and not vargs.resume:
+        try:
+            origin_main_snapshots = _preflight_multi_family_release_tag_support(
+                repo_root, configs, release_scope,
+                config_path=cfg_path, git_auth=git_auth,
+            )
+        except Exception as exc:
+            log_error(str(exc))
+            sys.exit(1)
+
+    dispatched = _dispatch_independent_git_families(
+        "release",
+        rest,
+        cfg_path,
+        repo_root,
+        configs,
+        release_scope,
+        original_target=vargs.target,
+        origin_main_snapshots=origin_main_snapshots,
+    )
+    if dispatched is not None:
+        sys.exit(dispatched)
+
+    # The normal command is a launcher, never a publisher from the caller's
+    # checkout: origin/main is the only release source, built in an isolated
+    # worktree. Local-only *commits* are a fail-closed condition (they are
+    # likely intended release inputs — see assert_local_main_not_ahead below).
+    # Uncommitted work is fail-closed too, but only when it touches a released
+    # project's own path (--allow-uncommitted overrides): otherwise it would be
+    # silently left out with no warning, since the build never looks at it.
+    try:
+        candidate_project_config_paths: list[Path] | None = None
+        transaction_root = transaction.source_git_root_for_projects(
+            repo_root, [configs[name] for name in release_scope]
+        )
+        preflighted_base = _consume_release_snapshot_handoff(
+            transaction_root, preflight_snapshot_handoff,
+        )
+        child_args = _child_release_args(
+            rest, cfg_path, repo_root, source_git_root=transaction_root,
+            target_override=",".join(release_scope), original_target=vargs.target,
+        )
+        with transaction.release_lock(transaction_root):
+            if preflighted_base is not None:
+                verified_base = transaction.fetch_origin_main(
+                    transaction_root, git_auth=git_auth,
+                )
+                if verified_base != preflighted_base:
+                    raise RuntimeError(
+                        "origin/main changed after the multi-family release preflight "
+                        f"(checked {preflighted_base}, now {verified_base}); "
+                        "rerun the release so every family is checked against "
+                        "one consistent snapshot"
+                    )
+            # Not --dry-run: a preview has no publish step to protect, and "I have
+            # local edits I haven't committed yet" is exactly when you'd run one.
+            if not vargs.dry_run and not vargs.allow_uncommitted:
+                # release actually iterates `ordered` (== project_order), which is
+                # independently configurable from the default target — check
+                # what will really run, not a possibly different default.
+                dirty = _uncommitted_release_paths(transaction_root, ordered, release_scope)
+                if dirty:
+                    for name, files in dirty.items():
+                        log_error(f"{name}: uncommitted changes — {', '.join(files)}")
+                    log_error(
+                        "Uncommitted local changes touch the project path(s) above. "
+                        "origin/main is the only release source, so this run would "
+                        "silently leave them out. Commit (and push) them first, or "
+                        "pass --allow-uncommitted to release without them."
+                    )
+                    sys.exit(2)
+
+            if getattr(vargs, "resume", None):
+                workspace = transaction.resume_workspace(
+                    transaction_root, Path(vargs.resume), git_auth=git_auth,
+                )
+                current_scope = transaction.read_release_scope_for_path(workspace.path)
+                if current_scope != resume_scope:
+                    raise RuntimeError(
+                        "retained release scope changed while acquiring its lock; "
+                        "inspect the candidate and retry"
+                    )
+                transaction.assert_resume_workspace_committed(workspace.path)
+                candidate_config_paths = _project_config_paths_in_candidate(
+                    transaction_root, workspace.path, cfg_path, configs,
+                    release_scope,
+                )
+                candidate_release_policies = {
+                    name: _project_release_policy_in_candidate(
+                        workspace.path, name, candidate_config_paths[name],
+                    )
+                    for name in release_scope
+                }
+                _assert_resume_candidate_is_safe_to_replay(
+                    transaction_root, workspace, release_scope, configs,
+                    git_auth=git_auth,
+                    release_policies=candidate_release_policies,
+                )
+                candidate_project_config_paths = [
+                    candidate_config_paths[name] for name in release_scope
+                    if configs[name].project_root is not None
+                ]
+                if not vargs.dry_run:
+                    if any(policy[1] for policy in candidate_release_policies.values()):
+                        _require_local_tag_inspection_support(transaction_root)
+            else:
+                base = preflighted_base or transaction.fetch_origin_main(
+                    transaction_root, git_auth=git_auth,
+                )
+                snapshot_config_paths = _project_config_paths_at_snapshot(
+                    transaction_root, base, cfg_path, configs, release_scope,
+                )
+                candidate_project_config_paths = [
+                    snapshot_config_paths[name] for name in release_scope
+                    if configs[name].project_root is not None
+                ]
+                if not vargs.dry_run:
+                    if any(
+                        _project_git_tag_policy_at_snapshot(
+                            transaction_root, base, configs[name],
+                            project_config_rel=snapshot_config_paths[name],
+                        )
+                        for name in release_scope
+                    ):
+                        _require_local_tag_inspection_support(transaction_root)
+                initial_tag_refs = None
+                if not vargs.dry_run:
+                    initial_tag_refs = _read_origin_tag_refs(
+                        transaction_root,
+                        git_auth=git_auth,
+                        context="capture origin release tags before the transaction",
+                    )
+                behind = transaction.assert_local_main_not_ahead(transaction_root, ref=vargs.ref or "main")
+                if behind:
+                    log_warn(
+                        f"Local main is {behind} commit(s) behind origin/main; "
+                        f"release uses fetched origin/main {base[:12]}."
+                    )
+                workspace = transaction.create_workspace(
+                    repo_root, base=base, scope=','.join(release_scope),
+                    source_git_root=transaction_root,
+                )
+                if initial_tag_refs is not None:
+                    transaction.write_release_tag_snapshot(
+                        transaction_root, workspace, initial_tag_refs,
+                    )
+            transaction.copy_secret_overlays(
+                repo_root,
+                workspace,
+                [Path(configs[name].project_root) / PROJECT_CONFIG_FILENAME for name in release_scope
+                 if configs[name].project_root is not None],
+                candidate_config_paths=candidate_project_config_paths,
+            )
+            log_info(
+                f"Release transaction {workspace.branch}: "
+                f"snapshot {workspace.base[:12]} at {workspace.path}"
+            )
+            transaction.clear_plan_refused(transaction_root, workspace)
+            rc = transaction.run_child(
+                workspace, child_args, project_names=release_scope,
+            )
+            if rc == 0:
+                retained: list[Path] = []
+                retain_logs = not vargs.discard_logs_on_release
+                retain_artifacts = not vargs.discard_artifacts_on_release
+                retain_evidence = not vargs.discard_evidence_on_release
+                has_declared_evidence = any(
+                    bool(getattr(configs.get(name), "evidence_paths", ()) or ())
+                    for name in configs
+                )
+                if retain_logs or retain_artifacts or (retain_evidence and has_declared_evidence):
+                    release_results = transaction.read_release_results(transaction_root, workspace)
+                    retained = transaction.retain_success_outputs(
+                        repo_root,
+                        workspace,
+                        configs,
+                        release_results,
+                        retain_logs=retain_logs,
+                        retain_artifacts=retain_artifacts,
+                        retain_evidence=retain_evidence,
+                    )
+                for path in retained:
+                    log_info(f"Retained release output: {path}")
+                transaction.remove_backup_branch(workspace, git_auth=git_auth)
+                transaction.remove_workspace(workspace)
+                transaction.forget_release_scope(transaction_root, workspace)
+                if _sync_local_main_and_report(transaction_root, git_auth=git_auth):
+                    log_info("Local main synced with origin/main.")
+                log_info("Release transaction complete; isolated worktree removed.")
+            elif transaction.plan_was_refused(transaction_root, workspace):
+                if vargs.resume:
+                    log_error(
+                        "Release plan refused before any project started; the "
+                        f"existing candidate {workspace.path} on branch "
+                        f"{workspace.branch} was retained for inspection. "
+                        "Resolve the refusal before retrying or abandoning it."
+                    )
+                else:
+                    # A new workspace has no prior work or remote backup to
+                    # preserve when its first release-plan check refuses.
+                    transaction.remove_workspace(workspace)
+                    transaction.forget_release_scope(transaction_root, workspace)
+                    _sync_local_main_and_report(transaction_root, git_auth=git_auth)
+                    log_error(
+                        "Release plan refused before any project started; no changes "
+                        "were made (see the error above). Worktree discarded."
+                    )
+            else:
+                # Promotion is now the final step of every project's
+                # candidate cycle. A failed project therefore leaves its
+                # source commit on the retained candidate branch while
+                # origin/main contains only earlier, fully completed
+                # projects. Never manufacture a revert commit for a
+                # candidate whose public artifact may already exist.
+                log_error(
+                    "Release candidate was not promoted; origin/main was left "
+                    "at the last fully completed project. The durable candidate "
+                    f"branch {workspace.branch} was retained for inspection."
+                )
+                _sync_local_main_and_report(transaction_root, git_auth=git_auth)
+                log_error(
+                    f"Release transaction failed; retained {workspace.path} "
+                    f"on branch {workspace.branch} for inspection/resume."
+                )
+            sys.exit(rc)
+    except Exception as exc:
+        log_error(str(exc))
+        sys.exit(1)
+
+
+def _release_child(
+    vargs, repo_root: Path, configs, ordered, project_order,
+    selected_names: List[str], github_config, env_config, git_auth,
+) -> None:
+    """The in-worktree half of ``release``: detect, tag, push, build, publish."""
+    from cmru.version import ReleasePlanRefused, release_cmd, detect_changed_projects
+
+    selected_ordered = {name: ordered[name] for name in selected_names}
+
+    # Scope to what this run will actually touch *before* computing the plan
+    # (not by filtering the result afterward): an unrelated orchestrated
+    # project's degenerate tag state must not abort a target-scoped run
+    # that never touches it.
+    release_scope = selected_names
+    scoped_for_plan = {name: ordered[name] for name in release_scope}
+    if vargs.dry_run:
+        # External version strategies read a fact emitted by prepare. Run
+        # only that declared input-discovery step in this disposable
+        # transaction before the single release-plan comparison below.
+        _prepare_dry_run_external_versions(
+            repo_root, configs, release_scope,
+            github_config=github_config, env_config=env_config,
+        )
+    # S12.2a/S12.2b (KI-12): the release plan — unlike a read-only `status`
+    # preview or a `changelog` migration — MUST be a function of the pushed
+    # repository, and a tag pushed but strictly ahead of the snapshot commit
+    # MUST abort loudly rather than look identical to a genuinely unchanged
+    # project (S-CLI.5: continuing here would silently produce an empty
+    # release). `--allow-tag-ahead-of-head` downgrades only that one check;
+    # a tag exactly AT the snapshot commit is always reported and skipped,
+    # never an error. A refusal here means no project's cycle ever started
+    # -- nothing was gated, promoted, or tagged -- so the parent discards
+    # this worktree exactly like a success, never retaining it for
+    # inspection (there would be nothing there to inspect).
+    try:
+        changed = detect_changed_projects(
+            repo_root, scoped_for_plan,
+            require_pushed_baseline=True,
+            check_tag_at_head=True,
+            allow_tag_ahead_of_head=vargs.allow_tag_ahead_of_head,
+            git_auth=git_auth,
+        )
+    except ReleasePlanRefused as exc:
+        log_error(str(exc))
+        transaction.mark_plan_refused(repo_root, _transaction_workspace_from_env(repo_root))
+        sys.exit(exit_codes.FAILURE)
+    changed_names = {c[0] for c in changed}
+
+    release_names = [name for name in project_order if name in changed_names]
+    if release_names:
+        log_info(
+            f"Release plan: {len(release_names)}/{len(project_order)} project(s) changed "
+            f"— releasing in order: {', '.join(release_names)}"
+        )
+    else:
+        log_info("Release plan: no changed projects detected; nothing to release.")
+    # KI-13/S12.2e: every unchanged project already printed its own specific
+    # "[INFO] Unchanged, skipping: <name> (<baseline tag> @ <reason>)" line
+    # above, from inside detect_changed_projects (this isolated transaction
+    # always passes check_tag_at_head=True) -- one line per project naming
+    # its exact baseline and reason, not a second, bare name-only list here.
+    # This also runs identically whether or not --dry-run is set (KI-14):
+    # the plan above is computed once, before the dry-run/real branch below.
+
+    # S15: declared tool dependencies for external/copy consumers
+    # are verified here, alongside the tag-preflight above -- same phase (no
+    # project's cycle has started), same network-touching plan-computation
+    # step, same typed refusal. This is deliberately scoped to `release_names`
+    # (what THIS run will actually ship), so an unrelated orchestrated
+    # project's stale/unreachable tool dependency never blocks a run that
+    # never touches it -- and NEVER runs when nothing changed (no network
+    # call for a no-op run). It runs identically for --dry-run too, for the
+    # same S-CLI.5c reason the tag preflight above does.
+    try:
+        _check_release_tool_dependencies(
+            {name: configs[name] for name in release_names},
+            configs,
+            github_config=github_config,
+            allow_stale=vargs.allow_stale_tool_deps,
+        )
+    except ReleasePlanRefused as exc:
+        log_error(str(exc))
+        transaction.mark_plan_refused(repo_root, _transaction_workspace_from_env(repo_root))
+        sys.exit(exit_codes.FAILURE)
+
+    if vargs.dry_run:
+        # Preview only: show what would be tagged for every changed project, no
+        # commits/gates/promotion/tags — nothing here has side effects.
+        release_cmd(
+            repo_root, selected_ordered,
+            minor=vargs.minor, major=vargs.major, set_version=vargs.set_version,
+            dry_run=True,
+        )
+        log_info("[DRY RUN] No tags pushed, nothing built/published.")
+        return
+
+    if not release_names:
+        log_info("Nothing to release (no changed projects).")
+        return
+
+    # Build all projects after another (S-REL): each project's own
+    # prepare → gate → tag → build → publish → promote cycle runs to completion
+    # before the next project starts. This is what lets a later project (e.g. an
+    # OCI image) resolve an earlier project's (e.g. a wheel) brand-new release
+    # within this SAME `cmru release` run, instead of always trailing one run
+    # behind. If project N fails, its exact candidate remains on the retained
+    # transaction branch and already-published projects before it are left alone.
+    workspace = _transaction_workspace_from_env(repo_root)
+    transaction.write_release_scope(repo_root, workspace, release_names)
+    transaction.push_backup_branch(workspace, git_auth=git_auth)
+    log_info(f"Pushed release candidate {workspace.branch} to origin (durability).")
+
+    released = _release_projects_sequentially(
+        repo_root, configs, workspace, release_names,
+        github_config=github_config, env_config=env_config,
+        git_auth=git_auth,
+        no_build=vargs.no_build, minor=vargs.minor, major=vargs.major,
+        set_version=vargs.set_version,
+    )
+
+    if released:
+        log_info(f"Released: {', '.join(released)}")
+    elif vargs.no_build:
+        log_info("Tagged only (--no-build); nothing built or published.")
+    else:
+        log_info("Nothing built or published (see per-project log above for why).")
 
 
 def _usage_error(message: str) -> None:
