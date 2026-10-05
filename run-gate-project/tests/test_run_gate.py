@@ -5949,6 +5949,26 @@ def test_status_reports_unreadable_inflight_directory(tmp_path, monkeypatch):
     assert "directory scan denied" in errors[0]
 
 
+def test_status_reports_inflight_directory_stat_failure(tmp_path, monkeypatch):
+    project = tmp_path / "project"
+    directory = project / ".run-gate" / "inflight"
+    directory.mkdir(parents=True)
+    original_lstat = Path.lstat
+
+    def denied(path, *args, **kwargs):
+        if path == directory:
+            raise PermissionError("directory stat denied")
+        return original_lstat(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "lstat", denied)
+    records, errors = run_gate._read_inflight_status(project, tmp_path)
+
+    assert records == []
+    assert len(errors) == 1
+    assert "cannot list inflight directory" in errors[0]
+    assert "directory stat denied" in errors[0]
+
+
 def test_status_reports_inflight_directory_removed_during_listing(
         tmp_path, monkeypatch):
     project = tmp_path / "project"
@@ -6202,6 +6222,10 @@ def test_status_lane_name_can_be_recovered_from_proc_cmdline(tmp_path):
     assert run_gate._status_command_lane(789, tmp_path) is None
     cmdline.write_bytes(b"python\0--version\0")
     assert run_gate._status_command_lane(789, tmp_path) is None
+    cmdline.write_bytes(
+        b"run-gate.py\0--worktree\0/worktrees/x\0--base\0main\0"
+        b"--json\0--allow-dirty\0")
+    assert run_gate._status_command_lane(789, tmp_path) is None
     assert run_gate._status_command_lane(790, tmp_path) is None
 
 
@@ -6238,7 +6262,10 @@ def test_status_human_output_reports_lock_and_admission_occupancy(
                 "visible_admission_objects": [{
                     "name": "ciu-admission-1", "generation": 1,
                     "docker_status": "created", "identity_readable": False,
-                    "max_concurrent_readable": False}],
+                    "max_concurrent_readable": False}, {
+                    "name": "ciu-admission-readable", "generation": 2,
+                    "docker_status": "running", "identity_readable": True,
+                    "max_concurrent_readable": True}],
                 "tickets": [
                     {"name": "ciu-res-gates-1", "state": "running",
                      "owner": {"lane": "schema", "pid": 10},
@@ -6262,6 +6289,7 @@ def test_status_human_output_reports_lock_and_admission_occupancy(
     assert "unreadable:" in out
     assert "published=ciu-admission-2 cap=2 cap_readable=true" in out
     assert "unreadable admission object: ciu-admission-1" in out
+    assert "unreadable admission object: ciu-admission-readable" not in out
     assert "ciu-res-gates-1: running lane=schema pid=10" in out
     assert "ciu-res-gates-2: unreadable-live lane=(unreadable)" in out
 
@@ -6353,6 +6381,16 @@ def test_status_worktree_selects_its_config_and_inflight_scope(
     assert result["scope"]["config"] == str(
         selected_project / "run-gate.toml")
     assert [row["lane"] for row in result["inflight"]] == ["target-lane"]
+
+
+def test_status_rejects_lane_execution_options(tmp_path, monkeypatch, capsys):
+    repo = make_repo(tmp_path)
+    project = make_project(repo, "schema_version = 1\n")
+    monkeypatch.setattr(sys, "argv", [str(_TOOL_INVOKE)])
+    monkeypatch.chdir(project)
+
+    assert run_gate.main(["status", "--dry-run"]) == 2
+    assert "status accepts only" in capsys.readouterr().err
 
 
 @pytest.mark.parametrize("published, remedy", [
@@ -23967,3 +24005,109 @@ class TestFinalChangedLineCoverageOracles:
         result = run_gate._dispatch(["unit", "--allow-dirty"])
         assert result.verdict == "ERROR"
         assert result.reason == "missing-or-invalid-assay-identity-mode"
+
+
+def test_unknown_schema_foreign_runner_names_its_lifecycle_owner(
+        tmp_path):
+    path = tmp_path / "inflight.json"
+    path.write_text(json.dumps({"schema": 99, "container": "runner",
+                                "runner": "exec"}))
+
+    with pytest.raises(run_gate.GateError,
+                       match="names runner 'exec'.*lifecycle owner"):
+        run_gate.load_inflight_record(path)
+
+    assert path.exists()
+
+
+def test_inflight_assay_contract_rejects_null_identity_mode_for_assay(
+        tmp_path):
+    pending = {"container": "runner", "assay_identity_mode": None}
+
+    with pytest.raises(run_gate.GateError,
+                       match="does not contain a valid assay_identity_mode") as exc:
+        run_gate.validate_inflight_assay_contract(
+            pending, "unit", tmp_path,
+            {"kind": "assay", "assay_lane": "unit"},
+            fresh_supported=False)
+
+    assert "cannot use --fresh" in str(exc.value)
+
+
+def test_inflight_assay_contract_rejects_unsafe_assay_lane_identity(
+        tmp_path):
+    pending = {"container": "runner", "assay_identity_mode": "source"}
+
+    with pytest.raises(run_gate.GateError,
+                       match="no safe assay_lane identity"):
+        run_gate.validate_inflight_assay_contract(
+            pending, "unit", tmp_path,
+            {"kind": "assay", "assay_lane": "../other"})
+
+
+def test_lane_supports_fresh_uses_assay_defaults_and_central_environments():
+    assert run_gate.lane_supports_fresh(
+        {"kind": "assay"}, {},
+        {"environments": {"runner": {"mode": "ephemeral"}}},
+        {"environment": "runner"})
+    assert run_gate.lane_supports_fresh(
+        {"kind": "command", "environment": "runner"}, {},
+        {"environments": {"runner": {"mode": "ephemeral"}}}, {})
+    assert not run_gate.lane_supports_fresh(
+        {"kind": "command"}, {}, {}, {})
+
+
+def test_inflight_preflight_walks_cycles_and_reuses_checked_members(
+        tmp_path, monkeypatch):
+    cfg = {
+        "environments": {"local": {"mode": "ephemeral"}},
+        "lanes": {
+            "suite": {"kind": "sequence",
+                      "lanes": ["child", "child", "suite"]},
+            "child": {"kind": "sequence", "lanes": ["leaf"]},
+            "leaf": {"kind": "command", "environment": "local"},
+        },
+    }
+    monkeypatch.setattr(run_gate, "load_inflight_record",
+                        lambda *_args, **_kwargs: None)
+
+    run_gate.preflight_inflight_assay_contract(
+        SimpleNamespace(help=False, list=False, check_env=False,
+                        lane="suite", fresh=False),
+        cfg, {}, {}, tmp_path)
+
+
+def test_sequence_inflight_record_with_null_identity_is_previous_container(
+        tmp_path, monkeypatch):
+    cfg = {"lanes": {"suite": {"kind": "sequence", "lanes": []}}}
+    monkeypatch.setattr(
+        run_gate, "load_inflight_record",
+        lambda *_args, **_kwargs: {"container": "runner",
+                                   "assay_identity_mode": None})
+
+    with pytest.raises(run_gate.GateError,
+                       match="belongs to a previous container lane"):
+        run_gate.preflight_inflight_assay_contract(
+            SimpleNamespace(help=False, list=False, check_env=False,
+                            lane="suite", fresh=False),
+            cfg, {}, {}, tmp_path)
+
+
+@pytest.mark.parametrize("members,extra_lanes", [
+    (("unknown",), {}),
+    ([None], {}),
+    (["unsupported"], {"unsupported": {"kind": "custom"}}),
+])
+def test_sequence_fresh_refuses_when_members_are_not_ephemeral(
+        tmp_path, monkeypatch, members, extra_lanes):
+    lanes = {"suite": {"kind": "sequence", "lanes": members},
+             **extra_lanes}
+    monkeypatch.setattr(run_gate, "load_inflight_record",
+                        lambda *_args, **_kwargs: None)
+
+    with pytest.raises(run_gate.GateError,
+                       match="has no ephemeral member container"):
+        run_gate.preflight_inflight_assay_contract(
+            SimpleNamespace(help=False, list=False, check_env=False,
+                            lane="suite", fresh=True),
+            {"lanes": lanes}, {}, {}, tmp_path)
