@@ -1443,3 +1443,94 @@ def test_nested_damonsession_inside_tempcaps_with_exception_releases_both(fake_d
     assert fake_damon.state_of(0) == "off"
     assert fake_damon.nr_kdamonds() == 0
     assert target.read_text().strip() == before
+
+
+def test_pool_confirm_off_fails_closed_when_state_is_unreadable(fake_damon, monkeypatch):
+    def unreadable_state(cls, idx):
+        raise OSError(errno.EIO, "synthetic unreadable state")
+
+    monkeypatch.setattr(fake_damon, "kdamond_state", classmethod(unreadable_state))
+    assert not damon.KdamondPool()._confirm_off(7)
+
+
+def test_pool_refuses_capacity_reservation_when_counter_cannot_be_proven(fake_damon, monkeypatch):
+    readings = iter((0, None))
+    monkeypatch.setattr(damon, "_read_nr_kdamonds", lambda: next(readings))
+    pool = damon.KdamondPool()
+    pool._baseline = 0
+
+    with pytest.raises(damon.DamonSessionError, match="cannot prove the next pool-owned"):
+        pool.acquire()
+
+    assert not any(call[0] == "create_kdamond" for call in fake_damon.calls)
+    assert pool.live_indices == frozenset()
+
+
+def test_pool_quarantines_free_slot_if_it_is_not_off_at_claim_time(fake_damon, monkeypatch):
+    pool = damon.KdamondPool()
+    reserve = pool._reserve_capacity
+
+    def reserve_then_start(baseline):
+        reserve(baseline)
+        fake_damon.kdamond_on(0)
+
+    monkeypatch.setattr(pool, "_reserve_capacity", reserve_then_start)
+    with pytest.raises(damon.DamonSessionError, match="no verified-off"):
+        pool.acquire()
+
+    assert pool.live_indices == frozenset()
+    assert pool.quarantined_indices == frozenset({0})
+    assert fake_damon.state_of(0) == "on"
+
+
+def test_pool_does_not_restore_baseline_while_a_slot_is_live(fake_damon):
+    pool = damon.KdamondPool()
+    idx = pool.acquire()
+
+    assert not pool._restore_baseline()
+    assert pool.live_indices == frozenset({idx})
+    assert fake_damon.nr_kdamonds() == 1
+
+
+def test_zero_capacity_pool_close_clears_captured_baseline(fake_damon):
+    pool = damon.KdamondPool(capacity=0)
+    with pytest.raises(damon.DamonSessionError, match="capacity=0"):
+        pool.acquire()
+
+    assert pool._baseline == 0
+    assert pool.close()
+    assert pool._baseline is None
+    assert fake_damon.nr_kdamonds() == 0
+
+
+def test_pool_retains_ownership_when_baseline_readback_disagrees(fake_damon, monkeypatch):
+    pool = damon.KdamondPool()
+    idx = pool.acquire()
+    # The write succeeds in the fake sysfs, but the independent readback does
+    # not confirm it. Keep the ownership ledger for a later safe retry.
+    monkeypatch.setattr(damon, "_read_nr_kdamonds", lambda: 1)
+
+    assert pool.release(idx)
+
+    assert fake_damon.nr_kdamonds() == 0
+    assert pool._baseline == 0
+    assert pool._owned == {idx}
+    assert pool._free == {idx}
+
+
+def test_solo_teardown_does_not_shrink_when_state_readback_is_unavailable(
+    fake_damon, monkeypatch,
+):
+    session = damon.DamonSession([make_target()])
+    session.__enter__()
+
+    def unreadable_state(cls, idx):
+        raise OSError(errno.EIO, "synthetic state readback failure")
+
+    monkeypatch.setattr(fake_damon, "kdamond_state", classmethod(unreadable_state))
+    session._teardown()
+
+    assert not session.cleanup_confirmed
+    assert fake_damon.nr_kdamonds() == 1
+    assert not [call for call in fake_damon.calls
+                if call[0] == "_write_int" and call[1].endswith("nr_kdamonds")]

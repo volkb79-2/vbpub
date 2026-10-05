@@ -311,22 +311,13 @@ class KdamondPool:
         except Exception:
             return False
 
-    def _reserve_capacity(self) -> None:
-        if self._baseline is None:
-            baseline = _read_nr_kdamonds()
-            if baseline is None or baseline < 0:
-                raise DamonSessionError(
-                    "cannot determine nr_kdamonds baseline; refusing to claim a slot"
-                )
-            self._baseline = baseline
-
+    def _reserve_capacity(self, baseline: int) -> None:
         if self._live or self._quarantined:
             raise DamonSessionError(
                 "cannot grow the DAMON pool while an owned kdamond may be running"
             )
 
         while len(self._owned) < self.capacity:
-            baseline = self._baseline
             current = _read_nr_kdamonds()
             expected = max(self._owned, default=baseline - 1) + 1
             if current is None or current < expected:
@@ -377,7 +368,8 @@ class KdamondPool:
     def acquire(self) -> int:
         """Claim a verified-off pool-owned index without resizing live sysfs."""
         with self._lock:
-            if self._baseline is None:
+            baseline = self._baseline
+            if baseline is None:
                 baseline = _read_nr_kdamonds()
                 if baseline is None or baseline < 0:
                     raise DamonSessionError(
@@ -391,7 +383,7 @@ class KdamondPool:
             # turned on. A partial reservation can be used, but capacity is
             # immutable until every owned monitor is confirmed off again.
             if len(self._owned) < self.capacity and not self._free:
-                self._reserve_capacity()
+                self._reserve_capacity(baseline)
 
             for idx in sorted(self._free):
                 current = _read_nr_kdamonds()

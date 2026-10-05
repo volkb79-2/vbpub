@@ -6750,3 +6750,19 @@ counter reading fail closed rather than classify every live slot as missing.
 This failed gate is not coverage or release evidence. No next gate is launched
 by this ruling; it requires a fresh PSI/container preflight after the test
 fixture correction is committed.
+
+### RW-445 — 2026-10-05 06:15:38Z — functional pass is insufficient while DAMON lifecycle coverage is below 100%
+
+The registered `r0-r1` gate on `b30eca82100711f53ebf63839facdb4b50b4183a`
+completed with 2,299 tests passing but failed its mandatory coverage check
+(run `2fba4b01b6a3b08b8729711c682e2752`; history verdict FAIL, internal
+`exit_code=2`, 212.496 seconds; wrapper exit 1; log
+`/tmp/run-gate/lanes/r0-r1/2fba4b01b6a3b08b8729711c682e2752.log`). The package
+reported 15 uncovered statements and 6 partial branches in `lib/damon.py`
+(96% file line coverage; 99% total), including uncertain state/readback,
+reservation, quarantine, and teardown paths. Do not treat the passing test
+count as gate evidence. The candidate now adds behavioral tests for those
+failure paths and makes `_reserve_capacity` receive the already-validated
+baseline from `acquire`, removing its otherwise unreachable duplicate baseline
+capture. A fresh exact-tree `r0-r1` run is required after commit; current PSI
+has fallen below the launch threshold, but it must be checked again at launch.
