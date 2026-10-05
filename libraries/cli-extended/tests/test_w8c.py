@@ -129,3 +129,86 @@ def test_listed_dataclasses_are_frozen_and_reject_assignment(module_name, class_
             setattr(instance, field.name, object())
     with pytest.raises(dataclasses.FrozenInstanceError):
         delattr(instance, dataclasses.fields(cls)[0].name)
+
+
+# --------------------------------------- verb option defaults (batch 2)
+
+import io  # noqa: E402
+
+from cli_extended import CliIdentity, CliRegistry, OptionSpec, VerbSpec  # noqa: E402
+
+
+def _defaults_cli(seen):
+    registry = CliRegistry(
+        CliIdentity("T", "1.0", "T", command="t"),
+        prog="t",
+        description="d",
+        global_options=(OptionSpec(("--config",), "global config"),),
+    )
+    registry.register(VerbSpec(
+        "go",
+        description="go",
+        handler=lambda args, runtime: seen.append(args) or 0,
+        options=(
+            OptionSpec(("--hours",), "hours"),
+            OptionSpec(("--flag",), "flag", parser_kwargs={"action": "store_true"}),
+            OptionSpec(("--limit",), "limit", parser_kwargs={"type": int, "default": 3}),
+            OptionSpec(("--cfg",), "collides with the global", parser_kwargs={"dest": "config"}),
+        ),
+    ))
+    return registry.build()
+
+
+def _invoke(seen, *argv):
+    app = _defaults_cli(seen)
+    code = app.run(argv=list(argv), stdout=io.StringIO(), stderr=io.StringIO())
+    assert code == 0
+    return seen[-1]
+
+
+def test_omitted_verb_options_are_readable_with_argparse_defaults():
+    seen = []
+    args = _invoke(seen, "go")
+    assert args.hours is None
+    assert args.flag is False
+    assert args.limit == 3  # an explicit default is honoured
+    assert args.config is None
+
+
+def test_given_verb_options_still_parse():
+    seen = []
+    args = _invoke(seen, "go", "--hours", "4", "--flag", "--limit", "9")
+    assert (args.hours, args.flag, args.limit) == ("4", True, 9)
+
+
+def test_colliding_dest_keeps_the_root_parsed_value_before_the_verb():
+    seen = []
+    assert _invoke(seen, "--config", "root.toml", "go").config == "root.toml"
+
+
+def test_colliding_dest_accepts_a_value_after_the_verb():
+    seen = []
+    assert _invoke(seen, "go", "--config", "late.toml").config == "late.toml"
+    assert _invoke(seen, "go", "--cfg", "verb.toml").config == "verb.toml"
+    assert _invoke(seen, "--config", "root.toml", "go", "--hours", "1").config == "root.toml"
+
+
+def test_explicit_default_on_a_colliding_dest_is_honoured():
+    seen = []
+    registry = CliRegistry(
+        CliIdentity("T", "1.0", "T", command="t"),
+        prog="t",
+        description="d",
+        global_options=(OptionSpec(("--config",), "global config"),),
+    )
+    registry.register(VerbSpec(
+        "go",
+        description="go",
+        handler=lambda args, runtime: seen.append(args) or 0,
+        options=(OptionSpec(
+            ("--cfg",), "c", parser_kwargs={"dest": "config", "default": "dflt"}
+        ),),
+    ))
+    code = registry.build().run(argv=["go"], stdout=io.StringIO(), stderr=io.StringIO())
+    assert code == 0
+    assert seen[0].config == "dflt"

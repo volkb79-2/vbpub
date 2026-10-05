@@ -465,7 +465,14 @@ reason)` (exported from `cli_extended`; `Constraint` names the union).
    action's default: not `None` for a `None` default, not `False` for a
    `False` default, non-empty for an empty list or tuple default. A value left
    at a suppressed default (a repeated global or library control) is absent.
-   Rule 2 exists so presence cannot be misdetected.
+   Rule 2 exists so presence cannot be misdetected. A verb option without an
+   explicit `default` keeps argparse's own default (`None`, `False` for
+   `store_true`, and so on), so a handler can read every declared option as an
+   attribute whether or not it was given. The one exception is an option whose
+   `dest` equals a destination the root parser defines (a global option or a
+   library control): its default is suppressed so the verb parser cannot
+   overwrite the value the root already parsed. An explicit `default=` is
+   always honoured.
 4. **Enforcement.** After argparse succeeds and after the refusals for
    unsupported `--json`, `--dry-run` and `--progress`, and before the runtime
    is built or the handler runs, the first violated constraint in declaration

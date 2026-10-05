@@ -111,6 +111,13 @@ that CLI sets `dry_run=True`.
 
 ## Replacing handler-side option checks and name-list parsing
 
+**Every declared option is an attribute.** A handler can read each option of
+its verb as `args.<dest>` whether or not it was given: `None` (or `False` for
+`store_true`) when omitted, or your explicit `parser_kwargs={"default": ...}`.
+Do not add `default=None` or `getattr(args, "hours", None)` guards. The one
+exception is an option whose `dest` equals a global option's or a library
+control's: it keeps the value parsed before the verb.
+
 **Declared constraints.** CMRU's `tool-deps` handler refused `--dry-run`
 without a mode and `--refresh` with `--json` after parsing. Before:
 

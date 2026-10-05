@@ -153,17 +153,17 @@ def test_option_markdown_documents_choices_required_exclusivity_and_defaults():
     )
 
 
-def test_option_add_to_preserves_explicit_default_and_suppresses_implicit_default():
+def test_option_add_to_force_suppress_overrides_even_an_explicit_default():
     parser = argparse.ArgumentParser(add_help=False)
     implicit = OptionSpec(("--implicit",), "implicit value")
     explicit = OptionSpec(
         ("--explicit",), "explicit value", parser_kwargs={"default": "kept"}
     )
-    implicit.add_to(parser, suppress_default=True)
-    explicit.add_to(parser, suppress_default=True)
+    implicit.add_to(parser, force_suppress_default=True)
+    explicit.add_to(parser, force_suppress_default=True)
     parsed = parser.parse_args([])
     assert not hasattr(parsed, "implicit")
-    assert parsed.explicit == "kept"
+    assert not hasattr(parsed, "explicit")
 
 
 def test_option_add_to_keeps_argparse_defaults_by_default():
