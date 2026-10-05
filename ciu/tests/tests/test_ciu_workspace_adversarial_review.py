@@ -990,10 +990,21 @@ def test_ensure_repairs_a_legacy_ready_record_missing_nested_facts(monkeypatch, 
         metadata={**dict(shared_state.metadata), "root_entries": []},
     ))
 
+    git_calls = []
+    real_git = worktree._git
+
+    def record_git(args, *positional, **kwargs):
+        git_calls.append((list(args), dict(kwargs)))
+        return real_git(args, *positional, **kwargs)
+
+    monkeypatch.setattr(worktree, "_git", record_git)
     repaired = worktree.ensure(primary, "demo")
     assert repaired.state == "ready"
     assert nested_facts.is_file()
     assert len(generated) == 2
+    # Readiness repair must not check out the recorded base again; ensure is
+    # repairing missing facts rather than reallocating the checkout.
+    assert not any(args[:2] == ["reset", "--hard"] for args, _kwargs in git_calls)
 
 
 def test_create_wraps_a_non_workspace_multi_root_failure(monkeypatch, tmp_path):
