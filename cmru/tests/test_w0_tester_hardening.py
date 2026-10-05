@@ -469,3 +469,38 @@ def test_physical_path_tie_picks_the_visible_last_mount():
 def test_handlers_host_bind_source_tie_picks_the_visible_last_mount(monkeypatch):
     monkeypatch.setattr(handlers.Path, "read_text", lambda *a, **k: SHADOWED)
     assert handlers._host_bind_source(Path("/cockpit/cmru")) == "/visible/cmru"
+
+
+# --- signal-handler scoping and a shared .cmru directory
+
+def test_terminate_as_exit_installs_and_restores_handlers_and_tolerates_other_threads():
+    import threading
+
+    before = {s: signal.getsignal(s) for s in (signal.SIGTERM, signal.SIGHUP)}
+    with tester_gate._terminate_as_exit():
+        for signum in before:
+            assert signal.getsignal(signum) is not before[signum]
+            with pytest.raises(SystemExit) as exited:
+                signal.raise_signal(signum)
+            assert exited.value.code == 128 + signum
+    assert {s: signal.getsignal(s) for s in before} == before
+
+    outcome = []
+
+    def worker():  # signal.signal() is main-thread only: must degrade, not crash
+        with tester_gate._terminate_as_exit():
+            outcome.append("ran")
+
+    thread = threading.Thread(target=worker)
+    thread.start()
+    thread.join()
+    assert outcome == ["ran"]
+
+
+def test_other_files_in_the_cmru_directory_survive_a_gate_run(fake_docker):
+    (fake_docker.repo / ".cmru").mkdir()
+    keep = fake_docker.repo / ".cmru" / "someone-elses.txt"
+    keep.write_text("keep")
+    assert _run_gate() == 0
+    assert keep.read_text() == "keep"
+    assert [p.name for p in (fake_docker.repo / ".cmru").iterdir()] == ["someone-elses.txt"]

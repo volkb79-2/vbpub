@@ -182,3 +182,16 @@ def test_standards_requires_every_dind_limit_for_a_docker_enabled_gate(tmp_path,
     out = capsys.readouterr().out
     assert ("Docker-enabled tester-gate requires explicit CMRU_TESTER_DIND_MEMORY, "
             "CMRU_TESTER_DIND_CPUS, CMRU_TESTER_DIND_PIDS_LIMIT in [env]") in out
+
+
+def test_standards_accepts_a_docker_enabled_gate_with_every_dind_input(tmp_path, capsys):
+    config, _project = _gate_project(
+        tmp_path, docker=True,
+        extra_env=(
+            'CMRU_TESTER_PIDS_LIMIT = "4096"\nCMRU_TESTER_DIND_IMAGE = "docker@sha256:x"\n'
+            'CMRU_TESTER_DIND_MEMORY = "2g"\nCMRU_TESTER_DIND_CPUS = "1.5"\n'
+            'CMRU_TESTER_DIND_PIDS_LIMIT = "2048"\n'
+        ),
+    )
+    capsys.readouterr()
+    assert standards_main(["demo", "--config", str(config)]) == 0
