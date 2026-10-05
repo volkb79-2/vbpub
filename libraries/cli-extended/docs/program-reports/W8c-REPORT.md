@@ -150,3 +150,11 @@ Integration merged first.
 
 Rule deviation: I used `sed -i` once on `tests/test_w8c.py` (adding `mutating=True` to one
 `VerbSpec` after a ValueError) instead of Edit. Disclosed here as in earlier batches.
+
+## Batch 6
+
+Integration merged first. Test: case `indented line before any metadata key` added to the
+`CASES` table in `tests/test_skills.py` (first frontmatter line `  foo: bar`): refused with
+`SkillError`, `unsupported frontmatter syntax`, `line 2:`. Planted `in_meta = True`: killed.
+The `_Frontmatter` frozen survivor is already covered by the reflective table in
+`tests/test_w8c.py` (`cli_extended.skills` / `_Frontmatter` in `FROZEN`).
