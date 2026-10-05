@@ -536,6 +536,23 @@ def resolve_identities(
                 environ=environment,
             )
 
+        try:
+            import yaml
+        except ImportError as exc:
+            raise RuntimeError("[S18] PyYAML is required to resolve Compose identities") from exc
+        try:
+            compose_doc = yaml.safe_load(rendered_compose) or {}
+        except yaml.YAMLError as exc:
+            raise ValueError(f"[S18] rendered compose for {rel!r} is invalid: {exc}") from exc
+        services = compose_doc.get("services", {}) if isinstance(compose_doc, dict) else {}
+        if not isinstance(services, dict):
+            raise ValueError(f"[S18] rendered compose for {rel!r} has no services table")
+        for service_name, service_config in services.items():
+            if not isinstance(service_config, dict):
+                raise ValueError(
+                    f"[S18] rendered service {rel}:{service_name} must be a table"
+                )
+
         if require_closed_image_map:
             try:
                 if image_isolation.compose_may_import_service_definitions(
@@ -549,20 +566,25 @@ def resolve_identities(
                 raise ValueError(
                     f"[CIU-117] cannot read the primary image map for {rel!r}: {exc}"
                 ) from exc
-        rendered_compose = engine.scope_worktree_compose_images(
+        scoped_compose = engine.scope_worktree_compose_images(
             repo_root, rendered_compose
         )
-        try:
-            import yaml
-        except ImportError as exc:
-            raise RuntimeError("[S18] PyYAML is required to resolve Compose identities") from exc
-        try:
-            compose_doc = yaml.safe_load(rendered_compose) or {}
-        except yaml.YAMLError as exc:
-            raise ValueError(f"[S18] rendered compose for {rel!r} is invalid: {exc}") from exc
-        services = compose_doc.get("services", {}) if isinstance(compose_doc, dict) else {}
-        if not isinstance(services, dict):
-            raise ValueError(f"[S18] rendered compose for {rel!r} has no services table")
+        if scoped_compose != rendered_compose:
+            rendered_compose = scoped_compose
+            try:
+                compose_doc = yaml.safe_load(rendered_compose) or {}
+            except yaml.YAMLError as exc:
+                raise ValueError(
+                    f"[S18] scoped compose for {rel!r} is invalid: {exc}"
+                ) from exc
+            services = (
+                compose_doc.get("services", {})
+                if isinstance(compose_doc, dict) else {}
+            )
+            if not isinstance(services, dict):
+                raise ValueError(
+                    f"[S18] scoped compose for {rel!r} has no services table"
+                )
 
         try:
             compose_project = engine.compose_project_name(profile.config, stack_dir)
