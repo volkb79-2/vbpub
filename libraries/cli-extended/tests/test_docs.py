@@ -115,13 +115,6 @@ def test_spec_contract_subsection_names_every_library_control():
     assert f"version `{CONTRACT_VERSION}`" in section
 
 
-# The parallel Netcup package renames cli-review.toml to this file. It is not in
-# this branch yet; the controller removes this constant at the Netcup merge.
-PENDING_NETCUP_RENAME = (
-    PACKAGE_ROOT.parents[1] / "scripts" / "netcup" / "cli-review-monitor-task.toml"
-)
-
-
 def test_library_document_markdown_links_and_anchors_resolve():
     for source_path in LINK_CHECK_DOCS:
         source = _without_fenced_blocks(source_path.read_text(encoding="utf-8"))
@@ -137,8 +130,6 @@ def test_library_document_markdown_links_and_anchors_resolve():
                 else source_path.resolve()
             )
             if not parsed.path and not parsed.fragment:
-                continue
-            if target_path == PENDING_NETCUP_RENAME.resolve() and not target_path.exists():
                 continue
             assert target_path.is_file(), (
                 f"{source_path} links to missing document {parsed.path!r}"
