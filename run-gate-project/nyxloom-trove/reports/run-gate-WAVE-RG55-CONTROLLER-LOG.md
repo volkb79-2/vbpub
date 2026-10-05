@@ -6674,3 +6674,13 @@ visible tester container inspected belonged to `cli-extended`'s worktree, not
 this wave; it was left untouched and is not RG-55 evidence. Startup-fix HEAD
 `38291bb58f20f5d4dd4dbeab397ac456ef810801` is clean and passes `git diff
 --check`; registered gates remain pending.
+
+### RW-441 — 2026-10-05 03:21:48Z — operator authorizes one gate despite PSI hold
+
+The operator explicitly directed “launch regardless” after RW-439/RW-440
+recorded memory PSI above the 5% launch ceiling. Scope this override to one
+bounded, non-mutation `r0-r1` gate on the current startup-fix candidate. Keep
+the gate in `dev-gates.slice` with the gate's verified 3-CPU cap; this does not
+authorize a mutation campaign, extra probe workload, or changes to another
+agent's containers. Preserve the preflight reading (`memory full avg10=19.39`)
+and disclose it with the verdict.
