@@ -25,6 +25,90 @@ installed. For source-run tools, pass the version from that project's checked-in
 version module/metadata. Do not invent a fallback. `cli-extended` itself uses
 its explicit `[project].version` in its `pyproject.toml`.
 
+## Replacing hand-rolled version lookup, exception wrappers, and --dry-run
+
+Three patterns recur in adopted CLIs and are now library features.
+
+**Version lookup.** Netcup's `monitor-task.py` read a `VERSION` file with its
+own regex. Before:
+
+```python
+_VERSION_PATH = Path(__file__).resolve().parent / "VERSION"
+
+def _read_version() -> str:
+    version = _VERSION_PATH.read_text(encoding="utf-8").strip()
+    if not re.fullmatch(r"\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?", version):
+        raise ValueError(f"invalid Netcup CLI version in {_VERSION_PATH}: {version!r}")
+    return version
+
+IDENTITY = CliIdentity(name="NETCUP SCP", command="monitor-task",
+                       version=_read_version(), long_name="Netcup task monitor")
+```
+
+After (add `distribution=` as well once the script ships as a wheel):
+
+```python
+IDENTITY = CliIdentity.resolve(
+    name="NETCUP SCP",
+    command="monitor-task",
+    long_name="Netcup task monitor",
+    version_file=Path(__file__).resolve().parent / "VERSION",
+)
+```
+
+**Exception wrapper.** nyxloom's `_invoke` wrapped every handler to print
+`error: ...` and return `1` unless `--traceback` was given, and declared its
+own `--traceback` option. Before:
+
+```python
+try:
+    return handler(args)
+except (CliFailure, PromptCancelled, KeyboardInterrupt, SystemExit):
+    raise
+except Exception as exc:
+    if bool(getattr(args, "traceback", False)):
+        raise
+    print(f"error: {exc}", file=runtime.output.stderr)
+    return 1
+```
+
+After: delete the wrapper and the consumer `--traceback` option (the library
+refuses a duplicate), and register the policy once:
+
+```python
+registry = CliRegistry(
+    identity, prog="nyxloom", description="...",
+    unexpected_exceptions="report",
+    expected_exceptions=(DomainError,),
+)
+```
+
+**`--dry-run`.** Netcup's `install-host.py` declares its own `--dry-run` and
+reads it with `getattr(args, "dry_run", False)` in many places. Before:
+
+```python
+if getattr(args, "dry_run", False):
+    print("DRY RUN: would reinstall", server)
+    return 0
+```
+
+After: mark the verb and let the confirmation gate do the work. Remove the
+consumer `OptionSpec(("--dry-run",), ...)` first; `build()` refuses both.
+
+```python
+VerbSpec("install", description="Install a host.", mutating=True,
+         dry_run=True, handler=install)
+
+def install(args, runtime):
+    runtime.output.info(f"would reinstall {args.server}")  # preview first
+    if not runtime.confirm(f"Reinstall {args.server}?"):
+        return 0  # --dry-run prints "Dry run: no changes made." and lands here
+    reinstall(args.server)
+```
+
+Until a CLI migrates, its own `--dry-run` stays legal as long as no verb in
+that CLI sets `dry_run=True`.
+
 ## Turn an interface inventory into registrations
 
 Before editing parser code, write down the operator-facing verbs/actions and
