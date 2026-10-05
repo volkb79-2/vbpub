@@ -25,6 +25,10 @@ EXTERNAL_DOC_ARTIFACTS = (
 ESTATE_CONFIG_FIXTURES = (
     Path("topos/cmru.toml"),
     Path("nyxloom/cmru.toml"),
+    # test_tls_edge_retained_tarball_inventory_... reads the tls-edge config and
+    # its artifact script; without them the canary control run is red on main.
+    Path("tls-edge/cmru.toml"),
+    Path("tls-edge/scripts/build-artifact.sh"),
 )
 
 

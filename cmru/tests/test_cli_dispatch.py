@@ -674,8 +674,25 @@ def test_fresh_checkout_bootstrap_is_the_only_source_build_launcher():
 
 
 def test_bootstrap_script_runs_python_isolated_with_library_roots_and_commit_epoch(tmp_path):
-    repo_root = Path(__file__).resolve().parents[2]
+    # A throw-away tree with its own git history: the gate fixtures copy the
+    # project without .git, so the real checkout cannot be assumed here.
+    repo_root = (tmp_path / "tree").resolve()
+    (repo_root / "cmru").mkdir(parents=True)
+    source_script = Path(__file__).resolve().parents[1] / "build-initial-standalone.sh"
     bootstrap = repo_root / "cmru" / "build-initial-standalone.sh"
+    bootstrap.write_text(source_script.read_text(encoding="utf-8"), encoding="utf-8")
+    bootstrap.chmod(0o755)
+    commit_env = {
+        **os.environ,
+        "GIT_AUTHOR_DATE": "2023-11-14T22:13:20+00:00",
+        "GIT_COMMITTER_DATE": "2023-11-14T22:13:20+00:00",
+    }
+    subprocess.run(["git", "init", "-q", str(repo_root)], check=True)
+    subprocess.run(
+        ["git", "-C", str(repo_root), "-c", "user.name=t", "-c", "user.email=t@t",
+         "commit", "-q", "--allow-empty", "-m", "init"],
+        check=True, env=commit_env,
+    )
     record = tmp_path / "record.txt"
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
@@ -708,11 +725,7 @@ def test_bootstrap_script_runs_python_isolated_with_library_roots_and_commit_epo
         str(repo_root / "libraries" / "cli-extended" / "src"),
         str(repo_root / "libraries" / "worktree" / "src"),
     ]
-    head = subprocess.run(
-        ["git", "-C", str(repo_root), "log", "-1", "--format=%ct"],
-        capture_output=True, text=True, check=True,
-    ).stdout.strip()
-    assert lines["EPOCH"] == head
+    assert lines["EPOCH"] == "1700000000"
 
 
 def test_cleanup_delete_unmanaged_release_previews_then_refuses_without_confirmation(
