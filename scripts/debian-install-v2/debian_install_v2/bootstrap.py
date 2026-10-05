@@ -64,8 +64,8 @@ def _config_options() -> tuple[OptionSpec, ...]:
 
 
 def _load_config(args: Any, runtime: Any) -> Config:
-    config_path = getattr(args, "config", None)
-    config_json = getattr(args, "config_json", None)
+    config_path = args.config
+    config_json = args.config_json
     if not config_path and not config_json:
         raise CliFailure(
             "this verb requires --config FILE or --config-json JSON",
@@ -185,7 +185,7 @@ def _wizard(args: Any, runtime: Any) -> int:
 
     return run_configuration_wizard(
         output_path=args.output,
-        from_config=getattr(args, "from_config", None),
+        from_config=args.from_config,
         runtime=runtime,
         save=save_config,
     )
@@ -274,12 +274,10 @@ def _build_customscript(args: Any, runtime: Any) -> int:
     try:
         bundle = build_customscript_bundle(
             config,
-            repo_url=getattr(args, "repo_url", None),
-            repo_branch=getattr(args, "repo_branch", None),
-            bootstrap_url=getattr(args, "bootstrap_url", None),
-            controller_ssh_placeholder=getattr(
-                args, "controller_ssh_placeholder", False
-            ),
+            repo_url=args.repo_url,
+            repo_branch=args.repo_branch,
+            bootstrap_url=args.bootstrap_url,
+            controller_ssh_placeholder=args.controller_ssh_placeholder,
         )
     except (ValueError, ConfigError) as exc:
         raise CliFailure(str(exc), exit_code=2, show_help=True) from exc
@@ -486,7 +484,7 @@ def build_cli():
                     ("--controller-ssh-placeholder",),
                     "emit {{CONTROLLER_SSH_PUBKEY}} for a provider to replace at install time",
                     group="SSH KEY INTEGRATION",
-                    parser_kwargs={"action": "store_true", "default": False},
+                    parser_kwargs={"action": "store_true"},
                 ),
             ),
             handler=_build_customscript,

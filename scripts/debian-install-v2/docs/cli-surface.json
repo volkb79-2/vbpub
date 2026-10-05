@@ -15,7 +15,7 @@
           "option:route:entrypoint:debian-install-v2/build-customscript/--config-json"
         ]
       },
-      "signature": "sha256:f0317d8896f98136d1ba895adcb808fcb34d4a1aa98afc750093c0d9e7c75cb7"
+      "signature": "sha256:7073adc3495bc0790c401bf628477b7caeb9cade7b50c711af1f53e89d019714"
     },
     {
       "id": "case:route:entrypoint:debian-install-v2/build-customscript/exclusive-member/configuration-source/option:route:entrypoint:debian-install-v2/build-customscript/--config",
@@ -29,7 +29,7 @@
         "required": true,
         "selected_option": "option:route:entrypoint:debian-install-v2/build-customscript/--config"
       },
-      "signature": "sha256:53bc24ba6ef549686441d9306296c6887c53fa15833955f137a3bf096840289a"
+      "signature": "sha256:f0de54f425f3da39e60a9e75c040e9a86f3a86aca596fc429128e6c4033b76fa"
     },
     {
       "id": "case:route:entrypoint:debian-install-v2/build-customscript/exclusive-member/configuration-source/option:route:entrypoint:debian-install-v2/build-customscript/--config-json",
@@ -43,7 +43,7 @@
         "required": true,
         "selected_option": "option:route:entrypoint:debian-install-v2/build-customscript/--config-json"
       },
-      "signature": "sha256:c96c10dc9ba79486acede6353945a3a76de238c457154ba89c56ffeb1806af6a"
+      "signature": "sha256:e97b729ba61631cb12a8e787a8ca970a4732a72cc28ccaa7a55a7095b39aaf01"
     },
     {
       "id": "case:route:entrypoint:debian-install-v2/build-customscript/minimum",
@@ -72,7 +72,7 @@
         },
         "required_options": []
       },
-      "signature": "sha256:1eb6d10ffea4c78512c44edc4c637a1e02706df8b4f3527af99b354d1cc7b474"
+      "signature": "sha256:0fafbaaef9de83785f3c88eb76620b07c478bc84021ca1e9c9ccb2fea4518e38"
     },
     {
       "id": "case:route:entrypoint:debian-install-v2/build-customscript/option-spelling/option:route:entrypoint:debian-install-v2/build-customscript/--bootstrap-url/--bootstrap-url",
@@ -85,7 +85,7 @@
         "option_id": "option:route:entrypoint:debian-install-v2/build-customscript/--bootstrap-url",
         "spelling": "--bootstrap-url"
       },
-      "signature": "sha256:73d10ca31156f8f67be491e73651afda03fd408cbc5fd002435e7bed24d1df6c"
+      "signature": "sha256:3a3962bbe82aeebb464e1e84a3ff9c044c8d75d5bab45a15e75ace017c28648c"
     },
     {
       "id": "case:route:entrypoint:debian-install-v2/build-customscript/option-spelling/option:route:entrypoint:debian-install-v2/build-customscript/--config-json/--config-json",
@@ -98,7 +98,7 @@
         "option_id": "option:route:entrypoint:debian-install-v2/build-customscript/--config-json",
         "spelling": "--config-json"
       },
-      "signature": "sha256:57efe978f038ccbb8d462e2981e2137f4fe5b4edaa9e7b6c697a024c5383d91d"
+      "signature": "sha256:904ed0cd783761f2da48edb8f5f0a8dfe0f0c7a1677c966cfbdf5b906d7e205b"
     },
     {
       "id": "case:route:entrypoint:debian-install-v2/build-customscript/option-spelling/option:route:entrypoint:debian-install-v2/build-customscript/--config/--config",
@@ -111,7 +111,7 @@
         "option_id": "option:route:entrypoint:debian-install-v2/build-customscript/--config",
         "spelling": "--config"
       },
-      "signature": "sha256:f1af74f9ec88811450991dca9fa249f8da9ac037da4d4cdaaa2725d351250eba"
+      "signature": "sha256:54d5e9fede78b8f4ef8970fa76453005222d6e53ab2168bf21fe0beaeb7d45d0"
     },
     {
       "id": "case:route:entrypoint:debian-install-v2/build-customscript/option-spelling/option:route:entrypoint:debian-install-v2/build-customscript/--controller-ssh-placeholder/--controller-ssh-placeholder",
@@ -124,7 +124,7 @@
         "option_id": "option:route:entrypoint:debian-install-v2/build-customscript/--controller-ssh-placeholder",
         "spelling": "--controller-ssh-placeholder"
       },
-      "signature": "sha256:effa76a47a835d4d7c8e8c12cab05cb261edfc0f930b7a711913a071047d6577"
+      "signature": "sha256:f2006b12d480d740e32120f1625bfdf8c7904689324d847b9fc4f73eb9069847"
     },
     {
       "id": "case:route:entrypoint:debian-install-v2/build-customscript/option-spelling/option:route:entrypoint:debian-install-v2/build-customscript/--debug-raw/--debug-raw",
@@ -137,7 +137,7 @@
         "option_id": "option:route:entrypoint:debian-install-v2/build-customscript/--debug-raw",
         "spelling": "--debug-raw"
       },
-      "signature": "sha256:d3894f584519703f5f1dd04cb208fdc58593330b05ed5e0b33f197783966d6b2"
+      "signature": "sha256:4e4a1ceaf008e95766e723701254f0fbe6d7489e57eea20c8c47ae47eec80f4c"
     },
     {
       "id": "case:route:entrypoint:debian-install-v2/build-customscript/option-spelling/option:route:entrypoint:debian-install-v2/build-customscript/--repo-branch/--repo-branch",
@@ -150,7 +150,7 @@
         "option_id": "option:route:entrypoint:debian-install-v2/build-customscript/--repo-branch",
         "spelling": "--repo-branch"
       },
-      "signature": "sha256:f18c2f22d64a02d30b2ce20a7dba968960cd35436079340cc175eb5803cd39fb"
+      "signature": "sha256:8d5fc07fa49e97c9c67c09c846060a1458a314089a57fd2761918cf49318b072"
     },
     {
       "id": "case:route:entrypoint:debian-install-v2/build-customscript/option-spelling/option:route:entrypoint:debian-install-v2/build-customscript/--repo-url/--repo-url",
@@ -163,7 +163,7 @@
         "option_id": "option:route:entrypoint:debian-install-v2/build-customscript/--repo-url",
         "spelling": "--repo-url"
       },
-      "signature": "sha256:70a6e277ab76770410894df618b0b2ff80a7d4767adbcd44389a7da6dd1e4971"
+      "signature": "sha256:24195d6a5e2a91ea8861f45cf861e09f7ce0d248df072b68807003b26c09c667"
     },
     {
       "id": "case:route:entrypoint:debian-install-v2/disable-stage2/exclusive-conflict/configuration-source/option:route:entrypoint:debian-install-v2/disable-stage2/--config/option:route:entrypoint:debian-install-v2/disable-stage2/--config-json",
@@ -180,7 +180,7 @@
           "option:route:entrypoint:debian-install-v2/disable-stage2/--config-json"
         ]
       },
-      "signature": "sha256:63859a814a4d6d47c7b199ced2006ac5f403e1cb11ca7ebce48dafa9b717913f"
+      "signature": "sha256:cd21604bf71318a3692054845cf6976a8b093370f362687a42198941b8d33e17"
     },
     {
       "id": "case:route:entrypoint:debian-install-v2/disable-stage2/exclusive-member/configuration-source/option:route:entrypoint:debian-install-v2/disable-stage2/--config",
@@ -194,7 +194,7 @@
         "required": true,
         "selected_option": "option:route:entrypoint:debian-install-v2/disable-stage2/--config"
       },
-      "signature": "sha256:a538263a7f71e45710d638459edab872f43ad86df7899da20feddad0f80161dd"
+      "signature": "sha256:77f15b9e99b1a1bb37b1342057856fbc65725ca6740687df6cfe4e4131e09929"
     },
     {
       "id": "case:route:entrypoint:debian-install-v2/disable-stage2/exclusive-member/configuration-source/option:route:entrypoint:debian-install-v2/disable-stage2/--config-json",
@@ -208,7 +208,7 @@
         "required": true,
         "selected_option": "option:route:entrypoint:debian-install-v2/disable-stage2/--config-json"
       },
-      "signature": "sha256:4b2957d5490c4676009eacd41427a9e58bf276457dd33af13e701ac07ddf47eb"
+      "signature": "sha256:4257c9d42fde094de814cf277766d211a50841c7b45472548316f5f507153602"
     },
     {
       "id": "case:route:entrypoint:debian-install-v2/disable-stage2/minimum",
@@ -230,7 +230,7 @@
         },
         "required_options": []
       },
-      "signature": "sha256:024d8c158c8f443027259fb5059b51792b0182cce345fa2a4870c6c56cc8d79a"
+      "signature": "sha256:e7a13de5dfc6e629062d660f84ae9b34e8eb25a8f2701998f886b51585690a2d"
     },
     {
       "id": "case:route:entrypoint:debian-install-v2/disable-stage2/option-spelling/option:route:entrypoint:debian-install-v2/disable-stage2/--config-json/--config-json",
@@ -243,7 +243,7 @@
         "option_id": "option:route:entrypoint:debian-install-v2/disable-stage2/--config-json",
         "spelling": "--config-json"
       },
-      "signature": "sha256:bd1e7cfe43f0e94c63878f8dfd40e1955cf9657c873e33ae2efae62883300801"
+      "signature": "sha256:2ab285031ddd70d1c129396ea2209d0e3698a7c917610c16d0cde9e69177d6d7"
     },
     {
       "id": "case:route:entrypoint:debian-install-v2/disable-stage2/option-spelling/option:route:entrypoint:debian-install-v2/disable-stage2/--config/--config",
@@ -256,7 +256,7 @@
         "option_id": "option:route:entrypoint:debian-install-v2/disable-stage2/--config",
         "spelling": "--config"
       },
-      "signature": "sha256:b6a4974920d356174e1e88666a86ed66475bc447828a68b787924901a405fb96"
+      "signature": "sha256:836163ddc8c29c2161c896c403432672de41a532bcaa755d9c8e5ef35a2bff2d"
     },
     {
       "id": "case:route:entrypoint:debian-install-v2/disable-stage2/option-spelling/option:route:entrypoint:debian-install-v2/disable-stage2/--debug-raw/--debug-raw",
@@ -269,7 +269,7 @@
         "option_id": "option:route:entrypoint:debian-install-v2/disable-stage2/--debug-raw",
         "spelling": "--debug-raw"
       },
-      "signature": "sha256:b93063ed4a4d25d57017eba7c8c5c7783a8e4f47a7e4981b1fd2893bdae64e17"
+      "signature": "sha256:0bd69735ba95ed97228a550f0b97ddb787518577f11991fd47b947d861c2dcc5"
     },
     {
       "id": "case:route:entrypoint:debian-install-v2/disable-stage2/option-spelling/option:route:entrypoint:debian-install-v2/disable-stage2/--dry-run/--dry-run",
@@ -282,7 +282,7 @@
         "option_id": "option:route:entrypoint:debian-install-v2/disable-stage2/--dry-run",
         "spelling": "--dry-run"
       },
-      "signature": "sha256:f7035de43c910e4c0255b716f799aeb727497ef87880d2bd0ff438cb3218fe36"
+      "signature": "sha256:8679473910a4ebc8ef6dc9cbc8d2d802074333bbdf6b0094a7f6d6e39dd51da4"
     },
     {
       "id": "case:route:entrypoint:debian-install-v2/disable-stage2/option-spelling/option:route:entrypoint:debian-install-v2/disable-stage2/--yes/--yes",
@@ -295,7 +295,7 @@
         "option_id": "option:route:entrypoint:debian-install-v2/disable-stage2/--yes",
         "spelling": "--yes"
       },
-      "signature": "sha256:c2bb8a133e3ba9753d1681f11c587ff49e6904334d49115fcafd809d6bd549c3"
+      "signature": "sha256:64d387edc8041c7aec5ac569fdced8240748c998c3ae7e8784754d85efee49ff"
     },
     {
       "id": "case:route:entrypoint:debian-install-v2/install/exclusive-conflict/configuration-source/option:route:entrypoint:debian-install-v2/install/--config/option:route:entrypoint:debian-install-v2/install/--config-json",
@@ -312,7 +312,7 @@
           "option:route:entrypoint:debian-install-v2/install/--config-json"
         ]
       },
-      "signature": "sha256:20ee0368a297669a45b3cd946c6a5b3b9b1767935f303fc0d5a8e24aeddc22bb"
+      "signature": "sha256:16f64ba1b4212c6b1932b5d73730e14fd8e84056df47aab594b600a0d954a7c4"
     },
     {
       "id": "case:route:entrypoint:debian-install-v2/install/exclusive-member/configuration-source/option:route:entrypoint:debian-install-v2/install/--config",
@@ -326,7 +326,7 @@
         "required": true,
         "selected_option": "option:route:entrypoint:debian-install-v2/install/--config"
       },
-      "signature": "sha256:5a672c4375f42b6161044ab5f3474b09ed2d5a41be88eb37c43dfa4283c30353"
+      "signature": "sha256:6edd83f43bfba78bdeeec6cf5ce2d45d76e725cfa65dcc53e1fb65575b9a6fa4"
     },
     {
       "id": "case:route:entrypoint:debian-install-v2/install/exclusive-member/configuration-source/option:route:entrypoint:debian-install-v2/install/--config-json",
@@ -340,7 +340,7 @@
         "required": true,
         "selected_option": "option:route:entrypoint:debian-install-v2/install/--config-json"
       },
-      "signature": "sha256:fe23334913dc6c53405dd63998c3e11444e1e4b702c0a7dce08f2345a03fedd1"
+      "signature": "sha256:aab22d915e96ed8b811f1b15d895e0f4ff76a5b3cbe006aaa6ced08c50e2f5de"
     },
     {
       "id": "case:route:entrypoint:debian-install-v2/install/minimum",
@@ -362,7 +362,7 @@
         },
         "required_options": []
       },
-      "signature": "sha256:2f071618d79c5d77c5017a9b154df43100a57b1169fb8d3da9de7429b6f557ad"
+      "signature": "sha256:9d424328ca8fb469dfced46b7cfde385f8959fdf4d7e81f46aa1aa6e4e8c7f49"
     },
     {
       "id": "case:route:entrypoint:debian-install-v2/install/option-spelling/option:route:entrypoint:debian-install-v2/install/--config-json/--config-json",
@@ -375,7 +375,7 @@
         "option_id": "option:route:entrypoint:debian-install-v2/install/--config-json",
         "spelling": "--config-json"
       },
-      "signature": "sha256:13b2331e8b25cec159f930db7ad60aaf579bdbfb4b2a33cc0b714d838fbacbc3"
+      "signature": "sha256:092af66219cfc7c10d26a236dad8b153736f1071188ef4dd4cfeaac826bcd3eb"
     },
     {
       "id": "case:route:entrypoint:debian-install-v2/install/option-spelling/option:route:entrypoint:debian-install-v2/install/--config/--config",
@@ -388,7 +388,7 @@
         "option_id": "option:route:entrypoint:debian-install-v2/install/--config",
         "spelling": "--config"
       },
-      "signature": "sha256:ef384e7f1fb36f71d2315399b2a56c9f46a63c2e6235b0be5dba5c164ffe3963"
+      "signature": "sha256:f45c4da1bf4f24e0c17113bfab7f3449c20cf040d5ec1218994a1bba01230193"
     },
     {
       "id": "case:route:entrypoint:debian-install-v2/install/option-spelling/option:route:entrypoint:debian-install-v2/install/--debug-raw/--debug-raw",
@@ -401,7 +401,7 @@
         "option_id": "option:route:entrypoint:debian-install-v2/install/--debug-raw",
         "spelling": "--debug-raw"
       },
-      "signature": "sha256:a9ad06f59564d176285a3ec2590d3c5d4cc3ff78a8c86cbb541d2a84aec73de1"
+      "signature": "sha256:3d0960b77d524b1397fb1fbf9c4190ac2c62ad67df503352f3fc284c24a43355"
     },
     {
       "id": "case:route:entrypoint:debian-install-v2/install/option-spelling/option:route:entrypoint:debian-install-v2/install/--dry-run/--dry-run",
@@ -414,7 +414,7 @@
         "option_id": "option:route:entrypoint:debian-install-v2/install/--dry-run",
         "spelling": "--dry-run"
       },
-      "signature": "sha256:1582a386e963c69ec660195ea8ba46d7482742b55c0ddd61e4441a0b67aa4a6b"
+      "signature": "sha256:b4477249a5d86e26d7045fb821675b6aeaf2040582ca6ebaac26cd852532a479"
     },
     {
       "id": "case:route:entrypoint:debian-install-v2/install/option-spelling/option:route:entrypoint:debian-install-v2/install/--yes/--yes",
@@ -427,7 +427,7 @@
         "option_id": "option:route:entrypoint:debian-install-v2/install/--yes",
         "spelling": "--yes"
       },
-      "signature": "sha256:a3ee68084a50a2351c7873b3986672ae0cae0387877c2d2c74b806ed16fb865b"
+      "signature": "sha256:8ef6041df29c7393e751359a36a282b69e89b07c294d515e42cebf99c5fb922b"
     },
     {
       "id": "case:route:entrypoint:debian-install-v2/plan/exclusive-conflict/configuration-source/option:route:entrypoint:debian-install-v2/plan/--config/option:route:entrypoint:debian-install-v2/plan/--config-json",
@@ -444,7 +444,7 @@
           "option:route:entrypoint:debian-install-v2/plan/--config-json"
         ]
       },
-      "signature": "sha256:f0b2f264c637f70d13b7a43577720caf54702eebdbcf4905c58bd8b1a5c31bc5"
+      "signature": "sha256:60e0dde472f95805cdcd0dd6f6df9cde79e44140bcab2e70c01891ff75baa53c"
     },
     {
       "id": "case:route:entrypoint:debian-install-v2/plan/exclusive-member/configuration-source/option:route:entrypoint:debian-install-v2/plan/--config",
@@ -458,7 +458,7 @@
         "required": true,
         "selected_option": "option:route:entrypoint:debian-install-v2/plan/--config"
       },
-      "signature": "sha256:3ac9108515e1f6510413d1e0995112c9da9897ce06ab9b07066944c5f66c9c84"
+      "signature": "sha256:7cb1e86115e8b04e6ddec9f6f4c37785f4dd60dca255e703bbbbdb97d44d598e"
     },
     {
       "id": "case:route:entrypoint:debian-install-v2/plan/exclusive-member/configuration-source/option:route:entrypoint:debian-install-v2/plan/--config-json",
@@ -472,7 +472,7 @@
         "required": true,
         "selected_option": "option:route:entrypoint:debian-install-v2/plan/--config-json"
       },
-      "signature": "sha256:be18e92d19c5b55577419bc579ee81289cdd8267200b64dabad91218d7db5313"
+      "signature": "sha256:c2fe51e57950502e06f0cd845915c828c1cb3d1c9e66aa6e878f44c3f84d05e6"
     },
     {
       "id": "case:route:entrypoint:debian-install-v2/plan/minimum",
@@ -494,7 +494,7 @@
         },
         "required_options": []
       },
-      "signature": "sha256:1fcd8324b6ab93f14b4514d31dbfce68083d222745220d9ac025a88bcc44eb8c"
+      "signature": "sha256:e5a6f7068861f5d47c0aca6e595bb450cff9d4b6034a4bbf90327934638483e3"
     },
     {
       "id": "case:route:entrypoint:debian-install-v2/plan/option-spelling/option:route:entrypoint:debian-install-v2/plan/--config-json/--config-json",
@@ -507,7 +507,7 @@
         "option_id": "option:route:entrypoint:debian-install-v2/plan/--config-json",
         "spelling": "--config-json"
       },
-      "signature": "sha256:28befa9094800921594d5b44d449d8d5b291bbb3e29d41d393084f34e860822c"
+      "signature": "sha256:72f3e0c877b2e3a433556b7e611ee744fcc82ce8d0c56d200697e8ece1efe11a"
     },
     {
       "id": "case:route:entrypoint:debian-install-v2/plan/option-spelling/option:route:entrypoint:debian-install-v2/plan/--config/--config",
@@ -520,7 +520,7 @@
         "option_id": "option:route:entrypoint:debian-install-v2/plan/--config",
         "spelling": "--config"
       },
-      "signature": "sha256:5c39af952257ddee37973dfbb2bdf35c165713313f73fe260899727b4a672be1"
+      "signature": "sha256:32ebc4e479032b8f1149e04ac6b54da4ae2d3886fcb1ee26b3e4689006609c41"
     },
     {
       "id": "case:route:entrypoint:debian-install-v2/plan/option-spelling/option:route:entrypoint:debian-install-v2/plan/--debug-raw/--debug-raw",
@@ -533,7 +533,7 @@
         "option_id": "option:route:entrypoint:debian-install-v2/plan/--debug-raw",
         "spelling": "--debug-raw"
       },
-      "signature": "sha256:dd65dddc076fc713e2a85f17534308b60dd942108b5d37887439cc5cc4bd8bab"
+      "signature": "sha256:5993f330c803249553cc6d0254b0cf9a2e90b4474927e66f85d28d35c1dcaeda"
     },
     {
       "id": "case:route:entrypoint:debian-install-v2/plan/option-spelling/option:route:entrypoint:debian-install-v2/plan/--json/--json",
@@ -546,7 +546,7 @@
         "option_id": "option:route:entrypoint:debian-install-v2/plan/--json",
         "spelling": "--json"
       },
-      "signature": "sha256:b27ed23326fadaab14e60764f8c389d54b91f999dbe3acf738b0c13d677e5ded"
+      "signature": "sha256:d7332c6a3664a0b8c75ffc7e20d5de5e4f92b14bf9a0b42ee78d28a36e8d577a"
     },
     {
       "id": "case:route:entrypoint:debian-install-v2/resume/minimum",
@@ -616,7 +616,7 @@
           "option:route:entrypoint:debian-install-v2/status/--config-json"
         ]
       },
-      "signature": "sha256:0cd3b1b06c41b87e984b272637479bdd2ac46286fe54ae95a17a4b1966fa4dab"
+      "signature": "sha256:f695c3487934bac46c408cdb1503dd017c447d4ee8112467fef23f38c7db7bbe"
     },
     {
       "id": "case:route:entrypoint:debian-install-v2/status/exclusive-member/configuration-source/option:route:entrypoint:debian-install-v2/status/--config",
@@ -630,7 +630,7 @@
         "required": true,
         "selected_option": "option:route:entrypoint:debian-install-v2/status/--config"
       },
-      "signature": "sha256:c57f5d57fc17c19b16f9049a17ce83dcc8fdd91fa876db540c79d9c10e17c4b0"
+      "signature": "sha256:d025bde96e01877a0caa1ef864211180823c65ac74c371f082b6de7fb6833ec5"
     },
     {
       "id": "case:route:entrypoint:debian-install-v2/status/exclusive-member/configuration-source/option:route:entrypoint:debian-install-v2/status/--config-json",
@@ -644,7 +644,7 @@
         "required": true,
         "selected_option": "option:route:entrypoint:debian-install-v2/status/--config-json"
       },
-      "signature": "sha256:a92f02d611298fa5bc8825d076cd0f48a52c75d55f0785e921f6e47fb5854089"
+      "signature": "sha256:662c1144b3b8b984f30ced0ce387d7758aa638806f015ec3d96e503c4f54e954"
     },
     {
       "id": "case:route:entrypoint:debian-install-v2/status/minimum",
@@ -666,7 +666,7 @@
         },
         "required_options": []
       },
-      "signature": "sha256:7906315a8725996057a2ee66ff02671a9c7a7b5fc2091439be66fa28b9333a10"
+      "signature": "sha256:4421c25bcd6d0fd64d3f41b0e70aebe27b240b9c2cddcea75332829a5b7aa95b"
     },
     {
       "id": "case:route:entrypoint:debian-install-v2/status/option-spelling/option:route:entrypoint:debian-install-v2/status/--config-json/--config-json",
@@ -679,7 +679,7 @@
         "option_id": "option:route:entrypoint:debian-install-v2/status/--config-json",
         "spelling": "--config-json"
       },
-      "signature": "sha256:0d9e9f4e9f315173dc64081eeff9c96f148cf010fb7ef021218ce680c03aaadd"
+      "signature": "sha256:40ba7ad5433908624d9147e32cb786f89ff38f77f16f74f705e4c6dba9593475"
     },
     {
       "id": "case:route:entrypoint:debian-install-v2/status/option-spelling/option:route:entrypoint:debian-install-v2/status/--config/--config",
@@ -692,7 +692,7 @@
         "option_id": "option:route:entrypoint:debian-install-v2/status/--config",
         "spelling": "--config"
       },
-      "signature": "sha256:b17abb235589a0041a61528a2140a940e4067031653687b81a9c55419994ef87"
+      "signature": "sha256:002f7f549162eb19843bd823357cb68bd555bc2a6246f88956b7f81cf7455dbc"
     },
     {
       "id": "case:route:entrypoint:debian-install-v2/status/option-spelling/option:route:entrypoint:debian-install-v2/status/--debug-raw/--debug-raw",
@@ -705,7 +705,7 @@
         "option_id": "option:route:entrypoint:debian-install-v2/status/--debug-raw",
         "spelling": "--debug-raw"
       },
-      "signature": "sha256:19c8658e01f0694c14df89b9e6fd3b691bf3b4e14702403902d01909f2882460"
+      "signature": "sha256:2b1a76f60b01027bee89c98768459e5d2a8b4f403bf417f1b74f2643c9e258ac"
     },
     {
       "id": "case:route:entrypoint:debian-install-v2/status/option-spelling/option:route:entrypoint:debian-install-v2/status/--json/--json",
@@ -718,7 +718,7 @@
         "option_id": "option:route:entrypoint:debian-install-v2/status/--json",
         "spelling": "--json"
       },
-      "signature": "sha256:ff94e20c32d39b4b79bdf8a028d0ff2f62b45d9d66689887ca869503251f702b"
+      "signature": "sha256:a688201a1f383e50272e857fac7b4734f46fe3ddc2cecef2910a2894c5ee3549"
     },
     {
       "id": "case:route:entrypoint:debian-install-v2/verify/exclusive-conflict/configuration-source/option:route:entrypoint:debian-install-v2/verify/--config/option:route:entrypoint:debian-install-v2/verify/--config-json",
@@ -735,7 +735,7 @@
           "option:route:entrypoint:debian-install-v2/verify/--config-json"
         ]
       },
-      "signature": "sha256:802481e4d1b99d222ffe73d82e7992210ddf3541d54959fd0a5705996cbffefa"
+      "signature": "sha256:f2031d0c6ee411050ff7232fbd071c2694be0fec32a211c92e4903941431e004"
     },
     {
       "id": "case:route:entrypoint:debian-install-v2/verify/exclusive-member/configuration-source/option:route:entrypoint:debian-install-v2/verify/--config",
@@ -749,7 +749,7 @@
         "required": true,
         "selected_option": "option:route:entrypoint:debian-install-v2/verify/--config"
       },
-      "signature": "sha256:1c351e915b491e0971c0a901bf16cd2011a7276d8d7ca9328a5397da4a215821"
+      "signature": "sha256:63f49037dc6440fd209da0b0397c9bfd4cdb4ffef7bb6e4ef1b4a5a11954f5e5"
     },
     {
       "id": "case:route:entrypoint:debian-install-v2/verify/exclusive-member/configuration-source/option:route:entrypoint:debian-install-v2/verify/--config-json",
@@ -763,7 +763,7 @@
         "required": true,
         "selected_option": "option:route:entrypoint:debian-install-v2/verify/--config-json"
       },
-      "signature": "sha256:41d1dfdf44b490695429918f77503d1469b86afd4cd626f4ac7287688b733950"
+      "signature": "sha256:f90ac29eea8f9561c72a615647ddcbccea7acbbee9f5ec9a6e252bec06087bec"
     },
     {
       "id": "case:route:entrypoint:debian-install-v2/verify/minimum",
@@ -785,7 +785,7 @@
         },
         "required_options": []
       },
-      "signature": "sha256:6ca84fcf69c554c6df12045988d6f81783629ed7836276eefbb955ffb774d703"
+      "signature": "sha256:05936f3329a3cbe88a8e8579c3ad93dfef461bf9bc86e42944a8a78f1362e82b"
     },
     {
       "id": "case:route:entrypoint:debian-install-v2/verify/option-spelling/option:route:entrypoint:debian-install-v2/verify/--config-json/--config-json",
@@ -798,7 +798,7 @@
         "option_id": "option:route:entrypoint:debian-install-v2/verify/--config-json",
         "spelling": "--config-json"
       },
-      "signature": "sha256:07c5ab81be858e6c4865bb9e183b1eb98b243a69d30ddd11627c875e8efd6031"
+      "signature": "sha256:3b220a2145970401a05dbfe4570b6ac41855e97e6607e08f7d31eea31b3d8e8f"
     },
     {
       "id": "case:route:entrypoint:debian-install-v2/verify/option-spelling/option:route:entrypoint:debian-install-v2/verify/--config/--config",
@@ -811,7 +811,7 @@
         "option_id": "option:route:entrypoint:debian-install-v2/verify/--config",
         "spelling": "--config"
       },
-      "signature": "sha256:05e3dfc0d62e66fb8e4baa6762daaaffedfa313f6bedf69ea70d9ba75aea1448"
+      "signature": "sha256:35a217c5a8e814ea9a6e9bc91119aadd7f30c5bf32fd23e2b98f8f060d931a20"
     },
     {
       "id": "case:route:entrypoint:debian-install-v2/verify/option-spelling/option:route:entrypoint:debian-install-v2/verify/--debug-raw/--debug-raw",
@@ -824,7 +824,7 @@
         "option_id": "option:route:entrypoint:debian-install-v2/verify/--debug-raw",
         "spelling": "--debug-raw"
       },
-      "signature": "sha256:9e02798c08c929e2fe83ab86255b948ee6b3aa31ca961d44eb7862f519dbb6e2"
+      "signature": "sha256:7a8d1d3be12b20dfde0e90dbd04240ee5e66389e5eed08f5d7fdeafafb1e95b8"
     },
     {
       "id": "case:route:entrypoint:debian-install-v2/wizard/minimum",
@@ -842,7 +842,7 @@
           "option:route:entrypoint:debian-install-v2/wizard/--output"
         ]
       },
-      "signature": "sha256:c778be36889a7a4a5df0d4de99c04444e12ae928a45532f11ed2ec0bf2f50d08"
+      "signature": "sha256:764edab5cc5290869509a19935c10d1108eaa781daeeff5732c8de444cdedbc8"
     },
     {
       "id": "case:route:entrypoint:debian-install-v2/wizard/option-spelling/option:route:entrypoint:debian-install-v2/wizard/--debug-raw/--debug-raw",
@@ -855,7 +855,7 @@
         "option_id": "option:route:entrypoint:debian-install-v2/wizard/--debug-raw",
         "spelling": "--debug-raw"
       },
-      "signature": "sha256:8d0824c2e02ecb2229213fb59d7ace81802e6fdf0cef96c3d056e9da3059962e"
+      "signature": "sha256:d48812fd88e48836b127f6427259edbb1b521cbc8704a1405ac978476ce20f97"
     },
     {
       "id": "case:route:entrypoint:debian-install-v2/wizard/option-spelling/option:route:entrypoint:debian-install-v2/wizard/--from-config/--from-config",
@@ -868,7 +868,7 @@
         "option_id": "option:route:entrypoint:debian-install-v2/wizard/--from-config",
         "spelling": "--from-config"
       },
-      "signature": "sha256:b1861a09b455d38c50c352367259717257514f68ce05aec4d037c61178143080"
+      "signature": "sha256:eca10b57d59cdf3ce15a46fbf16c68ffb8899efff227798c3848a6f79a94c262"
     },
     {
       "id": "case:route:entrypoint:debian-install-v2/wizard/option-spelling/option:route:entrypoint:debian-install-v2/wizard/--output/--output",
@@ -881,7 +881,7 @@
         "option_id": "option:route:entrypoint:debian-install-v2/wizard/--output",
         "spelling": "--output"
       },
-      "signature": "sha256:f56b6e9168b5d9f3ac2236bc52b9c4a20901515d6ec2389b8077695ead273734"
+      "signature": "sha256:de7ffeadebe49095cb8042c789c9292ab01ad122221d8d841b3f7d75b5160348"
     },
     {
       "id": "case:route:entrypoint:debian-install-v2/wizard/option-spelling/option:route:entrypoint:debian-install-v2/wizard/--yes/--yes",
@@ -894,7 +894,7 @@
         "option_id": "option:route:entrypoint:debian-install-v2/wizard/--yes",
         "spelling": "--yes"
       },
-      "signature": "sha256:062b57f69bee6bb068ba1eac870fc984d59770dd6731160523cfd71fd3f55019"
+      "signature": "sha256:3bde59a83a135cfc108f9b41b8b8a16394d0c56d55fda70684ce8500b47a0ba8"
     }
   ],
   "entrypoint": {
@@ -931,15 +931,11 @@
           "canonical": "--config",
           "choices": null,
           "const": null,
-          "default": {
-            "kind": "suppressed"
-          },
-          "default_present": false,
+          "default": null,
+          "default_present": true,
           "description": "read a validated JSON configuration file (preferred over inline JSON)",
           "dest": "config",
-          "effective_default": {
-            "kind": "suppressed"
-          },
+          "effective_default": null,
           "exclusive_group": "configuration-source",
           "exclusive_required": true,
           "flags": [
@@ -971,15 +967,11 @@
           "canonical": "--config-json",
           "choices": null,
           "const": null,
-          "default": {
-            "kind": "suppressed"
-          },
-          "default_present": false,
+          "default": null,
+          "default_present": true,
           "description": "read a JSON object from this argument; avoid secrets because argv may be visible",
           "dest": "config_json",
-          "effective_default": {
-            "kind": "suppressed"
-          },
+          "effective_default": null,
           "exclusive_group": "configuration-source",
           "exclusive_required": true,
           "flags": [
@@ -1087,15 +1079,11 @@
           "canonical": "--bootstrap-url",
           "choices": null,
           "const": null,
-          "default": {
-            "kind": "suppressed"
-          },
-          "default_present": false,
+          "default": null,
+          "default_present": true,
           "description": "explicit bootstrap-remote.py URL (required for a custom repository)",
           "dest": "bootstrap_url",
-          "effective_default": {
-            "kind": "suppressed"
-          },
+          "effective_default": null,
           "exclusive_group": null,
           "exclusive_required": false,
           "flags": [
@@ -1145,8 +1133,7 @@
           "minimum_values": 0,
           "nargs": 0,
           "parser_kwargs": {
-            "action": "store_true",
-            "default": false
+            "action": "store_true"
           },
           "parser_path": [
             "build-customscript"
@@ -1232,15 +1219,11 @@
           "canonical": "--config",
           "choices": null,
           "const": null,
-          "default": {
-            "kind": "suppressed"
-          },
-          "default_present": false,
+          "default": null,
+          "default_present": true,
           "description": "read a validated JSON configuration file (preferred over inline JSON)",
           "dest": "config",
-          "effective_default": {
-            "kind": "suppressed"
-          },
+          "effective_default": null,
           "exclusive_group": "configuration-source",
           "exclusive_required": true,
           "flags": [
@@ -1272,15 +1255,11 @@
           "canonical": "--config-json",
           "choices": null,
           "const": null,
-          "default": {
-            "kind": "suppressed"
-          },
-          "default_present": false,
+          "default": null,
+          "default_present": true,
           "description": "read a JSON object from this argument; avoid secrets because argv may be visible",
           "dest": "config_json",
-          "effective_default": {
-            "kind": "suppressed"
-          },
+          "effective_default": null,
           "exclusive_group": "configuration-source",
           "exclusive_required": true,
           "flags": [
@@ -1383,15 +1362,11 @@
           "canonical": "--config",
           "choices": null,
           "const": null,
-          "default": {
-            "kind": "suppressed"
-          },
-          "default_present": false,
+          "default": null,
+          "default_present": true,
           "description": "read a validated JSON configuration file (preferred over inline JSON)",
           "dest": "config",
-          "effective_default": {
-            "kind": "suppressed"
-          },
+          "effective_default": null,
           "exclusive_group": "configuration-source",
           "exclusive_required": true,
           "flags": [
@@ -1423,15 +1398,11 @@
           "canonical": "--config-json",
           "choices": null,
           "const": null,
-          "default": {
-            "kind": "suppressed"
-          },
-          "default_present": false,
+          "default": null,
+          "default_present": true,
           "description": "read a JSON object from this argument; avoid secrets because argv may be visible",
           "dest": "config_json",
-          "effective_default": {
-            "kind": "suppressed"
-          },
+          "effective_default": null,
           "exclusive_group": "configuration-source",
           "exclusive_required": true,
           "flags": [
@@ -1535,15 +1506,11 @@
           "canonical": "--config",
           "choices": null,
           "const": null,
-          "default": {
-            "kind": "suppressed"
-          },
-          "default_present": false,
+          "default": null,
+          "default_present": true,
           "description": "read a validated JSON configuration file (preferred over inline JSON)",
           "dest": "config",
-          "effective_default": {
-            "kind": "suppressed"
-          },
+          "effective_default": null,
           "exclusive_group": "configuration-source",
           "exclusive_required": true,
           "flags": [
@@ -1575,15 +1542,11 @@
           "canonical": "--config-json",
           "choices": null,
           "const": null,
-          "default": {
-            "kind": "suppressed"
-          },
-          "default_present": false,
+          "default": null,
+          "default_present": true,
           "description": "read a JSON object from this argument; avoid secrets because argv may be visible",
           "dest": "config_json",
-          "effective_default": {
-            "kind": "suppressed"
-          },
+          "effective_default": null,
           "exclusive_group": "configuration-source",
           "exclusive_required": true,
           "flags": [
@@ -1753,15 +1716,11 @@
           "canonical": "--config",
           "choices": null,
           "const": null,
-          "default": {
-            "kind": "suppressed"
-          },
-          "default_present": false,
+          "default": null,
+          "default_present": true,
           "description": "read a validated JSON configuration file (preferred over inline JSON)",
           "dest": "config",
-          "effective_default": {
-            "kind": "suppressed"
-          },
+          "effective_default": null,
           "exclusive_group": "configuration-source",
           "exclusive_required": true,
           "flags": [
@@ -1793,15 +1752,11 @@
           "canonical": "--config-json",
           "choices": null,
           "const": null,
-          "default": {
-            "kind": "suppressed"
-          },
-          "default_present": false,
+          "default": null,
+          "default_present": true,
           "description": "read a JSON object from this argument; avoid secrets because argv may be visible",
           "dest": "config_json",
-          "effective_default": {
-            "kind": "suppressed"
-          },
+          "effective_default": null,
           "exclusive_group": "configuration-source",
           "exclusive_required": true,
           "flags": [
@@ -1900,15 +1855,11 @@
           "canonical": "--config",
           "choices": null,
           "const": null,
-          "default": {
-            "kind": "suppressed"
-          },
-          "default_present": false,
+          "default": null,
+          "default_present": true,
           "description": "read a validated JSON configuration file (preferred over inline JSON)",
           "dest": "config",
-          "effective_default": {
-            "kind": "suppressed"
-          },
+          "effective_default": null,
           "exclusive_group": "configuration-source",
           "exclusive_required": true,
           "flags": [
@@ -1940,15 +1891,11 @@
           "canonical": "--config-json",
           "choices": null,
           "const": null,
-          "default": {
-            "kind": "suppressed"
-          },
-          "default_present": false,
+          "default": null,
+          "default_present": true,
           "description": "read a JSON object from this argument; avoid secrets because argv may be visible",
           "dest": "config_json",
-          "effective_default": {
-            "kind": "suppressed"
-          },
+          "effective_default": null,
           "exclusive_group": "configuration-source",
           "exclusive_required": true,
           "flags": [
@@ -2046,15 +1993,11 @@
           "canonical": "--output",
           "choices": null,
           "const": null,
-          "default": {
-            "kind": "suppressed"
-          },
-          "default_present": false,
+          "default": null,
+          "default_present": true,
           "description": "destination for the mode-0600 validated configuration",
           "dest": "output",
-          "effective_default": {
-            "kind": "suppressed"
-          },
+          "effective_default": null,
           "exclusive_group": null,
           "exclusive_required": false,
           "flags": [
@@ -2088,15 +2031,11 @@
           "canonical": "--from-config",
           "choices": null,
           "const": null,
-          "default": {
-            "kind": "suppressed"
-          },
-          "default_present": false,
+          "default": null,
+          "default_present": true,
           "description": "validated configuration to use as the starting point",
           "dest": "from_config",
-          "effective_default": {
-            "kind": "suppressed"
-          },
+          "effective_default": null,
           "exclusive_group": null,
           "exclusive_required": false,
           "flags": [
