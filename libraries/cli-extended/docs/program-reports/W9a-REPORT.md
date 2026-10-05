@@ -1,4 +1,4 @@
-STATUS: CHECKPOINT (the original BLOCK was resolved by W6b; see "Resumption" at the end). The BLOCK text below is kept as history.
+STATUS: COMPLETE, awaiting reviewer verification (see "Successor session 4" at the end). The BLOCK and checkpoint text below is kept as history.
 
 # W9a report: Netcup adopts cli-extended (checkpoint, BLOCKED)
 
@@ -197,5 +197,63 @@ State: branch `cli-ext-w9a-netcup`. Integration (verb options keep real defaults
 Controller decisions that stand: scp-api positional-value rules and `configure` callbacks stay hand-written (AC-07 manual items recorded as `wontfix` findings -> CLI-EXT-17); repetitive library-control rows keep real rows with one parametrised test per control (CLI-EXT-18 is the future library fix).
 
 Tooling note: pytest needs `. <scratchpad>/w9a-env.sh` sourced in the same shell (worktree library + scratch dist-info on PYTHONPATH); without it the plugin import fails.
+
+## Successor session 4 (final for W9a; nothing remains except reviewer verification)
+
+Branch `cli-ext-w9a-netcup`, HEAD `d1d95294f` at the time of writing (this report is committed after it). Everything below was run; scratchpad = `/tmp/claude-1003/-workspaces-vbpub/384f276e-fadc-4611-bf1d-973b249d83c0/scratchpad`.
+
+### Done
+
+1. **scp-api behaviour tests: suite green.** `scripts/netcup/tests/test_cli_cases_scp_api.py` (commit `0ecc09425`).
+   - Parameters are generated from the catalog's own `test_ids`, so node ids cannot drift from rows; each param carries its row's `cli_case` marker.
+   - `test_replayed_case_matches_catalog`: replays the row's invocation through `main()` with `RoutedClient`; asserts exit status, stdout/stderr substrings and the exact API call list pinned per invocation in `CALLS` (a missing key is a KeyError). A mutating call may appear only on exit 0; exit 2 means no call at all.
+   - `test_invalid_argument_is_refused`: 28 bad-value invocations (`INVALID`), exit 2, distinguishing stderr text, empty stdout, no API call.
+   - Controls, one parametrised test each with a contrast run: `test_json_output_is_machine_readable` (17 routes), `test_debug_raw_warns_and_is_off_by_default` (18), `test_yes_is_the_only_consent_in_a_non_interactive_run` (9).
+   - `test_part_size_changes_how_a_large_iso_is_split` (linked to the `--part-size-mib` row, node id added to the catalog): with an 11 MiB sparse file, `--part-size-mib 5` gives uploads of 5/5/1 MiB, the default gives one 11 MiB part. `case_harness.run_scp_api` gained `iso_size` for it.
+   - `pytest tests -q` (nice/ionice, serial, plugin active): **487 passed**.
+   - Note: metrics prints JSON with and without `--json`; the test asserts the same document, compact form with `--json`.
+2. **surface pack + LLM review** done by me for all three CLIs per `cli-extended-review/SKILL.md` and the rubric; findings files written (`cli-review-findings-{install-host,monitor-task,scp-api}.toml`, commit `21be49f04`). `cx surface check` passes for all three (open minor findings print as NOTE).
+3. **audit**: `cx audit --cli <id>`: install-host `11 pass, 0 warn, 0 fail, 4 manual`; monitor-task `11 pass, 0 warn, 0 fail, 4 manual`; scp-api `10 pass, 0 warn, 0 fail, 5 manual`. Every manual item is recorded as an `adoption` finding (AC-04 keep, AC-07 per verb, AC-19, AC-20, AC-24).
+4. **Synopsis overrides**: removed the five redundant ones the audit flagged (monitor-task `show`; scp-api `login`, `servers`, `server-details`, `guest-agent-status`), commit `9703e5430`. This changed the surface signature of 19 rows (6 monitor-task, 13 scp-api); only `reviewed_signature` was re-signed by hand (Edit), no decision/rationale/test link touched, the replay tests passed unchanged.
+5. **Docs**: README (workflow paragraph after the CLI-SPEC index paragraph) and DESIGN-GUIDE (new section "Why the case tests replay the catalog"), commit `d1d95294f`.
+6. **Gate**: `flock gate.lock ./run-gate.py --worktree <wt> suite > w9a-suite.log`, then in a separate step `grep -i verdict`: `run-gate: lane 'suite' verdict PASS; exit_code 0; log /tmp/run-gate/lanes/suite/c0bbfc1ae662e724da1785594f736a43.log`. No mutation lane was run.
+
+### Findings the controller should look at (product decisions, all recorded as `wontfix` with rationale)
+
+- MT-001 (major): `monitor-task watch` exits 0 when the task ends in ERROR/CANCELED/ROLLBACK. An existing test (`test_watch_accepts_explicit_poll_and_debug_raw`) pins exit 0. Decision needed: change the exit code?
+- SA-002 (major): `--filter` is a server-side `q` query alias on `tasks`/`firewall-policies` but a client-side text filter on `imageflavours`/`iso-bootable`.
+- SA-003: `power` takes the action first, all other scp-api verbs the server first.
+- SA-004: optional MAC positional on `firewall` (handler swap).
+- SA-007: no scp-api verb has `--dry-run` (confirmation-only; AC-12 passes).
+- SA-008 / SA-013: the `attach-iso` and `power` configure callbacks are in fact expressible declaratively (no positional-value rule); kept because the controller decided scp-api's callbacks stay. The other eight (SA-009..SA-012 and SA-014..SA-017) wait on CLI-EXT-17.
+- AC-20 doctor is a `wontfix` note on all three (product decision).
+- Open minor findings (not fixed, no blocker/major open): IH-001..IH-006, MT-003, MT-004, SA-005.
+- SA-001 is the `fixed` blocker for the `AttributeError` crash (commit `b30ca374e`) with replay tests as regression evidence.
+
+### Oracles
+
+- O1: suite lane PASS (above). No previously existing test assertion was changed in this session; the earlier sessions changed only how tests invoke the CLIs (invoke_script, plugin).
+- O2: `surface check` passes for install-host (78 active), monitor-task (13), scp-api (151).
+- O3: audit transcripts above, no `fail`.
+- O4: `grep` in `scripts/netcup`: no `getattr(args, "dry_run"`, no VERSION regex (`VERSION_RE`/`re.search(...version`), no `def _invoke(` helper, and no hand-added `"--dry-run"` option; the only `"--dry-run"` strings are in the generated `run-gate.py` wrapper (its own flag).
+- O5: findings files exist; the open ones are minor only; major/blocker items are `fixed` or `wontfix` with rationale.
+
+### Hand-planted mutations (scratch copy `<scratchpad>/mut/scripts/netcup`, planted with Edit, not in the repo)
+
+The scratch copy has 3 unrelated failures in `tests/test_cli_contract.py` (doc-link/verb-in-guide checks that resolve `../../libraries/...` relative paths, which do not exist at the scratch location). They also fail on the unmutated scratch copy (baseline run: 3 failed, 484 passed), so they are not kills.
+
+| CLI | Mutation | Killed by |
+| --- | --- | --- |
+| scp-api | `"cycle": ("ON", "POWERCYCLE", ...)` -> `"RESET"` | `test_cli_cases_scp_api.py::test_replayed_case_matches_catalog[power-choice-cycle]` and the existing `test_cmd_power_actions_are_confirmed_and_use_server_patch[cycle-...]` (5 failed incl. the 3 baseline) |
+| install-host | `if args.dry_run:` -> `if False and args.dry_run:` before the "NOT calling POST" plan | 16 tests beyond the baseline, among them `test_cli_cases_install_host.py::test_dry_run_plans_without_mutating[install]`, `::test_replayed_case_matches_catalog[install-poll-interval]` and `test_install_host.py::test_install_from_payload_dry_run_never_posts` |
+| monitor-task | `interval <= 0` -> `interval < 0` in `_watch` | `test_monitor_task.py::test_watch_rejects_nonpositive_or_nonfinite_poll_before_authentication` (4 failed incl. the 3 baseline) |
+
+### Deviations from the brief
+
+- Brief item 7 asked to FIX every blocker/major in Netcup code or mark wontfix for product decisions: the only blocker (SA-001) was fixed earlier; the two majors (MT-001, SA-002) are wontfix product decisions listed above.
+- `CLI-SPEC.md` is an index with one `CLI-SPEC-<id>.md` per CLI (sync supports one region per spec file).
+- Library-tree files other than this report were not touched.
+
+Co-Authored-By: Claude Sonnet <noreply@anthropic.com>
 
 Co-Authored-By: Claude Sonnet <noreply@anthropic.com>
