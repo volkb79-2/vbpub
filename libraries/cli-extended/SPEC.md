@@ -1067,6 +1067,8 @@ reviewed grammar. The library exposes one integer `CONTRACT_VERSION`
 
 Contract version `1` covers these controls: `--help`, `--version`,
 `--log-level`, `--quiet`, `--debug` (alias `--verbose`), `--debug-raw`,
-`--color`, `--no-color`, `--json`, `--progress`, and `--yes`. Whether a route
-enables `--json`, `--progress`, and `--yes` follows its registration; the
-other controls are always present.
+`--color`, `--no-color`, `--json`, `--progress`, `--yes`, `--dry-run`, and
+`--traceback`. Whether a route enables `--json`, `--progress`, `--yes`, and
+`--dry-run` follows its verb registration, and `--traceback` is present only
+when the registry uses `unexpected_exceptions="report"`; the other controls are
+always present.

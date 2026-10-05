@@ -156,7 +156,11 @@ def test_common_control_table_keys_are_derived_from_every_include_flag():
     assert ALL_V1_FLAGS <= set(table)
     # Switching an include flag off removes exactly its control.
     partial = ExtendedArgumentParser(prog="scratch", identity=IDENTITY)
-    add_common_options(partial, IDENTITY, include_json=False)
+    add_common_options(
+        partial,
+        IDENTITY,
+        **{name: name != "include_json" for name in include_flags},
+    )
     assert {
         contract.canonical_flag(action.option_strings)
         for action in partial._actions
