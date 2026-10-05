@@ -142,6 +142,7 @@ items:
   - {id: B140, title: "no project-level default for a lane's env_passthrough: every new lane must repeat the project's common names, and a missing one fails the lane's first run COMMAND_FAILED", type: feature, component: config, context_estimate: small}
   - {id: B141, title: "changed-lines lanes cannot scope to files: judge.source_roots must be directories, so a later-HEAD run judges other packages' changed lines with the wrong tests", type: feature, component: config, context_estimate: small}
   - {id: B143, title: "Adopt cli-extended (unified adoption, order 6 of 8): real wheel dependency, zipapp bundles cli_extended, A-005 reworded", type: feature, component: cli, context_estimate: large}
+  - {id: B144, title: "per-candidate covering-test selection for qualifying Python R2: a coverage-context map runs each mutant's covering tests first (kill fast) while every survivor still runs the full declared suite -- decision-gated against B110 D3", type: feature, component: mutation, context_estimate: large}
 ---
 
 # assay — backlog
@@ -189,6 +190,7 @@ the per-entry evidence table, WIP-branch findings, and ID collisions.
 - B078 — R0 trusts only the wrapped target's exit code — PARTIAL (checkpoints 2/3: pytest, go test)
 - B103 — execution-interruption boundary (reserved stub; ID collision with an unmerged branch's own B099/A-448 only) — OPEN (owned by the RG-55 continuation)
 - B143 — adopt cli-extended (unified adoption, order 6 of 8; A-005 reworded) — PLANNED (filed 2026-10-05; requires cli-extended 0.2.0 released)
+- B144 — per-candidate covering-test selection for qualifying Python R2 (covering tests first, full suite on survival) — OPEN, decision-gated against B110 D3/A-467 (filed 2026-10-05 from the cli-extended 0.2.0 wave; measured on a real campaign)
 - B105 — full-source R0-R3 Assay self-qualification — OPEN (next package after the single Wave C release; required before M7; pre-release Wave C gate remains R0-only; full gate must meet B110's 8-hour ceiling; suite scope amended by A-468; equivalents only via the A-465 ledger)
 
 **Filed after the 2026-09-23 triage**
@@ -11883,3 +11885,53 @@ Fix: add both names in pytest's own precedence order, and check the order agains
 **Oracles for the carver.** A scratch venv with only the assay wheel and the cli-extended wheel runs `assay lanes`; the `.pyz` runs `assay --version` on a Python with no pip and no site-packages; a controlled wrong implementation that omits `cli_extended` from the `.pyz` staging fails the pip-less run; `gate/tests/test_dependency_purity.py` fails if a second third-party dependency is added.
 
 **Why assay owns it.** The change is to assay's packaging, release build, tests and CLI; the program only supplies the library and the decision (CX-D1, CX-D11).
+
+## B144 — per-candidate covering-test selection for qualifying Python R2: covering tests first, full declared suite on survival
+
+**Status: OPEN, decision-gated (filed 2026-10-05 from the cli-extended 0.2.0 wave, measured on a real campaign). Needs an operator decision before a carve:** B110 **D3 (A-467)** fixes the qualifying execution model as one process running the full declared suite *in declared order*. This item changes the per-candidate **order** of a qualifying attempt — never its membership on survival — so it amends D3 or is refused.
+
+**How it relates to what is already filed (none of them covers it):**
+- **B114 / P3b cold witness** — runs the declared order without coverage. Orthogonal: it makes each test cheaper; this item makes the kill arrive earlier. They compose.
+- **B112 / P1 tiered declared order** (`tests/zz_slow/` last) — static, one order per lane. It cannot help when the tests that own a module are simply collected late; this item is per candidate.
+- **B110 plan RP1** (`reports/assay-B110-PLAN-2026-09-28.md`, proposals table) — covering-test selection in the **non-qualifying survivor screen only**. This item asks for the **qualifying kill path**; RP1's screen is still wanted (requirement R8 below).
+- **B121 / P11 isolation units** — coverage-guided order of per-file *processes*, decision-gated. This item stays single-process and needs no unit model.
+- **B109 carry-forward of unaffected kills** — reuses old verdicts across commits; this item speeds a first-time candidate. They compose.
+
+**Observed (measured, not estimated).** Lane `cli-extended` (`libraries/cli-extended/assay.toml`: `whole_target`, 20 targets, `max_mutants = 3000`, `jobs = 2`, argv `pytest tests -q --maxfail=1 --cov...`), commit `86993acd1`, tester-unified capped at 3 CPUs on the shared 8-core host (load ~9 from other sessions), progress file `libraries/cli-extended/.assay/progress-r2.jsonl` on branch `cli-extended-unified`:
+- 1,403 candidates; baseline 42.4 s; derived `budget_per_candidate` 127.3 s.
+- First 66 candidates (all in `cli.py`/`audit.py`), 25 min: **53 killed** (median command 8.1 s) — but **21 of the 53 were killed only after more than 500 of the 1,180 tests had run, and those 21 consumed 1,077 of the 1,274 command-seconds spent on kills (85%)**; **11 survived** (full suite, median command 57.6 s); **2 `budget_exceeded`** (full suite, 128 s under contention — probably survivors).
+- Fixed per-candidate overhead (materialize + integrity + teardown) median 8.7 s.
+- Throughput ~2.6 candidates/min → ~9 h projected for 1,403 candidates, **over the lane's 480 m budget**.
+- **Cause:** `--maxfail=1` plus declared (alphabetical file) order. The tests that own `cli.py`/`audit.py` live in `tests/test_workflow.py`/`tests/test_audit.py`, collected near the end, so every mutant in those modules first runs ~1,100 tests that cannot touch it. A library that grows new modules makes this worse with every module whose test file sorts late. Renaming test files to game the order is the only consumer-side workaround, and it is a hack.
+
+**What the consumer needs (requirements, in priority order):**
+- **R1 — kill cost proportional to the covering tests**, not to where they happen to sit in collection order.
+- **R2 — the survivor claim is unchanged.** `survived` still means "the full declared suite ran and passed". Nothing is skipped for a survivor.
+- **R3 — no weaker kill.** A kill found by a reordered attempt must be one B110 would accept: the failing test fails *because of the mutant*, not because the reorder changed test pollution (see "kill attribution" below).
+- **R4 — zero per-test annotations.** One opt-in lane key (e.g. `judge.mutation.test_order = "covering-first"`, default `"declared"`); the map is derived, never hand-maintained.
+- **R5 — deterministic.** Same tree, same judge identity → same per-candidate order → same verdict.
+- **R6 — composes with** `--resume`, `--shard`, `jobs`, B106 prefix replay, B114 cold witness, `whole_target` and `changed_lines`.
+- **R7 — visible in the verdict.** Per-candidate evidence of which attempt killed (a new evidence `mode`, e.g. `covering-first`), the index of the failing test, and run-level counts, so `assay verify` can audit it.
+- **R8 — a fast non-qualifying dev-loop screen** (the RP1 half): `assay run --candidates-file` (B118/P7) plus a **path filter** (e.g. `--candidates-path 'src/cli_extended/{cli,audit}.py'`) using covering-test *selection*, so a developer harvests the survivors of the modules they just wrote in minutes, before paying for a qualifying campaign. Today the only way to find survivors is the full campaign; in this wave that meant three restarts of a multi-hour run because each fix changed the tree (resume is per-tree by design).
+
+**Proposed mechanism (for the carve — not decided):**
+1. **Coverage map.** The coverage baseline (the R0/R1 run R2 already performs) runs with coverage.py dynamic contexts (`--cov-context=test`; JSON with contexts). assay derives `(file, line) → sorted node ids`, bound to the tree/judge identity and stored with the resume state; a map from another tree is refused. Lines whose only context is the empty/import context map to "no covering test" → that candidate uses the declared order (no regression).
+2. **Covering-first attempt.** The same single pytest process and the same collected membership, with `session.items` reordered by an assay plugin: the candidate's covering tests first (in their declared relative order), then every other test in declared order. The plugin asserts the reordered collection has the same `collection_sha256` *membership* as the baseline (B110 §5), or the attempt is refused and the declared attempt runs.
+3. **On survival:** the attempt already ran the full membership. **Decision D-a:** accept it as the survival run (cheapest; the order differs from declared), or re-run survivors in declared order (survivors cost 2×; survivors are already the dominant cost, about 17% of candidates here).
+4. **Kill attribution (decision D-b)** — the R3 risk is order-dependent tests. Options:
+   - **K1** confirm each covering-first kill by re-running the failing node alone, in a fresh process, on the mutant, with its isolated pass on the unmutated tree cached once per node id; an inconclusive confirmation falls back to the declared attempt. Sound, adds ~5–8 s per kill.
+   - **K2** a lane-level order-independence gate: the coverage baseline is additionally run once in reversed declared order; if anything fails, the lane refuses `covering-first` (or falls back to declared) for that tree. Cheap; it proves reversal-independence, not all orders.
+   - **K3** both: K2 gates the feature, and K1 confirms only kills by a test K2 could not exercise.
+
+**Expected effect on the measured sample:** the 21 late kills drop from ~51 s to roughly 8–12 s each (~900 s saved per 66 candidates, ~35% of the sample's wall time). Survivors are untouched by design (R2), so the campaign still needs B114's cold witness and the R8 screen to drop survivor counts *before* the qualifying run.
+
+**Oracles:**
+- The reordered collection's membership equals the declared collection; a controlled wrong implementation that **drops** non-covering tests (true selection) must fail the "survivor ran the full suite" oracle.
+- A mutant killed only by a non-covering test (an import-time effect) is still killed.
+- An order-dependent fixture pair (B passes only after A; A does not cover the mutant) must not yield a kill attributed to the reorder, under the chosen K option.
+- The same tree twice produces identical per-candidate orders and an identical verdict.
+- A map bound to another tree is refused; `--shard` and `--resume` produce the same buckets as a single declared-order run on a fixed candidate set.
+
+**Acceptance:** on the `cli-extended` lane at a fixed commit, identical outcome buckets to a declared-order run on the same candidate set, and at least 30% less wall time; B105 self-qualification measured the same way; `assay verify` checks the new evidence; docs (CONSUMERS: when to enable it, what it does not change).
+
+**Found in:** vbpub cli-extended unified-adoption wave (`libraries/cli-extended/docs/PROGRAM-2026-10-UNIFIED-ADOPTION.md`), R2 campaign on `cli-extended-unified@86993acd1`, 2026-10-05.
