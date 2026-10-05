@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import errno
 import json
 import os
 import subprocess
@@ -20,7 +19,7 @@ from conftest import (
     prepared_snapshot,
 )
 from assay.adapters.python import PythonAdapter
-from assay.errors import Outcome, ReasonCode
+from assay.errors import AssayError, Outcome, ReasonCode
 from assay.mutation import (
     MutationTarget,
     _resource_limit_bucket,
@@ -34,7 +33,7 @@ from assay.resource_limits import (
     ResourceLimitObservationError,
     read_current_cgroup_counters,
 )
-from assay.runner import execute_command
+from assay.runner import default_process_runner, execute_command
 from assay.verdict import MUTATION_BUCKETS, MutantOutcome, Mutation
 from assay.verify import _check_b145_resource_limit_evidence
 
@@ -42,50 +41,143 @@ from assay.verify import _check_b145_resource_limit_evidence
 def _evidence(
     *,
     pids: tuple[int, int] = (0, 0),
+    memory_max: tuple[int, int] = (0, 0),
+    oom: tuple[int, int] = (0, 0),
     oom_kill: tuple[int, int] = (0, 0),
     oom_group_kill: tuple[int, int] = (0, 0),
 ) -> ResourceLimitEvidence:
     return ResourceLimitEvidence(
         pids_events_max=CounterDelta.between(*pids),
+        memory_events_max=CounterDelta.between(*memory_max),
+        memory_events_oom=CounterDelta.between(*oom),
         memory_events_oom_kill=CounterDelta.between(*oom_kill),
         memory_events_oom_group_kill=CounterDelta.between(*oom_group_kill),
     )
 
 
+def _lock_cgroup_controls(*directories: Path) -> None:
+    for directory in directories:
+        for name in ("cgroup.procs", "cgroup.subtree_control"):
+            path = directory / name
+            path.write_text("", encoding="ascii")
+            path.chmod(0o444)
+
+
 def test_reader_resolves_current_cgroup_from_kernel_mount_records(tmp_path: Path):
-    cgroup_dir = tmp_path / "cgroup" / "lane"
+    cgroup_dir = tmp_path / "cgroup" / "worker" / "lane"
     cgroup_dir.mkdir(parents=True)
-    (cgroup_dir / "pids.events").write_text("max 3\n", encoding="ascii")
-    (cgroup_dir / "memory.events").write_text(
-        "oom 1\noom_kill 2\noom_group_kill 0\n", encoding="ascii"
+    parent_dir = cgroup_dir.parent
+    mount_root = tmp_path / "cgroup"
+    for directory, pids_limit, memory_limit in (
+        (parent_dir, "12", "4096"),
+        (cgroup_dir, "max", "max"),
+    ):
+        (directory / "pids.max").write_text(f"{pids_limit}\n", encoding="ascii")
+        (directory / "memory.max").write_text(f"{memory_limit}\n", encoding="ascii")
+    (parent_dir / "pids.events").write_text("max 3\n", encoding="ascii")
+    (cgroup_dir / "pids.events").write_text("max 2\n", encoding="ascii")
+    (parent_dir / "memory.events").write_text(
+        "max 2\noom 3\noom_kill 4\noom_group_kill 1\n", encoding="ascii"
     )
+    (cgroup_dir / "memory.events").write_text(
+        "max 1\noom 1\noom_kill 2\noom_group_kill 0\n", encoding="ascii"
+    )
+    _lock_cgroup_controls(mount_root, parent_dir, cgroup_dir)
     cgroup_file = tmp_path / "proc-cgroup"
     cgroup_file.write_text("0::/worker/lane\n", encoding="utf-8")
     mountinfo_file = tmp_path / "mountinfo"
     mountinfo_file.write_text(
-        f"31 23 0:28 /worker {tmp_path}/cgroup rw - cgroup2 cgroup rw\n",
+        f"31 23 0:28 / {mount_root} ro,nosuid - cgroup2 cgroup rw\n"
+        f"32 24 0:29 /worker/lane/child {tmp_path / 'child-cgroup'} ro - cgroup2 cgroup rw\n",
         encoding="utf-8",
     )
 
     assert read_current_cgroup_counters(
         cgroup_file=cgroup_file, mountinfo_file=mountinfo_file
     ) == ResourceLimitCounters(
-        pids_max=3, memory_oom_kill=2, memory_oom_group_kill=0
+        pids_max=5,
+        memory_max=3,
+        memory_oom=4,
+        memory_oom_kill=6,
+        memory_oom_group_kill=1,
+        limit_signature=(
+            (str(cgroup_dir), True, None, True, None, True, True),
+            (str(parent_dir), True, 12, True, 4096, True, True),
+        ),
     )
+
+
+@pytest.mark.parametrize(
+    ("cgroup_path", "mount_root", "namespace_root_limit"),
+    [
+        ("/", "/", None),
+        ("/worker/lane", "/worker", None),
+        ("/child", "/", "pids.max"),
+    ],
+)
+def test_reader_fails_closed_when_the_mount_hides_ancestor_cgroups(
+    tmp_path: Path,
+    cgroup_path: str,
+    mount_root: str,
+    namespace_root_limit: str | None,
+):
+    mount_point = tmp_path / "cgroup"
+    mount_point.mkdir()
+    if namespace_root_limit is not None:
+        (mount_point / namespace_root_limit).write_text("32\n", encoding="ascii")
+    cgroup_file = tmp_path / "proc-cgroup"
+    cgroup_file.write_text(f"0::{cgroup_path}\n", encoding="utf-8")
+    mountinfo_file = tmp_path / "mountinfo"
+    mountinfo_file.write_text(
+        f"31 23 0:28 {mount_root} {mount_point} ro - cgroup2 cgroup rw\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ResourceLimitObservationError, match="ancestor|namespace"):
+        read_current_cgroup_counters(
+            cgroup_file=cgroup_file, mountinfo_file=mountinfo_file
+        )
+
+
+def test_reader_refuses_a_sibling_cgroup_overmount_at_the_candidate_path(
+    tmp_path: Path,
+):
+    mount_root = tmp_path / "cgroup"
+    cgroup_dir = mount_root / "worker" / "lane"
+    cgroup_dir.mkdir(parents=True)
+    cgroup_file = tmp_path / "proc-cgroup"
+    cgroup_file.write_text("0::/worker/lane\n", encoding="utf-8")
+    mountinfo_file = tmp_path / "mountinfo"
+    mountinfo_file.write_text(
+        f"31 23 0:28 / {mount_root} ro - cgroup2 cgroup rw\n"
+        f"32 24 0:29 /worker/other {cgroup_dir} ro - cgroup2 cgroup rw\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ResourceLimitObservationError, match="shadows"):
+        read_current_cgroup_counters(
+            cgroup_file=cgroup_file, mountinfo_file=mountinfo_file
+        )
 
 
 def test_reader_fails_closed_when_a_required_controller_counter_is_missing(
     tmp_path: Path,
 ):
-    cgroup_dir = tmp_path / "cgroup"
+    mount_point = tmp_path / "cgroup"
+    cgroup_dir = mount_point / "lane"
     cgroup_dir.mkdir()
+    (cgroup_dir / "pids.max").write_text("16\n", encoding="ascii")
+    (cgroup_dir / "memory.max").write_text("1024\n", encoding="ascii")
     (cgroup_dir / "pids.events").write_text("max 0\n", encoding="ascii")
-    (cgroup_dir / "memory.events").write_text("oom_kill 0\n", encoding="ascii")
+    (cgroup_dir / "memory.events").write_text(
+        "max 0\noom 0\noom_kill 0\n", encoding="ascii"
+    )
+    _lock_cgroup_controls(mount_point, cgroup_dir)
     cgroup_file = tmp_path / "proc-cgroup"
-    cgroup_file.write_text("0::/\n", encoding="utf-8")
+    cgroup_file.write_text("0::/lane\n", encoding="utf-8")
     mountinfo_file = tmp_path / "mountinfo"
     mountinfo_file.write_text(
-        f"31 23 0:28 / {cgroup_dir} rw - cgroup2 cgroup rw\n",
+        f"31 23 0:28 / {mount_point} ro - cgroup2 cgroup rw\n",
         encoding="utf-8",
     )
 
@@ -93,6 +185,159 @@ def test_reader_fails_closed_when_a_required_controller_counter_is_missing(
         read_current_cgroup_counters(
             cgroup_file=cgroup_file, mountinfo_file=mountinfo_file
         )
+
+
+def test_reader_accepts_inactive_child_controllers_when_finite_parent_is_visible(
+    tmp_path: Path,
+):
+    mount_point = tmp_path / "cgroup"
+    parent_dir = mount_point / "worker"
+    cgroup_dir = parent_dir / "lane"
+    cgroup_dir.mkdir(parents=True)
+    (parent_dir / "pids.max").write_text("12\n", encoding="ascii")
+    (parent_dir / "memory.max").write_text("4096\n", encoding="ascii")
+    (parent_dir / "pids.events").write_text("max 3\n", encoding="ascii")
+    (parent_dir / "memory.events").write_text(
+        "max 2\noom 3\noom_kill 4\noom_group_kill 1\n", encoding="ascii"
+    )
+    _lock_cgroup_controls(mount_point, parent_dir, cgroup_dir)
+    cgroup_file = tmp_path / "proc-cgroup"
+    cgroup_file.write_text("0::/worker/lane\n", encoding="utf-8")
+    mountinfo_file = tmp_path / "mountinfo"
+    mountinfo_file.write_text(
+        f"31 23 0:28 / {mount_point} ro - cgroup2 cgroup rw\n",
+        encoding="utf-8",
+    )
+
+    counters = read_current_cgroup_counters(
+        cgroup_file=cgroup_file, mountinfo_file=mountinfo_file
+    )
+
+    assert counters.pids_max == 3
+    assert counters.memory_max == 2
+    assert counters.memory_oom == 3
+    assert counters.memory_oom_kill == 4
+    assert counters.memory_oom_group_kill == 1
+
+
+def test_reader_samples_unlimited_active_ancestors_for_local_events(
+    tmp_path: Path,
+):
+    mount_point = tmp_path / "cgroup"
+    limited = mount_point / "limited"
+    active = limited / "active"
+    candidate = active / "lane"
+    candidate.mkdir(parents=True)
+    (limited / "pids.max").write_text("32\n", encoding="ascii")
+    (limited / "memory.max").write_text("8192\n", encoding="ascii")
+    (limited / "pids.events").write_text("max 2\n", encoding="ascii")
+    (limited / "memory.events").write_text(
+        "max 1\noom 2\noom_kill 3\noom_group_kill 4\n", encoding="ascii"
+    )
+    (active / "pids.max").write_text("max\n", encoding="ascii")
+    (active / "memory.max").write_text("max\n", encoding="ascii")
+    (active / "pids.events").write_text("max 5\n", encoding="ascii")
+    (active / "memory.events").write_text(
+        "max 6\noom 7\noom_kill 8\noom_group_kill 9\n", encoding="ascii"
+    )
+    _lock_cgroup_controls(mount_point, limited, active, candidate)
+    cgroup_file = tmp_path / "proc-cgroup"
+    cgroup_file.write_text("0::/limited/active/lane\n", encoding="utf-8")
+    mountinfo_file = tmp_path / "mountinfo"
+    mountinfo_file.write_text(
+        f"31 23 0:28 / {mount_point} ro - cgroup2 cgroup rw\n",
+        encoding="utf-8",
+    )
+
+    counters = read_current_cgroup_counters(
+        cgroup_file=cgroup_file, mountinfo_file=mountinfo_file
+    )
+
+    assert counters.pids_max == 7
+    assert counters.memory_max == 7
+    assert counters.memory_oom == 9
+    assert counters.memory_oom_kill == 11
+    assert counters.memory_oom_group_kill == 13
+
+
+def test_reader_refuses_clone_migration_when_candidate_cgroup_procs_is_writable(
+    tmp_path: Path,
+):
+    mount_point = tmp_path / "cgroup"
+    parent_dir = mount_point / "worker"
+    candidate = parent_dir / "lane"
+    candidate.mkdir(parents=True)
+    _lock_cgroup_controls(mount_point, parent_dir, candidate)
+    (candidate / "cgroup.procs").chmod(0o644)
+    cgroup_file = tmp_path / "proc-cgroup"
+    cgroup_file.write_text("0::/worker/lane\n", encoding="utf-8")
+    mountinfo_file = tmp_path / "mountinfo"
+    mountinfo_file.write_text(
+        f"31 23 0:28 / {mount_point} ro - cgroup2 cgroup rw\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ResourceLimitObservationError, match="can write.*cgroup.procs"):
+        read_current_cgroup_counters(
+            cgroup_file=cgroup_file, mountinfo_file=mountinfo_file
+        )
+
+
+def test_reader_refuses_a_writable_cgroup_mount(tmp_path: Path):
+    mount_point = tmp_path / "cgroup"
+    mount_point.mkdir()
+    cgroup_file = tmp_path / "proc-cgroup"
+    cgroup_file.write_text("0::/worker/lane\n", encoding="utf-8")
+    mountinfo_file = tmp_path / "mountinfo"
+    mountinfo_file.write_text(
+        f"31 23 0:28 / {mount_point} ro - cgroup2 cgroup rw\n"
+        f"32 24 0:29 /worker/lane/child {tmp_path / 'second-cgroup'} rw - cgroup2 cgroup rw\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        ResourceLimitObservationError,
+        match="cgroup2 mount exposes the candidate hierarchy writable",
+    ):
+        read_current_cgroup_counters(
+            cgroup_file=cgroup_file, mountinfo_file=mountinfo_file
+        )
+
+
+def test_limit_configuration_change_invalidates_candidate_window():
+    before = ResourceLimitCounters(
+        pids_max=0,
+        memory_max=0,
+        memory_oom=0,
+        memory_oom_kill=0,
+        memory_oom_group_kill=0,
+        limit_signature=(("/worker/lane", True, 12, True, 4096, True, True),),
+    )
+    after = replace(
+        before,
+        limit_signature=(("/worker/lane", True, None, True, 4096, True, True),),
+    )
+
+    with pytest.raises(ResourceLimitObservationError, match="changed"):
+        ResourceLimitEvidence.between(before, after)
+
+
+def test_event_interface_change_invalidates_candidate_window():
+    before = ResourceLimitCounters(
+        pids_max=0,
+        memory_max=0,
+        memory_oom=0,
+        memory_oom_kill=0,
+        memory_oom_group_kill=0,
+        limit_signature=(("/worker/lane", False, None, False, None, True, True),),
+    )
+    after = replace(
+        before,
+        limit_signature=(("/worker/lane", False, None, False, None, False, True),),
+    )
+
+    with pytest.raises(ResourceLimitObservationError, match="changed"):
+        ResourceLimitEvidence.between(before, after)
 
 
 def test_resource_evidence_parser_rejects_forged_counter_arithmetic():
@@ -107,6 +352,8 @@ def test_resource_evidence_parser_rejects_forged_counter_arithmetic():
     "evidence",
     [
         _evidence(pids=(0, 1)),
+        _evidence(memory_max=(0, 1)),
+        _evidence(oom=(0, 1)),
         _evidence(oom_kill=(1, 2)),
         _evidence(oom_group_kill=(0, 1)),
     ],
@@ -204,7 +451,15 @@ def test_ingested_outcome_cannot_claim_local_resource_evidence():
         )
 
 
-def test_raw_verifier_rejects_a_positive_counter_delta_in_killed():
+@pytest.mark.parametrize(
+    "evidence",
+    [
+        _evidence(pids=(0, 1)),
+        _evidence(memory_max=(0, 1)),
+        _evidence(oom=(0, 1)),
+    ],
+)
+def test_raw_verifier_rejects_a_positive_counter_delta_in_killed(evidence):
     entry = native_outcome(
         path="src/mod.py",
         lineno=1,
@@ -214,7 +469,7 @@ def test_raw_verifier_rejects_a_positive_counter_delta_in_killed():
         operator="python:compare-swap",
         description="x < y",
     ).to_dict()
-    entry["resource_limit_evidence"] = _evidence(pids=(0, 1)).to_dict()
+    entry["resource_limit_evidence"] = evidence.to_dict()
     failures: list[str] = []
 
     _check_b145_resource_limit_evidence("killed", entry, failures)
@@ -240,6 +495,26 @@ def test_raw_verifier_accepts_a_positive_counter_delta_in_crashed():
     _check_b145_resource_limit_evidence("crashed", entry, failures)
 
     assert failures == []
+
+
+def test_raw_verifier_refuses_evidence_missing_memory_max_without_raising():
+    entry = native_outcome(
+        path="src/mod.py",
+        lineno=1,
+        start_byte=0,
+        end_byte=1,
+        replacement_sha256="a" * 64,
+        operator="python:compare-swap",
+        description="x < y",
+    ).to_dict()
+    evidence = _evidence().to_dict()
+    del evidence["memory_events"]["max"]
+    entry["resource_limit_evidence"] = evidence
+    failures: list[str] = []
+
+    _check_b145_resource_limit_evidence("crashed", entry, failures)
+
+    assert any("invalid memory_events evidence" in failure for failure in failures)
 
 
 @pytest.mark.parametrize(
@@ -292,13 +567,25 @@ def test_candidate_counter_delta_is_persisted_and_overrides_a_kill(
     samples = iter(
         (
             ResourceLimitCounters(
-                pids_max=0, memory_oom_kill=0, memory_oom_group_kill=0
+                pids_max=0,
+                memory_max=0,
+                memory_oom=0,
+                memory_oom_kill=0,
+                memory_oom_group_kill=0,
             ),  # mutation preflight
             ResourceLimitCounters(
-                pids_max=0, memory_oom_kill=0, memory_oom_group_kill=0
+                pids_max=0,
+                memory_max=0,
+                memory_oom=0,
+                memory_oom_kill=0,
+                memory_oom_group_kill=0,
             ),  # before candidate
             ResourceLimitCounters(
-                pids_max=1, memory_oom_kill=0, memory_oom_group_kill=0
+                pids_max=1,
+                memory_max=0,
+                memory_oom=0,
+                memory_oom_kill=0,
+                memory_oom_group_kill=0,
             ),  # after candidate
         )
     )
@@ -356,37 +643,152 @@ def test_candidate_counter_delta_is_persisted_and_overrides_a_kill(
     assert progress_record["resource_limit_evidence"] == expected
 
 
+def test_worker_start_failure_is_a_payload_free_execution_error(
+    tmp_path: Path, monkeypatch
+):
+    source = "def flags():\n    return True\n"
+    repo = GitRepo(path=tmp_path / "repo")
+    repo.path.mkdir()
+    repo.git("init", "-q", "-b", "main")
+    repo.git("config", "user.email", "assay-tests@example.com")
+    repo.git("config", "user.name", "assay tests")
+    repo.write("pkg/flags.py", source)
+    repo.commit_all("add flags")
+
+    def baseline_runner(argv, *, env, cwd, timeout):
+        return subprocess.CompletedProcess(list(argv), returncode=0)
+
+    baseline = execute_command(
+        make_lane(argv=("pytest", "-q")),
+        cwd=repo.path,
+        process_runner=baseline_runner,
+    )
+    monkeypatch.setattr(
+        "assay.mutation.read_current_cgroup_counters",
+        lambda: ResourceLimitCounters(
+            pids_max=0,
+            memory_max=0,
+            memory_oom=0,
+            memory_oom_kill=0,
+            memory_oom_group_kill=0,
+        ),
+    )
+
+    class ThreadLimitedExecutor:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
+        def submit(self, function, position):
+            raise RuntimeError("can't start new thread")
+
+    scratch_root = tmp_path / "scratch"
+    scratch_root.mkdir()
+    with prepared_snapshot(repo, scratch_root=scratch_root) as prepared:
+        with pytest.raises(
+            AssayError, match="could not start a native R2 candidate worker"
+        ) as caught:
+            run_mutation(
+                baseline=baseline,
+                prepared=prepared,
+                plan=make_plan(make_lane(argv=("pytest", "-q"))),
+                deadline=make_deadline(),
+                targets=(
+                    MutationTarget(
+                        path="pkg/flags.py", text=source, lines=frozenset({2})
+                    ),
+                ),
+                adapter=PythonAdapter(),
+                jobs=1,
+                max_mutants=10,
+                operators=("python:bool-const-flip",),
+                process_runner=baseline_runner,
+                clock=lambda: datetime(2026, 10, 5, tzinfo=timezone.utc),
+                executor_factory=lambda _jobs: ThreadLimitedExecutor(),
+            )
+
+    assert caught.value.outcome is Outcome.ERROR
+    assert caught.value.reason_code is ReasonCode.EXEC_FAILED
+
+
 @pytest.mark.skipif(
     os.environ.get("ASSAY_B145_LOW_PIDS_PROBE") != "1",
     reason="requires the dedicated tester-unified --pids-limit acceptance container",
 )
-def test_low_pids_limit_event_cannot_become_a_kill():
-    before = read_current_cgroup_counters()
+def test_low_pids_limit_event_cannot_become_a_kill(tmp_path: Path):
+    source = "def flags():\n    return True\n"
+    repo = GitRepo(path=tmp_path / "repo")
+    repo.path.mkdir()
+    repo.git("init", "-q", "-b", "main")
+    repo.git("config", "user.email", "assay-tests@example.com")
+    repo.git("config", "user.name", "assay tests")
+    repo.write("README.md", "seed\n")
+    repo.commit_all("seed")
+    repo.write("pkg/flags.py", source)
+    repo.commit_all("add flag target")
     code = "\n".join(
         (
-            "import errno, os, time",
+            "import errno, os",
+            "from pkg.flags import flags",
+            "if flags():",
+            "    raise SystemExit(0)",
             "children = []",
+            "release_r, release_w = os.pipe()",
+            "status = 0",
             "try:",
             "    for _ in range(64):",
-            "        child = os.fork()",
+            "        try:",
+            "            child = os.fork()",
+            "        except OSError as exc:",
+            "            if exc.errno != errno.EAGAIN:",
+            "                raise",
+            "            status = 1",
+            "            break",
             "        if child == 0:",
-            "            time.sleep(1)",
+            "            os.close(release_w)",
+            "            os.read(release_r, 1)",
+            "            os.close(release_r)",
             "            os._exit(0)",
             "        children.append(child)",
-            "except OSError as exc:",
-            "    if exc.errno != errno.EAGAIN:",
-            "        raise",
             "finally:",
+            "    os.close(release_w)",
+            "    os.close(release_r)",
             "    for child in children:",
             "        os.waitpid(child, 0)",
+            "raise SystemExit(status)",
         )
     )
-    try:
-        subprocess.run([sys.executable, "-c", code], check=False, timeout=10)
-    except OSError as exc:
-        assert exc.errno == errno.EAGAIN
-    after = read_current_cgroup_counters()
-    evidence = ResourceLimitEvidence.between(before, after)
+    lane = make_lane(argv=(sys.executable, "-c", code))
+    baseline = execute_command(
+        lane, cwd=repo.path, process_runner=default_process_runner
+    )
+    assert baseline.outcome is Outcome.PASS
+    scratch_root = tmp_path / "scratch"
+    scratch_root.mkdir()
+    with prepared_snapshot(repo, scratch_root=scratch_root) as prepared:
+        mutation = run_mutation(
+            baseline=baseline,
+            prepared=prepared,
+            plan=make_plan(lane),
+            deadline=make_deadline(budget_seconds=30.0),
+            targets=(
+                MutationTarget(path="pkg/flags.py", text=source, lines=frozenset({2})),
+            ),
+            adapter=PythonAdapter(),
+            jobs=1,
+            max_mutants=1,
+            operators=("python:bool-const-flip",),
+            process_runner=default_process_runner,
+        )
 
-    assert evidence.pids_events_max.delta > 0
-    assert _resource_limit_bucket("killed", evidence) == "crashed"
+    assert not isinstance(mutation, str)
+    assert mutation.killed == ()
+    assert len(mutation.crashed) == mutation.total == 1
+    assert mutation.crashed[0].resource_limit_evidence is not None
+    assert mutation.crashed[0].resource_limit_evidence.pids_events_max.delta > 0
+    assert judge_mutation(baseline=baseline, mutation=mutation) == (
+        Outcome.ERROR,
+        ReasonCode.EXEC_FAILED,
+    )

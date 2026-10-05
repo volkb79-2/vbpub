@@ -1840,6 +1840,8 @@ def _check_b145_resource_limit_evidence(
         )
         return
     if not isinstance(memory, dict) or set(memory) != {
+        "max",
+        "oom",
         "oom_kill",
         "oom_group_kill",
     }:
@@ -1851,6 +1853,8 @@ def _check_b145_resource_limit_evidence(
     positive_delta = False
     for name, raw_delta in (
         ("pids_events.max", pids["max"]),
+        ("memory_events.max", memory["max"]),
+        ("memory_events.oom", memory["oom"]),
         ("memory_events.oom_kill", memory["oom_kill"]),
         ("memory_events.oom_group_kill", memory["oom_group_kill"]),
     ):

@@ -611,25 +611,58 @@ rather than from the declared budget.
 
 #### Native R2 cgroup resource-limit events (B145)
 
-A candidate that reaches the lane's process or memory limit has not shown that
-the test suite caught a mutant. Before native R2 starts candidates, Assay
-requires readable cgroup v2 counters. It samples `pids.events.max`,
-`memory.events.oom_kill`, and `memory.events.oom_group_kill` immediately around
-each candidate command and records each counter's before, after, and delta in
-the candidate verdict and resume record. The counters belong to the lane's
-cgroup, so overlapping candidate windows can conservatively mark more than
-one candidate as affected; a positive delta never certifies a kill or a
-survivor. Such a candidate is `crashed`, making the R2 result
-`ERROR/EXEC_FAILED`. Missing, malformed, or unreadable counters refuse the
-native R2 run before its candidate sweep.
+A candidate that reaches a process or memory limit has not shown that the test
+suite caught a mutant. Before native R2 starts candidates, Assay requires a
+visible cgroup v2 path through the hierarchy root. It samples the candidate's
+`pids.events.max` whenever available and the event file at every visible
+ancestor where the pids controller is active; a finite `pids.max` requires its
+counter. Sampling unlimited active ancestors covers `pids_localevents`, where
+a rejected fork can increment the nearest active ancestor's local counter
+while a higher ancestor enforces the finite limit. Assay samples the four
+`memory.events` counters (`max`, `oom`, `oom_kill`, `oom_group_kill`) at the
+candidate and every visible ancestor where the memory controller is active; a
+finite `memory.max` requires its event file. If the candidate memory controller
+is inactive, visible active ancestor event files are sampled too. `max` counts attempts to
+exceed the memory boundary even when the OOM path does not run; `oom_kill` also
+captures a global OOM kill in the candidate when its own `memory.max` is
+unlimited. Unlimited active ancestors are sampled too, so local event counters
+can report a refusal at an intermediate ancestor. A shared ancestor can still
+conservatively attribute sibling activity. Every visible cgroup2 mount
+exposing the sampled hierarchy must be read-only. Assay also checks the
+underlying `cgroup.procs` inode permissions on the candidate cgroup and every
+ancestor. A read-only mount alone cannot stop `CLONE_INTO_CGROUP` from moving a
+candidate into an existing child; the kernel checks inode permissions without
+the mount's read-only flag. Assay refuses when candidate credentials or
+capabilities can write those files, and refuses overmounts that shadow a
+sampled path.
+
+For each started full candidate command, Assay records the selected counters
+immediately before and after it. If the lane stops before a full command starts,
+that candidate remains `budget_exceeded` and shares a zero-duration sample
+taken after already-submitted work finishes. Replacement materialization or a
+saved-witness replay may already have run; the shared sample does not describe
+that earlier work or prove it did not happen. A positive delta during a full
+command records that candidate as `crashed`, making R2
+`ERROR/EXEC_FAILED`. A positive delta during witness-prefix replay instead
+stops the lane with payload-free `ERROR/EXEC_FAILED` before retry, so the replay
+event cannot be hidden by a later command. A positive delta never certifies a
+kill or survivor. The visible cgroup paths, controller availability, and
+configured limits must match between the bracketing samples. If they change,
+or if a required counter is missing, malformed, or unreadable, native R2 fails
+closed. A cgroup namespace that hides ancestors or a cgroup mount rooted below the
+hierarchy root also refuses native R2 before its candidate sweep. Worker
+creation failure at the executor boundary yields a payload-free
+`ERROR/EXEC_FAILED`, so a `RuntimeError` such as `can't start new thread`
+cannot escape the verdict path. This contract observes cgroup v2 events; it
+does not detect per-process limits such as `RLIMIT_NPROC` or `RLIMIT_AS`.
 
 `assay verify` independently checks the evidence shape, subtraction, and
 bucket. Resume state with a positive counter delta is rejected for reuse, and
-the judge identity advances to `/4`, so pre-B145 candidate records are cold
-starts. The mutation-state schema number does not change: this is a change in
-what the judge identity covers, not the record's outer shape. The v14 verdict
-shape adds the evidence only to native outcomes; ingested mutation reports do
-not claim local execution counters.
+the judge identity advances to `/6`, so pre-current-B145 candidate records are
+cold starts. The mutation-state schema number does not change: this is a
+change in what the judge identity covers, not the record's outer shape. The
+v14 verdict shape adds the evidence only to native outcomes; ingested mutation
+reports do not claim local execution counters.
 
 #### Liveness process-group cleanup
 

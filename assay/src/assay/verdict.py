@@ -1664,11 +1664,16 @@ class MutantOutcome:
     mutated_file_sha256: str | None = None
     execution: MutationExecution | None = None
     #: (B145/schema v14) Exact cgroup v2 process-limit and OOM counter
-    #: deltas across this native candidate's test command. Native outcomes
-    #: always carry this object, including zero deltas; a positive delta
-    #: means the result is infrastructure-affected and may only be recorded
-    #: in `crashed`. Ingested outcomes have no per-candidate execution and
-    #: therefore cannot carry this field.
+    #: deltas observed around this native candidate's full command. A
+    #: positive delta during that command requires the `crashed` bucket; a
+    #: positive delta during witness-prefix replay instead stops the lane
+    #: with payload-free `ERROR/EXEC_FAILED` before retry. A `budget_exceeded`
+    #: candidate whose full command did not start carries the shared
+    #: zero-duration sweep-close sample. Replacement materialization or a
+    #: witness-prefix replay may already have run; that sample does not
+    #: describe the earlier work. Native outcomes always carry this object,
+    #: including zero deltas. Ingested outcomes have no per-candidate
+    #: execution and therefore cannot carry this field.
     resource_limit_evidence: ResourceLimitEvidence | None = None
 
     def __post_init__(self) -> None:

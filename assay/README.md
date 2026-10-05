@@ -209,10 +209,20 @@ assay exists to close that gap mechanically, not by policy:
   database DSN even when its name does not contain `PASSWORD`. See the
   [redaction rule](docs/DESIGN-GUIDE.md#redacting-passthrough-environment-values-b142)
   and [consumer example](docs/CONSUMERS.md#keep-passthrough-secrets-out-of-verdicts-b142).
-- **Native R2 cannot count a resource-limited candidate as a kill (B145).**
-  Assay records cgroup v2 process-limit and out-of-memory event deltas around
-  each candidate command. A positive delta makes the candidate `crashed` and
-  R2 `ERROR/EXEC_FAILED`; missing counters refuse the run. See the
+- **Native R2 cannot count a cgroup-limited candidate as a kill (B145).**
+  Assay records cgroup v2 PID and memory events at the candidate and active
+  visible ancestors. Samples bracket each started full candidate command. If
+  an early stop prevents a full command from starting, the candidate stays
+  `budget_exceeded` and gets a shared zero-duration sample at sweep close;
+  replacement materialization or a saved-witness replay may already have run,
+  and that sample does not describe that earlier work. A positive delta during
+  a full command records the candidate as `crashed`; a positive replay delta
+  stops the lane with payload-free `ERROR/EXEC_FAILED`. Assay requires
+  read-only cgroup mounts and verifies that the candidate cannot write
+  `cgroup.procs` on its cgroup or ancestors; incomplete or writable cgroup
+  controls refuse the run.
+  This does not observe per-process limits such as `RLIMIT_NPROC` or
+  `RLIMIT_AS`. See the
   [design rationale](docs/DESIGN-GUIDE.md#native-r2-cgroup-resource-limit-events-b145)
   and [consumer requirements](docs/CONSUMERS.md#native-r2-resource-limit-observation-b145).
 - **Zero runtime dependencies.** assay imports nothing but the Python

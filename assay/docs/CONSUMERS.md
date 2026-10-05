@@ -122,17 +122,49 @@ mutation begins.
 
 ### Native R2 resource-limit observation (B145)
 
-Native R2 requires the running process to read its cgroup v2
-`pids.events.max`, `memory.events.oom_kill`, and
-`memory.events.oom_group_kill` counters. There is no Assay config switch for
-this: the counters must be exposed by the environment that runs the lane.
-Assay refuses the candidate sweep with `ERROR/EXEC_FAILED` if it cannot read
-them. If a counter increases during a candidate command, that candidate is
-recorded as `crashed` and the R2 result is an infrastructure error, even if a
-test command also failed. Fix the runner's cgroup visibility or process/memory
-limit pressure, then rerun; pre-B145 resume records are automatically cold
-starts under the new judge identity. Ingested third-party R2 reports have no
-local candidate process and do not carry these counters. See the
+Native R2 requires visible cgroup v2 event counters and limit configuration
+through the hierarchy. Assay samples the candidate's `pids.events.max` when
+exposed, even if its own `pids.max` is unlimited, and every visible ancestor's
+event counter when available. A finite `pids.max` requires its event counter.
+Sampling unlimited active ancestors covers `pids_localevents`, where a
+rejected fork can increment the nearest active ancestor's local counter while
+a higher ancestor enforces the finite limit. Assay samples
+`memory.events.max`, `oom`, `oom_kill`, and `oom_group_kill` at the candidate
+and every visible ancestor with those interfaces. A finite `memory.max`
+requires its event file. If the candidate's memory controller is inactive,
+visible active ancestor counters are sampled too. `max` catches a memory limit boundary even when
+the OOM path does not run; `oom_kill` also catches a global OOM kill when the
+candidate's `memory.max` is unlimited. Run Docker lanes with `--cgroupns=host`
+so Assay can see the actual hierarchy root. A private cgroup namespace or a
+cgroup mount rooted below an ancestor cannot prove that a parent limit was
+untouched, so Assay refuses native R2 with `ERROR/EXEC_FAILED`. Every visible
+cgroup2 mount exposing the hierarchy must also be read-only. Assay checks the
+underlying `cgroup.procs` inode permissions on the candidate cgroup and all
+ancestors, since a read-only mount alone does not block
+`CLONE_INTO_CGROUP` into an existing child. The candidate must not have the
+permissions or capabilities to write those files. An overmount that shadows a
+sampled cgroup path also refuses native R2. There is no Assay config switch for
+this. This protection observes cgroup v2 events; it does not observe
+per-process limits such as `RLIMIT_NPROC` or `RLIMIT_AS`, so consumers must not
+rely on it to distinguish failures caused by those limits. A change to the visible
+cgroup path, controller availability, or configured limits during a candidate
+also makes the run an infrastructure error. A counter increase at a shared
+finite ancestor can conservatively refuse a healthy candidate if sibling work
+hit that limit during the same window. If any sampled counter increases during
+a full candidate command, that candidate is recorded as `crashed` and the R2
+result is an infrastructure error, even if a test command also failed. A
+positive delta during a saved-witness replay instead stops the lane with a
+payload-free `ERROR/EXEC_FAILED` before Assay can retry the candidate; it does
+not produce a per-candidate outcome. Fix the runner's cgroup visibility or
+process/memory limit pressure, then rerun. If the lane budget expires before a
+candidate's full command starts, it stays `budget_exceeded`. Replacement
+materialization or a saved-witness replay may already have run. The zero-duration
+sample shared by `budget_exceeded` entries is taken after already-submitted work
+finishes; it does not bracket or describe that earlier work and does not prove
+that no earlier work ran. Pre-current
+B145 resume records are automatically cold starts under the new judge
+identity. Ingested third-party R2 reports have no local candidate process and
+do not carry these counters. See the
 [design rationale](DESIGN-GUIDE.md#native-r2-cgroup-resource-limit-events-b145).
 
 From a clean Assay worktree, capture the gate output under `.assay/` so it does

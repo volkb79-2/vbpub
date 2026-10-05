@@ -1625,6 +1625,14 @@ def _discover_plan_jobs(
         remaining=deadline.remaining,
     )
     project_prefix = runner._resolved_project_prefix(repo_top, lane_file.project_root)
+    runner._require_exact_source_roots_tracked(
+        repo=lane_file.project_root,
+        commit=commit,
+        project_root=lane_file.project_root,
+        project_prefix=project_prefix,
+        source_roots=lane.judge.source_roots,
+        remaining=deadline.remaining,
+    )
     reuse_command_plan = None
     reuse_command_cwd = None
     if resolve_reuse_command:

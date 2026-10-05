@@ -2570,6 +2570,40 @@ def _resolved_project_prefix(repo_top: Path, project_root: Path) -> PurePosixPat
     )
 
 
+def _require_exact_source_roots_tracked(
+    *,
+    repo: Path,
+    commit: str,
+    project_root: Path,
+    project_prefix: PurePosixPath,
+    source_roots: Sequence[str] | None,
+    remaining: Callable[[], float] | None = None,
+) -> None:
+    """Refuse exact-file roots absent from the judged commit.
+
+    Both ``assay run`` and ``assay plan`` resolve candidates from the committed
+    snapshot. A file root that exists only in an ignored caller worktree would
+    disappear there and could turn changed-line selection into a plausible
+    zero-candidate result, so both entry points use this same check.
+    """
+    if source_roots is None:
+        return
+    for raw_root in source_roots:
+        if not (project_root / raw_root).is_file():
+            continue
+        normalized = PurePosixPath(os.path.normpath(raw_root).replace(os.sep, "/"))
+        repo_path = (project_prefix / normalized).as_posix()
+        entry = git.tree_entry_info(repo, commit, repo_path, remaining=remaining)
+        if entry not in (("100644", "blob"), ("100755", "blob")):
+            raise AssayError(
+                f"exact-file source root {raw_root!r} must name a tracked regular "
+                f"file at judged commit {commit}; commit the file or choose a "
+                f"tracked source path",
+                outcome=Outcome.ERROR,
+                reason_code=ReasonCode.BAD_LANE_CONFIG,
+            )
+
+
 def _resolve_snapshot_worktree_integrity(
     *,
     repo: Path,
@@ -5845,10 +5879,8 @@ def run_lane(
 
     # B141: config loading proves that an exact-file root exists in the
     # invoking checkout, but ignored/untracked files are absent from the
-    # judged commit snapshot. Without this check, _source_root_file_keys()
-    # drops such a root in the snapshot and changed-line judging can silently
-    # become 0/0. Read Git's exact tree entry before the lane command starts;
-    # a file root must be an ordinary tracked blob at this commit.
+    # judged commit snapshot. Apply the same Git-tree check that `assay plan`
+    # uses, so its candidate inventory cannot disagree with this run.
     judge = lane.judge
     project_prefix: PurePosixPath | None = None
     if (
@@ -5859,24 +5891,14 @@ def run_lane(
         try:
             repo_top = git.repo_top(repo, remaining=deadline.remaining)
             project_prefix = _resolved_project_prefix(repo_top, project_root)
-            for raw_root in judge.source_roots:
-                if not (project_root / raw_root).is_file():
-                    continue
-                normalized = PurePosixPath(
-                    os.path.normpath(raw_root).replace(os.sep, "/")
-                )
-                repo_path = (project_prefix / normalized).as_posix()
-                entry = git.tree_entry_info(
-                    repo, commit, repo_path, remaining=deadline.remaining
-                )
-                if entry not in (("100644", "blob"), ("100755", "blob")):
-                    raise AssayError(
-                        f"exact-file source root {raw_root!r} must name a tracked "
-                        f"regular file at judged commit {commit}; commit the file "
-                        f"or choose a tracked source path",
-                        outcome=Outcome.ERROR,
-                        reason_code=ReasonCode.BAD_LANE_CONFIG,
-                    )
+            _require_exact_source_roots_tracked(
+                repo=repo,
+                commit=commit,
+                project_root=project_root,
+                project_prefix=project_prefix,
+                source_roots=judge.source_roots,
+                remaining=deadline.remaining,
+            )
         except AssayError as exc:
             file_root_detail = announce_refusal(exc, diagnostics=diagnostics)
             return refuse_lane(

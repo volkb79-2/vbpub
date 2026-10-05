@@ -1041,6 +1041,8 @@ def test_a_resource_limited_candidate_record_is_never_reused(tmp_path: Path):
         "cgroup_version": 2,
         "pids_events": {"max": {"before": 0, "after": 1, "delta": 1}},
         "memory_events": {
+            "max": {"before": 0, "after": 0, "delta": 0},
+            "oom": {"before": 0, "after": 0, "delta": 0},
             "oom_kill": {"before": 0, "after": 0, "delta": 0},
             "oom_group_kill": {"before": 0, "after": 0, "delta": 0},
         },
@@ -1069,8 +1071,65 @@ def test_a_current_judge_record_without_b145_evidence_is_rejected(tmp_path: Path
     )
 
 
+@pytest.mark.parametrize(
+    "memory_events",
+    [
+        {
+            "oom_kill": {"before": 0, "after": 0, "delta": 0},
+            "oom_group_kill": {"before": 0, "after": 0, "delta": 0},
+        },
+        {
+            "oom": {"before": 0, "after": 0, "delta": 0},
+            "oom_kill": {"before": 0, "after": 0, "delta": 0},
+            "oom_group_kill": {"before": 0, "after": 0, "delta": 0},
+        },
+    ],
+)
+def test_pre_current_b145_state_shapes_are_validated_then_rejected(
+    tmp_path: Path, memory_events
+):
+    job = _job()
+    payload = _record(
+        job,
+        judge="v" * 64,
+        resource_limit_evidence={
+            "cgroup_version": 2,
+            "pids_events": {"max": {"before": 0, "after": 0, "delta": 0}},
+            "memory_events": memory_events,
+        },
+    )
+    root = _store(tmp_path, job, payload)
+
+    assert (
+        mutation._load_validated_state_record(root, job, judge="n" * 64)
+        is mutation._RECORD_REJECTED
+    )
+
+
+def test_corrupt_pre_current_b145_state_shape_is_still_an_error(tmp_path: Path):
+    job = _job()
+    memory_events = {
+        "oom": {"before": 0, "after": 1, "delta": 0},
+        "oom_kill": {"before": 0, "after": 0, "delta": 0},
+        "oom_group_kill": {"before": 0, "after": 0, "delta": 0},
+    }
+    payload = _record(
+        job,
+        judge="v" * 64,
+        resource_limit_evidence={
+            "cgroup_version": 2,
+            "pids_events": {"max": {"before": 0, "after": 0, "delta": 0}},
+            "memory_events": memory_events,
+        },
+    )
+    root = _store(tmp_path, job, payload)
+
+    with pytest.raises(MutationStateError, match="invalid resource-limit evidence"):
+        mutation._load_validated_state_record(root, job, judge="n" * 64)
+
+
 def test_b145_advances_the_judge_identity_label():
-    assert mutation._JUDGE_DIGEST_LABEL == "assay-judge-identity/4"
+    assert mutation._JUDGE_DIGEST_LABEL == "assay-judge-identity/6"
 
 
 def test_a_different_judge_is_rejected_not_treated_as_tampering(tmp_path: Path):

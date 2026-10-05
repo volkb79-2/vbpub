@@ -519,6 +519,7 @@ _assay_gate_logs_pid=""
 _assay_gate_receipt_to_clear=""
 _assay_sql_container_name=""
 _assay_sql_scratch=""
+_assay_b145_probe_container_name=""
 
 cleanup_assay_gate_container() {
   local result=$?
@@ -527,6 +528,14 @@ cleanup_assay_gate_container() {
   # run before `local result=$?` / `trap - EXIT` above: any command resets `$?`.
   if [[ -n "$_assay_sql_container_name" ]]; then
     docker rm -f -v "$_assay_sql_container_name" >/dev/null 2>&1 || true
+  fi
+  if [[ -n "$_assay_b145_probe_container_name" ]]; then
+    if ! timeout --kill-after=5s 20s docker rm -f "$_assay_b145_probe_container_name" >/dev/null 2>&1; then
+      printf 'tester-unified-gate: failed to remove B145 probe container %s during exit cleanup\n' \
+        "$_assay_b145_probe_container_name" >&2
+      [[ $result -ne 0 ]] || result=1
+    fi
+    _assay_b145_probe_container_name=""
   fi
   if [[ -n "$_assay_sql_scratch" ]]; then
     rm -rf -- "$_assay_sql_scratch" || true
@@ -575,6 +584,7 @@ run_registered_tester_container() {
   container_id="$(docker run -d \
     --name "$_assay_gate_container_name" \
     --init \
+    --cgroupns=host \
     --cgroup-parent="$cgroup_parent" \
     -e "CGROUP_PARENT_DEV_GATES=$cgroup_parent" \
     -e "ASSAY_GATE_EXPECTED_COMMIT=${ASSAY_GATE_EXPECTED_COMMIT:-}" \
@@ -606,6 +616,124 @@ run_registered_tester_container() {
 
   printf 'ASSAY_GATE_CONTAINER_EXIT=%s\n' "$wait_status"
   return "$wait_status"
+}
+
+# B145's detached probe containers have explicit host-side bounds. Forced
+# cleanup also runs when `docker wait` times out and the container is still
+# alive, so the acceptance cannot strand a pids-limited container.
+cleanup_b145_probe_container() {
+  local container_name="$1"
+  timeout --kill-after=5s 20s docker rm -f "$container_name" >/dev/null 2>&1
+}
+
+cleanup_b145_probe_container_or_die() {
+  local reason="$1" container_name="$_assay_b145_probe_container_name"
+  if ! cleanup_b145_probe_container "$container_name"; then
+    die "$reason; could not remove B145 probe container $container_name, and exit cleanup will retry"
+  fi
+  _assay_b145_probe_container_name=""
+}
+
+# Live acceptance for the bounded-wait failure path. The one-second timeout
+# must interrupt `docker wait`, and `docker rm -f` must stop and remove the
+# still-running detached container.
+run_b145_bounded_wait_acceptance_probe() {
+  local host_repo_root="$1" cgroup_parent="$2"
+  local container_id wait_status wait_rc
+  command -v timeout >/dev/null 2>&1 \
+    || die 'the B145 bounded-wait probe requires the host timeout command'
+  _assay_b145_probe_container_name="run-gate-assay-b145-wait-${BASHPID}-${RANDOM}-$(date +%s)"
+  printf 'ASSAY_B145_WAIT_PROBE_CONTAINER=%s\n' "$_assay_b145_probe_container_name"
+  container_id="$(timeout --kill-after=10s 30s docker run -d \
+    --name "$_assay_b145_probe_container_name" \
+    --init \
+    --cgroupns=host \
+    --pids-limit=16 \
+    --cgroup-parent="$cgroup_parent" \
+    -e "CGROUP_PARENT_DEV_GATES=$cgroup_parent" \
+    --network=none \
+    --mount "type=bind,src=$host_repo_root,dst=$host_repo_root" \
+    --mount "type=bind,src=$host_repo_root,dst=/workspaces/vbpub" \
+    tester-unified:local \
+    bash -lc 'git config --global safe.directory "*" && cd /workspaces/vbpub && exec sleep 60')" \
+    || { cleanup_b145_probe_container "$_assay_b145_probe_container_name" || true; die 'could not start the B145 bounded-wait probe container'; }
+  [[ -n "$container_id" ]] \
+    || { cleanup_b145_probe_container "$_assay_b145_probe_container_name" || true; die 'Docker returned an empty bounded-wait probe container ID'; }
+
+  if wait_status="$(timeout --signal=TERM --kill-after=5s 1s docker wait "$_assay_b145_probe_container_name")"; then
+    wait_rc=0
+  else
+    wait_rc=$?
+  fi
+  if [[ "$wait_rc" -ne 124 ]]; then
+    cleanup_b145_probe_container_or_die \
+      "bounded docker wait probe returned $wait_rc instead of timing out"
+    die "bounded docker wait probe returned $wait_rc instead of timing out"
+  fi
+  cleanup_b145_probe_container "$_assay_b145_probe_container_name" \
+    || die 'could not remove the B145 bounded-wait probe container'
+  _assay_b145_probe_container_name=""
+  echo 'ASSAY_GATE_PHASE=b145-bounded-wait-accepted'
+}
+
+# Run the real resource-limit regression in a small, detached tester-unified
+# container. Host cgroup namespace visibility is required so Assay can observe
+# the finite pids.max at this container and its ancestors. The explicit cap
+# bounds the fork probe even if its test regresses; the inner and outer limits
+# bound the test process and Docker wait independently.
+run_b145_low_pids_probe() {
+  local worktree="$1" host_repo_root="$2" cgroup_parent="$3"
+  local container_id wait_status wait_rc logs wait_timeout_seconds=150
+  command -v timeout >/dev/null 2>&1 \
+    || die 'the B145 low-pids probe requires the host timeout command'
+  _assay_b145_probe_container_name="run-gate-assay-b145-pids-${BASHPID}-${RANDOM}-$(date +%s)"
+  printf 'ASSAY_B145_PROBE_CONTAINER=%s\n' "$_assay_b145_probe_container_name"
+  container_id="$(timeout --kill-after=10s 30s docker run -d \
+    --name "$_assay_b145_probe_container_name" \
+    --init \
+    --cgroupns=host \
+    --pids-limit=32 \
+    --cgroup-parent="$cgroup_parent" \
+    -e "CGROUP_PARENT_DEV_GATES=$cgroup_parent" \
+    -e ASSAY_B145_LOW_PIDS_PROBE=1 \
+    -e "ASSAY_GATE_PROBE_WORKTREE=$worktree" \
+    --network=none \
+    --mount "type=bind,src=$host_repo_root,dst=$host_repo_root" \
+    --mount "type=bind,src=$host_repo_root,dst=/workspaces/vbpub" \
+    tester-unified:local \
+    bash -lc 'git config --global safe.directory "*" && cd "$ASSAY_GATE_PROBE_WORKTREE/assay" && exec timeout --signal=TERM --kill-after=10s 120s /opt/tester-venv/bin/python -m pytest -q tests/core/test_mutation_resource_limits.py::test_low_pids_limit_event_cannot_become_a_kill')" \
+    || { cleanup_b145_probe_container "$_assay_b145_probe_container_name" || true; die 'could not start the B145 low-pids acceptance container'; }
+  [[ -n "$container_id" ]] \
+    || { cleanup_b145_probe_container "$_assay_b145_probe_container_name" || true; die 'Docker returned an empty B145 probe container ID'; }
+
+  if wait_status="$(timeout --signal=TERM --kill-after=10s "${wait_timeout_seconds}s" docker wait "$_assay_b145_probe_container_name")"; then
+    wait_rc=0
+  else
+    wait_rc=$?
+  fi
+  if [[ "$wait_rc" -ne 0 ]]; then
+    logs="$(timeout --kill-after=5s 15s docker logs "$_assay_b145_probe_container_name" 2>&1)" || logs=""
+    printf '%s\n' "$logs"
+    if [[ "$wait_rc" -eq 124 || "$wait_rc" -eq 137 ]]; then
+      cleanup_b145_probe_container_or_die \
+        "B145 low-pids acceptance exceeded ${wait_timeout_seconds}s"
+      die "B145 low-pids acceptance exceeded ${wait_timeout_seconds}s; its container was force-removed"
+    fi
+    cleanup_b145_probe_container_or_die \
+      "could not collect the B145 probe container exit status (docker wait exit $wait_rc)"
+    die "could not collect the B145 probe container exit status (docker wait exit $wait_rc)"
+  fi
+  [[ "$wait_status" =~ ^[0-9]+$ ]] \
+    || die "Docker returned a non-decimal B145 probe exit status: $wait_status"
+  logs="$(timeout --kill-after=5s 30s docker logs "$_assay_b145_probe_container_name")" \
+    || { cleanup_b145_probe_container_or_die 'could not collect B145 probe logs'; die 'could not collect B145 probe logs'; }
+  printf '%s\n' "$logs"
+  timeout --kill-after=5s 20s docker rm "$_assay_b145_probe_container_name" >/dev/null \
+    || { cleanup_b145_probe_container_or_die 'could not remove the B145 probe container'; die 'could not remove the B145 probe container with the normal or forced remove'; }
+  _assay_b145_probe_container_name=""
+  [[ "$wait_status" == 0 ]] \
+    || die "B145 low-pids acceptance failed (container exit $wait_status)"
+  echo 'ASSAY_GATE_PHASE=b145-low-pids-accepted'
 }
 
 # --- the S1 receipt (B123) ---------------------------------------------------
@@ -723,6 +851,8 @@ run_registered_gate() {
   clear_registered_gate_receipt "$worktree"
   _assay_gate_receipt_to_clear="$worktree/assay/.assay/registered-gate/tester-unified.json"
   trap cleanup_assay_gate_container EXIT
+  run_b145_bounded_wait_acceptance_probe "$host_repo_root" "$cgroup_parent"
+  run_b145_low_pids_probe "$worktree" "$host_repo_root" "$cgroup_parent"
   # A plain call, never inside `||`/`if`: the script's `set -e` ends the run with
   # the container's own status, so a red container never reaches the receipt.
   ASSAY_GATE_EXPECTED_COMMIT="$commit" run_registered_tester_container "$worktree" "$host_repo_root" "$cgroup_parent"

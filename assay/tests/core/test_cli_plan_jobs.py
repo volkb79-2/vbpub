@@ -17,7 +17,7 @@ from assay import cli, mutation, runner
 from assay.candidate_identity import candidate_id_from_fields
 from assay.cli import main, plan_jobs
 from assay.config import LaneFile, load_lane_file
-from assay.errors import AssayError, LaneConfigError, ReasonCode
+from assay.errors import AssayError, LaneConfigError, Outcome, ReasonCode
 
 IDENTITY_KEYS = {
     "path",
@@ -205,6 +205,61 @@ operators = ["python:compare-swap"]
     payload = _plan_payload(toml)
 
     assert payload["by_file"] == {"src/shared/owned.py": 2}
+
+
+def test_plan_refuses_an_ignored_untracked_exact_file_source_root(
+    git_repo: GitRepo,
+):
+    git_repo.write(".gitignore", "__pycache__/\nsrc/owned.py\n")
+    git_repo.write("src/other.py", "def other():\n    return 0\n")
+    toml = git_repo.write(
+        "assay.toml",
+        f"""\
+schema_version = 2
+
+[lanes.package]
+scope = "S1"
+rigor = ["R0", "R2"]
+enforcement = "gate"
+argv = ["/bin/true"]
+env = {{}}
+env_passthrough = ["PATH"]
+budget = "1m"
+allow_argv_append = false
+
+[lanes.package.isolation]
+snapshot_selection = "repository"
+
+[lanes.package.judge]
+language = "python"
+source_roots = ["src/owned.py"]
+base = "HEAD^"
+
+[lanes.package.judge.mutation]
+jobs = 1
+max_mutants = 20
+operators = ["python:compare-swap"]
+""",
+    )
+    git_repo.commit_all("seed lane with an exact file root")
+    git_repo.write("src/other.py", "def other():\n    return 1\n")
+    git_repo.commit_all("change a sibling source file")
+    git_repo.write("src/owned.py", "def owned():\n    return True\n")
+    lane_file, lane = _load(toml)
+
+    with pytest.raises(AssayError) as caught:
+        plan_jobs(lane_file, lane)
+    assert caught.value.reason_code is ReasonCode.BAD_LANE_CONFIG
+
+    out, err = io.StringIO(), io.StringIO()
+    code = main(
+        ["plan", "package", "--file", str(toml)],
+        stdout=out,
+        stderr=err,
+    )
+    assert code == Outcome.ERROR.exit_code
+    assert out.getvalue() == ""
+    assert "exact-file source root 'src/owned.py'" in err.getvalue()
 
 
 def test_o16a_iv_a_lane_without_an_adapter_raises(git_repo: GitRepo, monkeypatch):

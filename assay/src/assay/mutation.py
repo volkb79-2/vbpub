@@ -147,6 +147,7 @@ from .verdict import (
 )
 from .redaction import redact_passthrough_text as _redact_passthrough_text
 from .resource_limits import (
+    CounterDelta,
     ResourceLimitCounters,
     ResourceLimitEvidence,
     ResourceLimitObservationError,
@@ -235,7 +236,7 @@ MUTATION_STATE_SCHEMA_VERSION = 1
 #: (B088) The serialization label folded into :func:`judge_sha256`, so a
 #: future change to WHAT the judge identity covers yields visibly different
 #: digests instead of silently comparable ones.
-_JUDGE_DIGEST_LABEL = "assay-judge-identity/4"
+_JUDGE_DIGEST_LABEL = "assay-judge-identity/6"
 
 #: (B088) Returned by :func:`_load_validated_state_record` when a record was
 #: FOUND, is well-formed, and is still not evidence about this run -- its
@@ -1650,9 +1651,10 @@ def _load_validated_state_record(
                 f"mutation-state record {identity} resource_limit_evidence must be an object"
             )
         try:
-            resource_limit_evidence = ResourceLimitEvidence.from_dict(
-                raw_resource_evidence
-            )
+            if not _is_valid_legacy_b145_resource_limit_evidence(raw_resource_evidence):
+                resource_limit_evidence = ResourceLimitEvidence.from_dict(
+                    raw_resource_evidence
+                )
         except (TypeError, ValueError) as exc:
             raise MutationStateError(
                 f"mutation-state record {identity} has invalid resource-limit evidence: {exc}"
@@ -1715,6 +1717,48 @@ def _load_validated_state_record(
     ):
         return _RECORD_REJECTED
     return payload
+
+
+def _is_valid_legacy_b145_resource_limit_evidence(raw: Mapping[str, Any]) -> bool:
+    """Validate and identify pre-current B145 state evidence for cold-start.
+
+    B145's released-state label is deliberately changed whenever the evidence
+    surface changes. Records with the old v4 (two memory counters) or v5
+    (three memory counters) shape remain structurally checkable, but are never
+    converted into current evidence or reused by this judge.
+    """
+    if set(raw) != {"cgroup_version", "pids_events", "memory_events"}:
+        return False
+    memory = raw["memory_events"]
+    legacy_memory_shapes = (
+        {"oom_kill", "oom_group_kill"},
+        {"oom", "oom_kill", "oom_group_kill"},
+    )
+    if not isinstance(memory, Mapping) or set(memory) not in legacy_memory_shapes:
+        return False
+    if raw["cgroup_version"] != 2 or type(raw["cgroup_version"]) is not int:
+        raise ValueError("legacy resource-limit evidence requires cgroup_version 2")
+    pids = raw["pids_events"]
+    if not isinstance(pids, Mapping) or set(pids) != {"max"}:
+        raise ValueError("legacy pids_events must contain exactly max")
+
+    def validate_delta(value: Any) -> None:
+        if not isinstance(value, Mapping) or set(value) != {
+            "before",
+            "after",
+            "delta",
+        }:
+            raise ValueError(
+                "legacy resource counter must contain exactly before, after, and delta"
+            )
+        CounterDelta(
+            before=value["before"], after=value["after"], delta=value["delta"]
+        )
+
+    validate_delta(pids["max"])
+    for name in sorted(memory):
+        validate_delta(memory[name])
+    return True
 
 
 def merge_mutations(current: Mutation, records: Iterable[Mapping[str, Any]]) -> Mutation:
@@ -2005,8 +2049,24 @@ def _read_candidate_resource_counters() -> ResourceLimitCounters:
         return read_current_cgroup_counters()
     except ResourceLimitObservationError as exc:
         raise AssayError(
-            "cannot observe cgroup v2 pids.events and memory.events for native "
+            "cannot observe cgroup v2 process and memory limit events across "
+            "the candidate cgroup's visible ancestors for native "
             f"R2 candidate execution: {exc}",
+            outcome=Outcome.ERROR,
+            reason_code=ReasonCode.EXEC_FAILED,
+        ) from exc
+
+
+def _candidate_resource_limit_evidence(
+    before: ResourceLimitCounters, after: ResourceLimitCounters
+) -> ResourceLimitEvidence:
+    """Bind both samples, turning an unstable observation into a lane error."""
+    try:
+        return ResourceLimitEvidence.between(before, after)
+    except (ResourceLimitObservationError, ValueError) as exc:
+        raise AssayError(
+            "cannot compare cgroup resource-limit observations around a native "
+            f"R2 candidate command: {exc}",
             outcome=Outcome.ERROR,
             reason_code=ReasonCode.EXEC_FAILED,
         ) from exc
@@ -2015,7 +2075,7 @@ def _read_candidate_resource_counters() -> ResourceLimitCounters:
 def _zero_window_resource_limit_evidence() -> ResourceLimitEvidence:
     """Record a zero-duration sample for a candidate that never started."""
     sample = _read_candidate_resource_counters()
-    return ResourceLimitEvidence.between(sample, sample)
+    return _candidate_resource_limit_evidence(sample, sample)
 
 
 def _measured_resources(
@@ -3120,7 +3180,7 @@ def _execute_mutation_jobs(
                 process_runner=process_runner,
                 clock=clock,
             )
-            resource_limit_evidence = ResourceLimitEvidence.between(
+            resource_limit_evidence = _candidate_resource_limit_evidence(
                 resource_limits_before, _read_candidate_resource_counters()
             )
             command_finished_monotonic = time.monotonic()
@@ -3335,7 +3395,19 @@ def _execute_mutation_jobs(
         index = 0
         while index < total and fatal is None:
             wave = list(range(index, min(index + jobs, total)))
-            futures = {pool.submit(_run_one, position): position for position in wave}
+            futures = {}
+            for position in wave:
+                try:
+                    futures[pool.submit(_run_one, position)] = position
+                except RuntimeError as exc:
+                    fatal = AssayError(
+                        "could not start a native R2 candidate worker; the "
+                        "candidate sweep stopped before all mutants were run "
+                        f"({exc})",
+                        outcome=Outcome.ERROR,
+                        reason_code=ReasonCode.EXEC_FAILED,
+                    )
+                    break
             wave_stopped = False
             for future, position in futures.items():
                 try:

@@ -838,19 +838,19 @@ def test_resource_limited_witness_replay_stops_before_full_fallback(
     samples = iter(
         (
             ResourceLimitCounters(
-                pids_max=0, memory_oom_kill=0, memory_oom_group_kill=0
+                pids_max=0, memory_max=0, memory_oom=0, memory_oom_kill=0, memory_oom_group_kill=0
             ),  # mutation preflight
             ResourceLimitCounters(
-                pids_max=0, memory_oom_kill=0, memory_oom_group_kill=0
+                pids_max=0, memory_max=0, memory_oom=0, memory_oom_kill=0, memory_oom_group_kill=0
             ),  # replay before
             ResourceLimitCounters(
-                pids_max=1, memory_oom_kill=0, memory_oom_group_kill=0
+                pids_max=1, memory_max=0, memory_oom=0, memory_oom_kill=0, memory_oom_group_kill=0
             ),  # replay after: pids.max hit
             ResourceLimitCounters(
-                pids_max=1, memory_oom_kill=0, memory_oom_group_kill=0
+                pids_max=1, memory_max=0, memory_oom=0, memory_oom_kill=0, memory_oom_group_kill=0
             ),  # fallback before, if incorrectly run
             ResourceLimitCounters(
-                pids_max=1, memory_oom_kill=0, memory_oom_group_kill=0
+                pids_max=1, memory_max=0, memory_oom=0, memory_oom_kill=0, memory_oom_group_kill=0
             ),  # fallback after, falsely clean
         )
     )

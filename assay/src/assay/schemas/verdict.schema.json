@@ -1399,7 +1399,7 @@
       "additionalProperties": false
     },
     "resource_limit_evidence": {
-      "description": "B145: exact cgroup v2 process-limit and OOM event counter samples around one candidate command. The model and independent verifier require each delta to equal after minus before and any positive delta to be classified as crashed.",
+      "description": "B145: cgroup v2 process-limit and memory event counter evidence for native R2 candidates. A started full candidate command has samples bracketing its execution. A candidate whose full command did not start after an early stop is budget_exceeded and shares one zero-duration sample taken after already-submitted work finishes at sweep close. Replacement materialization or a saved-witness replay may already have run; the shared sample does not describe that earlier work or prove it did not happen. A positive delta during a full command is classified as crashed; a positive delta during witness-prefix replay stops the lane with payload-free ERROR/EXEC_FAILED before retry. Events are sampled at the candidate cgroup and every visible ancestor with the corresponding controller active, including unlimited active ancestors; a finite pids.max or memory.max requires its event file. The model and independent verifier require each delta in a candidate outcome to equal after minus before and any positive delta to be classified as crashed.",
       "type": "object",
       "required": ["cgroup_version", "pids_events", "memory_events"],
       "properties": {
@@ -1412,8 +1412,10 @@
         },
         "memory_events": {
           "type": "object",
-          "required": ["oom_kill", "oom_group_kill"],
+          "required": ["max", "oom", "oom_kill", "oom_group_kill"],
           "properties": {
+            "max": {"$ref": "#/$defs/resource_counter_delta"},
+            "oom": {"$ref": "#/$defs/resource_counter_delta"},
             "oom_kill": {"$ref": "#/$defs/resource_counter_delta"},
             "oom_group_kill": {"$ref": "#/$defs/resource_counter_delta"}
           },

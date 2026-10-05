@@ -100,6 +100,12 @@
         }
        },
        "memory_events": {
+        "max": {
+         "after": 0,
+         "before": 0,
+         "delta": 0
+        },
+        "oom": {"before": 0, "after": 0, "delta": 0},
         "oom_kill": {
          "before": 0,
          "after": 0,
@@ -143,6 +149,12 @@
         }
        },
        "memory_events": {
+        "max": {
+         "after": 0,
+         "before": 0,
+         "delta": 0
+        },
+        "oom": {"before": 0, "after": 0, "delta": 0},
         "oom_kill": {
          "before": 0,
          "after": 0,

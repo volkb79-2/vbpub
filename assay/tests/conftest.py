@@ -262,6 +262,8 @@ def native_outcome(**fields):
         execution=MutationExecution(mode="full"),
         resource_limit_evidence=ResourceLimitEvidence(
             pids_events_max=CounterDelta(before=0, after=0, delta=0),
+            memory_events_max=CounterDelta(before=0, after=0, delta=0),
+            memory_events_oom=CounterDelta(before=0, after=0, delta=0),
             memory_events_oom_kill=CounterDelta(before=0, after=0, delta=0),
             memory_events_oom_group_kill=CounterDelta(before=0, after=0, delta=0),
         ),
@@ -275,6 +277,8 @@ def zero_resource_limit_evidence_dict() -> dict:
     zero = CounterDelta(before=0, after=0, delta=0)
     return ResourceLimitEvidence(
         pids_events_max=zero,
+        memory_events_max=zero,
+        memory_events_oom=zero,
         memory_events_oom_kill=zero,
         memory_events_oom_group_kill=zero,
     ).to_dict()

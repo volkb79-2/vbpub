@@ -9,7 +9,7 @@
 | Depends on | P10a's ledger wire shape. Either P10a is accepted, or you finish under the documented **BLOCKED-PARTIAL** escape: anchor validated by length only, with P10b adding the grammar later. Either way the rest of this package is dispatchable. |
 | Contract class | **2b**. Public shapes are fixed below; the private construction is yours. |
 | Implementer | Opus (fresh session) |
-| Decisions | A-470 (D6, v14 cold-witness contract, A1–A9), A-465 (ledger wire fields), A-469 (D5 liveness disclosure fields), A-471 (runtime fingerprint field), A-483 (B145 native resource-limit evidence and judge identity `/4`) |
+| Decisions | A-470 (D6, v14 cold-witness contract, A1–A9), A-465 (ledger wire fields), A-469 (D5 liveness disclosure fields), A-471 (runtime fingerprint field), A-483 (B145 native resource-limit evidence; originally `/4`, now `/6` after review hardening) |
 | Size | L. This is a hard cut: ~50 fixtures, carve assets W10, gate markers, and about 15 test files with version literals. |
 
 **What this package is.** It is the consumer side of v14, meaning the model, the JSON schema, the independent raw verifier, reconstruction and version plumbing. P3a itself has **no producer behaviour**:
@@ -31,16 +31,19 @@ P3b produces cold evidence, P3c produces the liveness values, and P10b produces 
 
 This is required alongside the original P3a packet. Every native `MutantOutcome`
 has a required `resource_limit_evidence` object with cgroup v2 deltas for
-`pids.events.max`, `memory.events.oom_kill`, and
-`memory.events.oom_group_kill`; ingested outcomes forbid the field. Each delta
+`pids.events.max`, `memory.events.max`, `memory.events.oom`,
+`memory.events.oom_kill`, and `memory.events.oom_group_kill`; ingested outcomes
+forbid the field. Each delta
 contains non-negative integer `before`, `after`, and `delta` values, with
 `after >= before` and `delta == after - before`. The schema declares the exact
 shape; the producer model and independent raw verifier both enforce arithmetic
 and the rule that any positive delta is allowed only in the `crashed` bucket.
 Native R2 fails `ERROR/EXEC_FAILED` before candidate execution if the counters
 cannot be read. The mutation state and progress records carry the same evidence;
-positive-delta records are not reused. `_JUDGE_DIGEST_LABEL` is
-`assay-judge-identity/4`, invalidating pre-B145 state. This is a hard-cut
+positive-delta records are not reused. At this report's implementation
+snapshot, `_JUDGE_DIGEST_LABEL` was `assay-judge-identity/4`, invalidating
+pre-B145 state. The final B145 review hardening advanced the current label to
+`/6`, which also cold-starts `/4` and `/5` evidence. This is a hard-cut
 compatibility change within the planned v14/8.0.0 wave, not another schema
 version.
 

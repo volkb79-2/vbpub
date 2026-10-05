@@ -63,12 +63,13 @@ def gate_functions(tmp_path_factory) -> Path:
     body = source.split(marker, 1)[0]
 
     if not Path(AMBIENT_TESTER_VENV_PYTHON).exists():
-        # 4 since B024/DA-R7: `build_lint_venv` resolves the same base prefix
+        # 5 since B145: its live low-pids probe adds a reference to the
+        # image's interpreter; `build_lint_venv` resolves the same base prefix
         # the build/run venvs are cut from, so the lint closure is built by the
         # image's own interpreter and not by whatever is first on PATH.
         occurrences = body.count(AMBIENT_TESTER_VENV_PYTHON)
-        assert occurrences == 4, (
-            f"expected exactly 3 uses of {AMBIENT_TESTER_VENV_PYTHON} in the "
+        assert occurrences == 5, (
+            f"expected exactly 5 uses of {AMBIENT_TESTER_VENV_PYTHON} in the "
             f"function definitions, found {occurrences}; update this test's "
             "substitution if the script changed"
         )
@@ -195,6 +196,7 @@ def test_registered_self_gate_uses_named_detached_container_and_wait_exit(
     name = run[3]
     assert name in proc.stdout
     assert "--init" in run
+    assert "--cgroupns=host" in run
     assert "--cgroup-parent=dev-gates.slice" in run
     assert "CGROUP_PARENT_DEV_GATES=dev-gates.slice" in run
     assert f"ASSAY_GATE_EXPECTED_COMMIT={HEX40}" in run
@@ -220,6 +222,268 @@ def test_registered_self_gate_uses_named_detached_container_and_wait_exit(
     assert failed_calls[-1] == ["rm", "-f", attempted_name]
 
 
+def test_b145_probe_is_capped_placed_and_waited_before_logs(
+    tmp_path: Path, gate_functions: Path
+) -> None:
+    fake_bin = tmp_path / "probe-bin"
+    fake_bin.mkdir()
+    calls_path = tmp_path / "probe-docker-calls.log"
+    docker = fake_bin / "docker"
+    docker.write_text(
+        "#!/usr/bin/env bash\n"
+        'printf "%s\\n" "$*" >> "$DOCKER_CALLS"\n'
+        'case "$1" in\n'
+        '  run) printf "fake-container-id\\n" ;;\n'
+        '  wait) printf "0\\n" ;;\n'
+        '  logs) printf "low-pids probe passed\\n" ;;\n'
+        '  rm) exit 0 ;;\n'
+        '  *) exit 91 ;;\n'
+        'esac\n',
+        encoding="utf-8",
+    )
+    docker.chmod(0o755)
+    env = {
+        **_host_environ(),
+        "PATH": f"{fake_bin}:{os.environ['PATH']}",
+        "DOCKER_CALLS": str(calls_path),
+    }
+
+    proc = run_bash(
+        'run_b145_low_pids_probe "/workspaces/vbpub/.worktrees/assay-b145" '
+        '"/host/vbpub" "dev-gates.slice"',
+        gate_functions=gate_functions,
+        env=env,
+    )
+
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "low-pids probe passed" in proc.stdout
+    assert "ASSAY_GATE_PHASE=b145-low-pids-accepted" in proc.stdout
+    calls = calls_path.read_text(encoding="utf-8").splitlines()
+    assert len(calls) == 4
+    run = calls[0]
+    assert run.startswith("run -d --name run-gate-assay-b145-pids-")
+    assert "--init" in run
+    assert "--cgroupns=host" in run
+    assert "--pids-limit=32" in run
+    assert "--cgroup-parent=dev-gates.slice" in run
+    assert "CGROUP_PARENT_DEV_GATES=dev-gates.slice" in run
+    assert "ASSAY_B145_LOW_PIDS_PROBE=1" in run
+    assert "type=bind,src=/host/vbpub,dst=/host/vbpub" in run
+    assert "type=bind,src=/host/vbpub,dst=/workspaces/vbpub" in run
+    assert "tester-unified:local" in run
+    assert "git config --global safe.directory" in run
+    assert "test_low_pids_limit_event_cannot_become_a_kill" in run
+    container_name = run.split()[3]
+    assert calls[1] == f"wait {container_name}"
+    assert calls[2] == f"logs {container_name}"
+    assert calls[3] == f"rm {container_name}"
+
+
+def test_b145_bounded_wait_acceptance_exercises_timeout_and_force_remove(
+    tmp_path: Path, gate_functions: Path
+) -> None:
+    fake_bin = tmp_path / "timeout-bin"
+    fake_bin.mkdir()
+    calls_path = tmp_path / "timeout-docker-calls.log"
+    timeouts_path = tmp_path / "timeout-calls.log"
+    docker = fake_bin / "docker"
+    docker.write_text(
+        "#!/usr/bin/env bash\n"
+        'printf "%s\\n" "$*" >> "$DOCKER_CALLS"\n'
+        'case "$1" in\n'
+        '  run) printf "fake-container-id\\n" ;;\n'
+        '  rm) exit 0 ;;\n'
+        '  *) exit 91 ;;\n'
+        'esac\n',
+        encoding="utf-8",
+    )
+    docker.chmod(0o755)
+    timeout = fake_bin / "timeout"
+    timeout.write_text(
+        "#!/usr/bin/env bash\n"
+        'printf "%s\\n" "$*" >> "$TIMEOUT_CALLS"\n'
+        'while [[ "$1" == --* || "$1" =~ ^[0-9]+s$ ]]; do shift; done\n'
+        'if [[ "$1" == docker && "$2" == wait ]]; then exit 124; fi\n'
+        'exec "$@"\n',
+        encoding="utf-8",
+    )
+    timeout.chmod(0o755)
+    env = {
+        **_host_environ(),
+        "PATH": f"{fake_bin}:{os.environ['PATH']}",
+        "DOCKER_CALLS": str(calls_path),
+        "TIMEOUT_CALLS": str(timeouts_path),
+    }
+
+    proc = run_bash(
+        'run_b145_bounded_wait_acceptance_probe "/host/vbpub" "dev-gates.slice"',
+        gate_functions=gate_functions,
+        env=env,
+    )
+
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "ASSAY_GATE_PHASE=b145-bounded-wait-accepted" in proc.stdout
+    docker_calls = calls_path.read_text(encoding="utf-8").splitlines()
+    assert len(docker_calls) == 2
+    run = docker_calls[0]
+    assert run.startswith("run -d --name run-gate-assay-b145-wait-")
+    assert "--init" in run
+    assert "--cgroupns=host" in run
+    assert "--pids-limit=16" in run
+    assert "--cgroup-parent=dev-gates.slice" in run
+    assert "CGROUP_PARENT_DEV_GATES=dev-gates.slice" in run
+    assert "type=bind,src=/host/vbpub,dst=/host/vbpub" in run
+    assert "type=bind,src=/host/vbpub,dst=/workspaces/vbpub" in run
+    assert "tester-unified:local" in run
+    assert "sleep 60" in run
+    name = run.split()[3]
+    assert docker_calls[1] == f"rm -f {name}"
+    timeout_calls = timeouts_path.read_text(encoding="utf-8").splitlines()
+    assert any(f"1s docker wait {name}" in call for call in timeout_calls)
+    assert any(f"20s docker rm -f {name}" in call for call in timeout_calls)
+
+
+def test_b145_low_pids_wait_timeout_logs_and_force_removes(
+    tmp_path: Path, gate_functions: Path
+) -> None:
+    fake_bin = tmp_path / "timeout-bin"
+    fake_bin.mkdir()
+    calls_path = tmp_path / "timeout-docker-calls.log"
+    timeouts_path = tmp_path / "timeout-calls.log"
+    docker = fake_bin / "docker"
+    docker.write_text(
+        "#!/usr/bin/env bash\n"
+        'printf "%s\\n" "$*" >> "$DOCKER_CALLS"\n'
+        'case "$1" in\n'
+        '  run) printf "fake-container-id\\n" ;;\n'
+        '  logs) printf "bounded timeout log\\n" ;;\n'
+        '  rm) exit 0 ;;\n'
+        '  *) exit 91 ;;\n'
+        'esac\n',
+        encoding="utf-8",
+    )
+    docker.chmod(0o755)
+    timeout = fake_bin / "timeout"
+    timeout.write_text(
+        "#!/usr/bin/env bash\n"
+        'printf "%s\\n" "$*" >> "$TIMEOUT_CALLS"\n'
+        'while [[ "$1" == --* || "$1" =~ ^[0-9]+s$ ]]; do shift; done\n'
+        'if [[ "$1" == docker && "$2" == wait ]]; then exit 124; fi\n'
+        'exec "$@"\n',
+        encoding="utf-8",
+    )
+    timeout.chmod(0o755)
+    env = {
+        **_host_environ(),
+        "PATH": f"{fake_bin}:{os.environ['PATH']}",
+        "DOCKER_CALLS": str(calls_path),
+        "TIMEOUT_CALLS": str(timeouts_path),
+    }
+
+    proc = run_bash(
+        'run_b145_low_pids_probe "/workspaces/vbpub/.worktrees/assay-b145" '
+        '"/host/vbpub" "dev-gates.slice"',
+        gate_functions=gate_functions,
+        env=env,
+    )
+
+    assert proc.returncode != 0
+    assert "exceeded 150s" in proc.stderr
+    assert "bounded timeout log" in proc.stdout
+    docker_calls = calls_path.read_text(encoding="utf-8").splitlines()
+    name = docker_calls[0].split()[3]
+    assert docker_calls == [
+        docker_calls[0],
+        f"logs {name}",
+        f"rm -f {name}",
+    ]
+    timeout_calls = timeouts_path.read_text(encoding="utf-8").splitlines()
+    assert any(f"150s docker wait {name}" in call for call in timeout_calls)
+    assert any(f"20s docker rm -f {name}" in call for call in timeout_calls)
+
+
+@pytest.mark.parametrize(
+    ("probe_function", "arguments", "wait_rc", "expected_error"),
+    [
+        (
+            "run_b145_bounded_wait_acceptance_probe",
+            '"/host/vbpub" "dev-gates.slice"',
+            143,
+            "bounded docker wait probe returned 143",
+        ),
+        (
+            "run_b145_low_pids_probe",
+            '"/workspaces/vbpub/.worktrees/assay-b145" '
+            '"/host/vbpub" "dev-gates.slice"',
+            124,
+            "exceeded 150s",
+        ),
+    ],
+)
+def test_b145_probe_cleanup_failure_is_reported_and_exit_trap_retries(
+    tmp_path: Path,
+    gate_functions: Path,
+    probe_function: str,
+    arguments: str,
+    wait_rc: int,
+    expected_error: str,
+) -> None:
+    fake_bin = tmp_path / "retry-bin"
+    fake_bin.mkdir()
+    calls_path = tmp_path / "retry-docker-calls.log"
+    timeouts_path = tmp_path / "retry-timeout-calls.log"
+    removal_failed = tmp_path / "removal-failed-once"
+    docker = fake_bin / "docker"
+    docker.write_text(
+        "#!/usr/bin/env bash\n"
+        'printf "%s\\n" "$*" >> "$DOCKER_CALLS"\n'
+        'case "$1" in\n'
+        '  run) printf "fake-container-id\\n" ;;\n'
+        '  logs) printf "bounded timeout log\\n" ;;\n'
+        '  rm) if [[ ! -e "$REMOVAL_FAILED" ]]; then touch "$REMOVAL_FAILED"; exit 91; fi ;;\n'
+        '  *) exit 91 ;;\n'
+        'esac\n',
+        encoding="utf-8",
+    )
+    docker.chmod(0o755)
+    timeout = fake_bin / "timeout"
+    timeout.write_text(
+        "#!/usr/bin/env bash\n"
+        'printf "%s\\n" "$*" >> "$TIMEOUT_CALLS"\n'
+        'while [[ "$1" == --* || "$1" =~ ^[0-9]+s$ ]]; do shift; done\n'
+        'if [[ "$1" == docker && "$2" == wait ]]; then exit "$WAIT_RC"; fi\n'
+        'exec "$@"\n',
+        encoding="utf-8",
+    )
+    timeout.chmod(0o755)
+    env = {
+        **_host_environ(),
+        "PATH": f"{fake_bin}:{os.environ['PATH']}",
+        "DOCKER_CALLS": str(calls_path),
+        "TIMEOUT_CALLS": str(timeouts_path),
+        "REMOVAL_FAILED": str(removal_failed),
+        "WAIT_RC": str(wait_rc),
+    }
+
+    proc = run_bash(
+        f"trap cleanup_assay_gate_container EXIT\n{probe_function} {arguments}",
+        gate_functions=gate_functions,
+        env=env,
+    )
+
+    assert proc.returncode != 0
+    assert expected_error in proc.stderr
+    assert "could not remove B145 probe container" in proc.stderr
+    assert "exit cleanup will retry" in proc.stderr
+    assert "failed to remove B145 probe container" not in proc.stderr
+    if probe_function == "run_b145_low_pids_probe":
+        assert "force-removed" not in proc.stderr
+    docker_calls = calls_path.read_text(encoding="utf-8").splitlines()
+    removals = [call for call in docker_calls if call.startswith("rm -f ")]
+    assert len(removals) == 2
+    assert removals[0] == removals[1]
+
+
 def test_gate_script_passes_shellcheck_when_available() -> None:
     shellcheck = shutil.which("shellcheck")
     if shellcheck is None:
@@ -233,6 +497,7 @@ def test_gate_script_passes_shellcheck_when_available() -> None:
 def test_gate_script_preserves_required_markers_and_hardens_the_build() -> None:
     source = GATE_SCRIPT.read_text(encoding="utf-8")
     for phase in (
+        "b145-bounded-wait-accepted",
         "wheel-installed",
         "attestation-hardened",
         "self-hosted-lane-passed",
@@ -1321,6 +1586,8 @@ def test_a_red_container_leaves_no_receipt_even_when_a_stale_one_existed(
 
     proc = run_bash(
         "run_registered_tester_container() { return 7; }\n"
+        "run_b145_bounded_wait_acceptance_probe() { :; }\n"
+        "run_b145_low_pids_probe() { :; }\n"
         f'run_registered_gate "{worktree}" "/host/vbpub" "dev-gates.slice"',
         gate_functions=gate_functions,
         env=env,
@@ -1343,6 +1610,8 @@ def test_a_red_container_that_wrote_a_valid_receipt_itself_leaves_none(
     proc = run_bash(
         'run_registered_tester_container() { write_registered_gate_receipt "$1" '
         '"$(git -C "$1" rev-parse HEAD)" "$(git -C "$1" rev-parse "HEAD^{tree}")"; return 7; }\n'
+        "run_b145_bounded_wait_acceptance_probe() { :; }\n"
+        "run_b145_low_pids_probe() { :; }\n"
         f'run_registered_gate "{worktree}" "/host/vbpub" "dev-gates.slice"',
         gate_functions=gate_functions,
         env=env,
@@ -1371,6 +1640,8 @@ def test_a_green_container_yields_the_receipt_and_exactly_one_complete_marker(
     proc = run_bash(
         "run_registered_tester_container() { echo stubbed-tester; }\n"
         "run_sql_qualification() { :; }\n"  # W5: the SQL phase has its own tests (test_qualify_sql.py, T7)
+        "run_b145_bounded_wait_acceptance_probe() { :; }\n"
+        "run_b145_low_pids_probe() { :; }\n"
         f'run_registered_gate "{worktree}" "/host/vbpub" "dev-gates.slice"',
         gate_functions=gate_functions,
         env=env,
@@ -1401,6 +1672,7 @@ def test_a_busy_host_makes_the_gate_inconclusive_before_anything_else_happens(
 
     proc = run_bash(
         "run_registered_tester_container() { echo LAUNCHED; }\n"
+        "run_b145_low_pids_probe() { :; }\n"
         f'run_registered_gate "{worktree}" "/host/vbpub" "dev-gates.slice"',
         gate_functions=gate_functions,
         env=env,
@@ -1424,6 +1696,8 @@ def test_a_host_running_only_other_containers_proceeds_to_the_tester(
     proc = run_bash(
         "run_registered_tester_container() { echo LAUNCHED; }\n"
         "run_sql_qualification() { :; }\n"
+        "run_b145_bounded_wait_acceptance_probe() { :; }\n"
+        "run_b145_low_pids_probe() { :; }\n"
         f'run_registered_gate "{worktree}" "/host/vbpub" "dev-gates.slice"',
         gate_functions=gate_functions,
         env=env,
@@ -1446,6 +1720,8 @@ def test_the_shared_host_opt_in_lets_other_projects_gates_run_alongside_and_prin
     proc = run_bash(
         "run_registered_tester_container() { echo LAUNCHED; }\n"
         "run_sql_qualification() { :; }\n"
+        "run_b145_bounded_wait_acceptance_probe() { :; }\n"
+        "run_b145_low_pids_probe() { :; }\n"
         f'run_registered_gate "{worktree}" "/host/vbpub" "dev-gates.slice"',
         gate_functions=gate_functions,
         env=env,
@@ -1477,6 +1753,7 @@ def test_the_shared_host_opt_in_still_refuses_another_assay_gate(tmp_path: Path,
 
     proc = run_bash(
         "run_registered_tester_container() { echo LAUNCHED; }\n"
+        "run_b145_low_pids_probe() { :; }\n"
         f'run_registered_gate "{worktree}" "/host/vbpub" "dev-gates.slice"',
         gate_functions=gate_functions,
         env=env,
@@ -1506,6 +1783,7 @@ def test_a_shared_host_opt_in_value_other_than_empty_or_one_is_refused_before_do
 
     proc = run_bash(
         "run_registered_tester_container() { echo LAUNCHED; }\n"
+        "run_b145_low_pids_probe() { :; }\n"
         f'run_registered_gate "{worktree}" "/host/vbpub" "dev-gates.slice"',
         gate_functions=gate_functions,
         env=env,
@@ -1534,6 +1812,7 @@ def test_a_failing_docker_ps_is_inconclusive_and_leaves_the_receipt(
 
     proc = run_bash(
         "run_registered_tester_container() { echo LAUNCHED; }\n"
+        "run_b145_low_pids_probe() { :; }\n"
         f'run_registered_gate "{worktree}" "/host/vbpub" "dev-gates.slice"',
         gate_functions=gate_functions,
         env=env,

@@ -38,8 +38,9 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ### Fixed
 - fix(assay): prevent cgroup process-limit or OOM events from becoming native
-  R2 kills or survivors; persist exact cgroup v2 counter deltas, reject affected
-  resume records, and advance the judge identity to `/4` (B145)
+  R2 kills or survivors; sample candidate and visible-ancestor event counters,
+  reject affected resume records, and advance the judge identity to `/6`,
+  cold-starting the earlier `/4` and `/5` B145 evidence (B145)
 
 ### Changed
 - refactor(assay): repeated judge rules now live once: `assay.records` (the

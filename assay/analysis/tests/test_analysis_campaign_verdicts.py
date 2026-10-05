@@ -37,6 +37,8 @@ def _entry(row):
             "cgroup_version": 2,
             "pids_events": {"max": {"before": 0, "after": 0, "delta": 0}},
             "memory_events": {
+                "max": {"before": 0, "after": 0, "delta": 0},
+                "oom": {"before": 0, "after": 0, "delta": 0},
                 "oom_kill": {"before": 0, "after": 0, "delta": 0},
                 "oom_group_kill": {"before": 0, "after": 0, "delta": 0},
             },
