@@ -36,9 +36,9 @@ becomes readable/unreadable):
   whitespace-separated list of the thread's direct children, walked
   breadth-first from every token-owning pid.
 * fallback — a full ``ppid`` map built once per call from every
-  ``/proc/<pid>/stat`` under ``proc_root`` (parsed past the last ``)``, the
-  same convention :func:`lib.metrics._proc_cpu_usec` uses for ``proc(5)``'s
-  attacker-and-kernel-controlled ``comm`` field), then walked the same way.
+  ``/proc/<pid>/stat`` under ``proc_root`` using the shared parser for
+  ``proc(5)``'s attacker-and-kernel-controlled ``comm`` field, then walked
+  the same way.
 
 Both paths only ever *add* pids to the frontier; a pid whose files vanish
 mid-walk (``OSError``) simply contributes no children, it is not an error.
@@ -49,7 +49,7 @@ from __future__ import annotations
 import os
 from typing import Callable, Dict, List, Optional, Set
 
-from . import targets as targets_mod, util
+from . import proc_stat, targets as targets_mod, util
 
 _ENVIRON_SEP = "\x00"
 
@@ -77,17 +77,15 @@ def _parse_ppid(stat_path: str) -> Optional[int]:
     """``ppid`` (proc(5) field 4) from a ``/proc/<pid>/stat`` line.
 
     Field 2 (``comm``) may itself contain spaces or ``)`` characters, so the
-    only safe parse is splitting on the *last* ``)`` and counting fields from
-    there — the identical convention :func:`lib.metrics._proc_cpu_usec` uses
-    for the same file, deliberately not reinvented here.
+    shared parser splits on the *last* ``)`` before callers count fields.
     """
     text = util.read_text(stat_path)
     if not text:
         return None
-    close = text.rfind(")")
-    if close == -1:
+    parsed = proc_stat.split_after_comm(text)
+    if parsed is None:
         return None
-    fields = text[close + 1 :].split()
+    _close, fields = parsed
     if len(fields) < 2:
         return None
     try:
@@ -101,10 +99,12 @@ def _start_time_ticks(pid: int, proc_root: str) -> Optional[str]:
     text = util.read_text(os.path.join(proc_root, str(pid), "stat"))
     if not text:
         return None
-    close = text.rfind(")")
+    parsed = proc_stat.split_after_comm(text)
+    if parsed is None:
+        return None
+    close, fields = parsed
     if close <= 0:
         return None
-    fields = text[close + 1 :].split()
     if len(fields) <= 19 or not fields[19].isdigit():
         return None
     return fields[19]

@@ -6611,3 +6611,76 @@ campaign remains evidence only for its exact old tree and cannot qualify the
 fix tree. Do not modify the judged campaign checkout. Once that campaign
 finishes, the exact final library source needs its own R2 verdict and all
 release gates; keep the existing run useful for triage, not as a substitute.
+
+### RW-437 — 2026-10-05 02:48:22Z — DRY refactor accepted for provisional integration
+
+The isolated branch `rg55-dry-helpers-20261004` at `6733bef5ecb6ee88a093ca56b1fc2029f48d25bf`
+passed the registered `r0-r1` gate (2,275 passed; 100% line and branch
+coverage) and `r3` (7/7 canaries rejected). A fresh Sol/xhigh adversarial
+review accepted this exact tree for provisional integration with no blockers.
+The first review invocation failed in its read-only sandbox before repository
+access (`bwrap` could not mount `/proc`); it is not evidence. The fresh retry
+reviewed the branch and gate artifacts and accepted the provisional merge.
+
+This ruling authorizes integrating the reviewed DRY refactor only; it does
+not mark RG-55 release-ready. The live synthetic DAMON samples and measured
+overhead remain absent, and the P1 R2 result (12 survivors) is from an older
+source tree. Disposition of those survivors and a mutation verdict on the
+final library source, plus the required package/release/daemon gates, remain
+open. The separate initial-DAMON-start fix in RW-436 also needs reconciliation,
+gates, review, and live validation before it can qualify the release tree.
+
+### RW-438 — 2026-10-05 02:57:17Z — DRY merge complete; live-probe prerequisites clarified
+
+The reviewed DRY tree was provisionally merged `--no-ff` into local `main` as
+`e5d9962c25e18d443f5e3712c906fff57c0d561e`. This is not a release or a claim
+that the wave is complete. The RW-436 initial-DAMON-start fix and its kernel
+documentation were cherry-picked without conflict onto a fresh worktree based
+on this merge; that candidate is `a3735a42e` and still needs registered gates,
+fresh Sol review, and real-kernel acceptance.
+
+Read-only host inspection found authored `dev-gates.slice` loaded at
+`/dev.slice/dev-gates.slice` (5 CPUs, 1.5 GiB) and `cgprofile.slice` loaded at
+`/cgprofile.slice` (1 GiB). No cgprofile daemon service/container was running;
+the control socket therefore did not yet exist. The current cockpit already
+bind-mounts host `/run/cgprofile` at the same path, so once the daemon creates
+`ctl.sock` both socket and Docker-exec carriers can be probed; this is not a
+missing-mount finding. Two tester-unified containers were already active, so
+no new gate or synthetic workload was launched during this check.
+
+Historical notes saying the broader suite “could not collect” refer to
+non-authoritative pytest attempts in the cockpit interpreter, which lacked
+optional report dependencies. They do not describe a tester-container failure:
+the registered exact-tree `r0-r1` gate for RW-437 collected and passed 2,275
+tests with full line and branch coverage. Do not run package tests in the
+cockpit; use the project's registered tester-unified lanes.
+
+### RW-439 — 2026-10-05 03:00:33Z — defer new container launches while memory PSI is over the gate
+
+Before launching the startup-fix gate or a synthetic workload, `/proc/pressure/memory`
+reported `full avg10=18.06` (CPU `full avg10=0.00`). The RG-55 launch limit is
+memory `full avg10 <= 5`; therefore no new gate or workload container was
+started. The fix candidate remains clean at `a3735a42e`; run its registered
+gates after a later preflight meets the memory limit and existing tester
+containers have released their resources. This is a resource-safety deferral,
+not a gate result.
+
+### RW-440 — 2026-10-05 03:16:15Z — repeated launch preflight remains over the memory limit
+
+After the operator's resume instruction, the 03:14:25Z preflight still read
+memory `full avg10=19.39` (CPU `full avg10=0.00`), above the RG-55 launch
+ceiling. No RG-55 gate or synthetic workload was started. The only newly
+visible tester container inspected belonged to `cli-extended`'s worktree, not
+this wave; it was left untouched and is not RG-55 evidence. Startup-fix HEAD
+`38291bb58f20f5d4dd4dbeab397ac456ef810801` is clean and passes `git diff
+--check`; registered gates remain pending.
+
+### RW-441 — 2026-10-05 03:21:48Z — operator authorizes one gate despite PSI hold
+
+The operator explicitly directed “launch regardless” after RW-439/RW-440
+recorded memory PSI above the 5% launch ceiling. Scope this override to one
+bounded, non-mutation `r0-r1` gate on the current startup-fix candidate. Keep
+the gate in `dev-gates.slice` with the gate's verified 3-CPU cap; this does not
+authorize a mutation campaign, extra probe workload, or changes to another
+agent's containers. Preserve the preflight reading (`memory full avg10=19.39`)
+and disclose it with the verdict.
