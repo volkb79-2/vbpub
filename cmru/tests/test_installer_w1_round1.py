@@ -598,7 +598,27 @@ class TestTlsEdgeBundle:
         assert with_files["files"]["VERSION"]["sha256"] == sha(self.TAG.encode() + b"\n")
         assert {k: v for k, v in with_files.items() if k != "files"} == without
 
+    def test_bundle_files_rejects_a_non_directory_and_honours_exclude(self, tmp_path):
+        from cmru.manifest import bundle_files
+        with pytest.raises(ValueError, match="not a directory"):
+            bundle_files(tmp_path / "missing")
+        stage = self._stage(tmp_path, b"c\n")
+        assert "VERSION" not in bundle_files(stage, exclude=("VERSION",))
+        assert "get.py" in bundle_files(stage, exclude=("VERSION",))
+
+    def test_rebuilding_the_manifest_does_not_list_the_manifest_itself(self, tmp_path):
+        from cmru.handlers import cmd_bundle_manifest
+        stage = self._stage(tmp_path, b"c\n")
+        monkey = {"name": "tls-edge", "tag": self.TAG, "root": str(stage),
+                  "manifest_name": "manifest.json"}
+        cmd_bundle_manifest(args_ns(**monkey))
+        cmd_bundle_manifest(args_ns(**monkey))  # a re-run over its own output
+        files = json.loads((stage / "manifest.json").read_text())["files"]
+        assert "manifest.json" not in files and "VERSION" in files
+
     def test_build_artifact_script_calls_the_builder_after_clamping(self):
+        if not (REPO / "tls-edge" / "scripts" / "build-artifact.sh").exists():
+            pytest.skip("tls-edge not present")
         script = (REPO / "tls-edge" / "scripts" / "build-artifact.sh").read_text()
         assert "handler bundle-manifest" in script
         call = script.index("cmru handler bundle-manifest --name")

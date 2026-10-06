@@ -147,6 +147,21 @@ def test_latest_json_pointer_with_a_malformed_sha256_is_an_error(monkeypatch, di
         resolve.resolve(object(), "demo-v", gh_releases_url="https://x")
 
 
+def test_resolve_passes_the_variant_only_when_given():
+    calls = []
+
+    class Host:
+        def resolve_latest(self, prefix, **kw):
+            calls.append(kw)
+            return {"tag": "t"}
+
+    resolve.resolve(Host(), "demo-v", use_latest_json=False, asset_suffix=".tar.xz")
+    resolve.resolve(Host(), "demo-v", use_latest_json=False, asset_suffix=".tar.xz",
+                    variant="py39")
+    assert calls == [{"asset_suffix": ".tar.xz"},
+                     {"asset_suffix": ".tar.xz", "variant": "py39"}]
+
+
 def test_latest_json_pointer_with_a_good_sha256_is_used(monkeypatch):
     pointer = {"version": "1.0.0", "tag": "demo-v1.0.0", "asset": "a.tar.xz",
                "sha256": DIGEST, "url": "https://dl/a"}
