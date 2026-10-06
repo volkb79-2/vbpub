@@ -7195,3 +7195,48 @@ container could not reach Docker, and the selftest entry is dirty/unprofiled).
 No footprint write was attempted. After the released daemon is up, obtain at
 least three completed, profiled PASS runs in the project store, then run
 `footprint --write` and verify the tracked manifest and `footprint --json`.
+
+### RW-465 — 2026-10-06 21:32:07 UTC — P6 R2 terminal result and selective-reuse recovery
+
+The completed P6 R2 on commit `324eac950bf0b261d51d064d8a8152e3af0dbe31`
+is a history-eligible `FAIL/MUTANTS_SURVIVED`, exit 1: all 1,251 candidates
+were accounted for, with 1,210 killed and 41 survived; there were no
+equivalent, crashed, budget-exceeded, or hung candidates. The authoritative
+Assay v13 verdict and progress stream remain in
+`.worktrees/rg55-p6-r2-ciu/scripts/cgroup-profiler/.assay/`. Of the 1,210
+kills, 1,203 have call-phase failure witnesses and seven do not. The 41
+survivor IDs and mutation locations are in the verdict; candidate
+`45ca2247d28b5515ca007923efb2406f9c1b66f0792aeb2b62e6b8c9794ab131`
+(`placement.py:1882`) is the subject of a new test-only oracle commit.
+
+The first selective-rejudge worker did not invoke run-gate or start a
+container: it exited at `2026-10-06T18:33:54Z` with `bash: line 30: $1:
+unbound variable` (log `/tmp/rg55-p6-selective-r2-20261006-watch.log`). Treat
+this as a controller launch failure, not a mutation result. Its attempted
+`--resume --rejudge` route also needed correction: the new test tree has a new
+Assay judge identity, so ordinary per-tree resume records cannot be carried
+forward.
+
+The supported changed-tree route is `--reuse-from` the complete v13 verdict.
+On isolated diagnostic branch `rg55-p6-selective-reuse-20261006`, commits
+`6ebb9c13a` and `69f3fe673` opt the diagnostic command lane into run-gate
+argument forwarding and explicitly declare empty pytest `addopts`; they do
+not change cgprofile runtime code and are not merged into the package branch.
+On the clean exact diagnostic tree `69f3fe673534e45488bade0a1bf90bf861446a93`
+(tree `06e942f37b7f90015db8b5a24333e528cce9096c`), `assay plan r2` against
+request base `db29266f8a006b22a30609a74de7645d1e4c50b7` verified the same
+1,251 candidate IDs and the prior v13 artifact (`ddb4e19f…`). It classifies
+1,203 candidates for witness replay on the current suite and 48 for full-suite
+execution (the 41 prior survivors plus seven prior kills without witnesses).
+The target survivor is classified for a full run. This is a diagnostic
+campaign plan, not an acceptance R2 receipt; the final integrated P1/P6 tree
+still needs its own complete R2 and full gate.
+
+The run-gate dry run verified the explicit base, argument forwarding,
+`dev-gates.slice`, and the 3-CPU cap, and started no container. At the
+`2026-10-06T21:31Z` launch check, host memory PSI `full avg10` was 6.45%, above
+the 5% launch threshold, and a CMRU canary runner held the shared gate lock.
+Therefore the P6 diagnostic R2 remains unlaunched; retry only after the
+shared gate slot is available and a fresh memory-PSI preflight is at or below
+5%. On launch, check once at 90 seconds, then respect the 25-minute minimum
+progress-poll interval unless an earlier completion/error is expected.
