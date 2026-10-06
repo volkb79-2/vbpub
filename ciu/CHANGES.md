@@ -21,6 +21,51 @@ restatement of the technical detail below it.
 
 <!-- cmru: release history -->
 
+## [7.15.3] - 2026-10-06
+<!-- cmru: generated -->
+<!-- cmru: source-end=4b3d65cc1854e4d55d0714c45e7a7912a226c78b -->
+
+### Fixed
+- fix(ciu): validate Compose shapes before image scoping (eeeb95bf7)
+- fix(ciu): preserve malformed Compose check findings (8b4d66775)
+- fix(ciu): isolate worktree images and container names (f1a9d0e42)
+
+### Changed
+- merge CIU-117/104 worktree isolation (c0547e7a8)
+- backlog(ciu): CIU-132 stopped-stack identity migration (clean preview, named-volume carry-over, hostdir re-own) from the nyxloom Mattermost restore (11f8facca)
+
+### Testing
+- test(ciu): close resolver mutation gaps (b178ddc53)
+- test(ciu): close image isolation mutation gaps (3cf034a13)
+- test(ciu): cover deploy image safety paths (ee0b438e5)
+- test(ciu): cover worktree isolation boundaries (b6bef9e89)
+- test(ciu): include image policy in worktree key set (814245925)
+
+### Added (detail)
+- **CIU-117 — isolate linked-worktree image tags.** Project-built image
+  references in a linked Git worktree include that checkout's CIU instance
+  identity; the primary checkout and pulled vendor images keep their declared
+  references. CIU checks the primary image map before building and refuses a
+  tag collision or an image map it cannot verify.
+- **CIU-104 — protect explicit container names.** Before deployment, CIU
+  resolves each explicit `container_name` with the active Compose inputs and
+  proceeds only when Docker labels prove that the exact name belongs to this
+  checkout, project, and service. A different or unknown owner refuses before
+  Compose runs.
+
+### Adoption / Migration Notes
+
+If linked worktrees build project images, review scripts and tooling that
+expect the primary checkout's literal image tag; linked builds now use
+instance-scoped tags. Keep one shared tag only when that is intentional: set
+`[ciu.worktree].shared_image_tags = true` in the primary checkout's config, or
+use `ciu bake --allow-shared-tag` for one Bake invocation. If a Compose
+template declares `container_name`, make the value unique per checkout; when
+the template derives it from `deploy.environment_tag`, set that field to
+`"$INSTANCE_ID"`. CIU now refuses names owned by another checkout or whose
+owner cannot be proved. Image-sharing options do not bypass this
+container-name ownership check.
+
 ## [7.15.2] - 2026-10-05
 <!-- cmru: generated -->
 <!-- cmru: source-end=bee6771d2cbd472c91b7a4c456af443706805412 -->

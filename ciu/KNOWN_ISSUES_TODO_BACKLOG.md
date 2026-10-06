@@ -552,7 +552,7 @@ Last reconciled: 2026-08-17, automation-safe worktree lifecycle milestone.
 | CIU-100 | **`docs/SPEC.md` S14.7a specifies `--controller`'s auto-default source as `topology.external.public_fqdn`, but no config path in ciu ever sets that key — the real, established equivalent elsewhere in this codebase is `infrastructure.public_fqdn`** (`src/ciu/workspace_env.py:392`'s own resolution order, `docs/SPEC.md:219`). Confirmed by grep: `topology.external.public_fqdn` appears NOWHERE else in the source or docs except S14.7a's own text and `src/ciu/host_enroll.py`'s literal implementation of it (`resolve_controller`, `cli.py`'s own help text). Practical consequence: `ciu host enroll`'s documented convenience — "defaults from the declared controller, `--controller` only required when it is not declared" — never actually fires in real use, because the config key it reads is never set by anything; every real invocation silently requires `--controller` explicitly, with no error pointing at WHY the default never applied (the code correctly refuses with a clear message when NEITHER is present, so this is not a silent wrong answer, just a silently-dead convenience). Found and flagged, not fixed, by ciu-P52 (implementing S14.7 literally as written is the correct call per a fresh implementer's own scope — AUTHORING.md "product decisions are decisions, not silent workarounds" — this is a normative-text question for S14.7's own owner, not an implementation bug). Proposed fix: either correct S14.7a/proposal text to read `infrastructure.public_fqdn` (and `resolve_controller` to match) if that key is genuinely the intended source, or explain in S14.7a why host-enrollment needs a DIFFERENT, new config key than every other public-hostname consumer in this codebase — whichever is right, `resolve_controller` (`src/ciu/host_enroll.py:93-110`) and `cli.py:454`'s help text need to agree with the corrected spec | Low | DEFERRED TO V8.2 — not built in v7 by operator direction (2026-10-04); host enrollment is redesigned in v8.2 |
 | CIU-102 | **A `post_compose` hook cannot read back a secret IT ITSELF persisted through S9.4a — `ctx.secret_file(name)` resolves DECLARED directive names only and raises `KeyError` for every hook-persisted one, which is by definition every S9.4a name** (S9.4a's own uniqueness rule forbids declaring one). Mechanism, read from installed ciu 7.11.0 source: `engine.py`'s `_secret_file` closure iterates `specs` (the output of `secret_directives.discover`) and `raise KeyError(name)` on a miss; hook-persisted names live only in `<stack>/.ciu/secrets/.hook-persisted.toml`, which nothing on the HookContext exposes. `ciu secrets list`/`reset` DO see them (`secret_materialize.hook_secret_rows`), so the provenance is tracked — it is only the hook-facing read that is missing. Why this is not theoretical: an idempotent hook that mints a credential the provider reveals ONLY ONCE (a Mattermost personal access token; the same is true of many API tokens) has to distinguish three states on every re-run — (a) not minted, (b) minted and still stored, (c) minted but the store file is gone. Without a read-back it can only see (a) vs (not-a), so it either silently skips — leaving the consumer with no credential, forever, with no signal — or mints again, leaving a live orphan credential that cannot be revoked by value. Found by nyxloom-P109 (2026-09-09) while extending `nyxloom/mattermost/hooks/post_compose_provision.py`; worked around there by computing `Path(ctx.stack_dir) / '.ciu' / 'secrets' / name` directly, which is NOT reaching around the API — S9.4a states that path normatively — but it does hardcode a layout the context should own. Proposed fix: extend `_secret_file` to fall through to the hook-persisted store (it is the same directory `secret_materialize.stack_store(working_dir)` already returns for non-`GEN_LOCAL`/`ASK_FILE` specs, so this is a lookup-order change, not new machinery), or add an explicit `ctx.hook_secret_file(name)` alongside it. Oracle: a hook that returns `{'x': {'value': 'v', 'persist': 'secret'}}` on run 1 must, on run 2, be able to observe that `x` exists WITHOUT the value having to be re-minted; the controlled wrong implementation is a `secret_file` that returns a path for an undeclared name that was never persisted either (it must still raise, not hand back a path to a file that does not exist and never will) | Medium | OPEN — found by nyxloom-P109 (2026-09-09), worked around consumer-side |
 | CIU-103 | `ciu up --dry-run` executes the live post_compose hook | Medium | FIXED 2026-10-04 |
-| CIU-104 | Worktree create can recreate a different checkout’s live container | Medium | PARTIAL — remaining ownership checks open |
+| CIU-104 | Worktree create can recreate a different checkout’s live container | Medium | FIXED — exact container-name ownership preflight refuses another or unknown checkout before Compose up |
 | CIU-105 | No intent guard for destructive actions on a rightful protected instance | Medium | PARTIAL — remaining design open |
 | CIU-106 | Worktree records lack the immutable fork commit | Medium | FIXED 2026-09-11 |
 | CIU-107 | Interrupted adopt resume can reset and destroy later commits | High | FIXED 2026-10-04 |
@@ -565,7 +565,7 @@ Last reconciled: 2026-08-17, automation-safe worktree lifecycle milestone.
 | CIU-114 | CLI grammar/help/wizard extension | Low | OPEN — design candidate |
 | CIU-115 | CIU-owned outdated identity records block siblings and teardown | Medium | FIXED 2026-10-04 |
 | CIU-116 | Worktree shared-infrastructure reuse is not declared in project config | Medium | OPEN — waiting for shareability measurements |
-| CIU-117 | Worktree builds overwrite the primary checkout image tag | Medium | OPEN |
+| CIU-117 | Worktree builds overwrite the primary checkout image tag | Medium | FIXED — linked-worktree Compose and Bake image tags include its instance id by default |
 | CIU-118 | No supported resolve/exec API for services of any instance | Medium | FIXED 2026-10-04; RG-70 direct command path folded into `ciu exec` |
 | CIU-119 | v7 clean cannot remove resources owned by a retired instance id | Medium | FIXED 2026-10-04 with CIU-115 |
 | CIU-120 | Reserved; intentionally unused | — | UNUSED |
@@ -577,6 +577,7 @@ Last reconciled: 2026-08-17, automation-safe worktree lifecycle milestone.
 | CIU-126 | CIU rejects its own valid rootless worktree record and siblings can block lifecycle verbs | Medium | FIXED 2026-10-04 |
 | CIU-127 | `ciu down` cannot stop one stack without targeting the whole project | Medium | FIXED 2026-10-04 |
 | CIU-128 | Worktree reports `ready` before committed nested roots are prepared | High | FIXED 2026-10-05 |
+| CIU-132 | Outdated-identity guard blocks a stopped stack's data-preserving migration and is not told ownership drift or stale persisted hostnames | High | OPEN |
 
 
 The approved milestone decisions and serial package order are in
@@ -3847,39 +3848,43 @@ hardcoded operator recipes) would still opt out deliberately — but that
 would then be a visible, intentional choice instead of the accidental
 default shape every fresh `ciu init` currently produces.
 
-Separately confirmed (asked and checked, not assumed): the v8
-`{project}-{instance}-{stack}-{service}[-{replica}]` scheme and the
-`owner_id`-token ownership refusal (S4.1.1/S4.5.3, `docs/SPEC-V8.md`) that
-would ALSO close this class of hazard structurally are real, current V8
-design — but v8 is unbuilt (`ciu8/` has one shelved carve, `P001`, the
-config-schema piece only; the identity/naming/ownership piece is
-unstarted "checkpoint A" work) and was never decided as a v7 backport
-(only host enrollment, V8-29/CIU-93, has that explicit exception). An
-earlier `CIU-V8-TESTING-GATE-PROPOSAL.md` draft also carried a
-`[deploy.profiles.<name>.locks]` "production-lockdown"/interactive-
-confirmation-on-teardown mechanism; it is no longer in the current file —
-superseded by the `owner_id` approach above, not merely forgotten.
+**v8: absorb.** Checked against SPEC-V8 draft.12: S4.1.1 derives the
+path-based instance identity and refuses an id collision at allocation;
+S4.5.1 labels resources with `ciu.project`, `ciu.instance`, and
+`ciu.checkout`; S4.5.4 verifies all three before a mutating verb removes or
+recreates a resource. Draft.12 has no `owner_id` and no S4.5.3 ownership
+token. The v7 implementation below uses the current checkout path plus
+Docker Compose's project and service labels for the legacy resource set.
 
-### Status — PARTIALLY FIXED, 2026-09-11
+### Status — FIXED, 2026-10-05
 
 Proposed-fix option 3 (re-weighted per the Correction above) landed:
 `scaffold.py`'s `ciu init` default is now `environment_tag =
-"$INSTANCE_ID"`, not the inert literal `"dev"` — every FRESH `ciu init`
-from this point forward is collision-proof by default, with zero extra
-author effort, unless the author deliberately opts out via
-`--environment-tag`. Gate-verified (R0+R1 PASS, 100% coverage).
+"$INSTANCE_ID"`, so the ordinary generated name varies by checkout. This
+reduces accidental collisions for fresh projects; existing explicit names
+still need the runtime ownership check below. The scaffold change was
+gate-verified (R0+R1 PASS, 100% coverage).
 
-Options 1 and 2 (`ciu up`/`ciu worktree create-ensure` actively refusing
-or warning when a container name about to be recreated already exists,
-is RUNNING, and belongs to a different `repo_root`) remain **OPEN** — no
-runtime guard exists. This means: any EXISTING repo that already
+**Disposition (2026-10-05): FIXED.** Before any real Compose `up`, CIU now
+checks each explicit `container_name` against Docker's full container list
+using exact name equality. An existing name is reusable only when Docker's
+resolved Compose working-directory, project, and service labels prove it is
+the same checkout and service. Compose resolves interpolation with the same
+files, environment, and profiles as the upcoming start. A different checkout,
+missing/contradictory labels, failed query, or inspection race refuses before
+Compose starts. The guard covers native and shipped Compose paths; ordinary generated Compose
+names without explicit `container_name` already include the per-instance
+project. The scaffold default remains `environment_tag = "$INSTANCE_ID"`.
+
+This means: any EXISTING repo that already
 declares a fixed, non-`$INSTANCE_ID` `environment_tag` literal (as
 nyxloom/mattermost's own `"prod"` did, fixed by hand separately, not by
 this scaffold change), or any new repo whose author deliberately opts
-out of the new default, still has zero runtime protection against the
-exact live-incident scenario this entry documents. The scaffold-default
-fix prevents the hazard from being created by accident going forward; it
-does not detect or refuse it when it already exists.
+out of the new default, now gets a refusal when a live or stopped container
+with the exact declared name is owned by a different checkout. Resolve the
+collision by giving worktrees distinct explicit names. When a template
+derives those names from `environment_tag`, use its instance-derived value;
+CIU does not offer a container-takeover override.
 
 ## CIU-105 — no protection against the RIGHTFUL owner's own accidental `ciu down`/`ciu clean` against a flagged-important instance, in v7 or as currently designed for v8
 
@@ -4634,6 +4639,30 @@ Severity: Medium. Type: feature. Spec owner: S8.x (bake), S17 (provenance). v8: 
 
 **Amendment (2026-10-03, dstdns D-666; reviewed against SPEC-V8 draft.11 and proposal rev 4.9):** the **v8: absorb** paragraph above is superseded: draft.8+ specifies it (proposal V8-35, N26). SPEC-V8 S6.2 and S17.6.1: a linked worktree's project-built reference is tagged `<declared tag>-<instance_id>`, the compose `image:` is injected with it, `image_from` names it (S16.4, S16.11.6), and `ciu build` refuses to tag, retag or push a tag the primary's image map names (`[S17.6] refusing to overwrite dstdns/test-runner:latest, which the primary names`). S17.6 stays in **8.0** under the v8.2 split (only releases and activation moved). Two differences, stated so the v7 build does not read as a disagreement: v8 has **no opt-out** (no `shared_image_tags`, no `--allow-shared-tag`; greenfield, AGENTS §4.1), so the opt-out of the proposed contract is a v7-line safety valve for existing adopters only; and `ciu status --json`'s image reference is, in v8, `ciu resolve --json` (S4.4.3). With D-666 this is also how a worktree changes its **own** runner's runtime without touching main's `:latest`.
 
+**Amendment (2026-10-05; checked against SPEC-V8 draft.12): v8: absorb.**
+S6.2 classifies project-built images from the `build` declaration and
+S17.6.1 scopes each project-owned reference in a linked worktree to
+`<declared tag>-<instance_id>`. Compose uses that reference, while the
+primary retains the declared tag; v8 refuses to write any tag named by the
+primary image map. The rule remains in v8.0. V7 exposes a per-project
+`[ciu.worktree].shared_image_tags = true` safety valve for existing consumers
+and a one-command `ciu bake --allow-shared-tag` escape hatch; neither is in
+v8's contract. Pulled images remain unchanged in both lines.
+
+**Disposition (2026-10-05): FIXED.** Linked-worktree Compose rendering now
+adds the generated instance id only to image references whose Compose service
+declares `build`; other services sharing the same reference receive the same
+scoped reference, and pulled images remain unchanged. `ciu bake` reads the
+resolved Buildx target/tag plan and scopes its output tags before building.
+The primary keeps declared tags. Before writing, CIU resolves the primary
+checkout's active image map and refuses a colliding scoped tag; failure to
+resolve that map refuses instead of passing as empty. Project policy can opt
+out with `shared_image_tags = true`; an individual bake can opt out with
+`--allow-shared-tag`. A linked Git checkout with no resolvable CIU root and
+generated identity refuses an unscoped Bake unless that explicit flag is
+supplied. CIU-104 independently refuses an exact explicit container-name
+collision unless Docker labels prove the same checkout, project, and service.
+
 ## CIU-118 — no supported way to name or exec into a service of ANY instance (the primary included); consumers re-derive container names from the rendered file
 
 Severity: Medium. Type: feature. Spec owner: S16.6, S16.7 (v8: S4.4, S14.6.3). Related: CIU-113's "stack-scoped one-shot `exec`" product question; run-gate RG-70 is folded into this entry's `ciu exec` surface. Filed 2026-10-03 from dstdns.
@@ -4868,3 +4897,23 @@ specific to a generic Git worktree containing multiple CIU roots; v8 has one
 instance per checkout, so that aggregate metadata detail is not applicable.
 
 **Disposition (2026-10-05): FIXED.** The ready transition now follows nested-root fact generation and locked shared metadata persistence. `ensure` verifies historical readiness and derives the original allocation commit from saved facts. A partial allocation with a recorded fork point repairs against that commit without resetting later work; an older no-fork-point record whose checkout moved is demoted to `recovery-required` and refused. The registered CIU gate passed on implementation commit `b588cd96ecf0f9e0fb2fa8f47654906e911def9a` (run `195b964ff850afc73eff9c6e708babb8`, 2026-10-05): R0/R1/R2/R3 PASS, 100% branch coverage, 28/28 mutation candidates killed, no budget overruns, and the import-break canary detected. The final gate covers this backlog disposition update.
+
+## CIU-132 — recovering a stopped prod stack across the identity-scheme change needs a hand-run `clean --identity`, a manual hostdir re-own, and a manual named-volume copy
+
+Severity: High (it stands between a stopped production stack and its own data). Type: bugfix + feature. Spec owner: S3.1c, S6.3, S16.9, CIU-115/CIU-119. Filed 2026-10-06 from the nyxloom Mattermost restore (ids up to CIU-131 are taken on the unmerged branch `cmru-wave-2026-10`, so this is the next free id above 131).
+
+**Observed (ciu 7.15.2).** `nyxloom-1dd3d1-mattermost{,-db}` had been stopped for three weeks (network deleted) and `ciu up --dir nyxloom/mattermost` was refused: `[S3.1c] ciu.instance.generated.toml has outdated identity '1dd3d1', and Docker still has resources carrying it. Remove those resources with ciu clean --identity 1dd3d1`. Recovery with zero data loss took four hand steps that CIU could have owned.
+1. **The guard cannot pass in place, by design.** The record was schema-1 and its id `1dd3d1` came from the pre-base36 derivation; `workspace_id_for_path("/home/vb/volkb79-2/vbpub/nyxloom")` now yields `3oqua1`, so there is no same-id in-place migration. Every container, network and project-named volume therefore changes name (`nyxloom-1dd3d1-*` to `nyxloom-3oqua1-*`). The only supported exit is `ciu clean --identity 1dd3d1`, whose message does not say what it will and will not delete. Measured: it removed the 2 stopped containers and the 2 compose-labelled named volumes and touched no `vol-*` hostdir (it does not, per `action_clean_identity`). It missed `mattermost_mattermost-data`, which carried no `com.docker.compose.project` label (and no `ciu.instance` label). The operator has to read ~150 lines of source to learn that.
+2. **Named-volume data is silently orphaned, not migrated.** The new project gets fresh empty named volumes (`nyxloom-3oqua1-mattermost_*`). Uploaded files live in the old-named volume and must be copied across by hand (the README's 2026-09-10 recipe). Nothing warns that the old volume still holds data.
+3. **S6.3 then refuses the bind-mounted hostdirs.** `vol-mattermost-config`, `vol-mattermost-logs` and `vol-postgres-data` were owned `1003:1003` (the devcontainer user) instead of the declared `2000:994` / `70:994`, with file contents `1003` too. Something between 2026-09-11 and now re-owned the whole trees. S6.3 refused with `Existing hostdir has incompatible ownership/permissions`; the fix was a hand `chown -R` through a throwaway root container. A top-level-only `chown`, as the README step 3 shows, would have left Postgres unable to read its own 0600 files.
+4. **Persisted webhook URLs embed the instance-id hostname.** `daemon_webhook_url` and `intake_webhook_url` carried `http://nyxloom-1dd3d1-mattermost:8065`. Here the post_compose hook happened to re-persist them with the new host on the first `ciu up`, so this one is closed, but `clean --identity` should say so.
+
+**Proposed contract.**
+- `ciu clean --identity OLD --dry-run` (or default preview) lists exactly what it will remove (containers, networks, volumes), and what it will KEEP, naming every volume and hostdir that survives, including unlabelled project-prefixed named volumes.
+- A supported `ciu migrate-identity` (v8 `--move` is the model): after the clean, it copies each retired project's non-empty named volumes into the same-named volumes of the new identity, refusing to overwrite a non-empty target, instead of leaving an operator recipe in a README.
+- S6.3 offers `--fix-hostdir-ownership` (via the existing S6.5 root helper) that re-owns the hostdir tree recursively when the recorded owner is the operator, rather than refusing with a hand-fix hint.
+- The outdated-identity error names the NEW id the regeneration will produce and states that no same-id path exists.
+
+**Oracles.** (1) A stopped stack with an outdated-identity record and compose-labelled named volumes: preview names every removal and every survivor; the survivor list includes an unlabelled `<oldproject>_*` volume. (2) After migrate, the new project's named volumes carry the old volumes' file set; a non-empty target is refused. (3) A hostdir tree owned by the operator uid is re-owned to the declared owner/group recursively; a tree owned by a foreign uid still refuses. Controlled wrong implementation for (3): chown of the top directory only passes the S6.3 check but leaves Postgres unable to start.
+
+**Disposition (2026-10-06):** OPEN. Data was recovered by hand: full tar backup first, `ciu clean --identity 1dd3d1`, hostdir `chown -R`, `ciu up`, named-volume data copied from the retired volume. Production Mattermost is up and healthy on identity `3oqua1`.

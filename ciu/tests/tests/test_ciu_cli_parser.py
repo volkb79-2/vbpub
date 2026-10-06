@@ -9,7 +9,18 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 from ciu.engine import parse_arguments, _build_secrets_subparser  # noqa: E402
-from ciu import cli  # noqa: E402
+from ciu import cli, dev, worktree  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _keep_bake_parser_tests_on_the_primary_contract(monkeypatch):
+    monkeypatch.setattr(
+        dev, "resolve_repo_root",
+        lambda *_args, **_kwargs: Path(__file__).resolve().parents[2],
+    )
+    monkeypatch.setattr(
+        worktree, "resolve_worktree_image_tag_suffix", lambda *_a, **_kw: None
+    )
 
 
 def test_all_ciu_parser_diagnostics_start_with_the_dynamic_headline(monkeypatch, capsys):

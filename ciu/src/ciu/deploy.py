@@ -213,7 +213,12 @@ def load_global_config(repo_root: Path, *, write_rendered: bool = True) -> dict:
     return global_cfg
 
 
-def resolve_profiles(global_cfg: dict, names: Optional[list[str]]) -> profiles_pkg.Profile:
+def resolve_profiles(
+    global_cfg: dict,
+    names: Optional[list[str]],
+    *,
+    environ: Optional[dict[str, str]] = None,
+) -> profiles_pkg.Profile:
     """Resolve profiles: CLI, then worktree-local config, then legacy env."""
     if not names:
         ciu = global_cfg.get("ciu", {})
@@ -231,16 +236,20 @@ def resolve_profiles(global_cfg: dict, names: Optional[list[str]]) -> profiles_p
                 raise ValueError(
                     "[S16] ciu.instance.service_profiles contains a duplicate"
                 )
-    return profiles_pkg.resolve_profiles(global_cfg, names)
+    return profiles_pkg.resolve_profiles(global_cfg, names, env=environ)
 
 
-def profile_env(profile: profiles_pkg.Profile) -> dict:
+def profile_env(
+    profile: profiles_pkg.Profile,
+    *,
+    environ: Optional[dict[str, str]] = None,
+) -> dict:
     """Build the env dict handed to stacks: os.environ + profile.env_overrides.
 
     S7.4 — env_overrides are applied to a COPY of os.environ, never mutated in
     place (no os.environ mutation rule).
     """
-    env = dict(os.environ)
+    env = dict(os.environ if environ is None else environ)
     for k, v in profile.env_overrides.items():
         env[k] = str(v)
     return env
@@ -426,6 +435,9 @@ def resolve_identities(
     service: str | None = None,
     profiles: list[str] | None = None,
     live: bool = False,
+    render_environ: dict[str, str] | None = None,
+    require_closed_image_map: bool = False,
+    image_map_only: bool = False,
 ) -> dict:
     """Resolve rendered service identity facts without writing files.
 
@@ -437,13 +449,23 @@ def resolve_identities(
     repo-relative stack path so duplicate service keys in different stacks
     remain unambiguous.
     """
-    from . import composefile
+    from . import composefile, image_isolation
     from .config_constants import CIU_COMPOSE_TEMPLATE, SHIPPED_COMPOSE
     from .workspace_env import read_generated_facts
 
     repo_root = Path(repo_root).resolve()
-    global_config = load_global_config(repo_root, write_rendered=False)
-    profile = resolve_profiles(global_config, profiles)
+    if render_environ is None:
+        global_config = load_global_config(repo_root, write_rendered=False)
+        profile = resolve_profiles(global_config, profiles)
+    else:
+        global_config = config_model.render_global_chain(
+            repo_root,
+            repo_root,
+            write_rendered=False,
+            environ=render_environ,
+        )
+        profiles_pkg.reject_groups(global_config)
+        profile = resolve_profiles(global_config, profiles, environ=render_environ)
     selection = build_selection(profile)
     selected = _resolve_identity_stack_paths(repo_root, selection, stack)
     ciu_context = profiles_pkg.render_ciu_context(profile, selection)
@@ -458,12 +480,14 @@ def resolve_identities(
     deployment = profile.config.get("deploy", {})
     network = deployment.get("network_name") or facts.get("network")
     if not isinstance(network, str) or not network:
-        raise ValueError(
-            "[S18] this instance has no declared network identity; set "
-            "deploy.network_name or run `ciu env generate`"
-        )
+        if not image_map_only:
+            raise ValueError(
+                "[S18] this instance has no declared network identity; set "
+                "deploy.network_name or run `ciu env generate`"
+            )
+        network = None
     physical_root = facts.get("physical_repo_root")
-    environment = profile_env(profile)
+    environment = profile_env(profile, environ=render_environ)
     identities: dict[str, dict[str, dict]] = {}
 
     for entry in selected:
@@ -484,10 +508,14 @@ def resolve_identities(
                 preserve_state=True,
                 ciu_context=ciu_context,
                 write_rendered=False,
+                environ=render_environ,
             )
             merged = config_model.deep_merge(profile.config, stack_cfg)
             root_key = config_model.validate_stack_shape(stack_cfg)
-            engine.auto_generate_values(merged)
+            if render_environ is not None:
+                engine.auto_generate_values(merged, repo_root=repo_root)
+            else:
+                engine.auto_generate_values(merged)
             _resolve_hostdirs_for_render(
                 merged,
                 stack_dir,
@@ -519,13 +547,55 @@ def resolve_identities(
         services = compose_doc.get("services", {}) if isinstance(compose_doc, dict) else {}
         if not isinstance(services, dict):
             raise ValueError(f"[S18] rendered compose for {rel!r} has no services table")
+        for service_name, service_config in services.items():
+            if not isinstance(service_config, dict):
+                raise ValueError(
+                    f"[S18] rendered service {rel}:{service_name} must be a table"
+                )
+
+        if require_closed_image_map:
+            try:
+                if image_isolation.compose_may_import_service_definitions(
+                    rendered_compose
+                ):
+                    raise ValueError(
+                        f"[CIU-117] primary stack {rel!r} imports Compose service "
+                        "definitions; CIU cannot prove its complete image map"
+                    )
+            except image_isolation.ContainerOwnershipError as exc:
+                raise ValueError(
+                    f"[CIU-117] cannot read the primary image map for {rel!r}: {exc}"
+                ) from exc
+        scoped_compose = engine.scope_worktree_compose_images(
+            repo_root, rendered_compose
+        )
+        if scoped_compose != rendered_compose:
+            rendered_compose = scoped_compose
+            try:
+                compose_doc = yaml.safe_load(rendered_compose) or {}
+            except yaml.YAMLError as exc:
+                raise ValueError(
+                    f"[S18] scoped compose for {rel!r} is invalid: {exc}"
+                ) from exc
+            services = (
+                compose_doc.get("services", {})
+                if isinstance(compose_doc, dict) else {}
+            )
+            if not isinstance(services, dict):
+                raise ValueError(
+                    f"[S18] scoped compose for {rel!r} has no services table"
+                )
 
         try:
             compose_project = engine.compose_project_name(profile.config, stack_dir)
         except ValueError:
-            compose_project = engine.identity_compose_project_name(
-                repo_root, stack_dir, allow_identity_repair=False
-            )
+            if image_map_only:
+                compose_project = None
+            else:
+                compose_project = engine.identity_compose_project_name(
+                    repo_root, stack_dir, allow_identity_repair=False
+                )
+
         topology_services = profile.config.get("topology", {}).get("services", {})
         stack_identities: dict[str, dict] = {}
         for service_name, service_config in services.items():
@@ -541,10 +611,16 @@ def resolve_identities(
             )
             row = {
                 "container_name": service_config.get("container_name")
-                or f"{compose_project}-{service_name}-1",
+                or (
+                    f"{compose_project}-{service_name}-1"
+                    if compose_project is not None else None
+                ),
                 "hostname": service_config.get("hostname")
                 or service_config.get("container_name")
-                or f"{compose_project}-{service_name}-1",
+                or (
+                    f"{compose_project}-{service_name}-1"
+                    if compose_project is not None else None
+                ),
                 "compose_key": service_name,
                 "compose_project": compose_project,
                 "network": network,
@@ -570,6 +646,80 @@ def resolve_identities(
         scope = f" in stack {stack!r}" if stack is not None else ""
         raise ValueError(f"[S18] service {service!r} was not found{scope}")
     return {"schema_version": 1, "resolved": {"identities": identities}}
+
+
+def _render_environment_for_checkout(repo_root: Path) -> dict[str, str]:
+    """Use a checkout's generated facts instead of a sibling's shell values."""
+    from .workspace_env import (
+        LEGACY_IDENTITY_ENV_KEYS,
+        MACHINE_FACT_ENV_KEYS,
+        generated_facts_path,
+        identity_env_from_facts,
+        read_generated_facts,
+        read_generated_machine_facts,
+    )
+
+    root = Path(repo_root).resolve()
+    environment = dict(os.environ)
+    for key in LEGACY_IDENTITY_ENV_KEYS:
+        environment.pop(key, None)
+    facts_path = generated_facts_path(root)
+    if facts_path.is_file():
+        facts = read_generated_facts(root, allow_repair=False)
+        environment.update(identity_env_from_facts(facts))
+        machine = read_generated_machine_facts(root)
+        environment.update(
+            {MACHINE_FACT_ENV_KEYS[key]: value for key, value in machine.items()}
+        )
+    return environment
+
+
+def resolve_primary_image_references(repo_root: Path) -> set[str]:
+    """Resolve the primary checkout's active image map without writing files.
+
+    CIU-117 compares a linked build against the primary CIU root's own
+    configured selection. ``resolve_identities`` renders that checkout's
+    Compose definitions and reads its generated identity by exact path; it
+    does not inspect containers or mutate rendered files.
+    """
+    from . import image_isolation
+
+    primary_root = worktree_pkg.primary_ciu_root(Path(repo_root).resolve())
+    document = resolve_identities(
+        primary_root,
+        render_environ=_render_environment_for_checkout(primary_root),
+        require_closed_image_map=True,
+        image_map_only=True,
+    )
+    identities = document.get("resolved", {}).get("identities", {})
+    if not isinstance(identities, dict):
+        raise ValueError("[CIU-117] primary image map is not a service mapping")
+    references: set[str] = set()
+    for stack, services in identities.items():
+        if not isinstance(services, dict):
+            raise ValueError(
+                f"[CIU-117] primary image map for stack {stack!r} is malformed"
+            )
+        for service, row in services.items():
+            if not isinstance(row, dict):
+                raise ValueError(
+                    f"[CIU-117] primary image map for {stack}:{service} is malformed"
+                )
+            reference = row.get("image")
+            if reference is None:
+                continue
+            if not isinstance(reference, str) or not reference.strip():
+                raise ValueError(
+                    f"[CIU-117] primary image map for {stack}:{service} has an "
+                    "invalid image reference"
+                )
+            if "$" in reference:
+                raise ValueError(
+                    f"[CIU-117] primary image reference {reference!r} contains "
+                    "unresolved Compose interpolation; CIU cannot prove the image map"
+                )
+            references.add(image_isolation.normalize_image_reference(reference))
+    return references
 
 
 def _resolve_identity_live_state(project: str, service: str) -> dict:
@@ -2497,6 +2647,14 @@ def action_deploy(
         return 0
 
     env = profile_env(profile)
+    primary_image_map: set[str] | None = None
+
+    def primary_image_references() -> set[str]:
+        nonlocal primary_image_map
+        if primary_image_map is None:
+            primary_image_map = resolve_primary_image_references(repo_root)
+        return primary_image_map
+
     # S3.12 / CIU-44: one selection-facts snapshot for every render/hook of
     # this deploy — the FULL selected set, not per-stack slices.
     ciu_ctx = profiles_pkg.render_ciu_context(profile, selection)
@@ -2585,6 +2743,7 @@ def action_deploy(
                 update_cert_permission=update_cert_permission,
                 shipped=shipped,
                 ciu_context=ciu_ctx,
+                primary_image_references=primary_image_references,
             )
             if ok:
                 deployed.append(entry["path"])
@@ -2650,6 +2809,7 @@ def _run_stack(
     update_cert_permission: bool,
     shipped: bool = False,
     ciu_context: Optional[dict] = None,
+    primary_image_references: Callable[[], set[str]] | None = None,
 ) -> bool:
     """Run engine.main_execution for one stack in-process. Returns success bool.
 
@@ -2677,6 +2837,7 @@ def _run_stack(
                 dry_run=dry_run,
                 update_cert_permission=update_cert_permission,
                 compose_profiles=compose_profiles or None,
+                primary_image_references=primary_image_references,
             )
         else:
             result = engine.main_execution(
@@ -2686,6 +2847,7 @@ def _run_stack(
                 update_cert_permission=update_cert_permission,
                 compose_profiles=compose_profiles or None,
                 ciu_context=ciu_context,
+                primary_image_references=primary_image_references,
             )
     except engine.ComposeError as exc:
         error(str(exc))
@@ -3649,6 +3811,26 @@ def _check_stack_config(
             f"skipped: neither {CIU_COMPOSE_TEMPLATE} nor {SHIPPED_COMPOSE} is present",
             stack=rel,
         )
+
+    if rendered_compose is not None:
+        import yaml
+
+        try:
+            yaml.safe_load(rendered_compose)
+        except yaml.YAMLError:
+            # Keep malformed YAML on the established per-stack validation
+            # path below. In particular, validate_consumption records it as a
+            # finding and continues checking later stacks; image scoping must
+            # not turn that report into an early abort.
+            pass
+        else:
+            try:
+                rendered_compose = engine.scope_worktree_compose_images(
+                    repo_root, rendered_compose
+                )
+            except (RuntimeError, ValueError) as exc:
+                report.fail("compose-render", f"[CIU-117] {exc}", stack=rel)
+                rendered_compose = None
 
     # ---- stages 8 + 9: hooks load + validate_config preflight (S9) ----
     _check_hooks_for_stack(

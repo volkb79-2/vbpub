@@ -1860,3 +1860,46 @@ CIU records the adopted checkout's HEAD before preparing its environment. If
 recorded target and continues only when they match. If HEAD moved, the command
 refuses and preserves the commits. Review the checkout before deciding how to
 continue; do not reset it to make the record match.
+
+## 25. Isolate worktree image tags and check explicit container names (CIU-117, CIU-104)
+
+By default, CIU gives project-built image references in a linked Git worktree
+the checkout's instance suffix. Pulled images stay unchanged, and the primary
+continues using its declared tag. A deployment also checks any explicit
+`container_name` against existing containers; CIU proceeds only when Docker's
+Compose labels prove that the exact name belongs to this checkout, project,
+and service. A different or unknown owner is a refusal before Compose runs.
+Before a linked worktree builds, CIU also resolves the primary checkout's
+active image map and refuses if the final scoped tag is one that map names.
+Change the worktree's declared image tag to remove that collision. A failed
+primary render refuses too, since CIU cannot certify an empty map from missing
+evidence. If a linked Git checkout has no resolvable CIU root or generated
+identity, CIU refuses an unscoped Bake by default; pass `--allow-shared-tag`
+only when that build is intentionally meant to use shared tags. See the
+[design rationale](DESIGN-GUIDE.md#why-worktree-images-and-explicit-container-names-have-separate-guards-ciu-117-and-ciu-104)
+for why image tags and explicit container names use separate checks.
+
+If your v7 project intentionally shares one built image tag across all
+checkouts, opt out in the primary checkout's committed configuration:
+
+```toml
+[ciu.worktree]
+shared_image_tags = true
+```
+
+For one Bake invocation, pass `--allow-shared-tag` instead. These options do
+not bypass the explicit container-name ownership check; the Bake flag also
+explicitly bypasses the primary image-tag collision check. Give worktrees
+distinct explicit names when a declared `container_name` would otherwise
+collide. If the template derives the name from `deploy.environment_tag`, set
+that value to `"$INSTANCE_ID"`.
+
+CIU resolves explicit container-name interpolation with Docker Compose before
+checking ownership, using the same files, environment, and active profiles as
+the upcoming deployment. A Compose configuration failure refuses before
+containers can change. Project image references imported with Compose
+`include` or service `extends` refuse linked-worktree image scoping until the
+image declarations are present in the rendered file. A fully interpolated
+project image reference with no literal repository path or tag separator
+also refuses; render enough of the image name in the CIU template for CIU to
+append the instance tag safely.

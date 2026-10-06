@@ -55,6 +55,8 @@ CLOSED_PUBLIC_VALUES = {
     # exec-target config vocabulary (S16.7)
     "exec_targets",
     "up",
+    "shared_image_tags",
+    "--allow-shared-tag",
     "DRY_RUN_SAFE",
     "requires_worktree_mount",
     "stack",
@@ -215,6 +217,23 @@ def test_new_v7_workflows_are_explained_in_all_three_user_documents():
     assert "ciu exec --profile test tools/test-runner:test-runner" in consumers
     assert "ciu down --dir tools/admin-debug" in consumers
     assert "ciu clean --identity OLD_ID" in consumers
+    assert "shared_image_tags = true" in consumers
+    assert "--allow-shared-tag" in readme and "--allow-shared-tag" in consumers
+    assert "project-built image" in readme
+    assert "CIU-117" in design and "CIU-104" in design
+
+
+def test_worktree_image_optout_example_matches_the_shipped_loader():
+    consumers = (REPO_ROOT / "docs" / "CONSUMERS.md").read_text(encoding="utf-8")
+    blocks = [
+        block for block in _toml_blocks(REPO_ROOT / "docs" / "CONSUMERS.md")
+        if "[ciu.worktree]" in block and "shared_image_tags" in block
+    ]
+    assert len(blocks) == 1
+    parsed = config_model.parse_toml_string(blocks[0], "worktree image opt-out example")
+    worktree._validate_worktree_table(parsed["ciu"]["worktree"])
+    assert parsed["ciu"]["worktree"]["shared_image_tags"] is True
+    assert "why-worktree-images-and-explicit-container-names-have-separate-guards-ciu-117-and-ciu-104" in consumers
 
 
 def test_worktree_startup_consumer_example_uses_the_shipped_profile_loader():
