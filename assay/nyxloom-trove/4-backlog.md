@@ -11945,7 +11945,7 @@ Fix: add both names in pytest's own precedence order, and check the order agains
 
 ## B145 — fork exhaustion is classified as `killed`: a lane at its process limit cannot produce a valid R2 kill
 
-**Status: IMPLEMENTED on `assay-b136-b141`; registered `tester-unified` PASS at `8ffa26b9`; ready to merge, unreleased and grouped with the planned v14 / 8.0.0 wave.** The earlier gate at `e57b643b` passed the live B145 probes, installed-wheel suite, analysis lane, self-hosting checks, lint, SQL matrix, and expected-crash controls. Its final SQL witness was inconclusive while other gates were active, so that earlier run was not green. Sol xhigh reviews found worker-context gaps in cgroup identity, ancestor overmount binding, capability inspection, and SQL runner ownership. The fixes and regressions are in the branch; the resource-limit file passes 39 tests with 1 skip, the SQL qualification module passes 169 tests, and the docs contract test passes 52. The full identity module is not a cockpit check here: 20 integration cases stopped at the devcontainer's hidden-ancestor preflight (113 passed). Judge identity advances to `/7` so possible false `/6` state is re-executed. B145 prevents host pressure from deciding a mutation result.
+**Status: IMPLEMENTED on `assay-b136-b141`; registered `tester-unified` PASS at `8ffa26b9`; merged to `main` as `25c3af6b`, unreleased and grouped with the planned v14 / 8.0.0 wave.** The earlier gate at `e57b643b` passed the live B145 probes, installed-wheel suite, analysis lane, self-hosting checks, lint, SQL matrix, and expected-crash controls. Its final SQL witness was inconclusive while other gates were active, so that earlier run was not green. Sol xhigh reviews found worker-context gaps in cgroup identity, ancestor overmount binding, capability inspection, and SQL runner ownership. The fixes and regressions are in the branch; the resource-limit file passes 39 tests with 1 skip, the SQL qualification module passes 169 tests, and the docs contract test passes 52. The full identity module is not a cockpit check here: 20 integration cases stopped at the devcontainer's hidden-ancestor preflight (113 passed). Judge identity advances to `/7` so possible false `/6` state is re-executed. B145 prevents host pressure from deciding a mutation result.
 
 **Observed:** `run-gate-project`'s `assay-r2` campaign ran in CMRU tester-gate container `pedantic_antonelli` without init. Git's detached maintenance left enough zombies to reach `pids.current=19,115` of `pids.max=19,117` at 03:11:18Z. Before the limit, 18 candidates had produced 13 kills after a median of 155 tests and 5 survivors. Afterwards, it recorded 192/192 kills, a median of 2 tests, and 91 first-test kills; those post-limit outcomes and the final verdict are invalid. The affected worktree was `.worktrees/run-gate-r2-assay-venv-20261005`. This task did not inspect or delete that other session's `.assay` state. Discard its state and progress before retrying.
 
@@ -12007,8 +12007,9 @@ result is still required before merge.
 `8ffa26b9eb7f48a6128d19edb0479cb1c4f6b616` (`GATE_EXIT=0`). B145 probes,
 packaging, attestation, the self-hosted suite, analysis lane, independent
 self-hosting, and lint passed. SQL completed all controls and 24 matrix rows;
-the frozen witness qualified and the registered receipt was written. This is
-ready to merge. B146 remains deferred; release remains grouped with the planned
+the frozen witness qualified and the registered receipt was written. Assay
+B145 and B147 merged to `main` as `25c3af6b`. B146 remains deferred;
+release remains grouped with the planned
 v14 / 8.0.0 wave.
 
 ## B146 — R0 failure summary names the failure instead of reporting `NO_MEASUREMENT`
@@ -12021,7 +12022,7 @@ v14 / 8.0.0 wave.
 
 ## B147 — Assay's hermetic Git environment drops image gc.autoDetach and permits detached automatic maintenance
 
-**Status: IMPLEMENTED on `assay-b136-b141`; covered by the registered `tester-unified` PASS at `8ffa26b9`; unreleased and grouped with the planned v14 / 8.0.0 wave (2026-10-06).** Its focused suite previously passed 161 tests. Assay replaces Git's process environment, so system configuration baked into `tester-unified` does not reach Git. The image's `gc.autoDetach=false` cannot protect Assay's own Git children.
+**Status: IMPLEMENTED on `assay-b136-b141`; covered by the registered `tester-unified` PASS at `8ffa26b9`; merged to `main` as `25c3af6b`, unreleased and grouped with the planned v14 / 8.0.0 wave (2026-10-06).** Its focused suite previously passed 161 tests. Assay replaces Git's process environment, so system configuration baked into `tester-unified` does not reach Git. The image's `gc.autoDetach=false` cannot protect Assay's own Git children.
 
 **Observed:** Assay's `_REPLACEMENT_ENV` sets `GIT_CONFIG_NOSYSTEM=1` and points `GIT_CONFIG_GLOBAL` at `/dev/null`. This is intentional for hermetic repository facts, but it also discards the image-level `gc.autoDetach=false` setting. Git 2.55 can start detached maintenance after commands; those children can outlive the bounded Git command, consume the gate's PID capacity, and modify a test repository during a campaign. B145 detects the false mutation result after resource exhaustion; B147 closes Assay's contributor to the same process leak.
 

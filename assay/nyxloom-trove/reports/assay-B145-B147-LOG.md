@@ -127,5 +127,6 @@ lane, independent self-hosting, lint, SQL controls, all 24 matrix rows, and
 frozen SQL witness passed. The registered receipt is
 `assay/.assay/registered-gate/tester-unified.json`.
 
-B145 and B147 are ready to merge. B146 remains deferred. No separate release is
-planned; these fixes remain grouped with the planned v14 / 8.0.0 wave.
+B145 and B147 merged to `main` as `25c3af6b`. B146 remains deferred. No separate
+release is planned; these fixes remain grouped with the planned v14 / 8.0.0
+wave.
