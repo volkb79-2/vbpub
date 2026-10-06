@@ -214,5 +214,8 @@ MDT's own `build-push.py` (my grep did surface `test_release_flow.py:431` patchi
    - `scripts/test_release_flow.py` (needs the MDT dir on PYTHONPATH for `from scripts import ...`): 31 passed.
 9. Nit done: the shell/string scanner tokenises with `shlex.split(..., comments=True)`; tests show a trailing `# not --project` is dropped and `'a # b'` (quoted) is kept.
 
+**Lane (round 2):** `coverage` at `2bb245f64` under `flock gate.lock nice -n 19`, tree clean, verdict read separately: PASS, exit 0, 3536 passed, 6 skipped,
+100.00% (log `/tmp/run-gate/lanes/coverage/c9b03562289a9953e717af7c1b1221ec.log`). `canary` not re-run this round (the coordinator asked for coverage only).
+
 **Full suite (round 2):** 3536 passed, 6 skipped, 0 failed; `--cov` TOTAL 11884 stmts / 5128 branches, 0 missed, 100%.
 
