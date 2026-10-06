@@ -24,7 +24,7 @@ No edit to `cli.py` or any delegate module, and no shim.
 - The full suite ran with `-x` by mistake (the brief says no maxfail). It was green, so nothing was cut off.
 - All repo edits went through Edit/Write. The only scratch script was `scratchpad/pk0.sh` (a pytest wrapper), outside the repo.
 
-## Tests (`tests/test_cli_support_registry.py`, 30 tests)
+## Tests (`tests/test_cli_support_registry.py`, 31 tests)
 - Factory: the identity source (monkeypatched `installed_version`) and the absence of a fallback; the policy constant is used (monkeypatched to `"report"` and a parent/delegate `build()` succeeds); `TypeError` on owned keywords; logger and passthrough; the option is declared once and `global_options` extends it; a delegate built with the factory parses `--log-prefix-time-short`, with the env effect.
 - Selector: parse results for omitted, `all` and a list. The adapter is compared against `cli._select_projects`, the live oracle, over `all`, whitespace, one name, several names and given-order permutations. Also covered: ALL beats the context project, omitted resolves to context or estate, the ALL path skips orchestration names that are not loaded, unknown names, malformed tuples, an empty tuple, and library refusals matching the legacy refusals.
 
@@ -34,4 +34,4 @@ No edit to `cli.py` or any delegate module, and no shim.
 | Adapter drops the ALL sentinel (`return None`) | first attempt SURVIVED (omitted and ALL coincide without a context); added `test_adapter_explicit_all_beats_the_context_project`; now killed |
 
 Full suite via `pt.py` (serial, flock, nice/ionice, PSI full avg60 about 1): 3249 passed, 2 skipped, 20 subtests.
-Gate lanes: see the hand-back message (read in a separate step).
+Gate lanes: the first run of `coverage` and `canary` at commit `a7272ace5` FAILED at 99.99%. The only miss was `cli_support.py:168-169`: `parse_target_names(None)` became unreachable once the adapter normalises `None` first. Fixed with `test_legacy_string_parser_keeps_its_contract`; the lanes were then re-run on the follow-up commit (verdicts in the hand-back message).

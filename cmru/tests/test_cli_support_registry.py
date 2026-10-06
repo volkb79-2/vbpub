@@ -169,6 +169,12 @@ def test_adapter_omitted_target_uses_context_or_the_whole_estate(monkeypatch):
     assert _legacy(None, context=None, monkeypatch=monkeypatch) == ORDER
 
 
+def test_legacy_string_parser_keeps_its_contract():
+    assert cli_support.parse_target_names(None) is None
+    assert cli_support.parse_target_names(" a , b ") == ["a", "b"]
+    assert cli_support.parse_target_names("all") == ["all"]
+
+
 def test_adapter_explicit_all_beats_the_context_project():
     # ALL inside a project must still mean every project, unlike an omitted target.
     assert select_target_names(
