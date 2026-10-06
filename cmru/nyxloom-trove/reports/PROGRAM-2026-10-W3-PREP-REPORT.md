@@ -13,7 +13,13 @@ tree shows neither file modified.)
 - `cli-extended surface check` on this tree's cmru: the only finding is exactly
   `[REVIEW] incomplete parser syntax: cmru skills: delegated parser does not register inherited global option(s): --log-prefix-time-short`
   (CLI-EXT-26 / KI-61), then "CLI surface check failed." (exit 1, as KI-61 documents; every other line is a `[NOTE]` open finding).
-- Gate lanes: see "Gate" at the end (filled after the run).
+- Gate lanes at the code commit `bce3ab8af` plus the follow-up (clean tree, run via `flock gate.lock`, verdicts read in separate steps):
+  `coverage` PASS exit 0, 3998 passed, 6 skipped, total coverage 100.00% (log `/tmp/run-gate/lanes/coverage/da3bff5679e5c11cb3cf22d369daddfe.log`);
+  `canary` PASS exit 0 (log `/tmp/run-gate/lanes/canary/965e409f5aadaf8af027cb175e9a8174.log`). The two full serial suite runs above (3993) were
+  before 5 extra coverage tests were added to `test_w3_prep_remote_retire.py` (3998 in the lane); the reverse-order run was NOT repeated after those 5 tests.
+- Abandon plants (each by Edit, `test_w3_prep_remote_retire.py` run, reverted with `git checkout`): `unique_commits` guard disabled -> KILLED
+  (`test_retire_refuses_unique_commits_and_a_local_branch_of_the_same_name`); sidecar removal dropped -> KILLED (`test_yes_retires_a_merged_candidate_and_its_sidecars_only`);
+  lease replaced by `--force` -> KILLED (1 failed). The `_is_release_branch` guard plant was not run.
 
 ## 1. KI-35 / REL-09 sweep (PREPARED, not executed)
 Plan: `cmru/nyxloom-trove/reports/PROGRAM-2026-10-W3-SWEEP-PLAN.md` (16 refs, class, evidence, exact command, safe-to-delete).
