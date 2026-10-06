@@ -1559,12 +1559,23 @@ class SessionServer:
                 f"session {session_id}: DAMON cleanup raised during {context}: "
                 f"{type(cleanup_exc).__name__}: {cleanup_exc}"
             )
-        if not getattr(damon_session, "cleanup_confirmed", True):
+        if not getattr(damon_session, "cleanup_confirmed", False):
             pool = self.damon_pool
-            quarantined = sorted(getattr(pool, "quarantined_indices", ()))
+            quarantined = set(getattr(pool, "quarantined_indices", ()))
+            slot_idx = getattr(damon_session, "kdamond_idx", None)
+            if slot_idx is not None and slot_idx in quarantined:
+                disposition = (
+                    f"owned slot {slot_idx} is quarantined and will not be reused"
+                )
+            else:
+                disposition = (
+                    f"cleanup remains unverified; slot {slot_idx!r} is not recorded "
+                    f"as quarantined (pool quarantine={sorted(quarantined)}); "
+                    "no no-reuse guarantee is established"
+                )
             self._log(
                 f"session {session_id}: DAMON stop is unconfirmed during {context}; "
-                f"owned slot quarantined={quarantined} and will not be reused"
+                f"{disposition}"
             )
 
     def _disable_damon_for_session(self, sess: _Session, exc: Exception) -> None:

@@ -1139,6 +1139,17 @@ class TestHelperSpecDockerArgs:
         with pytest.raises(access.AccessError, match="absolute"):
             spec.docker_args()
 
+    def test_damon_helper_refuses_a_relative_lock_target(self):
+        spec = access.HelperSpec(
+            image="img:local", repo_host_path="/h/repo", repo_mount_path="/repo",
+            out_host_path="/h/out", out_mount_path="/out",
+            cgroup_parent="dev-interactive.slice",
+            damon_lock_host_path="/run/cgprofile/damon.lock",
+            damon_lock_container_path="tmp/cgprofile-damon.lock",
+        )
+        with pytest.raises(access.AccessError, match="absolute"):
+            spec.docker_args()
+
     def test_cgroup_parent_is_always_passed_explicitly(self):
         # The bug this exists to prevent: no --cgroup-parent means Docker's
         # daemon default wins, and on this estate that default is the exact

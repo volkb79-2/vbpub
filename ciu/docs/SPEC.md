@@ -1402,11 +1402,13 @@ build-tool-agnostically; CIU carries no npm/Vite/uvicorn specifics (CIU-5).
   never invokes `docker compose up/down/build/exec` — it is read-only by
   contract, not merely by default.
 
-- **S7.11** `ciu bake [targets ...] [--no-cache]` / `ciu bake --profile NAME
-  [--no-cache]` (CIU-QOL-7) unifies the two build entry points around ONE
-  selection model. With NO `--profile`, behaviour is byte-identical to the
-  pre-existing form: explicit positional targets (or `all`, when none are
-  given) go straight to `docker buildx bake ... --load`. With `--profile`,
+- **S7.11** `ciu bake [targets ...] [--no-cache] [--allow-shared-tag]` /
+  `ciu bake --profile NAME [--no-cache] [--allow-shared-tag]` (CIU-QOL-7)
+  unifies the two build entry points around ONE
+  selection model. With NO `--profile`, explicit positional targets (or
+  `all`, when none are given) retain the pre-existing target-selection and
+  `docker buildx bake ... --load` contract. Linked-worktree identity is still
+  applied before the build under S17.6. With `--profile`,
   the target list instead comes from the SAME selection chain S7.10 uses
   (`load_global_config` → `resolve_profiles` → `build_selection`), reduced
   to the final path component of every selected `applications/`/`tools/`
@@ -1417,6 +1419,14 @@ build-tool-agnostically; CIU carries no npm/Vite/uvicorn specifics (CIU-5).
   would silently "win" is not obvious to a reader and would invite a
   divergent-build bug. `--no-cache` combines with either mode unchanged.
   Every invocation still carries S17.1's revision stamp.
+  In a linked worktree, CIU resolves the selected Bake targets with
+  `docker buildx bake --print`, scopes every declared target tag by appending
+  `-<instance_id>`, then passes the scoped tags as Buildx `--set` overrides
+  to the real build. A malformed plan or unscopable digest tag refuses before
+  the build. The primary keeps the declared tags. `[ciu.worktree]
+  shared_image_tags = true` and the one-invocation `--allow-shared-tag` flag
+  deliberately keep the declared tags for existing consumers that require
+  shared tags.
 
 ## S8 — Compose execution
 
@@ -1643,6 +1653,28 @@ build-tool-agnostically; CIU carries no npm/Vite/uvicorn specifics (CIU-5).
   instructions; `CIU_ADOPT_LEGACY_PROJECT=1` instead removes them (bind-
   mounted state survives) and proceeds. Reset's Step-4 component-label
   cleanup remains project-independent and also clears legacy containers.
+
+### S8.8 Explicit container-name ownership preflight (CIU-104)
+
+Before a real native or shipped `up`, CIU checks each explicit
+`container_name` against all containers on the Docker daemon using exact name
+equality. Containers without an exact name match do not affect the check. An
+existing name is reusable only when at least one of its Docker Compose
+working-directory and CIU checkout-root labels identifies this checkout,
+every present path label is a known alias for this checkout, and its Compose
+project and service labels equal the project and service about to be started.
+Both checkout-root labels may be present as host and container path aliases
+for this same checkout. A different/unknown checkout, contradictory labels,
+missing ownership evidence, a failed query/inspection, or unresolved Compose
+configuration refuses before Compose can mutate containers. Compose resolves
+`container_name` interpolation itself through `docker compose config --format json`,
+using the same files, project, working directory, environment, and profile
+selection as the upcoming `up`. The check includes stopped containers, which
+Compose may also recreate. There is no takeover flag; give the linked worktree
+a distinct explicit name. When the template derives that name from
+`deploy.environment_tag`, set the value to `"$INSTANCE_ID"`; otherwise resolve
+the existing name first. This preflight runs on deployment, not `ciu worktree create`, because
+only the selected stack's rendered services declare container names.
 
 ## S9 — Hooks
 
@@ -4493,6 +4525,12 @@ unknown `[ciu.worktree]` key, or a `max_concurrent_instances` that is not a
 positive integer (including `true`/`false`, which are `int` subclasses in
 Python and are explicitly rejected), fails loudly.
 
+The closed `[ciu.worktree]` key set is `max_concurrent_instances`,
+`lease_ttl_hours`, `exec_targets`, `up`, and `shared_image_tags`. Capacity,
+lease, and image-tag policy are read from the primary CIU root. Startup
+profiles and execution targets are read from the selected checkout's rendered
+global config.
+
 A CIU root that is not inside a git work tree at all (no worktree family is
 even possible) is treated the same as an absent global template: no file
 policy, consulted the same way a no-configuration render is — silently
@@ -5293,6 +5331,40 @@ includes it in `docker compose down`'s `-f` args.
 
 `--json` grammar and `S17.4`'s exposure are independent: neither depends on
 the other, and a project may adopt either alone.
+
+### S17.6 — Instance-scoped project-built image references (CIU-117)
+
+CIU identifies a project-built image from a service's rendered Compose
+`build:` declaration. The `image:` reference for each such build is scoped in
+a linked Git worktree by appending `-<instance_id>` to its declared tag (or to
+the implicit `latest` tag). Every service in that Compose model that uses the
+same reference uses the same scoped reference, including services that only
+consume the built image. References without a matching `build:` declaration,
+including pulled vendor images, remain byte-for-byte unchanged. A project-
+built service without an explicit mutable `image:` reference and a digest
+reference that cannot be tagged safely refuse in a linked worktree. Compose
+`include` and service `extends` definitions outside the rendered mapping also
+refuse there because CIU cannot prove it has scoped every project-built image.
+A fully
+interpolated image reference with no literal repository path or tag separator
+also refuses because CIU cannot tell whether the expression already contains
+a tag. The primary checkout retains the declared tag.
+
+`ciu bake` applies the same linked-worktree identity to tags from Buildx's
+resolved plan. Before a linked-worktree build or deployment writes any
+project-built tag, CIU resolves the primary CIU root's selected image map and
+refuses an exact tag collision with `[CIU-117] refusing to overwrite
+<reference>, which the primary names`. A missing or unresolvable primary map
+also refuses; CIU never treats a render failure as an empty map. The boolean
+`[ciu.worktree].shared_image_tags` defaults to
+`false` and is read from the primary CIU root as repository-family policy.
+Set it to `true` or pass `ciu bake --allow-shared-tag` to opt a v7 consumer
+out; this compatibility escape hatch is not part of the v8 contract. See [CIU worktree image and
+container isolation](DESIGN-GUIDE.md#why-worktree-images-and-explicit-container-names-have-separate-guards-ciu-117-and-ciu-104)
+and the [consumer example](CONSUMERS.md#25-isolate-worktree-image-tags-and-check-explicit-container-names-ciu-117-ciu-104).
+If a linked Git checkout has no resolvable CIU root and generated identity,
+`ciu bake` refuses an unscoped build by default; `--allow-shared-tag` is the
+explicit one-invocation opt-out when shared tags are intended.
 
 ## S18 — Implementation gate (Assay-backed)
 
