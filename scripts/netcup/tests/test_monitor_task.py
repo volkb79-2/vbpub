@@ -316,7 +316,9 @@ def test_watch_rejects_nonpositive_or_nonfinite_poll_before_authentication(
         )
         assert result.returncode == 2
         assert "finite number greater than zero" in result.stderr
-        assert "usage:" in result.stderr
+        # A verb-level usage error is the message plus a one-line hint, not the full help.
+        assert "Hint: run ./monitor-task.py help watch" in result.stderr
+        assert "usage:" not in result.stderr
         assert "Traceback" not in result.stderr
 
 

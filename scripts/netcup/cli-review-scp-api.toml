@@ -1142,7 +1142,7 @@ reviewed_signature = "sha256:0d9cbbdb158d989a21f649d1f1868139d182d18892e0f3fd74d
 rationale = "Library output control; metrics already prints JSON by default (the series is not tabular), so the flag is accepted and the output is identical."
 invocation = ["metrics", "42", "cpu", "--json"]
 expected_exit_status = 0
-expected_stdout_contains = "cpu"
+expected_stdout_contains = "CPU0"
 expected_stderr_contains = ""
 effects = ["Performs the same read as without the flag; the printed JSON is unchanged."]
 test_ids = ["tests/test_cli_cases_scp_api.py::test_json_output_is_machine_readable[metrics]"]
@@ -1536,7 +1536,7 @@ test_ids = [
 id = "case:route:entrypoint:scp-api/snapshots/minimum"
 state = "active"
 decision = "accept"
-reviewed_signature = "sha256:9ee9fd3d3f7a395d79da842c2c104320f75b77a415633e3080dc551b2e7a0045"
+reviewed_signature = "sha256:9b3cbbe653281524d8276ab8f3d45211a186b0dc725bf6e7e652c5657a3be3f6"
 rationale = "A bare 'snapshots' is a safe read of every server's snapshots; nothing is required."
 invocation = ["snapshots"]
 expected_exit_status = 0
@@ -2053,3 +2053,146 @@ expected_stdout_contains = "key: custom.iso"
 expected_stderr_contains = "Confirmation accepted via --yes"
 effects = ["Skips the confirmation prompt and uploads the file; without it nothing is sent."]
 test_ids = ["tests/test_cli_cases_scp_api.py::test_yes_is_the_only_consent_in_a_non_interactive_run[user-iso]"]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/boot-order/argument-choice/argument:route:entrypoint:scp-api/boot-order/action/c7f5814b92"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:ccdddead1ae1597f3ef73b12d50ea663b57b7c365c1ca1a818e4bb371d0dbf4a"
+rationale = "'set' replaces the boot order; a mutation that needs consent."
+invocation = ["boot-order", "42", "set", "HDD,CDROM,NETWORK", "--yes"]
+expected_exit_status = 0
+expected_stdout_contains = "boot order set"
+expected_stderr_contains = "Confirmation accepted via --yes"
+effects = ["Reads GET /api/v1/servers/42 for the current order, then sends one PATCH /api/v1/servers/42 with bootorder [HDD, CDROM, NETWORK] after --yes."]
+test_ids = ["tests/test_cli_cases_scp_api.py::test_replayed_case_matches_catalog[boot-order-choice-set]"]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/boot-order/argument-shape/argument:route:entrypoint:scp-api/boot-order/action"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:f046811597b3f3bb537267466ab8bf8d5ff09786512e67dc27c296766fe28923"
+rationale = "The optional action accepts only 'set'; any other word is refused by the parser, so a typo can never fall through to the read."
+invocation = ["boot-order", "42", "set", "HDD,CDROM,NETWORK", "--yes"]
+expected_exit_status = 0
+expected_stdout_contains = "boot order set"
+expected_stderr_contains = "Confirmation accepted via --yes"
+effects = ["Reads GET /api/v1/servers/42, then sends one PATCH /api/v1/servers/42 after --yes."]
+test_ids = ["tests/test_cli_cases_scp_api.py::test_replayed_case_matches_catalog[boot-order-shape-action]", "tests/test_cli_cases_scp_api.py::test_invalid_argument_is_refused[boot-order-action]"]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/boot-order/argument-shape/argument:route:entrypoint:scp-api/boot-order/order"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:946ca5c445b8fa2ac00fbf5ad9fa42dc79c5706bbec1620c1d0d48ea47b72e8a"
+rationale = "ORDER is a comma list of unique HDD, CDROM, NETWORK devices (any case); an unknown, repeated or empty device is refused with exit 2 before any request."
+invocation = ["boot-order", "42", "set", "HDD,CDROM,NETWORK", "--yes"]
+expected_exit_status = 0
+expected_stdout_contains = "boot order set"
+expected_stderr_contains = "Confirmation accepted via --yes"
+effects = ["Reads GET /api/v1/servers/42, then sends one PATCH /api/v1/servers/42 with the validated order after --yes."]
+test_ids = ["tests/test_cli_cases_scp_api.py::test_replayed_case_matches_catalog[boot-order-shape-order]", "tests/test_cli_cases_scp_api.py::test_invalid_argument_is_refused[boot-order-order]"]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/boot-order/argument-shape/argument:route:entrypoint:scp-api/boot-order/server_id"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:0e16854be458eba37ce07088d61f5ee611fc24469c9abd5d2c7a4a298d6d426b"
+rationale = "The required server id must be an integer; a non-integer is refused before any request."
+invocation = ["boot-order", "42"]
+expected_exit_status = 0
+expected_stdout_contains = "HDD,CDROM,NETWORK"
+expected_stderr_contains = ""
+effects = ["Reads GET /api/v1/servers/42 only; no mutation."]
+test_ids = ["tests/test_cli_cases_scp_api.py::test_replayed_case_matches_catalog[boot-order-shape-server-id]", "tests/test_cli_cases_scp_api.py::test_invalid_argument_is_refused[boot-order-server-id]"]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/boot-order/minimum"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:e5ed88af0ab53fd2bc322f26c31f37991e7b88176f56b804476ab72df8f51d7b"
+rationale = "A bare 'boot-order SERVER_ID' is a safe read of the live boot order; nothing else is required."
+invocation = ["boot-order", "42"]
+expected_exit_status = 0
+expected_stdout_contains = "HDD,CDROM,NETWORK"
+expected_stderr_contains = ""
+effects = ["Reads GET /api/v1/servers/42 only; no mutation."]
+test_ids = ["tests/test_cli_cases_scp_api.py::test_replayed_case_matches_catalog[boot-order-minimum]"]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/boot-order/option-spelling/option:route:entrypoint:scp-api/boot-order/--debug-raw/--debug-raw"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:83c83f5b06e6d3e64ab3b8e956fd392acc6224a96571b7ca156e814bb6dc5940"
+rationale = "Library debugging control: turns redaction of diagnostic output off and warns that secrets may be exposed; it never changes which requests are made."
+invocation = ["boot-order", "42", "--debug-raw"]
+expected_exit_status = 0
+expected_stdout_contains = "HDD,CDROM,NETWORK"
+expected_stderr_contains = "--debug-raw is active"
+effects = ["Prints the secrets-exposure warning on stderr, then performs the same read as without the flag."]
+test_ids = ["tests/test_cli_cases_scp_api.py::test_debug_raw_warns_and_is_off_by_default[boot-order]"]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/boot-order/option-spelling/option:route:entrypoint:scp-api/boot-order/--json/--json"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:1864d7f80ecb5807a6fa1854dc555fafb59b95df094e4f6aaa788528d78c0ddf"
+rationale = "Library output control: prints the boot order as JSON on stdout for scripting."
+invocation = ["boot-order", "42", "--json"]
+expected_exit_status = 0
+expected_stdout_contains = "bootorder"
+expected_stderr_contains = ""
+effects = ["Performs the same read as without the flag and prints the JSON object."]
+test_ids = ["tests/test_cli_cases_scp_api.py::test_json_output_is_machine_readable[boot-order]"]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/boot-order/option-spelling/option:route:entrypoint:scp-api/boot-order/--yes/--yes"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:93c4a627a78ea7dbd289bdc2d645d85065b6a2e7085a5dd1ee98bd16e12553be"
+rationale = "Library consent control: in a non-interactive run it is the only consent for 'set'; without it the run refuses with exit 2 before any PATCH."
+invocation = ["boot-order", "42", "set", "HDD,CDROM,NETWORK", "--yes"]
+expected_exit_status = 0
+expected_stdout_contains = "boot order set"
+expected_stderr_contains = "Confirmation accepted via --yes"
+effects = ["Skips the confirmation prompt and sends the single PATCH; without it nothing is sent."]
+test_ids = ["tests/test_cli_cases_scp_api.py::test_yes_is_the_only_consent_in_a_non_interactive_run[boot-order]"]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/snapshots/option-spelling/option:route:entrypoint:scp-api/snapshots/--disk-name/--disk-name"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:81ed1595fcc8f25d6488c14beb62456f3714aa01f452c613661547ce6494094e"
+rationale = "Names the disk to snapshot (the API rejects a snapshot without one); without it the server's only disk is used and several disks make it required."
+invocation = ["snapshots", "42", "create", "--disk-name", "vda", "--yes"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = "Confirmation accepted via --yes"
+effects = ["Sends one POST /api/v1/servers/42/snapshots with a generated name and diskName vda after --yes; no disk lookup is made."]
+test_ids = ["tests/test_cli_cases_scp_api.py::test_replayed_case_matches_catalog[snapshots-disk-name]"]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/snapshots/option-spelling/option:route:entrypoint:scp-api/snapshots/--online/--online"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:f566efbebd8ac7afa3dbce42b321741cfc765d98d62460997a7c84ad1139bd9d"
+rationale = "Requests an online snapshot (onlineSnapshot true), which the API spec allows without a disk name."
+invocation = ["snapshots", "42", "create", "--online", "--yes"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = "Confirmation accepted via --yes"
+effects = ["Sends one POST /api/v1/servers/42/snapshots with a generated name and onlineSnapshot true after --yes; no disk lookup is made."]
+test_ids = ["tests/test_cli_cases_scp_api.py::test_replayed_case_matches_catalog[snapshots-online]"]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/snapshots/option-spelling/option:route:entrypoint:scp-api/snapshots/--description/--description"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:bf747b32290f54689ae8db682cd37ff42759812adb98008ca5ca5379aa23b80d"
+rationale = "Free-text description stored with the snapshot; only meaningful with 'create'."
+invocation = ["snapshots", "42", "create", "--description", "pre-upgrade", "--yes"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = "Confirmation accepted via --yes"
+effects = ["Reads the server's disks, then sends one POST /api/v1/servers/42/snapshots with a generated name, the description and the only disk after --yes."]
+test_ids = ["tests/test_cli_cases_scp_api.py::test_replayed_case_matches_catalog[snapshots-description]"]

@@ -166,6 +166,114 @@
       "signature": "sha256:9733da97f2ded79a55523f5366d7e2c3402d779d49b4e86e2428207a88fd7010"
     },
     {
+      "id": "case:route:entrypoint:scp-api/boot-order/argument-choice/argument:route:entrypoint:scp-api/boot-order/action/c7f5814b92",
+      "kind": "argument-choice",
+      "members": [
+        "argument:route:entrypoint:scp-api/boot-order/action"
+      ],
+      "route_id": "route:entrypoint:scp-api/boot-order",
+      "shape": {
+        "argument_id": "argument:route:entrypoint:scp-api/boot-order/action",
+        "choice": "set"
+      },
+      "signature": "sha256:ccdddead1ae1597f3ef73b12d50ea663b57b7c365c1ca1a818e4bb371d0dbf4a"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/boot-order/argument-shape/argument:route:entrypoint:scp-api/boot-order/action",
+      "kind": "argument-shape",
+      "members": [
+        "argument:route:entrypoint:scp-api/boot-order/action"
+      ],
+      "route_id": "route:entrypoint:scp-api/boot-order",
+      "shape": {
+        "argument_id": "argument:route:entrypoint:scp-api/boot-order/action"
+      },
+      "signature": "sha256:f046811597b3f3bb537267466ab8bf8d5ff09786512e67dc27c296766fe28923"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/boot-order/argument-shape/argument:route:entrypoint:scp-api/boot-order/order",
+      "kind": "argument-shape",
+      "members": [
+        "argument:route:entrypoint:scp-api/boot-order/order"
+      ],
+      "route_id": "route:entrypoint:scp-api/boot-order",
+      "shape": {
+        "argument_id": "argument:route:entrypoint:scp-api/boot-order/order"
+      },
+      "signature": "sha256:946ca5c445b8fa2ac00fbf5ad9fa42dc79c5706bbec1620c1d0d48ea47b72e8a"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/boot-order/argument-shape/argument:route:entrypoint:scp-api/boot-order/server_id",
+      "kind": "argument-shape",
+      "members": [
+        "argument:route:entrypoint:scp-api/boot-order/server_id"
+      ],
+      "route_id": "route:entrypoint:scp-api/boot-order",
+      "shape": {
+        "argument_id": "argument:route:entrypoint:scp-api/boot-order/server_id"
+      },
+      "signature": "sha256:0e16854be458eba37ce07088d61f5ee611fc24469c9abd5d2c7a4a298d6d426b"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/boot-order/minimum",
+      "kind": "minimum",
+      "members": [
+        "argument:route:entrypoint:scp-api/boot-order/server_id"
+      ],
+      "route_id": "route:entrypoint:scp-api/boot-order",
+      "shape": {
+        "defaulted_options": [],
+        "required_argument_values": {
+          "argument:route:entrypoint:scp-api/boot-order/server_id": 1
+        },
+        "required_arguments": [
+          "argument:route:entrypoint:scp-api/boot-order/server_id"
+        ],
+        "required_exclusive_groups": {},
+        "required_options": []
+      },
+      "signature": "sha256:e5ed88af0ab53fd2bc322f26c31f37991e7b88176f56b804476ab72df8f51d7b"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/boot-order/option-spelling/option:route:entrypoint:scp-api/boot-order/--debug-raw/--debug-raw",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:scp-api/boot-order/--debug-raw"
+      ],
+      "route_id": "route:entrypoint:scp-api/boot-order",
+      "shape": {
+        "option_id": "option:route:entrypoint:scp-api/boot-order/--debug-raw",
+        "spelling": "--debug-raw"
+      },
+      "signature": "sha256:83c83f5b06e6d3e64ab3b8e956fd392acc6224a96571b7ca156e814bb6dc5940"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/boot-order/option-spelling/option:route:entrypoint:scp-api/boot-order/--json/--json",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:scp-api/boot-order/--json"
+      ],
+      "route_id": "route:entrypoint:scp-api/boot-order",
+      "shape": {
+        "option_id": "option:route:entrypoint:scp-api/boot-order/--json",
+        "spelling": "--json"
+      },
+      "signature": "sha256:1864d7f80ecb5807a6fa1854dc555fafb59b95df094e4f6aaa788528d78c0ddf"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/boot-order/option-spelling/option:route:entrypoint:scp-api/boot-order/--yes/--yes",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:scp-api/boot-order/--yes"
+      ],
+      "route_id": "route:entrypoint:scp-api/boot-order",
+      "shape": {
+        "option_id": "option:route:entrypoint:scp-api/boot-order/--yes",
+        "spelling": "--yes"
+      },
+      "signature": "sha256:93c4a627a78ea7dbd289bdc2d645d85065b6a2e7085a5dd1ee98bd16e12553be"
+    },
+    {
       "id": "case:route:entrypoint:scp-api/disks/argument-choice/argument:route:entrypoint:scp-api/disks/action/d7e3e586da",
       "kind": "argument-choice",
       "members": [
@@ -1528,16 +1636,20 @@
     {
       "id": "case:route:entrypoint:scp-api/snapshots/minimum",
       "kind": "minimum",
-      "members": [],
+      "members": [
+        "option:route:entrypoint:scp-api/snapshots/--online"
+      ],
       "route_id": "route:entrypoint:scp-api/snapshots",
       "shape": {
-        "defaulted_options": [],
+        "defaulted_options": [
+          "option:route:entrypoint:scp-api/snapshots/--online"
+        ],
         "required_argument_values": {},
         "required_arguments": [],
         "required_exclusive_groups": {},
         "required_options": []
       },
-      "signature": "sha256:9ee9fd3d3f7a395d79da842c2c104320f75b77a415633e3080dc551b2e7a0045"
+      "signature": "sha256:9b3cbbe653281524d8276ab8f3d45211a186b0dc725bf6e7e652c5657a3be3f6"
     },
     {
       "id": "case:route:entrypoint:scp-api/snapshots/option-spelling/option:route:entrypoint:scp-api/snapshots/--debug-raw/--debug-raw",
@@ -1551,6 +1663,32 @@
         "spelling": "--debug-raw"
       },
       "signature": "sha256:c3edce81fe91732f2e01185b1db97ebe9956e25b6dc4271300b558b9a94f0e99"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/snapshots/option-spelling/option:route:entrypoint:scp-api/snapshots/--description/--description",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:scp-api/snapshots/--description"
+      ],
+      "route_id": "route:entrypoint:scp-api/snapshots",
+      "shape": {
+        "option_id": "option:route:entrypoint:scp-api/snapshots/--description",
+        "spelling": "--description"
+      },
+      "signature": "sha256:bf747b32290f54689ae8db682cd37ff42759812adb98008ca5ca5379aa23b80d"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/snapshots/option-spelling/option:route:entrypoint:scp-api/snapshots/--disk-name/--disk-name",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:scp-api/snapshots/--disk-name"
+      ],
+      "route_id": "route:entrypoint:scp-api/snapshots",
+      "shape": {
+        "option_id": "option:route:entrypoint:scp-api/snapshots/--disk-name",
+        "spelling": "--disk-name"
+      },
+      "signature": "sha256:81ed1595fcc8f25d6488c14beb62456f3714aa01f452c613661547ce6494094e"
     },
     {
       "id": "case:route:entrypoint:scp-api/snapshots/option-spelling/option:route:entrypoint:scp-api/snapshots/--json/--json",
@@ -1577,6 +1715,19 @@
         "spelling": "--name"
       },
       "signature": "sha256:aee3d09800ee83eaa652fef7cf8eeb5c1b3c9d7aac357df982cb6a4032120040"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/snapshots/option-spelling/option:route:entrypoint:scp-api/snapshots/--online/--online",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:scp-api/snapshots/--online"
+      ],
+      "route_id": "route:entrypoint:scp-api/snapshots",
+      "shape": {
+        "option_id": "option:route:entrypoint:scp-api/snapshots/--online",
+        "spelling": "--online"
+      },
+      "signature": "sha256:f566efbebd8ac7afa3dbce42b321741cfc765d98d62460997a7c84ad1139bd9d"
     },
     {
       "id": "case:route:entrypoint:scp-api/snapshots/option-spelling/option:route:entrypoint:scp-api/snapshots/--yes/--yes",
@@ -2191,7 +2342,7 @@
           "const": true,
           "default": false,
           "default_present": true,
-          "description": "also make the virtual CD-ROM the next boot device",
+          "description": "also make the virtual CD-ROM the next boot device (prints the previous order and the command that restores it)",
           "dest": "change_boot_device_to_cdrom",
           "effective_default": false,
           "exclusive_group": null,
@@ -2291,6 +2442,155 @@
       "subcommands_required": false,
       "summary": "attach a bootable or uploaded ISO to a server [mutating]",
       "synopsis_override": "server_id",
+      "syntax_complete": true,
+      "usage_override": null
+    },
+    {
+      "actions": [
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "choices": null,
+          "const": null,
+          "default": null,
+          "description": "Netcup SCP server ID.",
+          "help_group": "positional arguments",
+          "hidden": false,
+          "id": "argument:route:entrypoint:scp-api/boot-order/server_id",
+          "kind": "argument",
+          "metavar": "server_id",
+          "minimum_values": 1,
+          "name": "server_id",
+          "nargs": null,
+          "parser_kwargs": {
+            "type": {
+              "callable": "_cli_extended_surface_scp_api._positive_int"
+            }
+          },
+          "parser_path": [
+            "boot-order"
+          ],
+          "required": true,
+          "scope": "positional",
+          "type": {
+            "callable": "_cli_extended_surface_scp_api._positive_int"
+          }
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "choices": [
+            "set"
+          ],
+          "const": null,
+          "default": null,
+          "description": "replace the boot order (confirmed)",
+          "help_group": "ACTIONS",
+          "hidden": false,
+          "id": "argument:route:entrypoint:scp-api/boot-order/action",
+          "kind": "argument",
+          "metavar": "{set}",
+          "minimum_values": 0,
+          "name": "action",
+          "nargs": "?",
+          "parser_kwargs": {},
+          "parser_path": [
+            "boot-order"
+          ],
+          "required": false,
+          "scope": "positional",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "choices": null,
+          "const": null,
+          "default": null,
+          "description": "comma-separated devices from HDD, CDROM, NETWORK; required with set",
+          "help_group": "positional arguments",
+          "hidden": false,
+          "id": "argument:route:entrypoint:scp-api/boot-order/order",
+          "kind": "argument",
+          "metavar": "ORDER",
+          "minimum_values": 0,
+          "name": "order",
+          "nargs": "?",
+          "parser_kwargs": {},
+          "parser_path": [
+            "boot-order"
+          ],
+          "required": false,
+          "scope": "positional",
+          "type": null
+        }
+      ],
+      "aliases": [],
+      "behavior": [
+        "mutating"
+      ],
+      "common_controls": [
+        "--color",
+        "--debug",
+        "--debug-raw",
+        "--help",
+        "--json",
+        "--log-level",
+        "--no-color",
+        "--quiet",
+        "--traceback",
+        "--version",
+        "--yes"
+      ],
+      "confirmation": true,
+      "constraints": [],
+      "delegated_metadata": [],
+      "description": "Show the boot order from the server's live record, or replace it with set. ORDER is a comma list of HDD, CDROM and NETWORK (PATCH /api/v1/servers/{id}, bootorder). attach-iso --change-boot-device-to-cdrom puts the CD-ROM first and the provider does not restore the order on detach; use set to put it back. set changes server state and is confirmed.",
+      "group": "MIXED OPERATIONS",
+      "id": "route:entrypoint:scp-api/boot-order",
+      "kind": "invocation",
+      "no_args_action": false,
+      "opaque_fields": [
+        "argument:route:entrypoint:scp-api/boot-order/server_id.type"
+      ],
+      "parser_configured_by_callback": true,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "boot-order"
+          ],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "boot-order"
+      ],
+      "single_command": false,
+      "subcommand_groups": [],
+      "subcommands": [],
+      "subcommands_required": false,
+      "summary": "show or replace a server's boot order [mutating]",
+      "synopsis_override": "server_id [set ORDER]",
       "syntax_complete": true,
       "usage_override": null
     },
@@ -3219,7 +3519,7 @@
           "const": null,
           "default": null,
           "default_present": true,
-          "description": "client-side filter: keep rows where the text appears, ignoring case, in any returned field",
+          "description": "client-side filter: keep rows where the text appears, ignoring case, in a name, alias or description column (never the id column)",
           "dest": "filter",
           "effective_default": null,
           "exclusive_group": null,
@@ -3490,7 +3790,7 @@
           "const": null,
           "default": null,
           "default_present": true,
-          "description": "client-side filter: keep rows where the text appears, ignoring case, in any returned field",
+          "description": "client-side filter: keep rows where the text appears, ignoring case, in a name, alias or description column (never the id column)",
           "dest": "filter",
           "effective_default": null,
           "exclusive_group": null,
@@ -4336,6 +4636,131 @@
         {
           "action": "argparse._StoreAction",
           "before_nested_subcommand": false,
+          "canonical": "--disk-name",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "disk to snapshot, for create or dryrun (default: the server's only disk; required when it has several)",
+          "dest": "disk_name",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--disk-name"
+          ],
+          "help_group": "SNAPSHOT OPTIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:scp-api/snapshots/--disk-name",
+          "kind": "option",
+          "metavar": "NAME",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null,
+            "type": {
+              "callable": "_cli_extended_surface_scp_api._nonempty_text"
+            }
+          },
+          "parser_path": [
+            "snapshots"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": {
+            "callable": "_cli_extended_surface_scp_api._nonempty_text"
+          }
+        },
+        {
+          "action": "argparse._StoreTrueAction",
+          "before_nested_subcommand": false,
+          "canonical": "--online",
+          "choices": null,
+          "const": true,
+          "default": false,
+          "default_present": true,
+          "description": "take an online snapshot (no disk name needed)",
+          "dest": "online",
+          "effective_default": false,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--online"
+          ],
+          "help_group": "SNAPSHOT OPTIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:scp-api/snapshots/--online",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 0,
+          "nargs": 0,
+          "parser_kwargs": {
+            "action": "store_true",
+            "default": false
+          },
+          "parser_path": [
+            "snapshots"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--description",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "snapshot description for create",
+          "dest": "description",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--description"
+          ],
+          "help_group": "SNAPSHOT OPTIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:scp-api/snapshots/--description",
+          "kind": "option",
+          "metavar": "TEXT",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null,
+            "type": {
+              "callable": "_cli_extended_surface_scp_api._nonempty_text"
+            }
+          },
+          "parser_path": [
+            "snapshots"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": {
+            "callable": "_cli_extended_surface_scp_api._nonempty_text"
+          }
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
           "choices": [
             "create",
             "dryrun"
@@ -4380,13 +4805,15 @@
       "confirmation": true,
       "constraints": [],
       "delegated_metadata": [],
-      "description": "List snapshots for one or every server. dryrun asks SCP whether creation is possible; create makes a snapshot and is confirmed.",
+      "description": "List snapshots for one or every server. dryrun asks SCP whether creation is possible (an empty answer means possible); create makes a snapshot and is confirmed. Both need a disk: the server's only disk is used unless --disk-name is given, or pass --online. Note: the server record's snapshotCount can exceed the list this verb shows; the provider list endpoint takes no paging parameters, so that difference is provider-side.",
       "group": "MIXED OPERATIONS",
       "id": "route:entrypoint:scp-api/snapshots",
       "kind": "invocation",
       "no_args_action": false,
       "opaque_fields": [
-        "argument:route:entrypoint:scp-api/snapshots/server_id.type"
+        "argument:route:entrypoint:scp-api/snapshots/server_id.type",
+        "option:route:entrypoint:scp-api/snapshots/--description.type",
+        "option:route:entrypoint:scp-api/snapshots/--disk-name.type"
       ],
       "parser_configured_by_callback": true,
       "parser_settings": [
