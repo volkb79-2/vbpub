@@ -13,7 +13,8 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 
 ## [23.10.0] - 2026-10-06
 <!-- cmru: generated -->
-<!-- cmru: source-end=75a6385396f4a3e99e0e63de0c1a27a742f48901 -->
+<!-- cmru: source-end=5e19e9ac91fe35902ad8ed4c71b7b9e332aa4162 -->
+<!-- This section describes source rev 55. The release generator keeps it verbatim, so the entries below were extended by hand through source-end; tests/test_run_gate.py asserts this marker matches run_gate.__revision__. -->
 
 ### Added
 - feat(run-gate): integrate occupancy and source recovery (6c1563b53)
@@ -22,6 +23,9 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 - feat: add estate cli version compatibility (05f373a40)
 
 ### Fixed
+- fix(run-gate): repair stdlib allowlist, guard selftest scratch mkdir, document cmru 6.0 dependency (5e19e9ac9)
+- fix(run-gate): launch release selftest in tester-unified (a496d2d4e); the `cmru.toml` release step runs `cmru tester-gate -- ./run-gate.py selftest` and requires cmru >= 6.0.0 (`--init`, cmru KI-52)
+- fix(run-gate): create selftest scratch root (623332171)
 - fix(cgprofile): report cleanup quarantine truthfully (a8a53fb43)
 - fix(cgprofile): tolerate unavailable optional DAMON lock (d8056454e)
 - fix(cgprofile): serialize DAMON registry ownership safely (c5d89652f)
@@ -44,6 +48,8 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 - fix: preserve nested gate stack governance (eb9a0a594)
 
 ### Changed
+- Merge main into run-gate-2310-adopt (f955b0fce)
+- controller(rg55): record current Assay and gate admission state (b2c7522b6)
 - Merge branch 'main' into rg55-p1-review-repairs-20261005 (99cffbe09)
 - controller(rg55): record cgprofile deployment preflight (67c4c2732)
 - controller(rg55): resume P1 and launch combined P6 R2 (a4b6fd7ba)
@@ -138,6 +144,8 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 - chore: land run-gate root and dev-gates migration (41c1cafb3)
 
 ### Documentation
+- docs(rg55): record P6 R2 result and selective plan (607d220a4)
+- docs(rg55): record P1 fix verification and campaign evidence (7da5f0eb5)
 - docs(rg55): record exact combined mutation plan (ac335808f)
 - docs(rg55): record provisional P1 integration and gates (bec813081)
 - docs(cgprofile): record P1 survivor review (ca352d8cd)
@@ -248,6 +256,9 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 - docs(run-gate): distinguish release and whole-project coverage (98fde8296)
 
 ### Testing
+- test(run-gate): cover foreign identity reaping guard (aa7a30112)
+- test(run-gate): verify v8 ticket reaping interoperability (6e2836942)
+- test(run-gate): selftest lane argv must create the scratch root before pytest and GIT_CEILING_DIRECTORIES; stdlib allowlist gains `collections` (5e19e9ac9)
 - test(cgprofile): close P1 R2 survivor oracles (c24b0d2b8)
 - test(cgprofile): cover DAMON quarantine and restore failures (b9ea60801)
 - test(cgprofile): align pool counter fixtures with reconciliation (b30eca821)
