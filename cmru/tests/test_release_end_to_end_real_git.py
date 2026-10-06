@@ -1,7 +1,7 @@
 """REL-15: end-to-end ``cmru release`` runs against a real local bare origin.
 
 The real launcher and the real in-worktree child run as subprocesses (through a
-tiny ``CMRU_BIN`` wrapper). Only the three project steps are faked: a gate whose
+tiny PATH-resolved ``cmru`` wrapper). Only the three project steps are faked: a gate whose
 behaviour a test scripts through ``GATE_HOOK``, a build that can be told to fail
 (``FAIL_BUILD``) and a publisher that appends to ``MARK`` and can be told to fail
 (``FAIL_PUSH``). Everything about git (tags, candidate branch, promotion, local
@@ -98,7 +98,11 @@ class _Env:
             str(Path(module.__file__).resolve().parents[1])
             for module in (cmru, cli_extended, worktree)
         ]
-        wrapper = root / "cmru-bin"
+        # Redesign section D: the launcher is resolved from PATH, never from an
+        # ambient environment variable.
+        bin_dir = root / "bin"
+        bin_dir.mkdir()
+        wrapper = bin_dir / "cmru"
         wrapper.write_text(
             "#!/bin/sh\n"
             f'PYTHONPATH="{os.pathsep.join(sources)}" exec "{sys.executable}" '
@@ -107,7 +111,7 @@ class _Env:
         wrapper.chmod(0o755)
         self.env = {
             **os.environ,
-            "CMRU_BIN": str(wrapper),
+            "PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}",
             "GITHUB_PUSH_PAT": "x",
             "GATE_HOOK": "",
             "MARK": str(self.mark),
@@ -167,7 +171,7 @@ git push -q origin HEAD:refs/heads/main
 
     def release(self, *args: str) -> subprocess.CompletedProcess:
         result = subprocess.run(
-            [self.env["CMRU_BIN"], "release", *args],
+            ["cmru", "release", *args],
             cwd=self.project, env=self.env, capture_output=True, text=True,
             timeout=300,
         )
@@ -541,7 +545,7 @@ def test_cli01_status_does_not_touch_the_release_log_or_redirect_output(e2e):
 
     def run(*args):
         return subprocess.run(
-            [e2e.env["CMRU_BIN"], *args], cwd=e2e.project, env=e2e.env,
+            ["cmru", *args], cwd=e2e.project, env=e2e.env,
             capture_output=True, text=True, timeout=120,
         )
 

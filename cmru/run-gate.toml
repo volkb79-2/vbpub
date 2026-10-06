@@ -47,7 +47,7 @@ memory_swap = "16g"
 
 [lanes.coverage]
 kind = "command"
-environment = "tester-unified"
+environment = "cmru-tester"   # TODO(cmru-6.0 landing): back to "tester-unified"
 argv = [
   "bash",
   "-c",
@@ -65,13 +65,23 @@ artifacts = ["coverage.json", "junit-coverage.xml"]     # disclosed after every 
 memory = "2g"
 memory_swap = "16g"
 
+# TODO(cmru-6.0 landing): delete this environment after the retag and point the
+# `coverage` and `canary` lanes back at `tester-unified` (the Wave 2 image bakes
+# the cmru wheel; this mirrors the root tester-unified environment).
+[environments.cmru-tester]
+mode = "ephemeral"
+image = "tester-unified:cmru6-integ"
+cgroup_slice_env = "CGROUP_PARENT_DEV_GATES"
+forward_env = ["CGROUP_PARENT_DEV_BACKGROUND"]
+
 # The mutation lane receives token-free remote facts generated immediately
 # before it starts. CMRU's host-side gate uses its configured secret through
 # CMRU's scoped Git transport; the tester container receives tag names and
 # commit IDs only, never publisher credentials.
 [environments.cmru-mutation]
 mode = "ephemeral"
-image = "tester-unified:local"
+# TODO(cmru-6.0 landing): back to tester-unified:local after the retag
+image = "tester-unified:cmru6-integ"
 cgroup_slice_env = "CGROUP_PARENT_DEV_GATES"
 forward_env = ["CGROUP_PARENT_DEV_BACKGROUND", "CMRU_ASSAY_BASELINE_FACTS"]
 
@@ -126,7 +136,7 @@ memory_swap = "16g"
 
 [lanes.canary]
 kind = "command"
-environment = "tester-unified"
+environment = "cmru-tester"   # TODO(cmru-6.0 landing): back to "tester-unified"
 argv = [
   "bash",
   "-c",

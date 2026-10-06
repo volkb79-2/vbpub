@@ -18,7 +18,7 @@ from pathlib import Path
 from cmru import exit_codes
 from cmru.cli_support import write_config_diagnostic
 from cli_extended import CliFailure, OptionSpec, VerbGroup, VerbSpec
-from cmru.cli_support import cmru_registry
+from cmru.cli_support import INTERACTIVE_EXTRA, cmru_registry
 
 _ID_RE = re.compile(r"[a-z][a-z0-9-]*")
 _GIT_OWNER_REPO_RE = re.compile(r"[:/]([^/:]+)/([^/]+?)(?:\.git)?$")
@@ -510,7 +510,7 @@ def init_cli():
 
 
 def init_main(argv: list[str] | None = None) -> int:
-    return init_cli().run(argv=argv)
+    return init_cli().run(argv=argv, interactive_extra=INTERACTIVE_EXTRA)
 
 
 def _run_init(args, runtime) -> None:

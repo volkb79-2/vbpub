@@ -696,7 +696,7 @@ def _run_tool_deps(args, runtime) -> None:
             f"cmru tool-deps: {len(blocking)} of {len(statuses)} declared dependenc{plural} "
             "blocking (a stale or mismatched tool dependency is an error by default; "
             "--allow-stale-tool-deps overrides staleness only).",
-            exit_code=exit_codes.POLICY_REFUSED,
+            exit_code=exit_codes.REFUSED,
         )
     if not args.json:
         plural = "y is" if len(statuses) == 1 else "ies are"

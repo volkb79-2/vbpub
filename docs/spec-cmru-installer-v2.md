@@ -55,7 +55,7 @@ The generator and the only live consumer:
   string substitution on a template; `render_from_config()` (line 131) reads
   `proj.getsh` and **raises if `[getsh]` is absent** (lines 138-141);
   `_render_preserve_func()` (line 22) code-generates the preserve/restore helpers;
-  `getpy_main()` (line 162) is the `cmru get-py --project <name> --config <toml>` CLI.
+  `getpy_main()` (line 162) is the `cmru get-py <name> --config <toml>` CLI.
 - **`cmru/src/cmru/templates/get.py.tmpl`** — the rendered installer template (`[[VARNAME]]` syntax).
 - **`src/cmru/config.py`** — `GetShConfig` dataclass (line 61: `install_dir`, `preserve`,
   `deps`, `next_steps`); parsed at lines 192-226 (`if "getsh" in raw:`); attached as

@@ -930,7 +930,7 @@ def test_abandon_refuses_when_origin_branch_recheck_fails(monkeypatch, tmp_path)
 def test_abandon_refuses_while_a_local_release_holds_the_lock(monkeypatch, tmp_path):
     @contextmanager
     def occupied_lock(_root):
-        raise RuntimeError("Another cmru release transaction is already running.")
+        raise transaction.ReleaseLockHeld("Another cmru release transaction is already running.")
         yield
 
     monkeypatch.setattr(transaction, "release_lock", occupied_lock)

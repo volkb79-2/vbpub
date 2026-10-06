@@ -34,7 +34,7 @@ getpy_module = getpy
 @pytest.mark.parametrize(
     "builder",
     [
-        scaffold.init_cli, versions.versions_cli, runner.runner_cli, handlers.handlers_cli,
+        scaffold.init_cli, versions.versions_cli, handlers.handlers_cli,
         tester_gate.tester_gate_cli, resolve.resolve_cli, getpy.getpy_cli,
         standards.standards_cli, tool_deps.tool_deps_cli,
     ],
@@ -528,21 +528,6 @@ def test_versions_check_has_no_dry_run_but_init_and_resolve_do(capsys):
     for verb in ("init", "resolve"):
         assert versions.main([verb, "--help"]) == 0
         assert "--dry-run" in capsys.readouterr().out
-
-
-# --- runner (compatibility export until PKG-1 removes the mount) ---------------
-
-
-def test_run_step_delegate_still_resolves_one_project_through_the_shared_helper(
-    monkeypatch, tmp_path, capsys,
-):
-    project = SimpleNamespace(name="demo", project_root=tmp_path / "demo", runner_steps={})
-    monkeypatch.setattr(cli, "_resolve_config", lambda _p: tmp_path / "cmru.orchestration.toml")
-    monkeypatch.setattr(
-        cli, "load_config", lambda _p: (tmp_path, {"demo": project, "other": project}, ["demo", "other"]),
-    )
-    assert runner.runner_cli().run(argv=["demo,other", "--step", "build"]) == 2
-    assert "run-step requires exactly one project target" in capsys.readouterr().err
 
 
 # --- review fix round 1 -------------------------------------------------------

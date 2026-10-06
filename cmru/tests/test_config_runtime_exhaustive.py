@@ -114,14 +114,14 @@ def test_runner_git_metadata_and_build_date_are_source_derived_or_refused(tmp_pa
 
 def test_runner_quiet_aggregate_log_is_distinct_and_append_is_observable(tmp_path, monkeypatch):
     aggregate = tmp_path / "aggregate.log"
-    monkeypatch.setenv("CMRU_RUN_LOG", str(aggregate))
-    monkeypatch.delenv("CMRU_SHOW_RUN_DETAILS", raising=False)
-    monkeypatch.delenv("CMRU_LOG_APPEND", raising=False)
+    monkeypatch.setenv("CMRU_INTERNAL_RUN_LOG", str(aggregate))
+    monkeypatch.delenv("CMRU_INTERNAL_SHOW_RUN_DETAILS", raising=False)
+    monkeypatch.delenv("CMRU_INTERNAL_LOG_APPEND", raising=False)
     step = runner.StepConfig("s", [{"label": "ok", "argv": [sys.executable, "-c", "print('OK')"], "cwd": "."}],
                              None, [], None, [], [], None, {}, None, [], True)
     runner.execute_step(step, tmp_path, tmp_path / "logs")
     assert "label='ok'" in aggregate.read_text()
-    monkeypatch.setenv("CMRU_LOG_APPEND", "1")
+    monkeypatch.setenv("CMRU_INTERNAL_LOG_APPEND", "1")
     runner.execute_step(step, tmp_path, tmp_path / "logs")
     assert "\n---\n" in (tmp_path / "logs" / "s.log").read_text()
 

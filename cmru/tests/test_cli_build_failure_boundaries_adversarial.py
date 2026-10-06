@@ -40,6 +40,48 @@ def _prepare_build(monkeypatch, tmp_path):
     return workspace
 
 
+def test_build_with_uncommitted_project_paths_is_a_refusal_exit_4(monkeypatch, tmp_path, capsys):
+    _prepare_build(monkeypatch, tmp_path)
+    monkeypatch.setattr(cli, "_uncommitted_release_paths", lambda *args: {"demo": ["demo/x.py"]})
+    monkeypatch.setattr(
+        cli.transaction, "create_workspace",
+        lambda *a, **k: pytest.fail("a refused build must not create a worktree"),
+    )
+    assert cli.main(["build", "demo", "--config", str(tmp_path / "cmru.toml")]) == 4
+    err = capsys.readouterr().err
+    assert "demo: uncommitted changes" in err
+    assert "cmru build snapshots origin/main" in err
+
+
+def test_build_while_the_release_lock_is_held_is_a_refusal_exit_4(monkeypatch, tmp_path, capsys):
+    from contextlib import contextmanager
+
+    _prepare_build(monkeypatch, tmp_path)
+
+    @contextmanager
+    def held(_root):
+        raise cli.transaction.ReleaseLockHeld("Another cmru release transaction is already running.")
+        yield
+
+    monkeypatch.setattr(cli.transaction, "release_lock", held)
+    monkeypatch.setattr(
+        cli.transaction, "create_workspace",
+        lambda *a, **k: pytest.fail("a refused build must not create a worktree"),
+    )
+    assert cli.main(["build", "demo", "--config", str(tmp_path / "cmru.toml")]) == 4
+    assert "already running" in capsys.readouterr().err
+
+
+def test_build_failing_after_the_snapshot_started_stays_exit_1(monkeypatch, tmp_path, capsys):
+    _prepare_build(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        cli.transaction, "fetch_origin_main",
+        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("origin unreachable")),
+    )
+    assert cli.main(["build", "demo", "--config", str(tmp_path / "cmru.toml")]) == 1
+    assert "origin unreachable" in capsys.readouterr().err
+
+
 def test_build_child_failure_retains_worktree_and_propagates_status(monkeypatch, tmp_path, capsys):
     workspace = _prepare_build(monkeypatch, tmp_path)
     monkeypatch.setattr(cli.transaction, "run_child", lambda *args, **kwargs: 7)

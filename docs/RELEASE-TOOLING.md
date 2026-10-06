@@ -33,7 +33,7 @@ cmru release                           # one-shot: detect → tag → push → b
 cmru release --dry-run                 # preview tags, no writes
 cmru changelog assay --backfill-tag assay-v0.1.0  # migrate a missed history entry
 cmru build cmru                        # retained isolated gate + build_step; no publish
-cmru publish cmru                      # run the declared push step
+cmru publish cmru --build-output ID    # publish a retained build (or --from-checkout: the declared push step)
 cmru cleanup --remove-assets 30d      # prune old releases/GHCR versions
 cmru --help                           # all verbs
 ```

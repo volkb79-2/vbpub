@@ -132,9 +132,9 @@ def test_execute_step_overwrites_stable_log_mirrors_quiet_detail_and_summarizes(
     step_log.parent.mkdir(parents=True)
     step_log.write_text("old output\n", encoding="utf-8")
     full_log = tmp_path / "cmru.release.log"
-    monkeypatch.setenv("CMRU_RUN_LOG", str(full_log))
-    monkeypatch.delenv("CMRU_SHOW_RUN_DETAILS", raising=False)
-    monkeypatch.delenv("CMRU_LOG_APPEND", raising=False)
+    monkeypatch.setenv("CMRU_INTERNAL_RUN_LOG", str(full_log))
+    monkeypatch.delenv("CMRU_INTERNAL_SHOW_RUN_DETAILS", raising=False)
+    monkeypatch.delenv("CMRU_INTERNAL_LOG_APPEND", raising=False)
 
     out = io.StringIO()
     with contextlib.redirect_stdout(out):
@@ -151,9 +151,9 @@ def test_execute_step_overwrites_stable_log_mirrors_quiet_detail_and_summarizes(
 def test_execute_step_show_details_streams_without_duplicate_aggregate(tmp_path, monkeypatch):
     full_log = tmp_path / "cmru.release.log"
     full_log.write_text("outer tee owns this stream\n", encoding="utf-8")
-    monkeypatch.setenv("CMRU_RUN_LOG", str(full_log))
-    monkeypatch.setenv("CMRU_SHOW_RUN_DETAILS", "1")
-    monkeypatch.delenv("CMRU_LOG_APPEND", raising=False)
+    monkeypatch.setenv("CMRU_INTERNAL_RUN_LOG", str(full_log))
+    monkeypatch.setenv("CMRU_INTERNAL_SHOW_RUN_DETAILS", "1")
+    monkeypatch.delenv("CMRU_INTERNAL_LOG_APPEND", raising=False)
 
     out = io.StringIO()
     with contextlib.redirect_stdout(out):
@@ -168,9 +168,9 @@ def test_execute_step_log_append_inserts_exact_divider(tmp_path, monkeypatch):
     log_file = log_dir / "run-tests.log"
     log_file.parent.mkdir(parents=True)
     log_file.write_text("previous\n", encoding="utf-8")
-    monkeypatch.setenv("CMRU_LOG_APPEND", "1")
-    monkeypatch.delenv("CMRU_RUN_LOG", raising=False)
-    monkeypatch.delenv("CMRU_SHOW_RUN_DETAILS", raising=False)
+    monkeypatch.setenv("CMRU_INTERNAL_LOG_APPEND", "1")
+    monkeypatch.delenv("CMRU_INTERNAL_RUN_LOG", raising=False)
+    monkeypatch.delenv("CMRU_INTERNAL_SHOW_RUN_DETAILS", raising=False)
 
     runner.execute_step(_step(), tmp_path, log_dir)
 
@@ -333,7 +333,7 @@ commands = [{ label = "push", argv = ["true"], cwd = "." }]
 """,
         encoding="utf-8",
     )
-    monkeypatch.delenv("CMRU_RUN_LOG", raising=False)
+    monkeypatch.delenv("CMRU_INTERNAL_RUN_LOG", raising=False)
 
     runner.run_step(project_config, "build")
 

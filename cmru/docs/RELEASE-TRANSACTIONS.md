@@ -122,8 +122,8 @@ artifacts, and declared gate evidence by default first: logs move into
 `<project>/logs/cmru-release/<immutable-id>/`, explicitly declared artifact directories move
 into `<project>/artifacts/<immutable-id>/` with the existing `release.json` SHA-256 inventory,
 and `evidence_paths` move into `<project>/evidence/cmru-release/<immutable-id>/` with an
-`evidence.json` source-commit/hash inventory. Pass `--discard-logs-on-release`,
-`--discard-artifacts-on-release`, and/or `--discard-evidence-on-release` to opt out of each
+`evidence.json` source-commit/hash inventory. Pass `release --discard logs`,
+`--discard artifacts`, and/or `--discard evidence` to opt out of each
 half. A project that declares no `project.release.artifact_dirs` or no
 `project.release.evidence_paths` simply has nothing to retain for that half and is skipped,
 not an error. Evidence declarations name only project-relative files/directories produced by
@@ -172,7 +172,7 @@ sidecars and `latest.json` use temporary copies, so the retained record stays va
 publisher must consume files beneath `CMRU_BUILD_OUTPUT_ROOT` and must not create or move Git
 refs. A build or retention failure keeps that
 worktree and prints its path; `cmru worktrees` discovers it and
-`cmru cleanup --discard-build-worktree <path> --yes` removes it after inspection. Rebuilding the
+`cmru abandon <absolute-path> --yes` removes it after inspection. Rebuilding the
 same commit requires explicit deletion of the existing output record with
 `cmru cleanup <name> --delete-build-output <id> --yes`.
 

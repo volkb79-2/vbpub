@@ -160,12 +160,12 @@ def test_transaction_child_args_strip_parent_only_options_and_reject_external_co
     config.write_text("", encoding="utf-8")
     args = cli._child_release_args(
         ["--resume", "/tmp/w", "--config=/old", "demo"],
-        config, tmp_path,
+        config, tmp_path, forward_from=None,
     )
     assert args == ["demo", "--config", "cmru.toml"]
     outside = tmp_path.parent / "outside-cmru.toml"
     outside.write_text("", encoding="utf-8")
-    assert cli._child_release_args([], outside, tmp_path) == ["--config", str(outside.resolve())]
+    assert cli._child_release_args([], outside, tmp_path, forward_from=None) == ["--config", str(outside.resolve())]
 
 
 def test_tag_on_head_ignores_latest_pointer_and_selects_highest_version(tmp_path):

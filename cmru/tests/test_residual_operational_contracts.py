@@ -124,8 +124,9 @@ def test_runner_run_step_requires_one_project_and_declared_step(monkeypatch, tmp
     )
     monkeypatch.setattr("cmru.cli.load_config", lambda _: loaded)
     monkeypatch.setattr("cmru.cli.apply_project_release_env", lambda *args: None)
-    with pytest.raises(RuntimeError, match="project-local"):
+    with pytest.raises(RuntimeError, match="project-local") as refused:
         runner.run_step(cfg, "tests")
+    assert "cmru.runner.run_step" in str(refused.value)  # names the API, not `run --step`
     loaded = (tmp_path, {"a": project}, (), {}, {}, "", (), {}, SimpleNamespace(), {})
     monkeypatch.setattr("cmru.cli.load_config", lambda _: loaded)
     with pytest.raises(ValueError, match="not declared"):

@@ -16,14 +16,6 @@ from time import monotonic
 from typing import Iterable, Mapping, Optional
 
 from cmru.config_names import ORCHESTRATION_CONFIG_FILENAME, PROJECT_CONFIG_FILENAME
-from cli_extended import (
-    CliFailure,
-    OptionSpec,
-    VerbGroup,
-    VerbSpec,
-)
-from cmru.cli_support import cmru_registry, target_argument
-
 
 
 @dataclass(frozen=True)
@@ -69,7 +61,7 @@ def render_step_plan(step: StepConfig, project_root: Path) -> list[str]:
 
     Environment commands may compute values at runtime, so a dry-run names that
     unresolved input instead of executing it and pretending to know its output.
-    The same formatter is used by run, run-step, build, and publish.
+    The same formatter is used by run, run --step, build, and publish.
     """
     lines = [f"Would run declared step {step.name} from {project_root}"]
     for relative in step.clean_dirs:
@@ -352,7 +344,7 @@ def _open_aggregate_log(local_log: Path, *, quiet: bool):
     without the wrapper still has its stable per-step file and does not invent a
     repository-wide log path.
     """
-    raw_path = (os.getenv("CMRU_RUN_LOG") or "").strip()
+    raw_path = (os.getenv("CMRU_INTERNAL_RUN_LOG") or "").strip()
     if not quiet or not raw_path:
         return None
     aggregate_path = Path(raw_path).expanduser().resolve()
@@ -449,7 +441,8 @@ def execute_step(
     path_prefixes: Optional[Iterable[Path]] = None,
     build_metadata: Optional[Mapping[str, str]] = None,
 ) -> None:
-    """Execute a pre-parsed StepConfig. Called by both run_step() and the orchestrator.
+    """Execute a pre-parsed StepConfig. Reached through ``cli.run_project_step``, which both the
+    orchestrator (``cmru run``/``release``/``build``) and the ``run_step()`` API call.
 
     This is the single execution path every build step flows through (S3 contract).
     ``extra_env`` carries project-level declared environment from the orchestrator.
@@ -511,8 +504,8 @@ def _execute_step(
 
     timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     log_file = log_dir / f"{step.name}.log"
-    quiet = step.quiet and not _truthy_env("CMRU_SHOW_RUN_DETAILS")
-    append = _truthy_env("CMRU_LOG_APPEND")
+    quiet = step.quiet and not _truthy_env("CMRU_INTERNAL_SHOW_RUN_DETAILS")
+    append = _truthy_env("CMRU_INTERNAL_LOG_APPEND")
     if quiet:
         log_info(f"Details: {log_file} (kept out of the console; use --show-run-details to stream them)")
     else:
@@ -590,6 +583,7 @@ def _prepend_path_entries(entries: Optional[Iterable[Path]]) -> None:
 def run_step(project_config_path: Path, step_name: str) -> None:
     """Run one named step from the strict project-local ``cmru.toml``.
 
+    Supported Python API (consumed by ``modern-debian-tools-python-debug/build-push.py``).
     This is intentionally a thin direct entry point over the same parser and
     executor as orchestration.  There is no standalone runner configuration,
     shell-evaluation adapter, or inferred release config to drift from it.
@@ -616,7 +610,10 @@ def run_step(project_config_path: Path, step_name: str) -> None:
         project = matches[0]
     else:
         if len(projects) != 1:
-            raise RuntimeError(f"run-step requires a project-local {PROJECT_CONFIG_FILENAME}")
+            raise RuntimeError(
+                f"cmru.runner.run_step requires a project-local {PROJECT_CONFIG_FILENAME} "
+                "that declares exactly one project"
+            )
         project = next(iter(projects.values()))
     apply_project_release_env(github, env, project)
     step = project.runner_steps.get(step_name) if project.runner_steps else None
@@ -630,78 +627,5 @@ def run_step(project_config_path: Path, step_name: str) -> None:
     )
 
 
-def runner_cli():
-    """COMPATIBILITY EXPORT: the ``run-step`` delegate.
-
-    Redesign B1 absorbs ``run-step`` into ``run --step``; W2-PKG1 removes the
-    mounting line in ``cli.py`` (and the ``run-step`` verb). Until that merge
-    lands this export keeps the root registry buildable, so it is converted to
-    the shared factory like every other delegate. After the PKG-1 merge nothing
-    calls it: delete this function and ``_run_step_cli`` (keep :func:`run_step`
-    and the executor functions that ``run`` uses).
-    """
-    registry = cmru_registry(
-        "cmru run-step",
-        f"Run one named step from a project {PROJECT_CONFIG_FILENAME}.",
-        single_command=True,
-        no_args_action=True,
-    )
-    registry.register(VerbSpec(
-        "run-step",
-        description="Execute exactly one declared step for one selected project.",
-        group=VerbGroup.MODIFICATION.value,
-        mutating=True,
-        dry_run=True,
-        include_confirmation=False,
-        arguments=(target_argument("registered project target; omitted uses the current project"),),
-        options=(
-            OptionSpec(("--config",), "path to project or orchestration config", metavar="FILE", parser_kwargs={"default": None}),
-            OptionSpec(("--step",), "step name to execute", metavar="NAME", parser_kwargs={"required": True}),
-            OptionSpec(("--show-run-details",), "stream full subprocess output to this console", parser_kwargs={"action": "store_true", "default": False}),
-            OptionSpec(("--log-append",), "append a divider and retain the stable step log", parser_kwargs={"action": "store_true", "default": False}),
-        ),
-        include_json=False,
-        include_progress=False,
-        handler=_run_step_cli,
-    ))
-    return registry.build()
-
-
-def _run_step_cli(args, _runtime) -> int | None:
-    if args.show_run_details:
-        os.environ["CMRU_SHOW_RUN_DETAILS"] = "1"
-    if args.log_append:
-        os.environ["CMRU_LOG_APPEND"] = "1"
-    from cmru.cli import _resolve_config, load_config
-    from cmru.config import load_forge_config
-    from cmru.delegate_targets import resolve_target
-
-    config_path = _resolve_config(args.config)
-    loaded = load_config(config_path)
-    projects, project_order = loaded[1], loaded[2]
-    names = resolve_target(args.target, config_path, projects, project_order)
-    if len(names) != 1:
-        raise CliFailure("run-step requires exactly one project target", exit_code=2, show_help=True)
-    if args.dry_run:
-        project = projects[names[0]]
-        step = (project.runner_steps or {}).get(args.step)
-        if step is None:
-            raise CliFailure(
-                f"{names[0]}: step {args.step!r} is not declared",
-                exit_code=2, show_help=False,
-            )
-        project_root = project.project_root
-        for line in render_step_plan(step, project_root):
-            print(f"[DRY RUN] {names[0]}:{args.step}: {line}")
-        return
-    forge = load_forge_config(config_path)
-    project_path = (
-        forge.orchestration.project_configs[names[0]]
-        if forge.orchestration is not None
-        else config_path
-    )
-    run_step(project_path, args.step)
-
-
 if __name__ == "__main__":
-    raise SystemExit("Use the installed 'cmru run-step' command; cmru.runner is not a CLI.")
+    raise SystemExit("Use the installed 'cmru run --step' command; cmru.runner is not a CLI.")

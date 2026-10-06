@@ -56,7 +56,7 @@ pip install -e /path/to/vbpub/ciu
 
 # Build + publish the wheel through CIU's explicit CMRU contract (from the repo root)
 cmru build   ciu   # python -m build --wheel
-cmru publish ciu   # requires GITHUB_PUSH_PAT, GITHUB_USERNAME, GITHUB_REPO
+cmru publish ciu --from-checkout   # requires GITHUB_PUSH_PAT, GITHUB_USERNAME, GITHUB_REPO
 ```
 
 ### Installing a released wheel from GitHub Releases

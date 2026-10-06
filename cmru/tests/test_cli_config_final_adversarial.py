@@ -14,13 +14,13 @@ from cmru import cli, config
 
 
 def test_output_options_export_only_explicit_flags(monkeypatch):
-    monkeypatch.delenv("CMRU_SHOW_RUN_DETAILS", raising=False)
-    monkeypatch.delenv("CMRU_LOG_APPEND", raising=False)
+    monkeypatch.delenv("CMRU_INTERNAL_SHOW_RUN_DETAILS", raising=False)
+    monkeypatch.delenv("CMRU_INTERNAL_LOG_APPEND", raising=False)
     cli._apply_output_options(SimpleNamespace(show_run_details=False, log_append=False))
-    assert "CMRU_SHOW_RUN_DETAILS" not in os.environ
+    assert "CMRU_INTERNAL_SHOW_RUN_DETAILS" not in os.environ
     cli._apply_output_options(SimpleNamespace(show_run_details=True, log_append=True))
-    assert os.environ["CMRU_SHOW_RUN_DETAILS"] == "1"
-    assert os.environ["CMRU_LOG_APPEND"] == "1"
+    assert os.environ["CMRU_INTERNAL_SHOW_RUN_DETAILS"] == "1"
+    assert os.environ["CMRU_INTERNAL_LOG_APPEND"] == "1"
 
 
 class _Response:

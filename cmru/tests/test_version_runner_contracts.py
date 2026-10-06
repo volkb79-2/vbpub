@@ -123,30 +123,14 @@ def test_runner_execute_step_restores_environment_even_when_step_fails(monkeypat
 
 def test_runner_open_aggregate_log_avoids_duplicate_and_writes_separate_file(monkeypatch, tmp_path):
     local = tmp_path / "step.log"
-    monkeypatch.setenv("CMRU_RUN_LOG", str(local))
+    monkeypatch.setenv("CMRU_INTERNAL_RUN_LOG", str(local))
     assert runner._open_aggregate_log(local, quiet=True) is None
     aggregate = tmp_path / "all.log"
-    monkeypatch.setenv("CMRU_RUN_LOG", str(aggregate))
+    monkeypatch.setenv("CMRU_INTERNAL_RUN_LOG", str(aggregate))
     handle = runner._open_aggregate_log(local, quiet=True)
     assert handle is not None
     handle.write("line\n"); handle.close()
     assert aggregate.read_text() == "line\n"
-
-
-def test_runner_parser_main_propagates_explicit_presentation_flags(monkeypatch, tmp_path):
-    seen = []
-    monkeypatch.setattr(runner, "run_step", lambda config, step: seen.append((config, step)))
-    config = tmp_path / "cmru.toml"
-    monkeypatch.setattr("cmru.cli._resolve_config", lambda _arg: config)
-    monkeypatch.setattr(
-        "cmru.cli.load_config",
-        lambda _path: (tmp_path, {"demo": SimpleNamespace(project_root=tmp_path)}, ["demo"], ["demo"], [], "project-first", {}, None, None, None),
-    )
-    monkeypatch.setattr("cmru.config.load_forge_config", lambda _path: SimpleNamespace(orchestration=None))
-    runner.runner_cli().run(argv=["--config", str(config), "--step", "tests", "--show-run-details", "--log-append"])
-    assert seen[0][1] == "tests"
-    assert runner.os.environ["CMRU_SHOW_RUN_DETAILS"] == "1"
-    assert runner.os.environ["CMRU_LOG_APPEND"] == "1"
 
 
 def test_runner_step_uses_nearest_central_config_for_project_path(monkeypatch, tmp_path):
@@ -188,7 +172,7 @@ def test_runner_step_uses_nearest_central_config_for_project_path(monkeypatch, t
 
     assert executed[0][:3] == (step, project_root, project.env)
     assert executed[0][3]["CMRU_RUNTIME_KIND"] == "none"
-    assert Path(executed[0][3]["CMRU_BIN"]).name == "cmru"
+    assert Path(executed[0][3]["CMRU_INTERNAL_BIN"]).name == "cmru"
 
 
 def test_runner_step_refuses_central_config_without_exact_project_match(

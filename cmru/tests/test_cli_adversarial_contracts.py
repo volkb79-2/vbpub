@@ -77,15 +77,6 @@ def test_main_dispatches_read_only_version_and_help(monkeypatch, capsys):
     assert "cmru" in capsys.readouterr().out
 
 
-def test_main_run_step_routes_exact_remaining_argv(monkeypatch):
-    from cmru.runner import runner_cli
-
-    parser = runner_cli().parser
-    args = parser.parse_args(["demo", "--step", "test"])
-    assert args.target == ("demo",)
-    assert args.step == "test"
-
-
 def test_worktree_dispatch_refuses_non_git_directory(monkeypatch):
     shared = cli.transaction._shared_worktree()
     monkeypatch.setattr(

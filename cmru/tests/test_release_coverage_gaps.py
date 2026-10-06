@@ -439,26 +439,6 @@ def test_resolve_orchestration_context_without_explicit_target(monkeypatch, tmp_
     assert '"version": "1"' in capsys.readouterr().out
 
 
-def test_runner_context_branches_and_exactly_one_guard(monkeypatch, tmp_path):
-    cfg = tmp_path / "cmru.toml"
-    one = _loaded({"demo": SimpleNamespace(project_root=tmp_path)})
-    monkeypatch.setattr("cmru.cli._resolve_config", lambda _arg: cfg)
-    monkeypatch.setattr("cmru.cli.load_config", lambda _path: one)
-    monkeypatch.setattr("cmru.config.resolve_invocation_context", lambda *_args, **_kwargs: SimpleNamespace(project_name=None, scope="estate"))
-    monkeypatch.setattr("cmru.config.load_forge_config", lambda _path: SimpleNamespace(orchestration=None))
-    monkeypatch.setattr(runner, "run_step", lambda *_args: None)
-    runner.runner_cli().run(argv=["--step", "build"])
-    many = _loaded({"demo": object(), "other": object()}, ["demo", "other"])
-    monkeypatch.setattr("cmru.cli.load_config", lambda _path: many)
-    assert runner.runner_cli().run(argv=["all", "--step", "build"]) == 2
-    cfg = tmp_path / "cmru.orchestration.toml"
-    monkeypatch.setattr("cmru.cli._resolve_config", lambda _arg: cfg)
-    monkeypatch.setattr("cmru.cli.load_config", lambda _path: one)
-    monkeypatch.setattr("cmru.config.resolve_invocation_context", lambda *_args, **_kwargs: SimpleNamespace(project_name=None, scope="estate"))
-    runner.runner_cli().run(argv=["--step", "build"])
-    assert runner.runner_cli().run(argv=["missing", "--step", "build"]) == 2
-
-
 def test_standards_reports_explicit_tester_resources():
     env = {key: "set" for key in standards.REQUIRED_TESTER_ENV}
     command = SimpleNamespace(argv=["python", "tester-gate"])

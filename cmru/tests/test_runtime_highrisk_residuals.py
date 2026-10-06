@@ -139,8 +139,3 @@ def test_runner_docker_login_uses_stdin_and_main_flags(monkeypatch, tmp_path):
         runner._docker_login("registry", "user", "secret")
     assert calls[0][0][0] == ["docker", "login", "registry", "-u", "user", "--password-stdin"]
     assert calls[0][1]["input"] == "secret\n"
-    config = tmp_path / "cmru.toml"
-    config.write_text(project_doc(), encoding="utf-8")
-    with patch.object(runner, "run_step") as run:
-        runner.runner_cli().run(argv=["--config", str(config), "--step", "build", "--show-run-details", "--log-append"])
-    run.assert_called_once()

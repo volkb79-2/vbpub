@@ -45,11 +45,21 @@ def test_source_module_invocation_works_from_the_cmru_project_directory(tmp_path
     proc = invoke_module(
         "cmru.handlers", ["--help"], home=tmp_path, cwd=PROJECT_DIR, pythonpath=_own_sources(),
     )
-    # D2 (merged from W2-PKG2): the version is installed metadata only. A gate
-    # container that puts src/ on PYTHONPATH without installing the wheel has no
-    # distribution, and the entry then exits 3 with one line (no traceback); an
-    # installed distribution gets the real help. The child's own view decides.
-    if proc.returncode == 3:
+    # D2: the version is installed metadata only. The child inherits this
+    # process's environment, so whether the cmru distribution is installed is
+    # decided HERE and the outcome is exact (no either-or): the gate image bakes
+    # cmru (`+tester.unified`), so the lane gets exit 0 plus help; an environment
+    # without the distribution gets exit 3 with one line and no traceback.
+    from importlib.metadata import PackageNotFoundError, version
+
+    try:
+        version("cmru")
+        installed = True
+    except PackageNotFoundError:
+        installed = False
+    assert (proc.returncode == 0) is installed, proc.stderr
+    if not installed:
+        assert proc.returncode == 3
         assert proc.stderr.strip() == (
             "cmru is not installed as a distribution; install the wheel (see README)"
         )
@@ -286,6 +296,7 @@ import sys
 import importlib.metadata as metadata
 sys.path += [{src!r}, {worktree!r}]
 print("DIST=" + metadata.version("cmru"))
+print("NAME=" + metadata.distribution("cmru").metadata["Name"])
 import cli_extended
 print("CX=" + cli_extended.__file__)
 from cmru import cli_support
@@ -342,6 +353,7 @@ def test_bootstrap_stages_a_cmru_dist_info_so_the_real_registry_builds_in_a_bare
 
     # tag cmru-v1.2.3 on HEAD: the exact tag version, as setuptools-scm would derive it.
     assert lines.get("DIST") == "1.2.3", raw
+    assert lines.get("NAME") == "cmru", raw  # PKG-4 N16: the staged dist-info names cmru
     assert lines.get("IDENTITY") == "1.2.3", raw
     assert "site-packages" not in lines["CX"], raw
 

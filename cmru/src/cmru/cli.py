@@ -25,7 +25,7 @@ from cmru.runner import StepConfig, execute_step, parse_step as _runner_parse_st
 from cmru import transaction
 from cmru import exit_codes
 from cmru.git_auth import GitHubGitAuth, run_local_git, run_remote_git
-from cmru.config import _RESERVED_CMRU_INTERNAL_ENV, load_forge_config
+from cmru.config import _RESERVED_CMRU_INTERNAL_ENV, is_reserved_internal_env, load_forge_config
 from cmru.config import InvocationContext, resolve_invocation_context
 from cmru.config_names import ORCHESTRATION_CONFIG_FILENAME, PROJECT_CONFIG_FILENAME
 from cmru.cli_support import (
@@ -180,9 +180,9 @@ def _sync_local_main_and_report(
 def _apply_output_options(args: object) -> None:
     """Carry explicit console/logging choices into all child step processes."""
     if getattr(args, "show_run_details", False):
-        os.environ["CMRU_SHOW_RUN_DETAILS"] = "1"
+        os.environ["CMRU_INTERNAL_SHOW_RUN_DETAILS"] = "1"
     if getattr(args, "log_append", False):
-        os.environ["CMRU_LOG_APPEND"] = "1"
+        os.environ["CMRU_INTERNAL_LOG_APPEND"] = "1"
 
 
 def parse_duration(value: str) -> timedelta:
@@ -332,7 +332,7 @@ def run_project_step(
             launcher_dir = Path(launcher_root)
             launcher = _create_bound_cmru_launcher(launcher_dir)
             internal_env = {
-                "CMRU_BIN": str(launcher),
+                transaction.INTERNAL_BIN_ENV: str(launcher),
                 "CMRU_RUNTIME_KIND": getattr(project, "runtime_kind", "none"),
                 **{
                     key: os.environ[key]
@@ -715,7 +715,7 @@ def apply_release_env(github: GitHubConfig, env_config: ReleaseEnvConfig) -> Non
             "release environment key(s) are reserved for resolved publisher credentials: "
             + ", ".join(configured_credentials)
         )
-    configured_internal = sorted(_RESERVED_CMRU_INTERNAL_ENV.intersection(env_config.env))
+    configured_internal = sorted(name for name in env_config.env if is_reserved_internal_env(name))
     if configured_internal:
         raise RuntimeError(
             "release environment key(s) are reserved for CMRU internal launch state: "
@@ -2408,11 +2408,11 @@ def _prepare_native_release_log(repo_root: Path, *, append: bool) -> Path:
     if append:
         with log_path.open("a", encoding="utf-8") as handle:
             handle.write("\n---\n")
-        os.environ["CMRU_LOG_APPEND"] = "1"
+        os.environ["CMRU_INTERNAL_LOG_APPEND"] = "1"
     else:
         log_path.write_text("", encoding="utf-8")
-        os.environ.pop("CMRU_LOG_APPEND", None)
-    os.environ["CMRU_RUN_LOG"] = str(log_path)
+        os.environ.pop("CMRU_INTERNAL_LOG_APPEND", None)
+    os.environ["CMRU_INTERNAL_RUN_LOG"] = str(log_path)
     os.environ["PYTHONUNBUFFERED"] = "1"
     return log_path
 
@@ -3070,7 +3070,7 @@ def _forwarded_global_args(parsed: object | None, rest: Sequence[str]) -> List[s
 def _child_release_args(
     rest: List[str], config_path: Path, repo_root: Path, *, source_git_root: Path | None = None,
     target_override: str | None = None, original_target: object | None = None,
-    verb: str = "release", forward_from: object | None = None,
+    verb: str = "release", forward_from: object | None,
 ) -> List[str]:
     """Point a transaction child at its snapshot or central CMRU config.
 
@@ -3141,7 +3141,7 @@ def _dispatch_independent_git_families(
     *,
     original_target: str | None,
     origin_main_snapshots: Mapping[Path, str] | None = None,
-    forward_from: object | None = None,
+    forward_from: object | None,
 ) -> int | None:
     """Run one normal transaction per independent selected Git family.
 
@@ -3172,7 +3172,7 @@ def _dispatch_independent_git_families(
         )
     try:
         import shutil
-        launcher = os.environ.get("CMRU_BIN") or shutil.which("cmru")
+        launcher = transaction.internal_launcher(repo_root) or shutil.which("cmru")
         if launcher:
             command_prefix = [launcher]
         else:
@@ -4498,7 +4498,7 @@ def _dispatch(args, runtime):
                     if dirty:
                         for project_name, files in dirty.items():
                             log_error(f"{project_name}: uncommitted changes — {', '.join(files)}")
-                        raise RuntimeError(
+                        raise transaction.RefusedBeforeChange(
                             "cmru build snapshots origin/main; commit and push the selected project "
                             "changes first so the isolated build cannot silently omit them."
                         )
@@ -4581,6 +4581,11 @@ def _dispatch(args, runtime):
                             f"--delete-build-output {output_id} --yes"
                         )
                     _sys.exit(0)
+            except transaction.RefusedBeforeChange as exc:
+                # Refused before the build changed anything (dirty project paths, a
+                # held release lock): REFUSED, not "failed after start".
+                log_error(str(exc))
+                _sys.exit(exit_codes.REFUSED)
             except _DOMAIN_ERRORS as exc:
                 # The build worktree is only removed after full success above, so a
                 # failure here has already retained it; a programming error (any
@@ -5192,6 +5197,9 @@ def _release_launcher(
                 )
                 _sync_local_main_and_report(transaction_root, git_auth=git_auth)
             sys.exit(rc)
+    except transaction.ReleaseLockHeld as exc:
+        log_error(str(exc))
+        sys.exit(exit_codes.REFUSED)
     except _DOMAIN_ERRORS as exc:
         # Retention of the candidate worktree already happened above (a failed
         # child leaves it in place); any other exception type is a bug and
@@ -5359,10 +5367,8 @@ def _abandon(args, runtime) -> int:
             return _abandon_locked(args, runtime, repo_root)
     except CliFailure:
         raise
-    except RuntimeError as exc:
-        if "Another cmru release transaction is already running." in str(exc):
-            raise CliFailure(str(exc), exit_code=exit_codes.REFUSED) from exc
-        raise
+    except transaction.ReleaseLockHeld as exc:
+        raise CliFailure(str(exc), exit_code=exit_codes.REFUSED) from exc
 
 
 def _release_tag_prefixes_for_scope(
@@ -5941,7 +5947,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         return 2
     arguments = list(argv) if argv is not None else sys.argv[1:]
     from cli_extended.identity import VersionLookupError
-    from cmru.cli_support import report_not_installed
+    from cmru.cli_support import INTERACTIVE_EXTRA, report_not_installed
 
     try:
         configure_from_environment()
@@ -5951,7 +5957,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             cli = _build_cli()
         except VersionLookupError:
             return report_not_installed()
-        return cli.run(argv=arguments)
+        return cli.run(argv=arguments, interactive_extra=INTERACTIVE_EXTRA)
     finally:
         _ACTIVE_RELEASE_PREFLIGHT_SNAPSHOT = previous_handoff
 

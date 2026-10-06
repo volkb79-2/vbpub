@@ -23,6 +23,14 @@ python3 -m pip install --no-index --no-deps -e .      # developer checkout; prov
 python3 -m pip install --no-index --find-links ./wheelhouse ./cmru-<version>-py3-none-any.whl
 ```
 
+The guided `cmru init` wizard asks its questions with the optional `questionary` prompt
+driver, which is the `interactive` extra: install the wheelhouse with `cmru[interactive]`
+(`python3 -m pip install --no-index --find-links ./wheelhouse 'cmru[interactive]'`; the
+wheelhouse must then also hold `questionary` and its dependencies). Neither cmru nor
+cli-extended is on a package index, so `cmru[interactive]` always needs `--find-links`
+pointing at the release assets (or the GitHub release URL) that carry both wheels. A run whose options
+already carry every fact needs no terminal and no extra.
+
 A `get.py` bundle that declares `[[project.installer.wheels]]` for cli-extended installs
 it first, hash-locked, with `--no-index --find-links` (`cmru get-py`; the order is enforced
 by the generated installer, not by the declaration order). The `tester-unified` image
@@ -146,7 +154,7 @@ cmru tool-deps --refresh <provider-project>  # deliberate external/copy artifact
 cmru versions init [all|P[,P...]] [--dry-run]    # derive registry targets from manifests
 cmru versions resolve [all|P[,P...]] [--dry-run] # resolve eligible versions and write native artifacts
 cmru versions check [all|P[,P...]] [--json]      # read-only comparison with fresh registry state
-cmru publish <name>               # caller-worktree push step
+cmru publish <name> --from-checkout    # explicit: caller-worktree push step
 cmru publish <name> --build-output ID  # publish exact retained build bytes
 cmru resolve <name>               # resolve the current "latest" (version/tag/url/sha256)
 cmru cleanup --remove-assets 30d --dry-run  # preview age-based remote cleanup
@@ -154,7 +162,7 @@ cmru cleanup --remove-assets 30d --yes      # apply the reviewed cleanup actions
 cmru cleanup ciu --delete-unmanaged-release-tag ciu-wheel-latest --dry-run
 cmru cleanup ciu --delete-unmanaged-release-tag ciu-wheel-latest --yes
 cmru cleanup ciu --delete-build-output <commit-date>_<commit> --dry-run
-cmru cleanup --discard-build-worktree /path/reported/by/cmru --yes
+cmru abandon /absolute/path/reported/by/cmru --yes   # discard a retained failed build worktree
 cmru version                      # print the CMRU version
 cmru --version                    # estate-wide top-level compatibility spelling
 cmru get-py ciu --config cmru.orchestration.toml --output ciu-get.py  # render from installed wheel
@@ -354,8 +362,8 @@ artifact directories, and explicitly declared gate evidence by default before re
 worktree: logs move to `assay/logs/cmru-release/<immutable-tag>/`, declared directories move
 into `assay/artifacts/<immutable-tag>/` with the existing hash inventory in `release.json`, and
 gate evidence moves into `assay/evidence/cmru-release/<immutable-tag>/` with an `evidence.json`
-source-commit/hash manifest. Pass `--discard-logs-on-release`,
-`--discard-artifacts-on-release`, or `--discard-evidence-on-release` to opt out of each half.
+source-commit/hash manifest. Pass `release --discard logs`, `--discard artifacts`, or
+`--discard evidence` (repeatable) to opt out of each half.
 
 ```bash
 cmru release modern-debian-tools-python-debug --show-run-details
@@ -505,7 +513,7 @@ publication metadata.
 If the build or retention fails, CMRU keeps the exact
 `cmru-build-<YYYYMMDD_HHMMSS>-<scope>-<workspace-id>` worktree and prints its
 path. Run `cmru worktrees` to discover retained build/release worktrees, then use
-`cmru cleanup --discard-build-worktree <path> --yes` only after inspection. An existing output
+`cmru abandon <absolute-path> --yes` only after inspection. An existing output
 coordinate is never overwritten; remove it explicitly with
 `cmru cleanup <name> --delete-build-output <id> --yes` before rebuilding that source.
 
@@ -623,7 +631,7 @@ fits the work:
 |---|---|---|
 | Release, inspect, or maintain a product | `cmru` and its registered verbs | Canonical operator workflow |
 | Register/build/publish an artifact handler from a project step | `cmru handler <verb> …` | Project-step adapter (bound launcher inside a release transaction); `python -m cmru.handlers` is bootstrap-only, used by the fresh-checkout wheel bootstrap |
-| Preview or reproduce one declared step | `cmru run-step …` | Direct single-step diagnostic using the project's normal `cmru.toml` |
+| Preview or reproduce one declared step | `cmru run --step NAME …` | Direct single-step diagnostic using the project's normal `cmru.toml` |
 | Compose step or bundle behavior in Python | `cmru.runner.run_step` or `cmru.bundle.run_bundle` | Supported library entrypoints used by estate consumers |
 | Manage generic Git worktree lifecycles | `worktree` package in the CMRU wheel | Stable shared API, versioned with the CMRU wheel; see the [worktree consumer guide](../libraries/worktree/CONSUMERS.md) |
 
@@ -631,7 +639,7 @@ fits the work:
 the deterministic format is `xztar` as specified in S9. It is a Python library,
 not a module CLI or top-level `cmru bundle` verb. A project that needs the
 reusable operation imports `run_bundle`; a root verb should be added only when a
-concrete operator workflow needs one. `cmru run-step` is the single-step CLI.
+concrete operator workflow needs one. `cmru run --step NAME` is the single-step CLI.
 The standalone generated `get.py` remains intentionally independent and uses
 `argparse` because adopters run it without a CMRU installation. It is the generic
 installer only: a fail-closed, transactional `install`/`update`/`status`/`rollback` that

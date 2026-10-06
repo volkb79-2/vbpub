@@ -24,6 +24,11 @@ dependencies = ["cli-extended>=0.2.0"]
 # tests for the shared workspace adapter.
 test = ["pytest>=8", "pytest-cov>=5.0", "hypothesis>=6.140"]
 versions-templates = ["Jinja2>=3.1,<4"]
+# `cmru init` asks its questions with the cli-extended prompt driver, which needs
+# questionary. cli-extended 0.2.0 declares `interactive = ["questionary>=2.1.1"]`
+# (Provides-Extra verified in the released wheel's METADATA); cmru re-exports the
+# extra because the bare cli-extended name is not installable by a cmru user.
+interactive = ["cli-extended[interactive]>=0.2.0"]
 
 [project.scripts]
 cmru = "cmru.cli:main"
