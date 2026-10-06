@@ -479,6 +479,19 @@ def test_successor_brief_explicit_flags_override_defaults(capsys):
     assert "[tool call:" not in out and "[tool error" not in out
 
 
+def test_successor_brief_explicit_profile_and_legacy_call_flag_win(capsys):
+    code, out, err = _run(capsys, DESCRIBED, "--successor-brief", "--profile", "operator-review",
+                          "--show-tool-calls")
+    assert code == 0, err
+    assert "deprecated" in err
+    assert "# Successor" in out or "Original brief" in out
+
+
+def test_brief_max_chars_must_be_non_negative(capsys):
+    code, _, err = _run(capsys, LANE, "--successor-brief", "--brief-max-chars", "-1")
+    assert code == 2 and "non-negative" in err
+
+
 def test_successor_brief_task_banner_wording(capsys):
     _, out, _ = _run(capsys, DESCRIBED, "--task", "Continue the lane.")
     assert "TASK FOR THIS SESSION" in out
