@@ -8,6 +8,8 @@ from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from typing import Any, Literal
 
+from .notify import NotifyConfigError, effective_backend, validate_webhook_url
+
 SCHEMA_VERSION = 1
 OBSOLETE_VARIABLES = {
     "SWAP_ARCH",
@@ -85,6 +87,16 @@ class Config:
     reboot_window_time: str = "03:00"
     telegram_bot_token: str = field(default="", repr=False)
     telegram_chat_id: str = field(default="", repr=False)
+    # Notification backend: "mattermost" | "telegram" | "none"; empty means
+    # "infer from whichever credential is present" (both present and no explicit
+    # choice is a config error -- see validate_config()). The webhook URL is a
+    # SECRET (it is the only thing needed to post to the channel): repr=False,
+    # never logged, never persisted into state.json.
+    notify_backend: str = ""
+    mattermost_webhook_url: str = field(default="", repr=False)
+    # Free-text label shown first in every Mattermost message (e.g. "netcup-1");
+    # empty falls back to the hostname alone.
+    notify_host_label: str = ""
     telegram_verbose_progress: bool = False
     credential_mode: Literal["root-storage", "systemd"] = "root-storage"
     # A one-line `authorized_keys` entry (type + base64 + comment) for the
@@ -158,6 +170,7 @@ def validate_config(config: Config) -> None:
     string_names = [
         "log_dir", "state_dir", "stage2_output",
         "telegram_bot_token", "telegram_chat_id",
+        "notify_backend", "mattermost_webhook_url", "notify_host_label",
         "docker_log_driver", "docker_log_max_size", "docker_log_max_file",
         "reboot_window_time", "controller_ssh_pubkey",
     ]
@@ -212,10 +225,43 @@ def validate_config(config: Config) -> None:
         raise ConfigError("reboot_window_time must be 24h HH:MM (e.g. '03:00')")
     if bool(config.telegram_bot_token) != bool(config.telegram_chat_id):
         raise ConfigError("telegram_bot_token and telegram_chat_id must be supplied together")
+    if config.mattermost_webhook_url:
+        try:
+            validate_webhook_url(config.mattermost_webhook_url)
+        except NotifyConfigError as exc:
+            raise ConfigError(str(exc)) from None
+    if any(char in config.notify_host_label for char in "\r\n\x00`"):
+        raise ConfigError("notify_host_label must be one line without backticks or NUL")
+    try:
+        resolve_notify_backend(config)
+    except NotifyConfigError as exc:
+        raise ConfigError(str(exc)) from None
     if not isinstance(config.credential_mode, str) or config.credential_mode not in {"root-storage", "systemd"}:
         raise ConfigError("credential_mode must be root-storage or systemd")
     if config.credential_mode == "root-storage" and not (config.state_dir.startswith("/var/lib/") or config.state_dir == "/var/lib/vbpub/bootstrap"):
         raise ConfigError("credential_mode=root-storage requires state_dir under /var/lib")
+
+
+def resolve_notify_backend(config: "Config") -> str:
+    """The backend actually used: explicit notify_backend, else inferred."""
+    return effective_backend(
+        config.notify_backend,
+        has_telegram=bool(config.telegram_bot_token and config.telegram_chat_id),
+        has_mattermost=bool(config.mattermost_webhook_url),
+    )
+
+
+def require_notify_credentials(config: "Config") -> None:
+    """Initial-install check: an explicit backend must carry its credentials.
+
+    Not part of validate_config(): the stage-two config is re-validated with
+    credentials deliberately stripped (they arrive via credential files).
+    """
+    backend = resolve_notify_backend(config)
+    if backend == "mattermost" and not config.mattermost_webhook_url:
+        raise ConfigError("notify_backend=mattermost requires mattermost_webhook_url")
+    if backend == "telegram" and not (config.telegram_bot_token and config.telegram_chat_id):
+        raise ConfigError("notify_backend=telegram requires telegram_bot_token and telegram_chat_id")
 
 
 def load_config(path: str | None = None, raw_json: str | None = None) -> Config:

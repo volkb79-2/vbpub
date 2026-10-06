@@ -19,6 +19,23 @@ from conftest import FakeHTTPResponse
 
 # --- pure helpers --------------------------------------------------------
 
+HOOK = "https://mm.example.test/hooks/abcDEF123xyz"
+
+
+def test_redact_secrets_masks_mattermost_webhook_url(install_host_mod):
+    out = install_host_mod._redact_secrets(f"POST failed for {HOOK} (retrying)")
+    assert "abcDEF123xyz" not in out
+    assert "REDACTED_MATTERMOST_WEBHOOK_URL" in out
+
+
+def test_log_redaction_masks_webhook_key_and_embedded_url(install_host_mod):
+    import netcup_scp_client as client
+    red = client._redact_for_log(
+        {"MATTERMOST_WEBHOOK_URL": HOOK, "note": f"see {HOOK}", "list": [HOOK]}
+    )
+    assert "abcDEF123xyz" not in json.dumps(red)
+
+
 def test_strip_jsonc_comments_line_and_block(install_host_mod):
     text = '{\n  "a": 1, // comment\n  "b": /* block */ 2\n}'
     parsed = json.loads(install_host_mod._strip_jsonc_comments(text))

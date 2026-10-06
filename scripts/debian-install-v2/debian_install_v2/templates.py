@@ -263,7 +263,7 @@ OnCalendar=daily
 """
 
 
-# Reusable Telegram notifier — any unit/timer/script can call this instead of
+# Reusable Telegram/Mattermost notifier — any unit/timer/script can call this instead of
 # each owning its own HTTP call. Reads the same credential pair
 # debian-install-v2 itself already writes to /etc/vbpub/credentials/ for
 # EITHER credential_mode (root-storage: read directly; systemd: a caller unit
@@ -272,20 +272,45 @@ OnCalendar=daily
 NOTIFY_SCRIPT = """\
 #!/bin/sh
 # /usr/local/sbin/vbpub-notify MESSAGE
+# Backend = whichever credential file exists: Mattermost incoming webhook
+# (preferred when present) or Telegram. The installer writes only the selected
+# backend's files. The webhook URL is a secret: never echoed, never in argv.
 set -eu
 
 CRED_DIR="${CREDENTIALS_DIRECTORY:-/etc/vbpub/credentials}"
+HOOK_FILE="$CRED_DIR/mattermost_webhook_url"
 TOKEN_FILE="$CRED_DIR/telegram_bot_token"
 CHAT_FILE="$CRED_DIR/telegram_chat_id"
+MESSAGE="${1:?usage: vbpub-notify MESSAGE}"
+
+if [ -s "$HOOK_FILE" ]; then
+  # Status channel: a failed POST must never fail the caller (exit 0).
+  VBPUB_HOOK_FILE="$HOOK_FILE" VBPUB_HOST="$(hostname)" python3 - "$MESSAGE" <<'PYEOF' \
+    || echo "vbpub-notify: send failed" >&2
+import json, os, sys, time, urllib.request
+url = open(os.environ["VBPUB_HOOK_FILE"], encoding="utf-8").read().strip()
+text = "ℹ️ **%s** | %s" % (os.environ["VBPUB_HOST"], sys.argv[1])
+data = json.dumps({"text": text[:3500]}).encode("utf-8")
+for attempt in range(2):
+    try:
+        req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"}, method="POST")
+        urllib.request.urlopen(req, timeout=10).close()
+        sys.exit(0)
+    except Exception as exc:
+        print("vbpub-notify: mattermost post failed (%s)" % type(exc).__name__, file=sys.stderr)
+        time.sleep(1.5)
+sys.exit(1)
+PYEOF
+  exit 0
+fi
 
 if [ ! -s "$TOKEN_FILE" ] || [ ! -s "$CHAT_FILE" ]; then
-  echo "vbpub-notify: no Telegram credentials at $CRED_DIR, skipping" >&2
+  echo "vbpub-notify: no notification credentials at $CRED_DIR, skipping" >&2
   exit 0
 fi
 
 TOKEN=$(cat "$TOKEN_FILE")
 CHAT_ID=$(cat "$CHAT_FILE")
-MESSAGE="${1:?usage: vbpub-notify MESSAGE}"
 
 curl -fsS --max-time 15 \\
   --data-urlencode "chat_id=${CHAT_ID}" \\

@@ -16,8 +16,9 @@ import urllib.request
 
 from . import inuse_partition_editor
 from .actions import HostActions
-from .config import Config, ConfigError, load_config
+from .config import Config, ConfigError, load_config, resolve_notify_backend
 from .host_facts import _code, collect_host_facts, format_facts_html
+from .notify import NotifyConfigError, format_mattermost_message, post_webhook, redact_text
 from .state import StateError, StateStore
 from .templates import (
     APT_CUSTOM,
@@ -97,6 +98,7 @@ class Installer:
         self.actions = actions
         self.state = StateStore(config.state_dir)
         self.state.dry_run = actions.dry_run
+        self._notify_stage = "stage1"
         self.release = ""
         self.root_disk = ""
         self.root_partition_path = ""
@@ -176,7 +178,19 @@ class Installer:
 
     @property
     def _notifications_enabled(self) -> bool:
-        return bool(self.config.telegram_bot_token) and bool(self.config.telegram_chat_id) and not self.actions.dry_run
+        return self._notify_backend() != "none" and not self.actions.dry_run
+
+    def _notify_backend(self) -> str:
+        """telegram | mattermost | none, from config; unusable credentials -> none."""
+        try:
+            backend = resolve_notify_backend(self.config)
+        except (ConfigError, NotifyConfigError):
+            return "none"
+        if backend == "telegram" and not (self.config.telegram_bot_token and self.config.telegram_chat_id):
+            return "none"
+        if backend == "mattermost" and not self.config.mattermost_webhook_url:
+            return "none"
+        return backend
 
     def install(self) -> None:
         self.state.save_new(StateStore.new(self.config))
@@ -191,7 +205,10 @@ class Installer:
             # Case B hosts -- see _resolve_swap_plan()'s docstring for the
             # actual bug that triggered this backstop).
             try:
-                self._notify(self._initial_report_message())
+                if self._notify_backend() == "mattermost":
+                    self._notify("", event=self._initial_event_text(), status="run")
+                else:
+                    self._notify(self._initial_report_message())
             except Exception as exc:
                 _LOG.warning("could not build/send initial report notification: %s", exc)
         try:
@@ -199,7 +216,10 @@ class Installer:
         except Exception as exc:
             if not self.actions.dry_run:
                 self.state.save(status="failed", phase="stage1", last_error=str(exc))
-            self._notify(f"<b>Install FAILED</b> during stage1: {_code(str(exc))}")
+            self._notify(
+                f"<b>Install FAILED</b> during stage1: {_code(str(exc))}",
+                event="install FAILED", status="fail", excerpt=str(exc),
+            )
             raise
 
     def resume(self) -> None:
@@ -210,7 +230,7 @@ class Installer:
         config_data = {
             key: value
             for key, value in persisted.items()
-            if key not in {"telegram_bot_token", "telegram_chat_id"}
+            if key not in {"telegram_bot_token", "telegram_chat_id", "mattermost_webhook_url"}
         }
         try:
             persisted_config = load_config(raw_json=json.dumps(config_data))
@@ -224,6 +244,7 @@ class Installer:
             persisted_config,
             telegram_bot_token=self.config.telegram_bot_token,
             telegram_chat_id=self.config.telegram_chat_id,
+            mattermost_webhook_url=self.config.mattermost_webhook_url,
         )
         if self.config.credential_mode == "systemd":
             # systemd supplies this path for LoadCredential= entries. Resolve
@@ -249,13 +270,19 @@ class Installer:
             chat_id = chat_file.read_text(encoding="utf-8").strip()
             if token and chat_id:
                 self.config = replace(self.config, telegram_bot_token=token, telegram_chat_id=chat_id)
+        webhook_file = credential_dir / "mattermost_webhook_url" if credential_dir else None
+        if not self.actions.dry_run and webhook_file is not None and webhook_file.is_file():
+            webhook = webhook_file.read_text(encoding="utf-8").strip()
+            if webhook:
+                self.config = replace(self.config, mattermost_webhook_url=webhook)
         thread_file = Path(self.config.state_dir) / "telegram_thread_id"
         if not self.actions.dry_run and thread_file.is_file():
             thread_id = thread_file.read_text(encoding="utf-8").strip()
             if thread_id.isdigit():
                 self.state.save(telegram_thread_id=thread_id)
         self.state.save(phase="stage2", status="running")
-        self._notify("<b>Resumed stage2</b> after reboot.")
+        self._notify_stage = "stage2"
+        self._notify("<b>Resumed stage2</b> after reboot.", event="resumed after reboot", status="run")
         try:
             self._stage2()
             self.state.save(status="success", phase="done")
@@ -278,10 +305,16 @@ class Installer:
             if self._notifications_enabled:
                 duration = self._duration_since_start()
                 facts_html = format_facts_html(collect_host_facts(self))
-                self._notify(f"<b>Install complete</b> (duration: {duration})\n\n{facts_html}")
+                self._notify(
+                    f"<b>Install complete</b> (duration: {duration})\n\n{facts_html}",
+                    event=f"install complete (duration {duration})", status="ok",
+                )
         except Exception as exc:
             self.state.save(status="failed", phase="stage2", last_error=str(exc))
-            self._notify(f"<b>Install FAILED</b> during stage2: {_code(str(exc))}")
+            self._notify(
+                f"<b>Install FAILED</b> during stage2: {_code(str(exc))}",
+                event="install FAILED", status="fail", excerpt=str(exc),
+            )
             raise
 
     def status(self) -> dict[str, object]:
@@ -1492,7 +1525,23 @@ MaxFileSec=1month
         working_directory = str(Path(__file__).resolve().parents[1])
         env_file = "/etc/vbpub/bootstrap.env"
         credentials_line = "-"
-        if self.config.telegram_bot_token and self.config.telegram_chat_id:
+        backend = self._notify_backend()
+        if backend == "mattermost":
+            self.actions.write_file(
+                "/etc/vbpub/credentials/mattermost_webhook_url",
+                self.config.mattermost_webhook_url + "\n", 0o600,
+            )
+            if self.config.credential_mode == "root-storage":
+                credential_dir = Path(self.config.state_dir) / "credentials"
+                self.actions.write_file(
+                    str(credential_dir / "mattermost_webhook_url"),
+                    self.config.mattermost_webhook_url + "\n", 0o600,
+                )
+                credential_note = "root-only Mattermost webhook credential installed"
+            else:
+                credentials_line = "mattermost_webhook_url:/etc/vbpub/credentials/mattermost_webhook_url"
+                credential_note = "systemd LoadCredential Mattermost webhook configured"
+        elif backend == "telegram":
             # /usr/local/sbin/vbpub-notify (NOTIFY_SCRIPT) is called from
             # several standalone systemd units (reboot-check, boot-notify,
             # apt-update-notify) that declare no LoadCredential= of their
@@ -1519,7 +1568,7 @@ MaxFileSec=1month
                 )
                 credential_note = "systemd LoadCredential Telegram credentials configured"
         else:
-            credential_note = "Telegram disabled"
+            credential_note = "notifications disabled"
         env = "\n".join([
             f"VBPUB_STATE_DIR={self.config.state_dir}",
             f"VBPUB_STAGE2_OUTPUT={self.config.stage2_output}",
@@ -1552,13 +1601,58 @@ MaxFileSec=1month
         """
         self.state.mark_step(name, status, detail)
         if self.config.telegram_verbose_progress:
-            self._notify(f"<b>{name}</b>: {status}" + (f" — {detail}" if detail else ""))
+            self._notify(
+                f"<b>{name}</b>: {status}" + (f" — {detail}" if detail else ""),
+                event=f"{name}: {status}" + (f" - {detail}" if detail else ""),
+                status={"success": "ok", "failed": "fail"}.get(status, "run"),
+            )
 
-    def _notify(self, message: str) -> None:
+    def _initial_event_text(self) -> str:
+        """One-line start summary for the Mattermost backend."""
+        facts = collect_host_facts(self)
+        plan = self.show_plan()
+        return (
+            f"starting: {facts.get('cpu_count')} cores, {facts.get('memory_total_mib')} MiB, "
+            f"{facts.get('boot_mode')}, release {self.release or '?'}, root {plan['root_device']}, "
+            f"{len(plan['swap_partitions'])} swap partition(s)"
+        )
+
+    def _mattermost_text(self, event: str, status: str, excerpt: str) -> str:
+        """Build the Mattermost message (layout lives in notify.format_mattermost_message)."""
+        try:
+            run_id = str(self.state.load().get("run_id") or "")
+        except Exception:
+            run_id = ""
+        return format_mattermost_message(
+            host_label=self.config.notify_host_label,
+            server_name=platform.node() or "unknown-host",
+            run_id=run_id,
+            stage=self._notify_stage,
+            event=event,
+            status=status,
+            excerpt=excerpt,
+            secrets=(self.config.mattermost_webhook_url, self.config.telegram_bot_token),
+        )
+
+    def _notify(self, message: str, *, event: str = "", status: str = "run", excerpt: str = "") -> None:
+        """Send one milestone via the selected backend. Never raises.
+
+        ``message`` is the Telegram (HTML) text; ``event``/``status``/``excerpt``
+        feed the Mattermost format (a missing ``event`` falls back to the
+        tag-stripped Telegram text).
+        """
+        backend = self._notify_backend()
+        if backend == "none" or self.actions.dry_run:
+            return
+        if backend == "mattermost":
+            text = event or re.sub(r"<[^>]+>", "", message).replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&")
+            post_webhook(
+                self.config.mattermost_webhook_url,
+                self._mattermost_text(text, status, excerpt),
+            )
+            return
         token = self.config.telegram_bot_token
         chat_id = self.config.telegram_chat_id
-        if not token or not chat_id or self.actions.dry_run:
-            return
         thread_id = None
         try:
             thread_id = self.state.load().get("telegram_thread_id") or None
@@ -1598,13 +1692,19 @@ MaxFileSec=1month
     def _reboot(self) -> None:
         if self.config.never_reboot or not self.config.auto_reboot_after_stage1:
             self._mark_step("reboot", "deferred", "disabled by configuration")
-            self._notify("<b>Stage1 complete.</b> Reboot is disabled by configuration - stage2 requires a manual resume.")
+            self._notify(
+                "<b>Stage1 complete.</b> Reboot is disabled by configuration - stage2 requires a manual resume.",
+                event="complete; reboot disabled, stage2 needs a manual resume", status="warn",
+            )
             return
         self._mark_step(
             "reboot", "scheduled",
             f"stage2 resumes on next boot (reboot delayed {self._REBOOT_DELAY_SECONDS}s to let cloud-init report completion)",
         )
-        self._notify("<b>Stage1 complete.</b> Rebooting into stage2.")
+        self._notify(
+            "<b>Stage1 complete.</b> Rebooting into stage2.",
+            event="complete; rebooting into stage2", status="ok",
+        )
         # systemd-run schedules a transient, detached unit and returns
         # immediately -- this process (and the customScript/cloud-init
         # runcmd it's a child of) gets to exit normally well before the

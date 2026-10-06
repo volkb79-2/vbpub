@@ -130,7 +130,7 @@ For a Netcup-style replacement of the controller SSH-key marker:
   --config target-host.json --controller-ssh-placeholder
 ```
 
-If the configuration contains a Telegram bot token, the generated bundle is
+If the configuration contains a Telegram bot token or a Mattermost webhook URL (`mattermost_webhook_url`), the generated bundle is
 secret-bearing. The CLI refuses to print it by default. If you deliberately
 need to capture the raw bundle, protect the file and explicitly bypass
 redaction:

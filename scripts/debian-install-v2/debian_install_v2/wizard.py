@@ -98,8 +98,14 @@ WIZARD_SECTIONS = (
     ),
     WizardSection(
         "notifications",
-        "Telegram notifications and credentials",
+        "Notifications (Mattermost / Telegram) and credentials",
         (
+            WizardField(
+                "notify_backend", "Notification backend (auto = infer from the credential given)",
+                "choice", ("auto", "mattermost", "telegram", "none"),
+            ),
+            WizardField("mattermost_webhook_url", "Mattermost incoming-webhook URL (blank = none)", "secret", secret=True),
+            WizardField("notify_host_label", "Host label shown first in each Mattermost message (blank = hostname only)"),
             WizardField("telegram_bot_token", "Telegram bot token (blank disables notifications)", "secret", secret=True),
             WizardField("telegram_chat_id", "Telegram chat ID (required with a bot token)"),
             WizardField("telegram_verbose_progress", "Send a notification for every internal step?", "boolean"),
@@ -128,7 +134,7 @@ WIZARD_SECTIONS = (
 )
 
 _FIXED_FIELDS = {"schema_version", "fresh_install"}
-_SECRET_FIELDS = {"telegram_bot_token"}
+_SECRET_FIELDS = {"telegram_bot_token", "mattermost_webhook_url"}
 _SUMMARY_HIDDEN_FIELDS = _SECRET_FIELDS | {"controller_ssh_pubkey"}
 _WIZARD_REQUIREMENTS = Path(__file__).resolve().parents[1] / "wizard-requirements.txt"
 
@@ -167,9 +173,12 @@ def _ask_field(questionary: Any, field: WizardField, current: Any, runtime: Any)
                 kbi_msg=""
             )
         elif field.kind == "choice":
+            auto = field.name == "notify_backend"  # "auto" stands for the unset ("") value
             answer = questionary.select(
-                prompt, choices=list(field.choices), default=current
+                prompt, choices=list(field.choices), default=(current or "auto") if auto else current
             ).ask(kbi_msg="")
+            if auto and answer == "auto":
+                answer = ""
         elif field.kind == "secret":
             answer = questionary.password(prompt, default=str(current)).ask(
                 kbi_msg=""

@@ -66,6 +66,10 @@ merged in last (wins over the named vars above):
              RUN_OOMD_CONFIG, RUN_FSTRIM, RUN_DOCKER_CLEANUP,
              RUN_APT_AUTO_UPGRADE, RUN_AUTO_REBOOT
   Reboot:    AUTO_REBOOT_AFTER_STAGE1, NEVER_REBOOT
+  Notify:    NOTIFY_BACKEND (mattermost|telegram|none; unset = infer from the
+             credential present, refuse when both are), MATTERMOST_WEBHOOK_URL
+             (secret incoming-webhook URL, post-only), NOTIFY_HOST_LABEL
+             (free-text label shown first in every Mattermost message)
   Telegram:  TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, CREDENTIAL_MODE
              (root-storage|systemd), TELEGRAM_VERBOSE_PROGRESS (yes/no -
              also notify on every internal step, not just the stage-boundary
@@ -139,6 +143,9 @@ _STRING_FIELDS = {
     "CREDENTIAL_MODE": "credential_mode",
     "TELEGRAM_BOT_TOKEN": "telegram_bot_token",
     "TELEGRAM_CHAT_ID": "telegram_chat_id",
+    "NOTIFY_BACKEND": "notify_backend",
+    "MATTERMOST_WEBHOOK_URL": "mattermost_webhook_url",
+    "NOTIFY_HOST_LABEL": "notify_host_label",
     "STATE_DIR": "state_dir",
     "LOG_DIR": "log_dir",
     "STAGE2_OUTPUT": "stage2_output",
@@ -445,7 +452,10 @@ def main() -> int:
     config_path.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
     os.chmod(config_path, 0o600)
     if debug:
-        redacted = {key: ("<redacted>" if "token" in key else value) for key, value in config.items()}
+        redacted = {
+            key: ("<redacted>" if "token" in key or "webhook" in key else value)
+            for key, value in config.items()
+        }
         print(f"[bootstrap-remote] config: {json.dumps(redacted)}", file=sys.stderr)
 
     argv = [sys.executable, str(entrypoint), "install", "--config", str(config_path), "--yes"]

@@ -165,15 +165,25 @@ through the same journal).
 ### Orchestration / observability
 
 `state.json` under `state_dir` tracks per-step status across stage1 → reboot
-→ stage2, so a re-run resumes rather than repeats. Telegram progress +
-completion notifications (`telegram_bot_token`/`telegram_chat_id`,
-`telegram_verbose_progress`) including host facts. An ephemeral controller
+→ stage2, so a re-run resumes rather than repeats. Progress +
+completion notifications through one backend, `notify_backend` =
+`mattermost` | `telegram` | `none` (unset: inferred from whichever credential is
+present; both present and unset is a config error). Mattermost posts a
+`{"text": markdown}` to an incoming webhook (`mattermost_webhook_url`, a
+secret; `notify_host_label` is the optional leading label; stdlib `urllib`
+only, 2 attempts / 10 s timeout, a failed POST only warns). Milestone messages
+look like `✅ **netcup-1** (`vmi123`) | run `ab12cd34` | stage1 | done`; a
+failure carries a short redacted log tail as a fenced block. Telegram
+(`telegram_bot_token`/`telegram_chat_id`, `telegram_verbose_progress`) keeps
+working. Both include host facts. See `nyxloom/mattermost/CONSUMER.md` for the
+producer contract. The webhook URL is never printed (only its host), is
+redacted in `--debug`/`--debug-raw`, and is not written to `state.json`. An ephemeral controller
 SSH pubkey (`controller_ssh_pubkey`) is installed for external monitoring
 during the run and removed again only *after* the stage2-done marker is
 written (removing it earlier can strand an external poller mid-install with
 no way back in — a real bug found and fixed live, 2026-09-09).
 `credential_mode` (`root-storage` / `systemd`) selects how the Telegram
-token and controller pubkey are stored on disk.
+token / Mattermost webhook URL and controller pubkey are stored on disk.
 
 ## Not yet in v2 (v1 had some of this)
 

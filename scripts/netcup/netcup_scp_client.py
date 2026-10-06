@@ -359,7 +359,17 @@ _SENSITIVE_DICT_KEYS = {
     "authorization",
     "Authorization",
     "cloudInitResultBase64Encoded",
+    # Mattermost incoming-webhook URL: the URL itself is the credential.
+    "mattermost_webhook_url",
+    "MATTERMOST_WEBHOOK_URL",
 }
+
+# A Mattermost incoming-webhook URL anywhere inside a free-text string.
+_MATTERMOST_HOOK_URL_RE = re.compile(r"https?://[^\s/'\"`]+/hooks/[A-Za-z0-9_-]+")
+
+
+def _mask_webhook_urls(text: str) -> str:
+    return _MATTERMOST_HOOK_URL_RE.sub("***REDACTED_MATTERMOST_WEBHOOK_URL***", text)
 
 
 def _redact_for_log(value: Any) -> Any:
@@ -375,6 +385,8 @@ def _redact_for_log(value: Any) -> Any:
         return redacted
     if isinstance(value, list):
         return [_redact_for_log(v) for v in value]
+    if isinstance(value, str):
+        return _mask_webhook_urls(value)
     return value
 
 

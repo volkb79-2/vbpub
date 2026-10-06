@@ -744,8 +744,10 @@ _RE_TELEGRAM_BOT_TOKEN = re.compile(r"\b\d{6,}:[A-Za-z0-9_-]{30,}\b")
 
 
 def _redact_secrets(text: str) -> str:
-    # Telegram bot tokens are secrets; avoid printing or persisting them.
-    return _RE_TELEGRAM_BOT_TOKEN.sub("***REDACTED_TELEGRAM_BOT_TOKEN***", text)
+    # Telegram bot tokens and Mattermost webhook URLs are secrets; avoid
+    # printing or persisting them.
+    text = _RE_TELEGRAM_BOT_TOKEN.sub("***REDACTED_TELEGRAM_BOT_TOKEN***", text)
+    return netcup_scp_client._mask_webhook_urls(text)
 
 
 def _extract_primary_ipv4(server_details: Dict[str, Any]) -> Optional[str]:

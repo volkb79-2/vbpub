@@ -53,7 +53,9 @@ request filed earlier the same session._
 _2026-09-08: feasibility report + implementation plan now exist —
 [`zswap-shrinker-threshold-feasibility.md`](zswap-shrinker-threshold-feasibility.md)._
 
-## Feature request: adopt nyxloom's Mattermost notification pattern (not the package itself)
+## DONE (LT-PREP, 2026-10-06): adopt nyxloom's Mattermost notification pattern (not the package itself)
+
+Implemented as `debian_install_v2/notify.py` + `notify_backend` config; historical investigation below.
 
 Operator asked (2026-09-08, netcup live-test session) whether the scp-api/
 debian-install-v2 tooling could adopt nyxloom's Telegram/Mattermost

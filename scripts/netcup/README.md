@@ -182,7 +182,7 @@ spelling remains an alias for `--config FILE`.
 ### Notifications
 
 The installer supports one selected notification backend: `telegram`,
-`mattermost`, or `none`. Telegram remains the compatibility default. For the
+`mattermost`, or `none`. When unset it is inferred from whichever credential is present (both present is a config error); Mattermost is the default for new setups. For the
 public Mattermost deployment described by
 [`nyxloom/mattermost/CONSUMER.md`](../../nyxloom/mattermost/CONSUMER.md), use
 the producer's incoming-webhook secret in the local `.env`. The externally

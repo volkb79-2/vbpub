@@ -16,7 +16,7 @@ from cli_extended import (
 )
 
 from .actions import ActionError, HostActions
-from .config import Config, ConfigError, load_config, save_config
+from .config import Config, ConfigError, load_config, require_notify_credentials, save_config
 from .customscript import build_customscript_bundle
 from .installer import Installer, InstallerError
 from .state import StateError, StateStore
@@ -76,8 +76,14 @@ def _load_config(args: Any, runtime: Any) -> Config:
         config = load_config(config_path, config_json)
     except ConfigError as exc:
         raise CliFailure(f"invalid installation configuration: {exc}", exit_code=2) from exc
+    try:
+        require_notify_credentials(config)
+    except ConfigError as exc:
+        raise CliFailure(f"invalid installation configuration: {exc}", exit_code=2) from exc
     if config.telegram_bot_token:
         runtime.output.secrets = (*runtime.output.secrets, config.telegram_bot_token)
+    if config.mattermost_webhook_url:
+        runtime.output.secrets = (*runtime.output.secrets, config.mattermost_webhook_url)
     return config
 
 
@@ -93,7 +99,7 @@ def _stage2_config(state_dir: str) -> Config:
     config_data = {
         key: value
         for key, value in saved.items()
-        if key not in {"telegram_bot_token", "telegram_chat_id"}
+        if key not in {"telegram_bot_token", "telegram_chat_id", "mattermost_webhook_url"}
     }
     try:
         config = load_config(raw_json=json.dumps(config_data))
@@ -281,9 +287,10 @@ def _build_customscript(args: Any, runtime: Any) -> int:
         )
     except (ValueError, ConfigError) as exc:
         raise CliFailure(str(exc), exit_code=2, show_help=True) from exc
-    if config.telegram_bot_token and not runtime.debug_raw:
+    if (config.telegram_bot_token or config.mattermost_webhook_url) and not runtime.debug_raw:
         raise CliFailure(
-            "the generated bundle contains the Telegram bot token and must not be redacted",
+            "the generated bundle contains a notification secret (Telegram bot token or "
+            "Mattermost webhook URL) and must not be redacted",
             exit_code=2,
             hint=(
                 "write it to a protected file with umask 077, or explicitly use "
