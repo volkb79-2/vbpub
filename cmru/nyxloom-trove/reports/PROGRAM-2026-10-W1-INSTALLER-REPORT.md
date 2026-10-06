@@ -256,8 +256,15 @@ the first sorted asset there.
 - Round-1 files: 129 passed (`test_installer_w1_round1.py` 108 + `test_ins18_resolve_host.py` 21).
 - Re-render of `ciu/get.py` / `tls-edge/get.py`: none needed after round 1: the template did not change
   after the predecessor's re-render (`TestRealProjects` compares the committed files byte for byte and passes).
-- Full cmru suite, ciu enrollment tests and the `coverage` / `canary` lanes: see the final lines
-  below.
+- Full cmru suite via `pt.py`, no `--maxfail`: 3163 passed, 2 skipped (before the last 3 coverage
+  tests; the first full run also caught the new verb missing from SPEC's CLI inventory and used
+  `--project`, which `test_help_lists_every_public_option` forbids: fixed, see ruling A).
+- ciu `tests/tests/test_getpy_enroll.py` + `test_ciu_host_enroll.py` (PYTHONPATH with `ciu/src`): 172
+  passed, 8 skipped.
+- Lanes (each run once after the last edit, at commit `d1aed127f`): `coverage` verdict PASS
+  (3166 passed, 2 skipped, 100%); `canary` verdict PASS. The first attempt FAILED honestly: 99.96%
+  (two `manifest.bundle_files` branches and `resolve()`'s variant pass-through untested, now covered)
+  and one tls-edge-script test that must skip when the container checkout has no `tls-edge/`.
 
 ### Deviations
 
