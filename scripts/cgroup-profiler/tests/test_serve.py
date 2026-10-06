@@ -1399,6 +1399,24 @@ class TestRetention:
         assert (removed, kept) == ([], 0)
         assert bad_dir.exists()
 
+    def test_retention_requires_positive_completion_of_a_placement_journal(self, tmp_path):
+        sessions_dir = tmp_path / "sessions"
+        server = serve.SessionServer(sessions_dir=str(sessions_dir), keep_sessions=0)
+        records = {
+            "s-20260101T000000Z-aaaa": "{bad json",
+            "s-20260102T000000Z-aaaa": "[]",
+            "s-20260103T000000Z-aaaa": '{"state":"recovery-required"}',
+            "s-20260104T000000Z-aaaa": '{"state":"complete"}',
+        }
+        for session_id, journal in records.items():
+            self._finished(sessions_dir, session_id, "2026-01-01T00:00:00Z")
+            (sessions_dir / session_id / "placement-state.json").write_text(journal)
+
+        removed, kept = server._run_retention()
+        assert removed == ["s-20260104T000000Z-aaaa"]
+        assert kept == 0
+        assert sorted(path.name for path in sessions_dir.iterdir()) == list(records)[:3]
+
 
 # ── caps.TempCaps must never be imported by this module ─────────────────
 
@@ -3180,12 +3198,8 @@ def test_real_socket_does_not_dispatch_unterminated_start_request(
         simple_server, "handle_start",
         lambda args: (dispatches.append(args) or {"ok": True, "contract": 1}),
     )
-    thread = threading.Thread(target=simple_server._accept_loop, daemon=True)
-    thread.start()
+    thread = _start_ready_socket_server(simple_server)
     try:
-        deadline = time.monotonic() + 5.0
-        while not os.path.exists(socket_path) and time.monotonic() < deadline:
-            time.sleep(0.01)
         assert os.path.exists(socket_path)
 
         request = {

@@ -123,6 +123,11 @@ Both directions require the verified host-proc view and confirm resulting
 membership. Successful moves are written to the session's `events.jsonl`; an
 unresolvable or unrestored survivor leaves the scope, leaf, and recovery
 record intact and appears as `placement.error` in the stop summary.
+If that happens, keep the sessions volume and inspect the returned
+`session_dir`'s `placement-state.json`; a daemon restart retries the recorded
+restoration. `ctl gc` preserves an incomplete journal, including when the
+normal count or age limit has been reached. Do not delete that session record
+to make the retention count look clean.
 Do not set host namespace modes. On startup `serve` verifies that PID 1 in
 that proc view
 belongs to a PID namespace distinct from the daemon's and refuses if either

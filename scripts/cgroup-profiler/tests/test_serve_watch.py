@@ -287,12 +287,35 @@ class TestRealSubtreeEnforcement:
     ):
         """Host PIDs are observation-only in the private PID namespace;
         without placement the daemon must report, never signal."""
-        lane = subprocess.Popen(
-            ["sleep", "30"], env=dict(os.environ, RUN_GATE_PROFILE_SESSION=TOKEN)
-        )
-        parked = threading.Event()
-        server = None
+        ready_read, ready_write = os.pipe()
         try:
+            release_read, release_write = os.pipe()
+        except BaseException:
+            os.close(ready_read)
+            os.close(ready_write)
+            raise
+        lane = None
+        server = None
+        parked = threading.Event()
+        try:
+            lane = subprocess.Popen(
+                [
+                    sys.executable, "-c",
+                    f"import os; os.write({ready_write}, b'R'); os.read({release_read}, 1)",
+                ],
+                env=dict(os.environ, RUN_GATE_PROFILE_SESSION=TOKEN),
+                pass_fds=(ready_write, release_read),
+            )
+            os.close(ready_write)
+            ready_write = None
+            os.close(release_read)
+            release_read = None
+            # Popen's exec handshake does not mean the child has run yet.
+            # Wait for an exact readiness byte, then keep the child blocked
+            # on the parent-controlled pipe through the daemon's initial
+            # /proc scan and the no-signal assertions. This makes PID
+            # visibility independent of how long the parent is descheduled.
+            assert os.read(ready_read, 1) == b"R", "token child exited before readiness"
             server = _server(
                 tmp_path, cgroup_root=_fake_cgroup_root(tmp_path, procs=str(lane.pid)),
                 proc_root="/proc", host_proc_root=str(_fake_proc(tmp_path)),
@@ -327,11 +350,25 @@ class TestRealSubtreeEnforcement:
             assert sess.finished is False
         finally:
             parked.set()
-            if server is not None and SESSION_ID in server._sessions:
-                server._dispatch({"verb": "stop", "args": {"session": SESSION_ID}, "contract": 1})
-            if lane.poll() is None:
-                lane.kill()
-            lane.wait(timeout=10)
+            try:
+                if server is not None and SESSION_ID in server._sessions:
+                    server._dispatch({"verb": "stop", "args": {"session": SESSION_ID}, "contract": 1})
+            finally:
+                try:
+                    if lane is not None and lane.poll() is None:
+                        try:
+                            os.write(release_write, b"X")
+                        except BrokenPipeError:
+                            pass
+                        try:
+                            lane.wait(timeout=10)
+                        except subprocess.TimeoutExpired:
+                            lane.kill()
+                            lane.wait(timeout=10)
+                finally:
+                    for fd in (ready_read, ready_write, release_read, release_write):
+                        if fd is not None:
+                            os.close(fd)
 
     def test_a_progress_stream_is_read_through_proc_root(self, tmp_path):
         # The lane's stream path is read as `/proc/<pid>/root/<path>`; in
