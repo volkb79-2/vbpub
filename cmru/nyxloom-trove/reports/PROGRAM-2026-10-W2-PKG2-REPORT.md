@@ -123,3 +123,58 @@ and the factory param, but no dedicated plant was run).
    `test_every_delegate_builder_takes_its_policy_from_the_shared_factory` already monkeypatches it and
    will hold after the flip.
 8. `exit_codes.py` merge: both PKG-1 and PKG-2 may add `POLICY_REFUSED = 4`; keep one.
+9. D-A (review): the `cmru init` wizard needs `questionary` (prompt driver), and cmru has `dependencies = []`
+   with no extra; the error hint points at `cli-extended[interactive]`, which a user cannot install because
+   cli_extended is bundled in the wheel. `cmru/pyproject.toml` belongs to the merged PKG-4, so W2-INTEG adds an
+   `interactive = ["questionary>=2.1.1"]` extra (as nyxloom does) and rewrites the hint to name it.
+
+## Review fix round 1
+Commits after `d446e68dd`: `7a54514ce` (fixes), a test-fake follow-up, and a second fake follow-up (final head in the hand-back).
+
+- **B1** `resolve.py` (`_run_resolve`): the installer section is read from `load_forge_config(cfg_path).projects[name].installer`,
+  the same loader `getpy.render_from_config` uses; no getattr fallback. New real-file tests (`_real_config`, an on-disk
+  cmru.toml from `tests.test_installer._minimal_toml` with `[project.installer]`, real `load_config` + `load_forge_config`):
+  `test_resolve_runs_against_a_real_config_with_an_installer_section[explicit|omitted-standalone|all]` (also covers
+  the shape rule against a real config and checks the installer `asset_suffix` ".tar.xz" reaches `resolve()`) and
+  `..._without_an_installer_section`. The SimpleNamespace fakes in `_resolve_env` (and in `test_release_coverage_gaps`,
+  `test_ins18_resolve_host`, `test_resolve_format`, `test_semantic_boundary_contracts._install_config_loader`,
+  `test_small_operational_residuals`) now also fake `load_forge_config`; the fake-based shape tests are kept and
+  the real-config tests run the shapes once against real files.
+- **B2** `resolve_via_latest_json` tuple is `(OSError, ValueError, http.client.HTTPException)`; parametrised cases
+  `incomplete-read`, `bad-status-line` added to `test_latest_json_failures_fall_back_to_the_release_scan`.
+- **versions render ruling:** the template read is separate (`OSError`/`UnicodeDecodeError` -> `VersionsError`, new
+  test `test_an_unreadable_user_template_is_a_versions_error`); the RENDER call is in `except Exception` with a comment
+  naming it the one justified broad catch. Tests: `test_a_user_template_that_raises_anything_is_a_versions_error`
+  (`{{ 1/0 }}`, `{{ 'a' + 1 }}`) and `test_a_template_error_exits_2_through_the_versions_entry` (the exit-2 mapping
+  is exercised with a stubbed `_dispatch_versions` raising `VersionsError`; the `{{ 1/0 }}` path itself is checked
+  at `_template_artifacts` level, not end to end through the CLI). The now-unused `TemplateError` import was removed.
+- **get-py:** `render_from_config` raises `RenderError` (a `ValueError` subclass the CLI already maps to exit 2) with a
+  hint; `test_get_py_without_an_installer_section_is_a_clean_exit_2_with_a_hint`.
+- **N1** `test_init_scaffolding.py::test_a_plan_the_real_loader_rejects_is_refused_before_anything_is_written`
+  (`build_files` patched to return a TOML the real loader rejects; asserts exit 2 and an untouched tree).
+- **N2** the help-default assertion is now the regex `\(default: \$NAME[,)]` (delimiter-exact).
+- **N3** `--repo` negatives `a/b/c`, `a/b c`, `a/b!`, `/b`. `fullmatch` IS used (`resolve.py:190`); the earlier `match`
+  mutant survived only for lack of these cases. I did not re-plant `match` after adding them.
+- **Docs:** `cmru/docs/plan-contextual-config.md` (get-py multi-project stdout) corrected.
+- **D-B:** init option names accepted as they are (no change).
+
+Plants (each by Edit, targeted suite, then restore):
+
+| Plant | Killed by |
+|---|---|
+| B1: `installer = proj.installer` | the 3 `..._real_config_with_an_installer_section` cases + `..._without_...` (+3 fake-based tests) |
+| B2: HTTPException removed from the tuple | `test_latest_json_failures_fall_back_to_the_release_scan[incomplete-read]`, `[bad-status-line]` |
+| N1: `validate(files, root)` removed | `test_a_plan_the_real_loader_rejects_is_refused_before_anything_is_written` |
+| versions: render catch narrowed to `(ValueError, OSError)` | both `test_a_user_template_that_raises_anything...` cases + `test_versions.py::test_template_dependency_and_strict_render_failures` |
+
+Caveat on the plants: at the time they ran, three fake-based tests in `test_release_coverage_gaps.py` were already
+failing on the clean tree (they had not yet been given the forge fake); the named new tests are the kills, and the
+clean-tree baseline was restored to 456 passed before the gate.
+
+Gates (each read in a separate step): first coverage run after the fixes FAILED, 7 tests in four more files whose
+fakes lacked the forge config (fixed in the follow-up commits); then `coverage` PASS (3338 passed, 2 skipped,
+100.00%, `/tmp/run-gate/lanes/coverage/bd76db6a1e073cfb36197cae415ca20a.log`) and `canary` PASS
+(`/tmp/run-gate/lanes/canary/70dc78860c998fdf9ec4574abbc5ab6f.log`).
+
+Process note: one no-op `cat >> file <<EOF EOF` shell command was issued by mistake (it wrote nothing; confirmed by `git status`).
+All repository edits were made with Edit/Write.
