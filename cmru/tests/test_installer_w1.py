@@ -828,9 +828,11 @@ class TestLegacyMigration:
     def test_failed_migration_leaves_the_legacy_install_working(self, tmp_path):
         ns, bundles = _plain_setup(tmp_path)
         old = self._legacy(ns)
+        old_rollback = root_of(ns) / "releases" / "demo-v0.0.1"  # the old installer's target
         make_bundle(bundles, V2, manifest=None, files={"VERSION": b"2"})
         with _exits(1):
             update(ns, version=V2)
+        assert old_rollback.is_dir()  # nothing legacy is pruned before the atomic swap
         assert (root_of(ns) / "current").resolve() == old and (old / "VERSION").exists()
         assert (root_of(ns) / "venv" / "bin" / "legacy-tool").exists()
         assert not (root_of(ns) / "state.json").exists()

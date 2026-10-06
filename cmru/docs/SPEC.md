@@ -1404,7 +1404,12 @@ get.py rollback [--version TAG] [--scope system|user]
 `--config FILE` is installed as `<root>/shared/host.toml` (mode 0600, written atomically) once
 the release is live, and is handed to the adapter as `--config` during the transaction;
 without it the adapter gets `<root>/shared/host.toml`. There is no `--manifest-pubkey` flag:
-the key is pinned in the rendered `get.py` (S6.15).
+the key is pinned in the rendered `get.py` (S6.15). `status` is read-only: it reconciles a
+`state.json` that is missing or behind `current` in memory and never writes it (the next
+install/update/rollback does). Render-time validation refuses `install_dir_system` set to `/`
+or to `/usr`, `/etc`, `/bin`, `/sbin`, `/lib`, `/var`, `/boot` or `/home` (a path below one,
+such as `/usr/local/<name>`, is fine), and a `preserve` or `install_dir_user` entry that
+normalises to the root itself (`.`, `a/..`).
 
 **S6.3** Transactional pipeline (install / update):
 
@@ -1414,12 +1419,20 @@ The pipeline is **fail-closed** (S6.15): every verification failure is exit 1 an
 1. **Pre-flight** — `required_commands`, `python3-venv` (when wheels are configured) and,
    when a `manifest_pubkey` is configured, the `minisign` binary, ALL before any network I/O
    (exit 3 if missing). System scope needs root (exit 3).
-2. **Lock + read state** — `flock` on `<root>/.lock`; read `state.json`; delete leftover
-   `.incomplete` release dirs (crash recovery).
+2. **Lock + read state** — `flock` on `<root>/.lock` (opened `O_NOFOLLOW`); as root,
+   `<root>`, `releases`, `shared` and `bin` must be real directories (not symlinks) owned by
+   the effective uid and not group/world-writable, and are created that way (`0755`), else
+   exit 1 with nothing written through them; read `state.json`; delete leftover `.incomplete`
+   release dirs (crash recovery; never for a pre-W1 install, whose old releases survive until
+   the new release is live).
 3. **Resolve** — `--version X` installs exactly X (no "latest" lookup happens). Without it the
    highest-semver `TAG_PREFIX*` release is resolved and the resolved tag is printed. The tag
    must be `<prefix><version>` made of `[A-Za-z0-9._+-]` (exit 2 otherwise). Re-running the
-   current version and variant is a no-op that re-verifies the recorded manifest digest.
+   current version and variant is a no-op that re-verifies the recorded manifest digest (and
+   still applies `--config` and rewrites the launchers). `--version ""` is exit 2, never
+   "latest". An unpinned `update` whose latest release is OLDER than the installed one is
+   refused (exit 1; the message says to pass `--version`); an explicit older `--version` is
+   allowed and prints a downgrade notice.
 4. **Download + SHA256** — fetch `<tag><asset_suffix>` + its `.sha256` sidecar (for a
    multi-variant release `<tag>-<variant><asset_suffix>`, S6.12). The sidecar must be exactly
    `<64 hex>[  <asset name>]`; a mismatch is exit 1, before extraction. HTTPS only, on every
@@ -1430,11 +1443,18 @@ The pipeline is **fail-closed** (S6.15): every verification failure is exit 1 an
    have `schema_version` 1 and, when it carries `tag`/`version`, they must equal the requested
    tag. These in-memory bytes are the ONLY manifest used afterwards.
 6. **Build the release** at its final path `<root>/releases/<tag>-<manifest12>[-<variant>]/`,
-   marked `.incomplete`: extract the bundle to `tree/` (`filter="data"` plus a pre-scan that
-   refuses the bundle on absolute paths, `..`, device nodes, absolute/escaping links; the
-   manifest and signature are not extracted), write the verified `manifest.json` (+ `.minisig`),
-   check every manifest `files` entry (the adapter MUST be listed, or the install is refused),
-   link `preserve` paths, then install wheels (S6.16).
+   marked `.incomplete`: extract the bundle to `tree/` (`filter="data"` where the interpreter
+   has `tarfile.data_filter`, otherwise setuid/setgid/group-write stripped and the archive's
+   owner ignored; plus a pre-scan that refuses the bundle on absolute paths, `..`, device
+   nodes, absolute/escaping links, and any non-directory member that is neither a key of
+   manifest `files` nor a wheel matching a configured wheel glob; a symlink or hardlink is
+   allowed only when its target is a listed file; the manifest and signature are not
+   extracted), write the verified `manifest.json` (+ `.minisig`), check every manifest `files`
+   entry (the adapter MUST be listed, or the install is refused; a `preserve` path that this
+   installer replaced with a link into `<root>/shared` is the operator's copy and is not
+   hashed), link `preserve` paths, then install wheels (S6.16). Resource bounds, checked
+   before anything is written: download at most 512 MiB, declared extracted size at most
+   2 GiB, at most 50,000 archive members; a bundle beyond any of them is refused (exit 1).
 7. **Invoke adapter** (`bootstrap` on install, `apply` on update/migration) — if `entrypoint`
    is set. Non-zero exit aborts before the swap.
 8. **Commit** — write `release.json`, then `.complete` (last), then atomically swap `current`,
@@ -1631,7 +1651,10 @@ entry is exit 1). The verified wheels are copied to `<release>/wheelhouse/` and 
 (`python3 -m venv`, so the `python3-venv` package is a prerequisite, exit 3) is populated with
 `pip install --isolated --no-index --find-links <wheelhouse> --require-hashes -r
 requirements.lock`, then `pip check`: no index, no network, no resolver choice, and any wheel
-swapped after verification fails the hash lock.
+swapped after verification fails the hash lock. pip also runs with `PIP_CONFIG_FILE=/dev/null`
+and no `PIP_*` variables from the caller: `--isolated` alone leaves pip's global config
+(`/etc/pip.conf`, `$XDG_CONFIG_DIRS`) active, and a global `target`/`prefix` could redirect
+the install. The wheel version that goes into the lock must be a plain version string.
 
 **S6.17** Launchers. `launchers = ["a", "b"]` (plain command names) makes the installer create
 `<root>/bin/<cmd>` symlinks to `../current/venv/bin/<cmd>`, rewritten atomically after every

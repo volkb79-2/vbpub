@@ -282,23 +282,34 @@ The rendered `get.py` is a fail-closed, transactional installer you ship as a re
    paths, and the project files. The manifest is JSON with `schema_version: 1`, `tag`/`version`
    if present equal to the release tag, one `{"sha256": ..., "wheel": ..., "size": ...}` entry
    per configured wheel distribution (key = distribution name), and a `files` map
-   `{relpath: {"sha256": ...}}` that MUST cover the `entrypoint`.
+   `{relpath: {"sha256": ..., "size": ..., "mode": ...}}` that MUST cover the `entrypoint` and
+   EVERY other regular file in the bundle: the installer refuses a bundle with a member that is
+   not listed there (wheels are hashed through their distribution entry instead), and a
+   symlink or hardlink only when its target is a listed file. A project whose release is a
+   plain tarball writes that manifest with `cmru handler bundle-manifest --project NAME
+   --tag TAG --root <staged top-level dir>` as the last step before `tar` (tls-edge's
+   `scripts/build-artifact.sh` does); `cmru.manifest.build_manifest(..., bundle_root=DIR)`
+   embeds the same `files` map for wheel-based bundles.
 3. **Render and commit** `cmru get-py myproj --config cmru.toml --output get.py`.
-4. **Users** run the installer. The one-liner (stdin carries the script, so a token for a
-   private repo comes from `--github-token-file` or `GITHUB_TOKEN`, never `--github-token-stdin`):
+4. **Users** run the installer. It runs as root, so lead with the verified, chained form: a
+   private temp directory (no predictable `get.py` in the current directory), HTTPS only, and a
+   checksum that must pass before anything runs (`&&` stops the chain on any failure). Take
+   `<sha256-of-get.py>` from a source you already trust (your own release notes or controller):
+   cmru does not publish a checksum for `get.py`.
+
+   ```sh
+   d=$(mktemp -d) && cd "$d" && curl -fsSLo get.py --proto '=https' https://github.com/<owner>/<repo>/releases/download/<tag>/get.py && echo "<sha256-of-get.py>  get.py" | sha256sum -c - && sudo python3 get.py install --version <tag>
+   ```
+
+   The pipe form is **unverified**: nothing checks the script before root runs it, and
+   `curl -f ... | sudo python3 -` exits 0 on a 404 (empty input is an empty program), so a
+   failed download looks like a successful install. Use it only for a throwaway host. Stdin
+   carries the script, so a token for a private repo comes from `--github-token-file` or
+   `GITHUB_TOKEN`, never `--github-token-stdin`:
 
    ```sh
    curl -fsSL https://github.com/<owner>/<repo>/releases/download/<tag>/get.py \
      | sudo python3 - install --version <tag>
-   ```
-
-   The careful form downloads, checks, then runs (the checksum is published next to the
-   release or printed by the controller you already trust):
-
-   ```sh
-   curl -fsSLo get.py https://github.com/<owner>/<repo>/releases/download/<tag>/get.py
-   echo "<sha256-of-get.py>  get.py" | sha256sum -c -
-   sudo python3 get.py install --version <tag>
    ```
 
    Then `python3 get.py update [--version TAG]`, `status` and `rollback [--version TAG]`.

@@ -102,3 +102,67 @@ def test_cli_passes_the_installer_asset_suffix(monkeypatch):
     _cli(monkeypatch, resolver, installer=SimpleNamespace(asset_suffix=".tar.xz"))
     assert resolve.resolve_main(["demo"]) == 1
     assert got["asset_suffix"] == ".tar.xz"
+
+
+# ─── review round 1: the leftovers ───────────────────────────────────────────
+
+def test_installer_release_without_a_sidecar_is_an_error_not_a_missing_digest():
+    with pytest.raises(RuntimeError, match="no demo-v1.0.0.tar.xz.sha256 asset"):
+        _host(["demo-v1.0.0.tar.xz"]).resolve_latest("demo-v", asset_suffix=".tar.xz")
+
+
+def test_a_release_without_a_sidecar_still_resolves_when_no_suffix_is_asked(monkeypatch):
+    out = _host(["demo-v1.0.0.tar.xz"]).resolve_latest("demo-v")
+    assert out["asset"] == "demo-v1.0.0.tar.xz" and out["sha256"] is None
+
+
+@pytest.mark.parametrize("assets,variant,expected", [
+    (["z.tar.xz", "demo-v1.0.0.tar.xz", "a.tar.xz"], "", "demo-v1.0.0.tar.xz"),
+    (["z.tar.xz", "a.tar.xz"], "", "a.tar.xz"),  # no tag match: first in sorted order
+    (["demo-v1.0.0-py312.tar.xz", "demo-v1.0.0-py39.tar.xz"], "py39",
+     "demo-v1.0.0-py39.tar.xz"),
+    (["demo-v1.0.0-py39.tar.xz", "demo-v1.0.0-py312.tar.xz"], "py312",
+     "demo-v1.0.0-py312.tar.xz"),
+])
+def test_primary_asset_is_chosen_deterministically(monkeypatch, assets, variant, expected):
+    monkeypatch.setattr("urllib.request.urlopen",
+                        lambda url, **kw: _Resp(DIGEST.encode() + b"  x\n"))
+    names = assets + [f"{a}.sha256" for a in assets]
+    for order in (names, list(reversed(names))):
+        out = _host(order).resolve_latest("demo-v", asset_suffix=".tar.xz", variant=variant)
+        assert out["asset"] == expected
+
+
+def test_an_unknown_variant_resolves_to_nothing():
+    assert _host(["demo-v1.0.0-py39.tar.xz", "demo-v1.0.0-py39.tar.xz.sha256"]
+                 ).resolve_latest("demo-v", asset_suffix=".tar.xz", variant="py27") is None
+
+
+@pytest.mark.parametrize("digest", ["zz" * 32, "ab" * 31, "AB" * 33, 12345])
+def test_latest_json_pointer_with_a_malformed_sha256_is_an_error(monkeypatch, digest):
+    monkeypatch.setattr(resolve, "resolve_via_latest_json", lambda url, prefix: {
+        "version": "1.0.0", "tag": "demo-v1.0.0", "asset": "a.tar.xz",
+        "sha256": digest, "url": "https://dl/a"})
+    with pytest.raises(RuntimeError, match="not 64 hex"):
+        resolve.resolve(object(), "demo-v", gh_releases_url="https://x")
+
+
+def test_latest_json_pointer_with_a_good_sha256_is_used(monkeypatch):
+    pointer = {"version": "1.0.0", "tag": "demo-v1.0.0", "asset": "a.tar.xz",
+               "sha256": DIGEST, "url": "https://dl/a"}
+    monkeypatch.setattr(resolve, "resolve_via_latest_json", lambda url, prefix: pointer)
+    assert resolve.resolve(object(), "demo-v", gh_releases_url="https://x",
+                           asset_suffix=".tar.xz") == pointer
+
+
+def test_latest_json_pointer_without_a_digest_falls_through_for_an_installer(monkeypatch):
+    monkeypatch.setattr(resolve, "resolve_via_latest_json", lambda url, prefix: {
+        "version": "1.0.0", "tag": "demo-v1.0.0", "asset": "a.tar.xz",
+        "sha256": None, "url": "https://dl/a"})
+
+    class Host:
+        def resolve_latest(self, prefix, **kw):
+            return {"tag": "from-host", **kw}
+
+    out = resolve.resolve(Host(), "demo-v", gh_releases_url="https://x", asset_suffix=".tar.xz")
+    assert out["tag"] == "from-host" and out["asset_suffix"] == ".tar.xz"
