@@ -8,6 +8,7 @@ the ``installed-wheel`` gate lane (``tools/installed_wheel_smoke.py``).
 from __future__ import annotations
 
 import importlib.util
+import os
 import re
 import tomllib
 import zipfile
@@ -65,9 +66,23 @@ def test_skills_ship_as_package_data_and_the_checkout_skill_dir_is_gone():
     assert "skills/*/*" in patterns and "skills/*/**/*" in patterns
     skill = PROJECT / "src" / "cmru" / "skills" / "cmru-cli" / "SKILL.md"
     assert skill.is_file()
-    assert not (PROJECT / ".claude" / "skills" / "cmru-cli").exists()  # no second source of truth
     head = skill.read_text(encoding="utf-8").split("---", 2)[1]
     assert re.search(r"^name: cmru-cli$", head, re.MULTILINE)
+
+
+def test_checkout_skill_discovery_is_a_relative_symlink_to_the_packaged_skill():
+    """D-2 bridge until `cmru skills install` (PKG-5): Claude Code discovers
+    `cmru/.claude/skills/cmru-cli`, which is a symlink (no second source of
+    truth) to the packaged skill; the wheel never sees it (it lives outside
+    the package source roots)."""
+    link = PROJECT / ".claude" / "skills" / "cmru-cli"
+    packaged = PROJECT / "src" / "cmru" / "skills" / "cmru-cli"
+    assert link.is_symlink()
+    assert os.readlink(link) == "../../src/cmru/skills/cmru-cli"
+    assert link.resolve() == packaged.resolve()
+    assert (link / "SKILL.md").read_text(encoding="utf-8") == (packaged / "SKILL.md").read_text(encoding="utf-8")
+    roots = PYPROJECT["tool"]["setuptools"]["packages"]["find"]["where"]
+    assert all(not (PROJECT / root / ".claude").exists() for root in roots)
 
 
 # --- gate/bootstrap configuration -------------------------------------------
@@ -80,6 +95,9 @@ def test_no_gate_or_bootstrap_config_puts_cli_extended_source_on_a_path(relative
     code = _code_lines(PROJECT / relative)
     assert "libraries/cli-extended" not in code, relative
     assert "cli-extended/src" not in code and "cli_extended/src" not in code, relative
+    # The split path form (`REPOSITORY_ROOT / "libraries" / "cli-extended" / "src"`),
+    # which the literal greps above cannot see: "cli-extended" as a path component.
+    assert not re.search(r"""["']/?cli[-_]extended/?["']""", code), relative
 
 
 def test_every_gate_pythonpath_keeps_the_worktree_root_only():

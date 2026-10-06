@@ -291,6 +291,30 @@ def test_dockerfile_fetches_the_release_by_sha256_before_cmru_is_installed():
     assert "COPY tester-unified/fetch-cli-extended.py" in code
 
 
+def test_dockerfile_pins_the_released_asset_and_digest_by_default_and_latest_is_opt_in():
+    """D-3: the repo carries the sha256 pin (the pointer cannot vouch for itself);
+    `latest.json` mode needs an explicit CLI_EXTENDED_RESOLVE=latest build arg."""
+    text = DOCKERFILE.read_text("utf-8")
+    args = dict(re.findall(r"^ARG (CLI_EXTENDED_\w+)=(\S*)$", text, re.MULTILINE))
+    assert args["CLI_EXTENDED_RESOLVE"] == "pinned"
+    url, digest = args["CLI_EXTENDED_WHEEL_URL"], args["CLI_EXTENDED_WHEEL_SHA256"]
+    fetcher = _load_fetcher()
+    assert fetcher._check_url(url) == url  # the allowlisted release prefix
+    named = fetcher._WHEEL.fullmatch(url.rsplit("/", 1)[-1])
+    assert named is not None
+    declared = tomllib.loads((REPO_ROOT / "cmru" / "pyproject.toml").read_text("utf-8"))
+    (spec,) = [d for d in declared["project"]["dependencies"] if gen.requirement_name(d) == "cli-extended"]
+    assert fetcher._at_least(named["version"], spec.replace(" ", "").split(">=")[1])
+    assert re.fullmatch(r"[0-9a-f]{64}", digest)
+    flat = " ".join(re.sub(r"\\\n\s*", " ", _dockerfile_run_lines()).split())
+    # pinned branch passes the pin, latest branch passes only the pointer, anything else fails the build.
+    assert re.search(r'pinned\) set -- --wheel-url "\$\{CLI_EXTENDED_WHEEL_URL\}" '
+                     r'--sha256 "\$\{CLI_EXTENDED_WHEEL_SHA256\}" ;;', flat)
+    assert re.search(r'latest\) set -- --pointer-url "\$\{CLI_EXTENDED_POINTER_URL\}" ;;', flat)
+    assert re.search(r'\*\) echo "[^"]*" >&2; exit 1 ;;', flat)
+    assert 'fetch-cli-extended.py --dest /tmp/cli-extended-release --min-version 0.2.0 "$@"' in flat
+
+
 def test_dockerfile_fetch_floor_equals_cmru_declared_floor():
     code = re.sub(r"\\\n\s*", " ", _dockerfile_run_lines())
     floor = re.search(r"fetch-cli-extended\.py .*?--min-version (\S+)", code).group(1)
@@ -365,9 +389,111 @@ def test_fetcher_refuses_foreign_hosts_old_versions_and_odd_names(tmp_path):
     fetch, _ = _fake_release()
     with pytest.raises(SystemExit, match="older than the declared floor"):
         fetcher.fetch_wheel(fetcher.POINTER_URL, None, None, tmp_path, "0.3.0", fetch)
-    odd, _ = _fake_release(url=_BASE + "cmru-0.2.0-py3-none-any.whl")
+    odd, _ = _fake_release(url=_BASE + "cmru-0.2.0-py3-none-any.whl", asset="cmru-0.2.0-py3-none-any.whl")
     with pytest.raises(SystemExit, match="not a cli_extended"):
         fetcher.fetch_wheel(fetcher.POINTER_URL, None, None, tmp_path, "0.2.0", odd)
+
+
+@pytest.mark.parametrize("field, value, message", [
+    ("asset", "cli_extended-0.9.9-py3-none-any.whl", "asset .* is not the url's file name"),
+    ("asset", None, "asset None is not the url's file name"),
+    ("version", "0.3.0", "version '0.3.0' is not the wheel's '0.2.0'"),
+    ("version", None, "version None is not the wheel's '0.2.0'"),
+])
+def test_fetcher_cross_checks_the_pointer_asset_and_version_against_the_url(tmp_path, field, value, message):
+    fetcher = _load_fetcher()
+    fetch, _ = _fake_release(**{field: value})
+    with pytest.raises(SystemExit, match=message):
+        fetcher.fetch_wheel(fetcher.POINTER_URL, None, None, tmp_path / "x", "0.2.0", fetch)
+    assert not (tmp_path / "x").exists()
+
+
+@pytest.mark.parametrize("version, floor, expected", [
+    ("0.2", "0.2.0", True), ("0.2.0", "0.2", True), ("0.2.0.0", "0.2", True),
+    ("0.1.9", "0.2", False), ("0.2", "0.2.1", False), ("1", "0.2.0", True),
+])
+def test_fetcher_pads_version_tuples_before_comparing_to_the_floor(version, floor, expected):
+    assert _load_fetcher()._at_least(version, floor) is expected
+
+
+def test_fetcher_turns_a_failed_wheel_download_into_a_clean_exit(tmp_path):
+    fetcher = _load_fetcher()
+    fetch, _ = _fake_release()
+
+    def pointer_only(url):
+        if url.endswith(_WHEEL_NAME):
+            raise OSError("connection reset")
+        return fetch(url)
+
+    with pytest.raises(SystemExit) as caught:
+        fetcher.fetch_wheel(fetcher.POINTER_URL, None, None, tmp_path / "x", "0.2.0", pointer_only)
+    assert caught.value.code == "fetch-cli-extended: cannot download " + _BASE + _WHEEL_NAME + ": connection reset"
+    assert not (tmp_path / "x").exists()
+
+
+# --- B2: HTTPS only across redirects, to allowlisted hosts only ---------------
+
+@pytest.mark.parametrize("target, message", [
+    ("http://github.com/volkb79-2/x.whl", "not https"),
+    ("http://objects.githubusercontent.com/x", "not https"),
+    ("ftp://github.com/x", "not https"),
+    ("https://evil.invalid/x.whl", "host not allowed"),
+    ("https://github.com.evil.invalid/x.whl", "host not allowed"),
+    ("https://pypi.org/x.whl", "host not allowed"),
+])
+def test_redirect_handler_refuses_non_https_and_foreign_hosts(target, message):
+    import urllib.request
+    fetcher = _load_fetcher()
+    handler = fetcher._HttpsOnlyRedirects()
+    request = urllib.request.Request("https://github.com/volkb79-2/vbpub/releases/download/x")
+    with pytest.raises(SystemExit, match=message):
+        handler.redirect_request(request, None, 302, "Found", {}, target)
+
+
+@pytest.mark.parametrize("host", [
+    "github.com", "objects.githubusercontent.com", "release-assets.githubusercontent.com",
+    "raw.githubusercontent.com",
+])
+def test_redirect_handler_follows_https_to_each_allowlisted_host(host):
+    import urllib.request
+    fetcher = _load_fetcher()
+    request = urllib.request.Request("https://github.com/volkb79-2/vbpub/releases/download/x")
+    followed = fetcher._HttpsOnlyRedirects().redirect_request(
+        request, None, 302, "Found", {}, f"https://{host}/a/b?sig=1")
+    assert followed.full_url == f"https://{host}/a/b?sig=1"
+
+
+def test_real_opener_refuses_an_http_redirect_served_by_a_fake_origin():
+    """End to end through the real opener (no fake fetch): a local origin that
+    302s to http:// and to a foreign https host; the origin's own host is allowed
+    as the pointer host, the redirect targets are not."""
+    import http.server
+    import threading
+
+    fetcher = _load_fetcher()
+    targets = {"/to-http": "http://127.0.0.1:1/x", "/to-foreign": "https://evil.invalid/x"}
+
+    class Origin(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(302)
+            self.send_header("Location", targets[self.path])
+            self.end_headers()
+
+        def log_message(self, *args):
+            pass
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), Origin)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        base = f"http://127.0.0.1:{server.server_port}"
+        with pytest.raises(SystemExit, match="not https"):
+            fetcher._urlopen_bytes(base + "/to-http")
+        with pytest.raises(SystemExit, match="host not allowed"):
+            fetcher._urlopen_bytes(base + "/to-foreign")
+    finally:
+        server.shutdown()
+        server.server_close()
 
 
 def test_fetcher_pinned_asset_needs_both_url_and_digest_and_skips_the_pointer(tmp_path):

@@ -116,6 +116,33 @@ fi
     exit 2
 }
 
+# D2: cmru's CLI identity is the installed ``cmru`` DISTRIBUTION's metadata (no
+# source-tree fallback). The first wheel does not exist yet, so stage a minimal
+# ``cmru-<ver>.dist-info`` beside the unpacked cli-extended on PYTHONPATH. The
+# version is derived exactly as the wheel build (setuptools-scm, tag_regex
+# ^cmru-v...) derives it: the pretend-version override first, else the next-patch
+# ``.devN+gHASH`` shape of ``git describe --long`` (the exact tag when N is 0).
+cmru_version="${SETUPTOOLS_SCM_PRETEND_VERSION_FOR_CMRU:-${SETUPTOOLS_SCM_PRETEND_VERSION:-}}"
+if [[ -z "${cmru_version}" ]]; then
+    describe="$(git -C "${repo_root}" describe --tags --long --match 'cmru-v*' 2>/dev/null)" || describe=""
+    if [[ "${describe}" =~ ^cmru-v([0-9]+)\.([0-9]+)\.([0-9]+)-([0-9]+)-g([0-9a-f]+)$ ]]; then
+        if [[ "${BASH_REMATCH[4]}" == "0" ]]; then
+            cmru_version="${BASH_REMATCH[1]}.${BASH_REMATCH[2]}.${BASH_REMATCH[3]}"
+        else
+            cmru_version="${BASH_REMATCH[1]}.${BASH_REMATCH[2]}.$((BASH_REMATCH[3] + 1)).dev${BASH_REMATCH[4]}+g${BASH_REMATCH[5]}"
+        fi
+    fi
+fi
+if [[ ! "${cmru_version}" =~ ^[0-9][0-9A-Za-z.+!-]*$ ]]; then
+    echo "[ERROR] cannot derive the cmru version (need a cmru-vX.Y.Z tag in ${repo_root} or SETUPTOOLS_SCM_PRETEND_VERSION_FOR_CMRU)" >&2
+    exit 2
+fi
+cmru_dist_info="${cli_extended_stage}/site/cmru-${cmru_version}.dist-info"
+mkdir -p "${cmru_dist_info}"
+printf 'Metadata-Version: 2.1\nName: cmru\nVersion: %s\n' "${cmru_version}" > "${cmru_dist_info}/METADATA"
+printf 'bootstrap\n' > "${cmru_dist_info}/INSTALLER"
+: > "${cmru_dist_info}/RECORD"
+
 echo "[INFO] Building the standalone CMRU wheel from ${project_dir}" >&2
 (
     cd "${project_dir}"

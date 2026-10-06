@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 import subprocess
 import sys
 import zipfile
@@ -95,6 +96,7 @@ def _bootstrap_tree(tmp_path: Path) -> dict[str, object]:
          "commit", "-q", "--allow-empty", "-m", "init"],
         check=True, env=commit_env,
     )
+    subprocess.run(["git", "-C", str(repo_root), "tag", "cmru-v1.2.3"], check=True)
     record = tmp_path / "record.txt"
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
@@ -112,6 +114,11 @@ def _bootstrap_tree(tmp_path: Path) -> dict[str, object]:
         '      second="$(echo "$PYTHONPATH" | cut -d: -f2)"\n'
         '      if [ -f "$second/cli_extended/__init__.py" ]; then echo "CX=$(cat "$second/cli_extended/__init__.py")"; fi\n'
         f'    }} > "{record}"\n'
+        # Optional probe: run code in a REAL bare interpreter with the exact PYTHONPATH
+        # the handlers launch got (the staged unpack + dist-info is all it can see).
+        '    if [ -n "$CMRU_TEST_PROBE_PY" ]; then\n'
+        '      "$CMRU_TEST_PROBE_PY" -s -c "$CMRU_TEST_PROBE_CODE" > "$CMRU_TEST_PROBE_OUT" 2>&1 || true\n'
+        "    fi\n"
         "    exit 0;;\n"
         "esac\n"
         f'exec "{sys.executable}" "$@"\n',
@@ -244,4 +251,133 @@ def test_bootstrap_stops_when_the_fetcher_cannot_deliver_a_wheel(tmp_path):
 
     assert result.returncode == 2
     assert "could not fetch the released cli-extended wheel" in result.stderr
+    assert not Path(tree["record"]).exists()
+
+
+# --- B1/D-1: the bootstrap stages a cmru distribution identity (D2 has no source fallback) ---
+
+def _real_cli_extended_wheel(directory: Path) -> tuple[Path, str]:
+    """A wheel carrying the REAL installed ``cli_extended`` package (the released
+    0.2.0 in this environment), so the probe below runs the real module."""
+    import cli_extended
+
+    directory.mkdir(parents=True, exist_ok=True)
+    wheel = directory / _WHEEL_NAME
+    package = Path(cli_extended.__file__).resolve().parent
+    with zipfile.ZipFile(wheel, "w") as archive:
+        for path in sorted(package.rglob("*")):
+            if path.is_file() and "__pycache__" not in path.parts:
+                archive.write(path, f"cli_extended/{path.relative_to(package).as_posix()}")
+    return wheel, hashlib.sha256(wheel.read_bytes()).hexdigest()
+
+
+_PROBE = """
+import sys
+import importlib.metadata as metadata
+sys.path += [{src!r}, {worktree!r}]
+print("DIST=" + metadata.version("cmru"))
+import cli_extended
+print("CX=" + cli_extended.__file__)
+from cmru import cli_support
+registry = cli_support.cmru_registry("cmru", "bootstrap probe")
+print("IDENTITY=" + registry.identity.version)
+"""
+
+
+def _bare_interpreter() -> Path:
+    """A real interpreter with neither cmru nor cli_extended installed."""
+    candidate = Path(sys.base_prefix) / "bin" / "python3"
+    if not candidate.exists():
+        pytest.skip("no base interpreter to act as the bare bootstrap interpreter")
+    pristine = subprocess.run(
+        [str(candidate), "-s", "-c", "import cli_extended"], capture_output=True, text=True, check=False,
+    )
+    if pristine.returncode == 0:
+        pytest.skip("the base interpreter already has cli_extended installed")
+    return candidate
+
+
+def _probe_bootstrap(tmp_path: Path, **extra_env: str) -> tuple[dict[str, str], str]:
+    tree = _bootstrap_tree(tmp_path)
+    wheel, digest = _real_cli_extended_wheel(tmp_path / "release")
+    probe_out = tmp_path / "probe.txt"
+    tree["env"].update(
+        CMRU_BOOTSTRAP_CLI_EXTENDED_WHEEL=str(wheel),
+        CMRU_BOOTSTRAP_CLI_EXTENDED_SHA256=digest,
+        CMRU_TEST_PROBE_PY=str(_bare_interpreter()),
+        CMRU_TEST_PROBE_CODE=_PROBE.format(
+            src=str(PROJECT_DIR / "src"), worktree=str(REPO_ROOT / "libraries" / "worktree" / "src"),
+        ),
+        CMRU_TEST_PROBE_OUT=str(probe_out),
+        **extra_env,
+    )
+    for name in ("SETUPTOOLS_SCM_PRETEND_VERSION", "SETUPTOOLS_SCM_PRETEND_VERSION_FOR_CMRU", "PYTHONPATH"):
+        if name not in extra_env:
+            tree["env"].pop(name, None)
+    _run_bootstrap(tree)
+    raw = probe_out.read_text(encoding="utf-8") if probe_out.exists() else ""
+    return dict(line.split("=", 1) for line in raw.splitlines() if "=" in line), raw
+
+
+def test_bootstrap_stages_a_cmru_dist_info_so_the_real_registry_builds_in_a_bare_interpreter(tmp_path):
+    # Control: the bare interpreter really has no cmru distribution of its own.
+    control = subprocess.run(
+        [str(_bare_interpreter()), "-s", "-c",
+         "import importlib.metadata as m; m.version('cmru')"],
+        capture_output=True, text=True, check=False, cwd=tmp_path,
+    )
+    assert control.returncode != 0 and "PackageNotFoundError" in control.stderr
+
+    lines, raw = _probe_bootstrap(tmp_path)
+
+    # tag cmru-v1.2.3 on HEAD: the exact tag version, as setuptools-scm would derive it.
+    assert lines.get("DIST") == "1.2.3", raw
+    assert lines.get("IDENTITY") == "1.2.3", raw
+    assert "site-packages" not in lines["CX"], raw
+
+
+def test_bootstrap_derives_the_dev_version_like_the_wheel_build_beyond_the_tag(tmp_path):
+    # One empty commit past the tag: next patch, .devN+gHASH (setuptools-scm shape).
+    tree = _bootstrap_tree(tmp_path)
+    subprocess.run(
+        ["git", "-C", str(tree["repo_root"]), "-c", "user.name=t", "-c", "user.email=t@t",
+         "commit", "-q", "--allow-empty", "-m", "more"],
+        check=True,
+    )
+    wheel, digest = _real_cli_extended_wheel(tmp_path / "release")
+    probe_out = tmp_path / "probe.txt"
+    tree["env"].update(
+        CMRU_BOOTSTRAP_CLI_EXTENDED_WHEEL=str(wheel), CMRU_BOOTSTRAP_CLI_EXTENDED_SHA256=digest,
+        CMRU_TEST_PROBE_PY=str(_bare_interpreter()), CMRU_TEST_PROBE_OUT=str(probe_out),
+        CMRU_TEST_PROBE_CODE="import importlib.metadata as m; print(m.version('cmru'))",
+    )
+    for name in ("SETUPTOOLS_SCM_PRETEND_VERSION", "SETUPTOOLS_SCM_PRETEND_VERSION_FOR_CMRU", "PYTHONPATH"):
+        tree["env"].pop(name, None)
+
+    _run_bootstrap(tree)
+
+    head = subprocess.run(
+        ["git", "-C", str(tree["repo_root"]), "rev-parse", "--short", "HEAD"],
+        capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    assert re.fullmatch(rf"1\.2\.4\.dev1\+g{head[:7]}\w*", probe_out.read_text("utf-8").strip())
+
+
+def test_bootstrap_honours_the_scm_pretend_version_override(tmp_path):
+    lines, raw = _probe_bootstrap(tmp_path, SETUPTOOLS_SCM_PRETEND_VERSION_FOR_CMRU="9.8.7")
+    assert lines.get("DIST") == "9.8.7" and lines.get("IDENTITY") == "9.8.7", raw
+
+
+def test_bootstrap_refuses_when_no_cmru_version_can_be_derived(tmp_path):
+    tree = _bootstrap_tree(tmp_path)
+    subprocess.run(["git", "-C", str(tree["repo_root"]), "tag", "-d", "cmru-v1.2.3"], check=True, capture_output=True)
+    wheel, digest = _toy_wheel(tmp_path / "release")
+    tree["env"].update(CMRU_BOOTSTRAP_CLI_EXTENDED_WHEEL=str(wheel), CMRU_BOOTSTRAP_CLI_EXTENDED_SHA256=digest)
+    for name in ("SETUPTOOLS_SCM_PRETEND_VERSION", "SETUPTOOLS_SCM_PRETEND_VERSION_FOR_CMRU"):
+        tree["env"].pop(name, None)
+
+    result = _run_bootstrap(tree)
+
+    assert result.returncode == 2
+    assert "cannot derive the cmru version" in result.stderr
     assert not Path(tree["record"]).exists()

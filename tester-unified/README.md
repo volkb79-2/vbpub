@@ -30,9 +30,13 @@ Image contents worth knowing (KI-52 / BG-05, 2026-10):
   the host Docker socket. The one exception is `cli-extended` (cmru declares
   `cli-extended>=0.2.0`): the generator SKIPS that line, so no cli-extended
   requirement ever reaches pip, and the image installs the RELEASED wheel
-  instead: `fetch-cli-extended.py` reads `cli-extended-latest/latest.json` (or
-  a pinned asset via the `CLI_EXTENDED_WHEEL_URL` + `CLI_EXTENDED_WHEEL_SHA256`
-  build args), requires and verifies its sha256, and the wheel is installed
+  instead: `fetch-cli-extended.py` downloads the asset PINNED in the Dockerfile
+  (`CLI_EXTENDED_WHEEL_URL` + `CLI_EXTENDED_WHEEL_SHA256` defaults, currently the
+  released 0.2.0 wheel; to bump, copy `url`/`sha256` from
+  `cli-extended-latest/latest.json` into those defaults and rebuild).
+  `--build-arg CLI_EXTENDED_RESOLVE=latest` is the explicit opt-in that reads the
+  pointer instead (add `--no-cache`). Redirects must stay https on a GitHub
+  host. Either way it requires and verifies the sha256, and the wheel is installed
   `--no-index --no-deps` BEFORE cmru. cmru is built offline from the COPYed
   `cmru/` and `libraries/worktree/` sources (`pip wheel --no-index --no-deps
   --no-build-isolation`, in a throwaway venv holding only its pinned build

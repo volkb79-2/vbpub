@@ -469,10 +469,10 @@ def test_run_child_self_release_imports_candidate_cmru_source(monkeypatch, tmp_p
 
 
 @pytest.mark.xfail(
-    strict=False,
+    strict=True,
     reason="W2-PKG4/PKG-1 seam: turns green once PKG-1 drops the candidate "
     "libraries/cli-extended/src root from transaction.run_child (decision D10); "
-    "the controller removes this marker at merge",
+    "strict: it FAILS (XPASS) the moment D10 lands, forcing this marker's removal",
 )
 def test_run_child_never_puts_a_candidate_cli_extended_source_root_on_pythonpath(
     monkeypatch, tmp_path,

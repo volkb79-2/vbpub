@@ -70,25 +70,39 @@ COPY scripts/cgroup-profiler/ /src/cgroup-profiler/
 # PyPI, i.e. a dependency-confusion path into an image that is handed the host
 # Docker socket. cmru declares `cli-extended>=0.2.0`; the generator SKIPS that
 # one line (no cli-extended requirement ever reaches pip), and the image installs
-# the RELEASED cli-extended wheel instead: fetch-cli-extended.py resolves
-# `cli-extended-latest/latest.json` (or a pinned release asset through the two
-# build args), REQUIRES its sha256 and verifies it, and the wheel goes in with
+# the RELEASED cli-extended wheel instead: fetch-cli-extended.py downloads the
+# pinned release asset (default; or `cli-extended-latest/latest.json` as an opt-in),
+# REQUIRES its sha256 and verifies it, and the wheel goes in with
 # `--no-index --no-deps` BEFORE cmru. cmru itself is built OFFLINE from the
 # COPYed source, in a throwaway venv holding only its pinned build backends
 # (`--no-index --no-deps --no-build-isolation`), and installed from that local
 # wheel, whose local version segment (+tester.unified) no PyPI release can have.
+# PINNED BY DEFAULT (D-3): the two WHEEL args below name the released 0.2.0 asset
+# and its sha256 IN THIS REPOSITORY, so the digest is an independent pin and not
+# something `latest.json` can vouch for over the same TLS channel. Because the pin
+# is build-arg text, a changed pin is a changed RUN layer: no stale cache. TO BUMP:
+# release cli-extended, copy `version`/`url`/`sha256` from
+# cli-extended-latest/latest.json, update the three defaults (and cmru's floor in
+# cmru/pyproject.toml plus --min-version below if the floor moves), rebuild.
+# `latest.json` mode is an explicit opt-in: --build-arg CLI_EXTENDED_RESOLVE=latest
+# (still sha256-verified, but the digest then comes from the pointer; add
+# --no-cache, the unchanged RUN text would otherwise reuse the cached wheel).
+ARG CLI_EXTENDED_RESOLVE=pinned
 ARG CLI_EXTENDED_POINTER_URL=https://github.com/volkb79-2/vbpub/releases/download/cli-extended-latest/latest.json
-ARG CLI_EXTENDED_WHEEL_URL=
-ARG CLI_EXTENDED_WHEEL_SHA256=
+ARG CLI_EXTENDED_WHEEL_URL=https://github.com/volkb79-2/vbpub/releases/download/cli-extended-v0.2.0/cli_extended-0.2.0-py3-none-any.whl
+ARG CLI_EXTENDED_WHEEL_SHA256=84ec3db81e8a4eaa931e57786f9b07395382af2601562f067b56fadbf3f3b58b
 RUN /usr/local/bin/python3.14 /usr/local/lib/tester-unified/gen-requirements.py --root /src \
       > /tmp/tester-requirements.txt \
  && /usr/local/bin/python3.14 /usr/local/lib/tester-unified/gen-requirements.py --root /src \
       --build-requires cmru/pyproject.toml \
       > /tmp/internal-build-requirements.txt \
+ && case "${CLI_EXTENDED_RESOLVE}" in \
+      pinned) set -- --wheel-url "${CLI_EXTENDED_WHEEL_URL}" --sha256 "${CLI_EXTENDED_WHEEL_SHA256}" ;; \
+      latest) set -- --pointer-url "${CLI_EXTENDED_POINTER_URL}" ;; \
+      *) echo "CLI_EXTENDED_RESOLVE must be pinned or latest" >&2; exit 1 ;; \
+    esac \
  && /usr/local/bin/python3.14 /usr/local/lib/tester-unified/fetch-cli-extended.py \
-      --dest /tmp/cli-extended-release --min-version 0.2.0 \
-      --pointer-url "${CLI_EXTENDED_POINTER_URL}" \
-      --wheel-url "${CLI_EXTENDED_WHEEL_URL}" --sha256 "${CLI_EXTENDED_WHEEL_SHA256}"
+      --dest /tmp/cli-extended-release --min-version 0.2.0 "$@"
 RUN /usr/local/bin/python3.14 -m venv --copies /opt/tester-venv \
  && /opt/tester-venv/bin/pip install --no-cache-dir --upgrade pip \
  && /opt/tester-venv/bin/pip install --no-cache-dir -r /tmp/tester-requirements.txt \

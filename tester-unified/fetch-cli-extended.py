@@ -21,6 +21,7 @@ import hashlib
 import json
 import re
 import sys
+import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Callable
@@ -40,8 +41,38 @@ class FetchError(SystemExit):
         super().__init__(f"fetch-cli-extended: {message}")
 
 
+#: Hosts a release download may be redirected to (GitHub serves release assets from
+#: its object storage hosts); the pointer's own host is added per fetch.
+ALLOWED_REDIRECT_HOSTS = frozenset({
+    "github.com",
+    "objects.githubusercontent.com",
+    "release-assets.githubusercontent.com",
+    "raw.githubusercontent.com",
+})
+
+
+class _HttpsOnlyRedirects(urllib.request.HTTPRedirectHandler):
+    """Refuse a redirect to anything but https on an allowlisted host (B2)."""
+
+    def __init__(self, extra_hosts: frozenset[str] = frozenset()) -> None:
+        self.allowed_hosts = ALLOWED_REDIRECT_HOSTS | extra_hosts
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # type: ignore[no-untyped-def]
+        target = urllib.parse.urlsplit(newurl)
+        if target.scheme != "https":
+            raise FetchError(f"refusing redirect to {newurl!r}: not https")
+        if (target.hostname or "") not in self.allowed_hosts:
+            raise FetchError(f"refusing redirect to {newurl!r}: host not allowed")
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+def _opener(url: str) -> urllib.request.OpenerDirector:
+    host = urllib.parse.urlsplit(url).hostname or ""
+    return urllib.request.build_opener(_HttpsOnlyRedirects(frozenset({host})))
+
+
 def _urlopen_bytes(url: str) -> bytes:
-    with urllib.request.urlopen(url, timeout=60) as response:  # noqa: S310 (https, prefix-checked)
+    with _opener(url).open(url, timeout=60) as response:  # noqa: S310 (https, prefix-checked)
         return response.read()
 
 
@@ -50,6 +81,13 @@ def _version_key(version: str) -> tuple[int, ...]:
     if not all(part.isdigit() for part in parts):
         raise FetchError(f"version {version!r} is not a plain release version")
     return tuple(int(part) for part in parts)
+
+
+def _at_least(version: str, floor: str) -> bool:
+    """Compare release versions with the shorter tuple zero-padded (0.2 == 0.2.0)."""
+    have, want = _version_key(version), _version_key(floor)
+    width = max(len(have), len(want))
+    return have + (0,) * (width - len(have)) >= want + (0,) * (width - len(want))
 
 
 def _check_url(url: str) -> str:
@@ -82,6 +120,14 @@ def resolve(
     url = pointer.get("url")
     if not isinstance(url, str):
         raise FetchError("the release pointer has no url")
+    name = url.rsplit("/", 1)[-1]
+    if pointer.get("asset") != name:
+        raise FetchError(f"the release pointer asset {pointer.get('asset')!r} is not the url's file name {name!r}")
+    named = _WHEEL.fullmatch(name)
+    if named is not None and pointer.get("version") != named["version"]:
+        raise FetchError(
+            f"the release pointer version {pointer.get('version')!r} is not the wheel's {named['version']!r}"
+        )
     return _check_url(url), _digest(pointer.get("sha256"), "the release pointer")
 
 
@@ -95,9 +141,12 @@ def fetch_wheel(
     match = _WHEEL.fullmatch(name)
     if match is None:
         raise FetchError(f"{name!r} is not a cli_extended py3-none-any wheel file name")
-    if _version_key(match["version"]) < _version_key(min_version):
+    if not _at_least(match["version"], min_version):
         raise FetchError(f"{name} is older than the declared floor {min_version}")
-    payload = fetch(url)
+    try:
+        payload = fetch(url)
+    except OSError as exc:
+        raise FetchError(f"cannot download {url}: {exc}") from exc
     actual = hashlib.sha256(payload).hexdigest()
     if actual != expected:
         raise FetchError(f"sha256 mismatch for {name}: expected {expected}, got {actual}")
