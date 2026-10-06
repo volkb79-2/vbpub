@@ -186,11 +186,16 @@ class TestEnrollCLIShape:
         assert args.name is None and args.from_pattern is None
         assert args.docker is False and args.no_install is False
 
-    def test_get_py_cli_render_carries_enroll(self, tmp_path):
+    def test_get_py_cli_render_carries_enroll(self, tmp_path, monkeypatch):
         """The `cmru get-py ciu` path renders a script whose enroll flags match.
 
-        Needs a cmru that knows ``extensions``; skipped against an older one.
+        Needs a cmru that knows ``extensions`` (fails, not skips, against an older one).
+        The orchestration config interpolates ``${CGROUP_PARENT_DEV_GATES}``; the render
+        does not use the slice, so pin a value instead of depending on the caller's env.
         """
+        monkeypatch.setenv(
+            "CGROUP_PARENT_DEV_GATES", os.environ.get("CGROUP_PARENT_DEV_GATES") or "dev-gates.slice"
+        )
         try:
             from cmru.config import InstallerConfig
             from cmru.getpy import getpy_main
