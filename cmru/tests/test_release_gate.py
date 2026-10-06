@@ -148,6 +148,92 @@ def test_release_gate_restores_secrets_after_a_failed_registered_lane(tmp_path, 
     assert project_secret.read_bytes() == b"project override\n"
 
 
+def _inventory_with_walk_error(tmp_path, monkeypatch, error):
+    """Run the overlay inventory while os.walk reports ``error`` for one directory."""
+    root = tmp_path / "mount"
+    (root / "cmru").mkdir(parents=True)
+    (root / "elsewhere" / "deep").mkdir(parents=True)
+    (root / "elsewhere" / "deep" / "cmru.secret.toml").write_text("x", encoding="utf-8")
+    real_walk = os.walk
+
+    def walk(top, **kwargs):
+        kwargs["onerror"](error)
+        yield from real_walk(top, **kwargs)
+
+    monkeypatch.setattr(run_release_gate.os, "walk", walk)
+    return root, run_release_gate._secret_overlay_paths(root, root, root / "cmru")
+
+
+def _unreadable_dir_error(path):
+    return PermissionError(13, "Permission denied", str(path))
+
+
+def test_overlay_inventory_skips_foreign_owned_unreadable_directory_with_warning(
+    tmp_path, monkeypatch, capsys,
+):
+    foreign = tmp_path / "volume"
+    foreign.mkdir()
+    monkeypatch.setattr(run_release_gate.os, "geteuid", lambda: foreign.lstat().st_uid + 1)
+    root, found = _inventory_with_walk_error(
+        tmp_path, monkeypatch, _unreadable_dir_error(foreign),
+    )
+    assert root / "elsewhere" / "deep" / "cmru.secret.toml" in found
+    err = capsys.readouterr().err
+    assert err.count("\n") == 1
+    assert "WARN" in err and str(foreign) in err
+
+
+def test_overlay_inventory_skips_vanished_unreadable_directory(
+    tmp_path, monkeypatch, capsys,
+):
+    gone = tmp_path / "vanished"
+    root, found = _inventory_with_walk_error(
+        tmp_path, monkeypatch, _unreadable_dir_error(gone),
+    )
+    assert root / "elsewhere" / "deep" / "cmru.secret.toml" in found
+    assert str(gone) in capsys.readouterr().err
+
+
+def test_overlay_inventory_fails_closed_on_unreadable_directory_we_own(
+    tmp_path, monkeypatch,
+):
+    own = tmp_path / "ours"
+    own.mkdir()
+    with pytest.raises(RuntimeError, match="cannot inventory CMRU secret overlays"):
+        _inventory_with_walk_error(tmp_path, monkeypatch, _unreadable_dir_error(own))
+
+
+def test_overlay_inventory_fails_closed_when_error_has_no_filename(
+    tmp_path, monkeypatch,
+):
+    with pytest.raises(RuntimeError, match="cannot inventory CMRU secret overlays"):
+        _inventory_with_walk_error(tmp_path, monkeypatch, PermissionError(13, "denied"))
+
+
+def test_overlay_inventory_fails_closed_on_other_oserror(tmp_path, monkeypatch):
+    foreign = tmp_path / "volume"
+    foreign.mkdir()
+    monkeypatch.setattr(run_release_gate.os, "geteuid", lambda: foreign.lstat().st_uid + 1)
+    with pytest.raises(RuntimeError, match="cannot inventory CMRU secret overlays"):
+        _inventory_with_walk_error(
+            tmp_path, monkeypatch, OSError(5, "Input/output error", str(foreign)),
+        )
+
+
+def test_overlay_inventory_fails_closed_when_owner_cannot_be_determined(
+    tmp_path, monkeypatch,
+):
+    target = tmp_path / "volume"
+    target.mkdir()
+
+    def broken_lstat(_path):
+        raise OSError(5, "Input/output error")
+
+    monkeypatch.setattr(run_release_gate.os, "lstat", broken_lstat)
+    with pytest.raises(RuntimeError, match="cannot inventory CMRU secret overlays"):
+        _inventory_with_walk_error(tmp_path, monkeypatch, _unreadable_dir_error(target))
+
+
 @pytest.mark.parametrize("signum", [signal.SIGTERM, signal.SIGHUP])
 def test_secret_overlay_restores_files_and_handler_when_termination_signal_arrives(
     tmp_path, monkeypatch, signum,
