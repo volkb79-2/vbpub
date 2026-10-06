@@ -11757,7 +11757,7 @@ Fix: add both names in pytest's own precedence order, and check the order agains
 
 ## B136 — `plan-estimate` does not bind the baseline progress file to the planned lane
 
-**Status: OPEN (filed 2026-09-30 from dstdns; observed in assay CLI 7.2.0; dstdns evidence `nyxloom-trove/decisions.md` D-572 section 3 at dstdns@682c7ef4).**
+**Status: IMPLEMENTED (found already on `main` at `b2c7522b6` via `9ae442998`: `assay plan` names its lane, `plan-estimate` refuses a lane mismatch by name; verified on `assay-73-B` by `test_same_commit_progress_from_a_different_lane_is_refused` and a killed plant). Filed 2026-09-30 from dstdns; observed in assay CLI 7.2.0; dstdns evidence `nyxloom-trove/decisions.md` D-572 section 3 at dstdns@682c7ef4).**
 
 **Observed (source-grounded):** `analysis/src/assay_analysis/plan_estimate.py` `_plan()` (l.34-54) requires `commit`, `tree`, `candidate_count` and `candidates` from the `assay plan` JSON. That JSON carries no lane name. `_segments()` (l.57-80) does read each progress `run` header's `lane` and refuses a progress file that mixes several lanes, but nothing compares that lane to the plan's. `plan_estimate()` (l.130-148) checks only `run.commit == plan.commit`. A baseline progress file from a different lane at the same commit therefore yields a plausible `candidate_count * baseline_seconds` estimate.
 
@@ -11771,7 +11771,7 @@ Fix: add both names in pytest's own precedence order, and check the order agains
 
 ## B137 — no plan estimate for an ingested JavaScript R2 lane
 
-**Status: OPEN (filed 2026-09-30 from dstdns; source-grounded, not reproduced live against a dstdns JS lane).**
+**Status: IMPLEMENTED as contract (b), already on `main` via `9ae442998`: `assay plan` returns `status = "unsupported"` with the lane and a named reason, `plan-estimate` forwards it, and CONSUMERS "Size an ingested JavaScript R2 campaign (B137)" gives the first-run budget procedure. Contract (a), an estimate from a Stryker report mutant count, was not built and is not filed as a new item: it needs a decision that the report count equals the run's candidate count, which is not established. Verified on `assay-73-B` by `test_assay_plan_names_why_an_ingested_lane_cannot_be_planned` and a killed plant. Filed 2026-09-30 from dstdns.**
 
 **Observed:** JavaScript R2 is judged by ingesting StrykerJS's report (B046; the lane's own argv runs Stryker). The JS adapter's `generate_mutation_sites` is unconditionally `UNSUPPORTED` (`src/assay/cli.py` `_resolve_declared_adapters` comments around l.579-660), so `assay plan` has no candidate rows for such a lane (`cli.plan_jobs` returns `"UNSUPPORTED"` / refuses), and `plan-estimate` requires a plan with `candidate_count` candidates. A consumer configuring the first R2 budget for a Stryker lane therefore has no assay-side estimate source at all.
 
@@ -11785,7 +11785,7 @@ Fix: add both names in pytest's own precedence order, and check the order agains
 
 ## B138 — no consolidated v12 to v13 migration section in CONSUMERS.md
 
-**Status: OPEN (filed 2026-09-30 from dstdns, which is pending the 7.0.0 cutover, P219).**
+**Status: IMPLEMENTED (already on `main` via `9ae442998`: CONSUMERS "Migration notes (v12 to v13)" and "(v13 to v14)" exist, and `test_consumers_covers_the_latest_two_verdict_schema_cuts` plus its must-fail control enforce them). Filed 2026-09-30 from dstdns, which is pending the 7.0.0 cutover, P219.**
 
 **Observed:** `docs/CONSUMERS.md` has "Migration notes (v11 -> v12)" (l.~2998) and a historical v10 -> v11 section, but nothing for v12 -> v13. The v13 facts are scattered: the `MutantOutcome.identity` note (l.~2836), the reuse/cold-start paragraph (l.~2883, "A v12 verdict is a cold start"), "Adopting a v2-capable release" (l.~2975, `assay verify` rejects v12), and the 7.0.0 CHANGES entry.
 
@@ -11797,7 +11797,7 @@ Fix: add both names in pytest's own precedence order, and check the order agains
 
 ## B139 — the assay-cli skill omits JavaScript R2 by Stryker ingestion
 
-**Status: OPEN (filed 2026-09-30 from dstdns).**
+**Status: IMPLEMENTED (already on `main` via `9ae442998`: the canonical skill, README and DESIGN-GUIDE state JavaScript R2 as ingestion only; `test_assay_cli_skill_capabilities_match_the_current_registry` and its missing-pair control enforce it). Filed 2026-09-30 from dstdns.**
 
 **Observed:** the canonical `assay/.claude/skills/assay-cli/SKILL.md` section "What this build evaluates" (l.97-102) lists "R0, Python R1, Python R2, Python R3, JavaScript R1, Go R1, SQL R2". CONSUMERS.md (B046 section) documents JavaScript R2 by ingestion of the lane's own StrykerJS report, while the README's JavaScript section and DESIGN-GUIDE's adapter table still say R1 only. An agent following any of those copies can conclude JS R2 is a capability gap or miss that it is ingestion-only.
 
@@ -12014,7 +12014,7 @@ v14 / 8.0.0 wave.
 
 ## B146 — R0 failure summary names the failure instead of reporting `NO_MEASUREMENT`
 
-**Status: OPEN; defer to the next Assay wave. This is useful diagnostics work, not a blocker for the B145/B147 release.** When R0's test command fails, the summary should distinguish that measured failure from a run that produced no measurement and identify the first failing test.
+**Status: IMPLEMENTED on `assay-73-B` (2026-10-06): `assay run`'s summary gains an `R0: FAIL (first failing test: NAME)` line, read from the retained output tail by `src/assay/failure_summary.py` (pytest, `go test` text and JSON, vitest, jest). The headline pair is unchanged (a failing suite that dirtied the tree still headlines `NO_MEASUREMENT/DIRTY_TREE`); output with no recognised failure adds no line. SQL R0 and `result_report` JSON files are not read; the name is the first failure inside the bounded tail.** When R0's test command fails, the summary should distinguish that measured failure from a run that produced no measurement and identify the first failing test.
 
 **Expected:** the concise run summary reports R0 as `FAIL` and names the first failing test when the baseline command has a test failure. Genuine preflight/no-measurement outcomes remain `NO_MEASUREMENT` with their existing reason; they are not rewritten as test failures.
 

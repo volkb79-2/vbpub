@@ -75,6 +75,7 @@ from . import (
     adjudication,
     attestation,
     diff,
+    failure_summary,
     git,
     isolation,
     measurability,
@@ -1566,6 +1567,21 @@ def _print_run_summary(verdict: Verdict, out: TextIO) -> None:
     if verdict.reason_code is not None:
         label = f"{label}/{verdict.reason_code.value}"
     print(f"{verdict.lane}: {label} (exit {verdict.exit_code})", file=out)
+    # (B146) A later refusal (e.g. DIRTY_TREE after a failing suite dirtied the
+    # tree) can make the headline NO_MEASUREMENT although the R0 command
+    # measurably failed. The headline stays the verdict's own pair; this line
+    # states the measured failure and its first failing test, only when the
+    # retained output names one, so a genuine no-measurement is never recast.
+    failing_test = None
+    if verdict.outcome is not Outcome.PASS and not any(
+        claim.rigor == "R0" and claim.status is Outcome.PASS
+        for claim in verdict.claims
+    ):
+        failing_test = failure_summary.first_failing_test(
+            verdict.result_stdout_tail, verdict.result_stderr_tail
+        )
+    if failing_test is not None:
+        print(f"  R0: FAIL (first failing test: {failing_test})", file=out)
     print(f"  commit: {verdict.commit}", file=out)
     print(f"  argv: {shlex.join(verdict.argv_effective or ())}", file=out)
     if verdict.argv_modified:

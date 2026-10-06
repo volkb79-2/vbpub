@@ -37,6 +37,12 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   progress or plan key changes meaning; no schema version changes
 
 ### Fixed
+- fix(assay): the `assay run` summary now adds an `R0: FAIL (first failing
+  test: NAME)` line when the retained R0 output names a failing test (pytest,
+  `go test` text/JSON, vitest, jest) and the headline is not PASS, so a failing
+  suite that also dirtied the tree is not summarised as a bare
+  `NO_MEASUREMENT`; the headline pair is unchanged and output with no
+  recognised failure adds nothing (B146)
 - fix(assay): prevent cgroup process-limit or OOM events from becoming native
   R2 kills or survivors; sample candidate and visible-ancestor event counters,
   bind them to the executing worker's cgroup, capabilities, and selected mount,
