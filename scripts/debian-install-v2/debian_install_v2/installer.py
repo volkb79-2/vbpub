@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import re
 from dataclasses import replace
 from datetime import datetime, timezone
@@ -163,9 +164,16 @@ class Installer:
         self.root_disk = ""
         self.root_partition_path = ""
         self.root_number = 0
+        # The exception the failure guard last reported (identity, not a flag:
+        # one Installer may see several runs), so nested guards post ONCE.
+        self._reported_failure: BaseException | None = None
         if inspect_host:
-            self.release = self._detect_release()
-            self.root_disk, self.root_partition_path, self.root_number = self._discover_root()
+            self.inspect()
+
+    def inspect(self) -> None:
+        """Read release and root device from the host (can raise: call it inside failure_guard)."""
+        self.release = self._detect_release()
+        self.root_disk, self.root_partition_path, self.root_number = self._discover_root()
 
     def _run(
         self,
@@ -260,7 +268,73 @@ class Installer:
             return "none"
         return backend
 
+    @contextlib.contextmanager
+    def failure_guard(self, phase: str = "stage1"):
+        """Run a block under the install failure handling (LT-EARLY).
+
+        ANY exception raised inside -- plan building, validation, show_plan,
+        host inspection, stage one itself -- records a failed state.json with
+        the cause, makes sure the controller key is on the host (a failed
+        install keeps it for diagnosis), posts ONE failure notice, then
+        re-raises. Nested guards report a given exception only once.
+        """
+        try:
+            yield
+        except BaseException as exc:
+            if exc is not self._reported_failure:
+                self._reported_failure = exc
+                self._handle_failure(exc, phase)
+            raise
+
+    def _handle_failure(self, exc: BaseException, phase: str) -> None:
+        """Failure bookkeeping. Every step is best-effort; it never raises."""
+        if not self.actions.dry_run:  # a dry run never writes state or touches the host
+            try:
+                if not self.state.path.is_file():
+                    # Failed before install() created the state (e.g. show_plan).
+                    self.state.save_new(StateStore.new(self.config))
+                self.state.save(status="failed", phase=phase, last_error=str(exc))
+            except Exception as state_exc:
+                _LOG.warning("could not record the failed state: %s", state_exc)
+            self._ensure_controller_key_after_failure()
+            self._restore_apt_timers_after_failure()
+        try:
+            delivered = self._notify(
+                f"<b>Install FAILED</b> during {phase}: {_code(str(exc))}",
+                event="install FAILED", status="fail", excerpt=str(exc),
+            )
+        except Exception:
+            delivered = False
+        if delivered:
+            # Same dedup mark the stage2 path writes: the OnFailure notifier
+            # skips its own post when this one was delivered.
+            try:
+                self.state.save(failure_notified_at=datetime.now(timezone.utc).isoformat())
+            except Exception as state_exc:
+                _LOG.warning("could not record failure_notified_at: %s", state_exc)
+
+    def _ensure_controller_key_after_failure(self) -> None:
+        """A failed install leaves the controller key for diagnosis -- even when
+        the failure came before the key step ran (otherwise the host is
+        unreachable). Idempotent; best-effort."""
+        if not self.config.controller_ssh_pubkey.strip():
+            return
+        try:
+            step = self.state.load().get("steps", {}).get("controller_ssh_key")
+            if isinstance(step, dict) and step.get("status") == "success":
+                return
+        except Exception:
+            pass
+        try:
+            self._configure_controller_ssh_key()
+        except Exception as exc:
+            _LOG.warning("could not install the controller key after failure: %s", exc)
+
     def install(self) -> None:
+        with self.failure_guard("stage1"):
+            self._install_guarded()
+
+    def _install_guarded(self) -> None:
         self.state.save_new(StateStore.new(self.config))
         if self._notifications_enabled:
             # This is a courtesy notification, not part of the install
@@ -279,17 +353,7 @@ class Installer:
                     self._notify(self._initial_report_message())
             except Exception as exc:
                 _LOG.warning("could not build/send initial report notification: %s", exc)
-        try:
-            self._stage1()
-        except BaseException as exc:
-            if not self.actions.dry_run:
-                self.state.save(status="failed", phase="stage1", last_error=str(exc))
-            self._restore_apt_timers_after_failure()
-            self._notify(
-                f"<b>Install FAILED</b> during stage1: {_code(str(exc))}",
-                event="install FAILED", status="fail", excerpt=str(exc),
-            )
-            raise
+        self._stage1()
 
     def resume(self) -> None:
         # Before anything below can fail: a failure message must say stage2.

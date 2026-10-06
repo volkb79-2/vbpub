@@ -8,6 +8,7 @@ disk, write swap, or touch systemd. Every file lives under tmp_path.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import shlex
 import stat
@@ -84,6 +85,12 @@ class FakeInstaller:
         self.calls.append(name)
         if self.actions.dry_run:
             self.actions.planned.append(PlannedAction(("/usr/bin/true", name), f"fake {name}"))
+
+    def failure_guard(self, phase="stage1"):
+        return contextlib.nullcontext()
+
+    def inspect(self):
+        """Host inspection (LT-EARLY: the install handler calls it inside the guard)."""
 
     def show_plan(self):
         self.calls.append("show_plan")

@@ -21,6 +21,7 @@ from .config import (
 )
 from .customscript import build_customscript_bundle
 from .installer import Installer, InstallerError
+from .notify import NotifyConfigError, validate_host_label, validate_webhook_url
 from .state import StateError, StateStore
 
 PROG = "debian-install-v2"
@@ -65,7 +66,59 @@ def _config_options() -> tuple[OptionSpec, ...]:
     )
 
 
-def _load_config(args: Any, runtime: Any) -> Config:
+_NOTIFY_FIELDS = (
+    "notify_backend", "mattermost_webhook_url", "notify_host_label",
+    "telegram_bot_token", "telegram_chat_id",
+)
+
+
+def _post_config_failure(args: Any, runtime: Any, cause: str) -> None:
+    """Best-effort ONE failure post for a configuration that could not be loaded (LT-EARLY).
+
+    No Installer, state or config exists yet, so read only the notify settings
+    leniently from the raw JSON, keep them only when they are usable on their
+    own (string-typed, valid webhook URL / host label), and post through the
+    same Installer._notify path. Never raises; a configuration that carries no
+    usable notify settings simply posts nothing.
+    """
+    try:
+        if runtime.dry_run:
+            return
+        if args.config:
+            raw = json.loads(Path(args.config).read_text(encoding="utf-8"))
+        else:
+            raw = json.loads(args.config_json or "")
+        if not isinstance(raw, dict):
+            return
+        values = {
+            name: raw[name] for name in _NOTIFY_FIELDS
+            if isinstance(raw.get(name), str) and raw[name]
+        }
+        if "mattermost_webhook_url" in values:
+            try:
+                validate_webhook_url(values["mattermost_webhook_url"])
+            except NotifyConfigError:
+                del values["mattermost_webhook_url"]
+        if "notify_host_label" in values:
+            try:
+                validate_host_label(values["notify_host_label"])
+            except NotifyConfigError:
+                del values["notify_host_label"]
+        if bool(values.get("telegram_bot_token")) != bool(values.get("telegram_chat_id")):
+            values.pop("telegram_bot_token", None)
+            values.pop("telegram_chat_id", None)
+        partial = Config(**values)
+        notifier = Installer(partial, HostActions(dry_run=False), inspect_host=False)
+        notifier._notify(
+            f"<b>Install FAILED</b> during stage1: invalid installation configuration: {cause}",
+            event="install FAILED", status="fail",
+            excerpt=f"invalid installation configuration: {cause}",
+        )
+    except Exception:
+        return
+
+
+def _load_config(args: Any, runtime: Any, *, report_failure: bool = False) -> Config:
     config_path = args.config
     config_json = args.config_json
     if not config_path and not config_json:
@@ -76,11 +129,10 @@ def _load_config(args: Any, runtime: Any) -> Config:
         )
     try:
         config = load_config(config_path, config_json)
-    except ConfigError as exc:
-        raise CliFailure(f"invalid installation configuration: {exc}", exit_code=2) from exc
-    try:
         require_notify_credentials(config)
     except ConfigError as exc:
+        if report_failure:
+            _post_config_failure(args, runtime, str(exc))
         raise CliFailure(f"invalid installation configuration: {exc}", exit_code=2) from exc
     if config.telegram_bot_token:
         runtime.output.secrets = (*runtime.output.secrets, config.telegram_bot_token)
@@ -196,9 +248,16 @@ def _wizard(args: Any, runtime: Any) -> int:
 
 
 def _install(args: Any, runtime: Any) -> int:
-    installer = _make_installer(args, runtime)
+    config = _load_config(args, runtime, report_failure=True)
+    installer = Installer(config, HostActions(dry_run=runtime.dry_run), inspect_host=False)
     actions = installer.actions
-    plan = installer.show_plan()
+    # LT-EARLY: everything after config parsing runs under the installer's
+    # failure handling (failed state.json, controller key, ONE post), not
+    # just stage one. Host inspection and the plan preview used to sit
+    # outside it, so an invalid-but-parseable config died silently.
+    with installer.failure_guard("stage1"):
+        installer.inspect()
+        plan = installer.show_plan()
     if not actions.dry_run:
         runtime.output.emit(
             "info",
