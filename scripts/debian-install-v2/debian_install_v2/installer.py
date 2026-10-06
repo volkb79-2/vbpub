@@ -302,13 +302,20 @@ class Installer:
             # up to its full timeout (an hour, by default) and then
             # reporting a spurious TimeoutError for an install that had
             # actually already succeeded.
-            self._remove_controller_ssh_key()
+            if self.config.retain_controller_ssh_key:
+                self._mark_step("controller_ssh_key_retained", "success", "configured to retain after successful stage2")
+            else:
+                self._remove_controller_ssh_key()
             if self._notifications_enabled:
                 duration = self._duration_since_start()
                 facts_html = format_facts_html(collect_host_facts(self))
+                retained = self._controller_key_retained()
+                key_note = "\n\nController key retained on host." if retained else ""
+                key_event = ", controller key retained on host" if retained else ""
                 self._notify(
-                    f"<b>Install complete</b> (duration: {duration})\n\n{facts_html}",
-                    event=f"install complete (duration {duration})", status="ok",
+                    f"<b>Install complete</b> (duration: {duration})"
+                    f"{key_note}\n\n{facts_html}",
+                    event=f"install complete (duration {duration}){key_event}", status="ok",
                 )
         except Exception as exc:
             self.state.save(status="failed", phase="stage2", last_error=str(exc))
@@ -540,7 +547,7 @@ MaxFileSec=1month
             raise InstallerError(f"refusing to merge into an unparseable {path}: {exc}") from exc
 
     def _configure_docker_daemon(self) -> None:
-        # Owns live-restore/log-driver/log-opts only — see the ownership
+        # Owns live-restore/log-driver/log-opts/default-address-pools only — see the ownership
         # split rationale in _install_docker()'s comment above. mdt
         # host-setup/install.sh owns "cgroup-parent" the same, disjoint way.
         existing = self._read_json_for_merge("/etc/docker/daemon.json")
@@ -561,6 +568,15 @@ MaxFileSec=1month
             # owns log-driver/log-opts together (see comment above), so an
             # idempotent re-run must fully reflect the current driver.
             existing.pop("log-opts", None)
+        # Owned like log-opts: an idempotent re-run reflects the current
+        # config, so an empty list removes a stale pool block.
+        if self.config.docker_default_address_pools:
+            existing["default-address-pools"] = [
+                {"base": pool["base"], "size": pool["size"]}
+                for pool in self.config.docker_default_address_pools
+            ]
+        else:
+            existing.pop("default-address-pools", None)
         self.actions.write_file("/etc/docker/daemon.json", json.dumps(existing, indent=2) + "\n", 0o644)
         self._mark_step("docker_daemon_config", "success", self.config.docker_log_driver)
 
@@ -1744,6 +1760,12 @@ MaxFileSec=1month
         combined = existing if (not existing or existing.endswith("\n")) else existing + "\n"
         self.actions.write_file(str(authorized_keys), combined + pubkey_line + "\n", 0o600)
         self._mark_step("controller_ssh_key", "success", "controller pubkey installed for stage1/stage2 SSH monitoring")
+
+    def _controller_key_retained(self) -> bool:
+        return bool(
+            self.config.controller_ssh_pubkey.strip()
+            and self.config.retain_controller_ssh_key
+        )
 
     def _remove_controller_ssh_key(self) -> None:
         # Last step of stage2, once everything else has already succeeded --

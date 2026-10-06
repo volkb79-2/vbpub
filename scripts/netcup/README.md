@@ -150,6 +150,20 @@ customScript owns any remote key cleanup. If its JSON bundle declares a
 `completionMarker`, the Netcup monitor can safely wait for that marker before
 applying `--local-controller-key remove`; without one, the local key is kept.
 
+Host/local policy (2x2): host `remove` + local `retain` (default), host `remove`
++ local `remove`, and host `retain` + local `retain` are valid. Host `retain` +
+local `remove` is **rejected** (exit 2, before authentication): it would leave a
+key on the host whose private half was deleted. Host retention is the
+producer's setting (`retain_controller_ssh_key` / `RETAIN_CONTROLLER_SSH_KEY`
+in debian-install-v2); install-host detects it from the submitted customScript
+-- either `RETAIN_CONTROLLER_SSH_KEY=yes|no` or `"retain_controller_ssh_key"`
+inside the embedded `VBPUB_CONFIG_EXTRA_JSON` bundle (the bundle value wins,
+as in the bootstrap). When the host retains, an unset local choice defaults to
+`retain`. Limitation: a customScript that is not shell-splittable or sets the
+policy any other way is "not declared"; nothing is guessed, and the dry-run
+summary then prints `not declared by the customScript` -- pass
+`--local-controller-key` deliberately. The dry-run summary shows both settings.
+
 If the dry-run looks correct, the file-driven install can be made
 non-interactive:
 

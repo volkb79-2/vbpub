@@ -85,6 +85,11 @@ WIZARD_SECTIONS = (
             WizardField("docker_log_driver", "Docker log driver"),
             WizardField("docker_log_max_size", "Per-file limit for drivers that support it"),
             WizardField("docker_log_max_file", "Number of retained files for drivers that support it"),
+            WizardField(
+                "docker_default_address_pools",
+                "Docker default address pools as a JSON list of {base, size} (empty list = Docker built-in default)",
+                "json",
+            ),
             WizardField("docker_cleanup_max_age_hours", "Maximum age for unused images (hours)", "integer"),
         ),
     ),
@@ -119,6 +124,11 @@ WIZARD_SECTIONS = (
             WizardField(
                 "controller_ssh_pubkey",
                 "One authorized_keys public-key line (blank disables temporary access)",
+            ),
+            WizardField(
+                "retain_controller_ssh_key",
+                "Keep the controller key on the host after a successful install?",
+                "boolean",
             ),
         ),
     ),
@@ -184,10 +194,17 @@ def _ask_field(questionary: Any, field: WizardField, current: Any, runtime: Any)
                 kbi_msg=""
             )
         else:
-            answer = questionary.text(prompt, default=str(current)).ask(kbi_msg="")
+            default = json.dumps(current) if field.kind == "json" else str(current)
+            answer = questionary.text(prompt, default=default).ask(kbi_msg="")
 
         if answer is None:
             raise KeyboardInterrupt
+        if field.kind == "json":
+            try:
+                return json.loads(answer)
+            except (TypeError, ValueError):
+                runtime.output.warn(f"{field.name} must be valid JSON; please try again")
+                continue
         if field.kind != "integer":
             return answer.strip() if isinstance(answer, str) else answer
         try:

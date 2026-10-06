@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ipaddress
 import json
 import os
 import re
@@ -83,6 +84,12 @@ class Config:
     docker_log_max_size: str = "50m"
     docker_log_max_file: str = "3"
     docker_cleanup_max_age_hours: int = 240
+    # daemon.json "default-address-pools" (mdt MDT-002): the ranges Docker
+    # carves per-network subnets from. Each entry is {"base": CIDR, "size":
+    # int}. Empty list = Docker's built-in default (the key is omitted).
+    docker_default_address_pools: list = field(
+        default_factory=lambda: [{"base": "10.240.0.0/16", "size": 24}]
+    )
     apt_auto_upgrade_mode: Literal["full", "security-only", "notify-only"] = "full"
     reboot_window_time: str = "03:00"
     telegram_bot_token: str = field(default="", repr=False)
@@ -108,6 +115,9 @@ class Config:
     # this feature is off; the operator's own persistent key (via sshKeyIds,
     # or however else it got there) is never touched either way.
     controller_ssh_pubkey: str = field(default="", repr=False)
+    # Keep the temporary controller access line after successful stage2.
+    # Failure paths always retain it for diagnosis.
+    retain_controller_ssh_key: bool = False
     # Runs the kernel's own official iocost calibration tool
     # (tools/cgroup/iocost_coef_gen.py, vendored -- not apt-packaged) against
     # a throwaway partition carved from the same free space swap will use,
@@ -148,6 +158,40 @@ def _reject_obsolete(data: dict[str, Any]) -> None:
         raise ConfigError(f"setting(s) are not part of minimal v2: {', '.join(unsupported)}")
 
 
+MAX_ADDRESS_POOLS = 16
+
+
+def validate_address_pools(pools: Any) -> None:
+    """Validate docker_default_address_pools (see Config)."""
+    name = "docker_default_address_pools"
+    if not isinstance(pools, list):
+        raise ConfigError(f"{name} must be a list of {{base, size}} objects")
+    if len(pools) > MAX_ADDRESS_POOLS:
+        raise ConfigError(f"{name} may hold at most {MAX_ADDRESS_POOLS} pools")
+    networks = []
+    for index, pool in enumerate(pools):
+        if not isinstance(pool, dict) or set(pool) != {"base", "size"}:
+            raise ConfigError(f"{name}[{index}] must be an object with exactly base and size")
+        base, size = pool["base"], pool["size"]
+        if not isinstance(base, str):
+            raise ConfigError(f"{name}[{index}].base must be a CIDR string")
+        try:
+            network = ipaddress.ip_network(base, strict=True)
+        except ValueError as exc:
+            raise ConfigError(f"{name}[{index}].base is not a valid network: {exc}") from None
+        if isinstance(size, bool) or not isinstance(size, int):
+            raise ConfigError(f"{name}[{index}].size must be an integer")
+        upper = 30 if network.version == 4 else 128
+        if not network.prefixlen <= size <= upper:
+            raise ConfigError(
+                f"{name}[{index}].size must be from {network.prefixlen} (the base prefix) to {upper}"
+            )
+        for other_index, other in networks:
+            if other.version == network.version and network.overlaps(other):
+                raise ConfigError(f"{name}[{index}].base overlaps {name}[{other_index}].base")
+        networks.append((index, network))
+
+
 def validate_config(config: Config) -> None:
     """Validate a Config instance with the same rules used by JSON loading."""
     if config.schema_version != SCHEMA_VERSION:
@@ -185,6 +229,7 @@ def validate_config(config: Config) -> None:
         raise ConfigError("zswap_compressor must be zstd, lz4, or lzo-rle")
     if not isinstance(config.zswap_zpool, str) or config.zswap_zpool not in {"z3fold", "zbud", "zsmalloc"}:
         raise ConfigError("zswap_zpool must be z3fold, zbud, or zsmalloc")
+    validate_address_pools(config.docker_default_address_pools)
     if not config.docker_log_driver:
         raise ConfigError("docker_log_driver must not be empty")
     if not _DOCKER_LOG_MAX_SIZE_RE.fullmatch(config.docker_log_max_size):
