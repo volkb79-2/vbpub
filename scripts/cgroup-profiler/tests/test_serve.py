@@ -3180,12 +3180,8 @@ def test_real_socket_does_not_dispatch_unterminated_start_request(
         simple_server, "handle_start",
         lambda args: (dispatches.append(args) or {"ok": True, "contract": 1}),
     )
-    thread = threading.Thread(target=simple_server._accept_loop, daemon=True)
-    thread.start()
+    thread = _start_ready_socket_server(simple_server)
     try:
-        deadline = time.monotonic() + 5.0
-        while not os.path.exists(socket_path) and time.monotonic() < deadline:
-            time.sleep(0.01)
         assert os.path.exists(socket_path)
 
         request = {
