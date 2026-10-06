@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import contextlib
 import hashlib
 import io
 import json
@@ -93,21 +94,28 @@ def manifest_entry(wheel: Path) -> dict:
 def make_bundle(
     workdir: Path, tag: str, *, files: Optional[Dict[str, bytes]] = None,
     wheels: Iterable[Tuple[str, Path]] = (), manifest: object = "auto",
-    manifest_extra: Optional[dict] = None, hash_files: Iterable[str] = (),
+    manifest_extra: Optional[dict] = None, hash_files: Optional[Iterable[str]] = None,
     signature: Optional[bytes] = None, variant: Optional[str] = None,
     extra_members: Iterable[Tuple[str, bytes]] = (), top: Optional[str] = None,
     manifest_name: str = "manifest.json", sign_with: Optional[Path] = None,
-    sign_comment: Optional[str] = None,
+    sign_comment: Optional[str] = None, modes: Optional[Dict[str, int]] = None,
+    links: Iterable[Tuple[str, str, str]] = (),
 ) -> Tuple[Path, bytes]:
     """Write ``<tag>[-<variant>].tar.xz`` + ``.sha256`` into ``workdir``.
 
     ``wheels`` is [(distribution, wheel path)], shipped under ``vendor/`` and listed in the
-    manifest as ``manifest[dist]``. ``hash_files`` names ``files`` entries to cover in the
-    manifest ``files`` map. ``manifest`` may be "auto" (built), ``None`` (omitted), or raw
-    bytes. Returns (bundle path, manifest bytes)."""
+    manifest as ``manifest[dist]``. ``hash_files`` names the ``files`` entries to cover in the
+    manifest ``files`` map; the default covers EVERY shipped file except the wheels (the
+    installer refuses unlisted members, so a bundle is complete unless a test says
+    otherwise: ``extra_members`` are never listed). ``modes`` sets tar modes by member name;
+    ``links`` is [(kind "sym"|"hard", name, target)] (hard targets are bundle-relative).
+    ``manifest`` may be "auto" (built), ``None`` (omitted), or raw bytes.
+    Returns (bundle path, manifest bytes)."""
     workdir.mkdir(parents=True, exist_ok=True)
     files = dict(files or {})
     top = tag if top is None else top
+    if hash_files is None:
+        hash_files = list(files)
     for _dist, wheel in wheels:
         files[f"vendor/{wheel.name}"] = wheel.read_bytes()
     if manifest == "auto":
@@ -133,9 +141,16 @@ def make_bundle(
         def add(rel: str, data: bytes) -> None:
             info = tarfile.TarInfo(name=f"{top}/{rel}" if top else rel)
             info.size = len(data)
+            if modes and rel in modes:
+                info.mode = modes[rel]
             tf.addfile(info, io.BytesIO(data))
         for rel, data in files.items():
             add(rel, data)
+        for kind, name, target in links:
+            link = tarfile.TarInfo(name=f"{top}/{name}")
+            link.type = tarfile.SYMTYPE if kind == "sym" else tarfile.LNKTYPE
+            link.linkname = target if kind == "sym" else f"{top}/{target}"
+            tf.addfile(link)
         if manifest_bytes is not None:
             add(manifest_name, manifest_bytes)
         if signature is not None:
@@ -164,8 +179,19 @@ def args(**kw) -> argparse.Namespace:
     return argparse.Namespace(**base)
 
 
+@contextlib.contextmanager
 def as_root(ns: dict):
-    return mock.patch.object(ns["os"], "geteuid", return_value=0)
+    """Pretend to be root: `geteuid()` is 0. The temp dirs belong to the test user, so the
+    installer's "owned by the effective uid" rule is pointed at the real uid (a test that
+    wants a foreign owner replaces ``ns["_expected_owner"]`` itself)."""
+    real_uid = ns["os"].getuid()
+    original = ns["_expected_owner"]
+    ns["_expected_owner"] = lambda: real_uid
+    try:
+        with mock.patch.object(ns["os"], "geteuid", return_value=0):
+            yield
+    finally:
+        ns["_expected_owner"] = original
 
 
 def install(ns: dict, **kw) -> None:

@@ -36,13 +36,16 @@ from __future__ import annotations
 
 import argparse
 import fcntl
+import fnmatch
 import hashlib
 import json
 import os
 import platform
+import posixpath
 import re
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import tarfile
@@ -60,6 +63,7 @@ TAG_PREFIX       = "tls-edge-v"
 ASSET_SUFFIX     = ".tar.xz"
 MANIFEST_NAME    = "manifest.json"
 SIGNATURE_NAME   = "manifest.json.minisig"
+PROJECT_NAME     = "tls-edge"     # the minisign trusted comment must name it
 ENTRYPOINT       = ""           # "" means no adapter
 # minisign public key (base64). "" => the release is unsigned (SHA256 only).
 MANIFEST_PUBKEY  = ""
@@ -90,7 +94,14 @@ _ALLOWED_HOSTS = {
 
 MANIFEST_SCHEMA = 1
 _MAX_MANIFEST_BYTES = 8 * 1024 * 1024
+# Resource bounds (documented in SPEC S6): a bundle larger than these is refused, never
+# truncated. Download = the compressed asset; extract = the sum of the member sizes the
+# tar headers declare (checked BEFORE anything is written); members = the entry count.
+_MAX_DOWNLOAD_BYTES = 512 * 1024 * 1024
+_MAX_EXTRACT_BYTES = 2 * 1024 * 1024 * 1024
+_MAX_MEMBERS = 50_000
 _SHA256_RE = re.compile(r"[0-9a-f]{64}")
+_WHEEL_VERSION_RE = re.compile(r"[0-9][0-9A-Za-z.!+_]*")
 _TAG_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._+-]*")
 _NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._+-]*")
 
@@ -267,11 +278,13 @@ def _gh_request(
     accept: str = "application/vnd.github+json",
     stream_to: Optional[Path] = None,
     timeout: int = 30,
+    max_bytes: Optional[int] = None,
 ) -> Tuple[int, bytes]:
     """Low-level GitHub request.
 
     Per S5 / release.py invariant: only sends Authorization when token is present.
     An empty 'Bearer ' header causes GitHub to 401 even on public repos.
+    A streamed body larger than ``max_bytes`` is refused (EXIT_FAIL), never truncated.
     """
     _check_url(url)
     headers: dict = {"Accept": accept, "User-Agent": "tls-edge/get.py"}
@@ -282,8 +295,22 @@ def _gh_request(
     try:
         with opener.open(req, timeout=timeout) as resp:
             if stream_to:
+                total = 0
+                too_big = False
                 with open(stream_to, "wb") as fh:
-                    shutil.copyfileobj(resp, fh)
+                    while True:
+                        chunk = resp.read(65536)
+                        if not chunk:
+                            break
+                        total += len(chunk)
+                        if max_bytes is not None and total > max_bytes:
+                            too_big = True
+                            break
+                        fh.write(chunk)
+                if too_big:
+                    stream_to.unlink()
+                    fatal(f"Download of {url} exceeds the {max_bytes}-byte limit; refusing.",
+                          EXIT_FAIL)
                 return resp.status, b""
             return resp.status, resp.read()
     except urllib.error.HTTPError as exc:
@@ -357,7 +384,8 @@ def normalize_tag(version_arg: str) -> str:
 
 def _validate_tag(tag: str) -> str:
     """A tag becomes a URL component and a directory name: refuse anything odd."""
-    if not tag.startswith(TAG_PREFIX) or not _TAG_RE.fullmatch(tag) or ".." in tag:
+    if (not tag.startswith(TAG_PREFIX) or not _TAG_RE.fullmatch(tag) or ".." in tag
+            or not _TAG_RE.fullmatch(tag[len(TAG_PREFIX):])):
         fatal(f"Refusing release tag {tag!r}: expected {TAG_PREFIX}<version> "
               "(letters, digits, '.', '_', '+', '-').", EXIT_CONFIG)
     return tag
@@ -366,7 +394,7 @@ def _validate_tag(tag: str) -> str:
 def _resolve_tag(args: argparse.Namespace, token: Optional[str]) -> str:
     """`--version X` installs exactly X; without it, resolve the latest and print it."""
     version = getattr(args, "version", None)
-    if version:
+    if version is not None:  # an EMPTY --version (unset shell variable) must not mean "latest"
         tag = _validate_tag(normalize_tag(version))
         info(f"Pinned version: {_c('BLD', tag)}")
         return tag
@@ -406,7 +434,7 @@ def _persist_variant(root: Path, variant: Optional[str]) -> None:
     if not variant:
         return
     marker = _variant_marker_path(root)
-    marker.parent.mkdir(parents=True, exist_ok=True)
+    _mkdir_secure(marker.parent)
     _atomic_write(marker, (variant + "\n").encode("utf-8"), 0o644)
 
 
@@ -488,14 +516,14 @@ def _download_asset(tag: str, asset_name: str, dest: Path, token: Optional[str])
             f"/releases/assets/{asset['id']}"
         )
         status, _ = _gh_request(asset_url, token=token, accept="application/octet-stream",
-                                stream_to=dest, timeout=300)
+                                stream_to=dest, timeout=300, max_bytes=_MAX_DOWNLOAD_BYTES)
     else:
         url = (
             f"https://github.com/{REPO_OWNER}/{REPO_NAME}"
             f"/releases/download/{tag}/{asset_name}"
         )
         status, _ = _gh_request(url, token=None, accept="application/octet-stream",
-                                stream_to=dest, timeout=300)
+                                stream_to=dest, timeout=300, max_bytes=_MAX_DOWNLOAD_BYTES)
     if status != 200:
         fatal(f"Download of {asset_name} failed (HTTP {status}).", EXIT_FAIL)
     if not dest.exists() or dest.stat().st_size == 0:
@@ -544,9 +572,9 @@ def _verify_sha256(asset: Path, sidecar: Path) -> None:
 def _verify_minisign(manifest: Path, sig: Path, pubkey: str, tag: str, digest: str) -> None:
     """Verify the manifest signature with the pinned key (`minisign -V -P KEY`).
 
-    The signed trusted comment must also bind this tag and this exact manifest digest
-    (`project=<name> tag=<tag> manifest_sha256=<hex>`), so an old signed release cannot be
-    replayed as a new one.
+    The signed trusted comment must also bind this project, this tag and this exact manifest
+    digest (`project=<name> tag=<tag> manifest_sha256=<hex>`), so an old signed release cannot
+    be replayed as a new one, nor another project's signed release as this project's.
     """
     cmd = ["minisign", "-V", "-m", str(manifest), "-x", str(sig), "-P", pubkey]
     result = subprocess.run(cmd, capture_output=True, text=True)
@@ -561,10 +589,12 @@ def _verify_minisign(manifest: Path, sig: Path, pubkey: str, tag: str, digest: s
         if line.startswith("Trusted comment:"):
             comment = line[len("Trusted comment:"):].strip()
     fields = dict(tok.split("=", 1) for tok in comment.split() if "=" in tok)
-    if fields.get("tag") != tag or fields.get("manifest_sha256") != digest:
+    if (fields.get("project") != PROJECT_NAME or fields.get("tag") != tag
+            or fields.get("manifest_sha256") != digest):
         fatal(
             "minisign trusted comment does not bind this release "
-            f"(want tag={tag} manifest_sha256={digest}; got {comment!r}).",
+            f"(want project={PROJECT_NAME} tag={tag} manifest_sha256={digest}; "
+            f"got {comment!r}).",
             EXIT_FAIL,
         )
     ok("Manifest signature verified (minisign).")
@@ -603,6 +633,12 @@ def _bundle_members(tf: tarfile.TarFile) -> List[Tuple[tarfile.TarInfo, str]]:
     """(member, path relative to the bundle's single top-level directory) for every
     member below it. Anything outside that one directory, or duplicated, is EXIT_FAIL."""
     members = tf.getmembers()
+    if len(members) > _MAX_MEMBERS:
+        fatal(f"Bundle has {len(members)} members; the limit is {_MAX_MEMBERS}.", EXIT_FAIL)
+    declared = sum(m.size for m in members if m.isfile())
+    if declared > _MAX_EXTRACT_BYTES:
+        fatal(f"Bundle expands to {declared} bytes; the limit is {_MAX_EXTRACT_BYTES}.",
+              EXIT_FAIL)
     tops = {Path(m.name).parts[0] for m in members if Path(m.name).parts}
     if len(tops) != 1:
         fatal(f"Bundle must have exactly one top-level directory; found {sorted(tops)}.",
@@ -685,7 +721,9 @@ def _verify_manifest(
         _verify_minisign(mpath, spath, MANIFEST_PUBKEY, tag, digest)
     else:
         info("This release is unsigned (no manifest_pubkey configured): integrity rests "
-             "on HTTPS + the SHA256 sidecar + the manifest hashes.")
+             "on HTTPS + the SHA256 sidecar + the manifest hashes. The sidecar and the "
+             "manifest are served from the same origin as the bundle, so this detects "
+             "corruption, NOT a compromised publisher or tampered release assets.")
     return _parse_manifest(manifest_bytes, tag), digest
 
 
@@ -707,11 +745,37 @@ def _regular_file(path: Path, what: str) -> Path:
     return path
 
 
-def _verify_files(tree: Path, manifest: dict) -> None:
-    """Every manifest `files` entry must exist and match; the adapter MUST be covered."""
+def _manifest_files(manifest: dict) -> dict:
+    """The manifest `files` map: {normalised relative path: {sha256, size?}}; anything
+    else (non-object, absolute/`..`/un-normalised keys) is EXIT_FAIL."""
     files = manifest.get("files", {})
     if not isinstance(files, dict):
         fatal(f"{MANIFEST_NAME}: 'files' must be an object.", EXIT_FAIL)
+    for rel in files:
+        if (not isinstance(rel, str) or not rel or rel.startswith("/")
+                or posixpath.normpath(rel) != rel or rel == "." or rel.startswith("../")):
+            fatal(f"{MANIFEST_NAME}: files key {rel!r} is not a normalised relative path.",
+                  EXIT_FAIL)
+    return files
+
+
+def _preserved_link(tree: Path, root: Path, rel: str) -> bool:
+    """True when `rel` is (inside) a PRESERVE_PATHS entry that this installer replaced with
+    its own symlink into <root>/shared: the operator's copy, not the bundle's, so the
+    manifest hash does not apply to it (R7 / S6.4)."""
+    for keep in PRESERVE_PATHS:
+        keep = posixpath.normpath(keep)
+        if rel == keep or rel.startswith(keep + "/"):
+            link = tree / keep
+            if link.is_symlink() and Path(os.readlink(link)) == root / "shared" / keep:
+                return True
+    return False
+
+
+def _verify_files(tree: Path, manifest: dict, root: Path) -> None:
+    """Every manifest `files` entry must exist and match; the adapter MUST be covered.
+    Preserved paths that point into <root>/shared are skipped (they are the operator's)."""
+    files = _manifest_files(manifest)
     if ENTRYPOINT and ENTRYPOINT not in files:
         fatal(f"Adapter {ENTRYPOINT!r} is not covered by {MANIFEST_NAME} 'files'; "
               "refusing to run unhashed code as root.", EXIT_FAIL)
@@ -719,6 +783,8 @@ def _verify_files(tree: Path, manifest: dict) -> None:
         if not isinstance(entry, dict):
             fatal(f"{MANIFEST_NAME}: files[{rel!r}] must be an object.", EXIT_FAIL)
         expected = _hex_digest(entry.get("sha256"), f"files[{rel!r}]")
+        if _preserved_link(tree, root, rel):
+            continue
         path = _regular_file(tree / rel, f"Manifest file {rel!r}")
         _check_size(entry, path.stat().st_size, f"files[{rel!r}]")
         if _sha256(path) != expected:
@@ -759,9 +825,40 @@ def _safe_member(member: tarfile.TarInfo, dest: Path) -> bool:
     return True
 
 
-def _pre_scan_members(tf: tarfile.TarFile, dest: Path) -> List[tarfile.TarInfo]:
+def _wheel_listed(rel: str) -> bool:
+    """`rel` matches a WHEEL_SPECS glob (same number of path parts, each fnmatch'ed)."""
+    parts = rel.split("/")
+    for pattern, _dist in WHEEL_SPECS:
+        globs = pattern.split("/")
+        if len(globs) == len(parts) and all(
+                fnmatch.fnmatchcase(p, g) for p, g in zip(parts, globs)):
+            return True
+    return False
+
+
+def _link_target_rel(m: tarfile.TarInfo, rel: str, top: str) -> Optional[str]:
+    """The bundle-relative path a symlink/hardlink member points at (None if it escapes)."""
+    if m.issym():
+        target = posixpath.normpath(posixpath.join(posixpath.dirname(rel), m.linkname))
+    else:  # hardlink: linkname is a path in the archive, below the top-level dir
+        parts = Path(m.linkname).parts
+        if not parts or parts[0] != top:
+            return None
+        target = str(Path(*parts[1:])) if len(parts) > 1 else ""
+    if not target or target == "." or target.startswith("../") or target.startswith("/"):
+        return None
+    return target
+
+
+def _pre_scan_members(
+    tf: tarfile.TarFile, dest: Path, files: Optional[dict] = None,
+) -> List[tarfile.TarInfo]:
     """Strip the top-level dir, drop the manifest/signature (kept separately, verified),
-    and refuse the whole bundle if any member is unsafe (fail closed)."""
+    and refuse the whole bundle if any member is unsafe or UNLISTED (fail closed).
+
+    Every non-directory member must be a key of manifest `files` or match a WHEEL_SPECS
+    glob (so it is hashed); a symlink/hardlink is only allowed when its target is a listed
+    file. `files=None` skips the coverage rule (extension/legacy callers)."""
     import copy as _copy
     members = []
     for member, rel in _bundle_members(tf):
@@ -771,20 +868,53 @@ def _pre_scan_members(tf: tarfile.TarFile, dest: Path) -> List[tarfile.TarInfo]:
         m.name = rel
         if not _safe_member(m, dest):
             fatal(f"Bundle member {member.name!r} is unsafe; refusing to extract.", EXIT_FAIL)
+        if files is not None and not m.isdir():
+            if m.issym() or m.islnk():
+                top = Path(member.name).parts[0]
+                target = _link_target_rel(m, rel, top)
+                if target is None or target not in files:
+                    fatal(f"Bundle link {rel!r} -> {m.linkname!r} does not point at a file "
+                          f"listed in {MANIFEST_NAME}; refusing to extract.", EXIT_FAIL)
+                if m.islnk():
+                    m.linkname = target  # relative to the extraction root, like m.name
+            elif not m.isfile():
+                fatal(f"Bundle member {rel!r} has an unsupported type; refusing to extract.",
+                      EXIT_FAIL)
+            elif rel not in files and not _wheel_listed(rel):
+                fatal(f"Bundle member {rel!r} is not covered by {MANIFEST_NAME} 'files' "
+                      "(and is not a declared wheel); refusing to install unhashed content.",
+                      EXIT_FAIL)
         members.append(m)
     return members
 
 
-def _extract_bundle(bundle: Path, tree: Path) -> None:
-    """Extract bundle into the release tree with safety pre-scan + filter='data' (py>=3.12)."""
+def _strip_privileges(m: tarfile.TarInfo) -> tarfile.TarInfo:
+    """What `filter='data'` does for the cases that matter to a root install, for Pythons
+    that lack it: no setuid/setgid/sticky, no group/other write, the archive's owner and
+    group ignored (extracted files belong to the installing user)."""
+    m.mode = (m.mode & 0o755)
+    m.uid, m.gid = _expected_owner(), os.getegid()
+    m.uname = m.gname = ""
+    return m
+
+
+def _extract_bundle(bundle: Path, tree: Path, manifest: Optional[dict] = None) -> None:
+    """Extract the bundle into the release tree: coverage + safety pre-scan, then
+    `filter='data'` (or the manual equivalent on Pythons without `tarfile.data_filter`)."""
+    files = _manifest_files(manifest) if manifest is not None else None
     tree.mkdir(parents=True, exist_ok=True)
     info(f"Extracting to {tree} ...")
     with tarfile.open(bundle, "r:xz") as tf:
-        members = _pre_scan_members(tf, tree)
+        members = _pre_scan_members(tf, tree, files)
         kw: dict = {}
-        if sys.version_info >= (3, 12):
+        if hasattr(tarfile, "data_filter"):
             kw["filter"] = "data"
-        tf.extractall(tree, members=members, **kw)
+        else:
+            members = [_strip_privileges(m) for m in members]
+        try:
+            tf.extractall(tree, members=members, **kw)
+        except (tarfile.TarError, OSError, KeyError) as exc:
+            fatal(f"Extraction failed: {exc}", EXIT_FAIL)
     ok("Extraction complete.")
 
 
@@ -802,8 +932,10 @@ def _wheel_order() -> List[Tuple[str, str]]:
 
 
 def _wheel_version(wheel: Path) -> str:
+    """The version field of a wheel file name; it goes into the hash lock, so it must be a
+    plain version string (no spaces, `;`, `@`, newlines or option-looking text)."""
     parts = wheel.name[:-len(".whl")].split("-")
-    if len(parts) < 5 or not parts[1]:
+    if len(parts) < 5 or not _WHEEL_VERSION_RE.fullmatch(parts[1]):
         fatal(f"Not a valid wheel file name: {wheel.name}", EXIT_FAIL)
     return parts[1]
 
@@ -843,7 +975,12 @@ def _check_venv_prereqs() -> None:
 
 
 def _pip_env() -> Dict[str, str]:
-    return {k: v for k, v in os.environ.items() if not k.startswith("PIP_")}
+    """No `PIP_*` from the caller, and no global/site pip config either: `--isolated` leaves
+    pip's "global" scope (/etc/pip.conf, $XDG_CONFIG_DIRS) enabled, `PIP_CONFIG_FILE=os.devnull`
+    disables every config file."""
+    env = {k: v for k, v in os.environ.items() if not k.startswith("PIP_")}
+    env["PIP_CONFIG_FILE"] = os.devnull
+    return env
 
 
 def _run_checked(cmd: List[str], what: str) -> None:
@@ -920,6 +1057,49 @@ def _atomic_write(path: Path, data: bytes, mode: int = 0o644) -> None:
     _fsync_dir(path.parent)
 
 
+# ─── Root-directory ownership (root runs code from <root>) ───────────────────
+
+def _expected_owner() -> int:
+    """The uid that must own <root> and its subdirectories (the effective uid)."""
+    return os.geteuid()
+
+
+def _check_dir(path: Path, what: str) -> None:
+    """As root: `path` must be a real directory (not a symlink), owned by the effective
+    uid and not group/world-writable, else EXIT_FAIL. A no-op for unprivileged runs."""
+    if os.geteuid() != 0:
+        return
+    st = os.lstat(path)
+    if stat.S_ISLNK(st.st_mode) or not stat.S_ISDIR(st.st_mode):
+        fatal(f"{what} {path} is not a real directory (symlink or file); refusing to "
+              "install as root through it.", EXIT_FAIL)
+    if st.st_uid != _expected_owner():
+        fatal(f"{what} {path} is owned by uid {st.st_uid}, not {_expected_owner()}; "
+              "refusing to install as root.", EXIT_FAIL)
+    if st.st_mode & 0o022:
+        fatal(f"{what} {path} is group- or world-writable ({oct(st.st_mode & 0o777)}); "
+              "refusing to install as root. chmod go-w it.", EXIT_FAIL)
+
+
+def _mkdir_secure(path: Path) -> None:
+    """Create `path` (0755) if missing and run `_check_dir` on it."""
+    try:
+        os.mkdir(path, 0o755)
+    except FileExistsError:
+        pass
+    _check_dir(path, "Install directory")
+
+
+def _check_layout(root: Path) -> None:
+    """Re-check <root> and the subdirectories that already exist (before anything is
+    written through them)."""
+    if os.path.lexists(root):
+        _check_dir(root, "Install root")
+    for name in ("releases", "shared", "bin"):
+        if os.path.lexists(root / name):
+            _check_dir(root / name, f"Install subdirectory {name!r}")
+
+
 # ─── Adapter invocation (Seam 1 — S3.3) ──────────────────────────────────────
 
 def _layout(release: Path, legacy: bool = False) -> Tuple[Path, Path, Path]:
@@ -989,6 +1169,7 @@ def _copy_preserve_to_shared(root: Path, src_release: Optional[Path] = None) -> 
         src = source / rel
         dest = shared / rel
         if src.exists() and not src.is_symlink():
+            _mkdir_secure(shared)
             dest.parent.mkdir(parents=True, exist_ok=True)
             if src.is_dir():
                 if dest.exists():
@@ -1019,7 +1200,7 @@ def _restore_preserve_from_shared(root: Path, release_dir: Path) -> None:
 def _install_host_config(root: Path, source: Path) -> None:
     """`--config FILE` => <root>/shared/host.toml, mode 0600, written atomically."""
     shared = root / "shared"
-    shared.mkdir(parents=True, exist_ok=True)
+    _mkdir_secure(shared)
     _atomic_write(shared / "host.toml", source.read_bytes(), 0o600)
     ok(f"Host config installed at {shared / 'host.toml'} (0600).")
 
@@ -1052,8 +1233,12 @@ _lock_fd: Optional[int] = None
 
 def _cleanup_on_signal(sig: int, _frame: object) -> None:
     global _active_staging, _lock_fd
-    if _active_staging and _active_staging.exists():
-        shutil.rmtree(_active_staging, ignore_errors=True)
+    staging = _active_staging
+    if staging and staging.exists():
+        # never remove a release that has become `current` (a signal landing around the swap)
+        live = staging.parent.parent / "current"
+        if not (live.is_symlink() and live.resolve() == staging.resolve()):
+            shutil.rmtree(staging, ignore_errors=True)
     if _lock_fd is not None:
         try:
             fcntl.flock(_lock_fd, fcntl.LOCK_UN)
@@ -1073,8 +1258,16 @@ class _Lock:
 
     def __enter__(self) -> "_Lock":
         global _lock_fd
-        self._path.parent.mkdir(parents=True, exist_ok=True)
-        _lock_fd = os.open(str(self._path), os.O_CREAT | os.O_WRONLY, 0o600)
+        root = self._path.parent
+        root.parent.mkdir(parents=True, exist_ok=True)
+        _mkdir_secure(root)
+        _check_layout(root)
+        try:
+            _lock_fd = os.open(str(self._path),
+                               os.O_CREAT | os.O_WRONLY | os.O_NOFOLLOW, 0o600)
+        except OSError as exc:  # ELOOP: .lock is a symlink
+            fatal(f"Cannot open the lock file {self._path} ({exc.strerror}); "
+                  "refusing to follow it.", EXIT_FAIL)
         try:
             fcntl.flock(_lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
@@ -1119,18 +1312,29 @@ def _entry_of(release: Path) -> dict:
     return entry
 
 
-def _read_state(root: Path) -> Optional[dict]:
+def _read_state(root: Path, repair: bool = True) -> Optional[dict]:
     """The install state, or None when nothing is installed.
 
     * a pre-W1 install (a `current` symlink, no state.json) is returned as a synthetic
       state with `legacy: True` — the next install/update migrates it;
     * a `current` symlink that disagrees with state.json (crash between the swap and
-      the state write) is reconciled from the target's own release.json."""
+      the state write) is reconciled from the target's own release.json; so is a
+      complete new-layout release with no state.json at all (a fresh install that died
+      between the swap and the state write);
+    * `repair=False` (the read-only `status`) reconciles in memory and writes nothing."""
     state_path = root / "state.json"
     current = root / "current"
     target = current.resolve() if current.is_symlink() else None
     if not state_path.exists():
         if target is not None and target.is_dir():
+            if (target / ".complete").is_file() and (target / "release.json").is_file():
+                state = {"schema": 1, "current": _entry_of(target), "previous": None,
+                         "history": []}
+                warn(f"state.json is missing but {current} points at the complete release "
+                     f"{target.name}; reconciling.")
+                if repair:
+                    _write_state(root, state)
+                return state
             return {"schema": 1, "legacy": True, "previous": None, "history": [],
                     "current": {"name": target.name, "tag": target.name,
                                 "manifest_sha256": None, "variant": _installed_variant(root)}}
@@ -1153,7 +1357,8 @@ def _read_state(root: Path) -> Optional[dict]:
         warn(f"state.json was behind {current} (interrupted run); reconciling to {target.name}.")
         state = {"schema": 1, "current": _entry_of(target), "previous": cur,
                  "history": list(state.get("history", [])) + [cur]}
-        _write_state(root, state)
+        if repair:
+            _write_state(root, state)
     return state
 
 
@@ -1223,7 +1428,7 @@ def _write_launchers(root: Path) -> None:
     if not LAUNCHERS:
         return
     bindir = root / "bin"
-    bindir.mkdir(parents=True, exist_ok=True)
+    _mkdir_secure(bindir)
     for cmd in LAUNCHERS:
         tmp = bindir / f".{cmd}.tmp"
         if tmp.is_symlink():
@@ -1250,7 +1455,7 @@ def _verify_release_intact(root: Path, entry: dict) -> Path:
         sig_bytes = _regular_file(release / SIGNATURE_NAME, f"{entry['name']} signature").read_bytes()
     with tempfile.TemporaryDirectory() as tmp:
         manifest, _ = _verify_manifest(manifest_bytes, sig_bytes, entry["tag"], Path(tmp))
-    _verify_files(release / "tree", manifest)
+    _verify_files(release / "tree", manifest, root)
     return release
 
 
@@ -1262,11 +1467,11 @@ def _build_release(
     release.mkdir(parents=True)
     (release / ".incomplete").write_text("", encoding="utf-8")
     tree = release / "tree"
-    _extract_bundle(bundle, tree)
+    _extract_bundle(bundle, tree, manifest)
     _atomic_write(release / MANIFEST_NAME, manifest_bytes)
     if sig_bytes is not None and MANIFEST_PUBKEY:
         _atomic_write(release / SIGNATURE_NAME, sig_bytes)
-    _verify_files(tree, manifest)
+    _verify_files(tree, manifest, root)
     _restore_preserve_from_shared(root, tree)
     _install_wheels(tree, release, manifest)
     for cmd in LAUNCHERS:
@@ -1290,6 +1495,8 @@ def _commit_release(
         if fresh:
             (release / ".complete").write_text("", encoding="utf-8")
             (release / ".incomplete").unlink()
+        # From here the release may become `current`: the signal handler must not rmtree it.
+        _active_staging = None
         _atomic_swap_current(root, release)
     except BaseException:
         if fresh:
@@ -1318,7 +1525,12 @@ def _transact(args: argparse.Namespace, token: Optional[str], root: Path, instal
         warn(f"Existing install found ({state['current']['tag']}). Running update instead.")
     if not install and state is None:
         fatal(f"No install found at {root}. Run 'python3 get.py install' first.", EXIT_FAIL)
-    _prune_releases(root, state)  # crash recovery: `.incomplete` dirs from a dead run
+    legacy = bool(state and state.get("legacy"))
+    if not legacy:
+        # crash recovery: `.incomplete` dirs from a dead run. NEVER for a pre-W1 install:
+        # its old releases (the old installer's rollback targets) must survive until the
+        # new release is live and swapped in; the end-of-transaction prune removes them.
+        _prune_releases(root, state)
     config_arg = _check_config_arg(args)
 
     tag = _resolve_tag(args, token)
@@ -1326,11 +1538,21 @@ def _transact(args: argparse.Namespace, token: Optional[str], root: Path, instal
     if variant:
         info(f"Variant: {_c('BLD', variant)}")
 
-    legacy = bool(state and state.get("legacy"))
     if state and not legacy:
         cur = state["current"]
+        if cur["tag"] != tag:
+            older = _semver_key(tag) < _semver_key(cur["tag"])
+            if older and getattr(args, "version", None) is None:
+                fatal(f"Refusing to downgrade {cur['tag']} -> {tag} (the latest release "
+                      f"is older than the installed one). Pass --version {tag} to do "
+                      "it deliberately.", EXIT_FAIL)
+            if older:
+                warn(f"Downgrade: installing {tag}, older than the installed {cur['tag']}.")
         if cur["tag"] == tag and cur.get("variant") == variant:
             _verify_release_intact(root, cur)
+            if config_arg:
+                _install_host_config(root, config_arg)
+            _write_launchers(root)
             ok(f"Already at {tag}. Nothing to do (recorded manifest re-verified).")
             return
     if legacy:
@@ -1349,7 +1571,7 @@ def _transact(args: argparse.Namespace, token: Optional[str], root: Path, instal
         fresh = not release.exists()
         if fresh:
             _active_staging = release
-            (root / "releases").mkdir(parents=True, exist_ok=True)
+            _mkdir_secure(root / "releases")
             try:
                 _build_release(root, release, bundle, manifest_bytes, sig_bytes, manifest, entry)
             except BaseException:
@@ -1425,8 +1647,8 @@ def do_rollback(args: argparse.Namespace, token: Optional[str]) -> None:
                   "'python3 get.py update' once to migrate it (the first update after "
                   "migration creates a rollback target).", EXIT_FAIL)
         wanted = getattr(args, "version", None)
-        if wanted:
-            tag = normalize_tag(wanted)
+        if wanted is not None:
+            tag = _validate_tag(normalize_tag(wanted))
             pool = ([state["previous"]] if state.get("previous") else []) \
                 + list(reversed(state.get("history", [])))
             target = next((e for e in pool if e["tag"] == tag
@@ -1460,7 +1682,7 @@ def do_status(args: argparse.Namespace) -> None:
     scope = getattr(args, "scope", "system")
     root = _root_dir(scope)
 
-    state = _read_state(root)
+    state = _read_state(root, repair=False)  # status never writes
     if state is None:
         print(f"tls-edge: not installed at {root}")
         return

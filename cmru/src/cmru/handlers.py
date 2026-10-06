@@ -518,6 +518,23 @@ def cmd_tarball_publish(args: argparse.Namespace) -> None:
     print(result)
 
 
+def cmd_bundle_manifest(args: argparse.Namespace) -> None:
+    """Write the installer manifest (`files` = sha256/size/mode of every regular file) into
+    a staged bundle directory, before it is tarred. The hardened get.py refuses bundles
+    whose members the manifest does not list, so every tarball project needs this step."""
+    from cmru.manifest import build_bundle_manifest, manifest_sha256, write_manifest
+
+    root = Path(args.root).resolve()
+    name = args.manifest_name
+    manifest = build_bundle_manifest(
+        project=args.project, tag=args.tag, bundle_root=root,
+        exclude=(name, name + ".minisig"),
+    )
+    out = write_manifest(manifest, root / name)
+    print(f"[INFO] Wrote {out} ({len(manifest['files'])} files, "
+          f"sha256 {manifest_sha256(out)})")
+
+
 def cmd_tarball_validate(args: argparse.Namespace) -> None:
     """Assert the resolved latest <prefix>-v* release carries a tarball + .sha256."""
     owner = _require_env("GITHUB_USERNAME")
@@ -649,6 +666,12 @@ def handlers_cli():
             OptionSpec(("--version-file",), "version file relative to --cwd", metavar="PATH", parser_kwargs={"dest": "version_file", "default": None}, mutually_exclusive_group="version-source", mutually_exclusive_required=True),
             OptionSpec(("--version-env",), "environment variable containing the version", metavar="NAME", parser_kwargs={"dest": "version_env", "default": None}, mutually_exclusive_group="version-source", mutually_exclusive_required=True),
             OptionSpec(("--notes-env",), "environment variable holding optional release notes", metavar="NAME", parser_kwargs={"dest": "notes_env", "default": None}),
+        )),
+        ("bundle-manifest", "Write the installer manifest (files + sha256) into a staged bundle dir.", cmd_bundle_manifest, (
+            required_name("--project", "project name (as in cmru.toml)", "NAME"),
+            required_name("--tag", "full release tag, e.g. tls-edge-v1.2.3", "TAG"),
+            required_path("--root", "the staged bundle directory (the tarball's top-level dir)"),
+            OptionSpec(("--manifest-name",), "manifest file name (default manifest.json)", metavar="NAME", parser_kwargs={"dest": "manifest_name", "default": "manifest.json"}),
         )),
         ("tarball-validate", "Validate the resolved latest tarball release.", cmd_tarball_validate, (
             required_name("--prefix", "release prefix without -v", "PREFIX"),

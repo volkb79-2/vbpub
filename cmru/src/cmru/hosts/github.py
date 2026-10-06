@@ -66,12 +66,18 @@ class GitHubReleaseHost(ReleaseHost):
             })
         return out
 
-    def resolve_latest(self, prefix: str, asset_suffix: str = "") -> Optional[Dict[str, Any]]:
+    def resolve_latest(
+        self, prefix: str, asset_suffix: str = "", variant: str = "",
+    ) -> Optional[Dict[str, Any]]:
         """Highest-semver release for prefix (e.g. "ciu-v"); returns {version,tag,asset,sha256,url} (S5).
 
         ``asset_suffix`` (the project's installer ``asset_suffix``, e.g. ".tar.xz") selects the
-        primary asset by type instead of by API order. A checksum sidecar that exists but
-        cannot be fetched or parsed raises ``RuntimeError`` (never ``sha256=None``)."""
+        primary asset by type instead of by API order; with several matches the choice is
+        deterministic: ``<tag>-<variant><suffix>`` when ``variant`` is given, else
+        ``<tag><suffix>``, else the first in sorted order. A checksum sidecar that exists but
+        cannot be fetched or parsed raises ``RuntimeError`` (never ``sha256=None``), and so
+        does a release WITHOUT a sidecar when ``asset_suffix`` is given (an installer project:
+        its get.py refuses a bundle without one)."""
         candidates = []
         for rel in self._gh.list_releases():
             tag = rel.get("tag_name", "")
@@ -86,17 +92,27 @@ class GitHubReleaseHost(ReleaseHost):
 
         # The primary asset: with `asset_suffix` the one asset of that type (never a
         # sidecar), else the first non-sidecar, non-latest.json asset in API order.
-        asset_name = next(
-            (n for n in assets
-             if n and not n.endswith(".sha256") and n != "latest.json"
-             and (not asset_suffix or n.endswith(asset_suffix))),
-            None,
-        )
+        matching = [
+            n for n in assets
+            if n and not n.endswith(".sha256") and n != "latest.json"
+            and (not asset_suffix or n.endswith(asset_suffix))
+        ]
+        if asset_suffix and (len(matching) > 1 or variant):
+            wanted = f"{tag}-{variant}{asset_suffix}" if variant else f"{tag}{asset_suffix}"
+            if wanted in matching:
+                matching = [wanted]
+            else:
+                matching = [] if variant else sorted(matching)
+        asset_name = matching[0] if matching else None
         if not asset_name:
             return None
 
         sha256_url = assets.get(f"{asset_name}.sha256")
         sha256_val: Optional[str] = None
+        if not sha256_url and asset_suffix:
+            raise RuntimeError(
+                f"release {tag} has no {asset_name}.sha256 asset; an installer release "
+                "must publish its checksum sidecar")
         if sha256_url:
             # A published sidecar that cannot be read, or does not hold a digest, is an
             # error: the caller must never get an unverified "latest" silently (INS-18).

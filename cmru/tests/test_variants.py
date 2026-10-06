@@ -574,6 +574,8 @@ class TestInstallerVariantTransaction:
         )
         ns: dict = {}
         exec(compile(src, "<rendered-get.py>", "exec"), ns)
+        # geteuid() is mocked to 0 in these tests, but the temp dirs belong to the test user
+        ns["_expected_owner"] = lambda: __import__("os").getuid()
         return ns
 
     def _bundles(self, workdir, tag="naf-v1.0.0"):
@@ -585,9 +587,11 @@ class TestInstallerVariantTransaction:
             asset_name = f"{tag}-{variant}.tar.xz"
             asset = workdir / asset_name
             with tarfile.open(asset, "w:xz") as tf:
-                manifest = json.dumps({"schema_version": 1, "tag": tag})
-                for rel, content in (("VERSION", "1.0.0\n"), ("variant.txt", variant + "\n"),
-                                     ("manifest.json", manifest)):
+                shipped = (("VERSION", "1.0.0\n"), ("variant.txt", variant + "\n"))
+                manifest = json.dumps({"schema_version": 1, "tag": tag, "files": {
+                    rel: {"sha256": hashlib.sha256(c.encode()).hexdigest()}
+                    for rel, c in shipped}})
+                for rel, content in shipped + (("manifest.json", manifest),):
                     data = content.encode()
                     ti = tarfile.TarInfo(name=f"{tag}/{rel}")
                     ti.size = len(data)

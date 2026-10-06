@@ -100,6 +100,17 @@ def _relative_problem(value: str, what: str) -> Optional[str]:
     return None
 
 
+# An install root is removed/rewritten wholesale by the installer; these (and "/") are never
+# acceptable as `install_dir_system`, however the path is spelled.
+_SYSTEM_ROOT_DIRS = frozenset({"usr", "etc", "bin", "sbin", "lib", "var", "boot", "home"})
+
+
+def _normalises_to_root(value: str) -> bool:
+    """True when a relative `value` collapses to the root itself (``.``, ``a/..``)."""
+    import posixpath
+    return posixpath.normpath(value) == "."
+
+
 def installer_problems(
     *,
     install_dir_system: str,
@@ -120,9 +131,18 @@ def installer_problems(
             or any(ch in install_dir_system for ch in "\0\n\r")):
         problems.append(f"install_dir_system must be an absolute path without '..': "
                         f"{install_dir_system!r}")
+    else:
+        parts = [p for p in install_dir_system.split("/") if p not in ("", ".")]
+        if not parts or (len(parts) == 1 and parts[0] in _SYSTEM_ROOT_DIRS):
+            problems.append(f"install_dir_system {install_dir_system!r} is the filesystem "
+                            "root or a system directory; use a dedicated directory "
+                            "(e.g. /opt/<name>)")
     problem = _relative_problem(install_dir_user, "install_dir_user")
     if problem:
         problems.append(problem)
+    elif _normalises_to_root(install_dir_user):
+        problems.append(f"install_dir_user must name a sub-directory, not the data "
+                        f"directory itself: {install_dir_user!r}")
     if asset_suffix != ".tar.xz":
         problems.append(f"asset_suffix must be '.tar.xz' (the installer reads xz tarballs): "
                         f"{asset_suffix!r}")
@@ -140,6 +160,9 @@ def installer_problems(
         problem = _relative_problem(path, "preserve entry")
         if problem:
             problems.append(problem)
+        elif _normalises_to_root(path):
+            problems.append(f"preserve entry {path!r} names the release root itself, not "
+                            "a path inside it")
     for glob_path, distribution in wheels:
         problem = _relative_problem(glob_path, "wheels.path")
         if problem:

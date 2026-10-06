@@ -140,7 +140,8 @@ class TestFailClosed:
     def test_adapter_must_be_covered_by_manifest(self, tmp_path):
         ns = render_ns(tmp_path, entrypoint="adapter.py")
         bundles = tmp_path / "bundles"
-        make_bundle(bundles, V1, files={"adapter.py": b"import sys\nsys.exit(0)\n"})
+        make_bundle(bundles, V1, files={"adapter.py": b"import sys\nsys.exit(0)\n"},
+                    hash_files=[])
         use_bundles(ns, bundles)
         with _exits(1):
             install(ns, version=V1)
@@ -399,7 +400,8 @@ class TestSignature:
         from cmru.manifest import build_trusted_comment, write_manifest
         pub, sec = minisign_keypair(tmp_path / "keys")
         ns = render_ns(tmp_path, manifest_pubkey=pub)
-        mpath = write_manifest({"schema_version": 1, "project": "demo", "tag": V1},
+        mpath = write_manifest({"schema_version": 1, "project": "demo", "tag": V1,
+                                "files": {"VERSION": {"sha256": sha(b"1")}}},
                                tmp_path / "m" / "manifest.json")
         minisign_sign(mpath, secret_key=str(sec), trusted_comment=build_trusted_comment(
             project="demo", tag=V1, manifest_path=mpath))

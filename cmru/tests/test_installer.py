@@ -790,6 +790,8 @@ class TestTransaction:
         )
         ns: dict = {}
         exec(compile(src, "<rendered-get.py>", "exec"), ns)
+        # geteuid() is mocked to 0 below, but the temp dirs belong to the test user
+        ns["_expected_owner"] = lambda: os.getuid()
         # Override XDG_DATA_HOME to use tmp_path for user scope
         os.environ["XDG_DATA_HOME"] = str(tmp_path / "xdg")
         return ns
@@ -799,7 +801,10 @@ class TestTransaction:
         asset_name = f"{tag}.tar.xz"
         asset = workdir / asset_name
         files = dict(files)
-        files["manifest.json"] = json.dumps({"schema_version": 1, "tag": tag})
+        listed = {rel: {"sha256": hashlib.sha256(
+                      c.encode() if isinstance(c, str) else c).hexdigest()}
+                  for rel, c in files.items()}
+        files["manifest.json"] = json.dumps({"schema_version": 1, "tag": tag, "files": listed})
         with tarfile.open(asset, "w:xz") as tf:
             for rel_path, content in files.items():
                 full = f"{tag}/{rel_path}"

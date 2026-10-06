@@ -8,6 +8,7 @@ replacing GitHub's single repo-global "Latest" badge.
 from __future__ import annotations
 
 import json
+import re
 import sys
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -61,21 +62,35 @@ def resolve(
     use_latest_json: bool = True,
     gh_releases_url: Optional[str] = None,
     asset_suffix: str = "",
+    variant: str = "",
 ) -> Optional[Dict[str, Any]]:
     """Resolve the latest release for prefix using the host (S5).
 
     Returns {version, tag, asset, sha256, url} or None if no release exists.
     Tries latest.json first (S5.3) for speed, falls back to scanning releases (S5.4).
-    ``asset_suffix`` selects the primary asset by type (INS-18); an unreadable or malformed
-    checksum sidecar raises instead of resolving with ``sha256=None``.
+    ``asset_suffix`` selects the primary asset by type (INS-18; ``variant`` one of several);
+    an unreadable, malformed or (for an installer release) missing checksum sidecar raises
+    instead of resolving with ``sha256=None``, and so does a malformed ``sha256`` in the
+    latest.json pointer.
     """
     if use_latest_json and gh_releases_url:
         result = resolve_via_latest_json(gh_releases_url, prefix)
         if result:
-            return result
+            digest = result.get("sha256")
+            if digest is not None and not (
+                    isinstance(digest, str) and re.fullmatch(r"[0-9a-f]{64}", digest.lower())):
+                raise RuntimeError(
+                    f"latest.json for {prefix!r} carries a sha256 that is not 64 hex digits")
+            if asset_suffix and digest is None:
+                result = None  # an installer release needs its digest: scan the release
+            else:
+                return result
+    kwargs: Dict[str, str] = {}
     if asset_suffix:
-        return host.resolve_latest(prefix, asset_suffix=asset_suffix)
-    return host.resolve_latest(prefix)
+        kwargs["asset_suffix"] = asset_suffix
+    if variant:
+        kwargs["variant"] = variant
+    return host.resolve_latest(prefix, **kwargs)
 
 
 def format_result(result: Dict[str, Any], fmt: str) -> str:

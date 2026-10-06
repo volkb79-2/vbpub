@@ -446,6 +446,7 @@ def render_get_py(
         "[[REQUIRED_COMMANDS_STR]]":     ", ".join(cmds) if cmds else "(none)",
         "[[REQUIRED_COMMANDS_COMMENT]]": required_commands_comment,
         # code position (a complete, json.dumps-escaped literal)
+        "[[PROJECT_NAME_LIT]]":          _py_literal(project_name),
         "[[REPO_OWNER]]":                _py_literal(repo_owner),
         "[[REPO_NAME]]":                 _py_literal(repo_name),
         "[[TAG_PREFIX_LIT]]":            _py_literal(tag_prefix),
