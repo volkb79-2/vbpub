@@ -100,6 +100,7 @@ from typing import Any
 
 from ..config import ExtractConfig
 from ..events import EventKind, NormalizedEvent
+from .. import toolresult
 
 name = "claude-code"
 
@@ -588,6 +589,11 @@ class StreamState:
 
     has_primary_thread: bool = True
     askuserquestion_inputs: dict[str, list[Any]] = field(default_factory=dict)
+    # tool_use id -> (tool name, one-line call summary), so a later
+    # tool_result (error / stop record) can name the call it answers.
+    # Registered unconditionally as tool_use blocks arrive; an unknown id
+    # (a follow stream whose call predates its anchor) degrades to "tool".
+    tool_calls: dict[str, tuple[str, str]] = field(default_factory=dict)
 
 
 def _remember_askuserquestion(rec: dict[str, Any], state: StreamState) -> None:
@@ -685,6 +691,74 @@ def update_interview_pending(rec: dict[str, Any], pending: dict[str, str]) -> st
     return None
 
 
+def _tool_call_label(name: str, tool_input: Any, mode: str) -> str | None:
+    """One tool_use block -> its rendered event text under `mode` (see
+    ExtractConfig.tool_call_mode), or None when the mode renders nothing
+    for it. Never includes the tool result."""
+    if mode == "none":
+        return None
+    head = f"[tool call: {name}]"
+    intent = toolresult.tool_intent(tool_input)
+    if mode == "label":
+        return head
+    if mode == "label-intent":
+        return head + (f" {intent}" if intent else "")
+    if mode == "intent":
+        return f"{head} {intent}" if intent else None
+    call = toolresult.summarize_call(name, tool_input)
+    if mode == "intent-or-call":
+        text = intent or call
+    else:  # "call"
+        text = call
+    return f"{head} {text}" if text else head
+
+
+def _stop_event(
+    seq: int, uuid: str, ts: str, text: str,
+) -> NormalizedEvent:
+    """The harness's synthetic stop/denial record as a kept marker. It is a
+    LIFECYCLE_MARKER (always kept) tagged boundary_type="interrupt" so it is
+    neither an OPERATOR turn nor a compaction, and not a ledger boundary."""
+    event = NormalizedEvent(seq, uuid, ts, EventKind.LIFECYCLE_MARKER, text)
+    event.meta["boundary_type"] = "interrupt"
+    return event
+
+
+def _tool_result_events(
+    rec: dict[str, Any], seq: int, uuid: str, ts: str, config: ExtractConfig, state: StreamState,
+) -> list[NormalizedEvent]:
+    """STOP markers for the harness's synthetic denial results, and (unless
+    `--tool-errors hide`) a truncated rendering of every FAILED tool_result,
+    independent of `--tool-calls`."""
+    content = rec.get("message", {}).get("content")
+    out: list[NormalizedEvent] = []
+    if not isinstance(content, list):
+        return out
+    for block in content:
+        if not isinstance(block, dict) or block.get("type") != "tool_result":
+            continue
+        tid = block.get("tool_use_id")
+        if tid in state.askuserquestion_inputs:
+            continue
+        text = toolresult.result_text(block)
+        tname, call = state.tool_calls.get(tid, ("tool", ""))
+        if toolresult.is_denial(text, rec):
+            what = f"{tname}: {call}" if call else tname
+            out.append(_stop_event(
+                seq, uuid, ts,
+                f"[STOP: tool call rejected by the harness, not an operator message -- {what}]",
+            ))
+            continue
+        if config.tool_errors == "show" and toolresult.is_failed(block, rec):
+            event = NormalizedEvent(
+                seq, uuid, ts, EventKind.TOOL_CALL,
+                f"[tool error: {tname}] {toolresult.one_line(text, 240)}",
+            )
+            event.meta["tool_error"] = "true"
+            out.append(event)
+    return out
+
+
 def parse_record(
     rec: dict[str, Any], seq: int, fallback_marker: str, config: ExtractConfig, state: StreamState
 ) -> list[NormalizedEvent]:
@@ -777,13 +851,10 @@ def parse_record(
                                 events.append(NormalizedEvent(
                                     seq, uuid, ts, EventKind.QA_PAIR, prompt,
                                 ))
-                if config.show_tool_calls:
-                    intent = ""
-                    if config.show_tool_call_intent and isinstance(tool_input, dict):
-                        raw_intent = tool_input.get("description") or tool_input.get("intent")
-                        if isinstance(raw_intent, str):
-                            intent = " ".join(raw_intent.split())[:240]
-                    label = f"[tool call: {name}]" + (f" {intent}" if intent else "")
+                if block.get("id"):
+                    state.tool_calls[block["id"]] = (name, toolresult.summarize_call(name, tool_input))
+                label = _tool_call_label(name, tool_input, config.tool_call_mode)
+                if label is not None:
                     events.append(NormalizedEvent(seq, uuid, ts, EventKind.TOOL_CALL, label))
             elif btype == "thinking" and config.include_thinking:
                 text = block.get("thinking", "")
@@ -810,6 +881,7 @@ def parse_record(
             return events
 
         content = rec.get("message", {}).get("content")
+        events.extend(_tool_result_events(rec, seq, uuid, ts, config, state))
 
         if isinstance(content, list):
             # A tool_result block for some OTHER tool call can share a
@@ -841,6 +913,18 @@ def parse_record(
             return events
 
         if rec.get("isMeta") or rec.get("isVisibleInTranscriptOnly"):
+            return events
+
+        if toolresult.is_interrupt_text(raw_text):
+            # The harness's synthetic "[Request interrupted by user for tool
+            # use]" record that follows a rejected call (no
+            # interruptedMessageId on it). Not operator intent; and the
+            # transcript renders a user stop and a controller TaskStop alike
+            # -- only .meta.json stoppedByUser tells them apart.
+            events.append(_stop_event(
+                seq, uuid, ts,
+                f"[STOP: harness interrupt record, not an operator message -- {raw_text.strip()}]",
+            ))
             return events
 
         cmd = _command_name(raw_text)

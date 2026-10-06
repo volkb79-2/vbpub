@@ -30,6 +30,22 @@ tool_result records this package otherwise drops entirely:
 Claude Code only, for now -- whether Codex/opencode expose tool_use/
 tool_result the same way is the same open question E-012 raised for prose,
 not yet checked for tool calls either.
+
+WHOLE-SESSION LEDGER + EXTERNAL EFFECTS (nyxloom-SUCCESSOR, 2026-10-06,
+operator decision): the per-boundary lines above only print after a KEPT
+operator boundary, so a single-brief agent (one OPERATOR turn, hundreds of
+tool calls) showed little or nothing useful. `session_ledger()` merges every
+boundary's ledger into one whole-session `Ledger`, and the new
+`external_effects` bucket lists Bash commands that change the world outside
+the worktree (git push/merge/tag/rebase, ssh, mutating curl, netcup
+snapshot/install verbs, docker rm/stop/run, systemctl, apt). It is the
+"already done -- verify by state, never repeat" list a successor needs. The
+patterns are heuristic regexes over each shell SEGMENT (heredoc bodies
+dropped; `;`, `&&`, `||`, `|` and newlines split; leading `VAR=x`, sudo,
+nice/ionice/timeout/time wrappers stripped) and are configurable
+(`--effect-pattern`, `--no-default-effect-patterns`). A command whose result
+failed or was rejected by the harness is annotated, because a rejected push
+did NOT happen.
 """
 
 from __future__ import annotations
@@ -37,8 +53,69 @@ from __future__ import annotations
 import json
 import os
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
+
+from . import toolresult
+
+# Default external-effect patterns, matched (re.search, case-insensitive)
+# against each normalised shell segment. See the module docstring.
+DEFAULT_EFFECT_PATTERNS: tuple[str, ...] = (
+    r"^git(?:\s+-C\s+\S+)?\s+(?:push|merge|rebase)\b",
+    r"^git(?:\s+-C\s+\S+)?\s+tag\b(?!.*\s(?:-l|--list)\b)",
+    r"^(?:ssh|scp)(?:\s|$)",
+    r"^curl\b.*\s(?:-X|--request)\s*=?\s*(?:POST|PUT|PATCH|DELETE)\b",
+    r"^curl\b.*\s(?:-d|--data\S*|-F|--form\S*|-T|--upload-file)\b",
+    r"\bnc\.py\b.*\bsnapshots?\b.*\b(?:create|delete|revert|rollback)\b",
+    r"\bnc\.py\b.*\binstall-host\b",
+    r"\bnc\.py\b.*\bscp-api\b.*\b(?:create|delete|install|reinstall|start|stop|shutdown|poweron|poweroff|reset|rescue)\b",
+    r"^docker\s+(?:rm|stop|run)\b",
+    r"^systemctl\b",
+    r"^(?:apt|apt-get)\b",
+)
+
+_HEREDOC_RE = re.compile(r"<<-?\s*['\"]?(\w+)['\"]?[^\n]*\n.*?\n\s*\1\b", re.DOTALL)
+_SEGMENT_SPLIT_RE = re.compile(r"&&|\|\||;|\||\n")
+_LEADING_KEYWORD_RE = re.compile(r"^(?:do|then|else|elif|if|while|!|\(|\{)\s+")
+_LEADING_ASSIGN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=\S*\s+")
+_WRAPPER_RES = (
+    re.compile(r"^sudo(?:\s+-\S+)*\s+"),
+    re.compile(r"^nice(?:\s+-n\s*\d+|\s+-\d+)?\s+"),
+    re.compile(r"^ionice(?:\s+-c\s*\d+)?(?:\s+-n\s*\d+)?\s+"),
+    re.compile(r"^timeout(?:\s+-\S+)*\s+\d+[smhd]?\s+"),
+    re.compile(r"^time\s+"),
+)
+
+
+def _segments(command: str) -> list[str]:
+    command = _HEREDOC_RE.sub("", command)
+    out = []
+    for seg in _SEGMENT_SPLIT_RE.split(command):
+        seg = seg.strip()
+        changed = True
+        while changed and seg:
+            changed = False
+            for rx in (_LEADING_KEYWORD_RE, _LEADING_ASSIGN_RE, *_WRAPPER_RES):
+                new = rx.sub("", seg, count=1)
+                if new != seg:
+                    seg, changed = new.strip(), True
+        if seg:
+            out.append(seg)
+    return out
+
+
+def effect_segments(command: str, patterns: Iterable[str] = DEFAULT_EFFECT_PATTERNS) -> list[str]:
+    """The shell segments of `command` that match an external-effect
+    pattern (empty = not an external effect)."""
+    compiled = [re.compile(p, re.IGNORECASE) for p in patterns]
+    return [seg for seg in _segments(command) if any(rx.search(seg) for rx in compiled)]
+
+
+def external_effect(command: str, patterns: Iterable[str] = DEFAULT_EFFECT_PATTERNS) -> bool:
+    """Whether any shell segment of `command` matches an external-effect
+    pattern."""
+    return bool(effect_segments(command, patterns))
 
 _FILE_EDIT_TOOLS = {"Edit", "Write", "NotebookEdit"}
 _READ_TOOLS = {"Read"}
@@ -62,9 +139,42 @@ class Ledger:
     commits: list[str] = field(default_factory=list)
     branches: list[str] = field(default_factory=list)
     tests: list[str] = field(default_factory=list)
+    # "[HH:MM:SS] <command>" lines, chronological, NOT de-duplicated (a
+    # repeated push is information). Rendered only by render_session().
+    external_effects: list[str] = field(default_factory=list)
 
     def is_empty(self) -> bool:
+        """Empty for the PER-BOUNDARY line (external effects are a
+        whole-session notion and never part of it)."""
         return not (self.files_read or self.files_edited or self.commits or self.branches or self.tests)
+
+    def session_is_empty(self) -> bool:
+        return self.is_empty() and not self.external_effects
+
+    def render_session(self) -> str:
+        """The whole-session ledger as a short multi-line block."""
+        lines = ["[session ledger -- whole session]"]
+        if self.files_read:
+            lines.append(f"files read ({len(self.files_read)}): {', '.join(self.files_read)}")
+        if self.files_edited:
+            lines.append(f"files edited ({len(self.files_edited)}): {', '.join(self.files_edited)}")
+        if self.commits:
+            lines.append(f"commits created: {', '.join(self.commits)}")
+        if self.branches:
+            lines.append(f"branches involved: {', '.join(self.branches)}")
+        if self.tests:
+            lines.append(f"tests: {'; '.join(self.tests)}")
+        if self.external_effects:
+            lines.append(
+                f"external effects ({len(self.external_effects)}) -- already done; verify by "
+                "state, never repeat:"
+            )
+            lines.extend(f"  {e}" for e in self.external_effects)
+        if self.session_is_empty():
+            lines.append("(no files, commits, branches, tests or external effects recorded)")
+        elif not self.external_effects:
+            lines.append("external effects: none detected")
+        return "\n".join(lines)
 
     def render(self) -> str:
         parts = []
@@ -103,8 +213,32 @@ def _relativize(fp: str, repo_root: Path) -> str:
     return os.path.relpath(fp, repo_root)
 
 
+def session_ledger(ledgers: dict[str, Ledger]) -> Ledger:
+    """Merge every boundary's ledger into one whole-session ledger, in
+    boundary (= chronological) order. Files/commits/branches are
+    de-duplicated; tests and external effects keep every occurrence."""
+    merged = Ledger()
+    for entry in ledgers.values():
+        merged.files_read.extend(entry.files_read)
+        merged.files_edited.extend(entry.files_edited)
+        merged.commits.extend(entry.commits)
+        merged.branches.extend(entry.branches)
+        merged.tests.extend(entry.tests)
+        merged.external_effects.extend(entry.external_effects)
+    merged.files_read = _dedup_preserve_order(merged.files_read)
+    merged.files_edited = _dedup_preserve_order(merged.files_edited)
+    merged.commits = _dedup_preserve_order(merged.commits)
+    merged.branches = _dedup_preserve_order(merged.branches)
+    return merged
+
+
+def _hms(ts: str) -> str:
+    return f"[{ts[11:19]}]" if len(ts) >= 19 else "[--:--:--]"
+
+
 def build_ledger_claude_code(
-    path: Path, boundary_markers: set[str], repo_root: Path | None = None
+    path: Path, boundary_markers: set[str], repo_root: Path | None = None,
+    effect_patterns: Iterable[str] = DEFAULT_EFFECT_PATTERNS,
 ) -> dict[str, Ledger]:
     """One `Ledger` per marker in `boundary_markers` (pass the `.marker` of
     every OPERATOR_TEXT/QA_PAIR/LIFECYCLE_MARKER event that survived
@@ -131,6 +265,10 @@ def build_ledger_claude_code(
     # tool_use_id -> the boundary marker owning it, for a Bash call whose
     # OWN command looked like a commit (the hash only appears in the RESULT).
     pending_commits: dict[str, str] = {}
+    # tool_use_id -> (the ledger holding the effect line, its index), so the
+    # result can annotate a failed/rejected command.
+    pending_effects: dict[str, tuple[Ledger, int]] = {}
+    effect_patterns = tuple(effect_patterns)
 
     with path.open("r", errors="ignore") as f:
         for line in f:
@@ -172,6 +310,15 @@ def build_ledger_claude_code(
                         m = _BRANCH_CHECKOUT_RE.search(command)
                         if m:
                             ledgers[current].branches.append(m.group(1))
+                        hits = effect_segments(command, effect_patterns) if isinstance(command, str) else []
+                        if hits:
+                            effects = ledgers[current].external_effects
+                            effects.append(
+                                f"{_hms(rec.get('timestamp', ''))} "
+                                f"{toolresult.one_line(' ; '.join(hits), 200)}"
+                            )
+                            if block.get("id"):
+                                pending_effects[block["id"]] = (ledgers[current], len(effects) - 1)
                 continue
 
             if rtype == "user":
@@ -186,6 +333,13 @@ def build_ledger_claude_code(
                         result_text = json.dumps(result_text)
 
                     tool_use_id = block.get("tool_use_id")
+                    pending = pending_effects.pop(tool_use_id, None) if tool_use_id else None
+                    if pending is not None:
+                        eff_ledger, eff_idx = pending
+                        if toolresult.is_denial(result_text, rec):
+                            eff_ledger.external_effects[eff_idx] += " [REJECTED by harness: not executed]"
+                        elif toolresult.is_failed(block, rec):
+                            eff_ledger.external_effects[eff_idx] += " [FAILED]"
                     owner = pending_commits.pop(tool_use_id, None) if tool_use_id else None
                     if owner is not None:
                         m = _COMMIT_RE.search(result_text)
@@ -206,11 +360,12 @@ def build_ledger_claude_code(
 
 
 def build_ledger(
-    path: Path, fmt: str, boundary_markers: set[str], repo_root: Path | None = None
+    path: Path, fmt: str, boundary_markers: set[str], repo_root: Path | None = None,
+    effect_patterns: Iterable[str] = DEFAULT_EFFECT_PATTERNS,
 ) -> dict[str, Ledger]:
     """Dispatches on `fmt` -- see module docstring for what's implemented."""
     if fmt == "claude-code":
-        return build_ledger_claude_code(Path(path), boundary_markers, repo_root)
+        return build_ledger_claude_code(Path(path), boundary_markers, repo_root, effect_patterns)
     raise NotImplementedError(
         f"the E-012 ledger does not support {fmt!r} yet -- see ledger.py's module docstring"
     )

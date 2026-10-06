@@ -240,7 +240,11 @@ def render_text(
     timestamp_format: str = "[%H:%M:%S]",
     metadata_position: str = "both",
     source_metadata: dict[str, str] | None = None,
+    trailer_blocks: list[str] | None = None,
 ) -> str:
+    """`trailer_blocks`: extra blocks (the whole-session ledger, the stop
+    state) appended after the last event and BEFORE the closing cursor
+    comment, so the cursor stays the last thing in the output."""
     plain_sep = separator(insert_blank_lines)
     parts: list[str] = []
     seps: list[str] = []
@@ -270,7 +274,8 @@ def render_text(
             _add(f"[epoch {epoch}/{ev.meta.get('epoch_count', '1')}]")
             last_epoch = epoch
         _add(render_event_block(ev, block_render, show_timestamps, timestamp_format))
-        if ledger is not None and ev.kind in _LEDGER_BOUNDARY_KINDS:
+        if (ledger is not None and ev.kind in _LEDGER_BOUNDARY_KINDS
+                and ev.meta.get("boundary_type") != "interrupt"):
             entry = ledger.get(ev.marker)
             if entry and not entry.is_empty():
                 _add(entry.render())
@@ -282,6 +287,9 @@ def render_text(
             inline_text = _gap_inline_text(ev, min_gap_to_annotate, gap_marker_mode, show_gap_marker)
             if inline_text:
                 pending_sep = separator(insert_blank_lines, inline_text)
+
+    for block in trailer_blocks or ():
+        _add(block)
 
     body = parts[0] if parts else ""
     for text, sep in zip(parts[1:], seps):

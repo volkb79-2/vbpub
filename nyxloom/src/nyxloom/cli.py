@@ -566,6 +566,8 @@ def _extract_config_from_args(args, *, since_marker=None, json_output: bool | No
         hide_compaction_content=not get("show_compaction_content", False),
         show_tool_calls=get("show_tool_calls", False),
         show_tool_call_intent=get("show_tool_call_intent", False),
+        tool_calls=get("tool_calls") or "none",
+        tool_errors=get("tool_errors") or "show",
         show_timestamps=get("show_timestamps") or "pre",
         timestamp_format=get("timestamp_format") or "[%H:%M:%S]",
         extract_metadata=get("extract_metadata") or "both",
@@ -754,6 +756,9 @@ def cmd_extract(args) -> int:
     [--max-checkpoints N] [--answer-length N] [--max-words N]
     [--max-compactions N] [--max-time-minutes N] [--epochs N|A:B|all]
     [--since MARKER | --since-file PATH] [--until MARKER] [--ledger]
+    [--tool-calls none|intent|intent-or-call|call] [--tool-errors show|hide]
+    [--stop-state] [--successor-brief [--order TEXT|@FILE] [--brief-max-chars N]]
+    [--effect-pattern REGEX] [--no-default-effect-patterns]
     [--show-tool-calls] [--show-tool-call-intent] [--gap-marker MODE]
     [--blank-lines N] [--show-timestamps MODE] [--timestamp-format FMT]
     [--extract-metadata MODE] [--render-markdown | --highlight] [--color | --no-color]
@@ -810,7 +815,29 @@ def cmd_extract(args) -> int:
     ...]` line after each kept boundary's own text (E-012, session_extract/
     ledger.py) -- zero LLM calls, same guarantee as the rest of this
     package. Claude Code only today (errors on any other format); --json
-    errors too (no JSON equivalent yet).
+    errors too (no JSON equivalent yet). It also appends a WHOLE-SESSION
+    ledger (files, commits, branches, tests and an `external effects` bucket
+    of Bash commands: git push/merge/tag/rebase, ssh, mutating curl, netcup
+    snapshot/install verbs, docker rm/stop/run, systemctl, apt -- extend or
+    replace with --effect-pattern / --no-default-effect-patterns) before the
+    closing cursor comment, so a single-brief agent is no longer empty.
+
+    --tool-calls MODE (Claude Code) renders tool calls: `none` (default),
+    `intent` (the call's own description/intent field only), `intent-or-call`
+    (intent, else the one-line truncated call), `call` (the one-line
+    truncated call); results are never shown. --show-tool-calls and
+    --show-tool-call-intent are DEPRECATED aliases that keep their exact
+    prior output (name labels, optionally with intent) and cannot be mixed
+    with --tool-calls. --tool-errors show|hide (default show) renders FAILED
+    tool results truncated, independent of --tool-calls; the harness's
+    synthetic stop/denial records render as `[STOP: ...]`, never as OPERATOR.
+
+    --stop-state appends the cause (the sibling .meta.json `stoppedByUser`
+    plus the transcript tail), the last assistant text and the in-flight call.
+    --successor-brief emits ONE markdown document for priming a fresh agent
+    (original brief verbatim or path+sha256, extract with the successor
+    defaults --profile all --tool-calls intent-or-call --tool-errors show,
+    whole-session ledger, stop state, then --order TEXT|@FILE).
 
     --blank-lines/--gap-marker/--min-gap-records/--show-gap-source control
     ONLY the text-mode rendering of
@@ -858,6 +885,22 @@ def cmd_extract(args) -> int:
         return 1
     path, session_id = resolved
 
+    successor = bool(getattr(args, "successor_brief", False))
+    if successor:
+        # Successor defaults (operator decision 2026-10-06): the whole
+        # transcript, tool calls as intent-or-call, failures shown, ledger on.
+        # Anything the caller passed explicitly wins.
+        if getattr(args, "profile", None) is None:
+            args.profile = "all"
+        if (getattr(args, "tool_calls", None) is None
+                and not getattr(args, "show_tool_calls", False)):
+            args.tool_calls = "intent-or-call"
+        args.ledger = True
+    if getattr(args, "show_tool_calls", False) or getattr(args, "show_tool_call_intent", False):
+        print("nyxloom extract: --show-tool-calls/--show-tool-call-intent are deprecated aliases "
+              "(label / label+intent rendering); use --tool-calls "
+              "none|intent|intent-or-call|call", file=sys.stderr)
+
     detected_format = None
     if args.format is None and (args.since_file or args.follow):
         from .session_extract.adapters import detect
@@ -898,6 +941,23 @@ def cmd_extract(args) -> int:
               file=sys.stderr)
         return 1
 
+    for flag, wanted in (("--stop-state", getattr(args, "stop_state", False)),
+                         ("--successor-brief", successor)):
+        if wanted and result.format != "claude-code":
+            print(f"error: {flag} does not support {result.format!r} yet -- Claude Code "
+                  f"transcripts only (see session_extract/stopstate.py)", file=sys.stderr)
+            return 1
+    if config.tool_calls != "none" and result.format != "claude-code":
+        print(f"error: --tool-calls is not supported for {result.format!r} yet; supported "
+              f"format: claude-code", file=sys.stderr)
+        return 1
+    if getattr(args, "tool_errors", None) is not None and result.format != "claude-code":
+        print(f"error: --tool-errors is not supported for {result.format!r} yet; supported "
+              f"format: claude-code", file=sys.stderr)
+        return 1
+
+    trailer_blocks: list[str] = []
+    session_ledger = None
     if args.ledger:
         if result.format != "claude-code":
             print(f"error: --ledger does not support {result.format!r} yet -- see "
@@ -905,11 +965,56 @@ def cmd_extract(args) -> int:
             return 1
         from .session_extract import ledger as ledger_mod
 
+        import re as re_mod
+
+        effect_patterns = tuple(getattr(args, "effect_pattern", None) or ())
+        for pattern in effect_patterns:
+            try:
+                re_mod.compile(pattern)
+            except re_mod.error as e:
+                print(f"error: --effect-pattern {pattern!r}: invalid regex: {e}", file=sys.stderr)
+                return 1
+        if not getattr(args, "no_default_effect_patterns", False):
+            effect_patterns = ledger_mod.DEFAULT_EFFECT_PATTERNS + effect_patterns
+
+        # An interrupt STOP marker is a LIFECYCLE_MARKER but not a boundary.
         boundary_markers = {
             ev.marker for ev in result.events
             if ev.kind in (EventKind.OPERATOR_TEXT, EventKind.QA_PAIR, EventKind.LIFECYCLE_MARKER)
+            and ev.meta.get("boundary_type") != "interrupt"
         }
-        result._ledger = ledger_mod.build_ledger(path, result.format, boundary_markers)
+        ledgers = ledger_mod.build_ledger(
+            path, result.format, boundary_markers, effect_patterns=effect_patterns,
+        )
+        session_ledger = ledger_mod.session_ledger(ledgers)
+        if not successor:
+            result._ledger = ledgers
+            trailer_blocks.append(session_ledger.render_session())
+
+    stop_state = None
+    if getattr(args, "stop_state", False) or successor:
+        from .session_extract.stopstate import build_stop_state
+
+        stop_state = build_stop_state(path)
+        if not successor:
+            trailer_blocks.append(stop_state.render())
+
+    brief = None
+    if successor:
+        from .session_extract.successor import first_user_record
+
+        brief = first_user_record(path)
+        if brief is None:
+            print(f"error: --successor-brief: {path} has no user record to take the original "
+                  f"brief from", file=sys.stderr)
+            return 1
+        # The brief is its own section; drop its event from the extract.
+        brief_uuid = brief[0]
+        result.events = [
+            ev for ev in result.events
+            if not (ev.kind is EventKind.OPERATOR_TEXT and brief_uuid and ev.marker == brief_uuid)
+        ]
+    result._trailer_blocks = trailer_blocks
 
     block_render = _block_render_for(args)
     result._block_render = block_render
@@ -923,6 +1028,21 @@ def cmd_extract(args) -> int:
               f"--redact-pattern", file=sys.stderr)
 
     rendered = result.render()
+    if successor:
+        from .session_extract import successor as successor_mod
+
+        order = None
+        if getattr(args, "order", None) is not None:
+            try:
+                order = successor_mod.read_order(args.order)
+            except OSError as e:
+                print(f"error: --order: {e}", file=sys.stderr)
+                return 1
+        max_chars = getattr(args, "brief_max_chars", None)
+        rendered = successor_mod.assemble(
+            path, brief[1], rendered, session_ledger, stop_state, order,
+            brief_max_chars=max_chars if max_chars is not None else successor_mod.DEFAULT_BRIEF_MAX_CHARS,
+        )
     task_text = None
     if args.task is not None:
         task_text = args.task
@@ -930,8 +1050,8 @@ def cmd_extract(args) -> int:
         task_text = Path(args.task_file).read_text(encoding="utf-8")
     if task_text is not None:
         rendered += (
-            "\n════ TASK FOR THIS SESSION (authored by the operator, not part of the session "
-            "above) ════\n"
+            "\n════ TASK FOR THIS SESSION (supplied by the requester of this extract -- the "
+            "controller or the operator -- not part of the session above) ════\n"
             f"{task_text.strip()}\n"
             "════════════════════════════════════════════════════════════════════════════════"
             "════\n"

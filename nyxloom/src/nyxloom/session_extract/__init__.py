@@ -62,6 +62,7 @@ class ExtractResult:
             timestamp_format=self._timestamp_format,
             metadata_position=self._metadata_position,
             source_metadata=self._source_metadata,
+            trailer_blocks=self._trailer_blocks,
         )
 
     # set by extract() below; not part of the public dataclass contract
@@ -78,6 +79,10 @@ class ExtractResult:
     # E-012 (ledger.py) -- opt-in, built and attached by cli.py's cmd_extract
     # when --ledger is passed; None means "not requested," skipped entirely.
     _ledger: dict[str, Ledger] | None = None
+    # Whole-session ledger / stop-state blocks, appended by cli.py after the
+    # last event and before the closing cursor comment (render_text's
+    # trailer_blocks). Empty = nothing requested.
+    _trailer_blocks: list[str] | None = None
     # Per-block prose render hook (render.py's own block_render param) --
     # attached by cli.py for --render-markdown/--highlight. A rendering
     # concern, not a selection one, so it lives here rather than in

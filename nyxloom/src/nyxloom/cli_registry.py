@@ -283,6 +283,45 @@ def _extract_guard(args: Any) -> None:
             exit_code=2,
             show_help=True,
         )
+    if getattr(args, "tool_calls", None) is not None and (
+        getattr(args, "show_tool_calls", False) or getattr(args, "show_tool_call_intent", False)
+    ):
+        raise CliFailure(
+            "--tool-calls replaces the deprecated --show-tool-calls/--show-tool-call-intent; "
+            "pass only one spelling",
+            exit_code=2,
+            show_help=True,
+        )
+    successor = getattr(args, "successor_brief", False)
+    if not successor:
+        for attr, flag in (("order", "--order"), ("brief_max_chars", "--brief-max-chars")):
+            if getattr(args, attr, None) is not None:
+                raise CliFailure(f"{flag} only applies with --successor-brief", exit_code=2, show_help=True)
+    else:
+        for conflict, flag in (
+            (getattr(args, "task", None) is not None or getattr(args, "task_file", None) is not None,
+             "--task/--task-file (use --order)"),
+            (getattr(args, "follow", False), "--follow"),
+            (getattr(args, "json", False), "--json"),
+            (getattr(args, "stop_state", False), "--stop-state (always included)"),
+        ):
+            if conflict:
+                raise CliFailure(
+                    f"--successor-brief emits one markdown document and cannot be combined "
+                    f"with {flag}",
+                    exit_code=2,
+                    show_help=True,
+                )
+    if getattr(args, "brief_max_chars", None) is not None and args.brief_max_chars < 0:
+        raise CliFailure("--brief-max-chars must be non-negative", exit_code=2, show_help=True)
+    if (getattr(args, "effect_pattern", None) or getattr(args, "no_default_effect_patterns", False)) \
+            and not (getattr(args, "ledger", False) or successor):
+        raise CliFailure(
+            "--effect-pattern/--no-default-effect-patterns only apply with --ledger "
+            "or --successor-brief",
+            exit_code=2,
+            show_help=True,
+        )
     if getattr(args, "follow", False) and getattr(args, "strip_stale_wakeups", False):
         raise CliFailure(
             "extract --follow cannot be combined with --strip-stale-wakeups: "
@@ -302,6 +341,7 @@ def _extract_guard(args: Any) -> None:
             "--gap-marker" if getattr(args, "gap_marker", None) is not None else None,
             "--min-gap-records" if getattr(args, "min_gap_records", None) is not None else None,
             "--ledger" if getattr(args, "ledger", False) else None,
+            "--stop-state" if getattr(args, "stop_state", False) else None,
             "--show-gap-source" if getattr(args, "show_gap_source", False) else None,
             "--task" if getattr(args, "task", None) is not None else None,
             "--task-file" if getattr(args, "task_file", None) is not None else None,
@@ -518,11 +558,70 @@ With --follow, Nyxloom prints a one-shot prefix and then reads only appended pay
                 "--show-compaction-content", "Show compaction content",
                 group="CONTENT", action="store_true",
             ),
-            _opt("--show-tool-calls", "Show tool call details", group="CONTENT", action="store_true"),
-            _opt("--show-tool-call-intent", "Show tool call intent", group="CONTENT", action="store_true"),
+            _opt(
+                "--tool-calls",
+                "Tool-call rendering (Claude Code): none (default), intent (the call's own "
+                "description), intent-or-call (intent, else the one-line truncated call), "
+                "call (one-line truncated call); results are never shown",
+                group="CONTENT", choices=("none", "intent", "intent-or-call", "call"), default=None,
+            ),
+            _opt(
+                "--tool-errors",
+                "Render FAILED tool results truncated, independent of --tool-calls "
+                "(Claude Code): show (default) or hide",
+                group="CONTENT", choices=("show", "hide"), default=None,
+            ),
+            _opt(
+                "--show-tool-calls",
+                "Deprecated alias: tool-name labels (use --tool-calls)",
+                group="CONTENT", action="store_true",
+            ),
+            _opt(
+                "--show-tool-call-intent",
+                "Deprecated alias: add intent to the --show-tool-calls labels (use --tool-calls)",
+                group="CONTENT", action="store_true",
+            ),
             _opt("--strip-stale-wakeups", "Remove stale wakeup events", group="CONTENT", action="store_true"),
             _opt("--json", "Emit structured JSON output", group="OUTPUT", action="store_true"),
-            _opt("--ledger", "Include source event ledger", group="OUTPUT", action="store_true"),
+            _opt(
+                "--ledger",
+                "Include source event ledger: per-boundary lines plus a whole-session ledger "
+                "with external effects (Claude Code)",
+                group="OUTPUT", action="store_true",
+            ),
+            _opt(
+                "--effect-pattern",
+                "Extra regex marking a Bash command as an external effect; repeatable",
+                group="OUTPUT", action="append", default=None,
+            ),
+            _opt(
+                "--no-default-effect-patterns",
+                "Use only --effect-pattern regexes for the external-effects ledger bucket",
+                group="OUTPUT", action="store_true",
+            ),
+            _opt(
+                "--stop-state",
+                "Append a Stop state section: cause, last assistant text, in-flight call "
+                "(Claude Code)",
+                group="OUTPUT", action="store_true",
+            ),
+            _opt(
+                "--successor-brief",
+                "Emit ONE markdown document to prime a fresh agent: original brief, extract "
+                "(defaults --profile all --tool-calls intent-or-call --tool-errors show), "
+                "whole-session ledger, stop state, then --order (Claude Code)",
+                group="SUCCESSOR", action="store_true",
+            ),
+            _opt(
+                "--order", "With --successor-brief: the successor's order, TEXT or @FILE",
+                group="SUCCESSOR", default=None,
+            ),
+            _opt(
+                "--brief-max-chars",
+                "With --successor-brief: inline the original brief up to this many chars "
+                "(default 6000), else its path + sha256",
+                group="SUCCESSOR", type=int, default=None,
+            ),
             _opt(
                 ("--blank-lines", "--insert-blank-lines"), "Blank lines between extract sections",
                 group="OUTPUT", type=int, default=None,
