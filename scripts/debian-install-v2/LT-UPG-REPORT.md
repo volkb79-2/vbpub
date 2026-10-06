@@ -181,5 +181,6 @@ flock/nice/ionice, verdicts read in a separate step from the output files:
    `failed`) and the stage1-complete post carries "⚠️ apt upgrade failed (<mode>),
    install continued". Test updated.
 
-Gates for the rulings: see the verdict lines below.
+Gates for the rulings (run on the committed tree before this line was added):
+`r0-r1` PASS exit 0, 939 passed / 11 skipped; netcup `suite` PASS exit 0, 716 passed.
 
