@@ -96,6 +96,30 @@ The first `coverage` run FAILED at 99.64%, with the suite itself green. Two caus
   (63-hex is the malformed id), `test_release_transaction_final_adversarial.py` (a fetch failure is a false result),
   `test_release_transaction.py` (dirty-reason wording, `test_rel13_...`), `test_release_coverage_gaps.py` (status no longer configures logging).
 
+## Review fixes (after the ACCEPT-conditional review)
+
+| Item | Change | Evidence |
+|---|---|---|
+| 1-2 | SPEC status row/prose no longer mention `--show-run-details`/`--log-append`; SPEC "fast-forwards remote main" (two places) now "push, merging origin/main into the candidate if main advanced"; CONSUMERS dirty-checkout text aligned with README/RELEASE-TRANSACTIONS (ignored files only block on a path origin/main would add) | docs only |
+| 3 | `docs/RELEASE-TRANSACTIONS.md` new section "Release history behaviour changes": (a) non-empty plain `[Unreleased]` refuses a tagged release (KI-30) with the remedy, (b) regenerating a stale generated section overwrites hand edits inside it; pointer added in `CONSUMERS.md` | docs only |
+| 4 | `changelog._project_commits_after_cursor` ignores cmru's own `chore: bump <prefix> to <version>` commit, so a resumed `file:` release neither regenerates the section with a self-referential entry nor re-tags a new commit | `test_release_end_to_end_real_git.py::test_rel05_file_strategy_resume_retags_the_same_commit_without_a_self_entry[file:VERSION]` (build fails, tag rolled back, resume: tag on the exact gated candidate commit, no "chore: bump" in the shipped history). Reproduced red before the fix; plant (filter forced True) FAILS, restored. The e2e harness is now parametrised on the version strategy |
+| 5 M16 | non-race push failure fails at once without merging | `test_m16_a_non_race_push_failure_fails_at_once_without_merging`; plant `if False:` at the marker check FAILS, restored |
+| 5 M14 | contained-origin branch returns False and makes no merge | `test_m14_a_candidate_already_containing_origin_main_needs_no_merge`; plant `return True` FAILS, restored |
+| 5 M13b | `_close_fd_if_open` never closes | the existing `test_the_never_opened_fd_sentinel_is_not_closed` already asserts the close; plant (`and False`) FAILS, restored. Not deferred |
+| 6 | `CHANGES.md` comment now points at `68a03b4fe^:cmru/CHANGES.md` | see merge note below |
+| 7 | `KNOWN_ISSUES_TODO_BACKLOG.md`: KI-55 (backup branch not re-pushed after merge-promote), KI-56 (refuse `build_step = "push"` / publishing steps in the rollback window), KI-57 (no multi-project/nested e2e for merge-promote), KI-58 (non-empty `[Unreleased]` in assay, run-gate-project, scripts/cgroup-profiler; estate follow-up) | backlog |
+
+Merge: `cmru-wave-2026-10` (`b9ed0cc01`) merged by a normal merge, merge commit **`c542a082b`**. Conflicts (resolved with Edit):
+`CHANGES.md` (the integration branch had re-populated `[Unreleased]` with the 6.0.0 prose; kept it and replaced my comment with a note
+that KI-30 refuses a tagged release while that body is non-empty, so the controller must move it into the 6.0.0 notes before releasing)
+and `docs/SPEC.md` (my `status` row, the integration branch's `cleanup` row).
+
+Gates on the merged tree (code commit `c542a082b`; later commits only change this REPORT):
+- Full suite via `pt.py` (editable finder removed), no `--maxfail`: **2780 passed, 10 skipped** (smaller than before because
+  W0-RETIRE deleted agent/controller tests). The end-to-end file passed three times in a row before the merge (18 passed each).
+- `coverage` lane: **PASS**, exit 0, total 100.00%.
+- `canary` lane: **PASS**, exit 0 (W0-GATE's tls-edge guard is in).
+
 ## Carry-forward for the controller (REL-10 / 6.0.0 notes)
 The hand-written `[Unreleased]` prose was emptied by `68a03b4fe` (KI-30 refuses a non-empty `[Unreleased]` in a tagged release), so
 it is NOT in the working-tree `cmru/CHANGES.md`. Recover it with `git show 68a03b4fe^:cmru/CHANGES.md` (lines 5-55):
