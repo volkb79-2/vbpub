@@ -145,6 +145,7 @@ items:
   - {id: B143, title: "Adopt cli-extended (unified adoption, order 6 of 8): real wheel dependency, zipapp bundles cli_extended, A-005 reworded", type: feature, component: cli, context_estimate: large}
   - {id: B144, title: "per-candidate covering-test selection for qualifying Python R2: a coverage-context map runs each mutant's covering tests first (kill fast) while every survivor still runs the full declared suite -- decision-gated against B110 D3", type: feature, component: mutation, context_estimate: large}
   - {id: B145, title: "fork exhaustion (pids.max) is classified as killed: a lane at its process limit cannot produce a valid R2 kill", type: bugfix, component: mutation, context_estimate: medium}
+  - {id: B146, title: "R0 failure summary reports generic NO_MEASUREMENT instead of naming R0 FAIL and the first failing test", type: bugfix, component: cli, context_estimate: small}
   - {id: B147, title: "Assay's hermetic Git environment drops image gc.autoDetach and permits detached automatic maintenance", type: bugfix, component: execution, context_estimate: small}
 ---
 
@@ -195,6 +196,7 @@ the per-entry evidence table, WIP-branch findings, and ID collisions.
 - B143 — adopt cli-extended (unified adoption, order 6 of 8; A-005 reworded) — PLANNED (filed 2026-10-05; requires cli-extended 0.2.0 released)
 - B144 — per-candidate covering-test selection for qualifying Python R2 (covering tests first, full suite on survival) — OPEN, decision-gated against B110 D3/A-467 (filed 2026-10-05 from the cli-extended 0.2.0 wave; measured on a real campaign)
 - B145 — fork exhaustion classified as `killed` (false kills at `pids.max`) — OPEN, critical (filed 2026-10-05; contaminated post-03:11Z results must be discarded before retry)
+- B146 — R0 failure summary should report `FAIL` and name the first failing test instead of `NO_MEASUREMENT` — OPEN, deferred to the next wave (non-release blocker; filed 2026-10-06)
 - B147 — hermetic Git boundary permits detached automatic maintenance — OPEN (filed 2026-10-06; fold into the B145 wave)
 - B105 — full-source R0-R3 Assay self-qualification — OPEN (next package after the single Wave C release; required before M7; pre-release Wave C gate remains R0-only; full gate must meet B110's 8-hour ceiling; suite scope amended by A-468; equivalents only via the A-465 ledger)
 
@@ -11943,7 +11945,7 @@ Fix: add both names in pytest's own precedence order, and check the order agains
 
 ## B145 — fork exhaustion is classified as `killed`: a lane at its process limit cannot produce a valid R2 kill
 
-**Status: IMPLEMENTED on branch `assay-b136-b141`; final Sol xhigh review is READY-CONDITIONAL-ON-REGISTERED-GATE (2026-10-05). The gate at `19b647c` passed the live B145 probes but exposed 12 harness failures; those fixtures and test issues were repaired. The next gate at `b32d0ac` passed the probes and reported 7,492 passed / 11 skipped, with two standalone exact-result failures: B145 evidence is duplicated in both the R2 claim and judgment summary, but the helper normalized counters only in the summary. The pending fix validates and normalizes both copies; the focused rerun is pending.** A false kill certifies tests that catch nothing and violates Assay's rule that host pressure cannot decide a mutation result.
+**Status: IMPLEMENTED on branch `assay-b136-b141`; not yet release-ready.** The registered gate at `e57b643b` passed the live B145 probes, installed-wheel suite, analysis lane, self-hosting checks, lint, SQL matrix, and expected-crash controls. Its final SQL witness returned `ERROR/EXEC_FAILED` rather than the expected `FAIL/MUTANTS_SURVIVED` while two unrelated `run-gate-*` containers were active, so this is not a green gate. A Sol xhigh review of `e57b643b` found two further blockers: sampling the process leader's cgroup instead of the executing worker thread's, and missing an ancestor overmount. Both fixes and regressions are now in the branch worktree; the focused resource-limit file passes 38 tests with 1 skip. Follow-up review and a registered gate on the fixed tree remain required. A false kill certifies tests that catch nothing and violates Assay's rule that host pressure cannot decide a mutation result.
 
 **Observed:** `run-gate-project`'s `assay-r2` campaign ran in CMRU tester-gate container `pedantic_antonelli` without init. Git's detached maintenance left enough zombies to reach `pids.current=19,115` of `pids.max=19,117` at 03:11:18Z. Before the limit, 18 candidates had produced 13 kills after a median of 155 tests and 5 survivors. Afterwards, it recorded 192/192 kills, a median of 2 tests, and 91 first-test kills; those post-limit outcomes and the final verdict are invalid. The affected worktree was `.worktrees/run-gate-r2-assay-venv-20261005`. This task did not inspect or delete that other session's `.assay` state. Discard its state and progress before retrying.
 
@@ -11957,9 +11959,17 @@ Fix: add both names in pytest's own precedence order, and check the order agains
 
 **Related:** CMRU KI-52, run-gate RG-83/RG-84, Assay B107/B108, and dstdns D-670 TEST-RUNNER-INIT.
 
+## B146 — R0 failure summary names the failure instead of reporting `NO_MEASUREMENT`
+
+**Status: OPEN; defer to the next Assay wave. This is useful diagnostics work, not a blocker for the B145/B147 release.** When R0's test command fails, the summary should distinguish that measured failure from a run that produced no measurement and identify the first failing test.
+
+**Expected:** the concise run summary reports R0 as `FAIL` and names the first failing test when the baseline command has a test failure. Genuine preflight/no-measurement outcomes remain `NO_MEASUREMENT` with their existing reason; they are not rewritten as test failures.
+
+**Oracles:** a deterministic R0 fixture with multiple failing tests reports `FAIL` and the first failure in execution order; a command that cannot produce an R0 measurement retains its existing `NO_MEASUREMENT` result and reason.
+
 ## B147 — Assay's hermetic Git environment drops image gc.autoDetach and permits detached automatic maintenance
 
-**Status: IMPLEMENTED on branch `assay-b136-b141`; focused tests PASS (161 passed), registered gate pending (2026-10-06).** Assay replaces Git's process environment, so system configuration baked into `tester-unified` does not reach Git. The image's `gc.autoDetach=false` cannot protect Assay's own Git children.
+**Status: IMPLEMENTED on branch `assay-b136-b141`; folded into the combined B145 gate, unreleased (2026-10-06).** Its focused suite previously passed 161 tests. Assay replaces Git's process environment, so system configuration baked into `tester-unified` does not reach Git. The image's `gc.autoDetach=false` cannot protect Assay's own Git children.
 
 **Observed:** Assay's `_REPLACEMENT_ENV` sets `GIT_CONFIG_NOSYSTEM=1` and points `GIT_CONFIG_GLOBAL` at `/dev/null`. This is intentional for hermetic repository facts, but it also discards the image-level `gc.autoDetach=false` setting. Git 2.55 can start detached maintenance after commands; those children can outlive the bounded Git command, consume the gate's PID capacity, and modify a test repository during a campaign. B145 detects the false mutation result after resource exhaustion; B147 closes Assay's contributor to the same process leak.
 

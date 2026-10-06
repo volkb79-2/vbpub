@@ -613,7 +613,16 @@ rather than from the declared budget.
 
 A candidate that reaches a process or memory limit has not shown that the test
 suite caught a mutant. Before native R2 starts candidates, Assay requires a
-visible cgroup v2 path through the hierarchy root. It samples the candidate's
+visible cgroup v2 path through the hierarchy root. The sampler reads
+`/proc/thread-self/cgroup`, because a worker thread in a threaded cgroup v2
+subtree can have a different cgroup from the process leader; `/proc/self/cgroup`
+would identify the wrong execution context. Assay selects the hierarchy mount
+ID from `/proc/self/mountinfo`, then checks the mount ID of the opened hierarchy
+and each opened control file through `/proc/self/fdinfo`. It reads control bytes
+from the same checked file descriptor. This catches a later overmount on a
+parent path as well as one directly covering a sampled cgroup path.
+
+Assay samples the candidate's
 `pids.events.max` whenever available and the event file at every visible
 ancestor where the pids controller is active; a finite `pids.max` requires its
 counter. Sampling unlimited active ancestors covers `pids_localevents`, where

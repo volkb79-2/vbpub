@@ -2,7 +2,7 @@
 
 R2 uses these counters to distinguish a test failure caused by a mutant from a
 test process that could not run because its lane exhausted the process or
-memory limit. The counters are read from the current process's cgroup and every
+memory limit. The counters are read from the calling thread's cgroup and every
 visible ancestor, using the kernel's own cgroup and mount records rather than
 assuming a host path. Matching cgroup2 mounts must be read-only, preventing a
 candidate from creating or removing child cgroups. Assay also verifies that
@@ -26,7 +26,14 @@ from .records import record
 
 
 LimitSignatureEntry = tuple[
-    str, bool, int | None, bool, int | None, bool, bool
+    str,
+    int,
+    bool,
+    int | None,
+    bool,
+    int | None,
+    bool,
+    bool,
 ]
 
 
@@ -42,9 +49,9 @@ class ResourceLimitCounters:
     memory_oom_kill: int
     memory_oom_group_kill: int
     # This is an in-process pre/post binding, not verdict evidence. It makes a
-    # changed cgroup path, limit/event interface availability, or configured
-    # limit during one candidate an infrastructure error instead of hiding a
-    # counter from the aggregate merely because it became unlimited.
+    # changed cgroup path, mount identity, limit/event interface availability,
+    # or configured limit during one candidate an infrastructure error instead
+    # of hiding a counter from the aggregate merely because it became unlimited.
     limit_signature: tuple[LimitSignatureEntry, ...] = ()
 
     def __post_init__(self) -> None:
@@ -63,18 +70,26 @@ class ResourceLimitCounters:
         for entry in self.limit_signature:
             if (
                 type(entry) is not tuple
-                or len(entry) != 7
+                or len(entry) != 8
                 or not isinstance(entry[0], str)
-                or type(entry[1]) is not bool
-                or (entry[2] is not None and (type(entry[2]) is not int or entry[2] < 0))
-                or type(entry[3]) is not bool
-                or (entry[4] is not None and (type(entry[4]) is not int or entry[4] < 0))
-                or type(entry[5]) is not bool
+                or type(entry[1]) is not int
+                or entry[1] <= 0
+                or type(entry[2]) is not bool
+                or (
+                    entry[3] is not None
+                    and (type(entry[3]) is not int or entry[3] < 0)
+                )
+                or type(entry[4]) is not bool
+                or (
+                    entry[5] is not None
+                    and (type(entry[5]) is not int or entry[5] < 0)
+                )
                 or type(entry[6]) is not bool
-                or (not entry[1] and entry[2] is not None)
-                or (not entry[3] and entry[4] is not None)
-                or (entry[1] and not entry[5])
-                or (entry[3] and not entry[6])
+                or type(entry[7]) is not bool
+                or (not entry[2] and entry[3] is not None)
+                or (not entry[4] and entry[5] is not None)
+                or (entry[2] and not entry[6])
+                or (entry[4] and not entry[7])
             ):
                 raise ValueError("limit_signature entries are malformed")
 
@@ -142,8 +157,8 @@ class ResourceLimitEvidence:
     ) -> ResourceLimitEvidence:
         if before.limit_signature != after.limit_signature:
             raise ResourceLimitObservationError(
-                "cgroup paths, controller files, or resource limits changed "
-                "during a candidate command"
+                "cgroup paths, mount identities, controller files, or resource "
+                "limits changed during a candidate command"
             )
         return cls(
             pids_events_max=CounterDelta.between(before.pids_max, after.pids_max),
@@ -214,6 +229,112 @@ def _unescape_mountinfo(value: str) -> str:
         lambda match: chr(int(match.group(1), 8)),
         value,
     )
+
+
+def _mount_id_for_fd(fd: int) -> int:
+    """Read the mount ID of an already-open path from its proc fdinfo."""
+    try:
+        lines = Path(f"/proc/self/fdinfo/{fd}").read_text(
+            encoding="ascii"
+        ).splitlines()
+    except (OSError, UnicodeError) as exc:
+        raise ResourceLimitObservationError(
+            "cannot inspect the opened cgroup path's mount identity"
+        ) from exc
+    values = [
+        line.split()[1]
+        for line in lines
+        if len(line.split()) == 2 and line.split()[0] == "mnt_id:"
+    ]
+    if len(values) != 1:
+        raise ResourceLimitObservationError(
+            "the opened cgroup path has no unique mount identity"
+        )
+    try:
+        mount_id = int(values[0], 10)
+    except ValueError as exc:
+        raise ResourceLimitObservationError(
+            "the opened cgroup path has a malformed mount identity"
+        ) from exc
+    if mount_id <= 0:
+        raise ResourceLimitObservationError(
+            "the opened cgroup path has an invalid mount identity"
+        )
+    return mount_id
+
+
+def _mount_id_for_path(path: Path) -> int:
+    """Resolve a path with O_PATH and return the mount ID of that opened path."""
+    path_only = getattr(os, "O_PATH", None)
+    if path_only is None:
+        raise ResourceLimitObservationError(
+            "the platform cannot establish cgroup path mount identity"
+        )
+    try:
+        fd = os.open(path, path_only | os.O_CLOEXEC)
+    except OSError as exc:
+        raise ResourceLimitObservationError(
+            f"cannot open {path.name} to establish cgroup mount identity: {exc}"
+        ) from exc
+    try:
+        return _mount_id_for_fd(fd)
+    finally:
+        os.close(fd)
+
+
+def _require_mount_id(fd: int, expected_mount_id: int, name: str) -> None:
+    actual_mount_id = _mount_id_for_fd(fd)
+    if actual_mount_id != expected_mount_id:
+        raise ResourceLimitObservationError(
+            f"{name} resolves through a different mount ID {actual_mount_id}, "
+            "not the "
+            f"selected cgroup2 mount ID {expected_mount_id}; an overmount "
+            "may shadow the sampled hierarchy"
+        )
+
+
+def _read_control_text(
+    path: Path, *, expected_mount_id: int, optional: bool
+) -> str | None:
+    """Read a control file and bind its bytes to the selected mount ID."""
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_CLOEXEC)
+    except FileNotFoundError:
+        _require_path_mount_id(path.parent, expected_mount_id)
+        if optional:
+            return None
+        raise ResourceLimitObservationError(f"{path.name} is unavailable") from None
+    except OSError as exc:
+        raise ResourceLimitObservationError(f"cannot read {path.name}: {exc}") from exc
+    try:
+        _require_mount_id(fd, expected_mount_id, path.name)
+        try:
+            with os.fdopen(fd, "r", encoding="ascii", closefd=False) as stream:
+                return stream.read()
+        except (OSError, UnicodeError) as exc:
+            raise ResourceLimitObservationError(
+                f"cannot read {path.name}: {exc}"
+            ) from exc
+    finally:
+        os.close(fd)
+
+
+def _require_path_mount_id(path: Path, expected_mount_id: int) -> None:
+    path_only = getattr(os, "O_PATH", None)
+    if path_only is None:
+        raise ResourceLimitObservationError(
+            "the platform cannot establish cgroup path mount identity"
+        )
+    try:
+        fd = os.open(path, path_only | os.O_CLOEXEC)
+    except OSError as exc:
+        raise ResourceLimitObservationError(
+            f"cannot open {path.name} to establish cgroup mount identity: {exc}"
+        ) from exc
+    try:
+        _require_mount_id(fd, expected_mount_id, path.name)
+    finally:
+        os.close(fd)
 
 
 def _path_is_present(path: Path) -> bool:
@@ -293,7 +414,7 @@ def _mode_grants_write(path: Path) -> bool:
 
 
 def _require_unwritable_cgroup_procs(
-    directories: tuple[Path, ...], hierarchy_root: Path
+    directories: tuple[Path, ...], hierarchy_root: Path, mount_id: int
 ) -> None:
     """A candidate must not be able to migrate to an unsampled cgroup.
 
@@ -310,6 +431,7 @@ def _require_unwritable_cgroup_procs(
             raise ResourceLimitObservationError(
                 "cgroup.procs is unavailable on a visible cgroup ancestor"
             )
+        _require_path_mount_id(path, mount_id)
         if _mode_grants_write(path):
             raise ResourceLimitObservationError(
                 "candidate credentials can write an ancestor cgroup.procs and "
@@ -319,7 +441,7 @@ def _require_unwritable_cgroup_procs(
 
 def _visible_cgroup_directories(
     *, cgroup_text: str, mountinfo_text: str
-) -> tuple[Path, ...]:
+) -> tuple[tuple[Path, ...], int]:
     unified_path: str | None = None
     for line in cgroup_text.splitlines():
         fields = line.split(":", 2)
@@ -328,17 +450,18 @@ def _visible_cgroup_directories(
             break
     if unified_path is None or not unified_path.startswith("/"):
         raise ResourceLimitObservationError(
-            "/proc/self/cgroup has no absolute unified cgroup v2 path"
+            "the calling thread cgroup record has no absolute unified cgroup v2 path"
         )
 
     cgroup_path = PurePosixPath(unified_path)
-    matching_mounts: list[tuple[Path, PurePosixPath]] = []
+    matching_mounts: list[tuple[int, Path, PurePosixPath]] = []
     visible_mount_points: list[Path] = []
     for line in mountinfo_text.splitlines():
         try:
             left, right = line.split(" - ", 1)
             mount_fields = left.split()
             filesystem_fields = right.split()
+            mount_id = int(mount_fields[0], 10)
             mount_point = Path(_unescape_mountinfo(mount_fields[4]))
             visible_mount_points.append(mount_point)
             if filesystem_fields[0] != "cgroup2":
@@ -348,10 +471,12 @@ def _visible_cgroup_directories(
         except (IndexError, ValueError) as exc:
             raise ResourceLimitObservationError("malformed cgroup mount record") from exc
 
+        if mount_id <= 0:
+            raise ResourceLimitObservationError("invalid cgroup mount ID")
         if cgroup_path.is_relative_to(mount_root) or mount_root.is_relative_to(
             cgroup_path
         ):
-            matching_mounts.append((mount_point, mount_root))
+            matching_mounts.append((mount_id, mount_point, mount_root))
             if "ro" not in mount_options:
                 raise ResourceLimitObservationError(
                     "a cgroup2 mount exposes the candidate hierarchy writable"
@@ -362,8 +487,8 @@ def _visible_cgroup_directories(
             "the current process has no visible cgroup v2 mount"
         )
     full_hierarchy_mounts = [
-        (point, root)
-        for point, root in matching_mounts
+        (mount_id, point, root)
+        for mount_id, point, root in matching_mounts
         if root == PurePosixPath("/")
     ]
     if not full_hierarchy_mounts:
@@ -371,8 +496,15 @@ def _visible_cgroup_directories(
             "the visible cgroup2 mount omits ancestors above its mount root"
         )
 
-    mount_point, _mount_root = full_hierarchy_mounts[0]
+    selected_mount_id, mount_point, _mount_root = full_hierarchy_mounts[0]
     hierarchy_root = mount_point
+    opened_mount_id = _mount_id_for_path(hierarchy_root)
+    if opened_mount_id != selected_mount_id:
+        raise ResourceLimitObservationError(
+            "the opened cgroup hierarchy resolves through mount ID "
+            f"{opened_mount_id}, not selected cgroup2 mount ID {selected_mount_id}; "
+            "an overmount may shadow the hierarchy"
+        )
     relative_path = cgroup_path.relative_to(PurePosixPath("/"))
     current_directory = mount_point.joinpath(*relative_path.parts)
     if cgroup_path == PurePosixPath("/"):
@@ -425,21 +557,19 @@ def _visible_cgroup_directories(
             raise ResourceLimitObservationError(
                 "a visible mount shadows a cgroup path or resource counter"
             )
-    return visible_directories
-
+    return visible_directories, selected_mount_id
 
 
 def _read_event_file_if_present(
-    path: Path, required: frozenset[str]
+    path: Path, required: frozenset[str], *, expected_mount_id: int
 ) -> dict[str, int] | None:
-    try:
-        lines = path.read_text(encoding="ascii").splitlines()
-    except FileNotFoundError:
+    text = _read_control_text(
+        path, expected_mount_id=expected_mount_id, optional=True
+    )
+    if text is None:
         return None
-    except (OSError, UnicodeError) as exc:
-        raise ResourceLimitObservationError(f"cannot read {path.name}: {exc}") from exc
     values: dict[str, int] = {}
-    for line in lines:
+    for line in text.splitlines():
         fields = line.split()
         if len(fields) != 2 or fields[0] in values:
             raise ResourceLimitObservationError(f"malformed event line in {path.name}")
@@ -458,21 +588,27 @@ def _read_event_file_if_present(
     return values
 
 
-def _read_event_file(path: Path, required: frozenset[str]) -> dict[str, int]:
-    values = _read_event_file_if_present(path, required)
+def _read_event_file(
+    path: Path, required: frozenset[str], *, expected_mount_id: int
+) -> dict[str, int]:
+    values = _read_event_file_if_present(
+        path, required, expected_mount_id=expected_mount_id
+    )
     if values is None:
         raise ResourceLimitObservationError(f"{path.name} is unavailable")
     return values
 
 
-def _read_limit_file(path: Path) -> tuple[bool, int | None]:
+def _read_limit_file(
+    path: Path, *, expected_mount_id: int
+) -> tuple[bool, int | None]:
     """Read a cgroup limit, returning (interface present, limit or max)."""
-    try:
-        fields = path.read_text(encoding="ascii").split()
-    except FileNotFoundError:
+    text = _read_control_text(
+        path, expected_mount_id=expected_mount_id, optional=True
+    )
+    if text is None:
         return False, None
-    except (OSError, UnicodeError) as exc:
-        raise ResourceLimitObservationError(f"cannot read {path.name}: {exc}") from exc
+    fields = text.split()
     if fields == ["max"]:
         return True, None
     if len(fields) != 1:
@@ -488,10 +624,10 @@ def _read_limit_file(path: Path) -> tuple[bool, int | None]:
 
 def read_current_cgroup_counters(
     *,
-    cgroup_file: Path = Path("/proc/self/cgroup"),
+    cgroup_file: Path = Path("/proc/thread-self/cgroup"),
     mountinfo_file: Path = Path("/proc/self/mountinfo"),
 ) -> ResourceLimitCounters:
-    """Read exact process-limit and OOM counters across visible ancestors.
+    """Read exact process-limit and OOM counters for the calling thread.
 
     The cgroup2 mounts exposing the current hierarchy must be read-only, and
     `cgroup.procs` permissions at the candidate and ancestors must deny writes.
@@ -503,20 +639,26 @@ def read_current_cgroup_counters(
     the nearest active ancestor rather than the finite enforcing ancestor. If
     a controller is inactive, the nearest active visible ancestors are still
     sampled. A shared ancestor can conservatively attribute sibling activity.
-    Limit and path signatures are bound across each candidate's before/after
-    samples; any change makes the observation unusable.
+    The calling thread's `/proc/thread-self/cgroup` identity is used because
+    threaded cgroup subtrees can place it separately from the process leader.
+    The opened hierarchy and each sampled file must resolve through the mount
+    ID selected from mountinfo. Limit, mount, and path signatures are bound
+    across each candidate's before/after samples; any change makes the
+    observation unusable.
     """
     try:
         cgroup_text = cgroup_file.read_text(encoding="utf-8")
         mountinfo_text = mountinfo_file.read_text(encoding="utf-8")
     except (OSError, UnicodeError) as exc:
         raise ResourceLimitObservationError(
-            f"cannot inspect current cgroup identity: {exc}"
+            f"cannot inspect calling thread cgroup identity: {exc}"
         ) from exc
-    directories = _visible_cgroup_directories(
+    directories, mount_id = _visible_cgroup_directories(
         cgroup_text=cgroup_text, mountinfo_text=mountinfo_text
     )
-    _require_unwritable_cgroup_procs(directories, directories[-1].parent)
+    _require_unwritable_cgroup_procs(
+        directories, directories[-1].parent, mount_id
+    )
     pids_max = 0
     memory_max = 0
     memory_oom = 0
@@ -527,8 +669,12 @@ def read_current_cgroup_counters(
     limits: list[tuple[bool, int | None, bool, int | None]] = []
     limit_signature: list[LimitSignatureEntry] = []
     for directory in directories:
-        pids_limit_present, pids_limit = _read_limit_file(directory / "pids.max")
-        memory_limit_present, memory_limit = _read_limit_file(directory / "memory.max")
+        pids_limit_present, pids_limit = _read_limit_file(
+            directory / "pids.max", expected_mount_id=mount_id
+        )
+        memory_limit_present, memory_limit = _read_limit_file(
+            directory / "memory.max", expected_mount_id=mount_id
+        )
         limits.append(
             (
                 pids_limit_present,
@@ -545,7 +691,9 @@ def read_current_cgroup_counters(
             _memory_limit,
         ) = limits[index]
         pids_events = _read_event_file_if_present(
-            directory / "pids.events", frozenset({"max"})
+            directory / "pids.events",
+            frozenset({"max"}),
+            expected_mount_id=mount_id,
         )
         if pids_limit_present and pids_events is None:
             raise ResourceLimitObservationError(
@@ -557,6 +705,7 @@ def read_current_cgroup_counters(
         memory_events = _read_event_file_if_present(
             directory / "memory.events",
             frozenset({"max", "oom", "oom_kill", "oom_group_kill"}),
+            expected_mount_id=mount_id,
         )
         if memory_limit_present and memory_events is None:
             raise ResourceLimitObservationError(
@@ -567,6 +716,7 @@ def read_current_cgroup_counters(
         limit_signature.append(
             (
                 str(directory),
+                mount_id,
                 *limits[index],
                 pids_events is not None,
                 memory_events is not None,

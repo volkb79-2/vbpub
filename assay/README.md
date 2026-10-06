@@ -210,8 +210,11 @@ assay exists to close that gap mechanically, not by policy:
   [redaction rule](docs/DESIGN-GUIDE.md#redacting-passthrough-environment-values-b142)
   and [consumer example](docs/CONSUMERS.md#keep-passthrough-secrets-out-of-verdicts-b142).
 - **Native R2 cannot count a cgroup-limited candidate as a kill (B145).**
-  Assay records cgroup v2 PID and memory events at the candidate and active
-  visible ancestors. Samples bracket each started full candidate command. If
+  Assay reads the calling worker thread's `/proc/thread-self/cgroup` identity,
+  then records cgroup v2 PID and memory events at that cgroup and active visible
+  ancestors. It checks the selected hierarchy mount ID and each opened control
+  file against `/proc/self/mountinfo`, so a parent overmount cannot redirect a
+  sample silently. Samples bracket each started full candidate command. If
   an early stop prevents a full command from starting, the candidate stays
   `budget_exceeded` and gets a shared zero-duration sample at sweep close;
   replacement materialization or a saved-witness replay may already have run,

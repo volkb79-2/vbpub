@@ -123,7 +123,14 @@ mutation begins.
 ### Native R2 resource-limit observation (B145)
 
 Native R2 requires visible cgroup v2 event counters and limit configuration
-through the hierarchy. Assay samples the candidate's `pids.events.max` when
+through the hierarchy. Assay resolves the cgroup of the thread running the
+candidate sampler from `/proc/thread-self/cgroup`, so threaded cgroup v2
+placements do not inherit the process leader's identity. It checks the mount ID
+of the opened hierarchy and every opened counter/limit file against the
+selected cgroup2 mount in `/proc/self/mountinfo`; it reads each file through
+the descriptor whose mount ID it checked. An ancestor overmount that redirects
+those paths therefore refuses the lane. Assay samples the candidate's
+`pids.events.max` when
 exposed, even if its own `pids.max` is unlimited, and every visible ancestor's
 event counter when available. A finite `pids.max` requires its event counter.
 Sampling unlimited active ancestors covers `pids_localevents`, where a

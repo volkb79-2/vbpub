@@ -4,6 +4,7 @@ import json
 import os
 import subprocess
 import sys
+import threading
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -18,6 +19,7 @@ from conftest import (
     native_outcome,
     prepared_snapshot,
 )
+import assay.resource_limits as resource_limits
 from assay.adapters.python import PythonAdapter
 from assay.errors import AssayError, Outcome, ReasonCode
 from assay.mutation import (
@@ -31,11 +33,19 @@ from assay.resource_limits import (
     ResourceLimitCounters,
     ResourceLimitEvidence,
     ResourceLimitObservationError,
+    _mount_id_for_fd,
+    _read_control_text,
     read_current_cgroup_counters,
 )
 from assay.runner import default_process_runner, execute_command
 from assay.verdict import MUTATION_BUCKETS, MutantOutcome, Mutation
 from assay.verify import _check_b145_resource_limit_evidence
+
+
+@pytest.fixture(autouse=True)
+def _synthetic_cgroup_mount_id(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Reader fixtures pin their selected cgroup2 mount to ID 31.
+    monkeypatch.setattr(resource_limits, "_mount_id_for_fd", lambda _fd: 31)
 
 
 def _evidence(
@@ -101,10 +111,83 @@ def test_reader_resolves_current_cgroup_from_kernel_mount_records(tmp_path: Path
         memory_oom_kill=6,
         memory_oom_group_kill=1,
         limit_signature=(
-            (str(cgroup_dir), True, None, True, None, True, True),
-            (str(parent_dir), True, 12, True, 4096, True, True),
+            (str(cgroup_dir), 31, True, None, True, None, True, True),
+            (str(parent_dir), 31, True, 12, True, 4096, True, True),
         ),
     )
+
+
+def test_reader_uses_the_calling_worker_thread_cgroup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    mount_point = tmp_path / "cgroup"
+    worker = mount_point / "worker" / "lane"
+    leader = mount_point / "leader" / "lane"
+    for directory, pids_count in ((worker, 3), (leader, 91)):
+        directory.mkdir(parents=True)
+        (directory / "pids.max").write_text("max\n", encoding="ascii")
+        (directory / "memory.max").write_text("max\n", encoding="ascii")
+        (directory / "pids.events").write_text(
+            f"max {pids_count}\n", encoding="ascii"
+        )
+        (directory / "memory.events").write_text(
+            "max 0\noom 0\noom_kill 0\noom_group_kill 0\n",
+            encoding="ascii",
+        )
+    _lock_cgroup_controls(mount_point, worker.parent, worker, leader.parent, leader)
+    mountinfo_file = tmp_path / "mountinfo"
+    mountinfo_file.write_text(
+        f"31 23 0:28 / {mount_point} ro - cgroup2 cgroup rw\n",
+        encoding="utf-8",
+    )
+    original_read_text = Path.read_text
+    read_cgroup_paths: list[Path] = []
+
+    def read_thread_identity(path: Path, *args: object, **kwargs: object) -> str:
+        if path in {Path("/proc/thread-self/cgroup"), Path("/proc/self/cgroup")}:
+            read_cgroup_paths.append(path)
+            target = (
+                "/worker/lane"
+                if path == Path("/proc/thread-self/cgroup")
+                else "/leader/lane"
+            )
+            return f"0::{target}\n"
+        return original_read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", read_thread_identity)
+
+    result: list[ResourceLimitCounters] = []
+    errors: list[BaseException] = []
+
+    def read_on_worker_thread() -> None:
+        try:
+            result.append(read_current_cgroup_counters(mountinfo_file=mountinfo_file))
+        except BaseException as exc:
+            errors.append(exc)
+
+    worker_thread = threading.Thread(
+        target=read_on_worker_thread, name="resource-limit-sampler"
+    )
+    worker_thread.start()
+    worker_thread.join(timeout=5)
+
+    assert not worker_thread.is_alive()
+    assert errors == []
+    assert result[0].pids_max == 3
+    assert read_cgroup_paths == [Path("/proc/thread-self/cgroup")]
+
+
+def test_mount_id_reader_uses_the_opened_file_identity(monkeypatch: pytest.MonkeyPatch):
+    original_read_text = Path.read_text
+
+    def read_fdinfo(path: Path, *args: object, **kwargs: object) -> str:
+        if path == Path("/proc/self/fdinfo/77"):
+            return "pos:\t0\nflags:\t0100000\nmnt_id:\t31\nino:\t123\n"
+        return original_read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", read_fdinfo)
+
+    assert _mount_id_for_fd(77) == 31
 
 
 @pytest.mark.parametrize(
@@ -157,6 +240,93 @@ def test_reader_refuses_a_sibling_cgroup_overmount_at_the_candidate_path(
     with pytest.raises(ResourceLimitObservationError, match="shadows"):
         read_current_cgroup_counters(
             cgroup_file=cgroup_file, mountinfo_file=mountinfo_file
+        )
+
+
+def test_reader_refuses_a_parent_overmount_hiding_the_cgroup_hierarchy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    overmounted_parent = tmp_path / "cgroup-parent"
+    mount_point = overmounted_parent / "cgroup"
+    (mount_point / "worker" / "lane").mkdir(parents=True)
+    cgroup_file = tmp_path / "proc-cgroup"
+    cgroup_file.write_text("0::/worker/lane\n", encoding="utf-8")
+    mountinfo_file = tmp_path / "mountinfo"
+    mountinfo_file.write_text(
+        "23 23 0:23 / / rw - overlay overlay rw\n"
+        f"24 23 0:24 / {overmounted_parent} ro - tmpfs tmpfs rw\n"
+        f"31 24 0:28 / {mount_point} ro - cgroup2 cgroup rw\n"
+        f"32 23 0:32 / {overmounted_parent} ro - tmpfs tmpfs rw\n",
+        encoding="utf-8",
+    )
+    # The path now resolves through the later parent overmount, while mountinfo
+    # still contains the original cgroup2 mount at ID 31.
+    monkeypatch.setattr(resource_limits, "_mount_id_for_fd", lambda _fd: 32)
+
+    with pytest.raises(ResourceLimitObservationError, match="overmount"):
+        read_current_cgroup_counters(
+            cgroup_file=cgroup_file, mountinfo_file=mountinfo_file
+        )
+
+
+def test_reader_refuses_a_sampled_counter_from_another_mount(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    mount_point = tmp_path / "cgroup"
+    candidate = mount_point / "worker" / "lane"
+    candidate.mkdir(parents=True)
+    for directory in (candidate.parent, candidate):
+        (directory / "pids.max").write_text("max\n", encoding="ascii")
+        (directory / "memory.max").write_text("max\n", encoding="ascii")
+        (directory / "pids.events").write_text("max 0\n", encoding="ascii")
+        (directory / "memory.events").write_text(
+            "max 0\noom 0\noom_kill 0\noom_group_kill 0\n",
+            encoding="ascii",
+        )
+    _lock_cgroup_controls(mount_point, candidate.parent, candidate)
+    cgroup_file = tmp_path / "proc-cgroup"
+    cgroup_file.write_text("0::/worker/lane\n", encoding="utf-8")
+    mountinfo_file = tmp_path / "mountinfo"
+    mountinfo_file.write_text(
+        f"31 23 0:28 / {mount_point} ro - cgroup2 cgroup rw\n",
+        encoding="utf-8",
+    )
+    original_mount_id_for_fd = resource_limits._mount_id_for_fd
+
+    def report_event_file_overmount(fd: int) -> int:
+        path = Path(os.readlink(f"/proc/self/fd/{fd}"))
+        if path == candidate / "pids.events":
+            return 32
+        return original_mount_id_for_fd(fd)
+
+    monkeypatch.setattr(
+        resource_limits, "_mount_id_for_fd", report_event_file_overmount
+    )
+
+    with pytest.raises(ResourceLimitObservationError, match="different mount"):
+        read_current_cgroup_counters(
+            cgroup_file=cgroup_file, mountinfo_file=mountinfo_file
+        )
+
+
+def test_missing_optional_control_still_checks_its_parent_mount(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    cgroup_dir = tmp_path / "cgroup" / "worker"
+    cgroup_dir.mkdir(parents=True)
+    original_mount_id_for_fd = resource_limits._mount_id_for_fd
+
+    def report_parent_overmount(fd: int) -> int:
+        path = Path(os.readlink(f"/proc/self/fd/{fd}"))
+        if path == cgroup_dir:
+            return 32
+        return original_mount_id_for_fd(fd)
+
+    monkeypatch.setattr(resource_limits, "_mount_id_for_fd", report_parent_overmount)
+
+    with pytest.raises(ResourceLimitObservationError, match="different mount"):
+        _read_control_text(
+            cgroup_dir / "pids.events", expected_mount_id=31, optional=True
         )
 
 
@@ -311,11 +481,15 @@ def test_limit_configuration_change_invalidates_candidate_window():
         memory_oom=0,
         memory_oom_kill=0,
         memory_oom_group_kill=0,
-        limit_signature=(("/worker/lane", True, 12, True, 4096, True, True),),
+        limit_signature=(
+            ("/worker/lane", 31, True, 12, True, 4096, True, True),
+        ),
     )
     after = replace(
         before,
-        limit_signature=(("/worker/lane", True, None, True, 4096, True, True),),
+        limit_signature=(
+            ("/worker/lane", 31, True, None, True, 4096, True, True),
+        ),
     )
 
     with pytest.raises(ResourceLimitObservationError, match="changed"):
@@ -329,14 +503,40 @@ def test_event_interface_change_invalidates_candidate_window():
         memory_oom=0,
         memory_oom_kill=0,
         memory_oom_group_kill=0,
-        limit_signature=(("/worker/lane", False, None, False, None, True, True),),
+        limit_signature=(
+            ("/worker/lane", 31, False, None, False, None, True, True),
+        ),
     )
     after = replace(
         before,
-        limit_signature=(("/worker/lane", False, None, False, None, False, True),),
+        limit_signature=(
+            ("/worker/lane", 31, False, None, False, None, False, True),
+        ),
     )
 
     with pytest.raises(ResourceLimitObservationError, match="changed"):
+        ResourceLimitEvidence.between(before, after)
+
+
+def test_mount_identity_change_invalidates_candidate_window():
+    before = ResourceLimitCounters(
+        pids_max=0,
+        memory_max=0,
+        memory_oom=0,
+        memory_oom_kill=0,
+        memory_oom_group_kill=0,
+        limit_signature=(
+            ("/worker/lane", 31, True, 12, True, 4096, True, True),
+        ),
+    )
+    after = replace(
+        before,
+        limit_signature=(
+            ("/worker/lane", 32, True, 12, True, 4096, True, True),
+        ),
+    )
+
+    with pytest.raises(ResourceLimitObservationError, match="mount identities"):
         ResourceLimitEvidence.between(before, after)
 
 
