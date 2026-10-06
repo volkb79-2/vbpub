@@ -7240,3 +7240,40 @@ Therefore the P6 diagnostic R2 remains unlaunched; retry only after the
 shared gate slot is available and a fresh memory-PSI preflight is at or below
 5%. On launch, check once at 90 seconds, then respect the 25-minute minimum
 progress-poll interval unless an earlier completion/error is expected.
+
+### RW-466 — 2026-10-06 21:58:06 UTC — rebase P6 R2 recovery on current Assay and resolve two-gate controls
+
+Main now includes Assay B145/B147 and source-backed Assay reports
+`7.2.1.dev804+g96fbf0599`. Its `reuse.py` treats verdict schema 12 and 13 as
+cold starts. On the new CIU-managed candidate worktree
+`.worktrees/rg55-p6-final-r2-20261006` (based on main `e65d4e4d`, clean and
+registered), the current-source plan against request base
+`db29266f8a006b22a30609a74de7645d1e4c50b7` found 1,261 candidates and
+classified all 1,261 `unproven-source` from the previous schema-13 verdict.
+This supersedes RW-465's 1,203 witness-replay / 48 full plan, which used an
+older Assay source. Its printed 105-hour estimate is the configured
+600-second-per-candidate ceiling, not a measured forecast; the earlier
+schema-13 campaign observed about 15 hours for 1,251 candidates. Do not claim
+selective reuse on the final tree from that old artifact.
+
+Assay's `--resume --rejudge-outcome survived` exists, but it operates on
+per-tree mutation state. It can re-run the old 41 survivors only against the
+exact old judged tree and matching Assay identity; that is diagnostic, not
+final evidence for current main. The final current-source tree needs a
+complete R2 campaign. The candidate CIU worktree carries the three-line
+placement-retirement oracle for candidate 45ca, plus run-gate argv forwarding
+and explicit empty pytest `addopts` needed to make targeted R2 requests
+expressible; no gates were launched on it in this checkpoint.
+
+For concurrency, the read-only `run-gate admission show` reports
+`enabled=false` and no published Docker admission object in
+`run-gate-project`. `tester-unified/run` itself atomically caps its own image
+at two live containers, but the shared exclusive `gate.lock` used by current
+controllers serializes a wider set of launchers; it is not the daemon-wide
+admission mechanism. At the due 21:56Z check one CMRU coverage container had
+just started, another runner was queued behind that lock, and memory `full
+avg10` was 0.00%. Do not bypass the held lock. A safe estate-wide two-gate
+policy needs all participating Run-Gate projects/launchers to join one
+Docker-daemon ticket cap of two, plus a read of current slice capacity and
+timeout/liveness behavior under that cap; no host or admission setting was
+changed here.
