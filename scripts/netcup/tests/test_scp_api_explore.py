@@ -434,18 +434,18 @@ def test_cmd_iso_bootable_without_id_enumerates_all_servers(explore_mod, fake_cl
 
 def test_cmd_attached_iso_detach_declined_never_calls_delete(explore_mod, fake_client, monkeypatch):
     monkeypatch.setattr("builtins.input", lambda *a: "n")
-    client = fake_client(get_responses=[[], []])  # the two active-task checks; no delete allowed
+    client = fake_client(get_responses=[[], [], []])  # the three active-task checks; no delete allowed
     pal = explore_mod._Palette(enabled=False)
     explore_mod.cmd_attached_iso(client, _ns(server_id=1, action="detach", yes=False), pal)
-    assert [c[0] for c in client.calls] == ["get", "get"]
+    assert [c[0] for c in client.calls] == ["get", "get", "get"]
 
 
 def test_cmd_attached_iso_detach_with_yes_calls_delete(explore_mod, fake_client):
-    client = fake_client(get_responses=[[], []], allow=("get", "delete"))
+    client = fake_client(get_responses=[[], [], []], allow=("get", "delete"))
     pal = explore_mod._Palette(enabled=False)
     explore_mod.cmd_attached_iso(client, _ns(server_id=1, action="detach", yes=True), pal)
     assert client.calls[-1] == ("delete", "/api/v1/servers/1/iso", None)
-    assert [c[0] for c in client.calls[:-1]] == ["get", "get"]
+    assert [c[0] for c in client.calls[:-1]] == ["get", "get", "get"]
 
 
 def test_cmd_attach_iso_uses_bootable_iso_id_and_confirmation(explore_mod, fake_client, monkeypatch):

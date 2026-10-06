@@ -352,9 +352,9 @@ bootable installer or recovery media. Useful first queries are:
 ./scp-api.py power reset 799611
 ```
 
-`--filter` is case-insensitive and searches the text columns only: an image
-flavour's name and alias, or an ISO image's name and description. It never
-matches the numeric id column, so `--filter 13` finds "Debian 13" and not every
+`--filter` is case-insensitive and searches every displayed non-id column (the
+server name in the all-servers view, an ISO's architecture) plus a row's name,
+alias, text and description. It never matches an id column (`id`, `serverId`), so `--filter 13` finds "Debian 13" and not every
 row whose id happens to contain 13. Every `scp-api.py` verb supports `--help`; resource reads and
 API actions support `--json` for machine-readable output. No short `-h` alias
 is used, so the complete public spelling is visible in generated usage.
@@ -387,9 +387,24 @@ denylist). `attach-iso --change-boot-device-to-cdrom` puts the CD-ROM first and
 the provider does NOT put the previous order back when the ISO is detached
 (live: HDD,CDROM,NETWORK became HDD,NETWORK,CDROM after attach and detach), so
 that option prints the previous order and the exact `boot-order ... set`
-command that restores it. `iso-attached SERVER_ID detach` refuses while the
-server has a PENDING or RUNNING task (the provider answered HTTP 500 to a
-detach during a running attach); wait with `monitor-task.py watch TASK_UUID`.
+command that restores it. The hint is a WARNING, so `--quiet` still shows it;
+with `--json` it is also the `restore_command` field of the result. It is only
+printed when every boot device name the API returned is HDD, CDROM or NETWORK.
+When `boot-order set` is answered with a task (HTTP 202) it prints "boot order
+change submitted (task UUID)" with a `monitor-task.py watch` hint, because the
+change is not applied yet; `--json` emits the task.
+`iso-attached SERVER_ID detach` refuses while the server has any PENDING,
+RUNNING or WAITING_FOR_CANCEL task (the provider answered HTTP 500 to a detach
+during a running attach); wait with `monitor-task.py watch TASK_UUID`. The check
+fails closed: if `GET /tasks` errors, detach is refused. `--ignore-active-tasks`
+skips the check (it prints a warning and the detach is still confirmed). The
+check is check-then-act: a task can start between the check and the DELETE, so
+it narrows the window but cannot close it.
+`snapshots ... --online` cannot be combined with `--disk-name` (exit 2; the
+provider error is `online.diskselected`), and the provider may refuse online
+snapshots on UEFI hosts (`online.uefi`). `snapshots SERVER_ID dryrun` renders the
+spec's HTTP 400 as "snapshot not possible; blocking reasons: ..." with exit 1
+(`--json` prints the raw reason list).
 `tasks --limit 0` makes no request and prints "limit 0: nothing requested".
 `monitor-task.py watch` never displays a progress percentage lower than one
 already shown (the provider's estimate is not monotonic); `--debug` notes the

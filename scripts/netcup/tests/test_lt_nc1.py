@@ -9,6 +9,7 @@ import json
 import types
 from pathlib import Path
 
+import netcup_scp_client
 import pytest
 from cli_extended import CliFailure
 
@@ -47,7 +48,9 @@ def test_scp_user_id_accepts_int_and_digit_string(explore_mod, fake_client, valu
 
 
 @pytest.mark.parametrize(
-    "value", ["0", "-1", "12a", "", " 12", "1.5", "²", "٣", True, False, 0, -3, 1.5, None, [], {"a": 1}]
+    "value",
+    ["0", "-1", "12a", "", " 12", "1.5", "²", "٣", True, False, 0, -3, 1.5, None, [], {"a": 1},
+     "9" * 5000, "1" * 20]  # over 19 digits: ResponseShapeError, never a raw ValueError
 )
 def test_scp_user_id_rejects_everything_else(explore_mod, fake_client, value):
     client = fake_client(user_info={"id": value})
@@ -126,11 +129,17 @@ def test_create_defaults_diskname_to_the_only_disk_and_matches_schema(explore_mo
 
 def test_create_with_every_option_matches_schema(explore_mod, fake_client):
     client = fake_client(allow=("get", "post"))
-    args = _ns(server_id=42, action="create", name="n", yes=True, disk_name="vdb", online=True, description="why")
+    args = _ns(server_id=42, action="create", name="n", yes=True, disk_name="vdb", online=False, description="why")
     explore_mod.cmd_snapshots(client, args, _pal(explore_mod))
     (_, _, payload), = client.calls  # explicit disk: no disks GET
-    assert payload == {"name": "n", "description": "why", "onlineSnapshot": True, "diskName": "vdb"}
+    assert payload == {"name": "n", "description": "why", "diskName": "vdb"}
     _check_against_schema("ServerSnapshotCreate", payload)
+    # --online and --disk-name are mutually exclusive (see test_b2_*); online alone:
+    client = fake_client(allow=("post",))
+    args = _ns(server_id=42, action="create", name="n", yes=True, online=True, description="why")
+    explore_mod.cmd_snapshots(client, args, _pal(explore_mod))
+    assert client.calls[0][2] == {"name": "n", "description": "why", "onlineSnapshot": True}
+    _check_against_schema("ServerSnapshotCreate", client.calls[0][2])
 
 
 def test_online_snapshot_needs_no_disk_lookup(explore_mod, fake_client):
@@ -289,11 +298,12 @@ def test_tasks_limit_zero_makes_no_request(explore_mod, tmp_path, monkeypatch, c
     assert [c[1] for c in one.calls] == ["/api/v1/tasks"]
 
 
-@pytest.mark.parametrize("state", ["PENDING", "RUNNING"])
+@pytest.mark.parametrize("state", ["PENDING", "RUNNING", "WAITING_FOR_CANCEL"])
 def test_detach_is_refused_while_a_task_is_active(explore_mod, fake_client, state):
     # F10: the live provider answered HTTP 500 to a detach during a running attach.
     row = {"uuid": TASK_UUID, "name": "ServerAttachIsoTask", "state": state}
-    client = fake_client(get_responses=[[row] if state == "PENDING" else [], [row] if state == "RUNNING" else []],
+    order = ["PENDING", "RUNNING", "WAITING_FOR_CANCEL"]
+    client = fake_client(get_responses=[[row] if state == s else [] for s in order],
                          allow=("get",))  # a DELETE would raise AssertionError
     with pytest.raises(CliFailure, match=f"is still {state}") as caught:
         explore_mod.cmd_attached_iso(client, _ns(server_id=42, action="detach", yes=True), _pal(explore_mod))
@@ -304,9 +314,55 @@ def test_detach_is_refused_while_a_task_is_active(explore_mod, fake_client, stat
 
 def test_detach_ignores_finished_rows_the_api_may_return(explore_mod, fake_client):
     done = {"uuid": TASK_UUID, "name": "ServerAttachIsoTask", "state": "FINISHED"}
-    client = fake_client(get_responses=[[done], [done]], allow=("get", "delete"))
+    client = fake_client(get_responses=[[done], [done], [done]], allow=("get", "delete"))
     explore_mod.cmd_attached_iso(client, _ns(server_id=42, action="detach", yes=True), _pal(explore_mod))
     assert client.calls[-1][0] == "delete"
+    assert [c[2]["state"] for c in client.calls if c[0] == "get"] == ["PENDING", "RUNNING", "WAITING_FOR_CANCEL"]
+
+
+class _TasksErrorClient:
+    """GET /tasks fails; any DELETE is recorded (it must not happen unless overridden)."""
+
+    def __init__(self):
+        self.calls = []
+
+    def get(self, endpoint, params=None):
+        self.calls.append(("get", endpoint))
+        raise netcup_scp_client.HTTPStatusError(503, "service unavailable", "")
+
+    def delete(self, endpoint, params=None):
+        self.calls.append(("delete", endpoint))
+        return {}
+
+
+def test_detach_is_fail_closed_when_the_task_list_errors(explore_mod):
+    client = _TasksErrorClient()
+    with pytest.raises(CliFailure, match="503"):
+        explore_mod.cmd_attached_iso(client, _ns(server_id=42, action="detach", yes=True), _pal(explore_mod))
+    assert [c[0] for c in client.calls] == ["get"]  # no DELETE
+
+
+def test_detach_ignore_active_tasks_overrides_but_still_confirms(explore_mod, monkeypatch, capsys):
+    client = _TasksErrorClient()
+    args = _ns(server_id=42, action="detach", yes=True, ignore_active_tasks=True)
+    explore_mod.cmd_attached_iso(client, args, _pal(explore_mod))
+    assert client.calls == [("delete", "/api/v1/servers/42/iso")]  # no GET /tasks at all
+    assert "--ignore-active-tasks" in capsys.readouterr().err
+    # Declining the confirmation still stops the DELETE.
+    client = _TasksErrorClient()
+    monkeypatch.setattr("builtins.input", lambda *_a: "n")
+    args = _ns(server_id=42, action="detach", yes=False, ignore_active_tasks=True)
+    explore_mod.cmd_attached_iso(client, args, _pal(explore_mod))
+    assert client.calls == []
+
+
+def test_ignore_active_tasks_is_a_real_option_and_warns(explore_mod, tmp_path, monkeypatch, capsys):
+    run = _run(explore_mod, ["iso-attached", "42", "detach", "--yes", "--ignore-active-tasks"], tmp_path, monkeypatch, capsys)
+    assert run.status == 0
+    assert "--ignore-active-tasks" in run.err
+    assert [c[0] for c in run.calls] == ["delete"]
+    refused = _run(explore_mod, ["iso-attached", "42", "detach", "--ignore-active-tasks"], tmp_path, monkeypatch, capsys)
+    assert refused.status == 2 and [c for c in refused.calls if c[0] == "delete"] == []
 
 
 # --- item 5, progress clamp (F5), monitor-task ---------------------------------------
@@ -420,3 +476,168 @@ def test_attach_without_the_boot_flag_reads_no_boot_order(explore_mod, tmp_path,
     run = _run(explore_mod, ["attach-iso", "42", "--iso-id", "84", "--yes"], tmp_path, monkeypatch, capsys)
     assert [c[0] for c in run.calls] == ["post"]
     assert "boot order" not in run.err
+
+
+# --- review fix round 1 -------------------------------------------------------------
+
+ATTACH = ["attach-iso", "42", "--iso-id", "84", "--change-boot-device-to-cdrom", "--yes"]
+RESTORE = "./scp-api.py boot-order 42 set HDD,CDROM,NETWORK"
+
+
+def test_b1_restore_hint_survives_quiet(explore_mod, tmp_path, monkeypatch, capsys):
+    run = _run(explore_mod, ATTACH + ["--quiet"], tmp_path, monkeypatch, capsys, **{S42: DETAILS})
+    assert run.status == 0
+    assert RESTORE in run.err
+
+
+def test_b1_restore_command_is_in_the_json_result(explore_mod, tmp_path, monkeypatch, capsys):
+    run = _run(explore_mod, ATTACH + ["--json"], tmp_path, monkeypatch, capsys, **{S42: DETAILS})
+    assert run.status == 0
+    assert json.loads(run.out)["restore_command"] == RESTORE
+    quiet = _run(explore_mod, ATTACH + ["--json", "--quiet"], tmp_path, monkeypatch, capsys, **{S42: DETAILS})
+    assert json.loads(quiet.out)["restore_command"] == RESTORE and RESTORE in quiet.err
+
+
+def test_b1_unexpected_device_names_build_no_restore_command(explore_mod, tmp_path, monkeypatch, capsys):
+    odd = {"id": 42, "name": "v42", "serverLiveInfo": {"bootorder": ["HDD", "$(touch x)"]}}
+    run = _run(explore_mod, ATTACH + ["--json"], tmp_path, monkeypatch, capsys, **{S42: odd})
+    assert run.status == 0
+    assert "cannot build a restore command: unexpected boot device names: '$(touch x)'" in run.err
+    assert "boot-order 42 set" not in run.err
+    assert "restore_command" not in json.loads(run.out)
+
+
+@pytest.mark.parametrize("verb", ["create", "dryrun"])
+def test_b2_online_with_disk_name_is_rejected_locally(explore_mod, tmp_path, monkeypatch, capsys, verb):
+    run = _run(explore_mod, ["snapshots", "42", verb, "--online", "--disk-name", "vda", "--yes"], tmp_path, monkeypatch, capsys)
+    assert run.status == 2
+    assert "--online cannot be combined with --disk-name" in run.err
+    assert run.calls == []
+
+
+def test_b2_online_help_mentions_uefi(explore_mod):
+    help_text = explore_mod.build_cli().command_parsers["snapshots"].format_help()
+    assert "online.uefi" in help_text
+
+
+def test_b4_dryrun_400_renders_the_blocking_reasons(explore_mod, tmp_path, monkeypatch, capsys):
+    body = json.dumps([{"code": "server.snapshot.create.error.iso", "message": "an ISO is attached"},
+                       {"code": "server.snapshot.create.error.online.uefi", "message": "UEFI host"}])
+
+    from case_harness import RoutedClient
+
+    class Client(RoutedClient):
+        def post(self, endpoint, data=None):
+            self.calls.append(("post", endpoint, data))
+            raise netcup_scp_client.HTTPStatusError(400, "Bad Request", body)
+
+    client = Client()
+    args = _ns(server_id=42, action="dryrun", disk_name="vda", online=False)
+    with pytest.raises(CliFailure) as caught:
+        explore_mod.cmd_snapshots(client, args, _pal(explore_mod))
+    assert caught.value.exit_code == 1
+    assert "snapshot not possible; blocking reasons: an ISO is attached; UEFI host" in str(caught.value)
+    assert "HTTP 400" not in str(caught.value)
+    # --json emits the raw reasons.
+    args.json = True
+    with pytest.raises(CliFailure):
+        explore_mod.cmd_snapshots(client, args, _pal(explore_mod))
+    assert json.loads(capsys.readouterr().out) == json.loads(body)
+
+
+def test_b4_dryrun_other_http_errors_stay_errors(explore_mod, fake_client):
+    class Client(fake_client):
+        def post(self, endpoint, data):
+            raise netcup_scp_client.HTTPStatusError(400, "Bad Request", "not json")
+
+    client = Client(allow=("get", "post"))
+    with pytest.raises(CliFailure, match="HTTP 400") as caught:
+        explore_mod.cmd_snapshots(client, _ns(server_id=42, action="dryrun", disk_name="vda"), _pal(explore_mod))
+    assert "blocking reasons" not in str(caught.value)
+
+
+def test_b4_dryrun_400_end_to_end_exit_1(explore_mod, tmp_path, monkeypatch, capsys):
+    from case_harness import RoutedClient
+
+    real_post = RoutedClient.post
+
+    def post(self, endpoint, data=None):
+        if endpoint.endswith(":dryrun"):
+            self.calls.append(("post", endpoint, data))
+            raise netcup_scp_client.HTTPStatusError(400, "Bad Request", '["disk is locked"]')
+        return real_post(self, endpoint, data)
+
+    monkeypatch.setattr(RoutedClient, "post", post)
+    run = _run(explore_mod, ["snapshots", "42", "dryrun", "--disk-name", "vda"], tmp_path, monkeypatch, capsys)
+    assert run.status == 1
+    assert "snapshot not possible; blocking reasons: disk is locked" in run.err
+
+
+class _PatchClient:
+    def __init__(self, answer):
+        self.answer = answer
+        self.calls = []
+
+    def get(self, endpoint, params=None):
+        self.calls.append(("get", endpoint))
+        return dict(DETAILS)
+
+    def patch(self, endpoint, data, params=None):
+        self.calls.append(("patch", endpoint, data))
+        return self.answer
+
+
+def test_b6_boot_order_202_reports_a_submitted_task_not_set(explore_mod, capsys):
+    task = {"uuid": TASK_UUID, "name": "ServerBootorderTask", "state": "PENDING"}
+    client = _PatchClient(task)
+    explore_mod.cmd_boot_order(client, _ns(server_id=42, action="set", order="HDD", yes=True), _pal(explore_mod))
+    out = capsys.readouterr().out
+    assert f"boot order change submitted (task {TASK_UUID}); watch: ./monitor-task.py watch {TASK_UUID}" in out
+    assert "boot order set" not in out
+    args = _ns(server_id=42, action="set", order="HDD", yes=True)
+    args.json = True
+    explore_mod.cmd_boot_order(_PatchClient(task), args, _pal(explore_mod))
+    assert json.loads(capsys.readouterr().out) == task
+
+
+@pytest.mark.parametrize("answer", [{}, None])
+def test_b6_boot_order_200_204_keep_the_set_message(explore_mod, capsys, answer):
+    explore_mod.cmd_boot_order(
+        _PatchClient(answer), _ns(server_id=42, action="set", order="HDD,CDROM", yes=True), _pal(explore_mod)
+    )
+    assert "boot order set to HDD,CDROM" in capsys.readouterr().out
+
+
+AGG_SERVERS = [{"id": 42, "name": "alpha-host"}, {"id": 77, "name": "beta-host"}]
+AGG_FLAVOURS = [{"id": 5, "alias": "debian", "name": "Flv1", "text": "Debian text", "image": {"name": "Debian 13"}}]
+AGG_ISOS = [{"id": 9, "name": "rescue.iso", "description": "tools", "architecture": "AMD64_X86_64", "text": "recovery blob"}]
+
+
+def _agg(explore_mod, tmp_path, monkeypatch, capsys, verb, term):
+    routes = {
+        "/api/v1/servers": AGG_SERVERS,
+        "/api/v1/servers/42/imageflavours": AGG_FLAVOURS, "/api/v1/servers/77/imageflavours": AGG_FLAVOURS,
+        "/api/v1/servers/42/isoimages": AGG_ISOS, "/api/v1/servers/77/isoimages": AGG_ISOS,
+    }
+    run = _run(explore_mod, [verb, "--filter", term, "--json"], tmp_path, monkeypatch, capsys, **routes)
+    assert run.status == 0
+    return sorted({row["serverId"] for row in json.loads(run.out)})
+
+
+@pytest.mark.parametrize("verb", ["imageflavours", "iso-bootable"])
+def test_b7_aggregate_filter_matches_server_name_but_not_server_id(explore_mod, tmp_path, monkeypatch, capsys, verb):
+    assert _agg(explore_mod, tmp_path, monkeypatch, capsys, verb, "beta") == [77]
+    assert _agg(explore_mod, tmp_path, monkeypatch, capsys, verb, "77") == []  # serverId is an id column
+
+
+def test_b7_imageflavours_filter_matches_name_and_text_fields(explore_mod, tmp_path, monkeypatch, capsys):
+    assert _agg(explore_mod, tmp_path, monkeypatch, capsys, "imageflavours", "flv1") == [42, 77]
+    assert _agg(explore_mod, tmp_path, monkeypatch, capsys, "imageflavours", "debian text") == [42, 77]
+    assert _agg(explore_mod, tmp_path, monkeypatch, capsys, "imageflavours", "debian 13") == [42, 77]
+    assert _agg(explore_mod, tmp_path, monkeypatch, capsys, "imageflavours", "5") == []  # the id
+
+
+def test_b7_iso_filter_matches_text_and_architecture(explore_mod, tmp_path, monkeypatch, capsys):
+    assert _agg(explore_mod, tmp_path, monkeypatch, capsys, "iso-bootable", "recovery blob") == [42, 77]
+    assert _agg(explore_mod, tmp_path, monkeypatch, capsys, "iso-bootable", "amd64") == [42, 77]
+    assert _agg(explore_mod, tmp_path, monkeypatch, capsys, "iso-bootable", "9") == []  # the id

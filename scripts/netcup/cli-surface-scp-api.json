@@ -977,16 +977,20 @@
     {
       "id": "case:route:entrypoint:scp-api/iso-attached/minimum",
       "kind": "minimum",
-      "members": [],
+      "members": [
+        "option:route:entrypoint:scp-api/iso-attached/--ignore-active-tasks"
+      ],
       "route_id": "route:entrypoint:scp-api/iso-attached",
       "shape": {
-        "defaulted_options": [],
+        "defaulted_options": [
+          "option:route:entrypoint:scp-api/iso-attached/--ignore-active-tasks"
+        ],
         "required_argument_values": {},
         "required_arguments": [],
         "required_exclusive_groups": {},
         "required_options": []
       },
-      "signature": "sha256:2a2df9a999077ad93efdebce7c379b838ccd8d090e9b7c293ac18d309128aa7c"
+      "signature": "sha256:d3d7b407fe45788cdef6fa39192245b088ea6af61b94e6d97b1ea3f229b5cf4e"
     },
     {
       "id": "case:route:entrypoint:scp-api/iso-attached/option-spelling/option:route:entrypoint:scp-api/iso-attached/--debug-raw/--debug-raw",
@@ -1000,6 +1004,19 @@
         "spelling": "--debug-raw"
       },
       "signature": "sha256:520a18e5d3c24bdf2f6ad0368bc2f94c46e7ffdedb7386dd84bc7cfe83438008"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/iso-attached/option-spelling/option:route:entrypoint:scp-api/iso-attached/--ignore-active-tasks/--ignore-active-tasks",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:scp-api/iso-attached/--ignore-active-tasks"
+      ],
+      "route_id": "route:entrypoint:scp-api/iso-attached",
+      "shape": {
+        "option_id": "option:route:entrypoint:scp-api/iso-attached/--ignore-active-tasks",
+        "spelling": "--ignore-active-tasks"
+      },
+      "signature": "sha256:f76e48558897e8dd830b4b50a6e2fbe5e74dd1464019839388e0f81c4e829e89"
     },
     {
       "id": "case:route:entrypoint:scp-api/iso-attached/option-spelling/option:route:entrypoint:scp-api/iso-attached/--json/--json",
@@ -3519,7 +3536,7 @@
           "const": null,
           "default": null,
           "default_present": true,
-          "description": "client-side filter: keep rows where the text appears, ignoring case, in a name, alias or description column (never the id column)",
+          "description": "client-side filter: keep rows where the text appears, ignoring case, in any displayed non-id column or a name, alias or text field (never an id column)",
           "dest": "filter",
           "effective_default": null,
           "exclusive_group": null,
@@ -3653,6 +3670,45 @@
           "type": {
             "callable": "_cli_extended_surface_scp_api._positive_int"
           }
+        },
+        {
+          "action": "argparse._StoreTrueAction",
+          "before_nested_subcommand": false,
+          "canonical": "--ignore-active-tasks",
+          "choices": null,
+          "const": true,
+          "default": false,
+          "default_present": true,
+          "description": "detach even if the server has an active task or the task list cannot be read (still confirmed; the provider may answer HTTP 500 if an attach is running)",
+          "dest": "ignore_active_tasks",
+          "effective_default": false,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--ignore-active-tasks"
+          ],
+          "help_group": "DETACH OPTIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:scp-api/iso-attached/--ignore-active-tasks",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 0,
+          "nargs": 0,
+          "parser_kwargs": {
+            "action": "store_true",
+            "default": false
+          },
+          "parser_path": [
+            "iso-attached"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
         },
         {
           "action": "argparse._StoreAction",
@@ -3790,7 +3846,7 @@
           "const": null,
           "default": null,
           "default_present": true,
-          "description": "client-side filter: keep rows where the text appears, ignoring case, in a name, alias or description column (never the id column)",
+          "description": "client-side filter: keep rows where the text appears, ignoring case, in any displayed non-id column or a name, alias or text field (never an id column)",
           "dest": "filter",
           "effective_default": null,
           "exclusive_group": null,
@@ -4684,7 +4740,7 @@
           "const": true,
           "default": false,
           "default_present": true,
-          "description": "take an online snapshot (no disk name needed)",
+          "description": "take an online snapshot (no disk name needed; cannot be combined with --disk-name; the provider may refuse online snapshots on UEFI hosts, error online.uefi)",
           "dest": "online",
           "effective_default": false,
           "exclusive_group": null,

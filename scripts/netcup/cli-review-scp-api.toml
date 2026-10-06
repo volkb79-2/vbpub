@@ -827,7 +827,7 @@ invocation = ["iso-attached", "42", "detach", "--yes"]
 expected_exit_status = 0
 expected_stdout_contains = "detached"
 expected_stderr_contains = "Confirmation accepted via --yes"
-effects = ["Sends one DELETE /api/v1/servers/42/iso after --yes."]
+effects = ["Reads GET /api/v1/tasks?serverId=42 once each for state PENDING, RUNNING and WAITING_FOR_CANCEL and refuses if any task is active (fail-closed when the list cannot be read), then sends one DELETE /api/v1/servers/42/iso after --yes."]
 test_ids = ["tests/test_cli_cases_scp_api.py::test_replayed_case_matches_catalog[iso-attached-choice-detach]"]
 
 [[cases]]
@@ -840,7 +840,7 @@ invocation = ["iso-attached", "42", "detach", "--yes"]
 expected_exit_status = 0
 expected_stdout_contains = "detached"
 expected_stderr_contains = "Confirmation accepted via --yes"
-effects = ["Sends one DELETE /api/v1/servers/42/iso after --yes."]
+effects = ["Reads GET /api/v1/tasks?serverId=42 once each for state PENDING, RUNNING and WAITING_FOR_CANCEL and refuses if any task is active (fail-closed when the list cannot be read), then sends one DELETE /api/v1/servers/42/iso after --yes."]
 test_ids = [
   "tests/test_cli_cases_scp_api.py::test_replayed_case_matches_catalog[iso-attached-shape-action]",
   "tests/test_cli_cases_scp_api.py::test_invalid_argument_is_refused[iso-attached-action]",
@@ -866,7 +866,7 @@ test_ids = [
 id = "case:route:entrypoint:scp-api/iso-attached/minimum"
 state = "active"
 decision = "accept"
-reviewed_signature = "sha256:2a2df9a999077ad93efdebce7c379b838ccd8d090e9b7c293ac18d309128aa7c"
+reviewed_signature = "sha256:d3d7b407fe45788cdef6fa39192245b088ea6af61b94e6d97b1ea3f229b5cf4e"
 rationale = "A bare 'iso-attached' is a safe read of every server's ISO state; nothing is required."
 invocation = ["iso-attached"]
 expected_exit_status = 0
@@ -874,6 +874,19 @@ expected_stdout_contains = "serverName"
 expected_stderr_contains = ""
 effects = ["Reads GET /api/v1/servers and each server's iso state; no mutation."]
 test_ids = ["tests/test_cli_cases_scp_api.py::test_replayed_case_matches_catalog[iso-attached-minimum]"]
+
+[[cases]]
+id = "case:route:entrypoint:scp-api/iso-attached/option-spelling/option:route:entrypoint:scp-api/iso-attached/--ignore-active-tasks/--ignore-active-tasks"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:f76e48558897e8dd830b4b50a6e2fbe5e74dd1464019839388e0f81c4e829e89"
+rationale = "Explicit override of the active-task refusal: skips the GET /tasks check (also when the list cannot be read), prints a warning, and the detach is still confirmed, so it never removes the consent requirement."
+invocation = ["iso-attached", "42", "detach", "--yes", "--ignore-active-tasks"]
+expected_exit_status = 0
+expected_stdout_contains = "detached"
+expected_stderr_contains = "--ignore-active-tasks"
+effects = ["Makes no GET /api/v1/tasks call; sends the single DELETE /api/v1/servers/42/iso after --yes; the provider may answer HTTP 500 if an attach is still running."]
+test_ids = ["tests/test_cli_cases_scp_api.py::test_replayed_case_matches_catalog[iso-attached-ignore-active-tasks]"]
 
 [[cases]]
 id = "case:route:entrypoint:scp-api/iso-attached/option-spelling/option:route:entrypoint:scp-api/iso-attached/--debug-raw/--debug-raw"
@@ -911,7 +924,7 @@ invocation = ["iso-attached", "42", "detach", "--yes"]
 expected_exit_status = 0
 expected_stdout_contains = "detached"
 expected_stderr_contains = "Confirmation accepted via --yes"
-effects = ["Skips the confirmation prompt and sends the single DELETE; without it nothing is sent."]
+effects = ["Skips the confirmation prompt; the three active-task reads (GET /api/v1/tasks) still run, then the single DELETE is sent; without it nothing is sent."]
 test_ids = ["tests/test_cli_cases_scp_api.py::test_yes_is_the_only_consent_in_a_non_interactive_run[iso-attached]"]
 
 [[cases]]
@@ -1139,12 +1152,12 @@ id = "case:route:entrypoint:scp-api/metrics/option-spelling/option:route:entrypo
 state = "active"
 decision = "accept"
 reviewed_signature = "sha256:0d9cbbdb158d989a21f649d1f1868139d182d18892e0f3fd74dfed6611ae53c9"
-rationale = "Library output control; metrics already prints JSON by default (the series is not tabular), so the flag is accepted and the output is identical."
+rationale = "Library output control; without it metrics prints a compact table (series, unit, min, avg, max, last), with --json it prints the raw timestamp-to-series map unchanged."
 invocation = ["metrics", "42", "cpu", "--json"]
 expected_exit_status = 0
 expected_stdout_contains = "CPU0"
 expected_stderr_contains = ""
-effects = ["Performs the same read as without the flag; the printed JSON is unchanged."]
+effects = ["Performs the same read as without the flag; only the output form changes (raw JSON instead of the table)."]
 test_ids = ["tests/test_cli_cases_scp_api.py::test_json_output_is_machine_readable[metrics]"]
 
 [[cases]]
@@ -1484,7 +1497,7 @@ invocation = ["snapshots", "42", "dryrun"]
 expected_exit_status = 0
 expected_stdout_contains = ""
 expected_stderr_contains = ""
-effects = ["Sends one POST /api/v1/servers/42/snapshots:dryrun with an empty body; no snapshot is created."]
+effects = ["Reads GET /api/v1/servers/42/disks to pick the only disk, then sends one POST /api/v1/servers/42/snapshots:dryrun with {diskName}; no snapshot is created. An HTTP 400 carrying a reason list is rendered as 'snapshot not possible; blocking reasons: ...' with exit 1."]
 test_ids = ["tests/test_cli_cases_scp_api.py::test_replayed_case_matches_catalog[snapshots-choice-dryrun]"]
 
 [[cases]]
@@ -1497,7 +1510,7 @@ invocation = ["snapshots", "42", "create", "--yes"]
 expected_exit_status = 0
 expected_stdout_contains = ""
 expected_stderr_contains = "Confirmation accepted via --yes"
-effects = ["Sends one POST /api/v1/servers/42/snapshots with a generated vbpub-<timestamp> name after --yes."]
+effects = ["Reads GET /api/v1/servers/42/disks to pick the only disk, then sends one POST /api/v1/servers/42/snapshots with a generated vbpub-<timestamp> name and that diskName after --yes."]
 test_ids = ["tests/test_cli_cases_scp_api.py::test_replayed_case_matches_catalog[snapshots-choice-create]"]
 
 [[cases]]
@@ -1510,7 +1523,7 @@ invocation = ["snapshots", "42", "dryrun"]
 expected_exit_status = 0
 expected_stdout_contains = ""
 expected_stderr_contains = ""
-effects = ["Sends one POST /api/v1/servers/42/snapshots:dryrun; creates nothing."]
+effects = ["Reads the server's disks, then sends one POST /api/v1/servers/42/snapshots:dryrun with the only disk's diskName; creates nothing."]
 test_ids = [
   "tests/test_cli_cases_scp_api.py::test_replayed_case_matches_catalog[snapshots-shape-action]",
   "tests/test_cli_cases_scp_api.py::test_invalid_argument_is_refused[snapshots-action]",
@@ -1526,7 +1539,7 @@ invocation = ["snapshots", "42", "dryrun"]
 expected_exit_status = 0
 expected_stdout_contains = ""
 expected_stderr_contains = ""
-effects = ["Sends one POST /api/v1/servers/42/snapshots:dryrun; creates nothing."]
+effects = ["Reads the server's disks, then sends one POST /api/v1/servers/42/snapshots:dryrun with the only disk's diskName; creates nothing."]
 test_ids = [
   "tests/test_cli_cases_scp_api.py::test_replayed_case_matches_catalog[snapshots-shape-server-id]",
   "tests/test_cli_cases_scp_api.py::test_invalid_argument_is_refused[snapshots-server-id]",
@@ -1581,7 +1594,7 @@ invocation = ["snapshots", "42", "create", "--name", "before-upgrade", "--yes"]
 expected_exit_status = 0
 expected_stdout_contains = ""
 expected_stderr_contains = "Confirmation accepted via --yes"
-effects = ["Sends one POST /api/v1/servers/42/snapshots with name before-upgrade after --yes."]
+effects = ["Reads GET /api/v1/servers/42/disks to pick the only disk, then sends one POST /api/v1/servers/42/snapshots with name before-upgrade and that diskName after --yes."]
 test_ids = ["tests/test_cli_cases_scp_api.py::test_replayed_case_matches_catalog[snapshots-name]"]
 
 [[cases]]
@@ -1594,7 +1607,7 @@ invocation = ["snapshots", "42", "create", "--yes"]
 expected_exit_status = 0
 expected_stdout_contains = ""
 expected_stderr_contains = "Confirmation accepted via --yes"
-effects = ["Skips the confirmation prompt and sends the single snapshot POST; without it nothing is sent."]
+effects = ["Skips the confirmation prompt; the disks GET still runs and the single snapshot POST is sent; without it nothing is sent."]
 test_ids = ["tests/test_cli_cases_scp_api.py::test_yes_is_the_only_consent_in_a_non_interactive_run[snapshots]"]
 
 [[cases]]

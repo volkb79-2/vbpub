@@ -983,6 +983,12 @@ def _filter_rows(
     return [row for row in rows if needle in haystack(row).casefold()]
 
 
+# --filter searches every displayed non-ID column plus name, alias and text.
+# ID columns (id, serverId) are never searched.
+_IMAGEFLAVOUR_FILTER_FIELDS = ("serverName", "image.name", "name", "alias", "text")
+_ISO_FILTER_FIELDS = ("serverName", "name", "description", "architecture", "alias", "text")
+
+
 def _image_flavour_name(row: Dict[str, Any]) -> str:
     image = row.get("image")
     if image is None:
@@ -1304,7 +1310,7 @@ def cmd_imageflavours(client: NetcupSCPClient, args, pal: _Palette) -> None:
         result = _api_call(client.get, f"/api/v1/servers/{server['id']}/imageflavours")
         rows = _response_rows(result, f"GET /api/v1/servers/{server['id']}/imageflavours")
         flavours.extend(_annotate_server_row(row, server) if aggregate else row for row in rows)
-    flavours = _filter_rows(flavours, getattr(args, "filter", None), ("image.name", "alias"))
+    flavours = _filter_rows(flavours, getattr(args, "filter", None), _IMAGEFLAVOUR_FILTER_FIELDS)
 
     def table(rows):
         flat = [
@@ -1332,20 +1338,23 @@ def cmd_iso_bootable(client: NetcupSCPClient, args, pal: _Palette) -> None:
         result = _api_call(client.get, f"/api/v1/servers/{server['id']}/isoimages")
         rows = _response_rows(result, f"GET /api/v1/servers/{server['id']}/isoimages")
         images.extend(_annotate_server_row(row, server) if aggregate else row for row in rows)
-    images = _filter_rows(images, getattr(args, "filter", None), ("name", "description"))
+    images = _filter_rows(images, getattr(args, "filter", None), _ISO_FILTER_FIELDS)
     columns = ["serverId", "serverName", "id", "name", "description", "architecture"] if aggregate else ["id", "name", "description", "architecture"]
     scope = "on this account" if aggregate else "for this server"
     emit(images, args.json, lambda d: print_table(d, columns, pal, f"no ISO images available {scope}"))
 
 
-_ACTIVE_TASK_STATES = ("PENDING", "RUNNING")
+_ACTIVE_TASK_STATES = ("PENDING", "RUNNING", "WAITING_FOR_CANCEL")
 
 
 def _refuse_if_tasks_active(client: NetcupSCPClient, server_id: int, operation: str) -> None:
-    """Refuse ``operation`` while the server has a PENDING/RUNNING task.
+    """Refuse ``operation`` while the server has an active task.
 
     Live finding F10: detaching while an attach task was still running made
-    the provider answer HTTP 500 ``error.internalserver``.
+    the provider answer HTTP 500 ``error.internalserver``.  Fail-closed: an
+    error or odd answer from ``GET /tasks`` aborts (override with
+    ``--ignore-active-tasks``).  The check is inherently check-then-act: a task
+    can start between this GET and the DELETE.
     """
     for state in _ACTIVE_TASK_STATES:
         rows = _response_rows(
@@ -1367,7 +1376,14 @@ def cmd_attached_iso(client: NetcupSCPClient, args, pal: _Palette) -> None:
     if args.action == "detach":
         server_id = _require_server_id(args, "detach")
         _guard_server_mutation(client, server_id, "detach ISO")
-        _refuse_if_tasks_active(client, server_id, "detach ISO")
+        if getattr(args, "ignore_active_tasks", False):
+            _diagnostic(
+                "warn",
+                f"--ignore-active-tasks: not checking server {server_id} for active tasks; "
+                "the provider may answer HTTP 500 if an attach is still running",
+            )
+        else:
+            _refuse_if_tasks_active(client, server_id, "detach ISO")
         if not confirm(f"Detach the ISO currently attached to server {args.server_id}?", args.yes, pal):
             print("aborted")
             return
@@ -1435,6 +1451,20 @@ def cmd_boot_order(client: NetcupSCPClient, args, pal: _Palette) -> None:
             return
         endpoint = f"/api/v1/servers/{args.server_id}"
         result = _api_call(client.patch, endpoint, {"bootorder": order})
+        if isinstance(result, dict) and isinstance(result.get("uuid"), str) and result["uuid"]:
+            # 202 TaskInfo: the change is asynchronous, so do not claim "set".
+            task_uuid = result["uuid"]
+            emit(
+                result,
+                args.json,
+                lambda d: print(
+                    pal.green(
+                        f"boot order change submitted (task {task_uuid}); "
+                        f"watch: ./monitor-task.py watch {task_uuid}"
+                    )
+                ),
+            )
+            return
         if not isinstance(result, dict) or not result:
             result = {"bootorder": order, "serverId": args.server_id}
         emit(result, args.json, lambda d: print(pal.green(f"boot order set to {','.join(order)}")))
@@ -1469,13 +1499,28 @@ def cmd_attach_iso(client: NetcupSCPClient, args, pal: _Palette) -> None:
         _api_call(client.post, f"/api/v1/servers/{args.server_id}/iso", data),
         f"POST /api/v1/servers/{args.server_id}/iso",
     )
+    restore_command = None
     if previous_order:
         # The provider does not restore the order on detach (live finding F9).
-        _diagnostic(
-            "info",
-            f"previous boot order: {','.join(previous_order)}; "
-            f"restore it after detaching with: ./scp-api.py boot-order {args.server_id} set {','.join(previous_order)}",
-        )
+        # WARN level so --quiet still shows it; only built from known device
+        # names, so the command is shell-safe by construction.
+        unexpected = [item for item in previous_order if item not in _BOOT_DEVICES]
+        if unexpected:
+            _diagnostic(
+                "warn",
+                "cannot build a restore command: unexpected boot device names: "
+                + ", ".join(repr(item) for item in unexpected),
+            )
+        else:
+            joined = ",".join(previous_order)
+            restore_command = f"./scp-api.py boot-order {args.server_id} set {joined}"
+            _diagnostic(
+                "warn",
+                f"previous boot order: {joined}; restore it after detaching with: {restore_command}",
+            )
+    if restore_command and args.json:
+        result = dict(result)
+        result["restore_command"] = restore_command
     emit(result, args.json, lambda d: print_kv(d, pal) if isinstance(d, dict) and d else print(pal.green("attach requested")))
 
 
@@ -1568,6 +1613,12 @@ def _snapshot_options(client: NetcupSCPClient, server_id: int, args) -> Dict[str
     return options
 
 
+def _snapshot_reason_text(reason: Any) -> str:
+    if isinstance(reason, dict):
+        reason = reason.get("message") or json.dumps(reason, sort_keys=True)
+    return _stringify(reason)
+
+
 def _render_snapshot_check(result: Any, pal: _Palette) -> None:
     """Human view of POST snapshots:dryrun (live answer: ``[]`` == possible)."""
     if result is None or result == [] or result == {}:
@@ -1576,9 +1627,7 @@ def _render_snapshot_check(result: Any, pal: _Palette) -> None:
     if isinstance(result, list):
         print(pal.yellow("snapshot not possible; blocking reasons:"))
         for reason in result:
-            if isinstance(reason, dict):
-                reason = reason.get("message") or json.dumps(reason, sort_keys=True)
-            print(f"  - {_stringify(reason)}")
+            print(f"  - {_snapshot_reason_text(reason)}")
         return
     if isinstance(result, dict):
         print_kv(result, pal)
@@ -1586,13 +1635,46 @@ def _render_snapshot_check(result: Any, pal: _Palette) -> None:
     print(_stringify(result))
 
 
+def _dryrun_blocking_reasons(exc: HTTPStatusError) -> List[Any] | None:
+    """The spec's HTTP 400 carries a JSON list of blocking reasons."""
+    if exc.status != 400 or not exc.body:
+        return None
+    try:
+        reasons = json.loads(exc.body)
+    except ValueError:
+        return None
+    return reasons if isinstance(reasons, list) and reasons else None
+
+
 def cmd_snapshots(client: NetcupSCPClient, args, pal: _Palette) -> None:
+    if args.action in ("dryrun", "create") and getattr(args, "online", False) and getattr(args, "disk_name", None):
+        # Spec error server.snapshot.create.error.online.diskselected.
+        raise CliFailure(
+            "--online cannot be combined with --disk-name (the provider refuses an online snapshot with a disk selected)",
+            exit_code=2,
+            hint="drop --disk-name, or drop --online to snapshot that disk",
+        )
     if args.action == "dryrun":
         server_id = _require_server_id(args, "dryrun")
         body = _snapshot_options(client, server_id, args)
         # The live API answers a JSON list ([] when possible); the spec shows
         # an object or nothing.  Accept every shape and report the raw one.
-        result = _api_call(client.post, f"/api/v1/servers/{server_id}/snapshots:dryrun", body)
+        try:
+            result = client.post(f"/api/v1/servers/{server_id}/snapshots:dryrun", body)
+        except HTTPStatusError as exc:
+            reasons = _dryrun_blocking_reasons(exc)
+            if reasons is None:
+                raise CliFailure(
+                    f"{exc} (HTTP {exc.status})" + (f"; response: {exc.body[:2000]}" if exc.body else "")
+                ) from exc
+            message = "snapshot not possible; blocking reasons: " + "; ".join(
+                _snapshot_reason_text(reason) for reason in reasons
+            )
+            if args.json:
+                emit(reasons, True)
+            raise CliFailure(message, exit_code=1) from exc
+        except netcup_scp_client.NetcupAPIError as exc:
+            raise CliFailure(str(exc)) from exc
         emit(result, args.json, lambda d: _render_snapshot_check(d, pal))
         return
     if args.action == "create":
@@ -1780,7 +1862,9 @@ def _scp_user_id(client: NetcupSCPClient) -> int:
     user_id = user_info.get("id")
     # The live userinfo returns the id as a digit string ("152828"); the
     # OpenAPI spec implies an integer.  Accept both, reject everything else.
-    if isinstance(user_id, str) and re.fullmatch(r"[0-9]+", user_id):
+    # Longer than 19 digits cannot be a real id (and a huge digit string made
+    # int() raise a raw ValueError), so it is a response-shape error.
+    if isinstance(user_id, str) and re.fullmatch(r"[0-9]{1,19}", user_id):
         user_id = int(user_id)
     if not isinstance(user_id, int) or isinstance(user_id, bool) or user_id <= 0:
         raise ResponseShapeError("GET OIDC userinfo: response did not contain a positive integer user id")
@@ -2532,7 +2616,7 @@ def build_cli():
             VerbGroup.EXPLORATION.value,
             cmd_imageflavours if name == "imageflavours" else cmd_iso_bootable,
             arguments=(server_id_optional,),
-            options=(_option(("--filter",), "client-side filter: keep rows where the text appears, ignoring case, in a name, alias or description column (never the id column)", group="FILTERS", metavar="TEXT", type=_nonempty_text),),
+            options=(_option(("--filter",), "client-side filter: keep rows where the text appears, ignoring case, in any displayed non-id column or a name, alias or text field (never an id column)", group="FILTERS", metavar="TEXT", type=_nonempty_text),),
             examples=(example,),
         )
     register(
@@ -2540,6 +2624,9 @@ def build_cli():
         "Show the ISO currently attached to one or every server. The detach action changes the server's media assignment and is confirmed.",
         "MIXED OPERATIONS", cmd_attached_iso,
         arguments=(server_id_optional,), configure=_configure_iso_attached,
+        options=(
+            _option(("--ignore-active-tasks",), "detach even if the server has an active task or the task list cannot be read (still confirmed; the provider may answer HTTP 500 if an attach is running)", group="DETACH OPTIONS", action="store_true", default=False),
+        ),
         examples=("./scp-api.py iso-attached 799611", "./scp-api.py iso-attached 799611 detach --yes"), mutating=True,
     )
     register(
@@ -2564,7 +2651,7 @@ def build_cli():
         options=(
             _option(("--name",), "snapshot name for create (default is timestamped)", group="SNAPSHOT OPTIONS", metavar="NAME", default=None),
             _option(("--disk-name",), "disk to snapshot, for create or dryrun (default: the server's only disk; required when it has several)", group="SNAPSHOT OPTIONS", metavar="NAME", type=_nonempty_text, default=None),
-            _option(("--online",), "take an online snapshot (no disk name needed)", group="SNAPSHOT OPTIONS", action="store_true", default=False),
+            _option(("--online",), "take an online snapshot (no disk name needed; cannot be combined with --disk-name; the provider may refuse online snapshots on UEFI hosts, error online.uefi)", group="SNAPSHOT OPTIONS", action="store_true", default=False),
             _option(("--description",), "snapshot description for create", group="SNAPSHOT OPTIONS", metavar="TEXT", type=_nonempty_text, default=None),
         ),
         examples=("./scp-api.py snapshots 799611", "./scp-api.py snapshots 799611 dryrun", "./scp-api.py snapshots 799611 create --name before-upgrade --yes"), mutating=True,

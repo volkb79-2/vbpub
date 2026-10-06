@@ -147,8 +147,10 @@ CALLS = {
     "iso-attached 42 detach --yes": [
         ("get", "tasks", {"serverId": 42, "state": "PENDING"}),
         ("get", "tasks", {"serverId": 42, "state": "RUNNING"}),
+        ("get", "tasks", {"serverId": 42, "state": "WAITING_FOR_CANCEL"}),
         ("delete", "servers/42/iso", None),
     ],
+    "iso-attached 42 detach --yes --ignore-active-tasks": [("delete", "servers/42/iso", None)],
     "iso-attached 42": [("get", "servers/42/iso", None)],
     "iso-attached": [("get", "servers", None), ("get", "servers/42/iso", None)],
     "iso-bootable 42": [("get", "servers/42/isoimages", None)],
