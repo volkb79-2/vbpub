@@ -178,3 +178,10 @@ Behaviours its direct tests pinned and where each is pinned now (`tests/test_run
 
 **Full suite (round 1, via `pt.py`, serial, flock/nice/ionice, PSI full avg60 0.00 before):** 3530 passed, 6 skipped, 0 failed;
 `--cov=cmru --cov-branch` TOTAL 11862 stmts / 5120 branches, 0 missed, 100%.
+
+**Lanes on image `tester-unified:cmru6-integ`** (`flock gate.lock nice -n 19 ./run-gate.py <lane>` from `cmru/`, tree clean, verdicts read in a separate step),
+at commit `2f03c240d`: `canary` PASS exit 0 (log `/tmp/run-gate/lanes/canary/882ff6f7dbde796f7967adcbc5b01cd7.log`); `coverage` PASS exit 0,
+3530 passed, 6 skipped, 100.00% (log `/tmp/run-gate/lanes/coverage/b60beeacd52973d6fdc7e9610471f2b4.log`).
+Two canary FAILs on the way, both lane-only and both in the new sibling requirement of `test_the_estate_scan_actually_finds_the_project_contracts`
+(the sparse snapshot has a bare `run-gate-project/` dir and only some siblings), fixed in `dc71f9dd6` and `2f03c240d`; the full suite and the
+coverage lane had passed before each. Not run: `mutation`, `assay`, `installed-wheel`, `gate` lanes. A final docs-only commit adds this paragraph.
