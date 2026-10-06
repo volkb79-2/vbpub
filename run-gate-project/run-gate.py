@@ -8961,8 +8961,13 @@ def _make_private_dir(repo: Path) -> tuple[Path, Path]:
     temp first (outside every mount); `<repo>/.run-gate` only when the temp
     area is not host-visible (a nested devcontainer). Returns (dir, physical)."""
     last = "no candidate directory"
-    for base in (Path(tempfile.gettempdir()), repo / ".run-gate"):
+    for fallback, base in ((False, Path(tempfile.gettempdir())),
+                           (True, repo / ".run-gate")):
         try:
+            if fallback:
+                # A fresh checkout has no `.run-gate` yet (RG-85); the fallback
+                # must create it rather than fail the lane.
+                base.mkdir(parents=True, exist_ok=True)
             made = Path(tempfile.mkdtemp(prefix="run-gate-gitcfg-", dir=base))
         except OSError as exc:
             last = str(exc)

@@ -24853,7 +24853,7 @@ class TestRgNarrowEdges:
     def test_private_dir_falls_back_when_system_temp_is_not_host_visible(
             self, tmp_path, monkeypatch):
         repo = tmp_path / "repo"
-        (repo / ".run-gate").mkdir(parents=True)
+        repo.mkdir()  # no `.run-gate` yet: the fallback must create it
         system_tmp = tmp_path / "systmp"
         system_tmp.mkdir()
         monkeypatch.setattr(run_gate.tempfile, "gettempdir",
@@ -24873,9 +24873,11 @@ class TestRgNarrowEdges:
             self, tmp_path, monkeypatch):
         monkeypatch.setattr(run_gate.tempfile, "gettempdir",
                             lambda: str(tmp_path / "missing-tmp"))
+        blocker = tmp_path / "a-file"
+        blocker.write_text("not a directory")
         with pytest.raises(run_gate.GateInfraError,
                            match="no host-visible private directory"):
-            run_gate._make_private_dir(tmp_path / "no-such-repo")
+            run_gate._make_private_dir(blocker / "repo")
 
     def test_relative_gitfile_resolves_to_the_admin_and_common_dirs(
             self, tmp_path):
