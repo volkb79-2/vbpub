@@ -35,7 +35,18 @@ Image contents worth knowing (KI-52 / BG-05, 2026-10):
   released 0.2.0 wheel; to bump, copy `url`/`sha256` from
   `cli-extended-latest/latest.json` into those defaults and rebuild).
   `--build-arg CLI_EXTENDED_RESOLVE=latest` is the explicit opt-in that reads the
-  pointer instead (add `--no-cache`). Redirects must stay https on a GitHub
+  pointer instead (add `--no-cache`).
+  `--build-arg CLI_EXTENDED_RESOLVE=local` is the ZERO-RELEASE path (three modes
+  in all: `pinned` default, `latest`, `local`; see `docs/BOOTSTRAP-FROM-ZERO.md`):
+  with no release to fetch, build the wheel with cmru's own wheel builder
+  (`CMRU_BOOTSTRAP_CLI_EXTENDED=source cmru/build-initial-standalone.sh` logs its
+  sha256 and leaves it in `libraries/cli-extended/dist/`), copy exactly that one
+  `cli_extended-*.whl` into `tester-unified/local-wheel/` (git-ignored) and pass
+  `--build-arg CLI_EXTENDED_WHEEL_SHA256=<that sha256>` (the existing arg). The
+  digest is checked with `sha256sum`, the wheel is installed `--no-index
+  --no-deps` before cmru, and the build asserts it carries a `+local` version
+  (pinned/latest assert the opposite). It is never a fallback: a missing release
+  in `pinned` mode simply fails. Redirects must stay https on a GitHub
   host. Either way it requires and verifies the sha256, and the wheel is installed
   `--no-index --no-deps` BEFORE cmru. cmru is built offline from the COPYed
   `cmru/` and `libraries/worktree/` sources (`pip wheel --no-index --no-deps

@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 import os
 import re
+import shutil
 import subprocess
 import sys
 import zipfile
@@ -131,6 +132,16 @@ def _bootstrap_tree(tmp_path: Path) -> dict[str, object]:
     python.write_text(
         "#!/bin/sh\n"
         'case "$*" in\n'
+        # Source mode: the cli-extended wheel-build call. The real handler needs docker (faked
+        # above), so this stand-in records the call and builds the same wheel with the real
+        # interpreter's pip; the handler's own contract (dist/ in --cwd) is what it reproduces.
+        '  *"-m cmru.handlers wheel-build --cwd "*"/libraries/cli-extended")\n'
+        '    lib="${*##*--cwd }"\n'
+        f'    {{ echo "CXB_ARGS=$*"; echo "CXB_PP=$PYTHONPATH"; echo "CXB_VERSION=$SETUPTOOLS_SCM_PRETEND_VERSION_FOR_CLI_EXTENDED"\n'
+        '      echo "CXB_EPOCH=$SOURCE_DATE_EPOCH"; echo "CXB_IMAGE=$CMRU_WHEEL_BUILDER_IMAGE"\n'
+        f'    }} > "{record}.cxbuild"\n'
+        f'    rm -rf "$lib/dist"; PYTHONNOUSERSITE=1 exec "{sys.executable}" -m pip wheel --no-deps --no-build-isolation '
+        '--no-index -q -w "$lib/dist" "$lib";;\n'
         '  *"-m cmru.handlers"*)\n'
         '    { echo "ARGS=$*"; echo "PP=$PYTHONPATH"; echo "EPOCH=$SOURCE_DATE_EPOCH"\n'
         '      second="$(echo "$PYTHONPATH" | cut -d: -f2)"\n'
@@ -158,6 +169,8 @@ def _bootstrap_tree(tmp_path: Path) -> dict[str, object]:
     }
     env.pop("CMRU_BOOTSTRAP_CLI_EXTENDED_WHEEL", None)
     env.pop("CMRU_BOOTSTRAP_CLI_EXTENDED_SHA256", None)
+    env.pop("CMRU_BOOTSTRAP_CLI_EXTENDED", None)
+    env.pop("CMRU_BOOTSTRAP_CLI_EXTENDED_SOURCE_VERSION", None)
     return {"repo_root": repo_root, "bootstrap": bootstrap, "record": record, "env": env}
 
 
@@ -171,7 +184,9 @@ def _run_bootstrap(tree) -> subprocess.CompletedProcess[str]:
 
 def _record(tree) -> dict[str, str]:
     return dict(
+        # `CX=` is the staged package's __init__: a real (multi-line) one has lines without `=`.
         line.split("=", 1) for line in Path(tree["record"]).read_text(encoding="utf-8").splitlines()
+        if "=" in line
     )
 
 
@@ -273,6 +288,140 @@ def test_bootstrap_stops_when_the_fetcher_cannot_deliver_a_wheel(tmp_path):
 
     assert result.returncode == 2
     assert "could not fetch the released cli-extended wheel" in result.stderr
+    assert "CMRU_BOOTSTRAP_CLI_EXTENDED=source" in result.stderr  # the zero-release path is named
+    assert not Path(tree["record"]).exists()
+
+
+# --- W3-ZERO Z1: the explicit zero-release source mode ---
+
+CX_LIB = REPO_ROOT / "libraries" / "cli-extended"
+_needs_build_tools = pytest.mark.skipif(
+    not CX_LIB.is_dir(), reason="repository-root library absent (isolated canary tree)",
+)
+
+
+def _with_source_library(tree) -> None:
+    """Give the throw-away tree the library inputs the source-mode build reads."""
+    root = tree["repo_root"]
+    (root / "tester-unified").mkdir(exist_ok=True)
+    library = root / "libraries" / "cli-extended"
+    library.mkdir(parents=True)
+    shutil.copy2(CX_LIB / "pyproject.toml", library / "pyproject.toml")
+    shutil.copy2(CX_LIB / "README.md", library / "README.md")
+    shutil.copytree(CX_LIB / "src", library / "src", ignore=shutil.ignore_patterns("__pycache__"))
+
+
+@_needs_build_tools
+def test_release_mode_with_no_release_fails_with_the_zero_release_hint_and_never_builds_from_source(tmp_path):
+    tree = _bootstrap_tree(tmp_path)
+    _with_source_library(tree)  # the source IS available: a silent fallback would use it
+    fetcher = tree["repo_root"] / "tester-unified" / "fetch-cli-extended.py"
+    fetcher.write_text("raise SystemExit('cannot read the release pointer: 404')\n", encoding="utf-8")
+
+    for env_extra in ({}, {"CMRU_BOOTSTRAP_CLI_EXTENDED": "release"}):
+        tree["env"].update(env_extra)
+        result = _run_bootstrap(tree)
+        assert result.returncode == 2
+        assert "CMRU_BOOTSTRAP_CLI_EXTENDED=source" in result.stderr
+        assert "could not fetch the released cli-extended wheel" in result.stderr
+        # NO silent fallback: nothing was built, nothing was launched.
+        assert "source wheel sha256" not in result.stderr
+        assert not Path(tree["record"]).exists()
+
+
+@_needs_build_tools
+def test_source_mode_builds_the_wheel_offline_logs_its_sha256_and_stages_it(tmp_path):
+    tree = _bootstrap_tree(tmp_path)
+    _with_source_library(tree)
+    tree["env"]["CMRU_BOOTSTRAP_CLI_EXTENDED"] = "source"
+
+    result = _run_bootstrap(tree)
+
+    lines = _record(tree)
+    library = tree["repo_root"] / "libraries" / "cli-extended"
+    (built,) = list((library / "dist").glob("cli_extended-*.whl"))
+    digest = hashlib.sha256(built.read_bytes()).hexdigest()
+    # The run log records the digest of exactly the built wheel, and its +local version.
+    assert f"cli-extended source wheel sha256={digest} file=cli_extended-0.2.0+bootstrap.source-py3-none-any.whl" \
+        in result.stderr, result.stderr
+    assert built.name == "cli_extended-0.2.0+bootstrap.source-py3-none-any.whl"
+    # It was built by cmru's own wheel-build handler, with the pretend version and the builder image.
+    build = dict(line.split("=", 1) for line in Path(f"{tree['record']}.cxbuild").read_text("utf-8").splitlines())
+    assert build["CXB_ARGS"].startswith("-s -m cmru.handlers wheel-build --cwd ")
+    assert build["CXB_VERSION"] == "0.2.0+bootstrap.source" and build["CXB_IMAGE"] == "wheel-builder:test"
+    # The library source is on the path for THAT step only ...
+    assert str(library / "src") in build["CXB_PP"].split(os.pathsep)
+    # ... and the cmru wheel build uses the staged wheel like any other mode.
+    roots = lines["PP"].split(os.pathsep)
+    assert str(library / "src") not in roots
+    assert not Path(roots[1]).exists()  # staging does not outlive the script
+
+
+@_needs_build_tools
+def test_the_real_registry_builds_in_a_bare_interpreter_with_the_source_built_wheel(tmp_path):
+    # No release anywhere: no fetcher, no wheel env. Only the checkout's library.
+    tree = _bootstrap_tree(tmp_path)
+    _with_source_library(tree)
+    probe_out = tmp_path / "probe.txt"
+    tree["env"].update(
+        CMRU_BOOTSTRAP_CLI_EXTENDED="source",
+        CMRU_TEST_PROBE_PY=str(_bare_interpreter()),
+        CMRU_TEST_PROBE_OUT=str(probe_out),
+        CMRU_TEST_PROBE_CODE=_PROBE.format(
+            src=str(PROJECT_DIR / "src"), worktree=str(REPO_ROOT / "libraries" / "worktree" / "src"),
+        ) + 'print("CXV=" + metadata.version("cli-extended"))\n',
+    )
+    for name in ("SETUPTOOLS_SCM_PRETEND_VERSION", "SETUPTOOLS_SCM_PRETEND_VERSION_FOR_CMRU", "PYTHONPATH"):
+        tree["env"].pop(name, None)
+
+    _run_bootstrap(tree)
+
+    raw = probe_out.read_text(encoding="utf-8") if probe_out.exists() else ""
+    lines = dict(line.split("=", 1) for line in raw.splitlines() if "=" in line)
+    assert lines.get("DIST") == "1.2.3" and lines.get("IDENTITY") == "1.2.3", raw
+    assert lines.get("CXV") == "0.2.0+bootstrap.source", raw
+    assert "site-packages" not in lines["CX"] and "libraries" not in lines["CX"], raw
+
+
+@_needs_build_tools
+def test_source_mode_version_is_overridable_and_must_be_a_local_version(tmp_path):
+    tree = _bootstrap_tree(tmp_path)
+    _with_source_library(tree)
+    tree["env"].update(CMRU_BOOTSTRAP_CLI_EXTENDED="source", CMRU_BOOTSTRAP_CLI_EXTENDED_SOURCE_VERSION="0.2.0")
+
+    result = _run_bootstrap(tree)
+
+    assert result.returncode == 2
+    assert "+local" in result.stderr or "X.Y.Z+local" in result.stderr
+    assert not Path(tree["record"]).exists()
+
+
+def test_source_mode_cannot_be_combined_with_a_supplied_wheel(tmp_path):
+    tree = _bootstrap_tree(tmp_path)
+    wheel, digest = _toy_wheel(tmp_path / "release")
+    tree["env"].update(
+        CMRU_BOOTSTRAP_CLI_EXTENDED="source",
+        CMRU_BOOTSTRAP_CLI_EXTENDED_WHEEL=str(wheel), CMRU_BOOTSTRAP_CLI_EXTENDED_SHA256=digest,
+    )
+
+    result = _run_bootstrap(tree)
+
+    assert result.returncode == 2 and "cannot be combined" in result.stderr
+    assert not Path(tree["record"]).exists()
+
+
+def test_a_wheel_path_mode_value_is_verified_by_sha256_like_the_wheel_variable(tmp_path):
+    tree = _bootstrap_tree(tmp_path)
+    wheel, digest = _toy_wheel(tmp_path / "release")
+    tree["env"].update(CMRU_BOOTSTRAP_CLI_EXTENDED=str(wheel), CMRU_BOOTSTRAP_CLI_EXTENDED_SHA256=digest)
+
+    _run_bootstrap(tree)
+    assert _record(tree)["CX"] == "MARKER = 'released-wheel'"
+
+    Path(tree["record"]).unlink()
+    tree["env"]["CMRU_BOOTSTRAP_CLI_EXTENDED_SHA256"] = "0" * 64
+    result = _run_bootstrap(tree)
+    assert result.returncode == 2 and "sha256 mismatch" in result.stderr
     assert not Path(tree["record"]).exists()
 
 

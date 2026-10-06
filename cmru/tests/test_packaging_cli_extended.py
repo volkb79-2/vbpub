@@ -89,7 +89,7 @@ def test_no_checkout_skill_tree_duplicates_the_packaged_skill():
 # --- gate/bootstrap configuration -------------------------------------------
 
 @pytest.mark.parametrize("relative", [
-    "run-gate.toml", "assay.toml", "cmru.toml", "build-initial-standalone.sh",
+    "run-gate.toml", "assay.toml", "cmru.toml",
     "tools/run_release_gate.py", "tools/project_fixture.py",
 ])
 def test_no_gate_or_bootstrap_config_puts_cli_extended_source_on_a_path(relative):
@@ -99,6 +99,20 @@ def test_no_gate_or_bootstrap_config_puts_cli_extended_source_on_a_path(relative
     # The split path form (`REPOSITORY_ROOT / "libraries" / "cli-extended" / "src"`),
     # which the literal greps above cannot see: "cli-extended" as a path component.
     assert not re.search(r"""["']/?cli[-_]extended/?["']""", code), relative
+
+
+def test_bootstrap_names_the_library_checkout_only_as_the_source_mode_build_input():
+    """W3-ZERO Z1: the bootstrap's explicit `source` mode BUILDS a wheel from the
+    library checkout (--source), but never puts that tree on an import path."""
+    code = _code_lines(PROJECT / "build-initial-standalone.sh")
+    assert "cli-extended/src" not in code and "cli_extended/src" not in code
+    assert not re.search(r"""["']/?cli[-_]extended/?["']""", code)
+    lines = [line for line in code.splitlines() if CX_LIBRARY in line]
+    assert len(lines) == 1 and lines[0].lstrip().startswith("cli_extended_library="), lines
+    # The library source reaches PYTHONPATH exactly once: the explicit source-mode build subshell.
+    on_path = [line for line in code.splitlines() if "cli_extended_library}/src" in line]
+    assert len(on_path) == 1 and "export PYTHONPATH" in on_path[0], on_path
+    assert code.index(on_path[0]) > code.index('"${cli_extended_mode}" == "source" ]]; then\n    cli_extended_library')
 
 
 def test_every_gate_pythonpath_keeps_the_worktree_root_only():
