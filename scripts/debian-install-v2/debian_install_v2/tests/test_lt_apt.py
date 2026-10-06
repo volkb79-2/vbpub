@@ -48,7 +48,7 @@ def test_only_one_source_call_site_builds_an_apt_get_argv():
     _apt_get helper, so no call site can bypass the lock option."""
     source = Path(installer_module.__file__).read_text(encoding="utf-8")
     assert source.count('"/usr/bin/apt-get"') == 1
-    assert 'argv = ["/usr/bin/apt-get", *APT_LOCK_OPTION, *args]' in source
+    assert 'self._run_lock_retry(["/usr/bin/apt-get", *APT_LOCK_OPTION, *args]' in source
 
 
 def test_notify_only_check_script_waits_for_the_lock():

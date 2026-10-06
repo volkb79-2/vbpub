@@ -491,7 +491,10 @@ class Installer:
         """The single place the installer invokes apt-get: always with the dpkg
         lock timeout, and with one bounded retry when the failure is lock
         contention (see APT_LOCK_* above). Other failures raise immediately."""
-        argv = ["/usr/bin/apt-get", *APT_LOCK_OPTION, *args]
+        return self._run_lock_retry(["/usr/bin/apt-get", *APT_LOCK_OPTION, *args], description, dangerous)
+
+    def _run_lock_retry(self, argv: list[str], description: str, dangerous: bool = False) -> str:
+        """Run ``argv``; on apt/dpkg lock contention retry (bounded, see APT_LOCK_*)."""
         for attempt in range(1, APT_LOCK_RETRY_ATTEMPTS + 1):
             try:
                 return self._run(argv, description, dangerous=dangerous)
@@ -769,6 +772,15 @@ MaxFileSec=1month
         )
 
     def _unattended_upgrade_origins(self) -> list[str]:
+        """Origins-Pattern lines, each verified against the published Release
+        fields (see tests/test_lt_upg.py RELEASE_STANZAS):
+
+        * main / -updates / -security / testing / unstable Release files all
+          say ``Origin: Debian``; security has ``Label: Debian-Security``.
+        * trixie-backports says ``Origin: Debian Backports`` (NOT ``Debian``)
+          -- LT-F-v1001-10: ``origin=Debian,codename=trixie-backports`` never
+          matched, so unattended-upgrades never considered backports.
+        """
         release = self.release
         security = [
             f'    "origin=Debian,codename={release},label=Debian-Security";',
@@ -779,7 +791,7 @@ MaxFileSec=1month
         return security + [
             f'    "origin=Debian,codename={release}";',
             f'    "origin=Debian,codename={release}-updates";',
-            f'    "origin=Debian,codename={release}-backports";',
+            f'    "origin=Debian Backports,codename={release}-backports";',
             '    "origin=Debian,suite=testing";',
             '    "origin=Debian,suite=unstable";',
         ]
@@ -799,13 +811,107 @@ MaxFileSec=1month
         origins = self._unattended_upgrade_origins()
         self.actions.write_file(
             "/etc/apt/apt.conf.d/51-vbpub-unattended-upgrades",
-            UNATTENDED_UPGRADES_CONFIG.format(mode=self.config.apt_auto_upgrade_mode, origins="\n".join(origins)),
+            UNATTENDED_UPGRADES_CONFIG.format(
+                mode=self.config.apt_auto_upgrade_mode,
+                origins="\n".join(origins),
+                lock_timeout=APT_LOCK_TIMEOUT_S,
+            ),
         )
         self.actions.write_file("/etc/apt/apt.conf.d/20auto-upgrades", APT_PERIODIC_CONFIG)
         self.actions.write_file("/etc/needrestart/conf.d/vbpub.conf", NEEDRESTART_CONFIG)
         # Timers are NOT started here (LT-F-r1002-01): see _hold_apt_timers().
         self._hold_apt_timers()
         self._mark_step("apt_auto_upgrade", "success", self.config.apt_auto_upgrade_mode)
+
+    # --- LT-UPG: one unattended-upgrade run during stage1 ------------------
+
+    _BOOT_DIR = Path("/boot")
+    _UU_UPGRADED_RE = re.compile(r"Packages that will be upgraded:[ \t]*(.*)")
+
+    @staticmethod
+    def _kernel_key(release: str) -> tuple[int, ...]:
+        """Sort key for kernel release strings ('7.2.6+deb13-amd64' > '6.12.111+deb13-amd64')."""
+        return tuple(int(n) for n in re.findall(r"\d+", release))
+
+    def _running_kernel(self) -> str:
+        return platform.release()
+
+    def _boot_kernel(self) -> str:
+        """The kernel GRUB boots next: the highest installed /boot/vmlinuz-*.
+        Falls back to the running kernel when none is visible."""
+        names = [p.name[len("vmlinuz-"):] for p in self._BOOT_DIR.glob("vmlinuz-*")]
+        names = [n for n in names if re.search(r"\d", n)]
+        return max(names, key=self._kernel_key) if names else self._running_kernel()
+
+    def _upgrade_at_install(self) -> None:
+        """Run unattended-upgrade ONCE now (stage1), instead of waiting for the
+        first daily timer. Called after the apt sources, pins and the
+        unattended-upgrades config are written and BEFORE _plan_root_shrink()
+        and the stage1 reboot: that reboot then boots any new kernel (no
+        extra reboot), and -- because the root-shrink hook is installed after
+        the upgrade and ends in `update-initramfs -u -k all` -- every kernel
+        the upgrade installed gets the hook in its initramfs.
+
+        The unattended-upgrades config written by _configure_apt_auto_upgrade
+        already encodes the mode (security-only -> security origins only;
+        full -> every origin incl. backports); this step just runs it. A
+        failed run is recorded and reported but does not abort the install.
+        """
+        step = "apt_upgrade_at_install"
+        mode = self.config.apt_auto_upgrade_mode
+        if not self.config.run_apt_auto_upgrade:
+            self._mark_step(step, "skipped", "run_apt_auto_upgrade is off")
+            return
+        if not self.config.apt_upgrade_at_install:
+            self._mark_step(step, "skipped", "apt_upgrade_at_install is off")
+            return
+        if mode == "notify-only":
+            out = self._apt_get(["-s", "full-upgrade"], "count pending upgrades (simulation only)")
+            pending = sum(1 for line in out.splitlines() if line.startswith("Inst "))
+            self._mark_step(step, "skipped", f"notify-only: nothing installed; {pending} package(s) pending")
+            self._upgrade_summary = f"apt upgrade skipped (notify-only): {pending} package(s) pending"
+            return
+        before = self._running_kernel()
+        try:
+            out = self._run_lock_retry(
+                ["/usr/bin/unattended-upgrade", "-v"],
+                f"install-time unattended-upgrade ({mode})", dangerous=True,
+            )
+        except ActionError as exc:
+            detail = f"{mode}: unattended-upgrade failed: {str(exc).splitlines()[0]}"
+            self._mark_step(step, "failed", detail)
+            self._upgrade_summary = f"apt upgrade FAILED ({mode}), install continued"
+            return
+        matches = self._UU_UPGRADED_RE.findall(out)
+        count = len(matches[-1].split()) if matches else 0
+        after = self._boot_kernel()
+        detail = f"{mode}: {count} package(s) upgraded; kernel {before} -> {after}"
+        if after != before:
+            if self.config.never_reboot or not self.config.auto_reboot_after_stage1:
+                note = "reboot required for the new kernel (reboot disabled by configuration)"
+            else:
+                note = "the new kernel boots on the stage1 reboot"
+            detail += f"; {note}"
+        self._mark_step(step, "success", detail)
+        self._upgrade_summary = f"apt upgrade {detail}"
+
+    #: One-line outcome of _upgrade_at_install(), appended to the single
+    #: stage1-complete post (Mattermost/Telegram) rather than posted on its own
+    #: -- keeps one post per milestone.
+    _upgrade_summary = ""
+
+    # Hook name as it appears in `lsinitramfs` (scripts/local-premount/<name>).
+    _SHRINK_HOOK_NAME = "vbpub-root-shrink"
+
+    def _initramfs_hook_state(self) -> dict[str, bool]:
+        """{initrd image name: contains the root-shrink hook} for EVERY installed kernel."""
+        result: dict[str, bool] = {}
+        for image in sorted(self._BOOT_DIR.glob("initrd.img-*")):
+            if image.suffix in {".dpkg-bak", ".new", ".bak"}:
+                continue
+            listing = self._run(["/usr/bin/lsinitramfs", str(image)], f"list contents of {image.name}")
+            result[image.name] = self._SHRINK_HOOK_NAME in listing
+        return result
 
     _APT_TIMERS = ("apt-daily.timer", "apt-daily-upgrade.timer")
 
@@ -1487,6 +1593,14 @@ MaxFileSec=1month
             ["/usr/sbin/update-initramfs", "-u", "-k", "all"],
             "rebuild initramfs with the root-shrink hook", dangerous=True,
         )
+        # LT-UPG: a hookless initrd on ANY kernel GRUB might pick is the r1002
+        # silent no-op again -- verify every image, fail the install loudly.
+        if not self.actions.dry_run:
+            missing = [name for name, has in self._initramfs_hook_state().items() if not has]
+            if missing:
+                raise InstallerError(
+                    "root-shrink hook missing from initramfs of: " + ", ".join(missing)
+                )
         self._mark_step(
             "root_shrink", "planned",
             f"target root {target_root_sectors} sectors (was {root_size}); hook installed",
@@ -1553,7 +1667,14 @@ MaxFileSec=1month
                 ["/usr/sbin/update-initramfs", "-u", "-k", "all"],
                 "rebuild initramfs without the root-shrink hook", dangerous=True,
             )
-            self._mark_step("root_shrink", "success", f"root shrunk to {root_size} sectors (target {target_sectors})")
+            detail = f"root shrunk to {root_size} sectors (target {target_sectors})"
+            if not self.actions.dry_run:
+                stale = [name for name, has in self._initramfs_hook_state().items() if has]
+                if stale:
+                    # Harmless (the hook no-ops once root is at target) but untidy: report, don't fail.
+                    detail += f"; WARNING hook still in initramfs of: {', '.join(stale)}"
+                    _LOG.warning("root-shrink hook still in initramfs of: %s", ", ".join(stale))
+            self._mark_step("root_shrink", "success", detail)
             return True
         self._mark_step("root_shrink", "failed", f"root is still {root_size} sectors, target was {target_sectors}")
         # No _notify() here: this raises, and resume()'s own except block already
@@ -2600,10 +2721,15 @@ MaxFileSec=1month
         if self.config.never_reboot or not self.config.auto_reboot_after_stage1:
             # state.mark_step (silent): the explicit warn notification below is
             # the informative post; _mark_step would duplicate it in verbose mode.
-            self.state.mark_step("reboot", "deferred", "disabled by configuration")
+            self.state.mark_step(
+                "reboot", "deferred",
+                "disabled by configuration" + (f"; {self._upgrade_summary}" if self._upgrade_summary else ""),
+            )
+            kernel = f" ({self._upgrade_summary})" if self._upgrade_summary else ""
             self._notify(
-                "<b>Stage1 complete.</b> Reboot is disabled by configuration - stage2 requires a manual resume.",
-                event="complete; reboot disabled, stage2 needs a manual resume", status="warn",
+                "<b>Stage1 complete.</b> Reboot is disabled by configuration - stage2 requires a manual resume."
+                + kernel,
+                event="complete; reboot disabled, stage2 needs a manual resume" + kernel, status="warn",
             )
             return
         self._mark_step(
@@ -2613,9 +2739,10 @@ MaxFileSec=1month
         # The "scheduled" step post (with the delay detail) is the informative
         # one in verbose mode; the milestone post is sent only when it is silent.
         if not self.config.telegram_verbose_progress:
+            summary = f" ({self._upgrade_summary})" if self._upgrade_summary else ""
             self._notify(
-                "<b>Stage1 complete.</b> Rebooting into stage2.",
-                event="complete; rebooting into stage2", status="ok",
+                "<b>Stage1 complete.</b> Rebooting into stage2." + summary,
+                event="complete; rebooting into stage2" + summary, status="ok",
             )
         # systemd-run schedules a transient, detached unit and returns
         # immediately -- this process (and the customScript/cloud-init
@@ -2737,6 +2864,8 @@ MaxFileSec=1month
                 self._configure_docker_cleanup()
         if self.config.run_apt_auto_upgrade:
             self._configure_apt_auto_upgrade()
+        # LT-UPG: upgrade BEFORE the root-shrink hook install and the reboot.
+        self._upgrade_at_install()
         self._plan_root_shrink()
         self._install_stage2()
         self._reboot()

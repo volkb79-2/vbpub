@@ -179,6 +179,7 @@ _BOOL_FIELDS = {
     "RUN_FSTRIM": "run_fstrim",
     "RUN_DOCKER_CLEANUP": "run_docker_cleanup",
     "RUN_APT_AUTO_UPGRADE": "run_apt_auto_upgrade",
+    "APT_UPGRADE_AT_INSTALL": "apt_upgrade_at_install",
     "RUN_AUTO_REBOOT": "run_auto_reboot",
     "TELEGRAM_VERBOSE_PROGRESS": "telegram_verbose_progress",
     "RETAIN_CONTROLLER_SSH_KEY": "retain_controller_ssh_key",

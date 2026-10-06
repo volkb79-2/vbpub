@@ -99,6 +99,7 @@ WIZARD_SECTIONS = (
         "Updates and reboot window",
         (
             WizardField("apt_auto_upgrade_mode", "Automatic-upgrade mode", "choice", ("full", "security-only", "notify-only")),
+            WizardField("apt_upgrade_at_install", "Run one unattended upgrade during the install (before the stage1 reboot)?", "boolean"),
             WizardField("reboot_window_time", "Preferred reboot window (24-hour HH:MM)"),
         ),
     ),

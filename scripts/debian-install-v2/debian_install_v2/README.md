@@ -103,4 +103,9 @@ security 550, stable and stable-updates 500, oldstable/oldstable-backports and
 testing 100 (visible, never chosen by default), unstable 50. `apt_auto_upgrade_mode`
 `full` covers all pinned origins, `security-only` just the security origin, and
 `notify-only` installs nothing and reports the pending count via `vbpub-notify`.
+`apt_upgrade_at_install` (default true) runs `unattended-upgrade -v` once in
+stage1, after the sources/pins/config are written and before the root-shrink
+hook and the stage1 reboot, so a new (backports) kernel boots on that reboot;
+`security-only` takes security only, `notify-only` and `run_apt_auto_upgrade=false`
+skip it (notify-only reports the pending count). Env var: `APT_UPGRADE_AT_INSTALL`.
 Package-manager `Automatic-Reboot` stays off; `run_auto_reboot` owns rebooting.

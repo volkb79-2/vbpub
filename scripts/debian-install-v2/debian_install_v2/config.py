@@ -102,6 +102,11 @@ class Config:
         default_factory=lambda: [{"base": "10.240.0.0/16", "size": 24}]
     )
     apt_auto_upgrade_mode: Literal["full", "security-only", "notify-only"] = "full"
+    # LT-UPG: run unattended-upgrade once during stage1 (before the stage1
+    # reboot, so a new kernel boots then) instead of waiting for the first
+    # daily timer. Honors apt_auto_upgrade_mode; no effect when
+    # run_apt_auto_upgrade is false or the mode is notify-only (count only).
+    apt_upgrade_at_install: bool = True
     reboot_window_time: str = "03:00"
     telegram_bot_token: str = field(default="", repr=False)
     telegram_chat_id: str = field(default="", repr=False)

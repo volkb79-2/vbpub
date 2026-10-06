@@ -40,7 +40,8 @@ _APT_LOCK_TIMEOUT_RE = re.compile(r"DPkg::Lock::Timeout=[0-9]{1,5}")
 
 _SAFE_COMMANDS = {
     "apt-cache": {"policy"},
-    "apt-get": {"update", "install", "upgrade"},
+    # full-upgrade/-s: the notify-only install-time pending count (simulation).
+    "apt-get": {"update", "install", "upgrade", "full-upgrade"},
     "bash": {"-c"},
     "blkid": set(),
     "blockdev": {"--getsize64", "--rereadpt"},
@@ -60,6 +61,8 @@ _SAFE_COMMANDS = {
     # io.cost benchmark's throwaway partition (installer._run_io_benchmark).
     "iocost_coef_gen.py": {"--testfile", "--testfile-size-gb", "--duration", "--quiet"},
     "lsblk": {"-no", "-o"},
+    # LT-UPG: list an initrd's contents to verify the root-shrink hook is in it.
+    "lsinitramfs": set(),
     "lspci": set(),
     "mkdir": {"-p"},
     "mkfs.ext4": {"-F", "-q", "-O", "-L"},
@@ -97,6 +100,8 @@ _SAFE_COMMANDS = {
     "tee": {"-a"},
     "udevadm": {"settle", "trigger"},
     "umount": {"-v"},  # non-empty: any other option (-f, -l) is refused
+    # LT-UPG: the single install-time upgrade run (lock wait comes from apt config).
+    "unattended-upgrade": {"-v"},
     "update-grub": set(),
     "update-initramfs": {"-u", "-k"},
     "wget": {"-q"},
@@ -166,7 +171,7 @@ class HostActions:
             return None
         if timeout is None:
             # apt-get never prompts (dpkg conffile / debconf / needrestart).
-            extra = {"env": {**os.environ, "DEBIAN_FRONTEND": "noninteractive"}} if Path(argv[0]).name == "apt-get" else {}
+            extra = {"env": {**os.environ, "DEBIAN_FRONTEND": "noninteractive"}} if Path(argv[0]).name in {"apt-get", "unattended-upgrade"} else {}
             result = subprocess.run(
                 argv,
                 **extra,

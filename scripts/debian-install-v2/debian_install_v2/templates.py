@@ -631,6 +631,10 @@ Unattended-Upgrade::Origins-Pattern {{
 Unattended-Upgrade::Remove-Unused-Dependencies "true";
 Unattended-Upgrade::Remove-Unused-Kernel-Packages "true";
 Unattended-Upgrade::Automatic-Reboot "false";
+// LT-UPG: the install-time `unattended-upgrade -v` run has no -o switch, so
+// the dpkg frontend-lock wait comes from apt config (same value the installer
+// passes to its own apt-get calls). dpkg is invoked via apt-pkg, which honors it.
+DPkg::Lock::Timeout "{lock_timeout}";
 """
 
 APT_PERIODIC_CONFIG = """\
