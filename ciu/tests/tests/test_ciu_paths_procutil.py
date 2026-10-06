@@ -225,6 +225,10 @@ class TestRunCmdSuccess:
         result = run_cmd(["echo", "hello"])
         assert "hello" in result.stdout
 
+    def test_cwd_is_passed_to_subprocess(self, tmp_path: Path) -> None:
+        result = run_cmd(["pwd"], cwd=str(tmp_path))
+        assert result.stdout.strip() == str(tmp_path)
+
     def test_check_true_on_success_no_raise(self) -> None:
         result = run_cmd(["true"], check=True)
         assert result.returncode == 0

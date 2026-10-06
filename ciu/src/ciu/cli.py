@@ -460,8 +460,7 @@ ciu status [--profile NAME] [--json]
                    document instead of one line per stack
 """,
     "bake": """\
-ciu bake [targets ...] [--no-cache]
-ciu bake --profile NAME [--no-cache]
+ciu bake [targets ...] [--profile NAME] [--no-cache] [--allow-shared-tag]
   Thin wrapper over `docker buildx bake --load`. No targets, no --profile →
   bake `all`. With --profile, the target list instead comes from the SAME
   resolution chain `ciu up --profile` uses (host profile -> selected stacks
@@ -474,6 +473,8 @@ ciu bake --profile NAME [--no-cache]
                    (repeatable; comma-separated forms accepted, same as
                    `ciu status`/`ciu up`)
   --no-cache       pass --no-cache to buildx
+  --allow-shared-tag
+                   allow a linked-worktree bake to write shared image tags
 """,
     "dev": """\
 ciu dev <stack> [--profile NAME] [--no-prebuild]
@@ -1398,10 +1399,11 @@ def _bake(rest: list[str]) -> int:
     """Handle `ciu bake [targets ...] [--no-cache]` / `ciu bake --profile
     NAME [--no-cache]` (CIU-QOL-7).
 
-    No `--profile`: byte-identical to the pre-existing v1 behaviour --- raw
-    positional targets go straight to `docker buildx bake --load`
-    (defaulting to `all` when none are given). This is an ADDITIVE flag, not
-    a replacement, so that path is untouched here.
+    No `--profile`: raw positional targets go straight to `docker buildx bake
+    --load` (defaulting to `all` when none are given), with linked-worktree
+    image isolation applied when CIU can resolve its generated identity. A
+    linked Git checkout without a CIU root is refused because it cannot be
+    safely distinguished from the primary image owner.
 
     With `--profile`, the target list instead comes from the SAME chain
     `ciu up --profile` uses (`load_global_config` -> `resolve_profiles` ->
@@ -1421,7 +1423,10 @@ def _bake(rest: list[str]) -> int:
     from .engine import bake_revision_args
 
     no_cache = "--no-cache" in rest
-    positional = [a for a in rest if a != "--no-cache"]
+    allow_shared_tag = "--allow-shared-tag" in rest
+    positional = [
+        a for a in rest if a not in {"--no-cache", "--allow-shared-tag"}
+    ]
 
     has_profile_flag = any(
         a == "--profile" or a.startswith("--profile=") for a in positional
@@ -1468,13 +1473,150 @@ def _bake(rest: list[str]) -> int:
     else:
         targets = positional
 
+    # A primary checkout keeps its historical Buildx argv. A linked checkout
+    # scopes every tagged Bake output using the exact resolved Bake plan, so
+    # target aliases and consumer-defined Bake files remain intact.
+    suffix: str | None = None
+    candidate_root = repo_root if has_profile_flag else None
+    try:
+        from . import worktree
+        from .dev import resolve_repo_root
+
+        if candidate_root is None:
+            try:
+                candidate_root = resolve_repo_root(None, Path.cwd())
+            except ValueError as root_error:
+                if not allow_shared_tag:
+                    try:
+                        linked_without_root = _bake_is_linked_checkout_without_ciu_root(
+                            Path.cwd()
+                        )
+                    except ValueError as identity_error:
+                        print(f"[ERROR] ciu bake: {identity_error}", file=sys.stderr)
+                        return 2
+                    if linked_without_root:
+                        print(
+                            "[ERROR] ciu bake: [CIU-117] this is a linked Git "
+                            "worktree without a CIU root, so its image identity "
+                            "cannot be resolved; refusing an unscoped Bake. "
+                            f"The CIU root lookup failed: {root_error}",
+                            file=sys.stderr,
+                        )
+                        return 2
+                candidate_root = None
+        if candidate_root is not None:
+            suffix = worktree.resolve_worktree_image_tag_suffix(
+                candidate_root,
+                allow_shared_tag=allow_shared_tag,
+            )
+    except (RuntimeError, ValueError) as exc:
+        print(f"[ERROR] ciu bake: {exc}", file=sys.stderr)
+        return 2
+
+    scoped_overrides: list[str] = []
+    if suffix is not None:
+        from .image_isolation import (
+            ImageIsolationError,
+            bake_scoped_tags,
+            bake_tag_overrides,
+            check_primary_image_collisions,
+        )
+
+        targets_for_print = targets or ["all"]
+        try:
+            preview = subprocess.run(
+                ["docker", "buildx", "bake", *targets_for_print, "--print"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        except OSError as exc:
+            print(
+                f"[ERROR] ciu bake: could not resolve Buildx image tags: {exc}",
+                file=sys.stderr,
+            )
+            return 2
+        if preview.returncode != 0:
+            if preview.stderr:
+                print(preview.stderr, file=sys.stderr, end="")
+            return preview.returncode
+        try:
+            scoped_tags = bake_scoped_tags(preview.stdout, suffix)
+            if scoped_tags:
+                from .deploy import resolve_primary_image_references
+
+                primary_tags = resolve_primary_image_references(candidate_root)
+                check_primary_image_collisions(scoped_tags, primary_tags)
+            scoped_overrides = bake_tag_overrides(preview.stdout, suffix)
+        except (ImageIsolationError, RuntimeError, ValueError) as exc:
+            detail = str(exc)
+            if not detail.startswith("[CIU-117]"):
+                detail = f"[CIU-117] {detail}"
+            print(f"[ERROR] ciu bake: {detail}", file=sys.stderr)
+            return 2
+    elif allow_shared_tag:
+        print(
+            "[WARN] [CIU-117] --allow-shared-tag was supplied; this Bake uses "
+            "the declared tags without worktree scoping.",
+            file=sys.stderr,
+        )
+
     cmd = ["docker", "buildx", "bake"] + (targets or ["all"]) + ["--load"]
     # Provenance: stamp the source revision so a running container can be
     # traced back to the commit it was built from (engine.bake_revision_args).
     cmd += bake_revision_args()
+    cmd += scoped_overrides
     if no_cache:
         cmd.append("--no-cache")
     return subprocess.call(cmd)
+
+
+def _bake_is_linked_checkout_without_ciu_root(start: Path) -> bool:
+    """Classify a rootless Bake invocation without guessing Git ownership.
+
+    A standalone source tree or the primary checkout can keep legacy Bake
+    behavior without a CIU root. A linked checkout cannot: there is no
+    generated identity with which to isolate image tags. Broken or ambiguous
+    Git inventory is therefore a refusal rather than an unscoped build.
+    """
+    from . import worktree
+    from .workspace import CiuWorkspaceError, resolve_worktree_git_root
+
+    start = Path(start).resolve()
+    try:
+        git_root = resolve_worktree_git_root(start)
+    except CiuWorkspaceError as exc:
+        try:
+            has_git_marker = any(
+                (parent / ".git").exists() or (parent / ".git").is_symlink()
+                for parent in (start, *start.parents)
+            )
+        except OSError as marker_error:
+            raise ValueError(
+                f"[CIU-117] cannot determine Git ownership for {start}: {marker_error}"
+            ) from marker_error
+        if has_git_marker:
+            raise ValueError(
+                f"[CIU-117] cannot resolve Git ownership for {start}; "
+                "refusing an unscoped Bake"
+            ) from exc
+        return False
+
+    try:
+        entries = worktree.list_worktrees(git_root)
+    except (RuntimeError, ValueError) as exc:
+        raise ValueError(
+            f"[CIU-117] cannot inspect Git worktree ownership for {git_root}; "
+            "refusing an unscoped Bake"
+        ) from exc
+    current = [entry for entry in entries if entry.path.resolve() == git_root.resolve()]
+    primaries = [entry for entry in entries if entry.is_primary]
+    if len(current) != 1 or len(primaries) != 1:
+        raise ValueError(
+            f"[CIU-117] cannot identify exactly one current and primary Git "
+            f"worktree for {git_root}; refusing an unscoped Bake"
+        )
+    return not current[0].is_primary
 
 
 def _worktree_exec(rest: list[str], resolve_repo_root) -> int:

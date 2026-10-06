@@ -13,9 +13,25 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
-from ciu import activate, cli, diagnose, governance, provisioning, transport_ssh
+from ciu import (
+    activate,
+    cli,
+    diagnose,
+    governance,
+    provisioning,
+    transport_ssh,
+    worktree,
+    workspace,
+)
 from ciu.deploy_pkg import registry
 from ciu.secrets.directives import parse_value
+
+
+@pytest.fixture(autouse=True)
+def _keep_legacy_bake_test_on_the_primary_contract(monkeypatch):
+    monkeypatch.setattr(
+        worktree, "resolve_worktree_image_tag_suffix", lambda *_a, **_kw: None
+    )
 
 
 def test_module_entrypoint_calls_cli_main(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -55,6 +71,19 @@ def test_activation_without_remaining_arguments_has_no_trailing_space(
 
 
 def test_bake_without_no_cache_omits_flag_and_propagates_exit(monkeypatch: pytest.MonkeyPatch) -> None:
+    # This test checks argv and child-status propagation for the legacy
+    # primary-checkout path. Rootless linked-checkout refusal is covered by
+    # the CIU-117-specific tests; make this ownership fact explicit instead
+    # of depending on the gate container's Git mount paths.
+    primary = Path.cwd().resolve()
+    monkeypatch.setattr(
+        workspace, "resolve_worktree_git_root", lambda _start: primary
+    )
+    monkeypatch.setattr(
+        worktree,
+        "list_worktrees",
+        lambda _root: [SimpleNamespace(path=primary, is_primary=True)],
+    )
     captured: list[list[str]] = []
     monkeypatch.setattr(cli.subprocess, "call", lambda argv: captured.append(argv) or 9)
     monkeypatch.setattr(sys, "argv", ["ciu", "bake", "api"])

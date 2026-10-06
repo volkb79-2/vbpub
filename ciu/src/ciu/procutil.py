@@ -25,6 +25,7 @@ def run_cmd(
     timeout: float | None = None,
     check: bool = False,
     env: dict | None = None,
+    cwd: str | None = None,
     capture: bool = True,
     input: str | None = None,
 ) -> subprocess.CompletedProcess:
@@ -45,6 +46,8 @@ def run_cmd(
     env:
         Optional environment dict for the child process.  *None* inherits the
         current process environment.
+    cwd:
+        Optional working directory for the child process.
     capture:
         When *True* (the default), capture both stdout and stderr
         (``capture_output=True``).  When *False*, both streams are passed
@@ -77,6 +80,7 @@ def run_cmd(
         capture_output=capture,
         timeout=timeout,
         env=env,
+        cwd=cwd,
         input=input,
     )
 
@@ -104,6 +108,6 @@ def docker(args: list[str], **kw: Any) -> subprocess.CompletedProcess:
     """Thin wrapper: run ``docker <args>`` via :func:`run_cmd`.
 
     All keyword arguments are forwarded to :func:`run_cmd` unchanged
-    (``timeout``, ``check``, ``env``, ``capture``, ``input``).
+    (``timeout``, ``check``, ``env``, ``cwd``, ``capture``, ``input``).
     """
     return run_cmd(["docker", *args], **kw)

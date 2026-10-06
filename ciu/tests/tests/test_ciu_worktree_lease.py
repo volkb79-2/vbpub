@@ -575,9 +575,10 @@ class TestOwnRecordOperations:
 
 
 class TestLeaseTtlConfig:
-    def test_the_table_key_set_is_closed_and_now_holds_four_keys(self):
+    def test_the_table_key_set_is_closed_and_now_holds_five_keys(self):
         assert worktree.WORKTREE_TABLE_KEYS == {
             "max_concurrent_instances", "lease_ttl_hours", "exec_targets", "up",
+            "shared_image_tags",
         }
 
     def test_absent_table_means_no_lease_behavior_at_all(self):
@@ -614,14 +615,16 @@ class TestLeaseTtlConfig:
             {"max_concurrent_instances": 2, "lease_ttl_hours": 24}
         ) == 2
 
-    def test_all_four_families_coexist_in_one_table(self):
+    def test_all_public_worktree_keys_coexist_in_one_table(self):
         """CIU-69/125: `[ciu.worktree]` carries four key families (S16.3
         `max_concurrent_instances`, S16.9 `lease_ttl_hours`, S16.7
-        `exec_targets.<alias>`, and S16.1 `up`). The closed key set must
-        accept them together while each reader validates its own contract."""
+        `exec_targets.<alias>`, S16.1 `up`) and the S17.6 shared-image-tag
+        policy. The closed key set must accept them together while each reader
+        validates its own contract."""
         worktree_table = {
             "max_concurrent_instances": 2,
             "lease_ttl_hours": 24,
+            "shared_image_tags": False,
             "exec_targets": {
                 "tester": {"stack": "test", "service": "tester", "workdir": "/workspace"},
             },
