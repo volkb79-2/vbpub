@@ -2250,6 +2250,45 @@ disagree, §8 amendments win, then README, then CONSUMERS.
     ("this run measured X; the trend has been Y"), not this run's own
     number folded into itself.
 
+- `R-45` **Narrow container mounts (RG-86, package RG-NARROW).** `R-15`'s
+  "the repo dual-mounted" is superseded: every container run-gate itself
+  creates (ephemeral lanes and ephemeral probes, one shared mount set)
+  mounts ONLY what the judged tree needs. Isolation comes from mounting
+  less, never from masking named files; run-gate has no knowledge of any
+  project's secret files.
+  - **`R-45a` Linked worktree.** Mounted, each at its physical AND
+    namespace path (`R-23` applies, with sub-paths of the aliased root taking
+    the same namespace prefix): the judged worktree (all of its own files,
+    git-ignored ones included) and the git common directory READ-WRITE
+    (assay's repository snapshot runs `git worktree add`; the per-worktree
+    admin dir lies inside it). For assay lanes whose environment declares
+    no `state_root`, `<repo>/.run-gate` is also mounted (created when
+    absent), because the durable resume state lives in the main checkout.
+    `RUN_GATE_EXTRA_MOUNTS` (`R-14b`) is unchanged. NOT mounted: the main
+    checkout, every other worktree, every ignored file outside the judged
+    worktree.
+  - **`R-45b` Credential-free git config.** `<common>/config` and any
+    `config.worktree` (common and per-worktree admin) are overlaid
+    READ-ONLY with a per-run copy re-rendered from `git config --file X
+    --list -z`, kept in a private 0700 directory outside every mount
+    (system temp; `<repo>/.run-gate` only when system temp has no host
+    path), removed at process exit. Removed: URL userinfo in keys and values
+    (http/https/ftp/ftps any userinfo; other schemes only `user:pass@`),
+    `credential.*`, `*.extraheader`, `*.cookiefile`, `core.askpass`,
+    `core.sshCommand`, `include.*`/`includeIf.*`, keys named
+    password/passwd/token/secret/apikey, and `url.*.(push)insteadOf` whose
+    base or value embeds credentials. A missing common config or an
+    unreadable one is an infrastructure error, never an unsanitized mount.
+  - **`R-45c` Plain (main) checkout.** An ephemeral lane or probe on a
+    plain checkout is REFUSED (exit 2) naming `--allow-main-checkout` and
+    `RUN_GATE_ALLOW_MAIN_CHECKOUT`. With either set (`1`/`true`/`yes`; the
+    flag sets the env var for the whole process) the whole checkout is
+    mounted as before, a WARN says every git-ignored file is visible (once
+    per tree), and the `R-45b` overlay still applies.
+  - **`R-45d` Out of scope.** `mode = "exec"` lanes and probes (containers
+    owned by ciu or the project's stack) compute no run-gate mounts and are
+    never refused.
+
 ## 6. Non-goals (unchanged from CONSUMERS)
 
 No second parser of run-gate documents (`run-gate.toml` and
