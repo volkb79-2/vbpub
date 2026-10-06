@@ -179,6 +179,136 @@ allow_argv_append = false
     assert lane.as_declared() == lane_table(text)
 
 
+def test_explicit_project_defaults_and_lane_names_form_a_stable_effective_union(
+    project: Project,
+):
+    from assay import runner
+
+    text = """\
+schema_version = 2
+
+[defaults]
+env_passthrough = ["BUILD_VERSION", "PATH", "BUILD_VERSION"]
+
+[lanes.package]
+scope = "S0"
+rigor = ["R0"]
+enforcement = "gate"
+argv = ["/bin/true"]
+env = {}
+env_passthrough = ["PATH", "LOCAL_FLAG", "LOCAL_FLAG"]
+budget = "1m"
+allow_argv_append = false
+"""
+    lane = load_lane_file(project.write(text)).lane("package")
+
+    assert lane.env_passthrough == ("PATH", "LOCAL_FLAG", "LOCAL_FLAG")
+    assert lane.effective_env_passthrough == (
+        "BUILD_VERSION", "PATH", "LOCAL_FLAG"
+    )
+    assert lane.as_declared()["env_passthrough"] == [
+        "PATH", "LOCAL_FLAG", "LOCAL_FLAG"
+    ]
+    plan = runner.resolve_command_plan(
+        lane,
+        passthrough_source={
+            "BUILD_VERSION": "release-42",
+            "PATH": "/usr/bin",
+            "LOCAL_FLAG": "on",
+            "UNDECLARED": "not passed",
+        },
+    )
+    assert plan.env_passthrough == lane.effective_env_passthrough
+    assert dict(plan.env_effective) == {
+        "BUILD_VERSION": "release-42",
+        "PATH": "/usr/bin",
+        "LOCAL_FLAG": "on",
+    }
+
+
+def test_a_lane_may_omit_its_list_only_when_an_explicit_project_default_exists(
+    project: Project,
+):
+    text = """\
+schema_version = 2
+
+[defaults]
+env_passthrough = ["PATH", "BUILD_VERSION"]
+
+[lanes.package]
+scope = "S0"
+rigor = ["R0"]
+enforcement = "gate"
+argv = ["/bin/true"]
+env = {}
+budget = "1m"
+allow_argv_append = false
+"""
+    lane = load_lane_file(project.write(text)).lane("package")
+
+    assert lane.env_passthrough is None
+    assert lane.effective_env_passthrough == ("PATH", "BUILD_VERSION")
+    assert "env_passthrough" not in lane.as_declared()
+
+
+def test_a_project_default_colliding_with_lane_fixed_env_is_refused(project: Project):
+    text = """\
+schema_version = 2
+
+[defaults]
+env_passthrough = ["BUILD_VERSION"]
+
+[lanes.package]
+scope = "S0"
+rigor = ["R0"]
+enforcement = "gate"
+argv = ["/bin/true"]
+env = { BUILD_VERSION = "fixed" }
+budget = "1m"
+allow_argv_append = false
+"""
+    with pytest.raises(LaneConfigError, match="BUILD_VERSION.*declared in both"):
+        load_lane_file(project.write(text))
+
+
+def test_passthrough_lists_reject_empty_environment_names(project: Project):
+    text = """\
+schema_version = 2
+
+[defaults]
+env_passthrough = [""]
+
+[lanes.package]
+scope = "S0"
+rigor = ["R0"]
+enforcement = "gate"
+argv = ["/bin/true"]
+env = {}
+budget = "1m"
+allow_argv_append = false
+"""
+    with pytest.raises(LaneConfigError, match="defaults.env_passthrough\[0\].*non-empty"):
+        load_lane_file(project.write(text))
+
+
+def test_lane_passthrough_list_rejects_empty_environment_names(project: Project):
+    text = """\
+schema_version = 2
+
+[lanes.package]
+scope = "S0"
+rigor = ["R0"]
+enforcement = "gate"
+argv = ["/bin/true"]
+env = {}
+env_passthrough = [""]
+budget = "1m"
+allow_argv_append = false
+"""
+    with pytest.raises(LaneConfigError, match="env_passthrough\[0\].*non-empty"):
+        load_lane_file(project.write(text))
+
+
 def test_lane_lookup_names_the_declared_lanes_when_the_name_is_wrong(
     project: Project,
 ):

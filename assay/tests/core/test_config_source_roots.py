@@ -102,7 +102,7 @@ def test_root_that_exists_only_relative_to_the_repo_root_is_rejected(
 
 
 def test_nonexistent_root_is_rejected(layout: Layout):
-    with pytest.raises(LaneConfigError, match="does not exist"):
+    with pytest.raises(LaneConfigError, match="must name an existing directory or regular file"):
         load_lane_file(layout.write("nope"))
 
 
@@ -153,7 +153,9 @@ def test_repo_relative_root_is_rejected_even_when_cwd_is_the_repo_root(
     # wrong answer would look right.
     monkeypatch.chdir(layout.repo_root)
 
-    with pytest.raises(LaneConfigError, match="does not exist"):
+    with pytest.raises(
+        LaneConfigError, match="must name an existing directory or regular file"
+    ):
         load_lane_file(layout.write("pkgs"))
 
 
@@ -163,10 +165,49 @@ def test_absolute_source_root_is_rejected(layout: Layout):
         load_lane_file(layout.write(absolute))
 
 
-def test_source_root_pointing_at_a_file_is_rejected(layout: Layout):
-    (layout.project_root / "README.md").write_text("hi", encoding="utf-8")
-    with pytest.raises(LaneConfigError, match="does not exist"):
-        load_lane_file(layout.write("README.md"))
+def test_a_file_source_root_selects_only_that_exact_file(layout: Layout):
+    source = layout.project_root / "src" / "owned.py"
+    sibling = layout.project_root / "src" / "other_package.py"
+    source.write_text("def owned(): return 1\n", encoding="utf-8")
+    sibling.write_text("def other(): return 1\n", encoding="utf-8")
+
+    judge = load_lane_file(layout.write("src/owned.py")).lane("package").judge
+
+    assert judge is not None
+    assert judge.source_roots == ("src/owned.py",)
+    assert judge.source_root_paths == (source.resolve(),)
+    assert source.resolve().is_relative_to(judge.source_root_paths[0])
+    assert not sibling.resolve().is_relative_to(judge.source_root_paths[0])
+
+
+@pytest.mark.parametrize("alias_kind", ["directory", "file"])
+def test_a_file_root_reached_through_a_symlink_is_rejected(
+    layout: Layout, alias_kind: str
+):
+    source = layout.project_root / "src" / "owned.py"
+    source.write_text("def owned(): return 1\n", encoding="utf-8")
+    if alias_kind == "directory":
+        alias = layout.project_root / "src_alias"
+        alias.symlink_to(source.parent, target_is_directory=True)
+        declared_root = "src_alias/owned.py"
+    else:
+        alias = source.parent / "owned_alias.py"
+        alias.symlink_to(source.name)
+        declared_root = "src/owned_alias.py"
+
+    with pytest.raises(
+        LaneConfigError,
+        match=(
+            "resolves through a symlink.*declare the resolved in-project "
+            "file path directly"
+        ),
+    ):
+        load_lane_file(layout.write(declared_root))
+
+
+def test_a_missing_file_source_root_is_rejected_by_name(layout: Layout):
+    with pytest.raises(LaneConfigError, match="src/missing.py.*must name an existing"):
+        load_lane_file(layout.write("src/missing.py"))
 
 
 def test_empty_source_root_string_is_rejected(layout: Layout):

@@ -5,6 +5,17 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 ## [Unreleased]
 
 ### Added
+- feat(assay): explicit project-level `[defaults].env_passthrough`, ordered
+  union with lane lists, and exact-file `source_roots`; verdict schema v14
+  records the effective allowlist (B140, B141)
+- fix(assay): redact every effective passthrough value in verdict JSON and
+  mask exact echoes before tail truncation in command tails, crash-resume
+  records, failed probe diagnostics and Go helper refusals; record each
+  present value's per-name SHA-256 fingerprint for cross-verdict comparison
+  and mutation resume identity (B142)
+- feat(assay): `assay plan` names its lane and reports why ingested R2
+  candidate enumeration is unsupported; first-run budget sizing for Stryker
+  is documented without inventing an estimate (B137)
 - feat(assay): `assay analyze plan-estimate`; `assay plan` JSON `commit`/`tree`
   and a stderr hint; `candidate` progress `cpu_seconds`/`peak_rss_bytes`/
   `phase_seconds`/`startup_seconds` and state `resources` (with the
@@ -24,6 +35,22 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   `mutation.candidate_identity_fields`; and the public aliases replacing the
   private judge names the analysis package used to reach. No existing verdict,
   progress or plan key changes meaning; no schema version changes
+
+### Fixed
+- fix(assay): the `assay run` summary now adds an `R0: FAIL (first failing
+  test: NAME)` line when the retained R0 output names a failing test (pytest,
+  `go test` text/JSON, vitest, jest) and the headline is not PASS, so a failing
+  suite that also dirtied the tree is not summarised as a bare
+  `NO_MEASUREMENT`; the headline pair is unchanged and output with no
+  recognised failure adds nothing (B146)
+- fix(assay): prevent cgroup process-limit or OOM events from becoming native
+  R2 kills or survivors; sample candidate and visible-ancestor event counters,
+  bind them to the executing worker's cgroup, capabilities, and selected mount,
+  reject affected resume records, and advance the judge identity to `/7`,
+  cold-starting the earlier `/4`, `/5`, and `/6` B145 evidence (B145)
+- fix(assay): disable automatic Git maintenance and detached maintenance for
+  every Assay Git child, independent of image, system, or consumer config
+  (B147)
 
 ### Changed
 - refactor(assay): repeated judge rules now live once: `assay.records` (the
@@ -72,6 +99,9 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   (B127)
 
 ### Fixed
+- fix(assay): `plan-estimate` binds its baseline to both the plan's lane and
+  commit, validates lane identity on every progress run header, and returns
+  the lane in its JSON result (B136)
 - fix(assay): liveness test leak; CONSUMERS 'upper bound' claim (the plan
   estimate is declaration-derived, not an upper bound); the B105 report checker
   refuses a partial, sharded or foreign R2 campaign against the plan (B111)

@@ -5,12 +5,21 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import subprocess
 import sys
 from dataclasses import replace
 from pathlib import Path
 
 import pytest
-from conftest import GitRepo, TESTS_ROOT, make_lane, make_r2_judge, native_mutation, native_outcome
+from conftest import (
+    GitRepo,
+    TESTS_ROOT,
+    make_lane,
+    make_r2_judge,
+    native_mutation,
+    native_outcome,
+    zero_resource_limit_evidence_dict,
+)
 
 from assay import candidate_identity, mutation, runner, verdict
 from assay.adapters.python import PythonAdapter
@@ -27,13 +36,14 @@ from assay.mutation_witness import (
 from assay.reuse import classify_candidate, load_reuse_source, prior_only_candidates
 from assay import verify as raw_verify
 from assay.verify import verify_document
+from assay.resource_limits import ResourceLimitCounters
 
 FIXTURES = TESTS_ROOT / "fixtures" / "verdicts"
 
 
-def _v13_killed_source() -> dict:
+def _v14_killed_source() -> dict:
     document = json.loads((FIXTURES / "r2_pass.json").read_text(encoding="utf-8"))
-    document["schema_version"] = 13
+    document["schema_version"] = 14
     mutation = document["claims"][1]["mutation"]
     candidate_ids = []
     for index, item in enumerate(mutation["killed"]):
@@ -52,6 +62,7 @@ def _v13_killed_source() -> dict:
                 "candidate_id": candidate,
                 "source_sha256": source_digest,
                 "mutated_file_sha256": mutated_digest,
+                "resource_limit_evidence": zero_resource_limit_evidence_dict(),
                 "execution": {
                     "mode": "full",
                     "witness": {
@@ -70,10 +81,13 @@ def _v13_killed_source() -> dict:
     return document
 
 
-def test_v12_is_a_bounded_cold_start_without_candidate_inspection(tmp_path: Path):
+@pytest.mark.parametrize("version", [12, 13])
+def test_v12_and_v13_are_bounded_cold_starts_without_candidate_inspection(
+    tmp_path: Path, version: int
+):
     path = tmp_path / "old.json"
     path.write_text(
-        '{"schema_version":12,"claims":"not inspected",'
+        f'{{"schema_version":{version},"claims":"not inspected",'
         '"mutation":{"candidate_ids":["invented"]}}',
         encoding="utf-8",
     )
@@ -86,15 +100,15 @@ def test_v12_is_a_bounded_cold_start_without_candidate_inspection(tmp_path: Path
     assert source.candidate_ids == frozenset()
     assert source.outcomes == {}
     assert verify_document(json.loads(path.read_text()))[0].startswith(
-        "schema_version 12 is not this verifier's version 13"
+        f"schema_version {version} is not this verifier's version 14"
     )
 
 
 @pytest.mark.parametrize(
     ("content", "detail"),
     [
-        ('{"schema_version":13,"schema_version":13}', "duplicate object key"),
-        ('{"schema_version":14}', "unsupported"),
+        ('{"schema_version":14,"schema_version":14}', "duplicate object key"),
+        ('{"schema_version":15}', "unsupported"),
         ('{"schema_version":true}', "must be an integer"),
         ('{"schema_version":NaN}', "invalid JSON"),
     ],
@@ -112,8 +126,8 @@ def test_reuse_source_rejects_unreadable_or_foreign_envelopes(
     assert detail in str(caught.value)
 
 
-def test_complete_v13_campaign_exposes_only_killed_witnesses(tmp_path: Path):
-    document = _v13_killed_source()
+def test_complete_v14_campaign_exposes_only_killed_witnesses(tmp_path: Path):
+    document = _v14_killed_source()
     path = tmp_path / "prior.json"
     path.write_text(json.dumps(document), encoding="utf-8")
 
@@ -131,8 +145,8 @@ def test_complete_v13_campaign_exposes_only_killed_witnesses(tmp_path: Path):
     assert prior_only_candidates(source, [eligible[0]]) == [eligible[1]]
 
 
-def test_current_v13_verifier_rejects_incomplete_candidate_inventory():
-    document = _v13_killed_source()
+def test_current_v14_verifier_rejects_incomplete_candidate_inventory():
+    document = _v14_killed_source()
     document["claims"][1]["mutation"]["candidate_ids"].pop()
 
     failures = verify_document(document)
@@ -224,32 +238,32 @@ def test_raw_b106_receipt_refuses_malformed_and_non_killed_witnesses():
 
 
 def test_raw_b106_mutation_provenance_accepts_a_complete_native_record():
-    document = _v13_killed_source()
+    document = _v14_killed_source()
 
     assert _raw_failures(raw_verify._check_b106_mutation_provenance, document) == []
 
 
 def test_raw_b106_mutation_provenance_checks_inventory_and_entry_binding():
-    document = _v13_killed_source()
+    document = _v14_killed_source()
     mutation = document["claims"][1]["mutation"]
     mutation["candidate_ids"] = ["bad"]
     failures = _raw_failures(raw_verify._check_b106_mutation_provenance, document)
     assert any("malformed digest" in item for item in failures)
     assert any("does not equal" in item for item in failures)
 
-    document = _v13_killed_source()
+    document = _v14_killed_source()
     mutation = document["claims"][1]["mutation"]
     mutation["killed"][0]["source_sha256"] = "bad"
     failures = _raw_failures(raw_verify._check_b106_mutation_provenance, document)
     assert any("malformed B106 digest" in item for item in failures)
 
-    document = _v13_killed_source()
+    document = _v14_killed_source()
     mutation = document["claims"][1]["mutation"]
     mutation["killed"][0]["candidate_id"] = "f" * 64
     failures = _raw_failures(raw_verify._check_b106_mutation_provenance, document)
     assert any("does not match its recorded identity inputs" in item for item in failures)
 
-    document = _v13_killed_source()
+    document = _v14_killed_source()
     mutation = document["claims"][1]["mutation"]
     mutation["killed"][0]["execution"] = {}
     failures = _raw_failures(raw_verify._check_b106_mutation_provenance, document)
@@ -259,13 +273,13 @@ def test_raw_b106_mutation_provenance_checks_inventory_and_entry_binding():
 def test_raw_b106_mutation_provenance_rejects_duplicate_inventory_and_outcome_ids(
     monkeypatch,
 ):
-    document = _v13_killed_source()
+    document = _v14_killed_source()
     mutation = document["claims"][1]["mutation"]
     mutation["candidate_ids"] = [mutation["candidate_ids"][0]] * 2
     failures = _raw_failures(raw_verify._check_b106_mutation_provenance, document)
     assert any("candidate_ids contains a duplicate" in item for item in failures)
 
-    document = _v13_killed_source()
+    document = _v14_killed_source()
     mutation = document["claims"][1]["mutation"]
     same_candidate = "c" * 64
     monkeypatch.setattr(raw_verify, "candidate_id_from_fields", lambda **_kwargs: same_candidate)
@@ -277,7 +291,7 @@ def test_raw_b106_mutation_provenance_rejects_duplicate_inventory_and_outcome_id
 
 
 def test_raw_b106_mutation_provenance_handles_ingested_and_limit_sentinel_shapes():
-    document = _v13_killed_source()
+    document = _v14_killed_source()
     document["judgment"]["r2"]["producer"] = "ingested"
     document["claims"][1]["mutation"]["candidate_ids"] = []
     failures = _raw_failures(raw_verify._check_b106_mutation_provenance, document)
@@ -597,8 +611,8 @@ operators = ["python:compare-swap"]
     head = repo.commit_all("add current candidate")
     assert repo.head() == head
 
-    prior = tmp_path / "prior-v13.json"
-    prior.write_text(json.dumps(_v13_killed_source()), encoding="utf-8")
+    prior = tmp_path / "prior-v14.json"
+    prior.write_text(json.dumps(_v14_killed_source()), encoding="utf-8")
     out = io.StringIO()
     exit_code = main(
         [
@@ -713,7 +727,7 @@ def test_replay_requires_a_current_kill_and_falls_back_to_a_full_run(
     assert first_outcome.execution.mode == "full"
     assert first_outcome.execution.witness.node_id == "tests/test_behavior.py::test_behavior"
     assert verify_document(original.to_dict()) == []
-    prior = tmp_path / "prior-v13.json"
+    prior = tmp_path / "prior-v14.json"
     prior.write_text(json.dumps(original.to_dict()), encoding="utf-8")
 
     git_repo.write(
@@ -782,6 +796,92 @@ def test_replay_requires_a_current_kill_and_falls_back_to_a_full_run(
     assert stale_witness.claims[1].mutation.survived
     assert stale_witness.claims[1].mutation.survived[0].execution.mode == "full"
     assert verify_document(stale_witness.to_dict()) == []
+
+
+def test_resource_limited_witness_replay_stops_before_full_fallback(
+    git_repo: GitRepo, tmp_path: Path, monkeypatch
+):
+    base, first_head = _seed_pytest_mutation(git_repo)
+    lane = make_lane(
+        rigor=("R0", "R2"),
+        argv=(sys.executable, "-m", "pytest", "tests", "-q", "-p", "no:cacheprovider"),
+        judge=make_r2_judge(
+            source_root_paths=(git_repo.path / "src",),
+            base=base,
+            mutation=MutationConfig(
+                jobs=1,
+                max_mutants=10,
+                operators=("python:compare-swap",),
+                liveness="false",
+            ),
+        ),
+        budget="2m",
+        budget_seconds=120,
+    )
+    original = runner.run_lane(
+        lane,
+        commit=first_head,
+        repo=git_repo.path,
+        project_root=git_repo.path,
+        adapter=PythonAdapter(),
+        assay_version="0.1.0",
+    )
+    assert original.outcome is Outcome.PASS
+    prior = tmp_path / "prior.json"
+    prior.write_text(json.dumps(original.to_dict()), encoding="utf-8")
+
+    git_repo.write(
+        "tests/test_a_pass_before_witness.py",
+        "def test_before_witness():\n    assert 2 + 2 == 4\n",
+    )
+    second_head = git_repo.commit_all("add a passing test before the witness")
+    samples = iter(
+        (
+            ResourceLimitCounters(
+                pids_max=0, memory_max=0, memory_oom=0, memory_oom_kill=0, memory_oom_group_kill=0
+            ),  # mutation preflight
+            ResourceLimitCounters(
+                pids_max=0, memory_max=0, memory_oom=0, memory_oom_kill=0, memory_oom_group_kill=0
+            ),  # replay before
+            ResourceLimitCounters(
+                pids_max=1, memory_max=0, memory_oom=0, memory_oom_kill=0, memory_oom_group_kill=0
+            ),  # replay after: pids.max hit
+            ResourceLimitCounters(
+                pids_max=1, memory_max=0, memory_oom=0, memory_oom_kill=0, memory_oom_group_kill=0
+            ),  # fallback before, if incorrectly run
+            ResourceLimitCounters(
+                pids_max=1, memory_max=0, memory_oom=0, memory_oom_kill=0, memory_oom_group_kill=0
+            ),  # fallback after, falsely clean
+        )
+    )
+    monkeypatch.setattr(
+        mutation, "read_current_cgroup_counters", lambda: next(samples)
+    )
+    commands: list[tuple[str, ...]] = []
+
+    def resource_limited_replay_runner(argv, *, env, cwd, timeout):
+        commands.append(tuple(argv))
+        # Baseline passes. The replay and any erroneous full fallback fail; a
+        # zero-delta fallback would otherwise turn the prior resource hit into
+        # a reported mutation kill.
+        return subprocess.CompletedProcess(
+            list(argv), returncode=0 if len(commands) == 1 else 1
+        )
+
+    replayed = runner.run_lane(
+        lane,
+        commit=second_head,
+        repo=git_repo.path,
+        project_root=git_repo.path,
+        adapter=PythonAdapter(),
+        assay_version="0.1.0",
+        process_runner=resource_limited_replay_runner,
+        reuse_from=prior,
+    )
+
+    assert replayed.outcome is Outcome.ERROR
+    assert replayed.reason_code is ReasonCode.EXEC_FAILED
+    assert len(commands) == 2  # baseline plus replay; no zero-delta full fallback
 
 
 def test_witness_capture_works_with_the_existing_liveness_plugin(git_repo: GitRepo):

@@ -101,6 +101,23 @@ def test_bounded_command_tail_preserves_utf8_at_its_byte_boundary():
     assert len(tail.encode("utf-8")) == runner.COMMAND_TAIL_BYTES - 1
 
 
+def test_bounded_command_tail_redacts_a_secret_before_the_tail_cut():
+    secret = "SCHEMA_GATE_DSN=postgresql://u:secret@h/db"
+    limit = 64
+    # The retained suffix starts five characters into the secret. Redacting
+    # only after truncation would no longer find the complete value.
+    raw = "x" * 5 + secret + "z" * (limit + 5 - len(secret))
+
+    tail, removed = runner._bounded_tail(
+        raw, sensitive_values=(secret,), limit=limit
+    )
+
+    assert secret not in tail
+    assert "secret" not in tail
+    assert len(tail.encode("utf-8")) == limit
+    assert removed == len(raw.encode("utf-8")) - limit
+
+
 def test_command_plan_refuses_an_unrecognized_infrastructure_source():
     lane = make_lane(infrastructure={"image": "invented:deploy.image"})
 
@@ -116,6 +133,7 @@ def test_probe_refusal_renders_diagnostics_and_keeps_the_document_detail():
         name="package", environment_command=("python", "-m", "pytest")
     )
     probe = SimpleNamespace(
+        plan=SimpleNamespace(env_effective={}, env_passthrough=()),
         reason_code=ReasonCode.COMMAND_FAILED,
         returncode=7,
         stderr_tail="probe stderr\n",
@@ -151,6 +169,7 @@ def test_probe_refusal_renders_diagnostics_and_keeps_the_document_detail():
     runner._report_probe_refusal(
         lane,
         SimpleNamespace(
+            plan=SimpleNamespace(env_effective={}, env_passthrough=()),
             reason_code=ReasonCode.EXEC_FAILED,
             returncode=None,
             stderr_tail="",
@@ -163,6 +182,35 @@ def test_probe_refusal_renders_diagnostics_and_keeps_the_document_detail():
     assert empty_diagnostics.getvalue().startswith("assay: ERROR/BAD_LANE_CONFIG")
     assert "probe stderr:" not in empty_diagnostics.getvalue()
     assert "probe stdout:" not in empty_diagnostics.getvalue()
+
+
+def test_probe_refusal_masks_passthrough_echo_before_logging():
+    secret = "postgresql://dstdns:dsn-secret@db/schema"
+    probe = SimpleNamespace(
+        plan=SimpleNamespace(
+            env_effective={"SCHEMA_GATE_DSN": secret},
+            env_passthrough=("SCHEMA_GATE_DSN",),
+        ),
+        reason_code=ReasonCode.COMMAND_FAILED,
+        returncode=7,
+        stderr_tail=f"connection failed for {secret}\n",
+        stdout_tail=f"using {secret}\n",
+    )
+    diagnostics = StringIO()
+
+    runner._report_probe_refusal(
+        SimpleNamespace(name="package", environment_command=("probe",)),
+        probe,
+        status=Outcome.ERROR,
+        reason_code=ReasonCode.BAD_LANE_CONFIG,
+        diagnostics=diagnostics,
+    )
+
+    rendered = diagnostics.getvalue()
+    assert secret not in rendered
+    masked = "*" * len(secret)
+    assert f"probe stderr: connection failed for {masked}" in rendered
+    assert f"probe stdout: using {masked}" in rendered
 
 
 def test_result_report_arm_failure_closes_the_reservation_and_falls_back(
@@ -697,6 +745,7 @@ def test_reuse_execution_reports_the_loaded_prior_campaign_state(
 
     head, lane = _seed_r2_lane(git_repo, argv=("python", "-m", "pytest", "-q"))
     source = SimpleNamespace(
+        schema_version=12,
         cold_start=cold_start,
         complete_unsharded_native=complete,
     )

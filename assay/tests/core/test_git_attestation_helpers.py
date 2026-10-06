@@ -106,6 +106,10 @@ def test_tree_entry_kind_raises_rather_than_reporting_a_bad_commit_as_absent(
         == "blob"
     )
     assert (
+        git.tree_entry_info(git_repo.path, head, "reviewed.py", remaining=_remaining)
+        == ("100644", "blob")
+    )
+    assert (
         git.tree_entry_kind(git_repo.path, head, "no/such/path", remaining=_remaining)
         is None
     ), "genuine absence stays None"
@@ -194,4 +198,26 @@ def test_tree_entry_kind_accepts_the_one_well_formed_record(
     assert (
         git.tree_entry_kind(tmp_path, "a" * 40, "src/api.py", remaining=_remaining)
         == "tree"
+    )
+
+
+def test_tree_entry_info_distinguishes_regular_blobs_from_symlinks(git_repo: GitRepo):
+    """Both regular files and symlinks are Git blobs, but only regular source
+    files are valid exact-file roots at the judged commit."""
+    git_repo.write("regular.py", "x = 1\n")
+    git_repo.commit_all("add regular file")
+    assert (
+        git.tree_entry_info(
+            git_repo.path, git_repo.head(), "regular.py", remaining=_remaining
+        )
+        == ("100644", "blob")
+    )
+
+    (git_repo.path / "link.py").symlink_to("regular.py")
+    git_repo.commit_all("add symlink")
+    assert (
+        git.tree_entry_info(
+            git_repo.path, git_repo.head(), "link.py", remaining=_remaining
+        )
+        == ("120000", "blob")
     )

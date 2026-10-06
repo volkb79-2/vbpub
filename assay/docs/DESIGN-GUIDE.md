@@ -26,6 +26,12 @@ At every nested parser depth, help, usage, and configuration diagnostics begin
 with `ASSAY <version> — declared-lane judge` as line 1, before argparse usage
 text. Normal command output is unchanged.
 
+Verdict schema versions name exact evidence contracts. A hard cut has no
+upgrade-in-place path because an older artifact cannot acquire provenance it
+never recorded; consumers regenerate evidence they need verified under a new
+schema. Keep the current and immediately preceding cut's adoption steps in
+CONSUMERS so a skipped release still has a concrete upgrade path.
+
 ## 1. What assay is, in one paragraph
 
 assay answers **HOW TO JUDGE** a change. It reads a project's declared lanes,
@@ -266,10 +272,33 @@ project's layout: `default="src/nyxloom"`, `default="topos/src/topos"`,
 `-source internal -module srdm`. If any is wrong it measures the wrong tree and
 **passes**. A library cannot ship any of them; it must read them.
 
-**Nonexistent `source_roots` fail at load time.** Apply the §4.2a test — *if
-this is wrong, does anything fail loudly?* A typo'd source root matches no
-changed file, so the gate returns 0/0 PASS forever. That is a laundering gate,
-and none of the four copies guards it.
+### File-scoped source roots
+
+**A nonexistent `source_roots` path fails at load time.** Apply the §4.2a test
+— *if this is wrong, does anything fail loudly?* A typo'd source root matches
+no changed file, so the gate returns 0/0 PASS forever. That is a laundering
+gate, and none of the four copies guards it. Each entry may name an existing
+directory or one existing regular file. A file entry selects exactly that
+declared path and must reach it without traversing a symlink; declare its
+resolved in-project path directly. This keeps the Git diff spelling aligned
+with exact-file selection. Sibling files and sibling symlinks pointing to it
+stay outside scope. Directory containment uses resolved paths, so an
+in-project directory symlink can still name a directory root. Both forms
+resolve under the project root, and an absent path or a path escaping through
+`..` or a symlink refuses.
+
+**An exact-file root must also exist as a regular tracked file at the judged
+commit.** Config loading sees the invoking checkout, while R1/R2 execute from
+the committed snapshot. An ignored or untracked local file can therefore pass
+load-time existence checks but disappear from that snapshot; if Assay then
+drops its file key, a changed-lines lane can measure nothing and return 0/0
+PASS. Before the lane command starts, Assay checks the exact Git tree entry and
+refuses with `ERROR`/`BAD_LANE_CONFIG` unless it is a regular file. Commit
+the file or declare a tracked source path.
+
+The ingested R2 path applies the same boundary to report keys before resolving
+them: a report naming a sibling symlink cannot turn the resolved target into
+evidence for an exact-file root.
 
 **Coverage format is READ and cross-checked by DERIVATION.** The lane declares
 it (it is a fact of the lane's own argv: `--cov-report=json` vs `lcov`), and
@@ -295,6 +324,18 @@ value assay invents. A bare `argv[0]` is accepted only when `PATH` appears
 explicitly in `env` or `env_passthrough`; otherwise the lane fails to load with
 `BAD_LANE_CONFIG`. This prevents Python/libc's implementation-default executable
 search from becoming an undeclared input. An argv containing `/` needs no PATH.
+
+**Project-wide passthrough defaults are explicit policy (B140).** A lane file
+may declare `[defaults].env_passthrough` once to list common allowed names. The
+effective lane list is the defaults followed by the lane's own list, with
+duplicates removed while preserving first occurrence. A lane may omit its own
+`env_passthrough` key only when `[defaults]` is present; a missing project
+table never causes Assay to invent names. Names in the effective list must not
+also appear in that lane's fixed `env`. No built-in passthrough list exists.
+The verdict records the effective names as `env_passthrough`, including names
+that were allowed but absent from the invoking environment; `env_effective`
+continues to record only values that were actually present. This wire addition
+is verdict schema v14.
 
 **`env_required` is the subset whose ABSENCE refuses the lane (A-254).** A
 passthrough name that is not set is silently dropped — `env_effective` copies a
@@ -327,17 +368,47 @@ budget = "20m"
 allow_argv_append = false
 ```
 
-Both names then appear verbatim in the artifact's `env_effective` on **every**
-outcome where the lane resolved, refusals included (A-036), so *which
-environment produced this verdict* is answerable from the artifact instead of
-asserted by whoever ran it. Two caveats that matter:
+### Redacting passthrough environment values (B142)
 
-* **`env_effective` is recorded, not verified.** assay copies the value; it does
-  not compare it against anything. It is transparency, not a claim — see §3 on
-  what makes something evidence.
-* **Pass identities through, never secrets.** Everything in `env_passthrough`
-  that is present lands in the artifact in cleartext. That is the point for an
-  instance id and a disaster for a token.
+On every outcome where the lane resolved, including refusals (A-036),
+`env_effective` keeps each present passthrough name with the fixed value
+`"<passthrough>"`. The sibling
+`env_effective_passthrough_sha256` maps exactly those present names to the
+full SHA-256 of the value's original environment bytes. On POSIX, UTF-8
+`surrogateescape` preserves bytes that are not valid UTF-8. Names allowed but
+absent remain in `env_passthrough`, but have no `env_effective` or digest
+entry. Fixed `env` values and infrastructure facts remain recorded as before.
+The child process still receives the original environment value; output is
+redacted before it is retained or serialized. If stdout or stderr contains an
+exact passthrough value, masking happens before the tail is truncated or serialized.
+This prevents a command that echoes a DSN across the tail boundary from
+leaving its remaining credential characters in the verdict. The same
+pre-truncation masking applies to crashed-candidate tails saved in mutation
+resume state, failed environment-probe diagnostics, and the Go
+statement-position helper's stderr refusal.
+
+This is a recorded fingerprint, not verification of the environment. A
+subsequent run with a different value produces a different digest, which a
+consumer can compare across verdicts. `assay verify` checks the artifact's
+marker, key set and digest format; it does not have the live environment and
+cannot tell whether a digest matches the original process input. The hash is
+unkeyed SHA-256, so a low-entropy or guessable secret may be recovered by
+trying candidate values. It is for equality/change comparison, not secrecy or
+authentication; do not treat it as a password-hashing scheme.
+
+The digest field was added before the first v14 release. Because the schema is
+still v14, no released v14 consumer has to interpret the earlier draft shape.
+
+Two caveats that matter:
+
+* **`env_effective` is recorded, not verified.** The marker and digest say
+  what value the producer read, but assay does not compare it with an external
+  expected identity. This is transparency, not a claim — see §3 on what makes
+  something evidence.
+* **Never put raw secrets in declared `env`.** Those values are committed in
+  the lane file and remain verbatim in verdicts; only values arriving through
+  `env_passthrough` receive the marker and fingerprint. Exact echoes of those
+  passthrough values in command-output tails are masked as well.
 * **(B025) One exception, flagged rather than silent.** A refusal whose OWN
   cause is an unresolvable infrastructure declaration cannot safely record
   the real `env_effective` — neither the infrastructure fact nor any
@@ -537,6 +608,74 @@ feed the CPU-growth or hang decision. The values are measured once, are
 `None` when unavailable, and never enter a classification, a verdict or the
 `judge_sha256` inputs; they exist so a campaign can be sized from measurement
 rather than from the declared budget.
+
+#### Native R2 cgroup resource-limit events (B145)
+
+A candidate that reaches a process or memory limit has not shown that the test
+suite caught a mutant. Before native R2 starts candidates, Assay requires a
+visible cgroup v2 path through the hierarchy root. The sampler reads
+`/proc/thread-self/cgroup`, because a worker thread in a threaded cgroup v2
+subtree can have a different cgroup from the process leader; `/proc/self/cgroup`
+would identify the wrong execution context. The capability guard likewise
+reads `/proc/thread-self/status`: Linux capabilities are per-thread, and
+`/proc/self/status` reports the main thread's sets. Assay selects the hierarchy
+mount ID from `/proc/self/mountinfo`, then checks the mount ID of the opened
+hierarchy and each opened control file through `/proc/self/fdinfo`. It reads
+control bytes from the same checked file descriptor. This catches a later
+overmount on a parent path as well as one directly covering a sampled cgroup
+path.
+
+Assay samples the candidate's
+`pids.events.max` whenever available and the event file at every visible
+ancestor where the pids controller is active; a finite `pids.max` requires its
+counter. Sampling unlimited active ancestors covers `pids_localevents`, where
+a rejected fork can increment the nearest active ancestor's local counter
+while a higher ancestor enforces the finite limit. Assay samples the four
+`memory.events` counters (`max`, `oom`, `oom_kill`, `oom_group_kill`) at the
+candidate and every visible ancestor where the memory controller is active; a
+finite `memory.max` requires its event file. If the candidate memory controller
+is inactive, visible active ancestor event files are sampled too. `max` counts attempts to
+exceed the memory boundary even when the OOM path does not run; `oom_kill` also
+captures a global OOM kill in the candidate when its own `memory.max` is
+unlimited. Unlimited active ancestors are sampled too, so local event counters
+can report a refusal at an intermediate ancestor. A shared ancestor can still
+conservatively attribute sibling activity. Every visible cgroup2 mount
+exposing the sampled hierarchy must be read-only. Assay also checks the
+underlying `cgroup.procs` inode permissions on the candidate cgroup and every
+ancestor. A read-only mount alone cannot stop `CLONE_INTO_CGROUP` from moving a
+candidate into an existing child; the kernel checks inode permissions without
+the mount's read-only flag. Assay refuses when candidate credentials or
+capabilities can write those files, and refuses overmounts that shadow a
+sampled path.
+
+For each started full candidate command, Assay records the selected counters
+immediately before and after it. If the lane stops before a full command starts,
+that candidate remains `budget_exceeded` and shares a zero-duration sample
+taken after already-submitted work finishes. Replacement materialization or a
+saved-witness replay may already have run; the shared sample does not describe
+that earlier work or prove it did not happen. A positive delta during a full
+command records that candidate as `crashed`, making R2
+`ERROR/EXEC_FAILED`. A positive delta during witness-prefix replay instead
+stops the lane with payload-free `ERROR/EXEC_FAILED` before retry, so the replay
+event cannot be hidden by a later command. A positive delta never certifies a
+kill or survivor. The visible cgroup paths, controller availability, and
+configured limits must match between the bracketing samples. If they change,
+or if a required counter is missing, malformed, or unreadable, native R2 fails
+closed. A cgroup namespace that hides ancestors or a cgroup mount rooted below the
+hierarchy root also refuses native R2 before its candidate sweep. Worker
+creation failure at the executor boundary yields a payload-free
+`ERROR/EXEC_FAILED`, so a `RuntimeError` such as `can't start new thread`
+cannot escape the verdict path. This contract observes cgroup v2 events; it
+does not detect per-process limits such as `RLIMIT_NPROC` or `RLIMIT_AS`.
+
+`assay verify` independently checks the evidence shape, subtraction, and
+bucket. Resume state with a positive counter delta is rejected for reuse, and
+the worker capability guard advances the judge identity to `/7`, so `/4`,
+`/5`, and `/6` B145 records are cold starts. The mutation-state schema number
+does not change: this is a change in what the judge identity covers, not the
+record's outer shape. The
+v14 verdict shape adds the evidence only to native outcomes; ingested mutation
+reports do not claim local execution counters.
 
 #### Liveness process-group cleanup
 
@@ -1048,9 +1187,8 @@ routine format bump never fails the whole lane the way a genuinely tampered
 record does. **A record also carries `judge_sha256` (B088): the identity of
 what JUDGED the candidate** — the content digest of the judged commit's own
 tree, plus the resolved argv, the lane's declared `env` by value, the NAMES
-of whatever else the resolved environment carried (passthrough and
-infrastructure values are per-invocation by design and folding them by value
-would defeat a shared `--state-dir`), the cwd, the project prefix, the
+of infrastructure facts and the names plus SHA-256 value fingerprints of
+present `env_passthrough` values (B142), the cwd, the project prefix, the
 declared `link_paths` and assay's own version. The
 candidate digest answers "is this the same mutation", which is the right
 question for skipping re-generation and the wrong one for skipping
@@ -1081,7 +1219,7 @@ costly case where source and tests changed: it uses a prior result only to
 choose a test node worth replaying, never to carry an old kill into the new
 verdict.
 
-The prior artifact must be a current-verifier-accepted v13, complete,
+The prior artifact must be a current-verifier-accepted v14, complete,
 unsharded native campaign. Each candidate ID commits to the canonical path,
 operator, source-file digest, byte span, and full mutated-file digest. On the
 new run Assay passes the current R0 baseline first, rediscovers the complete
@@ -1099,8 +1237,9 @@ candidate snapshot: missing or repeated node, setup/teardown failure, changed
 candidate ID, malformed receipt, unsupported command, xdist, custom loop,
 untrusted lifecycle hook, or mismatched status. Survivors, crashes, hangs,
 timeouts, equivalents, and candidates absent from the prior plan always run
-fully. The v12 exception reads only a bounded JSON envelope and its version;
-it is a cold start, and v12 remains rejected by `assay verify`.
+fully. A v12 or v13 prior verdict is read only as a bounded JSON envelope
+and version; either is a cold start, and both remain rejected by
+`assay verify`.
 
 The narrower alternatives fail in opposite ways. Reusing a kill because
 mutated bytes match ignores the new tests and command. Deselecting all tests
@@ -1151,6 +1290,22 @@ Git's ownership protection with a command-line exception. As with B068, this
 probe runs only after bootstrap fails; the linked-worktree diagnostic keeps
 precedence, healthy resolution never consults it, and other Git failures pass
 through unchanged. See the [consumer remedy](CONSUMERS.md#b081-ownership-remedy).
+
+### Git auto-maintenance stays disabled at the boundary (B147)
+
+Assay replaces the environment of its Git children and disables system and
+global Git configuration. An image-level `gc.autoDetach=false` therefore does
+not reach those children. Assay pins `maintenance.auto=false`,
+`maintenance.autoDetach=false`, and `gc.autoDetach=false` with command-level
+configuration on bootstrap, substantive, and P22 Git invocations. The first
+disables automatic maintenance. Git documents `gc.autoDetach` as a fallback
+when `maintenance.autoDetach` is unset ([Git configuration reference](https://git-scm.com/docs/git-config)),
+so Assay pins both detach settings to `false` and does not rely on
+repository-local config precedence. This keeps
+automatic Git work from outliving a bounded command, consuming the gate's
+process budget, or changing a repository while a judge is reading it. Real-Git
+boundary tests set each repository-local value to `true` and check that Assay
+still observes `false`.
 
 ### Filtered native-R2 judge identity (B092)
 
@@ -2290,8 +2445,8 @@ build actually wires it to (§7 — an adapter existing is not a capability):
 |---|---|---|
 | `python` | R1, R2, R3 | the reference adapter; `requires_span_attribution = True` (coverage.py's multi-line-statement gap, recovered by a real AST walk) |
 | `sql` | R2 only | a stdlib lexer over DDL; no coverage tool exists for it, so no R1, and A-192 forbids R3 without R1 |
-| `javascript` | R1 only | `.js`/`.jsx`/`.ts`/`.tsx` under one name (A-340). R2 waits on B037's native-vs-ingest ruling, so `generate_mutation_sites` is unconditionally `UNSUPPORTED`; R3 is an unwired fast-follow |
-| `go` | nothing | ships and is tested, but no producer path is wired at any level (A-172/A-217) |
+| `javascript` | R1, R2 by ingestion only (B046) | `.js`/`.jsx`/`.ts`/`.tsx` under one name (A-340). The lane runs Stryker and Assay judges its report; native `generate_mutation_sites` remains `UNSUPPORTED`. R3 is not registered |
+| `go` | R1 only (A-394) | requires the real Go toolchain for source-derived statement positions (A-217); R2 and R3 have no producer path and are not registered |
 
 **`javascript` needs no span attribution, and that too was measured rather
 than assumed (A-342).** Istanbul's `statementMap` carries each statement's own
@@ -3097,13 +3252,16 @@ trusted silently.
 
 The mask/lexer tests prove which bytes assay replaces; only a real catalog can
 say the replacement *means* something. The gate proves that with assay's own
-material and no consumer checkout. It runs as an **outer phase of the
-registered `tester-unified` gate**: the tester container has no Docker socket,
-so after it exits green the host script builds an exact-OID clone of the gated
-commit and runs `gate/python/qualify_sql.py` from it with the host `python3`
-(>= 3.11). A red tester ends the script first, so PostgreSQL never runs after a
-red tester. The phase prints `ASSAY_GATE_PHASE=sql-qualified` between the
-tester and the receipt.
+material and no consumer checkout. After the ordinary registered
+`tester-unified` suite exits green, the outer driver starts a second, dedicated
+`tester-unified` container for SQL qualification. It uses `--cgroupns=host` so
+the real `assay run` witness can see the cgroup hierarchy B145 requires; only
+this phase receives the Docker socket, which it uses to run the pinned
+PostgreSQL fixture. The driver mounts the exact-OID clone of the gated commit
+and runs `gate/python/qualify_sql.py` there with the image's Python 3.14
+interpreter. A red ordinary tester ends the script first, so PostgreSQL never
+runs after a red tester. The phase prints `ASSAY_GATE_PHASE=sql-qualified`
+between the tester and the receipt.
 
 **Inputs, all in the repository.** The schema is
 `tests/fixtures/mutation/sql/qualification/01-schema.sql` (sha256 pinned in
@@ -3112,12 +3270,37 @@ tester and the receipt.
 `K01`-`K25`, `K12` unused). The image is
 `postgres:18-alpine@sha256:d3e1620b530c944afa6e887d22eb899824da68e19c52024bf98f5220c88a65b2`
 (PostgreSQL 18.6), pinned by digest and **never pulled**: an absent image is an
-inconclusive run. One container runs at a time, `--network none`, `--cpus 1`,
+inconclusive run. One PostgreSQL container runs at a time, `--network none`, `--cpus 1`,
 `--memory 512m`, on a 256 MiB tmpfs data directory, in the gate's own cgroup
 slice, named `run-gate-assay-sql-<pid>-<epoch>` so a peer's `docker ps` sees
-it; it is removed by its exact name on every path, including SIGTERM. Before
-`docker run` the harness looks once at `docker ps`: any other `run-gate-*`
-container makes the run **inconclusive** (exit 3, `host busy`); it never polls. With `--allow-shared-host` (CD50; the gate passes it when `ASSAY_GATE_ALLOW_SHARED_HOST=1`) other projects' `run-gate-*` containers are tolerated and named on stderr as `ASSAY_SQL_SHARED_HOST=<names>`, but another `run-gate-assay-sql-*` container is still `host busy`.
+it. Docker's `--cidfile` records the container ID only when this run creates
+it; all fixture operations and the outer cleanup address that ID, so renaming
+the fixture cannot redirect cleanup to a replacement at its old name. The SQL
+scratch directory has sticky write/search permission for the tester UID but
+does not allow listing. A random per-run ownership label binds both SQL
+container IDs to this invocation. `postgres.launch-attempted` distinguishes a
+confirmed prelaunch refusal, whose clone can be discarded, from an ambiguous
+postlaunch result without an ID, whose recovery evidence must be preserved. A
+planted cidfile or stale `postgres.removed` marker cannot authorize removal or
+discard recovery evidence. The SQL runner
+has its own cidfile and is also waited on and removed by ID; a container name
+conflict leaves the existing container untouched. Its host repository and Docker socket use Docker's
+`--mount` bind form, which refuses a missing daemon-side source instead of
+creating a phantom directory. Cleanup is attempted on every
+path, including SIGTERM, and an unconfirmed removal keeps the gate red. Before
+`docker run` the harness looks once at `docker ps`, excluding only the named
+qualification runner that contains it. Any other `run-gate-*` container makes
+the run **inconclusive** (exit 3, `host busy`); it never polls. With
+`--allow-shared-host` (CD50; the gate passes it when
+`ASSAY_GATE_ALLOW_SHARED_HOST=1`) other projects' `run-gate-*` containers are
+tolerated and named on stderr as `ASSAY_SQL_SHARED_HOST=<names>`, but another
+`run-gate-assay-sql-*` container is still `host busy`.
+The PostgreSQL fixture and qualification runner are removed with bounded
+Docker calls before the gate writes its receipt or prints its completion
+marker. A failed removal keeps the gate red and triggers the outer cleanup
+retry. The registered 5h outer timeout covers the sequential 60m tester and
+analysis lanes, the B145 probes and the SQL runner's 80m failsafe, with cleanup
+time remaining.
 
 **Two derivations, no assertion of the consumer's.** Each row's mutant is
 applied to a fresh database and its bucket is *derived*, never trusted: the
@@ -3210,13 +3393,15 @@ adopting only assay writes no `where`; one adopting only ciu writes no `judge`.
 ```toml
 schema_version = 2
 
+[defaults]
+env_passthrough = ["PATH"]
+
 [lanes.package]
 scope = "S1"
 rigor = ["R0","R1","R2","R3"]
 enforcement = "gate"
 argv = ["pytest", "tests/unit", "-q", "--cov-report=json:cov.json"]
 env = { MOCK_MODE = "true" }
-env_passthrough = ["PATH"]
 budget = "5m"
 allow_argv_append = false
 
@@ -3320,9 +3505,12 @@ flag* — it does not mean "at the lane's top level".
 | `budget` | a duration string, **parsed at load**, not merely present — a malformed budget discovered at run time is a failure the config layer could have caught |
 
 **`source_roots` are relative to the directory containing `assay.toml`** — the
-project root, not the repo root. The lane file must not need to know where it
-sits inside a monorepo, and a project that gets vendored one level deeper should
-not silently start measuring nothing. Reconciling that against git's own
+project root, not the repo root. Each root can be an existing directory or a
+single existing file. When a file is named, membership means that exact path;
+neighboring packages and files do not enter the lane's scope. The lane file
+must not need to know where it sits inside a monorepo, and a project that gets
+vendored one level deeper should not silently start measuring nothing.
+Reconciling that against git's own
 spellings (`git diff --relative` is cwd-relative; `git status --porcelain` is
 always repo-top-relative) is exactly what the core's prefix-boundary normaliser
 is for — see §11, and note that nyxloom's copy routes status paths through the
@@ -3738,18 +3926,26 @@ protecting any verdict.
   (`analysis`, tests in `analysis/tests/`, 100% line and branch). R2 for
   analysis is deliberately not claimed in this change; it is a follow-up
   (B131).
-- **The measured plan estimate lives here (CD1, B111).** `assay plan` keeps
-  its declared-budget estimate and only prints a stderr hint; the measured
-  projection is `assay analyze plan-estimate`
-  (`analysis/src/assay_analysis/plan_estimate.py`). It reads the plan's JSON
-  (which now carries `commit` and `tree`) and one progress stream with a
-  completed baseline, binds them through the commit, and prints
-  `baseline_s`, `per_candidate_s` and the projected worker and wall hours.
-  It imports no judge name, never classifies a candidate, and exits `2` on
-  unusable input.
 - **Schemas** stay in `src/assay/schemas/`; documented paths do not move.
 - The undocumented `import assay.analysis` is removed. A source checkout
   needs both `src` and `analysis/src` on `PYTHONPATH`.
+
+### Plan estimates bind lane and commit
+
+`assay plan` keeps its declared-budget estimate and only prints a stderr hint;
+the measured projection is `assay analyze plan-estimate`
+(`analysis/src/assay_analysis/plan_estimate.py`). It reads the plan's JSON
+(which carries `lane`, `commit` and `tree`) and one progress stream with a
+completed baseline, binds them through lane and commit, and prints `baseline_s`,
+`per_candidate_s` and the projected worker and wall hours. It imports no judge
+name, never classifies a candidate, and exits `2` on unusable input. A selected
+progress run from another lane is refused even when it shares the same commit;
+the result repeats the matched lane. Ingested R2 reports do not expose Assay's
+candidate inventory, so `assay plan` returns a named unsupported result and
+`plan-estimate` forwards that reason instead of manufacturing a count or a
+forecast. Consumers size the first ingested run from their existing CI job
+ceiling, then use observed elapsed time when revisiting that policy (see the
+[consumer procedure](CONSUMERS.md#size-an-ingested-javascript-r2-campaign-b137)).
 
 ### Mutation campaign closeout (B108 phase 1)
 

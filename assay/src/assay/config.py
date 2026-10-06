@@ -9,9 +9,11 @@ copies in the estate ship anti-pattern #1 — `default="src/nyxloom"`,
 `-source internal` — and when one of those literals is wrong the gate measures
 the wrong tree and **passes**.
 
-So: **this loader has no defaults at all.** Every value in a :class:`Lane` came
-out of the file. There is no key on a loaded object that the file did not
-declare, which is what :meth:`Lane.as_declared` exists to make mechanical.
+So: this loader has **no implicit lane defaults**. Every lane value came out
+of the file, except that an omitted lane ``env_passthrough`` may resolve from
+an explicitly declared project ``[defaults]`` table. There are no built-in
+names; :meth:`Lane.as_declared` keeps the lane table faithful to what that lane
+actually declared.
 
 The complete rejection surface, so it can be reviewed in one place:
 
@@ -27,8 +29,8 @@ duration                      ``budget`` that does not parse              A-052
 declared rigor is enforced    R1 without the five judge fields, R2        A-017,
                               without ``mutation``, R3 without            A-048
                               ``canary``
-source roots                  absolute, or not an existing directory      A-016,
-                              under the project root                      A-049
+source roots                  absolute, missing, or outside the project   B141,
+                              root; existing directories and files load   A-049
 unknown keys                  a key assay does not understand, in a       §12
                               lane table or in ``[…judge]``
 coverage format                ``judge.coverage.format`` not a key the    A-068
@@ -807,7 +809,7 @@ class JudgeConfig:
     #: exactly the strings the file declared, in file order
     source_roots: tuple[str, ...] | None
     #: those strings resolved against the project root (A-049), each verified
-    #: to be an existing directory (A-016)
+    #: to be an existing directory or file (A-016/B141)
     source_root_paths: tuple[Path, ...] | None
     fail_under: float | None
     allow_excluded: bool | None
@@ -1200,7 +1202,7 @@ class Lane:
     enforcement: str
     argv: tuple[str, ...]
     env: Mapping[str, str]
-    env_passthrough: tuple[str, ...]
+    env_passthrough: tuple[str, ...] | None
     #: the declared duration string, verbatim -- or (B067) the closed literal
     #: :data:`UNBOUNDED_BUDGET`
     budget: str
@@ -1219,14 +1221,12 @@ class Lane:
     #: -- REQUIRED, never defaulted: `None` on an R0-only lane, and the real
     #: `IsolationConfig` object on any lane declaring R1, R2, or R3. Every
     #: direct `Lane(...)` constructor must say one or the other explicitly;
-    #: there is no third, inferred value. Placed immediately before
-    #: `env_required` (the field order §3.2 specifies), which stays the ONLY
-    #: defaulted field.
+    #: there is no third, inferred value. Keep the explicit project-default
+    #: tuple appended at the end so established positional fields stay put.
     isolation: IsolationConfig | None
     #: (A-254) The subset of `env_passthrough` whose ABSENCE refuses the lane
     #: before its command runs. Defaults to empty, so every lane written before
-    #: this field existed is unchanged -- and it is LAST in the field order
-    #: because it is the only defaulted field on a positional dataclass.
+    #: this field existed is unchanged.
     env_required: tuple[str, ...] = ()
     #: (B010) Optional gate-environment probe. ``None`` means the lane is
     #: meaningful wherever it is invoked; a declared argv is executed in the
@@ -1253,6 +1253,20 @@ class Lane:
     #: which is what every lane written before this field existed carries, and
     #: what keeps A-073's exit-code rule the unchanged default for it.
     result_report: ResultReportConfig | None = None
+    #: (B140) Explicit project-level defaults from ``[defaults]``. Retained
+    #: separately from the lane declaration so ``as_declared`` remains an
+    #: exact reconstruction, while runtime consumers use
+    #: :attr:`effective_env_passthrough`.
+    env_passthrough_defaults: tuple[str, ...] = ()
+
+    @property
+    def effective_env_passthrough(self) -> tuple[str, ...]:
+        """Stable, deduplicated union of explicit project and lane lists."""
+        return tuple(
+            dict.fromkeys(
+                (*self.env_passthrough_defaults, *(self.env_passthrough or ()))
+            )
+        )
 
     def as_declared(self) -> dict[str, Any]:
         """Reconstruct the TOML table this lane was loaded from.
@@ -1268,10 +1282,11 @@ class Lane:
             "enforcement": self.enforcement,
             "argv": list(self.argv),
             "env": dict(self.env),
-            "env_passthrough": list(self.env_passthrough),
             "budget": self.budget,
             "allow_argv_append": self.allow_argv_append,
         }
+        if self.env_passthrough is not None:
+            declared["env_passthrough"] = list(self.env_passthrough)
         if self.env_required:
             declared["env_required"] = list(self.env_required)
         if self.environment_command is not None:
@@ -1298,7 +1313,8 @@ class LaneFile:
     #: the file itself, resolved
     path: Path
     #: the directory containing it — the PROJECT root, which is what
-    #: `source_roots` resolve against (A-049), and not the repo root
+    #: `source_roots` resolve against (A-049), and not the repo root. A root
+    #: may name either an existing directory or one regular file.
     project_root: Path
     schema_version: int
     lanes: Mapping[str, Lane]
@@ -1419,11 +1435,38 @@ def load_lane_file(path: Path) -> LaneFile:
     project_root = file_path.parent
     schema_version = _load_schema_version(document, file_path)
 
-    unknown = sorted(set(document) - {"schema_version", "lanes", "isolation"})
+    unknown = sorted(
+        set(document) - {"schema_version", "lanes", "isolation", "defaults"}
+    )
     if unknown:
         raise LaneConfigError(
             f"{file_path}: unknown top-level key(s): {', '.join(unknown)}; "
-            f"expected only: schema_version, lanes, isolation"
+            f"expected only: schema_version, lanes, isolation, defaults"
+        )
+
+    defaults_declared = "defaults" in document
+    env_passthrough_defaults: tuple[str, ...] = ()
+    if defaults_declared:
+        defaults = document["defaults"]
+        if not isinstance(defaults, dict):
+            raise LaneConfigError(
+                f"{file_path}: 'defaults' must be a table, got {_type_name(defaults)}"
+            )
+        unknown_defaults = sorted(set(defaults) - {"env_passthrough"})
+        if unknown_defaults:
+            raise LaneConfigError(
+                f"{file_path}: unknown [defaults] key(s): "
+                f"{', '.join(unknown_defaults)}; expected only: env_passthrough"
+            )
+        if "env_passthrough" not in defaults:
+            raise LaneConfigError(
+                f"{file_path}: [defaults] is present but missing required key "
+                f"'env_passthrough'"
+            )
+        env_passthrough_defaults = tuple(
+            _as_env_name_list(
+                defaults["env_passthrough"], str(file_path), "defaults.env_passthrough"
+            )
         )
 
     snapshot_limits, dirty_ignore = _load_project_snapshot_limits(
@@ -1448,7 +1491,14 @@ def load_lane_file(path: Path) -> LaneFile:
         )
 
     lanes = {
-        name: _load_lane(name, table, file_path, project_root)
+        name: _load_lane(
+            name,
+            table,
+            file_path,
+            project_root,
+            env_passthrough_defaults=env_passthrough_defaults,
+            defaults_declared=defaults_declared,
+        )
         for name, table in lanes_table.items()
     }
     return LaneFile(
@@ -1488,7 +1538,13 @@ def _load_schema_version(document: Mapping[str, Any], file_path: Path) -> int:
 
 
 def _load_lane(
-    name: str, table: Any, file_path: Path, project_root: Path
+    name: str,
+    table: Any,
+    file_path: Path,
+    project_root: Path,
+    *,
+    env_passthrough_defaults: tuple[str, ...] = (),
+    defaults_declared: bool = False,
 ) -> Lane:
     where = f"{file_path}: lane {name!r}"
     if not isinstance(table, dict):
@@ -1496,6 +1552,8 @@ def _load_lane(
 
     for field in REQUIRED_LANE_FIELDS:
         if field not in table:
+            if field == "env_passthrough" and defaults_declared:
+                continue
             raise LaneConfigError(f"{where}: missing required field {field!r}")
 
     unknown = sorted(
@@ -1552,8 +1610,13 @@ def _load_lane(
         )
 
     env = _as_str_table(table["env"], where, "env")
-    env_passthrough = _as_str_list(
-        table["env_passthrough"], where, "env_passthrough"
+    env_passthrough = (
+        _as_env_name_list(table["env_passthrough"], where, "env_passthrough")
+        if "env_passthrough" in table
+        else None
+    )
+    effective_env_passthrough = tuple(
+        dict.fromkeys((*env_passthrough_defaults, *(env_passthrough or ())))
     )
     # P15 (A-067 finding 9): a name declared in BOTH tables let the ambient
     # process environment silently override a value the lane declared as
@@ -1627,7 +1690,7 @@ def _load_lane(
     # only ever copies declared passthrough names, so requiring a name the lane
     # never asked for would refuse every run for a reason no environment could
     # satisfy. Caught at load, where a typo is cheap, rather than at run time.
-    unreachable = sorted(set(env_required) - set(env_passthrough))
+    unreachable = sorted(set(env_required) - set(effective_env_passthrough))
     if unreachable:
         raise LaneConfigError(
             f"{where}: 'env_required' names {unreachable} which "
@@ -1636,7 +1699,7 @@ def _load_lane(
             f"'env_passthrough' or drop it from 'env_required'."
         )
 
-    collisions = sorted(set(env) & set(env_passthrough))
+    collisions = sorted(set(env) & set(effective_env_passthrough))
     if collisions:
         raise LaneConfigError(
             f"{where}: {', '.join(collisions)} declared in both 'env' (a "
@@ -1653,14 +1716,18 @@ def _load_lane(
                 f"'infrastructure' and fixed 'env'; an injected fact must own its "
                 f"name exclusively"
             )
-        collisions = sorted(set(infrastructure) & set(env_passthrough))
+        collisions = sorted(set(infrastructure) & set(effective_env_passthrough))
         if collisions:
             raise LaneConfigError(
                 f"{where}: {', '.join(collisions)} declared in both "
                 f"'infrastructure' and 'env_passthrough'; an injected fact must "
                 f"own its name exclusively"
             )
-    if "/" not in argv[0] and "PATH" not in env and "PATH" not in env_passthrough:
+    if (
+        "/" not in argv[0]
+        and "PATH" not in env
+        and "PATH" not in effective_env_passthrough
+    ):
         raise LaneConfigError(
             f"{where}: argv[0] {argv[0]!r} is a bare executable name but PATH "
             f"is declared by neither 'env' nor 'env_passthrough'. Without an "
@@ -1754,7 +1821,8 @@ def _load_lane(
         argv=tuple(argv),
         environment_command=None if environment_command is None else tuple(environment_command),
         env=MappingProxyType(dict(env)),
-        env_passthrough=tuple(env_passthrough),
+        env_passthrough=None if env_passthrough is None else tuple(env_passthrough),
+        env_passthrough_defaults=tuple(env_passthrough_defaults),
         env_required=tuple(env_required),
         infrastructure=infrastructure,
         budget=budget,
@@ -3641,7 +3709,10 @@ def _resolve_source_root(raw: str, where: str, project_root: Path) -> Path:
     symlink inside the project root can point anywhere on disk regardless of
     what *raw* spells. ``Path.resolve()`` collapses BOTH ``..`` components
     and symlinks to their real final target, so comparing the two resolved
-    paths catches either escape route the same way.
+    paths catches either escape route the same way. File roots additionally
+    must be reachable without traversing a symlink: Git diffs name the link
+    and its target as different paths, while exact-file selection needs one
+    unambiguous tracked spelling.
     """
     if not raw:
         raise LaneConfigError(f"{where}: 'judge.source_roots' contains an empty path")
@@ -3652,13 +3723,15 @@ def _resolve_source_root(raw: str, where: str, project_root: Path) -> Path:
             f"to the directory containing assay.toml ({project_root})"
         )
     resolved = (project_root / candidate).resolve()
-    if not resolved.is_dir():
+    if not resolved.is_dir() and not resolved.is_file():
         # A-016/A-035: a typo'd root matches no changed file, so the gate
         # returns 0/0 PASS forever. That is a laundering gate, and none of the
-        # four existing copies guards it.
+        # four existing copies guards it. A regular file is also a valid
+        # root; path membership then selects only that exact file.
         raise LaneConfigError(
-            f"{where}: source root {raw!r} does not exist under the project root "
-            f"{project_root} (looked for {resolved})"
+            f"{where}: source root {raw!r} must name an existing directory or "
+            f"regular file under the project root ({project_root}); looked for "
+            f"{resolved}"
         )
     if not resolved.is_relative_to(project_root):
         raise LaneConfigError(
@@ -3667,6 +3740,18 @@ def _resolve_source_root(raw: str, where: str, project_root: Path) -> Path:
             f"'..' or a symlink) -- a lane must not be able to measure a "
             f"tree outside the project it declares"
         )
+    if resolved.is_file():
+        traversed = project_root
+        for part in candidate.parts:
+            if part == "..":
+                traversed = traversed.parent
+                continue
+            traversed = traversed / part
+            if traversed.is_symlink():
+                raise LaneConfigError(
+                    f"{where}: file source root {raw!r} resolves through a "
+                    f"symlink; declare the resolved in-project file path directly"
+                )
     return resolved
 
 
@@ -3706,6 +3791,17 @@ def _as_str_list(value: Any, where: str, field: str) -> list[str]:
                 f"{_type_name(item)}"
             )
     return list(value)
+
+
+def _as_env_name_list(value: Any, where: str, field: str) -> list[str]:
+    """Read an environment-name list with the verdict schema's nonempty rule."""
+    names = _as_str_list(value, where, field)
+    for index, name in enumerate(names):
+        if not name:
+            raise LaneConfigError(
+                f"{where}: '{field}[{index}]' must be a non-empty string"
+            )
+    return names
 
 
 def _load_posix_glob_list(

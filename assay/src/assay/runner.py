@@ -160,6 +160,7 @@ from .verdict import (
     rollup,
     supported_helper_roles,
 )
+from .redaction import redact_passthrough_text as _redact_passthrough_text
 
 __all__ = [
     "CommandPlan",
@@ -629,12 +630,18 @@ def _report_probe_refusal(
     # of `detail` for the same reason (A-439): the wire carries the ONE
     # line's message, never the context lines under it.
     if diagnostics is not None:
+        passthrough_values = tuple(
+            probe_result.plan.env_effective[name]
+            for name in probe_result.plan.env_passthrough
+            if name in probe_result.plan.env_effective
+        )
         for label, tail in (
             ("stderr", probe_result.stderr_tail),
             ("stdout", probe_result.stdout_tail),
         ):
             if tail:
-                print(f"  probe {label}: {tail.rstrip()}", file=diagnostics)
+                safe_tail = _redact_passthrough_text(tail, passthrough_values)
+                print(f"  probe {label}: {safe_tail.rstrip()}", file=diagnostics)
     return detail
 
 
@@ -651,21 +658,30 @@ def _decode_timeout_stream(raw: str | bytes | None) -> str | None:
     return raw
 
 
-def _bounded_tail(raw: str | None) -> tuple[str, int]:
-    """Keep the final *COMMAND_TAIL_BYTES* of captured text.
+def _bounded_tail(
+    raw: str | None,
+    *,
+    sensitive_values: Sequence[str] = (),
+    limit: int = COMMAND_TAIL_BYTES,
+) -> tuple[str, int]:
+    """Redact exact sensitive values, then keep the final *limit* bytes.
 
     The input is decoded by ``subprocess`` under ``text=True``, so the byte
     count is measured on its UTF-8 encoding: the same currency as the
     process's output and the artifact's stated bound. Undecodable child bytes
     have already become U+FFFD at that boundary; re-encoding them preserves
     the replacement character without inventing a second decode policy.
+    Redaction happens before truncation because a secret can cross the tail
+    boundary: masking only the retained suffix would then miss the complete
+    value and expose its remaining characters.
     """
     if raw is None or raw == "":
         return "", 0
-    encoded = raw.encode("utf-8")
-    if len(encoded) <= COMMAND_TAIL_BYTES:
-        return raw, 0
-    cutoff = len(encoded) - COMMAND_TAIL_BYTES
+    safe = _redact_passthrough_text(raw, sensitive_values)
+    encoded = safe.encode("utf-8")
+    if len(encoded) <= limit:
+        return safe, 0
+    cutoff = len(encoded) - limit
     while cutoff < len(encoded) and (encoded[cutoff] & 0xC0) == 0x80:
         cutoff += 1
     return encoded[cutoff:].decode("utf-8"), cutoff
@@ -732,6 +748,15 @@ class CommandPlan:
     cwd_declared: str | None = None
 
 
+def _plan_passthrough_values(plan: CommandPlan) -> tuple[str, ...]:
+    """Present raw values explicitly allowed through by *plan*."""
+    return tuple(
+        plan.env_effective[name]
+        for name in plan.env_passthrough
+        if name in plan.env_effective
+    )
+
+
 @record
 class CommandResult:
     """The real outcome of the R0 step -- append rejected, executable
@@ -784,13 +809,13 @@ def resolve_command_plan(
 ) -> CommandPlan:
     """Resolve what will run. Never launches anything.
 
-    *passthrough_source* is the ambient environment to read
-    ``lane.env_passthrough`` names FROM -- ``os.environ`` by default, but
-    injectable so a test proves "no ambient leak" without mutating real
-    process-global state (AUTHORING.md §3b.B). Only names the lane actually
-    declared in ``env_passthrough`` AND that are present in the source are
-    carried into ``env_effective``; everything else in the source is invisible
-    to the child, matching A-019's "declared-only" env contract.
+    *passthrough_source* is the ambient environment to read the effective
+    allowlist FROM -- ``os.environ`` by default, but injectable so a test
+    proves "no ambient leak" without mutating real process-global state
+    (AUTHORING.md §3b.B). Only names in the explicit project/lane
+    ``env_passthrough`` policy AND present in the source are carried into
+    ``env_effective``; everything else in the source is invisible to the child,
+    matching A-019's "declared-only" env contract.
 
     **B013:** when *lane* declares ``infrastructure``, those facts are resolved
     HERE, in the invoking process, before any snapshot or command exists.
@@ -874,7 +899,7 @@ def resolve_command_plan(
                     reason_code=ReasonCode.BAD_LANE_CONFIG,
                 )
             env_effective[name] = value
-    for name in lane.env_passthrough:
+    for name in lane.effective_env_passthrough:
         if name not in source:
             continue
         if name in env_effective:
@@ -901,7 +926,7 @@ def resolve_command_plan(
         argv_effective=argv_declared + argv_appended,
         env_declared=lane.env,
         env_effective=MappingProxyType(env_effective),
-        env_passthrough=tuple(lane.env_passthrough),
+        env_passthrough=lane.effective_env_passthrough,
         allow_argv_append=lane.allow_argv_append,
         budget_seconds=lane.budget_seconds,
         project_prefix=project_prefix,
@@ -1236,8 +1261,13 @@ def _execute_plan_inner(
         # is documented and typed to receive an already-decoded `str`; decode
         # here, at the one call site that actually receives `bytes`, so its
         # contract stays accurate everywhere else.
-        stdout_tail, stdout_dropped_bytes = _bounded_tail(_decode_timeout_stream(exc.stdout))
-        stderr_tail, stderr_dropped_bytes = _bounded_tail(_decode_timeout_stream(exc.stderr))
+        sensitive_values = _plan_passthrough_values(plan)
+        stdout_tail, stdout_dropped_bytes = _bounded_tail(
+            _decode_timeout_stream(exc.stdout), sensitive_values=sensitive_values
+        )
+        stderr_tail, stderr_dropped_bytes = _bounded_tail(
+            _decode_timeout_stream(exc.stderr), sensitive_values=sensitive_values
+        )
         # (B091/RW-33, P7 A3) `LivenessRunner`'s monitoring loop raises its
         # own `liveness.LivenessHungExpired` -- a `subprocess.TimeoutExpired`
         # subclass -- ONLY for an idle-stall kill, never for a genuine
@@ -1325,8 +1355,13 @@ def _execute_plan_inner(
     # target (A-131), which is why they sit adjacent with no comment between
     # them: that test collapses this conditional pair to its PASS arm to prove
     # `assay verify` alone cannot catch a universal-PASS producer bug.
-    stdout_tail, stdout_dropped_bytes = _bounded_tail(proc.stdout)
-    stderr_tail, stderr_dropped_bytes = _bounded_tail(proc.stderr)
+    sensitive_values = _plan_passthrough_values(plan)
+    stdout_tail, stdout_dropped_bytes = _bounded_tail(
+        proc.stdout, sensitive_values=sensitive_values
+    )
+    stderr_tail, stderr_dropped_bytes = _bounded_tail(
+        proc.stderr, sensitive_values=sensitive_values
+    )
     return CommandResult(
         plan=plan,
         outcome=Outcome.PASS if passed else Outcome.FAIL,
@@ -1526,6 +1561,7 @@ def _attribute_statements_for_lane(
     repo_top: Path,
     project_root: Path,
     remaining: git.Remaining | None,
+    sensitive_values: Sequence[str] = (),
     on_helper_invoked: Callable[[HelperInvocation], None] | None = None,
 ) -> CoverageProfile:
     """*profile* with its block-based records resolved to statement-granular
@@ -1642,7 +1678,12 @@ def _attribute_statements_for_lane(
         return attribute_statements(profile, {})
 
     rel_paths = [repo_path_by_raw_key[raw_key] for raw_key in to_attribute]
-    report = adapter.statement_blocks(repo_top, rel_paths, remaining=remaining)
+    report = adapter.statement_blocks(
+        repo_top,
+        rel_paths,
+        remaining=remaining,
+        sensitive_values=sensitive_values,
+    )
     if report is None:
         raise AssayError(
             f"the {adapter.name!r} adapter declares "
@@ -1680,6 +1721,31 @@ def _attribute_statements_for_lane(
             )
         blocks_by_key[raw_key] = blocks
     return attribute_statements(profile, blocks_by_key)
+
+
+def _source_root_file_keys(
+    source_roots: Sequence[str] | None,
+    *,
+    repo_top: Path,
+    project_root: Path,
+) -> tuple[str, ...]:
+    """Exact repo-relative spellings for declared roots that name files.
+
+    Resolved roots alone cannot distinguish a changed symlink sibling from
+    the file it points to. Preserve the declaration's lexical path for
+    exact-file selection while directory roots use resolved containment.
+    """
+    if source_roots is None:
+        return ()
+    prefix = PurePosixPath(project_root.relative_to(repo_top).as_posix())
+    file_keys: list[str] = []
+    for raw in source_roots:
+        if (project_root / raw).is_file():
+            normalized = PurePosixPath(
+                os.path.normpath(raw).replace(os.sep, "/")
+            )
+            file_keys.append((prefix / normalized).as_posix())
+    return tuple(file_keys)
 
 
 def _record_statement_position_helper(
@@ -1728,6 +1794,7 @@ def evaluate_r1(
     on_added_resolved: Callable[[diff.AddedLines], None] | None = None,
     profile: CoverageProfile | None = None,
     remaining: git.Remaining | None = None,
+    sensitive_values: Sequence[str] = (),
     on_helper_invoked: Callable[[HelperInvocation], None] | None = None,
     diagnostics: "TextIO | None" = None,
 ) -> Claim:
@@ -1909,6 +1976,7 @@ def evaluate_r1(
                 repo_top=repo_top,
                 project_root=project_root,
                 remaining=remaining,
+                sensitive_values=sensitive_values,
                 on_helper_invoked=on_helper_invoked,
             )
 
@@ -1951,6 +2019,11 @@ def evaluate_r1(
                 repo_top=repo_top,
                 project_root=project_root,
                 source_root_paths=judge.source_root_paths,
+                source_root_files=_source_root_file_keys(
+                    judge.source_roots,
+                    repo_top=repo_top,
+                    project_root=project_root,
+                ),
                 fail_under=judge.fail_under,
                 allow_excluded=judge.allow_excluded,
                 read_source_text=read_source_text,
@@ -2228,6 +2301,7 @@ def assemble_verdict(
         argv_effective=plan.argv_effective,
         env_declared=plan.env_declared,
         env_effective=plan.env_effective,
+        env_passthrough=plan.env_passthrough,
         env_effective_incomplete=env_effective_incomplete,
         scope=lane.scope,
         enforcement=lane.enforcement,
@@ -2359,7 +2433,7 @@ def refuse_lane(
             argv_effective=argv_effective,
             env_declared=MappingProxyType(dict(lane.env)),
             env_effective=MappingProxyType(dict(lane.env)),
-            env_passthrough=tuple(lane.env_passthrough),
+            env_passthrough=lane.effective_env_passthrough,
             allow_argv_append=lane.allow_argv_append,
             budget_seconds=lane.budget_seconds,
             project_prefix=project_prefix,
@@ -2494,6 +2568,40 @@ def _resolved_project_prefix(repo_top: Path, project_root: Path) -> PurePosixPat
     return (
         PurePosixPath(".") if relative == Path(".") else PurePosixPath(relative.as_posix())
     )
+
+
+def _require_exact_source_roots_tracked(
+    *,
+    repo: Path,
+    commit: str,
+    project_root: Path,
+    project_prefix: PurePosixPath,
+    source_roots: Sequence[str] | None,
+    remaining: Callable[[], float] | None = None,
+) -> None:
+    """Refuse exact-file roots absent from the judged commit.
+
+    Both ``assay run`` and ``assay plan`` resolve candidates from the committed
+    snapshot. A file root that exists only in an ignored caller worktree would
+    disappear there and could turn changed-line selection into a plausible
+    zero-candidate result, so both entry points use this same check.
+    """
+    if source_roots is None:
+        return
+    for raw_root in source_roots:
+        if not (project_root / raw_root).is_file():
+            continue
+        normalized = PurePosixPath(os.path.normpath(raw_root).replace(os.sep, "/"))
+        repo_path = (project_prefix / normalized).as_posix()
+        entry = git.tree_entry_info(repo, commit, repo_path, remaining=remaining)
+        if entry not in (("100644", "blob"), ("100755", "blob")):
+            raise AssayError(
+                f"exact-file source root {raw_root!r} must name a tracked regular "
+                f"file at judged commit {commit}; commit the file or choose a "
+                f"tracked source path",
+                outcome=Outcome.ERROR,
+                reason_code=ReasonCode.BAD_LANE_CONFIG,
+            )
 
 
 def _resolve_snapshot_worktree_integrity(
@@ -2731,8 +2839,8 @@ def _relocate_source_roots(
     :mod:`assay.canary`'s control/transform halves, rather than two
     independently drifting copies.
 
-    ``source_root_paths`` are RESOLVED, ABSOLUTE directories under the
-    CONSUMER's own project root; every judgement made inside a snapshot
+    ``source_root_paths`` are RESOLVED, ABSOLUTE directories or regular files
+    under the CONSUMER's own project root; every judgement made inside a snapshot
     compares them against paths under THAT snapshot's own project root.
     Only ``source_root_paths`` needs respelling: every other path-bearing
     field a snapshot is judged through is already project-relative and
@@ -3248,6 +3356,7 @@ def _mutation_targets_from_diff(
     adapter: LanguageAdapter,
     snapshot_repo_top: Path,
     source_root_paths: Sequence[Path],
+    source_root_files: Sequence[str] = (),
 ) -> tuple[mutation.MutationTarget, ...]:
     """R2's per-file candidate list, from P18's own landed
     :func:`~assay.mutation.resolve_mutation_targets` -- the SAME four gates
@@ -3290,6 +3399,7 @@ def _mutation_targets_from_diff(
         added,
         repo_top=snapshot_repo_top,
         source_root_paths=source_root_paths,
+        source_root_files=source_root_files,
         adapter=adapter,
         read_source_text=read_source_text,
     )
@@ -3954,6 +4064,7 @@ def _run_prepared_lane(
                     resolved_base=resolved_base,
                     profile=unit.profile,
                     diagnostics=diagnostics,
+                    sensitive_values=_plan_passthrough_values(plan),
                     on_base_resolved=resolved_base_holder.append,
                     on_added_resolved=added_holder.append,
                     remaining=deadline.remaining,
@@ -4224,6 +4335,11 @@ def _run_prepared_lane(
                         adapter=adapter,
                         snapshot_repo_top=baseline_snapshot.root,
                         source_root_paths=relocated_lane_r2.judge.source_root_paths,
+                        source_root_files=_source_root_file_keys(
+                            relocated_lane_r2.judge.source_roots,
+                            repo_top=baseline_snapshot.root,
+                            project_root=baseline_snapshot.project_root,
+                        ),
                     )
                 except AssayError as exc:
                     detail = announce_refusal(exc, diagnostics=diagnostics)
@@ -4915,6 +5031,11 @@ def _ingest_r2_report(
         run_cwd=run_cwd,
         repo_top=snapshot.root,
         source_root_paths=relocated_lane.judge.source_root_paths,
+        source_root_files=_source_root_file_keys(
+            relocated_lane.judge.source_roots,
+            repo_top=snapshot.root,
+            project_root=snapshot.project_root,
+        ),
         mode=lane.judge.mode or "changed_lines",
         added=added,
         targets=declared_targets,
@@ -5756,6 +5877,48 @@ def run_lane(
             budget_seconds=lane.budget_seconds, monotonic=monotonic
         )
 
+    # B141: config loading proves that an exact-file root exists in the
+    # invoking checkout, but ignored/untracked files are absent from the
+    # judged commit snapshot. Apply the same Git-tree check that `assay plan`
+    # uses, so its candidate inventory cannot disagree with this run.
+    judge = lane.judge
+    project_prefix: PurePosixPath | None = None
+    if (
+        adapter is not None
+        and judge is not None
+        and judge.source_roots is not None
+    ):
+        try:
+            repo_top = git.repo_top(repo, remaining=deadline.remaining)
+            project_prefix = _resolved_project_prefix(repo_top, project_root)
+            _require_exact_source_roots_tracked(
+                repo=repo,
+                commit=commit,
+                project_root=project_root,
+                project_prefix=project_prefix,
+                source_roots=judge.source_roots,
+                remaining=deadline.remaining,
+            )
+        except AssayError as exc:
+            file_root_detail = announce_refusal(exc, diagnostics=diagnostics)
+            return refuse_lane(
+                lane,
+                commit=commit,
+                status=exc.outcome,
+                reason_code=exc.reason_code,
+                argv_append=argv_append,
+                passthrough_source=passthrough_source,
+                project_prefix=project_prefix,
+                infrastructure_source=infrastructure_source,
+                infrastructure_environment=infrastructure_environment,
+                assay_version=assay_version,
+                judge_provenance=judge_provenance,
+                evidence=evidence,
+                declared_evidence=declared_evidence,
+                clock=clock,
+                detail=file_root_detail,
+            )
+
     # (B010) A lane may declare WHERE its command is meaningful. Run the probe
     # in the INVOKING environment before any repository or snapshot work and
     # refuse loudly on a nonzero exit, rather than surfacing an unrelated
@@ -5814,7 +5977,7 @@ def run_lane(
             argv_effective=tuple(lane.environment_command),
             env_declared=MappingProxyType(dict(lane.env)),
             env_effective=probe_env_effective,
-            env_passthrough=lane.env_passthrough,
+            env_passthrough=lane.effective_env_passthrough,
             allow_argv_append=False,
             budget_seconds=probe_timeout,
             project_prefix=None,
@@ -6031,7 +6194,8 @@ def run_lane(
         if diagnostics is not None:
             if reuse_source.cold_start:
                 print(
-                    f"assay: --reuse-from {str(reuse_from)!r} is a v12 cold "
+                    f"assay: --reuse-from {str(reuse_from)!r} is a "
+                    f"v{reuse_source.schema_version} cold "
                     "start; no prior candidates are reusable, so every "
                     "current candidate will run fully after baseline PASS",
                     file=diagnostics,

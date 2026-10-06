@@ -229,6 +229,7 @@ def native_outcome(**fields):
     independent checks of candidate identity derivation and reuse semantics.
     """
     from assay.candidate_identity import candidate_id_from_fields
+    from assay.resource_limits import CounterDelta, ResourceLimitEvidence
     from assay.verdict import MutantOutcome, MutationExecution
 
     path = fields["path"]
@@ -259,7 +260,28 @@ def native_outcome(**fields):
         source_sha256=source_sha256,
         mutated_file_sha256=mutated_file_sha256,
         execution=MutationExecution(mode="full"),
+        resource_limit_evidence=ResourceLimitEvidence(
+            pids_events_max=CounterDelta(before=0, after=0, delta=0),
+            memory_events_max=CounterDelta(before=0, after=0, delta=0),
+            memory_events_oom=CounterDelta(before=0, after=0, delta=0),
+            memory_events_oom_kill=CounterDelta(before=0, after=0, delta=0),
+            memory_events_oom_group_kill=CounterDelta(before=0, after=0, delta=0),
+        ),
     )
+
+
+def zero_resource_limit_evidence_dict() -> dict:
+    """Return a fresh raw-wire sample for a native candidate with no event."""
+    from assay.resource_limits import CounterDelta, ResourceLimitEvidence
+
+    zero = CounterDelta(before=0, after=0, delta=0)
+    return ResourceLimitEvidence(
+        pids_events_max=zero,
+        memory_events_max=zero,
+        memory_events_oom=zero,
+        memory_events_oom_kill=zero,
+        memory_events_oom_group_kill=zero,
+    ).to_dict()
 
 
 def native_mutation(**fields):

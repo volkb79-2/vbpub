@@ -392,6 +392,7 @@ class LanguageAdapter(Protocol):
         rel_paths: Sequence[str],
         *,
         remaining: Remaining | None = None,
+        sensitive_values: Sequence[str] = (),
     ) -> StatementBlockReport | None:
         """Where every coverage block over *rel_paths* begins its own
         statements — the FOURTH deliberate post-P05 protocol extension
@@ -411,6 +412,10 @@ class LanguageAdapter(Protocol):
         launches a subprocess samples it rather than inventing a timeout;
         ``None`` stays legal only for a genuine non-lane caller, exactly as
         it is for :func:`assay.git.run`.
+
+        *sensitive_values* are the present passthrough values whose exact
+        echoes must not appear in any helper refusal returned to the core.
+        Adapters that do not launch a subprocess ignore them.
 
         Two return shapes, the convention A-101 established for
         :meth:`statement_spans`:

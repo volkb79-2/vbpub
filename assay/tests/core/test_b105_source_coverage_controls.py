@@ -65,8 +65,13 @@ def test_go_adapter_passes_statement_block_request_and_deadline_to_oracle(
     expected = object()
     seen = {}
 
-    def derive(repo_top, rel_paths, *, remaining):
-        seen.update(repo_top=repo_top, rel_paths=rel_paths, remaining=remaining)
+    def derive(repo_top, rel_paths, *, remaining, sensitive_values):
+        seen.update(
+            repo_top=repo_top,
+            rel_paths=rel_paths,
+            remaining=remaining,
+            sensitive_values=sensitive_values,
+        )
         return expected
 
     monkeypatch.setattr(go_module, "derive_statement_blocks", derive)
@@ -75,6 +80,7 @@ def test_go_adapter_passes_statement_block_request_and_deadline_to_oracle(
         "repo_top": tmp_path,
         "rel_paths": paths,
         "remaining": deadline,
+        "sensitive_values": (),
     }
 
 
