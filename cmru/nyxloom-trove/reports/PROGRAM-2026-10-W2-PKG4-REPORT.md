@@ -62,3 +62,36 @@ of order), so the "wrong order fails" oracle is the lock-file order plus the arg
 7. `nyxloom/pyproject.toml` still vendors cli-extended via `package-dir` (nyxloom adoption is a separate wave); not touched.
 8. CHANGES.md untouched (controller folds): "cmru now requires cli-extended>=0.2.0 (release asset, never PyPI): install it first / `--no-index --find-links`; `pip install -e .` without `--no-deps`/`--no-index` now queries PyPI for it; skill ships in the wheel; build bootstrap verifies the released wheel by sha256".
 9. Checkpoint: I passed ~65 tool calls but cut only at this green boundary; no continuation file needed.
+
+## Review fix round 1
+
+Fix implementer: fresh Sonnet, base `825d6660c`, fix commit `eedf2f164` (+ this REPORT section). Edit/Write only for file contents; the symlink was made with `ln -s` (plus `mkdir -p` for its parent dir); `git checkout <file>` reverted plants. One note: I also ran a no-op `cat >> file <<EOF` with an empty body against a test file (wrote nothing; the file was unchanged). No docker build, `.env` never read.
+
+| Item | Change | Evidence (what I ran) |
+| --- | --- | --- |
+| B1 / D-1 | `build-initial-standalone.sh` stages `cmru-<ver>.dist-info/{METADATA,INSTALLER,RECORD}` in the same private stage `site/` as the unpacked cli-extended (on `PYTHONPATH`). `<ver>` is derived as the wheel build derives it: `SETUPTOOLS_SCM_PRETEND_VERSION_FOR_CMRU`/`SETUPTOOLS_SCM_PRETEND_VERSION` first, else `git describe --tags --long --match 'cmru-v*'` -> exact tag at distance 0, else next-patch `.devN+gHASH` (the setuptools-scm shape, same as `cli._dev_version_from_describe`); no derivable version exits 2. PKG-1's D2 stays pure. | New tests in `test_installed_wheel_subprocess.py`: with a real bare interpreter (`sys.base_prefix/bin/python3`, control proves no cmru dist and no cli_extended there) given exactly the PYTHONPATH the handlers launch got, plus the REAL `cli_extended` package zipped as the verified wheel, `importlib.metadata.version("cmru")` == `1.2.3` and `cli_support.cmru_registry(...)` builds with `identity.version == 1.2.3`; dev form `1.2.4.dev1+g<hash>`; override honoured; no tag -> exit 2 before any launch. |
+| B2 | `fetch-cli-extended.py` uses an opener whose `HTTPRedirectHandler.redirect_request` refuses any non-https target and any host outside `github.com`, `objects.githubusercontent.com`, `release-assets.githubusercontent.com`, `raw.githubusercontent.com` + the fetch URL's own host. | Tests: handler refusals (http, ftp, foreign, look-alike host), follow of https on each allowed host, and an end-to-end test through the REAL opener against a local fake origin that 302s to `http://` and to a foreign https host. Live note: the live pointer's download redirects to `release-assets.githubusercontent.com` over https (seen with `curl -L`), which the allowlist admits; the fetcher itself was not run live. |
+| D-3 | Dockerfile: `ARG CLI_EXTENDED_RESOLVE=pinned` (default), `CLI_EXTENDED_WHEEL_URL`/`_SHA256` default to the released 0.2.0 asset (`.../cli-extended-v0.2.0/cli_extended-0.2.0-py3-none-any.whl`, sha256 `84ec3db8...b58b`); `--build-arg CLI_EXTENDED_RESOLVE=latest` is the explicit opt-in; any other value fails the build. Bump procedure documented in the Dockerfile comment and `tester-unified/README.md`. A changed pin is a changed RUN text, which settles nit 6. | Pin source: ONE live GET of `cli-extended-latest/latest.json` (project cli-extended, version 0.2.0, tag cli-extended-v0.2.0, the asset and sha256 above). Disclosure: I issued the GET twice (the first, `curl -fsS`, printed nothing; the second `curl -sSL` returned the pointer). The wheel itself was NOT downloaded by me, so the digest is the pointer's and is not independently re-hashed here. Test `test_dockerfile_pins_the_released_asset_and_digest_by_default_and_latest_is_opt_in`. |
+| D-2 | `cmru/.claude/skills/cmru-cli -> ../../src/cmru/skills/cmru-cli` (relative symlink) until PKG-5's `cmru skills install`. | `test_checkout_skill_discovery_is_a_relative_symlink_to_the_packaged_skill` (symlink, target, resolves to the same SKILL.md, not under any setuptools package root). I did not rebuild a wheel for this; "wheel unchanged" rests on the symlink being outside the `where` roots plus the existing wheel-content tests. |
+| Nit 1 | guard test also rejects `"cli-extended"`/`'cli_extended'` as a quoted path component. | M24 plant below. |
+| Nit 2 | pointer `asset == basename(url)` and `version == filename version` cross-checked. | 4 parametrized tests. |
+| Nit 3 | `_at_least()` zero-pads both tuples. | 6 parametrized cases (`0.2` vs `0.2.0` both ways, etc.). |
+| Nit 5 | wheel download `OSError` -> `FetchError` (`fetch-cli-extended: cannot download <url>: ...`, exit 1), nothing written. | test. |
+| xfail | `test_git_auth` seam test is now `strict=True`. | Still `1 xfailed` in the suite. |
+
+Test side effect: `_bootstrap_tree` now tags its throw-away repo `cmru-v1.2.3`; the existing fake-interpreter tests are otherwise unchanged. A moved existing test (`..._odd_names`) now also sets `asset`, since the asset cross-check fires first.
+
+### Suite
+Full cmru suite via `pt.py` (serial, `flock test.lock nice -n 19 ionice -c 3`; PSI memory/cpu low before launch): `3323 passed, 2 skipped, 1 xfailed in 214.56s` on commit `eedf2f164` content. NOT run: the `coverage` and `canary` lanes (known to fail until the controller rebuilds the tester-unified image) and `installed-wheel`; no docker build.
+
+### Plants (applied by hand, focused tests run, reverted with `git checkout`; tree clean after)
+| Plant | Result |
+| --- | --- |
+| B1: dist-info dir renamed (`...notdist`, no dist identity staged) | KILLED: 3 failed (`..._stages_a_cmru_dist_info_...`, `..._derives_the_dev_version_...`, `..._honours_the_scm_pretend_version_override`) |
+| B2: redirect handler also allows `http` | KILLED: 3 failed (two `test_redirect_handler_refuses_non_https_and_foreign_hosts[http://...]`, `test_real_opener_refuses_an_http_redirect_...`) |
+| M24: `run_release_gate.py` re-adds `REPOSITORY_ROOT / "libraries" / "cli-extended" / "src"` | KILLED: `test_no_gate_or_bootstrap_config_puts_cli_extended_source_on_a_path[tools/run_release_gate.py]` |
+| Pin removed: Dockerfile `CLI_EXTENDED_WHEEL_SHA256=` empty | KILLED: `test_dockerfile_pins_the_released_asset_and_digest_by_default_and_latest_is_opt_in` |
+
+### For the controller
+- Remaining nit 4/7/8 need no code. Nit 7 (the moved `cli.py` stderr test in this package's file) must be watched at the PKG-1 merge.
+- After merge, re-verify the bootstrap end to end (real wheel-builder image); this round proved the dist identity only through the real `cmru_registry` in a bare interpreter, not through `wheel-build`.
