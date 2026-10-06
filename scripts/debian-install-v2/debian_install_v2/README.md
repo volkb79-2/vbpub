@@ -56,6 +56,16 @@ Stage2 appends both stdout and stderr to `stage2_output`
 (default `/root/custom_script.output2`); its systemd unit also records normal
 failures in journald. `status` shows persisted state and recent logs.
 
+`log_dir` (default `/var/log/debian-install`) is NOT written by the installer:
+nothing creates it or logs into it. Stage1 output goes to the provider's
+`/root/custom_script.output*` files, stage2 to `stage2_output`, failures to
+journald. `status` only lists files that happen to exist under `log_dir`, so the
+directory is normally absent on a host (live finding LT-F-v1001-08).
+
+The provider's `/root/custom_script` (and its `.output*` files) can contain the
+Mattermost webhook URL; stage1 chmods them to 0600 early (LT-F-v1001-07). The
+text must stay on disk (the provider re-reads it), so the mode is the protection.
+
 ## Host tuning notes
 
 - Docker cleanup (`run_docker_cleanup` / `docker_cleanup_max_age_hours`,

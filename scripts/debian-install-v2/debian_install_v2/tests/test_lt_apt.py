@@ -191,3 +191,40 @@ def test_io_benchmark_result_is_posted_exactly_once(tmp_path):
         posts = [s for s in sent if "io benchmark" in s.lower() or "io_benchmark:" in s]
         posts = [s for s in posts if "rbps" in s]
         assert len(posts) == 1, (verbose, sent)
+
+
+def test_stage1_chmods_custom_script_and_outputs_to_0600(tmp_path, monkeypatch):
+    """LT-F-v1001-07."""
+    root = tmp_path / "root"
+    root.mkdir()
+    names = ["custom_script", "custom_script.output", "custom_script.output2", "unrelated"]
+    for name in names:
+        (root / name).write_text("x")
+        (root / name).chmod(0o644)
+    config = Config(
+        state_dir=str(tmp_path / "s"), log_dir=str(tmp_path / "l"),
+        stage2_output=str(root / "custom_script.output2"),
+    )
+    inst = Installer(config, HostActions(dry_run=False), inspect_host=False)
+    monkeypatch.setattr(Installer, "_BOOTSTRAP_DIR", root)
+    inst._secure_bootstrap_files()
+    modes = {n: (root / n).stat().st_mode & 0o777 for n in names}
+    assert modes == {
+        "custom_script": 0o600, "custom_script.output": 0o600,
+        "custom_script.output2": 0o600, "unrelated": 0o644,
+    }
+
+
+def test_stage1_calls_secure_bootstrap_files_first(tmp_path, monkeypatch):
+    order = []
+    inst, _ = (lambda i: (i, None))(Installer(Config(state_dir=str(tmp_path / "s"), log_dir=str(tmp_path / "l")), HostActions(dry_run=True), inspect_host=False))
+    monkeypatch.setattr(inst, "_secure_bootstrap_files", lambda: order.append("secure"))
+
+    def stop():
+        order.append("next")
+        raise RuntimeError("stop")
+
+    monkeypatch.setattr(inst, "_configure_controller_ssh_key", stop)
+    with pytest.raises(RuntimeError):
+        inst._stage1()
+    assert order == ["secure", "next"]

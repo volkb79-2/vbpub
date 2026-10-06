@@ -2671,7 +2671,29 @@ MaxFileSec=1month
         self.actions.write_file(str(authorized_keys), content, 0o600)
         self._mark_step("controller_ssh_key_removed", "success", "no further controller access needed")
 
+    _BOOTSTRAP_DIR = Path("/root")
+
+    def _secure_bootstrap_files(self) -> None:
+        """chmod 0600 the provider's customScript and its output files.
+
+        LT-F-v1001-07: /root/custom_script contains the webhook URL and its
+        mode was never set by us. Missing files are fine (not every provider
+        path creates them).
+        """
+        if self.actions.dry_run:
+            return
+        root = self._BOOTSTRAP_DIR
+        candidates = {root / "custom_script", Path(self.config.stage2_output)}
+        candidates.update(root.glob("custom_script.output*"))
+        for path in sorted(candidates):
+            try:
+                if path.is_file():
+                    path.chmod(0o600)
+            except OSError as exc:
+                _LOG.warning("could not chmod 0600 %s: %s", path, exc)
+
     def _stage1(self) -> None:
+        self._secure_bootstrap_files()
         self._configure_controller_ssh_key()
         if self.config.run_apt_auto_upgrade:
             self._hold_apt_timers()

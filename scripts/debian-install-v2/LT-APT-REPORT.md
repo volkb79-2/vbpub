@@ -40,5 +40,14 @@ that the apt-get path literal exists once; timers held before the first apt-get 
 non-lock not retried; io benchmark posted once (verbose on and off). Existing tests that pinned the
 old apt-get argv were updated.
 
+## Added from the v1001 lane
+- LT-F-v1001-07: `Installer._secure_bootstrap_files()` runs first in `_stage1` and chmods 0600
+  `/root/custom_script`, `/root/custom_script.output*` and `stage2_output` (skipped in dry-run, missing
+  files ignored). The webhook text stays in the file (the provider owns it); README documents this.
+  Tests: real chmod on a tmp dir, and call order (first in stage1).
+- LT-F-v1001-08: CHECKED the code: nothing writes to `log_dir`; it is only read by the status/backup
+  listing (`installer.py` ~408). Resolution is a doc fix (README "Stage2 log" section), not code:
+  logs go to the provider's `custom_script.output*`, `stage2_output` and journald.
+
 ## Gate and plants
-See the hand-back message for verdicts and the plant table (filled by actual runs).
+Verdicts and the plant table are in the hand-back message (from actual runs on the final commit).
