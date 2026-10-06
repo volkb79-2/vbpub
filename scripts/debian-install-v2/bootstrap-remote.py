@@ -191,6 +191,31 @@ class BootstrapError(SystemExit):
         super().__init__(f"bootstrap-remote: {message}")
 
 
+PROVIDER_FILE_DIR = Path("/root")
+
+
+def restrict_provider_files(root: Path | None = None) -> None:
+    """chmod 0600 every `<root>/custom_script*` file (the provider's script,
+    custom_script.output and .output2). Best effort, never raises.
+
+    Called as the VERY FIRST action of main(), before config parsing or
+    anything else that can fail (LT-F-r1002-03): the script and its output can
+    hold the webhook URL, and an early failure used to leave a 0700 script and
+    a 0644 output behind.
+    """
+    base = PROVIDER_FILE_DIR if root is None else root
+    try:
+        candidates = sorted(base.glob("custom_script*"))
+    except OSError:
+        return
+    for path in candidates:
+        try:
+            if path.is_file() and not path.is_symlink():
+                path.chmod(0o600)
+        except OSError as exc:
+            print(f"bootstrap-remote: could not chmod 0600 {path}: {exc}", file=sys.stderr)
+
+
 def _env_bool(name: str) -> bool | None:
     value = os.environ.get(name)
     if value is None or value == "":
@@ -438,7 +463,8 @@ def install_wheel(url: str, sha256: str, install_dir: Path, *, debug: bool) -> P
 
 
 def main() -> int:
-    debug = bool(_env_bool("DEBUG_MODE"))
+    restrict_provider_files()  # LT-F-r1002-03: first action, before anything can fail
+    debug =bool(_env_bool("DEBUG_MODE"))
     repo_url = os.environ.get("REPO_URL", REPO_URL_DEFAULT).rstrip("/")
     branch = os.environ.get("REPO_BRANCH", REPO_BRANCH_DEFAULT)
     install_dir = Path(os.environ.get("INSTALL_DIR", INSTALL_DIR_DEFAULT))

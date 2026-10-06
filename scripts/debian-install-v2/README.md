@@ -226,6 +226,25 @@ timers are held and `apt-daily(-upgrade).service` have finished (waited for, up 
 and of apt; a failed run is a warning (step `apt_upgrade_at_install` = `warned`,
 with the last lines of its output) and never fails the install.
 
+### `never_reboot` and what it does not hold back
+
+`never_reboot=true` (and `auto_reboot_after_stage1=false`) only stops the
+INSTALLER from scheduling a reboot after stage1: the stage1 `reboot` step is
+reported as "disabled by configuration", and a new kernel installed by the
+stage1 upgrade is reported as "reboot required". The enabled stage2 unit still
+starts at the next boot, whoever causes that boot. It is not a hold on stage2.
+
+Provider-driven restarts are outside the installer's control. On netcup (live
+finding LT-F-r1002-04, run LT-04-run3) the provider's cloud-init ends with
+`Post-Script finished / restarting... / Poweroff requested`, so the host is
+restarted after the customScript returns REGARDLESS of `never_reboot`. The
+enabled stage2 unit then runs on that boot (about a minute after it), without
+any manual `systemctl start`, and the new kernel from the stage1 upgrade is the
+one that boots (6.12 to 7.2 in that run). To hold stage2 back on such a
+provider, disable the unit yourself in time (`systemctl disable
+vbpub-bootstrap-stage2.service`, or the `disable-stage2` verb) before the
+provider restart; `never_reboot` alone cannot do it.
+
 ### Stage2 launch and failure notification
 
 The stage2 systemd unit runs the installed entrypoint

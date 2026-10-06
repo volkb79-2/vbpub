@@ -114,6 +114,31 @@ def test_expand_payload_placeholders_leaves_opaque_script_unchanged(install_host
     assert install_host_mod._expand_payload_placeholders(payload) == payload
 
 
+def _v2_script(config):
+    import shlex
+    return "REPO_BRANCH=main VBPUB_CONFIG_EXTRA_JSON=" + shlex.quote(json.dumps(config)) + " python3 -c pass"
+
+
+def test_expand_refuses_retain_key_script_without_key_or_marker(install_host_mod):
+    # LT-05 attempt 2: right branch, no placeholder -> the script could never install a key.
+    payload = {"customScript": _v2_script({"retain_controller_ssh_key": True, "controller_ssh_pubkey": ""})}
+    with pytest.raises(ValueError, match="could never install a key"):
+        install_host_mod._expand_payload_placeholders(payload)
+
+
+def test_expand_accepts_retain_key_script_with_marker_or_explicit_key(install_host_mod, monkeypatch):
+    monkeypatch.setenv("CONTROLLER_SSH_PUBKEY", "ssh-ed25519 AAAAtest vbpub-controller-ephemeral")
+    marker = {"customScript": _v2_script({"retain_controller_ssh_key": True, "controller_ssh_pubkey": "{{CONTROLLER_SSH_PUBKEY}}"})}
+    assert "AAAAtest" in install_host_mod._expand_payload_placeholders(marker)["customScript"]
+    explicit = {"customScript": _v2_script({"retain_controller_ssh_key": True, "controller_ssh_pubkey": "ssh-ed25519 AAAAx c"})}
+    assert install_host_mod._expand_payload_placeholders(explicit) == explicit
+
+
+def test_expand_ignores_scripts_that_do_not_retain_a_key(install_host_mod):
+    payload = {"customScript": _v2_script({"retain_controller_ssh_key": False, "controller_ssh_pubkey": ""})}
+    assert install_host_mod._expand_payload_placeholders(payload) == payload
+
+
 def test_normalize_ssh_public_key_drops_comment(install_host_mod):
     assert install_host_mod._normalize_ssh_public_key("ssh-ed25519 AAAA... user@host") == "ssh-ed25519 AAAA..."
 

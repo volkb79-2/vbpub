@@ -563,6 +563,25 @@ bundle to `wizard --custom-script-file`, or copy the bundle's `customScript`
 string into a reviewed `target-host.jsonc`. Netcup only validates the generic
 controller-key marker and submits the resulting opaque command.
 
+**Provider restart and `never_reboot` (LT-F-r1002-04).** Netcup's cloud-init
+ends the customScript run with `Post-Script finished / restarting... / Poweroff
+requested`, so the host is restarted after the script returns no matter what the
+script's own reboot settings say. For debian-install-v2 this means
+`never_reboot=true` cannot hold stage2 back on netcup: the enabled stage2 unit
+runs automatically on the provider's restart (observed about a minute into that
+boot) and the kernel installed by the stage1 upgrade is the one that boots.
+`never_reboot` only stops the installer from scheduling its OWN reboot. See the
+`never_reboot` section of `../debian-install-v2/README.md`.
+
+**Key recipe check.** A debian-install-v2 customScript that sets
+`retain_controller_ssh_key=true` but carries neither a `controller_ssh_pubkey` nor
+the `{{CONTROLLER_SSH_PUBKEY}}` marker could never install a key; `build-customscript`
+refuses to build it, and `install-host.py` refuses to send one that was built
+elsewhere. Build with `--controller-ssh-placeholder`. Also note
+`build-customscript` prints which branch and commit the host will fetch (default
+`main`) and warns when the local checkout is on another branch; pass
+`--repo-branch` to test unmerged code.
+
 If the bundle declares `completionMarker`, the wizard carries it into task
 monitoring. For a file-driven target, provide the same generic contract
 explicitly, for example:

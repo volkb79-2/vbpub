@@ -36,7 +36,7 @@ WIZARD_SECTIONS = (
         "install",
         "Install behavior and paths",
         (
-            WizardField("log_dir", "Installer log directory"),
+            WizardField("log_dir", "Legacy log directory (not written by v2; logs are custom_script.output*, stage2 output, journald)"),
             WizardField("state_dir", "Persistent installer state directory"),
             WizardField("stage2_output", "Stage-two output log"),
             WizardField("auto_reboot_after_stage1", "Reboot automatically after stage one?", "boolean"),
