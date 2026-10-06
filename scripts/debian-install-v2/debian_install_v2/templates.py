@@ -83,7 +83,12 @@ Package: *
 Pin: release a=stable-security
 Pin-Priority: 550
 
-# Backports -- preferred over stable once a package is pulled from here
+# Backports -- priority 600 is ABOVE stable (500), so apt prefers the
+# backports version of EVERY package that has one, not only of packages
+# explicitly pulled with `-t`. Consequence (operator decision 2026-10-06,
+# deliberate): a `full` unattended upgrade moves the kernel (and every other
+# package with a backports build) to the backports series. Priority 100
+# would be the "only when explicitly requested" setting; this is not it.
 Package: *
 Pin: release a=stable-backports
 Pin-Priority: 600
@@ -620,17 +625,35 @@ After=network-online.target local-fs.target
 Wants=network-online.target
 ConditionPathExists={state_dir}/stage1_done
 ConditionPathExists=!{state_dir}/stage2_done
+OnFailure={failed_unit}
 
 [Service]
 Type=oneshot
 EnvironmentFile=-{env_file}
-LoadCredential={credentials_line}
-WorkingDirectory={working_directory}
-ExecStart={python} -m debian_install_v2.bootstrap resume --yes
+{load_credential_lines}WorkingDirectory={working_directory}
+# ONE launch path: the installed entrypoint puts the cli-extended wheel beside
+# it on sys.path. `python3 -m debian_install_v2...` bypasses that and crashes
+# with ModuleNotFoundError: cli_extended (live v1001 2026-10-06).
+ExecStart={python} {entrypoint} resume --yes
 TimeoutStartSec=infinity
 StandardOutput=append:{output}
 StandardError=append:{output}
 
 [Install]
 WantedBy=multi-user.target
+"""
+
+# Template unit started by OnFailure= of the stage2 unit (%i = failed unit
+# name). It must work when the failure IS a broken import path, so it runs the
+# stdlib-only notifier script directly, never the installer entrypoint.
+BOOTSTRAP_FAILED_SERVICE = """\
+[Unit]
+Description=vbpub bootstrap failure notifier for %i
+
+[Service]
+Type=oneshot
+EnvironmentFile=-{env_file}
+ExecStart={python} {notifier} %i
+StandardOutput=append:{output}
+StandardError=append:{output}
 """

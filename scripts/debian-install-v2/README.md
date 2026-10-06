@@ -145,6 +145,26 @@ release + `-updates` + `-security` + `-backports`), `apt_auto_upgrade_mode`
 (`full` / `security-only` / `notify-only`) driving an unattended-upgrades
 style timer.
 
+**Backports pin is 600, deliberately.** `/etc/apt/preferences.d/debian-priorities`
+pins `stable-backports` at 600, above stable (500), so apt prefers the backports
+version of EVERY package that has one, not only of packages pulled explicitly
+with `-t`. Consequence: a `full` unattended upgrade moves the kernel (and any
+other package with a backports build) to the backports series. This is an
+operator decision (2026-10-06). Priority 100 would be the "only when explicitly
+requested" setting.
+
+### Stage2 launch and failure notification
+
+The stage2 systemd unit runs the installed entrypoint
+(`python3 <install dir>/debian-install-v2.py resume --yes`), never
+`python3 -m debian_install_v2...`: only the entrypoint puts the
+`cli_extended-*.whl` beside it on `sys.path`. The unit has
+`OnFailure=vbpub-bootstrap-failed@%n.service`, which runs the stdlib-only
+`debian_install_v2/failure_notify.py`: it marks `state.json` `status=failed`
+(`failed_unit`, redacted `failed_journal_tail`) and posts a failure message via
+the configured backend, using the credential files under `/etc/vbpub/credentials`.
+`LoadCredential=` lines appear only in `credential_mode=systemd`.
+
 ### Docker
 
 Full Docker CE install from Docker's own official apt repo

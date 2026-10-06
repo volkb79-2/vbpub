@@ -14,7 +14,7 @@ linked tests are in [`cli-review.toml`](cli-review.toml), and review findings in
 | --- | --- | --- |
 | `debian-install-v2.py` | operator, systemd stage-two unit | the registered CLI below; needs `cli_extended` from a wheel beside the script or an installed one |
 | `bootstrap-remote.py` | cloud-init / operator one-liner | stdlib-only fetcher; environment variables, not a CLI; installs the released `cli_extended` wheel beside the entrypoint |
-| `python -m debian_install_v2.bootstrap` | tests and developers | same registered CLI as the entrypoint |
+| `python -m debian_install_v2.bootstrap` | in-repo tests only; never on a host or in a unit | same registered CLI as the entrypoint, but without the wheel `sys.path` setup |
 | `inuse-partition-editor.py` | installer internals, operators | standalone stdlib script, not a `cli_extended` consumer |
 
 ## Semantic table

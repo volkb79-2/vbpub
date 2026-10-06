@@ -31,6 +31,7 @@ from .templates import (
     APT_UPDATE_NOTIFY_SERVICE,
     APT_UPDATE_NOTIFY_TIMER,
     BOOT_NOTIFY_SERVICE,
+    BOOTSTRAP_FAILED_SERVICE,
     CGROUP2_FLAGS_SCRIPT,
     CGROUP2_FLAGS_SERVICE,
     DOCKER_CLEANUP_SERVICE,
@@ -53,6 +54,7 @@ from .templates import (
 
 
 SUPPORTED_RELEASES = {"trixie", "forky"}
+FAILED_UNIT_NAME = "vbpub-bootstrap-failed@.service"
 SWAP_TYPE_GUID = "0657fd6d-a4ab-43c4-84e5-0933c84b4f4f"
 _LOG = logging.getLogger("debian_install_v2.installer")
 
@@ -2097,15 +2099,19 @@ MaxFileSec=1month
 
     def _install_stage2(self) -> None:
         python = shutil.which("python3") or "/usr/bin/python3"
-        # parents[1], not [2]: installer.py lives at .../debian-install-v2/
-        # debian_install_v2/installer.py, so parents[1] is the directory that
-        # directly contains the debian_install_v2 package — `-m` prepends
-        # WorkingDirectory to sys.path, so `-m debian_install_v2.bootstrap`
-        # only resolves from there. parents[2] was one level too high
-        # (ModuleNotFoundError on every real host — see DEBIAN-INSTALLv2-REVIEW.md P1#4).
+        # installer.py lives at .../debian-install-v2/debian_install_v2/
+        # installer.py, so parents[1] is the install directory: it holds the
+        # entrypoint debian-install-v2.py and the cli_extended wheel. The unit
+        # runs the ENTRYPOINT (never `-m debian_install_v2...`, which bypasses
+        # the entrypoint's wheel sys.path setup: LT-F-v1001-01).
         working_directory = str(Path(__file__).resolve().parents[1])
+        entrypoint = f"{working_directory}/debian-install-v2.py"
+        notifier = f"{working_directory}/debian_install_v2/failure_notify.py"
         env_file = "/etc/vbpub/bootstrap.env"
-        credentials_line = "-"
+        # One LoadCredential= line per credential, and NONE in root-storage
+        # mode (a literal `LoadCredential=-` logs "Couldn't read inherited
+        # credential '-'" on every start: LT-F-v1001-04).
+        credential_lines: list[str] = []
         backend = self._notify_backend()
         # vbpub-notify picks its backend from whichever credential file exists,
         # so a re-run that switches backend (or to `none`) must REMOVE the other
@@ -2130,7 +2136,7 @@ MaxFileSec=1month
                 )
                 credential_note = "root-only Mattermost webhook credential installed"
             else:
-                credentials_line = "mattermost_webhook_url:/etc/vbpub/credentials/mattermost_webhook_url"
+                credential_lines = ["mattermost_webhook_url:/etc/vbpub/credentials/mattermost_webhook_url"]
                 credential_note = "systemd LoadCredential Mattermost webhook configured"
         elif backend == "telegram":
             # /usr/local/sbin/vbpub-notify (NOTIFY_SCRIPT) is called from
@@ -2153,10 +2159,10 @@ MaxFileSec=1month
                 self.actions.write_file(str(credential_dir / "telegram_chat_id"), self.config.telegram_chat_id + "\n", 0o600)
                 credential_note = "root-only Telegram credentials installed"
             else:
-                credentials_line = (
-                    f"telegram_bot_token:/etc/vbpub/credentials/telegram_bot_token "
-                    f"telegram_chat_id:/etc/vbpub/credentials/telegram_chat_id"
-                )
+                credential_lines = [
+                    "telegram_bot_token:/etc/vbpub/credentials/telegram_bot_token",
+                    "telegram_chat_id:/etc/vbpub/credentials/telegram_chat_id",
+                ]
                 credential_note = "systemd LoadCredential Telegram credentials configured"
         else:
             credential_note = "notifications disabled"
@@ -2171,10 +2177,19 @@ MaxFileSec=1month
             state_dir=self.config.state_dir,
             env_file=env_file,
             python=python,
+            entrypoint=entrypoint,
             output=self.config.stage2_output,
             working_directory=working_directory,
-            credentials_line=credentials_line,
+            load_credential_lines="".join(f"LoadCredential={line}\n" for line in credential_lines),
+            failed_unit=FAILED_UNIT_NAME.replace("@.", "@%n."),  # %n = the failing unit's own name
         )
+        failed_service = BOOTSTRAP_FAILED_SERVICE.format(
+            env_file=env_file,
+            python=python,
+            notifier=notifier,
+            output=self.config.stage2_output,
+        )
+        self.actions.write_file(f"/etc/systemd/system/{FAILED_UNIT_NAME}", failed_service)
         self.actions.write_file("/etc/systemd/system/vbpub-bootstrap-stage2.service", service)
         marker = Path(self.config.state_dir) / "stage1_done"
         if not self.actions.dry_run:

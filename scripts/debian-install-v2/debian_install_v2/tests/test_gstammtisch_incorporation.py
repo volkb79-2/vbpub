@@ -233,7 +233,10 @@ def test_stage2_unit_module_path_and_workdir_resolve(tmp_path):
     unit = actions.dry_run_writes["/etc/systemd/system/vbpub-bootstrap-stage2.service"]
     assert "ExecStart=" in unit
     exec_line = next(line for line in unit.splitlines() if line.startswith("ExecStart="))
-    assert exec_line.endswith("-m debian_install_v2.bootstrap resume --yes")
+    # LT-S2: the unit goes through the installed entrypoint (it sets up the
+    # cli-extended wheel import path); `-m debian_install_v2...` crashed live.
+    assert exec_line.endswith("/debian-install-v2.py resume --yes")
+    assert "-m debian_install_v2" not in exec_line
     workdir_line = next(line for line in unit.splitlines() if line.startswith("WorkingDirectory="))
     workdir = workdir_line.removeprefix("WorkingDirectory=")
     # Regression, 2026-09-09: this used to assert workdir.endswith(
