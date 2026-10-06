@@ -538,6 +538,9 @@ def test_unit_activation_time_parses_systemctl_and_fails_open(monkeypatch):
     fake_run.out = "ExecMainStartTimestamp=@1790000000\n"
     assert real(STAGE2) == failure_notify.datetime.fromtimestamp(1790000000, failure_notify.timezone.utc)
     assert "ExecMainStartTimestamp" in calls[-1] and STAGE2 in calls[-1]
+    # Without the flag systemd prints a locale date the parser rejects, so every
+    # failure would fail open and post twice.
+    assert "--timestamp=unix" in calls[-1]
     for odd in ("ExecMainStartTimestamp=\n", "ExecMainStartTimestamp=n/a\n", "", "garbage"):
         fake_run.out = odd
         assert real(STAGE2) is None
