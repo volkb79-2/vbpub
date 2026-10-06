@@ -164,3 +164,22 @@ flock/nice/ionice, verdicts read in a separate step from the output files:
   the corrected pattern actually installing and booting 7.x, zswap/iocost on 7.x).
 - Release-stanza values other than backports/Docker/trixie are from knowledge.
 - The "u-u ignores pins" explanation in section 3 is a hypothesis fitting the log lines.
+
+## Controller rulings (applied; supersede sections 1-3 where they differ)
+
+1. Testing/unstable: option 1. `suite=testing` and `suite=unstable` are removed from
+   the unattended-upgrades origins; `full` now means release, `-updates`, `-security`,
+   `-backports`. Apt sources and pins are untouched (manual `-t testing` still works).
+   Tests: testing/unstable stanzas moved to the never-allowed set (checked in full and
+   security-only); `test_gstammtisch_incorporation` full-mode test inverted. Plant
+   (testing pattern re-added): killed by `test_foreign_origins_never_allowed[full-testing]`
+   and `test_apt_auto_upgrade_full_mode_excludes_testing_and_unstable` (2 failed), reverted.
+   README documents the new meaning of `full`.
+2. `DPkg::Lock::Timeout "600";` stays in the 51 config; README states the side effect
+   (interactive apt waits up to 600 s for the dpkg lock while unattended-upgrades runs).
+3. A failed install-time upgrade stays non-fatal: step status is now `warned` (was
+   `failed`) and the stage1-complete post carries "⚠️ apt upgrade failed (<mode>),
+   install continued". Test updated.
+
+Gates for the rulings: see the verdict lines below.
+
