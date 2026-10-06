@@ -92,4 +92,6 @@ by a full-suite run and reverted: output tail dropped from the message -> 2 fail
 output-tail redaction removed -> 2 failed (end-to-end, redaction unit test); duplicate guard removed -> 1 failed
 (`test_duplicate_guard_skips_the_post_when_the_installer_just_announced`).
 
-Gates: see below.
+Gates on commit `d1ae51382` (clean tree, foreground, flock/nice/ionice, verdicts read separately):
+debian-install-v2 `r0-r1` PASS exit 0 (777 passed, 11 skipped); netcup `suite` PASS exit 0 (683 passed).
+r2, the VM lane and live hosts were not run.
