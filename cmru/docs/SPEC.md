@@ -1379,59 +1379,105 @@ deterministic (byte-identical for identical config) from both a source checkout 
 installed wheel. The CMRU wheel MUST include the template resource and `cli-extended` runtime
 package. The gate MUST build/install that wheel into an isolated environment, invoke its
 `cmru get-py` console script from outside the source checkout, and compile the emitted
-installer. Any unreplaced `[[...]]` placeholder triggers a warning.
+installer. Any unreplaced `[[...]]` placeholder is a render error (exit 2), never a warning.
+Rendering is a single `[[NAME]]` pass; every value that lands in code goes through
+`json.dumps` (a bad value, such as a `"` in the GitHub owner, is refused with exit 2), values
+that land in docstring/message text must be plain names, and the installer fields have a
+grammar: absolute `install_dir_system`, relative `install_dir_user`/`entrypoint`/`preserve`
+without `..`, `asset_suffix == ".tar.xz"`, plain file names for `manifest_name`/`signature_name`,
+plain command names for `required_commands`/`launchers`, and a 56-character base64
+`manifest_pubkey`.
 
 **S6.2** Commands emitted:
 
 ```
-get.py install  --config HOST.toml [--version TAG] [--scope system|user]
-get.py update   [--version TAG] [--scope system|user]
+get.py install  [--config HOST.toml] [--version TAG] [--scope system|user] [--variant NAME]
+get.py update   [--version TAG] [--scope system|user] [--variant NAME]
 get.py status   [--scope system|user]
 get.py rollback [--version TAG] [--scope system|user]
 ```
 
+`--config FILE` is installed as `<root>/shared/host.toml` (mode 0600, written atomically) once
+the release is live, and is handed to the adapter as `--config` during the transaction;
+without it the adapter gets `<root>/shared/host.toml`. There is no `--manifest-pubkey` flag:
+the key is pinned in the rendered `get.py` (S6.15).
+
 **S6.3** Transactional pipeline (install / update):
 
-1. **Pre-flight** — check `required_commands` BEFORE any network I/O (exit 3 if missing).
-2. **Resolve** — resolve the highest-semver `TAG_PREFIX*` release via the GitHub Releases API,
-   or use `--version`. Public requests carry **no** Authorization header. Private assets are
-   resolved by API asset-ID with the Authorization header stripped before the CDN redirect.
-3. **Download** — fetch `<tag><asset_suffix>` + its `.sha256` sidecar. For a multi-variant
-   release the selected variant (S6.12) changes the asset name to
-   `<tag>-<variant><asset_suffix>` (+ matching `.sha256`).
-4. **Verify SHA256** — recompute and compare; mismatch → exit 1, before extraction.
-5. **Verify minisign** — if `--manifest-pubkey` is supplied (or pubkey in host config),
-   extract `manifest_name` + `signature_name` from the bundle and run
-   `minisign -Vm manifest.json -P <pubkey>` (or `-p <pubkey-file>`). Failure → exit 1.
-6. **Stage** — extract into `<root>/releases/<tag>.staging/` with `filter="data"` (py≥3.12)
-   plus a pre-scan that rejects: absolute paths, `..` traversal, device nodes, absolute
-   symlinks, and symlink/hardlink traversal escapes.
-7. **Install wheels** — if `installer.wheels` is non-empty, create `<root>/venv` via
-   `python3 -m venv` and `venv/bin/pip install --no-index <wheel>` for each glob match.
-   Wheel sha256s from the manifest are verified before pip install (exit 1 on mismatch).
-8. **Invoke adapter** (`bootstrap` on install, `apply` on update) — if `entrypoint` is set.
-   Non-zero exit aborts before the `current` swap (previous release stays live).
-9. **Atomic swap** — `os.symlink` to a temp name + `os.replace` onto `current`.
-10. **Finalize** — rename `.staging` → final release dir; prune old releases (keep 2 by default).
+The pipeline is **fail-closed** (S6.15): every verification failure is exit 1 and leaves
+`<root>` as it was.
+
+1. **Pre-flight** — `required_commands`, `python3-venv` (when wheels are configured) and,
+   when a `manifest_pubkey` is configured, the `minisign` binary, ALL before any network I/O
+   (exit 3 if missing). System scope needs root (exit 3).
+2. **Lock + read state** — `flock` on `<root>/.lock`; read `state.json`; delete leftover
+   `.incomplete` release dirs (crash recovery).
+3. **Resolve** — `--version X` installs exactly X (no "latest" lookup happens). Without it the
+   highest-semver `TAG_PREFIX*` release is resolved and the resolved tag is printed. The tag
+   must be `<prefix><version>` made of `[A-Za-z0-9._+-]` (exit 2 otherwise). Re-running the
+   current version and variant is a no-op that re-verifies the recorded manifest digest.
+4. **Download + SHA256** — fetch `<tag><asset_suffix>` + its `.sha256` sidecar (for a
+   multi-variant release `<tag>-<variant><asset_suffix>`, S6.12). The sidecar must be exactly
+   `<64 hex>[  <asset name>]`; a mismatch is exit 1, before extraction. HTTPS only, on every
+   redirect hop (host allowlist); the token is never forwarded across a redirect.
+5. **Read + verify the manifest** — the bundle must have exactly one top-level directory;
+   `manifest_name` (and `signature_name`) are read straight from it into memory. When a
+   `manifest_pubkey` is configured the signature must verify (S6.15). The manifest must parse,
+   have `schema_version` 1 and, when it carries `tag`/`version`, they must equal the requested
+   tag. These in-memory bytes are the ONLY manifest used afterwards.
+6. **Build the release** at its final path `<root>/releases/<tag>-<manifest12>[-<variant>]/`,
+   marked `.incomplete`: extract the bundle to `tree/` (`filter="data"` plus a pre-scan that
+   refuses the bundle on absolute paths, `..`, device nodes, absolute/escaping links; the
+   manifest and signature are not extracted), write the verified `manifest.json` (+ `.minisig`),
+   check every manifest `files` entry (the adapter MUST be listed, or the install is refused),
+   link `preserve` paths, then install wheels (S6.16).
+7. **Invoke adapter** (`bootstrap` on install, `apply` on update/migration) — if `entrypoint`
+   is set. Non-zero exit aborts before the swap.
+8. **Commit** — write `release.json`, then `.complete` (last), then atomically swap `current`,
+   then write `state.json` atomically. Any failure before the swap deletes the new release dir.
+9. **After the swap** — install `--config`, write launchers (S6.17), persist the variant,
+   prune: only `current` and `previous` are kept.
 
 **S6.4** Release layout:
 
 ```
-<root>/releases/<tag>/    # immutable dir per installed version
-<root>/current            # symlink → releases/<current-tag>  (atomic swap)
-<root>/shared/            # preserved config/state (never inside releases/)
-<root>/venv/              # private interpreter; bundled wheels live here
+<root>/releases/<tag>-<manifest12>[-<variant>]/
+    tree/            # extracted bundle (the adapter's --release-root)
+    venv/            # this release's own interpreter (venvs are not relocatable)
+    wheelhouse/ requirements.lock    # the verified wheels and their hash lock
+    manifest.json [manifest.json.minisig]   # exactly the verified bytes
+    release.json     # {name, tag, variant, manifest_sha256}
+    .complete        # written last; `.incomplete` while building
+<root>/current        # symlink -> releases/<name>  (atomic swap)
+<root>/state.json     # {schema, current, previous, history}  (atomic write)
+<root>/bin/<cmd>      # launchers -> ../current/venv/bin/<cmd>
+<root>/shared/        # preserved config/state (host.toml, .variant); never inside releases/
 ```
 
 `<root>` = `install_dir_system` (system scope) or `$XDG_DATA_HOME/<install_dir_user>` /
-`~/.local/share/<install_dir_user>` (user scope).
+`~/.local/share/<install_dir_user>` (user scope). If the process dies between the symlink swap
+and the state write, the next run reconciles `state.json` from the `current` target's own
+`release.json`. A corrupt `state.json` or a dangling `current` is refused (exit 1).
 
-**S6.5** Preserve: files in `installer.preserve` are copied to `<root>/shared/` before
-staging and symlinked back into the new release dir after extraction. They survive across
-updates and rollbacks.
+**Pre-W1 layout (migration).** A host installed by the older template (`current` symlink, no
+`state.json`, content directly in `releases/<tag>/`, one shared `<root>/venv`) is **migrated
+by the next `install` or `update`**: the new release is built beside the old one, `current`
+is swapped atomically, and only then are the old release dirs and the shared `<root>/venv`
+removed. The legacy release becomes neither `previous` nor history (it has no per-release venv
+or digest), so the first migrated host has no rollback target until its next update;
+`rollback` says so and exits 1. A failed migration leaves the legacy install untouched and
+working. `status` marks such a host `pre-W1 layout`.
 
-**S6.6** Rollback: `get.py rollback [--version TAG]` re-points `current` to the previous
-(or named) release dir and re-runs the adapter with `action=rollback`.
+**S6.5** Preserve: files in `installer.preserve` are copied from the live release's `tree/` to
+`<root>/shared/` after the new bundle has verified, and symlinked back into the new `tree/`.
+They survive across updates and rollbacks.
+
+**S6.6** Rollback: `get.py rollback` goes to `state.previous`, which must be `.complete` and
+is re-verified (recorded manifest digest, signature when a key is configured, adapter and
+`files` hashes) before the adapter runs `action=rollback` and `current` is swapped, using
+that release's own venv. `state.previous` becomes the release rolled away from, so a second
+rollback toggles back. `--version TAG` selects a recorded release of that tag from `previous`
+or the history, if its directory still exists (pruning keeps only `current` and `previous`).
 
 **S6.7** Scope-exclusive lock (`flock` on `<root>/.lock`) serialises concurrent invocations.
 SIGINT/SIGTERM handler cleans up staging dir and releases the lock.
@@ -1439,11 +1485,14 @@ SIGINT/SIGTERM handler cleans up staging dir and releases the lock.
 **S6.8** Adapter invocation contract (Seam 1):
 
 ```
-<root>/venv/bin/python <root>/current/<entrypoint> <action> \
-    --release-root <root>/releases/<tag> \
+<release>/venv/bin/python <release>/tree/<entrypoint> <action> \
+    --release-root <release>/tree \
     --config <root>/shared/host.toml \
-    --manifest <root>/releases/<tag>/manifest.json
+    --manifest <release>/manifest.json
 ```
+
+(`<release>` = `<root>/releases/<name>`; without wheels there is no venv and the adapter runs
+under the installer's own interpreter.)
 
 `<action>` ∈ `{bootstrap, apply, health, rollback}`. Non-zero adapter exit → exit 1.
 The GitHub token is **stripped** from the child-process environment.

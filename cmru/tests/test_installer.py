@@ -583,44 +583,24 @@ class TestVerification:
         # should not raise
         _verify_sha256(asset, sidecar)
 
-    def test_minisign_failure_aborts_exit_1(self, tmp_path):
+    # minisign verification is exercised with the REAL binary in test_installer_w1.py
+    # (TestSignature); a mocked subprocess cannot show that a key or comment is honoured.
+
+    def test_minisign_command_uses_P_for_the_pinned_key(self, tmp_path):
+        """The key is passed as `-P <base64>` (never `-p -`, INS-05/R12 note)."""
         ns = self._get_ns()
-        _verify_minisign = ns["_verify_minisign"]
-
-        manifest = tmp_path / "manifest.json"
-        manifest.write_text("{}")
-        sig = tmp_path / "manifest.json.minisig"
-        sig.write_text("bad sig")
-
-        # Mock subprocess.run to simulate minisign failure
-        def fake_run(cmd, **kw):
-            r = mock.MagicMock()
-            r.returncode = 1
-            r.stderr = "signature verification failed"
-            return r
-
-        with mock.patch("subprocess.run", side_effect=fake_run):
-            with pytest.raises(SystemExit) as exc:
-                _verify_minisign(manifest, sig, "RWS...")
-            assert exc.value.code == 1
-
-    def test_minisign_success_passes(self, tmp_path):
-        ns = self._get_ns()
-        _verify_minisign = ns["_verify_minisign"]
-
-        manifest = tmp_path / "manifest.json"
-        manifest.write_text("{}")
-        sig = tmp_path / "manifest.json.minisig"
-        sig.write_text("good sig")
+        seen = []
 
         def fake_run(cmd, **kw):
-            r = mock.MagicMock()
-            r.returncode = 0
-            r.stderr = ""
-            return r
+            seen.append(cmd)
+            return mock.MagicMock(returncode=1, stderr="no", stdout="")
 
         with mock.patch("subprocess.run", side_effect=fake_run):
-            _verify_minisign(manifest, sig, "RWS...")  # should not raise
+            with pytest.raises(SystemExit):
+                ns["_verify_minisign"](tmp_path / "m", tmp_path / "s", "RWKEY", "t", "d")
+        cmd = seen[0]
+        assert cmd[:2] == ["minisign", "-V"] and cmd[cmd.index("-P") + 1] == "RWKEY"
+        assert "-p" not in cmd
 
     # ── _verify_wheel_sha256 — Seam-3 schema (SPEC B) ────────────────────────
 
@@ -662,9 +642,8 @@ class TestVerification:
             _verify_wheel_sha256(wheel, manifest, "cmru")
         assert exc.value.code == 1
 
-    def test_verify_wheel_sha256_missing_distribution_warns_skips(self, tmp_path):
-        """Missing distribution entry in manifest emits a warning and skips verification."""
-        import io
+    def test_verify_wheel_sha256_missing_distribution_is_fatal(self, tmp_path):
+        """INS-02: a missing distribution entry is EXIT_FAIL (it used to warn and skip)."""
         ns = self._get_ns()
         _verify_wheel_sha256 = ns["_verify_wheel_sha256"]
 
@@ -674,8 +653,9 @@ class TestVerification:
         # Manifest has no 'cmru' key at all
         manifest = {"schema_version": 1}
 
-        # Should warn and return without raising or calling fatal
-        _verify_wheel_sha256(wheel, manifest, "cmru")
+        with pytest.raises(SystemExit) as exc:
+            _verify_wheel_sha256(wheel, manifest, "cmru")
+        assert exc.value.code == 1
 
     def test_verify_wheel_sha256_ciu_distribution(self, tmp_path):
         """Correctly verifies ciu wheel using manifest['ciu']['sha256']."""
@@ -706,16 +686,17 @@ class TestVerification:
         wheel.write_bytes(b"content")
         real_digest = _sha256(wheel)
 
-        # Provide the old broken schema only — the function must ignore it
-        # and fall back to warning (no sha256 found via distribution key).
+        # Provide the old broken schema only — the function must ignore it; with no
+        # per-distribution entry the install is refused (fail closed).
         manifest = {
             "schema_version": 1,
             "wheels": {wheel.name: {"sha256": real_digest}},
             # intentionally no 'cmru' distribution entry
         }
 
-        # With the fixed implementation, this warns and skips (no crash, no mismatch).
-        _verify_wheel_sha256(wheel, manifest, "cmru")
+        with pytest.raises(SystemExit) as exc:
+            _verify_wheel_sha256(wheel, manifest, "cmru")
+        assert exc.value.code == 1
 
 
 # ─── Extraction safety tests ─────────────────────────────────────────────────
@@ -817,6 +798,8 @@ class TestTransaction:
         """Create a minimal .tar.xz bundle + .sha256 sidecar."""
         asset_name = f"{tag}.tar.xz"
         asset = workdir / asset_name
+        files = dict(files)
+        files["manifest.json"] = json.dumps({"schema_version": 1, "tag": tag})
         with tarfile.open(asset, "w:xz") as tf:
             for rel_path, content in files.items():
                 full = f"{tag}/{rel_path}"
@@ -851,24 +834,20 @@ class TestTransaction:
         self._make_bundle(bundle_dir, tag, {"VERSION": "0.1.0"})
         self._patch_download(ns, bundle_dir, tag)
 
-        # Monkeypatch minisign check (skip)
-        ns["MANIFEST_NAME"] = ""
-        ns["SIGNATURE_NAME"] = ""
-
         root = Path(ns["INSTALL_DIR_SYSTEM"])
         root.mkdir(parents=True, exist_ok=True)
 
         args = mock.MagicMock()
         args.version = tag
         args.scope = "system"
-        args.manifest_pubkey = None
+        args.config = None
 
         with mock.patch.object(sys.modules.get("os", os), "geteuid", return_value=0):
             ns["do_install"](args, token=None)
 
         current = root / "current"
         assert current.is_symlink()
-        assert current.resolve().name == tag
+        assert current.resolve().name.startswith(tag + "-")  # <tag>-<manifest12>
 
     def test_update_changes_current(self, tmp_path, monkeypatch):
         ns = self._build_ns(tmp_path)
@@ -882,15 +861,13 @@ class TestTransaction:
         self._make_bundle(bundle_dir, tag2, {"VERSION": "0.2.0"})
         self._patch_download(ns, bundle_dir, tag1)
 
-        ns["MANIFEST_NAME"] = ""
-        ns["SIGNATURE_NAME"] = ""
         root = Path(ns["INSTALL_DIR_SYSTEM"])
         root.mkdir(parents=True, exist_ok=True)
 
         args1 = mock.MagicMock()
         args1.version = tag1
         args1.scope = "system"
-        args1.manifest_pubkey = None
+        args1.config = None
 
         with mock.patch.object(sys.modules.get("os", os), "geteuid", return_value=0):
             ns["do_install"](args1, token=None)
@@ -900,13 +877,13 @@ class TestTransaction:
         args2 = mock.MagicMock()
         args2.version = tag2
         args2.scope = "system"
-        args2.manifest_pubkey = None
+        args2.config = None
 
         with mock.patch.object(sys.modules.get("os", os), "geteuid", return_value=0):
             ns["do_update"](args2, token=None)
 
         current = root / "current"
-        assert current.resolve().name == tag2
+        assert current.resolve().name.startswith(tag2 + "-")
 
     def test_rollback_restores_previous(self, tmp_path, monkeypatch):
         ns = self._build_ns(tmp_path)
@@ -919,8 +896,6 @@ class TestTransaction:
         self._make_bundle(bundle_dir, tag1, {"VERSION": "0.1.0"})
         self._make_bundle(bundle_dir, tag2, {"VERSION": "0.2.0"})
 
-        ns["MANIFEST_NAME"] = ""
-        ns["SIGNATURE_NAME"] = ""
         root = Path(ns["INSTALL_DIR_SYSTEM"])
         root.mkdir(parents=True, exist_ok=True)
 
@@ -928,7 +903,7 @@ class TestTransaction:
         args1 = mock.MagicMock()
         args1.version = tag1
         args1.scope = "system"
-        args1.manifest_pubkey = None
+        args1.config = None
         with mock.patch.object(sys.modules.get("os", os), "geteuid", return_value=0):
             ns["do_install"](args1, token=None)
 
@@ -936,7 +911,7 @@ class TestTransaction:
         args2 = mock.MagicMock()
         args2.version = tag2
         args2.scope = "system"
-        args2.manifest_pubkey = None
+        args2.config = None
         with mock.patch.object(sys.modules.get("os", os), "geteuid", return_value=0):
             ns["do_update"](args2, token=None)
 
@@ -947,7 +922,7 @@ class TestTransaction:
             ns["do_rollback"](args_rb, token=None)
 
         current = root / "current"
-        assert current.resolve().name == tag1
+        assert current.resolve().name.startswith(tag1 + "-")
 
     def test_interrupted_update_leaves_current_live(self, tmp_path, monkeypatch):
         """Staging dir exists but current still points to previous when update is interrupted."""
@@ -961,8 +936,6 @@ class TestTransaction:
         self._make_bundle(bundle_dir, tag1, {"VERSION": "0.1.0"})
         self._make_bundle(bundle_dir, tag2, {"VERSION": "0.2.0"})
 
-        ns["MANIFEST_NAME"] = ""
-        ns["SIGNATURE_NAME"] = ""
         root = Path(ns["INSTALL_DIR_SYSTEM"])
         root.mkdir(parents=True, exist_ok=True)
 
@@ -971,7 +944,7 @@ class TestTransaction:
         args1 = mock.MagicMock()
         args1.version = tag1
         args1.scope = "system"
-        args1.manifest_pubkey = None
+        args1.config = None
         with mock.patch.object(sys.modules.get("os", os), "geteuid", return_value=0):
             ns["do_install"](args1, token=None)
 
@@ -987,7 +960,7 @@ class TestTransaction:
         args2 = mock.MagicMock()
         args2.version = tag2
         args2.scope = "system"
-        args2.manifest_pubkey = None
+        args2.config = None
         with mock.patch.object(sys.modules.get("os", os), "geteuid", return_value=0):
             try:
                 ns["do_update"](args2, token=None)
@@ -996,7 +969,7 @@ class TestTransaction:
 
         # current must still point to tag1
         current = root / "current"
-        assert current.resolve().name == tag1
+        assert current.resolve().name.startswith(tag1 + "-")
 
     def test_user_scope_path(self, tmp_path, monkeypatch):
         """User scope resolves to XDG_DATA_HOME/<install_dir_user>."""
@@ -1040,12 +1013,30 @@ class TestAdapter:
             install_dir_user="demo",
             entrypoint="scripts/bootstrap.py",
             required_commands=[],
+            wheel_specs=[("vendor/x-*.whl", "x")],  # wheels => the adapter runs in the venv
             manifest_name="manifest.json",
             signature_name="manifest.json.minisig",
         )
         ns: dict = {}
         exec(compile(src, "<rendered-get.py>", "exec"), ns)
         return ns
+
+    def test_adapter_without_wheels_runs_under_the_installer_python(self, tmp_path):
+        from cmru.getpy import render_get_py
+        ns: dict = {}
+        exec(compile(render_get_py(
+            project_name="demo", repo_owner="o", repo_name="r", tag_prefix="demo-v",
+            install_dir_system="/opt/demo", install_dir_user="demo",
+            entrypoint="a.py"), "<g>", "exec"), ns)
+        release = tmp_path / "rel" / "tree"
+        release.mkdir(parents=True)
+        (release / "a.py").touch()
+        seen = []
+        with mock.patch("subprocess.run",
+                        side_effect=lambda cmd, **kw: seen.append(cmd) or mock.Mock(returncode=0)):
+            ns["_invoke_adapter"]("apply", release, tmp_path, tmp_path / "venv", None)
+        assert seen[0][0] == sys.executable
+        assert seen[0][seen[0].index("--manifest") + 1] == str(release.parent / "manifest.json")
 
     def test_adapter_invoked_with_correct_argv(self, tmp_path):
         ns = self._build_ns_with_adapter(tmp_path)

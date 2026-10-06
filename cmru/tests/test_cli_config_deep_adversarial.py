@@ -11,9 +11,11 @@ def test_installer_config_validates_and_preserves_explicit_values():
         "demo",
         {
             "install_dir_system": "/opt/demo",
-            "install_dir_user": "~/.local/demo",
-            "asset_suffix": ".tar.zst",
+            "install_dir_user": "demo-leaf",
+            "asset_suffix": ".tar.xz",
             "entrypoint": "demo",
+            "manifest_pubkey": "RWQf6LRCGA9i53mlYecO4IzT51TGPpvWucNSCh1CBM0QTaLn73Y7GFO3",
+            "launchers": ["demo"],
             "required_commands": ["tar"],
             "preserve": ["config.toml"],
             "manifest_name": "release.json",
@@ -22,8 +24,32 @@ def test_installer_config_validates_and_preserves_explicit_values():
         },
     )
     assert parsed.install_dir_system == "/opt/demo"
-    assert parsed.asset_suffix == ".tar.zst"
+    assert parsed.asset_suffix == ".tar.xz"
     assert parsed.wheels[0].distribution == "demo"
+    assert parsed.launchers == ["demo"] and parsed.manifest_pubkey.startswith("RWQ")
+
+
+@pytest.mark.parametrize(
+    "override, message",
+    [
+        ({"asset_suffix": ".tar.zst"}, "asset_suffix"),
+        ({"install_dir_system": "opt/demo"}, "install_dir_system"),
+        ({"install_dir_user": "/abs"}, "install_dir_user"),
+        ({"entrypoint": "../x.py"}, "entrypoint"),
+        ({"manifest_pubkey": "short"}, "manifest_pubkey"),
+        ({"manifest_pubkey": 5}, "manifest_pubkey"),
+        ({"launchers": "demo"}, "launchers"),
+        ({"launchers": ["a b"]}, "launchers"),
+        ({"launchers": ["demo"], "wheels": []}, "launchers"),
+    ],
+)
+def test_installer_config_grammar_refusals(override, message, capsys):
+    raw = {"install_dir_system": "/opt/demo", "install_dir_user": "demo",
+           "wheels": [{"path": "vendor/demo-*.whl", "distribution": "demo"}], **override}
+    with pytest.raises(SystemExit) as exc:
+        config._parse_installer("demo", raw)
+    assert exc.value.code == 2
+    assert message in capsys.readouterr().err
 
 
 @pytest.mark.parametrize(
