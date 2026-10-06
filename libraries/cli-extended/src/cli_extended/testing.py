@@ -25,7 +25,10 @@ def _child_environment(
     env: Mapping[str, str | None] | None,
     pythonpath: Sequence[Path | str],
     library_path: bool,
+    isolated: bool = False,
 ) -> dict[str, str]:
+    if isolated and (pythonpath or library_path):
+        raise ValueError("isolated=True cannot be combined with pythonpath or library_path")
     if not str(home):
         raise ValueError("home must be a non-empty directory")
     home_path = Path(home)
@@ -52,9 +55,11 @@ def _child_environment(
     # be a whole site-packages that shadows the consumer's own copy.
     paths = [str(_LIBRARY_ROOT)] if library_path else []
     paths.extend(str(item) for item in pythonpath)
-    if child.get("PYTHONPATH"):
+    if child.get("PYTHONPATH") and not isolated:
         paths.append(child["PYTHONPATH"])
-    if paths:
+    if isolated:
+        child.pop("PYTHONPATH", None)
+    elif paths:
         child["PYTHONPATH"] = os.pathsep.join(paths)
     for key, value in (env or {}).items():
         if value is None:
@@ -74,16 +79,31 @@ def _run(
     timeout: float,
     pythonpath: Sequence[Path | str],
     library_path: bool,
+    isolated: bool = False,
 ) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         command,
-        env=_child_environment(home, scrub_prefixes, env, pythonpath, library_path),
+        env=_child_environment(
+            home, scrub_prefixes, env, pythonpath, library_path, isolated
+        ),
         cwd=cwd,
         text=True,
         capture_output=True,
         check=False,
         timeout=timeout,
     )
+
+
+def _interpreter_command(
+    python: str | None,
+    python_args: Sequence[str],
+    isolated: bool,
+    tail: list[str],
+) -> list[str]:
+    if isinstance(python_args, str):
+        raise ValueError("python_args must be a sequence of strings, not one string")
+    args = [*(["-I"] if isolated else []), *python_args]
+    return [python or sys.executable, *args, *tail]
 
 
 def invoke_script(
@@ -98,6 +118,8 @@ def invoke_script(
     timeout: float = 60,
     pythonpath: Sequence[Path | str] = (),
     library_path: bool = False,
+    python_args: Sequence[str] = (),
+    isolated: bool = False,
 ) -> subprocess.CompletedProcess[str]:
     """Run ``script`` in a subprocess with a hermetic environment.
 
@@ -116,10 +138,17 @@ def invoke_script(
     ``CLAUDE_CONFIG_DIR`` and every variable starting with a ``scrub_prefixes``
     entry are removed. ``env`` is applied last; a ``None`` value deletes the
     key. ``timeout`` is only a failsafe.
+
+    ``python_args`` are interpreter options placed before the script (for
+    example ``("-S",)``). ``isolated=True`` is the "library not installed"
+    probe: it adds ``-I`` (ignore ``PYTHON*`` variables, user site and the
+    script directory) and drops the inherited ``PYTHONPATH`` from the child
+    environment; it cannot be combined with ``pythonpath`` or
+    ``library_path`` (``ValueError``). CLI-EXT-19.
     """
 
     return _run(
-        [python or sys.executable, str(script), *argv],
+        _interpreter_command(python, python_args, isolated, [str(script), *argv]),
         home=home,
         scrub_prefixes=scrub_prefixes,
         env=env,
@@ -127,6 +156,7 @@ def invoke_script(
         timeout=timeout,
         pythonpath=pythonpath,
         library_path=library_path,
+        isolated=isolated,
     )
 
 
@@ -142,11 +172,13 @@ def invoke_module(
     timeout: float = 60,
     pythonpath: Sequence[Path | str] = (),
     library_path: bool = False,
+    python_args: Sequence[str] = (),
+    isolated: bool = False,
 ) -> subprocess.CompletedProcess[str]:
     """The ``python -m MODULE`` twin of :func:`invoke_script`."""
 
     return _run(
-        [python or sys.executable, "-m", module, *argv],
+        _interpreter_command(python, python_args, isolated, ["-m", module, *argv]),
         home=home,
         scrub_prefixes=scrub_prefixes,
         env=env,
@@ -154,6 +186,7 @@ def invoke_module(
         timeout=timeout,
         pythonpath=pythonpath,
         library_path=library_path,
+        isolated=isolated,
     )
 
 

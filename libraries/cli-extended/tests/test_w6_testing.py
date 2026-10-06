@@ -178,6 +178,42 @@ def test_cx27_library_path_true_prepends_the_imported_library(tmp_path, monkeypa
                     prefix + "/inherited", prefix + "/inherited"]
 
 
+def test_cx19_python_args_precede_the_target(tmp_path, monkeypatch):
+    commands = []
+    monkeypatch.setattr(
+        testing_module.subprocess, "run", lambda command, **kw: commands.append(command)
+    )
+    invoke_script("x.py", ["a"], home=tmp_path, python="/py", python_args=("-S", "-B"))
+    invoke_module("m", ["a"], home=tmp_path, python="/py", python_args=["-S"])
+    invoke_script("x.py", [], home=tmp_path, python="/py", isolated=True,
+                  python_args=("-S",))
+    assert commands == [
+        ["/py", "-S", "-B", "x.py", "a"],
+        ["/py", "-S", "-m", "m", "a"],
+        ["/py", "-I", "-S", "x.py"],
+    ]
+    with pytest.raises(ValueError, match="not one string"):
+        invoke_script("x.py", [], home=tmp_path, python_args="-S")  # type: ignore[arg-type]
+
+
+def test_cx19_isolated_drops_inherited_pythonpath_in_a_real_child(tmp_path, monkeypatch):
+    script = tmp_path / "probe.py"
+    script.write_text(
+        "import json, os, sys\n"
+        "print(json.dumps({'pp': os.environ.get('PYTHONPATH'),"
+        " 'flags_isolated': sys.flags.isolated}))\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("PYTHONPATH", "/inherited")
+    plain = invoke_script(script, [], home=tmp_path)
+    assert json.loads(plain.stdout) == {"pp": "/inherited", "flags_isolated": 0}
+    iso = invoke_script(script, [], home=tmp_path, isolated=True)
+    assert json.loads(iso.stdout) == {"pp": None, "flags_isolated": 1}
+    for kwargs in ({"pythonpath": ["/x"]}, {"library_path": True}):
+        with pytest.raises(ValueError, match="isolated=True cannot be combined"):
+            invoke_script(script, [], home=tmp_path, isolated=True, **kwargs)
+
+
 def test_invoke_script_runs_in_cwd(tmp_path):
     work = tmp_path / "work"
     work.mkdir()

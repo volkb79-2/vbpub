@@ -336,8 +336,23 @@ class VerbSpec:
     surface_id: str | None = None
     dry_run: bool = False
     constraints: tuple[Constraint, ...] = ()
+    dry_run_help: str | None = None
 
     def __post_init__(self) -> None:
+        if self.dry_run_help is not None:
+            if (
+                not isinstance(self.dry_run_help, str)
+                or not self.dry_run_help.strip()
+                or "\n" in self.dry_run_help
+                or "\r" in self.dry_run_help
+            ):
+                raise ValueError(
+                    f"verb {self.name!r} dry_run_help must be a non-empty single-line string"
+                )
+            if not self.dry_run:
+                raise ValueError(
+                    f"verb {self.name!r} declares dry_run_help but not dry_run=True"
+                )
         if not isinstance(self.constraints, tuple) or not all(
             isinstance(item, Constraint) for item in self.constraints
         ):
@@ -487,6 +502,9 @@ class VerbSpec:
         return tuple(sections)
 
 
+DRY_RUN_HELP = "show what would change without changing anything"
+
+
 def _common_option_specs(
     *,
     include_json: bool,
@@ -494,6 +512,7 @@ def _common_option_specs(
     include_confirmation: bool,
     include_traceback: bool,
     include_dry_run: bool,
+    dry_run_help: str | None = None,
 ) -> tuple[OptionSpec, ...]:
     """Return common option metadata for generated help surfaces."""
 
@@ -583,7 +602,7 @@ def _common_option_specs(
         options.append(
             OptionSpec(
                 ("--dry-run",),
-                "show what would change without changing anything",
+                dry_run_help or DRY_RUN_HELP,
                 group="CONFIRMATION",
                 parser_kwargs={"action": "store_true"},
             )
@@ -829,6 +848,7 @@ class HelpCatalog:
                         include_confirmation=verb.confirmation_enabled,
                         include_traceback=self.include_traceback,
                         include_dry_run=verb.dry_run,
+                        dry_run_help=verb.dry_run_help,
                     ),
                     *(option for option in verb.options if not option.hidden),
                 )
@@ -1152,6 +1172,7 @@ def add_common_options(
     suppress_defaults: bool = False,
     include_traceback: bool = False,
     include_dry_run: bool = False,
+    dry_run_help: str | None = None,
 ) -> None:
     """Add the standard long options without introducing ``-h`` aliases."""
 
@@ -1168,6 +1189,7 @@ def add_common_options(
                 include_confirmation=include_confirmation,
                 include_traceback=include_traceback,
                 include_dry_run=include_dry_run,
+                dry_run_help=dry_run_help,
             )
         )
     help_group = parser.add_argument_group("HELP AND VERSION")
@@ -1256,7 +1278,7 @@ def add_common_options(
                 "--dry-run",
                 action="store_true",
                 default=default,
-                help="show what would change without changing anything",
+                help=dry_run_help or DRY_RUN_HELP,
             )
     for library_action in parser._actions[first_library_action:]:
         library_action._cli_extended_common = True
@@ -1633,6 +1655,9 @@ class CliRegistry:
             ),
             include_traceback=report_mode,
             include_dry_run=any_dry_run,
+            dry_run_help=(
+                self._verbs[0].dry_run_help if self.single_command else None
+            ),
         )
         self._add_option_specs(parser, self.global_options)
         if catalog is not None:
@@ -1675,6 +1700,7 @@ class CliRegistry:
                     suppress_defaults=True,
                     include_traceback=report_mode,
                     include_dry_run=verb.dry_run,
+                    dry_run_help=verb.dry_run_help,
                 )
                 verb_flags = {
                     flag for option in verb.options for flag in option.flags

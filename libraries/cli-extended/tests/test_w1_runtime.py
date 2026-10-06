@@ -84,8 +84,68 @@ def test_resolve_requires_a_source():
     with pytest.raises(ValueError) as info:
         _resolve()
     assert str(info.value) == (
-        "CliIdentity.resolve needs a distribution, a version_file, or both"
+        "CliIdentity.resolve needs a distribution, a version_file, "
+        "a version_probe, or a combination"
     )
+
+
+# ------------------------------------------------ CLI-EXT-24 version_probe
+
+
+def test_cx24_probe_none_is_unresolved_and_listed(monkeypatch):
+    _installed(monkeypatch, {})
+    with pytest.raises(VersionLookupError) as info:
+        _resolve(distribution="x", version_probe=lambda: None)
+    assert str(info.value) == (
+        "distribution 'x' is not installed; version probe returned None"
+    )
+
+
+def test_cx24_probe_resolves_without_installed_distribution(monkeypatch):
+    _installed(monkeypatch, {})
+    ident = _resolve(distribution="x", version_probe=lambda: " 3.4.5-12-gabc \n")
+    assert ident.version == "3.4.5-12-gabc"
+    assert _resolve(version_probe=lambda: "1.0.0").version == "1.0.0"
+
+
+def test_cx24_probe_agreeing_with_metadata_resolves(monkeypatch):
+    _installed(monkeypatch, {"dist": "1.2.3"})
+    assert _resolve(distribution="dist", version_probe=lambda: "1.2.3").version == "1.2.3"
+
+
+def test_cx24_probe_disagreeing_with_metadata_names_both_values(monkeypatch):
+    _installed(monkeypatch, {"dist": "7.20.0"})
+    with pytest.raises(VersionLookupError) as info:
+        _resolve(distribution="dist", version_probe=lambda: "7.21.0")
+    text = str(info.value)
+    assert "'7.20.0'" in text and "'7.21.0'" in text
+    assert "distribution 'dist'" in text and "version probe" in text
+
+
+def test_cx24_probe_disagreeing_with_version_file_is_refused(monkeypatch, tmp_path):
+    _installed(monkeypatch, {})
+    f = tmp_path / "VERSION"
+    f.write_text("1.0.0\n", encoding="utf-8")
+    with pytest.raises(VersionLookupError, match="disagree"):
+        _resolve(version_file=f, version_probe=lambda: "1.0.1")
+
+
+@pytest.mark.parametrize("value", ["", "v1.2.3", "1.2", 7])
+def test_cx24_malformed_probe_value_is_an_error(monkeypatch, value):
+    _installed(monkeypatch, {})
+    with pytest.raises(VersionLookupError, match="probe returned malformed value"):
+        _resolve(version_probe=lambda: value)
+
+
+def test_cx24_raising_probe_is_a_lookup_error_with_cause(monkeypatch):
+    _installed(monkeypatch, {})
+
+    def boom():
+        raise OSError("git missing")
+
+    with pytest.raises(VersionLookupError, match="version probe failed: git missing") as info:
+        _resolve(version_probe=boom)
+    assert isinstance(info.value.__cause__, OSError)
 
 
 def test_resolve_relative_path_is_refused():
@@ -343,6 +403,42 @@ def test_single_command_dry_run():
     plain = _cli(lambda a, r: 0, single_command=True)
     code, _, err = _run(plain, ["--dry-run"])
     assert code == 2 and "--dry-run" in err
+
+
+def test_cx21_per_verb_dry_run_help_sentence():
+    generic = "show what would change without changing anything"
+    cli = _cli(
+        None,
+        verbs=[
+            VerbSpec("apply", description="Apply.", mutating=True, dry_run=True,
+                     dry_run_help="print the repo URL that would be written",
+                     handler=lambda a, r: 0),
+            VerbSpec("wipe", description="Wipe.", mutating=True, dry_run=True,
+                     handler=lambda a, r: 0),
+        ],
+    )
+    _, apply_out, apply_err = _run(cli, ["apply", "--help"])
+    apply_text = apply_out + apply_err
+    assert "print the repo URL that would be written" in apply_text
+    assert generic not in apply_text
+    _, wipe_out, wipe_err = _run(cli, ["wipe", "--help"])
+    assert generic in wipe_out + wipe_err
+    assert "print the repo URL" not in wipe_out + wipe_err
+
+
+def test_cx21_dry_run_help_validation_and_single_command():
+    with pytest.raises(ValueError, match="dry_run_help but not dry_run=True"):
+        VerbSpec("x", description="d", mutating=True, dry_run_help="why")
+    for bad in ("", "  ", "a\nb"):
+        with pytest.raises(ValueError, match="non-empty single-line"):
+            VerbSpec("x", description="d", mutating=True, dry_run=True,
+                     dry_run_help=bad)
+    verb = VerbSpec("only", description="Only.", mutating=True, dry_run=True,
+                    dry_run_help="preview the single change",
+                    handler=lambda a, r: 0)
+    cli = _cli(None, verbs=[verb], single_command=True)
+    _, out, err = _run(cli, ["--help"])
+    assert "preview the single change" in out + err
 
 
 def test_dry_run_requires_mutating_and_bool():

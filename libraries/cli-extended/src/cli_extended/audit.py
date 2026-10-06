@@ -9,8 +9,10 @@ to one onto the ``audit:`` rows of ``docs/ADOPTION-CHECKLIST.md``.
 
 from __future__ import annotations
 
+import io
 import os
 import re
+import tokenize
 import tomllib
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, replace
@@ -218,7 +220,9 @@ def _version_source(cli: CliConfig, _app: RegisteredCli, _p: ProjectConfig) -> A
     hand_rolled = [
         _relative(path, cli.root)
         for path, text in files
-        if "CliIdentity(" in text
+        # CLI-EXT-22: a test builds a pinned CliIdentity(...) on purpose.
+        if not _is_test_file(path, cli.root)
+        and "CliIdentity(" in text
         and ("importlib.metadata" in text or (_REGEX_USE.search(text) and "VERSION" in text))
     ]
     if hand_rolled:
@@ -592,11 +596,42 @@ def _without_allowed_assertions(text: str) -> str:
     return "\n".join(kept)
 
 
+def _without_comments(path: Path, text: str) -> str:
+    """Blank out comments so prose about a path hack is not reported (CLI-EXT-22).
+
+    Python files are tokenized so a ``#`` inside a string literal is kept; a
+    file that does not tokenize, and any other suffix, falls back to dropping
+    whole-line ``#`` comments.
+    """
+
+    lines = text.splitlines()
+    if path.suffix == ".py":
+        try:
+            for token in tokenize.generate_tokens(io.StringIO(text).readline):
+                if token.type == tokenize.COMMENT:
+                    row, column = token.start[0] - 1, token.start[1]
+                    lines[row] = lines[row][:column]
+            return "\n".join(lines)
+        except (tokenize.TokenError, SyntaxError):
+            lines = text.splitlines()
+    return "\n".join(line for line in lines if not line.lstrip().startswith("#"))
+
+
+def _is_test_file(path: Path, root: Path) -> bool:
+    relative = path.relative_to(root)
+    return (
+        path.name == "conftest.py"
+        or path.name.startswith("test_")
+        or path.stem.endswith("_test")
+        or any(part in ("tests", "test") for part in relative.parts[:-1])
+    )
+
+
 def _no_path_hacks(cli: CliConfig, _a: RegisteredCli, _p: ProjectConfig) -> AuditItem:
     files, unreadable = _scan(cli.root, SOURCE_SUFFIXES)
     hits = []
     for path, raw in files:
-        text = _without_allowed_assertions(raw)
+        text = _without_comments(path, _without_allowed_assertions(raw))
         if (
             path.name != GATE_FILE_NAME
             and "libraries/cli-extended" in text
