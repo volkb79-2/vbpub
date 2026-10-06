@@ -34,11 +34,15 @@ _SAFE_COMMANDS = {
     "git": {"clone", "fetch", "reset"},
     "hostname": {"-f", "-I"},
     "ip": {"-j"},
+    # io.cost benchmark's throwaway partition (installer._run_io_benchmark).
+    "iocost_coef_gen.py": {"--testfile", "--testfile-size-gb", "--duration", "--quiet"},
     "lsblk": {"-no", "-o"},
     "lspci": set(),
     "mkdir": {"-p"},
+    "mkfs.ext4": {"-F", "-q", "-O", "-L"},
     "mkswap": set(),
     "modprobe": {"zstd"},
+    "mount": {"-t", "-o"},
     "partx": {"-a", "-d", "-u", "--nr"},
     "pip3": {"install"},
     "resize2fs": set(),
@@ -66,6 +70,7 @@ _SAFE_COMMANDS = {
     "systemd-run": {"--on-active", "--"},
     "tee": {"-a"},
     "udevadm": {"settle", "trigger"},
+    "umount": {"-v"},  # non-empty: any other option (-f, -l) is refused
     "update-grub": set(),
     "update-initramfs": {"-u", "-k"},
     "wget": {"-q"},

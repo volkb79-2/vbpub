@@ -1,5 +1,15 @@
 # debian-install-v2 — TODO / backlog
 
+## IMPLEMENTED (LT-IOB, 2026-10-06; live validation pending): io.cost benchmark step
+
+`Installer._run_io_benchmark()` — see `IO-BENCHMARK-DESIGN.md` and
+`LT-IOB-REPORT.md`. Unit-tested against a simulated disk only; the first
+real run (netcup test host, controller-driven) is still to happen. Open:
+(a) writing `io.cost.model`/`io.cost.qos` and enabling io.cost from the
+result (deliberately separate, "Not yet"); (b) Case B (hook already wrote
+swap) only benchmarks if tail free space remains, which is rarely the case;
+(c) `HostActions.run` has no timeout, so a hung `fio` would hang stage 2.
+
 ## Feature request: a zswap fill-watermark governor
 
 There is no kernel-native way to keep the zswap compressed pool hovering

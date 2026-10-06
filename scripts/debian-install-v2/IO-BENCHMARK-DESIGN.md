@@ -1,15 +1,55 @@
-# io.cost benchmark — design note (not yet implemented)
+# io.cost benchmark — design note (implemented 2026-10-06, LT-IOB; live validation pending)
 
-Status: `Config.run_io_benchmark`/`io_benchmark_duration_s`/
-`io_benchmark_max_size_gb` exist (`debian_install_v2/config.py`) and the
-kernel's own `iocost_coef_gen.py` is vendored (`debian_install_v2/vendor/`).
-MDT host setup and `iocost-calibrate.sh` consume the shared generated
-artifact from `tools/`; nothing in `installer.py` invokes it yet. This note captures the design
-worked out 2026-09-09 so the actual partition-surgery integration can be
-built as its own careful, reviewed pass — the same way
-`CASE-B-ROOT-SHRINK-DESIGN.md` preceded that feature's implementation,
-rather than folding brand-new live-disk-mutation code into an already large
-batch of unrelated changes.
+Status: IMPLEMENTED as `Installer._run_io_benchmark()` in
+`debian_install_v2/installer.py`, called from `_stage2()` between
+`_verify_and_apply_root_shrink()` and the swap shape. It has run only against
+a simulated disk (`tests/test_io_benchmark.py`); the first real run is a
+controller-driven netcup test. The design below was worked out 2026-09-09;
+`LT-IOB-REPORT.md` has the as-built action sequence.
+
+## As built, and deviations from the design below
+
+- **One write path.** The forward sfdisk/partx/settle/readback-verify block and
+  the rollback block of `_apply_known_swap_shape()` were extracted unchanged
+  into `_write_and_verify_partition_plan()` and `_restore_partition_table()`;
+  swap placement and the benchmark both call them. `_validate_plan_geometry()`
+  is untouched. The benchmark has its own small
+  `_validate_benchmark_plan()` (adds exactly one partition, changes nothing,
+  stays clear of the swap region).
+- **Placement:** the throwaway partition sits at the TAIL of the disk, number
+  `root_number + swap_file_count + 1` (above every swap number), named
+  `vbpub-iobench`, so it cannot overlap swap and a leftover is identifiable.
+- **Sizing:** `min(io_benchmark_max_size_gb, tail free - swap requirement -
+  1 GiB margin)`, 2048-sector aligned; under 2 GiB the step is `skipped`
+  (not a failure).
+- **Cleanup is the same primitive as the rollback:** restore the pre-benchmark
+  table with `sfdisk --force`, `partx -d --nr N:N`, `partx -u`,
+  `udevadm settle`, then read the table back and require it to equal the
+  pre-benchmark layout and the device node to be gone. (`sfdisk --delete` is
+  not on the action allowlist and was not added.) Cleanup runs on success and
+  on every failure after the partition write was attempted. Cleanup failure
+  raises and stops stage 2 before swap placement; a failed `io_benchmark`
+  marker is not terminal, so a resumed stage 2 re-checks.
+- **Resume:** a terminal step status (`success`/`skipped`/`warned`) skips the
+  step; otherwise a leftover `vbpub-iobench` partition is unmounted and
+  deleted (via the live table minus that one line) before anything else. A
+  partition at that number that is NOT ours is left alone and the step is
+  skipped.
+- **Case B:** when the hook already wrote swap, free space is only what remains
+  after the last partition, so the benchmark usually skips; it uses the same
+  sizing with the existing partitions as the "requirement".
+- **Tool check:** the artifact's header hashes are compared with the vendored
+  source and patches (same formula as `build-iocost-generator.py`); the file is
+  not regenerated (that needs `patch` and the repo layout). The tool is run by
+  absolute path from the bootstrap checkout; `fio` and `pv` are installed only
+  when the benchmark runs. The test file is 75% of the partition, at most 16 GiB.
+- **Advisory:** any failure before cleanup is recorded as step `warned`, the
+  partition is removed and the install continues. No `io.cost.model` /
+  `io.cost.qos` is written.
+- **Residual risks:** `HostActions.run` has no timeout (a hung `fio` would hang
+  stage 2); the tool switches the whole disk's scheduler to `none` for the run.
+
+## Original design (2026-09-09), kept for rationale
 
 ## What changed from the original idea
 
@@ -122,8 +162,7 @@ already proven in `_apply_known_swap_shape()`'s own mismatch-handling path
    exactly the same disk state it already knows how to handle; no changes
    to it or to `_validate_plan_geometry()` should be needed.
 
-This has not been implemented or reviewed yet. Do not build it without a
-dedicated pass (design review of the exact reused-primitive plan above,
-plus the standard fresh adversarial review before it's considered shipped)
-— this is live disk partition surgery, the single highest-bug-density area
-of this whole project.
+This is now implemented (see the top of this note) but NOT yet reviewed or
+live-validated: it needs the standard fresh adversarial review before it is
+considered shipped — this is live disk partition surgery, the single
+highest-bug-density area of this whole project.

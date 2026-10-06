@@ -198,18 +198,24 @@ that still sets `run_geekbench`, `run_ssh_setup`, `swap_ram_solution`,
 `pre_shrink_root_extra_gb`, or `extend_root` — these were deliberately not
 ported, not merely forgotten.
 
-An io.cost calibration benchmark is planned but not wired into the v2
-installer: `config.py` has the currently inert `run_io_benchmark`/
-`io_benchmark_duration_s`/`io_benchmark_max_size_gb` fields. MDT host setup
-and this project's manual `iocost-calibrate.sh` already consume one generated
-copy of the kernel's `tools/cgroup/iocost_coef_gen.py`, built from the pristine
-vendor source and reviewed patches. Its raw `--testdev` mode resolves partition
-sysfs paths, while a mounted file target avoids destructive raw-device mode.
-The mounted target must still be a dedicated disposable scratch file because
-calibration overwrites its contents; the tool refuses mismatched existing
-targets instead of replacing them.
-See `IO-BENCHMARK-DESIGN.md` for the installer integration plan; partition
-creation and cleanup remain a separate safety review.
+The optional io.cost benchmark (`run_io_benchmark`, off by default;
+`io_benchmark_duration_s`, `io_benchmark_max_size_gb`) runs in stage 2 before
+the swap shape is written: it carves ONE throwaway partition from the tail of
+the free space (sized `min(io_benchmark_max_size_gb, free - swap requirement -
+1 GiB margin)`, skipped under 2 GiB), formats and mounts it, runs the shared
+generated `tools/iocost_coef_gen.py` in `--testfile` mode, then unmounts and
+deletes the partition and reads the table back before swap placement. Results
+(`rbps`/`rseqiops`/`rrandiops`/`wbps`/`wseqiops`/`wrandiops`) go to
+`state_dir/io-benchmark.json` (0600), the `io_benchmark` step and one
+milestone notification. A benchmark failure is advisory (step `warned`, the
+install continues); a cleanup that cannot be verified stops the install.
+It needs `fio` and `pv` (installed only when the benchmark runs) and, while
+it runs, the tool sets the disk's scheduler to `none` and disables merging
+(restored afterwards). See `IO-BENCHMARK-DESIGN.md` for the full flow.
+
+Still not done: the result is NOT written to `io.cost.model`/`io.cost.qos`
+and io.cost is not enabled; choosing and applying those is a separate,
+later decision.
 
 ## Is this the right tool for everything?
 

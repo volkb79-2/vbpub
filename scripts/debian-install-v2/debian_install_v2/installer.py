@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 import platform
 import shutil
+import tempfile
 import time
 import urllib.parse
 import urllib.request
@@ -55,6 +56,19 @@ SWAP_TYPE_GUID = "0657fd6d-a4ab-43c4-84e5-0933c84b4f4f"
 _LOG = logging.getLogger("debian_install_v2.installer")
 
 TELEGRAM_MESSAGE_LIMIT = 4096
+
+# io.cost benchmark (see IO-BENCHMARK-DESIGN.md). The 2 GiB floor is the
+# smallest partition whose 75% test file still gives fio a meaningful working
+# set; the 1 GiB margin keeps the benchmark clear of the swap shape's tail.
+IOBENCH_PARTITION_NAME = "vbpub-iobench"
+IOBENCH_FS_TYPE_GUID = "0fc63daf-8483-4772-8e79-3d69d8477de4"
+IOBENCH_MIN_SIZE_GIB = 2
+IOBENCH_SAFETY_MARGIN_GIB = 1
+IOBENCH_RESULT_KEYS = ("rbps", "rseqiops", "rrandiops", "wbps", "wseqiops", "wrandiops")
+# A terminal step status means cleanup was already verified; resume skips it.
+# "failed" is deliberately NOT terminal: it means cleanup could not be
+# verified, so a resumed stage2 must re-run the leftover check.
+IOBENCH_FINAL_STATUSES = {"success", "skipped", "warned"}
 
 
 class InstallerError(RuntimeError):
@@ -1289,6 +1303,52 @@ MaxFileSec=1month
             backup_digest = hashlib.sha256(current_dump.encode("utf-8")).hexdigest()
             self.actions.write_file(str(backup_dir / checksum_name), f"{backup_digest}  {backup_name}\n", 0o644)
             self.actions.write_file(plan_path, plan_text)
+            self._write_and_verify_partition_plan(
+                current_dump=current_dump,
+                plan_text=plan_text,
+                plan_entries=plan_entries,
+                new_numbers=range(self.root_number + 1, self.root_number + self.config.swap_file_count + 1),
+                backup_path=str(backup_dir / backup_name),
+            )
+        manifest = {
+            "preflight": preflight,
+            "plan": plan_text,
+            "current": current_dump,
+            "backup": str(backup_dir / backup_name),
+            "checksum": str(backup_dir / checksum_name),
+            "new_root_size_sectors": new_root_size,
+        }
+        self.actions.write_file(
+            str(Path(self.config.state_dir) / "disk-transaction.json"),
+            json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+            0o600,
+        )
+        self._mark_step("partitions", "planned" if self.actions.dry_run else "success", plan_path)
+
+    def _write_and_verify_partition_plan(
+        self,
+        *,
+        current_dump: str,
+        plan_text: str,
+        plan_entries: dict[int, dict[str, str]],
+        new_numbers: range,
+        backup_path: str,
+        record_in_dry_run: bool = False,
+    ) -> None:
+        """Forward sfdisk write + partx -a + udevadm settle + readback verify.
+
+        Shared by _apply_known_swap_shape() (new_numbers = the swap partitions)
+        and the io.cost benchmark's throwaway partition (new_numbers = just
+        that one) so there is exactly ONE raw-sfdisk write path. On a readback
+        mismatch it restores ``current_dump`` through _restore_partition_table()
+        and raises. Extracted verbatim from _apply_known_swap_shape(); the
+        live-bug annotations below belong to that original block.
+
+        Dry-run: nothing runs unless ``record_in_dry_run`` (the benchmark
+        wants its action sequence in the plan); then actions are recorded, but
+        no readback comparison and no device-node wait happen.
+        """
+        if not self.actions.dry_run or record_in_dry_run:
             # input=plan_text is REQUIRED -- sfdisk with no positional script
             # argument reads its new table from stdin (this is exactly how
             # inuse_partition_editor.py's own Table.write() calls it:
@@ -1336,7 +1396,7 @@ MaxFileSec=1month
             self._run(
                 [
                     "/usr/bin/partx", "-a", "--nr",
-                    f"{self.root_number + 1}:{self.root_number + self.config.swap_file_count}",
+                    f"{new_numbers[0]}:{new_numbers[-1]}",
                     f"/dev/{self.root_disk}",
                 ],
                 "register new partitions with the kernel", dangerous=True,
@@ -1346,7 +1406,7 @@ MaxFileSec=1month
             readback_entries = self._parse_partition_entries(readback)
             expected_geometry = {n: self._geometry_for_comparison(a) for n, a in plan_entries.items()}
             actual_geometry = {n: self._geometry_for_comparison(a) for n, a in readback_entries.items()}
-            if actual_geometry != expected_geometry:
+            if not self.actions.dry_run and actual_geometry != expected_geometry:
                 # Diagnostic-only, computed before the rollback below
                 # overwrites the disk: every prior mismatch on this exact
                 # line has needed an SSH session to a still-broken host to
@@ -1367,90 +1427,399 @@ MaxFileSec=1month
                     if expected != actual:
                         diff_parts.append(f"p{number}: expected={expected} actual={actual}")
                 mismatch_detail = "; ".join(diff_parts) or "(dicts differ but no per-number diff found)"
-                # Same missing-stdin bug as the forward write above: sfdisk
-                # takes its restore script on stdin, not as a positional
-                # path argument -- a bare positional arg after the device is
-                # sfdisk's (unrelated) "operate on just this partition
-                # number" syntax, which is why the live failure was
-                # literally "failed to parse partition number: '<path>'".
-                # current_dump is the exact backup content already held in
-                # memory (identical to what was just written to
-                # backup_dir/backup_name), so feed it straight back in
-                # rather than re-reading the file. _run() unconditionally
-                # .strip()s command output, so current_dump lost its
-                # trailing newline on the way in (unlike plan_text, which
-                # _write_sfdisk_plan() builds with one already) -- restore
-                # it so both `input=` payloads this method feeds sfdisk are
-                # terminated the same way (adversarial-review finding,
-                # 2026-09-09: harmless in practice, sfdisk's line reader
-                # handles a final unterminated line fine, but an
-                # unintentional divergence from the reference
-                # inuse_partition_editor.py, which never strips at all).
-                self._run(
-                    ["/usr/sbin/sfdisk", "--force", f"/dev/{self.root_disk}"],
-                    description="rollback failed partition write",
-                    dangerous=True,
-                    input=current_dump + "\n",
-                )
-                # partx + udevadm settle instead of partprobe (not even
-                # installed by this package set -- it ships in the separate
-                # `parted` package, never one of stage2's own dependencies).
-                # Two calls, not one (adversarial-review finding,
-                # 2026-09-08, round 2 -- confirmed directly against
-                # util-linux's own partx.c source, not just man-page
-                # recall): this branch just restored the OLD backup table, a
-                # strictly SMALLER set of partitions than what the
-                # just-reverted write's own partx -a already registered with
-                # the kernel (the new swap partitions, the resized root).
-                # `partx -u` alone only fixes GEOMETRY for partition numbers
-                # still present in the restored table (which is exactly what
-                # un-resizes root back to its original size) -- upd_parts()
-                # silently skips (warns, does not delete) any number that's
-                # now entirely ABSENT from the restored table, per
-                # util-linux's own source. The vanished swap-partition
-                # numbers need an explicit, scoped `-d --nr` first; `-d`
-                # treats an already-absent partition as success (ENXIO), so
-                # this is safe/idempotent even if the forward path never got
-                # as far as registering them.
-                self._run(
-                    [
-                        "/usr/bin/partx", "-d", "--nr",
-                        f"{self.root_number + 1}:{self.root_number + self.config.swap_file_count}",
-                        f"/dev/{self.root_disk}",
-                    ],
-                    "retract stale swap partitions after rollback", dangerous=True,
-                )
-                self._run(["/usr/bin/partx", "-u", f"/dev/{self.root_disk}"], "refresh kernel view after rollback", dangerous=True)
-                self._run(["/usr/bin/udevadm", "settle"], "wait for udev after rollback")
+                self._restore_partition_table(current_dump, new_numbers, "rollback failed partition write")
                 raise InstallerError(
-                    f"partition table verification failed; restored backup {backup_dir / backup_name}; "
+                    f"partition table verification failed; restored backup {backup_path}; "
                     f"diff: {mismatch_detail}"
                 )
-            expected_paths = [
-                f"{self._partition_base}{number}"
-                for number in range(self.root_number + 1, self.root_number + self.config.swap_file_count + 1)
-            ]
-            for path in expected_paths:
+            if not self.actions.dry_run:
+                for number in new_numbers:
+                    path = f"{self._partition_base}{number}"
+                    for _ in range(50):
+                        if self.actions.exists(path):
+                            break
+                        time.sleep(0.1)
+                    else:
+                        raise InstallerError(f"partition device did not appear after partx/udevadm settle: {path}")
+
+    def _restore_partition_table(self, dump: str, drop_numbers: range, why: str) -> None:
+        """Write ``dump`` back with sfdisk and retract ``drop_numbers`` from the kernel.
+
+        The single rollback primitive: used by _write_and_verify_partition_plan()
+        on a readback mismatch and by the io.cost benchmark's cleanup (where
+        ``dump`` is the pre-benchmark table). Does NOT verify the result; the
+        caller reads the table back.
+        """
+        # Same missing-stdin bug as the forward write: sfdisk
+        # takes its restore script on stdin, not as a positional
+        # path argument -- a bare positional arg after the device is
+        # sfdisk's (unrelated) "operate on just this partition
+        # number" syntax, which is why the live failure was
+        # literally "failed to parse partition number: '<path>'".
+        # `dump` is the exact backup content already held in
+        # memory (identical to what was just written to
+        # the backup file), so feed it straight back in
+        # rather than re-reading the file. _run() unconditionally
+        # .strip()s command output, so the dump lost its
+        # trailing newline on the way in (unlike plan_text, which
+        # _write_sfdisk_plan() builds with one already) -- restore
+        # it so both `input=` payloads are terminated the same way
+        # (adversarial-review finding, 2026-09-09: harmless in
+        # practice, sfdisk's line reader handles a final
+        # unterminated line fine, but an unintentional divergence
+        # from the reference inuse_partition_editor.py, which
+        # never strips at all).
+        self._run(
+            ["/usr/sbin/sfdisk", "--force", f"/dev/{self.root_disk}"],
+            description=why,
+            dangerous=True,
+            input=dump + "\n",
+        )
+        # partx + udevadm settle instead of partprobe (not even
+        # installed by this package set -- it ships in the separate
+        # `parted` package, never one of stage2's own dependencies).
+        # Two calls, not one (adversarial-review finding,
+        # 2026-09-08, round 2 -- confirmed directly against
+        # util-linux's own partx.c source, not just man-page
+        # recall): this restores the OLD table, a
+        # strictly SMALLER set of partitions than what the
+        # just-reverted write's own partx -a already registered with
+        # the kernel (the new partitions, the resized root).
+        # `partx -u` alone only fixes GEOMETRY for partition numbers
+        # still present in the restored table (which is exactly what
+        # un-resizes root back to its original size) -- upd_parts()
+        # silently skips (warns, does not delete) any number that's
+        # now entirely ABSENT from the restored table, per
+        # util-linux's own source. The vanished partition
+        # numbers need an explicit, scoped `-d --nr` first; `-d`
+        # treats an already-absent partition as success (ENXIO), so
+        # this is safe/idempotent even if the forward path never got
+        # as far as registering them.
+        self._run(
+            [
+                "/usr/bin/partx", "-d", "--nr",
+                f"{drop_numbers[0]}:{drop_numbers[-1]}",
+                f"/dev/{self.root_disk}",
+            ],
+            "retract stale partitions after rollback", dangerous=True,
+        )
+        self._run(["/usr/bin/partx", "-u", f"/dev/{self.root_disk}"], "refresh kernel view after rollback", dangerous=True)
+        self._run(["/usr/bin/udevadm", "settle"], "wait for udev after rollback")
+
+    # ------------------------------------------------------------------
+    # io.cost benchmark (IO-BENCHMARK-DESIGN.md). Advisory: any failure
+    # BEFORE/DURING measurement is recorded and the install continues; a
+    # failure to prove the disk is back at its pre-benchmark layout is the
+    # one fatal case (swap must never be written over an unknown layout).
+    # _validate_plan_geometry() is deliberately untouched: the throwaway
+    # partition is always gone, and verified gone, before the swap shape runs.
+    # ------------------------------------------------------------------
+
+    def _benchmark_partition_number(self) -> int:
+        # Above every swap partition number (root+1 .. root+swap_file_count):
+        # never collides with the swap shape's own numbering, and "present
+        # with our name" unambiguously identifies a leftover.
+        return self.root_number + self.config.swap_file_count + 1
+
+    def _current_partition_dump(self, root_start: int, root_size: int) -> str:
+        if self.actions.dry_run:
+            return "\n".join([
+                "label: gpt",
+                f"device: /dev/{self.root_disk}",
+                "",
+                f"{self._partition_base}{self.root_number} : start={root_start}, size={root_size}, "
+                f"type={IOBENCH_FS_TYPE_GUID}",
+            ])
+        return self._run(["/usr/sbin/sfdisk", "--dump", f"/dev/{self.root_disk}"], dangerous=False)
+
+    def _plan_benchmark_partition(self, disk_sectors: int, swap_required_end: int) -> tuple[int, int] | None:
+        """(start, size) in sectors of the throwaway partition, or None if too small.
+
+        Placed at the TAIL of the disk, so it can never overlap the region the
+        swap shape will occupy. size = min(io_benchmark_max_size_gb,
+        tail free - swap requirement - safety margin), 2048-sector aligned.
+        """
+        alignment = 2048
+        end_buffer = 2048
+        gib = 1024 ** 3 // 512
+        end_aligned = (disk_sectors - end_buffer) // alignment * alignment
+        available = end_aligned - swap_required_end - IOBENCH_SAFETY_MARGIN_GIB * gib
+        size = min(self.config.io_benchmark_max_size_gb * gib, available)
+        size -= size % alignment
+        if size < IOBENCH_MIN_SIZE_GIB * gib:
+            return None
+        return end_aligned - size, size
+
+    def _validate_benchmark_plan(
+        self,
+        current: dict[int, dict[str, str]],
+        plan: dict[int, dict[str, str]],
+        number: int,
+        start: int,
+        size: int,
+        swap_required_end: int,
+    ) -> None:
+        """The benchmark plan may ADD exactly one partition and change nothing else."""
+        if set(plan) != set(current) | {number} or number in current:
+            raise InstallerError("io benchmark plan must add exactly one partition and drop none")
+        for existing, attrs in current.items():
+            if self._geometry_for_comparison(plan[existing]) != self._geometry_for_comparison(attrs):
+                raise InstallerError(f"io benchmark plan would modify existing partition {existing}")
+            if int(attrs["start"]) + int(attrs["size"]) > start:
+                raise InstallerError(f"io benchmark partition would overlap existing partition {existing}")
+        if start < swap_required_end + IOBENCH_SAFETY_MARGIN_GIB * (1024 ** 3 // 512):
+            raise InstallerError("io benchmark partition would eat space the swap shape needs")
+        if size <= 0:
+            raise InstallerError("io benchmark partition has a non-positive size")
+
+    def _iocost_tool_path(self) -> Path:
+        return Path(__file__).resolve().parents[1] / "tools" / "iocost_coef_gen.py"
+
+    def _verify_iocost_generator(self, tool: Path) -> tuple[str, dict[str, str]]:
+        """Return (sha256 of the file, header hashes) after checking it is the generated artifact.
+
+        Same inputs/formula build-iocost-generator.py hashes into the header
+        (source bytes; patch name + NUL + patch bytes + NUL, in order). Checks
+        the header against the vendored source+patches; does not regenerate
+        (that needs `patch`, and the builder assumes the full repo layout).
+        """
+        if not tool.is_file():
+            raise InstallerError(f"io.cost generator not found: {tool}")
+        data = tool.read_bytes()
+        header = dict(re.findall(rb"^# (source-sha256|patch-series-sha256): ([0-9a-f]{64})$", data[:1024], re.M))
+        header_text = {key.decode(): value.decode() for key, value in header.items()}
+        if set(header_text) != {"source-sha256", "patch-series-sha256"} or not data.startswith(b"#!"):
+            raise InstallerError(f"{tool} is not the generated io.cost artifact (header missing)")
+        vendor = tool.parent.parent / "debian_install_v2" / "vendor"
+        source = vendor / "iocost_coef_gen.py"
+        patches = sorted(vendor.glob("0*.patch"))
+        if not source.is_file() or not patches:
+            raise InstallerError(f"vendored io.cost source/patches missing under {vendor}")
+        source_hash = hashlib.sha256(source.read_bytes()).hexdigest()
+        series = b"".join(p.name.encode("utf-8") + b"\0" + p.read_bytes() + b"\0" for p in patches)
+        series_hash = hashlib.sha256(series).hexdigest()
+        if header_text["source-sha256"] != source_hash or header_text["patch-series-sha256"] != series_hash:
+            raise InstallerError(f"{tool} header does not match the vendored source/patches; stale generated artifact")
+        return hashlib.sha256(data).hexdigest(), header_text
+
+    @staticmethod
+    def _parse_iocost_result(output: str) -> tuple[str, dict[str, int]]:
+        """Parse the generator's final line: ``MAJ:MIN rbps=N rseqiops=N ... wrandiops=N``."""
+        for line in reversed(output.splitlines()):
+            parts = line.split()
+            if len(parts) != 7 or not re.fullmatch(r"\d+:\d+", parts[0]):
+                continue
+            fields = dict(part.split("=", 1) for part in parts[1:] if "=" in part)
+            if set(fields) == set(IOBENCH_RESULT_KEYS) and all(v.isdigit() for v in fields.values()):
+                return parts[0], {key: int(fields[key]) for key in IOBENCH_RESULT_KEYS}
+        raise InstallerError("could not parse the io.cost generator's result line")
+
+    @staticmethod
+    def _format_iocost_summary(results: dict[str, int]) -> str:
+        def mib(value: int) -> str:
+            return f"{value / 1048576:.0f} MiB/s"
+        return (
+            f"rbps {mib(results['rbps'])}, wbps {mib(results['wbps'])}, "
+            f"rseqiops {results['rseqiops']}, rrandiops {results['rrandiops']}, "
+            f"wseqiops {results['wseqiops']}, wrandiops {results['wrandiops']} IOPS"
+        )
+
+    def _benchmark_device_mounted(self, device: str) -> list[str]:
+        findmnt = self._run(["/usr/bin/findmnt", "-rn", "-o", "SOURCE,TARGET,FSTYPE"], "enumerate mounted sources")
+        return [line for line in findmnt.splitlines() if line.split() and line.split()[0] == device]
+
+    def _teardown_benchmark_partition(
+        self, *, number: int, mount_dir: str | None, mounted: bool, pre_dump: str | None
+    ) -> None:
+        """Unmount, delete the throwaway partition, and PROVE the layout is restored.
+
+        ``pre_dump`` is the exact pre-benchmark table; None (leftover from a
+        crashed run) derives it from the live table minus our one partition.
+        Raises InstallerError("io benchmark cleanup failed ...") on any
+        failure: the caller must then stop the install.
+        """
+        device = f"{self._partition_base}{number}"
+        try:
+            if mounted or self._benchmark_device_mounted(device):
+                self._run(["/usr/bin/sync"], "flush benchmark filesystem")
+                self._run(["/usr/bin/umount", device], f"unmount {device}", dangerous=True)
+            if mount_dir and not self.actions.dry_run:
+                try:
+                    Path(mount_dir).rmdir()
+                except OSError:
+                    pass
+            if pre_dump is None:
+                # Leftover-from-a-crashed-run path (never reached in dry-run:
+                # nothing real was ever created, so there is no leftover).
+                live_dump = self._current_partition_dump(0, 0)
+                live_entries = self._parse_partition_entries(live_dump)
+                ours = live_entries.get(number)
+                if ours is not None and ours.get("name") != IOBENCH_PARTITION_NAME:
+                    raise InstallerError(f"partition {number} is not the throwaway benchmark partition; refusing to delete it")
+                pre_dump = "\n".join(
+                    line for line in live_dump.splitlines()
+                    if not line.split() or line.split()[0] != device
+                )
+            self._restore_partition_table(pre_dump, range(number, number + 1), "delete throwaway io benchmark partition")
+            readback = self._run(["/usr/sbin/sfdisk", "--dump", f"/dev/{self.root_disk}"], dangerous=False)
+            if not self.actions.dry_run:
+                expected = {n: self._geometry_for_comparison(a) for n, a in self._parse_partition_entries(pre_dump).items()}
+                actual = {n: self._geometry_for_comparison(a) for n, a in self._parse_partition_entries(readback).items()}
+                if expected != actual:
+                    raise InstallerError(f"layout after cleanup differs from pre-benchmark layout: expected={expected} actual={actual}")
                 for _ in range(50):
-                    if self.actions.exists(path):
+                    if not self.actions.exists(device):
                         break
                     time.sleep(0.1)
                 else:
-                    raise InstallerError(f"partition device did not appear after partx/udevadm settle: {path}")
-        manifest = {
-            "preflight": preflight,
-            "plan": plan_text,
-            "current": current_dump,
-            "backup": str(backup_dir / backup_name),
-            "checksum": str(backup_dir / checksum_name),
-            "new_root_size_sectors": new_root_size,
-        }
-        self.actions.write_file(
-            str(Path(self.config.state_dir) / "disk-transaction.json"),
-            json.dumps(manifest, indent=2, sort_keys=True) + "\n",
-            0o600,
-        )
-        self._mark_step("partitions", "planned" if self.actions.dry_run else "success", plan_path)
+                    raise InstallerError(f"{device} still exists after deletion")
+        except Exception as exc:
+            raise InstallerError(
+                f"io benchmark cleanup failed ({exc}); the disk layout is unverified, so stopping before swap placement"
+            ) from exc
+
+    def _run_io_benchmark(self, *, swap_written: bool) -> None:
+        """Measure the disk with the generated iocost_coef_gen.py on a throwaway partition.
+
+        Order (each step recorded through HostActions): [leftover removal] ->
+        packages -> tool check -> sfdisk write -> partx -a -> readback verify ->
+        mkfs -> mount -> tool -> umount -> sfdisk restore -> partx -d/-u ->
+        readback verify. Does not write io.cost.model/io.cost.qos.
+        """
+        if not self.config.run_io_benchmark:
+            return
+        state = self.state.load()
+        previous = state.get("steps", {}).get("io_benchmark")
+        if previous and previous.get("status") in IOBENCH_FINAL_STATUSES:
+            return
+        number = self._benchmark_partition_number()
+        device = f"{self._partition_base}{number}"
+        disk_sectors, root_start, root_size = self._disk_facts()
+        self._mark_step("io_benchmark", "started", "")
+        current_dump = self._current_partition_dump(root_start, root_size)
+        current_entries = self._parse_partition_entries(current_dump)
+        if number in current_entries:
+            if current_entries[number].get("name") != IOBENCH_PARTITION_NAME:
+                self._mark_step("io_benchmark", "skipped", f"partition {number} already exists and is not ours")
+                return
+            # A previous (crashed/interrupted) run left its throwaway partition behind.
+            self._teardown_benchmark_partition(number=number, mount_dir=None, mounted=False, pre_dump=None)
+            current_dump = self._current_partition_dump(root_start, root_size)
+            current_entries = self._parse_partition_entries(current_dump)
+            if number in current_entries:
+                raise InstallerError("io benchmark cleanup failed (leftover partition still present); stopping before swap placement")
+
+        created = False
+        mounted = False
+        mount_dir: str | None = None
+        failure: Exception | None = None
+        results: dict[str, int] | None = None
+        skip_reason = ""
+        summary = ""
+        try:
+            try:
+                if swap_written:
+                    swap_required_end = max(
+                        (int(a["start"]) + int(a["size"]) for a in current_entries.values()), default=0
+                    )
+                else:
+                    swap_partitions, _ = self._plan_swap_partitions()
+                    swap_required_end = swap_partitions[-1][0] + swap_partitions[-1][1]
+                geometry = self._plan_benchmark_partition(disk_sectors, swap_required_end)
+                if geometry is None:
+                    skip_reason = (
+                        f"free space after the swap shape and margin is under {IOBENCH_MIN_SIZE_GIB} GiB"
+                    )
+                else:
+                    start, size = geometry
+                    self._preflight_disk_transaction()
+                    self._packages(["fio", "pv"], "io_benchmark")
+                    tool = self._iocost_tool_path()
+                    tool_sha256, tool_header = self._verify_iocost_generator(tool)
+                    new_line = (
+                        f'{device} : start={start}, size={size}, type={IOBENCH_FS_TYPE_GUID}, '
+                        f'name="{IOBENCH_PARTITION_NAME}"'
+                    )
+                    plan_text = current_dump.rstrip("\n") + "\n" + new_line + "\n"
+                    plan_entries = self._parse_partition_entries(plan_text)
+                    self._validate_benchmark_plan(current_entries, plan_entries, number, start, size, swap_required_end)
+                    backup_path = str(Path(self.config.state_dir) / "backups" / f"ptable-iobench-{int(time.time())}.sfdisk")
+                    self.actions.write_file(backup_path, current_dump + "\n", 0o600)
+                    created = True  # set BEFORE the write: it may partly succeed
+                    self._write_and_verify_partition_plan(
+                        current_dump=current_dump,
+                        plan_text=plan_text,
+                        plan_entries=plan_entries,
+                        new_numbers=range(number, number + 1),
+                        backup_path=backup_path,
+                        record_in_dry_run=True,
+                    )
+                    self._run(
+                        ["/usr/sbin/mkfs.ext4", "-F", "-q", "-O", "^has_journal", "-L", IOBENCH_PARTITION_NAME, device],
+                        f"format throwaway benchmark partition {device}", dangerous=True,
+                    )
+                    mount_dir = "/tmp/vbpub-iobench-dry-run" if self.actions.dry_run else tempfile.mkdtemp(prefix="vbpub-iobench-")
+                    self._run(
+                        ["/usr/bin/mount", "-t", "ext4", "-o", "noatime", device, mount_dir],
+                        f"mount {device}", dangerous=True,
+                    )
+                    mounted = True
+                    size_gib = size / (1024 ** 3 // 512)
+                    testfile_gb = min(16.0, round(size_gib * 0.75, 2))
+                    output = self._run(
+                        [
+                            str(tool), "--testfile", f"{mount_dir}/iocost-coef-fio.testfile",
+                            "--testfile-size-gb", f"{testfile_gb:g}",
+                            "--duration", str(self.config.io_benchmark_duration_s), "--quiet",
+                        ],
+                        "run the io.cost coefficient generator against the throwaway partition", dangerous=True,
+                    )
+                    if self.actions.dry_run:
+                        summary = f"dry-run: would benchmark {device} ({size_gib:.1f} GiB, {self.config.io_benchmark_duration_s}s)"
+                    else:
+                        devno, results = self._parse_iocost_result(output)
+                        summary = f"{self._format_iocost_summary(results)} on {device} ({size_gib:.1f} GiB, {self.config.io_benchmark_duration_s}s)"
+                        record = {
+                            "timestamp": datetime.now(timezone.utc).isoformat(),
+                            "device": f"/dev/{self.root_disk}",
+                            "partition": device,
+                            "devno": devno,
+                            "partition_size_gib": round(size_gib, 3),
+                            "partition_size_sectors": size,
+                            "duration_s": self.config.io_benchmark_duration_s,
+                            "tool": "tools/iocost_coef_gen.py",
+                            "tool_sha256": tool_sha256,
+                            "tool_header": tool_header,
+                            "results": results,
+                        }
+                        self.actions.write_file(
+                            str(Path(self.config.state_dir) / "io-benchmark.json"),
+                            json.dumps(record, indent=2, sort_keys=True) + "\n",
+                            0o600,
+                        )
+            except Exception as exc:  # advisory: recorded below, after cleanup
+                failure = exc
+        finally:
+            if created:
+                try:
+                    self._teardown_benchmark_partition(
+                        number=number, mount_dir=mount_dir, mounted=mounted, pre_dump=current_dump
+                    )
+                except InstallerError as exc:
+                    detail = f"{exc}" + (f" (benchmark had also failed: {failure})" if failure else "")
+                    self._mark_step("io_benchmark", "failed", detail)
+                    raise InstallerError(detail) from exc
+        if failure is not None:
+            self._mark_step("io_benchmark", "warned", f"benchmark failed (advisory), partition removed and layout verified: {failure}")
+            self._notify(
+                f"<b>io benchmark</b>: failed (advisory) - {failure}",
+                event=f"io benchmark failed (advisory): {failure}", status="run",
+            )
+        elif skip_reason:
+            self._mark_step("io_benchmark", "skipped", skip_reason)
+        else:
+            self._mark_step("io_benchmark", "planned" if self.actions.dry_run else "success", summary)
+            self._notify(f"<b>io benchmark</b>: {summary}", event=f"io benchmark: {summary}", status="ok")
 
     def _health_gate_swap_devices(self, *, mark_step: bool = True) -> None:
         expected_numbers = range(self.root_number + 1, self.root_number + self.config.swap_file_count + 1)
@@ -1805,6 +2174,11 @@ MaxFileSec=1month
         # part of shrinking root -- _apply_known_swap_shape() must then be
         # skipped, not re-run (see _verify_and_apply_root_shrink()'s docstring).
         swap_partitions_already_written = self._verify_and_apply_root_shrink()
+        # Must precede _apply_known_swap_shape(): the throwaway partition is
+        # created, measured, deleted and read back before the real swap
+        # layout is planned. Failure to benchmark is advisory; failure to
+        # clean up raises and stops the install here.
+        self._run_io_benchmark(swap_written=swap_partitions_already_written)
         self._configure_zswap()
         self._configure_cgroup2_flags()
         if self.config.run_ksm:
