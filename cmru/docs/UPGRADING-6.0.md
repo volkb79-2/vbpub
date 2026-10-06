@@ -4,7 +4,17 @@ This is the operator upgrade guide from cmru 5.5 to 6.0.0. It lives here, not in
 because `CHANGES.md` is generated per release by `cmru release` (a hand-authored
 `## [6.0.0] - UNRELEASED` heading blocks the release, KI-23). The per-commit change list for 6.0.0 is
 the generated `## [6.0.0]` section of `CHANGES.md`; the pre-release hand-written wave entries are
-recoverable from the W3-PREP commit history (`git show 1be285b09:cmru/CHANGES.md`).
+recoverable from the W3-PREP commit history (`git show 1be285b09:cmru/CHANGES.md`), and the
+pre-wave hand-written text from `git show 68a03b4fe^:cmru/CHANGES.md`.
+
+**Release status: PROVISIONAL.** cmru 6.0.0 was released through `./run-gate.py gate-provisional`,
+which skips ONLY the R2 mutation campaign by operator decision (2026-10-06); the postponement is
+recorded in the retained release evidence (`.assay/mutation-postponed-cmru.json`) and tracked as
+**KI-62**. The R2 run against the `cmru-v6.0.0` tag, and the fixes it backports, follow the release;
+see `KNOWN_ISSUES_TODO_BACKLOG.md` KI-62 for the current state. Until then 6.0.0 has no mutation
+evidence. During the landing window the estate also carries two compatibility shims for a
+not-yet-upgraded 5.5 (`default_projects` in `cmru.orchestration.toml`, and `ciu/cmru.toml` without its
+installer `extensions`); both are marked `TODO(cmru-6.0 post-release): remove shim`.
 
 cmru 6.0.0 is a **breaking** release: the command line was redesigned (hard renames, no
 compatibility spellings except `release --ref`), the exit-code scheme gained a fifth value, the
@@ -104,7 +114,7 @@ Verified against `cmru --help`, `cmru handler --help` and `cmru versions --help`
 
 ## How to upgrade from 5.5
 
-1. Install `cli-extended>=0.2.0` first (or let the release wheelhouse resolve it), then cmru 6.0.0.
+1. Install `cli-extended>=0.3.0` first (or let the release wheelhouse resolve it), then cmru 6.0.0.
 2. Run `cmru standards --update` in each project, then `cmru standards all`; set `CMRU_TESTER_PIDS_LIMIT`
    (estate value `4096`) in `[env]` of any project that runs `cmru tester-gate`, and digest-pin the probe images.
 3. Search scripts, CI and docs for the removed spellings and replace them per the table above:

@@ -7,7 +7,23 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 <!-- Empty on purpose: KI-30 refuses a tagged release while this body is non-empty, and KI-23
      refuses one while a hand-authored `## [6.0.0] - UNRELEASED` heading exists, so this file
      carries no 6.0.0 draft. The operator upgrade guide is `docs/UPGRADING-6.0.md`; the
-     pre-6.0 hand-written text is recoverable at `68a03b4fe^:cmru/CHANGES.md`. -->
+     pre-6.0 hand-written text is recoverable at `68a03b4fe^:cmru/CHANGES.md`.
+
+     6.0.0 release notes (LANDPREP, 2026-10-06): `cmru release` generates the `## [6.0.0]`
+     section below from the commit subjects since `cmru-v5.5.0`; a hand-written 6.0.0 section
+     cannot coexist with it (the generator refuses to overwrite one). The pre-wave hand-written
+     [Unreleased] bullets (versions/age-window, OCI rolling tags, secret-overlay and mutation
+     hardening) describe work already shipped in 5.5.0 or covered by those commit subjects, so
+     nothing from them is lost by leaving this body empty. The breaking changes (command
+     grammar, exit codes, retired cmru-agent/cmru-controller, cli-extended as a wheel
+     dependency) are in `docs/UPGRADING-6.0.md`.
+
+     PROVISIONAL RELEASE: the R2 mutation campaign for 6.0.0 was postponed by operator
+     decision 2026-10-06 and is tracked as KI-62 (`KNOWN_ISSUES_TODO_BACKLOG.md`); the
+     release ran `gate-provisional`, whose evidence carries `.assay/mutation-postponed-cmru.json`.
+     The release-notes commit subject (`docs(cmru): 6.0.0 release notes ...`) states this in the
+     generated Documentation list. TODO(cmru-6.0 post-release): once KI-62 is closed, append a
+     one-line pointer to the 6.0.x notes. -->
 
 <!-- cmru: release history -->
 
