@@ -165,7 +165,7 @@ def test_reader_fails_closed_when_a_required_controller_counter_is_missing(
 ):
     mount_point = tmp_path / "cgroup"
     cgroup_dir = mount_point / "lane"
-    cgroup_dir.mkdir()
+    cgroup_dir.mkdir(parents=True)
     (cgroup_dir / "pids.max").write_text("16\n", encoding="ascii")
     (cgroup_dir / "memory.max").write_text("1024\n", encoding="ascii")
     (cgroup_dir / "pids.events").write_text("max 0\n", encoding="ascii")
@@ -781,6 +781,7 @@ def test_low_pids_limit_event_cannot_become_a_kill(tmp_path: Path):
             max_mutants=1,
             operators=("python:bool-const-flip",),
             process_runner=default_process_runner,
+            clock=lambda: datetime.now(timezone.utc),
         )
 
     assert not isinstance(mutation, str)
