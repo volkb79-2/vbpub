@@ -260,7 +260,7 @@ class TestManifestAndInstallerBoundaries(unittest.TestCase):
         # W1-INSTALLER (R11): code-position values are json.dumps-escaped, a hostile
         # text-position value is refused, and an unreplaced placeholder is a render error.
         common = dict(repo_owner="o", repo_name="r", tag_prefix="a-v",
-                      install_dir_system="/x", install_dir_user="y")
+                      install_dir_system="/opt/x", install_dir_user="y")
         with tempfile.TemporaryDirectory() as tmp:
             template = Path(tmp) / "template"
             template.write_text("[[PROJECT_NAME]] [[ENTRYPOINT]]", encoding="utf-8")

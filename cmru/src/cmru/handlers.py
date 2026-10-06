@@ -522,14 +522,25 @@ def cmd_bundle_manifest(args: argparse.Namespace) -> None:
     """Write the installer manifest (`files` = sha256/size/mode of every regular file) into
     a staged bundle directory, before it is tarred. The hardened get.py refuses bundles
     whose members the manifest does not list, so every tarball project needs this step."""
-    from cmru.manifest import build_bundle_manifest, manifest_sha256, write_manifest
+    from cmru import exit_codes
+    from cmru.manifest import (
+        bundle_tag_problem, build_bundle_manifest, manifest_sha256, write_manifest,
+    )
 
+    problem = bundle_tag_problem(args.tag)
+    if problem:
+        print(f"[ERROR] {problem}", file=sys.stderr)
+        raise SystemExit(exit_codes.CONFIG_ERROR)
     root = Path(args.root).resolve()
     name = args.manifest_name  # the file name inside `root` (not the project --name)
-    manifest = build_bundle_manifest(
-        project=args.name, tag=args.tag, bundle_root=root,
-        exclude=(name, name + ".minisig"),
-    )
+    try:
+        manifest = build_bundle_manifest(
+            project=args.name, tag=args.tag, bundle_root=root,
+            exclude=(name, name + ".minisig"),
+        )
+    except ValueError as exc:
+        print(f"[ERROR] bundle-manifest: {exc}", file=sys.stderr)
+        raise SystemExit(exit_codes.FAILURE) from None
     out = write_manifest(manifest, root / name)
     print(f"[INFO] Wrote {out} ({len(manifest['files'])} files, "
           f"sha256 {manifest_sha256(out)})")

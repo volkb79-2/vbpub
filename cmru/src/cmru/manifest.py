@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import stat
 from datetime import datetime, timezone
 from pathlib import Path
@@ -93,6 +94,18 @@ def _validate_images(images: Optional[Dict[str, Any]], project: str) -> Dict[str
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
+
+_BUNDLE_TAG_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._+-]*")
+
+
+def bundle_tag_problem(tag: str) -> Optional[str]:
+    """Why `tag` is not a release tag the installer (`get.py`) accepts, else None. Mirrors
+    the installer's grammar: ``[A-Za-z0-9][A-Za-z0-9._+-]*`` and no ``..``."""
+    if not _BUNDLE_TAG_RE.fullmatch(tag) or ".." in tag:
+        return (f"invalid --tag {tag!r}: a release tag is made of [A-Za-z0-9._+-], starts "
+                "with a letter or digit and has no '..'")
+    return None
+
 
 def bundle_files(root: Path, exclude: Iterable[str] = ()) -> Dict[str, Dict[str, Any]]:
     """The manifest ``files`` map of a bundle tree: ``{relpath: {sha256, size, mode}}`` for

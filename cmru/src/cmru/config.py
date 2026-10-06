@@ -132,10 +132,16 @@ def installer_problems(
         problems.append(f"install_dir_system must be an absolute path without '..': "
                         f"{install_dir_system!r}")
     else:
+        import posixpath
         parts = [p for p in install_dir_system.split("/") if p not in ("", ".")]
-        if not parts or (len(parts) == 1 and parts[0] in _SYSTEM_ROOT_DIRS):
+        if (posixpath.normpath(install_dir_system) != install_dir_system
+                or install_dir_system.startswith("//")):
+            problems.append(f"install_dir_system must be a normalised path (no '//', '.' "
+                            f"or trailing '/'): {install_dir_system!r}")
+        elif len(parts) < 2 or (len(parts) == 1 and parts[0] in _SYSTEM_ROOT_DIRS):
             problems.append(f"install_dir_system {install_dir_system!r} is the filesystem "
-                            "root or a system directory; use a dedicated directory "
+                            "root, a top-level directory or a system directory; use a "
+                            "dedicated directory with at least two components "
                             "(e.g. /opt/<name>)")
     problem = _relative_problem(install_dir_user, "install_dir_user")
     if problem:

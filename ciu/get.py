@@ -753,7 +753,8 @@ def _manifest_files(manifest: dict) -> dict:
         fatal(f"{MANIFEST_NAME}: 'files' must be an object.", EXIT_FAIL)
     for rel in files:
         if (not isinstance(rel, str) or not rel or rel.startswith("/")
-                or posixpath.normpath(rel) != rel or rel == "." or rel.startswith("../")):
+                or posixpath.normpath(rel) != rel or rel in (".", "..")
+                or rel.startswith("../") or "\0" in rel or "\\" in rel):
             fatal(f"{MANIFEST_NAME}: files key {rel!r} is not a normalised relative path.",
                   EXIT_FAIL)
     return files

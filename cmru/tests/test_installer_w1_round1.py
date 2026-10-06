@@ -391,7 +391,7 @@ class TestRootDirectories:
             update(ns, version=V2)
         assert snapshot(root_of(ns)) == before
 
-    def test_shared_symlink_refused_and_target_untouched(self, tmp_path):
+    def test_shared_symlink_refused_and_target_untouched(self, tmp_path, capsys):
         ns = self._ns(tmp_path)
         root = root_of(ns)
         root.mkdir(parents=True)
@@ -403,6 +403,29 @@ class TestRootDirectories:
         with _exits(1):
             install(ns, version=V1, config=str(cfg))
         assert list(ext.iterdir()) == []
+        # N3: a symlink's lstat mode is 0777 and `as_root` already points the owner rule at
+        # the real uid, so the writable-bit check would refuse it too. The message says
+        # WHICH clause refused: only the symlink clause says "not a real directory".
+        assert "not a real directory" in capsys.readouterr().err
+
+    @pytest.mark.parametrize("link", ["root", "releases", "shared", "bin"])
+    def test_each_install_directory_as_a_symlink_is_refused_by_the_symlink_clause(
+            self, tmp_path, capsys, link):
+        """N3 for every directory `_check_dir` guards; the target is never written."""
+        ns = self._ns(tmp_path)
+        root = root_of(ns)
+        ext = tmp_path / "ext"
+        ext.mkdir()
+        if link == "root":
+            root.parent.mkdir(parents=True, exist_ok=True)
+            os.symlink(ext, root)
+        else:
+            root.mkdir(parents=True)
+            os.symlink(ext, root / link)
+        with _exits(1):
+            install(ns, version=V1)
+        assert list(ext.iterdir()) == []
+        assert "not a real directory" in capsys.readouterr().err
 
     def test_lock_symlink_refused_and_nothing_created(self, tmp_path):
         ns = self._ns(tmp_path)
@@ -789,6 +812,16 @@ class TestSurvivorsKilled:
         files = {"VERSION": b"2"}
         entries = _std(V2, files, extra=[("other/VERSION", "file", b"2", 0o644)])
         _unchanged_after_failure(tmp_path, V2, entries)
+
+    def test_m49b_second_top_level_directory_refused_without_a_duplicate_or_unlisted_member(
+            self, tmp_path, capsys):
+        """Every member is listed and hashed and nothing repeats once the top directory is
+        stripped, so only the single-top-level-directory check can refuse this bundle."""
+        files = {"VERSION": b"2", "OTHER": b"o"}
+        entries = _std(V2, {"VERSION": b"2"}, manifest=manifest_for(V2, files),
+                       extra=[("other/OTHER", "file", b"o", 0o644)])
+        _unchanged_after_failure(tmp_path, V2, entries)
+        assert "exactly one top-level directory" in capsys.readouterr().err
 
     def test_m59_current_pointing_at_an_incomplete_release_is_refused(self, tmp_path):
         ns, _ = _plain_setup(tmp_path)

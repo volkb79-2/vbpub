@@ -263,7 +263,7 @@ The rendered `get.py` is a fail-closed, transactional installer you ship as a re
 
    ```text
    [project.myproj.installer]
-   install_dir_system = "/opt/myproj"        # absolute; user scope uses install_dir_user
+   install_dir_system = "/opt/myproj"        # absolute, normalised, >= 2 components (not /opt); user scope uses install_dir_user
    install_dir_user   = "myproj"
    asset_suffix       = ".tar.xz"
    entrypoint         = "scripts/adapter.py" # optional project adapter (bootstrap/apply/rollback)
@@ -289,7 +289,10 @@ The rendered `get.py` is a fail-closed, transactional installer you ship as a re
    plain tarball writes that manifest with `cmru handler bundle-manifest --name NAME
    --tag TAG --root <staged top-level dir>` as the last step before `tar` (tls-edge's
    `scripts/build-artifact.sh` does); `cmru.manifest.build_manifest(..., bundle_root=DIR)`
-   embeds the same `files` map for wheel-based bundles.
+   embeds the same `files` map for wheel-based bundles. A bad tree (symlink, special file,
+   missing root) or an invalid `--tag` is a one-line `[ERROR]` and a non-zero exit (1 for the
+   tree, 2 for the tag), never a traceback. Manifest `files` keys must be normalised relative
+   paths: `../x`, `..`, `/abs`, `a//b`, `./a`, NUL and backslash are refused.
 3. **Render and commit** `cmru get-py myproj --config cmru.toml --output get.py`.
 4. **Users** run the installer. It runs as root, so lead with the verified, chained form: a
    private temp directory (no predictable `get.py` in the current directory), HTTPS only, and a
@@ -320,6 +323,10 @@ The rendered `get.py` is a fail-closed, transactional installer you ship as a re
    SHA-256 sidecar checked before extraction; HTTPS only with an allowlisted host on every
    redirect hop and the token never forwarded across a redirect; wheels installed offline with
    `--require-hashes` into a per-release venv; a crash never leaves a half-built release live.
+   Crash recovery: each transaction starts by deleting leftover `.incomplete` release
+   directories, EXCEPT on a pre-W1 (legacy-layout) install, where that prune is skipped and the
+   old releases survive until the new release is live (a failed migration leaves the legacy
+   previous release in place).
    **Signing is optional but absolute once enabled:** with `manifest_pubkey` the installer needs
    `minisign`, verifies `manifest.json.minisig` with the pinned key, and requires the signed
    trusted comment to be exactly
