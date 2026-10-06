@@ -139,14 +139,17 @@ argv = ["/opt/tester-venv/bin/python", "-m", "pytest",
   "tests/test_cli_extract.py",
   "tests/test_session_extract_follow.py",
   "tests/test_session_extract_locate.py",
+  "tests/test_session_extract_successor.py",
   "tests/test_cli_help.py",
   "tests/test_cli.py::test_tick",
   "tests/test_cli.py::test_tick_project_id_passes_the_selector_to_daemon",
   "-n", "4", "--maxfail=1", "-q", "--cov=src/nyxloom", "--cov-branch", "--cov-report=json:coverage-session-extract.json"]
 env = { PYTHONPATH = "src:../libraries/cli-extended/src", PYTHONDONTWRITEBYTECODE = "1" }
 env_passthrough = ["HOME", "PATH", "TERM", "LANG"]
-# The final current-main diff has 43 eligible candidates, within the approved
-# 45-candidate cap. The source-backed plan estimates a 43m wall bound with two
+# The current-main diff had 43 eligible candidates (cap 45); the SUCCESSOR
+# package (2026-10) adds toolresult/stopstate/successor and brought the plan to
+# 46, so the cap is raised to 52 (see [lanes.session-extract.judge.mutation]).
+# The source-backed plan estimates a 43m wall bound with two
 # mutation jobs and the declared 120s per-candidate failsafe; allow 2h for
 # baseline, scheduling, and verdict overhead.
 budget = "2h"
@@ -178,7 +181,7 @@ base = "126ccc39e151e33cc7bbcaa18bf765f9c9cd7dd1"
 # budget_per_candidate remains 120s.
 [lanes.session-extract.judge.mutation]
 jobs = 2
-max_mutants = 45
+max_mutants = 52
 operators = ["python:compare-swap", "python:boolop-swap", "python:bool-const-flip", "python:falsy-swap"]
 budget_per_candidate = "120s"
 
