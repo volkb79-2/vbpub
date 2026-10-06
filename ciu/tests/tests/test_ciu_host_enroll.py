@@ -13,7 +13,8 @@ Oracle map (handoff `ciu-P52-ciu93-host-enroll.md` Work item 6):
   implementations, each pinned as its own test against the SPECIFIC oracle it
   must break (row-before-check, key material on stdout, whole-file rewrite).
 * **O6** — `TestRenderedInstaller`: the committed `ciu/get.py`'s `enroll --help`
-  flag set, its byte-identity with a fresh `cmru get-py --project ciu` render,
+  flag set, its byte-identity with a fresh `cmru get-py ciu` render (template +
+  the ciu-owned `installer/enroll.py` extension fragment),
   and the release coordinates baked into `host_enroll` vs ciu's own `cmru.toml`.
 
 The end-to-end chain oracle (step 1's printed one-liner → a real `get.py enroll`
@@ -1115,8 +1116,15 @@ class TestRenderedInstaller:
         installed cmru wheel does not ship (`[tool.setuptools.package-data]`
         packages only `templates/*.toml`), so it runs against a cmru source
         checkout when one is reachable and skips when it is not."""
-        pytest.importorskip("cmru")
-        from cmru import getpy
+        try:
+            from cmru import getpy
+        except ImportError as exc:  # a missing cmru must be RED, never a silent skip
+            pytest.fail(
+                "cmru is not importable, so the committed ciu/get.py cannot be "
+                "checked against a fresh render; put ../cmru/src (and "
+                "../libraries/cli-extended/src, ../libraries/worktree/src) on "
+                f"PYTHONPATH: {exc}"
+            )
 
         template = getattr(getpy, "_TEMPLATE_PATH", None)
         if template is None or not template.exists():
@@ -1126,14 +1134,19 @@ class TestRenderedInstaller:
         if not template.exists():
             template = CIU_ROOT.parent / "cmru" / "templates" / "get.py.tmpl"
         if not template.exists():
-            pytest.skip("cmru's get.py.tmpl is not reachable from this checkout")
-        if "def do_enroll" not in template.read_text(encoding="utf-8"):
-            pytest.skip(
-                "the reachable cmru get.py.tmpl predates KI-24 (no enroll "
-                "subcommand), so it cannot have rendered the committed get.py"
+            pytest.fail("cmru's get.py.tmpl is not reachable from this checkout")
+        if "# @@EXTENSIONS@@" not in template.read_text(encoding="utf-8"):
+            pytest.fail(
+                "the reachable cmru get.py.tmpl predates the installer extensions "
+                "mechanism (W1-CIU-ENROLL), so it cannot have rendered the "
+                "committed get.py"
             )
 
-        from cmru.config import load_forge_config
+        from cmru.config import InstallerConfig, load_forge_config
+
+        assert "extensions" in InstallerConfig.__dataclass_fields__, (
+            "the importable cmru predates `[project.installer] extensions`"
+        )
 
         project_text = (CIU_ROOT / "cmru.toml").read_text(encoding="utf-8")
         central = tomllib.loads(
@@ -1192,7 +1205,11 @@ class TestRenderedInstaller:
             manifest_name=ins.manifest_name,
             signature_name=ins.signature_name,
             template_path=template,
+            extensions=[
+                (rel, (CIU_ROOT / rel).read_bytes()) for rel in ins.extensions
+            ],
         )
+        assert ins.extensions == ["installer/enroll.py"]
         assert rendered == self.GET_PY.read_text(encoding="utf-8")
 
 

@@ -115,7 +115,7 @@ def test_release_lanes_run_with_secret_files_and_ambient_credentials_masked(
 
     monkeypatch.setattr(run_release_gate, "_invoke_lane", invoke)
     assert run_release_gate.run_release_gate(repo, temp_parent=private_root) == 0
-    assert calls == ["installed-wheel", "assay", "coverage", "mutation", "canary", "enroll"]
+    assert calls == ["installed-wheel", "assay", "coverage", "mutation", "canary"]
     assert root_secret.read_bytes() == b"root credential\n"
     assert project_secret.read_bytes() == b"project override\n"
     assert {
@@ -287,7 +287,7 @@ def test_release_gate_retains_private_backups_when_secret_restoration_fails(
 
     assert not root_secret.exists()
     assert project_secret.is_symlink()
-    assert calls == ["installed-wheel", "assay", "coverage", "mutation", "canary", "enroll"]
+    assert calls == ["installed-wheel", "assay", "coverage", "mutation", "canary"]
     assert backup_root.is_dir()
     assert stat.S_IMODE(backup_root.stat().st_mode) == 0o700
     backup_files = list(backup_root.glob("overlay-*.bin"))

@@ -12,11 +12,13 @@ unmatched [[...]] keys trigger a warning.
 """
 from __future__ import annotations
 
+import ast
+import hashlib
 import re
 import sys
 from importlib import resources
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
 from cmru.config_names import ORCHESTRATION_CONFIG_FILENAME, PROJECT_CONFIG_FILENAME
 from cli_extended import (
@@ -32,6 +34,292 @@ from cmru.cli_support import cmru_identity, cmru_presentation_options
 
 
 _TEMPLATE_RESOURCE = "templates/get.py.tmpl"
+_EXTENSION_MARKER = "# @@EXTENSIONS@@\n"
+
+
+class ExtensionError(ValueError):
+    """An installer extension fragment is missing, unsafe, or violates the contract."""
+
+
+def _bindings(node: ast.AST) -> Dict[str, int]:
+    """Names bound in ``node``'s own scope (not in nested function scopes) -> first line.
+
+    Includes bindings nested in ``if``/``try``/``for``/``while``/``with``/``match``
+    blocks, ``del`` targets, ``except ... as`` names, ``match`` captures and imports.
+    """
+    bound: Dict[str, int] = {}
+
+    def add(name: str, child: ast.AST) -> None:
+        bound.setdefault(name, getattr(child, "lineno", 0))
+
+    def visit(child: ast.AST) -> None:
+        if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            add(child.name, child)
+            return
+        if isinstance(child, ast.Lambda):
+            return
+        if isinstance(child, ast.Name) and isinstance(child.ctx, (ast.Store, ast.Del)):
+            add(child.id, child)
+        elif isinstance(child, ast.ExceptHandler) and child.name:
+            add(child.name, child)
+        elif isinstance(child, (ast.MatchAs, ast.MatchStar)) and child.name:
+            add(child.name, child)
+        elif isinstance(child, ast.MatchMapping) and child.rest:
+            add(child.rest, child)
+        elif isinstance(child, (ast.Import, ast.ImportFrom)):
+            for alias in child.names:
+                add((alias.asname or alias.name).split(".")[0], child)
+        for sub in ast.iter_child_nodes(child):
+            visit(sub)
+
+    for stmt in ast.iter_child_nodes(node):
+        visit(stmt)
+    return bound
+
+
+def _bound_names(node: ast.AST) -> Set[str]:
+    return set(_bindings(node))
+
+
+def _arg_annotations(args: ast.arguments) -> List[ast.expr]:
+    every = args.posonlyargs + args.args + args.kwonlyargs
+    if args.vararg:
+        every.append(args.vararg)
+    if args.kwarg:
+        every.append(args.kwarg)
+    return [a.annotation for a in every if a.annotation is not None]
+
+
+def _args_names(args: ast.arguments) -> Set[str]:
+    names = {a.arg for a in args.posonlyargs + args.args + args.kwonlyargs}
+    if args.vararg:
+        names.add(args.vararg.arg)
+    if args.kwarg:
+        names.add(args.kwarg.arg)
+    return names
+
+
+def _top_level_names(tree: ast.Module, *, include_imports: bool) -> Dict[str, int]:
+    """Top-level binding names -> first line. Imports are optional (see callers)."""
+    names: Dict[str, int] = {}
+    for stmt in tree.body:
+        found: List[Tuple[str, int]] = []
+        if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            found.append((stmt.name, stmt.lineno))
+        elif isinstance(stmt, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
+            targets = stmt.targets if isinstance(stmt, ast.Assign) else [stmt.target]
+            for target in targets:
+                for sub in ast.walk(target):
+                    if isinstance(sub, ast.Name) and isinstance(sub.ctx, ast.Store):
+                        found.append((sub.id, stmt.lineno))
+        elif include_imports and isinstance(stmt, (ast.Import, ast.ImportFrom)):
+            for alias in stmt.names:
+                found.append(((alias.asname or alias.name).split(".")[0], stmt.lineno))
+        for name, line in found:
+            names.setdefault(name, line)
+    return names
+
+
+def _template_contract(core_source: str) -> Tuple[Set[str], Tuple[str, ...]]:
+    """(template top-level non-import names, EXTENSION_API) of the rendered core."""
+    tree = ast.parse(core_source)
+    names = set(_top_level_names(tree, include_imports=False))
+    api: Tuple[str, ...] = ()
+    for stmt in tree.body:
+        if (isinstance(stmt, ast.Assign) and len(stmt.targets) == 1
+                and isinstance(stmt.targets[0], ast.Name)
+                and stmt.targets[0].id == "EXTENSION_API"):
+            api = tuple(ast.literal_eval(stmt.value))
+    return names, api
+
+
+def _undeclared_api_loads(
+    tree: ast.Module, template_names: Set[str], api: Tuple[str, ...],
+) -> List[Tuple[str, int]]:
+    """Loads of template top-level names, outside EXTENSION_API, that no fragment
+    scope (module, enclosing function, comprehension) shadows."""
+    module_bound = _bound_names(tree)
+    offenders: List[Tuple[str, int]] = []
+
+    def walk(node: ast.AST, scopes: List[Set[str]]) -> None:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+            for default in list(node.args.defaults) + [d for d in node.args.kw_defaults if d]:
+                walk(default, scopes)
+            local = _args_names(node.args)
+            if not isinstance(node, ast.Lambda):
+                local |= _bound_names(node)
+                for deco in node.decorator_list:
+                    walk(deco, scopes)
+                annotations = _arg_annotations(node.args)
+                if node.returns is not None:
+                    annotations.append(node.returns)
+                for annotation in annotations:
+                    walk(annotation, scopes)
+            inner = scopes + [local]
+            body = [node.body] if isinstance(node, ast.Lambda) else node.body
+            for stmt in body:
+                walk(stmt, inner)
+            return
+        if isinstance(node, ast.ClassDef):
+            for sub in ast.iter_child_nodes(node):
+                walk(sub, scopes)
+            return
+        if isinstance(node, (ast.ListComp, ast.SetComp, ast.GeneratorExp, ast.DictComp)):
+            targets: Set[str] = set()
+            for gen in node.generators:
+                for sub in ast.walk(gen.target):
+                    if isinstance(sub, ast.Name):
+                        targets.add(sub.id)
+            scopes = scopes + [targets]
+        if (isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load)
+                and node.id in template_names and node.id not in api
+                and not any(node.id in scope for scope in scopes)):
+            offenders.append((node.id, node.lineno))
+        for sub in ast.iter_child_nodes(node):
+            walk(sub, scopes)
+
+    for stmt in tree.body:
+        walk(stmt, [module_bound])
+    return offenders
+
+
+def _check_extension(
+    relpath: str,
+    source: str,
+    template_names: Set[str],
+    api: Tuple[str, ...],
+    claimed: Dict[str, str],
+) -> None:
+    """Refuse a fragment that violates the extension contract (checks a-e)."""
+    try:
+        tree = ast.parse(source, filename=relpath)
+    except SyntaxError as exc:
+        raise ExtensionError(
+            f"extension {relpath}: does not parse (line {exc.lineno}): {exc.msg}"
+        ) from exc
+
+    # (d) stdlib-only imports.
+    stdlib = sys.stdlib_module_names
+    for node in ast.walk(tree):
+        modules: List[str] = []
+        if isinstance(node, ast.Import):
+            modules = [alias.name for alias in node.names]
+        elif isinstance(node, ast.ImportFrom):
+            if node.level:
+                raise ExtensionError(
+                    f"extension {relpath}: line {node.lineno}: relative import is not "
+                    "allowed (stdlib only)"
+                )
+            if any(alias.name == "*" for alias in node.names):
+                raise ExtensionError(
+                    f"extension {relpath}: line {node.lineno}: star import is not allowed "
+                    "(it could rebind any template name)"
+                )
+            modules = [node.module or ""]
+        for module in modules:
+            if module.split(".")[0] not in stdlib:
+                raise ExtensionError(
+                    f"extension {relpath}: line {node.lineno}: import of "
+                    f"{module!r} is not standard library (get.py is stdlib-only)"
+                )
+
+    # (b) top-level names must not collide with the template or another fragment.
+    # Imports never collide with another fragment (each fragment carries its own),
+    # but an import that rebinds a template name is still a collision.
+    own = _top_level_names(tree, include_imports=False)
+    imported = _top_level_names(tree, include_imports=True)
+    for name, line in list(own.items()) + [
+        (n, ln) for n, ln in imported.items() if n not in own and n in template_names
+    ]:
+        if name in template_names:
+            raise ExtensionError(
+                f"extension {relpath}: line {line}: top-level name {name!r} collides "
+                "with a template top-level name"
+            )
+        if name in claimed:
+            raise ExtensionError(
+                f"extension {relpath}: line {line}: top-level name {name!r} collides "
+                f"with extension {claimed[name]}"
+            )
+    # Rebinding anywhere in module scope (inside top-level if/try/for/with/match
+    # blocks, del targets, match captures) is a collision too, and so is a
+    # `global`/`nonlocal` declaration naming a template name (it would let a
+    # function rebind the template's own global).
+    for name, line in _bindings(tree).items():
+        if name in template_names:
+            raise ExtensionError(
+                f"extension {relpath}: line {line}: module-scope binding {name!r} "
+                "rebinds a template top-level name"
+            )
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Global, ast.Nonlocal)):
+            for name in node.names:
+                if name in template_names:
+                    raise ExtensionError(
+                        f"extension {relpath}: line {node.lineno}: "
+                        f"`{type(node).__name__.lower()} {name}` names a template "
+                        "top-level name"
+                    )
+    for name in own:
+        claimed[name] = relpath
+
+    # (c) only EXTENSION_API template names may be used.
+    offenders = _undeclared_api_loads(tree, template_names, api)
+    if offenders:
+        name, line = offenders[0]
+        raise ExtensionError(
+            f"extension {relpath}: line {line}: uses template name {name!r}, which is "
+            f"not in EXTENSION_API ({', '.join(api)})"
+        )
+
+    # (e) at least one top-level _EXTENSIONS.append(<name>).
+    for stmt in tree.body:
+        if (isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Call)
+                and isinstance(stmt.value.func, ast.Attribute)
+                and stmt.value.func.attr == "append"
+                and isinstance(stmt.value.func.value, ast.Name)
+                and stmt.value.func.value.id == "_EXTENSIONS"
+                and len(stmt.value.args) == 1
+                and isinstance(stmt.value.args[0], ast.Name)):
+            return
+    raise ExtensionError(
+        f"extension {relpath}: no top-level `_EXTENSIONS.append(<name>)` registration"
+    )
+
+
+def _inline_extensions(
+    template: str, extensions: List[Tuple[str, bytes]], replacements: Dict[str, str],
+) -> str:
+    """Replace the extension marker in the (unreplaced) template with the checked,
+    wrapped fragments. The caller then substitutes ``[[VARNAME]]`` placeholders over
+    the whole result, so a fragment may use them too."""
+    if not extensions:
+        return template.replace(_EXTENSION_MARKER, "")
+    if template.count(_EXTENSION_MARKER) != 1:
+        raise ValueError("get.py.tmpl must contain exactly one '# @@EXTENSIONS@@' marker line")
+    core = template
+    for placeholder, value in replacements.items():
+        core = core.replace(placeholder, value)
+    template_names, api = _template_contract(core)
+    claimed: Dict[str, str] = {}
+    blocks: List[str] = []
+    for relpath, raw in extensions:
+        try:
+            text = raw.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise ExtensionError(f"extension {relpath}: not valid UTF-8: {exc}") from exc
+        shipped = text
+        for placeholder, value in replacements.items():
+            shipped = shipped.replace(placeholder, value)
+        _check_extension(relpath, shipped, template_names, api, claimed)
+        digest = hashlib.sha256(raw).hexdigest()
+        body = text if text.endswith("\n") else text + "\n"
+        blocks.append(
+            f"# --- extension: {relpath} sha256={digest} ---\n"
+            f"{body}"
+            f"# --- end extension: {relpath} ---\n\n\n"
+        )
+    return template.replace(_EXTENSION_MARKER, "".join(blocks))
 
 
 def _py_str_list(items: List[str]) -> str:
@@ -86,9 +374,13 @@ def render_get_py(
     signature_name: str = "manifest.json.minisig",
     variants: Optional[List[Dict[str, Optional[str]]]] = None,
     template_path: Optional[Path] = None,
+    extensions: Optional[List[Tuple[str, bytes]]] = None,
 ) -> str:
     """Render the get.py template for a project.
 
+    ``extensions`` is an ordered list of ``(project-relative path, fragment bytes)``
+    inlined at the ``# @@EXTENSIONS@@`` marker after the render-time contract checks
+    (see ``_check_extension``); raises ``ExtensionError`` on a violation.
     All [[VARNAME]] placeholders are replaced with the provided values.
     Returns the rendered script as a string. Emits a warning for any
     unreplaced [[...]] placeholders.
@@ -130,7 +422,7 @@ def render_get_py(
         "[[SIGNATURE_NAME]]":            signature_name,
     }
 
-    result = template
+    result = _inline_extensions(template, list(extensions or []), replacements)
     for placeholder, value in replacements.items():
         result = result.replace(placeholder, value)
 
@@ -139,6 +431,30 @@ def render_get_py(
         unique = sorted(set(remaining))
         print(f"[WARN] get.py.tmpl: unreplaced placeholders: {unique}", file=sys.stderr)
 
+    return result
+
+
+def _read_extensions(
+    project_name: str, relpaths: List[str], project_root: Optional[Path],
+) -> List[Tuple[str, bytes]]:
+    """Read each declared extension fragment; it must exist inside the project dir."""
+    if not relpaths:
+        return []
+    if project_root is None:
+        raise ExtensionError(
+            f"project {project_name!r}: extensions need a project directory to resolve against"
+        )
+    root = project_root.resolve()
+    result: List[Tuple[str, bytes]] = []
+    for rel in relpaths:
+        path = (root / rel).resolve()
+        if root != path and root not in path.parents:
+            raise ExtensionError(
+                f"extension {rel}: resolves outside the project directory ({path})"
+            )
+        if not path.is_file():
+            raise ExtensionError(f"extension {rel}: file not found at {path}")
+        result.append((rel, path.read_bytes()))
     return result
 
 
@@ -162,8 +478,11 @@ def render_from_config(project_name: str, config_path: Path) -> str:
         {"name": v.name, "label": v.label} for v in proj.variants
     ]
 
+    extensions = _read_extensions(project_name, ins.extensions, proj.project_root)
+
     return render_get_py(
         project_name=project_name,
+        extensions=extensions or None,
         repo_owner=config.github.owner,
         repo_name=config.github.repo,
         tag_prefix=proj.prefix,
@@ -256,7 +575,10 @@ def _run_getpy(args, _runtime) -> None:
             exit_code=2,
             show_help=True,
         )
-    scripts = {name: render_from_config(name, cfg_path) for name in names}
+    try:
+        scripts = {name: render_from_config(name, cfg_path) for name in names}
+    except ExtensionError as exc:
+        raise CliFailure(str(exc), exit_code=2) from exc
     if args.dry_run:
         if args.output_dir:
             for name in names:

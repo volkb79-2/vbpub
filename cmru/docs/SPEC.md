@@ -864,6 +864,7 @@ required_commands  = ["python3", "docker", "minisign"]   # checked pre-network (
 preserve           = ["shared/host.toml"] # paths kept in <root>/shared/ across updates
 manifest_name      = "manifest.json"      # manifest file inside the bundle
 signature_name     = "manifest.json.minisig"  # minisign signature for manifest
+# extensions       = ["installer/extra.py"]   # project-owned get.py command fragments (S6.14)
 
 [[project.installer.wheels]]         # bundled wheels to install into private venv
 path         = "vendor/cmru-*.whl"  # glob inside the release bundle
@@ -1478,6 +1479,53 @@ re-installs the other variant rather than being short-circuited. When `VARIANTS`
 every step above is skipped and the installer behaves **byte-for-byte** as before (single
 asset `<tag><asset_suffix>`).
 
+**S6.14** **Installer extensions (cmru program 2026-10, O4).** The generic installer
+(`install`/`update`/`status`/`rollback`) is the whole of what cmru ships. Project-specific
+commands (for example ciu's host `enroll`) are **project-owned fragments** inlined into the
+single rendered file:
+
+- Config: `[project.installer] extensions = ["<relpath>.py", ...]` (optional list). Each path
+  is project-relative, must not be absolute or contain `..`, must end in `.py`, and must be
+  unique (config error, exit 2). The file must exist at render time and, after resolving
+  symlinks, lie inside the project directory (render error, exit 2).
+- Render: the template's `# @@EXTENSIONS@@` marker line (after every core helper and `do_*`
+  function, before `check_prerequisites`/`main`) is replaced by each fragment's bytes
+  **verbatim**, in declared order, wrapped in
+  `# --- extension: <relpath> sha256=<hex of the fragment file bytes> ---` and
+  `# --- end extension: <relpath> ---`. With no extensions the marker line is removed and the
+  output is a plain installer with no extension code. `[[VARNAME]]` placeholders are replaced
+  over the whole result, fragments included (the banner digest covers the raw file bytes).
+  The output stays ONE file with one digest and is byte-identical across renders.
+- Render-time checks (`ast`; each refusal names the fragment and a line): (a) the fragment
+  parses; (b) its top-level names collide with neither the template's top-level names nor
+  another fragment's (imports are exempt from fragment-to-fragment collisions, but an import
+  that rebinds a template name collides); (c) every load of a template top-level name that no
+  fragment scope shadows is in `EXTENSION_API`; (d) imports are stdlib only
+  (`sys.stdlib_module_names`; relative imports refused); (e) at least one top-level
+  `_EXTENSIONS.append(<name>)`.
+  Check (b) also covers every module-scope binding (inside top-level `if`/`try`/`for`/`with`/
+  `match`, `del` targets, match captures), refuses star imports, and refuses `global`/`nonlocal`
+  statements naming a template name; check (c) also walks argument and return annotations.
+  **These checks are a contract/lint guard over repo-owned fragments, not a security boundary:**
+  `globals()`, `getattr`, `exec` and similar dynamic access remain possible, and fragments are
+  trusted code reviewed with the repository.
+- Runtime: `_EXTENSIONS` is a list of `register(subparsers) -> {command: handler}`. After the
+  core subparsers are added, `main()` calls each registered function in order and merges the
+  returned dicts. A command that duplicates a core command or another extension's (including an
+  argparse duplicate-subparser error) is `fatal`, exit 2; a returned handler with no subparser
+  of that name is also exit 2. Dispatch is `handler(args, token)`, the same shape as the core
+  `do_*` functions; the token is the resolved GitHub token.
+- **`EXTENSION_API` is a stability contract.** The rendered file carries a tuple
+  `EXTENSION_API` naming every template top-level name a fragment may use (today:
+  `EXIT_CONFIG`, `EXIT_FAIL`, `EXIT_PREREQ`, `_EXTENSIONS`, `_c`, `_current_version`,
+  `_root_dir`, `do_install`, `fatal`, `hr`, `info`, `ok`, `warn`). Renaming, changing the
+  signature of, or removing a name requires updating every in-repo fragment in the same change;
+  adding a name is deliberate and made together with the fragment that needs it. Fragments
+  carry their own stdlib imports; the template's imports are not part of the API.
+- Consequence: a project that renders `get.py` without `extensions` carries no root-run
+  `authorized_keys` writer. Host enrollment is ciu's (`ciu/installer/enroll.py`); its hardening
+  is tracked in ciu (CIU-122/CIU-123), not here.
+
 ---
 
 ## S7 — External third-party tool integration (not yet config-enabled)
@@ -2060,7 +2108,7 @@ An empty source diff writes skip evidence bound to HEAD. The serial campaign
 has a 120-second per-candidate timeout,
 `--maxfail=1`, `--resume`, and a progress stream.
 `run-gate.py gate` runs the Assay R0/R1/R3 lane plus the tag-based R2 campaign,
-total coverage, cause-sensitive canary, and real-system enrollment checks.
+total coverage, and the cause-sensitive canary.
 
 **S16.1 — Snapshot boundary.** Assay R1/R3 run in
 `repository-minus-unsafe-symlinks`, with exactly the three tracked Topos
@@ -2081,9 +2129,8 @@ copied fixture closure exactly match the recorded run; any test or fixture chang
 new campaign. Both campaigns preserve their own resume state. The mutation and canary controls copy the CMRU test closure,
 including `topos/cmru.toml` and `nyxloom/cmru.toml`, which the estate adoption
 contract test reads. Missing closure files fail the control before mutation or
-canary evidence is written. The `gate` lane runs these with the total-coverage,
-cause-sensitive canary, and real-system enrollment checks as one release
-contract.
+canary evidence is written. The `gate` lane runs these with the total-coverage
+and cause-sensitive canary checks as one release contract.
 
 **S16.3 — Admission boundary.** The canonical entrypoint is
 `./run-gate.py`; the tester-unified lane requires the estate-provided
@@ -2108,13 +2155,11 @@ mode-0600 copy atomically from a sibling temporary file.
 Direct tester component lanes do not apply this host wrapper and MUST only run
 when the mounted checkout contains no publisher secret overlays.
 
-**S16.5 — Required real enrollment.** The registered `enroll` lane MUST set
-`CMRU_ENROLL_REQUIRED=1`. In this mode, missing Docker or
-the configured Docker-host probe image or `CGROUP_PARENT_DEV_GATES`, a Docker-host slice
-that is not loaded with a nonempty fragment, and failure to build the fixture image,
-MUST fail the lane rather than skip its real-system checks. A direct local test
-run without this marker MAY skip the enrollment container oracle when Docker
-is unavailable.
+**S16.5 — Real enrollment (moved to ciu).** cmru no longer ships host enrollment:
+`get.py enroll` is ciu-owned code inlined through the installer `extensions`
+mechanism (S6.14), and its real-system container oracles run in ciu's own
+`enroll` lane (`ciu/run-gate.toml`, `CIU_ENROLL_REQUIRED=1`). cmru's `gate` has no
+enrollment lane.
 
 ---
 

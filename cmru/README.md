@@ -606,7 +606,14 @@ not a module CLI or top-level `cmru bundle` verb. A project that needs the
 reusable operation imports `run_bundle`; a root verb should be added only when a
 concrete operator workflow needs one. `cmru run-step` is the single-step CLI.
 The standalone generated `get.py` remains intentionally independent and uses
-`argparse` because adopters run it without a CMRU installation. The
+`argparse` because adopters run it without a CMRU installation. It is the generic
+installer only; a project adds its own commands with `[project.installer] extensions =
+["<relpath>.py"]` fragments that `cmru get-py` inlines verbatim (sha256-banner wrapped, one file,
+deterministic) after render-time checks. The names a fragment may use are the rendered file's
+`EXTENSION_API` tuple, a stability contract: changing or removing a name requires updating every
+in-repo fragment in the same change (see "Installer extensions" in
+[docs/CONSUMERS.md](docs/CONSUMERS.md#installer-extensions-project-owned-getpy-commands) and
+SPEC S6.14). Host enrollment (`get.py enroll`) is ciu's fragment, not cmru's. The
 [consumer guide](docs/CONSUMERS.md#using-the-wheel-and-component-interfaces)
 shows installation and invocation examples.
 
@@ -664,11 +671,8 @@ mismatch fails the gate. Run the registered `gate` lane so it prepares fresh
 origin facts immediately before mutation.
 The checker verifies every local CMRU release tag at HEAD against its exact
 origin commit, including older tag names that point to the same commit.
-The registered real-enrollment lane sets `CMRU_ENROLL_REQUIRED=1`; missing Docker or host-probe
-configuration, an unloaded or fragment-less gate slice on the Docker host, or a failed fixture-image
-build fail that lane instead of skipping O2/O3. It checks the host through CMRU's privileged systemd
-probe. Direct local test runs may still skip the container integration checks when prerequisites
-are unavailable.
+Host enrollment (`get.py enroll`) and its real-system container lane belong to ciu now;
+cmru's gate has no enrollment lane (see "Installer extensions" under `cmru get-py`).
 Before tester-unified starts, the host gate points all visible root and selected
 project secret overlays at private host backups outside the repository mount
 and strips publisher-token and extra-mount variables from nested runner calls.

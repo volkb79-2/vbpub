@@ -292,14 +292,14 @@ and consumer behavior. `artifacts = ["wheel"]` records the released output—it 
 hidden behavior (see [`../docs/ciu-vs-cmru.md`](../docs/ciu-vs-cmru.md)).
 
 ```bash
-cmru release --project ciu     # gate → tag → explicit build → explicit publish
-cmru build   --project ciu     # retained worktree: gate + wheel build, no publish
-cmru resolve --project ciu     # resolve the current latest (version / url / sha256)
+cmru release ciu     # gate → tag → explicit build → explicit publish
+cmru build   ciu     # retained worktree: gate + wheel build, no publish
+cmru resolve ciu     # resolve the current latest (version / url / sha256)
 ```
 
 The only ciu-owned release helper is `run-ciu-tests.py` (the pytest suite). An old,
 unmanaged GitHub Release is CMRU maintenance, not CIU behavior: inspect first with
-`cmru cleanup --project ciu --delete-unmanaged-release-tag ciu-wheel-latest --dry-run`,
+`cmru cleanup ciu --delete-unmanaged-release-tag ciu-wheel-latest --dry-run`,
 then repeat with `--yes` to delete that Release while deliberately retaining its Git tag.
 
 `run-ciu-tests.py` enforces **100% total line and branch coverage** in the
@@ -361,19 +361,19 @@ curl -LO https://github.com/<owner>/<repo>/releases/download/ciu-v<version>/ciu-
 sha256sum -c ciu-<version>-py3-none-any.whl.sha256
 ```
 
-Use `cmru resolve --project ciu` (or `cmru.handlers wheel-validate --prefix ciu`) to
+Use `cmru resolve ciu` (or `cmru.handlers wheel-validate --prefix ciu`) to
 resolve the current latest version and print the download + checksum URLs
 programmatically:
 
 ```bash
-cmru resolve --project ciu
+cmru resolve ciu
 ```
 
 ### Cutting a new release (SemVer)
 
 ```bash
 # From a clean, pushed main checkout:
-./cmru.release.sh --project ciu
+cmru release ciu
 ```
 
 CMRU derives the SemVer increment from CIU's project-scoped conventional

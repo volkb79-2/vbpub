@@ -490,10 +490,9 @@ def _run_locked_gate(
         if result:
             return result
 
-        for lane in ("canary", "enroll"):
-            result = _invoke_lane(repo_root, lane, lane_environment)
-            if result:
-                return result
+        result = _invoke_lane(repo_root, "canary", lane_environment)
+        if result:
+            return result
     return 0
 
 

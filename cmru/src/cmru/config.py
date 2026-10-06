@@ -77,6 +77,10 @@ class InstallerConfig:
     manifest_name: str               # default "manifest.json"
     signature_name: str              # default "manifest.json.minisig"
     wheels: List[InstallerWheel]     # bundled wheels to install into venv
+    # Project-relative ``.py`` fragments inlined into the rendered get.py at the
+    # ``# @@EXTENSIONS@@`` marker (W1-CIU-ENROLL / decision O4). Existence is
+    # checked at render time, not here.
+    extensions: List[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -375,6 +379,7 @@ def _parse_installer(name: str, raw: dict) -> InstallerConfig:
     _KNOWN_INSTALLER_KEYS = {
         "install_dir_system", "install_dir_user", "asset_suffix", "entrypoint",
         "required_commands", "preserve", "manifest_name", "signature_name", "wheels",
+        "extensions",
     }
     unknown = [k for k in raw if k not in _KNOWN_INSTALLER_KEYS]
     if unknown:
@@ -422,6 +427,8 @@ def _parse_installer(name: str, raw: dict) -> InstallerConfig:
         wdist = str(_require(w, "distribution", f"project.{name}.installer.wheels[{i}]"))
         wheels.append(InstallerWheel(path=wpath, distribution=wdist))
 
+    extensions = _parse_installer_extensions(name, raw.get("extensions"))
+
     return InstallerConfig(
         install_dir_system=install_dir_system,
         install_dir_user=install_dir_user,
@@ -432,7 +439,33 @@ def _parse_installer(name: str, raw: dict) -> InstallerConfig:
         manifest_name=manifest_name,
         signature_name=signature_name,
         wheels=wheels,
+        extensions=extensions,
     )
+
+
+def _parse_installer_extensions(name: str, raw: object) -> List[str]:
+    """Validate ``[project.installer] extensions`` — project-relative ``.py`` paths."""
+    where = f"project.{name}.installer.extensions"
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        _error(f"{where} must be a list of project-relative .py paths")
+    extensions: List[str] = []
+    for i, item in enumerate(raw):
+        if not isinstance(item, str) or not item.strip():
+            _error(f"{where}[{i}] must be a non-empty string")
+        rel = item.strip()
+        candidate = Path(rel)
+        if candidate.is_absolute() or rel.startswith(("/", "\\")):
+            _error(f"{where}[{i}] must be project-relative, not absolute: {rel!r}")
+        if ".." in candidate.parts or ".." in rel.replace("\\", "/").split("/"):
+            _error(f"{where}[{i}] must stay inside the project directory (no '..'): {rel!r}")
+        if not rel.endswith(".py"):
+            _error(f"{where}[{i}] must end in .py: {rel!r}")
+        if rel in extensions:
+            _error(f"{where}[{i}] duplicates an earlier entry: {rel!r}")
+        extensions.append(rel)
+    return extensions
 
 
 # A variant name is used verbatim inside a release-asset filename, so keep it to a

@@ -414,7 +414,7 @@ Accepts an optional leading `v` (`0.2.0` and `v0.2.0` both work).
 ### Via cmru (consistent with other vbpub projects)
 
 ```bash
-./cmru.release.sh --project tls-edge --set-version 0.2.0
+cmru release tls-edge --set-version 0.2.0
 # → same declared project contract, with the root audit log
 ```
 

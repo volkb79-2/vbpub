@@ -155,4 +155,4 @@ cp -p "$VERSION_FILE" "$DIST_DIR/VERSION"
 
 ok "Artifact ready: $TARBALL"
 echo "  Size: $(du -sh "$TARBALL" | cut -f1)"
-echo "  Next: cmru release --config ../cmru.toml --project tls-edge"
+echo "  Next: cmru release tls-edge --config ../cmru.toml"
