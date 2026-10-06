@@ -121,10 +121,13 @@ def assemble(
     brief_max_chars: int = DEFAULT_BRIEF_MAX_CHARS,
     omitted_brief_note: bool = True,
     brief_line: int = 1,
+    harness_warning: str | None = None,
 ) -> str:
     path = Path(path)
     meta = read_meta(path) or {}
     header = [f"# Successor brief for agent `{path.stem.removeprefix('agent-')}`"]
+    if harness_warning:
+        header.append(f"> {harness_warning}")
     facts = []
     for key in ("description", "agentType", "model", "stoppedByUser"):
         if key in meta:

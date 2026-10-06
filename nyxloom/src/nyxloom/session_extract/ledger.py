@@ -75,6 +75,26 @@ def external_effect(
 _FILE_EDIT_TOOLS = {"Edit", "Write", "NotebookEdit"}
 _READ_TOOLS = {"Read"}
 
+# Agent-control calls change the world outside the transcript (they start,
+# steer or kill another agent), so a successor must see them as "already done"
+# effects. Rule added with the real-transcript corpus (SUCCESSOR-2).
+AGENT_CONTROL_TOOLS = frozenset({"Agent", "SendMessage", "TaskStop"})
+
+
+def agent_control_line(name: str, tinput: dict, aliases: tuple[tuple[str, str], ...] = ()) -> str:
+    """One ledger line for an Agent / SendMessage / TaskStop call."""
+    def clip(value: object, limit: int = 100) -> str:
+        text = value if isinstance(value, str) else json.dumps(value, default=str)
+        return toolresult.one_line(toolresult.apply_aliases(text, aliases), limit)
+
+    if name == "Agent":
+        kind = tinput.get("subagent_type") or "general-purpose"
+        return f"agent launch [{kind}]: {clip(tinput.get('description') or tinput.get('prompt') or '')}"
+    if name == "SendMessage":
+        about = tinput.get("summary") or tinput.get("message") or tinput.get("content") or ""
+        return f"agent message to {clip(tinput.get('to') or '?', 60)}: {clip(about)}"
+    return f"agent stop: {clip(tinput.get('task_id') or tinput.get('agent_id') or '?', 60)}"
+
 # git's own commit-summary first line: "[branch-name abc1234] message" (or
 # "[branch-name (root-commit) abc1234] message" for a repo's first commit).
 _COMMIT_RE = re.compile(r"\[\S+(?:\s+\([^)]*\))?\s+([0-9a-f]{7,40})\]")
@@ -259,6 +279,14 @@ def build_ledger_claude_code(
                                 else ledgers[current].files_edited
                             aliased = toolresult.apply_aliases(fp, aliases)
                             bucket.append(aliased if aliased != fp else _relativize(fp, root))
+                    elif name in AGENT_CONTROL_TOOLS:
+                        effects = ledgers[current].external_effects
+                        effects.append(
+                            f"{_hms(rec.get('timestamp', ''))} "
+                            f"{agent_control_line(name, tinput, aliases)}"
+                        )
+                        if block.get("id"):
+                            pending_effects[block["id"]] = (ledgers[current], len(effects) - 1)
                     elif name == "Bash":
                         command = tinput.get("command", "")
                         if not isinstance(command, str):

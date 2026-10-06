@@ -778,13 +778,38 @@ def _run_follow(args, path: Path, fmt: str, config, session_id: str | None, anch
     return follower.run_forever()
 
 
+# The `successor` preset: option attribute -> value, in the order shown to the
+# operator. `--successor-brief` implies it; an explicit flag always overrides.
+SUCCESSOR_PRESET_VALUES = (
+    ("profile", "all"),
+    ("tool_calls", "intent-or-call"),
+    ("tool_errors", "show"),
+    ("edit_calls", "collapse"),
+    ("read_calls", "collapse"),
+    ("effect_calls", "always"),
+    ("timestamps", "gaps"),
+    ("path_aliases", "auto"),
+)
+# Boolean members of the preset (no value): ledger and the cd-prefix strip.
+SUCCESSOR_PRESET_FLAGS = ("--strip-cd-prefix", "--ledger")
+SUCCESSOR_PRESET_TEXT = " ".join(
+    [f"--{attr.replace('_', '-')} {value}" for attr, value in SUCCESSOR_PRESET_VALUES]
+    + list(SUCCESSOR_PRESET_FLAGS)
+)
+
+
 def cmd_extract(args) -> int:
     """extract <session-ref> [--format FMT] [--json] [--profile NAME]
     [--max-checkpoints N] [--answer-length N] [--max-words N]
     [--max-compactions N] [--max-time-minutes N] [--epochs N|A:B|all]
     [--since MARKER | --since-file PATH] [--until MARKER] [--ledger]
     [--tool-calls none|intent|intent-or-call|call] [--tool-errors show|hide]
-    [--stop-state] [--successor-brief [--order TEXT|@FILE] [--brief-max-chars N]]
+    [--stop-state] [--preset successor]
+    [--successor-brief [--order TEXT|@FILE] [--brief-max-chars N]]
+    [--strip-cd-prefix | --no-strip-cd-prefix] [--path-aliases SPEC]
+    [--edit-calls show|collapse|omit] [--read-calls show|collapse]
+    [--effect-calls always|mode] [--timestamps all|gaps|none]
+    [--timestamp-gap-minutes N]
     [--effect-pattern REGEX] [--no-default-effect-patterns]
     [--show-tool-calls] [--show-tool-call-intent] [--gap-marker MODE]
     [--blank-lines N] [--show-timestamps MODE] [--timestamp-format FMT]
@@ -861,10 +886,14 @@ def cmd_extract(args) -> int:
 
     --stop-state appends the cause (the sibling .meta.json `stoppedByUser`
     plus the transcript tail), the last assistant text and the in-flight call.
-    --successor-brief emits ONE markdown document for priming a fresh agent
-    (original brief verbatim or path+sha256, extract with the successor
-    defaults --profile all --tool-calls intent-or-call --tool-errors show,
-    whole-session ledger, stop state, then --order TEXT|@FILE).
+    Every option belongs to one help group: Source & range, Content
+    selection, Rendering & compression, Derived sections, Output.
+    --preset successor is a named bundle of the compression/selection
+    options (see SUCCESSOR_PRESET_TEXT; shown in --help); explicit flags
+    override it. --successor-brief emits ONE markdown document for priming a
+    fresh agent (original brief verbatim or path+sha256, the extract with the
+    successor preset applied, whole-session ledger, stop state, then --order
+    TEXT|@FILE) and implies --preset successor.
 
     --blank-lines/--gap-marker/--min-gap-records/--show-gap-source control
     ONLY the text-mode rendering of
@@ -913,24 +942,18 @@ def cmd_extract(args) -> int:
     path, session_id = resolved
 
     successor = bool(getattr(args, "successor_brief", False))
-    if successor:
-        # Successor defaults (operator decision 2026-10-06): the whole
-        # transcript, tool calls as intent-or-call, failures shown, ledger on.
-        # Anything the caller passed explicitly wins.
-        if getattr(args, "profile", None) is None:
-            args.profile = "all"
-        if (getattr(args, "tool_calls", None) is None
-                and not getattr(args, "show_tool_calls", False)):
-            args.tool_calls = "intent-or-call"
-        args.ledger = True
-        # The rest of the successor defaults (design section 9): every
-        # compression is an option; the brief just turns them on. An explicit
-        # value always wins.
-        for attr, value in (("tool_errors", "show"), ("edit_calls", "collapse"),
-                            ("read_calls", "collapse"), ("effect_calls", "always"),
-                            ("timestamps", "gaps"), ("path_aliases", "auto")):
+    preset = getattr(args, "preset", None) == "successor"
+    if successor or preset:
+        # The `successor` preset (operator decision 2026-10-06; --successor-brief
+        # implies it): every compression is an option and the preset just turns
+        # them on. An explicit value always wins. The expansion is
+        # SUCCESSOR_PRESET (shown in --help and the docs).
+        for attr, value in SUCCESSOR_PRESET_VALUES:
+            if attr == "tool_calls" and getattr(args, "show_tool_calls", False):
+                continue  # the deprecated alias spelling counts as explicit
             if getattr(args, attr, None) is None:
                 setattr(args, attr, value)
+        args.ledger = True
         if not getattr(args, "no_strip_cd_prefix", False):
             args.strip_cd_prefix = True
     if getattr(args, "show_tool_calls", False) or getattr(args, "show_tool_call_intent", False):
@@ -995,6 +1018,7 @@ def cmd_extract(args) -> int:
         return 1
 
     for flag, wanted in (("--stop-state", getattr(args, "stop_state", False)),
+                         ("--preset successor", preset),
                          ("--successor-brief", successor)):
         if wanted and result.format != "claude-code":
             print(f"error: {flag} does not support {result.format!r} yet -- Claude Code "
@@ -1078,6 +1102,15 @@ def cmd_extract(args) -> int:
               f"--redact-pattern", file=sys.stderr)
 
     rendered = result.render()
+    harness_warning = None
+    if result.format == "claude-code":
+        from .session_extract.harness import version_warning
+
+        harness_warning = version_warning(path)
+        if harness_warning and (args.json or args.follow):
+            print(f"nyxloom extract: {harness_warning}", file=sys.stderr)
+        elif harness_warning and not successor:
+            rendered = harness_warning + "\n" + rendered
     if successor:
         from .session_extract import successor as successor_mod
 
@@ -1092,7 +1125,7 @@ def cmd_extract(args) -> int:
         rendered = successor_mod.assemble(
             path, brief[1], rendered, session_ledger, stop_state, order,
             brief_max_chars=max_chars if max_chars is not None else successor_mod.DEFAULT_BRIEF_MAX_CHARS,
-            brief_line=brief[2],
+            brief_line=brief[2], harness_warning=harness_warning,
         )
     task_text = None
     if args.task is not None:
