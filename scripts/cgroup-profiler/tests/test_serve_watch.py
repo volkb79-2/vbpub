@@ -287,9 +287,26 @@ class TestRealSubtreeEnforcement:
     ):
         """Host PIDs are observation-only in the private PID namespace;
         without placement the daemon must report, never signal."""
-        lane = subprocess.Popen(
-            ["sleep", "30"], env=dict(os.environ, RUN_GATE_PROFILE_SESSION=TOKEN)
-        )
+        ready_read, ready_write = os.pipe()
+        try:
+            lane = subprocess.Popen(
+                [
+                    sys.executable, "-c",
+                    f"import os, time; os.write({ready_write}, b'R'); time.sleep(30)",
+                ],
+                env=dict(os.environ, RUN_GATE_PROFILE_SESSION=TOKEN),
+                pass_fds=(ready_write,),
+            )
+        finally:
+            os.close(ready_write)
+        try:
+            # Popen's exec handshake does not mean the child has run yet.
+            # Wait until its own code has started before the daemon's initial
+            # one-shot /proc scan; otherwise host scheduling can make a test
+            # about PID safety intermittently observe no process at all.
+            os.read(ready_read, 1)
+        finally:
+            os.close(ready_read)
         parked = threading.Event()
         server = None
         try:
