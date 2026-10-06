@@ -67,7 +67,11 @@ unit/subgroup, verifies the scope and leaf are empty, removes its leaf, then
 asks systemd to stop the exact empty scope. It never stops a nonempty scope as
 a cleanup shortcut. A durable journal lets restart recovery repeat these
 checks; unknown membership or process identity leaves the evidence intact for
-operator repair.
+operator repair. The same rule applies when start fails after placement: the
+daemon attempts identity-checked rollback before discarding the unfinished
+session. Retention requires a positively complete placement journal before it
+may prune a finished session, since a finished summary alone cannot prove that
+the process left the delegated scope.
 
 ### Memory accounting is charge-based
 
