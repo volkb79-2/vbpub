@@ -107,7 +107,38 @@ def install(args, runtime):
 ```
 
 Until a CLI migrates, its own `--dry-run` stays legal as long as no verb in
-that CLI sets `dry_run=True`.
+that CLI sets `dry_run=True`. `--dry-run` help is one generic sentence; a verb
+whose preview means something specific sets `VerbSpec(dry_run_help="print the
+repo URL that would be written")` (single line, only with `dry_run=True`).
+
+**Version probe (CLI-EXT-24).** A tool whose version is SCM-derived and that
+also runs from a source tree passes `version_probe=` to
+`CliIdentity.resolve(...)`: a zero-argument callable returning a version
+string, or `None` when it cannot tell. It is checked against installed
+metadata and a version file like any other source; a disagreement is a
+`VersionLookupError` naming every value, never a silent preference.
+
+**Policies are shared by a parent and its delegates.** A parent registry and
+every registry it delegates to must use the same `unexpected_exceptions`
+(`build()` raises `ValueError` otherwise), and `dry_run` support is
+registry-wide. A tool with many registries should build them all through one
+factory so the policy is flipped in one place (cmru: `cmru_registry`). Every
+library-built delegate (`register_skills_verbs`) inherits the parent's `global_options`, `identity_banner` and
+`error_help`, so a consumer global option is accepted on those routes too.
+
+**Exit codes and hints for expected exceptions (CLI-EXT-29).** An exception
+class listed in `expected_exceptions` may carry `exit_code` (an `int`) and
+`hint` (a non-empty `str`) attributes: the run prints `[ERROR] <message>`,
+then the hint, and exits with that code (default 1). No subclassing of
+`CliFailure` is needed; existing tuples behave as before.
+
+**Quieter errors (CLI-EXT-23).** Defaults are unchanged. Opt in per registry:
+`CliRegistry(..., identity_banner="never")` stops the identity headline from
+preceding the first error, and `error_help="usage"` replaces the full help
+block after a parser error, missing verb, unknown help topic or
+`CliFailure(show_help=True)` with the usage line plus
+`Run '<prog> --help' for full help.`. Exit codes are unchanged. Update tests
+that assert the old stderr when you opt in.
 
 ## Replacing handler-side option checks and name-list parsing
 
@@ -1427,7 +1458,7 @@ SETUPTOOLS_SCM_PRETEND_VERSION_FOR_CLI_EXTENDED=0.2.0 \
 ### Test helpers: invoke_script
 
 Replace a hand-rolled `_invoke` (copy the environment, scrub variables, set
-`HOME`, prepend the library to `PYTHONPATH`, `subprocess.run`) with
+`HOME`, `subprocess.run`) with
 `invoke_script`, `invoke_module` or `make_invoker`:
 
 ```python
@@ -1453,12 +1484,14 @@ def test_real_executable_obeys_cli_contract(tmp_path, identity):
 `python -m`. The child gets `HOME` and the four `XDG_*_HOME` directories under
 `home`, `NO_COLOR=1`, and no `FORCE_COLOR`, `CLICOLOR_FORCE` or
 `CLAUDE_CONFIG_DIR`; variables starting with a `scrub_prefixes` entry are
-removed; `PYTHONPATH` starts with the directory of the `cli_extended` you
-imported, so the child runs the library revision under test. That prefix is
-added only for the same interpreter (`python=None`); with an explicit
-`python=`, pass `pythonpath=[...]` yourself, since an installed library
-directory is a whole `site-packages` that must not leak into a foreign
-interpreter. `env={"K": None}` deletes a key, but `env` may not set `HOME` or
+removed; `PYTHONPATH` is `pythonpath=[...]` followed by the inherited value and
+nothing else. The library directory is never added implicitly (CLI-EXT-27):
+installed, it is a whole `site-packages` that would shadow the consumer's own
+pinned copy and hide a missing dependency. A test that must run the
+in-process library passes `library_path=True`. `python_args=("-S",)` adds
+interpreter options, and `isolated=True` (CLI-EXT-19) runs `-I` and drops the
+inherited `PYTHONPATH`, the way to prove "library not installed" (it cannot be
+combined with `pythonpath` or `library_path`). `env={"K": None}` deletes a key, but `env` may not set `HOME` or
 any `XDG_*_HOME` (`ValueError`; `home` is the only source), `home` must be
 absolute, and an empty string in `scrub_prefixes` is refused (it would scrub
 `PATH` too). `timeout` is a failsafe, not an oracle.

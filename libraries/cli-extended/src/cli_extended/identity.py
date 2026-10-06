@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as installed_version
@@ -94,17 +95,24 @@ class CliIdentity:
         command: str | None = None,
         distribution: str | None = None,
         version_file: str | os.PathLike | None = None,
+        version_probe: Callable[[], str | None] | None = None,
     ) -> CliIdentity:
-        """Build an identity from installed metadata and/or a version file.
+        """Build an identity from installed metadata, a version file and/or a probe.
 
         Every given source is consulted. A source that does not exist is
-        "unresolved"; a malformed version file is an error. When both sources
-        resolve they must agree. There is never a literal fallback.
+        "unresolved"; a malformed version file or probe result is an error.
+        ``version_probe`` is a zero-argument callable for a checkout-accurate
+        version (for example a ``git describe`` wrapper): it returns a version
+        string, or ``None`` when it cannot tell (unresolved). A probe that
+        raises is a ``VersionLookupError``. When several sources resolve they
+        must all agree; a probe is never silently preferred over installed
+        metadata. There is never a literal fallback.
         """
 
-        if distribution is None and version_file is None:
+        if distribution is None and version_file is None and version_probe is None:
             raise ValueError(
-                "CliIdentity.resolve needs a distribution, a version_file, or both"
+                "CliIdentity.resolve needs a distribution, a version_file, "
+                "a version_probe, or a combination"
             )
         path: Path | None = None
         if version_file is not None:
@@ -131,11 +139,20 @@ class CliIdentity:
                         f"version file '{path}' has malformed content {text!r}"
                     )
                 resolved.append((f"version file '{path}'", text))
+        if version_probe is not None:
+            try:
+                probed = version_probe()
+            except Exception as exc:
+                raise VersionLookupError(f"version probe failed: {exc}") from exc
+            if probed is None:
+                missing.append("version probe returned None")
+            elif not isinstance(probed, str) or not _VERSION_RE.fullmatch(probed.strip()):
+                raise VersionLookupError(f"version probe returned malformed value {probed!r}")
+            else:
+                resolved.append(("version probe", probed.strip()))
         if not resolved:
             raise VersionLookupError("; ".join(missing))
         if len({value for _, value in resolved}) > 1:
-            (src_a, val_a), (src_b, val_b) = resolved
-            raise VersionLookupError(
-                f"version sources disagree: {src_a} says {val_a!r}, {src_b} says {val_b!r}"
-            )
+            says = ", ".join(f"{src} says {val!r}" for src, val in resolved)
+            raise VersionLookupError(f"version sources disagree: {says}")
         return cls(name=name, version=resolved[0][1], long_name=long_name, command=command)
