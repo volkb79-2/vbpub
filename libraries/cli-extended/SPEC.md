@@ -674,12 +674,13 @@ Subprocess test helpers (`cli_extended.testing`):
 - `home` MUST be absolute (`ValueError` otherwise). `env` MUST NOT contain
   `HOME` or any `XDG_*_HOME` key (`ValueError` naming the key); `home` is the
   only source. An empty string in `scrub_prefixes` is a `ValueError`.
-- `PYTHONPATH` is the directory of the imported `cli_extended` package, then
-  `pythonpath`, then any inherited value, but the library directory is added
-  only when `python` is None (the same interpreter). With an explicit `python`
-  the caller supplies `pythonpath` itself, because an installed library
-  directory is a whole `site-packages` that must not leak into a foreign
-  interpreter. `env` is applied last; a `None` value deletes the key.
+- `PYTHONPATH` is `pythonpath`, then any inherited value; nothing else is
+  added (CLI-EXT-27). With `library_path=True` the directory of the imported
+  `cli_extended` package is placed first. `python_args` are interpreter
+  options placed before the script or `-m`; `isolated=True` adds `-I`, drops
+  the inherited `PYTHONPATH`, and is a `ValueError` together with `pythonpath`
+  or `library_path` (CLI-EXT-19). `env` is applied last; a `None` value deletes
+  the key.
   `timeout` is a failsafe only.
 
 Every adoption MUST keep two contracts distinct: the generated grammar

@@ -16,7 +16,7 @@ matched.
 
 | ID | Requirement | Replaces | Verification | Docs |
 | --- | --- | --- | --- | --- |
-| AC-01 | The version comes from `CliIdentity.resolve(...)`: installed metadata and/or an absolute VERSION file, which must agree, with no literal fallback. | Regex or `importlib.metadata` readers feeding `CliIdentity(...)`; a hard-coded fallback version. | audit:version-source | [Install and choose a version source](CONSUMERS.md#install-and-choose-a-version-source) |
+| AC-01 | The version comes from `CliIdentity.resolve(...)`: installed metadata, an absolute VERSION file and/or a `version_probe` callable, which must agree, with no literal fallback (test files that build a pinned `CliIdentity(...)` are not flagged). | Regex or `importlib.metadata` readers feeding `CliIdentity(...)`; a hard-coded fallback version. | audit:version-source | [Install and choose a version source](CONSUMERS.md#install-and-choose-a-version-source) |
 | AC-02 | `CliIdentity` carries the product name, a long name and the executable `command` that equals the configured CLI id. | Hand-written `--version` strings and banner text. | manual | [README](../README.md#adopt-it) |
 
 ## Registration and grammar
@@ -85,4 +85,4 @@ matched.
 | ID | Requirement | Replaces | Verification | Docs |
 | --- | --- | --- | --- | --- |
 | AC-24 | A packaged tool declares `cli-extended>=X.Y.Z` in `[project].dependencies` and does not map `cli_extended` through `package-dir`; standalone scripts use the installed library. | Vendored copies and source-tree dependencies. | audit:dependency-declared | [Package the same library revision that was tested](CONSUMERS.md#package-the-same-library-revision-that-was-tested) |
-| AC-25 | No project source puts the library checkout on `sys.path` or `PYTHONPATH` (gate lanes that test the library itself are exempt). | `sys.path.insert(0, ".../libraries/cli-extended/src")`. | audit:no-path-hacks | [Package the same library revision that was tested](CONSUMERS.md#package-the-same-library-revision-that-was-tested) |
+| AC-25 | No project source puts the library checkout on `sys.path` or `PYTHONPATH` (gate lanes that test the library itself are exempt; comments are ignored; a test that asserts the path is absent marks that line with `# cli-extended: allow-path-assertion`, on the line or alone on the line above). | `sys.path.insert(0, ".../libraries/cli-extended/src")`. | audit:no-path-hacks | [Package the same library revision that was tested](CONSUMERS.md#package-the-same-library-revision-that-was-tested) |

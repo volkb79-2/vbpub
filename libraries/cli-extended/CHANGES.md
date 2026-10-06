@@ -7,6 +7,57 @@ know when upgrading; it is not generated.
 
 ## Contract and upgrade notes
 
+### Unreleased — library backlog fixes (CX-BACKLOG, 2026-10-06)
+
+Library contract version is unchanged (1). Behaviour changes a consumer can see:
+
+- **Release policy (operator ruling 2026-10-06).** The CLI-EXT-27 testing-helper
+  behaviour change below ships in a 0.x minor without a contract-version bump
+  (the contract concerns the CLI controls, not the test helpers); 0.x minors may
+  carry such documented behaviour changes.
+- **Notes.** The CLI-EXT-28 marker is honoured in non-test files too, by design.
+  `CliIdentity.resolve(version_probe=...)` (CLI-EXT-24) has no timeout: a caller
+  wrapping a slow command (for example `git describe`) must bound it itself.
+  An `exit_code` (an expected exception's, or `CliFailure`'s) outside 1..255,
+  including 0, negatives, values above 255 and bools, becomes 1.
+
+- **`cli_extended.testing` no longer edits `PYTHONPATH` implicitly (CLI-EXT-27).**
+  `invoke_script`/`invoke_module` used to prepend the imported library's
+  directory (a whole `site-packages` when installed), which shadowed a
+  consumer's own pinned copy and hid a missing dependency. The child now gets
+  `pythonpath` followed by the caller's inherited `PYTHONPATH`, nothing else.
+  A test that relied on the implicit entry must either run under a
+  `PYTHONPATH`/venv that already resolves `cli_extended`, or pass the new
+  `library_path=True`. Check the netcup tests (`test_cli_contract.py`,
+  `test_monitor_task.py`) and any `PYTHONPATH=…/src` gate lane.
+- **`register_skills_verbs` forwards the parent's `global_options`
+  (CLI-EXT-26)** (plus `identity_banner` and `error_help`) to its child
+  registry. A consumer with a global option now gets it on every `skills`
+  route, and `surface check` no longer reports `delegated parser does not
+  register inherited global option(s)`. Re-run `surface sync` if the skills
+  routes' review rows change.
+- **`expected_exceptions` honours `exit_code` and `hint` (CLI-EXT-29).** A
+  matched exception exits with its integer `exit_code` attribute (default 1)
+  and prints its non-empty string `hint` after `[ERROR] <msg>`. Plain tuples
+  and exceptions without those attributes behave as before.
+- **New opt-ins, defaults unchanged (CLI-EXT-23).**
+  `CliRegistry(identity_banner="never")` suppresses the identity headline
+  before an error; `CliRegistry(error_help="usage")` prints the usage line and
+  `Run '<prog> --help' for full help.` instead of the full help block on
+  parser errors, a missing verb, an unknown help topic and
+  `CliFailure(show_help=True)`. Exit codes are unchanged.
+- **`CliIdentity.resolve(version_probe=…)` (CLI-EXT-24).** A zero-argument
+  callable returning a version or `None`; it must agree with installed
+  metadata and a version file (`VersionLookupError` on disagreement). The
+  "no source" `ValueError` text now also names `version_probe`.
+- **`invoke_*(python_args=…, isolated=True)` (CLI-EXT-19);
+  `VerbSpec(dry_run_help=…)` (CLI-EXT-21).**
+- **Audit (CLI-EXT-28, CLI-EXT-22).** AC-25 `no-path-hacks` accepts the
+  `# cli-extended: allow-path-assertion` marker on (or immediately above) a
+  line that asserts the library path is absent, and ignores comments; AC-01
+  `version-source` ignores test files (`tests/`, `test_*.py`, `*_test.py`,
+  `conftest.py`) that build a pinned `CliIdentity(...)`.
+
 ### 0.2.0 — first released wheel (unified adoption)
 
 cli-extended is now a released wheel (`cli_extended-<version>-py3-none-any.whl`)
@@ -82,6 +133,26 @@ Behaviour changes a consumer can see:
   `cli-extended surface ...`; the shim is removed in a later release.
 
 <!-- cmru: release history -->
+
+## [0.3.0] - 2026-10-06
+<!-- cmru: generated -->
+<!-- cmru: source-end=0321ffc3c7009b31f17b3320611ad74a19567345 -->
+
+### Added
+- feat(cli-extended): name --cli-case-partial in the strict CLI-case coverage error (a63838063)
+- feat(cli-extended): CLI-EXT-19/21/22/24 version_probe, python_args/isolated, dry_run_help, audit precision (code and tests) (7cfe227f3)
+
+### Fixed
+- fix(cli-extended): CX-BACKLOG review round 1 (audit row alignment, exit-code clamp, docs, backlog) (16fdee1f7)
+- fix(cli-extended): CLI-EXT-23/26/27/28/29 library backlog fixes (code and tests) (f6ad8ce0c)
+
+### Documentation
+- docs(cli-extended): CX-BACKLOG 2026-10 report (933402fad)
+- docs(cli-extended): CX-BACKLOG triage, backlog entries 23-29, CHANGES unreleased contract notes, consumer docs (919bafcbe)
+
+### Testing
+- test(cli-extended): sharpen AC-25 separator test; round 1 report (6b56d15b4)
+- test(cli-extended): cover CliOutput policy validation (r0-r1 100% coverage) (318d6735b)
 
 ## [0.2.0] - 2026-10-05
 <!-- cmru: generated -->

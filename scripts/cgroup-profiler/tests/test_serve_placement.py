@@ -28,6 +28,7 @@ import os
 import posixpath
 import shutil
 import subprocess
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -348,6 +349,132 @@ def _server(tmp_path: Path, root: Path, **kw: Any) -> serve.SessionServer:
     server.cgroup_rmdir = _fake_rmdir
     _SERVERS.append(server)
     return server
+
+
+@pytest.mark.parametrize("failure", ["placement", "sample", "manifest", "thread"])
+def test_failed_start_restores_placed_pid_before_discarding_record(
+    tmp_path, monkeypatch, failure,
+):
+    root = _fake_cgroup_root(tmp_path, procs="101\n")
+    server = _server(tmp_path, root)
+    if failure == "placement":
+        original = placement.LanePlacement.apply
+
+        def fail_after_placement(lane, pids):
+            original(lane, pids)
+            monkeypatch.setattr(placement.LanePlacement, "apply", original)
+            raise OSError("start failed after placement")
+
+        monkeypatch.setattr(placement.LanePlacement, "apply", fail_after_placement)
+    elif failure == "sample":
+        original = serve.summary.sample_target_cgroup
+
+        def fail_once(abs_path):
+            monkeypatch.setattr(serve.summary, "sample_target_cgroup", original)
+            raise OSError("first sample failed")
+
+        monkeypatch.setattr(serve.summary, "sample_target_cgroup", fail_once)
+    elif failure == "manifest":
+        original = serve.store.RunDir.write_manifest
+
+        def fail_once(rundir, document):
+            monkeypatch.setattr(serve.store.RunDir, "write_manifest", original)
+            raise OSError("sessions volume full")
+
+        monkeypatch.setattr(serve.store.RunDir, "write_manifest", fail_once)
+    else:
+        original = threading.Thread.start
+
+        def fail_once(thread):
+            monkeypatch.setattr(threading.Thread, "start", original)
+            raise OSError("thread launch failed")
+
+        monkeypatch.setattr(threading.Thread, "start", fail_once)
+
+    with pytest.raises(OSError):
+        server._dispatch({"verb": "start", "args": _start_args(), "contract": 1})
+
+    assert not _leaf(root).exists()
+    assert not _leaf(root).parent.exists()
+    assert (root / SCOPE_CGROUP / "cgroup.procs").read_text() == "101\n"
+    assert not (tmp_path / "sessions" / SESSION_ID).exists()
+    assert server._sessions == {}
+
+    started = server._dispatch({"verb": "start", "args": _start_args(), "contract": 1})
+    assert started["ok"] is True
+    assert started["placement"]["leaf"] == PLACEMENT_CGROUP
+    stopped = server._dispatch({"verb": "stop", "args": {"session": SESSION_ID}, "contract": 1})
+    assert stopped["ok"] is True
+    assert not _leaf(root).exists()
+
+
+@pytest.mark.parametrize("rollback", ["unconfirmed", "raises"])
+def test_failed_start_preserves_recovery_journal_when_placement_cannot_be_restored(
+    tmp_path, monkeypatch, rollback,
+):
+    root = _fake_cgroup_root(tmp_path, procs="101\n")
+    server = _server(tmp_path, root)
+    original = serve.store.RunDir.write_manifest
+
+    def fail_once(rundir, document):
+        monkeypatch.setattr(serve.store.RunDir, "write_manifest", original)
+        raise OSError("sessions volume full")
+
+    monkeypatch.setattr(serve.store.RunDir, "write_manifest", fail_once)
+    if rollback == "unconfirmed":
+        monkeypatch.setattr(placement.LanePlacement, "_restore_owned_processes", lambda _lane: False)
+    else:
+        def fail_release(_lane):
+            raise OSError("systemd restore unavailable")
+
+        monkeypatch.setattr(placement.LanePlacement, "release", fail_release)
+
+    with pytest.raises(OSError, match="sessions volume full"):
+        server._dispatch({"verb": "start", "args": _start_args(), "contract": 1})
+
+    journal = tmp_path / "sessions" / SESSION_ID / "placement-state.json"
+    assert _leaf(root).exists()
+    assert _leaf(root).parent.exists()
+    assert journal.exists()
+    assert json.loads(journal.read_text())["state"] != "complete"
+    assert server._sessions == {}
+    with pytest.raises(OSError, match="session id collision"):
+        server._dispatch({"verb": "start", "args": _start_args(), "contract": 1})
+
+
+def test_retention_preserves_failed_placement_until_restoration_is_proved(
+    tmp_path, monkeypatch,
+):
+    root = _fake_cgroup_root(tmp_path, procs="101\n")
+    server = _server(tmp_path, root, keep_sessions=0, keep_days=0)
+    started = server._dispatch({"verb": "start", "args": _start_args(), "contract": 1})
+    assert started["placement"]["leaf"] == PLACEMENT_CGROUP
+
+    def refuse_restore(lane):
+        lane.error = placement.REFUSED_IDENTITY_UNAVAILABLE
+        lane._persist(state="recovery-required")
+        return False
+
+    with monkeypatch.context() as patcher:
+        patcher.setattr(placement.LanePlacement, "_restore_owned_processes", refuse_restore)
+        stopped = server._dispatch({
+            "verb": "stop", "args": {"session": SESSION_ID}, "contract": 1,
+        })
+
+    journal = tmp_path / "sessions" / SESSION_ID / "placement-state.json"
+    assert stopped["ok"] is True
+    assert stopped["summary"]["placement"]["error"] == placement.REFUSED_IDENTITY_UNAVAILABLE
+    assert _leaf(root).exists()
+    assert json.loads(journal.read_text())["state"] == "recovery-required"
+    assert server._dispatch({"verb": "gc", "args": {}, "contract": 1})["removed"] == []
+    assert journal.exists()
+
+    server._sessions[SESSION_ID].placement.release()
+    assert not _leaf(root).exists()
+    assert json.loads(journal.read_text())["state"] == "complete"
+    gc = server._dispatch({"verb": "gc", "args": {}, "contract": 1})
+    assert gc["removed"] == [SESSION_ID]
+    assert not journal.exists()
 
 
 # ── §8.3: the four `start` options ──────────────────────────────────────

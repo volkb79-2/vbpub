@@ -9,8 +9,10 @@ to one onto the ``audit:`` rows of ``docs/ADOPTION-CHECKLIST.md``.
 
 from __future__ import annotations
 
+import io
 import os
 import re
+import tokenize
 import tomllib
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, replace
@@ -80,6 +82,9 @@ SOURCE_SUFFIXES = (".py", ".toml")
 PLUGIN_SUFFIXES = (".py", ".toml", ".ini", ".cfg")
 PLUGIN_MODULE = "cli_extended.pytest_plugin"
 GATE_FILE_NAME = "run-gate.toml"
+# CLI-EXT-28: a test that asserts the library path is ABSENT marks that line
+# (or the line after a marker-only line); only marked lines are exempt.
+PATH_ASSERTION_MARKER = "# cli-extended: allow-path-assertion"
 _REVIEW_ERRORS = (
     ReviewCatalogError,
     SurfaceError,
@@ -215,7 +220,9 @@ def _version_source(cli: CliConfig, _app: RegisteredCli, _p: ProjectConfig) -> A
     hand_rolled = [
         _relative(path, cli.root)
         for path, text in files
-        if "CliIdentity(" in text
+        # CLI-EXT-22: a test builds a pinned CliIdentity(...) on purpose.
+        if not _is_test_file(path, cli.root)
+        and "CliIdentity(" in text
         and ("importlib.metadata" in text or (_REGEX_USE.search(text) and "VERSION" in text))
     ]
     if hand_rolled:
@@ -570,15 +577,69 @@ def _dependency_declared(cli: CliConfig, _a: RegisteredCli, _p: ProjectConfig) -
     )
 
 
+def _without_allowed_assertions(text: str) -> str:
+    """Drop lines the author marked as path-absence assertions (CLI-EXT-28)."""
+
+    kept: list[str] = []
+    skip_next = False
+    for line in text.split("\n"):
+        stripped = line.strip()
+        if skip_next:
+            skip_next = False
+            continue
+        if stripped == PATH_ASSERTION_MARKER:
+            skip_next = True
+            continue
+        if stripped.endswith(PATH_ASSERTION_MARKER):
+            continue
+        kept.append(line)
+    return "\n".join(kept)
+
+
+def _without_comments(path: Path, text: str) -> str:
+    """Blank out comments so prose about a path hack is not reported (CLI-EXT-22).
+
+    Python files are tokenized so a ``#`` inside a string literal is kept; a
+    file that does not tokenize, and any other suffix, falls back to dropping
+    whole-line ``#`` comments.
+    """
+
+    # Split on "\n" only, like the tokenizer: ``splitlines()`` also breaks on
+    # \x0c, \x1c-\x1e, \x85,   and  , which misaligns token rows.
+    lines = text.split("\n")
+    if path.suffix == ".py":
+        try:
+            for token in tokenize.generate_tokens(io.StringIO(text).readline):
+                if token.type == tokenize.COMMENT:
+                    row, column = token.start[0] - 1, token.start[1]
+                    lines[row] = lines[row][:column]
+            return "\n".join(lines)
+        except (tokenize.TokenError, SyntaxError):
+            lines = text.split("\n")
+    return "\n".join(line for line in lines if not line.lstrip().startswith("#"))
+
+
+def _is_test_file(path: Path, root: Path) -> bool:
+    relative = path.relative_to(root)
+    return (
+        path.name == "conftest.py"
+        or path.name.startswith("test_")
+        or path.stem.endswith("_test")
+        or any(part in ("tests", "test") for part in relative.parts[:-1])
+    )
+
+
 def _no_path_hacks(cli: CliConfig, _a: RegisteredCli, _p: ProjectConfig) -> AuditItem:
     files, unreadable = _scan(cli.root, SOURCE_SUFFIXES)
-    hits = [
-        _relative(path, cli.root)
-        for path, text in files
-        if path.name != GATE_FILE_NAME
-        and "libraries/cli-extended" in text
-        and ("sys.path" in text or "PYTHONPATH" in text)
-    ]
+    hits = []
+    for path, raw in files:
+        text = _without_comments(path, _without_allowed_assertions(raw))
+        if (
+            path.name != GATE_FILE_NAME
+            and "libraries/cli-extended" in text
+            and ("sys.path" in text or "PYTHONPATH" in text)
+        ):
+            hits.append(_relative(path, cli.root))
     if hits:
         return _verified(
             "no-path-hacks",

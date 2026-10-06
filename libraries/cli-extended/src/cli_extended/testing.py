@@ -24,8 +24,11 @@ def _child_environment(
     scrub_prefixes: Sequence[str],
     env: Mapping[str, str | None] | None,
     pythonpath: Sequence[Path | str],
-    same_interpreter: bool,
+    library_path: bool,
+    isolated: bool = False,
 ) -> dict[str, str]:
+    if isolated and (pythonpath or library_path):
+        raise ValueError("isolated=True cannot be combined with pythonpath or library_path")
     if not str(home):
         raise ValueError("home must be a non-empty directory")
     home_path = Path(home)
@@ -48,11 +51,16 @@ def _child_environment(
     child["XDG_CACHE_HOME"] = str(home_path / ".cache")
     child["XDG_STATE_HOME"] = str(home_path / ".local" / "state")
     child["NO_COLOR"] = "1"
-    paths = [str(_LIBRARY_ROOT)] if same_interpreter else []
+    # CLI-EXT-27: the library directory is never added implicitly; it could
+    # be a whole site-packages that shadows the consumer's own copy.
+    paths = [str(_LIBRARY_ROOT)] if library_path else []
     paths.extend(str(item) for item in pythonpath)
-    if child.get("PYTHONPATH"):
+    if child.get("PYTHONPATH") and not isolated:
         paths.append(child["PYTHONPATH"])
-    child["PYTHONPATH"] = os.pathsep.join(paths)
+    if isolated:
+        child.pop("PYTHONPATH", None)
+    elif paths:
+        child["PYTHONPATH"] = os.pathsep.join(paths)
     for key, value in (env or {}).items():
         if value is None:
             child.pop(key, None)
@@ -70,17 +78,32 @@ def _run(
     cwd: Path | str | None,
     timeout: float,
     pythonpath: Sequence[Path | str],
-    same_interpreter: bool,
+    library_path: bool,
+    isolated: bool = False,
 ) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         command,
-        env=_child_environment(home, scrub_prefixes, env, pythonpath, same_interpreter),
+        env=_child_environment(
+            home, scrub_prefixes, env, pythonpath, library_path, isolated
+        ),
         cwd=cwd,
         text=True,
         capture_output=True,
         check=False,
         timeout=timeout,
     )
+
+
+def _interpreter_command(
+    python: str | None,
+    python_args: Sequence[str],
+    isolated: bool,
+    tail: list[str],
+) -> list[str]:
+    if isinstance(python_args, str):
+        raise ValueError("python_args must be a sequence of strings, not one string")
+    args = [*(["-I"] if isolated else []), *python_args]
+    return [python or sys.executable, *args, *tail]
 
 
 def invoke_script(
@@ -94,33 +117,46 @@ def invoke_script(
     cwd: Path | str | None = None,
     timeout: float = 60,
     pythonpath: Sequence[Path | str] = (),
+    library_path: bool = False,
+    python_args: Sequence[str] = (),
+    isolated: bool = False,
 ) -> subprocess.CompletedProcess[str]:
-    """Run ``script`` in a subprocess with a hermetic, tested-library environment.
+    """Run ``script`` in a subprocess with a hermetic environment.
 
     ``home`` is required: the child gets ``HOME`` and the four ``XDG_*_HOME``
     directories under it, so a test can never read or write the real home.
     ``home`` must be absolute, and ``env`` may not set ``HOME`` or any
     ``XDG_*_HOME`` (``ValueError``); an empty ``scrub_prefixes`` entry is also
-    refused. The imported library root is prepended to ``PYTHONPATH`` only when
-    ``python`` is None (same interpreter); with an explicit ``python`` pass
-    ``pythonpath=`` yourself.
+    refused. ``PYTHONPATH`` is ``pythonpath`` followed by the inherited value;
+    nothing else is added, so the child imports the consumer's own packages
+    and the ``cli_extended`` the caller's environment resolves (CLI-EXT-27).
+    Pass ``library_path=True`` to put the directory of the imported
+    ``cli_extended`` first; that directory is a whole ``site-packages`` when
+    the library is installed, so it can shadow the consumer's own copy and
+    is for tests that deliberately pin the in-process library.
     ``NO_COLOR=1`` is set; ``FORCE_COLOR``, ``CLICOLOR_FORCE`` and
     ``CLAUDE_CONFIG_DIR`` and every variable starting with a ``scrub_prefixes``
-    entry are removed. ``PYTHONPATH`` begins with the directory of the imported
-    ``cli_extended`` package, then ``pythonpath``, then the inherited value.
-    ``env`` is applied last; a ``None`` value deletes the key. ``timeout`` is
-    only a failsafe.
+    entry are removed. ``env`` is applied last; a ``None`` value deletes the
+    key. ``timeout`` is only a failsafe.
+
+    ``python_args`` are interpreter options placed before the script (for
+    example ``("-S",)``). ``isolated=True`` is the "library not installed"
+    probe: it adds ``-I`` (ignore ``PYTHON*`` variables, user site and the
+    script directory) and drops the inherited ``PYTHONPATH`` from the child
+    environment; it cannot be combined with ``pythonpath`` or
+    ``library_path`` (``ValueError``). CLI-EXT-19.
     """
 
     return _run(
-        [python or sys.executable, str(script), *argv],
+        _interpreter_command(python, python_args, isolated, [str(script), *argv]),
         home=home,
         scrub_prefixes=scrub_prefixes,
         env=env,
         cwd=cwd,
         timeout=timeout,
         pythonpath=pythonpath,
-        same_interpreter=python is None,
+        library_path=library_path,
+        isolated=isolated,
     )
 
 
@@ -135,18 +171,22 @@ def invoke_module(
     cwd: Path | str | None = None,
     timeout: float = 60,
     pythonpath: Sequence[Path | str] = (),
+    library_path: bool = False,
+    python_args: Sequence[str] = (),
+    isolated: bool = False,
 ) -> subprocess.CompletedProcess[str]:
     """The ``python -m MODULE`` twin of :func:`invoke_script`."""
 
     return _run(
-        [python or sys.executable, "-m", module, *argv],
+        _interpreter_command(python, python_args, isolated, ["-m", module, *argv]),
         home=home,
         scrub_prefixes=scrub_prefixes,
         env=env,
         cwd=cwd,
         timeout=timeout,
         pythonpath=pythonpath,
-        same_interpreter=python is None,
+        library_path=library_path,
+        isolated=isolated,
     )
 
 

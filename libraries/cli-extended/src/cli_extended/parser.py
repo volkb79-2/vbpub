@@ -23,7 +23,13 @@ from .constraints import (
     rule_lines,
 )
 from .identity import CliIdentity
-from .output import CliOutput, LogLevel, logging_context
+from .output import (
+    ERROR_HELP_POLICIES,
+    IDENTITY_BANNER_POLICIES,
+    CliOutput,
+    LogLevel,
+    logging_context,
+)
 from .progress import ProgressMode, ProgressRenderer
 from .prompts import PromptAPI, PromptCancelled, PromptDriver
 
@@ -53,6 +59,14 @@ class UsageError(Exception):
     def render(self) -> str:
         help_text = self.parser.format_help()
         return f"[ERROR] {self.parser.prog}: {self.message}\n\n{help_text}"
+
+
+def _valid_exit_code(code: object) -> int:
+    """An exit code is an int in 1..255; anything else (0, bool, ...) is 1."""
+
+    if isinstance(code, int) and not isinstance(code, bool) and 1 <= code <= 255:
+        return code
+    return 1
 
 
 class CliFailure(Exception):
@@ -330,8 +344,23 @@ class VerbSpec:
     surface_id: str | None = None
     dry_run: bool = False
     constraints: tuple[Constraint, ...] = ()
+    dry_run_help: str | None = None
 
     def __post_init__(self) -> None:
+        if self.dry_run_help is not None:
+            if (
+                not isinstance(self.dry_run_help, str)
+                or not self.dry_run_help.strip()
+                or "\n" in self.dry_run_help
+                or "\r" in self.dry_run_help
+            ):
+                raise ValueError(
+                    f"verb {self.name!r} dry_run_help must be a non-empty single-line string"
+                )
+            if not self.dry_run:
+                raise ValueError(
+                    f"verb {self.name!r} declares dry_run_help but not dry_run=True"
+                )
         if not isinstance(self.constraints, tuple) or not all(
             isinstance(item, Constraint) for item in self.constraints
         ):
@@ -481,6 +510,9 @@ class VerbSpec:
         return tuple(sections)
 
 
+DRY_RUN_HELP = "show what would change without changing anything"
+
+
 def _common_option_specs(
     *,
     include_json: bool,
@@ -488,6 +520,7 @@ def _common_option_specs(
     include_confirmation: bool,
     include_traceback: bool,
     include_dry_run: bool,
+    dry_run_help: str | None = None,
 ) -> tuple[OptionSpec, ...]:
     """Return common option metadata for generated help surfaces."""
 
@@ -577,7 +610,7 @@ def _common_option_specs(
         options.append(
             OptionSpec(
                 ("--dry-run",),
-                "show what would change without changing anything",
+                dry_run_help or DRY_RUN_HELP,
                 group="CONFIRMATION",
                 parser_kwargs={"action": "store_true"},
             )
@@ -823,6 +856,7 @@ class HelpCatalog:
                         include_confirmation=verb.confirmation_enabled,
                         include_traceback=self.include_traceback,
                         include_dry_run=verb.dry_run,
+                        dry_run_help=verb.dry_run_help,
                     ),
                     *(option for option in verb.options if not option.hidden),
                 )
@@ -1146,6 +1180,7 @@ def add_common_options(
     suppress_defaults: bool = False,
     include_traceback: bool = False,
     include_dry_run: bool = False,
+    dry_run_help: str | None = None,
 ) -> None:
     """Add the standard long options without introducing ``-h`` aliases."""
 
@@ -1162,6 +1197,7 @@ def add_common_options(
                 include_confirmation=include_confirmation,
                 include_traceback=include_traceback,
                 include_dry_run=include_dry_run,
+                dry_run_help=dry_run_help,
             )
         )
     help_group = parser.add_argument_group("HELP AND VERSION")
@@ -1250,7 +1286,7 @@ def add_common_options(
                 "--dry-run",
                 action="store_true",
                 default=default,
-                help="show what would change without changing anything",
+                help=dry_run_help or DRY_RUN_HELP,
             )
     for library_action in parser._actions[first_library_action:]:
         library_action._cli_extended_common = True
@@ -1360,6 +1396,8 @@ class RegisteredCli:
     expected_exceptions: tuple[type[BaseException], ...] = ()
     unexpected_exceptions: str = "raise"
     skills_package: tuple[str, str] | None = None
+    identity_banner: str = "once"
+    error_help: str = "full"
 
     @property
     def catalog(self) -> HelpCatalog | None:
@@ -1394,6 +1432,8 @@ class RegisteredCli:
             interactive_extra=interactive_extra,
             expected_exceptions=expected,
             unexpected_exceptions=self.unexpected_exceptions,
+            identity_banner=self.identity_banner,
+            error_help=self.error_help,
             **kwargs,
         )
 
@@ -1430,10 +1470,23 @@ class CliRegistry:
         allow_abbrev: bool = False,
         expected_exceptions: tuple[type[BaseException], ...] = (),
         unexpected_exceptions: str = "raise",
+        identity_banner: str = "once",
+        error_help: str = "full",
     ) -> None:
         if not isinstance(expected_exceptions, tuple):
             raise TypeError("expected_exceptions must be a tuple of exception types")
         _check_unexpected_policy(unexpected_exceptions)
+        if identity_banner not in IDENTITY_BANNER_POLICIES:
+            raise ValueError(
+                f"identity_banner must be one of {IDENTITY_BANNER_POLICIES}, "
+                f"got {identity_banner!r}"
+            )
+        if error_help not in ERROR_HELP_POLICIES:
+            raise ValueError(
+                f"error_help must be one of {ERROR_HELP_POLICIES}, got {error_help!r}"
+            )
+        self.identity_banner = identity_banner
+        self.error_help = error_help
         self.expected_exceptions = expected_exceptions
         self.unexpected_exceptions = unexpected_exceptions
         self.identity = identity
@@ -1610,6 +1663,9 @@ class CliRegistry:
             ),
             include_traceback=report_mode,
             include_dry_run=any_dry_run,
+            dry_run_help=(
+                self._verbs[0].dry_run_help if self.single_command else None
+            ),
         )
         self._add_option_specs(parser, self.global_options)
         if catalog is not None:
@@ -1652,6 +1708,7 @@ class CliRegistry:
                     suppress_defaults=True,
                     include_traceback=report_mode,
                     include_dry_run=verb.dry_run,
+                    dry_run_help=verb.dry_run_help,
                 )
                 verb_flags = {
                     flag for option in verb.options for flag in option.flags
@@ -1708,6 +1765,8 @@ class CliRegistry:
             self.expected_exceptions,
             self.unexpected_exceptions,
             getattr(self, "_cli_extended_skills", None),
+            self.identity_banner,
+            self.error_help,
         )
 
 
@@ -1723,6 +1782,8 @@ def _runtime_from_args(
     command_argv: Sequence[str] = (),
     prompt_driver: PromptDriver | None = None,
     interactive_extra: str = "cli-extended[interactive]",
+    identity_banner: str = "once",
+    error_help: str = "full",
 ) -> CliRuntime:
     debug_raw = bool(getattr(args, "debug_raw", False))
     quiet = bool(getattr(args, "quiet", False))
@@ -1766,6 +1827,8 @@ def _runtime_from_args(
         stdin=stdin,
         stdout=stdout,
         stderr=stderr,
+        identity_banner=identity_banner,
+        error_help=error_help,
     )
     output.raw_warning()
     return CliRuntime(
@@ -1840,6 +1903,13 @@ def _print_error_with_help(
         output.debug(debug_detail)
     output.stderr.write("\n")
     output.stderr.flush()
+    if output.error_help == "usage":
+        # CLI-EXT-23: short usage plus a pointer; the identity headline is
+        # left out so the error stays the first thing the user reads.
+        usage = argparse.ArgumentParser.format_usage(parser).rstrip("\n")
+        output.stderr.write(f"{usage}\nRun '{parser.prog} --help' for full help.\n")
+        output.stderr.flush()
+        return
     _print_help(
         parser.format_help(),
         output.stderr,
@@ -1861,6 +1931,8 @@ def run_cli(
     delegates: Mapping[str, RegisteredCli] | None = None,
     expected_exceptions: tuple[type[BaseException], ...] = (),
     unexpected_exceptions: str = "raise",
+    identity_banner: str = "once",
+    error_help: str = "full",
     secrets: Sequence[str] = (),
     stdout: TextIO | None = None,
     stderr: TextIO | None = None,
@@ -1888,6 +1960,8 @@ def run_cli(
         stdin=stdin,
         stdout=stdout,
         stderr=stderr,
+        identity_banner=identity_banner,
+        error_help=error_help,
     )
     for command_parser in (parser, *command_parsers.values()):
         command_parser._cli_help_stream = stdout
@@ -2074,6 +2148,8 @@ def run_cli(
             ),
             prompt_driver=prompt_driver,
             interactive_extra=interactive_extra,
+            identity_banner=identity_banner,
+            error_help=error_help,
         )
         if logging_logger is None:
             result = handler(args, runtime)
@@ -2126,17 +2202,23 @@ def run_cli(
                 runtime.output.debug(f"handled CLI refusal in {verb or parser.prog}")
         else:
             help_output.error(exc.message, hint=exc.hint)
-        return exc.exit_code
+        return _valid_exit_code(exc.exit_code)
     except expected_exceptions as exc:
+        # CLI-EXT-29: an expected exception may carry ``exit_code`` (an int)
+        # and ``hint`` (a str); anything else keeps the plain ``[ERROR]``/1.
+        code = _valid_exit_code(getattr(exc, "exit_code", 1))
+        hint = getattr(exc, "hint", None)
+        if not isinstance(hint, str) or not hint:
+            hint = None
         if "runtime" in locals():
-            runtime.output.error(str(exc))
+            runtime.output.error(str(exc), hint=hint)
             if runtime.debug:
                 runtime.output.debug(
                     f"handled {type(exc).__name__} in {verb or parser.prog}"
                 )
         else:
-            help_output.error(str(exc))
-        return 1
+            help_output.error(str(exc), hint=hint)
+        return code
     except Exception as exc:
         # In the default "raise" policy unexpected programming failures remain
         # tracebacks: the outer Python entrypoint prints one traceback, so do
