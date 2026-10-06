@@ -230,9 +230,22 @@ def _stub_report_script(tmp_path: Path) -> str:
 
 def _wait_for_socket(socket_path: str) -> None:
     deadline = time.monotonic() + 5.0
-    while not os.path.exists(socket_path) and time.monotonic() < deadline:
-        time.sleep(0.01)
-    assert os.path.exists(socket_path)
+    last_error: Optional[OSError] = None
+    while time.monotonic() < deadline:
+        # bind() makes the pathname visible before listen() makes the socket
+        # connectable.  Path existence alone therefore lets a client race
+        # the server's bind/listen sequence and fail with ECONNREFUSED.
+        try:
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as probe:
+                probe.settimeout(0.1)
+                probe.connect(socket_path)
+            return
+        except (FileNotFoundError, ConnectionRefusedError) as exc:
+            last_error = exc
+            time.sleep(0.01)
+    raise AssertionError(
+        f"socket did not become connectable within 5s: {socket_path}: {last_error}"
+    )
 
 
 def _normalize(doc: Any, *, sessions_dir: str, socket_path: str) -> Any:
