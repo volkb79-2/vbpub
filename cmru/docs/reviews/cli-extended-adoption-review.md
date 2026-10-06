@@ -202,7 +202,12 @@ verb-group catalog.
 
 ## Backlog relationships
 
-| Backlog item | Current disposition | Review relevance |
+> **Historical.** This table and the `cmru get` remarks above describe the state as of
+> `4de03ca5`; they are not maintained. KI-10 and KI-11 have since shipped (see the backlog),
+> and the `get` alias was removed in favour of `cmru get-py`. The current disposition of
+> every item is in `KNOWN_ISSUES_TODO_BACKLOG.md`.
+
+| Backlog item | Current disposition (as of 4de03ca5) | Review relevance |
 |---|---|---|
 | KI-26 — installed-wheel `get-py` | SHIPPED in this branch | The `cmru get-py` module-resource fix is in scope; the standalone generated installer intentionally remains argparse. |
 | KI-29 — `cmru abandon` | SHIPPED in this branch | Exact branch selection and dry-run-safe separation from remote cleanup are reflected in S-CLI.8. |

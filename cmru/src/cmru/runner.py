@@ -314,7 +314,9 @@ ERROR_LINES_ON_FAILURE = 20
 # Matches this codebase's own "[ERROR] ..." convention (wherever it appears in a line,
 # e.g. after a buildkit "#63 89.30 " progress prefix) and docker/buildkit's own
 # top-level "ERROR: target ... failed to solve" summary line.
-_ERROR_LINE_RE = re.compile(r"\[ERROR\]|^ERROR:")
+# pytest's short-summary lines ("FAILED tests/x.py::t - ...", "ERROR tests/x.py::t")
+# must surface too, or a quiet console never names the failing test (BG-03).
+_ERROR_LINE_RE = re.compile(r"\[ERROR\]|^ERROR:|^(?:FAILED|ERROR) ")
 _PYTEST_SUCCESS_RE = re.compile(r"=+ .*?\b\d+ passed(?:, \d+ skipped)? in [^=]+ =+")
 _UNITTEST_RUN_RE = re.compile(r"^Ran \d+ tests? in .+$")
 _UNITTEST_OK_RE = re.compile(r"^OK(?: \(.+\))?$")
@@ -679,19 +681,15 @@ def _run_step_cli(args, _runtime) -> int | None:
     projects, project_order = loaded[1], loaded[2]
     if args.target is None and config_path.name == "cmru.toml" and len(projects) == 1:
         context_project = next(iter(projects))
-        estate_scope = False
     elif args.target is None:
         context = resolve_invocation_context(config_path)
         context_project = context.project_name
-        estate_scope = context.scope == "estate"
     else:
         context_project = None
-        estate_scope = False
     try:
         names = select_target_names(
             args.target, projects, project_order,
             context_project=context_project,
-            estate_scope=estate_scope,
         )
     except TargetSelectionError as exc:
         raise CliFailure(str(exc), exit_code=2, show_help=True) from exc

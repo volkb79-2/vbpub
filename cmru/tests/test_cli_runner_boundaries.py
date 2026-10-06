@@ -18,7 +18,7 @@ from types import SimpleNamespace
 import pytest
 
 from cmru import cli, dependencies, runner, tester_gate
-from cmru.standards import assess_projects
+from cmru.standards import PROJECT_TEMPLATE_REVISION, assess_projects
 
 
 @pytest.mark.parametrize(
@@ -229,7 +229,10 @@ def test_tester_gate_main_refuses_missing_image_before_host_launch(monkeypatch):
 
 
 def test_standards_messages_distinguish_manual_projects_and_gate_contract():
-    project = SimpleNamespace(template_revision=4, changelog="CHANGES.md", steps={}, runner_steps={})
+    project = SimpleNamespace(
+        template_revision=PROJECT_TEMPLATE_REVISION, changelog="CHANGES.md",
+        steps={}, runner_steps={},
+    )
     results = assess_projects(Path("."), {"demo": project}, [], ["demo"])
     assert results[0].problems == ()
     assert any("not in orchestration.project_order" in item for item in results[0].messages)

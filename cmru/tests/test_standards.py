@@ -83,7 +83,7 @@ def test_standards_update_only_touches_project_marker_and_rechecks(tmp_path):
     assert standards_main(["demo", "--config", str(config), "--update"]) == 0
 
     updated = project.read_text(encoding="utf-8")
-    assert "[project]\ntemplate_revision = 4\n" in updated
+    assert "[project]\ntemplate_revision = 5\n" in updated
     assert "commands = [{ label = \"gate\", argv = [\"true\"], cwd = \".\" }]" in updated
 
 
@@ -127,71 +127,59 @@ def test_standards_requires_a_wheel_builder_image_for_wheel_build(tmp_path):
     config, project = _config(tmp_path)
     contents = project.read_text(encoding="utf-8").replace(
         'argv = ["true"]',
+        'argv = ["cmru", "handler", "wheel-build", "--cwd", "."]',
+        1,
+    )
+    project.write_text(contents, encoding="utf-8")
+
+    assert standards_main(["demo", "--config", str(config)]) == 2
+
+
+def test_standards_flags_python_module_handler_calls_in_steps(tmp_path, capsys):
+    # BG-04/REL-07: `python3 -m cmru.handlers` bypasses the bound launcher.
+    config, project = _config(tmp_path)
+    contents = project.read_text(encoding="utf-8").replace(
+        'argv = ["true"]',
         'argv = ["python3", "-m", "cmru.handlers", "wheel-build", "--cwd", "."]',
         1,
     )
+    contents = contents.replace("[env]\n", '[env]\nCMRU_WHEEL_BUILDER_IMAGE = "wheel-builder:test"\n', 1)
+    contents = contents.replace("[project]\n", "[project]\ntemplate_revision = 5\n", 1)
     project.write_text(contents, encoding="utf-8")
 
     assert standards_main(["demo", "--config", str(config)]) == 2
+    captured = capsys.readouterr()
+    assert "cmru.handlers" in captured.out + captured.err
+    assert "bound cmru launcher" in captured.out + captured.err
 
 
-def _gate_project(tmp_path: Path, *, docker: bool, extra_env: str = "") -> tuple[Path, Path]:
-    """A project whose run-tests step is a tester-gate, with the template
-    marker already applied so the verdict reflects only the tester contract."""
+def test_standards_handler_form_without_builder_image_names_that_exact_problem(tmp_path, capsys):
+    # Only the missing image may be reported: the handler form itself is fine,
+    # and the wheel-build check must recognise `cmru handler wheel-build`.
     config, project = _config(tmp_path)
-    flag = '"--enable-docker", ' if docker else ""
     contents = project.read_text(encoding="utf-8").replace(
         'argv = ["true"]',
-        f'argv = ["cmru", "tester-gate", "--cwd", ".", {flag}"--", "true"]',
+        'argv = ["cmru", "handler", "wheel-build", "--cwd", "."]',
         1,
-    ).replace(
-        'CMRU_TESTER_CGROUP_PROBE_IMAGE = "debian:test"\n',
-        'CMRU_TESTER_CGROUP_PROBE_IMAGE = "debian:test"\n'
-        'CMRU_TESTER_CGROUP_PARENT = "dev-gates.slice"\n' + extra_env,
     )
+    contents = contents.replace("[project]\n", "[project]\ntemplate_revision = 5\n", 1)
     project.write_text(contents, encoding="utf-8")
-    standards_main(["demo", "--config", str(config), "--update"])
-    return config, project
 
-
-def test_standards_requires_the_pids_limit_for_a_tester_gate(tmp_path, capsys):
-    """BG-01(a'): CMRU_TESTER_PIDS_LIMIT is part of the shared required set,
-    so `cmru standards` rejects a tester-gate project that omits it."""
-    config, _project = _gate_project(tmp_path, docker=False)
-    capsys.readouterr()
     assert standards_main(["demo", "--config", str(config)]) == 2
-    assert "requires explicit [env] values: CMRU_TESTER_PIDS_LIMIT" in capsys.readouterr().out
+    text = "".join(capsys.readouterr())
+    assert "wheel-build requires explicit CMRU_WHEEL_BUILDER_IMAGE in [env]" in text
+    assert "bound cmru launcher" not in text
 
-    (tmp_path / "ok").mkdir()
-    config, _project = _gate_project(
-        tmp_path / "ok", docker=False, extra_env='CMRU_TESTER_PIDS_LIMIT = "4096"\n',
+
+def test_standards_accepts_the_bound_cmru_handler_form(tmp_path):
+    config, project = _config(tmp_path)
+    contents = project.read_text(encoding="utf-8").replace(
+        'argv = ["true"]',
+        'argv = ["cmru", "handler", "wheel-build", "--cwd", "."]',
+        1,
     )
-    capsys.readouterr()
-    assert standards_main(["demo", "--config", str(config)]) == 0
+    contents = contents.replace("[env]\n", '[env]\nCMRU_WHEEL_BUILDER_IMAGE = "wheel-builder:test"\n', 1)
+    contents = contents.replace("[project]\n", "[project]\ntemplate_revision = 5\n", 1)
+    project.write_text(contents, encoding="utf-8")
 
-
-def test_standards_requires_every_dind_limit_for_a_docker_enabled_gate(tmp_path, capsys):
-    """BG-07: the sidecar's memory/CPU/pids limits are required with
-    --enable-docker, each named in the report."""
-    config, _project = _gate_project(
-        tmp_path, docker=True,
-        extra_env='CMRU_TESTER_PIDS_LIMIT = "4096"\nCMRU_TESTER_DIND_IMAGE = "docker@sha256:x"\n',
-    )
-    capsys.readouterr()
-    assert standards_main(["demo", "--config", str(config)]) == 2
-    out = capsys.readouterr().out
-    assert ("Docker-enabled tester-gate requires explicit CMRU_TESTER_DIND_MEMORY, "
-            "CMRU_TESTER_DIND_CPUS, CMRU_TESTER_DIND_PIDS_LIMIT in [env]") in out
-
-
-def test_standards_accepts_a_docker_enabled_gate_with_every_dind_input(tmp_path, capsys):
-    config, _project = _gate_project(
-        tmp_path, docker=True,
-        extra_env=(
-            'CMRU_TESTER_PIDS_LIMIT = "4096"\nCMRU_TESTER_DIND_IMAGE = "docker@sha256:x"\n'
-            'CMRU_TESTER_DIND_MEMORY = "2g"\nCMRU_TESTER_DIND_CPUS = "1.5"\n'
-            'CMRU_TESTER_DIND_PIDS_LIMIT = "2048"\n'
-        ),
-    )
-    capsys.readouterr()
     assert standards_main(["demo", "--config", str(config)]) == 0

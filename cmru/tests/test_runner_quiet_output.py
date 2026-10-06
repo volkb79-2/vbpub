@@ -69,6 +69,24 @@ def test_quiet_failure_falls_back_to_tail_when_nothing_looks_like_an_error():
     assert "plain progress line" in err
 
 
+def test_quiet_failure_surfaces_pytest_failed_and_error_summary_lines():
+    # BG-03: pytest's short-summary lines must reach the quiet console.
+    script = (
+        'echo "FAILED tests/test_a.py::test_boom - assert 1 == 2"; '
+        'echo "ERROR tests/test_b.py::test_setup"; '
+        'echo "this FAILED mid-line is not a summary"; '
+        + "; ".join(f"echo filler {i}" for i in range(30))
+        + "; exit 1"
+    )
+    _out, err, _log, exc = _run_quiet(script)
+    assert exc is not None
+    assert "2 error-looking line(s)" in err
+    block = err.split("(context)")[0]
+    assert "FAILED tests/test_a.py::test_boom - assert 1 == 2" in block
+    assert "ERROR tests/test_b.py::test_setup" in block
+    assert "mid-line" not in block
+
+
 def test_quiet_failure_shows_both_error_lines_and_tail_as_context():
     script = 'echo "[ERROR] the real problem"; echo trailing context line; exit 1'
     out, err, _log, exc = _run_quiet(script)
@@ -272,6 +290,14 @@ commands = [{ label = "push", argv = ["true"], cwd = "." }]
 def test_raw_runner_uses_project_local_log_root(tmp_path, monkeypatch):
     project = tmp_path / "demo"
     project.mkdir()
+    # BG-11: config resolution requires a git repository. Without this the test
+    # only passed when TMPDIR happened to sit inside a worktree (the gate).
+    subprocess.run(["git", "init", "-q", str(project)], check=True)
+    subprocess.run(
+        ["git", "-C", str(project), "-c", "user.name=t", "-c", "user.email=t@t",
+         "commit", "-q", "--allow-empty", "-m", "init"],
+        check=True,
+    )
     project_config = project / "cmru.toml"
     project_config.write_text(
         """schema_version = 1

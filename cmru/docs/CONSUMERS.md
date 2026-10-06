@@ -18,16 +18,16 @@ with this pasteable probe:
     cmru --version
 
 It prints one `cmru <version>` line on stdout and exits 0. The equivalent native
-verb is `cmru version`. Help from `cmru`, `cmru-agent`, and `cmru-controller`,
+verb is `cmru version`. Help from `cmru`,
 including nested verbs, begins with the generated CMRU identity. CMRU
 configuration diagnostics put that identity on line 1; shared
 `cli-extended` usage/refusal diagnostics put the actionable error first and
 then show relevant generated help, which begins with the same identity. Use
 `--help` or `cmru help <verb>`; CMRU's shared grammar deliberately does not add
 a separate short `-h` spelling.
-The documented `python3 -m cmru.handlers` calls are explicit project-step
-library adapters rather than a separately versioned operator entrypoint, so
-they are outside this top-level identity surface.
+`python3 -m cmru.handlers` is a bootstrap-only library adapter (the first-wheel
+build), not a separately versioned operator entrypoint, so it is outside this
+top-level identity surface. Project steps use `cmru handler <verb>`.
 
 ---
 
@@ -71,7 +71,7 @@ id = "example-wheel"
 description = "Example wheel project"
 prefix = "example-wheel-v"        # the tag prefix cmru owns; SemVer follows it
 artifacts = ["wheel"]             # an output INVENTORY, not a behaviour switch
-template_revision = 4
+template_revision = 5
 
 [project.version]
 strategy = "scm"
@@ -130,15 +130,21 @@ commands = [
 [steps.build]
 quiet = true
 commands = [
-  { label = "build wheel", argv = ["python3", "-m", "cmru.handlers", "wheel-build", "--cwd", "."], cwd = "." },
+  { label = "build wheel", argv = ["cmru", "handler", "wheel-build", "--cwd", "."], cwd = "." },
 ]
 
 [steps.push]
 quiet = true
 commands = [
-  { label = "publish wheel", argv = ["python3", "-m", "cmru.handlers", "wheel-publish", "--prefix", "example-wheel", "--cwd", ".", "--notes-env", "EXAMPLE_RELEASE_NOTES"], cwd = "." },
+  { label = "publish wheel", argv = ["cmru", "handler", "wheel-publish", "--prefix", "example-wheel", "--cwd", ".", "--notes-env", "EXAMPLE_RELEASE_NOTES"], cwd = "." },
 ]
 ```
+
+Project steps call handlers as `cmru handler <verb> ...`, never
+`python3 -m cmru.handlers`: inside a release transaction `cmru` resolves to the
+launcher bound to the running cmru (its own library roots), while the module form
+resolves cmru from whatever interpreter and `PYTHONPATH` the step inherits.
+`cmru standards` flags the module form in project steps.
 
 The runtime declaration is mandatory and closed. Paste `kind = "none"` for a
 self-contained project step; use `kind = "ciu"` when the step deliberately
@@ -166,7 +172,6 @@ registry = ["ghcr.io"]
 
 [orchestration]
 project_order    = ["example-wheel"]
-default_projects = ["example-wheel"]
 default_steps    = ["run-tests", "build", "push"]
 execution_mode   = "project-first"
 
@@ -208,8 +213,7 @@ adopter can render an installer from any working directory after installing CMRU
 cmru get-py example-wheel --config /path/to/cmru.orchestration.toml --output ./get.py
 ```
 
-The wheel also installs `cmru-agent` and `cmru-controller`; those are independent companion
-CLIs with their own registered verbs. `cmru --help` lists top-level CMRU commands, while
+`cmru --help` lists top-level CMRU commands, while
 `cmru help get-py` or `cmru get-py --help` prints the exact delegated grammar.
 
 ## Using the wheel and component interfaces
@@ -228,10 +232,10 @@ python3 -m venv .venv-cmru
 ```
 
 Use installed console scripts for operator workflows. `python -m cmru.handlers`
-is the supported component CLI because project contracts and the first-wheel
-bootstrap need it. `cmru.bundle` and `cmru.runner` are library modules; they do
-not expose module commands. The `cmru.cli`, `cmru.agent.cli`, and
-`cmru.controller.cli` module aliases are retired. Use `cmru run-step` for
+is the bootstrap-only component CLI (the first-wheel build runs before an
+installed `cmru` exists); project contracts use `cmru handler <verb>` instead.
+`cmru.bundle` and `cmru.runner` are library modules; they do not expose module
+commands. The `cmru.cli` module alias is retired. Use `cmru run-step` for
 direct single-step CLI work, and use the documented Python functions to compose
 bundle or runner behavior:
 
@@ -263,8 +267,7 @@ archive = run_bundle(Path("bundle.toml"))
 
 Prefer the declared project-step commands or these documented entrypoints over
 copying CMRU implementation code. Do not import private helpers as an API. For
-operator commands, use the installed `cmru`, `cmru-agent`, or `cmru-controller`
-script. The bundle module is a library, and the runner module's supported CLI
+operator commands, use the installed `cmru` script. The bundle module is a library, and the runner module's supported CLI
 is `cmru run-step`.
 
 A real `wheel-build` handler invocation requires a Git worktree and a configured
@@ -510,9 +513,21 @@ stop and remove them by that name. After your command exits, cmru reads the cont
 `pids.events` and `memory.events` (copied by an in-container wrapper to
 `.cmru/tester-gate-events-<uuid>.txt` in your worktree, removed afterwards): a missing file, a
 non-zero `pids.events max` or a non-zero `memory.events oom_kill` makes the step exit **3**
-(infrastructure failure, naming the counter) even if your command exited 0. Otherwise your
-command's own exit status is returned unchanged. `.cmru/` is git-ignored in vbpub; add it to your
-project's ignore file if the gate runs against a worktree you also diff.
+(infrastructure failure, naming the counter) even if your command exited 0. A malformed
+events file is the same failure. Otherwise your command's own exit status is returned unchanged.
+`.cmru/` is git-ignored in vbpub; add it to your project's ignore file if the gate runs against a
+worktree you also diff.
+
+Two consequences to know about:
+- **`oom_kill > 0` anywhere in the gate's cgroup fails the step with exit 3, even when the
+  command exited 0.** That includes tests that provoke an OOM kill on purpose; run such tests
+  outside `tester-gate` (or in a child with its own limit) rather than expecting a pass.
+- **uid requirement.** The wrapper runs as the image's user (uid 1003 in `tester-unified`) and
+  must be able to create `.cmru/tester-gate-events-<uuid>.txt` in your mounted worktree. If the
+  host user that owns the worktree and the image uid do not match so that the directory is not
+  writable, the file is never written and every gate ends exit 3 with "events file is missing";
+  fix the ownership (the launcher creates `.cmru/` as the invoking host user) rather than
+  ignoring the failure.
 
 ### Reproducing a gate step by hand
 
@@ -686,9 +701,11 @@ the same 1:1 scheme ciu uses. A successful release removes the worktree; a **fai
 it** for diagnosis and prints its exact path. The origin candidate branch is also retained. CMRU
 records the allocator's canonical identity input so the visible six-character token and the
 structured workspace context remain the same fact across resume and cleanup.
-publishes from the exact gated candidate SHA and only then fast-forwards `origin/main`; if a
-concurrent update rejects that final promotion, CMRU does not rebase the candidate or create a
-source revert. Inspect the retained candidate and resolve the external publication explicitly
+publishes from the exact gated candidate SHA and only then promotes it to `origin/main`; if a
+concurrent update rejects that final promotion, CMRU merges `origin/main` into the candidate when
+the project's own paths are untouched (bounded retries), otherwise it stops. It never rebases the
+candidate or creates a source revert. A build failure after the tag push rolls the tag back (the
+candidate stays resumable); once publishing began the tag is kept. Inspect the retained candidate and resolve the external publication explicitly
 before abandoning it. List and clean retained ones:
 
 ```
@@ -880,10 +897,15 @@ valid for another publish. `--dry-run` checks local evidence and renders the
 step but does not query remote tag availability. Use `cmru release` for the
 source-first tag/build/publish/promote workflow.
 
+A tagged release is refused while a plain `## [Unreleased]` section has a non-empty body (KI-30),
+and regenerating a stale generated history section overwrites hand edits inside it; see
+[release history behaviour changes](RELEASE-TRANSACTIONS.md#release-history-behaviour-changes-rel-02-rel-10).
+
 After a release transaction, CMRU also cleans up the caller's local `main` when it can. If
-that checkout is dirty, including with tracked or untracked files, ignored files, or ignored
-directories, CMRU refuses the cleanup rebase before invoking either rebase command and leaves
-the files and local ref untouched.
+that checkout is dirty with tracked or untracked (non-ignored) changes, CMRU refuses the cleanup
+rebase before invoking either rebase command and leaves the files and local ref untouched.
+Ordinary ignored build output does not block it; an ignored file blocks only where `origin/main`
+would add a file at that exact path.
 This warning does not put caller edits into the immutable remote snapshot, and
 `--allow-uncommitted` does not change that boundary. From a clean caller checkout, use the
 remedy printed by CMRU:
@@ -956,8 +978,8 @@ only its declared outputs; CMRU refuses any other write.
 Adopt with these boundaries in mind — each is a deliberate, fail-closed gap, tracked in
 [`../KNOWN_ISSUES_TODO_BACKLOG.md`](../KNOWN_ISSUES_TODO_BACKLOG.md):
 
-- **OCI repack** is guarded off for production (`--repack` exits 2 before any side effect) until
-  it proves single-build + registry-digest equivalence (KI-02, `S14`).
+- **OCI repack** is unavailable: the `--repack` option was removed from the handler verbs while
+  KI-02 is open and returns when it is fixed, once it proves single-build + registry-digest equivalence (KI-02, `S14`).
 - **Durable post-tag publish resume** does not exist: `--resume` can continue a retained
   *pre-tag* worktree only after corrections are committed there; prepare and the required gate
   rerun, and the corrected candidate commit is what ships. It is not a post-tag retry (KI-06).

@@ -277,8 +277,13 @@ CLEAN = "pids.events max 0\nmemory.events low 0\nmemory.events oom_kill 0\n"
         ("pids.events max 0\nmemory.events oom_kill 1\n", 0, 3, "memory.events oom_kill=1"),
         ("memory.events oom_kill 0\n", 0, 3, "pids.events has no 'max' counter"),
         ("pids.events max 0\n", 0, 3, "memory.events has no 'oom_kill' counter"),
-        ("garbage\n", 0, 3, "no 'max' counter"),
+        ("garbage\n", 0, 3, "malformed line 'garbage'"),
+        # A non-integer value is an infrastructure failure with a message, never a crash.
+        ("pids.events max abc\nmemory.events oom_kill 0\n", 0, 3, "malformed line 'pids.events max abc'"),
+        ("pids.events max -1\nmemory.events oom_kill 0\n", 0, 3, "malformed line"),
+        ("pids.events max 0 9\nmemory.events oom_kill 0\n", 0, 3, "malformed line"),
         (None, 0, 3, "missing or unreadable"),  # a missing file proves nothing
+        (None, 0, 3, "uid baked into the image"),  # ... and the message says why it usually happens
     ],
 )
 def test_gate_exit_code_reads_the_events_file(tmp_path, capsys, text, returncode, expected, named):
@@ -365,6 +370,27 @@ def test_estate_configs_declare_the_pids_limit_and_pinned_helper_images():
 
 
 # --- BG-06 / BG-13: image references
+
+@pytest.mark.parametrize("resolver", ["resolve_cgroup_probe_image", "resolve_dind_image"])
+@pytest.mark.parametrize("value", ["debian@sha256:<digest>", "debian@sha256:<replace-with-digest>", "<digest>"])
+def test_template_placeholder_gets_a_replace_it_message_not_a_generic_refusal(resolver, value):
+    with pytest.raises(SystemExit) as refused:
+        getattr(tester_gate, resolver)(value)
+    message = str(refused.value)
+    assert "template placeholder" in message
+    assert "docker image inspect --format '{{index .RepoDigests 0}}' <image>" in message
+    assert "invalid" not in message and "not digest-pinned" not in message
+
+
+def test_two_launches_get_different_container_names(fake_docker):
+    """A constant name would collide between concurrent gates (and make exact-name
+    cleanup remove another gate's container)."""
+    assert tester_gate._container_name("tester") != tester_gate._container_name("tester")
+    assert _run_gate() == 0
+    assert _run_gate() == 0
+    names = [_name(a) for a in _calls(fake_docker) if a[0] == "run"]
+    assert len(names) == 4 and len(set(names)) == 4
+
 
 @pytest.mark.parametrize("resolver", ["resolve_cgroup_probe_image", "resolve_dind_image"])
 @pytest.mark.parametrize("value", ["debian:trixie-slim", "debian@sha256:abc", "debian@sha256:" + "A" * 64])

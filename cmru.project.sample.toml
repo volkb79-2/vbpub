@@ -42,7 +42,7 @@ EXAMPLE_RELEASE_NOTES = "## example-wheel\n\nInstall with `pipx install example-
 [project]
 id = "example-wheel"
 description = "One sentence describing the product and its consumer."
-template_revision = 4
+template_revision = 5
 prefix = "example-wheel-v"
 artifacts = ["wheel"]
 scm_dist = "example-wheel"
@@ -76,11 +76,11 @@ commands = [
 [steps.build]
 quiet = true
 commands = [
-  { label = "example-wheel: build wheel", argv = ["python3", "-m", "cmru.handlers", "wheel-build", "--cwd", "."], cwd = "." },
+  { label = "example-wheel: build wheel", argv = ["cmru", "handler", "wheel-build", "--cwd", "."], cwd = "." },
 ]
 
 [steps.push]
 quiet = true
 commands = [
-  { label = "example-wheel: publish wheel", argv = ["python3", "-m", "cmru.handlers", "wheel-publish", "--prefix", "example-wheel", "--cwd", ".", "--notes-env", "EXAMPLE_RELEASE_NOTES"], cwd = "." },
+  { label = "example-wheel: publish wheel", argv = ["cmru", "handler", "wheel-publish", "--prefix", "example-wheel", "--cwd", ".", "--notes-env", "EXAMPLE_RELEASE_NOTES"], cwd = "." },
 ]

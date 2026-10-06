@@ -118,12 +118,6 @@ def test_handler_extra_asset_glob_missing_is_refused(tmp_path, monkeypatch):
     assert "matched no existing file" in str(raised.value)
 
 
-def test_handler_oci_build_repack_refuses_before_prerequisites():
-    with pytest.raises(SystemExit) as raised:
-        handlers._reject_experimental_repack(True)
-    assert raised.value.code == 2
-
-
 def test_bundle_copy_sources_applies_excludes_and_client_output(tmp_path):
     root = tmp_path / "project"
     (root / "src").mkdir(parents=True)

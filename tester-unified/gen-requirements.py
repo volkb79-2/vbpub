@@ -22,7 +22,10 @@ import tomllib
 from pathlib import Path
 from typing import Iterator
 
-#: Normalised names of every distribution this estate builds itself.
+#: FLOOR of normalised names of distributions this estate builds itself. The
+#: refusal set is this floor UNIONED with every project name found under the
+#: copied tree (:func:`derive_internal`), so a new ``libraries/foo`` is covered
+#: without editing this list.
 ESTATE_INTERNAL = frozenset({
     "cli-extended", "worktree", "cmru", "assay", "ciu", "nyxloom", "topos",
     "cgroup-profiler", "run-gate", "pwmcp", "srdm",
@@ -60,13 +63,28 @@ def requirement_name(requirement: str) -> str:
     return normalized(match.group(1))
 
 
-def refuse_internal(requirement: str, source: str) -> str:
+def derive_internal(root: Path) -> frozenset[str]:
+    """The floor plus ``[project].name`` of every ``<root>/*/pyproject.toml`` and
+    ``<root>/libraries/*/pyproject.toml`` (normalised)."""
+    names = set(ESTATE_INTERNAL)
+    for pattern in ("*/pyproject.toml", "libraries/*/pyproject.toml"):
+        for pyproject in sorted(root.glob(pattern)):
+            with pyproject.open("rb") as handle:
+                name = tomllib.load(handle).get("project", {}).get("name")
+            if name:
+                names.add(normalized(name))
+    return frozenset(names)
+
+
+def refuse_internal(
+    requirement: str, source: str, internal: frozenset[str] = ESTATE_INTERNAL,
+) -> str:
     """Return ``requirement`` unchanged, or refuse it.
 
     Refuses estate-internal names and direct-URL (``name @ url``) requirements,
     which bypass the index policy entirely."""
     name = requirement_name(requirement)
-    if name in ESTATE_INTERNAL:
+    if name in internal:
         raise InternalRequirementError(
             f"gen-requirements: {source} requires estate-internal distribution "
             f"{name!r} ({requirement!r}). Refusing to hand it to a PyPI-default pip; "
@@ -104,6 +122,7 @@ def own_extra_requirements(project: dict, extras) -> Iterator[str]:
 
 
 def requirements(root: Path) -> Iterator[str]:
+    internal = derive_internal(root)
     for relative, extras in PROJECTS:
         pyproject = root / relative
         with pyproject.open("rb") as handle:
@@ -111,15 +130,15 @@ def requirements(root: Path) -> Iterator[str]:
         project = document["project"]
         source = f"{relative} [project]"
         for requirement in project.get("dependencies", ()):
-            yield refuse_internal(requirement, source)
+            yield refuse_internal(requirement, source, internal)
         for requirement in own_extra_requirements(project, extras):
-            yield refuse_internal(requirement, f"{relative} extras {list(extras)}")
+            yield refuse_internal(requirement, f"{relative} extras {list(extras)}", internal)
         # Source-backed lanes install the selected tree with --no-build-isolation,
         # so its pinned build backend must be in the image.  (Build backends are
         # third-party; the refusal applies to them as well.)
         if normalized(project["name"]) in BUILD_REQUIRES_FOR:
             for requirement in document.get("build-system", {}).get("requires", ()):
-                yield refuse_internal(requirement, f"{relative} [build-system]")
+                yield refuse_internal(requirement, f"{relative} [build-system]", internal)
     yield "build"
 
 
@@ -127,11 +146,12 @@ def build_requirements(root: Path, pyprojects: list[str]) -> Iterator[str]:
     """Pinned build backends of the estate-internal projects the Dockerfile
     builds offline (``--no-index --no-deps --no-build-isolation``) in a
     throwaway venv, so they never clash with the tester venv's own pins."""
+    internal = derive_internal(root)
     for relative in pyprojects:
         with (root / relative).open("rb") as handle:
             document = tomllib.load(handle)
         for requirement in document.get("build-system", {}).get("requires", ()):
-            yield refuse_internal(requirement, f"{relative} [build-system]")
+            yield refuse_internal(requirement, f"{relative} [build-system]", internal)
 
 
 def main(argv: list[str] | None = None) -> int:

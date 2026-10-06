@@ -231,6 +231,14 @@ def validate_image_reference(value: str, label: str) -> str:
 
 def require_digest_pinned(value: str, label: str) -> str:
     """Images run privileged / with host PID must be ``@sha256:`` pinned (BG-06)."""
+    # Shape first: the shipped templates carry a `<digest>` placeholder, which
+    # the generic character check would only call "invalid".
+    if "<" in (value or "") or ">" in (value or ""):
+        raise SystemExit(
+            f"tester-gate: {label} {value!r} is the template placeholder; replace it with "
+            "the real pinned reference of a locally present image: "
+            "docker image inspect --format '{{index .RepoDigests 0}}' <image>"
+        )
     candidate = validate_image_reference(value, label)
     if not _DIGEST_PATTERN.search(candidate):
         raise SystemExit(
@@ -817,13 +825,21 @@ def read_events_problems(events_path: Path) -> list[str]:
     try:
         text = events_path.read_text(encoding="utf-8")
     except OSError as exc:
-        return [f"the cgroup events file {events_path} is missing or unreadable ({exc})"]
+        return [
+            f"the cgroup events file {events_path} is missing or unreadable ({exc}); the container "
+            "user (the uid baked into the image) must be able to write .cmru/ in the mounted "
+            "worktree, and a host/image uid mismatch is the usual cause"
+        ]
     values: dict[tuple[str, str], int] = {}
+    problems = []
     for line in text.splitlines():
         parts = line.split()
+        if not parts:
+            continue
         if len(parts) == 3 and parts[2].isdigit():
             values[(parts[0], parts[1])] = int(parts[2])
-    problems = []
+        else:
+            problems.append(f"malformed line {line!r} in {events_path}")
     for events, key, meaning in _EVENT_COUNTERS:
         if (events, key) not in values:
             problems.append(f"{events} has no '{key}' counter in {events_path}")

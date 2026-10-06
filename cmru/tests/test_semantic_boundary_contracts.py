@@ -27,7 +27,6 @@ from cmru import (
     tool_deps,
     transaction,
 )
-from cmru.controller import cli as controller_cli
 
 OUTPUT_COMMIT = "a" * 40
 OUTPUT_ID = "20260927T120000Z_" + OUTPUT_COMMIT
@@ -390,9 +389,6 @@ def _install_abandon_facts(monkeypatch, root, workspace, *, progress=None):
 @pytest.mark.parametrize(
     ("entrypoint", "argv", "missing"),
     [
-        (controller_cli.main, ["approve"], "--plan"),
-        (controller_cli.main, ["hold"], "--plan"),
-        (controller_cli.main, ["rollback"], "--plan"),
         (handlers.main, ["wheel-build", "--dry-run"], "--cwd"),
         (handlers.main, ["wheel-validate"], "--prefix"),
         (lambda argv: runner.runner_cli().run(argv=argv), ["alpha"], "--step"),
@@ -414,25 +410,6 @@ def test_handler_dry_run_hides_its_own_control_flag(capsys, tmp_path):
     output = capsys.readouterr().out
     assert "Would run cmru handler wheel-build" in output
     assert "dry_run" not in output
-
-
-def test_controller_rollback_accepts_the_minimum_positive_generation(caplog):
-    from cmru.controller.planner import LandscapePlan, PlanStep
-    from cmru.controller.rollout import RolloutEngine
-
-    caplog.set_level("INFO")
-    step = PlanStep(
-        plan_id="plan", wave_name="canary", phase=1, wave_type="canary",
-        nodes=["node-a"], profiles=["core"], release_tag="demo-v1",
-        manifest_url="https://example.invalid/manifest.json", manifest_sha256="a" * 64,
-        config_hash="cfg", step_id="plan.phase-1.canary", required=True,
-        requires_approval=False,
-    )
-    engine = RolloutEngine(object(), "landscape", generation_base=3, dry_run=True)
-
-    engine.rollback(LandscapePlan("plan", "landscape", [step]), generation=1)
-
-    assert "action=rollback to 1" in caplog.text
 
 
 def test_run_step_without_its_required_step_reports_usage(capsys):

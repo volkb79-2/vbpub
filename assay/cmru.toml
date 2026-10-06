@@ -38,5 +38,5 @@ commands = [
 [steps.push]
 quiet = true
 commands = [
-  { label = "assay: publish wheel, zipapp, and manifest", argv = ["python3", "-m", "cmru.handlers", "wheel-publish", "--prefix", "assay", "--cwd", ".", "--notes-env", "ASSAY_RELEASE_NOTES", "--extra-asset", "dist/assay-*.pyz", "--extra-asset", "dist/assay-*.pyz.sha256", "--extra-asset", "dist/release-manifest.json", "--extra-asset", "dist/release-manifest.json.sha256"], cwd = "." },
+  { label = "assay: publish wheel, zipapp, and manifest", argv = ["cmru", "handler", "wheel-publish", "--prefix", "assay", "--cwd", ".", "--notes-env", "ASSAY_RELEASE_NOTES", "--extra-asset", "dist/assay-*.pyz", "--extra-asset", "dist/assay-*.pyz.sha256", "--extra-asset", "dist/release-manifest.json", "--extra-asset", "dist/release-manifest.json.sha256"], cwd = "." },
 ]

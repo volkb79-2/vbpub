@@ -61,12 +61,6 @@ def test_run_dry_run_respects_step_first_project_order_and_rejects_bad_plans(
     assert f"cwd={tmp_path / 'alpha' / 'src'}" in output
 
     monkeypatch.setattr(cli, "load_config", lambda _path: _loaded(
-        tmp_path, projects, mode="step-first", step_order={"build": ["missing"]},
-    ))
-    with pytest.raises(ValueError, match="Unknown project in step_project_order"):
-        cli.main(["run", "alpha", "--dry-run"])
-
-    monkeypatch.setattr(cli, "load_config", lambda _path: _loaded(
         tmp_path, {"alpha": SimpleNamespace(**{**vars(alpha), "runner_steps": {}})},
         mode="step-first",
     ))
@@ -276,7 +270,7 @@ def test_standards_dry_run_updates_only_the_marker_preview(monkeypatch, tmp_path
         "demo", "--config", str(config), "--update", "--dry-run",
     ]) == 2
     output = capsys.readouterr().out
-    assert "template_revision = 4" in output
+    assert f"template_revision = {standards.PROJECT_TEMPLATE_REVISION}" in output
     assert "Marker updates were previewed" in output
     assert "template_revision=3" in project_config.read_text(encoding="utf-8")
 
@@ -322,8 +316,6 @@ def test_tool_dependency_refresh_dry_run_does_not_write_pin_files(monkeypatch, t
         ("cmru.bundle", "Python library, not a command"),
         ("cmru.runner", "Use the installed 'cmru run-step' command"),
         ("cmru.cli", "Use the installed 'cmru' command"),
-        ("cmru.agent.cli", "Use the installed 'cmru-agent' command"),
-        ("cmru.controller.cli", "Use the installed 'cmru-controller' command"),
     ],
 )
 def test_removed_module_cli_aliases_fail_with_the_canonical_interface(module, message):
@@ -347,7 +339,7 @@ def test_project_handler_dry_run_uses_registered_cli_and_skips_handler(
         "oci-image-build", "--cwd", str(tmp_path), "--bake-file", "bake.hcl",
         "--target", "image", "--repack", "--dry-run",
     ]) == 2
-    assert "path is disabled" in capsys.readouterr().err
+    assert "unrecognized arguments: --repack" in capsys.readouterr().err
 
 
 @pytest.mark.parametrize(
@@ -784,157 +776,3 @@ def test_transaction_child_accepts_validated_legacy_record_and_rejects_source_ro
     )
     with pytest.raises(RuntimeError, match="shared transaction record has a different source root"):
         transaction.is_transaction_child(child)
-
-
-def test_agent_cli_dry_runs_and_reconciler_suppress_mutations(monkeypatch, capsys, caplog):
-    from cmru.agent import cli as agent_cli
-    from cmru.agent.reconciler import Reconciler
-
-    monkeypatch.setattr(agent_cli, "_build_backend", lambda *_: pytest.fail("dry-run contacted the backend"))
-    assert agent_cli.cmd_enroll(SimpleNamespace(
-        node_id="node-a", landscape="test", token="", minisign_pubkey="",
-        scope="user", consul_addr="http://consul", dry_run=True,
-    )) == 0
-    assert "Would enroll node_id=node-a" in capsys.readouterr().out
-
-    monkeypatch.setenv("CMRU_NODE_ID", "node-from-env")
-    monkeypatch.setenv("CMRU_LANDSCAPE", "landscape-from-env")
-    monkeypatch.setenv("CONSUL_HTTP_ADDR", "http://consul-from-env")
-    assert agent_cli.cmd_enroll(SimpleNamespace(
-        node_id="", landscape="", token="", minisign_pubkey=None,
-        scope="system", consul_addr=None, dry_run=True,
-    )) == 0
-    output = capsys.readouterr().out
-    assert "node-from-env" in output and "landscape-from-env" in output
-    assert "http://consul-from-env" in output
-
-    monkeypatch.delenv("CMRU_LANDSCAPE")
-    monkeypatch.setattr(agent_cli, "_load_identity", lambda _scope: ("node-a", {"landscape": "test", "public_key": ""}))
-    assert agent_cli.cmd_run(SimpleNamespace(scope="user", dry_run=True, release_root=None)) == 0
-    assert "Would start the long-running reconciler" in capsys.readouterr().out
-
-    monkeypatch.setattr(agent_cli, "_load_identity", lambda _scope: ("node-a", {"landscape": "", "public_key": ""}))
-    monkeypatch.setenv("CMRU_LANDSCAPE", "landscape-from-env")
-    assert agent_cli.cmd_run(SimpleNamespace(scope="user", dry_run=True, release_root=None)) == 0
-    assert "landscape-from-env" in capsys.readouterr().out
-
-    backend = object()
-    captured = {}
-    class DryRunReconciler:
-        def __init__(self, **kwargs):
-            captured.update(kwargs)
-        def once(self):
-            return True
-    monkeypatch.setattr(agent_cli, "_build_backend", lambda _args: backend)
-    monkeypatch.setattr("cmru.agent.reconciler.Reconciler", DryRunReconciler)
-    assert agent_cli.cmd_once(SimpleNamespace(scope="user", dry_run=True, release_root=None)) == 0
-    assert captured["backend"] is backend and captured["dry_run"] is True
-    assert "change would be applied" in capsys.readouterr().out
-    class NoChangeReconciler(DryRunReconciler):
-        def once(self):
-            return False
-    monkeypatch.setattr("cmru.agent.reconciler.Reconciler", NoChangeReconciler)
-    assert agent_cli.cmd_once(SimpleNamespace(scope="user", dry_run=True, release_root=None)) == 0
-    assert "no change" in capsys.readouterr().out
-
-    class WatchBackend:
-        def __init__(self, raw):
-            self.raw = raw
-            self.health = []
-        def watch_desired(self, *_args, **_kwargs):
-            return self.raw, 1
-        def pass_health_check(self, node):
-            self.health.append(node)
-        def read_desired_sig(self, *_args):
-            return None
-        def acquire_lock(self, *_args):
-            pytest.fail("dry-run acquired an apply lock")
-        def publish_observed(self, *_args):
-            pytest.fail("dry-run published state")
-
-    empty_backend = WatchBackend(None)
-    dry_reconciler = Reconciler(empty_backend, "node-a", "test", dry_run=True)
-    assert dry_reconciler.once() is False
-    assert empty_backend.health == []
-
-    payload = (
-        '{"schema_version":1,"generation":1,"action":"update",'
-        '"release":{"tag":"demo-v1","manifest_url":"https://example.invalid/m.json",'
-        '"manifest_sha256":"' + "a" * 64 + '"},"profiles":["core"],'
-        '"config_hash":"cfg","plan_id":"p","step_id":"p.step"}'
-    ).encode()
-    apply_backend = WatchBackend(payload)
-    monkeypatch.setattr("cmru.agent.reconciler.read_observed", lambda _scope: None)
-    assert Reconciler(apply_backend, "node-a", "test", dry_run=True).once() is True
-    assert apply_backend.health == []
-
-    noop_backend = WatchBackend(payload)
-    monkeypatch.setattr(Reconciler, "_is_noop", lambda *_: True)
-    assert Reconciler(noop_backend, "node-a", "test", dry_run=True).once() is False
-    assert noop_backend.health == []
-    Reconciler(object(), "node-a", "test", dry_run=True)._publish_error("invalid", "bad")
-    assert "Would publish error state" in caplog.text
-
-
-def test_controller_generation_and_rollout_dry_run_boundaries(monkeypatch, tmp_path, caplog):
-    caplog.set_level("INFO")
-    from cmru.controller import cli as controller_cli
-    from cmru.controller.planner import LandscapePlan, PlanStep
-    from cmru.controller.rollout import RolloutEngine
-
-    assert controller_cli._positive_generation("1") == 1
-    with pytest.raises(ValueError, match="positive integer"):
-        controller_cli._positive_generation("0")
-    with pytest.raises(ValueError, match="generation_base must be a positive integer"):
-        RolloutEngine(object(), "landscape", generation_base=0)
-
-    steps = [
-        PlanStep(
-            plan_id="plan", wave_name="canary", phase=1, wave_type="canary",
-            nodes=["node-a"], profiles=["core"], release_tag="demo-v1",
-            manifest_url="https://example.invalid/manifest.json", manifest_sha256="a" * 64,
-            config_hash="cfg", step_id="plan.phase-1.canary", required=True,
-            requires_approval=True,
-        ),
-        PlanStep(
-            plan_id="plan", wave_name="optional", phase=2, wave_type="dev",
-            nodes=["node-b"], profiles=["worker"], release_tag="demo-v1",
-            manifest_url="https://example.invalid/manifest.json", manifest_sha256="a" * 64,
-            config_hash="cfg", step_id="plan.phase-2.optional", required=False,
-            requires_approval=False,
-        ),
-    ]
-    plan = LandscapePlan("plan", "landscape", steps)
-    engine = RolloutEngine(object(), "landscape", generation_base=3, dry_run=True)
-    engine.publish(plan)
-    engine.approve("plan")
-    engine.hold("plan")
-    engine.release_hold("plan")
-    engine._write_plan_status("plan", "complete", None)
-    engine.rollback(plan, generation=9)
-    with pytest.raises(ValueError, match="rollback generation must be a positive integer"):
-        engine.rollback(plan, generation=0)
-
-    messages = caplog.text
-    assert "requires approval before publishing" in messages
-    assert "Would wait for wave canary health" in messages
-    assert "Would write desired state gen=103" in messages
-    assert "Would write desired state gen=203" in messages
-    assert "Would approve plan" in messages and "Would hold plan" in messages
-    assert "Would release hold" in messages and "Would write plan plan status=complete" in messages
-    assert "tag=demo-v1" in messages and "digest=" + "a" * 64 in messages
-
-    plan_path = tmp_path / "plan.toml"
-    plan_path.write_text("placeholder", encoding="utf-8")
-    from cmru.controller import planner as controller_planner
-    monkeypatch.setattr(controller_planner, "load_plan", lambda _path: plan)
-    seen = []
-    class CliEngine:
-        def publish(self, received):
-            seen.append(received)
-    monkeypatch.setattr(controller_cli, "_build_engine", lambda args, landscape: CliEngine())
-    assert controller_cli.main([
-        "publish", "--plan", str(plan_path), "--landscape", "landscape",
-        "--generation-base", "3", "--dry-run",
-    ]) == 0
-    assert seen == [plan]

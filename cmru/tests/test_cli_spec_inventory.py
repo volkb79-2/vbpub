@@ -5,9 +5,7 @@ import argparse
 import re
 from pathlib import Path
 
-from cmru.agent.cli import _build_cli as build_agent_cli
 from cmru.cli import _build_cli as build_cmru_cli
-from cmru.controller.cli import _build_cli as build_controller_cli
 from cmru.handlers import handlers_cli
 
 
@@ -114,16 +112,11 @@ def test_spec_cli_inventory_matches_registered_surfaces_and_options():
         family: set(flags.split("; "))
         for family, flags in common_rows
     }
-    assert set(common) == {"cmru and handlers module adapter", "cmru-agent", "cmru-controller"}
-    cmru_flags = common["cmru and handlers module adapter"]
-    agent_flags = common["cmru-agent"]
-    controller_flags = common["cmru-controller"]
+    assert set(common) == {"cmru and handlers module adapter"}
 
     actual = {}
     for registry, prefix, family in (
         (build_cmru_cli(), "cmru", "cmru and handlers module adapter"),
-        (build_agent_cli(), "cmru-agent", "cmru-agent"),
-        (build_controller_cli(), "cmru-controller", "cmru-controller"),
     ):
         assert registry.parser.allow_abbrev is False, prefix
         groups = dict(_registered_surface_groups(registry, prefix))
@@ -168,8 +161,6 @@ def test_spec_cli_inventory_matches_registered_surfaces_and_options():
 def test_spec_builtin_help_and_version_grammar_matches_library_help():
     expected = {
         "cmru": build_cmru_cli(),
-        "cmru-agent": build_agent_cli(),
-        "cmru-controller": build_controller_cli(),
     }
     documented = {
         entrypoint: set(commands.split("; "))
@@ -220,8 +211,6 @@ def _check_behavior_labels(registry, *, path=""):
 def test_registered_boolean_flags_default_off_and_help_marks_mutating_verbs():
     registries = (
         (build_cmru_cli(), "cmru"),
-        (build_agent_cli(), "cmru-agent"),
-        (build_controller_cli(), "cmru-controller"),
         (handlers_cli(), "python -m cmru.handlers"),
     )
     for registry, prefix in registries:
@@ -271,8 +260,7 @@ def test_semantic_audit_covers_every_inventory_surface_and_option():
         family_audit = next(
             semantic
             for surfaces, semantic, _result in rows
-            if (family == "cmru and handlers module adapter" and surfaces == "CMRU common controls")
-            or (family != "cmru and handlers module adapter" and surfaces == "Agent/controller common controls")
+            if family == "cmru and handlers module adapter" and surfaces == "CMRU common controls"
         )
         assert set(flags.split("; ")) <= set(re.findall(r"--[A-Za-z0-9_-]+", family_audit)), family
 

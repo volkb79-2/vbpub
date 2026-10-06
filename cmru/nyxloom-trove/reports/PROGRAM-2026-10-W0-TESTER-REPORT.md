@@ -112,6 +112,31 @@ Each plant applied to a scratch copy of `cmru/src` (or of the image files), the 
   `skipif` on the repository-root files being absent and the same for the estate-config test, re-ran, and the remaining red is the
   tls-edge test above.
 
+## Review fixes (after the W0-TESTER review, ACCEPT-conditional; live probe passed)
+
+Merged `cmru-wave-2026-10` (W0-RETIRE, W0-GATE, W0-REL) into this branch with a normal merge. Conflicts: `CHANGES.md`
+and `docs/SPEC.md` (took the integration side and re-applied my lines/rows), `tests/test_standards.py` (integration
+side plus my four tests re-added), `assay/.../4-backlog.md` (both entries kept: B146 from W0-GATE, my B147). Tests were
+run through `scratchpad/pt.py`; all edits in this round used Edit/Write only.
+
+| # | Ruling | Done | Test |
+|---|---|---|---|
+| 1 | README stale | `cmru/README.md`: lists `CMRU_TESTER_PIDS_LIMIT` and the three `CMRU_TESTER_DIND_*`, states `@sha256` + local + `--pull=never`, dropped the "no separate cap yet" sentence and the open-decision link | docs only |
+| 2 | Placeholder message | `require_digest_pinned` checks for `<`/`>` first: "is the template placeholder; replace it with ... `docker image inspect --format '{{index .RepoDigests 0}}' <image>`" | `test_template_placeholder_gets_a_replace_it_message_not_a_generic_refusal` (both resolvers, 3 placeholder shapes; asserts neither generic message) |
+| 3 | Missing events file | message adds the uid hint (container user must be able to write `.cmru/`, host/image uid mismatch is the usual cause); uid requirement documented in CONSUMERS and README | `test_gate_exit_code_reads_the_events_file` (case `uid baked into the image`) |
+| 4 | `ESTATE_INTERNAL` | static list kept as a floor, unioned with `[project].name` of every `*/pyproject.toml` and `libraries/*/pyproject.toml` (`derive_internal`), used by `requirements` and `build_requirements` | `test_refusal_set_includes_every_pyproject_name_under_the_root`, `test_new_library_name_is_refused_as_a_dependency` (new `libraries/foo` refused as a requirement and as a build requirement) |
+| 5a | M7 constant name | | `test_two_launches_get_different_container_names` (4 distinct names over two real `main()` runs, plus two `_container_name` calls) |
+| 5b | M17 events parsing | any non-empty line that is not `<file> <key> <digits>` is now an explicit "malformed line" problem (before, it was silently dropped and surfaced only as a missing counter) | `non-integer`, `negative`, `4-token` cases in `test_gate_exit_code_reads_the_events_file`: exit 3 with a message, no crash |
+| 5c | M28 | | `test_dockerfile_builds_both_internal_projects_from_the_build_requires_mode` (pins the exact `--build-requires` list) |
+| 6 | oom doc | CONSUMERS: `oom_kill > 0` fails the step with exit 3 even if the command exited 0, including intentional OOM tests; README and SPEC say malformed file too | docs only |
+| 7 | Template revision | `PROJECT_TEMPLATE_REVISION` 4 -> 5 (`standards.py`), `templates/cmru.toml.tmpl` (marker + value), `src/cmru/templates/project-wheel.toml`, `scaffold.py` literal replace, `cmru.project.sample.toml`, README/CONSUMERS/SPEC samples; tests that pinned 4 now use the constant or 5. CHANGES notes it. | existing suites |
+| 8 | Backlog | **KI-60** filed (digest pins age; no refresh policy; propose a standards age warning or a documented refresh procedure) | n/a |
+
+NOT done by me, for the controller: the estate's own project files still say `template_revision = 4`
+(`ciu`, `topos`, `nyxloom`, `pwmcp`, `tls-edge`, `run-gate-project`, `cmru`, `assay`, `mdt`,
+`scripts/cgroup-profiler`, `libraries/cli-extended`). `cmru standards --update` rewrites exactly that marker; run it
+once per project before the next release, otherwise `cmru standards` reports each as a stale revision.
+
 ## Further process deviations
 
 Three small test-file additions were appended with a shell heredoc (`cat >>`) instead of Edit/Write

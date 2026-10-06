@@ -90,16 +90,15 @@ surface for scripts that probe every first-party estate CLI in the same way; it
 does not create a second version source or change verb dispatch.
 
 The same identity is the first line of every help, usage, and configuration
-document emitted by the installed `cmru`, `cmru-agent`, and `cmru-controller`
-dispatchers, including nested verbs. CMRU configuration diagnostics put the
+document emitted by the installed `cmru`
+dispatcher, including nested verbs. CMRU configuration diagnostics put the
 identity first; `cli-extended` usage/refusal diagnostics put the actionable
 message first and then render the matching generated help. Normal command output
 is unchanged.
 
 ## One declared CLI grammar
 
-The CMRU wheel installs three operator CLIs: `cmru`, `cmru-agent`, and
-`cmru-controller`. Each uses `cli-extended` registrations as the source for
+The CMRU wheel installs one operator CLI, `cmru`. It uses `cli-extended` registrations as the source for
 argument parsing, option constraints, help, and dispatch. Root `cmru --help`
 stays a short command catalog, while `cmru help VERB` and `cmru VERB --help`
 show that verb's complete grammar. Nested commands delegate their remaining
@@ -117,8 +116,7 @@ rewrite argv before dispatch.
 testing, and compatibility surface without adding a use case. The same review
 removed numeric `init --layout` spellings and the deprecated tag option alias.
 The `handler` verb is the supported route to the project's explicit step
-handlers; `cmru-agent` and `cmru-controller` are separate installed commands,
-not hidden subcommands of `cmru`. The [canonical CLI grammar and semantic
+handlers. The [canonical CLI grammar and semantic
 audit](SPEC.md#s-cli9-canonical-cli-grammar-and-semantic-audit) inventories their complete option surfaces
 and is updated with every product grammar change.
 
@@ -244,14 +242,15 @@ data and a missing bundled `cli-extended` import.
 ### Operator commands, adapters, and libraries have separate jobs
 
 Installed console scripts and their registered verbs are the operator
-interface: `cmru`, `cmru-agent`, and `cmru-controller`. They use
+interface: `cmru`. It uses
 `cli-extended` to define grammar, options, help, and dispatch. CMRU does not
-maintain parallel hand-written parsers for those commands.
+maintain parallel hand-written parsers for that command.
 
-`python -m cmru.handlers` is the one supported component CLI. Project step
-contracts use it to invoke registered artifact handlers, and
-`build-initial-standalone.sh` needs it to build the first wheel before the
-installed `cmru` command exists. `python -m cmru.bundle`, `python -m
+`python -m cmru.handlers` is bootstrap-only: `build-initial-standalone.sh`
+needs it to build the first wheel before the installed `cmru` command exists.
+Project step contracts invoke registered artifact handlers as
+`cmru handler <verb>`, which inside a release transaction resolves to the
+bound launcher (`cmru standards` flags the module form). `python -m cmru.bundle`, `python -m
 cmru.runner`, and module aliases for the three operator scripts are retired;
 they now refuse with a pointer to the supported command or library API.
 
@@ -647,7 +646,7 @@ remote state retains the tag and candidate for inspection. A same-name remote ta
 different ref object is a conflict, not proof of absence, so CMRU preserves the local ref and
 candidate. After a confirmed-absent attempt, the same tag name may acquire a new annotated-tag
 object on retry; the ledger permits that rotation only when the prior exact object has a matching
-origin-absence proof. CMRU fast-forwards `origin/main` from the same candidate only after
+origin-absence proof. CMRU promotes `origin/main` from the same candidate only after
 publication succeeds. This keeps a failed build or upload out of `main` and lets a later project
 consume an earlier project's completed release in the same run. Resume checks attempted release
 tags and recorded results against origin before replaying a candidate. It refuses when a tag may
@@ -655,8 +654,9 @@ have been pushed without a completed result or when a recorded result has not be
 also keeps an existing candidate after a release-plan refusal. This prevents a successful child
 exit from erasing evidence of an incomplete post-tag release.
 
-The promotion is deliberately a single fast-forward push. CMRU does not rebase the candidate
+The promotion is a push of the exact candidate. CMRU does not rebase the candidate
 when another writer advances `origin/main`, because that would change the SHA that was gated and
-used to build the artifact. The candidate branch and worktree remain available for inspection;
+used to build the artifact; it merges `origin/main` into the candidate (bounded, `--no-ff`) only
+when the new commits leave the project's own paths untouched, otherwise it stops (REL-04). The candidate branch and worktree remain available for inspection;
 success deletes the now-redundant branch. A version strategy that creates a mechanical version
 commit receives a second gate on that exact commit before publication.

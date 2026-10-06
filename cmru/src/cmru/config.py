@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import os
 import re
+import subprocess
 import tomllib
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -138,7 +139,6 @@ class ProjectS2Config:
 @dataclass(frozen=True)
 class OrchestrationConfig:
     project_order: List[str]
-    default_projects: List[str]
     default_steps: List[str]
     execution_mode: str
     project_configs: Mapping[str, Path] = field(default_factory=dict)
@@ -193,8 +193,36 @@ def _git_scope(path: Path) -> dict[str, Optional[Path]]:
     is therefore not an error; each selected project supplies its own family.
     """
     candidate = path.resolve()
-    if not any((directory / ".git").exists() for directory in (candidate, *candidate.parents)):
-        return {}
+    # Let Git decide whether this is a repository (REL-11). Walking parents for
+    # any ``.git`` entry mistook a stray empty ``/tmp/.git`` for a repository
+    # and then hard-failed every project below it.
+    # GIT_* (GIT_DIR, GIT_WORK_TREE, ...) leaks in from hook contexts and would
+    # turn any directory into "the" repository; the probe must not inherit it.
+    probe_env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+    probe_env["LC_ALL"] = "C"
+    try:
+        probe = subprocess.run(
+            ["git", "-C", str(candidate), "rev-parse", "--show-toplevel"],
+            capture_output=True, text=True, check=False, env=probe_env,
+        )
+    except OSError as exc:
+        # No git binary: outside any repository that is the old "no Git here"
+        # answer; inside one it is a real failure.
+        if not any((directory / ".git").exists() for directory in (candidate, *candidate.parents)):
+            return {}
+        raise ValueError(f"could not resolve Git context for CMRU project {path}: {exc}") from exc
+    if probe.returncode != 0:
+        if "not a git repository" in probe.stderr.lower():
+            return {}
+        # Git aborts (instead of walking on) at an unparseable ``.git`` FILE. One in
+        # a parent directory is a stray, not this project's repository; one in the
+        # project's own directory is a genuinely broken checkout and stays an error.
+        stray = re.search(r"invalid gitfile format: (.+)", probe.stderr)
+        if stray and Path(stray.group(1).strip()).parent != candidate:
+            return {}
+        raise ValueError(
+            f"could not resolve Git context for CMRU project {path}: {probe.stderr.strip()}"
+        )
     try:
         try:
             import worktree
@@ -224,6 +252,10 @@ def _require(d: dict, key: str, section: str) -> object:
     if val is None:
         _error(f"{section}.{key} is required")
     return val
+
+
+# Config paths already warned about the deprecated orchestration.default_projects.
+_DEFAULT_PROJECTS_WARNED: set[str] = set()
 
 
 def _error(message: str) -> "None":
@@ -975,7 +1007,7 @@ def _load_project_config(config_path: Path) -> ForgeConfig:
         token=root_token or None,
     )
     orchestration = OrchestrationConfig(
-        project_order=[project.name], default_projects=[project.name],
+        project_order=[project.name],
         default_steps=["run-tests", "build", "push"], execution_mode="project-first",
         project_configs={project.name: config_path}, dependencies={project.name: []},
     )
@@ -1014,8 +1046,22 @@ def _load_orchestration_config(config_path: Path) -> ForgeConfig:
         {"project_order", "default_projects", "default_steps", "execution_mode", "defaults", "project"},
         "orchestration",
     )
-    for key in ("project_order", "default_projects", "default_steps"):
+    for key in ("project_order", "default_steps"):
         _string_list(_require(orch_raw, key, "orchestration"), f"orchestration.{key}")
+    if "default_projects" in orch_raw and str(config_path) not in _DEFAULT_PROJECTS_WARNED:
+        # CLI-04: the key was required and validated but never read (an omitted
+        # target selects the current project, or every orchestrated project at
+        # the estate root). Accept it for one release, warn once per config
+        # path (a run loads the config more than once), ignore.
+        import sys
+
+        _DEFAULT_PROJECTS_WARNED.add(str(config_path))
+        print(
+            "[WARN] orchestration.default_projects is ignored and will be removed; "
+            "an omitted target selects the current project or every orchestrated "
+            "project at the estate root",
+            file=sys.stderr,
+        )
     execution_mode = _require(orch_raw, "execution_mode", "orchestration")
     if execution_mode not in {"project-first", "step-first"}:
         _error("orchestration.execution_mode must be 'project-first' or 'step-first'")
@@ -1083,10 +1129,9 @@ def _load_orchestration_config(config_path: Path) -> ForgeConfig:
     }
     known = set(docs)
     root_token, project_tokens = _load_repository_secrets(config_path.parent, paths)
-    for field_name, values in (("project_order", orch_raw["project_order"]), ("default_projects", orch_raw["default_projects"])):
-        unknown = sorted(set(values) - known)
-        if unknown:
-            _error(f"orchestration.{field_name} names unknown project(s): {unknown}")
+    unknown = sorted(set(orch_raw["project_order"]) - known)
+    if unknown:
+        _error(f"orchestration.project_order names unknown project(s): {unknown}")
     for project_id, deps in dependencies.items():
         unknown = sorted(set(deps) - known)
         if unknown:
@@ -1118,7 +1163,6 @@ def _load_orchestration_config(config_path: Path) -> ForgeConfig:
         github=github, targets=targets,
         orchestration=OrchestrationConfig(
             project_order=list(orch_raw["project_order"]),
-            default_projects=list(orch_raw["default_projects"]),
             default_steps=list(orch_raw["default_steps"]), execution_mode=str(execution_mode),
             project_configs=paths, dependencies=dependencies,
         ),

@@ -135,9 +135,9 @@ def _ask_project(root: Path, interactive: bool) -> dict:
             "release tag policy",
         )
         if not generic_commands:
-            build_argv = ["python3", "-m", "cmru.handlers", "wheel-build", "--cwd", "."]
+            build_argv = ["cmru", "handler", "wheel-build", "--cwd", "."]
             push_argv = [
-                "python3", "-m", "cmru.handlers", "wheel-publish", "--prefix", project_id,
+                "cmru", "handler", "wheel-publish", "--prefix", project_id,
                 "--cwd", ".", "--notes-env", f"{project_id.upper().replace('-', '_')}_RELEASE_NOTES",
             ]
         else:
@@ -179,7 +179,7 @@ def render_project_toml(
             "[targets]\nhost = \"github\"\nregistry = [\"ghcr.io\"]\n",
             1,
         )
-    text = text.replace("template_revision = 4",
+    text = text.replace("template_revision = 5",
                         f"template_revision = {_expected_template_revision()}")
     notes_key = f"{project_id.upper().replace('-', '_')}_RELEASE_NOTES"
     selected_artifacts = artifacts or ([artifact_type] if artifact_type else ["wheel"])
@@ -199,11 +199,11 @@ def render_project_toml(
     if centralized:
         text = re.sub(r"\n\[github\].*?\n\[targets\].*?\n\n", "\n", text, flags=re.S)
     if build_argv is not None:
-        default = 'argv = ["python3", "-m", "cmru.handlers", "wheel-build", "--cwd", "."]'
+        default = 'argv = ["cmru", "handler", "wheel-build", "--cwd", "."]'
         text = text.replace(default, "argv = " + json.dumps(build_argv), 1)
     if push_argv is not None:
         text = re.sub(
-            r'argv = \["python3", "-m", "cmru\.handlers", "wheel-publish".*?\],',
+            r'argv = \["cmru", "handler", "wheel-publish".*?\],',
             "argv = " + json.dumps(push_argv) + ",", text, count=1,
         )
     return text
@@ -311,8 +311,8 @@ def collect_plan(options: dict, root: Path) -> dict:
         p.setdefault("description", f"The {p['id']} project.")
         p.setdefault("config", f"{p['id']}/cmru.toml")
         p.setdefault("artifacts", ["wheel"])
-        p.setdefault("build_argv", ["python3", "-m", "cmru.handlers", "wheel-build", "--cwd", "."])
-        p.setdefault("push_argv", ["python3", "-m", "cmru.handlers", "wheel-publish", "--prefix", p["id"], "--cwd", ".", "--notes-env", f"{p['id'].upper().replace('-', '_')}_RELEASE_NOTES"])
+        p.setdefault("build_argv", ["cmru", "handler", "wheel-build", "--cwd", "."])
+        p.setdefault("push_argv", ["cmru", "handler", "wheel-publish", "--prefix", p["id"], "--cwd", ".", "--notes-env", f"{p['id'].upper().replace('-', '_')}_RELEASE_NOTES"])
     return {
         "layout": layout, "root": root, "projects": projects,
         "owner": owner, "repo": repo, "owner_type": owner_type,

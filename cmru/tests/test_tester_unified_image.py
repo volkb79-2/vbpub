@@ -240,3 +240,40 @@ def test_dockerignore_admits_every_file_the_offline_build_needs(path):
 ])
 def test_dockerignore_still_excludes_everything_else(path):
     assert not _dockerignore_included(path), path
+
+
+def test_refusal_set_includes_every_pyproject_name_under_the_root(tmp_path):
+    _all_projects(tmp_path)
+    assert "foo-lib" not in gen.derive_internal(tmp_path)
+    _tree(tmp_path, libraries__foo='[project]\nname = "Foo_Lib"\n', brandnew='[project]\nname = "brand.new"\n')
+    derived = gen.derive_internal(tmp_path)
+    assert {"foo-lib", "brand-new"} <= derived
+    assert gen.ESTATE_INTERNAL <= derived  # the static list stays as a floor
+
+
+def test_new_library_name_is_refused_as_a_dependency(tmp_path):
+    _all_projects(tmp_path, nyxloom=(
+        '[project]\nname = "nyxloom"\ndependencies = ["foo_lib>=1"]\n'
+        '[project.optional-dependencies]\ntest = []\n'
+    ))
+    assert "foo_lib>=1" in list(gen.requirements(tmp_path))  # unknown name: third-party
+    _tree(tmp_path, libraries__foo='[project]\nname = "foo-lib"\n')
+    with pytest.raises(SystemExit, match="'foo-lib'"):
+        list(gen.requirements(tmp_path))
+    with pytest.raises(SystemExit, match="'foo-lib'"):
+        list(gen.build_requirements(
+            _tree(tmp_path / "y", libraries__foo='[project]\nname = "foo-lib"\n',
+                  cmru='[build-system]\nrequires = ["foo-lib"]\n'),
+            ["cmru/pyproject.toml"],
+        ))
+
+
+def test_dockerfile_builds_both_internal_projects_from_the_build_requires_mode():
+    """The throwaway build venv must get the pinned backends of BOTH internal
+    projects it builds (a dropped one would only fail at image build time)."""
+    code = _dockerfile_run_lines()
+    match = re.search(r"--build-requires (?P<paths>[^\n\\]*)", code)
+    assert match is not None
+    assert match["paths"].split() == ["cmru/pyproject.toml", "libraries/cli-extended/pyproject.toml"]
+    wheel = re.search(r"pip wheel (?P<flags>[^\n]*\\\n[^\n]*)", code)
+    assert "/src/libraries/cli-extended" in wheel["flags"] and "/src/cmru" in wheel["flags"]
