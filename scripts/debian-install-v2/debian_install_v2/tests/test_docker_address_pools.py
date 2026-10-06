@@ -219,3 +219,45 @@ def test_unparseable_ip_output_fails_closed(tmp_path):
     installer.actions.outputs[ADDR] = "not json"
     with pytest.raises(InstallerError, match="ip -j addr"):
         installer._configure_docker_daemon()
+
+
+def test_unparseable_ip_route_output_fails_closed(tmp_path):
+    from debian_install_v2.installer import InstallerError
+
+    installer = _real(tmp_path)
+    _host(installer)
+    installer.actions.outputs[ROUTE] = "not json"
+    with pytest.raises(InstallerError, match="ip -j route"):
+        installer._configure_docker_daemon()
+    assert "/etc/docker/daemon.json" not in installer.actions.files
+
+
+def _bridge_host(installer, ifname):
+    installer.actions.outputs[ADDR] = json.dumps([
+        {"ifname": ifname, "addr_info": [{"family": "inet", "local": "10.240.0.1", "prefixlen": 24}]}
+    ])
+    installer.actions.outputs[ROUTE] = json.dumps([{"dst": "10.240.0.0/24", "dev": ifname}])
+
+
+@pytest.mark.parametrize("ifname", ["br-abc123", "docker0", "veth9f2"])
+def test_rerun_with_docker_bridge_inside_the_pool_passes(tmp_path, ifname):
+    installer = _real(tmp_path)
+    _bridge_host(installer, ifname)
+    installer._configure_docker_daemon()
+    assert json.loads(installer.actions.files["/etc/docker/daemon.json"])["default-address-pools"] == DEFAULT
+
+
+def test_non_docker_interface_inside_the_pool_still_fails(tmp_path):
+    from debian_install_v2.installer import InstallerError
+
+    installer = _real(tmp_path)
+    _bridge_host(installer, "eth1")
+    with pytest.raises(InstallerError, match="10.240.0.0/16"):
+        installer._configure_docker_daemon()
+
+
+def test_literal_zero_prefix_routes_are_skipped_like_default(tmp_path):
+    installer = _real(tmp_path)
+    _host(installer, routes=["0.0.0.0/0"])
+    installer._configure_docker_daemon()
+    assert "/etc/docker/daemon.json" in installer.actions.files

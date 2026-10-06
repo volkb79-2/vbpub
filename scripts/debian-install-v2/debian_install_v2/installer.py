@@ -62,6 +62,11 @@ class InstallerError(RuntimeError):
     """Expected host-precondition or installer-operation failure."""
 
 
+def _is_docker_interface(name: object) -> bool:
+    """Docker-owned interfaces (docker0, user bridges br-*, veth*)."""
+    return isinstance(name, str) and (name == "docker0" or name.startswith(("br-", "veth")))
+
+
 def _split_for_telegram(message: str, limit: int = TELEGRAM_MESSAGE_LIMIT) -> list[str]:
     """Split `message` into <= `limit`-char chunks for Telegram's sendMessage.
 
@@ -550,6 +555,8 @@ MaxFileSec=1month
         route_out = self._run(["/usr/sbin/ip", "-j", "route", "show"], "list host routes (docker pool check)")
         try:
             for iface in json.loads(addr_out or "[]"):
+                if _is_docker_interface(iface.get("ifname")):
+                    continue  # Docker's own bridges (a re-run) are not conflicts
                 for info in iface.get("addr_info", []):
                     local, prefix = info.get("local"), info.get("prefixlen")
                     if local is None or prefix is None:
@@ -563,9 +570,12 @@ MaxFileSec=1month
         try:
             for route in json.loads(route_out or "[]"):
                 dst = route.get("dst")
-                if dst in (None, "default"):
+                if dst in (None, "default") or _is_docker_interface(route.get("dev")):
                     continue
-                found.append((f"route {dst}", ipaddress.ip_network(dst, strict=False)))
+                network = ipaddress.ip_network(dst, strict=False)
+                if network.prefixlen == 0:
+                    continue  # literal 0.0.0.0/0 or ::/0 is a default route
+                found.append((f"route {dst}", network))
         except (ValueError, TypeError, AttributeError) as exc:
             raise InstallerError(f"cannot parse `ip -j route` output for the docker pool check: {exc}") from exc
         return found

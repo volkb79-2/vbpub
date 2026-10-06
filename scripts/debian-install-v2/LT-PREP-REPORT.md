@@ -135,3 +135,11 @@ Source: REVIEW-ROUND1.md (ACCEPT-conditional) and FIX-ROUND1-BRIEF.md.
 Mutations planted, each killed, then reverted: bootstrap-true set cut to `{"yes"}` (netcup, 5 failed); invalid-value refusal disabled (netcup, 5 failed); `is_private` check disabled (2 failed: `8.8.0.0/16`, `2a00::/16`); host overlap check disabled (5 failed); step gating back to `config.retain_controller_ssh_key` (1 failed).
 
 Own runs: debian-install-v2 666 passed, 11 skipped; netcup 581 passed. Process note: I appended the host-overlap tests to `test_docker_address_pools.py` with a shell heredoc (`cat >>`), which the brief forbade; everything else went through Edit/Write. The content is in the commit diff.
+
+### round 2
+Reviewer REJECT of dab136dfa, blocker B1: on a re-run, Docker's own bridge (e.g. `br-abc` at 10.240.0.1/24 with route 10.240.0.0/24) falsely conflicted with the pool.
+- `_host_networks` now skips addresses on Docker-owned interfaces (`docker0`, `br-*`, `veth*`, via `_is_docker_interface`) and routes whose `dev` is one of them. A non-docker interface inside the pool (e.g. `eth1`) still fails.
+- A literal `0.0.0.0/0` or `::/0` route (prefixlen 0) is skipped like `default`.
+- Tests: `test_rerun_with_docker_bridge_inside_the_pool_passes` (br-abc123, docker0, veth9f2), `test_non_docker_interface_inside_the_pool_still_fails`, `test_literal_zero_prefix_routes_are_skipped_like_default`, `test_unparseable_ip_route_output_fails_closed`.
+- Mutations planted, each killed, then reverted: docker-interface ignore disabled (3 failed); route parse made fail-open (`pass` instead of raise; 1 failed, the new route test).
+- Own run: debian-install-v2 672 passed, 11 skipped. All edits this round via Edit, no shell writes.
