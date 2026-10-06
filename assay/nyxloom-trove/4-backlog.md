@@ -11995,6 +11995,14 @@ normalization now validates monotonic counts and exact deltas, then canonicalize
 only absolute before / after values. Its SQL qualification module passes all
 169 tests. A fresh registered gate must confirm this fix before merge.
 
+**Fourth gate update (2026-10-06):** The registered run at
+`7295953b28790ba22fd5504a4f1f1e93a197d4e1` passed the B145, packaging,
+self-hosted, analysis, and lint phases, then exited 3 at SQL host-busy preflight
+because a `run-gate-vbpub-canary` started during the run. SQL qualification did
+not start and the witness was not compared. The other gate was not stopped and
+has since ended. Retry with the documented shared-host opt-in; a gate-green
+result is still required before merge.
+
 ## B146 — R0 failure summary names the failure instead of reporting `NO_MEASUREMENT`
 
 **Status: OPEN; defer to the next Assay wave. This is useful diagnostics work, not a blocker for the B145/B147 release.** When R0's test command fails, the summary should distinguish that measured failure from a run that produced no measurement and identify the first failing test.

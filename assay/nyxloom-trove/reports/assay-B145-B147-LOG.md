@@ -102,3 +102,14 @@ deltas do not. Sol xhigh reviewed the normalizer and its counter contract; the
 follow-up found only an error-message mismatch in a test, which was corrected.
 All 169 SQL qualification tests pass. A registered gate on this corrected tree
 is still required to confirm the diagnosis and clear the merge blocker.
+
+## Controller continuation: SQL qualification host-busy refusal (2026-10-06)
+
+The registered run at `7295953b28790ba22fd5504a4f1f1e93a197d4e1` passed the
+B145 probes, packaging, attestation, self-hosted suite, analysis lane, and
+pyflakes. Before the SQL witness started, its host-busy preflight found a
+`run-gate-vbpub-canary` container and returned exit 3 (inconclusive). No SQL
+matrix or witness comparison ran. The canary was left alone and had finished by
+the next check. This is an environment refusal, not a product failure. Retry
+with the documented shared-host opt-in for other projects; Assay still refuses
+a concurrent Assay gate.
