@@ -3196,6 +3196,7 @@ class TestPlacementCleanupEdges:
             ("start-time-unknown", False, "leaf"),
             ("pid-reused", True, "exited"),
             ("not-restored", False, "leaf"),
+            ("cgroup-unreadable", False, "leaf"),
         ],
     )
     def test_auto_retirement_requires_each_original_pid_to_be_proved_restored(
@@ -3217,6 +3218,8 @@ class TestPlacementCleanupEdges:
             lane._pid_start_time = lambda pid: str(pid * 97)
         if condition == "not-restored":
             lane._pid_cgroup = lambda _pid: "/dev.slice/unrelated.scope"
+        elif condition == "cgroup-unreadable":
+            lane._pid_cgroup = lambda _pid: None
 
         assert lane._scope_retired_after_restore(
             str(root / SCOPE_UNIT_CGROUP)
