@@ -180,3 +180,20 @@ clean_tree = false   # sub-lanes each enforce their own clean-tree check
 # total-coverage, 7h tag-based R2 mutation, and cause-sensitive canary
 # lanes; this is advisory but must not understate the declared work.
 budget = "14h"
+
+# PROVISIONAL gate (KI-62, operator decision 2026-10-06): identical to `gate`
+# except the R2 mutation lane is skipped and the postponement is recorded in
+# the retained evidence (.assay/mutation-postponed-cmru.json) plus one WARN
+# line. Used ONLY by cmru.toml [steps.run-tests] for the cmru 6.0.0 release;
+# the full `gate` is then run against the cmru-v6.0.0 tag and fixes backported.
+# TODO(cmru-6.0 post-release): delete this lane once KI-62 is closed.
+[lanes.gate-provisional]
+kind = "command"
+environment = "bare-host"
+argv = [
+  "python3", "{worktree}/cmru/tools/run_release_gate.py", "--worktree", "{worktree}",
+  "--postpone-mutation", "KI-62",
+]
+clean_tree = false   # sub-lanes each enforce their own clean-tree check
+# The conjunction minus the 7h mutation lane (see `gate` for the rest).
+budget = "3h"

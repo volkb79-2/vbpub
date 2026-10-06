@@ -17,6 +17,7 @@ import time
 from xml.etree import ElementTree
 from contextlib import contextmanager
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterator, Mapping
 
@@ -408,6 +409,46 @@ def _report_lane_failure(project_root: Path, lane: str, since_ns: int) -> None:
             print(f"  {line}", file=sys.stderr)
 
 
+POSTPONED_MARKER = Path(".assay") / "mutation-postponed-cmru.json"
+POSTPONE_REASON = (
+    "operator-approved provisional release: the R2 mutation lane was skipped and "
+    "must be run afterwards against the released tag"
+)
+
+
+def _tracking_id(value: str) -> str:
+    """Return a stripped, non-empty postponement tracking id or refuse."""
+    tracking_id = value.strip()
+    if not tracking_id:
+        raise argparse.ArgumentTypeError("the postponement tracking id must be non-empty")
+    return tracking_id
+
+
+def _record_postponement(project_root: Path, tracking_id: str) -> Path:
+    """Write the retained marker saying the mutation lane was skipped, and WARN.
+
+    The marker lives under ``.assay`` so cmru's ``evidence_paths`` retain it
+    with the rest of the gate evidence; it is never written by a full gate.
+    """
+    marker = project_root / POSTPONED_MARKER
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    record = {
+        "schema_version": 1,
+        "lane": "mutation",
+        "status": "postponed",
+        "tracking_id": tracking_id,
+        "timestamp": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "reason": POSTPONE_REASON,
+    }
+    marker.write_text(json.dumps(record, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    print(
+        f"cmru-release-gate: WARN: mutation lane POSTPONED ({tracking_id}); "
+        f"this gate is PROVISIONAL; marker {marker}",
+        file=sys.stderr,
+    )
+    return marker
+
+
 def _invoke_lane(repo_root: Path, lane: str, environment: Mapping[str, str]) -> int:
     started = time.time_ns()
     result = subprocess.run(
@@ -425,7 +466,10 @@ def run_release_gate(
     repo_root: Path,
     *,
     temp_parent: Path = Path("/tmp"),
+    postpone_mutation: str | None = None,
 ) -> int:
+    if postpone_mutation is not None:
+        postpone_mutation = _tracking_id(postpone_mutation)
     repo_root = repo_root.resolve(strict=True)
     project_root = repo_root / "cmru"
     if not project_root.is_dir() or project_root.is_symlink():
@@ -450,6 +494,7 @@ def run_release_gate(
             baseline,
             assay_git,
             temp_parent,
+            postpone_mutation,
         )
 
 
@@ -460,6 +505,7 @@ def _run_locked_gate(
     baseline,
     assay_git,
     temp_parent: Path,
+    postpone_mutation: str | None = None,
 ) -> int:
     auth = baseline._repository_git_auth(repo_root)
     lane_environment = _lane_environment()
@@ -475,20 +521,27 @@ def _run_locked_gate(
             if result:
                 return result
 
-        facts = baseline.build_facts(
-            repo_root,
-            project_root,
-            git_auth=auth,
-            assay_git=assay_git,
-        )
-        facts_json = json.dumps(facts, separators=(",", ":"), sort_keys=True)
-        if auth.token and auth.token in facts_json:
-            raise RuntimeError("remote baseline facts unexpectedly contain publisher credentials")
-        mutation_environment = dict(lane_environment)
-        mutation_environment[FACTS_ENV_KEY] = facts_json
-        result = _invoke_lane(repo_root, "mutation", mutation_environment)
-        if result:
-            return result
+        if postpone_mutation is not None:
+            # Provisional gate: ONLY the mutation lane (and its remote-facts
+            # preparation) is skipped; the postponement is recorded as evidence.
+            _record_postponement(project_root, postpone_mutation)
+        else:
+            # A full gate never leaves an earlier provisional marker behind.
+            (project_root / POSTPONED_MARKER).unlink(missing_ok=True)
+            facts = baseline.build_facts(
+                repo_root,
+                project_root,
+                git_auth=auth,
+                assay_git=assay_git,
+            )
+            facts_json = json.dumps(facts, separators=(",", ":"), sort_keys=True)
+            if auth.token and auth.token in facts_json:
+                raise RuntimeError("remote baseline facts unexpectedly contain publisher credentials")
+            mutation_environment = dict(lane_environment)
+            mutation_environment[FACTS_ENV_KEY] = facts_json
+            result = _invoke_lane(repo_root, "mutation", mutation_environment)
+            if result:
+                return result
 
         result = _invoke_lane(repo_root, "canary", lane_environment)
         if result:
@@ -499,9 +552,19 @@ def _run_locked_gate(
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--worktree", type=Path, required=True)
+    parser.add_argument(
+        "--postpone-mutation",
+        metavar="TRACKING-ID",
+        type=_tracking_id,
+        default=None,
+        help=(
+            "skip ONLY the mutation lane (PROVISIONAL gate) and record the "
+            "postponement under TRACKING-ID in .assay/mutation-postponed-cmru.json"
+        ),
+    )
     args = parser.parse_args(argv)
     try:
-        return run_release_gate(args.worktree)
+        return run_release_gate(args.worktree, postpone_mutation=args.postpone_mutation)
     except Exception as exc:
         print(f"cmru-release-gate: {exc}", file=sys.stderr)
         return 1

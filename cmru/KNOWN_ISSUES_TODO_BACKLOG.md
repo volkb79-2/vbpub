@@ -1732,3 +1732,11 @@ gate exercises the regression; README, DESIGN-GUIDE, CONSUMERS, and SPEC documen
 **Fix direction:** when cli-extended ships the CLI-EXT-26 fix, bump the `cli-extended>=` floor in `pyproject.toml` (and `CLI_EXTENDED_REQUIREMENT` / the doctor floor check) to that release, delete the tolerance and the exact-message assertion so the test requires an empty finding list, run `cli-extended surface sync`, and close finding `adoption-skills-global-option` in `docs/cli-review-findings.toml`.
 
 **Oracle:** `cli-extended surface check` and `cli-extended audit --cli cmru` both exit 0 with no tolerance in the test.
+
+### KI-62 — R2 mutation campaign for 6.0.0 postponed by operator decision 2026-10-06; run it against the `cmru-v6.0.0` tag and backport fixes (LANDPREP) — *open, severity: major (release evidence gap)*
+
+**Observed:** the operator decided to merge and release cmru 6.0.0 with the R2 mutation campaign postponed. The release step (`cmru.toml` `[steps.run-tests]`) therefore runs `./run-gate.py gate-provisional`, which is `tools/run_release_gate.py --postpone-mutation KI-62`: every lane except `mutation` runs as in `gate`, and `.assay/mutation-postponed-cmru.json` (tracking id, timestamp, reason) is retained with the gate evidence next to one WARN line. The 6.0.0 release therefore has NO mutation evidence.
+
+**Fix direction:** after the release, run `./run-gate.py gate` (full, including R2) against the `cmru-v6.0.0` tag, triage survivors, and backport fixes. Then revert `cmru.toml` `[steps.run-tests]` to `./run-gate.py gate`, delete the `gate-provisional` lane in `run-gate.toml`, and grep for `TODO(cmru-6.0 post-release)`.
+
+**Oracle:** a full `gate` verdict (with `.assay/mutation-cmru.json`) exists for the `cmru-v6.0.0` tag, every survivor is fixed or recorded, and no `TODO(cmru-6.0 post-release)` marker remains that this item owns.

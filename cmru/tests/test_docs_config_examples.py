@@ -119,6 +119,11 @@ def test_assay_and_release_gate_split_rigor_without_empty_release_mutation():
     assert gate_command == (
         "python3 {worktree}/cmru/tools/run_release_gate.py --worktree {worktree}"
     )
+    # KI-62: the provisional lane is `gate` plus exactly the postponement option.
+    provisional = gate["lanes"]["gate-provisional"]
+    assert provisional["argv"] == gate["lanes"]["gate"]["argv"] + ["--postpone-mutation", "KI-62"]
+    assert provisional["environment"] == gate["lanes"]["gate"]["environment"]
+    assert "KI-62" in (ROOT / "KNOWN_ISSUES_TODO_BACKLOG.md").read_text(encoding="utf-8")
     release_gate = (ROOT / "tools" / "run_release_gate.py").read_text(encoding="utf-8")
     for name in ("installed-wheel", "assay", "coverage", "mutation", "canary"):
         assert f'"{name}"' in release_gate

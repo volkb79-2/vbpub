@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import argparse
 import importlib.util
+import json
 import os
 import signal
 import stat
 import sys
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -441,3 +444,133 @@ def test_passing_lane_and_unreadable_reports_stay_silent(tmp_path, monkeypatch, 
     )
     assert run_release_gate._invoke_lane(tmp_path, "coverage", {}) == 2
     assert capsys.readouterr().err == ""
+
+
+# --- --postpone-mutation (PROVISIONAL gate, KI-62) ---------------------------
+
+
+def _recording_gate(tmp_path, monkeypatch):
+    """A fixture whose lanes and remote-facts builder are recorded, never run."""
+    repo, *_rest, calls = _fixture(tmp_path, monkeypatch)
+    load = run_release_gate._load_components
+
+    def load_recording():
+        git, baseline = load()
+        original = baseline.build_facts
+
+        def build_facts(*args, **kwargs):
+            calls.append("facts")
+            return original(*args, **kwargs)
+
+        baseline.build_facts = build_facts
+        return git, baseline
+
+    monkeypatch.setattr(run_release_gate, "_load_components", load_recording)
+
+    def invoke(_root, lane, _environment):
+        calls.append(lane)
+        return 0
+
+    monkeypatch.setattr(run_release_gate, "_invoke_lane", invoke)
+    private_root = tmp_path / "private-backups"
+    private_root.mkdir(mode=0o700)
+    return repo, private_root, calls
+
+
+def test_postponed_mutation_skips_only_the_mutation_lane_and_records_the_marker(
+    tmp_path, monkeypatch, capsys,
+):
+    repo, private_root, calls = _recording_gate(tmp_path, monkeypatch)
+    status = run_release_gate.run_release_gate(
+        repo, temp_parent=private_root, postpone_mutation="KI-62",
+    )
+    assert status == 0
+    # Every other lane runs exactly as before, in order; no mutation lane and
+    # no remote-facts preparation (which only the mutation lane consumes).
+    assert calls == ["installed-wheel", "assay", "coverage", "canary"]
+    marker = repo / "cmru" / ".assay" / "mutation-postponed-cmru.json"
+    record = json.loads(marker.read_text(encoding="utf-8"))
+    assert record["tracking_id"] == "KI-62"
+    assert record["lane"] == "mutation"
+    assert record["status"] == "postponed"
+    assert record["reason"] == run_release_gate.POSTPONE_REASON
+    assert datetime.fromisoformat(record["timestamp"]).tzinfo is not None
+    err = capsys.readouterr().err
+    warn_lines = [line for line in err.splitlines() if "WARN" in line]
+    assert len(warn_lines) == 1
+    assert "POSTPONED" in warn_lines[0] and "KI-62" in warn_lines[0]
+
+
+def test_postponement_still_runs_later_lanes_and_stops_at_a_failing_one(tmp_path, monkeypatch):
+    repo, private_root, calls = _recording_gate(tmp_path, monkeypatch)
+
+    def invoke(_root, lane, _environment):
+        calls.append(lane)
+        return 7 if lane == "canary" else 0
+
+    monkeypatch.setattr(run_release_gate, "_invoke_lane", invoke)
+    status = run_release_gate.run_release_gate(
+        repo, temp_parent=private_root, postpone_mutation="KI-62",
+    )
+    assert status == 7
+    assert calls == ["installed-wheel", "assay", "coverage", "canary"]
+
+
+def test_postponement_does_not_hide_an_earlier_lane_failure(tmp_path, monkeypatch):
+    repo, private_root, calls = _recording_gate(tmp_path, monkeypatch)
+
+    def invoke(_root, lane, _environment):
+        calls.append(lane)
+        return 5 if lane == "coverage" else 0
+
+    monkeypatch.setattr(run_release_gate, "_invoke_lane", invoke)
+    assert run_release_gate.run_release_gate(
+        repo, temp_parent=private_root, postpone_mutation="KI-62",
+    ) == 5
+    assert not (repo / "cmru" / ".assay" / "mutation-postponed-cmru.json").exists()
+
+
+def test_full_gate_writes_no_marker_and_removes_a_stale_one(tmp_path, monkeypatch, capsys):
+    repo, private_root, calls = _recording_gate(tmp_path, monkeypatch)
+    marker = repo / "cmru" / ".assay" / "mutation-postponed-cmru.json"
+    assert run_release_gate.run_release_gate(repo, temp_parent=private_root) == 0
+    assert calls == ["installed-wheel", "assay", "coverage", "facts", "mutation", "canary"]
+    assert not marker.exists()
+    assert "WARN" not in capsys.readouterr().err
+    marker.parent.mkdir(parents=True)
+    marker.write_text("{}", encoding="utf-8")
+    assert run_release_gate.run_release_gate(repo, temp_parent=private_root) == 0
+    assert not marker.exists()
+
+
+@pytest.mark.parametrize("bad", ["", "   ", "\t"])
+def test_tracking_id_must_be_non_empty(tmp_path, monkeypatch, bad):
+    repo, private_root, calls = _recording_gate(tmp_path, monkeypatch)
+    with pytest.raises(argparse.ArgumentTypeError):
+        run_release_gate.run_release_gate(repo, temp_parent=private_root, postpone_mutation=bad)
+    assert calls == []
+    with pytest.raises(SystemExit) as raised:
+        run_release_gate.main(["--worktree", str(repo), "--postpone-mutation", bad])
+    assert raised.value.code == 2
+    assert calls == []
+
+
+def test_postpone_mutation_option_requires_a_value(tmp_path):
+    with pytest.raises(SystemExit) as raised:
+        run_release_gate.main(["--worktree", str(tmp_path), "--postpone-mutation"])
+    assert raised.value.code == 2
+
+
+def test_main_passes_the_stripped_tracking_id_through(tmp_path, monkeypatch):
+    seen = []
+    monkeypatch.setattr(
+        run_release_gate,
+        "run_release_gate",
+        lambda worktree, **kwargs: seen.append((worktree, kwargs)) or 0,
+    )
+    assert run_release_gate.main(["--worktree", str(tmp_path), "--postpone-mutation", " KI-62 "]) == 0
+    assert run_release_gate.main(["--worktree", str(tmp_path)]) == 0
+    assert seen == [
+        (tmp_path, {"postpone_mutation": "KI-62"}),
+        (tmp_path, {"postpone_mutation": None}),
+    ]
