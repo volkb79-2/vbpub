@@ -49,5 +49,23 @@ old apt-get argv were updated.
   listing (`installer.py` ~408). Resolution is a doc fix (README "Stage2 log" section), not code:
   logs go to the provider's `custom_script.output*`, `stage2_output` and journald.
 
+## Review round 1 fixes
+- Test conditions: a test that a `disable --now` of the apt timers follows the unattended-upgrades
+  package step (second hold); the io_benchmark post-once test now also covers the advisory-failure
+  branch, verbose on and off.
+- D1: `_restore_apt_timers_after_failure()` runs in the stage1 (`install`) and stage2 (`resume`)
+  failure paths before the failure notice: best-effort `enable --now` of the two apt timers,
+  logged, never raises, skipped in dry-run. Idempotent because stage2 is a new process.
+- D2: the Debian apt timers are held at stage1 start and restored with `enable --now` at the end of
+  stage2 regardless of `run_apt_auto_upgrade` (`vbpub-apt-check.timer` is added only when the step
+  is on and the mode is notify-only).
+- D3: running apt services are not stopped. `APT_LOCK_RETRY_ATTEMPTS = APT_LOCK_TIMEOUT_S // 30 + 1`
+  (21 attempts, 20 sleeps of 30 s = 600 s), one warning log line per retry. Test asserts the total
+  sleep equals the constant. The lists-lock claim is the reviewer's (apt 3.0.3); I did not test it.
+- `_reboot`: in verbose mode the "Stage1 complete. Rebooting" milestone is skipped (the
+  "reboot: scheduled ... delayed 60s" step post is the informative one); the reboot-disabled branch
+  uses the silent `state.mark_step` so its explicit warn post is the only one. Test covers all four
+  verbose x never_reboot combinations.
+
 ## Gate and plants
 Verdicts and the plant table are in the hand-back message (from actual runs on the final commit).
