@@ -1693,3 +1693,11 @@ gate exercises the regression; README, DESIGN-GUIDE, CONSUMERS, and SPEC documen
 **Fix direction:** per project, move the text into the release notes (generated section) or empty it, keeping a comment. Out of W0-REL's scope; an estate follow-up for the controller.
 
 **Oracle:** `cmru release --dry-run` for each of the three projects passes the changelog check.
+
+### KI-59 — The `file:` resume bump-commit skip matches any subject starting with `chore: bump <prefix> to ` (W0-REL review nit) — *open, severity: minor*
+
+**Observed:** `changelog._project_commits_after_cursor` ignores cmru's own version-bump commit so a resumed `file:` release re-tags the gated commit. The match is a subject prefix only. The W0-REL reviewer committed a real code change to `demo/core.py` with subject `chore: bump demo-v to 9.9.9 and rewrite core`; `generate_release_changelog` then returned False, so that work was missed by the changelog and by the resume decision.
+
+**Fix direction:** skip only a commit whose subject equals `chore: bump <prefix> to <pending_version>` exactly AND whose diff touches only the declared version file (plus the generated changelog cmru wrote).
+
+**Oracle:** the reviewer's probe (a real change with a look-alike subject) is counted as project work; the existing `file:VERSION` resume e2e case stays green.
