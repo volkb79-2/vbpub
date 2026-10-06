@@ -396,7 +396,6 @@ def _install_abandon_facts(monkeypatch, root, workspace, *, progress=None):
     [
         (handlers.main, ["wheel-build", "--dry-run"], "--cwd"),
         (handlers.main, ["wheel-validate"], "--prefix"),
-        (lambda argv: runner.runner_cli().run(argv=argv), ["alpha"], "--step"),
         (tester_gate.main, ["--", "true"], "--cwd"),
     ],
 )
@@ -415,13 +414,6 @@ def test_handler_dry_run_hides_its_own_control_flag(capsys, tmp_path):
     output = capsys.readouterr().out
     assert "Would run cmru handler wheel-build" in output
     assert "dry_run" not in output
-
-
-def test_run_step_without_its_required_step_reports_usage(capsys):
-    assert runner.runner_cli().run(argv=[]) == 2
-    diagnostic = capsys.readouterr().err.lower()
-    assert "usage:" in diagnostic
-    assert "--step" in diagnostic
 
 
 def test_init_help_marks_the_guided_command_interactive(capsys):
@@ -446,8 +438,6 @@ def test_init_without_arguments_starts_the_guided_flow(monkeypatch):
         (getpy.getpy_main, ["alpha,beta", "--output", "installer.py"]),
         (resolve.resolve_main, ["ghost"]),
         (resolve.resolve_main, ["alpha"]),
-        (lambda argv: runner.runner_cli().run(argv=argv), ["ghost", "--step", "build"]),
-        (lambda argv: runner.runner_cli().run(argv=argv), ["alpha,beta", "--step", "build"]),
         (standards.standards_main, ["ghost"]),
         (standards.standards_main, ["alpha", "--dry-run"]),
         (tool_deps.tool_deps_main, ["--refresh", "alpha", "--json"]),
@@ -468,21 +458,6 @@ def test_invalid_registered_invocations_render_usage(monkeypatch, tmp_path, caps
     diagnostic = captured.out + captured.err
     assert "usage:" in diagnostic.lower()
     assert "error" in diagnostic.lower()
-
-
-def test_run_step_unknown_dry_run_step_reports_a_concise_error_without_usage(
-    monkeypatch, tmp_path, capsys,
-):
-    config_path = _install_config_loader(monkeypatch, tmp_path)
-
-    result = runner.runner_cli().run(argv=[
-        "alpha", "--step", "missing", "--dry-run", "--config", str(config_path),
-    ])
-
-    diagnostic = capsys.readouterr().err
-    assert result == 2
-    assert "step 'missing' is not declared" in diagnostic
-    assert "usage:" not in diagnostic.lower()
 
 
 @pytest.mark.parametrize("base_commit", [None, "not-a-commit"])

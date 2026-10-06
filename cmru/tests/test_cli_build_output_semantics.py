@@ -1534,12 +1534,12 @@ def test_run_project_step_protects_bound_cmru_environment(monkeypatch, tmp_path)
     step = _step(
         "build",
         [{"label": "build", "argv": ["cmru", "tester-gate"], "cwd": "."}],
-        step_env={"CMRU_BIN": "/wrong/step", "PATH": "/wrong/step/bin"},
+        step_env={"CMRU_INTERNAL_BIN": "/wrong/step", "PATH": "/wrong/step/bin"},
         quiet=True,
     )
     project = SimpleNamespace(
         name="alpha", cwd="alpha", project_root=tmp_path / "alpha",
-        env={"CMRU_BIN": "/wrong/project", "GITHUB_PUSH_PAT": "declared-value"},
+        env={"CMRU_INTERNAL_BIN": "/wrong/project", "GITHUB_PUSH_PAT": "declared-value"},
         runtime_kind="none", build_metadata={}, github_token="resolved-token",
         runner_steps={"build": step},
     )
@@ -1558,9 +1558,9 @@ def test_run_project_step_protects_bound_cmru_environment(monkeypatch, tmp_path)
     cli.run_project_step(project, "build", tmp_path, tmp_path / "logs")
 
     assert captured["extra_env"] == {
-        "CMRU_BIN": "/wrong/project", "GITHUB_PUSH_PAT": "declared-value",
+        "CMRU_INTERNAL_BIN": "/wrong/project", "GITHUB_PUSH_PAT": "declared-value",
     }
-    assert captured["protected_env"]["CMRU_BIN"] == str(launcher_directory[0] / "cmru")
+    assert captured["protected_env"]["CMRU_INTERNAL_BIN"] == str(launcher_directory[0] / "cmru")
     assert captured["protected_env"]["GITHUB_PUSH_PAT"] == "resolved-token"
     assert captured["path_prefixes"] == (launcher_directory[0],)
 
@@ -1571,14 +1571,14 @@ def test_runner_reapplies_runtime_binding_after_project_environment_commands(
     step = _step(
         "build",
         [{"label": "check", "argv": ["cmru", "version"], "cwd": "."}],
-        step_env={"CMRU_BIN": "/wrong/step", "PATH": "/wrong/step/bin"},
+        step_env={"CMRU_INTERNAL_BIN": "/wrong/step", "PATH": "/wrong/step/bin"},
         env_command=["./set-env"],
         quiet=True,
     )
     monkeypatch.setattr(
         runner,
         "apply_env_command",
-        lambda *_args: os.environ.update({"CMRU_BIN": "/wrong/env-command", "PATH": "/wrong/env-command/bin"}),
+        lambda *_args: os.environ.update({"CMRU_INTERNAL_BIN": "/wrong/env-command", "PATH": "/wrong/env-command/bin"}),
     )
     monkeypatch.setattr(runner, "maybe_login_multi", lambda *_args: None)
     captured = []
@@ -1595,12 +1595,12 @@ def test_runner_reapplies_runtime_binding_after_project_environment_commands(
         step,
         tmp_path,
         tmp_path / "logs",
-        extra_env={"PATH": "/wrong/project", "CMRU_BIN": "/wrong/project/cmru"},
-        protected_env={"CMRU_BIN": "/bound/cmru"},
+        extra_env={"PATH": "/wrong/project", "CMRU_INTERNAL_BIN": "/wrong/project/cmru"},
+        protected_env={"CMRU_INTERNAL_BIN": "/bound/cmru"},
         path_prefixes=(Path("/bound"),),
     )
 
     argv, command_env = captured[0]
     assert argv == ["cmru", "version"]
-    assert command_env["CMRU_BIN"] == "/bound/cmru"
+    assert command_env["CMRU_INTERNAL_BIN"] == "/bound/cmru"
     assert command_env["PATH"].split(":", 1)[0] == "/bound"

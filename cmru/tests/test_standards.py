@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from cmru.exit_codes import POLICY_REFUSED
+from cmru.exit_codes import REFUSED
 from cmru.standards import standards_main
 
 
@@ -75,7 +75,7 @@ def _config(tmp_path: Path) -> tuple[Path, Path]:
 
 def test_standards_reports_missing_project_marker(tmp_path):
     config, _project = _config(tmp_path)
-    assert standards_main(["demo", "--config", str(config)]) == POLICY_REFUSED
+    assert standards_main(["demo", "--config", str(config)]) == REFUSED
 
 
 def test_standards_update_only_touches_project_marker_and_rechecks(tmp_path):
@@ -95,7 +95,7 @@ def test_standards_rejects_noisy_default_step_output(tmp_path):
         encoding="utf-8",
     )
 
-    assert standards_main(["demo", "--config", str(config)]) == POLICY_REFUSED
+    assert standards_main(["demo", "--config", str(config)]) == REFUSED
 
 
 def test_standards_requires_explicit_tester_gate_inputs(tmp_path):
@@ -109,7 +109,7 @@ def test_standards_requires_explicit_tester_gate_inputs(tmp_path):
     )
     project.write_text(contents, encoding="utf-8")
 
-    assert standards_main(["demo", "--config", str(config)]) == POLICY_REFUSED
+    assert standards_main(["demo", "--config", str(config)]) == REFUSED
 
 
 def test_standards_requires_dind_image_only_for_a_docker_enabled_gate(tmp_path):
@@ -121,7 +121,7 @@ def test_standards_requires_dind_image_only_for_a_docker_enabled_gate(tmp_path):
     )
     project.write_text(contents, encoding="utf-8")
 
-    assert standards_main(["demo", "--config", str(config)]) == POLICY_REFUSED
+    assert standards_main(["demo", "--config", str(config)]) == REFUSED
 
 
 def _gate_project(tmp_path: Path, *, docker: bool, extra_env: str = "") -> tuple[Path, Path]:
@@ -148,7 +148,7 @@ def test_standards_requires_the_pids_limit_for_a_tester_gate(tmp_path, capsys):
     so `cmru standards` rejects a tester-gate project that omits it."""
     config, _project = _gate_project(tmp_path, docker=False)
     capsys.readouterr()
-    assert standards_main(["demo", "--config", str(config)]) == POLICY_REFUSED
+    assert standards_main(["demo", "--config", str(config)]) == REFUSED
     assert "requires explicit [env] values: CMRU_TESTER_PIDS_LIMIT" in capsys.readouterr().out
 
     (tmp_path / "ok").mkdir()
@@ -167,7 +167,7 @@ def test_standards_requires_every_dind_limit_for_a_docker_enabled_gate(tmp_path,
         extra_env='CMRU_TESTER_PIDS_LIMIT = "4096"\nCMRU_TESTER_DIND_IMAGE = "docker@sha256:x"\n',
     )
     capsys.readouterr()
-    assert standards_main(["demo", "--config", str(config)]) == POLICY_REFUSED
+    assert standards_main(["demo", "--config", str(config)]) == REFUSED
     out = capsys.readouterr().out
     assert ("Docker-enabled tester-gate requires explicit CMRU_TESTER_DIND_MEMORY, "
             "CMRU_TESTER_DIND_CPUS, CMRU_TESTER_DIND_PIDS_LIMIT in [env]") in out
@@ -195,7 +195,7 @@ def test_standards_requires_a_wheel_builder_image_for_wheel_build(tmp_path):
     )
     project.write_text(contents, encoding="utf-8")
 
-    assert standards_main(["demo", "--config", str(config)]) == POLICY_REFUSED
+    assert standards_main(["demo", "--config", str(config)]) == REFUSED
 
 
 def test_standards_flags_python_module_handler_calls_in_steps(tmp_path, capsys):
@@ -210,7 +210,7 @@ def test_standards_flags_python_module_handler_calls_in_steps(tmp_path, capsys):
     contents = contents.replace("[project]\n", "[project]\ntemplate_revision = 5\n", 1)
     project.write_text(contents, encoding="utf-8")
 
-    assert standards_main(["demo", "--config", str(config)]) == POLICY_REFUSED
+    assert standards_main(["demo", "--config", str(config)]) == REFUSED
     captured = capsys.readouterr()
     assert "cmru.handlers" in captured.out + captured.err
     assert "bound cmru launcher" in captured.out + captured.err
@@ -228,7 +228,7 @@ def test_standards_handler_form_without_builder_image_names_that_exact_problem(t
     contents = contents.replace("[project]\n", "[project]\ntemplate_revision = 5\n", 1)
     project.write_text(contents, encoding="utf-8")
 
-    assert standards_main(["demo", "--config", str(config)]) == POLICY_REFUSED
+    assert standards_main(["demo", "--config", str(config)]) == REFUSED
     text = "".join(capsys.readouterr())
     assert "wheel-build requires explicit CMRU_WHEEL_BUILDER_IMAGE in [env]" in text
     assert "bound cmru launcher" not in text

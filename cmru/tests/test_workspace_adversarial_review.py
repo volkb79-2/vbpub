@@ -768,20 +768,23 @@ def test_dispatch_independent_families_covers_refusal_launcher_and_child_failure
     with pytest.raises(RuntimeError, match="resume must target"):
         cli._dispatch_independent_git_families(
             "release", ["--resume", "x"], config_path, tmp_path, configs,
-            ["left", "right"], original_target=None,
+            ["left", "right"], original_target=None, forward_from=None,
         )
 
-    monkeypatch.setenv("CMRU_BIN", "/usr/bin/cmru")
+    monkeypatch.setenv("CMRU_INTERNAL_BIN", "/usr/bin/cmru")
+    monkeypatch.setattr(transaction, "is_transaction_child", lambda _root: True)
     monkeypatch.setattr(cli.subprocess, "run", lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 3))
     assert cli._dispatch_independent_git_families(
         "release", [], config_path, tmp_path, configs, ["left", "right"], original_target=None,
+        forward_from=None,
     ) == 3
 
-    monkeypatch.delenv("CMRU_BIN")
+    monkeypatch.delenv("CMRU_INTERNAL_BIN")
     monkeypatch.setattr(shutil, "which", lambda _name: None)
     monkeypatch.setattr(cli.subprocess, "run", lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 0))
     assert cli._dispatch_independent_git_families(
         "build", [], config_path, tmp_path, configs, ["left", "right"], original_target=None,
+        forward_from=None,
     ) == 0
 
     def fail(*_args, **_kwargs):
@@ -791,6 +794,7 @@ def test_dispatch_independent_families_covers_refusal_launcher_and_child_failure
     with pytest.raises(RuntimeError, match="could not dispatch"):
         cli._dispatch_independent_git_families(
             "build", [], config_path, tmp_path, configs, ["left", "right"], original_target=None,
+            forward_from=None,
         )
 
 
@@ -803,10 +807,10 @@ def test_dispatch_does_not_split_a_single_project_and_uses_path_launcher(monkeyp
     )
     assert cli._dispatch_independent_git_families(
         "build", [], tmp_path / "cmru.toml", tmp_path, {"demo": project}, ["demo"],
-        original_target=None,
+        original_target=None, forward_from=None,
     ) is None
 
-    monkeypatch.setenv("CMRU_BIN", "")
+    monkeypatch.setenv("CMRU_INTERNAL_BIN", "")
     monkeypatch.setattr(shutil, "which", lambda _name: "/found/cmru")
     monkeypatch.setattr(
         transaction, "project_git_family_groups",
@@ -819,7 +823,7 @@ def test_dispatch_does_not_split_a_single_project_and_uses_path_launcher(monkeyp
     assert cli._dispatch_independent_git_families(
         "build", [], tmp_path / "cmru.toml", tmp_path,
         {"demo": project, "other": SimpleNamespace(name="other")}, ["demo", "other"],
-        original_target=None,
+        original_target=None, forward_from=None,
     ) == 0
     assert called[0][0] == "/found/cmru"
 
@@ -836,7 +840,8 @@ def test_release_dispatch_passes_exact_preflight_snapshot_to_each_family(
         tmp_path / "right": "b" * 40,
     }
     monkeypatch.setattr(transaction, "project_git_family_groups", lambda *_args: roots)
-    monkeypatch.setenv("CMRU_BIN", "/usr/bin/cmru")
+    monkeypatch.setenv("CMRU_INTERNAL_BIN", "/usr/bin/cmru")
+    monkeypatch.setattr(transaction, "is_transaction_child", lambda _root: True)
     seen = []
 
     def fake_run(argv, **kwargs):
@@ -855,20 +860,20 @@ def test_release_dispatch_passes_exact_preflight_snapshot_to_each_family(
     with pytest.raises(RuntimeError, match="do not match the selected release families"):
         cli._dispatch_independent_git_families(
             "release", [], tmp_path / "cmru.toml", tmp_path, configs,
-            ["left", "right"], original_target=None,
+            ["left", "right"], original_target=None, forward_from=None,
             origin_main_snapshots={tmp_path / "left": "a" * 40},
         )
     with pytest.raises(RuntimeError, match="do not match the selected release families"):
         cli._dispatch_independent_git_families(
             "build", [], tmp_path / "cmru.toml", tmp_path, configs,
-            ["left", "right"], original_target=None,
+            ["left", "right"], original_target=None, forward_from=None,
             origin_main_snapshots=snapshots,
         )
     assert seen == []
 
     assert cli._dispatch_independent_git_families(
         "release", [], tmp_path / "cmru.toml", tmp_path, configs,
-        ["left", "right"], original_target=None,
+        ["left", "right"], original_target=None, forward_from=None,
         origin_main_snapshots=snapshots,
     ) == 0
     assert [
@@ -889,24 +894,24 @@ def test_child_release_args_finds_the_target_structurally(tmp_path):
     config_path.write_text("x")
     assert cli._child_release_args(
         ["--set-version", "demo", "demo", "--dry-run"], config_path, tmp_path,
-        original_target="demo", target_override="demo",
+        original_target="demo", target_override="demo", forward_from=None,
     ) == ["demo", "--set-version", "demo", "--dry-run", "--config", "cmru.toml"]
     # A value-taking option's value is never mistaken for the (later) target:
     # the previous assertion is symmetric, this one is not.
     assert cli._child_release_args(
         ["--set-version", "1.2.3", "demo"], config_path, tmp_path,
-        original_target="demo", target_override="demo",
+        original_target="demo", target_override="demo", forward_from=None,
     ) == ["demo", "--set-version", "1.2.3", "--config", "cmru.toml"]
     # The target may also come after the options, and --config/--resume (with
     # either spelling) never reach the child.
     assert cli._child_release_args(
         ["--config=x.toml", "--resume", "/w", "--no-build", "demo"], config_path, tmp_path,
-        original_target=("demo",), target_override="demo",
+        original_target=("demo",), target_override="demo", forward_from=None,
     ) == ["demo", "--no-build", "--config", "cmru.toml"]
     # No target given: nothing positional is dropped, and the deprecated --ref
     # spelling is rewritten so the child does not warn a second time.
     assert cli._child_release_args(
-        ["--ref", "origin/main", "--ref=other"], config_path, tmp_path,
+        ["--ref", "origin/main", "--ref=other"], config_path, tmp_path, forward_from=None,
     ) == ["--ahead-check-ref", "origin/main", "--ahead-check-ref=other", "--config", "cmru.toml"]
 
 

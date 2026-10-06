@@ -14,7 +14,7 @@ def test_child_release_args_replaces_parent_only_options_and_preserves_operation
     args = cli._child_release_args(
         ["release", "--config", "/old/config.toml", "demo",
          "--resume=/old/worktree", "--dry-run"],
-        config, repo,
+        config, repo, forward_from=None,
     )
     assert args == ["release", "demo", "--dry-run", "--config", "cmru.orchestration.toml"]
 
@@ -26,17 +26,17 @@ def test_child_release_args_replaces_parent_only_options_and_preserves_operation
     target.parent.mkdir(parents=True)
     target.write_text("[projects]\n", encoding="utf-8")
     linked.symlink_to("cfg/old/cmru.orchestration.toml")
-    linked_args = cli._child_release_args([], linked, repo)
+    linked_args = cli._child_release_args([], linked, repo, forward_from=None)
     assert linked_args == ["--config", "cmru.orchestration.toml"]
     repo_alias = tmp_path / "repo-alias"
     repo_alias.symlink_to(repo, target_is_directory=True)
     aliased_args = cli._child_release_args(
-        [], repo_alias / "cmru.orchestration.toml", repo,
+        [], repo_alias / "cmru.orchestration.toml", repo, forward_from=None,
     )
     assert aliased_args == ["--config", "cmru.orchestration.toml"]
 
     outside = tmp_path / "outside.toml"
-    assert cli._child_release_args([], outside, repo) == ["--config", str(outside.resolve())]
+    assert cli._child_release_args([], outside, repo, forward_from=None) == ["--config", str(outside.resolve())]
 
 
 def test_resume_target_defaults_to_the_saved_scope_and_rejects_widening(tmp_path):

@@ -286,6 +286,7 @@ import sys
 import importlib.metadata as metadata
 sys.path += [{src!r}, {worktree!r}]
 print("DIST=" + metadata.version("cmru"))
+print("NAME=" + metadata.distribution("cmru").metadata["Name"])
 import cli_extended
 print("CX=" + cli_extended.__file__)
 from cmru import cli_support
@@ -342,6 +343,7 @@ def test_bootstrap_stages_a_cmru_dist_info_so_the_real_registry_builds_in_a_bare
 
     # tag cmru-v1.2.3 on HEAD: the exact tag version, as setuptools-scm would derive it.
     assert lines.get("DIST") == "1.2.3", raw
+    assert lines.get("NAME") == "cmru", raw  # PKG-4 N16: the staged dist-info names cmru
     assert lines.get("IDENTITY") == "1.2.3", raw
     assert "site-packages" not in lines["CX"], raw
 

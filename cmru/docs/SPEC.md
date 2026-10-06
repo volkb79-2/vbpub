@@ -50,16 +50,14 @@ cmru cleanup P --delete-unmanaged-release-tag TAG --yes
                                   # delete one old GitHub Release only, never its Git tag
 cmru cleanup P --delete-build-output ID --yes
                                   # delete one exact local non-release output record
-cmru cleanup --discard-build-worktree PATH --yes
-                                  # discard one exact inspected failed build worktree
+cmru abandon PATH --yes           # discard one exact inspected failed build worktree (absolute path)
 cmru version                      # print the CMRU version
 
 cmru resolve P    # consumer: highest-semver published version  (read-only)
 cmru get-py P    # consumer: emit a standalone installer
-cmru run     [--run-tests --build --push --validate] [--dry-run]
-                                  # explicit steps, or configured default_steps when omitted
+cmru run     [--step NAME ...] [--dry-run]
+                                  # named steps (repeatable), or configured default_steps when omitted
                                   # --dry-run previews resolved projects/commands; nothing runs
-cmru run-step --config C --step S  # raw single-step runner (rarely needed)
 ```
 
 **S-CLI.1** `release` is the normal path. A failed transaction retains its worktree for
@@ -716,8 +714,8 @@ project cleanup remains the sole operation allowed to delete managed Releases an
 
 **S-REL.4d — Local-build cleanup.** `cmru cleanup P --delete-build-output ID --yes`
 deletes only the exact commit-addressed local build record identified by its `build.json`;
-`--dry-run` is the non-mutating preview. `cmru cleanup --discard-build-worktree PATH --yes`
-deletes only an exact, visible `cmru-build-*` (or legacy `cmru/build/*`) worktree under this repository's managed
+`--dry-run` is the non-mutating preview. `cmru abandon PATH --yes`
+(formerly `cleanup --discard-build-worktree`) deletes only an exact, visible `cmru-build-*` (or legacy `cmru/build/*`) worktree under this repository's managed
 `.worktrees/` directory. Neither operation accepts a glob, an age range, an inferred latest
 record, or a release worktree. A missing, incomplete, symlinked, or unauthenticated target MUST
 fail rather than widen deletion.
@@ -1247,8 +1245,8 @@ by default before doing so: logs move to `<project>/logs/cmru-release/<immutable
 `release.json` source-commit and SHA-256 inventory, and declared `project.release.evidence_paths`
 move to `<project>/evidence/cmru-release/<immutable-id>/`. The evidence coordinate contains
 the declared files/directories and an `evidence.json` manifest recording the source commit and
-SHA-256 hash/byte inventory. `--discard-logs-on-release`, `--discard-artifacts-on-release`,
-and `--discard-evidence-on-release` are explicit independent opt-outs. A project declaring no
+SHA-256 hash/byte inventory. `release --discard logs`, `--discard artifacts`,
+and `--discard evidence` are explicit independent opt-outs. A project declaring no
 `artifact_dirs` or no `evidence_paths` has nothing to retain for that half and is skipped
 without error — retention applies uniformly across every orchestrated project, not all of
 which build a local artifact or produce commit-bound evidence. `cmru build` MUST use an isolated
@@ -1688,14 +1686,49 @@ instead of inventing a new provenance story for an external tool.
 
 ## S8 — Exit Codes
 
-cmru uses a four-value exit code scheme identical to CIU S10.3:
+cmru uses a five-value exit code scheme. Codes 0-3 carry the same meanings as CIU S10.3
+(`0` success, `1` runtime failure, `2` configuration/validation error, `3` environment
+prerequisite missing); cmru adds `4`, which CIU does not have (CIU S10.3 stops at `3`, and its
+`2` also covers argparse usage errors, as cmru's does). The scheme is therefore a superset of, not
+identical to, CIU S10.3 (redesign section E, CLI-16):
 
 | Code | Meaning |
 |---|---|
-| `0` | Success |
-| `1` | Build/publish failure or native version-artifact writer failure |
-| `2` | Configuration error (missing required field, unknown key, parse error) |
-| `3` | Missing prerequisite, including an unavailable registry metadata source, required environment variable, or external tool |
+| `0` | Done: success, a declined confirmation (`init`), or nothing to do |
+| `1` | The operation failed after it started: build/publish failure or native version-artifact writer failure |
+| `2` | Usage or configuration error (missing required field, unknown key, parse error, bad argument) |
+| `3` | Missing prerequisite, including an unavailable registry metadata source, required environment variable, external tool, a `tester-gate` missing its required configuration, and a cmru that is not installed as a distribution |
+| `4` | Refused by policy or verification; nothing was changed |
+
+Verbs that exit `4` (root and delegates):
+
+- `release`: the release plan is refused (S12.2a/S12.2b, including stale tool-deps at the plan
+  stage) or uncommitted paths in a selected project block the run;
+- `abandon`: ambiguous or published transactions block it (also on `--dry-run`), origin state
+  changed on the post-confirmation re-check, or another release transaction already holds the lock;
+- `standards`: any standards issue is reported (delegate);
+- `tool-deps`: stale or blocking tool declarations without `--allow-stale-tool-deps` (delegate).
+
+No other verb exits `4`.
+
+**S8.1 Process environment owned by cmru's own plumbing** (redesign section D):
+
+- `CMRU_RELEASE_LOG` is an OPERATOR input: the path of the aggregate `release` log (default
+  `<repo root>/cmru.release.log`). It is read only by `cmru release`.
+- `CMRU_NATIVE_RELEASE_LOGGING=0` is a TEST-ONLY switch that disables the release tee (it
+  re-points the process's file descriptors, which an in-process test must not do). It is not an
+  operator control and has no CLI spelling.
+- `CMRU_INTERNAL_BIN`, `CMRU_INTERNAL_RUN_LOG`, `CMRU_INTERNAL_SHOW_RUN_DETAILS`,
+  `CMRU_INTERNAL_LOG_APPEND` and `CMRU_INTERNAL_LOG_PREFIX_TIME_SHORT` are INTERNAL hand-offs
+  from a cmru process to its own children. They are not operator inputs and no operator-facing
+  document may tell anyone to set them (the operator spellings are the `--show-run-details`,
+  `--log-append` and `--log-prefix-time-short` flags and `CMRU_RELEASE_LOG`). The old
+  un-prefixed spellings (`CMRU_BIN`, `CMRU_RUN_LOG`, `CMRU_SHOW_RUN_DETAILS`, `CMRU_LOG_APPEND`,
+  `CMRU_LOG_PREFIX_TIME_SHORT`) are ignored. `CMRU_INTERNAL_BIN` is the one that selects an
+  executable, so it is honoured ONLY inside a verified transaction child
+  (`transaction.internal_launcher`); everywhere else the launcher is `cmru` resolved from `PATH`.
+  The other four only change presentation and logging and are set by the same process that reads
+  them (the flags above), so they are not child-gated.
 
 ---
 
@@ -1923,11 +1956,11 @@ was never pushed either, since it is pushed only after the plan is accepted. The
 release transaction MUST therefore surface this as a clean operator-facing `[ERROR]` message
 (never a raw Python traceback) and discard the just-created worktree/branch exactly like a
 successful release would — never retain it the way a genuine mid-release failure is retained
-for inspection (S-CLI.1), since there would be nothing there to inspect. This exit still uses
-the ordinary `1` ("build or publish failure") from S8's four-value scheme — S8 is not extended
-for this — the transaction records the refusal as its own state (alongside the existing scope
-marker, S-CLI.5a) so the parent process can tell "refused before starting" apart from "failed
-after starting" without a new exit code.
+for inspection (S-CLI.1), since there would be nothing there to inspect. This exit is `4`
+("refused by policy; nothing changed", S8), distinct from `1` ("failed after starting"). The
+transaction also records the refusal as its own state (alongside the existing scope marker,
+S-CLI.5a) so the parent process can tell "refused before starting" apart from "failed after
+starting" from the recorded state, not only from the code.
 
 **S12.2e — The isolated release transaction's unchanged/skipped path MUST name the exact
 baseline and reason, per project, never a bare project-name list (KI-13).** Before this rule,

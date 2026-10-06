@@ -442,7 +442,7 @@ def test_run_child_self_release_imports_candidate_cmru_source(monkeypatch, tmp_p
 
     observed = {}
     monkeypatch.setenv("PYTHONPATH", "/inherited/python/path")
-    monkeypatch.setenv("CMRU_BIN", "/opt/cmru/bin/cmru")
+    monkeypatch.setattr(transaction.shutil, "which", lambda _name: "/opt/cmru/bin/cmru")
 
     def fake_run(argv, *, cwd, env):
         observed.update(argv=argv, cwd=cwd, env=env)
@@ -468,12 +468,6 @@ def test_run_child_self_release_imports_candidate_cmru_source(monkeypatch, tmp_p
     assert observed["env"]["PYTHONPATH"].endswith("/inherited/python/path")
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="W2-PKG4/PKG-1 seam: turns green once PKG-1 drops the candidate "
-    "libraries/cli-extended/src root from transaction.run_child (decision D10); "
-    "strict: it FAILS (XPASS) the moment D10 lands, forcing this marker's removal",
-)
 def test_run_child_never_puts_a_candidate_cli_extended_source_root_on_pythonpath(
     monkeypatch, tmp_path,
 ):
@@ -491,7 +485,6 @@ def test_run_child_never_puts_a_candidate_cli_extended_source_root_on_pythonpath
             path.mkdir(parents=True, exist_ok=True)
     observed = {}
     monkeypatch.delenv("PYTHONPATH", raising=False)
-    monkeypatch.setenv("CMRU_BIN", "/opt/cmru/bin/cmru")
     monkeypatch.setattr(
         transaction.subprocess, "run",
         lambda argv, *, cwd, env: (observed.update(env=env), SimpleNamespace(returncode=0))[1],
@@ -522,7 +515,7 @@ def test_run_child_uses_only_the_candidate_roots_that_exist(
         return SimpleNamespace(returncode=0)
 
     monkeypatch.delenv("PYTHONPATH", raising=False)
-    monkeypatch.delenv("CMRU_BIN", raising=False)
+    monkeypatch.delenv("CMRU_INTERNAL_BIN", raising=False)
     monkeypatch.setattr(transaction.shutil, "which", lambda _name: None)
     monkeypatch.setattr(transaction.subprocess, "run", fake_run)
     workspace = SimpleNamespace(
@@ -546,7 +539,7 @@ def test_run_child_uses_only_the_candidate_roots_that_exist(
 
 def test_run_child_uses_path_cli_when_no_explicit_cmru_bin(monkeypatch, tmp_path):
     observed = {}
-    monkeypatch.delenv("CMRU_BIN", raising=False)
+    monkeypatch.delenv("CMRU_INTERNAL_BIN", raising=False)
     monkeypatch.setattr(transaction.shutil, "which", lambda _name: "/found/cmru")
     monkeypatch.setattr(
         transaction.subprocess, "run",

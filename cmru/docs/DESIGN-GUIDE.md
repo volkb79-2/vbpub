@@ -127,7 +127,7 @@ transaction. Resolving through ambient `PATH` could select an older installed
 wheel and run a different command contract inside a current source checkout.
 Before each step, CMRU creates a temporary launcher using its current Python
 interpreter and module root, puts that launcher first in `PATH`, and checks its
-reported version against the active runtime. The `CMRU_BIN` and `PATH` binding
+reported version against the active runtime. The internal `CMRU_INTERNAL_BIN` and `PATH` binding
 is reapplied after project environment setup, so a project setting cannot
 silently redirect a nested gate. A mismatch fails before the step command
 starts. This keeps project contracts portable and avoids requiring each
@@ -257,7 +257,7 @@ they now refuse with a pointer to the supported command or library API.
 
 The reusable `cmru.bundle.run_bundle` and `cmru.runner.run_step` functions
 remain supported Python APIs. PWMCP consumes the bundle API, and MDT consumes
-the runner API. Use `cmru run-step` for a direct operator invocation. CMRU does
+the runner API. Use `cmru run --step NAME` for a direct operator invocation. CMRU does
 not add a root `cmru bundle` verb until a concrete operator workflow needs one.
 The standalone generated `get.py` remains an independent product and keeps its
 own `argparse` parser because adopters use it without installing CMRU.
@@ -479,8 +479,8 @@ file is then loaded by CMRU's real configuration reader.
 The old shell wrapper duplicated release dispatch and made the installed command and wrapper
 drift risks. `cmru release` now owns context discovery, `PYTHONUNBUFFERED`, the aggregate
 `cmru.release.log`, append separators, and the live tee. Retention is the default for logs,
-declared artifacts, and declared gate evidence; explicit `--discard-logs-on-release`,
-`--discard-artifacts-on-release`, and `--discard-evidence-on-release` opt out independently.
+declared artifacts, and declared gate evidence; explicit `release --discard logs`, `--discard artifacts`, and
+`--discard evidence` (repeatable) opt out independently.
 Evidence is declared separately from publishable artifacts because a coverage report or assay
 verdict proves the gated commit but is not a release asset. The declaration is bounded to
 project-relative files/directories and the transaction refuses missing or symlinked evidence

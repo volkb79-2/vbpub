@@ -18,6 +18,10 @@ CMRU_DISTRIBUTION = "cmru"
 CMRU_COMMAND = "cmru"
 CMRU_LONG_NAME = "Configurable Multi Release Utility"
 CMRU_LOGGER = "cmru"
+# The pip requirement the missing-prompt-driver hint names. cli_extended is
+# bundled as a wheel dependency, so the extra that pulls questionary is cmru's
+# own (``cmru[interactive]`` -> ``cli-extended[interactive]``).
+INTERACTIVE_EXTRA = "cmru[interactive]"
 
 
 def cmru_headline() -> str:

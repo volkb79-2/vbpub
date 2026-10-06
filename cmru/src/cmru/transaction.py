@@ -48,6 +48,8 @@ from cmru.config_names import PROJECT_CONFIG_FILENAME
 CHILD_ENV = "CMRU_RELEASE_TRANSACTION_CHILD"
 BRANCH_ENV = "CMRU_RELEASE_BRANCH"
 BASE_ENV = "CMRU_RELEASE_BASE"
+# Redesign section D: the bound launcher handed to project steps is internal.
+INTERNAL_BIN_ENV = "CMRU_INTERNAL_BIN"
 _LEGACY_RESUME_METADATA_KEY = "transaction_scope"
 _LEGACY_RESUME_METADATA_VALUE = "legacy-release-resume"
 # REL-14: one commit-id grammar for sidecars and abandon -- SHA-1 (40 hex) and
@@ -149,6 +151,24 @@ def is_transaction_child(repo_root: Path) -> bool:
         )
 
     return True
+
+
+def internal_launcher(repo_root: Path) -> str | None:
+    """Return the ``CMRU_INTERNAL_BIN`` launcher, only inside a transaction child.
+
+    Redesign section D: an operator's ambient environment must never choose the
+    executable a release child runs. The value is honoured only when this
+    process is verifiably its managed transaction child; an invalid child
+    context fails closed (ignored) rather than trusting the variable.
+    """
+    value = os.environ.get(INTERNAL_BIN_ENV, "").strip()
+    if not value:
+        return None
+    try:
+        child = is_transaction_child(repo_root)
+    except RuntimeError:
+        return None
+    return value if child else None
 
 
 def _git(repo_root: Path, *args: str, check: bool = True) -> str:
@@ -3452,6 +3472,8 @@ def run_child(
             if inherited:
                 source_paths.extend(inherited.split(os.pathsep))
             env["PYTHONPATH"] = os.pathsep.join(source_paths)
-    launcher = [os.environ.get("CMRU_BIN") or shutil.which("cmru") or "cmru"]
+    launcher = [
+        internal_launcher(workspace.repo_root) or shutil.which("cmru") or "cmru"
+    ]
     command = [*launcher, verb, *child_args]
     return subprocess.run(command, cwd=workspace.path, env=env).returncode

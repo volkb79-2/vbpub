@@ -359,19 +359,19 @@ Use installed console scripts for operator workflows. `python -m cmru.handlers`
 is the bootstrap-only component CLI (the first-wheel build runs before an
 installed `cmru` exists); project contracts use `cmru handler <verb>` instead.
 `cmru.bundle` and `cmru.runner` are library modules; they do not expose module
-commands. The `cmru.cli` module alias is retired. Use `cmru run-step` for
+commands. The `cmru.cli` module alias is retired. Use `cmru run --step NAME` for
 direct single-step CLI work, and use the documented Python functions to compose
 bundle or runner behavior:
 
 ```sh
 # Preview one configured project step without running it.
-.venv-cmru/bin/cmru run-step --config ./cmru.toml --step build --dry-run
+.venv-cmru/bin/cmru run --config ./cmru.toml --step build --dry-run
 
 # Show the inputs to a declared wheel handler without launching its build.
 .venv-cmru/bin/python -m cmru.handlers wheel-build --cwd . --dry-run
 ```
 
-`cmru run-step` reads the same project configuration and step declaration used
+`cmru run --step` reads the same project configuration and step declaration used
 by CMRU orchestration; it does not define a second step format. The bundle
 library reads its dedicated bundle TOML. Its loader rejects unknown keys and
 wrong TOML value types at each table boundary; see S9.4a in the spec.
@@ -384,7 +384,7 @@ from cmru.runner import run_step
 
 # These calls execute configured work. run_step may remove declared clean
 # directories and runs the step commands; run_bundle removes dist_dir first.
-# Use cmru run-step --dry-run when you need to inspect project step effects.
+# Use cmru run --step NAME --dry-run when you need to inspect project step effects.
 run_step(Path("cmru.toml"), "build")
 archive = run_bundle(Path("bundle.toml"))
 ```
@@ -392,7 +392,7 @@ archive = run_bundle(Path("bundle.toml"))
 Prefer the declared project-step commands or these documented entrypoints over
 copying CMRU implementation code. Do not import private helpers as an API. For
 operator commands, use the installed `cmru` script. The bundle module is a library, and the runner module's supported CLI
-is `cmru run-step`.
+is `cmru run --step NAME`.
 
 A real `wheel-build` handler invocation requires a Git worktree and a configured
 `CMRU_WHEEL_BUILDER_IMAGE`; the dry-run example only displays accepted inputs.
@@ -830,7 +830,7 @@ before abandoning it. List and clean retained ones:
 
 ```
 cmru worktrees                                   # every retained failed build/release worktree
-cmru cleanup --discard-build-worktree <PATH> --yes
+cmru abandon <ABSOLUTE-PATH> --yes
 cmru abandon --dry-run                           # show all retained release candidates, no writes
 cmru abandon cmru-release-20260924_120000-example-a1b2c3 --dry-run
 cmru abandon cmru-release-20260924_120000-example-a1b2c3 --yes
@@ -1054,7 +1054,7 @@ CMRU moves those paths into `<project>/evidence/cmru-release/<immutable-id>/` af
 release succeeds and writes `evidence.json` with the gated source commit and SHA-256 hashes.
 The paths must be project-relative, contain no `..`, and contain no symlink component; a
 missing or unsafe declared path fails retention and keeps the release worktree available for
-inspection. Use `--discard-evidence-on-release` only when deliberately discarding those
+inspection. Use `release --discard evidence` only when deliberately discarding those
 outputs. `evidence_paths` is separate from `artifact_dirs`: evidence proves the gate's input
 commit and is not offered to a publisher.
 

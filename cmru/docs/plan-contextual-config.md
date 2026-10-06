@@ -37,7 +37,7 @@ The affected configuration and selection paths are:
 | `tool-deps` | every project in the selected config by default; cross-project checks require an orchestration file | current project default, with the nearest central registry available to resolve providers |
 | `cleanup` | estate config by default; project selector is optional | current project default when launched in a project; estate-wide only from CMRU-root context or explicit `all` |
 | `dependencies` | orchestration config required; graph is estate-wide | nearest central config is selected automatically; graph remains estate-wide |
-| `run-step` | explicit project config is required | current project config is the default; one step remains required |
+| `run --step` (formerly `run-step`) | explicit project config is required | current project config is the default; one step remains required |
 | `worktrees` | Git-only, no CMRU config | unchanged |
 | `tester-gate`, `handler` | direct execution surfaces, no CMRU project registry | unchanged |
 | `init` | generates project and/or orchestration documents from a small prompt set | an adoption wizard asks for one or more existing folder paths, project names, project type, CMRU-root/layout, repository facts, and release decisions; it previews and validates the generated contracts before writing |
@@ -399,5 +399,5 @@ shipped loader/parser tests.
 The wizard's first release exposes all four artifact types plus generic
 commands. Changelog backfill uses repeated raw tags matched by configured
 project prefix, and the output is headed per project. Explicit
-`--discard-logs-on-release` and `--discard-artifacts-on-release` remain as
-opt-outs; retention stays the default after wrapper removal.
+`release --discard logs` and `--discard artifacts` remain as
+opt-outs (the `--discard-*-on-release` spellings were replaced in Wave 2); retention stays the default after wrapper removal.

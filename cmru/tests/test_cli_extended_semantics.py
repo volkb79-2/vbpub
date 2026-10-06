@@ -119,7 +119,7 @@ def test_multi_project_single_git_family_uses_one_transaction_dispatch(
 
     assert cli._dispatch_independent_git_families(
         "build", [], tmp_path / "cmru.toml", tmp_path, projects,
-        ["alpha", "beta"], original_target=None,
+        ["alpha", "beta"], original_target=None, forward_from=None,
     ) is None
 
 
@@ -318,7 +318,7 @@ def test_tool_dependency_refresh_dry_run_does_not_write_pin_files(monkeypatch, t
     ("module", "message"),
     [
         ("cmru.bundle", "Python library, not a command"),
-        ("cmru.runner", "Use the installed 'cmru run-step' command"),
+        ("cmru.runner", "Use the installed 'cmru run --step' command"),
         ("cmru.cli", "Use the installed 'cmru' command"),
     ],
 )
@@ -382,25 +382,7 @@ def test_init_dry_run_validates_generated_contract_without_writing(
     assert not generated.exists()
 
 
-def test_runner_step_dry_run_uses_shared_renderer_without_invoking_step(
-    monkeypatch, tmp_path, capsys,
-):
-    project = SimpleNamespace(
-        name="demo", project_root=tmp_path / "demo", runner_steps={"build": _step()},
-    )
-    monkeypatch.setattr(cli, "_resolve_config", lambda _path: tmp_path / "cmru.orchestration.toml")
-    monkeypatch.setattr(cli, "load_config", lambda _path: (tmp_path, {"demo": project}, ["demo"]))
-    monkeypatch.setattr(runner, "run_step", lambda *_: pytest.fail("dry-run invoked run_step"))
-
-    assert runner.runner_cli().run(argv=["demo", "--step", "build", "--dry-run", "--config", "x"]) == 0
-    output = capsys.readouterr().out
-    assert "Would remove" in output
-    assert "Would resolve dynamic environment" in output
-    assert "Would log in to configured registry" in output
-    assert "Would run declared step build" in output
-
-    assert runner.runner_cli().run(argv=["demo", "--step", "missing", "--dry-run", "--config", "x"]) == 2
-    assert "step 'missing' is not declared" in capsys.readouterr().err
+def test_runner_step_plan_rejects_an_invalid_command(tmp_path):
     malformed = _step()
     malformed.commands[:] = [{}]
     with pytest.raises(ValueError, match="contains an invalid command"):

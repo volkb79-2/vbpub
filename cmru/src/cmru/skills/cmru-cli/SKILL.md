@@ -23,8 +23,8 @@ description: The cmru (Configurable Multi Release Utility) CLI — status/releas
 ```bash
 cmru status                        # preview what changed + the next version (no writes)
 cmru release                       # isolated: prepare → gate → integrate → tag → build → publish
-cmru cleanup [P] [--dry-run]           # prune old releases/images (keeps -latest)
-cmru cleanup --remove-assets 30d                  # age-based prune
+cmru cleanup --policy [--dry-run]                 # prune per the configured [cleanup] policy (keeps -latest)
+cmru cleanup --remove-assets 30d                  # age-based prune (exactly one cleanup mode is required)
 ```
 
 `cmru release` runs the ENTIRE release as one isolated, source-first
@@ -45,15 +45,17 @@ cmru dependencies [--config C] [--json] [--write]   # dependency graph + preflig
 
 ```bash
 cmru release [P] [--config C] [--minor|--major|--set-version V] [--dry-run]
-             [--no-build] [--resume WORKTREE|--abandon WORKTREE|all-previous]
-             [--allow-uncommitted] [--ref REF]
+             [--no-build] [--resume WORKTREE] [--discard logs|artifacts|evidence]
+             [--allow-uncommitted] [--ahead-check-ref REF]
 cmru changelog [P] --config C --backfill-tag TAG   # catalog an already-published tagged release
 cmru build [P] [--config C]      # isolated local build; retains outputs on success
-cmru publish [P] [--config C]      # run the project's 'push' step
+cmru publish [P] --build-output ID   # publish a retained build's exact bytes
+cmru publish [P] --from-checkout     # explicit: run the project's 'push' step from the caller's checkout
+cmru abandon [BRANCH|ABSOLUTE-PATH] [--dry-run] [--yes]   # discard a retained release/build transaction
 ```
 
-`--resume WORKTREE` / `--abandon WORKTREE` / `--resume all-previous` recover
-a release transaction after an interruption — check `cmru worktrees --json`
+`release --resume WORKTREE` recovers a pre-tag release transaction after an
+interruption; `cmru abandon` discards one. Check `cmru worktrees --json`
 first to see what's actually retained before choosing which to resume or
 abandon.
 
@@ -77,7 +79,7 @@ cmru tool-deps [P] [--config C] [--json]        # verify declared tool deps: int
                                                                # authenticity + freshness (network;
                                                                # NEVER run during tests)
 cmru resolve [P] [--config C] [--format env|json|url]
-cmru get|get-py [P] --config C [--output FILE]        # emit a standalone get.py installer
+cmru get-py [P] --config C [--output FILE | --output-dir DIR]   # emit a standalone get.py installer
 cmru init [--root PATH] [--layout single|monorepo] [--owner O] [--repo R] [--owner-type user|org]
 cmru version                                                  # print the installed cmru version
 ```

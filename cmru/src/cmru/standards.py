@@ -293,6 +293,6 @@ def _run_standards(args, runtime) -> None:
         raise CliFailure(
             f"CMRU standards: {problem_count} issue(s). "
             "Run `cmru standards --update` for safe marker updates, then fix any remaining policy issue.",
-            exit_code=exit_codes.POLICY_REFUSED,
+            exit_code=exit_codes.REFUSED,
         )
     print(f"[INFO] CMRU standards: {len(results)} project(s) conform.", file=human, flush=True)

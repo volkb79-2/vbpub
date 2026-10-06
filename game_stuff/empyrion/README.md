@@ -14,7 +14,7 @@ The goal is to make German (`Deutsch`) consistently available across the main lo
 
 - Publish only (no rebuild):
 ```bash
-cmru publish --project empyrion-translation
+cmru publish empyrion-translation --from-checkout
 ```
 
 Empyrion project note:
@@ -136,7 +136,7 @@ cd /workspaces/vbpub
 cmru build --project empyrion-translation
 
 # 7) Push release
-cmru publish --project empyrion-translation
+cmru publish empyrion-translation --from-checkout
 ```
 
 

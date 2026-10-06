@@ -1,6 +1,6 @@
 """One project-target resolver for the delegate verbs (redesign section B13).
 
-``resolve``, ``get-py``, ``standards``, ``tool-deps`` and ``run-step`` each
+``resolve``, ``get-py``, ``standards`` and ``tool-deps`` each
 carried a copied block that derived the "current project" for an omitted target
 and rendered selector errors. This module is that block, once, so the verbs
 cannot drift apart again.

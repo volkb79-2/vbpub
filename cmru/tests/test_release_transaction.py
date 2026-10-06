@@ -241,7 +241,7 @@ def test_child_args_replaces_absolute_config_with_snapshot_relative_path(tmp_pat
     config.write_text("", encoding="utf-8")
 
     assert cli._child_release_args(
-        ["alpha", "--config", str(config)], config, tmp_path,
+        ["alpha", "--config", str(config)], config, tmp_path, forward_from=None,
     ) == ["alpha", "--config", "nested/cmru.toml"]
 
 
@@ -250,7 +250,7 @@ def test_child_args_removes_parent_only_resume_option(tmp_path):
     config.write_text("", encoding="utf-8")
 
     assert cli._child_release_args(
-        ["--resume", "/tmp/retained", "alpha"], config, tmp_path,
+        ["--resume", "/tmp/retained", "alpha"], config, tmp_path, forward_from=None,
     ) == ["alpha", "--config", "cmru.toml"]
 
 
@@ -1051,7 +1051,7 @@ def test_selected_config_link_can_have_alias_filename(tmp_path):
     assert _real_project_config_paths_in_candidate(
         source_root, candidate_root, selected_link, configs, ["demo"],
     ) == expected
-    assert cli._child_release_args([], selected_link, source_root) == [
+    assert cli._child_release_args([], selected_link, source_root, forward_from=None) == [
         "--config", "current.toml",
     ]
 

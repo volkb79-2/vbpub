@@ -123,7 +123,7 @@ cmru release                            # one-shot: detect changed → tag → p
 cmru release --dry-run                  # preview tags only, no writes
 cmru changelog assay --backfill-tag assay-v0.1.0  # migrate a missed history entry
 cmru build <name>                       # retained isolated gate + build; no publish
-cmru publish <name>                     # run the project's declared publish step
+cmru publish <name> --build-output ID   # publish the exact bytes of a retained `cmru build`
 cmru cleanup --remove-assets 30d       # prune old releases / GHCR versions
 cmru --help                            # all verbs
 ```
