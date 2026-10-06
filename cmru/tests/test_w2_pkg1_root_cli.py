@@ -87,6 +87,53 @@ def test_status_json_is_one_record_list_with_the_stable_keys(monkeypatch, tmp_pa
     ]]
 
 
+def test_status_records_list_every_selected_project_with_a_changed_field(monkeypatch, tmp_path):
+    from cmru import version
+
+    alpha = SimpleNamespace(name="alpha", prefix="alpha-v", version=None, git_tag=True)
+    quiet = SimpleNamespace(name="quiet", prefix=None, version=None, git_tag=True)
+    monkeypatch.setattr(
+        version, "detect_changed_projects",
+        lambda _root, projects, end_ref: [("alpha", alpha, "alpha-v1.0.0", "patch")],
+    )
+    monkeypatch.setattr(
+        version, "_latest_tag_for_prefix",
+        lambda _root, prefix, **_kw: {"quiet-v": "quiet-v2.0.0"}.get(prefix),
+    )
+
+    records = version.status_records(tmp_path, {"quiet": quiet, "alpha": alpha})
+
+    assert records == [
+        {"project": "quiet", "changed": False, "last_tag": "quiet-v2.0.0", "bump": None,
+         "next_version": None, "note": None},
+        {"project": "alpha", "changed": True, "last_tag": "alpha-v1.0.0", "bump": "patch",
+         "next_version": "alpha-v1.0.1", "note": None},
+    ]
+
+
+def test_status_text_table_lists_only_changed_projects(monkeypatch, tmp_path, capsys):
+    from cmru import version
+
+    alpha = SimpleNamespace(name="alpha", prefix="alpha-v", version=None, git_tag=True)
+    quiet = SimpleNamespace(name="quiet", prefix="quiet-v", version=None, git_tag=True)
+    monkeypatch.setattr(
+        version, "detect_changed_projects",
+        lambda _root, projects, end_ref: [("alpha", alpha, "alpha-v1.0.0", "patch")],
+    )
+    monkeypatch.setattr(version, "_latest_tag_for_prefix", lambda *_a, **_k: "quiet-v2.0.0")
+
+    version.status_cmd(tmp_path, {"alpha": alpha, "quiet": quiet})
+
+    out = capsys.readouterr().out
+    assert "alpha-v1.0.1" in out and "quiet" not in out
+
+
+def test_value_taking_flags_knows_release_and_is_empty_for_an_unknown_verb():
+    assert "--set-version" in cli._value_taking_flags("release")
+    assert "--dry-run" not in cli._value_taking_flags("release")
+    assert cli._value_taking_flags("no-such-verb") == frozenset()
+
+
 # --- B3: release ---------------------------------------------------------------
 
 

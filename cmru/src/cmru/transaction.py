@@ -91,7 +91,7 @@ def is_transaction_child(repo_root: Path) -> bool:
         )
         worktrees = shared.list_git_worktrees(source_top)
         record = shared.find_workspace(child_common, child_top)
-    except Exception as exc:
+    except _DOMAIN_ERRORS as exc:
         raise RuntimeError(f"invalid CMRU transaction child worktree: {exc}") from exc
 
     child_top = Path(child_top).resolve()
@@ -241,6 +241,14 @@ def _validate_legacy_release_progress(
     return progress
 
 
+# The operational failures the worktree library, git and the filesystem raise
+# (``worktree.WorkspaceError`` is a ``RuntimeError``).  Sites that translate a
+# library/OS failure into a clean ``RuntimeError`` catch exactly these, so a
+# programming error (KeyError, TypeError, AttributeError...) keeps its traceback
+# instead of being flattened to ``str(exc)`` (CLI-06).
+_DOMAIN_ERRORS = (RuntimeError, OSError, ValueError, subprocess.SubprocessError)
+
+
 def _shared_worktree():
     """Load the internal source dependency in checkout and wheel modes."""
     try:
@@ -282,7 +290,7 @@ def project_git_family_groups(
         selected = selected.resolve()
         try:
             top, common, _branch, _head = shared.discover_git_context(selected)
-        except Exception as exc:
+        except _DOMAIN_ERRORS as exc:
             raise RuntimeError(
                 f"CMRU project root {selected} is not inside a usable Git worktree: {exc}"
             ) from exc
@@ -290,7 +298,7 @@ def project_git_family_groups(
     if not groups:
         try:
             top, _common, _branch, _head = shared.discover_git_context(repo_root)
-        except Exception as exc:
+        except _DOMAIN_ERRORS as exc:
             raise RuntimeError(
                 f"CMRU root {repo_root} has no selected project Git family: {exc}"
             ) from exc
@@ -567,7 +575,9 @@ def create_workspace(
             try:
                 with without_publisher_tokens():
                     shared.remove_workspace(context, force=True)
-            except Exception:
+            except _DOMAIN_ERRORS:
+                # Best-effort cleanup: the reset failure raised below is the
+                # error worth reporting, not a failed removal of its worktree.
                 pass
             raise RuntimeError(
                 f"git reset --hard {base} failed ({checkout.returncode}): "
@@ -591,7 +601,7 @@ def resume_workspace(
     shared = _shared_worktree()
     try:
         path_top, path_common, _path_branch, _path_head = shared.discover_git_context(path)
-    except Exception as exc:
+    except _DOMAIN_ERRORS as exc:
         raise RuntimeError(f"{path} is not a worktree: {exc}") from exc
     try:
         expected_common = _common_git_dir(repo_root)
@@ -645,7 +655,7 @@ def resume_workspace(
             )
     except subprocess.CalledProcessError:
         raise
-    except Exception as exc:
+    except _DOMAIN_ERRORS as exc:
         raise RuntimeError(str(exc)) from exc
     branch = _git(path, "branch", "--show-current")
     if not _is_release_branch(branch):
@@ -666,7 +676,7 @@ def resume_workspace(
             or Path(path_top).resolve() != path
         ):
             raise RuntimeError("legacy release worktree and source root do not share the exact Git family")
-    except Exception as exc:
+    except _DOMAIN_ERRORS as exc:
         raise RuntimeError(f"cannot adopt validated legacy release worktree {path}: {exc}") from exc
     run_remote_git(
         path_top, "fetch", "--prune", "origin", "main", auth=git_auth, check=True,
@@ -680,7 +690,7 @@ def resume_workspace(
             metadata={_LEGACY_RESUME_METADATA_KEY: _LEGACY_RESUME_METADATA_VALUE},
             identity_path=path,
         )
-    except Exception as exc:
+    except _DOMAIN_ERRORS as exc:
         raise RuntimeError(f"cannot adopt validated legacy release worktree {path}: {exc}") from exc
     return ReleaseWorkspace(
         repo_root=repo_root.resolve(), path=path, branch=branch,
@@ -878,7 +888,7 @@ def remove_workspace(workspace: ReleaseWorkspace) -> None:
             with without_publisher_tokens():
                 _shared_worktree().remove_workspace(workspace.context)
             return
-        except Exception as exc:
+        except _DOMAIN_ERRORS as exc:
             raise RuntimeError(str(exc)) from exc
     try:
         with without_publisher_tokens():
@@ -889,7 +899,7 @@ def remove_workspace(workspace: ReleaseWorkspace) -> None:
                 purpose="cmru-legacy",
                 force=True,
             )
-    except Exception as exc:
+    except _DOMAIN_ERRORS as exc:
         raise RuntimeError(str(exc)) from exc
 
 
@@ -1324,7 +1334,7 @@ def read_release_scope_for_path(path: Path) -> list[str] | None:
     shared = _shared_worktree()
     try:
         top, _common, branch, head = shared.discover_git_context(path)
-    except Exception as exc:
+    except _DOMAIN_ERRORS as exc:
         raise RuntimeError(f"{path} is not a readable Git worktree: {exc}") from exc
     top = Path(top).resolve()
     if top != path:
@@ -1919,7 +1929,7 @@ def retain_successful_build_outputs(
             moved_logs = True
             try:
                 staged_artifacts.replace(target_artifacts)
-            except Exception:
+            except Exception:  # re-raises below after restoring the first rename
                 # The sources are still safe in the retained worktree.  Restore
                 # the first rename so the caller checkout remains all-or-nothing.
                 target_logs.replace(staged_logs)
@@ -1986,7 +1996,7 @@ def _open_directory_path_nofollow(path: Path) -> int:
             os.close(current_fd)
             current_fd = next_fd
         return current_fd
-    except BaseException:
+    except BaseException:  # fd cleanup only; always re-raised (incl. KeyboardInterrupt)
         os.close(current_fd)
         raise
 
@@ -2029,7 +2039,7 @@ def _retained_build_output_parent_fds(
             f"{project_name}: retained build record is incomplete or unsafe for {output_id}; "
             "remove it manually after inspection"
         ) from exc
-    except BaseException:
+    except BaseException:  # fd cleanup only; always re-raised (incl. KeyboardInterrupt)
         for descriptor in (logs_parent_fd, artifact_parent_fd, root_fd):
             if descriptor is not None:
                 os.close(descriptor)
@@ -2128,7 +2138,7 @@ def _retained_build_output_cleanup_facts(
             f"{project_name}: retained build record is incomplete or unsafe for {output_id}; "
             "remove it manually after inspection"
         ) from exc
-    except BaseException:
+    except BaseException:  # fd cleanup only; always re-raised (incl. KeyboardInterrupt)
         for descriptor in (logs_fd, artifact_fd):
             if descriptor is not None:
                 os.close(descriptor)
@@ -2227,7 +2237,7 @@ def _create_private_cleanup_stage(parent_fd: int, output_id: str) -> tuple[str, 
             continue
         try:
             return stage_name, os.open(stage_name, flags, dir_fd=parent_fd)
-        except BaseException:
+        except BaseException:  # stage-dir cleanup only; always re-raised
             os.rmdir(stage_name, dir_fd=parent_fd)
             raise
     raise RuntimeError("could not allocate a private build-output cleanup directory")
@@ -2377,7 +2387,7 @@ def delete_retained_build_output(
             for parent_fd, stage_name, _stage_fd in stages:
                 os.rmdir(stage_name, dir_fd=parent_fd)
             return targets
-        except BaseException as exc:
+        except BaseException as exc:  # restores staged records, then always re-raises
             restore_failures: list[Path] = []
             for parent_fd, stage_name, stage_fd in reversed(moved):
                 try:
@@ -2434,7 +2444,7 @@ def discard_build_workspace(
         if record is not None:
             _require_cmru_record_purpose(record, "build", path)
             context = shared.ensure_workspace(record)
-    except Exception as exc:
+    except _DOMAIN_ERRORS as exc:
         raise RuntimeError(str(exc)) from exc
     workspace = ReleaseWorkspace(
         repo_root=repo_root,
@@ -2646,22 +2656,22 @@ def retain_success_outputs(
                 retained.append(target_root)
             if attempt_evidence:
                 retained.append(evidence_root)
-        except Exception:
+        except Exception:  # rolls the moves back, then always re-raises
             rollback_errors: list[Exception] = []
             for source, target in reversed(moved_sources):
                 try:
                     shutil.move(str(target), str(source))
-                except Exception as rollback_exc:
+                except OSError as rollback_exc:  # shutil.Error is an OSError
                     rollback_errors.append(rollback_exc)
             if created_target_root and target_root.exists():
                 try:
                     shutil.rmtree(target_root)
-                except Exception as rollback_exc:
+                except OSError as rollback_exc:
                     rollback_errors.append(rollback_exc)
             if created_evidence_root and evidence_root.exists():
                 try:
                     shutil.rmtree(evidence_root)
-                except Exception as rollback_exc:
+                except OSError as rollback_exc:
                     rollback_errors.append(rollback_exc)
             if not artifact_parent_existed and artifact_parent.exists():
                 try:

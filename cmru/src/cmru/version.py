@@ -627,10 +627,13 @@ def status_cmd(
     ``"origin/main"`` to preview against something other than this
     invocation's own checkout state.
     """
-    records = status_records(
-        repo_root, projects, minor=minor, major=major,
-        set_version=set_version, ref=ref,
-    )
+    records = [
+        record for record in status_records(
+            repo_root, projects, minor=minor, major=major,
+            set_version=set_version, ref=ref,
+        )
+        if record["changed"]
+    ]
     if not records:
         print("[INFO] No projects with changes since last release.")
         return
@@ -656,18 +659,30 @@ def status_records(
     set_version: Optional[str] = None,
     ref: str = "HEAD",
 ) -> List[Dict[str, Any]]:
-    """One record per CHANGED project: the data behind ``status`` and ``status --json``.
+    """One record per SELECTED project (changed or not), in the given order.
 
-    Keys: ``project``, ``changed`` (always true: unchanged projects are not
-    listed), ``last_tag`` (``None`` before the first release), ``bump``
-    (``patch|minor|major`` or ``prepare``/``no-tag`` for projects CMRU does not
-    version), ``next_version`` (the full next tag, or ``None`` when CMRU does not
-    derive one) and ``note`` (a human explanation, or ``None``).
+    ``status --json`` is a stable per-project record (redesign B2), so an
+    unchanged project is listed with ``changed: false`` rather than omitted.
+    Keys: ``project``, ``changed``, ``last_tag`` (``None`` before the first
+    release), ``bump`` (``patch|minor|major`` or ``prepare``/``no-tag`` for
+    projects CMRU does not version; ``None`` when unchanged), ``next_version``
+    (the full next tag, or ``None`` when CMRU does not derive one or the project
+    is unchanged) and ``note`` (a human explanation, or ``None``).
     """
     changed = detect_changed_projects(repo_root, projects, end_ref=ref)
+    changed_by_name = {entry[0]: entry for entry in changed}
     bump_override = "major" if major else "minor" if minor else None
     records: List[Dict[str, Any]] = []
-    for name, proj, last_tag, bump in changed:
+    for name, unchanged_proj in projects.items():
+        if name not in changed_by_name:
+            prefix = getattr(unchanged_proj, "prefix", None) or f"{name}-v"
+            records.append({
+                "project": name, "changed": False,
+                "last_tag": _latest_tag_for_prefix(repo_root, prefix) or None,
+                "bump": None, "next_version": None, "note": None,
+            })
+            continue
+        _, proj, last_tag, bump = changed_by_name[name]
         prefix = getattr(proj, "prefix", None) or f"{name}-v"
         version_cfg = getattr(proj, "version", None)
         strategy = getattr(version_cfg, "strategy", "scm") if version_cfg else "scm"

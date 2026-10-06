@@ -2833,7 +2833,7 @@ def _run_tagged_build_and_publish(
                 repo_root, configs, [name], artifact_phases,
                 github_config=github_config, env_config=env_config,
             )
-        except Exception as exc:
+        except Exception as exc:  # deliberately broad: ANY build failure must roll the tag back; re-raised
             _rollback_unpublished_release_tag(
                 repo_root, workspace, tag, git_auth=git_auth, cause=exc,
             )
@@ -2844,7 +2844,7 @@ def _run_tagged_build_and_publish(
             github_config=github_config, env_config=env_config,
         )
         _assert_release_candidate_unchanged(repo_root, name, candidate_sha)
-    except Exception:
+    except Exception:  # deliberately broad: ANY failure after publish began must report it; re-raised
         _report_publication_started(repo_root, workspace, tag)
         raise
 
@@ -4858,9 +4858,9 @@ def _release_or_status(verb: str, args, rest: List[str], runtime=None) -> None:
 def _status(vargs, runtime, repo_root: Path, configs, selected_names: List[str]) -> None:
     """Read-only version/plan preview for each selected Git family.
 
-    ``--json`` emits ONE list holding a record per changed project across every
-    family (see :func:`cmru.version.status_records`); an empty list means
-    nothing changed.
+    ``--json`` emits ONE list holding a record per SELECTED project across every
+    family, each with a ``changed`` field (see :func:`cmru.version.status_records`).
+    The text table lists only changed projects.
     """
     from cmru.version import status_cmd, status_records
 
