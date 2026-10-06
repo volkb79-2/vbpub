@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import os
+import re
 from pathlib import Path, PurePosixPath
 import shlex
 import signal
@@ -29,6 +30,12 @@ class ActionUnreapable(ActionError):
 # Seconds between SIGTERM and SIGKILL, and how long to wait for the reap after SIGKILL.
 TERM_GRACE_SECONDS = 10.0
 KILL_REAP_SECONDS = 10.0
+
+
+# The ONLY `-o` value apt-get accepts: a bounded-digits dpkg lock timeout.
+# Anything else (e.g. -o APT::Update::Pre-Invoke::=...) is arbitrary command
+# execution via apt config and is refused.
+_APT_LOCK_TIMEOUT_RE = re.compile(r"DPkg::Lock::Timeout=[0-9]{1,5}")
 
 
 _SAFE_COMMANDS = {
@@ -128,6 +135,15 @@ class HostActions:
             if command in {"apt-get", "git", "systemctl"}:
                 if not any(arg in allowed for arg in argv[1:]):
                     raise ActionError(f"{command} operation is not allowlisted")
+            if command == "apt-get":
+                args = argv[1:]
+                for index, arg in enumerate(args):
+                    if arg == "-o":
+                        value = args[index + 1] if index + 1 < len(args) else ""
+                        if not _APT_LOCK_TIMEOUT_RE.fullmatch(value):
+                            raise ActionError(f"apt-get -o value is not allowlisted: {value!r}")
+                    elif arg.startswith("-o") or arg.startswith("--option"):
+                        raise ActionError(f"apt-get option form is not allowlisted: {arg!r}")
             elif command != "blkid" and not all(arg in allowed for arg in argv[1:] if arg.startswith("-")):
                 unexpected = [arg for arg in argv[1:] if arg.startswith("-") and arg not in allowed]
                 if unexpected:
@@ -149,8 +165,11 @@ class HostActions:
         if self.dry_run:
             return None
         if timeout is None:
+            # apt-get never prompts (dpkg conffile / debconf / needrestart).
+            extra = {"env": {**os.environ, "DEBIAN_FRONTEND": "noninteractive"}} if Path(argv[0]).name == "apt-get" else {}
             result = subprocess.run(
                 argv,
+                **extra,
                 check=False,
                 text=True,
                 input=input,

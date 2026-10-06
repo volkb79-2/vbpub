@@ -1,0 +1,193 @@
+"""LT-APT: LT-F-r1002-01 (apt/dpkg lock race with unattended-upgrade) and the
+duplicated io_benchmark Mattermost post."""
+from __future__ import annotations
+
+import re
+import subprocess
+from pathlib import Path
+
+import pytest
+
+from debian_install_v2 import actions as actions_module
+from debian_install_v2 import installer as installer_module
+from debian_install_v2.actions import ActionError, HostActions
+from debian_install_v2.config import Config
+from debian_install_v2.installer import APT_LOCK_OPTION, Installer
+from debian_install_v2.templates import APT_UPDATE_NOTIFY_SCRIPT
+
+from .test_gstammtisch_incorporation import install_dry
+from .test_io_benchmark import make
+
+APT = "/usr/bin/apt-get"
+LOCK_OPT = ("-o", "DPkg::Lock::Timeout=600")
+TIMERS = ("apt-daily.timer", "apt-daily-upgrade.timer")
+
+SCENARIOS = [
+    {},
+    {"apt_auto_upgrade_mode": "notify-only"},
+    {"apt_auto_upgrade_mode": "security-only", "run_io_benchmark": True},
+]
+
+
+def _apt_calls(actions):
+    return [a.argv for a in actions.planned if a.argv[0] == APT]
+
+
+@pytest.mark.parametrize("overrides", SCENARIOS)
+def test_every_apt_get_call_carries_the_lock_timeout(tmp_path, overrides):
+    _, actions = install_dry(tmp_path, **overrides)
+    calls = _apt_calls(actions)
+    assert len(calls) >= 6  # stage1 + stage2 package steps all exercised
+    for argv in calls:
+        assert argv[1:3] == LOCK_OPT, argv
+    assert APT_LOCK_OPTION == list(LOCK_OPT)
+
+
+def test_only_one_source_call_site_builds_an_apt_get_argv():
+    """Table of source call sites: the literal apt-get path appears only in the
+    _apt_get helper, so no call site can bypass the lock option."""
+    source = Path(installer_module.__file__).read_text(encoding="utf-8")
+    assert source.count('"/usr/bin/apt-get"') == 1
+    assert 'argv = ["/usr/bin/apt-get", *APT_LOCK_OPTION, *args]' in source
+
+
+def test_notify_only_check_script_waits_for_the_lock():
+    assert "/usr/bin/apt-get -o DPkg::Lock::Timeout=600 update" in APT_UPDATE_NOTIFY_SCRIPT
+
+
+def _timer_enables(actions):
+    return [
+        (i, a.argv) for i, a in enumerate(actions.planned)
+        if a.argv[:2] == ("/usr/bin/systemctl", "enable") and any(t in a.argv for t in TIMERS)
+    ]
+
+
+@pytest.mark.parametrize("overrides", SCENARIOS)
+def test_apt_timers_not_started_before_the_last_package_step(tmp_path, overrides):
+    _, actions = install_dry(tmp_path, **overrides)
+    last_apt = max(i for i, a in enumerate(actions.planned) if a.argv[0] == APT)
+    enables = _timer_enables(actions)
+    assert len(enables) == 1
+    index, argv = enables[0]
+    assert index > last_apt and "--now" in argv
+    # Held (stopped + disabled) before the first install, so they cannot fire mid-install.
+    holds = [
+        i for i, a in enumerate(actions.planned)
+        if a.argv[:3] == ("/usr/bin/systemctl", "disable", "--now") and TIMERS[0] in a.argv
+    ]
+    first_apt = min(i for i, a in enumerate(actions.planned) if a.argv[0] == APT)
+    assert holds and holds[0] < first_apt
+    # No apt timer is ever started by anything other than that final enable.
+    starts = [a.argv for a in actions.planned if a.argv[:2] == ("/usr/bin/systemctl", "start") and any(t in a.argv for t in TIMERS)]
+    assert starts == []
+
+
+def test_notify_only_check_timer_also_deferred_to_the_end(tmp_path):
+    _, actions = install_dry(tmp_path, apt_auto_upgrade_mode="notify-only")
+    last_apt = max(i for i, a in enumerate(actions.planned) if a.argv[0] == APT)
+    idx = [i for i, a in enumerate(actions.planned) if "vbpub-apt-check.timer" in a.argv]
+    assert idx and all(i > last_apt for i in idx)
+
+
+def test_timers_untouched_when_auto_upgrade_step_disabled(tmp_path):
+    _, actions = install_dry(tmp_path, run_apt_auto_upgrade=False)
+    assert not any(any(t in a.argv for t in TIMERS) for a in actions.planned)
+
+
+@pytest.mark.parametrize(
+    "tail",
+    [
+        ["-o", "APT::Update::Pre-Invoke::=touch /x", "update"],
+        ["-o", "DPkg::Lock::Timeout=abc", "update"],
+        ["-o", "DPkg::Lock::Timeout=600;id", "update"],
+        ["-o", "DPkg::Lock::Timeout=", "update"],
+        ["-o", "DPkg::Lock::Timeout=123456", "update"],
+        ["-oDPkg::Lock::Timeout=600", "update"],
+        ["--option", "DPkg::Lock::Timeout=600", "update"],
+        ["--option=DPkg::Lock::Timeout=600", "update"],
+        ["update", "-o"],
+    ],
+)
+def test_allowlist_rejects_arbitrary_dash_o(tail):
+    with pytest.raises(ActionError):
+        HostActions._validate([APT, *tail])
+
+
+def test_allowlist_accepts_exact_lock_option():
+    HostActions._validate([APT, "-o", "DPkg::Lock::Timeout=600", "update", "-qq"])
+    HostActions._validate([APT, "-o", "DPkg::Lock::Timeout=600", "install", "-y", "curl"])
+    # Unrelated unallowlisted verbs are still refused.
+    with pytest.raises(ActionError):
+        HostActions._validate([APT, "-o", "DPkg::Lock::Timeout=600", "remove", "curl"])
+
+
+def test_apt_get_runs_noninteractive(monkeypatch):
+    seen = {}
+
+    def fake_run(argv, **kw):
+        seen["env"] = kw.get("env")
+        return subprocess.CompletedProcess(argv, 0, stdout="")
+
+    monkeypatch.setattr(actions_module.subprocess, "run", fake_run)
+    HostActions(dry_run=False).run([APT, *LOCK_OPT, "update", "-qq"])
+    assert seen["env"]["DEBIAN_FRONTEND"] == "noninteractive"
+
+
+class _LockActions(HostActions):
+    def __init__(self, outcomes):
+        super().__init__(dry_run=True)
+        self.outcomes = list(outcomes)
+        self.calls = []
+
+    def run(self, argv, description="", dangerous=False, **kw):
+        self.calls.append(tuple(argv))
+        outcome = self.outcomes.pop(0)
+        if outcome:
+            raise ActionError(f"action failed (100): {description}\n{outcome}")
+        return ""
+
+
+def _retry_installer(tmp_path, outcomes, monkeypatch):
+    sleeps = []
+    monkeypatch.setattr(installer_module.time, "sleep", lambda s: sleeps.append(s))
+    config = Config(state_dir=str(tmp_path / "s"), log_dir=str(tmp_path / "l"))
+    inst = Installer(config, _LockActions(outcomes), inspect_host=False)
+    return inst, sleeps
+
+
+def test_lists_lock_contention_is_retried_once_per_attempt_and_bounded(tmp_path, monkeypatch):
+    inst, sleeps = _retry_installer(
+        tmp_path, ["E: Could not get lock /var/lib/apt/lists/lock", None], monkeypatch
+    )
+    inst._apt_get(["update", "-qq"], "t")
+    assert len(inst.actions.calls) == 2 and sleeps == [installer_module.APT_LOCK_RETRY_DELAY_S]
+    assert all(c[1:3] == LOCK_OPT for c in inst.actions.calls)
+
+
+def test_lock_retry_gives_up_after_the_bound(tmp_path, monkeypatch):
+    msg = "E: Could not get lock /var/lib/apt/lists/lock"
+    inst, sleeps = _retry_installer(tmp_path, [msg] * 3, monkeypatch)
+    with pytest.raises(ActionError):
+        inst._apt_get(["update", "-qq"], "t")
+    assert len(inst.actions.calls) == installer_module.APT_LOCK_RETRY_ATTEMPTS
+    assert len(sleeps) == installer_module.APT_LOCK_RETRY_ATTEMPTS - 1
+
+
+def test_non_lock_failure_is_not_retried(tmp_path, monkeypatch):
+    inst, sleeps = _retry_installer(tmp_path, ["E: Unable to locate package nope"], monkeypatch)
+    with pytest.raises(ActionError):
+        inst._apt_get(["install", "-y", "nope"], "t")
+    assert len(inst.actions.calls) == 1 and sleeps == []
+
+
+def test_io_benchmark_result_is_posted_exactly_once(tmp_path):
+    """LT-F-r1002-01b: telegram_verbose_progress made _mark_step AND the explicit
+    notify both post the result (two Mattermost posts)."""
+    for verbose in (True, False):
+        installer, _ = make(tmp_path / str(verbose), telegram_verbose_progress=verbose)
+        sent: list[str] = []
+        installer._notify = lambda message, **kw: sent.append(kw.get("event", message))  # type: ignore[method-assign]
+        installer._run_io_benchmark(swap_written=False)
+        posts = [s for s in sent if "io benchmark" in s.lower() or "io_benchmark:" in s]
+        posts = [s for s in posts if "rbps" in s]
+        assert len(posts) == 1, (verbose, sent)

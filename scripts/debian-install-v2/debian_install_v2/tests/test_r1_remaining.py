@@ -164,12 +164,12 @@ def test_configure_apt_real_backup_and_policy(tmp_path, monkeypatch):
     sleep_calls = []
     monkeypatch.setattr(installer_mod.time, "sleep", lambda seconds: sleep_calls.append(seconds))
     installer.actions.outputs[("/usr/bin/apt-cache", "policy")] = "nothing"
-    installer.actions.outputs[("/usr/bin/apt-get", "update", "-qq")] = ""
-    installer.actions.outputs[("/usr/bin/apt-get", "install", "-y", "--no-install-recommends", "ca-certificates", "curl", "git", "python3")] = ""
+    installer.actions.outputs[("/usr/bin/apt-get", "-o", "DPkg::Lock::Timeout=600", "update", "-qq")] = ""
+    installer.actions.outputs[("/usr/bin/apt-get", "-o", "DPkg::Lock::Timeout=600", "install", "-y", "--no-install-recommends", "ca-certificates", "curl", "git", "python3")] = ""
     with pytest.raises(RuntimeError, match="APT configuration did not resolve"):
         installer._configure_apt()
     # Every retry attempt re-ran apt-get update, not just the first.
-    update_calls = [p for p in installer.actions.planned if p.argv == ("/usr/bin/apt-get", "update", "-qq")]
+    update_calls = [p for p in installer.actions.planned if p.argv == ("/usr/bin/apt-get", "-o", "DPkg::Lock::Timeout=600", "update", "-qq")]
     assert len(update_calls) == 3
     # Regression: must sleep between attempts 1->2 and 2->3 (2 sleeps), but
     # NOT after the final (3rd) attempt before raising -- there's no point
@@ -188,8 +188,8 @@ def test_configure_apt_retries_transient_suite_resolution_failure(tmp_path, monk
     monkeypatch.setattr("pathlib.Path.is_file", lambda self, *a, **kw: True)
     monkeypatch.setattr("shutil.copy2", lambda *a, **kw: None)
     monkeypatch.setattr(installer_mod.time, "sleep", lambda seconds: None)
-    installer.actions.outputs[("/usr/bin/apt-get", "update", "-qq")] = ""
-    installer.actions.outputs[("/usr/bin/apt-get", "install", "-y", "--no-install-recommends", "ca-certificates", "curl", "git", "python3")] = ""
+    installer.actions.outputs[("/usr/bin/apt-get", "-o", "DPkg::Lock::Timeout=600", "update", "-qq")] = ""
+    installer.actions.outputs[("/usr/bin/apt-get", "-o", "DPkg::Lock::Timeout=600", "install", "-y", "--no-install-recommends", "ca-certificates", "curl", "git", "python3")] = ""
 
     policy_calls = {"n": 0}
     incomplete_policy = "trixie trixie-updates trixie-security"
@@ -235,9 +235,9 @@ def test_docker_real_download(tmp_path, monkeypatch):
             return b"FAKE-KEY"
     monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **kw: FakeResponse())
     installer.actions.mkdir = lambda path: None
-    installer.actions.outputs[("/usr/bin/apt-get", "update", "-qq")] = ""
-    installer.actions.outputs[("/usr/bin/apt-get", "install", "-y", "--no-install-recommends", "ca-certificates", "curl", "gnupg")] = ""
-    installer.actions.outputs[("/usr/bin/apt-get", "install", "-y", "--no-install-recommends", "containerd.io", "docker-buildx-plugin", "docker-ce", "docker-ce-cli", "docker-compose-plugin")] = ""
+    installer.actions.outputs[("/usr/bin/apt-get", "-o", "DPkg::Lock::Timeout=600", "update", "-qq")] = ""
+    installer.actions.outputs[("/usr/bin/apt-get", "-o", "DPkg::Lock::Timeout=600", "install", "-y", "--no-install-recommends", "ca-certificates", "curl", "gnupg")] = ""
+    installer.actions.outputs[("/usr/bin/apt-get", "-o", "DPkg::Lock::Timeout=600", "install", "-y", "--no-install-recommends", "containerd.io", "docker-buildx-plugin", "docker-ce", "docker-ce-cli", "docker-compose-plugin")] = ""
     installer.actions.outputs[("/usr/bin/systemctl", "enable", "--now", "docker")] = ""
     installer._install_docker()
     assert installer.actions.files["/etc/apt/keyrings/docker.asc"].decode() == "FAKE-KEY"
@@ -702,9 +702,9 @@ def test_install_docker_merges_existing_key_and_omits_daemon_config_owned_keys(t
             return b"FAKE-KEY"
     monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **kw: FakeResponse())
     installer.actions.mkdir = lambda path: None
-    installer.actions.outputs[("/usr/bin/apt-get", "update", "-qq")] = ""
-    installer.actions.outputs[("/usr/bin/apt-get", "install", "-y", "--no-install-recommends", "ca-certificates", "curl", "gnupg")] = ""
-    installer.actions.outputs[("/usr/bin/apt-get", "install", "-y", "--no-install-recommends", "containerd.io", "docker-buildx-plugin", "docker-ce", "docker-ce-cli", "docker-compose-plugin")] = ""
+    installer.actions.outputs[("/usr/bin/apt-get", "-o", "DPkg::Lock::Timeout=600", "update", "-qq")] = ""
+    installer.actions.outputs[("/usr/bin/apt-get", "-o", "DPkg::Lock::Timeout=600", "install", "-y", "--no-install-recommends", "ca-certificates", "curl", "gnupg")] = ""
+    installer.actions.outputs[("/usr/bin/apt-get", "-o", "DPkg::Lock::Timeout=600", "install", "-y", "--no-install-recommends", "containerd.io", "docker-buildx-plugin", "docker-ce", "docker-ce-cli", "docker-compose-plugin")] = ""
     installer.actions.outputs[("/usr/bin/systemctl", "enable", "--now", "docker")] = ""
     installer._install_docker()
     written = json.loads(installer.actions.files["/etc/docker/daemon.json"])

@@ -70,6 +70,25 @@ _LOG = logging.getLogger("debian_install_v2.installer")
 
 TELEGRAM_MESSAGE_LIMIT = 4096
 
+# LT-F-r1002-01: stage2's apt-get exited 100 because unattended-upgrade (started
+# by apt-daily-upgrade.service 4 s earlier) held the dpkg lock. Every apt-get the
+# installer runs waits up to this long for the dpkg frontend lock. Fixed
+# constant, not a Config field: it is an operational safety margin, not a
+# per-host choice (keeps the config schema/wizard unchanged).
+APT_LOCK_TIMEOUT_S = 600
+APT_LOCK_OPTION = ["-o", f"DPkg::Lock::Timeout={APT_LOCK_TIMEOUT_S}"]
+# DPkg::Lock::Timeout only covers the dpkg frontend lock; `apt-get update`'s
+# lists lock (/var/lib/apt/lists/lock) fails immediately regardless of it, so
+# a lock-contention failure gets a bounded retry (attempts, seconds apart).
+APT_LOCK_RETRY_ATTEMPTS = 3
+APT_LOCK_RETRY_DELAY_S = 30
+_APT_LOCK_ERROR_MARKERS = (
+    "Could not get lock",
+    "Unable to acquire the dpkg frontend lock",
+    "Unable to lock directory",
+    "Unable to lock the administration directory",
+)
+
 # io.cost benchmark (see IO-BENCHMARK-DESIGN.md). The 2 GiB floor is the
 # smallest partition whose 75% test file still gives fio a meaningful working
 # set; the 1 GiB margin keeps the benchmark clear of the swap shape's tail.
@@ -464,10 +483,31 @@ class Installer:
             marker.touch(mode=0o600)
         self._mark_step("stage2", "disabled", "unit disabled and completion marker set")
 
+    def _apt_get(self, args: list[str], description: str, dangerous: bool = False) -> str:
+        """The single place the installer invokes apt-get: always with the dpkg
+        lock timeout, and with one bounded retry when the failure is lock
+        contention (see APT_LOCK_* above). Other failures raise immediately."""
+        argv = ["/usr/bin/apt-get", *APT_LOCK_OPTION, *args]
+        for attempt in range(1, APT_LOCK_RETRY_ATTEMPTS + 1):
+            try:
+                return self._run(argv, description, dangerous=dangerous)
+            except ActionError as exc:
+                locked = any(marker in str(exc) for marker in _APT_LOCK_ERROR_MARKERS)
+                if not locked or attempt == APT_LOCK_RETRY_ATTEMPTS:
+                    raise
+                _LOG.warning(
+                    "apt lock held by another process during '%s' (attempt %s/%s); retrying in %ss.",
+                    description, attempt, APT_LOCK_RETRY_ATTEMPTS, APT_LOCK_RETRY_DELAY_S,
+                )
+                time.sleep(APT_LOCK_RETRY_DELAY_S)
+        raise AssertionError("unreachable")  # pragma: no cover
+
     def _packages(self, packages: list[str], stage: str) -> None:
-        self._run(["/usr/bin/apt-get", "update", "-qq"], f"{stage}: refresh apt metadata")
-        argv = ["/usr/bin/apt-get", "install", "-y", "--no-install-recommends", *packages]
-        self._run(argv, f"{stage}: install packages", dangerous=True)
+        self._apt_get(["update", "-qq"], f"{stage}: refresh apt metadata")
+        self._apt_get(
+            ["install", "-y", "--no-install-recommends", *packages],
+            f"{stage}: install packages", dangerous=True,
+        )
         self._mark_step(f"{stage}_packages", "success", " ".join(packages))
 
     def _configure_apt(self) -> None:
@@ -490,7 +530,7 @@ class Installer:
         missing = list(expected)
         max_attempts = 3
         for attempt in range(1, max_attempts + 1):
-            self._run(["/usr/bin/apt-get", "update", "-qq"], "apt: refresh apt metadata")
+            self._apt_get(["update", "-qq"], "apt: refresh apt metadata")
             if self.actions.dry_run:
                 missing = []
                 break
@@ -746,10 +786,9 @@ MaxFileSec=1month
             self.actions.write_file("/etc/systemd/system/vbpub-apt-check.service", APT_UPDATE_NOTIFY_SERVICE)
             self.actions.write_file("/etc/systemd/system/vbpub-apt-check.timer", APT_UPDATE_NOTIFY_TIMER)
             self._run(["/usr/bin/systemctl", "daemon-reload"], "reload systemd units")
-            self._run(
-                ["/usr/bin/systemctl", "enable", "--now", "vbpub-apt-check.timer"],
-                "enable apt notify-only check", dangerous=True,
-            )
+            # vbpub-apt-check.timer is enabled+started by _release_apt_timers()
+            # at the end of stage2, not here.
+            self._hold_apt_timers()
             self._mark_step("apt_auto_upgrade", "success", "notify-only")
             return
         self._packages(["unattended-upgrades", "needrestart"], "apt-auto-upgrade")
@@ -760,11 +799,39 @@ MaxFileSec=1month
         )
         self.actions.write_file("/etc/apt/apt.conf.d/20auto-upgrades", APT_PERIODIC_CONFIG)
         self.actions.write_file("/etc/needrestart/conf.d/vbpub.conf", NEEDRESTART_CONFIG)
-        self._run(
-            ["/usr/bin/systemctl", "enable", "--now", "apt-daily.timer", "apt-daily-upgrade.timer"],
-            "enable apt auto-upgrade timers", dangerous=True,
-        )
+        # Timers are NOT started here (LT-F-r1002-01): see _hold_apt_timers().
+        self._hold_apt_timers()
         self._mark_step("apt_auto_upgrade", "success", self.config.apt_auto_upgrade_mode)
+
+    _APT_TIMERS = ("apt-daily.timer", "apt-daily-upgrade.timer")
+
+    def _hold_apt_timers(self) -> None:
+        """Keep the apt timers off for the whole install (stage1 start .. stage2 end).
+
+        LT-F-r1002-01: stage1 used to `enable --now` them, and Debian enables
+        them by default anyway; the persistent apt-daily-upgrade timer then
+        fired minutes after the stage2 reboot and unattended-upgrade grabbed
+        the dpkg lock mid-install. `disable --now` stops them and keeps them
+        from starting on the reboot; _release_apt_timers() re-enables them
+        with `--now` only after stage2's last package operation. The
+        DPkg::Lock::Timeout on every installer apt-get (_apt_get) remains the
+        primary defence for anything else holding the lock.
+        """
+        self._run(
+            ["/usr/bin/systemctl", "disable", "--now", *self._APT_TIMERS],
+            "hold apt timers until the install is finished", dangerous=True,
+        )
+
+    def _release_apt_timers(self) -> None:
+        """Last stage2 step (after every apt-get): enable + start the apt timers."""
+        timers = list(self._APT_TIMERS)
+        if self.config.apt_auto_upgrade_mode == "notify-only":
+            timers.append("vbpub-apt-check.timer")
+        self._run(
+            ["/usr/bin/systemctl", "enable", "--now", *timers],
+            "enable apt timers (install finished)", dangerous=True,
+        )
+        self._mark_step("apt_timers", "success", " ".join(timers))
 
     def _configure_cgroup2_flags(self) -> None:
         # Default ON, no config flag — memory_recursiveprot missing silently
@@ -2213,15 +2280,22 @@ MaxFileSec=1month
             failure = InstallerError(f"{failure}; {note}" if failure else note)
         if failure is not None:
             self._mark_step("io_benchmark", "warned", f"benchmark failed (advisory), partition removed and layout verified: {failure}")
-            self._notify(
-                f"<b>io benchmark</b>: failed (advisory) - {_code(str(failure))}",
-                event=f"io benchmark failed (advisory): {failure}", status="run",
-            )
+            # LT-F-r1002-01b: with telegram_verbose_progress on, _mark_step()
+            # above already posted this outcome; a second explicit post made
+            # the result appear twice in Mattermost. Post explicitly only when
+            # _mark_step stays silent.
+            if not self.config.telegram_verbose_progress:
+                self._notify(
+                    f"<b>io benchmark</b>: failed (advisory) - {_code(str(failure))}",
+                    event=f"io benchmark failed (advisory): {failure}", status="run",
+                )
         elif skip_reason:
             self._mark_step("io_benchmark", "skipped", skip_reason)
         else:
             self._mark_step("io_benchmark", "planned" if self.actions.dry_run else "success", summary)
-            self._notify(f"<b>io benchmark</b>: {summary}", event=f"io benchmark: {summary}", status="ok")
+            # Same de-duplication as the failure branch above.
+            if not self.config.telegram_verbose_progress:
+                self._notify(f"<b>io benchmark</b>: {summary}", event=f"io benchmark: {summary}", status="ok")
 
     _ZSWAP_PARAMS = Path("/sys/module/zswap/parameters")
 
@@ -2599,6 +2673,8 @@ MaxFileSec=1month
 
     def _stage1(self) -> None:
         self._configure_controller_ssh_key()
+        if self.config.run_apt_auto_upgrade:
+            self._hold_apt_timers()
         if self.config.run_apt_config:
             self._configure_apt()
         self._packages(["python3"], "stage1")
@@ -2679,6 +2755,8 @@ MaxFileSec=1month
             self._apply_known_swap_shape()
         self._activate_swap_partitions()
         self._health_gate_swap_devices()
+        if self.config.run_apt_auto_upgrade:
+            self._release_apt_timers()
         self.state.save(phase="done", status="success")
         # _remove_controller_ssh_key() deliberately does NOT happen here --
         # see resume(), which calls it only after the stage2_done marker

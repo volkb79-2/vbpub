@@ -657,7 +657,7 @@ APT_UPDATE_NOTIFY_SCRIPT = """\
 #!/bin/sh
 # /usr/local/sbin/vbpub-apt-check
 set -eu
-/usr/bin/apt-get update -qq
+/usr/bin/apt-get -o DPkg::Lock::Timeout=600 update -qq
 COUNT=$(apt list --upgradable 2>/dev/null | grep -c '/' || true)
 if [ "$COUNT" -gt 0 ]; then
   /usr/local/sbin/vbpub-notify "vbpub: ${COUNT} package(s) upgradable (apt_auto_upgrade_mode=notify-only, nothing installed automatically)"

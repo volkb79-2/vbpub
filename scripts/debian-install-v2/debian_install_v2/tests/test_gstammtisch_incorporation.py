@@ -137,7 +137,7 @@ def test_oomd_installs_its_package_before_enabling_the_unit(tmp_path):
     _, actions = install_dry(tmp_path)
     argvs = [a.argv for a in actions.planned]
     install_idx = argvs.index(
-        ("/usr/bin/apt-get", "install", "-y", "--no-install-recommends", "systemd-oomd")
+        ("/usr/bin/apt-get", "-o", "DPkg::Lock::Timeout=600", "install", "-y", "--no-install-recommends", "systemd-oomd")
     )
     enable_idx = argvs.index(("/usr/bin/systemctl", "enable", "--now", "systemd-oomd"))
     assert install_idx < enable_idx
