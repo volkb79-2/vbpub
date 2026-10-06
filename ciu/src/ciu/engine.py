@@ -2223,7 +2223,7 @@ def run_shipped(
         try:
             if shipped_image_override is not None:
                 temp_dir = working_dir / MACHINE_DIR
-                temp_dir.mkdir(parents=True, exist_ok=True)
+                temp_dir.mkdir(exist_ok=True)
                 with tempfile.NamedTemporaryFile(
                     mode="w",
                     encoding="utf-8",

@@ -673,6 +673,7 @@ def test_shipped_deploy_passes_and_cleans_a_worktree_image_override(
     repo = tmp_path / "repo"
     stack = repo / "tools" / "app"
     stack.mkdir(parents=True)
+    (stack / engine.MACHINE_DIR).mkdir()
     shipped = stack / SHIPPED_COMPOSE
     original = "services:\n  app:\n    image: team/app:latest\n    build: .\n"
     shipped.write_text(original, encoding="utf-8")
@@ -705,6 +706,7 @@ def test_shipped_deploy_passes_and_cleans_a_worktree_image_override(
         override = stack / file_args[-1]
         captured["path"] = override
         captured["contents"] = override.read_text(encoding="utf-8")
+        override.unlink()
         return {"status": "success", "stdout": "started"}
 
     monkeypatch.setattr(engine, "execute_docker_compose_with_logs", execute)

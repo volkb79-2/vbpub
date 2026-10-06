@@ -81,9 +81,18 @@ def _split_image_name_tag(reference: str) -> tuple[str, str]:
             f"{reference!r}; render a concrete project-built image name"
         )
 
+    if slash == 0:
+        raise ImageIsolationError(
+            f"image reference {reference!r} has an empty image name before its path"
+        )
+
     if separator < 0:
         return reference, "latest"
     name, tag = reference[:separator], reference[separator + 1:]
+    if not name:
+        raise ImageIsolationError(
+            f"image reference {reference!r} has an empty image name"
+        )
     if not tag:
         raise ImageIsolationError(f"image reference {reference!r} has an empty tag")
     return name, tag
@@ -254,12 +263,16 @@ def scope_compose_images(compose_yaml: str, instance_id: str | None) -> str:
         build_node = mapping_value(service_node, "build")
         if build_node is None or build_node.tag == "tag:yaml.org,2002:null":
             continue
-        if (
-            build_node.tag == "tag:yaml.org,2002:bool"
-            and isinstance(build_node, ScalarNode)
-            and build_node.value.lower() == "false"
-        ):
-            continue
+        if build_node.tag == "tag:yaml.org,2002:bool":
+            if not isinstance(build_node, ScalarNode):
+                raise ImageIsolationError(
+                    "Compose build boolean must be a scalar"
+                )
+            if build_node.value.lower() == "false":
+                continue
+            raise ImageIsolationError(
+                "Compose build boolean may only disable a service with false"
+            )
         image_node = mapping_value(service_node, "image")
         if not isinstance(image_node, ScalarNode) or not image_node.value.strip():
             raise ImageIsolationError(
@@ -296,7 +309,6 @@ def scope_compose_images(compose_yaml: str, instance_id: str | None) -> str:
             rendered_entry = yaml.safe_dump(
                 {"value": scoped},
                 default_style=image_node.style,
-                sort_keys=False,
                 allow_unicode=True,
             )
             rendered_scalar = rendered_entry.split(": ", 1)[1].rstrip("\n")
@@ -480,7 +492,7 @@ def docker_exact_container_ids(listing: str, expected_names: set[str]) -> dict[s
         if not line.strip():
             continue
         parts = line.split(maxsplit=1)
-        if len(parts) != 2 or not parts[0] or not parts[1]:
+        if len(parts) != 2:
             raise ContainerOwnershipError(
                 f"docker ps returned malformed row {line_number}: {line!r}"
             )
