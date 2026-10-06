@@ -140,6 +140,20 @@ class InconclusiveError(RuntimeError):
 
 # --- the one subprocess boundary --------------------------------------------
 
+_GIT_MAINTENANCE_CONFIG = (
+    "-c",
+    "maintenance.auto=false",
+    "-c",
+    "maintenance.autoDetach=false",
+    "-c",
+    "gc.autoDetach=false",
+)
+
+
+def _git_argv(*args: str) -> list[str]:
+    """Pin every qualification-owned Git child against detached maintenance."""
+    return ["git", *_GIT_MAINTENANCE_CONFIG, *args]
+
 
 def _run(
     argv: Sequence[str],
@@ -175,7 +189,7 @@ def _run(
 
 
 def _git(repo: Path, *args: str) -> str:
-    return _run(["git", "-C", str(repo), *args]).stdout.strip()
+    return _run(_git_argv("-C", str(repo), *args)).stdout.strip()
 
 
 def _env_with(overrides: Mapping[str, str]) -> dict[str, str]:
@@ -183,7 +197,11 @@ def _env_with(overrides: Mapping[str, str]) -> dict[str, str]:
 
 
 def _git_commit(repo: Path, message: str, *, env: Mapping[str, str]) -> None:
-    _run(["git", "-C", str(repo), "commit", "-q", "-m", message], env=_env_with(env), check=True)
+    _run(
+        _git_argv("-C", str(repo), "commit", "-q", "-m", message),
+        env=_env_with(env),
+        check=True,
+    )
 
 
 # --- the fixtures: hashes, matrix, sites --------------------------------------
@@ -702,7 +720,7 @@ def capture_witness(
     scratch.mkdir(parents=True)
     repo = scratch / "repo"
     repo.mkdir()
-    _run(["git", "init", "-q", "-b", "main"], cwd=repo)
+    _run(_git_argv("init", "-q", "-b", "main"), cwd=repo)
     identity = {"GIT_AUTHOR_NAME": "Assay SQL qualification", "GIT_AUTHOR_EMAIL": "assay-sql@example.invalid"}
     identity_env: dict[str, str] = {
         **identity,
@@ -715,7 +733,7 @@ def capture_witness(
     # the judge treats the snapshot as left dirty (NO_MEASUREMENT/DIRTY_TREE).
     (repo / ".gitignore").write_text(".assay/\n", encoding="utf-8")
     shutil.copytree(fixture_root / "tests", repo / "db" / "tests")
-    _run(["git", "add", "-A"], cwd=repo)
+    _run(_git_argv("add", "-A"), cwd=repo)
     _git_commit(repo, "base: probes and ignore rules", env=identity_env)
     base_oid = _git(repo, "rev-parse", "HEAD")
 
@@ -730,7 +748,7 @@ def capture_witness(
         lane_schema=LANE_SCHEMA_VERSION, lane=_WITNESS_LANE, operators=list(ALL_OPERATORS)
     ).replace("@BASE_OID@", base_oid)
     (repo / "assay.toml").write_text(lane_toml, encoding="utf-8")
-    _run(["git", "add", "-A"], cwd=repo)
+    _run(_git_argv("add", "-A"), cwd=repo)
     _git_commit(repo, "head: the qualification schema and the witness lane", env=identity_env)
     head_oid = _git(repo, "rev-parse", "HEAD")
 

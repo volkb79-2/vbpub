@@ -56,6 +56,39 @@ def _schema_text() -> str:
     return _SCHEMA_PATH.read_text(encoding="utf-8")
 
 
+def test_sql_witness_git_children_pin_automatic_maintenance(monkeypatch, tmp_path: Path) -> None:
+    captured: list[list[str]] = []
+
+    def fake_run(argv, **kwargs):
+        captured.append(list(argv))
+        return subprocess.CompletedProcess(argv, 0, "ok\n", "")
+
+    monkeypatch.setattr(q, "_run", fake_run)
+    q._git(tmp_path, "status")
+    q._git_commit(tmp_path, "fixture", env={})
+
+    expected = (
+        ("-c", "maintenance.auto=false"),
+        ("-c", "maintenance.autoDetach=false"),
+        ("-c", "gc.autoDetach=false"),
+    )
+    assert len(captured) == 2
+    for argv in captured:
+        pairs = tuple(zip(argv, argv[1:]))
+        assert all(pair in pairs for pair in expected)
+
+
+def test_sql_witness_git_boundary_overrides_repository_local_maintenance(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", "-b", "main", str(repo)], check=True, timeout=30)
+    keys = ("maintenance.auto", "maintenance.autoDetach", "gc.autoDetach")
+    for key in keys:
+        subprocess.run(["git", "-C", str(repo), "config", "--local", key, "true"], check=True, timeout=30)
+
+    assert [q._git(repo, "config", "--get", key) for key in keys] == ["false", "false", "false"]
+
+
 # =============================================================================
 # T0 -- the pinned fixture bytes
 # =============================================================================
@@ -1445,6 +1478,7 @@ def _sql_env(
     run_launch_rc: int = 0,
     run_launch_cidfile_on_failure: bool = False,
     run_launch_empty_cidfile: bool = False,
+    run_cidfile_id: str | None = None,
     run_launch_error: str | None = None,
     postgres_on_runner_remove: bool = False,
     postgres_launch_attempted: bool = False,
@@ -1521,7 +1555,7 @@ def _sql_env(
         "    token = args[args.index('--label') + 1].split('=', 1)[1]\n"
         "    pathlib.Path(os.environ['FAKE_OWNER_TOKEN_FILE']).write_text(token, encoding='ascii')\n"
         "    pathlib.Path(os.environ['FAKE_SCRIPT']).write_text(args[i + 2], encoding='utf-8')\n"
-        "    pathlib.Path(args[args.index('--cidfile') + 1]).write_text(os.environ['FAKE_RUNNER_CID'] + '\\n', encoding='ascii')\n"
+        "    pathlib.Path(args[args.index('--cidfile') + 1]).write_text(os.environ.get('FAKE_RUNNER_CIDFILE', os.environ['FAKE_RUNNER_CID']) + '\\n', encoding='ascii')\n"
         "    with open(os.environ['FAKE_LOG'], 'a', encoding='utf-8') as handle:\n"
         "        handle.write(' '.join(['--scratch', scratch + '/sql', '--container-name', postgres, '--runner-name', runner, '--ownership-token', token, '--cgroup-parent', cgroup] + (['--allow-shared-host'] if shared == '1' else [])) + '\\n')\n"
         "    if os.environ.get('FAKE_EXECUTE_RUNNER') == '1':\n"
@@ -1604,6 +1638,7 @@ def _sql_env(
         "FAKE_RUNNER_OUT": str(runner_out),
         "FAKE_RUNNER_RC": str(runner_rc),
         "FAKE_RUNNER_CID": _FAKE_RUNNER_ID,
+        "FAKE_RUNNER_CIDFILE": run_cidfile_id or _FAKE_RUNNER_ID,
         "FAKE_EXECUTE_RUNNER": "1" if execute_runner else "0",
         "FAKE_RUN_LAUNCH_RC": str(run_launch_rc),
         "FAKE_RUN_LAUNCH_CIDFILE_ON_FAILURE": "1" if run_launch_cidfile_on_failure else "0",
@@ -1639,6 +1674,7 @@ def _gate(
     run_launch_rc: int = 0,
     run_launch_cidfile_on_failure: bool = False,
     run_launch_empty_cidfile: bool = False,
+    run_cidfile_id: str | None = None,
     run_launch_error: str | None = None,
     postgres_on_runner_remove: bool = False,
     postgres_launch_attempted: bool = False,
@@ -1654,6 +1690,7 @@ def _gate(
         run_launch_rc=run_launch_rc,
         run_launch_cidfile_on_failure=run_launch_cidfile_on_failure,
         run_launch_empty_cidfile=run_launch_empty_cidfile,
+        run_cidfile_id=run_cidfile_id,
         run_launch_error=run_launch_error,
         postgres_on_runner_remove=postgres_on_runner_remove,
         postgres_launch_attempted=postgres_launch_attempted,
@@ -1733,6 +1770,33 @@ def test_a_green_tester_then_a_green_harness_marks_the_phase_once_between_tester
     runner_script = harness_log.with_suffix(".sh")
     syntax = subprocess.run(["bash", "-n", str(runner_script)], capture_output=True, text=True, timeout=10)
     assert syntax.returncode == 0, syntax.stderr
+
+
+def test_runner_id_cidfile_mismatch_preserves_scratch_after_verified_id_cleanup(
+    tmp_path: Path, gate_functions: Path
+) -> None:
+    worktree, _commit, _tree = _sql_worktree(tmp_path)
+    planted_cidfile_id = "a" * 64
+    proc, docker_log, _harness_log = _gate(
+        tmp_path,
+        gate_functions,
+        worktree,
+        out="",
+        rc=1,
+        run_cidfile_id=planted_cidfile_id,
+    )
+
+    assert proc.returncode == 1, proc.stdout + proc.stderr
+    assert "SQL qualification runner cidfile does not match its returned ID" in proc.stderr
+    assert "preserving SQL scratch" in proc.stderr
+    assert "ASSAY_REGISTERED_GATE_COMPLETE=1" not in proc.stdout
+    calls = _docker_calls(docker_log)
+    assert calls.count(["rm", "-f", _FAKE_RUNNER_ID]) == 1
+    assert ["rm", "-f", planted_cidfile_id] not in calls
+    runner_launch = next(call for call in calls if call[:2] == ["run", "-d"])
+    runner_cidfile = Path(runner_launch[runner_launch.index("--cidfile") + 1])
+    assert runner_cidfile.read_text(encoding="ascii").strip() == planted_cidfile_id
+    assert runner_cidfile.parent.exists(), "contradictory launch evidence must be retained"
 
 
 def test_sql_runner_name_conflict_never_removes_the_existing_container(

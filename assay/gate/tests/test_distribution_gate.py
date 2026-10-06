@@ -140,6 +140,38 @@ def test_gate_script_has_valid_bash_syntax() -> None:
     assert proc.returncode == 0, proc.stderr
 
 
+def test_gate_driver_git_wrapper_overrides_local_maintenance_settings(tmp_path: Path) -> None:
+    source = GATE_SCRIPT.read_text(encoding="utf-8")
+    assert not any(line.lstrip().startswith("git ") for line in source.splitlines())
+    start = source.index("assay_git() {")
+    end = source.index("\n}\n", start) + 2
+    helper = tmp_path / "assay-git.sh"
+    helper.write_text(source[start:end] + "\n", encoding="utf-8")
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", "-b", "main", str(repo)], check=True, timeout=30)
+    keys = ("maintenance.auto", "maintenance.autoDetach", "gc.autoDetach")
+    for key in keys:
+        subprocess.run(["git", "-C", str(repo), "config", "--local", key, "true"], check=True, timeout=30)
+
+    proc = subprocess.run(
+        [
+            "bash",
+            "-c",
+            'source "$1"; for key in maintenance.auto maintenance.autoDetach gc.autoDetach; do assay_git -C "$2" config --get "$key"; done',
+            "assay-git-test",
+            str(helper),
+            str(repo),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.splitlines() == ["false", "false", "false"]
+
+
 def test_registered_self_gate_tracks_container_by_owned_id_and_wait_exit(
     tmp_path: Path, gate_functions: Path
 ) -> None:
@@ -159,18 +191,30 @@ def test_registered_self_gate_tracks_container_by_owned_id_and_wait_exit(
         "with open(os.environ['DOCKER_CALLS'], 'a', encoding='utf-8') as out:\n"
         "    out.write(json.dumps(args) + '\\n')\n"
         "if args[:2] == ['run', '-d']:\n"
-        "    cid = 'a' * 64\n"
+        "    cid = os.environ.get('DOCKER_CID_VALUE', 'a' * 64)\n"
+        "    pathlib.Path(os.environ['DOCKER_REMOVED_FILE']).unlink(missing_ok=True)\n"
+        "    name = args[args.index('--name') + 1]\n"
+        "    owner = args[args.index('--label') + 1].split('=', 1)[1]\n"
+        "    pathlib.Path(os.environ['DOCKER_NAME_FILE']).write_text(name, encoding='ascii')\n"
+        "    pathlib.Path(os.environ['DOCKER_OWNER_FILE']).write_text(owner, encoding='ascii')\n"
         "    if os.environ.get('DOCKER_CID_ON_FAILED_LAUNCH') == '1' or not os.environ.get('DOCKER_RUN_STATUS'):\n"
         "        pathlib.Path(args[args.index('--cidfile') + 1]).write_text(cid + '\\n', encoding='ascii')\n"
         "    print(cid)\n"
         "    if os.environ.get('DOCKER_RUN_STATUS'):\n"
         "        raise SystemExit(int(os.environ['DOCKER_RUN_STATUS']))\n"
+        "elif args[:1] == ['ps']:\n"
+        "    cid = next(value[3:] for value in args if value.startswith('id='))\n"
+        "    removed = pathlib.Path(os.environ['DOCKER_REMOVED_FILE'])\n"
+        "    if cid == os.environ.get('DOCKER_CID_VALUE', 'a' * 64) and not removed.exists():\n"
+        "        name = pathlib.Path(os.environ['DOCKER_NAME_FILE']).read_text(encoding='ascii')\n"
+        "        owner = os.environ.get('DOCKER_INSPECT_OWNER_OVERRIDE') or pathlib.Path(os.environ['DOCKER_OWNER_FILE']).read_text(encoding='ascii')\n"
+        "        print(cid + '|' + name + '|' + owner)\n"
         "elif args[:2] == ['logs', '--follow']:\n"
         "    print('fake nested gate output')\n"
         "elif args[:1] == ['wait']:\n"
         "    print(os.environ['DOCKER_WAIT_STATUS'])\n"
         "elif args[:2] == ['rm', '-f']:\n"
-        "    pass\n"
+        "    pathlib.Path(os.environ['DOCKER_REMOVED_FILE']).write_text(args[-1], encoding='ascii')\n"
         "else:\n"
         "    raise SystemExit(90)\n",
         encoding="utf-8",
@@ -180,6 +224,9 @@ def test_registered_self_gate_tracks_container_by_owned_id_and_wait_exit(
         **_host_environ(),
         "PATH": f"{fake_bin}:{os.environ['PATH']}",
         "DOCKER_CALLS": str(calls_path),
+        "DOCKER_NAME_FILE": str(tmp_path / "tester-name.txt"),
+        "DOCKER_OWNER_FILE": str(tmp_path / "tester-owner.txt"),
+        "DOCKER_REMOVED_FILE": str(tmp_path / "tester-removed.txt"),
         "DOCKER_WAIT_STATUS": "17",
         "CGROUP_PARENT_DEV_BACKGROUND": "dev-background.slice",
         "ASSAY_GATE_EXPECTED_COMMIT": HEX40,
@@ -199,8 +246,10 @@ def test_registered_self_gate_tracks_container_by_owned_id_and_wait_exit(
     run = next(argv for argv in calls if argv[:2] == ["run", "-d"])
     assert run[2] == "--cidfile"
     assert run[3].endswith("/container.cid")
-    assert run[4] == "--name"
-    name = run[5]
+    assert run[4] == "--label"
+    assert run[5].startswith("assay.gate.owner=")
+    assert run[6] == "--name"
+    name = run[7]
     assert name in proc.stdout
     assert "--init" in run
     assert "--cgroupns=host" in run
@@ -215,6 +264,7 @@ def test_registered_self_gate_tracks_container_by_owned_id_and_wait_exit(
     container_id = "a" * 64
     assert ["logs", "--follow", container_id] in calls
     assert ["wait", container_id] in calls
+    assert calls[-2] == ["ps", "--all", "--no-trunc", "--filter", f"id={container_id}", "--format", '{{.ID}}|{{.Names}}|{{.Label "assay.gate.owner"}}']
     assert calls[-1] == ["rm", "-f", container_id]
 
     calls_path.unlink()
@@ -241,6 +291,22 @@ def test_registered_self_gate_tracks_container_by_owned_id_and_wait_exit(
     failed_calls = [json.loads(line) for line in calls_path.read_text().splitlines()]
     assert failed_calls[-1] == ["rm", "-f", container_id]
 
+    calls_path.unlink()
+    env["DOCKER_INSPECT_OWNER_OVERRIDE"] = "f" * 64
+    foreign_cidfile = run_bash(
+        'run_registered_tester_container "/workspaces/vbpub/.worktrees/test" '
+        '"/host/vbpub" "dev-gates.slice"',
+        gate_functions=gate_functions,
+        env=env,
+    )
+    assert foreign_cidfile.returncode != 0
+    assert "resolves to unexpected container" in foreign_cidfile.stderr
+    foreign_calls = [json.loads(line) for line in calls_path.read_text().splitlines()]
+    assert not any(argv[:2] == ["rm", "-f"] for argv in foreign_calls)
+    foreign_run = next(argv for argv in foreign_calls if argv[:2] == ["run", "-d"])
+    foreign_cidfile_path = Path(foreign_run[3])
+    assert foreign_cidfile_path.parent.exists(), "preserve a planted foreign ID for recovery"
+
 
 @pytest.mark.parametrize("ps_mode", ["error", "uninterruptible"])
 def test_registered_tester_log_follower_has_a_bound(
@@ -257,14 +323,23 @@ def test_registered_tester_log_follower_has_a_bound(
         "with open(os.environ['DOCKER_CALLS'], 'a', encoding='utf-8') as out: out.write(json.dumps(args) + '\\n')\n"
         "if args[:2] == ['run', '-d']:\n"
         "    cid = 'b' * 64\n"
+        "    pathlib.Path(os.environ['DOCKER_REMOVED_FILE']).unlink(missing_ok=True)\n"
+        "    pathlib.Path(os.environ['DOCKER_NAME_FILE']).write_text(args[args.index('--name') + 1], encoding='ascii')\n"
+        "    pathlib.Path(os.environ['DOCKER_OWNER_FILE']).write_text(args[args.index('--label') + 1].split('=', 1)[1], encoding='ascii')\n"
         "    pathlib.Path(args[args.index('--cidfile') + 1]).write_text(cid + '\\n', encoding='ascii')\n"
         "    print(cid)\n"
+        "elif args[:1] == ['ps']:\n"
+        "    cid = next(value[3:] for value in args if value.startswith('id='))\n"
+        "    if not pathlib.Path(os.environ['DOCKER_REMOVED_FILE']).exists():\n"
+        "        name = pathlib.Path(os.environ['DOCKER_NAME_FILE']).read_text(encoding='ascii')\n"
+        "        owner = pathlib.Path(os.environ['DOCKER_OWNER_FILE']).read_text(encoding='ascii')\n"
+        "        print(cid + '|' + name + '|' + owner)\n"
         "elif args[:2] == ['logs', '--follow']:\n"
         "    time.sleep(60)\n"
         "elif args[:1] == ['wait']:\n"
         "    print('0')\n"
         "elif args[:2] == ['rm', '-f']:\n"
-        "    pass\n"
+        "    pathlib.Path(os.environ['DOCKER_REMOVED_FILE']).write_text(args[-1], encoding='ascii')\n"
         "else:\n"
         "    raise SystemExit(90)\n",
         encoding="utf-8",
@@ -284,6 +359,9 @@ def test_registered_tester_log_follower_has_a_bound(
         **_host_environ(),
         "PATH": f"{fake_bin}:{os.environ['PATH']}",
         "DOCKER_CALLS": str(calls_path),
+        "DOCKER_NAME_FILE": str(tmp_path / "log-tester-name.txt"),
+        "DOCKER_OWNER_FILE": str(tmp_path / "log-tester-owner.txt"),
+        "DOCKER_REMOVED_FILE": str(tmp_path / "log-tester-removed.txt"),
         "DOCKER_WAIT_STATUS": "0",
         "PS_MODE": ps_mode,
         "WAIT_MARKER": str(wait_marker),
@@ -327,31 +405,80 @@ def test_log_follower_collects_saved_wait_status_after_ps_reports_no_pid(
     assert wait_marker.read_text(encoding="utf-8").strip() == "12345"
 
 
+_FAKE_B145_ID = "d" * 64
+_FAKE_B145_FOREIGN_ID = "e" * 64
+
+
+def _b145_docker(fake_bin: Path) -> None:
+    docker = fake_bin / "docker"
+    docker.write_text(
+        "#!/usr/bin/env python3\n"
+        "import json, os, pathlib, sys\n"
+        "args = sys.argv[1:]\n"
+        "with open(os.environ['DOCKER_CALLS'], 'a', encoding='utf-8') as out: out.write(json.dumps(args) + '\\n')\n"
+        "if args[:2] == ['run', '-d']:\n"
+        "    name = args[args.index('--name') + 1]\n"
+        "    owner = args[args.index('--label') + 1].split('=', 1)[1]\n"
+        "    cidfile = pathlib.Path(args[args.index('--cidfile') + 1])\n"
+        "    pathlib.Path(os.environ['FAKE_B145_NAME_FILE']).write_text(name, encoding='ascii')\n"
+        "    pathlib.Path(os.environ['FAKE_B145_OWNER_FILE']).write_text(owner, encoding='ascii')\n"
+        "    pathlib.Path(os.environ['FAKE_B145_CIDFILE_RECORD']).write_text(str(cidfile), encoding='utf-8')\n"
+        "    pathlib.Path(os.environ['FAKE_B145_REMOVED_FILE']).unlink(missing_ok=True)\n"
+        "    if os.environ.get('FAKE_B145_RUN_CONFLICT') == '1':\n"
+        "        if os.environ.get('FAKE_B145_PLANT_CID') == '1': cidfile.write_text(os.environ['FAKE_B145_FOREIGN_ID'] + '\\n', encoding='ascii')\n"
+        "        print('Conflict. The container name ' + chr(34) + '/' + name + chr(34) + ' is already in use', file=sys.stderr)\n"
+        "        raise SystemExit(125)\n"
+        "    cid = os.environ.get('FAKE_B145_ID', 'd' * 64)\n"
+        "    cidfile.write_text(cid + '\\n', encoding='ascii')\n"
+        "    print(cid)\n"
+        "elif args[:1] == ['ps']:\n"
+        "    cid = next(value[3:] for value in args if value.startswith('id='))\n"
+        "    if cid == os.environ.get('FAKE_B145_ID', 'd' * 64) and not pathlib.Path(os.environ['FAKE_B145_REMOVED_FILE']).exists():\n"
+        "        name = pathlib.Path(os.environ['FAKE_B145_NAME_FILE']).read_text(encoding='ascii')\n"
+        "        owner = os.environ.get('FAKE_B145_INSPECT_OWNER') or pathlib.Path(os.environ['FAKE_B145_OWNER_FILE']).read_text(encoding='ascii')\n"
+        "        print(cid + '|' + name + '|' + owner)\n"
+        "    elif cid == os.environ.get('FAKE_B145_FOREIGN_ID', 'e' * 64):\n"
+        "        name = pathlib.Path(os.environ['FAKE_B145_NAME_FILE']).read_text(encoding='ascii')\n"
+        "        print(cid + '|' + name + '|' + ('f' * 64))\n"
+        "elif args[:1] == ['wait']:\n"
+        "    print(os.environ.get('FAKE_B145_WAIT_STATUS', '0'))\n"
+        "elif args[:1] == ['logs']:\n"
+        "    print('B145 bounded probe log')\n"
+        "elif args[:2] == ['rm', '-f']:\n"
+        "    if os.environ.get('FAKE_B145_REMOVE_FAIL_ONCE') == '1' and not pathlib.Path(os.environ['FAKE_B145_REMOVE_FAILED_FILE']).exists():\n"
+        "        pathlib.Path(os.environ['FAKE_B145_REMOVE_FAILED_FILE']).touch()\n"
+        "        raise SystemExit(91)\n"
+        "    if args[-1] == os.environ.get('FAKE_B145_ID', 'd' * 64): pathlib.Path(os.environ['FAKE_B145_REMOVED_FILE']).touch()\n"
+        "else:\n"
+        "    raise SystemExit(90)\n",
+        encoding="utf-8",
+    )
+    docker.chmod(0o755)
+
+
+def _b145_env(fake_bin: Path, tmp_path: Path, calls_path: Path) -> dict[str, str]:
+    return {
+        **_host_environ(),
+        "PATH": f"{fake_bin}:{os.environ['PATH']}",
+        "DOCKER_CALLS": str(calls_path),
+        "FAKE_B145_ID": _FAKE_B145_ID,
+        "FAKE_B145_FOREIGN_ID": _FAKE_B145_FOREIGN_ID,
+        "FAKE_B145_NAME_FILE": str(tmp_path / "b145-container-name.txt"),
+        "FAKE_B145_OWNER_FILE": str(tmp_path / "b145-owner-token.txt"),
+        "FAKE_B145_CIDFILE_RECORD": str(tmp_path / "b145-cidfile-path.txt"),
+        "FAKE_B145_REMOVED_FILE": str(tmp_path / "b145-removed.txt"),
+        "FAKE_B145_REMOVE_FAILED_FILE": str(tmp_path / "b145-remove-failed.txt"),
+    }
+
+
 def test_b145_probe_is_capped_placed_and_waited_before_logs(
     tmp_path: Path, gate_functions: Path
 ) -> None:
     fake_bin = tmp_path / "probe-bin"
     fake_bin.mkdir()
     calls_path = tmp_path / "probe-docker-calls.log"
-    docker = fake_bin / "docker"
-    docker.write_text(
-        "#!/usr/bin/env bash\n"
-        'printf "%s\\n" "$*" >> "$DOCKER_CALLS"\n'
-        'case "$1" in\n'
-        '  run) printf "fake-container-id\\n" ;;\n'
-        '  wait) printf "0\\n" ;;\n'
-        '  logs) printf "low-pids probe passed\\n" ;;\n'
-        '  rm) exit 0 ;;\n'
-        '  *) exit 91 ;;\n'
-        'esac\n',
-        encoding="utf-8",
-    )
-    docker.chmod(0o755)
-    env = {
-        **_host_environ(),
-        "PATH": f"{fake_bin}:{os.environ['PATH']}",
-        "DOCKER_CALLS": str(calls_path),
-    }
+    _b145_docker(fake_bin)
+    env = _b145_env(fake_bin, tmp_path, calls_path)
 
     proc = run_bash(
         'run_b145_low_pids_probe "/workspaces/vbpub/.worktrees/assay-b145" '
@@ -361,12 +488,15 @@ def test_b145_probe_is_capped_placed_and_waited_before_logs(
     )
 
     assert proc.returncode == 0, proc.stdout + proc.stderr
-    assert "low-pids probe passed" in proc.stdout
+    assert "B145 bounded probe log" in proc.stdout
     assert "ASSAY_GATE_PHASE=b145-low-pids-accepted" in proc.stdout
-    calls = calls_path.read_text(encoding="utf-8").splitlines()
-    assert len(calls) == 4
+    calls = [json.loads(line) for line in calls_path.read_text(encoding="utf-8").splitlines()]
+    assert len(calls) == 6
     run = calls[0]
-    assert run.startswith("run -d --name run-gate-assay-b145-pids-")
+    assert run[:2] == ["run", "-d"]
+    assert run[run.index("--name") + 1].startswith("run-gate-assay-b145-pids-")
+    assert run[run.index("--cidfile") + 1].endswith("/container.cid")
+    assert run[run.index("--label") + 1].startswith("assay.b145-probe.owner=")
     assert "--init" in run
     assert "--cgroupns=host" in run
     assert "--pids-limit=32" in run
@@ -376,12 +506,19 @@ def test_b145_probe_is_capped_placed_and_waited_before_logs(
     assert "type=bind,src=/host/vbpub,dst=/host/vbpub" in run
     assert "type=bind,src=/host/vbpub,dst=/workspaces/vbpub" in run
     assert "tester-unified:local" in run
-    assert "git config --global safe.directory" in run
+    probe_command = run[run.index("bash") + 2]
+    assert probe_command.startswith(
+        "git -c maintenance.auto=false -c maintenance.autoDetach=false "
+        "-c gc.autoDetach=false config --global safe.directory"
+    )
     assert "test_low_pids_limit_event_cannot_become_a_kill" in run
-    container_name = run.split()[3]
-    assert calls[1] == f"wait {container_name}"
-    assert calls[2] == f"logs {container_name}"
-    assert calls[3] == f"rm {container_name}"
+    container_name = run[run.index("--name") + 1]
+    assert calls[1][:2] == ["ps", "--all"]
+    assert calls[2] == ["wait", _FAKE_B145_ID]
+    assert calls[3] == ["logs", _FAKE_B145_ID]
+    assert calls[4][:2] == ["ps", "--all"]
+    assert calls[5] == ["rm", "-f", _FAKE_B145_ID]
+    assert container_name in run
 
 
 def test_b145_bounded_wait_acceptance_exercises_timeout_and_force_remove(
@@ -391,18 +528,7 @@ def test_b145_bounded_wait_acceptance_exercises_timeout_and_force_remove(
     fake_bin.mkdir()
     calls_path = tmp_path / "timeout-docker-calls.log"
     timeouts_path = tmp_path / "timeout-calls.log"
-    docker = fake_bin / "docker"
-    docker.write_text(
-        "#!/usr/bin/env bash\n"
-        'printf "%s\\n" "$*" >> "$DOCKER_CALLS"\n'
-        'case "$1" in\n'
-        '  run) printf "fake-container-id\\n" ;;\n'
-        '  rm) exit 0 ;;\n'
-        '  *) exit 91 ;;\n'
-        'esac\n',
-        encoding="utf-8",
-    )
-    docker.chmod(0o755)
+    _b145_docker(fake_bin)
     timeout = fake_bin / "timeout"
     timeout.write_text(
         "#!/usr/bin/env bash\n"
@@ -414,9 +540,7 @@ def test_b145_bounded_wait_acceptance_exercises_timeout_and_force_remove(
     )
     timeout.chmod(0o755)
     env = {
-        **_host_environ(),
-        "PATH": f"{fake_bin}:{os.environ['PATH']}",
-        "DOCKER_CALLS": str(calls_path),
+        **_b145_env(fake_bin, tmp_path, calls_path),
         "TIMEOUT_CALLS": str(timeouts_path),
     }
 
@@ -428,10 +552,13 @@ def test_b145_bounded_wait_acceptance_exercises_timeout_and_force_remove(
 
     assert proc.returncode == 0, proc.stdout + proc.stderr
     assert "ASSAY_GATE_PHASE=b145-bounded-wait-accepted" in proc.stdout
-    docker_calls = calls_path.read_text(encoding="utf-8").splitlines()
-    assert len(docker_calls) == 2
+    docker_calls = [json.loads(line) for line in calls_path.read_text(encoding="utf-8").splitlines()]
+    assert len(docker_calls) == 4
     run = docker_calls[0]
-    assert run.startswith("run -d --name run-gate-assay-b145-wait-")
+    assert run[:2] == ["run", "-d"]
+    assert run[run.index("--name") + 1].startswith("run-gate-assay-b145-wait-")
+    assert run[run.index("--cidfile") + 1].endswith("/container.cid")
+    assert run[run.index("--label") + 1].startswith("assay.b145-probe.owner=")
     assert "--init" in run
     assert "--cgroupns=host" in run
     assert "--pids-limit=16" in run
@@ -441,11 +568,13 @@ def test_b145_bounded_wait_acceptance_exercises_timeout_and_force_remove(
     assert "type=bind,src=/host/vbpub,dst=/workspaces/vbpub" in run
     assert "tester-unified:local" in run
     assert "sleep 60" in run
-    name = run.split()[3]
-    assert docker_calls[1] == f"rm -f {name}"
+    probe_id = _FAKE_B145_ID
+    assert docker_calls[1][:2] == ["ps", "--all"]
+    assert docker_calls[2][:2] == ["ps", "--all"]
+    assert docker_calls[3] == ["rm", "-f", probe_id]
     timeout_calls = timeouts_path.read_text(encoding="utf-8").splitlines()
-    assert any(f"1s docker wait {name}" in call for call in timeout_calls)
-    assert any(f"20s docker rm -f {name}" in call for call in timeout_calls)
+    assert any(f"1s docker wait {probe_id}" in call for call in timeout_calls)
+    assert any(f"20s docker rm -f {probe_id}" in call for call in timeout_calls)
 
 
 def test_b145_low_pids_wait_timeout_logs_and_force_removes(
@@ -455,19 +584,7 @@ def test_b145_low_pids_wait_timeout_logs_and_force_removes(
     fake_bin.mkdir()
     calls_path = tmp_path / "timeout-docker-calls.log"
     timeouts_path = tmp_path / "timeout-calls.log"
-    docker = fake_bin / "docker"
-    docker.write_text(
-        "#!/usr/bin/env bash\n"
-        'printf "%s\\n" "$*" >> "$DOCKER_CALLS"\n'
-        'case "$1" in\n'
-        '  run) printf "fake-container-id\\n" ;;\n'
-        '  logs) printf "bounded timeout log\\n" ;;\n'
-        '  rm) exit 0 ;;\n'
-        '  *) exit 91 ;;\n'
-        'esac\n',
-        encoding="utf-8",
-    )
-    docker.chmod(0o755)
+    _b145_docker(fake_bin)
     timeout = fake_bin / "timeout"
     timeout.write_text(
         "#!/usr/bin/env bash\n"
@@ -479,9 +596,7 @@ def test_b145_low_pids_wait_timeout_logs_and_force_removes(
     )
     timeout.chmod(0o755)
     env = {
-        **_host_environ(),
-        "PATH": f"{fake_bin}:{os.environ['PATH']}",
-        "DOCKER_CALLS": str(calls_path),
+        **_b145_env(fake_bin, tmp_path, calls_path),
         "TIMEOUT_CALLS": str(timeouts_path),
     }
 
@@ -494,17 +609,50 @@ def test_b145_low_pids_wait_timeout_logs_and_force_removes(
 
     assert proc.returncode != 0
     assert "exceeded 150s" in proc.stderr
-    assert "bounded timeout log" in proc.stdout
-    docker_calls = calls_path.read_text(encoding="utf-8").splitlines()
-    name = docker_calls[0].split()[3]
-    assert docker_calls == [
-        docker_calls[0],
-        f"logs {name}",
-        f"rm -f {name}",
-    ]
+    assert "B145 bounded probe log" in proc.stdout
+    docker_calls = [json.loads(line) for line in calls_path.read_text(encoding="utf-8").splitlines()]
+    assert docker_calls[0][:2] == ["run", "-d"]
+    assert docker_calls[1][:2] == ["ps", "--all"]
+    assert docker_calls[2] == ["logs", _FAKE_B145_ID]
+    assert docker_calls[3][:2] == ["ps", "--all"]
+    assert docker_calls[4] == ["rm", "-f", _FAKE_B145_ID]
     timeout_calls = timeouts_path.read_text(encoding="utf-8").splitlines()
-    assert any(f"150s docker wait {name}" in call for call in timeout_calls)
-    assert any(f"20s docker rm -f {name}" in call for call in timeout_calls)
+    assert any(f"150s docker wait {_FAKE_B145_ID}" in call for call in timeout_calls)
+    assert any(f"20s docker rm -f {_FAKE_B145_ID}" in call for call in timeout_calls)
+
+
+@pytest.mark.parametrize("plant_cid", [False, True])
+def test_b145_name_conflict_never_removes_by_name_or_unverified_cid(
+    tmp_path: Path, gate_functions: Path, plant_cid: bool
+) -> None:
+    fake_bin = tmp_path / "conflict-bin"
+    fake_bin.mkdir()
+    calls_path = tmp_path / "conflict-docker-calls.jsonl"
+    _b145_docker(fake_bin)
+    env = _b145_env(fake_bin, tmp_path, calls_path)
+    env["FAKE_B145_RUN_CONFLICT"] = "1"
+    env["FAKE_B145_PLANT_CID"] = "1" if plant_cid else "0"
+
+    proc = run_bash(
+        'run_b145_bounded_wait_acceptance_probe "/host/vbpub" "dev-gates.slice"',
+        gate_functions=gate_functions,
+        env=env,
+    )
+
+    assert proc.returncode != 0
+    assert "already in use" in proc.stderr
+    calls = [json.loads(line) for line in calls_path.read_text(encoding="utf-8").splitlines()]
+    assert calls[0][:2] == ["run", "-d"]
+    assert not any(call[:2] == ["rm", "-f"] for call in calls)
+    if plant_cid:
+        assert any(call[:2] == ["ps", "--all"] for call in calls)
+        assert "resolves to unexpected container" in proc.stderr
+    else:
+        assert len(calls) == 1
+        assert "refusing name-based removal" in proc.stderr
+    cidfile = Path(Path(env["FAKE_B145_CIDFILE_RECORD"]).read_text(encoding="utf-8"))
+    assert cidfile.parent.exists(), "retain launch evidence when Docker refuses the generated name"
+    assert cidfile.exists() is plant_cid
 
 
 @pytest.mark.parametrize(
@@ -537,20 +685,7 @@ def test_b145_probe_cleanup_failure_is_reported_and_exit_trap_retries(
     fake_bin.mkdir()
     calls_path = tmp_path / "retry-docker-calls.log"
     timeouts_path = tmp_path / "retry-timeout-calls.log"
-    removal_failed = tmp_path / "removal-failed-once"
-    docker = fake_bin / "docker"
-    docker.write_text(
-        "#!/usr/bin/env bash\n"
-        'printf "%s\\n" "$*" >> "$DOCKER_CALLS"\n'
-        'case "$1" in\n'
-        '  run) printf "fake-container-id\\n" ;;\n'
-        '  logs) printf "bounded timeout log\\n" ;;\n'
-        '  rm) if [[ ! -e "$REMOVAL_FAILED" ]]; then touch "$REMOVAL_FAILED"; exit 91; fi ;;\n'
-        '  *) exit 91 ;;\n'
-        'esac\n',
-        encoding="utf-8",
-    )
-    docker.chmod(0o755)
+    _b145_docker(fake_bin)
     timeout = fake_bin / "timeout"
     timeout.write_text(
         "#!/usr/bin/env bash\n"
@@ -562,11 +697,9 @@ def test_b145_probe_cleanup_failure_is_reported_and_exit_trap_retries(
     )
     timeout.chmod(0o755)
     env = {
-        **_host_environ(),
-        "PATH": f"{fake_bin}:{os.environ['PATH']}",
-        "DOCKER_CALLS": str(calls_path),
+        **_b145_env(fake_bin, tmp_path, calls_path),
         "TIMEOUT_CALLS": str(timeouts_path),
-        "REMOVAL_FAILED": str(removal_failed),
+        "FAKE_B145_REMOVE_FAIL_ONCE": "1",
         "WAIT_RC": str(wait_rc),
     }
 
@@ -578,14 +711,14 @@ def test_b145_probe_cleanup_failure_is_reported_and_exit_trap_retries(
 
     assert proc.returncode != 0
     assert expected_error in proc.stderr
-    assert "could not remove B145 probe container" in proc.stderr
-    assert "exit cleanup will retry" in proc.stderr
-    assert "failed to remove B145 probe container" not in proc.stderr
+    assert "was not safely removed; recovery scratch is retained" in proc.stderr
+    assert "failed to remove owned B145 probe container" in proc.stderr
     if probe_function == "run_b145_low_pids_probe":
         assert "force-removed" not in proc.stderr
-    docker_calls = calls_path.read_text(encoding="utf-8").splitlines()
-    removals = [call for call in docker_calls if call.startswith("rm -f ")]
+    docker_calls = [json.loads(line) for line in calls_path.read_text(encoding="utf-8").splitlines()]
+    removals = [call for call in docker_calls if call[:2] == ["rm", "-f"]]
     assert len(removals) == 2
+    assert removals[0] == ["rm", "-f", _FAKE_B145_ID]
     assert removals[0] == removals[1]
 
 

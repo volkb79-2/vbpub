@@ -1,7 +1,7 @@
 # Assay B145/B147 implementation log
 
-Date: 2026-10-06  
-Worktree: `/workspaces/vbpub/.worktrees/assay-b136-b141`  
+Date: 2026-10-06
+Worktree: `/workspaces/vbpub/.worktrees/assay-b136-b141`
 Branch: `assay-b136-b141`
 
 ## Scope
@@ -36,3 +36,20 @@ intended for the planned v14 / 8.0.0 combined wave.
   v14 / 8.0.0 wave is complete.
 
 No tests or registered gates have been run on the current dirty tree.
+
+## Controller continuation (2026-10-06)
+
+The branch already includes its integration merge from `main` at
+`80138618f2ca06a5e51a5f9922704819337713b6`; the earlier remaining-work list
+above is a prior snapshot. A Sol xhigh review of the branch found four issues
+covering probe and tester ownership, B147 Git coverage, and preserving a
+contradictory SQL runner CID. Those paths were fixed and regression cases were
+added. The incremental Sol xhigh review found three test defects: assertions
+were scoped to the wrong test, expected an old Git command shape, and expected
+obsolete cleanup text. Those assertions are corrected.
+
+Shell syntax, Python source compilation, and working-tree whitespace checks
+pass. No tests or gates have run on the corrected tree yet. The next step is the
+registered `tester-unified` gate on the final committed tree, then a serial
+no-ff merge to `main`. B146 stays deferred; release remains grouped with the
+planned v14/8.0.0 wave.

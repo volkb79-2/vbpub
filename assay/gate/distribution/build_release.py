@@ -105,10 +105,23 @@ TAG_GLOB = "assay-v*"
 
 WHEEL_NAME_RE = re.compile(r"\Aassay-(?P<version>.+)-py3-none-any\.whl\Z")
 REQUIREMENT_RE = re.compile(r"\A(?P<name>[A-Za-z0-9._-]+)==(?P<version>[^\s]+)")
+_GIT_MAINTENANCE_CONFIG = (
+    "-c",
+    "maintenance.auto=false",
+    "-c",
+    "maintenance.autoDetach=false",
+    "-c",
+    "gc.autoDetach=false",
+)
 
 
 class ReleaseBuildError(RuntimeError):
     """The release build cannot proceed truthfully."""
+
+
+def _git_argv(*args: str) -> list[str]:
+    """Keep release-owned Git children independent of image Git settings."""
+    return ["git", *_GIT_MAINTENANCE_CONFIG, *args]
 
 
 def _run(argv: list[str], *, cwd: Path | None = None, env: dict[str, str] | None = None) -> str:
@@ -165,15 +178,15 @@ def make_exact_oid_clone(repo: Path, scratch: Path) -> str:
     produced a wheel over twice the correct size, *reproducibly*. Reproducible
     contamination is still contamination.
     """
-    oid = _run(["git", "-C", str(repo), "rev-parse", "HEAD"]).strip()
+    oid = _run(_git_argv("-C", str(repo), "rev-parse", "HEAD")).strip()
     if not re.fullmatch(r"[0-9a-f]{40}", oid):
         raise ReleaseBuildError(f"could not resolve a full HEAD OID for {repo}")
     clone = scratch / "clone"
-    _run(["git", "clone", "--no-local", "--no-checkout", "--quiet", str(repo), str(clone)])
-    _run(["git", "-C", str(clone), "sparse-checkout", "init", "--cone"])
-    _run(["git", "-C", str(clone), "sparse-checkout", "set", "assay"])
-    _run(["git", "-C", str(clone), "checkout", "--quiet", "--detach", oid])
-    clone_head = _run(["git", "-C", str(clone), "rev-parse", "HEAD"]).strip()
+    _run(_git_argv("clone", "--no-local", "--no-checkout", "--quiet", str(repo), str(clone)))
+    _run(_git_argv("-C", str(clone), "sparse-checkout", "init", "--cone"))
+    _run(_git_argv("-C", str(clone), "sparse-checkout", "set", "assay"))
+    _run(_git_argv("-C", str(clone), "checkout", "--quiet", "--detach", oid))
+    clone_head = _run(_git_argv("-C", str(clone), "rev-parse", "HEAD")).strip()
     if clone_head != oid:
         raise ReleaseBuildError(
             f"private clone HEAD ({clone_head}) does not match source OID ({oid})"
@@ -188,8 +201,7 @@ def head_release_tag(repo: Path) -> str | None:
     every later commit look like that release.
     """
     completed = subprocess.run(
-        ["git", "-C", str(repo), "describe", "--tags", "--exact-match",
-         "--match", TAG_GLOB, "HEAD"],
+        _git_argv("-C", str(repo), "describe", "--tags", "--exact-match", "--match", TAG_GLOB, "HEAD"),
         capture_output=True, text=True, check=False,
     )
     tag = completed.stdout.strip()
@@ -244,7 +256,7 @@ def commit_epoch(repo: Path) -> str:
     SOURCE_DATE_EPOCH -> identical sha256" -- so this closes a gap between that
     stated intent and anything that enforced it.
     """
-    stamp = _run(["git", "-C", str(repo), "log", "-1", "--format=%ct", "HEAD"]).strip()
+    stamp = _run(_git_argv("-C", str(repo), "log", "-1", "--format=%ct", "HEAD")).strip()
     if not stamp.isdigit():
         raise ReleaseBuildError(f"could not read HEAD's commit timestamp in {repo}")
     return stamp

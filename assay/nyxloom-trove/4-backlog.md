@@ -195,9 +195,9 @@ the per-entry evidence table, WIP-branch findings, and ID collisions.
 - B103 — execution-interruption boundary (reserved stub; ID collision with an unmerged branch's own B099/A-448 only) — OPEN (owned by the RG-55 continuation)
 - B143 — adopt cli-extended (unified adoption, order 6 of 8; A-005 reworded) — PLANNED (filed 2026-10-05; requires cli-extended 0.2.0 released)
 - B144 — per-candidate covering-test selection for qualifying Python R2 (covering tests first, full suite on survival) — OPEN, decision-gated against B110 D3/A-467 (filed 2026-10-05 from the cli-extended 0.2.0 wave; measured on a real campaign)
-- B145 — fork exhaustion classified as `killed` (false kills at `pids.max`) — OPEN, critical (filed 2026-10-05; contaminated post-03:11Z results must be discarded before retry)
+- B145 — fork exhaustion classified as `killed` (false kills at `pids.max`) — IMPLEMENTED on `assay-b136-b141`; critical, unreleased, grouped with the planned v14/8.0.0 wave (filed 2026-10-05; contaminated post-03:11Z results must be discarded before retry)
 - B146 — R0 failure summary should report `FAIL` and name the first failing test instead of `NO_MEASUREMENT` — OPEN, deferred to the next wave (non-release blocker; filed 2026-10-06)
-- B147 — hermetic Git boundary permits detached automatic maintenance — OPEN (filed 2026-10-06; fold into the B145 wave)
+- B147 — hermetic Git boundary permits detached automatic maintenance — IMPLEMENTED on `assay-b136-b141`; unreleased, grouped with the planned v14/8.0.0 wave (filed 2026-10-06; folded into the B145 wave)
 - B105 — full-source R0-R3 Assay self-qualification — OPEN (next package after the single Wave C release; required before M7; pre-release Wave C gate remains R0-only; full gate must meet B110's 8-hour ceiling; suite scope amended by A-468; equivalents only via the A-465 ledger)
 
 **Filed after the 2026-09-23 triage**
@@ -11958,6 +11958,14 @@ Fix: add both names in pytest's own precedence order, and check the order agains
 **Oracles:** a low-`--pids-limit` tester-unified container drives a failing mutant through native R2 and proves its final status is `ERROR/EXEC_FAILED` with no `killed` candidate; its test process is capped at 120 seconds and `docker wait` at 150 seconds; a live one-second `docker wait` timeout probe exercises force removal of a detached container; `pids.events.max` on an unlimited candidate is sampled for `pids_localevents`; inactive child controllers with active visible ancestors are accepted and sampled at the nearest active unlimited ancestor as well as finite parents; a finite parent counter remains required; a writable cgroup2 mount, writable `cgroup.procs` on a read-only mount, a worker whose `/proc/thread-self/status` has a cgroup-bypass capability absent from `/proc/self/status`, a sibling cgroup overmount at the candidate path, a private cgroup namespace at `/child`, a namespace root exposing resource limit files, and a cgroup mount below `/` all refuse before candidates; the hierarchy root is never treated as an ordinary enforcing ancestor; changing a visible limit during a candidate refuses the window; a real command failure with unchanged counters remains `killed`; memory event `max` and `oom` deltas receive the same infrastructure classification, including a global OOM kill with unlimited candidate `memory.max`; a controlled wrong implementation that ignores counter changes fails; a worker submission that raises `RuntimeError` produces `ERROR/EXEC_FAILED`; `assay verify` rejects malformed deltas, arithmetic mismatch, or resource-limited outcomes listed under `killed`.
 
 **Related:** CMRU KI-52, run-gate RG-83/RG-84, Assay B107/B108, and dstdns D-670 TEST-RUNNER-INIT.
+
+**Controller update (2026-10-06):** The completed branch includes B145 and B147.
+The branch-wide Sol xhigh review found container ownership, Git pinning, and
+ambiguous SQL runner evidence gaps; the fixes and regression cases are included.
+A follow-up review found three test assertion defects, which were corrected.
+The registered `tester-unified` gate on the final committed tree remains the
+pre-merge acceptance step. B146 remains deferred. Release stays grouped with
+the planned v14/8.0.0 wave.
 
 ## B146 — R0 failure summary names the failure instead of reporting `NO_MEASUREMENT`
 

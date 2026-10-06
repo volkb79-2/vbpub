@@ -17,6 +17,7 @@ import importlib.util
 import io
 import json
 import re
+import subprocess
 import tomllib
 from pathlib import Path
 
@@ -162,13 +163,13 @@ def test_registered_tester_gate_timeout_covers_the_sql_witness_phase():
     low_logs = re.findall(
         r"timeout --kill-after=([0-9]+)s ([0-9]+)s docker logs", b145_body
     )
-    probe_cleanup = script.split("cleanup_b145_probe_container() {", 1)[1].split("\n}", 1)[0]
+    probe_cleanup = script.split("remove_owned_b145_probe_container() {", 1)[1].split("\n}", 1)[0]
     probe_rm = re.search(
         r"timeout --kill-after=([0-9]+)s ([0-9]+)s docker rm -f", probe_cleanup
     )
     assert bounded_wait and low_wait and low_logs and probe_rm
 
-    inventory_body = script.split("sql_container_inventory() {", 1)[1].split("\n}\n", 1)[0]
+    inventory_body = script.split("container_inventory() {", 1)[1].split("\n}\n", 1)[0]
     inventory_timeout = re.search(
         r"timeout --kill-after=([0-9]+)s ([0-9]+)s docker ps --all", inventory_body
     )
@@ -180,15 +181,12 @@ def test_registered_tester_gate_timeout_covers_the_sql_witness_phase():
     tester_follower = re.search(
         r'wait_for_container_log_follower "\$_assay_gate_logs_pid" ([0-9]+)', tester_body
     )
-    tester_rm = re.search(
-        r'timeout --kill-after=([0-9]+)s ([0-9]+)s docker rm -f "\$container_id"',
-        tester_body,
-    )
+    assert "remove_owned_gate_container" in tester_body
+    tester_rm_body = script.split("remove_owned_gate_container() {", 1)[1].split("\n}\n", 1)[0]
+    tester_rm = re.search(r"timeout --kill-after=([0-9]+)s ([0-9]+)s docker rm -f", tester_rm_body)
     ordinary_cleanup = script.split("cleanup_assay_gate_container() {", 1)[1].split("\n}\n", 1)[0]
-    tester_exit_rm = re.search(
-        r'timeout --kill-after=([0-9]+)s ([0-9]+)s docker rm -f "\$gate_container_id"',
-        ordinary_cleanup,
-    )
+    assert "remove_owned_gate_container" in ordinary_cleanup
+    tester_exit_rm = tester_rm
     assert inventory_timeout and sql_rm and tester_follower and tester_rm and tester_exit_rm
 
     follower = script.split("wait_for_container_log_follower() {", 1)[1].split("\n}\n", 1)[0]
@@ -205,7 +203,9 @@ def test_registered_tester_gate_timeout_covers_the_sql_witness_phase():
     b145_seconds += sum(int(value) for value in bounded_wait.groups())
     b145_seconds += sum(int(value) for value in low_wait.groups())
     b145_seconds += max(int(grace) + int(limit) for grace, limit in low_logs)
-    # Each probe removes normally; its EXIT retry can add a second bounded rm.
+    # Two probes each inspect on launch and removal; a failed removal adds one
+    # bounded EXIT retry, so budget three inventory/removal pairs per probe.
+    b145_seconds += 6 * cap(inventory_timeout)
     b145_seconds += 4 * cap(probe_rm)
 
     sql_seconds = cap(sql_launch) + cap(sql_wait) + follower_cap(sql_follower)
@@ -213,7 +213,8 @@ def test_registered_tester_gate_timeout_covers_the_sql_witness_phase():
     # can retry each once. Count all four calls as though each needed an rm.
     sql_cleanup_call = cap(inventory_timeout) + cap(sql_rm)
     sql_seconds += 4 * sql_cleanup_call
-    tester_seconds = follower_cap(tester_follower) + cap(tester_rm) + cap(tester_exit_rm)
+    # Normal removal and its EXIT retry each re-verify the exact ID/name/label.
+    tester_seconds = follower_cap(tester_follower) + 2 * (cap(inventory_timeout) + cap(tester_rm))
     assay_lanes = load_lane_file(SELF_LANE_FILE)
     inner_seconds = sum(
         assay_lanes.lane(lane_id).budget_seconds for lane_id in (GATE_ID, "analysis")
@@ -286,6 +287,38 @@ def test_self_qualification_is_full_source_r0_through_r3():
     for out_of_scope in checker.OUT_OF_SCOPE_BY_DECISION:
         assert not any(target.startswith(out_of_scope) for target in declared)
         assert (PROJECT_ROOT / out_of_scope).is_dir()
+
+
+def test_self_qualification_git_wrapper_overrides_local_maintenance_settings(tmp_path: Path):
+    script = (PROJECT_ROOT / "tools" / "self-qualification-gate.sh").read_text(encoding="utf-8")
+    assert not any(line.lstrip().startswith("git ") for line in script.splitlines())
+    start = script.index("assay_git() {")
+    end = script.index("\n}\n", start) + 2
+    helper = tmp_path / "assay-git.sh"
+    helper.write_text(script[start:end] + "\n", encoding="utf-8")
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", "-b", "main", str(repo)], check=True, timeout=30)
+    keys = ("maintenance.auto", "maintenance.autoDetach", "gc.autoDetach")
+    for key in keys:
+        subprocess.run(["git", "-C", str(repo), "config", "--local", key, "true"], check=True, timeout=30)
+
+    proc = subprocess.run(
+        [
+            "bash",
+            "-c",
+            'source "$1"; for key in maintenance.auto maintenance.autoDetach gc.autoDetach; do assay_git -C "$2" config --get "$key"; done',
+            "assay-git-test",
+            str(helper),
+            str(repo),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.splitlines() == ["false", "false", "false"]
 
 
 def test_each_lane_declares_exactly_its_pinned_argv():
