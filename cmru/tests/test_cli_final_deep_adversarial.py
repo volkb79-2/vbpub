@@ -146,4 +146,4 @@ def test_main_publish_requires_project_credentials_before_running_push(monkeypat
     monkeypatch.setattr(cli, "_resolve_config", lambda _: tmp_path / "cmru.toml")
     monkeypatch.setattr(cli, "load_config", lambda _: loaded)
     with pytest.raises(RuntimeError, match="Publishing requires"):
-        cli.main(["publish", "demo", "--config", str(tmp_path / "cmru.toml")])
+        cli.main(["publish", "demo", "--from-checkout", "--config", str(tmp_path / "cmru.toml")])

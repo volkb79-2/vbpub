@@ -64,8 +64,10 @@ def test_run_dry_run_respects_step_first_project_order_and_rejects_bad_plans(
         tmp_path, {"alpha": SimpleNamespace(**{**vars(alpha), "runner_steps": {}})},
         mode="step-first",
     ))
-    with pytest.raises(RuntimeError, match="required declared step 'build' is absent"):
-        cli.main(["run", "alpha", "--dry-run"])
+    # CLI-09: an undeclared step is a usage error naming the declared ones.
+    assert cli.main(["run", "alpha", "--dry-run"]) == 2
+    refusal = capsys.readouterr().err
+    assert "alpha: step(s) not declared: build; declared steps: (none)" in refusal
 
     project_without_cwd = SimpleNamespace(**{**vars(alpha), "cwd": None})
     monkeypatch.setattr(
@@ -179,14 +181,15 @@ def test_build_and_publish_dry_runs_share_the_declared_plan_without_credentials(
     monkeypatch.setattr(cli, "require_project_publish_credentials", lambda *_a: pytest.fail("dry-run required credentials"))
     monkeypatch.setattr(cli, "run_project_step", lambda *_a, **_k: pytest.fail("dry-run executed a step"))
 
-    assert cli.main([verb, "demo", "--dry-run", "--config", "x"]) == 0
+    source = ["--from-checkout"] if verb == "publish" else []
+    assert cli.main([verb, "demo", *source, "--dry-run", "--config", "x"]) == 0
     output = capsys.readouterr().out
     assert f"demo:{step}: Would run declared step {step}" in output
     assert "argv=python build.py" in output
 
     project.runner_steps = {}
     with pytest.raises(RuntimeError, match=f"required declared step {step!r} is absent"):
-        cli.main([verb, "demo", "--dry-run", "--config", "x"])
+        cli.main([verb, "demo", *source, "--dry-run", "--config", "x"])
 
 
 def test_changelog_backfill_dry_run_prints_exact_diff_and_writes_nothing(

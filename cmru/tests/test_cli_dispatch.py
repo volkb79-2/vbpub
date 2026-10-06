@@ -19,9 +19,34 @@ from cmru import cli
 from cmru import handlers
 
 
-def test_version_prefers_an_exact_source_tag_over_stale_install_metadata(monkeypatch):
-    monkeypatch.setattr(cli, "_source_tree_version", lambda: "2.0.0")
-    assert cli._cmru_version() == "2.0.0"
+def test_version_comes_from_installed_metadata_only_never_from_git(monkeypatch):
+    """D2: no source-tree git describe, no ``"dev"`` fallback."""
+    from cmru import cli_support
+
+    monkeypatch.setattr("cli_extended.identity.installed_version", lambda _dist: "2.0.0")
+
+    def no_subprocess(*_args, **_kwargs):
+        raise AssertionError("the version must not probe git")
+
+    monkeypatch.setattr(subprocess, "run", no_subprocess)
+    assert cli_support.cmru_version() == "2.0.0"
+    for removed in ("_source_tree_version", "_dev_version_from_describe", "_cmru_version"):
+        assert not hasattr(cli, removed)
+
+
+def test_a_missing_distribution_is_exit_3_with_one_line_and_no_traceback(monkeypatch, capsys):
+    from importlib.metadata import PackageNotFoundError
+
+    def missing(distribution):
+        raise PackageNotFoundError(distribution)
+
+    monkeypatch.setattr("cli_extended.identity.installed_version", missing)
+    assert cli.main(["--help"]) == 3
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err.strip() == (
+        "[ERROR] cmru is not installed as a distribution; install the wheel (see README)"
+    )
 
 def test_helper_nested_help_and_errors_start_with_the_headline(capsys):
     assert handlers.main(["wheel-build", "--help"]) == 0
@@ -34,13 +59,6 @@ def test_helper_nested_help_and_errors_start_with_the_headline(capsys):
     captured = capsys.readouterr()
     assert captured.out == ""
     assert any(line.startswith("CMRU ") and " — " in line for line in captured.err.splitlines())
-
-
-def test_source_dev_version_is_derived_from_the_nearest_cmru_tag():
-    assert cli._dev_version_from_describe("cmru-v2.0.1-7-gabc123ef") == "2.0.2.dev7+gabc123ef"
-    assert cli._dev_version_from_describe("cmru-v2.0.1-0-gabc123ef") == "2.0.1"
-    assert cli._dev_version_from_describe("ciu-v6.0.0-7-gabc123ef") is None
-    assert cli._dev_version_from_describe("cmru-v2.0.1-rc1-7-gabc123ef") is None
 
 
 MINIMAL_S2 = """schema_version = 1
@@ -363,8 +381,9 @@ def test_help_lists_verbs_and_ordering():
     with redirect_stdout(out):
         cli.main(["--help"])
     text = out.getvalue()
-    for verb in ("status", "release", "changelog", "build", "worktrees", "publish", "resolve", "get", "cleanup", "version", "run-step", "tool-deps"):
+    for verb in ("status", "release", "changelog", "build", "worktrees", "publish", "resolve", "get", "cleanup", "version", "tool-deps"):
         assert verb in text, f"{verb} missing from help"
+    assert "run-step" not in text  # absorbed by `run --step` (redesign B1)
     assert "Usage: cmru <verb> [options]" in text
     assert "abandon" in text
 
@@ -380,16 +399,21 @@ def test_help_lists_every_public_option():
     for option in (
         "--config", "--minor", "--major", "--set-version", "--dry-run",
         "--no-build", "--resume", "--allow-uncommitted",
-        "--show-run-details", "--log-append", "--discard-logs-on-release",
-        "--discard-artifacts-on-release", "--discard-evidence-on-release",
+        "--show-run-details", "--log-append", "--discard",
         "--backfill-tag", "--update", "--json",
-        "--run-tests", "--build", "--push", "--validate", "--remove-assets",
+        "--remove-assets", "--policy", "--build-output", "--from-checkout",
         "--format", "--output", "--delete-unmanaged-release-tag",
-        "--delete-build-output", "--discard-build-worktree", "--yes", "--step", "--write",
+        "--delete-build-output", "--yes", "--step", "--write",
         "--log-prefix-time-short", "--help",
         "--allow-stale-tool-deps", "--refresh", "--timeout", "--ref",
+        "--ahead-check-ref",
     ):
         assert option in text, f"{option} missing from usage()"
+    for removed in (
+        "--run-tests", "--discard-logs-on-release", "--discard-artifacts-on-release",
+        "--discard-evidence-on-release", "--discard-build-worktree",
+    ):
+        assert removed not in text, f"{removed} should be gone from usage()"
     assert "--project" not in text
     assert "--abandon" not in text
     assert "--_transaction-child" not in text
@@ -453,7 +477,7 @@ def test_unknown_verb_diagnostic_is_version_headed(capsys):
 
 
 def test_version_verb_and_top_level_flag_are_compatible(monkeypatch, capsys):
-    monkeypatch.setattr(cli, "_cmru_version", lambda: "2.0.2")
+    monkeypatch.setattr("cli_extended.identity.installed_version", lambda _dist: "2.0.2")
     out = io.StringIO()
     with redirect_stdout(out):
         cli.main(["version"])
@@ -565,8 +589,8 @@ def test_worktrees_recovery_advice_includes_the_repository_config(tmp_path, monk
         cli.main(["worktrees"])
 
     text = out.getvalue()
-    assert f"cmru cleanup --config {config}" in text
-    assert f"--discard-build-worktree {workspace_path} --yes" in text
+    assert f"cmru abandon --config {config} {workspace_path} --yes" in text
+    assert "--discard-build-worktree" not in text
 
 
 def test_cleanup_uses_current_directory_orchestration_without_a_shim(tmp_path, monkeypatch):
@@ -584,8 +608,12 @@ def test_cleanup_uses_current_directory_orchestration_without_a_shim(tmp_path, m
         return preview
 
     monkeypatch.setattr(cli.transaction, "discard_build_workspace", discard)
+    monkeypatch.setattr(cli.transaction, "list_cmru_workspaces", lambda _root: [preview])
+    monkeypatch.setattr(cli, "_current_git_root", lambda: tmp_path)
+    from contextlib import nullcontext
+    monkeypatch.setattr(cli.transaction, "release_lock", lambda _root: nullcontext())
 
-    cli.main(["cleanup", "--discard-build-worktree", str(target), "--yes"])
+    cli.main(["abandon", str(target), "--yes"])
 
     assert calls[0] == (tmp_path, target, True, None)
     assert calls[1][:3] == (tmp_path, target, False)

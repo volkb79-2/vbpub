@@ -203,8 +203,6 @@ def build_manifest(
         RuntimeError:  SOURCE_DATE_EPOCH not set.
         TypeError/ValueError: images map has wrong shape.
     """
-    import importlib.metadata
-
     epoch = _epoch()
     created = _iso8601_from_epoch(epoch)
 
@@ -212,13 +210,10 @@ def build_manifest(
     cmru_sha256 = sha256_file(cmru_wheel)
     ciu_sha256 = sha256_file(ciu_wheel)
 
-    # cmru version from installed package metadata (stdlib importlib.metadata).
-    try:
-        cmru_version = importlib.metadata.version("cmru")
-    except importlib.metadata.PackageNotFoundError:
-        cmru_version = "0.0.0"
-
-    # ciu version: read from wheel filename or metadata if installed.
+    # Both versions come from the bundled wheels' own file names (D3): the
+    # manifest describes the wheels it ships, not whatever cmru happens to be
+    # installed in the building process.
+    cmru_version = _version_from_wheel_name(cmru_wheel)
     ciu_version = _version_from_wheel_name(ciu_wheel)
 
     validated_images = _validate_images(images, project)
@@ -251,12 +246,18 @@ def build_manifest(
 
 
 def _version_from_wheel_name(wheel_path: Path) -> str:
-    """Extract version from wheel filename (PEP 427: <name>-<ver>-<tag>.whl)."""
-    stem = wheel_path.stem  # strip .whl
-    parts = stem.split("-")
-    if len(parts) >= 2:
-        return parts[1]
-    return "0.0.0"
+    """Extract the version from a wheel file name (PEP 427: <name>-<ver>-<tag>.whl).
+
+    A name without a version field is an error: there is no placeholder
+    version, because a manifest must never describe a wheel by a made-up one.
+    """
+    parts = wheel_path.stem.split("-")  # stem strips .whl
+    if len(parts) < 2 or not parts[1]:
+        raise ValueError(
+            f"cannot read a version from wheel file name {wheel_path.name!r} "
+            "(expected <name>-<version>-<tags>.whl)"
+        )
+    return parts[1]
 
 
 def write_manifest(manifest: Dict[str, Any], out_path: Path) -> Path:

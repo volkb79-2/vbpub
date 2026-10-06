@@ -114,18 +114,3 @@ def test_cleanup_commit_deletions_refuses_empty_staging_and_reports_commit_failu
     )
     assert calls[-1][4] == "chore(demo): cleanup deleted v1, v2, v3, v4, v5 (+1 more)"
     assert "commit failed" in capsys.readouterr().out
-
-
-def test_source_tree_version_accepts_exact_tag_and_dev_describe(monkeypatch):
-    results = iter([
-        SimpleNamespace(returncode=0, stdout="cmru-v1.2.3\n"),
-    ])
-    monkeypatch.setattr(cli.subprocess, "run", lambda *args, **kwargs: next(results))
-    assert cli._source_tree_version() == "1.2.3"
-
-    results = iter([
-        SimpleNamespace(returncode=1, stdout=""),
-        SimpleNamespace(returncode=0, stdout="cmru-v1.2.3-4-gabcdef\n"),
-    ])
-    monkeypatch.setattr(cli.subprocess, "run", lambda *args, **kwargs: next(results))
-    assert cli._source_tree_version() == "1.2.4.dev4+gabcdef"

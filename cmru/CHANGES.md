@@ -24,6 +24,7 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 - Delete the byte-identical duplicate `templates/get.py.tmpl`; the package resource `src/cmru/templates/get.py.tmpl` is the only copy (CLI-18).
 
 ### Changed
+- `--json` on `worktrees`, `dependencies` and `status` is now the library-owned output: compact JSON instead of the previous sorted, indented text. `status --json` lists every selected project with a `changed` field. A root-level `--dry-run`/`--log-level`/`--quiet`/`--debug`/`--color` given before the verb is forwarded to the release/build transaction child.
 - Deprecate `orchestration.default_projects` (CLI-04): it is no longer required, is accepted with a one-line warning that it is ignored, and will be removed. Help text for the project target now says "omitted: the current project, or every orchestrated project at the estate root"; the dead `estate_scope` parameter and `step_project_order` handling are gone.
 - `cmru cleanup PROJECT --remove-assets AGE` now refuses the target (exit 2) instead of silently pruning estate-wide (CLI-05).
 - Extend strict root/project config with `[versions]`; project overlays resolve and store state project-side, while root targets retain root policy/state.

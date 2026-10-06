@@ -374,7 +374,7 @@ def test_release_aborts_before_creating_a_workspace_when_a_released_project_is_d
 
         exc = cli.main(["release", "--config", str(config), "alpha"])
 
-        assert exc == 2
+        assert exc == 4  # exit_codes.REFUSED: uncommitted paths, nothing changed
         # It never got as far as fetching origin or creating the isolated worktree.
         assert calls == []
 
@@ -568,7 +568,7 @@ cwd = "alpha"
 
     argv = [
             "release", "--config", str(config), "alpha",
-            "--discard-logs-on-release", "--discard-artifacts-on-release",
+            "--discard", "logs", "--discard", "artifacts",
         ]
     if use_internal_snapshot:
         snapshot_fd, snapshot_writer = os.pipe()
@@ -584,7 +584,7 @@ cwd = "alpha"
     assert not any(isinstance(call, tuple) for call in calls)
     assert calls.index("tag-inspection-preflight") < calls.index("workspace")
     assert [
-        "alpha", "--discard-logs-on-release", "--discard-artifacts-on-release",
+        "alpha", "--discard", "logs", "--discard", "artifacts",
         "--config", "cmru.toml",
     ] in calls
     assert "backup-removed" in calls

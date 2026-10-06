@@ -363,7 +363,7 @@ def _launch(monkeypatch, tmp_path, argv, *, tagged_policy: bool):
     )
     code = cli.main([
         "release", *argv, "--config", str(tmp_path / "cmru.toml"),
-        "--discard-logs-on-release", "--discard-artifacts-on-release",
+        "--discard", "logs", "--discard", "artifacts",
     ])
     return code, inspected
 

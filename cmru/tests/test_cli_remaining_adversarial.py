@@ -102,19 +102,12 @@ def test_list_releases_paginates_and_stops_on_empty_page(monkeypatch):
 
 
 def test_main_orchestration_builds_selected_steps_and_refuses_missing_credentials(monkeypatch, tmp_path):
-    project = SimpleNamespace(name="demo", github_token="", env={}, prefix="demo-v")
+    project = SimpleNamespace(
+        name="demo", github_token="", env={}, prefix="demo-v", runner_steps={"push": object()},
+    )
     loaded = (tmp_path, {"demo": project}, ["demo"], ["demo"], ["run-tests"], "project-first", {},
               cli.CleanupConfig([], [], [], []), cli.GitHubConfig("o", "r", "", "org"), cli.ReleaseEnvConfig({}, None))
     monkeypatch.setattr(cli, "_resolve_config", lambda _: tmp_path / "cmru.toml")
     monkeypatch.setattr(cli, "load_config", lambda *_: loaded)
     with pytest.raises(RuntimeError, match="Publishing"):
-        cli.main(["run", "--push", "--config", "x"])
-
-
-def test_version_helpers_only_accept_their_declared_git_describe_grammar(monkeypatch):
-    assert cli._dev_version_from_describe("cmru-v1.2.3-4-gabcdef") == "1.2.4.dev4+gabcdef"
-    assert cli._dev_version_from_describe("cmru-v1.2.3-0-gabcdef") == "1.2.3"
-    assert cli._dev_version_from_describe("unrelated") is None
-    monkeypatch.setattr(cli, "_source_tree_version", lambda: None)
-    monkeypatch.setattr("importlib.metadata.version", lambda _: "9.9.9")
-    assert cli._cmru_version() == "9.9.9"
+        cli.main(["run", "--step", "push", "--config", "x"])

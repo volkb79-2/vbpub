@@ -130,17 +130,20 @@ def test_manifest_validation_and_canonical_write(tmp_path, monkeypatch):
     with pytest.raises(ValueError, match="missing required"):
         manifest._validate_images({"web": {"repository": "r", "tag": "t"}}, "demo")
     assert manifest._version_from_wheel_name(Path("ciu-1.2.3-py3-none-any.whl")) == "1.2.3"
-    assert manifest._version_from_wheel_name(Path("invalid.whl")) == "0.0.0"
+    for bad in ("invalid.whl", "cmru-.whl"):
+        with pytest.raises(ValueError, match="cannot read a version"):
+            manifest._version_from_wheel_name(Path(bad))
     out = tmp_path / "nested" / "manifest.json"
     assert manifest.write_manifest({"b": 1, "a": 2}, out) == out
     assert out.read_text() == '{"a":2,"b":1}\n'
 
 
-def test_manifest_build_uses_fallback_cmru_version_and_image_facts(tmp_path, monkeypatch):
-    cmru_wheel = tmp_path / "cmru-1.whl"; cmru_wheel.write_bytes(b"cmru")
+def test_manifest_build_takes_the_cmru_version_from_the_wheel_name(tmp_path, monkeypatch):
+    cmru_wheel = tmp_path / "cmru-6.1.0-py3-none-any.whl"; cmru_wheel.write_bytes(b"cmru")
     ciu_wheel = tmp_path / "ciu-2.3.4-py3-none-any.whl"; ciu_wheel.write_bytes(b"ciu")
     import importlib.metadata
     monkeypatch.setenv("SOURCE_DATE_EPOCH", "1700000000")
+    # D3: the installed distribution is irrelevant (and even absent) here.
     monkeypatch.setattr(importlib.metadata, "version", lambda name: (_ for _ in ()).throw(importlib.metadata.PackageNotFoundError()))
     result = manifest.build_manifest(
         project="demo", tag="demo-v1", source_commit="abc", cmru_wheel=cmru_wheel,
@@ -148,8 +151,15 @@ def test_manifest_build_uses_fallback_cmru_version_and_image_facts(tmp_path, mon
         installer_schema_version=1, host_config_schema_version=2,
         platform={"min_python": "3.11", "arch": "amd64"}, upgrade={"min_from": "1", "rollback_to": "0"},
     )
-    assert result["cmru"]["version"] == "0.0.0"
+    assert result["cmru"]["version"] == "6.1.0"
     assert result["ciu"]["version"] == "2.3.4"
+    nameless = tmp_path / "cmru.whl"; nameless.write_bytes(b"cmru")
+    with pytest.raises(ValueError, match="cannot read a version"):
+        manifest.build_manifest(
+            project="demo", tag="demo-v1", source_commit="abc", cmru_wheel=nameless,
+            ciu_wheel=ciu_wheel, images=None, installer_schema_version=1,
+            host_config_schema_version=2, platform={}, upgrade={},
+        )
 
 
 def test_output_stream_handles_partial_prefix_and_literal_passthrough():
