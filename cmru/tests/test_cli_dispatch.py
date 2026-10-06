@@ -638,15 +638,12 @@ def test_source_module_invocation_works_from_the_cmru_project_directory():
     # src/ on PYTHONPATH without installing the wheel has no distribution, and
     # the entry then exits 3 with one line (no traceback); an installed
     # distribution gets the real help.
-    from importlib.metadata import PackageNotFoundError, version
-
-    try:
-        version("cmru")
-    except PackageNotFoundError:
-        assert result.returncode == 3, result.stderr
+    # The child's own view decides, not the test process's.
+    if result.returncode == 3:
         assert result.stderr.strip() == (
             "cmru is not installed as a distribution; install the wheel (see README)"
         )
+        assert "Traceback" not in result.stderr
     else:
         assert result.returncode == 0, result.stderr
         assert "wheel-build" in result.stdout
