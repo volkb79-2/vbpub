@@ -463,7 +463,7 @@ def test_the_estate_scan_actually_finds_the_project_contracts():
     assert on_disk <= names, f"estate guard skips real project contracts: {sorted(on_disk - names)}"
     siblings = [
         sibling for sibling in ("ciu", "nyxloom", "assay", "topos", "pwmcp", "tls-edge", "run-gate-project")
-        if (REPO_ROOT / sibling).is_dir()
+        if (REPO_ROOT / sibling / "cmru.toml").is_file()  # the sparse canary has a bare run-gate-project/
     ]
     for sibling in siblings:
         assert f"{sibling}/cmru.toml" in names, f"{sibling}/ exists but its cmru.toml is not scanned"
@@ -477,7 +477,7 @@ def test_the_estate_scan_covers_the_shell_scripts_that_call_cmru():
         "tls-edge/scripts/release.sh", "game_stuff/empyrion/run-full-workflow.sh",
     }
     for caller in callers:
-        if (REPO_ROOT / caller.split("/")[0]).is_dir():
+        if (REPO_ROOT / caller).is_file():
             assert caller in scripts, f"{caller} is not scanned"
             assert _cmru_from_text(_shell_text(REPO_ROOT / caller)), f"{caller} has no cmru call"
 
