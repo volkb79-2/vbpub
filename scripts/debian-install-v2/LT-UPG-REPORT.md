@@ -148,7 +148,15 @@ Evidence (LT-07 `uu-dryrun-diagnosis.txt`, `trigger-apt-daily-upgrade.txt`):
 
 ## 6. Gates
 
-See the end of this file (appended after the runs).
+Run on the committed tree (HEAD before this report edit), foreground under
+flock/nice/ionice, verdicts read in a separate step from the output files:
+- `scripts/debian-install-v2/run-gate.py --worktree ... r0-r1`: lane verdict PASS,
+  exit 0, 941 passed / 11 skipped (log `/tmp/run-gate/lanes/r0-r1/a741735242a8387fcb47c537f344a7c7.log`).
+- `scripts/netcup/run-gate.py --worktree ... suite`: lane verdict PASS, exit 0,
+  716 passed (log `/tmp/run-gate/lanes/suite/94fd3ac93c1dc01cf4f3b3ee6c37302d.log`).
+- cli-extended surface: the existing CLI-case/surface tests ran inside r0-r1 and
+  passed; no CLI option was added.
+- No mutation (assay) lane was run.
 
 ## Not verified
 
