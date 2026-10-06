@@ -110,6 +110,29 @@ def test_runner_rejects_non_table_command_before_subprocess(monkeypatch, tmp_pat
         runner._execute_step(step, tmp_path, tmp_path / "logs")
 
 
+def test_runner_run_step_requires_one_project_and_declared_step(monkeypatch, tmp_path):
+    cfg = tmp_path / "cmru.toml"
+    project = SimpleNamespace(project_root=tmp_path, runner_steps={}, env={}, build_metadata=None)
+    loaded = (tmp_path, {"a": project, "b": project}, (), {}, {}, "", (), {}, SimpleNamespace(), {})
+    # `run_step` first resolves the nearest orchestration context so a project
+    # path can inherit central settings. Keep this test focused on the
+    # project-local cardinality contract by pinning that resolver to the
+    # synthetic local config path.
+    monkeypatch.setattr(
+        "cmru.config.resolve_invocation_context",
+        lambda **_: SimpleNamespace(config_path=cfg),
+    )
+    monkeypatch.setattr("cmru.cli.load_config", lambda _: loaded)
+    monkeypatch.setattr("cmru.cli.apply_project_release_env", lambda *args: None)
+    with pytest.raises(RuntimeError, match="project-local") as refused:
+        runner.run_step(cfg, "tests")
+    assert "cmru.runner.run_step" in str(refused.value)  # names the API, not `run --step`
+    loaded = (tmp_path, {"a": project}, (), {}, {}, "", (), {}, SimpleNamespace(), {})
+    monkeypatch.setattr("cmru.cli.load_config", lambda _: loaded)
+    with pytest.raises(ValueError, match="not declared"):
+        runner.run_step(cfg, "tests")
+
+
 def test_handlers_wheel_build_refuses_disappearing_builder_image(monkeypatch, tmp_path):
     monkeypatch.setenv(handlers._WHEEL_BUILDER_IMAGE_ENV, "builder@sha256:abc")
     monkeypatch.setattr(handlers, "_check_build_prerequisites", lambda: None)

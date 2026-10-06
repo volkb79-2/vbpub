@@ -255,10 +255,9 @@ bound launcher (`cmru standards` flags the module form). `python -m cmru.bundle`
 cmru.runner`, and module aliases for the three operator scripts are retired;
 they now refuse with a pointer to the supported command or library API.
 
-The reusable `cmru.bundle.run_bundle` function remains a supported Python API;
-PWMCP consumes it. `cmru.runner.run_step` was removed (no production caller; its
-behaviour is the `cmru run --step` command). Use `cmru run --step NAME` for a
-direct operator invocation. CMRU does
+The reusable `cmru.bundle.run_bundle` and `cmru.runner.run_step` functions
+remain supported Python APIs. PWMCP consumes the bundle API, and MDT's
+`build-push.py` consumes the runner API. Use `cmru run --step NAME` for a direct operator invocation. CMRU does
 not add a root `cmru bundle` verb until a concrete operator workflow needs one.
 The standalone generated `get.py` remains an independent product and keeps its
 own `argparse` parser because adopters use it without installing CMRU.

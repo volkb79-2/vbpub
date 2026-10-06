@@ -360,8 +360,8 @@ is the bootstrap-only component CLI (the first-wheel build runs before an
 installed `cmru` exists); project contracts use `cmru handler <verb>` instead.
 `cmru.bundle` and `cmru.runner` are library modules; they do not expose module
 commands. The `cmru.cli` module alias is retired. Use `cmru run --step NAME` for
-direct single-step CLI work, and use the documented Python function to compose
-bundle behavior:
+direct single-step CLI work, and use the documented Python functions to compose
+bundle or runner behavior:
 
 ```sh
 # Preview one configured project step without running it.
@@ -380,10 +380,12 @@ wrong TOML value types at each table boundary; see S9.4a in the spec.
 from pathlib import Path
 
 from cmru.bundle import run_bundle
+from cmru.runner import run_step
 
-# This call executes configured work: run_bundle removes dist_dir first.
-# To run (or preview) one declared project step use the command, not Python:
-#   cmru run --step NAME [--dry-run]
+# These calls execute configured work. run_step may remove declared clean
+# directories and runs the step commands; run_bundle removes dist_dir first.
+# Use cmru run --step NAME --dry-run when you need to inspect project step effects.
+run_step(Path("cmru.toml"), "build")
 archive = run_bundle(Path("bundle.toml"))
 ```
 

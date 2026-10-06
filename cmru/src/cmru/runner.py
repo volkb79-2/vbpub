@@ -441,7 +441,8 @@ def execute_step(
     path_prefixes: Optional[Iterable[Path]] = None,
     build_metadata: Optional[Mapping[str, str]] = None,
 ) -> None:
-    """Execute a pre-parsed StepConfig. Called by both run_step() and the orchestrator.
+    """Execute a pre-parsed StepConfig. Reached through ``cli.run_project_step``, which both the
+    orchestrator (``cmru run``/``release``/``build``) and the ``run_step()`` API call.
 
     This is the single execution path every build step flows through (S3 contract).
     ``extra_env`` carries project-level declared environment from the orchestrator.
@@ -577,6 +578,53 @@ def _prepend_path_entries(entries: Optional[Iterable[Path]]) -> None:
     parts = [part for part in current.split(os.pathsep) if part]
     remainder = [part for part in parts if part not in prefixes]
     os.environ["PATH"] = os.pathsep.join([*prefixes, *remainder])
+
+
+def run_step(project_config_path: Path, step_name: str) -> None:
+    """Run one named step from the strict project-local ``cmru.toml``.
+
+    Supported Python API (consumed by ``modern-debian-tools-python-debug/build-push.py``).
+    This is intentionally a thin direct entry point over the same parser and
+    executor as orchestration.  There is no standalone runner configuration,
+    shell-evaluation adapter, or inferred release config to drift from it.
+    """
+    from cmru.cli import apply_project_release_env, load_config
+    from cmru.config import resolve_invocation_context
+
+    project_config_path = project_config_path.expanduser().resolve()
+    context = resolve_invocation_context(cwd=project_config_path.parent)
+    selected_config = context.config_path
+    (repo_root, projects, _order, _defaults, _steps, _mode, _step_order,
+     _cleanup, github, env) = load_config(selected_config)
+    if selected_config.name == ORCHESTRATION_CONFIG_FILENAME:
+        matches = [
+            candidate for candidate in projects.values()
+            if candidate.project_root is not None
+            and candidate.project_root.resolve() == project_config_path.parent
+        ]
+        if len(matches) != 1:
+            raise RuntimeError(
+                f"nearest {ORCHESTRATION_CONFIG_FILENAME} does not register "
+                f"exactly one project at {project_config_path.parent}"
+            )
+        project = matches[0]
+    else:
+        if len(projects) != 1:
+            raise RuntimeError(
+                f"cmru.runner.run_step requires a project-local {PROJECT_CONFIG_FILENAME} "
+                "that declares exactly one project"
+            )
+        project = next(iter(projects.values()))
+    apply_project_release_env(github, env, project)
+    step = project.runner_steps.get(step_name) if project.runner_steps else None
+    if step is None:
+        raise ValueError(f"Step '{step_name}' is not declared in {project_config_path}")
+    project_root = project.project_root or repo_root
+    from cmru.cli import run_project_step
+    run_project_step(
+        project, step_name, repo_root, project_root / "logs" / "cmru",
+        project_root_override=project_root,
+    )
 
 
 if __name__ == "__main__":

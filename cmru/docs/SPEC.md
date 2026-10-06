@@ -483,9 +483,9 @@ verb (the former `cmru run-step` was absorbed into `run`).
 |---|---|---|
 | `cmru` | Operator CLI | Canonical installed commands for product operations; registered verbs are the operator grammar. |
 | `python -m cmru.handlers` | Bootstrap-only CLI | `build-initial-standalone.sh` uses it to build the first CMRU wheel before the installed `cmru` script exists. Project steps use `cmru handler <verb>` (the bound launcher); `cmru standards` flags the module form (BG-04/REL-07). |
-| `cmru run --step` | Single-step diagnostic CLI | Preview or reproduce one declared project step in the caller's checkout with its normal project config and registered grammar. It is the only supported way to run one step: the former `cmru.runner.run_step` Python function was removed (it had no production caller). |
+| `cmru run --step` | Single-step diagnostic CLI | Preview or reproduce one declared project step in the caller's checkout with its normal project config and registered grammar. The `cmru.runner.run_step` API is also consumed by MDT (`modern-debian-tools-python-debug/build-push.py`). |
 | `cmru.bundle` | Python library | Build a stack bundle from its dedicated TOML through `run_bundle`; PWMCP consumes the library. No CLI exists because no distinct operator workflow needs one. |
-| `cmru.bundle.run_bundle` | Supported Python API | Compose the documented bundle behavior from Python. Other module internals (including `cmru.runner`) are not promised as public API. |
+| `cmru.runner.run_step`, `cmru.bundle.run_bundle` | Supported Python APIs | Compose the documented component behavior from Python. `run_step` is called by MDT's `build-push.py` (guarded by an estate import test). Other module internals are not promised as public API. |
 | `worktree` package | Bundled shared library API | Stable, product-neutral Git workspace primitives shipped inside the CMRU wheel; its own consumer guide and spec define the API. CMRU layers release/transaction policy on top. |
 | Generated `get.py` | Standalone generated CLI | Runs without the CMRU wheel and intentionally keeps its own `argparse` parser. |
 

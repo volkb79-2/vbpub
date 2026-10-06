@@ -8,6 +8,7 @@ release at runtime, not at review time).
 """
 from __future__ import annotations
 
+import ast
 import os
 import re
 import shlex
@@ -320,7 +321,7 @@ _LAUNCH_PREFIXES = {"exec", "sudo", "command", "nice", "time", "env"}
 
 def _tokens(text: str) -> list[str]:
     try:
-        return shlex.split(text)
+        return shlex.split(text, comments=True)  # a trailing unquoted `# note` is not argv
     except ValueError:  # an unbalanced quote across a segment split: fall back to words
         return text.split()
 
@@ -424,6 +425,10 @@ def test_the_text_scanner_finds_string_and_bash_c_invocations(registry):
     assert problems("python -m cmru.handlers wheel-build") == []  # not the cmru command word
     assert problems("run the cmru release step, then cmru is done") == []  # prose is not a call
     assert problems("echo 'unbalanced") == []
+    assert _cmru_from_text("cmru publish ciu --from-checkout   # not --project") == [
+        ["cmru", "publish", "ciu", "--from-checkout"],
+    ]
+    assert _cmru_from_text("cmru run --step 'a # b'") == [["cmru", "run", "--step", "a # b"]]
 
 
 def test_the_shell_script_reader_drops_comments_and_joins_continuations(tmp_path):
@@ -511,6 +516,96 @@ def test_no_estate_contract_uses_a_removed_cmru_spelling():
             if _REMOVED_SPELLINGS.search(line):
                 hits.append(f"{path.relative_to(REPO_ROOT)}: {line.strip()[:120]}")
     assert not hits, "\n".join(hits)
+
+
+# --- B1: estate Python callers import only what cmru still exports ---------------
+
+
+def _module_file(dotted: str) -> Path | None:
+    base = PROJECT_DIR / "src" / Path(*dotted.split("."))
+    for candidate in (base.with_suffix(".py"), base / "__init__.py"):
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def _exports(module_file: Path) -> set[str]:
+    """Top-level names a module binds (defs, classes, assignments, imports) plus submodules."""
+    names: set[str] = set()
+    for node in ast.walk(ast.parse(module_file.read_text(encoding="utf-8"))):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            names.add(node.name)
+        elif isinstance(node, ast.Assign):
+            names.update(t.id for t in node.targets if isinstance(t, ast.Name))
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            names.add(node.target.id)
+        elif isinstance(node, (ast.Import, ast.ImportFrom)):
+            names.update((a.asname or a.name).split(".")[0] for a in node.names)
+    if module_file.name == "__init__.py":
+        names.update(p.stem for p in module_file.parent.glob("*.py"))
+    return names
+
+
+def _estate_cmru_import_problems(files) -> list[str]:
+    problems = []
+    for path in files:
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+        except (SyntaxError, UnicodeDecodeError, ValueError):
+            continue
+        where = path.relative_to(REPO_ROOT) if path.is_relative_to(REPO_ROOT) else path
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    if alias.name.split(".")[0] == "cmru" and alias.name != "cmru" \
+                            and _module_file(alias.name) is None:
+                        problems.append(f"{where}:{node.lineno}: import {alias.name}: no such module")
+            elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module \
+                    and node.module.split(".")[0] == "cmru":
+                target = _module_file(node.module)
+                if target is None:
+                    problems.append(f"{where}:{node.lineno}: from {node.module}: no such module")
+                    continue
+                exported = _exports(target)
+                for alias in node.names:
+                    if alias.name != "*" and alias.name not in exported:
+                        problems.append(
+                            f"{where}:{node.lineno}: from {node.module} import {alias.name}: not exported",
+                        )
+    return problems
+
+
+def _estate_python_outside_cmru() -> list[Path]:
+    return sorted(
+        path for path in REPO_ROOT.rglob("*.py")
+        if not (_SKIP_PARTS | {"cmru"}) & set(path.relative_to(REPO_ROOT).parts[:1])
+        and not _SKIP_PARTS & set(path.relative_to(REPO_ROOT).parts)
+    )
+
+
+def test_the_import_guard_flags_a_missing_name_or_module(tmp_path):
+    consumer = tmp_path / "consumer.py"
+    consumer.write_text(
+        "from cmru.runner import run_step_gone\nfrom cmru.nosuch import x\nimport cmru.nosuch2\n"
+        "from cmru.runner import execute_step\nfrom cmru import exit_codes\nimport cmru.ghcr\n",
+        encoding="utf-8",
+    )
+    problems = _estate_cmru_import_problems([consumer])
+    assert [p.split(": ", 1)[1] for p in problems] == [
+        "from cmru.runner import run_step_gone: not exported",
+        "from cmru.nosuch: no such module",
+        "import cmru.nosuch2: no such module",
+    ]
+
+
+def test_estate_python_callers_import_only_what_cmru_exports():
+    files = _estate_python_outside_cmru()
+    problems = _estate_cmru_import_problems(files)
+    assert not problems, "\n".join(problems)
+    mdt = REPO_ROOT / "modern-debian-tools-python-debug" / "build-push.py"
+    if mdt.is_file():  # the consumer that the removed run_step broke
+        assert mdt in files
+        assert "from cmru.runner import run_step" in mdt.read_text(encoding="utf-8")
 
 
 # --- C4: this file leaves the process environment as it found it -----------------

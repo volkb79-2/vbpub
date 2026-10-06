@@ -150,14 +150,16 @@ SPEC S8 now lists `build` and the lock for `release`, states the rule and the ty
 (`init` write; `abandon` and its retained-build-worktree discard path; `cleanup`). Tests: build uncommitted = 4 (also the existing
 `test_build_refuses_uncommitted_snapshot_before_fetch_or_workspace`, changed 1 -> 4), build lock = 4, release lock = 4, abandon lock = 4
 (raises the typed exception now), real second lock holder raises `ReleaseLockHeld`, post-start build failure = 1.
-**Decision ask 2: `runner.run_step` deleted** (and its docs: SPEC, DESIGN-GUIDE, CONSUMERS; no caller existed, MDT never used it).
-Behaviours its direct tests pinned and where each is pinned now (`tests/test_run_step_replacements.py`, through the real `cmru run --step`):
+**Decision ask 2: SUPERSEDED by round 2 (below).** The deletion of `runner.run_step` described in this paragraph was WRONG and is reverted:
+its "no production caller" premise was false (`modern-debian-tools-python-debug/build-push.py:45` imports it and calls it at 350 and 682).
+The CLI tests in `tests/test_run_step_replacements.py` stay as extra coverage. Original round-1 text, kept for the record:
+Behaviours its direct tests pinned and where each is pinned (`tests/test_run_step_replacements.py`, through the real `cmru run --step`):
 | Direct test deleted | Behaviour | Replacement |
 |---|---|---|
 | `test_runner_step_uses_nearest_central_config_for_project_path` | step runs in the project root, project `[env]` as extra env, protected `CMRU_RUNTIME_KIND`/`CMRU_INTERNAL_BIN` (bound `cmru`) | `test_run_step_executes_in_the_project_root_with_env_and_protected_runtime` |
 | `test_raw_runner_uses_project_local_log_root` | detail goes to `<project>/logs/cmru/build.log` | `test_run_step_quiet_detail_goes_to_the_project_local_log_root` (also: quiet output not streamed) |
 | `test_runner_run_step_requires_one_project_and_declared_step` (declared-step half) | undeclared step refused | `test_run_step_refuses_an_undeclared_step` (exit 2, nothing runs) |
-| `test_runner_step_refuses_central_config_without_exact_project_match`, same test's cardinality half | refuse a project the config does not name | `test_run_step_refuses_a_project_the_config_does_not_register` (exit 2). The path-to-project inference itself (nearest orchestration, project-root match) existed only in `run_step`; `run` selects by name, so it has no counterpart and is gone by design |
+| `test_runner_step_refuses_central_config_without_exact_project_match`, same test's cardinality half | refuse a project the config does not name | `test_run_step_refuses_a_project_the_config_does_not_register` (exit 2). (Round-1 claim that path-to-project inference "has no counterpart" was WRONG: `cmru run --step` with no target infers the project from the cwd, pinned by `test_contextual_selection` and `test_ki12_cli_wiring`.) |
 **Nits.** `flat =" ".join(` typo fixed; README sentence added (`cmru[interactive]` needs `--find-links` to the release assets).
 **Out of scope, noted only.** `cmru standards cmru` fails "template revision is 4; expected 5" on the base tree (predates this package; Wave 3 runs `cmru standards --update`).
 
@@ -185,3 +187,32 @@ at commit `2f03c240d`: `canary` PASS exit 0 (log `/tmp/run-gate/lanes/canary/882
 Two canary FAILs on the way, both lane-only and both in the new sibling requirement of `test_the_estate_scan_actually_finds_the_project_contracts`
 (the sparse snapshot has a bare `run-gate-project/` dir and only some siblings), fixed in `dc71f9dd6` and `2f03c240d`; the full suite and the
 coverage lane had passed before each. Not run: `mutation`, `assay`, `installed-wheel`, `gate` lanes. A final docs-only commit adds this paragraph.
+
+## Review fix round 2 (B1: `run_step` restored)
+**B1.** The fix-verify REJECT was right: `modern-debian-tools-python-debug/build-push.py:45` does `from cmru.runner import run_step` and calls it at
+350 (`build`) and 682 (`push`); `scripts/test_release_flow.py:431` patches `build_push.run_step`. My round-1 grep for callers excluded
+MDT's own `build-push.py` (my grep did surface `test_release_flow.py:431` patching `build_push.run_step`, and I misread it as unrelated); the deletion ruling's premise was wrong. Ruling (a): restore, do not migrate MDT.
+1. `cmru.runner.run_step` and its four direct tests restored byte-for-byte from `dcc4d19ae` (via `git show` + Edit; the same four tests in
+   `test_version_runner_contracts`, `test_runner_quiet_output`, `test_residual_operational_contracts`). `tests/test_run_step_replacements.py` kept.
+2. SPEC (two rows), DESIGN-GUIDE and CONSUMERS reverted to the supported-API wording, now naming MDT's `build-push.py`.
+3. The cardinality error now says `cmru.runner.run_step requires a project-local cmru.toml that declares exactly one project`; the test asserts it names the API.
+4. `execute_step`'s docstring no longer says it is "called by run_step()" directly: it says it is reached through `cli.run_project_step`, which the orchestrator and `run_step()` both call.
+5. `cmru/README.md:635` row ("`cmru.runner.run_step` or `cmru.bundle.run_bundle` ... Supported library entrypoints used by estate consumers") is correct again as restored; unchanged.
+6. Round-1's claim that path-to-project inference had no counterpart is corrected in place above (`cmru run --step` with no target infers the project from the cwd:
+   `test_contextual_selection`, `test_ki12_cli_wiring`).
+7. **New guard** `test_estate_python_callers_import_only_what_cmru_exports` (+ `test_the_import_guard_flags_a_missing_name_or_module`): parses every estate
+   `*.py` outside `cmru/`, `.worktrees/` and the other skip dirs with `ast`; every `from cmru.X import Y` / `import cmru.X` must resolve to a module in
+   `cmru/src/cmru` that binds Y (def, class, assignment, import, or submodule). It also asserts MDT's `build-push.py` is scanned and still imports `run_step`.
+   Plant: `run_step` renamed in `runner.py` -> the guard failed with
+   `modern-debian-tools-python-debug/build-push.py:45: from cmru.runner import run_step: not exported`; reverted. Real estate: zero problems.
+8. **MDT proof** (PYTHONPATH = this worktree's `cmru/src`, `libraries/worktree/src`, `libraries/cli-extended/src`; nothing built, nothing pushed):
+   - `./build-push.py --help` exit 0 (usage `(--build | --push | --rebuild) [--ignore-new-releases]`).
+   - `./build-push.py --build --dry-run`: there is NO dry-run flag in `build-push.py` (argparse exits 2, unrecognised); and `--build` itself builds images, so I did not run it.
+     Nearest non-mutating path: called `cmru.runner.run_step(<MDT>/cmru.toml, "build")` and `"push"` with `cmru.cli.execute_step` replaced by a recorder:
+     both resolved MDT's real `cmru.toml`, found the step, and passed `StepConfig`, project root `modern-debian-tools-python-debug`, log root `logs/cmru`,
+     project env (e.g. `BUILDKIT_HOST`, `BUILDX_BUILDER`) and `CMRU_RUNTIME_KIND=none`. `git status` clean afterwards.
+   - `scripts/test_release_flow.py` (needs the MDT dir on PYTHONPATH for `from scripts import ...`): 31 passed.
+9. Nit done: the shell/string scanner tokenises with `shlex.split(..., comments=True)`; tests show a trailing `# not --project` is dropped and `'a # b'` (quoted) is kept.
+
+**Full suite (round 2):** 3536 passed, 6 skipped, 0 failed; `--cov` TOTAL 11884 stmts / 5128 branches, 0 missed, 100%.
+
