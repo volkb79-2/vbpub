@@ -1992,3 +1992,121 @@ specific to its old tree; the reconciled candidate still requires a fresh
 exact-tree R2 and registered full gate. A fresh supplemental review of the
 survivor dispositions and test oracles is pending. No gate or release is
 claimed for `e0ce67dc`.
+
+## Controller addendum — Sol round-2 DAMON lifecycle repair (2026-10-05)
+
+Sol round 2 rejected the P1 candidate on two lifecycle blockers, recorded in
+controller ruling RW-442: Linux rejects any `nr_kdamonds` resize while any
+kdamond is running, including a foreign monitor, and an unconfirmed stop must
+not be treated as successful release, reuse, or cleanup. The repair reserves
+the configured pool before the first owned monitor starts, admits only
+verified-off slots, quarantines ambiguous stop/readback outcomes, and retries
+cleanup at the next acquisition or shutdown. A foreign monitor that prevents
+reservation makes optional DAMON unavailable; ordinary profiling and its
+verdict continue.
+
+The repaired one-shot collector also treats DAMON startup as optional
+evidence: a `DamonSessionError` before or during context entry is logged, the
+READY sentinel is still written, and ordinary sampling proceeds so `cgprofile
+run` can launch its wrapped command under R-36h.
+
+Three registered `r0-r1` attempts have failed and are not transferable to the
+current candidate: run `2ada30366c4d4394cb79c20b12a2b59f` on `c8f7c70e` had
+2,292 passes and four stale expectation/fixture failures; run
+`64a68db76d4a888d260f8111faac5a9f` on `591c258d` had 2,293 passes and six
+fake-counter call-sequence failures; run
+`2fba4b01b6a3b08b8729711c682e2752` on `b30eca82` passed 2,299 tests but
+failed coverage at 99% total (15 statements and six partial branches missing
+in `lib/damon.py`). Details and log paths are in P1 LOG session 41 and
+controller rulings RW-443–RW-445.
+
+Commit `b9ea6080` adds behavioral tests for those lifecycle failure paths and
+removes `_reserve_capacity`'s unreachable duplicate baseline-capture branch;
+the exact tree still needs the registered 100% line/branch gate. Latest main
+`c0d1f4410a4a10a5d9635775e43dec74c2a000fd` was then merged without conflict
+as `4e4df5a86088a7fbb7c82b3aead473c2b18ca203` (the only main-only change was
+run-gate-project test code). That merge changes the Git tree, so all final
+evidence must use the reconciled tip. No live
+DAMON sample or overhead has been measured in these runs: the daemon was down
+and profiling fell back to coarse `rusage`. Current-tree R2, full gate, R3,
+doctor, same-Sol fix verification, live DAMON samples/overhead, current-main
+reconciliation, merge, release, and CIU singleton activation remain pending.
+
+## Controller addendum — reconcile with current main (2026-10-05)
+
+Before additional evidence, the P1 candidate was reconciled with current main
+`251c3eff5fb2e5b528c9e0ae3acff59fa99c2def` (previous P1 base
+`c0d1f4410a4a10a5d9635775e43dec74c2a000fd`). Main's broad intervening
+changes are included in the candidate history; no cgroup-profiler source or
+test code changed. Main added a CP-17 cli-extended adoption backlog item,
+colliding with the P1 DAMON-startup item. Both are preserved: adoption stays
+CP-17, the DAMON issue is CP-18, and `nyxloom backlog index` regenerated the
+index. The no-ff merge was finalized as `f0cf27517`. Historical review
+artifacts keep their contemporaneous CP-17 wording. This merge invalidates
+any prior exact-tree gate result. Fresh package gates,
+mutation evidence, review fix-verification, and live DAMON sample/overhead
+measurement are still required; this addendum claims none of them.
+
+## Controller addendum — P1 exact-tree R2 survivor triage (2026-10-05)
+
+The exact registered R2 on commit `33cfb15085cd259f2811731c377ec3879458f038`
+(tree `980863d4e3395d1d538a5cfb874af2e60a9c14aa`) ran from
+`2026-10-05T18:03:14.313140Z` through `2026-10-05T19:33:13.152801Z`.
+The separate verdict is R0 PASS and R2 `FAIL/MUTANTS_SURVIVED`, exit 1:
+114 candidates, 89 killed, 25 survived, and zero equivalent,
+budget-exceeded, crashed, or hung. The authoritative records are the
+detached worktree's `.assay/verdict-r2.json` and `.assay/r2-progress.jsonl`.
+The current successor worktree's unmodified target files were byte-identical
+to this judged commit before the oracle additions, so each survivor below was
+rechecked against the applicable source and test call paths.
+
+### Behavioral oracle gaps repaired in the successor candidate (19)
+
+| Survivor ID | Location / mutation | Behavioral oracle |
+|---|---|---|
+| `3660a30b8e1625d3` | `access.py:701`, `or` → `and` | `test_damon_helper_refuses_a_relative_lock_target` rejects a relative container lock target even when the host source is absolute. |
+| `8c6631040d22fb03` | `damon.py:148`, `==` → `!=` | `test_registry_lock_does_not_apply_host_permissions_to_an_override` preserves an override file's existing mode and group; the separate default-path test verifies repair to the shared `0660` mode and parent group. |
+| `b647cc836217c8f8` | `damon.py:336`, `False` → `True` | `test_identity_match_fails_when_the_pinned_state_path_disappears` requires a vanished current sysfs path to fail identity matching. |
+| `92b1ca82e4c944d9` | `damon.py:462`, `False` → `True` | `test_stop_and_confirm_off_refuses_a_missing_identity` requires refusal without issuing `kdamond_off` when the pinned identity is missing. |
+| `50caae39ffd95503` | `damon.py:471`, `False` → `True` | `test_stop_and_confirm_off_treats_state_read_errors_as_unconfirmed` keeps an unreadable, still-on monitor unconfirmed. |
+| `a7dc8a4e7260501d`, `585b06d91f19ae69` | `damon.py:477`, each `and` → `or` | `test_pool_owns_slot_requires_both_membership_and_matching_identity` isolates each precondition: exact identity without pool membership and pool membership without identity both fail. |
+| `47bd001a2cc6df18` | `damon.py:501`, `or` → `and` | `test_pool_quarantines_a_live_claim_after_same_count_identity_replacement` requires the replaced live claim to be quarantined, not reused. |
+| `61b35c60d4d9550e` | `damon.py:531`, `True` → `False` | `test_pool_refuses_if_registry_grows_before_reservation` asserts the race is remembered and a retry remains refused after the counter returns. |
+| `8bce5d1adbe9ecde` | `damon.py:640`, `or` → `and` | `test_pool_restore_refuses_same_count_replacement_of_a_freed_slot` preserves a foreign replacement instead of shrinking it away. |
+| `b04c3df80c2eeaac` | `damon.py:652`, `False` → `True` | `test_pool_close_fails_if_baseline_readback_disagrees` refuses to claim restoration when the observed counter does not match. |
+| `6b054c8fdace1c13` | `damon.py:656`, `False` → `True` | `test_pool_close_fails_and_retains_ownership_when_shrink_raises` reports failure and retains the owned slot after a resize error. |
+| `6b42ceba596938fb` | `damon.py:712`, `False` → `True` | `test_pool_close_reports_failure_when_registry_lock_is_refused` does not certify cleanup after lock refusal. |
+| `499b367b45103013` | `damon.py:774`, `True` → `False` | `test_teardown_on_a_never_entered_session_is_a_true_no_op` requires the no-op cleanup state to remain confirmed. |
+| `fe71e6f369bfd1ea`, `173da9807fd24904` | `damon.py:827,854`, `False` → `True` | `test_cleanup_is_unconfirmed_while_an_entered_monitor_is_owned` covers both pooled and one-shot sessions before teardown. |
+| `036d24788b945b7c` | `damon.py:970`, `and` → `or` | `test_recommit_targets_normalizes_duplicate_initial_pids` requires duplicate initial PIDs to be normalized and actually recommitted. |
+| `bbb365210b43c028` | `damon.py:1003`, `and` → `or` | `test_teardown_does_not_stop_after_ownership_changes_to_an_unrelated_slot` forbids stopping a slot after its identity changes. |
+| `a78a6c8935ff4186` | `serve.py:1562`, default `True` → `False` | The missing-property test requires unconfirmed cleanup without a false no-reuse claim; matching and nonmatching quarantine cases pin when that claim is justified. |
+
+The ownership-invariant test was tightened after its first all-suite pass so
+its membership and identity cases are independent rather than both removing
+the identity record. That final test-only adjustment is in the successor
+candidate and must be included in the exact-tree short gates and R2.
+
+### Contract-equivalent survivors (6; Assay does not auto-classify these)
+
+| Survivor ID | Location / mutation | Equivalence proof |
+|---|---|---|
+| `1d4815430d561e82` | `damon.py:501`, `current <= idx` → `< idx` | If `current == idx`, valid sysfs indices are only `0..current-1`, so `owns_slot(idx)` is already false; the adjacent `or not owns_slot(idx)` preserves quarantine. |
+| `ffbf084aaf44dc23` | `damon.py:495`, `True` → `False` | A successful external `nr_kdamonds` write removes and recreates the indexed objects. The following identity reconciliation therefore quarantines every replaced owned slot and removes it from `_free`; the sticky growth flag cannot change reuse, stop, or shrink behavior for this reachable sysfs transition. The oracle now asserts the observable refusal/preservation behavior without asserting the private flag. |
+| `c96e8651ba2fe529` | `damon.py:639`, `or` → `and` | After the earlier `current == baseline` return, a count different from `expected_end` is accompanied by a failed pinned identity: the kernel's `nr_kdamonds` store removes and recreates all kdamond directories before rebuilding indices `0..N-1`. Thus the final `any(not owns_slot(...))` remains true; if growth was observed earlier, the sticky `_foreign_growth` guard also refuses. See [the upstream DAMON sysfs implementation](https://code.googlesource.com/linux/torvalds/linux/+/0c59ae1290741854b6cf597ef05bfa9bc811389f/mm/damon/sysfs.c) and [the sysfs index contract](https://docs.kernel.org/7.1/admin-guide/mm/damon/usage.html). |
+| `5aa845f86924ad59` | `damon.py:639`, `current <= baseline` → `< baseline` | The preceding branch returns when `current == baseline`; in the remaining path, `current <= baseline` therefore implies `current < baseline`. The baseline is also required to be zero before this pool is reserved. |
+| `d09049bf4276155d` | `damon.py:678`, `and` → `or` | The mutant can call `_restore_baseline()` while either set is nonempty, but that method immediately returns false before reading or writing sysfs whenever `_live` or `_quarantined` is nonempty. |
+| `2411d2ca4ac652a8` | `damon.py:707`, `False` → `True` | The failed stop has already moved the slot to `_quarantined`; even if the mutant proceeds to `_restore_baseline()`, its first guard returns false before sysfs access. Both paths report cleanup failure and preserve the slot. |
+
+These six are human equivalence dispositions, not Assay's `equivalent`
+bucket. The raw R2 verdict remains FAIL until the behavioral gaps are killed;
+the proofs must remain visible to the independent reviewer. The successor
+candidate has added the listed oracle regressions and the fail-closed
+`serve.py` fallback. A fresh exact-tree R2 and the registered final gates are
+still required; the earlier short-gate run on the dirty successor candidate
+predates the final isolation-only test adjustment and is not transferable.
+
+The external-growth test models the kernel's count-write replacement behavior
+and asserts the observable refusal, quarantine, and preservation of the foreign
+marker. It deliberately does not treat `_foreign_growth` itself as a behavioral
+contract: the removed assertion only certified private bookkeeping.

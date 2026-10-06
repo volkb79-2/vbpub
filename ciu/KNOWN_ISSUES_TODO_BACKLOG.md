@@ -577,6 +577,7 @@ Last reconciled: 2026-08-17, automation-safe worktree lifecycle milestone.
 | CIU-126 | CIU rejects its own valid rootless worktree record and siblings can block lifecycle verbs | Medium | FIXED 2026-10-04 |
 | CIU-127 | `ciu down` cannot stop one stack without targeting the whole project | Medium | FIXED 2026-10-04 |
 | CIU-128 | Worktree reports `ready` before committed nested roots are prepared | High | FIXED 2026-10-05 |
+| CIU-132 | Outdated-identity guard blocks a stopped stack's data-preserving migration and is not told ownership drift or stale persisted hostnames | High | OPEN |
 
 
 The approved milestone decisions and serial package order are in
@@ -4868,3 +4869,23 @@ specific to a generic Git worktree containing multiple CIU roots; v8 has one
 instance per checkout, so that aggregate metadata detail is not applicable.
 
 **Disposition (2026-10-05): FIXED.** The ready transition now follows nested-root fact generation and locked shared metadata persistence. `ensure` verifies historical readiness and derives the original allocation commit from saved facts. A partial allocation with a recorded fork point repairs against that commit without resetting later work; an older no-fork-point record whose checkout moved is demoted to `recovery-required` and refused. The registered CIU gate passed on implementation commit `b588cd96ecf0f9e0fb2fa8f47654906e911def9a` (run `195b964ff850afc73eff9c6e708babb8`, 2026-10-05): R0/R1/R2/R3 PASS, 100% branch coverage, 28/28 mutation candidates killed, no budget overruns, and the import-break canary detected. The final gate covers this backlog disposition update.
+
+## CIU-132 — recovering a stopped prod stack across the identity-scheme change needs a hand-run `clean --identity`, a manual hostdir re-own, and a manual named-volume copy
+
+Severity: High (it stands between a stopped production stack and its own data). Type: bugfix + feature. Spec owner: S3.1c, S6.3, S16.9, CIU-115/CIU-119. Filed 2026-10-06 from the nyxloom Mattermost restore (ids up to CIU-131 are taken on the unmerged branch `cmru-wave-2026-10`, so this is the next free id above 131).
+
+**Observed (ciu 7.15.2).** `nyxloom-1dd3d1-mattermost{,-db}` had been stopped for three weeks (network deleted) and `ciu up --dir nyxloom/mattermost` was refused: `[S3.1c] ciu.instance.generated.toml has outdated identity '1dd3d1', and Docker still has resources carrying it. Remove those resources with ciu clean --identity 1dd3d1`. Recovery with zero data loss took four hand steps that CIU could have owned.
+1. **The guard cannot pass in place, by design.** The record was schema-1 and its id `1dd3d1` came from the pre-base36 derivation; `workspace_id_for_path("/home/vb/volkb79-2/vbpub/nyxloom")` now yields `3oqua1`, so there is no same-id in-place migration. Every container, network and project-named volume therefore changes name (`nyxloom-1dd3d1-*` to `nyxloom-3oqua1-*`). The only supported exit is `ciu clean --identity 1dd3d1`, whose message does not say what it will and will not delete. Measured: it removed the 2 stopped containers and the 2 compose-labelled named volumes and touched no `vol-*` hostdir (it does not, per `action_clean_identity`). It missed `mattermost_mattermost-data`, which carried no `com.docker.compose.project` label (and no `ciu.instance` label). The operator has to read ~150 lines of source to learn that.
+2. **Named-volume data is silently orphaned, not migrated.** The new project gets fresh empty named volumes (`nyxloom-3oqua1-mattermost_*`). Uploaded files live in the old-named volume and must be copied across by hand (the README's 2026-09-10 recipe). Nothing warns that the old volume still holds data.
+3. **S6.3 then refuses the bind-mounted hostdirs.** `vol-mattermost-config`, `vol-mattermost-logs` and `vol-postgres-data` were owned `1003:1003` (the devcontainer user) instead of the declared `2000:994` / `70:994`, with file contents `1003` too. Something between 2026-09-11 and now re-owned the whole trees. S6.3 refused with `Existing hostdir has incompatible ownership/permissions`; the fix was a hand `chown -R` through a throwaway root container. A top-level-only `chown`, as the README step 3 shows, would have left Postgres unable to read its own 0600 files.
+4. **Persisted webhook URLs embed the instance-id hostname.** `daemon_webhook_url` and `intake_webhook_url` carried `http://nyxloom-1dd3d1-mattermost:8065`. Here the post_compose hook happened to re-persist them with the new host on the first `ciu up`, so this one is closed, but `clean --identity` should say so.
+
+**Proposed contract.**
+- `ciu clean --identity OLD --dry-run` (or default preview) lists exactly what it will remove (containers, networks, volumes), and what it will KEEP, naming every volume and hostdir that survives, including unlabelled project-prefixed named volumes.
+- A supported `ciu migrate-identity` (v8 `--move` is the model): after the clean, it copies each retired project's non-empty named volumes into the same-named volumes of the new identity, refusing to overwrite a non-empty target, instead of leaving an operator recipe in a README.
+- S6.3 offers `--fix-hostdir-ownership` (via the existing S6.5 root helper) that re-owns the hostdir tree recursively when the recorded owner is the operator, rather than refusing with a hand-fix hint.
+- The outdated-identity error names the NEW id the regeneration will produce and states that no same-id path exists.
+
+**Oracles.** (1) A stopped stack with an outdated-identity record and compose-labelled named volumes: preview names every removal and every survivor; the survivor list includes an unlabelled `<oldproject>_*` volume. (2) After migrate, the new project's named volumes carry the old volumes' file set; a non-empty target is refused. (3) A hostdir tree owned by the operator uid is re-owned to the declared owner/group recursively; a tree owned by a foreign uid still refuses. Controlled wrong implementation for (3): chown of the top directory only passes the S6.3 check but leaves Postgres unable to start.
+
+**Disposition (2026-10-06):** OPEN. Data was recovered by hand: full tar backup first, `ciu clean --identity 1dd3d1`, hostdir `chown -R`, `ciu up`, named-volume data copied from the retired volume. Production Mattermost is up and healthy on identity `3oqua1`.

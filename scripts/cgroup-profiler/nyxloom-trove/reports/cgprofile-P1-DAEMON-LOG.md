@@ -1635,3 +1635,60 @@ evidence from the current candidate and directs the reviewer not to open
 numbered round 7. It does not authorize a merge, release, install, or long
 gate; those remain controller actions after review. No review or gate has yet
 run on this packet's candidate.
+
+### Session 42 — 2026-10-05 06:23:32Z — reconcile latest main before final P1 evidence
+
+Main advanced from the P1 candidate's base by two commits and is now
+`c0d1f4410a4a10a5d9635775e43dec74c2a000fd`. Merged it with `--no-ff` into
+the P1 branch as `4e4df5a86088a7fbb7c82b3aead473c2b18ca203`, without
+conflicts. Main's only delta from the previous candidate base was 61 lines of
+new tests in `run-gate-project/tests/test_run_gate.py`; no cgprofile source,
+test, config, or documentation path changed. This merge changes the exact Git
+tree nevertheless, so no prior gate receipt applies. The candidate is clean;
+all final gates and review remain pending on the reconciled tip.
+
+### Session 41 — 2026-10-05 06:20:09Z — implement Sol round-2 DAMON lifecycle repair
+
+Resumed P1 after Sol round 2 rejected the candidate on F1 (Linux forbids
+`nr_kdamonds` resize while any kdamond is on) and F2 (an unconfirmed stop must
+not release/reuse/shrink an owned slot). RW-442 records the binding design.
+Commit `c8f7c70e` pre-reserves configured pool capacity before first start,
+checks global off state before baseline restoration, quarantines ambiguous
+stops, and makes optional DAMON teardown non-fatal to summary finalization.
+
+Three exact-tree registered `r0-r1` attempts have not yet produced a gate
+PASS. Run `2ada30366c4d4394cb79c20b12a2b59f` on `c8f7c70e` had 2,292 passed
+and four stale/fixture failures; inspecting it also found the one-shot R-36h
+readiness gap, fixed in `591c258d`. Run
+`64a68db76d4a888d260f8111faac5a9f` on `591c258d` had 2,293 passed and six
+scripted-counter fixture failures after acquire gained a reconciliation read;
+the sequences were corrected in `b30eca82`. Run
+`2fba4b01b6a3b08b8729711c682e2752` on `b30eca82` passed 2,299 tests but failed
+the 100% coverage gate: `lib/damon.py` had 15 uncovered statements and six
+partial branches. `b9ea6080` adds failure-path oracles and removes an
+unreachable duplicate baseline-capture branch from `_reserve_capacity`.
+
+The exact current candidate is `b9ea60801da83abd488d0ae0a6ba88b3332f5c40`;
+it is clean, but no registered gate has run on it. The earlier three failures
+are historical, not evidence for this tree. The daemon was down during those
+runs, so they used coarse `rusage` profiling, not live DAMON data. Exact-tree
+R0/R1, R3, doctor, R2, full gate, same-reviewer fix verification, real DAMON
+sample and overhead probes, current-main reconciliation, integration, release,
+and singleton activation remain open.
+
+### Session 43 — 2026-10-05 14:42:59Z — reconcile P1 with latest main
+
+Main had advanced from `c0d1f4410a4a10a5d9635775e43dec74c2a000fd` to
+`251c3eff5fb2e5b528c9e0ae3acff59fa99c2def`; it was merged into the P1
+candidate before any further gates. The merge brings current run-gate, CIU,
+and estate changes into the candidate's history. No cgroup-profiler source
+or test code changed on main; the only cgroup-profiler conflict was a
+generated backlog-index collision because both branches had independently
+assigned CP-17. Main's cli-extended adoption entry remains CP-17; the P1
+DAMON startup defect is now CP-18, and the index was regenerated with
+`nyxloom backlog index`. Historical review artifacts retain their original
+CP-17 references; this session records the renumbering for current readers.
+The merge was finalized as `f0cf27517`. No gate receipt applies to the
+resolved merge tip: fresh `r0-r1`, `r3`, doctor, R2, full gate, review
+fix-verification, live DAMON samples/overhead, merge/release, and daemon
+activation remain pending.

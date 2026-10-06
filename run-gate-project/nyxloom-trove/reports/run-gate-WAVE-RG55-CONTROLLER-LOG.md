@@ -6684,3 +6684,470 @@ the gate in `dev-gates.slice` with the gate's verified 3-CPU cap; this does not
 authorize a mutation campaign, extra probe workload, or changes to another
 agent's containers. Preserve the preflight reading (`memory full avg10=19.39`)
 and disclose it with the verdict.
+
+### RW-442 — 2026-10-05 05:40:20Z — DAMON pool lifecycle must honor global sysfs resize and verified-stop constraints
+
+The Sol/xhigh round-2 review rejected the P1 startup repair on two lifecycle
+blockers. Binding repair: reserve the daemon's configured DAMON pool capacity
+before the first owned kdamond is started, because the kernel refuses
+`nr_kdamonds` changes while any kdamond is running, including foreign monitors.
+If a foreign monitor prevents initial reservation or the kernel permits only a
+partial pool, the daemon may report DAMON unavailable for an affected start;
+ordinary profiling and its verdict continue unchanged (R-36h). Once monitoring
+has begun, do not grow the pool. A stop/write/readback that does not establish
+`state=off` quarantines the owned slot; do not reuse it or shrink the shared
+count across it. Daemon shutdown retries cleanup. Restore the baseline only
+after owned slots are confirmed off, all remaining monitor states are
+readable/off, and the count still matches the ownership boundary; never stop
+or delete foreign slots. Optional DAMON teardown errors must be logged and
+must not abort session finalization or ordinary samples.
+
+The design rationale, README behavior summary, consumer guidance, CP-17 record,
+fake sysfs model, and lifecycle tests are being updated together. This ruling
+does not waive the exact-tree coverage/canary gates, same-reviewer fix
+verification, current-main reconciliation, P1 mutation disposition, live DAMON
+sample/overhead evidence, or release requirements. No test gate or container
+has been launched for this repair as of the ruling timestamp.
+
+### RW-443 — 2026-10-05 06:01:55Z — first post-RW-442 gate exposed stale expectations and a one-shot R-36h gap
+
+The registered `r0-r1` run on exact tree `c8f7c70e91c5e09a539cf6270445da56d1404666`
+completed with FAIL (run `2ada30366c4d4394cb79c20b12a2b59f`, 2,292 passed,
+4 failed; log `/tmp/run-gate/lanes/r0-r1/2ada30366c4d4394cb79c20b12a2b59f.log`).
+Two failures were stale fake-kernel expectations: a bare session cannot grow
+`nr_kdamonds` while a foreign monitor is on, and foreign growth must leave the
+count at 3 rather than incorrectly expecting 2. The disappeared-owned-slot
+case exposed that pool bookkeeping retained live claims after an external
+counter shrink; it is now reconciled into quarantine. The cleanup-finalization
+test fixture lacked manifest fields required by the real manifest path and has
+been completed.
+
+The gate review also exposed a separate R-36h path: one-shot `cgprofile run`
+could fail before its READY sentinel if an available DAMON interface refused
+session setup, withholding the wrapped command. The current candidate catches
+`DamonSessionError` both during construction and context entry, logs DAMON as
+unavailable, then signals readiness and continues ordinary sampling. Regression
+tests and README/design/consumer/CP-17 documentation are updated. These edits
+are still uncommitted at this ruling; no gate has yet validated them. Current
+memory PSI is below the launch ceiling, so the next exact-tree registered gate
+is authorized by the standing RG-55 rule, not by RW-441's already-used one-run
+override. The failed `c8f7c70e` gate is not coverage or release evidence for the
+candidate.
+
+### RW-444 — 2026-10-05 06:07:27Z — counter-read test fixtures must model the added reconciliation read
+
+The registered `r0-r1` gate on `591c258d8d4d5088e427aca50b16cf73e1b9cd8e`
+completed FAIL (run `64a68db76d4a888d260f8111faac5a9f`, 2,293 passed, 6
+failed in 174.54 seconds; separate run-gate history records exit 1; log
+`/tmp/run-gate/lanes/r0-r1/64a68db76d4a888d260f8111faac5a9f.log`). All failures
+were in fake `_read_nr_kdamonds` sequences: the new acquire-time reconciliation
+adds one read, shifting the tests' synthetic shrink/growth/readback events
+before the intended operation. The failed assertions do not identify a new
+production failure; they show the fakes no longer placed their simulated
+conditions at the intended boundary. Update those sequences to target the
+post-create readback or free-slot check explicitly, and make a negative
+counter reading fail closed rather than classify every live slot as missing.
+This failed gate is not coverage or release evidence. No next gate is launched
+by this ruling; it requires a fresh PSI/container preflight after the test
+fixture correction is committed.
+
+### RW-445 — 2026-10-05 06:15:38Z — functional pass is insufficient while DAMON lifecycle coverage is below 100%
+
+The registered `r0-r1` gate on `b30eca82100711f53ebf63839facdb4b50b4183a`
+completed with 2,299 tests passing but failed its mandatory coverage check
+(run `2fba4b01b6a3b08b8729711c682e2752`; history verdict FAIL, internal
+`exit_code=2`, 212.496 seconds; wrapper exit 1; log
+`/tmp/run-gate/lanes/r0-r1/2fba4b01b6a3b08b8729711c682e2752.log`). The package
+reported 15 uncovered statements and 6 partial branches in `lib/damon.py`
+(96% file line coverage; 99% total), including uncertain state/readback,
+reservation, quarantine, and teardown paths. Do not treat the passing test
+count as gate evidence. The candidate now adds behavioral tests for those
+failure paths and makes `_reserve_capacity` receive the already-validated
+baseline from `acquire`, removing its otherwise unreachable duplicate baseline
+capture. A fresh exact-tree `r0-r1` run is required after commit; current PSI
+has fallen below the launch threshold, but it must be checked again at launch.
+
+### RW-446 — 2026-10-05 14:42:59Z — reconcile P1 with current main and preserve colliding backlog IDs
+
+Main advanced from `c0d1f4410a4a10a5d9635775e43dec74c2a000fd` to
+`251c3eff5fb2e5b528c9e0ae3acff59fa99c2def` (RG-84 PID/cgroup guard and
+intervening estate work). Before any further exact-tree evidence, merge that
+current main into the P1 candidate. The merge brings 150 paths of main-only
+work into its history; under `scripts/cgroup-profiler`, main added the
+cli-extended adoption item using CP-17 while the P1 branch had independently
+used CP-17 for the DAMON-startup defect. Preserve both records: keep main's
+adoption item at CP-17, renumber the P1 DAMON item to CP-18, and regenerate
+the generated backlog index with `nyxloom backlog index`. No cgroup-profiler
+implementation code changed on main. Run all final P1 gates and review on the
+resolved merge tip; earlier receipts do not transfer. The separate CIU gate
+was left running untouched while this source reconciliation was done.
+
+### RW-447 — 2026-10-05 16:14:35 UTC — first final-repair R0/R1 run found six fixture failures
+
+The registered `r0-r1` run on P1 candidate HEAD `e2e077fbd7680105ad203d3ef407371d799a21b0`
+completed FAIL (run `41ed5886b1454ef6419f43b72d7a9a16`; 2,316 passed, 6
+failed in 130 seconds). The two `TestStartRun` failures were fake helper
+launchers whose signatures did not accept the new `damon` option. Four
+`test_damon` failures were counter-read fixtures still assuming the old
+sequence, before the added pre-reservation reconciliation read; the ambiguous
+resize test also referenced `_write_int` on the wrong object. No runtime
+product assertion failed. The fixtures are corrected in the candidate worktree;
+the failed run is not coverage evidence. Re-run `r0-r1` after checking PSI and
+the gate-container inventory.
+
+### RW-448 — 2026-10-05 16:29:46 UTC — DAMON lifecycle coverage is complete; one shutdown arc remains
+
+The next registered `r0-r1` run on the dirty P1 candidate completed with
+2,343 tests passing and FAIL on coverage only (run
+`fe8e9f04513456b1d8848370ff8d4b98`, 132.96 seconds; history records
+`exit_code=2`; log
+`/tmp/run-gate/lanes/r0-r1/fe8e9f04513456b1d8848370ff8d4b98.log`). The newly
+changed `lib/damon.py` reached 100% line and branch coverage. The sole
+remaining gap was the false arc at `lib/serve.py:2665`, where a clean daemon
+shutdown has already confirmed that the DAMON pool closed and therefore does
+not emit a quarantine warning. A clean-success shutdown regression test has
+been added; the gate must pass anew before this candidate has R0/R1 evidence.
+
+### RW-449 — 2026-10-05 16:34:17 UTC — full package coverage restored on the dirty P1 candidate
+
+After adding a direct clean-shutdown assertion, registered `r0-r1` passed
+(run `97446e632ab9c9b1d6d7d6d44ef74047`, 2,344 tests, 100% line and branch
+coverage across all modules, 132.97 seconds; history verdict PASS, wrapper
+exit 0; log `/tmp/run-gate/lanes/r0-r1/97446e632ab9c9b1d6d7d6d44ef74047.log`).
+The judged checkout was dirty, so the run is not commit-bound evidence and
+did not enter eligible history. Commit the reviewed source/tests/docs, merge
+current main, and rerun gates on the final clean merge tip.
+
+### RW-450 — 2026-10-05 17:01:20 UTC — repair round-4 DAMON lock and release-boundary blockers
+
+Sol's P1 round-4 review rejected candidate `afc32966b9fc2723e82e582c4fd45f1225283f26`
+for two blockers: a non-root caller attempted `fchown`/`fchmod` on the
+already-correct root-created `/run/cgprofile/damon.lock`, preventing helper
+launch; and README/CONSUMERS/DESIGN-GUIDE described an unchosen separate
+1.1.0 release despite RW-434 settling the combined P1+P6 tree as the first
+1.0.0. The candidate now skips owner-only mutations when the lock's group and
+mode already match, degrades helper-mode DAMON to off if optional lock
+preparation fails, and tests that `cgprofile run` still executes its wrapped
+command and preserves its exit status. It also closes the one-shot DAMON
+identity fd at teardown and aligns all three human-facing docs plus the
+historical CHANGES note to RW-434. These edits are not yet gated or reviewed;
+the round-4 report remains preserved in the candidate worktree. At this
+ruling's preflight, memory PSI full avg10 was 0.00 and two pre-existing tester
+containers were running; they were inspected only and left untouched. Run the
+registered package gates on a committed exact tip, then ask the same Sol
+reviewer for fix verification.
+
+### RW-451 — 2026-10-05 17:14:08 UTC — lock/deployment docs fix passes exact-tree R0/R1
+
+The first detached wrapper attempt for `r0-r1` exited without a log, gate
+container, or verdict; it did not run tests and is not a failure. The lane was
+restarted as a tracked foreground command on commit
+`d8056454e1723b948a2591a5ac4ae3ce70c1c8ea`. At +90s the exact 3-CPU
+`cgprofile-gate-1866324-1791220221` was running in `dev-gates.slice`; pytest
+was at 79% and memory PSI full avg10 was 0.00. It completed in 132.44s with
+2,348 tests passing and 100% line and branch coverage for every module. The
+separate run-gate history verdict is PASS, exit 0, `dirty:false`,
+`history_eligible:true`, run `bc0c3e6c390907394d1735190e150cb1`. Because this
+ruling changes the controller log in the judged worktree, that commit-bound
+receipt no longer qualifies the new tree; after committing this ruling, rerun
+the required short gates and then request Sol fix verification. R3 is still
+pending.
+
+### RW-452 — 2026-10-05 17:19:33 UTC — post-record R0/R1 and R3 pass
+
+After RW-451 was committed, the resulting clean candidate tip
+`332aeec196d23bcf7e5dab2641b81382f4aa40c3` passed the registered short gates:
+`r0-r1` run `0487492e11fa801cc918a48200a2cd1f` (2,348 tests, 100% lines and
+branches, 128.22 seconds) and `r3` run `188612adefc0c9253f84e3cb31b2de1b`
+(7/7 canaries rejected, 10.705 seconds). Separate run-gate history records
+both PASS, exit 0, `dirty:false`, and `history_eligible:true` on that same
+commit. This ruling itself changes the worktree tree, so rerun both short
+gates on its committed successor before requesting the same Sol reviewer for
+fix verification. The previously observed no-daemon warning means the runner
+used its registered coarse rusage profile; it does not affect the test or
+canary verdicts. No gate containers remain active.
+
+### RW-453 — 2026-10-05 17:44:42Z — Sol accepts P1 DAMON lock repair for provisional integration
+
+Fresh Sol/xhigh fix-verification round 5 accepted P1 candidate
+`ceb56b769ec74e7e51033876e2e31aee5c979ba0` for provisional integration.
+Round-4 blockers R4-1 (already-correct root-created DAMON lock rejected by
+non-root permission repair) and R4-2 (docs contradicting RW-434's combined
+first `1.0.0` release) are resolved. The preserved review is
+`scripts/cgroup-profiler/nyxloom-trove/reports/cgprofile-P1-DAMON-START-FIX-SOL-REVIEW-round5-20261005.md`.
+It records two low, nonblocking test-oracle limitations (fallback helper
+test does not require samples/DONE; descriptor-close fake does not assert the
+close call), and explicitly does not certify R2, the full gate, live helper
+completion, live DAMON samples/overhead, release, or deployment.
+
+The reviewer verified exact-tip `r0-r1` and `r3` history/log evidence on
+`ceb56b7`: 2,348 passed with 100% package line/branch coverage; 7/7 canaries
+rejected; both clean, history-eligible PASS. The operator supplied two
+scenario-specific live lock-permission probes (daemon-first already-correct
+root:gid lock without owner mutation; caller-first lock creation and group/mode
+repair). The reviewer records these as operator-reported corroboration, not
+independently verified live DAMON acceptance. At 17:44:26Z memory PSI
+`full avg10=0.00`; no mutation/gate process was running, and existing
+non-RG55 containers were left untouched.
+
+After preserving the report and this ruling, rerun short gates on the new
+commit-bound tree before provisional `--no-ff` integration. Then launch P1 R2
+from a quiet, supported CIU worktree and continue the remaining P3 live
+measurement/release work. This ACCEPT is not a release verdict.
+
+### RW-454 — 2026-10-05 17:51:43Z — detached short-gate wrapper produced no job or verdict
+
+The attempted post-RW-453 `r0-r1` launch at 17:48:58Z used a detached
+`nohup ... & disown` wrapper (PID 1909488). At the mandatory +90-second
+check, there was no surviving PID/process, no `cgprofile-gate-*` container,
+an empty output log with no exit marker, and no run-gate history verdict.
+This wrapper did not run a test and is not a gate failure or evidence. Do not
+infer its status from the wrapper PID or retry it detached. Restart the
+registered lane in a tracked foreground exec session; keep its exact session
+handle, verify the gate container/cap/progress at +90 seconds, and read the
+run-gate verdict/history separately after completion. Since this ruling
+changes the judged tree, those gates qualify only the resulting commit.
+
+### RW-455 — 2026-10-05 18:29:03Z — resume P1 and launch combined-tree P6 R2
+
+Main remains clean at `33cfb15085cd259f2811731c377ec3879458f038`, ahead of
+`origin/main` by 24 commits. P1 R2 is still running in its isolated CIU
+worktree, container `run-gate-vbpub-r2-1926195-1791223388` (3 CPUs under
+`dev-gates.slice`). Its last progress read, at 18:16:38Z, had judged 21/114
+candidates, all killed; a 18:23Z container check still found it running.
+No P1 progress was read after that check.
+
+P6's old CIU worktree branch was a clean ancestor of current `main`, so its
+tip did not represent a distinct candidate. Assay intentionally resolves a
+merge `HEAD` to its first parent; planning at the current main merge therefore
+selected only the P1 merge payload (114 candidates). To judge the accumulated
+P6+P1 source delta without changing its tree, the P6 CIU worktree was
+temporarily detached at one-parent commit `324eac950bf0b261d51d064d8a8152e3af0dbe31`.
+Its tree `980863d4e3395d1d538a5cfb874af2e60a9c14aa` is byte-identical to
+current main's merge tree, and `merge-base(db29266, 324eac9)` resolves to
+`db29266`. The exact `assay plan r2 --request-base db29266` reported 1,251
+candidates across 13 `lib/*.py` files, two workers, below the 1,500 cap.
+Its printed 104-hour estimate is derived from the 600-second per-candidate
+budget, not observed throughput; the P1 live rate suggests roughly 11 hours,
+within the declared 24-hour lane budget.
+
+The second allowed mutation slot launched at 18:25:04Z as registered R2,
+container `run-gate-vbpub-r2-1957326-1791224704`, capped at 3 CPUs under
+`dev-gates.slice`. At the startup check, the 154-second baseline had passed,
+all 1,251 candidates were pending, and 8 prior records were rejected rather
+than reused (`resumed_total=0`, `rejudged_total=0`). Host memory PSI full
+`avg10` was 0.02. The profiler daemon was down, so run-gate warned that it
+was using coarse in-lane sampling; this is not a test verdict effect. Keep
+the judged P6 tree quiet and restore its recorded CIU branch before any CIU
+lifecycle command after this campaign.
+
+### RW-456 — 2026-10-05 18:43:55Z — validate cgprofile CIU deployment without starting it
+
+The first root-level `ciu check` refused because this nested standalone CIU
+root had no generated identity. `ciu env generate --root-folder
+scripts/cgroup-profiler` completed; CIU warned that `ciu.env` is a legacy
+write-only export (new identity facts are in `ciu.instance.generated.toml`),
+created network `cgroup-profiler-cmqemn-5kibda-network`, and connected the
+current `dstdns-devcontainer-vb` to it. This was CIU's normal bootstrap side
+effect; read-only `docker network inspect` showed `Internal=false` and that
+container as its only member. This changed the running devcontainer's network
+membership; no command was issued against the `/workspaces/dstdns` checkout,
+and I did not disconnect the container. The generated files are ignored by
+Git and retained for the planned singleton deploy.
+
+Root-level `ciu check` then passed but rendered zero stack configs; the
+standalone service must be selected with `--dir .`. `ciu up --dir .
+--render-toml` rendered its config, and `ciu up --dir . --dry-run` validated
+the merged service and compose without starting Docker Compose. No volume
+directories were needed. The rendered service is privileged, private-cgroup
+(and no host PID setting), network-none, under `cgprofile.slice`; it has
+read-only host `/proc`, writable cgroup-v2, read-only system-bus, and DAMON
+sysfs mounts. Governance resolved `cgroup_parent=cgprofile.slice` and
+injected no service fields. No daemon was started. The local `cgprofile:local`
+image is from 2026-10-04 and predates the latest P1 repair; rebuild only after
+the active mutation suites finish.
+
+Read-only host inspection reported `cgprofile.slice` loaded at
+`/cgprofile.slice`, `Delegate=no`, unlimited CPU quota, and 1 GiB `MemoryMax`.
+The `host-escape` wrapper's automatic mdt doctor found missing cgroup2 mount
+flags and restored `nsdelegate`, `memory_recursiveprot`, and
+`memory_hugetlb_accounting`. The existing mdt host-setup defaults already
+declare `CGROUP2_FLAGS=fix`; no template change is indicated. CMRU's current
+syntax is positional (`cmru status cgroup-profiler --config
+cmru.orchestration.toml`), not the historical `--project` form. Status shows
+no `cgprofile-v*` tag; the config's first release remains the explicitly
+chosen `1.0.0`, not its default `0.1.0` suggestion. No release or daemon
+activation has occurred.
+
+### RW-457 — 2026-10-05 22:03:18 UTC — P1 R2 survivor triage and oracle repair
+
+The exact P1 R2 on commit `33cfb15085cd259f2811731c377ec3879458f038`
+(tree `980863d4e3395d1d538a5cfb874af2e60a9c14aa`) ended at
+`2026-10-05T19:33:13.152801Z`: 114 candidates, 89 killed, 25 survived,
+zero equivalent/budget-exceeded/crashed/hung; R0 PASS and R2
+`FAIL/MUTANTS_SURVIVED`, exit 1. The exact judged worktree and its Assay
+records remain preserved and untouched.
+
+The survivor table in the P1 daemon report
+(`scripts/cgroup-profiler/nyxloom-trove/reports/cgprofile-P1-DAEMON-REPORT.md`)
+dispositions all 25: 19 behavioral oracle gaps now have focused assertions,
+while six are justified equivalents
+under the reachable-state guards and the kernel's remove/recreate behavior
+for `nr_kdamonds` writes. Assay itself does not label these equivalent, so
+the original verdict remains mechanically FAIL; no claim of a green final
+R2 is made. The successor candidate is based on current main
+`67c4c27328a76ded1cb0b8ac192382386d65e796`, whose P1 target files were
+byte-identical to the old judged tree before the new oracles. Its ownership
+invariant parametrization was tightened after the initial short-gate runs to
+test membership and identity independently; those earlier results are
+non-transferable.
+
+The preliminary registered `r0-r1` run passed 2,366 tests with 100% line
+and branch coverage; preliminary `r3` rejected 7/7 canaries. Both preceded
+that final test-only adjustment. Re-run `r0-r1`, `r3`, doctor, and the full
+gate on the exact committed successor. The next exact-tree R2 must follow
+the final committed tests/report, with its verdict read separately. P6 R2
+continues in its separate quiet tree; do not edit or inspect that tree before
+the next 25-minute progress interval.
+
+### RW-458 — 2026-10-05 23:24:20 UTC — Sol supplemental review finds bounded P1 corrections
+
+A fresh Sol/xhigh supplemental review of P1 candidate
+`c24b0d2b882df96ee6549cf357a713943398a564` returned
+`ACCEPT-CONDITIONAL` for provisional integration, not release approval. The
+reviewer independently checked the exact 25-survivor table against the old
+R2 records (114 candidates, 89 killed, 25 survived) and the six-file direct
+delta from `67c4c27328a76ded1cb0b8ac192382386d65e796`; no tests, gates,
+containers, or live probes were run in review.
+
+Two corrections were required before the review could support provisional
+merge. First, `ffbf084aaf44dc23` (`damon.py:495`, `True` to `False`) was
+incorrectly described as a behavioral gap because its test asserted only the
+private `_foreign_growth` flag. Under the supported DAMON sysfs count-write
+behavior, every indexed object is replaced; identity reconciliation already
+quarantines the changed slots and blocks reuse/shrink. Reclassify this as a
+sixth contract-equivalent and retain only the observable refusal,
+quarantine, and foreign-marker-preservation assertions: 19 behavioral gaps,
+six human-reviewed equivalents. The raw Assay verdict remains FAIL until
+its real survivors are dispositioned; prose does not relabel the lane.
+
+Second, `_close_damon_session()` treated missing `cleanup_confirmed` as
+unconfirmed but logged that the slot “will not be reused” even when no
+matching slot appeared in the pool quarantine. The repair now says no
+no-reuse guarantee is established unless the session's identified index is
+actually present in `quarantined_indices`; tests cover missing identity,
+matching quarantine, and an unrelated quarantine. The override-lock oracle
+was also changed from a helper-call spy to file mode/group observations, with
+a separate default-path repair test. The seven focused changed-behavior tests
+passed in 1.95 seconds. Repairs are isolated at
+`.worktrees/rg55-p1-review-repairs-20261005`; the judged `c24b0d2b` worktree
+was not modified. The same Sol reviewer was asked to retain context for
+fix-verification. Exact gates and doctor on the repair tree remain pending.
+
+Main advanced to `faa812f169a540d4ac206d1440751d12ef28be60` while the P1
+candidate still forks at `67c4c273`; reconcile this movement before
+integration. `/run/cgprofile` is mounted in the current devcontainer, but
+`/run/cgprofile/ctl.sock` is absent, so socket-carrier acceptance remains
+unavailable and no live daemon probe was launched.
+
+### RW-459 — 2026-10-05 23:24:20 UTC — keep exact P1 R2 running; record startup and P6 pace
+
+The first detached P1 launch attempt used the monorepo root as cwd and left
+an empty log, no process/container, and no run-gate history entry; it was not
+a test result. The corrected registered launch started at 23:09:35 UTC from
+the P1 package directory against exact HEAD
+`c24b0d2b882df96ee6549cf357a713943398a564`, base
+`1882887511202d7e39f72599fcaa9fcc5e55b466`, in container
+`run-gate-vbpub-r2-2803529-1791241775`. Docker inspection verified
+`NanoCpus=3000000000` and `CgroupParent=dev-gates.slice`. At the required
+23:11:35 UTC health check it was alive in the baseline command with no
+candidate yet judged; the previous exact P1 R2 took about 90 minutes for
+114 candidates, so current ETA is provisionally 1.5–2 hours, to be revised
+from the next scheduled progress sample. The campaign tree remains clean and
+must not be changed; this c24 campaign is useful survivor triage but cannot
+certify the separate repair tree.
+
+The separate P6 R2 progress read at 23:11:48 UTC showed 517/1,251 candidates
+judged. From the 432-candidate sample at 22:16Z this is about 1.55
+candidates/minute; roughly 7h50m remained at that observed rate. No verdict
+was read, and no P6 tree/container was changed. Next progress inspection for
+both campaigns is not before 23:36Z unless a concrete error/completion signal
+arrives sooner.
+
+### RW-460 — 2026-10-05 23:26:40 UTC — Sol fix-verification accepts P1 for provisional integration
+
+The same fresh Sol reviewer verified the corrections on the reconciled P1
+repair tree `99cffbe09d9fe72d45ee34ad61b4c767b950a1c1` and returned `ACCEPT`
+for provisional integration, not release. It confirmed the 19-gap/six-
+equivalent survivor disposition; the cleanup diagnostic withholds a no-reuse
+claim unless the identified index is actually quarantined; and the lock tests
+assert file mode/group behavior rather than a helper call. No new blocker was
+found. The reviewer did not rerun tests or doctor; its full disposition and
+evidence limits are recorded in
+`scripts/cgroup-profiler/nyxloom-trove/reports/cgprofile-P1-R2-SURVIVOR-SOL-REVIEW-20261005.md`.
+
+The controller's seven focused regression cases passed (1.95 seconds) and
+`run-gate.py doctor` on `99cffbe` reported 9 OK, 2 warnings, 0 failures, and
+2 info. Both were before the review-record commit; exact-tip `r0-r1`, `r3`,
+and doctor will be refreshed after that commit. The c24 P1 R2 campaign remains
+active only as old-tree triage and cannot certify the repaired/reconciled
+tree. Do not change its judged checkout.
+
+### RW-461 — 2026-10-05 23:47:58 UTC — P1 provisionally merged; exact short gates pass
+
+P1 repair candidate `ca352d8cdcda1c8014d0f782624bfc5be079192f` passed the
+registered `r0-r1` lane (run `0e08e959e351ba0220ff3192a5c45dac`, 2,369 tests,
+100% line and branch coverage, 199.96 s) and `r3` (run
+`17aaedfe4b71cc68dab204606fb21c0a`, seven canaries rejected, zero survived,
+14.113 s). Separate run-gate history records both PASS, exit 0, `dirty:false`,
+and `history_eligible:true` on the same commit. Doctor on that candidate had
+zero failures (9 OK, 2 warnings, 2 info); the warnings are linked-worktree
+host-lane visibility and the intentionally stopped profiler daemon. With the
+same Sol reviewer accepting the repairs for provisional integration, the
+controller merged it `--no-ff` as `664663a52afa2fa444cee046640cc8b33296f6bb`.
+The merge tree `98b0605ac9a5d813e78cbfee74f39fc3428c27b0` is byte-identical
+to the reviewed/gated candidate tree. Main was clean before merge; the merge
+contains only the P1 repair/tests/reports and this controller log.
+
+This is provisional integration only. P1's active R2 on predecessor tree
+`c24b0d2b` is diagnostic, not final evidence; at 23:36:25Z it had judged
+45/114 candidates. P6's R2 remains active on tree `324eac95`; at 23:36:16Z it
+had judged 547/1,251. Both containers remain separately isolated and capped
+at three CPUs in `dev-gates.slice`. The next progress sample is not before
+00:01:25Z (P1) / 00:01:16Z (P6). After a slot opens, plan one fresh combined
+P1+P6 R2 from explicit request base `db29266f8a006b22a30609a74de7645d1e4c50b7`
+on the final quiet tree; the existing P6 request covers the package source
+set, so a duplicate P1-only campaign is not planned. Verify the plan against
+the merged tree before launch.
+
+Release remains blocked on acceptable exact-tree R2 disposition, the
+registered full gate, live daemon/carrier/placement/restoration probes, and
+measured DAMON overhead. The run-gate RG-55 feature surface is already in
+published tag `run-gate-v23.9.1` (its wheel is present locally); the cockpit
+currently has a newer development build (`23.9.2.dev1126+g998a43552`, rev
+46), so no redundant 23.10.0 release is inferred from this wave. Reconcile
+the installed release wheel at closeout. cgroup-profiler has no release tag;
+the agreed combined P1+P6 first release remains `1.0.0`.
+
+### RW-462 — 2026-10-05 23:49:40 UTC — full combined R2 plan validated; wait for a mutation slot
+
+Using the exact `bec813081d84972bbd15b5eb525e438b063eff4c` tree and this
+worktree's source-backed Assay 7.2.0, `assay plan r2 --request-base
+db29266f8a006b22a30609a74de7645d1e4c50b7` returned `status: ok` with 1,253
+candidates across all 13 changed `lib/*.py` modules, four configured
+operators, two workers, and a 1,500-candidate cap. The P1 repair adds two
+candidates versus the older P6 plan's 1,251; this combined plan covers the
+P1 `damon.py`/`serve.py` source delta and its new oracles. The printed
+375,900-second wall estimate is the 600-second-per-candidate budget divided
+between workers, not measured runtime. The active P6 campaign's observed
+pace (547/1,251 at 23:36Z; last interval 30 candidates/25 minutes) suggests
+a much lower but variable empirical ETA; re-estimate from the next scheduled
+sample rather than treating the plan estimate as a forecast.
+
+No mutant was executed by this planning command. Both mutation slots remain
+occupied by the diagnostic P1 predecessor and the older P6 tree. Once one
+finishes, re-run the plan against the then-final quiet tree and start one
+combined R2 from explicit base `db29266…`; keep that worktree unchanged
+until completion. The current-main tree changed only for controller records
+after the P1 short-gate receipts, so refresh short gates after the slot
+becomes free and before launching the combined campaign.

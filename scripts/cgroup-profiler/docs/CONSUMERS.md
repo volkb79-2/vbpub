@@ -9,24 +9,26 @@ The supported operator front door is the repository shell shim:
 
 The probe prints one identity line and exits 0. In a source checkout it uses
 `pyproject.toml`; a built image reports the CMRU release version embedded as
-`CGPROFILE_VERSION` (for example, `1.1.0`). The shim routes `--version`
-directly to `cgprofile.py`, so this check does not require the analysis/reporting
-venv. Help, usage, and configuration diagnostics at every subcommand depth
+`CGPROFILE_VERSION` (for example, the combined RG-55 first release, `1.0.0`).
+The shim routes `--version` directly to `cgprofile.py`, so this check does not
+require the analysis/reporting venv. Help, usage, and configuration diagnostics at every subcommand depth
 begin with the matching CGPROFILE headline as line 1; normal profiling output
 is unchanged. Use
 `ATTACH-GUIDE.md` for the complete gate integration recipe.
 
 ## Build or publish the daemon image
 
-After the required cgprofile 1.0.0 release, preview and release this 1.1.0
-follow-up from the repository root:
+P1 and P6 were developed as separate work tranches, but RW-434 settles their
+combined tree as cgprofile's first 1.0.0 release. After that tree is merged and
+its required review and gates pass, preview and release it from the repository
+root:
 
 ```bash
-cmru status cgroup-profiler --config cmru.orchestration.toml --set-version 1.1.0
-cmru release cgroup-profiler --config cmru.orchestration.toml --set-version 1.1.0
+cmru status cgroup-profiler --config cmru.orchestration.toml --set-version 1.0.0
+cmru release cgroup-profiler --config cmru.orchestration.toml --set-version 1.0.0
 ```
 
-The first 1.0.0 release used an explicit override because there was no prior
+The first 1.0.0 release uses an explicit override because there is no prior
 cgprofile tag. CMRU creates the release tag
 before image build. `build-push.py` reads that exact tag to set the OCI
 tag/label and embedded runtime version, so CMRU releases need no manual
@@ -39,10 +41,28 @@ selects the separate `cgprofile-release` Bake target, which contains only the
 versioned `ghcr.io/volkb79-2/cgprofile:<version>` tag; it does not publish the
 unqualified local alias to Docker Hub.
 
+## One-shot collector behavior
+
+If `cgprofile run` or `attach` requests DAMON while the host's `nr_kdamonds`
+registry is nonempty, the collector refuses to resize it—even when its
+existing monitors are stopped—because Linux rebuilds every kdamond entry on a
+count write. The collector logs DAMON as unavailable, signals readiness, and
+continues ordinary cgroup/CPU/memory sampling. A later DAMON collection or
+cleanup failure also disables only DAMON and still writes the normal finished
+manifest. `cgprofile run` still launches the wrapped command; a DAMON problem
+must not change the command's exit status (R-36h). Confirm actual DAMON
+collection from a persisted `damon.jsonl` series, not from `cgprofile doctor`
+or a visible DAMON sysfs directory alone. cgprofile's independent one-shot
+processes coordinate with the daemon using the host-shared
+`/run/cgprofile/damon.lock`; an in-container helper bind-mounts only that file
+at `/tmp/cgprofile-damon.lock`, not the control socket. If another cgprofile
+writer holds the lock, the optional DAMON series is refused rather than
+waiting or racing; ordinary profiling proceeds.
+
 ## Deploy a published daemon image with CIU
 
 The default CIU image coordinates intentionally select the local development
-image. To deploy the RG-55 v1.1.0 daemon release, put this complete
+image. To deploy the combined RG-55 v1.0.0 daemon release, put this complete
 override in the tracked sparse `ciu.toml.j2` at the cgprofile CIU root:
 
 ```toml
@@ -50,10 +70,10 @@ override in the tracked sparse `ciu.toml.j2` at the cgprofile CIU root:
 registry = "ghcr.io"
 namespace = "volkb79-2"
 name = "cgprofile"
-tag = "1.1.0"
+tag = "1.0.0"
 ```
 
-The complete coordinates resolve to `ghcr.io/volkb79-2/cgprofile:1.1.0`;
+The complete coordinates resolve to `ghcr.io/volkb79-2/cgprofile:1.0.0`;
 changing only `tag` while leaving the default empty registry and namespace
 would still select a local image. Use the normal CIU bring-up and verify the
 runtime identity before attaching consumers:
@@ -114,8 +134,8 @@ data under `/var/lib/cgprofile/sessions` and its own DAMON kdamonds under
 sysfs during normal operation. Grant daemon control only to operators already
 trusted with host-administrator Docker access. The privileged container's
 mounts and Python checks do not confine a compromised daemon; see the
-[trust boundary](DESIGN-GUIDE.md#daemon-safety-and-placement). Keep any v1.1
-host system-bus mount daemon-side, never in the cockpit.
+[trust boundary](DESIGN-GUIDE.md#daemon-safety-and-placement). Keep the host
+system-bus mount daemon-side, never in the cockpit.
 
 Before relying on `host.gates_slice` or requesting `start --place`, install
 the host's authored `dev-gates.slice` unit. The daemon verifies the loaded,
@@ -167,7 +187,7 @@ The version response has the current wire shape:
 {
   "ok": true,
   "contract": 1,
-  "cgprofile": "1.1.0",
+  "cgprofile": "1.0.0",
   "daemon": {
     "name": "cgprofile-host-daemon",
     "started_at": "2026-09-12T10:15:00Z",
@@ -186,6 +206,21 @@ response (`on` or `unavailable:<reason>`), then check the stop response's
 top-level `series.damon` field for `damon.jsonl` before claiming DAMON samples
 or overhead. See the
 [design rationale](DESIGN-GUIDE.md#damon-availability-is-not-session-readiness).
+
+The daemon reserves its configured DAMON session capacity with one count write
+from an empty registry before starting the first kdamond. A nonempty registry
+is refused regardless of whether its monitors are on or off: every count
+write replaces all entries and can erase foreign staged configuration. The
+daemon pins each owned state inode and quarantines any missing or replaced
+slot rather than stopping, reusing, or shrinking across an object whose
+identity no longer matches. cgprofile's shared advisory lock serializes its
+own pool reservation/teardown against one-shot collectors. It cannot govern
+unrelated privileged tools: the kernel exposes no atomic ownership lease for
+this global sysfs registry, so do not run `damo` or another non-cooperating
+privileged DAMON configurator concurrently. Ordinary profiling continues with
+DAMON marked unavailable when reservation is refused. Treat `damon: "on"` plus a persisted
+`damon.jsonl` series as the evidence that DAMON actually ran, not `ctl version`
+alone.
 
 ## Attach a run-gate lane
 

@@ -159,6 +159,7 @@ def test_damon_pool_explicit_arg_is_used_as_is(tmp_path):
 def test_damon_pool_defaults_to_a_real_kdamond_pool_when_omitted(tmp_path):
     server = serve.SessionServer(sessions_dir=str(tmp_path / "sessions"))
     assert isinstance(server.damon_pool, damon_mod.KdamondPool)
+    assert server.damon_pool.capacity == server.max_sessions
 
 
 def test_parse_iso_epoch_returns_none_for_malformed_text():
@@ -2145,9 +2146,215 @@ class _StubDamonSession:
     def recommit_targets(self, pids: List[int]) -> None:
         self.recommit_calls.append(list(pids))
 
+    def __exit__(self, *exc) -> None:
+        self.close_calls = getattr(self, "close_calls", 0) + 1
+
     @property
     def thresholds(self) -> Dict[str, Any]:
         return {"hot_rate_pct": 5, "warm_rate_pct": 1, "cold_age_s": 30, "idle_age_s": 120}
+
+
+@pytest.mark.parametrize(
+    "failure,cleanup_fails,token_path",
+    [
+        ("recommit", False, True),
+        ("recommit", False, False),
+        ("collect", False, False),
+        ("recommit", True, True),
+    ],
+)
+def test_runtime_damon_failure_keeps_profiling_session_alive(
+    simple_server, monkeypatch, failure, cleanup_fails, token_path, capsys,
+):
+    discovered = 0
+
+    def pids_in_cgroup(*args, **kwargs):
+        nonlocal discovered
+        discovered += 1
+        return [123] if discovered == 1 else [123, 456]
+
+    if not token_path:
+        monkeypatch.setattr(targets_mod, "pids_in_cgroup", pids_in_cgroup)
+
+    class FailingRuntimeDamonSession:
+        def __init__(self, targets, **kwargs):
+            self.targets = list(targets)
+            self.kdamond_idx = 7
+            self.thresholds = {
+                "hot_rate_pct": 50, "warm_rate_pct": 5,
+                "cold_age_s": 30, "idle_age_s": 120,
+            }
+            self.collect_calls = 0
+            self.close_calls = 0
+            self.cleanup_confirmed = not cleanup_fails
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            self.close_calls += 1
+            if cleanup_fails:
+                raise RuntimeError("synthetic cleanup failure")
+
+        def collect(self):
+            self.collect_calls += 1
+            if failure == "collect" and self.collect_calls > 1:
+                raise RuntimeError("late collect failure")
+            return []
+
+        def recommit_targets(self, pids):
+            if failure == "recommit":
+                raise RuntimeError("late recommit failure")
+            self.targets = list(pids)
+
+        @property
+        def last_class_bytes(self):
+            return {"hot": 1, "warm": 1, "cold": 1, "idle": 1}
+
+    monkeypatch.setattr(damon_mod, "DamonSession", FailingRuntimeDamonSession)
+    resolved = targets_mod.find_container_cgroup(
+        SIMPLE_CONTAINER_ID, root=simple_server.cgroup_root,
+    )
+    with simple_server._lock:
+        sess = simple_server._create_session_locked(
+            container_id=SIMPLE_CONTAINER_ID, cgroup=resolved, scope="container",
+            token="a-real-token-99" if token_path else None,
+            interval=1.0, damon_req="on",
+            meta={"lane": "x", "project": "p", "worktree": "w", "commit": None,
+                  "run_gate_revision": 1, "kind": "command", "expected": None},
+        )
+        simple_server._sessions[sess.session_id] = sess
+
+    if token_path:
+        assert sess.subtree_resolver is not None
+        monkeypatch.setattr(sess.subtree_resolver, "refresh", lambda: [123, 456])
+        # Start had no token PIDs, so DAMON was correctly unavailable then.
+        # Attach a synthetic running session to exercise the later discovery
+        # transition without touching the kernel's shared DAMON facility.
+        sess.damon_session = FailingRuntimeDamonSession([
+            damon_mod.DamonTarget(kind="vaddr", pid=123, label="123"),
+        ])
+        sess.damon_status = "on"
+        sess.damon_unavailable_reason = None
+
+    damon_session = sess.damon_session
+    assert damon_session is not None
+    abs_target = os.path.join(simple_server.cgroup_root, sess.cgroup.lstrip("/"))
+    simple_server._on_session_sample(
+        sess,
+        {"seq": 1, "mono": 2.0, "t": EPOCH_START + 2,
+         "cg": {sess.cgroup: {}}, "host": {}},
+        abs_target,
+        None,
+    )
+
+    assert sess.finished is False
+    assert sess.live_samples == 2
+    assert sess.summary_acc.sample_count == 2
+    assert sess.damon_session is None
+    assert sess.damon_status == f"unavailable:RuntimeError: late {failure} failure"
+    assert sess.damon_unavailable_reason == f"RuntimeError: late {failure} failure"
+    assert damon_session.close_calls == 1
+    # A duplicate degradation attempt is inert; the closed session is neither
+    # overwritten nor torn down twice.
+    simple_server._disable_damon_for_session(sess, RuntimeError("second failure"))
+    assert sess.damon_unavailable_reason == f"RuntimeError: late {failure} failure"
+    assert damon_session.close_calls == 1
+    if cleanup_fails:
+        err = capsys.readouterr().err
+        assert "DAMON cleanup raised during runtime failure" in err
+        assert "DAMON stop is unconfirmed" in err
+    assert simple_server._status_entry(sess)["live"]["damon"] == {
+        "status": "unavailable", "hot_bytes_recent": None,
+    }
+    # The failure tick remains part of the ordinary sample series; no partial
+    # DAMON row is fabricated for it. The token-path scenario starts without
+    # token PIDs, so it has no pre-failure DAMON row either.
+    assert len(list(sess.rundir.read("samples"))) == 2
+    assert len(list(sess.rundir.read("damon"))) == (0 if token_path else 1)
+
+    stop_resp = simple_server._dispatch(_wire("stop", session=sess.session_id))
+    assert stop_resp["summary"]["damon"]["status"] == "unavailable"
+    assert stop_resp["summary"]["damon"]["reason"] == f"RuntimeError: late {failure} failure"
+    assert sess.error is None
+
+
+def test_finalize_session_swallows_optional_damon_cleanup_failure(
+    simple_server, capsys,
+):
+    started = simple_server._dispatch(_start_req())
+    sess = simple_server._sessions[started["session"]]
+
+    class _UnconfirmedDamon:
+        cleanup_confirmed = False
+        kdamond_idx = 7
+        thresholds = {"hot_rate_pct": 50, "warm_rate_pct": 5,
+                      "cold_age_s": 30, "idle_age_s": 120}
+
+        def __exit__(self, *_args):
+            raise RuntimeError("synthetic stop failure")
+
+    sess.damon_session = _UnconfirmedDamon()
+    with simple_server._lock:
+        simple_server._finalize_session_locked(sess, aborted_reason=None)
+
+    assert sess.finished
+    assert (Path(simple_server.sessions_dir) / sess.session_id / "summary.json").is_file()
+    assert sess.error is None
+    err = capsys.readouterr().err
+    assert "DAMON cleanup raised during session finalization" in err
+    assert "DAMON stop is unconfirmed" in err
+
+
+def test_missing_cleanup_confirmation_property_is_reported_as_unconfirmed(
+    simple_server, capsys,
+):
+    class LegacyDamonSession:
+        def __exit__(self, *_args):
+            return None
+
+    simple_server._close_damon_session(
+        LegacyDamonSession(), session_id="s-legacy", context="test cleanup",
+    )
+
+    err = capsys.readouterr().err
+    assert "DAMON stop is unconfirmed" in err
+    assert "no no-reuse guarantee is established" in err
+    assert "will not be reused" not in err
+
+
+@pytest.mark.parametrize(
+    ("slot_idx", "quarantined", "reuse_claim"),
+    [
+        (7, {7}, "will not be reused"),
+        (7, {8}, "no no-reuse guarantee is established"),
+    ],
+)
+def test_unconfirmed_cleanup_only_claims_no_reuse_for_matching_quarantine(
+    simple_server, capsys, slot_idx, quarantined, reuse_claim,
+):
+    class _Pool:
+        def __init__(self, indices):
+            self.quarantined_indices = indices
+
+    class _UnconfirmedDamon:
+        def __init__(self, index):
+            self.cleanup_confirmed = False
+            self.kdamond_idx = index
+
+        def __exit__(self, *_args):
+            return None
+
+    simple_server.damon_pool = _Pool(quarantined)
+    simple_server._close_damon_session(
+        _UnconfirmedDamon(slot_idx), session_id="s-unconfirmed", context="test cleanup",
+    )
+
+    err = capsys.readouterr().err
+    assert "DAMON stop is unconfirmed" in err
+    assert reuse_claim in err
+    if slot_idx not in quarantined:
+        assert "will not be reused" not in err
 
 
 def test_on_session_sample_discovery_due_and_not_due_and_status_damon_on(simple_server, monkeypatch):
@@ -2163,6 +2370,10 @@ def test_on_session_sample_discovery_due_and_not_due_and_status_damon_on(simple_
 
     stub = _StubDamonSession()
     sess.damon_session = stub
+    assert sess.subtree_resolver is not None
+    discovered = iter(({10, 20}, {10, 20}, {11}))
+    monkeypatch.setattr(sess.subtree_resolver, "_token_owners", lambda: next(discovered))
+    monkeypatch.setattr(sess.subtree_resolver, "_descendants", lambda owners: set())
     abs_target = os.path.join(simple_server.cgroup_root, sess.cgroup.lstrip("/"))
     real_effective = serve.limits_mod.effective
     effective_calls = []
@@ -2177,7 +2388,7 @@ def test_on_session_sample_discovery_due_and_not_due_and_status_damon_on(simple_
         sess, {"mono": 0.0, "cg": {sess.cgroup: {}}, "host": {}}, abs_target, None
     )
     assert sess.last_discovery_mono == 0.0
-    assert stub.recommit_calls == [[]]
+    assert stub.recommit_calls == [[10, 20]]
 
     simple_server._on_session_sample(
         sess, {"mono": 1.0, "cg": {sess.cgroup: {}}, "host": {}}, abs_target, None
@@ -2189,7 +2400,7 @@ def test_on_session_sample_discovery_due_and_not_due_and_status_damon_on(simple_
         sess, {"mono": 3.0, "cg": {sess.cgroup: {}}, "host": {}}, abs_target, None
     )
     assert sess.last_discovery_mono == 3.0  # due again (delta 3.0 >= 2.0)
-    assert len(stub.recommit_calls) == 2
+    assert len(stub.recommit_calls) == 1  # changed set guard skips identical discovery
 
     status_resp = simple_server._dispatch(_wire("status", session=sess.session_id))
     assert status_resp["ok"] is True
@@ -2742,6 +2953,93 @@ def test_accept_loop_breaks_on_a_non_timeout_oserror(tmp_path, monkeypatch):
     monkeypatch.setattr(server, "_close_socket", lambda: calls.append("closed"))
     server._accept_loop()
     assert calls == ["closed"]
+
+
+@pytest.mark.parametrize("close_mode", ["false", "raises"])
+def test_accept_loop_reports_unconfirmed_pool_shutdown(
+    tmp_path, monkeypatch, capsys, close_mode,
+):
+    server = serve.SessionServer(sessions_dir=str(tmp_path / "sessions"))
+
+    class _FakeSock:
+        def accept(self):
+            raise OSError("done")
+
+    class _Pool:
+        quarantined_indices = frozenset({7})
+
+        def close(self):
+            if close_mode == "raises":
+                raise RuntimeError("synthetic close failure")
+            return False
+
+    monkeypatch.setattr(server, "_bind", lambda: setattr(server, "_sock", _FakeSock()))
+    monkeypatch.setattr(server, "_close_socket", lambda: None)
+    server.damon_pool = _Pool()
+
+    server._accept_loop()
+
+    err = capsys.readouterr().err
+    assert "DAMON pool shutdown could not confirm" in err
+    assert "quarantined=[7]" in err
+    if close_mode == "raises":
+        assert "DAMON pool shutdown raised: RuntimeError: synthetic close failure" in err
+
+
+def test_accept_loop_closes_pool_even_if_session_finalization_raises(tmp_path, monkeypatch):
+    server = serve.SessionServer(sessions_dir=str(tmp_path / "sessions"))
+    calls = []
+
+    class _FakeSock:
+        def accept(self):
+            raise OSError("done")
+
+    class _Pool:
+        quarantined_indices = frozenset()
+
+        def close(self):
+            calls.append("pool")
+            return True
+
+    monkeypatch.setattr(server, "_bind", lambda: setattr(server, "_sock", _FakeSock()))
+    monkeypatch.setattr(server, "_close_socket", lambda: calls.append("socket"))
+    monkeypatch.setattr(
+        server, "_stop_all_sessions",
+        lambda **kwargs: (_ for _ in ()).throw(RuntimeError("finalize failed")),
+    )
+    server.damon_pool = _Pool()
+
+    with pytest.raises(RuntimeError, match="finalize failed"):
+        server._accept_loop()
+
+    assert calls == ["socket", "pool"]
+
+
+def test_accept_loop_returns_cleanly_when_pool_shutdown_is_confirmed(
+    tmp_path, monkeypatch,
+):
+    server = serve.SessionServer(sessions_dir=str(tmp_path / "sessions"))
+    calls = []
+
+    class _FakeSock:
+        def accept(self):
+            raise OSError("done")
+
+    class _Pool:
+        quarantined_indices = frozenset()
+
+        def close(self):
+            calls.append("pool")
+            return True
+
+    monkeypatch.setattr(server, "_bind", lambda: setattr(server, "_sock", _FakeSock()))
+    monkeypatch.setattr(server, "_close_socket", lambda: calls.append("socket"))
+    monkeypatch.setattr(server, "_stop_all_sessions", lambda **_kwargs: None)
+    server.damon_pool = _Pool()
+
+    server._accept_loop()
+
+    assert calls == ["socket", "pool"]
 
 
 # ── a real Unix socket round trip ────────────────────────────────────────
