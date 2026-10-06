@@ -13,6 +13,10 @@ def test_resolve_main_rejects_missing_or_unknown_project(monkeypatch):
     )
     monkeypatch.setattr("cmru.cli._resolve_config", lambda _: None)
     monkeypatch.setattr("cmru.cli.load_config", lambda _: loaded)
+    monkeypatch.setattr(
+        "cmru.config.load_forge_config",
+        lambda _: SimpleNamespace(projects={"known": SimpleNamespace(installer=None)}),
+    )
     assert resolve.resolve_main(["missing"]) == 2
 
 
@@ -24,6 +28,7 @@ def test_resolve_main_uses_project_prefix_and_refuses_missing_owner_or_release(m
     )
     monkeypatch.setattr("cmru.cli._resolve_config", lambda _: None)
     monkeypatch.setattr("cmru.cli.load_config", lambda _: loaded)
+    monkeypatch.setattr("cmru.config.load_forge_config", lambda _: SimpleNamespace(projects={"demo": project}))
     captured = {}
 
     class Host:
