@@ -510,7 +510,7 @@ def test_assay_run_emits_a_b145_counter_refusal_its_own_verify_accepts(
         'jobs = 1\nmax_mutants = 5\noperators = ["python:compare-swap"]\n',
     )
     repo.commit_all("lane")
-    repo.write("src/m.py", "def f(x):\n    return x > 0\n\nvalue = f(1)\n")
+    repo.write("src/m.py", "def f(x):\n    return x >= 0\n")
     repo.commit_all("measurable source change")
 
     def counters_unavailable():

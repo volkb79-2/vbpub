@@ -11943,7 +11943,7 @@ Fix: add both names in pytest's own precedence order, and check the order agains
 
 ## B145 — fork exhaustion is classified as `killed`: a lane at its process limit cannot produce a valid R2 kill
 
-**Status: IMPLEMENTED on branch `assay-b136-b141`; final Sol xhigh review is READY-CONDITIONAL-ON-REGISTERED-GATE (2026-10-05). The 2026-10-06 gate exposed B145 test-harness defects: a missing `clock` argument, a nested cgroup fixture directory created without its parents, and Python bytecode making the synthetic mutant tree dirty. These fixes are included on this branch; the focused rerun and registered gate retry are pending.** A false kill certifies tests that catch nothing and violates Assay's rule that host pressure cannot decide a mutation result.
+**Status: IMPLEMENTED on branch `assay-b136-b141`; final Sol xhigh review is READY-CONDITIONAL-ON-REGISTERED-GATE (2026-10-05). The registered gate at `19b647c` passed the live B145 probes but exposed 12 test-harness failures: stale B105 exclusion line numbers, an ineligible mutation fixture, ShellCheck/Pyflakes issues, Docker probes missing from a SQL unit stub, and standalone expectations that assumed absolute cgroup counters start at zero. The fixes are included in the pending worktree changes; the focused rerun now passes (161 passed), and the registered gate retry is pending.** A false kill certifies tests that catch nothing and violates Assay's rule that host pressure cannot decide a mutation result.
 
 **Observed:** `run-gate-project`'s `assay-r2` campaign ran in CMRU tester-gate container `pedantic_antonelli` without init. Git's detached maintenance left enough zombies to reach `pids.current=19,115` of `pids.max=19,117` at 03:11:18Z. Before the limit, 18 candidates had produced 13 kills after a median of 155 tests and 5 survivors. Afterwards, it recorded 192/192 kills, a median of 2 tests, and 91 first-test kills; those post-limit outcomes and the final verdict are invalid. The affected worktree was `.worktrees/run-gate-r2-assay-venv-20261005`. This task did not inspect or delete that other session's `.assay` state. Discard its state and progress before retrying.
 
@@ -11959,7 +11959,7 @@ Fix: add both names in pytest's own precedence order, and check the order agains
 
 ## B147 — Assay's hermetic Git environment drops image gc.autoDetach and permits detached automatic maintenance
 
-**Status: IMPLEMENTED on branch `assay-b136-b141`; focused tests PASS (130 passed), registered gate pending (2026-10-06).** Assay replaces Git's process environment, so system configuration baked into `tester-unified` does not reach Git. The image's `gc.autoDetach=false` cannot protect Assay's own Git children.
+**Status: IMPLEMENTED on branch `assay-b136-b141`; focused tests PASS (161 passed), registered gate pending (2026-10-06).** Assay replaces Git's process environment, so system configuration baked into `tester-unified` does not reach Git. The image's `gc.autoDetach=false` cannot protect Assay's own Git children.
 
 **Observed:** Assay's `_REPLACEMENT_ENV` sets `GIT_CONFIG_NOSYSTEM=1` and points `GIT_CONFIG_GLOBAL` at `/dev/null`. This is intentional for hermetic repository facts, but it also discards the image-level `gc.autoDetach=false` setting. Git 2.55 can start detached maintenance after commands; those children can outlive the bounded Git command, consume the gate's PID capacity, and modify a test repository during a campaign. B145 detects the false mutation result after resource exhaustion; B147 closes Assay's contributor to the same process leak.
 

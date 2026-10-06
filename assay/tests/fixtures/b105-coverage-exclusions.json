@@ -10,7 +10,7 @@
       "reason": "TYPE_CHECKING imports CommandPlan only for annotations; importing runner here would create a runtime cycle."
     },
     "src/assay/mutation.py": {
-      "lines": [157, 164, 165],
+      "lines": [158, 165, 166],
       "reason": "TYPE_CHECKING imports four annotation names from adapters.base and runner; runtime imports would create the documented mutual dependencies."
     },
     "src/assay/mutation_witness.py": {
@@ -18,7 +18,7 @@
       "reason": "TYPE_CHECKING imports CommandPlan only for annotations; importing runner here would create a runtime cycle."
     },
     "src/assay/git.py": {
-      "lines": [396, 397, 1341, 1342],
+      "lines": [405, 406, 1377, 1378],
       "reason": "Selector cleanup catches only the narrow race where a descriptor is already unregistered or closed during deterministic process teardown."
     }
   }

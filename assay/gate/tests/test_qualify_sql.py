@@ -1268,6 +1268,9 @@ def _gate(tmp_path: Path, gate_functions: Path, worktree: Path, *, out: str, rc:
     env, docker_log, harness_log = _sql_env(tmp_path, out=out, rc=rc)
     proc = run_bash(
         f"run_registered_tester_container() {{ {tester}; }}\n"
+        # This unit harness stubs the separate live B145 Docker acceptance probes.
+        "run_b145_bounded_wait_acceptance_probe() { :; }\n"
+        "run_b145_low_pids_probe() { :; }\n"
         f'run_registered_gate "{worktree}" "/host/vbpub" "dev-gates.slice"',
         gate_functions=gate_functions,
         env=env,

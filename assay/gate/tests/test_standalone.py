@@ -63,6 +63,7 @@ materialised as a literal string/temp file at test time.
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import importlib.util
 import json
@@ -822,7 +823,7 @@ def _assert_complete(real: dict, expected: dict) -> None:
         "result_stdout_dropped_bytes",
         "result_stderr_dropped_bytes",
     }
-    filtered = {k: v for k, v in real.items() if k not in volatile}
+    filtered = copy.deepcopy({k: v for k, v in real.items() if k not in volatile})
     # (B091/A1) `judgment.r2.budget_per_candidate_derived_s` is the SAME
     # class of value as the top-level `volatile` set -- measured from this
     # run's own real baseline wall-clock time, so no fixture can hand-inject
@@ -833,6 +834,38 @@ def _assert_complete(real: dict, expected: dict) -> None:
     # never mutated.
     judgment = filtered.get("judgment")
     r2 = judgment.get("r2") if isinstance(judgment, dict) else None
+    mutation = r2.get("mutation") if isinstance(r2, dict) else None
+    if isinstance(mutation, dict):
+        counter_groups = {
+            "pids_events": ("max",),
+            "memory_events": ("max", "oom", "oom_kill", "oom_group_kill"),
+        }
+        for bucket in (
+            "killed",
+            "survived",
+            "crashed",
+            "budget_exceeded",
+            "equivalent",
+            "hung",
+        ):
+            for candidate in mutation.get(bucket, []):
+                evidence = candidate.get("resource_limit_evidence")
+                assert isinstance(evidence, dict)
+                assert evidence.get("cgroup_version") == 2
+                for group, event_names in counter_groups.items():
+                    counters = evidence.get(group)
+                    assert isinstance(counters, dict)
+                    assert set(counters) == set(event_names)
+                    for event in event_names:
+                        sample = counters[event]
+                        assert set(sample) == {"before", "after", "delta"}
+                        before, after, delta = (
+                            sample["before"], sample["after"], sample["delta"]
+                        )
+                        assert after >= before
+                        assert delta == after - before == 0
+                        sample["before"] = 0
+                        sample["after"] = 0
     if isinstance(r2, dict) and "budget_per_candidate_derived_s" in r2:
         derived = r2["budget_per_candidate_derived_s"]
         assert isinstance(derived, (int, float)) and not isinstance(derived, bool)

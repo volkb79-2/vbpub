@@ -688,6 +688,8 @@ run_b145_low_pids_probe() {
     || die 'the B145 low-pids probe requires the host timeout command'
   _assay_b145_probe_container_name="run-gate-assay-b145-pids-${BASHPID}-${RANDOM}-$(date +%s)"
   printf 'ASSAY_B145_PROBE_CONTAINER=%s\n' "$_assay_b145_probe_container_name"
+  # The command intentionally expands in the container's bash, not this shell.
+  # shellcheck disable=SC2016
   container_id="$(timeout --kill-after=10s 30s docker run -d \
     --name "$_assay_b145_probe_container_name" \
     --init \

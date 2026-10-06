@@ -214,7 +214,7 @@ def test_plan_refuses_an_ignored_untracked_exact_file_source_root(
     git_repo.write("src/other.py", "def other():\n    return 0\n")
     toml = git_repo.write(
         "assay.toml",
-        f"""\
+        """\
 schema_version = 2
 
 [lanes.package]
@@ -222,7 +222,7 @@ scope = "S1"
 rigor = ["R0", "R2"]
 enforcement = "gate"
 argv = ["/bin/true"]
-env = {{}}
+env = {}
 env_passthrough = ["PATH"]
 budget = "1m"
 allow_argv_append = false
