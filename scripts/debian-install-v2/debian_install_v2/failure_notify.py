@@ -136,13 +136,53 @@ def find_cause(lines: list[str]) -> str:
     return ""
 
 
-def recently_notified(state: dict, now: datetime | None = None) -> bool:
+def unit_activation_time(unit: str) -> datetime | None:
+    """When the failed unit's current run started, or None (callers then fail open).
+
+    Chosen option (simplest correct): ``ExecMainStartTimestamp`` via
+    ``systemctl show --timestamp=unix`` (seconds since the epoch, locale- and
+    timezone-independent; it is set for every service type the moment the main
+    process is exec'd, unlike ActiveEnterTimestamp which oneshot units lack
+    while activating). It is cleared by the installer too (Installer.resume
+    drops ``failure_notified_at`` on entry); this is the belt to that braces:
+    a mark written BEFORE this run began belongs to an earlier run and must not
+    silence a crash of this one that happened before the installer ran.
+    Any failure (no systemctl, old systemd, empty/odd output) -> None.
+    """
+    systemctl = shutil.which("systemctl")
+    if not systemctl:
+        return None
+    try:
+        result = subprocess.run(
+            [systemctl, "show", "--timestamp=unix", "-p", "ExecMainStartTimestamp", unit],
+            capture_output=True, text=True, timeout=JOURNAL_TIMEOUT_S, check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    for line in result.stdout.splitlines():
+        key, _, value = line.partition("=")
+        value = value.strip()
+        if key == "ExecMainStartTimestamp" and re.fullmatch(r"@\d+", value):
+            try:
+                return datetime.fromtimestamp(int(value[1:]), timezone.utc)
+            except (OverflowError, OSError, ValueError):
+                return None
+    return None
+
+
+def recently_notified(
+    state: dict, now: datetime | None = None, activated_at: datetime | None = None,
+) -> bool:
     """True when the installer's own stage2 failure path already posted a failure.
 
     That path (Installer.resume) records ``failure_notified_at`` in state.json
     just before it re-raises, which is what makes systemd run this notifier. A
     notice older than DEDUP_WINDOW_S belongs to an earlier run (a crash before
     the installer could report, e.g. an import error, must still be posted).
+    A future-dated mark (negative age) is not a trustworthy announcement: it
+    counts as NOT announced, so the notifier posts. ``activated_at`` (the failed
+    unit's current start, when known): a mark older than it is from a previous
+    run and is not an announcement of this failure.
     """
     stamp = state.get("failure_notified_at")
     if not isinstance(stamp, str):
@@ -153,6 +193,8 @@ def recently_notified(state: dict, now: datetime | None = None) -> bool:
         return False
     if then.tzinfo is None:
         then = then.replace(tzinfo=timezone.utc)
+    if activated_at is not None and then < activated_at:
+        return False
     age = ((now or datetime.now(timezone.utc)) - then).total_seconds()
     return 0 <= age <= DEDUP_WINDOW_S
 
@@ -261,7 +303,10 @@ def main(argv: list[str] | None = None, environ: dict[str, str] | None = None) -
             state = loaded if isinstance(loaded, dict) else {}
         except (OSError, ValueError):
             state = {}
-    already_announced = recently_notified(state)
+    # Fail open: when the unit's activation time cannot be determined we cannot
+    # prove the mark belongs to THIS run, so post (a duplicate beats silence).
+    activated_at = unit_activation_time(unit)
+    already_announced = activated_at is not None and recently_notified(state, activated_at=activated_at)
     if state_path is not None:
         recorded = record_failure(
             state_path, unit, journal, output, out_file, cause=cause, keep_status=already_announced,

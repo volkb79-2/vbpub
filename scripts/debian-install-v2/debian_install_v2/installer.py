@@ -261,6 +261,11 @@ class Installer:
         # Before anything below can fail: a failure message must say stage2.
         self._notify_stage = "stage2"
         saved = self.state.load()
+        if "failure_notified_at" in saved:
+            # A mark from an earlier run must not silence the OnFailure notifier
+            # if THIS run dies before reaching the failure path below.
+            # (None, not a deleted key: StateStore.save only merges.)
+            saved = self.state.save(failure_notified_at=None)
         persisted = saved.get("config", {})
         if not isinstance(persisted, dict):
             raise StateError("state manifest does not contain a configuration object")

@@ -7,6 +7,7 @@ import json
 import stat
 import sys
 import threading
+from datetime import timedelta
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
@@ -64,6 +65,20 @@ def hook_server():
     yield f"http://127.0.0.1:{server.server_port}/hooks/{SECRET_ID}"
     server.shutdown()
     thread.join(timeout=5)
+
+
+REAL_ACTIVATION_TIME = failure_notify.unit_activation_time
+LONG_AGO = failure_notify.datetime(2000, 1, 1, tzinfo=failure_notify.timezone.utc)
+
+
+@pytest.fixture(autouse=True)
+def activation_long_ago(monkeypatch):
+    """Default: the failed unit's current run started long before any mark.
+
+    Keeps in-process tests off the real systemctl; tests of the activation
+    comparison override it.
+    """
+    monkeypatch.setattr(failure_notify, "unit_activation_time", lambda unit: LONG_AGO)
 
 
 CAUSE = "ModuleNotFoundError: No module named 'cli_extended'"
@@ -233,30 +248,38 @@ def test_stale_installer_notice_does_not_suppress_a_new_crash(tmp_path, hook_ser
     assert len(Hook.bodies) == 1
 
 
-def failing_installer_run(tmp_path, monkeypatch, post):
+def failing_installer_run(
+    tmp_path, monkeypatch, post, *, seed=None, message="stage2 exploded", **config_overrides
+):
     """Installer.resume with a stage2 that raises; ``post`` stands in for post_webhook.
 
     Returns (state dict after the failure, state_dir). The first call is the
     'Resumed stage2' milestone, so only the FAILURE post is steered by ``post``.
+    ``seed`` is merged into the state before resume (e.g. a stale mark).
     """
     from debian_install_v2.actions import HostActions
     from debian_install_v2.config import Config
     from debian_install_v2.installer import Installer
     from debian_install_v2.state import StateStore
 
-    config = Config(
+    settings = dict(
         state_dir=str(tmp_path / "state"), log_dir=str(tmp_path / "logs"),
         mattermost_webhook_url="https://mm.example.test/hooks/prodhookid",
         never_reboot=True, auto_reboot_after_stage1=False, credential_mode="systemd",
     )
-    StateStore(config.state_dir).save_new(StateStore.new(config))
+    settings.update(config_overrides)
+    config = Config(**settings)
+    store = StateStore(config.state_dir)
+    store.save_new(StateStore.new(config))
+    if seed:
+        store.save(**seed)
     installer = Installer(config, HostActions(dry_run=True))
     monkeypatch.setattr(installer.actions, "dry_run", False)
     monkeypatch.setattr(installer.state, "dry_run", False)
     monkeypatch.setattr("debian_install_v2.installer.post_webhook", post)
 
     def boom():
-        raise RuntimeError("stage2 exploded")
+        raise RuntimeError(message)
 
     installer._stage2 = boom
     with pytest.raises(RuntimeError, match="stage2 exploded"):
@@ -426,3 +449,186 @@ def test_failed_post_is_reported_without_the_url(tmp_path, capsys, monkeypatch):
     assert "mattermost notification FAILED" in captured.out
     assert SECRET_ID not in captured.out + captured.err
     assert json.loads((state_dir / "state.json").read_text())["status"] == "failed"
+
+
+# ---- LT-S2b: window edges, future marks, partial chunks, stale marks, activation ----
+
+NOW = failure_notify.datetime(2026, 10, 6, 12, 0, 0, tzinfo=failure_notify.timezone.utc)
+
+
+def mark_aged(seconds):
+    return {"failure_notified_at": (NOW - timedelta(seconds=seconds)).isoformat()}
+
+
+@pytest.mark.parametrize(
+    "age, announced",
+    [(299, True), (300, True), (301, False)],
+    ids=["299s-suppressed", "300s-edge-suppressed", "301s-posts"],
+)
+def test_dedup_window_edges(age, announced):
+    assert failure_notify.recently_notified(mark_aged(age), now=NOW) is announced
+
+
+def test_future_dated_mark_counts_as_not_announced():
+    assert failure_notify.recently_notified(mark_aged(-1), now=NOW) is False
+    assert failure_notify.recently_notified(mark_aged(-3600), now=NOW) is False
+
+
+def test_future_dated_mark_makes_the_notifier_post(tmp_path, hook_server, monkeypatch):
+    monkeypatch.setattr(failure_notify, "read_journal", lambda unit, secrets: ["systemd: failed"])
+    future = (failure_notify.datetime.now(failure_notify.timezone.utc)
+              + timedelta(hours=1)).isoformat()
+    rc, _ = post_with_state(tmp_path, hook_server, status="failed", failure_notified_at=future)
+    assert rc == 0
+    assert len(Hook.bodies) == 1
+
+
+def test_mark_older_than_the_unit_activation_does_not_suppress(tmp_path, hook_server, monkeypatch):
+    # S1(b): the mark is fresh (60 s old) but the unit was (re)started 30 s ago,
+    # i.e. the mark belongs to the PREVIOUS run; this run crashed before the
+    # installer ran (import error). The notifier must post.
+    monkeypatch.setattr(failure_notify, "read_journal", lambda unit, secrets: ["systemd: failed"])
+    clock = failure_notify.datetime.now(failure_notify.timezone.utc)
+    mark = (clock - timedelta(seconds=60)).isoformat()
+    monkeypatch.setattr(
+        failure_notify, "unit_activation_time",
+        lambda unit: clock - timedelta(seconds=30),
+    )
+    rc, _ = post_with_state(tmp_path, hook_server, status="failed", failure_notified_at=mark)
+    assert rc == 0
+    assert len(Hook.bodies) == 1
+
+
+def test_mark_after_the_unit_activation_still_suppresses(tmp_path, hook_server, monkeypatch):
+    monkeypatch.setattr(failure_notify, "read_journal", lambda unit, secrets: ["systemd: failed"])
+    clock = failure_notify.datetime.now(failure_notify.timezone.utc)
+    monkeypatch.setattr(
+        failure_notify, "unit_activation_time",
+        lambda unit: clock - timedelta(seconds=90),
+    )
+    mark = (clock - timedelta(seconds=10)).isoformat()
+    rc, _ = post_with_state(tmp_path, hook_server, status="failed", failure_notified_at=mark)
+    assert rc == 0
+    assert Hook.bodies == []
+
+
+def test_unknown_activation_fails_open_and_posts(tmp_path, hook_server, monkeypatch):
+    monkeypatch.setattr(failure_notify, "read_journal", lambda unit, secrets: ["systemd: failed"])
+    monkeypatch.setattr(failure_notify, "unit_activation_time", lambda unit: None)
+    mark = failure_notify.datetime.now(failure_notify.timezone.utc).isoformat()
+    rc, _ = post_with_state(tmp_path, hook_server, status="failed", failure_notified_at=mark)
+    assert rc == 0
+    assert len(Hook.bodies) == 1
+
+
+def test_unit_activation_time_parses_systemctl_and_fails_open(monkeypatch):
+    class Result:
+        def __init__(self, stdout):
+            self.stdout = stdout
+
+    calls = []
+
+    def fake_run(argv, **kw):
+        calls.append(argv)
+        return Result(fake_run.out)
+
+    real = REAL_ACTIVATION_TIME  # the autouse fixture stubs the module attribute
+    monkeypatch.setattr(failure_notify.shutil, "which", lambda name: "/bin/systemctl")
+    monkeypatch.setattr(failure_notify.subprocess, "run", fake_run)
+    fake_run.out = "ExecMainStartTimestamp=@1790000000\n"
+    assert real(STAGE2) == failure_notify.datetime.fromtimestamp(1790000000, failure_notify.timezone.utc)
+    assert "ExecMainStartTimestamp" in calls[-1] and STAGE2 in calls[-1]
+    for odd in ("ExecMainStartTimestamp=\n", "ExecMainStartTimestamp=n/a\n", "", "garbage"):
+        fake_run.out = odd
+        assert real(STAGE2) is None
+
+    def boom(argv, **kw):
+        raise OSError("no systemctl")
+
+    monkeypatch.setattr(failure_notify.subprocess, "run", boom)
+    assert real(STAGE2) is None
+    monkeypatch.setattr(failure_notify.shutil, "which", lambda name: None)
+    assert real(STAGE2) is None
+
+
+def test_resume_clears_a_stale_mark_so_an_early_crash_is_not_silenced(tmp_path, monkeypatch, hook_server):
+    # S1(a): the previous run left a FRESH mark. The unit restarts; this run's
+    # failure post fails (so no new mark). The old mark must be gone, and the
+    # notifier must post. (activation is "long ago" via the autouse stub, so
+    # only the clear in Installer.resume can make this pass.)
+    fresh = failure_notify.datetime.now(failure_notify.timezone.utc).isoformat()
+    state, state_dir = failing_installer_run(
+        tmp_path, monkeypatch, post_false, seed={"failure_notified_at": fresh},
+    )
+    assert not isinstance(state.get("failure_notified_at"), str)
+    bodies = notifier_after(state_dir, tmp_path, hook_server, monkeypatch)
+    assert len(bodies) == 1
+
+
+def test_telegram_partial_chunk_failure_is_not_delivery_and_leaves_the_mark_unset(
+    tmp_path, monkeypatch, hook_server
+):
+    import urllib.request
+
+    sent = []
+    failure_chunks = []
+
+    def fake_urlopen(request, timeout=None):
+        text = request.data.decode("utf-8")
+        sent.append(text)
+        if "Install+FAILED" in text or failure_chunks:  # the failure post: chunk 1 ok, chunk 2 fails
+            failure_chunks.append(text)
+            if len(failure_chunks) >= 2:
+                raise OSError("telegram down")
+
+        class Closer:
+            def close(self):
+                pass
+
+        return Closer()
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr("debian_install_v2.installer.time.sleep", lambda s: None)
+    long_message = "stage2 exploded " + "\n\n".join("xxxxxxxx" * 200 for _ in range(6))
+    state, state_dir = failing_installer_run(
+        tmp_path, monkeypatch, post_ok, message=long_message,
+        mattermost_webhook_url="", notify_backend="telegram",
+        telegram_bot_token=TG_TOKEN, telegram_chat_id="42",
+    )
+    assert len(failure_chunks) == 2, "the failure message must be split and the 2nd chunk attempted"
+    assert state["status"] == "failed"
+    assert "failure_notified_at" not in state
+
+
+def test_notify_returns_false_when_a_later_telegram_chunk_fails(tmp_path, monkeypatch):
+    import urllib.request
+    from debian_install_v2.actions import HostActions
+    from debian_install_v2.config import Config
+    from debian_install_v2.installer import Installer
+
+    installer = Installer(
+        Config(state_dir=str(tmp_path / "s"), log_dir=str(tmp_path / "l"), notify_backend="telegram",
+               telegram_bot_token=TG_TOKEN, telegram_chat_id="42"),
+        HostActions(dry_run=False), inspect_host=False,
+    )
+    calls = []
+
+    def fake_urlopen(request, timeout=None):
+        calls.append(request)
+        if len(calls) == 2:
+            raise OSError("telegram down")
+
+        class Closer:
+            def close(self):
+                pass
+
+        return Closer()
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr("debian_install_v2.installer.time.sleep", lambda s: None)
+    message = "\n\n".join("y" * 3000 for _ in range(3))
+    assert installer._notify(message) is False
+    assert len(calls) == 2  # stopped at the failed chunk, no later chunk sent
+    calls.clear()
+    monkeypatch.setattr(urllib.request, "urlopen", lambda request, timeout=None: type("C", (), {"close": lambda self: None})())
+    assert installer._notify(message) is True
