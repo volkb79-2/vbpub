@@ -273,7 +273,7 @@ def _estate_contracts() -> list[Path]:
     found = []
     for path in sorted(REPO_ROOT.rglob("*.toml")):
         relative = path.relative_to(REPO_ROOT)
-        if _SKIP_PARTS & set(relative.parts):
+        if _SKIP_PARTS & set(relative.parts) or not path.is_file():
             continue
         if path.name.startswith(("cmru", "run-gate", "assay")) or "templates" in relative.parts:
             found.append(path)
@@ -356,7 +356,7 @@ def _cmru_from_text(text: str) -> list[list[str]]:
 def _estate_shell_scripts() -> list[Path]:
     return sorted(
         path for path in REPO_ROOT.rglob("*.sh")
-        if not _SKIP_PARTS & set(path.relative_to(REPO_ROOT).parts)
+        if path.is_file() and not _SKIP_PARTS & set(path.relative_to(REPO_ROOT).parts)
     )
 
 
@@ -551,7 +551,7 @@ def _estate_cmru_import_problems(files) -> list[str]:
     for path in files:
         try:
             tree = ast.parse(path.read_text(encoding="utf-8"))
-        except (SyntaxError, UnicodeDecodeError, ValueError):
+        except (SyntaxError, UnicodeDecodeError, ValueError, OSError):
             continue
         where = path.relative_to(REPO_ROOT) if path.is_relative_to(REPO_ROOT) else path
         for node in ast.walk(tree):
@@ -578,7 +578,10 @@ def _estate_cmru_import_problems(files) -> list[str]:
 def _estate_python_outside_cmru() -> list[Path]:
     return sorted(
         path for path in REPO_ROOT.rglob("*.py")
-        if not (_SKIP_PARTS | {"cmru"}) & set(path.relative_to(REPO_ROOT).parts[:1])
+        # is_file(): a tracked symlink dangles in the canary's sparse snapshot
+        # (libraries/worktree/run-gate.py -> ../../run-gate-project/run-gate.py).
+        if path.is_file()
+        and not (_SKIP_PARTS | {"cmru"}) & set(path.relative_to(REPO_ROOT).parts[:1])
         and not _SKIP_PARTS & set(path.relative_to(REPO_ROOT).parts)
     )
 
