@@ -32,7 +32,7 @@ Image contents worth knowing (KI-52 / BG-05, 2026-10):
   requirement ever reaches pip, and the image installs the RELEASED wheel
   instead: `fetch-cli-extended.py` downloads the asset PINNED in the Dockerfile
   (`CLI_EXTENDED_WHEEL_URL` + `CLI_EXTENDED_WHEEL_SHA256` defaults, currently the
-  released 0.2.0 wheel; to bump, copy `url`/`sha256` from
+  released 0.3.0 wheel; to bump, copy `url`/`sha256` from
   `cli-extended-latest/latest.json` into those defaults and rebuild).
   `--build-arg CLI_EXTENDED_RESOLVE=latest` is the explicit opt-in that reads the
   pointer instead (add `--no-cache`).

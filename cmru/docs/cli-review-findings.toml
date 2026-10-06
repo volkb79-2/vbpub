@@ -93,7 +93,7 @@ severity = "note"
 category = "adoption"
 route = "route:entrypoint:cmru/doctor"
 summary = "In an editable development venv whose stale dist metadata predates the cli-extended floor, doctor's `cli-extended` check warns instead of passing; it reads the requirement from installed cmru metadata."
-remedy = "Reinstall the cmru wheel (or `pip install -e` again) so dist metadata carries `cli-extended>=0.2.0`; no code change."
+remedy = "Reinstall the cmru wheel (or `pip install -e` again) so dist metadata carries `cli-extended>=0.3.0`; no code change."
 
 [[findings]]
 id = "semantics-domain-runtimeerror-reported-as-unexpected"

@@ -74,7 +74,7 @@ Verified against `cmru --help`, `cmru handler --help` and `cmru versions --help`
 
 ## Dependencies, packaging and new verbs
 
-- `cli-extended>=0.2.0` is now a real wheel dependency of cmru (it is no longer vendored or put on
+- `cli-extended>=0.3.0` is now a real wheel dependency of cmru (it is no longer vendored or put on
   `PYTHONPATH` from the monorepo). It is a release asset, not on PyPI: install it first, or use
   `--no-index --find-links`; `pip install -e .` without `--no-deps` queries PyPI for it. The tester image
   installs the released wheel by sha256.
