@@ -100,6 +100,11 @@ def sandbox(tmp_path, monkeypatch):
         raise OSError("socket use blocked by the review-case sandbox")
 
     monkeypatch.setattr(socket.socket, "connect", refuse_connect)
+
+    def refuse_dns(*_args, **_kwargs):
+        raise socket.gaierror("name resolution blocked by the review-case sandbox")
+
+    monkeypatch.setattr(socket, "getaddrinfo", refuse_dns)
     yield work, log
     # `--log-prefix-time-short` sets a process-wide env flag and wraps the std streams.
     os.environ.pop(output._TIME_ENV, None)
@@ -114,6 +119,26 @@ def _run(argv: list[str], capsys) -> int:
     except SystemExit as exc:
         status = exc.code if isinstance(exc.code, int) else (0 if exc.code is None else 1)
     return int(status or 0)
+
+
+def test_the_sandbox_blocks_dns_and_resolve_repo_does_no_lookup(sandbox, capsys, monkeypatch):
+    """``resolve --repo ... --prefix ...`` imports its own ``urlopen`` (not the patched one) and
+    used to perform a real DNS lookup for github.com; the sandbox now blocks name resolution."""
+    with pytest.raises(socket.gaierror, match="blocked by the review-case sandbox"):
+        socket.getaddrinfo("github.com", 443)
+    answered: list[object] = []
+    blocked = socket.getaddrinfo
+
+    def spy(*args, **kwargs):
+        result = blocked(*args, **kwargs)  # the sandbox stub: always raises
+        answered.append(args[:1])  # only reached if a real lookup answered
+        return result
+
+    monkeypatch.setattr(socket, "getaddrinfo", spy)
+    status = _run(["resolve", "--repo", "owner/repo", "--prefix", "demo-v"], capsys)
+    capsys.readouterr()
+    assert status != 0  # it could not fetch: nothing was resolved
+    assert answered == []  # no lookup was ever answered by a real resolver
 
 
 @pytest.mark.parametrize("case", _load_cases())

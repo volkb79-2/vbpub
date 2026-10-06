@@ -349,7 +349,7 @@ def source_git_root_for_projects(repo_root: Path, projects: Sequence[object]) ->
     groups = project_git_family_groups(repo_root, projects)
     if len(groups) != 1:
         details = ", ".join(str(root) for root in sorted(groups))
-        raise RuntimeError(
+        raise UsageRefusal(
             "selected CMRU projects belong to independent Git families; split the "
             f"transaction by family before allocating a worktree ({details})"
         )
@@ -406,7 +406,7 @@ def local_main_divergence(repo_root: Path, *, ref: str = "main") -> tuple[int, i
         return int(ahead), int(behind)
     except (RuntimeError, ValueError) as exc:
         label = "local main" if ref == "main" else repr(ref)
-        raise RuntimeError(
+        raise RefusedBeforeChange(
             f"Cannot compare {label} with origin/main; fetch/repair the ref, or pass a "
             "different --ref, before starting a release."
         ) from exc
@@ -422,7 +422,7 @@ def assert_local_main_not_ahead(repo_root: Path, *, ref: str = "main") -> int:
     ahead, behind = local_main_divergence(repo_root, ref=ref)
     if ahead:
         label = "Local main" if ref == "main" else repr(ref)
-        raise RuntimeError(
+        raise RefusedBeforeChange(
             f"{label} is {ahead} commit(s) ahead of origin/main. Push those commits (or "
             "explicitly base the intended change on origin/main) before release; an "
             "isolated release snapshots origin/main and would omit them."
@@ -572,7 +572,7 @@ def create_workspace(
     # which would not be "this ONE transaction exclusively owns the name it
     # created" if that ever happened (an allocation collision or stale leftover).
     if path.exists():
-        raise RuntimeError(
+        raise RefusedBeforeChange(
             f"worktree path already exists: {path}; refusing to reuse an occupied transaction name"
         )
     try:
@@ -637,7 +637,7 @@ def resume_workspace(
     except RuntimeError:
         expected_common = None
     if expected_common is not None and path_common != expected_common:
-        raise RuntimeError(f"{path} is not a worktree of {repo_root}")
+        raise UsageRefusal(f"{path} is not a worktree of {repo_root}")
     # New transactions resume directly from their CMRU record. Legacy
     # candidates, including a removal-bridge record, must revalidate progress
     # and refresh origin/main before returning or completing adoption.
@@ -648,7 +648,7 @@ def resume_workspace(
             _require_cmru_record_purpose(record, "release", path)
             context = shared.ensure_workspace(record)
             if not _is_release_branch(context.branch):
-                raise RuntimeError(
+                raise UsageRefusal(
                     f"{path} is not a retained cmru release branch (got {context.branch!r})"
                 )
             if record.purpose == "cmru-legacy":
@@ -688,7 +688,7 @@ def resume_workspace(
         raise RuntimeError(str(exc)) from exc
     branch = _git(path, "branch", "--show-current")
     if not _is_release_branch(branch):
-        raise RuntimeError(f"{path} is not a retained cmru release branch (got {branch!r})")
+        raise UsageRefusal(f"{path} is not a retained cmru release branch (got {branch!r})")
     if expected_common is None:
         raise RuntimeError(
             f"cannot validate legacy release worktree {path}: source Git family is unknown"
@@ -736,7 +736,7 @@ def assert_resume_workspace_committed(path: Path) -> None:
     """
     changes = _git(path, "status", "--porcelain=v1", "--untracked-files=normal")
     if changes:
-        raise RuntimeError(
+        raise RefusedBeforeChange(
             "retained release worktree has uncommitted changes. Commit the fixes on "
             "that release branch, then rerun `cmru release --resume`; the resumed "
             "prepare and required gate will run against and ship that commit."
@@ -2459,12 +2459,12 @@ def discard_build_workspace(
     path = path.resolve()
     expected_parent = (repo_root / ".worktrees").resolve()
     if path.parent != expected_parent:
-        raise RuntimeError(f"{path} is outside this repository's managed .worktrees directory")
+        raise UsageRefusal(f"{path} is outside this repository's managed .worktrees directory")
     if not path.is_dir() or _common_git_dir(path) != _common_git_dir(repo_root):
-        raise RuntimeError(f"{path} is not a worktree of {repo_root}")
+        raise UsageRefusal(f"{path} is not a worktree of {repo_root}")
     branch = _git(path, "branch", "--show-current")
     if not _is_build_branch(branch):
-        raise RuntimeError(f"{path} is not a retained cmru build worktree (got {branch!r})")
+        raise UsageRefusal(f"{path} is not a retained cmru build worktree (got {branch!r})")
     context = None
     shared = _shared_worktree()
     try:

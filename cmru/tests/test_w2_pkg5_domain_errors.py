@@ -226,10 +226,10 @@ def test_run_of_a_failing_step_is_exit_1_with_a_plain_message(monkeypatch, tmp_p
     assert "build.log" in err
 
 
-def test_traceback_still_prints_the_stack_for_a_domain_error(monkeypatch, tmp_path, capsys):
+def test_traceback_prints_no_stack_for_a_deliberate_refusal(monkeypatch, tmp_path, capsys):
     _install(monkeypatch, tmp_path, _project())
-    # ``--traceback`` is the library's own switch; for an *expected* refusal there is
-    # nothing to expand, so it must still be the one-line refusal with the same code.
+    # ``--traceback`` is the library's own switch for *unexpected* errors; a deliberate
+    # refusal has no stack worth expanding, so it stays the one-line refusal, same code.
     rc = cli.main(["publish", "demo", "--from-checkout", "--traceback", "--config", str(tmp_path / "cmru.toml")])
     _refused(capsys, rc, 3, "Publishing requires GITHUB_PUSH_PAT")
 
@@ -264,3 +264,73 @@ def test_a_release_child_exit_code_still_propagates_through_the_parent(
         "release", [], tmp_path / "cmru.toml", tmp_path, {"left": left, "right": right},
         ["left", "right"], original_target=None, forward_from=None,
     ) == child_status
+
+
+# ---- the sweep: refusals reachable from a user action, one test per converted class -----------
+
+def _raises(kind, match):
+    return pytest.raises(kind, match=match)
+
+
+def test_reserved_release_env_keys_are_a_usage_refusal(tmp_path):
+    github = cli.GitHubConfig("owner", "repo", "", "user")
+    with _raises(errors.UsageRefusal, "reserved for resolved publisher credentials") as first:
+        cli.apply_release_env(github, cli.ReleaseEnvConfig({"GITHUB_TOKEN": "x"}, None))
+    assert first.value.exit_code == exit_codes.CONFIG_ERROR
+
+
+def test_resume_scope_refusals_carry_their_codes(tmp_path):
+    configs, order = {"a": _project(name="a")}, ["a"]
+    cfg = tmp_path / "cmru.toml"
+    with _raises(errors.UsageRefusal, "no recorded project scope") as none_recorded:
+        cli._release_resume_target(cfg, None, None, configs, order)
+    with _raises(errors.UnsafeRecord, "malformed project-scope metadata") as malformed:
+        cli._release_resume_target(cfg, None, ["a", "a"], configs, order)
+    with _raises(errors.UsageRefusal, "absent from the selected config") as unknown:
+        cli._release_resume_target(cfg, None, ["ghost"], configs, order)
+    assert none_recorded.value.exit_code == unknown.value.exit_code == exit_codes.CONFIG_ERROR
+    assert malformed.value.exit_code == exit_codes.REFUSED
+
+
+def test_a_requested_step_that_is_not_declared_is_exit_3(tmp_path, monkeypatch):
+    monkeypatch.setattr(cli, "resolve_versions_from_git", lambda *_a, **_k: None)
+    with _raises(errors.StepUnavailable, "requested step 'build' is not declared") as raised:
+        cli._run_project_steps(tmp_path, {"demo": _project()}, ["demo"], ["build"])
+    assert raised.value.exit_code == exit_codes.PREREQ_MISSING
+
+
+def test_a_release_without_a_declared_gate_is_a_refusal_4(tmp_path):
+    with _raises(errors.RefusedBeforeChange, "no release gate is declared") as raised:
+        cli._run_release_gates(tmp_path, {"demo": _project()}, ["demo"])
+    assert raised.value.exit_code == exit_codes.REFUSED
+
+
+def test_a_local_main_ahead_of_origin_is_a_refusal_4(tmp_path, monkeypatch):
+    monkeypatch.setattr(transaction, "local_main_divergence", lambda *_a, **_k: (2, 0))
+    with _raises(errors.RefusedBeforeChange, "2 commit.s. ahead of origin/main") as raised:
+        transaction.assert_local_main_not_ahead(tmp_path)
+    assert raised.value.exit_code == exit_codes.REFUSED
+
+
+def test_a_build_worktree_outside_the_managed_directory_is_a_usage_error_2(tmp_path):
+    with _raises(errors.UsageRefusal, "outside this repository's managed .worktrees") as raised:
+        transaction.discard_build_workspace(tmp_path, tmp_path / "elsewhere", dry_run=True)
+    assert raised.value.exit_code == exit_codes.CONFIG_ERROR
+
+
+def test_missing_required_step_environment_is_exit_3(monkeypatch):
+    monkeypatch.delenv("CMRU_SWEEP_NEEDED", raising=False)
+    with _raises(errors.CredentialMissing, "CMRU_SWEEP_NEEDED") as raised:
+        runner.ensure_required_env(["CMRU_SWEEP_NEEDED"])
+    assert raised.value.exit_code == exit_codes.PREREQ_MISSING
+
+
+def test_changelog_refusals_carry_their_codes(tmp_path):
+    from cmru import changelog
+
+    with _raises(errors.StepUnavailable, "no release.changelog is configured") as absent:
+        changelog._validate_changelog_path(_project(changelog=None), tmp_path)
+    with _raises(errors.UsageRefusal, "must be a non-empty project-relative path") as bad:
+        changelog._validate_changelog_path(_project(changelog="../x.md"), tmp_path)
+    assert absent.value.exit_code == exit_codes.PREREQ_MISSING
+    assert bad.value.exit_code == exit_codes.CONFIG_ERROR

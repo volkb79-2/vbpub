@@ -107,3 +107,66 @@ def test_user_facing_cli_docs_link_to_the_canonical_spec_anchor():
     assert "### S-CLI.9: Canonical CLI grammar and semantic audit" in spec
     for path in (SPEC.parents[1] / "README.md", SPEC.parent / "DESIGN-GUIDE.md"):
         assert "#s-cli9-canonical-cli-grammar-and-semantic-audit" in path.read_text(encoding="utf-8"), path
+
+
+# ---- the retained "Verb semantics" table must not go stale -------------------------------------
+
+# Registered leaves that deliberately have no VERB-LEVEL semantic row: their whole contract is
+# grammar, which the generated S-CLI.9 region and the reviewed catalog already record.
+_GRAMMAR_ONLY = {
+    "skills check", "skills install", "skills list", "skills uninstall",  # library-built verbs
+    "doctor",  # read-only environment report; contract lives in its own tests
+}
+_SEMANTIC_START, _SEMANTIC_END = "<!-- cmru-cli-semantic-audit:start -->", "<!-- cmru-cli-semantic-audit:end -->"
+
+
+def _registered_leaves(registry, prefix: str = "") -> set[str]:
+    leaves: set[str] = set()
+    for name in registry.command_parsers:
+        child = registry.delegates.get(name)
+        if child is not None and child.command_parsers:
+            leaves |= _registered_leaves(child, f"{prefix}{name} ")
+        else:
+            leaves.add(f"{prefix}{name}")
+    return leaves
+
+
+def _semantic_rows(spec_text: str) -> set[str]:
+    """The verb path of every row, taking the first of ``a; python -m b`` alternatives."""
+    table = spec_text.split(_SEMANTIC_START, 1)[1].split(_SEMANTIC_END, 1)[0]
+    rows: set[str] = set()
+    for line in table.splitlines():
+        if not line.startswith("| cmru "):
+            continue  # header, separator or a malformed row (caught by the content test)
+        surface = line.split("|")[1].strip()
+        first = surface.split(";")[0].strip().removeprefix("cmru ").strip()
+        rows.add(first)
+    return rows
+
+
+def test_every_verb_the_semantics_table_names_is_registered():
+    registered = _registered_leaves(build_cmru_cli()) | {"common controls"}
+    rows = _semantic_rows(SPEC.read_text(encoding="utf-8")) - {"common controls"}
+    assert rows <= registered, sorted(rows - registered)
+    assert len(rows) >= 25  # the table is still the 30-row table, not an empty shell
+
+
+def test_every_registered_verb_has_a_semantics_row_or_is_grammar_only():
+    registered = _registered_leaves(build_cmru_cli())
+    rows = _semantic_rows(SPEC.read_text(encoding="utf-8"))
+    assert not (registered - rows - _GRAMMAR_ONLY), sorted(registered - rows - _GRAMMAR_ONLY)
+    # the exemption list itself may not go stale
+    assert _GRAMMAR_ONLY <= registered, sorted(_GRAMMAR_ONLY - registered)
+    assert not (_GRAMMAR_ONLY & rows), sorted(_GRAMMAR_ONLY & rows)
+
+
+def test_a_stale_semantics_table_is_detected():
+    """Plant: a row naming a removed verb, and a registered verb losing its row."""
+    text = SPEC.read_text(encoding="utf-8")
+    registry = build_cmru_cli()
+    assert "| cmru tool-deps |" in text
+    ghost = text.replace("| cmru tool-deps |", "| cmru ghost-verb |", 1)
+    rows = _semantic_rows(ghost)
+    assert "ghost-verb" in rows and not rows <= (_registered_leaves(registry) | {"common controls"})
+    assert "tool-deps" not in rows
+    assert "tool-deps" in (_registered_leaves(registry) - rows - _GRAMMAR_ONLY)

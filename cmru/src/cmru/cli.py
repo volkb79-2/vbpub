@@ -34,7 +34,14 @@ from cmru.cli_support import (
     write_config_diagnostic,
 )
 from cmru.dependencies import build_report, render_text as render_dependency_report
-from cmru.errors import CmruError, CredentialMissing, StepUnavailable
+from cmru.errors import (
+    CmruError,
+    CredentialMissing,
+    RefusedBeforeChange,
+    StepUnavailable,
+    UnsafeRecord,
+    UsageRefusal,
+)
 
 
 # The failures a root verb can legitimately hit (bad config, a refused git or
@@ -712,13 +719,13 @@ def apply_release_env(github: GitHubConfig, env_config: ReleaseEnvConfig) -> Non
     reserved_credentials = {"GITHUB_PUSH_PAT", "GITHUB_TOKEN", "CMRU_GIT_AUTH_TOKEN"}
     configured_credentials = sorted(reserved_credentials.intersection(env_config.env))
     if configured_credentials:
-        raise RuntimeError(
+        raise UsageRefusal(
             "release environment key(s) are reserved for resolved publisher credentials: "
             + ", ".join(configured_credentials)
         )
     configured_internal = sorted(name for name in env_config.env if is_reserved_internal_env(name))
     if configured_internal:
-        raise RuntimeError(
+        raise UsageRefusal(
             "release environment key(s) are reserved for CMRU internal launch state: "
             + ", ".join(configured_internal)
         )
@@ -2354,7 +2361,7 @@ def _release_resume_target(
     """
     if recorded_scope is None:
         if raw_target is None:
-            raise RuntimeError(
+            raise UsageRefusal(
                 "retained release has no recorded project scope; inspect the candidate "
                 "and pass its explicit project target to `cmru release TARGET --resume`"
             )
@@ -2365,10 +2372,10 @@ def _release_resume_target(
         or any(not isinstance(name, str) or not name for name in recorded_scope)
         or len(recorded_scope) != len(set(recorded_scope))
     ):
-        raise RuntimeError("retained release has malformed project-scope metadata")
+        raise UnsafeRecord("retained release has malformed project-scope metadata")
     unknown = [name for name in recorded_scope if name not in configs]
     if unknown:
-        raise RuntimeError(
+        raise UsageRefusal(
             "retained release scope contains project(s) absent from the selected config: "
             + ", ".join(unknown)
         )
@@ -2376,7 +2383,7 @@ def _release_resume_target(
     if raw_target is not None:
         requested = _select_projects(config_path, raw_target, configs, project_order)
         if set(requested) != set(ordered_scope):
-            raise RuntimeError(
+            raise UsageRefusal(
                 "release resume target does not match the retained transaction scope; "
                 f"saved scope is {','.join(ordered_scope)!r}, requested scope is "
                 f"{','.join(requested)!r}"
@@ -2616,7 +2623,7 @@ def _run_project_steps(
             apply_project_release_env(github_config, env_config, project)
         for step in steps:
             if step not in (project.runner_steps or {}):
-                raise RuntimeError(
+                raise StepUnavailable(
                     f"{name}: requested step {step!r} is not declared in "
                     f"{PROJECT_CONFIG_FILENAME}"
                 )
@@ -2639,7 +2646,7 @@ def _run_isolated_build_projects(
         project = configs[name]
         artifact_step = project.build_step
         if not artifact_step:
-            raise RuntimeError(f"{name}: project.release.build_step is absent")
+            raise StepUnavailable(f"{name}: project.release.build_step is absent")
         phases: list[str] = []
         if "prepare" in (project.runner_steps or {}):
             phases.append("prepare")
@@ -2672,7 +2679,7 @@ def _run_untagged_project(
     # risk producing artifacts from a post-tag HEAD.
     artifact_step = project.build_step
     if not artifact_step:
-        raise RuntimeError(f"{name}: project.release.build_step is absent")
+        raise StepUnavailable(f"{name}: project.release.build_step is absent")
     prepared_build = artifact_step == "prepare"
     if prepared_build:
         log_info(f"{name}: using artifact output deliberately produced by steps.prepare")
@@ -2690,7 +2697,7 @@ def _run_untagged_project(
         log_info(f"{name}: running step 'push'")
         run_project_step(project, "push", repo_root, log_dir)
     else:  # config validation requires it; keep the runtime guard for direct callers.
-        raise RuntimeError(f"{name}: required push step is absent")
+        raise StepUnavailable(f"{name}: required push step is absent")
 
 
 def _version_strategy(proj: "ProjectConfig") -> str:
@@ -3167,7 +3174,7 @@ def _dispatch_independent_git_families(
         )
     if any(flag in rest or any(item.startswith(flag + "=") for item in rest)
            for flag in ("--resume",)):
-        raise RuntimeError(
+        raise UsageRefusal(
             "resume must target one retained CMRU family workspace at a time; "
             "select one Git-family project set"
         )
@@ -3667,7 +3674,7 @@ def _assert_resume_candidate_is_safe_to_replay(
     scope = set(project_names)
     unknown_projects = sorted(scope - set(configs))
     if unknown_projects:
-        raise RuntimeError(
+        raise UnsafeRecord(
             "retained release scope names unknown project(s): "
             + ", ".join(unknown_projects)
         )
@@ -3681,7 +3688,7 @@ def _assert_resume_candidate_is_safe_to_replay(
     if release_policies is not None:
         unknown_policies = sorted(set(release_policies) - scope)
         if unknown_policies:
-            raise RuntimeError(
+            raise UnsafeRecord(
                 "retained candidate release policy names project(s) outside the recorded "
                 "scope: " + ", ".join(unknown_policies)
             )
@@ -3689,7 +3696,7 @@ def _assert_resume_candidate_is_safe_to_replay(
     results = transaction.read_release_results(repo_root, workspace)
     unexpected_results = sorted(set(results) - scope)
     if unexpected_results:
-        raise RuntimeError(
+        raise UnsafeRecord(
             "retained release result metadata names project(s) outside the recorded "
             "scope: " + ", ".join(unexpected_results)
         )
@@ -3718,7 +3725,7 @@ def _assert_resume_candidate_is_safe_to_replay(
                 prefix = policies[name][0]
                 tag_name = result_id
                 if not tag_name.startswith(prefix) or tag_name.endswith("-latest"):
-                    raise RuntimeError(
+                    raise UnsafeRecord(
                         f"retained release result for {name} is not a valid release tag: "
                         f"{result_id!r}"
                     )
@@ -3730,24 +3737,24 @@ def _assert_resume_candidate_is_safe_to_replay(
                 attempted_oid = attempts.get(f"refs/tags/{tag_name}")
                 remote_oid = (origin_tags or {}).get(f"refs/tags/{tag_name}")
                 if result_commit is None or remote_oid is None:
-                    raise RuntimeError(
+                    raise UnsafeRecord(
                         f"retained release result for {name} names {tag_name}, but origin "
                         "does not advertise that release tag; inspect the candidate and "
                         "published artifact before retrying"
                     )
                 if attempted_oid is not None and remote_oid != attempted_oid:
-                    raise RuntimeError(
+                    raise UnsafeRecord(
                         f"origin release tag {tag_name} no longer matches CMRU's recorded "
                         "push attempt; inspect the candidate before retrying"
                     )
             else:
                 if not result_id.startswith("source-"):
-                    raise RuntimeError(
+                    raise UnsafeRecord(
                         f"retained untagged release result for {name} is malformed"
                     )
                 source_prefix = result_id.removeprefix("source-")
                 if not re.fullmatch(r"[0-9a-f]{12,40}", source_prefix):
-                    raise RuntimeError(
+                    raise UnsafeRecord(
                         f"retained untagged release result for {name} is malformed"
                     )
                 resolved = run_local_git(
@@ -3766,7 +3773,7 @@ def _assert_resume_candidate_is_safe_to_replay(
                 capture_output=True, text=True, check=False,
             )
             if promoted.returncode == 1:
-                raise RuntimeError(
+                raise UnsafeRecord(
                     f"retained result for {name} is recorded, but its source commit "
                     "is not in origin/main; publication or promotion is incomplete, "
                     "so the candidate was kept for inspection"
@@ -3808,7 +3815,7 @@ def _assert_resume_candidate_is_safe_to_replay(
                 and _tag_ref_name(ref) not in completed_tag_names
             }
             if current_project_tags != initial_project_tags:
-                raise RuntimeError(
+                raise UnsafeRecord(
                     f"origin release tags for {name} changed after this candidate was "
                     "created; refuse to replay it and inspect the candidate first"
                 )
@@ -3829,7 +3836,7 @@ def _assert_resume_candidate_is_safe_to_replay(
         ]
         if unresolved_attempts:
             names = ", ".join(sorted(_tag_ref_name(ref) for ref in unresolved_attempts))
-            raise RuntimeError(
+            raise UnsafeRecord(
                 f"CMRU attempted to push release tag(s) for {name} ({names}), but a tag "
                 "is still present or CMRU has no exact record proving origin confirmed "
                 "its absence after local removal. Refusing to replay this candidate; "
@@ -3855,7 +3862,7 @@ def _assert_resume_candidate_is_safe_to_replay(
                     or records.get(f"refs/tags/{tag_name}")
                 )
                 if target == candidate_head:
-                    raise RuntimeError(
+                    raise UnsafeRecord(
                         f"legacy retained candidate HEAD is tagged as {tag_name}, but no "
                         "pre-attempt tag snapshot proves whether this transaction pushed "
                         "it; inspect the candidate before retrying"
@@ -4009,7 +4016,7 @@ def _configs_for_git_family(
         try:
             relative = project_root.relative_to(selected_root)
         except ValueError as exc:
-            raise RuntimeError(
+            raise UsageRefusal(
                 f"{name}: project root {project_root} is outside selected Git root {selected_root}"
             ) from exc
         child_root = selected_root / relative
@@ -4020,7 +4027,7 @@ def _configs_for_git_family(
                 try:
                     command_relative = command.cwd.relative_to(project_root)
                 except ValueError as exc:
-                    raise RuntimeError(
+                    raise UsageRefusal(
                         f"{name}: declared command cwd escapes project root: {command.cwd}"
                     ) from exc
                 rebased.append(replace(command, cwd=child_root / command_relative))
@@ -4046,7 +4053,7 @@ def _run_release_gates(
     for name in project_names:
         project = configs[name]
         if not project.steps.get("run-tests"):
-            raise RuntimeError(
+            raise RefusedBeforeChange(
                 f"{name}: no release gate is declared ([project.{name}.steps.run-tests]); "
                 "cmru refuses to tag or publish without a meaningful tester-unified gate"
             )
@@ -4131,7 +4138,7 @@ def _uncommitted_release_paths(
         try:
             relative_root = project_root.resolve().relative_to(repo_root.resolve())
         except ValueError as exc:
-            raise RuntimeError(
+            raise UsageRefusal(
                 f"{name}: project root {project_root} is outside selected Git root {repo_root}"
             ) from exc
         paths = [relative_root.as_posix() if relative_root.parts else "."]
@@ -4171,7 +4178,7 @@ def _commit_prepared_generated(
         return False
     unexpected = [path for path in changed if not _is_declared_generated(path, declared)]
     if unexpected:
-        raise RuntimeError(
+        raise RefusedBeforeChange(
             f"{project.name}: prepare changed undeclared paths: {', '.join(unexpected)}; "
             "declare mechanical outputs in project.<name>.release.commit_generated"
         )
@@ -5026,7 +5033,7 @@ def _release_launcher(
                     transaction_root, git_auth=git_auth,
                 )
                 if verified_base != preflighted_base:
-                    raise RuntimeError(
+                    raise RefusedBeforeChange(
                         "origin/main changed after the multi-family release preflight "
                         f"(checked {preflighted_base}, now {verified_base}); "
                         "rerun the release so every family is checked against "
@@ -5058,7 +5065,7 @@ def _release_launcher(
                 )
                 current_scope = transaction.read_release_scope_for_path(workspace.path)
                 if current_scope != resume_scope:
-                    raise RuntimeError(
+                    raise RefusedBeforeChange(
                         "retained release scope changed while acquiring its lock; "
                         "inspect the candidate and retry"
                     )

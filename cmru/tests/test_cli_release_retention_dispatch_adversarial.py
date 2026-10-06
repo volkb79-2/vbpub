@@ -111,8 +111,10 @@ def test_resumed_release_refuses_scope_changed_while_waiting_for_lock(
         "release", "--resume", str(workspace.path),
         "--config", str(tmp_path / "cmru.toml"),
     ])
-    assert result == 1
-    assert "retained release scope changed while acquiring its lock" in capsys.readouterr().err
+    assert result == 4  # a refusal made before anything changed
+    err = capsys.readouterr().err
+    assert "retained release scope changed while acquiring its lock" in err
+    assert "unexpected" not in err
     assert child_calls == []
 
 

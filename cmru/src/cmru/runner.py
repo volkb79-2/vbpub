@@ -16,7 +16,7 @@ from time import monotonic
 from typing import Iterable, Mapping, Optional
 
 from cmru.config_names import ORCHESTRATION_CONFIG_FILENAME, PROJECT_CONFIG_FILENAME
-from cmru.errors import StepFailed
+from cmru.errors import CredentialMissing, StepFailed
 
 
 @dataclass(frozen=True)
@@ -224,7 +224,7 @@ def parse_step(config: dict, step_name: str) -> StepConfig:
 def ensure_required_env(required: Iterable[str]) -> None:
     missing = [name for name in required if not os.getenv(name)]
     if missing:
-        raise RuntimeError(f"Missing required environment variables: {', '.join(missing)}")
+        raise CredentialMissing(f"Missing required environment variables: {', '.join(missing)}")
 
 
 def apply_env_command(env_command: Optional[list[str]], cwd: Path) -> None:
@@ -274,10 +274,10 @@ def maybe_login(login: Optional[dict]) -> None:
     token = os.getenv(token_env)
     if not token:
         if required:
-            raise RuntimeError(f"{token_env} is required for registry login")
+            raise CredentialMissing(f"{token_env} is required for registry login")
         return
     if not username:
-        raise RuntimeError(f"{username_env} is required for registry login")
+        raise CredentialMissing(f"{username_env} is required for registry login")
     _docker_login(registry, username, token)
 
 
@@ -293,7 +293,7 @@ def maybe_login_multi(login: Optional[dict], registries: Optional[list]) -> None
     token = os.getenv("GITHUB_PUSH_PAT")
     if not username or not token:
         missing = "GITHUB_USERNAME" if not username else "GITHUB_PUSH_PAT"
-        raise RuntimeError(
+        raise CredentialMissing(
             f"{missing} is required for additional registry login"
         )
     for reg in registries[1:]:

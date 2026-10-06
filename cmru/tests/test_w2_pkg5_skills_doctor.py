@@ -176,8 +176,48 @@ def test_every_cmru_command_in_the_skill_parses_against_the_registry(registry):
     assert not problems, "\n".join(problems)
 
 
+_JSON_SENTENCE = re.compile(r"`--json`\s+exists\s+only\s+on\s+verbs\s+that\s+say\s+so\s+\((.*?)\)", re.DOTALL)
+
+
+def _registry_json_verbs(registry) -> set[str]:
+    """Every leaf verb whose parser really has ``--json`` (skills/versions shells excluded)."""
+    def parsers(reg):
+        yield reg.parser
+        yield from reg.command_parsers.values()
+        for child in reg.delegates.values():
+            yield from parsers(child)
+
+    progs = {
+        parser.prog.removeprefix("cmru").strip()
+        for parser in parsers(registry)
+        if any("--json" in action.option_strings for action in parser._actions)
+    }
+    progs.discard("")  # the root's own global options
+    return {prog for prog in progs if not any(other.startswith(prog + " ") for other in progs)}
+
+
+def _skill_json_verbs(text: str) -> set[str]:
+    match = _JSON_SENTENCE.search(text)
+    assert match, "the SKILL no longer carries its `--json` verb sentence"
+    return set(re.findall(r"`([^`]+)`", match.group(1)))
+
+
+def test_the_skill_names_exactly_the_verbs_that_have_json(registry):
+    named = _skill_json_verbs(SKILL.read_text(encoding="utf-8"))
+    assert named == _registry_json_verbs(registry)
+    assert {"doctor", "skills list", "skills check"} <= named
+
+
+def test_a_json_verb_dropped_from_the_skill_sentence_is_detected(registry):
+    """Plant: the prose list losing `doctor` must fail the guard."""
+    text = SKILL.read_text(encoding="utf-8")
+    assert "`doctor`, `skills list`" in text
+    planted = text.replace("`doctor`, `skills list`", "`skills list`", 1)
+    assert _skill_json_verbs(planted) != _registry_json_verbs(registry)
+
+
 @pytest.mark.parametrize("line", [
-    "cmru status --dry-run",                  # status is read-only: no --dry-run
+    "cmru status --dry-run",               # status is read-only: no --dry-run
     "cmru release --abandon all-previous",    # removed grammar
     "cmru get ciu",                           # removed verb
     "cmru release --no-such-flag",            # a flag the registry never had
@@ -287,6 +327,20 @@ def test_docker_cli_missing_daemon_down_timeout_and_ok(monkeypatch):
     ok = doctor.check_docker()
     assert ok.status == "ok" and "27.1.0" in ok.summary
     assert calls == [["docker", "version", "--format", "{{.Server.Version}}"]]
+
+
+def test_the_docker_probe_is_bounded_to_five_seconds(monkeypatch):
+    """Pin the value: the summary says 5 seconds, so the timeout actually passed must be 5."""
+    monkeypatch.setattr(doctor, "_which", lambda name: "/usr/bin/docker")
+    seen: list[float] = []
+
+    def run(argv, timeout=doctor._PROBE_TIMEOUT_SECONDS):
+        seen.append(timeout)
+        return _Done(0, "27.1.0\n")
+
+    monkeypatch.setattr(doctor, "_run", run)
+    assert doctor.check_docker().status == "ok"
+    assert seen == [5]
 
 
 def test_config_skip_ok_and_fail(monkeypatch, isolated):

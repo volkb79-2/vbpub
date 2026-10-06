@@ -398,8 +398,13 @@ contract prose below in the same change. The generated region, the manifest
 `docs/cli-surface.json` and every reviewed case are checked against the built
 registry (including aliases, hidden flags, constraints and help groups) by
 `cli-extended surface check` and by `tests/test_cli_spec_inventory.py`; each
-active case is linked to a behavioural test by the cli-extended pytest plugin. A
-grammar change without those updates is incomplete.
+active case is linked to a probe in `tests/test_cli_review_cases.py` by the
+cli-extended pytest plugin. The catalog is a GRAMMAR and EARLY-REFUSAL contract:
+its probes run without a project config, so they pin spellings, choices,
+constraints, help groups and the refusals made before config discovery.
+Behaviour past config discovery (option effects, output shape, dry-run,
+confirmation, exit status) is pinned by each verb's own tests, not by the
+catalog. A grammar change without those updates is incomplete.
 
 `cli-extended` supplies the common presentation options shown here and the
 built-in `help [VERB]`, `version`, `--help`, and `--version` interfaces. Its
@@ -1123,7 +1128,8 @@ Before accepting a CLI or workflow change, reviewers MUST apply this prompt:
 
 The per-option semantics of every verb live in the reviewed catalog
 `docs/cli-review.toml` (one case per spelling, choice, constraint and argument
-shape, each with its `rationale`, `effects` and a behavioural test). The table
+shape, each with its `rationale`, `effects` and a grammar or early-refusal
+probe; behaviour past config discovery is pinned by each verb's own tests). The table
 below keeps only the VERB-LEVEL contract the catalog cannot hold: guarantees
 that span several options or a whole verb, accepted product choices, and the
 decisions that still block a stronger guarantee. W2-PKG5 moved the
@@ -1196,10 +1202,16 @@ correctness.
 **S-CLI.10 — CLI grammar and semantics gate.** The CMRU gate MUST run the
 grammar synchronization test in `tests/test_cli_spec_inventory.py`. A change is
 not complete if a registered leaf, argument shape, option spelling (including
-hidden/deprecated aliases), help group, shared option, or semantic audit row is
-absent or stale. The test proves inventory coverage and source-of-truth
-alignment; it does not replace behavioral oracles for option effects, refusal
-paths, dry-run, confirmation, output, or exit status.
+hidden/deprecated aliases), help group, or shared option is absent or stale.
+`surface check` proves that inventory against the registry, and the guard in
+`tests/test_cli_spec_inventory.py` proves the "Verb semantics" table is not
+stale: every verb it names is registered, and every registered leaf has a row
+or is on the test's explicit grammar-only list. None of this replaces
+behavioral oracles for option effects, refusal paths, dry-run, confirmation,
+output, or exit status, which live in each verb's own tests. Deliberate
+refusals exit with their taxonomy code (`2`/`3`/`4`) and print one
+`[ERROR] <message>` line, never an "unexpected" label; `--traceback` adds no
+stack for such a refusal and still shows one for a genuine internal error.
 
 ## S0 — Terminology
 

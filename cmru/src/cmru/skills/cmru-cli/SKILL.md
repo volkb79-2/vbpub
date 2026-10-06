@@ -24,7 +24,8 @@ orchestrated project at the estate root.
 Controls on every verb: `--log-level`, `--quiet`, `--debug`, `--debug-raw`,
 `--color`/`--no-color`, `--log-prefix-time-short`. `--json` exists only on
 verbs that say so (`status`, `worktrees`, `dependencies`, `standards`,
-`tool-deps`, `versions check`). `--dry-run` exists only on verbs that mutate.
+`tool-deps`, `versions check`, `doctor`, `skills list`, `skills check`).
+`--dry-run` exists only on verbs that mutate.
 
 ## Read-only verbs (safe to run any time)
 
@@ -121,9 +122,16 @@ with declared resource caps and a verified cgroup slice. Defaults come from the
 ## Exit codes
 
 `0` done (or declined, or nothing to do), `1` failure, `2` configuration or
-usage error, `3` prerequisite missing (a required tool or environment variable is
-absent, or cmru is not installed as a distribution), `4` refused by policy or verification with nothing
-changed.
+usage error (a bad `--delete-build-output` ID, `--resume` of a missing worktree, a
+resume target that does not match the retained scope), `3` prerequisite missing (a
+required tool, a credential such as `GITHUB_PUSH_PAT`, a declared step or a derived
+working directory is absent, or cmru is not installed as a distribution), `4`
+refused by policy or verification with nothing changed (an unsafe or incomplete
+retained build record, no release gate declared, local `main` ahead of origin).
+
+A deliberate refusal prints one `[ERROR] <message>` line with its exit code; it is
+never labelled "unexpected" and `--traceback` adds no stack for it. A failing
+project step exits `1` with `step 'NAME' of project 'P' failed (exit N); see LOG`.
 
 ## Never do instead
 

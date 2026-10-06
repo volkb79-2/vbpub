@@ -1425,8 +1425,10 @@ def test_release_refuses_handoff_after_origin_main_moves(tmp_path, monkeypatch, 
         lambda *_args, **_kwargs: pytest.fail("workspace created after origin/main moved"),
     )
 
-    assert cli.main(["release", "alpha", "--config", str(config)]) == 1
-    assert "origin/main changed after the multi-family release preflight" in capsys.readouterr().err
+    assert cli.main(["release", "alpha", "--config", str(config)]) == 4  # refused, nothing changed
+    err = capsys.readouterr().err
+    assert "origin/main changed after the multi-family release preflight" in err
+    assert "unexpected" not in err
 
 
 @pytest.mark.parametrize("fd_value", ["not-an-int", "0", "999999999"])

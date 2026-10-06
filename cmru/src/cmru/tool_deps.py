@@ -50,6 +50,7 @@ from urllib.request import Request, urlopen
 
 from cmru import exit_codes
 from cmru.config_names import ORCHESTRATION_CONFIG_FILENAME, PROJECT_CONFIG_FILENAME
+from cmru.errors import CmruError
 from cli_extended import (
     CliFailure,
     Conflicts,
@@ -490,21 +491,21 @@ def refresh_tool_dependency(
     calls this on its own."""
     resolved = resolve_latest_release(owner, repo, provider_prefix, timeout=timeout)
     if resolved is None:
-        raise RuntimeError(
+        raise CmruError(
             f"cannot refresh {dependency.project!r}: no published release exists yet for tag "
             f"prefix {provider_prefix!r}"
         )
     new_version = resolved["version"]
     old_name = Path(dependency.path).name
     if dependency.version not in old_name:
-        raise RuntimeError(
+        raise CmruError(
             f"cannot infer the refreshed filename: {dependency.path!r} does not contain the "
             f"pinned version {dependency.version!r}"
         )
     new_name = old_name.replace(dependency.version, new_version)
     asset = next((a for a in resolved["assets"] if a["name"] == new_name), None)
     if asset is None:
-        raise RuntimeError(
+        raise CmruError(
             f"published release {resolved['tag']!r} has no asset named {new_name!r}"
         )
 
