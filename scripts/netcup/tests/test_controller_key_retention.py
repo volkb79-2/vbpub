@@ -47,11 +47,62 @@ def test_json_wins_over_env_like_the_bootstrap_merge_order(install_host_mod):
 @pytest.mark.parametrize("script", [
     None, "", "echo hi", "VBPUB_CONFIG_EXTRA_JSON='{not json' python3 -",
     "unbalanced 'quote", _script(None),
-    "RETAIN_CONTROLLER_SSH_KEY=maybe python3 -",
+    "RETAIN_CONTROLLER_SSH_KEY= python3 -",
     "VBPUB_CONFIG_EXTRA_JSON='{\"retain_controller_ssh_key\":\"yes\"}' python3 -",
 ])
 def test_unreadable_or_absent_policy_is_none_never_guessed(install_host_mod, script):
     assert install_host_mod._custom_script_host_key_retention(script) is None
+
+
+@pytest.mark.parametrize("script, expected", [
+    ("RETAIN_CONTROLLER_SSH_KEY=true python3 -", True),
+    ("RETAIN_CONTROLLER_SSH_KEY=YES python3 -", True),
+    ("RETAIN_CONTROLLER_SSH_KEY=1 python3 -", True),
+    ("RETAIN_CONTROLLER_SSH_KEY=on python3 -", True),
+    ("RETAIN_CONTROLLER_SSH_KEY=' On ' python3 -", True),
+    ("RETAIN_CONTROLLER_SSH_KEY=\"yes\" python3 -", True),
+    ("export RETAIN_CONTROLLER_SSH_KEY='yes'; run", True),
+    ("export RETAIN_CONTROLLER_SSH_KEY=yes; run", True),
+    ("RETAIN_CONTROLLER_SSH_KEY=yes;x", True),
+    ("env RETAIN_CONTROLLER_SSH_KEY=yes run", True),
+    ("RETAIN_CONTROLLER_SSH_KEY=false python3 -", False),
+    ("RETAIN_CONTROLLER_SSH_KEY=NO python3 -", False),
+    ("RETAIN_CONTROLLER_SSH_KEY=0 python3 -", False),
+    ("RETAIN_CONTROLLER_SSH_KEY=off;x", False),
+    ("RETAIN_CONTROLLER_SSH_KEY=yes RETAIN_CONTROLLER_SSH_KEY=no run", False),
+    ("RETAIN_CONTROLLER_SSH_KEY=no; RETAIN_CONTROLLER_SSH_KEY=yes run", True),
+    ("unbalanced 'quote RETAIN_CONTROLLER_SSH_KEY=yes", True),
+])
+def test_env_forms_the_bootstrap_accepts_are_all_detected(install_host_mod, script, expected):
+    assert install_host_mod._custom_script_host_key_retention(script) is expected
+
+
+@pytest.mark.parametrize("script", [
+    "RETAIN_CONTROLLER_SSH_KEY=maybe python3 -",
+    "RETAIN_CONTROLLER_SSH_KEY=auto; run",
+    "RETAIN_CONTROLLER_SSH_KEY=$X run",
+    "RETAIN_CONTROLLER_SSH_KEY=yes RETAIN_CONTROLLER_SSH_KEY=bogus run",
+])
+def test_declared_but_invalid_value_is_refused_not_undeclared(install_host_mod, script):
+    with pytest.raises(CliFailure, match="RETAIN_CONTROLLER_SSH_KEY") as exc:
+        install_host_mod._custom_script_host_key_retention(script)
+    assert exc.value.exit_code == 2
+
+
+@pytest.mark.parametrize("script", [
+    "RETAIN_CONTROLLER_SSH_KEY=true python3 -",
+    "export RETAIN_CONTROLLER_SSH_KEY='yes'; run",
+    "RETAIN_CONTROLLER_SSH_KEY=yes;x",
+])
+def test_nonstandard_host_retain_forms_still_refuse_explicit_local_remove(install_host_mod, script):
+    with pytest.raises(CliFailure, match="host retain / local remove"):
+        install_host_mod._reconcile_local_key_with_host(_args("remove", True), script)
+
+
+def test_invalid_marker_refused_through_reconcile(install_host_mod):
+    with pytest.raises(CliFailure) as exc:
+        install_host_mod._reconcile_local_key_with_host(_args("remove", False), "RETAIN_CONTROLLER_SSH_KEY=maybe x")
+    assert exc.value.exit_code == 2
 
 
 # --- reconciliation ---------------------------------------------------------

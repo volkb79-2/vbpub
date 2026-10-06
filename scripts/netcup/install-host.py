@@ -1343,39 +1343,65 @@ def _payload_needs_controller_key(payload: Optional[Dict[str, Any]]) -> bool:
     return isinstance(custom_script, str) and "{{CONTROLLER_SSH_PUBKEY}}" in custom_script
 
 
+_RETAIN_TRUE = {"yes", "true", "1", "on"}
+_RETAIN_FALSE = {"no", "false", "0", "off"}
+_RETAIN_ENV_RE = re.compile(
+    r"(?<![A-Za-z0-9_])RETAIN_CONTROLLER_SSH_KEY=(?P<value>'[^']*'|\"[^\"]*\"|[^\s;&|'\"]*)"
+)
+
+
 def _custom_script_host_key_retention(custom_script: Optional[str]) -> Optional[bool]:
     """Whether the customScript says the host keeps the controller key.
 
     Detects the two producer markers debian-install-v2 defines: the
     ``"retain_controller_ssh_key"`` boolean inside the quoted
     ``VBPUB_CONFIG_EXTRA_JSON=`` assignment (wins, like the bootstrap's own
-    merge order) and a shell ``RETAIN_CONTROLLER_SSH_KEY=yes|no`` assignment.
-    Limitation: a script that is not shell-splittable, whose JSON cannot be
-    parsed, or that sets the policy by any other mechanism yields None
-    ("not declared") -- never a guess; the operator must then pass
-    ``--local-controller-key`` knowingly.
+    merge order) and a ``RETAIN_CONTROLLER_SSH_KEY=<value>`` assignment found
+    by scanning the raw text (so ``export X=yes; run`` and ``X=yes;cmd`` are
+    seen too; last assignment wins).  Values are normalised exactly like
+    bootstrap-remote.py (yes/true/1/on, no/false/0/off, case-insensitive).
+    An env assignment with any other non-empty value is "declared but
+    invalid" and raises CliFailure (exit 2): the bootstrap would reject it
+    too, and guessing "not declared" could leave a retained host key behind
+    a deleted local private key.
+    Limitation: a script whose JSON cannot be shell-split or parsed, or that
+    sets the policy by any other mechanism (nested ``sh -c '...'`` with
+    inner quoting, computed values), yields None ("not declared") -- never
+    a guess; the operator must then pass ``--local-controller-key`` knowingly.
     """
     if not isinstance(custom_script, str):
         return None
+    from_json: Optional[bool] = None
     try:
         tokens = shlex.split(custom_script)
     except ValueError:
-        return None
-    from_json: Optional[bool] = None
-    from_env: Optional[bool] = None
+        tokens = []
     for token in tokens:
         name, sep, value = token.partition("=")
-        if not sep:
-            continue
-        if name == "VBPUB_CONFIG_EXTRA_JSON":
+        if sep and name == "VBPUB_CONFIG_EXTRA_JSON":
             try:
                 parsed = json.loads(value)
             except json.JSONDecodeError:
                 continue
             if isinstance(parsed, dict) and isinstance(parsed.get("retain_controller_ssh_key"), bool):
                 from_json = parsed["retain_controller_ssh_key"]
-        elif name == "RETAIN_CONTROLLER_SSH_KEY" and value in ("yes", "no"):
-            from_env = value == "yes"
+    from_env: Optional[bool] = None
+    for match in _RETAIN_ENV_RE.finditer(custom_script):
+        raw = match.group("value").strip("'\"").strip().lower()
+        if raw == "":
+            continue  # empty == unset, as in the bootstrap
+        if raw in _RETAIN_TRUE:
+            from_env = True
+        elif raw in _RETAIN_FALSE:
+            from_env = False
+        else:
+            raise CliFailure(
+                f"RETAIN_CONTROLLER_SSH_KEY={match.group('value')} in the customScript is not "
+                "yes/no/true/false/1/0/on/off; the bootstrap would reject it and the host "
+                "key policy cannot be reconciled with --local-controller-key",
+                exit_code=2,
+                hint="set RETAIN_CONTROLLER_SSH_KEY to yes or no",
+            )
     return from_json if from_json is not None else from_env
 
 

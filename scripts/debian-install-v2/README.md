@@ -157,7 +157,14 @@ Full Docker CE install from Docker's own official apt repo
 from mdt MDT-002) is rendered as `default-address-pools` in the same
 `daemon.json`. Each pool needs a valid network `base` and an integer `size`
 with `base prefix <= size <= 30` (IPv4) / `<= 128` (IPv6); at most 16 pools,
-no overlapping bases. An empty list means Docker's built-in default: the key
+no overlapping bases. Bases must be private ranges (RFC 1918 / ULA); unspecified,
+loopback, link-local, multicast, IPv4-mapped IPv6 and public ranges are rejected,
+with no opt-out. The installer owns `default-address-pools` in `daemon.json`
+exactly as it owns `log-opts`: an existing value is overwritten, not preserved
+(installs are fresh). Before writing `daemon.json` the docker step compares every
+pool with the host's own addresses (`ip -j addr`) and IPv4 routes (`ip -j route`)
+and fails, naming the pool and the conflicting address or route, on any overlap.
+An empty list means Docker's built-in default: the key
 is omitted (and removed on an idempotent re-run). The wizard accepts a JSON
 list; the bundle / `--config-json` carry it as a JSON array.
 

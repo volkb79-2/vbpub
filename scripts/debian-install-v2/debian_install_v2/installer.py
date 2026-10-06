@@ -4,6 +4,7 @@ import re
 from dataclasses import replace
 from datetime import datetime, timezone
 import hashlib
+import ipaddress
 import json
 import logging
 import os
@@ -298,7 +299,7 @@ class Installer:
             # up to its full timeout (an hour, by default) and then
             # reporting a spurious TimeoutError for an install that had
             # actually already succeeded.
-            if self.config.retain_controller_ssh_key:
+            if self._controller_key_retained():
                 self._mark_step("controller_ssh_key_retained", "success", "configured to retain after successful stage2")
             else:
                 self._remove_controller_ssh_key()
@@ -542,7 +543,50 @@ MaxFileSec=1month
         except json.JSONDecodeError as exc:
             raise InstallerError(f"refusing to merge into an unparseable {path}: {exc}") from exc
 
+    def _host_networks(self) -> list[tuple[str, ipaddress._BaseNetwork]]:
+        """The host's own subnets: (description, network) from `ip -j addr` and `ip -j route`."""
+        found: list[tuple[str, ipaddress._BaseNetwork]] = []
+        addr_out = self._run(["/usr/sbin/ip", "-j", "addr", "show"], "list host addresses (docker pool check)")
+        route_out = self._run(["/usr/sbin/ip", "-j", "route", "show"], "list host routes (docker pool check)")
+        try:
+            for iface in json.loads(addr_out or "[]"):
+                for info in iface.get("addr_info", []):
+                    local, prefix = info.get("local"), info.get("prefixlen")
+                    if local is None or prefix is None:
+                        continue
+                    network = ipaddress.ip_interface(f"{local}/{prefix}").network
+                    found.append((f"address {local}/{prefix} on {iface.get('ifname', '?')}", network))
+        except (ValueError, TypeError, AttributeError) as exc:
+            raise InstallerError(f"cannot parse `ip -j addr` output for the docker pool check: {exc}") from exc
+        # IPv4 routes only: the allowlist admits `ip -j` without `-6`; IPv6
+        # pools are still checked against every inet6 address from `addr`.
+        try:
+            for route in json.loads(route_out or "[]"):
+                dst = route.get("dst")
+                if dst in (None, "default"):
+                    continue
+                found.append((f"route {dst}", ipaddress.ip_network(dst, strict=False)))
+        except (ValueError, TypeError, AttributeError) as exc:
+            raise InstallerError(f"cannot parse `ip -j route` output for the docker pool check: {exc}") from exc
+        return found
+
+    def _check_address_pools_against_host(self) -> None:
+        """Fail if a configured docker pool overlaps the host's own addresses or routes."""
+        pools = self.config.docker_default_address_pools
+        if not pools or self.actions.dry_run:
+            return
+        host = self._host_networks()
+        for pool in pools:
+            base = ipaddress.ip_network(pool["base"])
+            for description, network in host:
+                if base.version == network.version and base.overlaps(network):
+                    raise InstallerError(
+                        f"docker_default_address_pools base {pool['base']} overlaps the host's "
+                        f"{description}; choose a different pool base"
+                    )
+
     def _configure_docker_daemon(self) -> None:
+        self._check_address_pools_against_host()
         # Owns live-restore/log-driver/log-opts/default-address-pools only — see the ownership
         # split rationale in _install_docker()'s comment above. mdt
         # host-setup/install.sh owns "cgroup-parent" the same, disjoint way.

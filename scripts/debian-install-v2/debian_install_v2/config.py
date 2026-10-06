@@ -181,6 +181,15 @@ def validate_address_pools(pools: Any) -> None:
             network = ipaddress.ip_network(base, strict=True)
         except ValueError as exc:
             raise ConfigError(f"{name}[{index}].base is not a valid network: {exc}") from None
+        if network.version == 6 and network.network_address.ipv4_mapped is not None:
+            raise ConfigError(f"{name}[{index}].base must not be an IPv4-mapped IPv6 network")
+        addr = network.network_address
+        if addr.is_unspecified or addr.is_loopback or addr.is_link_local or addr.is_multicast:
+            raise ConfigError(
+                f"{name}[{index}].base must not be an unspecified, loopback, link-local or multicast range"
+            )
+        if not network.is_private:
+            raise ConfigError(f"{name}[{index}].base must be a private range (RFC 1918 / ULA); public ranges are not allowed")
         if isinstance(size, bool) or not isinstance(size, int):
             raise ConfigError(f"{name}[{index}].size must be an integer")
         upper = 30 if network.version == 4 else 128

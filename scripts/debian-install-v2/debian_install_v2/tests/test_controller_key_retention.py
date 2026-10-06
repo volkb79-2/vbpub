@@ -72,8 +72,8 @@ def test_customscript_default_bundle_says_no_retain():
 
 # --- installer: the success path honours retain --------------------------------
 
-def _resume_ok(tmp_path, monkeypatch, retain):
-    installer = mm._installer(tmp_path, controller_ssh_pubkey=PUBKEY, retain_controller_ssh_key=retain)
+def _resume_ok(tmp_path, monkeypatch, retain, pubkey=PUBKEY):
+    installer = mm._installer(tmp_path, controller_ssh_pubkey=pubkey, retain_controller_ssh_key=retain)
     posts = mm._live(installer, monkeypatch)
     removed = []
     monkeypatch.setattr(installer, "_stage1", lambda: installer._reboot())
@@ -98,6 +98,12 @@ def test_retain_skips_removal_and_marks_step_retained(tmp_path, monkeypatch):
     step = installer.state.load()["steps"]["controller_ssh_key_retained"]
     assert step["status"] == "success"
     assert step["detail"] == "configured to retain after successful stage2"
+
+
+def test_retain_without_installed_pubkey_does_not_claim_retained_step(tmp_path, monkeypatch):
+    installer, _, _, telegram = _resume_ok(tmp_path, monkeypatch, True, pubkey="")
+    assert "controller_ssh_key_retained" not in installer.state.load().get("steps", {})
+    assert not any("Controller key retained" in m for m in telegram)
 
 
 def test_default_still_removes_on_success(tmp_path, monkeypatch):

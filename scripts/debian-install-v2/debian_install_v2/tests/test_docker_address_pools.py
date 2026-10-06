@@ -88,6 +88,15 @@ def test_loads_from_config_json_and_empty_list_is_valid():
     [{"base": "fd00::/48", "size": 40}],                    # v6 size < prefix
     [{"base": "10.240.0.0/16", "size": 24}, {"base": "10.240.1.0/24", "size": 28}],  # overlap
     [{"base": f"10.{n}.0.0/16", "size": 24} for n in range(17)],                    # > 16
+    [{"base": "0.0.0.0/0", "size": 24}],                    # unspecified
+    [{"base": "127.0.0.0/8", "size": 24}],                  # loopback
+    [{"base": "169.254.0.0/16", "size": 24}],               # link-local
+    [{"base": "224.0.0.0/4", "size": 24}],                  # multicast
+    [{"base": "8.8.0.0/16", "size": 24}],                   # public
+    [{"base": "::ffff:10.0.0.0/104", "size": 120}],         # IPv4-mapped v6
+    [{"base": "fe80::/10", "size": 64}],                    # v6 link-local
+    [{"base": "::1/128", "size": 128}],                     # v6 loopback
+    [{"base": "2a00::/16", "size": 48}],                    # v6 public
 ])
 def test_invalid_pools_rejected(bad):
     with pytest.raises(ConfigError, match="docker_default_address_pools"):
@@ -134,3 +143,79 @@ def test_wizard_accepts_a_json_list_and_retries_bad_json(tmp_path):
     value = _ask_field(Q, field, DEFAULT, RT)
     assert value == [{"base": "10.9.0.0/16", "size": 20}]
     assert json.loads(seen_defaults[0]) == DEFAULT and len(RT.output.warnings) == 1
+
+
+# --- host-subnet overlap check (fix round 1) ----------------------------------
+
+ADDR = ("/usr/sbin/ip", "-j", "addr", "show")
+ROUTE = ("/usr/sbin/ip", "-j", "route", "show")
+
+
+def _host(installer, addrs=(), routes=()):
+    installer.actions.outputs[ADDR] = json.dumps([
+        {"ifname": "eth0", "addr_info": [
+            {"family": "inet6" if ":" in a else "inet", "local": a.split("/")[0], "prefixlen": int(a.split("/")[1])}
+            for a in addrs
+        ]}
+    ])
+    installer.actions.outputs[ROUTE] = json.dumps([{"dst": d} for d in routes])
+
+
+def _real(tmp_path, **kw):
+    return make_installer(tmp_path, dry_run=False, **kw)
+
+
+def test_pool_clear_of_host_networks_is_written(tmp_path):
+    installer = _real(tmp_path)
+    _host(installer, addrs=["10.0.0.5/24", "127.0.0.1/8", "fe80::1/64"],
+          routes=["default", "10.0.0.0/24", "172.17.0.0/16"])
+    installer._configure_docker_daemon()
+    assert json.loads(installer.actions.files["/etc/docker/daemon.json"])["default-address-pools"] == DEFAULT
+
+
+@pytest.mark.parametrize("addrs, routes, needle", [
+    (["10.240.5.9/24"], [], "address 10.240.5.9/24 on eth0"),
+    ([], ["10.240.128.0/17"], "route 10.240.128.0/17"),
+    ([], ["10.0.0.0/8"], "route 10.0.0.0/8"),
+    ([], ["10.240.1.1"], "route 10.240.1.1"),
+])
+def test_pool_overlapping_host_v4_fails_naming_pool_and_conflict(tmp_path, addrs, routes, needle):
+    from debian_install_v2.installer import InstallerError
+
+    installer = _real(tmp_path)
+    _host(installer, addrs, routes)
+    with pytest.raises(InstallerError, match="10.240.0.0/16") as exc:
+        installer._configure_docker_daemon()
+    assert needle in str(exc.value)
+    assert "/etc/docker/daemon.json" not in installer.actions.files
+
+
+def test_v6_pool_overlapping_host_v6_address_fails(tmp_path):
+    from debian_install_v2.installer import InstallerError
+
+    installer = _real(tmp_path, docker_default_address_pools=[{"base": "fd00:1::/48", "size": 64}])
+    _host(installer, addrs=["fd00:1::5/64"])
+    with pytest.raises(InstallerError, match="fd00:1::/48"):
+        installer._configure_docker_daemon()
+
+
+def test_v4_pool_is_not_compared_with_v6_host_addresses(tmp_path):
+    installer = _real(tmp_path)
+    _host(installer, addrs=["fd00::5/8"])
+    installer._configure_docker_daemon()
+
+
+def test_empty_pools_skip_the_host_check(tmp_path):
+    installer = _real(tmp_path, docker_default_address_pools=[])
+    _host(installer, addrs=["10.240.5.9/24"])
+    installer._configure_docker_daemon()
+    assert not any(a.argv[:2] == ("/usr/sbin/ip", "-j") for a in installer.actions.planned)
+
+
+def test_unparseable_ip_output_fails_closed(tmp_path):
+    from debian_install_v2.installer import InstallerError
+
+    installer = _real(tmp_path)
+    installer.actions.outputs[ADDR] = "not json"
+    with pytest.raises(InstallerError, match="ip -j addr"):
+        installer._configure_docker_daemon()
