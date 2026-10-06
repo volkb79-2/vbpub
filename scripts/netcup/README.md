@@ -87,8 +87,8 @@ IDs in `NETCUP_SCP_API_PROTECTED_SERVER_IDS` so a later server rename cannot
 silently remove protection. The `.env` writer enforces mode `0600`.
 
 The guarded server mutations are ISO attach/detach, rescue deactivation,
-snapshot creation, task cancellation, firewall assignment, power operations,
-and Debian image installation. Read-only queries, snapshot `dryrun`,
+snapshot creation and deletion, task cancellation, firewall assignment, power
+operations, and Debian image installation. Read-only queries, snapshot `dryrun`,
 and installer `--dry-run` remain available. Account-level user-ISO upload and
 firewall-policy create/PUT are not server-targeted; applying a policy with
 `firewall SERVER set` is guarded. Task cancellation needs
@@ -351,6 +351,8 @@ bootable installer or recovery media. Useful first queries are:
 ./scp-api.py rescuesystem 799611 deactivate
 ./scp-api.py snapshots 799611 dryrun
 ./scp-api.py snapshots 799611 create --name before-upgrade
+./scp-api.py snapshots 799611 delete before-upgrade --dry-run   # shows the target, deletes nothing
+./scp-api.py snapshots 799611 delete before-upgrade
 ./scp-api.py boot-order 799611
 ./scp-api.py boot-order 799611 set HDD,CDROM,NETWORK
 ./scp-api.py tasks --state RUNNING --server-id 799611
@@ -388,7 +390,14 @@ raw answer. Both `dryrun` and `create` need a disk (the API rejects a
 create without one with HTTP 422 "Disk name cannot be blank"): the server's only
 disk is used by default, `--disk-name NAME` selects one (required when the server
 has several disks), and `--online` requests an online snapshot, which needs no
-disk. `create` also takes `--description TEXT`. The server record's
+disk. `create` also takes `--description TEXT`. `snapshots SERVER_ID delete
+SNAPSHOT_NAME` removes a snapshot (`DELETE /servers/{id}/snapshots/{name}`; the
+API identifies a snapshot by its name, which `snapshots SERVER_ID` lists). It is
+irreversible, so it honours the protected-server denylist, is confirmed (`--yes`
+in a non-interactive run, else exit 2), and is refused with exit 2 when the name
+is not in the server's snapshot list. `--dry-run` looks the snapshot up and shows
+what would be deleted without sending the DELETE. The API answers a task; follow
+it with `./monitor-task.py watch TASK_UUID`. The server record's
 `snapshotCount` can be higher than the list `snapshots` shows (live: count 1,
 list `[]` on both test hosts); `GET /servers/{id}/snapshots` takes no paging
 parameters in the spec, so this is a provider-side discrepancy, not a client
