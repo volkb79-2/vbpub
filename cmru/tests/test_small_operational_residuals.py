@@ -17,7 +17,7 @@ def test_resolve_main_rejects_missing_or_unknown_project(monkeypatch):
 
 
 def test_resolve_main_uses_project_prefix_and_refuses_missing_owner_or_release(monkeypatch, capsys):
-    project = SimpleNamespace(prefix="demo-v", github_token="project-token")
+    project = SimpleNamespace(prefix="demo-v", github_token="project-token", installer=None)
     loaded = (
         None, {"demo": project}, ["demo"], None, None, None, None, None,
         SimpleNamespace(owner="owner", repo="repo", token="root-token"), None,

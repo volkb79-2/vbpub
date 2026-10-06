@@ -453,6 +453,7 @@ compares these rows with the registered parser objects, not a second parser.
 | cmru handler wheel-validate | EXPLORATION | — | --prefix |
 | cmru handler tarball-publish | MODIFICATION | — | --cwd; --dry-run; --glob; --notes-env; --prefix; --version-env; --version-file |
 | cmru handler tarball-validate | EXPLORATION | — | --artifact-suffix; --prefix |
+| cmru handler bundle-manifest | MODIFICATION | — | --dry-run; --manifest-name; --name; --root; --tag |
 | cmru handler oci-image-build | MODIFICATION | — | --bake-file; --cwd; --dry-run; --target |
 | cmru handler oci-image-push | MODIFICATION | — | --bake-file; --cwd; --dry-run; --target |
 | cmru tester-gate | MODIFICATION | command... | --cgroup-parent; --cgroup-probe-image; --cpus; --cwd; --device-read-bps; --device-read-iops; --device-write-bps; --device-write-iops; --dind-cpus; --dind-image; --dind-memory; --dind-pids-limit; --dry-run; --enable-docker; --forward-cgroup-parent-gates-var; --forward-cgroup-parent-var; --image; --memory; --memory-swap; --pids-limit |
@@ -465,6 +466,7 @@ compares these rows with the registered parser objects, not a second parser.
 | python -m cmru.handlers wheel-validate | EXPLORATION | — | --prefix |
 | python -m cmru.handlers tarball-publish | MODIFICATION | — | --cwd; --dry-run; --glob; --notes-env; --prefix; --version-env; --version-file |
 | python -m cmru.handlers tarball-validate | EXPLORATION | — | --artifact-suffix; --prefix |
+| python -m cmru.handlers bundle-manifest | MODIFICATION | — | --dry-run; --manifest-name; --name; --root; --tag |
 | python -m cmru.handlers oci-image-build | MODIFICATION | — | --bake-file; --cwd; --dry-run; --target |
 | python -m cmru.handlers oci-image-push | MODIFICATION | — | --bake-file; --cwd; --dry-run; --target |
 <!-- cmru-cli-grammar:end -->
@@ -547,6 +549,7 @@ registered implementation named beside them.
 | cmru handler wheel-validate; python -m cmru.handlers wheel-validate | Required `--prefix` selects the latest release to validate. It is read-only, so no `--dry-run` is offered. | ACCEPTED; validation does not accept a meaningless mutation flag. |
 | cmru handler tarball-publish; python -m cmru.handlers tarball-publish | Required `--prefix`, `--cwd`, and `--glob` select the one source; exactly one of `--version-file PATH` or `--version-env NAME` supplies its version; optional `--notes-env` supplies notes. `--dry-run` displays inputs and skips publication. | ACCEPTED; the mutually exclusive version source is semantically necessary. |
 | cmru handler tarball-validate; python -m cmru.handlers tarball-validate | Required `--prefix` selects the release; `--artifact-suffix` defaults to `.tar.xz` and selects the expected extension. This is read-only and has no `--dry-run`. | ACCEPTED; a future suffix change must preserve non-empty/path-safe validation. |
+| cmru handler bundle-manifest; python -m cmru.handlers bundle-manifest | Required `--name` (the project), `--tag` and `--root` (the staged bundle directory that becomes the tarball's single top-level directory) select what is described; it writes `manifest.json` there (or the file named by `--manifest-name`) with `schema_version`, `project`, `tag`, `created` and the `files` map (sha256, size, mode of every regular file), which the hardened `get.py` requires (S6.3). A symlink or special file in the tree is an error (one `[ERROR]` line, exit 1, no traceback); a `--tag` outside the installer's tag grammar is exit 2. `--dry-run` shows the inputs and writes nothing. | ACCEPTED; the producer half of the installer's refuse-unlisted-members rule, used by tarball projects such as tls-edge. |
 | cmru handler oci-image-build; python -m cmru.handlers oci-image-build | Required `--cwd`, `--bake-file`, and `--target` select the project build. `--dry-run` previews the build without Docker login or any command. | ACCEPTED; `--repack` and the KI-02 repack tuning flags were removed (CLI-14); a test pins that `--repack` is refused as an unrecognized argument. |
 | cmru handler oci-image-push; python -m cmru.handlers oci-image-push | Required `--cwd`, `--bake-file`, and `--target` select the image; operation uses buildx bake push. `--dry-run` shows inputs without pushing. | ACCEPTED; no dormant repack grammar remains. |
 | cmru tester-gate | Required `--cwd DIR` selects the in-container checkout path and positional `command...` is the command after `--`. `--image` selects the pinned tester image; `--cgroup-parent` overrides the required gates slice; `--forward-cgroup-parent-var` and `--forward-cgroup-parent-gates-var` control nested slice fact forwarding; `--memory`, `--memory-swap`, and `--cpus` set container resource bounds. CPU must be a finite decimal of at least `0.00001` that Docker can represent; CMRU uses `--cpus` without `--cpu-period` because Docker rejects NanoCPUs and CPU Period together; it refuses zero/smaller, non-finite, or unrepresentable values before host probes because those values can remove the per-container CPU limit. `--pids-limit` (required, `CMRU_TESTER_PIDS_LIMIT`, positive integer, no default) caps the workload's process count. `--cgroup-probe-image` and `--dind-image` select helper images that run privileged, so both MUST be digest-pinned (`<repo>@sha256:<64 hex>`) and are started with `--pull=never`; `--dind-memory`, `--dind-cpus` and `--dind-pids-limit` (required with `--enable-docker`, `CMRU_TESTER_DIND_*`) bound the sidecar; `--device-read-iops`, `--device-write-iops`, `--device-read-bps`, and `--device-write-bps` set device I/O limits; `--enable-docker` requests DinD and requires its image and limits. `--dry-run` prints the workload argv and, when enabled, the DinD startup argv; it starts no container and skips privileged host slice/IO probes. Every helper and workload container receives the required `--cgroup-parent`. The workload and the DinD sidecar run under `--init` (a reaper as PID 1; the gate command is one cmru does not control and git's detached auto-maintenance orphans one process per commit). Every container has an exact name (`cmru-tester-<uuid8>`, `cmru-probe-<uuid8>`, `cmru-tester-dind-<12 hex>`); SIGTERM/SIGHUP raise `SystemExit` and `finally` runs `docker stop` then `docker rm -f` by exact name for each; a timed-out probe is removed by name. After the gate command exits, a wrapper inside the container copies the container's own `pids.events` and `memory.events` into `.cmru/tester-gate-events-<uuid>.txt` on the mounted worktree; a missing, malformed or incomplete file, a non-zero `pids.events max`, or a non-zero `memory.events oom_kill` makes the run an infrastructure failure (exit 3, naming the counter) even when the command exited 0. Otherwise the command's own exit status is preserved. Image references are validated and one starting with `-` is refused. | ACCEPTED; the DinD sizing decision is DECIDED (2026-10-05): the sidecar has separate, explicit, required memory/CPU/pids inputs, so the nested envelope is never silently shared with or doubled on top of the workload's. Live Docker refused `--memory 1g --memory-swap 512m` with status 125 before workload creation. A live `docker create` plus inspect showed `--cpus 0` left `NanoCpus`, `CpuQuota`, and `CpuPeriod` all zero; live runs showed values below `0.00001` produce `cpu.max = max 100000`, whereas `0.00001` produces a bounded quota. CMRU rejects zero, smaller, non-finite, and unrepresentable limits before privileged probes. `--dry-run` still intentionally skips host slice/IO capability checks. |
@@ -864,6 +867,10 @@ required_commands  = ["python3", "docker", "minisign"]   # checked pre-network (
 preserve           = ["shared/host.toml"] # paths kept in <root>/shared/ across updates
 manifest_name      = "manifest.json"      # manifest file inside the bundle
 signature_name     = "manifest.json.minisig"  # minisign signature for manifest
+# manifest_pubkey  = "RWS3E3vAMFRhE+IFwPRKkv1VcLeqZIzKShZeB+QjX7u2iOMK7WfqEwk4"
+#                                           # optional: 56-char minisign public key, pinned INTO get.py;
+#                                           # set => signed releases are REQUIRED (S6.15). Absent => unsigned.
+# launchers        = ["ciu", "cmru"]      # optional: <root>/bin/<cmd> -> ../current/venv/bin/<cmd> (S6.17)
 # extensions       = ["installer/extra.py"]   # project-owned get.py command fragments (S6.14)
 
 [[project.installer.wheels]]         # bundled wheels to install into private venv
@@ -1379,59 +1386,129 @@ deterministic (byte-identical for identical config) from both a source checkout 
 installed wheel. The CMRU wheel MUST include the template resource and `cli-extended` runtime
 package. The gate MUST build/install that wheel into an isolated environment, invoke its
 `cmru get-py` console script from outside the source checkout, and compile the emitted
-installer. Any unreplaced `[[...]]` placeholder triggers a warning.
+installer. Any unreplaced `[[...]]` placeholder is a render error (exit 2), never a warning.
+Rendering is a single `[[NAME]]` pass; every value that lands in code goes through
+`json.dumps` (a bad value, such as a `"` in the GitHub owner, is refused with exit 2), values
+that land in docstring/message text must be plain names, and the installer fields have a
+grammar: absolute `install_dir_system`, relative `install_dir_user`/`entrypoint`/`preserve`
+without `..`, `asset_suffix == ".tar.xz"`, plain file names for `manifest_name`/`signature_name`,
+plain command names for `required_commands`/`launchers`, and a 56-character base64
+`manifest_pubkey`.
 
 **S6.2** Commands emitted:
 
 ```
-get.py install  --config HOST.toml [--version TAG] [--scope system|user]
-get.py update   [--version TAG] [--scope system|user]
+get.py install  [--config HOST.toml] [--version TAG] [--scope system|user] [--variant NAME]
+get.py update   [--version TAG] [--scope system|user] [--variant NAME]
 get.py status   [--scope system|user]
 get.py rollback [--version TAG] [--scope system|user]
 ```
 
+`--config FILE` is installed as `<root>/shared/host.toml` (mode 0600, written atomically) once
+the release is live, and is handed to the adapter as `--config` during the transaction;
+without it the adapter gets `<root>/shared/host.toml`. There is no `--manifest-pubkey` flag:
+the key is pinned in the rendered `get.py` (S6.15). `status` is read-only: it reconciles a
+`state.json` that is missing or behind `current` in memory and never writes it (the next
+install/update/rollback does). Render-time validation refuses an `install_dir_system` that is
+not an absolute normalised path (no `//`, `.`, trailing `/`) of at least two components, so `/`,
+`/opt`, `/srv`, `/tmp`, `/root`, `/usr`, `/etc`, `/bin`, `/sbin`, `/lib`, `/var`, `/boot` and
+`/home` are refused (a path below one, such as `/usr/local/<name>` or `/opt/<name>`, is fine), and a `preserve` or `install_dir_user` entry that
+normalises to the root itself (`.`, `a/..`).
+
 **S6.3** Transactional pipeline (install / update):
 
-1. **Pre-flight** — check `required_commands` BEFORE any network I/O (exit 3 if missing).
-2. **Resolve** — resolve the highest-semver `TAG_PREFIX*` release via the GitHub Releases API,
-   or use `--version`. Public requests carry **no** Authorization header. Private assets are
-   resolved by API asset-ID with the Authorization header stripped before the CDN redirect.
-3. **Download** — fetch `<tag><asset_suffix>` + its `.sha256` sidecar. For a multi-variant
-   release the selected variant (S6.12) changes the asset name to
-   `<tag>-<variant><asset_suffix>` (+ matching `.sha256`).
-4. **Verify SHA256** — recompute and compare; mismatch → exit 1, before extraction.
-5. **Verify minisign** — if `--manifest-pubkey` is supplied (or pubkey in host config),
-   extract `manifest_name` + `signature_name` from the bundle and run
-   `minisign -Vm manifest.json -P <pubkey>` (or `-p <pubkey-file>`). Failure → exit 1.
-6. **Stage** — extract into `<root>/releases/<tag>.staging/` with `filter="data"` (py≥3.12)
-   plus a pre-scan that rejects: absolute paths, `..` traversal, device nodes, absolute
-   symlinks, and symlink/hardlink traversal escapes.
-7. **Install wheels** — if `installer.wheels` is non-empty, create `<root>/venv` via
-   `python3 -m venv` and `venv/bin/pip install --no-index <wheel>` for each glob match.
-   Wheel sha256s from the manifest are verified before pip install (exit 1 on mismatch).
-8. **Invoke adapter** (`bootstrap` on install, `apply` on update) — if `entrypoint` is set.
-   Non-zero exit aborts before the `current` swap (previous release stays live).
-9. **Atomic swap** — `os.symlink` to a temp name + `os.replace` onto `current`.
-10. **Finalize** — rename `.staging` → final release dir; prune old releases (keep 2 by default).
+The pipeline is **fail-closed** (S6.15): every verification failure is exit 1 and leaves
+`<root>` as it was.
+
+1. **Pre-flight** — `required_commands`, `python3-venv` (when wheels are configured) and,
+   when a `manifest_pubkey` is configured, the `minisign` binary, ALL before any network I/O
+   (exit 3 if missing). System scope needs root (exit 3).
+2. **Lock + read state** — `flock` on `<root>/.lock` (opened `O_NOFOLLOW`); as root,
+   `<root>`, `releases`, `shared` and `bin` must be real directories (not symlinks) owned by
+   the effective uid and not group/world-writable, and are created that way (`0755`), else
+   exit 1 with nothing written through them; read `state.json`; delete leftover `.incomplete`
+   release dirs (crash recovery; never for a pre-W1 install, whose old releases survive until
+   the new release is live).
+3. **Resolve** — `--version X` installs exactly X (no "latest" lookup happens). Without it the
+   highest-semver `TAG_PREFIX*` release is resolved and the resolved tag is printed. The tag
+   must be `<prefix><version>` made of `[A-Za-z0-9._+-]` (exit 2 otherwise). Re-running the
+   current version and variant is a no-op that re-verifies the recorded manifest digest (and
+   still applies `--config` and rewrites the launchers). `--version ""` is exit 2, never
+   "latest". An unpinned `update` whose latest release is OLDER than the installed one is
+   refused (exit 1; the message says to pass `--version`); an explicit older `--version` is
+   allowed and prints a downgrade notice.
+4. **Download + SHA256** — fetch `<tag><asset_suffix>` + its `.sha256` sidecar (for a
+   multi-variant release `<tag>-<variant><asset_suffix>`, S6.12). The sidecar must be exactly
+   `<64 hex>[  <asset name>]`; a mismatch is exit 1, before extraction. HTTPS only, on every
+   redirect hop (host allowlist); the token is never forwarded across a redirect.
+5. **Read + verify the manifest** — the bundle must have exactly one top-level directory;
+   `manifest_name` (and `signature_name`) are read straight from it into memory. When a
+   `manifest_pubkey` is configured the signature must verify (S6.15). The manifest must parse,
+   have `schema_version` 1 and, when it carries `tag`/`version`, they must equal the requested
+   tag. These in-memory bytes are the ONLY manifest used afterwards.
+6. **Build the release** at its final path `<root>/releases/<tag>-<manifest12>[-<variant>]/`,
+   marked `.incomplete`: extract the bundle to `tree/` (`filter="data"` where the interpreter
+   has `tarfile.data_filter`, otherwise setuid/setgid/group-write stripped and the archive's
+   owner ignored; plus a pre-scan that refuses the bundle on absolute paths, `..`, device
+   nodes, absolute/escaping links, and any non-directory member that is neither a key of
+   manifest `files` nor a wheel matching a configured wheel glob; a symlink or hardlink is
+   allowed only when its target is a listed file; the manifest and signature are not
+   extracted), write the verified `manifest.json` (+ `.minisig`), check every manifest `files`
+   entry (the adapter MUST be listed, or the install is refused; a `preserve` path that this
+   installer replaced with a link into `<root>/shared` is the operator's copy and is not
+   hashed), link `preserve` paths, then install wheels (S6.16). Resource bounds, checked
+   before anything is written: download at most 512 MiB, declared extracted size at most
+   2 GiB, at most 50,000 archive members; a bundle beyond any of them is refused (exit 1).
+7. **Invoke adapter** (`bootstrap` on install, `apply` on update/migration) — if `entrypoint`
+   is set. Non-zero exit aborts before the swap.
+8. **Commit** — write `release.json`, then `.complete` (last), then atomically swap `current`,
+   then write `state.json` atomically. Any failure before the swap deletes the new release dir.
+9. **After the swap** — install `--config`, write launchers (S6.17), persist the variant,
+   prune: only `current` and `previous` are kept.
 
 **S6.4** Release layout:
 
 ```
-<root>/releases/<tag>/    # immutable dir per installed version
-<root>/current            # symlink → releases/<current-tag>  (atomic swap)
-<root>/shared/            # preserved config/state (never inside releases/)
-<root>/venv/              # private interpreter; bundled wheels live here
+<root>/releases/<tag>-<manifest12>[-<variant>]/
+    tree/            # extracted bundle (the adapter's --release-root)
+    venv/            # this release's own interpreter (venvs are not relocatable)
+    wheelhouse/ requirements.lock    # the verified wheels and their hash lock
+    manifest.json [manifest.json.minisig]   # exactly the verified bytes
+    release.json     # {name, tag, variant, manifest_sha256}
+    .complete        # written last; `.incomplete` while building
+<root>/current        # symlink -> releases/<name>  (atomic swap)
+<root>/state.json     # {schema, current, previous, history}  (atomic write)
+<root>/bin/<cmd>      # launchers -> ../current/venv/bin/<cmd>
+<root>/shared/        # preserved config/state (host.toml, .variant); never inside releases/
 ```
 
 `<root>` = `install_dir_system` (system scope) or `$XDG_DATA_HOME/<install_dir_user>` /
-`~/.local/share/<install_dir_user>` (user scope).
+`~/.local/share/<install_dir_user>` (user scope). If the process dies between the symlink swap
+and the state write, the next run reconciles `state.json` from the `current` target's own
+`release.json`. A corrupt `state.json` or a dangling `current` is refused (exit 1).
 
-**S6.5** Preserve: files in `installer.preserve` are copied to `<root>/shared/` before
-staging and symlinked back into the new release dir after extraction. They survive across
-updates and rollbacks.
+**Pre-W1 layout (migration).** A host installed by the older template (`current` symlink, no
+`state.json`, content directly in `releases/<tag>/`, one shared `<root>/venv`) is **migrated
+by the next `install` or `update`**: the new release is built beside the old one, `current`
+is swapped atomically, and only then are the old release dirs and the shared `<root>/venv`
+removed. The legacy release becomes neither `previous` nor history (it has no per-release venv
+or digest), so the first migrated host has no rollback target until its next update;
+`rollback` says so and exits 1. A failed migration leaves the legacy install untouched and
+working. `status` marks such a host `pre-W1 layout`.
 
-**S6.6** Rollback: `get.py rollback [--version TAG]` re-points `current` to the previous
-(or named) release dir and re-runs the adapter with `action=rollback`.
+**S6.5** Preserve: files in `installer.preserve` are copied from the live release's `tree/` to
+`<root>/shared/` after the new bundle has verified, and symlinked back into the new `tree/`.
+They survive across updates and rollbacks.
+
+**S6.6** Rollback: `get.py rollback` goes to `state.previous`, which must be `.complete` and
+is re-verified (recorded manifest digest, signature when a key is configured, adapter and
+`files` hashes) before the adapter runs `action=rollback` and `current` is swapped, using
+that release's own venv. `state.previous` becomes the release rolled away from, so a second
+rollback toggles back. `--version TAG` selects a recorded release of that tag from `previous`
+or the history, if its directory still exists (pruning keeps only `current` and `previous`).
+When there is no `previous` (a fresh install, or a host just migrated from the pre-W1 layout)
+`rollback` exits 1 with: "the pre-migration layout is not a rollback target; the first update
+after migration creates one".
 
 **S6.7** Scope-exclusive lock (`flock` on `<root>/.lock`) serialises concurrent invocations.
 SIGINT/SIGTERM handler cleans up staging dir and releases the lock.
@@ -1439,17 +1516,22 @@ SIGINT/SIGTERM handler cleans up staging dir and releases the lock.
 **S6.8** Adapter invocation contract (Seam 1):
 
 ```
-<root>/venv/bin/python <root>/current/<entrypoint> <action> \
-    --release-root <root>/releases/<tag> \
+<release>/venv/bin/python <release>/tree/<entrypoint> <action> \
+    --release-root <release>/tree \
     --config <root>/shared/host.toml \
-    --manifest <root>/releases/<tag>/manifest.json
+    --manifest <release>/manifest.json
 ```
+
+(`<release>` = `<root>/releases/<name>`; without wheels there is no venv and the adapter runs
+under the installer's own interpreter.)
 
 `<action>` ∈ `{bootstrap, apply, health, rollback}`. Non-zero adapter exit → exit 1.
 The GitHub token is **stripped** from the child-process environment.
 
 **S6.9** The installer is Python 3 **stdlib-only** (urllib/tarfile/hashlib/argparse/fcntl);
-no third-party dependencies. `minisign`, `docker`, and the project adapter are shelled out.
+no third-party dependencies. The project adapter, `python3 -m venv`/`pip` (wheels, S6.16) and,
+only when a `manifest_pubkey` is configured, `minisign` (S6.15) are shelled out; any other
+command in `required_commands` is only presence-checked.
 
 **S6.10** Auth (token) precedence: `--github-token` (warns: leaks via ps/history) >
 `--github-token-file FILE` (rejected if loose perms / wrong owner) > `--github-token-stdin`
@@ -1458,7 +1540,11 @@ no third-party dependencies. `minisign`, `docker`, and the project adapter are s
 **S6.11** `install_dir_user` degrades gracefully: if `entrypoint` is empty and `wheels`
 is empty, no adapter is called and no venv is created (tls-edge minimal path).
 
-**S6.13** `--version <TAG>` pins the install to a specific tag (bare semver or full tag). Arguments go to the right side of the pipe (`curl … | sudo python3 - install --version …`), so there is no env-var-across-pipe footgun.
+**S6.13** `--version <TAG>` pins the install to a specific tag (bare semver or full tag) and
+installs EXACTLY that tag: no "latest" lookup is made, so a moved or newer release can never
+substitute for it (and an unreachable release list does not block a pinned install). Without
+`--version` the highest-semver release is resolved. Arguments go to the right side of the pipe
+(`curl … | sudo python3 - install --version …`), so there is no env-var-across-pipe footgun.
 
 **S6.12** **Variant selection (multi-variant releases, S-REL.6).** When the emitted `get.py`
 carries a non-empty `VARIANTS` list, the operator MUST select one at install/update time —
@@ -1525,6 +1611,58 @@ single rendered file:
 - Consequence: a project that renders `get.py` without `extensions` carries no root-run
   `authorized_keys` writer. Host enrollment is ciu's (`ciu/installer/enroll.py`); its hardening
   is tracked in ciu (CIU-122/CIU-123), not here.
+
+**S6.15** Signature policy, fail-closed behaviour and exit codes.
+
+- *Unsigned projects.* With no `manifest_pubkey` the releases are unsigned; `install` says so
+  ("unsigned"), `status` shows `signed: no`, and `minisign` is not required.
+- *Signed projects.* With `manifest_pubkey` the key is pinned into the rendered `get.py`
+  (never a flag or environment variable). `minisign` and the venv prerequisites are checked
+  BEFORE any network I/O (exit 3). The bundle MUST contain `signature_name` next to the
+  manifest; the signature is verified over the exact manifest bytes with
+  `minisign -V -m <manifest> -x <sig> -P <key>`; a missing or invalid signature, or one from
+  another key, is exit 1 and changes nothing under `<root>`. Rollback and the idempotent
+  re-install re-verify it.
+- *Trusted-comment binding (replay protection).* The signed trusted comment MUST be exactly
+  `project=<name> tag=<tag> manifest_sha256=<hex>`: `<tag>` is the tag being installed and
+  `<hex>` the SHA-256 of the manifest bytes. The installer refuses (exit 1) when either field
+  differs, so an old signed release cannot be replayed as another tag and a signature cannot
+  be moved onto a different manifest. Producer primitives that emit exactly this:
+  `cmru.manifest.build_trusted_comment(project, tag, manifest_path)` and
+  `cmru.delegated.minisign_sign(blob, secret_key, trusted_comment)` (writes
+  `<blob>.minisig`); a test signs with them and installs the result. **Gap:** nothing in the
+  `cmru release` pipeline calls them yet (GETPY-REDESIGN R4, automatic signing at release); a
+  project that sets `manifest_pubkey` must sign from a project-owned release step with those
+  primitives until R4 lands, otherwise every install of its releases fails closed.
+- *Fail-closed.* Every verification failure (checksum, sidecar grammar, signature, manifest
+  schema/tag, `files` hashes, wheel hashes, adapter not covered by the manifest, unsafe tar
+  member) is exit 1 with the install untouched.
+- *Exit codes:* `0` ok (including a verified no-op); `1` download/verify/install/adapter
+  failure; `2` configuration or render error (bad tag or variant, missing `--config` file,
+  invalid installer field); `3` missing prerequisite (command, `minisign`, `python3-venv`, root
+  for system scope).
+- *Transport.* HTTPS only, every redirect hop checked against the host allowlist
+  (`api.github.com`, `github.com`, `uploads.github.com`, `objects.githubusercontent.com`,
+  `*.githubusercontent.com`, `*.github.com`); the token is never forwarded across a redirect; an empty token on stdin is
+  exit 2; a non-200 asset download is fatal.
+
+**S6.16** Wheels, offline installs, hash lock. When `[[project.installer.wheels]]` is set, each
+wheel glob must match exactly one file in the bundle and have a manifest entry
+`manifest[<distribution>] = {sha256, wheel?, size?}` that it matches (a missing or mismatching
+entry is exit 1). The verified wheels are copied to `<release>/wheelhouse/` and a
+`requirements.lock` of `<dist>==<version> --hash=sha256:<hex>` lines is written, with
+`cli-extended` first and the rest in declared order. The release's own venv
+(`python3 -m venv`, so the `python3-venv` package is a prerequisite, exit 3) is populated with
+`pip install --isolated --no-index --find-links <wheelhouse> --require-hashes -r
+requirements.lock`, then `pip check`: no index, no network, no resolver choice, and any wheel
+swapped after verification fails the hash lock. pip also runs with `PIP_CONFIG_FILE=/dev/null`
+and no `PIP_*` variables from the caller: `--isolated` alone leaves pip's global config
+(`/etc/pip.conf`, `$XDG_CONFIG_DIRS`) active, and a global `target`/`prefix` could redirect
+the install. The wheel version that goes into the lock must be a plain version string.
+
+**S6.17** Launchers. `launchers = ["a", "b"]` (plain command names) makes the installer create
+`<root>/bin/<cmd>` symlinks to `../current/venv/bin/<cmd>`, rewritten atomically after every
+install, update and rollback so they follow `current`. Add `<root>/bin` to `PATH`.
 
 ---
 

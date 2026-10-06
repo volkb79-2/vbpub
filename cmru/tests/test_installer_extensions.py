@@ -277,14 +277,14 @@ class TestRefusals:
         compile(_render(_frag(src)), "<get.py>", "exec")
 
     @pytest.mark.parametrize("src", [
-        "def _r(subparsers: _NoRedirectAuth):\n    return {}\n",
-        "def _r(subparsers, *a: _NoRedirectAuth):\n    return {}\n",
-        "def _r(subparsers, **k: _NoRedirectAuth):\n    return {}\n",
-        "def _r(subparsers) -> _NoRedirectAuth:\n    return {}\n",
-        "def _r(subparsers, *, kw: _NoRedirectAuth = None):\n    return {}\n",
+        "def _r(subparsers: _RedirectGuard):\n    return {}\n",
+        "def _r(subparsers, *a: _RedirectGuard):\n    return {}\n",
+        "def _r(subparsers, **k: _RedirectGuard):\n    return {}\n",
+        "def _r(subparsers) -> _RedirectGuard:\n    return {}\n",
+        "def _r(subparsers, *, kw: _RedirectGuard = None):\n    return {}\n",
     ])
     def test_c_annotations_are_checked(self, src):
-        with pytest.raises(ExtensionError, match="_NoRedirectAuth"):
+        with pytest.raises(ExtensionError, match="_RedirectGuard"):
             _render(_frag(src + "_EXTENSIONS.append(_r)\n"))
 
     def test_c_annotations_naming_api_or_builtin_names_are_fine(self):

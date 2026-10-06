@@ -7,13 +7,16 @@ install, update, rollback, status, scope (system/user), bundled-wheel venv, SHA2
 minisign-manifest verification, private GitHub asset auth, and the project-adapter
 invocation contract (Seam 1). It ships INSIDE the release artifact.
 
-Template variables use [[VARNAME]] syntax. All placeholders must be replaced;
-unmatched [[...]] keys trigger a warning.
+Template variables use [[VARNAME]] syntax and are replaced in ONE pass. Every value that
+lands in code is a ``json.dumps`` literal, and a leftover ``[[...]]`` placeholder or a value
+outside the installer-field grammar (``config.installer_problems``) is a ``RenderError``
+(exit 2), never a warning. See SPEC S6.1/S6.15 for the contract.
 """
 from __future__ import annotations
 
 import ast
 import hashlib
+import json
 import re
 import sys
 from importlib import resources
@@ -37,8 +40,34 @@ _TEMPLATE_RESOURCE = "templates/get.py.tmpl"
 _EXTENSION_MARKER = "# @@EXTENSIONS@@\n"
 
 
-class ExtensionError(ValueError):
+class RenderError(ValueError):
+    """A value or placeholder cannot be rendered safely into get.py (exit 2)."""
+
+
+class ExtensionError(RenderError):
     """An installer extension fragment is missing, unsafe, or violates the contract."""
+
+
+_PLACEHOLDER = re.compile(r"\[\[([A-Z_]+)\]\]")
+_PLAIN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
+
+
+def _substitute(text: str, replacements: Dict[str, str]) -> str:
+    """Single-pass ``[[NAME]]`` substitution: a substituted value is never re-scanned, and
+    a placeholder with no replacement is a render error (never a warning)."""
+    unknown: Set[str] = set()
+
+    def sub(match: "re.Match[str]") -> str:
+        key = match.group(0)
+        if key not in replacements:
+            unknown.add(key)
+            return key
+        return replacements[key]
+
+    result = _PLACEHOLDER.sub(sub, text)
+    if unknown:
+        raise RenderError(f"get.py.tmpl: unreplaced placeholders: {sorted(unknown)}")
+    return result
 
 
 def _bindings(node: ast.AST) -> Dict[str, int]:
@@ -297,9 +326,7 @@ def _inline_extensions(
         return template.replace(_EXTENSION_MARKER, "")
     if template.count(_EXTENSION_MARKER) != 1:
         raise ValueError("get.py.tmpl must contain exactly one '# @@EXTENSIONS@@' marker line")
-    core = template
-    for placeholder, value in replacements.items():
-        core = core.replace(placeholder, value)
+    core = _substitute(template, replacements)
     template_names, api = _template_contract(core)
     claimed: Dict[str, str] = {}
     blocks: List[str] = []
@@ -308,9 +335,7 @@ def _inline_extensions(
             text = raw.decode("utf-8")
         except UnicodeDecodeError as exc:
             raise ExtensionError(f"extension {relpath}: not valid UTF-8: {exc}") from exc
-        shipped = text
-        for placeholder, value in replacements.items():
-            shipped = shipped.replace(placeholder, value)
+        shipped = _substitute(text, replacements)
         _check_extension(relpath, shipped, template_names, api, claimed)
         digest = hashlib.sha256(raw).hexdigest()
         body = text if text.endswith("\n") else text + "\n"
@@ -322,39 +347,28 @@ def _inline_extensions(
     return template.replace(_EXTENSION_MARKER, "".join(blocks))
 
 
-def _py_str_list(items: List[str]) -> str:
-    """Render a Python list-of-strings literal."""
-    if not items:
-        return "[]"
-    inner = ", ".join(f'"{s}"' for s in items)
-    return f"[{inner}]"
-
-
-def _py_wheel_specs(wheel_specs: List[Tuple[str, str]]) -> str:
-    """Render WHEEL_SPECS as a Python list-of-tuple literal."""
-    if not wheel_specs:
-        return "[]"
-    parts = [f'("{glob}", "{dist}")' for glob, dist in wheel_specs]
-    return "[" + ", ".join(parts) + "]"
-
-
-def _py_lit(value: Optional[str]) -> str:
-    """Render a Python string literal (or ``None``) with the essentials escaped."""
+def _py_literal(value: object) -> str:
+    """A Python source literal for ``value``; every string goes through ``json.dumps``
+    (a JSON string literal is a valid, fully escaped Python one). Deterministic."""
     if value is None:
         return "None"
-    escaped = value.replace("\\", "\\\\").replace('"', '\\"')
-    return f'"{escaped}"'
+    if isinstance(value, str):
+        return json.dumps(value)
+    if isinstance(value, (list, tuple)):
+        return "[" + ", ".join(_py_literal(v) for v in value) + "]"
+    if isinstance(value, dict):
+        return "{" + ", ".join(
+            f"{_py_literal(k)}: {_py_literal(v)}" for k, v in value.items()
+        ) + "}"
+    raise RenderError(f"cannot render {type(value).__name__} into get.py")
 
 
-def _py_variants(variants: List[Dict[str, Optional[str]]]) -> str:
-    """Render VARIANTS as a Python list-of-dict literal ([{"name","label"}, ...])."""
-    if not variants:
-        return "[]"
-    parts = [
-        '{"name": %s, "label": %s}' % (_py_lit(v["name"]), _py_lit(v.get("label")))
-        for v in variants
-    ]
-    return "[" + ", ".join(parts) + "]"
+def _plain(value: str, what: str) -> str:
+    """A value that is substituted as TEXT (docstring / message position): a plain name."""
+    if not isinstance(value, str) or not _PLAIN.fullmatch(value):
+        raise RenderError(f"{what} {value!r} must match {_PLAIN.pattern} to be rendered "
+                          "into get.py")
+    return value
 
 
 def render_get_py(
@@ -375,16 +389,38 @@ def render_get_py(
     variants: Optional[List[Dict[str, Optional[str]]]] = None,
     template_path: Optional[Path] = None,
     extensions: Optional[List[Tuple[str, bytes]]] = None,
+    manifest_pubkey: str = "",
+    launchers: Optional[List[str]] = None,
 ) -> str:
     """Render the get.py template for a project.
 
     ``extensions`` is an ordered list of ``(project-relative path, fragment bytes)``
     inlined at the ``# @@EXTENSIONS@@`` marker after the render-time contract checks
     (see ``_check_extension``); raises ``ExtensionError`` on a violation.
-    All [[VARNAME]] placeholders are replaced with the provided values.
-    Returns the rendered script as a string. Emits a warning for any
-    unreplaced [[...]] placeholders.
+    Every [[VARNAME]] placeholder is replaced in ONE pass: values that land in code are
+    rendered through ``json.dumps``; values that land in docstring/message text must be
+    plain names. Any bad value, or a placeholder left unreplaced, raises ``RenderError``
+    (exit 2 from ``cmru get-py``); the result is byte-deterministic.
     """
+    from cmru.config import installer_problems
+
+    _plain(project_name, "project name")
+    _plain(repo_owner, "github owner")
+    _plain(repo_name, "github repo")
+    _plain(tag_prefix, "tag prefix")
+    launcher_list = launchers or []
+    problems = installer_problems(
+        install_dir_system=install_dir_system, install_dir_user=install_dir_user,
+        asset_suffix=asset_suffix, entrypoint=entrypoint,
+        manifest_name=manifest_name, signature_name=signature_name,
+        required_commands=required_commands or [], preserve=preserve_paths or [],
+        wheels=list(wheel_specs or []), launchers=launcher_list,
+        manifest_pubkey=manifest_pubkey,
+    )
+    for variant in variants or []:
+        _plain(variant["name"], "variant name")
+    if problems:
+        raise RenderError(problems[0])
     if template_path is None:
         template = resources.files("cmru").joinpath(_TEMPLATE_RESOURCE).read_text(
             encoding="utf-8"
@@ -404,34 +440,34 @@ def render_get_py(
         required_commands_comment = ""
 
     replacements = {
+        # text position (docstring / messages; validated plain names)
         "[[PROJECT_NAME]]":              project_name,
-        "[[REPO_OWNER]]":                repo_owner,
-        "[[REPO_NAME]]":                 repo_name,
         "[[TAG_PREFIX]]":                tag_prefix,
-        "[[ASSET_SUFFIX]]":              asset_suffix,
-        "[[INSTALL_DIR_SYSTEM]]":        install_dir_system,
-        "[[INSTALL_DIR_USER]]":          install_dir_user,
-        "[[ENTRYPOINT]]":                entrypoint,
-        "[[REQUIRED_COMMANDS_LIST]]":    _py_str_list(cmds),
         "[[REQUIRED_COMMANDS_STR]]":     ", ".join(cmds) if cmds else "(none)",
         "[[REQUIRED_COMMANDS_COMMENT]]": required_commands_comment,
-        "[[PRESERVE_PATHS_LIST]]":       _py_str_list(preserve),
-        "[[WHEEL_SPECS_LIST]]":          _py_wheel_specs(wheels),
-        "[[VARIANTS_LIST]]":             _py_variants(variant_list),
-        "[[MANIFEST_NAME]]":             manifest_name,
-        "[[SIGNATURE_NAME]]":            signature_name,
+        # code position (a complete, json.dumps-escaped literal)
+        "[[PROJECT_NAME_LIT]]":          _py_literal(project_name),
+        "[[REPO_OWNER]]":                _py_literal(repo_owner),
+        "[[REPO_NAME]]":                 _py_literal(repo_name),
+        "[[TAG_PREFIX_LIT]]":            _py_literal(tag_prefix),
+        "[[ASSET_SUFFIX]]":              _py_literal(asset_suffix),
+        "[[INSTALL_DIR_SYSTEM]]":        _py_literal(install_dir_system),
+        "[[INSTALL_DIR_USER]]":          _py_literal(install_dir_user),
+        "[[ENTRYPOINT]]":                _py_literal(entrypoint),
+        "[[MANIFEST_PUBKEY]]":           _py_literal(manifest_pubkey),
+        "[[REQUIRED_COMMANDS_LIST]]":    _py_literal(cmds),
+        "[[PRESERVE_PATHS_LIST]]":       _py_literal(preserve),
+        "[[WHEEL_SPECS_LIST]]":          _py_literal([list(w) for w in wheels]),
+        "[[LAUNCHERS_LIST]]":            _py_literal(launcher_list),
+        "[[VARIANTS_LIST]]":             _py_literal(
+            [{"name": v["name"], "label": v.get("label")} for v in variant_list]),
+        "[[MANIFEST_NAME]]":             _py_literal(manifest_name),
+        "[[SIGNATURE_NAME]]":            _py_literal(signature_name),
     }
 
-    result = _inline_extensions(template, list(extensions or []), replacements)
-    for placeholder, value in replacements.items():
-        result = result.replace(placeholder, value)
-
-    remaining = re.findall(r"\[\[[A-Z_]+\]\]", result)
-    if remaining:
-        unique = sorted(set(remaining))
-        print(f"[WARN] get.py.tmpl: unreplaced placeholders: {unique}", file=sys.stderr)
-
-    return result
+    return _substitute(
+        _inline_extensions(template, list(extensions or []), replacements), replacements,
+    )
 
 
 def _read_extensions(
@@ -495,6 +531,8 @@ def render_from_config(project_name: str, config_path: Path) -> str:
         wheel_specs=wheel_specs or None,
         manifest_name=ins.manifest_name,
         signature_name=ins.signature_name,
+        manifest_pubkey=ins.manifest_pubkey,
+        launchers=ins.launchers or None,
         variants=variants or None,
     )
 
@@ -577,7 +615,7 @@ def _run_getpy(args, _runtime) -> None:
         )
     try:
         scripts = {name: render_from_config(name, cfg_path) for name in names}
-    except ExtensionError as exc:
+    except RenderError as exc:
         raise CliFailure(str(exc), exit_code=2) from exc
     if args.dry_run:
         if args.output_dir:

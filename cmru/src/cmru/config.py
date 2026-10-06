@@ -81,6 +81,111 @@ class InstallerConfig:
     # ``# @@EXTENSIONS@@`` marker (W1-CIU-ENROLL / decision O4). Existence is
     # checked at render time, not here.
     extensions: List[str] = field(default_factory=list)
+    # minisign public key (base64). Empty = the project's releases are unsigned and get.py
+    # says so; non-empty = get.py REQUIRES `minisign` and a valid signature (W1-INSTALLER, R2).
+    manifest_pubkey: str = ""
+    # Commands exposed as <root>/bin/<cmd> -> ../current/venv/bin/<cmd> (R8).
+    launchers: List[str] = field(default_factory=list)
+
+
+_INSTALLER_SAFE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
+_INSTALLER_COMMAND = re.compile(r"[A-Za-z0-9_][A-Za-z0-9._+-]*")
+_MINISIGN_PUBKEY = re.compile(r"[A-Za-z0-9+/]{56}")
+
+
+def _relative_problem(value: str, what: str) -> Optional[str]:
+    if (not value or value.startswith("/") or ".." in value.replace("\\", "/").split("/")
+            or any(ch in value for ch in "\0\n\r")):
+        return f"{what} must be a relative path without '..': {value!r}"
+    return None
+
+
+# An install root is removed/rewritten wholesale by the installer; these (and "/") are never
+# acceptable as `install_dir_system`, however the path is spelled.
+_SYSTEM_ROOT_DIRS = frozenset({"usr", "etc", "bin", "sbin", "lib", "var", "boot", "home"})
+
+
+def _normalises_to_root(value: str) -> bool:
+    """True when a relative `value` collapses to the root itself (``.``, ``a/..``)."""
+    import posixpath
+    return posixpath.normpath(value) == "."
+
+
+def installer_problems(
+    *,
+    install_dir_system: str,
+    install_dir_user: str,
+    asset_suffix: str,
+    entrypoint: str,
+    manifest_name: str,
+    signature_name: str,
+    required_commands: List[str],
+    preserve: List[str],
+    wheels: List[tuple],
+    launchers: List[str],
+    manifest_pubkey: str,
+) -> List[str]:
+    """Grammar of the values that get.py bakes into code (INS-13 / R11); [] when valid."""
+    problems: List[str] = []
+    if (not install_dir_system.startswith("/") or ".." in install_dir_system.split("/")
+            or any(ch in install_dir_system for ch in "\0\n\r")):
+        problems.append(f"install_dir_system must be an absolute path without '..': "
+                        f"{install_dir_system!r}")
+    else:
+        import posixpath
+        parts = [p for p in install_dir_system.split("/") if p not in ("", ".")]
+        if (posixpath.normpath(install_dir_system) != install_dir_system
+                or install_dir_system.startswith("//")):
+            problems.append(f"install_dir_system must be a normalised path (no '//', '.' "
+                            f"or trailing '/'): {install_dir_system!r}")
+        elif len(parts) < 2 or (len(parts) == 1 and parts[0] in _SYSTEM_ROOT_DIRS):
+            problems.append(f"install_dir_system {install_dir_system!r} is the filesystem "
+                            "root, a top-level directory or a system directory; use a "
+                            "dedicated directory with at least two components "
+                            "(e.g. /opt/<name>)")
+    problem = _relative_problem(install_dir_user, "install_dir_user")
+    if problem:
+        problems.append(problem)
+    elif _normalises_to_root(install_dir_user):
+        problems.append(f"install_dir_user must name a sub-directory, not the data "
+                        f"directory itself: {install_dir_user!r}")
+    if asset_suffix != ".tar.xz":
+        problems.append(f"asset_suffix must be '.tar.xz' (the installer reads xz tarballs): "
+                        f"{asset_suffix!r}")
+    if entrypoint:
+        problem = _relative_problem(entrypoint, "entrypoint")
+        if problem:
+            problems.append(problem)
+    for label, name in (("manifest_name", manifest_name), ("signature_name", signature_name)):
+        if not _INSTALLER_SAFE_NAME.fullmatch(name):
+            problems.append(f"{label} must be a plain file name: {name!r}")
+    for command in required_commands:
+        if not _INSTALLER_COMMAND.fullmatch(command):
+            problems.append(f"required_commands entry is not a plain command name: {command!r}")
+    for path in preserve:
+        problem = _relative_problem(path, "preserve entry")
+        if problem:
+            problems.append(problem)
+        elif _normalises_to_root(path):
+            problems.append(f"preserve entry {path!r} names the release root itself, not "
+                            "a path inside it")
+    for glob_path, distribution in wheels:
+        problem = _relative_problem(glob_path, "wheels.path")
+        if problem:
+            problems.append(problem)
+        if not _INSTALLER_SAFE_NAME.fullmatch(distribution):
+            problems.append(f"wheels.distribution is not a plain name: {distribution!r}")
+    for launcher in launchers:
+        if not _INSTALLER_COMMAND.fullmatch(launcher):
+            problems.append(f"launchers entry is not a plain command name: {launcher!r}")
+    if launchers and not wheels:
+        problems.append("launchers need at least one [[project.installer.wheels]] entry "
+                        "(they point into the release venv)")
+    if manifest_pubkey and not _MINISIGN_PUBKEY.fullmatch(manifest_pubkey):
+        problems.append("manifest_pubkey must be a minisign public key in base64 "
+                        "(56 characters, as printed by `minisign -G` / in the .pub file's "
+                        "second line)")
+    return problems
 
 
 @dataclass(frozen=True)
@@ -379,7 +484,7 @@ def _parse_installer(name: str, raw: dict) -> InstallerConfig:
     _KNOWN_INSTALLER_KEYS = {
         "install_dir_system", "install_dir_user", "asset_suffix", "entrypoint",
         "required_commands", "preserve", "manifest_name", "signature_name", "wheels",
-        "extensions",
+        "extensions", "manifest_pubkey", "launchers",
     }
     unknown = [k for k in raw if k not in _KNOWN_INSTALLER_KEYS]
     if unknown:
@@ -429,6 +534,25 @@ def _parse_installer(name: str, raw: dict) -> InstallerConfig:
 
     extensions = _parse_installer_extensions(name, raw.get("extensions"))
 
+    manifest_pubkey = raw.get("manifest_pubkey", "")
+    if not isinstance(manifest_pubkey, str):
+        _error(f"project.{name}.installer.manifest_pubkey must be a string")
+    launchers_raw = raw.get("launchers") or []
+    if not isinstance(launchers_raw, list) or not all(isinstance(c, str) for c in launchers_raw):
+        _error(f"project.{name}.installer.launchers must be a list of command names")
+    launchers = [str(c) for c in launchers_raw]
+
+    problems = installer_problems(
+        install_dir_system=install_dir_system, install_dir_user=install_dir_user,
+        asset_suffix=asset_suffix, entrypoint=entrypoint or "",
+        manifest_name=manifest_name, signature_name=signature_name,
+        required_commands=required_commands, preserve=preserve,
+        wheels=[(w.path, w.distribution) for w in wheels],
+        launchers=launchers, manifest_pubkey=manifest_pubkey,
+    )
+    if problems:
+        _error(f"project.{name}.installer: {problems[0]}")
+
     return InstallerConfig(
         install_dir_system=install_dir_system,
         install_dir_user=install_dir_user,
@@ -440,6 +564,8 @@ def _parse_installer(name: str, raw: dict) -> InstallerConfig:
         signature_name=signature_name,
         wheels=wheels,
         extensions=extensions,
+        manifest_pubkey=manifest_pubkey,
+        launchers=launchers,
     )
 
 
