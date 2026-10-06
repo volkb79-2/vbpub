@@ -405,3 +405,44 @@ Oracles:
 
 **Provenance:** cmru KI-51 survey (gap N3), 2026-10-06, program package
 W2-PKG0.
+
+## CLI-EXT-26 — `register_skills_verbs` drops the consumer's global options
+
+**Status:** Open (planned)
+**Type:** Defect
+**Area:** Skills, surface export
+
+`register_skills_verbs(registry, package=...)` builds its child `CliRegistry`
+without `global_options=registry.global_options`
+(`cli_extended/skills.py`, the `CliRegistry(...)` call inside the function).
+A consumer that declares a global option on its registry (cmru:
+`--log-prefix-time-short`, a presentation option shared by every verb and
+every delegate) therefore gets `cmru skills install|uninstall|check|list`
+WITHOUT it: `cmru skills install --log-prefix-time-short` is a usage error
+while every other cmru verb accepts it. Worse, `cli-extended surface check`
+fails with `incomplete parser syntax: cmru skills: delegated parser does not
+register inherited global option(s): --log-prefix-time-short`, so a consumer
+with a global option cannot pass AC-17 at all after adopting the shared
+`skills` verbs (AC-19). Observed adopting cmru 2026-10-06 (W2-PKG5); the same
+applies to `register_doctor` only if it ever builds a delegate (today it
+does not).
+
+Wanted: forward `registry.global_options` (and any other consumer registry
+settings a delegate must share) to the child registry in
+`register_skills_verbs`, and add a `CONSUMERS.md` sentence that every
+library-built delegate inherits the parent's global options.
+
+Oracles:
+- A registry with a global option `--tag-prefix` and `register_skills_verbs`
+  accepts `skills list --tag-prefix`, and `surface check` reports no
+  incomplete-syntax finding for it.
+- The exported surface lists the global option on all four skills routes.
+- A controlled wrong implementation that forwards the options only to
+  `install` must fail the `check`/`list` route oracle.
+
+**Related (review volume):** the same adoption produced 346 review cases for
+32 routes, 60 of them identical `--debug-raw` and consumer-global
+cases repeated per route (plus a `--config`/`--dry-run`/`--json` case per verb); CLI-EXT-18 (one shared decision for common
+controls) would remove that repetition.
+
+**Provenance:** cmru W2-PKG5 surface adoption, 2026-10-06.

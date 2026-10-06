@@ -202,6 +202,13 @@ def _resolve_config_free(args) -> int | None:
         )
     except RuntimeError as exc:
         raise CliFailure(f"cannot resolve prefix {args.prefix!r}: {exc}") from exc
+    except OSError as exc:
+        # URLError and socket failures: registry metadata is unavailable, a missing
+        # prerequisite (exit 3), not a crash. Found by the W2-PKG5 surface review.
+        raise CliFailure(
+            f"cannot reach {args.repo} to resolve prefix {args.prefix!r}: {exc}",
+            exit_code=3,
+        ) from exc
     if not result:
         raise CliFailure(f"No releases found in {args.repo} (prefix {args.prefix!r})")
     print(format_result(result, args.format))

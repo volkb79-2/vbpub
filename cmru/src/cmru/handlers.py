@@ -541,6 +541,11 @@ def cmd_bundle_manifest(args: argparse.Namespace) -> None:
     except ValueError as exc:
         print(f"[ERROR] bundle-manifest: {exc}", file=sys.stderr)
         raise SystemExit(exit_codes.FAILURE) from None
+    except RuntimeError as exc:
+        # SOURCE_DATE_EPOCH unset: a missing prerequisite, not a crash (found by the
+        # W2-PKG5 surface review: it used to escape as a traceback).
+        print(f"[ERROR] bundle-manifest: {exc}", file=sys.stderr)
+        raise SystemExit(exit_codes.PREREQ_MISSING) from None
     out = write_manifest(manifest, root / name)
     print(f"[INFO] Wrote {out} ({len(manifest['files'])} files, "
           f"sha256 {manifest_sha256(out)})")

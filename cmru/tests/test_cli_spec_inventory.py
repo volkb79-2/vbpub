@@ -1,8 +1,21 @@
-"""Keep the CLI contract in SPEC aligned with the shipped registrations."""
+"""Keep the CLI contract in SPEC aligned with the shipped registrations.
+
+W2-PKG5 (CLI-T3/T4): the hand-kept grammar inventory, built-in grammar, mutating-label and
+semantic-audit tests were DELETED. Their work is done by:
+
+* ``cli-extended surface check`` (asserted below): the generated S-CLI.9 region, the manifest
+  ``docs/cli-surface.json`` and the reviewed catalog ``docs/cli-review.toml`` must match the real
+  registry (spellings, help groups, positionals, constraints, aliases, hidden flags);
+* the catalog's reviewed cases, each linked to ``tests/test_cli_review_cases.py`` through
+  ``@pytest.mark.cli_case`` by the cli-extended pytest plugin (``tests/conftest.py``);
+* ``tests/test_w2_pkg5_exploration_verbs.py`` (T5), which proves the read-only verbs leave the
+  tree unchanged, replacing the circular group-implies-mutating label test.
+
+What is left here are the registry facts those mechanisms do not cover.
+"""
 from __future__ import annotations
 
 import argparse
-import re
 from pathlib import Path
 
 from cmru.cli import _build_cli as build_cmru_cli
@@ -10,35 +23,17 @@ from cmru.handlers import handlers_cli
 
 
 SPEC = Path(__file__).parents[1] / "docs" / "SPEC.md"
+PYPROJECT = Path(__file__).parents[1] / "pyproject.toml"
 
-
-def _marked_table(start: str, end: str) -> list[list[str]]:
-    text = SPEC.read_text(encoding="utf-8")
-    body = text.split(start, 1)[1].split(end, 1)[0]
-    rows = []
-    for line in body.splitlines():
-        if not line.startswith("|"):
-            continue
-        cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
-        if cells and set(cells[0]) <= {"-", ":"}:
-            continue
-        if cells and cells[0] not in {"Surface", "Entry point", "Entry point family"}:
-            rows.append(cells)
-    return rows
-
-
-def _argument_shape(parser: argparse.ArgumentParser) -> str:
-    values = []
-    for action in parser._actions:
-        if action.option_strings:
-            continue
-        if action.nargs == "?":
-            values.append(f"{action.dest}?")
-        elif action.nargs in ("*", "+", argparse.REMAINDER):
-            values.append(f"{action.dest}{action.nargs}")
-        else:
-            values.append(action.dest)
-    return ", ".join(values) if values else "—"
+# The one problem `surface check` may still report: the library's `register_skills_verbs`
+# builds its child registry without the consumer's global options (cli-extended backlog entry
+# filed by W2-PKG5). The test tolerates ONLY this item, so a stale manifest, spec region,
+# catalog row or finding still fails it; once the library forwards the options this set
+# is simply never reported.
+_KNOWN_LIBRARY_GAP = {
+    "incomplete parser syntax: cmru skills: delegated parser does not register inherited "
+    "global option(s): --log-prefix-time-short",
+}
 
 
 def _option_strings(parser: argparse.ArgumentParser) -> set[str]:
@@ -49,140 +44,6 @@ def _option_strings(parser: argparse.ArgumentParser) -> set[str]:
     }
 
 
-def _registered_surfaces(registry, prefix: str):
-    """Flatten registered verbs and nested delegated registries to leaf parsers."""
-    if not registry.command_parsers:
-        yield prefix, registry.parser
-        return
-
-    for name, parser in registry.command_parsers.items():
-        path = f"{prefix} {name}"
-        child = registry.delegates.get(name)
-        if child is not None and child.command_parsers:
-            yield from _registered_surfaces(child, path)
-        elif child is not None:
-            yield path, child.parser
-        else:
-            yield path, parser
-
-
-def _registered_surface_groups(registry, prefix: str):
-    """Return the cli-extended semantic group attached to each rendered leaf."""
-    catalog = registry.parser.catalog
-    if not registry.command_parsers:
-        group = catalog.verbs[0].group if catalog and catalog.verbs else "STANDALONE COMMAND"
-        yield prefix, group
-        return
-
-    groups = {
-        verb.name: verb.group
-        for verb in (catalog.verbs if catalog is not None else ())
-    }
-    for name in registry.command_parsers:
-        path = f"{prefix} {name}"
-        child = registry.delegates.get(name)
-        if child is not None and child.command_parsers:
-            yield from _registered_surface_groups(child, path)
-        elif child is not None:
-            # A single-command delegate is an implementation detail of this
-            # top-level verb; the parent verb owns its help-catalog group.
-            yield path, groups.get(name, "")
-        else:
-            yield path, groups.get(name, "")
-
-
-def _inventory() -> dict[str, tuple[str, str, set[str]]]:
-    return {
-        surface: (
-            group,
-            arguments,
-            set() if options == "—" else set(options.split("; ")),
-        )
-        for surface, group, arguments, options in _marked_table(
-            "<!-- cmru-cli-grammar:start -->", "<!-- cmru-cli-grammar:end -->"
-        )
-    }
-
-
-def test_spec_cli_inventory_matches_registered_surfaces_and_options():
-    common_rows = _marked_table(
-        "<!-- cmru-cli-common:start -->", "<!-- cmru-cli-common:end -->"
-    )
-    common = {
-        family: set(flags.split("; "))
-        for family, flags in common_rows
-    }
-    assert set(common) == {"cmru and handlers module adapter"}
-
-    actual = {}
-    for registry, prefix, family in (
-        (build_cmru_cli(), "cmru", "cmru and handlers module adapter"),
-    ):
-        assert registry.parser.allow_abbrev is False, prefix
-        groups = dict(_registered_surface_groups(registry, prefix))
-        for surface, parser in _registered_surfaces(registry, prefix):
-            assert parser.allow_abbrev is False, surface
-            actual[surface] = (family, parser, groups[surface])
-
-    # This is the one supported component module CLI: active project-step and
-    # first-wheel bootstrap contracts use it.
-    for registry, prefix in ((handlers_cli(), "python -m cmru.handlers"),):
-        assert registry.parser.allow_abbrev is False, prefix
-        groups = dict(_registered_surface_groups(registry, prefix))
-        for surface, parser in _registered_surfaces(registry, prefix):
-            assert parser.allow_abbrev is False, surface
-            actual[surface] = ("cmru and handlers module adapter", parser, groups[surface])
-
-    inventory = _inventory()
-    assert set(inventory) == set(actual), (
-        f"SPEC surfaces differ from cli-extended registrations; "
-        f"missing={sorted(set(actual) - set(inventory))}, "
-        f"stale={sorted(set(inventory) - set(actual))}"
-    )
-
-    for surface, (family, parser, group) in actual.items():
-        documented_group, arguments, local_options = inventory[surface]
-        assert documented_group == group, (
-            f"{surface}: SPEC help group {documented_group!r} differs from registered {group!r}"
-        )
-        assert arguments == _argument_shape(parser), (
-            f"{surface}: SPEC positional shape {arguments!r} does not match "
-            f"registered {_argument_shape(parser)!r}"
-        )
-        expected_options = common[family] | local_options
-        registered_options = _option_strings(parser)
-        if surface.startswith("cmru skills "):
-            # The library-built `skills` delegate carries the library controls
-            # (including --progress) but not cmru's consumer-global
-            # --log-prefix-time-short (finding: adoption, W2-PKG5); its documented
-            # local options must all exist.
-            assert local_options <= registered_options, surface
-            continue
-        assert registered_options == expected_options, (
-            f"{surface}: SPEC option spellings differ; "
-            f"missing={sorted(registered_options - expected_options)}, "
-            f"stale={sorted(expected_options - registered_options)}"
-        )
-
-
-def test_spec_builtin_help_and_version_grammar_matches_library_help():
-    expected = {
-        "cmru": build_cmru_cli(),
-    }
-    documented = {
-        entrypoint: set(commands.split("; "))
-        for entrypoint, commands in _marked_table(
-            "<!-- cmru-cli-builtins:start -->", "<!-- cmru-cli-builtins:end -->"
-        )
-    }
-    assert set(documented) == set(expected)
-    for entrypoint, registry in expected.items():
-        assert documented[entrypoint] == {"help [VERB]", "version"}
-        generated_help = registry.parser.format_help().lower()
-        assert f"{entrypoint} help [verb]" in generated_help
-        assert f"{entrypoint} version" in generated_help
-
-
 def _registered_parsers(registry):
     yield registry.parser
     yield from registry.command_parsers.values()
@@ -190,49 +51,46 @@ def _registered_parsers(registry):
         yield from _registered_parsers(child)
 
 
-def _check_behavior_labels(registry, *, path=""):
-    """Check help metadata against the semantic category in the CLI spec."""
-    catalog = registry.parser.catalog
-    if catalog is None:
-        return
-    mutating_groups = {
-        "MODIFICATION", "MIXED OPERATIONS", "MAINTENANCE", "AUTHENTICATION / SETUP",
-    }
-    for verb in catalog.verbs:
-        surface = f"{path} {verb.name}".strip()
-        if verb.name in {"doctor", "skills"}:
-            continue  # library-owned verbs: skills' children carry their own labels
-        expected = verb.group in mutating_groups
-        assert verb.mutating is expected, (
-            f"{surface}: group {verb.group!r} and mutating help metadata disagree"
-        )
-        child = registry.delegates.get(verb.name)
-        if child is None:
-            continue
-        if child.parser.catalog is None:
-            # Single-command delegates surface their behavior in their own help.
-            text = child.parser.format_help()
-            assert ("Behavior: mutating" in text) is expected, surface
-        else:
-            _check_behavior_labels(child, path=surface)
+def test_surface_check_reports_nothing_beyond_the_known_library_gap():
+    from cli_extended import check_cli_surface
+    from cli_extended.config import load_project_config
 
-
-def test_registered_boolean_flags_default_off_and_help_marks_mutating_verbs():
-    registries = (
-        (build_cmru_cli(), "cmru"),
-        (handlers_cli(), "python -m cmru.handlers"),
+    project = load_project_config(PYPROJECT)
+    assert [cli.id for cli in project.clis] == ["cmru"]
+    cli = project.clis[0]
+    report = check_cli_surface(
+        build_cmru_cli(),
+        review_path=cli.review,
+        manifest_path=cli.manifest,
+        spec_path=cli.spec,
+        findings_path=cli.findings,
     )
-    for registry, prefix in registries:
-        _check_behavior_labels(registry, path=prefix)
+    assert set(report.findings) <= _KNOWN_LIBRARY_GAP, report.render()
+
+
+def test_one_cli_entry_covers_root_and_handlers_module_adapter():
+    """`python -m cmru.handlers` builds the registry the root mounts as `cmru handler`."""
+    handlers = handlers_cli()
+    root = build_cmru_cli()
+    assert handlers.identity.command_name == root.identity.command_name == "cmru"
+    assert set(handlers.command_parsers) == set(root.delegates["handler"].command_parsers)
+
+
+def test_registered_boolean_flags_default_off():
+    for registry in (build_cmru_cli(), handlers_cli()):
+        assert registry.parser.allow_abbrev is False
         for parser in _registered_parsers(registry):
+            assert parser.allow_abbrev is False, parser.prog
             for action in parser._actions:
                 if isinstance(action, argparse._StoreTrueAction):
                     assert action.default is not True, (
-                        f"{prefix} {parser.prog}: {action.option_strings} defaults on"
+                        f"{parser.prog}: {action.option_strings} defaults on"
                     )
 
-    # The top-level delegate parsers are dispatch shells. Their common options
-    # are not accepted by the child CLI and must not appear as false grammar.
+
+def test_dispatch_shells_do_not_show_common_options_as_grammar():
+    # The top-level delegate parsers are dispatch shells. Their common options are not accepted
+    # by the child CLI and must not appear as false grammar.
     cmru = build_cmru_cli()
     for name in cmru.delegates:
         if name == "skills":
@@ -240,40 +98,6 @@ def test_registered_boolean_flags_default_off_and_help_marks_mutating_verbs():
         parser = cmru.command_parsers[name]
         assert "--json" not in _option_strings(parser), name
         assert "--progress" not in _option_strings(parser), name
-
-
-def test_semantic_audit_covers_every_inventory_surface_and_option():
-    rows = _marked_table(
-        "<!-- cmru-cli-semantic-audit:start -->",
-        "<!-- cmru-cli-semantic-audit:end -->",
-    )
-    by_surface: dict[str, str] = {}
-    for surfaces, semantic_result, _result in rows:
-        for surface in surfaces.split("; "):
-            assert surface not in by_surface, f"duplicate semantic audit row for {surface}"
-            by_surface[surface] = semantic_result
-
-    inventory = _inventory()
-    assert set(inventory) <= set(by_surface), (
-        "semantic audit lacks surfaces: " + ", ".join(sorted(set(inventory) - set(by_surface)))
-    )
-    for surface, (_group, _arguments, options) in inventory.items():
-        mentioned = set(re.findall(r"--[A-Za-z0-9_-]+", by_surface[surface]))
-        assert options <= mentioned, (
-            f"{surface}: semantic result omits options "
-            + ", ".join(sorted(options - mentioned))
-        )
-
-    common_rows = _marked_table(
-        "<!-- cmru-cli-common:start -->", "<!-- cmru-cli-common:end -->"
-    )
-    for family, flags in common_rows:
-        family_audit = next(
-            semantic
-            for surfaces, semantic, _result in rows
-            if family == "cmru and handlers module adapter" and surfaces == "CMRU common controls"
-        )
-        assert set(flags.split("; ")) <= set(re.findall(r"--[A-Za-z0-9_-]+", family_audit)), family
 
 
 def test_user_facing_cli_docs_link_to_the_canonical_spec_anchor():
