@@ -37,6 +37,8 @@ libraries/worktree/src/*
 tester-unified/*
 !tester-unified/gen-requirements.py
 !tester-unified/fetch-cli-extended.py
+# Zero-release path: a locally built cli-extended wheel (CLI_EXTENDED_RESOLVE=local).
+!tester-unified/local-wheel
 # scripts/ is otherwise excluded wholesale; whitelist just the one project
 # tester-unified installs from (its pyproject is the closure's source of truth).
 # The parent directory must be re-included first or the child is never reached.

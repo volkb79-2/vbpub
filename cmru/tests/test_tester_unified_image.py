@@ -318,6 +318,71 @@ def test_dockerfile_pins_the_released_asset_and_digest_by_default_and_latest_is_
     assert 'fetch-cli-extended.py --dest /tmp/cli-extended-release --min-version 0.2.0 "$@"' in flat
 
 
+def _local_mode_script(tmp_path: Path) -> str:
+    """The Dockerfile's RUN `if local` block, extracted from its text, with the
+    image paths redirected into ``tmp_path`` so the shell logic itself runs."""
+    flat = re.sub(r"\\\n\s*", " ", DOCKERFILE.read_text("utf-8"))
+    block = re.search(r'if \[ "\$\{CLI_EXTENDED_RESOLVE\}" = local \]; then\s+(?P<body>.*?);\s+else\s', flat, re.DOTALL)
+    assert block is not None
+    body = block["body"].replace("/tmp/cli-extended-local", str(tmp_path / "local"))
+    return body.replace("/tmp/cli-extended-release", str(tmp_path / "release"))
+
+
+def _run_local_mode(tmp_path: Path, sha: str, wheels: list[str]):
+    import hashlib
+    import subprocess
+
+    (tmp_path / "local").mkdir(parents=True)
+    for name in wheels:
+        (tmp_path / "local" / name).write_bytes(b"wheel:" + name.encode())
+    digest = sha or hashlib.sha256(b"wheel:" + wheels[0].encode()).hexdigest()
+    script = f'CLI_EXTENDED_WHEEL_SHA256={digest}\n{_local_mode_script(tmp_path)}'
+    return subprocess.run(["sh", "-ec", script], capture_output=True, text=True, check=False)
+
+
+def test_local_mode_installs_exactly_one_digest_verified_local_wheel(tmp_path):
+    name = "cli_extended-0.2.0+local.zero-py3-none-any.whl"
+    result = _run_local_mode(tmp_path, "", [name])
+    assert result.returncode == 0, result.stderr
+    assert (tmp_path / "release" / name).read_bytes() == b"wheel:" + name.encode()
+
+
+def test_local_mode_refuses_a_digest_mismatch_no_wheel_or_two_wheels(tmp_path):
+    name = "cli_extended-0.2.0+local.zero-py3-none-any.whl"
+    mismatch = _run_local_mode(tmp_path / "a", "0" * 64, [name])
+    assert mismatch.returncode != 0 and "does not match" in mismatch.stderr
+    assert not (tmp_path / "a" / "release").exists()
+    none = _run_local_mode(tmp_path / "b", "0" * 64, [])
+    assert none.returncode != 0 and "needs exactly one" in none.stderr
+    two = _run_local_mode(
+        tmp_path / "c", "0" * 64, ["cli_extended-1+a-py3-none-any.whl", "cli_extended-2+b-py3-none-any.whl"],
+    )
+    assert two.returncode != 0 and "needs exactly one" in two.stderr
+
+
+def test_resolve_modes_are_pinned_default_latest_and_local_and_local_asserts_a_local_version():
+    text = DOCKERFILE.read_text("utf-8")
+    assert re.search(r"^ARG CLI_EXTENDED_RESOLVE=pinned$", text, re.MULTILINE)
+    flat = " ".join(re.sub(r"\\\n\s*", " ", text).split())
+    assert "local) set -- ;;" in flat
+    assert 'pinned, latest or local" >&2; exit 1' in flat  # the invalid-value refusal names all three
+    assert 'assert "+" in released' in text and 'assert "+" not in released' in text
+    assert 'os.environ["CLI_EXTENDED_RESOLVE"] == "local"' in text
+    header = text.split("FROM ", 1)[0] + text.split("ARG CLI_EXTENDED_RESOLVE", 1)[0]
+    for mode in ("pinned", "latest", "local"):
+        assert re.search(rf"^#\s+{mode}\b", header, re.MULTILINE), mode
+    assert "COPY tester-unified/local-wheel/ /tmp/cli-extended-local/" in text
+    readme = (REPO_ROOT / "tester-unified" / "README.md").read_text("utf-8")
+    assert "CLI_EXTENDED_RESOLVE=local" in readme and "local-wheel" in readme
+
+
+def test_dockerignore_admits_the_local_wheel_input_and_gitignore_keeps_wheels_out():
+    assert _dockerignore_included("tester-unified/local-wheel/cli_extended-0.2.0+x-py3-none-any.whl")
+    assert _dockerignore_included("tester-unified/local-wheel/.gitkeep")
+    ignore = (REPO_ROOT / ".gitignore").read_text("utf-8").splitlines()
+    assert "tester-unified/local-wheel/*.whl" in ignore
+
+
 def test_dockerfile_fetch_floor_equals_cmru_declared_floor():
     code = re.sub(r"\\\n\s*", " ", _dockerfile_run_lines())
     floor = re.search(r"fetch-cli-extended\.py .*?--min-version (\S+)", code).group(1)

@@ -59,8 +59,9 @@ if ! docker image inspect "${builder_image}" >/dev/null 2>&1; then
         "${repo_root}"
 fi
 
-# cmru depends on the RELEASED cli-extended wheel (KI-51 / CX-D1: never vendored,
-# never from an index). `python -m cmru.handlers` imports it, so the bootstrap
+# cmru depends on the cli-extended WHEEL (KI-51 / CX-D1: never vendored, never from
+# an index; normally the RELEASED one, or the explicit zero-release source build
+# below). `python -m cmru.handlers` imports it, so the bootstrap
 # interpreter must have it BEFORE the first cmru wheel exists. It is verified by
 # sha256 and unpacked (a wheel is a zip; no pip needed) into a private staging
 # directory that goes on PYTHONPATH, so nothing is installed into
@@ -89,8 +90,44 @@ PYEOF
 }
 cli_extended_stage="$(mktemp -d "${TMPDIR:-/tmp}/cmru-bootstrap-cli-extended.XXXXXX")"
 trap 'rm -rf "${cli_extended_stage}"' EXIT
+#
+# CMRU_BOOTSTRAP_CLI_EXTENDED selects the source EXPLICITLY (default `release`):
+#   release        the paths above. With no release/pointer and no wheel+digest this
+#                  FAILS (exit 2) and names the zero-release path; it never falls
+#                  back to a source build, because a silent switch would hide an
+#                  availability or supply-chain problem.
+#   source         ZERO-RELEASE PATH. Builds the wheel from this checkout's
+#                  cli-extended library with cmru's own wheel builder
+#                  (`cmru.handlers wheel-build`, the wheel-builder image; for that
+#                  one build step only, the library source is on PYTHONPATH),
+#                  version CMRU_BOOTSTRAP_CLI_EXTENDED_SOURCE_VERSION (default
+#                  <floor>+bootstrap.source; the +local segment keeps it distinct
+#                  from any release), records its sha256 in this log and stages it
+#                  exactly like a released wheel.
+#   <wheel-path>   a prebuilt wheel; CMRU_BOOTSTRAP_CLI_EXTENDED_SHA256 is required.
+# See docs/BOOTSTRAP-FROM-ZERO.md.
+cli_extended_mode="${CMRU_BOOTSTRAP_CLI_EXTENDED:-release}"
 cli_extended_wheel="${CMRU_BOOTSTRAP_CLI_EXTENDED_WHEEL:-}"
-if [[ -n "${cli_extended_wheel}" ]]; then
+if [[ "${cli_extended_mode}" != "release" && "${cli_extended_mode}" != "source" ]]; then
+    if [[ -n "${cli_extended_wheel}" ]]; then
+        echo "[ERROR] CMRU_BOOTSTRAP_CLI_EXTENDED=<wheel-path> and CMRU_BOOTSTRAP_CLI_EXTENDED_WHEEL are both set; use one" >&2
+        exit 2
+    fi
+    cli_extended_wheel="${cli_extended_mode}"
+    cli_extended_mode="wheel"
+fi
+if [[ "${cli_extended_mode}" == "source" ]]; then
+    if [[ -n "${cli_extended_wheel}" ]]; then
+        echo "[ERROR] CMRU_BOOTSTRAP_CLI_EXTENDED=source cannot be combined with CMRU_BOOTSTRAP_CLI_EXTENDED_WHEEL" >&2
+        exit 2
+    fi
+    # Built below, once the staged cmru identity exists (the builder is cmru's own).
+    cli_extended_source_version="${CMRU_BOOTSTRAP_CLI_EXTENDED_SOURCE_VERSION:-${cli_extended_floor}+bootstrap.source}"
+    if [[ ! "${cli_extended_source_version}" =~ ^[0-9][0-9.]*\+[0-9A-Za-z.]+$ ]]; then
+        echo "[ERROR] CMRU_BOOTSTRAP_CLI_EXTENDED_SOURCE_VERSION=${cli_extended_source_version} must be X.Y.Z+local (a source build is never version-identical to a release)" >&2
+        exit 2
+    fi
+elif [[ -n "${cli_extended_wheel}" ]]; then
     cli_extended_sha="${CMRU_BOOTSTRAP_CLI_EXTENDED_SHA256:-}"
     if [[ ! "${cli_extended_sha}" =~ ^[0-9a-f]{64}$ ]]; then
         echo "[ERROR] CMRU_BOOTSTRAP_CLI_EXTENDED_WHEEL needs CMRU_BOOTSTRAP_CLI_EXTENDED_SHA256 (64 lowercase hex digits)" >&2
@@ -107,14 +144,20 @@ if [[ -n "${cli_extended_wheel}" ]]; then
 else
     cli_extended_wheel="$("${python_bin}" -s "${repo_root}/tester-unified/fetch-cli-extended.py" \
         --dest "${cli_extended_stage}/download" --min-version "${cli_extended_floor}")" || {
-        echo "[ERROR] could not fetch the released cli-extended wheel; supply CMRU_BOOTSTRAP_CLI_EXTENDED_WHEEL and CMRU_BOOTSTRAP_CLI_EXTENDED_SHA256" >&2
+        echo "[ERROR] could not fetch the released cli-extended wheel; supply CMRU_BOOTSTRAP_CLI_EXTENDED_WHEEL and CMRU_BOOTSTRAP_CLI_EXTENDED_SHA256," >&2
+        echo "        or, when NO cli-extended release exists yet (zero-release estate), set CMRU_BOOTSTRAP_CLI_EXTENDED=source (see docs/BOOTSTRAP-FROM-ZERO.md)" >&2
         exit 2
     }
 fi
-"${python_bin}" -s -m zipfile -e "${cli_extended_wheel}" "${cli_extended_stage}/site" || {
-    echo "[ERROR] could not unpack ${cli_extended_wheel}" >&2
-    exit 2
+unpack_cli_extended() {
+    "${python_bin}" -s -m zipfile -e "${cli_extended_wheel}" "${cli_extended_stage}/site" || {
+        echo "[ERROR] could not unpack ${cli_extended_wheel}" >&2
+        exit 2
+    }
 }
+if [[ "${cli_extended_mode}" != "source" ]]; then
+    unpack_cli_extended
+fi
 
 # D2: cmru's CLI identity is the installed ``cmru`` DISTRIBUTION's metadata (no
 # source-tree fallback). The first wheel does not exist yet, so stage a minimal
@@ -142,6 +185,48 @@ mkdir -p "${cmru_dist_info}"
 printf 'Metadata-Version: 2.1\nName: cmru\nVersion: %s\n' "${cmru_version}" > "${cmru_dist_info}/METADATA"
 printf 'bootstrap\n' > "${cmru_dist_info}/INSTALLER"
 : > "${cmru_dist_info}/RECORD"
+
+# Zero-release path (CMRU_BOOTSTRAP_CLI_EXTENDED=source): build cli-extended with
+# the SAME builder every estate wheel uses (`cmru.handlers wheel-build`, i.e. the
+# wheel-builder image). cmru can only run from this checkout, so for THIS build
+# step ONLY the library checkout's source is on PYTHONPATH (as before KI-51);
+# the cmru wheel build below uses the staged wheel like any other mode. The
+# version is injected via setuptools-scm's pretend variable (the handler forwards
+# it into the container) because no cli-extended-v* tag exists yet.
+if [[ "${cli_extended_mode}" == "source" ]]; then
+    cli_extended_library="${repo_root}/libraries/cli-extended"
+    echo "[INFO] cli-extended: building from the checkout with cmru's wheel builder (source mode, version ${cli_extended_source_version})" >&2
+    (
+        cd "${project_dir}"
+        export PYTHONPATH="${project_dir}/src:${cli_extended_stage}/site:${repo_root}/libraries/worktree/src:${cli_extended_library}/src"
+        SOURCE_DATE_EPOCH="$(git -C "${repo_root}" log -1 --format=%ct)" || {
+            echo "[ERROR] could not read the HEAD commit time for SOURCE_DATE_EPOCH" >&2
+            exit 2
+        }
+        export SOURCE_DATE_EPOCH
+        export SETUPTOOLS_SCM_PRETEND_VERSION_FOR_CLI_EXTENDED="${cli_extended_source_version}"
+        export CMRU_WHEEL_BUILDER_IMAGE="${builder_image}"
+        export CMRU_DOCKER_CGROUP_PARENT="${cgroup_parent}"
+        "${python_bin}" -s -m cmru.handlers wheel-build --cwd "${cli_extended_library}"
+    ) || {
+        echo "[ERROR] could not build cli-extended from source with cmru's wheel builder" >&2
+        exit 2
+    }
+    shopt -s nullglob
+    source_wheels=("${cli_extended_library}/dist"/cli_extended-*.whl)
+    shopt -u nullglob
+    if (( ${#source_wheels[@]} != 1 )); then
+        echo "[ERROR] expected exactly one cli-extended wheel in ${cli_extended_library}/dist; found ${#source_wheels[@]}" >&2
+        exit 2
+    fi
+    cli_extended_wheel="${source_wheels[0]}"
+    source_sha="$("${python_bin}" -s -c 'import hashlib, sys; print(hashlib.sha256(open(sys.argv[1], "rb").read()).hexdigest())' "${cli_extended_wheel}")" || {
+        echo "[ERROR] cannot read ${cli_extended_wheel}" >&2
+        exit 2
+    }
+    echo "[INFO] cli-extended source wheel sha256=${source_sha} file=$(basename "${cli_extended_wheel}")" >&2
+    unpack_cli_extended
+fi
 
 echo "[INFO] Building the standalone CMRU wheel from ${project_dir}" >&2
 (

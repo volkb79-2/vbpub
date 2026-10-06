@@ -55,6 +55,8 @@ scripts/debian-install-v2/testing/vm/.vm/
 build/
 develop-eggs/
 dist/
+# tester-unified CLI_EXTENDED_RESOLVE=local input (a locally built wheel, never committed)
+tester-unified/local-wheel/*.whl
 downloads/
 eggs/
 .eggs/
