@@ -7300,3 +7300,16 @@ plan. The resulting non-merge `HEAD` must resolve `db29266…` as its merge
 base and enumerate the full expected profiler candidate set before any gate
 or mutation launch. Keep that final HEAD quiet through R2; no commit, even
 outside `lib/`, during the campaign.
+
+### RW-468 — 2026-10-06 22:36:11 UTC — correct P6 R2 survivor path attribution
+
+Correction to RW-465: the authoritative `.assay/verdict-r2.json` for commit
+`324eac950bf0b261d51d064d8a8152e3af0dbe31` reports 41 survivors across five
+modules, not exclusively `lib/targets.py`: `lib/access.py` 1, `lib/damon.py`
+23, `lib/placement.py` 10, `lib/serve.py` 5, and `lib/targets.py` 2. The
+verdict's `claims[1].mutation.survived` array is the source of truth; the
+earlier path summary was incorrect. The placement oracle for candidate
+`45ca2247…` addresses one of those survivors only. Treat the other 40 as
+untriaged until each has a behavioral oracle or contract-based equivalence
+proof. The current Assay v7.2.1 plan remains a cold-start full campaign, so
+these old records are diagnostic and cannot substitute for current-tree R2.
