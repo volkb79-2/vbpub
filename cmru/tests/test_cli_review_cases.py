@@ -166,8 +166,12 @@ def test_real_executable_obeys_help_version_and_parse_contract(tmp_path):
     # launcher with the same body as the `cmru` console script.
     entry = tmp_path / "cmru_entry.py"
     entry.write_text("import sys\nfrom cmru.cli import main\nsys.exit(main())\n")
+    # `python=sys.executable` is deliberate: without it the library prepends ITS OWN install
+    # directory to PYTHONPATH, which in the gate image holds an installed (older) cmru that
+    # would shadow `src` and make the probe test the wrong code.
     invoke = make_invoker(
-        entry, home=tmp_path.resolve(), cwd=tmp_path, pythonpath=[src, worktree_src],
+        entry, home=tmp_path.resolve(), cwd=tmp_path, python=sys.executable,
+        pythonpath=[src, worktree_src],
     )
     assert_cli_contract(
         invoke, cli.identity, ("status", "release", "doctor", "skills"),

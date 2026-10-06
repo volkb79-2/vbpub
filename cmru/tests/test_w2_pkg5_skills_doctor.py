@@ -386,6 +386,41 @@ def test_cli_extended_check_floor_ok_fail_warn(monkeypatch):
     assert doctor.check_cli_extended().status == "fail"
 
 
+def test_probe_failures_and_unreadable_metadata_degrade_to_a_result_never_a_crash(monkeypatch, isolated):
+    """Every probe/metadata error path of the checks (100% line and branch coverage)."""
+    monkeypatch.setattr(doctor, "_which", lambda name: "/usr/bin/" + name)
+    # git: the executable exists but cannot run; a blank leading line is skipped in the version.
+    _fake_run(monkeypatch, {("git", "--version"): OSError("exec format error")})
+    git = doctor.check_git()
+    assert git.status == "fail" and "OSError" in git.summary and git.remedy
+    _fake_run(monkeypatch, {("git", "--version"): _Done(0, "\n\ngit version 9.9.9\n")})
+    assert doctor.check_git().summary == "git version 9.9.9"
+    # docker: the CLI cannot be executed.
+    _fake_run(monkeypatch, {("docker", "version"): OSError("permission denied")})
+    docker = doctor.check_docker()
+    assert docker.status == "fail" and "OSError" in docker.summary and docker.remedy
+    # images: a config that does not load, then an inspect that cannot run.
+    (isolated / "cmru.toml").write_text("schema_version = 1\nbogus = 1\n", encoding="utf-8")
+    assert doctor.check_images().summary == "config does not load; see the config check"
+    env = 'CMRU_TESTER_UNIFIED_IMAGE = "t:1"'
+    (isolated / "cmru.toml").write_text(CONFIG.format(env=env), encoding="utf-8")
+    _fake_run(monkeypatch, {("docker", "image", "inspect"): OSError("no docker")})
+    assert doctor.check_images().status == "skip"
+    # cli-extended: no cmru distribution, a non-numeric installed version, a non-matching
+    # requirement listed before the cli-extended one.
+    _fake_metadata(monkeypatch, installed="0.2.0", requires=["cli-extended>=0.2.0"])
+
+    def no_cmru(name):
+        raise importlib.metadata.PackageNotFoundError(name)
+
+    monkeypatch.setattr(importlib.metadata, "requires", no_cmru)
+    assert doctor.check_cli_extended().status == "warn"
+    _fake_metadata(monkeypatch, installed="dev", requires=["pytest>=8", "cli-extended>=0.2.0"])
+    assert doctor.check_cli_extended().status == "warn"
+    _fake_metadata(monkeypatch, installed="0.3.0", requires=["pytest>=8", "cli-extended>=0.2.0"])
+    assert doctor.check_cli_extended().status == "ok"
+
+
 def test_doctor_json_shape_lists_the_six_checks_and_the_automatic_skills_check(monkeypatch, isolated, capsys):
     monkeypatch.setattr(doctor, "_which", lambda name: None)
     _fake_metadata(monkeypatch, installed="0.2.0", requires=["cli-extended>=0.2.0"])
