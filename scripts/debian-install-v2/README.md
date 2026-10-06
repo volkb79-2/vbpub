@@ -104,17 +104,35 @@ Config: `swap_disk_total_gb`, `swap_file_count`, `swap_priority`,
 
 ### zswap
 
-A `zswap-config.service` (sysinit.target, before `swap.target`) sets the
-compressor, zpool backend, and pool ceiling before any swap partition
-activates:
+A `zswap-config.service` (sysinit.target, before `swap.target`, mechanism
+copied from the gstammtisch host setup) configures zswap before any swap
+partition activates. Each `ExecStart` line writes ONE knob, in this order:
+`modprobe zstd`, `compressor`, `max_pool_percent`, `accept_threshold_percent`,
+`shrinker_enabled`, and `enabled=1` last, followed by an `ExecStartPost`
+status line. `/etc/modules-load.d/` also loads `zstd`. Nothing zswap-related
+is ever put on the kernel command line, and there is deliberately **no
+`zpool` write**: that knob is absent on 7.x kernels, and the unit must work
+on both 6.12 (stable) and 7.x (trixie-backports).
 
 - `zswap_compressor` (`zstd` / `lz4` / `lzo-rle`)
-- `zswap_zpool` (`z3fold` / `zbud` / `zsmalloc`)
-- `zswap_pool_percent` (5–60, ceiling as % of RAM)
-- `accept_threshold_percent` fixed at 90 (resume-accepting hysteresis once
-  the ceiling is hit)
-- `shrinker_enabled` is written unconditionally (`echo Y`) — this turns on
+- `zswap_pool_percent` (5–60, default 25, ceiling as % of RAM)
+- `zswap_accept_threshold_percent` (0–100, default 90, resume-accepting
+  hysteresis once the ceiling is hit)
+- `zswap_shrinker_enabled` (default `true`; the unit writes `Y` or `N`) —
   the kernel's memory-pressure-driven, per-cgroup zswap writeback shrinker.
+- `zswap_zpool` was **removed**. An old config or resume state that still
+  carries it logs one warning and the key is ignored.
+
+The post-install health gate reads `enabled`, `compressor`,
+`max_pool_percent`, `accept_threshold_percent` and `shrinker_enabled` back
+and compares them with the configuration.
+
+**Shrinker caution** (`TODO.md`, `zswap-shrinker-threshold-feasibility.md`,
+gstammtisch live incident 2026-09-08): the shrinker has no per-cgroup floor or
+rate limit; under sustained pressure it can drain a single cgroup's zswap pool
+to 0% in seconds to minutes, and it does not recover once disabled. A
+userspace fill-watermark governor is designed but **not implemented**; set
+`zswap_shrinker_enabled=false` on hosts where that matters.
 
   **Know this before relying on it under real memory pressure with
   multiple cgroups on the same host**: a separate live incident
@@ -129,14 +147,57 @@ activates:
   implemented** — currently nothing paces or floors this on hosts v2
   provisions.
 
-### THP, cgroup2, sysctls
+### KSM and THP (tmpfiles.d)
 
-`thp-config.service` (same sysinit-early timing as zswap). cgroup2 mount
-flags `memory_recursiveprot`, `nsdelegate`. `vm.swappiness` (default 50 —
-deliberately not the Linux default of 60, chosen to favor keeping zswap's
-compressed tier full before spilling to real disk, without going so low
-that RAM pressure gets reclaimed too late; see the comment at
-`config.py`'s `vm_swappiness` field for the full tradeoff).
+KSM and THP are `systemd-tmpfiles` `w!` entries (as on gstammtisch), applied
+immediately with `systemd-tmpfiles --create` and again at every boot. They
+replace the earlier `ksm-config.service` / `thp-config.service` units; on a
+re-run or resume those old units are disabled and removed if present.
+
+- THP: `enabled=madvise`, `defrag=madvise`.
+- KSM: `run=1`, `advisor_mode=scan-time`, `advisor_target_scan_time=200`,
+  `use_zero_pages=1` (installed when `run_ksm` is true).
+
+### cgroup2 and sysctls
+
+cgroup2 mount flags `memory_recursiveprot`, `nsdelegate`. The rendered
+sysctl file carries a one-line "why" per value:
+
+- `vm.swappiness` default **100**, range 0–200 (the kernel range): with zswap
+  in front of swap, reclaiming cold anonymous pages is cheap, so they go to
+  the compressed pool early and file cache stays resident. systemd-oomd is the
+  safety net. An already-saved resume state keeps its saved value.
+- `vm.watermark_scale_factor = 50`, `vm.vfs_cache_pressure = 50`,
+  `vm.page-cluster = 0`, `vm.dirty_ratio = 15`, `vm.dirty_background_ratio = 5`.
+- `vm.admin_reserve_kbytes = 65536`.
+- `vm.min_free_kbytes`: a FLOOR of 65536, applied by the boot-time
+  `vbpub-min-free-floor.service` only when the kernel's computed value is
+  lower. It never lowers the kernel's own value (large-RAM hosts compute more).
+
+### io.cost (from the benchmark, not bfq)
+
+If the install-time io benchmark (`/var/lib/vbpub/bootstrap/io-benchmark.json`)
+produced a valid result and `iocost_enabled` is true (default), a boot-time
+oneshot unit resolves the root disk's `MAJ:MIN` at boot (so a device rename
+cannot misconfigure it), writes `/sys/fs/cgroup/io.cost.model` from the
+persisted coefficients (`ctrl=user model=linear rbps= rseqiops= rrandiops=
+wbps= wseqiops= wrandiops=`) and enables `/sys/fs/cgroup/io.cost.qos` with
+`rpct=95 wpct=95 min=1 max=100` (from the mdt iocost plan); `rlat`/`wlat` stay
+at kernel defaults and the I/O scheduler is untouched. With no valid result no
+unit is installed and the completion notification says so; this is not a
+failure. The health gate reads the model and qos back.
+
+### `vbpub-swap-health`
+
+`/usr/local/sbin/vbpub-swap-health [watch]` prints a one-command view of
+zswap stats, compression ratio, writeback ratio and PSI. It works on 6.12 and
+7.x and degrades gracefully when debugfs is not mounted.
+
+### User ergonomics
+
+Root and `/etc/skel` receive mc, htop, iftop and top rc files, nano settings
+and a few shell aliases (`df -h`, `du -h`, `free -h`, `catlog`, ...),
+idempotently.
 
 ### apt
 
@@ -190,7 +251,7 @@ list; the bundle / `--config-json` carry it as a JSON array.
 
 ### Host hygiene
 
-KSM (host-wide `ksmd`, opt-in per process via `madvise`), systemd-oomd
+KSM (host-wide `ksmd`, tmpfiles.d, opt-in per process via `madvise`), systemd-oomd
 (`SwapUsedLimit=90%`, pressure threshold 60%/20s), `fstrim.timer` (daily,
 whole-disk), a scheduled auto-reboot window (`reboot_window_time`), a
 a persistent journald (1G cap, 60-day retention — sized generously since
