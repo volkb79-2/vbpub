@@ -15,7 +15,7 @@ PYTHONPATH = "src:../libraries/worktree/src"
 [project]
 id = "cmru"
 description = "Configurable Multi Release Utility."
-template_revision = 4
+template_revision = 5
 prefix = "cmru-v"
 artifacts = ["wheel"]
 scm_dist = "cmru"

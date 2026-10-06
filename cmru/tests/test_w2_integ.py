@@ -34,18 +34,10 @@ INTERNAL_ENV_NAMES = tuple(
 )
 
 
-# Every name the code under test may write into ``os.environ``.  monkeypatch records
-# nothing for ``delenv(raising=False)`` on an absent name, so a name the test never
-# registers is never restored; ``_clean_env`` therefore sets then deletes each one
-# (the recorded prior state is "absent", and teardown removes whatever was written).
+# Every name the code under test may write into ``os.environ``.  The session-wide
+# ``_restore_process_environment`` fixture (conftest.py) restores the environment after
+# each test, so this only has to start each test from "absent".
 _WRITTEN_BY_THE_CODE_UNDER_TEST = ("PYTHONUNBUFFERED",)
-
-
-@pytest.fixture(scope="module", autouse=True)
-def _env_before_module():
-    """The leak probe's baseline: names this file's tests may write, as found."""
-    watched = (*OLD_ENV_NAMES, *INTERNAL_ENV_NAMES, *_WRITTEN_BY_THE_CODE_UNDER_TEST)
-    return {name: os.environ.get(name) for name in watched}
 
 
 def _clean_env(monkeypatch) -> None:
@@ -53,8 +45,7 @@ def _clean_env(monkeypatch) -> None:
         *OLD_ENV_NAMES, *INTERNAL_ENV_NAMES, *_WRITTEN_BY_THE_CODE_UNDER_TEST,
         transaction.CHILD_ENV,
     ):
-        monkeypatch.setenv(name, "")
-        monkeypatch.delenv(name)
+        monkeypatch.delenv(name, raising=False)
 
 
 # --- D: internal environment names -------------------------------------------
@@ -611,16 +602,4 @@ def test_estate_python_callers_import_only_what_cmru_exports():
         assert "from cmru.runner import run_step" in mdt.read_text(encoding="utf-8")
 
 
-# --- C4: this file leaves the process environment as it found it -----------------
-# Keep LAST in the file: pytest runs a file's tests in order, so by now every
-# test above has run and torn down.
-
-
-def test_zz_no_internal_name_or_pythonunbuffered_leaks_out_of_this_file(_env_before_module):
-    leaked = {
-        name: os.environ.get(name) for name, before in _env_before_module.items()
-        if os.environ.get(name) != before
-    }
-    assert not leaked, f"the tests above leaked into the process environment: {leaked}"
-    assert not [name for name in os.environ if name.startswith("CMRU_INTERNAL_")
-                and name not in _env_before_module]
+# The process-environment leak check moved to tests/test_zz_environment_probe.py (W3-PREP).

@@ -2982,6 +2982,103 @@ def abandon_workspace(
     forget_release_scope(repo_root, workspace)
 
 
+@dataclass(frozen=True)
+class RemoteCandidate:
+    """An origin-only release candidate branch (KI-35): no local worktree/branch."""
+
+    branch: str
+    oid: str
+    main_oid: str
+    #: Commits on the candidate that origin/main does not contain.
+    unique_commits: int
+
+
+def inspect_remote_candidate(
+    repo_root: Path, branch: str, *, git_auth: GitHubGitAuth | None = None,
+) -> RemoteCandidate | None:
+    """Read-only facts about one origin ``cmru-release-*`` branch with no local
+    worktree. ``None`` means the branch is not on origin. Raises ``RuntimeError``
+    when a fact cannot be established (never folds it into "absent")."""
+    if not _is_release_branch(branch):
+        raise RuntimeError(f"{branch!r} is not a CMRU release transaction branch")
+    ref = "refs/heads/" + branch
+    remote = run_remote_git(
+        repo_root, "ls-remote", "--heads", "origin", ref, "refs/heads/main",
+        auth=git_auth, capture_output=True, text=True, check=False,
+    )
+    if remote.returncode != 0:
+        raise RuntimeError(
+            "could not determine origin branch state: "
+            + (remote.stderr.strip() or "git ls-remote failed")
+        )
+    refs = parse_ls_remote_refs(
+        remote.stdout, namespace="refs/heads/", description="origin branch lookup",
+    )
+    if set(refs) - {ref, "refs/heads/main"}:
+        raise RuntimeError("origin branch lookup returned an unexpected ref")
+    oid = refs.get(ref)
+    if oid is None:
+        return None
+    main_oid = refs.get("refs/heads/main")
+    if main_oid is None:
+        raise RuntimeError("origin/main ref is missing; cannot tell whether the candidate was promoted")
+    fetch_hint = f"run `git fetch origin {branch} main` and retry"
+    counted = run_local_git(
+        repo_root, "rev-list", "--count", oid, f"^{main_oid}",
+        capture_output=True, text=True, check=False,
+    )
+    if counted.returncode != 0 or not counted.stdout.strip().isdigit():
+        raise RuntimeError(
+            f"candidate tip {oid[:12]} or origin/main {main_oid[:12]} is not available "
+            f"locally; {fetch_hint}"
+        )
+    return RemoteCandidate(branch, oid, main_oid, int(counted.stdout.strip()))
+
+
+def retire_remote_candidate(
+    repo_root: Path, candidate: RemoteCandidate, *,
+    git_auth: GitHubGitAuth | None = None,
+) -> None:
+    """Delete an origin-only candidate branch whose every commit is already on
+    origin/main, then drop its orphan sidecars. Never touches main, tags or assets."""
+    if candidate.unique_commits:
+        raise RuntimeError(
+            f"{candidate.branch} holds {candidate.unique_commits} commit(s) that origin/main "
+            "does not contain; refusing to delete it"
+        )
+    if not (COMMIT_ID_RE.fullmatch(candidate.oid) and _is_release_branch(candidate.branch)):
+        raise RuntimeError("malformed remote candidate; nothing was deleted")
+    ref = "refs/heads/" + candidate.branch
+    local = run_local_git(
+        repo_root, "show-ref", "--verify", "--quiet", ref,
+        capture_output=True, text=True, check=False,
+    )
+    if local.returncode == 0:
+        raise RuntimeError(
+            f"a local branch {candidate.branch} exists; abandon its worktree or delete it first"
+        )
+    result = run_remote_git(
+        repo_root, "push", f"--force-with-lease={ref}:{candidate.oid}",
+        "origin", f":{ref}",
+        auth=git_auth, capture_output=True, text=True, check=False,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"could not delete origin candidate ref {ref}\n{result.stderr.strip()}"
+        )
+    verify = run_remote_git(
+        repo_root, "ls-remote", "--heads", "origin", ref,
+        auth=git_auth, capture_output=True, text=True, check=False,
+    )
+    if verify.returncode != 0 or parse_ls_remote_refs(
+        verify.stdout, namespace="refs/heads/", description="origin candidate deletion verification",
+    ):
+        raise RuntimeError(f"origin candidate ref {ref} still exists or could not be verified")
+    forget_release_scope(
+        repo_root, ReleaseWorkspace(repo_root, repo_root, candidate.branch, candidate.oid),
+    )
+
+
 def _tag_refs_for_prefixes(
     tag_refs: Mapping[str, str], prefixes: Sequence[str],
 ) -> dict[str, str]:

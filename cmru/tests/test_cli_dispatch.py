@@ -624,6 +624,13 @@ def test_cleanup_delete_unmanaged_release_previews_then_refuses_without_confirma
     tmp_path, monkeypatch, capsys,
 ):
     cfg_path = _valid_config(tmp_path)
+    # Hermetic credential: this test used to pass only because an earlier test leaked a
+    # token into os.environ (the session-wide environment restore removed that leak).
+    monkeypatch.delenv("GITHUB_PUSH_PAT", raising=False)
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    (tmp_path / "cmru.secret.toml").write_text(
+        '[github]\ntoken = "test-token"\n', encoding="utf-8"
+    )
     monkeypatch.setattr(
         cli, "load_json",
         lambda _url, _token: ([{

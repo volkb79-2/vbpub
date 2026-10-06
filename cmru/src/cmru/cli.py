@@ -5443,6 +5443,66 @@ def _abandon_build_worktree(args, runtime, repo_root: Path, workspace) -> int:
     return 0
 
 
+def _abandon_remote_candidate(args, runtime, repo_root: Path) -> int | None:
+    """Retire an origin-only release candidate branch (KI-35); ``None`` if absent on origin.
+
+    Only a branch whose every commit is already on origin/main is retired: the
+    delete then loses no commit, and origin/main, tags and assets are untouched.
+    A branch with unique commits is refused with the exact fact and the manual
+    command, never deleted.
+    """
+    from cli_extended import CliFailure
+
+    try:
+        github_config = load_config(_resolve_config(getattr(args, "config", None)))[8]
+        git_auth = _git_auth_for_repository(github_config)
+        candidate = transaction.inspect_remote_candidate(
+            repo_root, args.branch, git_auth=git_auth,
+        )
+    except _DOMAIN_ERRORS as exc:
+        raise CliFailure(
+            f"cannot inspect origin candidate {args.branch}: {exc}", exit_code=2,
+        ) from exc
+    if candidate is None:
+        return None
+    print(
+        f"Retire (origin-only candidate): {candidate.branch}\n"
+        f"  origin tip: {candidate.oid}\n"
+        f"  commits not on origin/main: {candidate.unique_commits}\n"
+        "  after retirement: the origin branch and any orphan transaction sidecars are "
+        "removed; origin/main, release tags and assets are unchanged"
+    )
+    if candidate.unique_commits:
+        print(
+            f"Withheld: {candidate.branch}\n"
+            f"  reason: {candidate.unique_commits} commit(s) are not on origin/main\n"
+            f"  inspect: git log --oneline {candidate.main_oid[:12]}..{candidate.oid[:12]}\n"
+            f"  if they are unneeded: git push origin --delete {candidate.branch}"
+        )
+        if args.dry_run:
+            log_info("[DRY RUN] No branch, worktree, metadata, or remote state was changed.")
+            return exit_codes.REFUSED
+        raise CliFailure(
+            f"{candidate.branch} has commits that origin/main does not contain; nothing was abandoned",
+            exit_code=exit_codes.REFUSED,
+        )
+    if args.dry_run:
+        log_info("[DRY RUN] No branch, worktree, metadata, or remote state was changed.")
+        return 0
+    if not (getattr(args, "yes", False) or runtime.confirm(
+        "Delete exactly the origin candidate branch listed above?"
+    )):
+        return 0
+    try:
+        transaction.retire_remote_candidate(repo_root, candidate, git_auth=git_auth)
+    except _DOMAIN_ERRORS as exc:
+        raise CliFailure(
+            f"could not retire {candidate.branch}: {exc}", exit_code=exit_codes.REFUSED,
+        ) from exc
+    log_info(f"Retired origin candidate {candidate.branch}")
+    return 0
+
+
 def _abandon_locked(args, runtime, repo_root: Path) -> int:
     """Inspect and, after exact confirmation, discard candidates under release lock."""
     from cli_extended import CliFailure
@@ -5462,6 +5522,11 @@ def _abandon_locked(args, runtime, repo_root: Path) -> int:
             if item.branch == args.branch
             or (requested_path.is_absolute() and Path(item.path) == requested_path)
         ]
+        if not selected and transaction._is_release_branch(args.branch):
+            # KI-35: an origin-only candidate (its worktree is long gone).
+            handled = _abandon_remote_candidate(args, runtime, repo_root)
+            if handled is not None:
+                return handled
         if not selected:
             raise CliFailure(
                 f"no exact managed CMRU build or release branch or worktree path "

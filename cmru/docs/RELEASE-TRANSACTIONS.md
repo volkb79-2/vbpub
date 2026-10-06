@@ -314,6 +314,30 @@ the private candidate ref and sidecars. Run `cmru cleanup --dry-run` separately
 to inspect configured remote asset pruning; `cleanup` does not remove retained
 release worktrees.
 
+### Retiring an origin-only candidate (KI-35)
+
+A candidate branch can outlive its worktree: the transaction succeeded (or was removed with
+raw Git) and only the `cmru-release-*` ref on origin and orphan sidecars under the shared Git
+directory's `cmru-release-scopes/` remain. Pass its exact name to `cmru abandon`:
+
+```sh
+cmru abandon cmru-release-20260917_004929-all-2d088b95 --dry-run
+cmru abandon cmru-release-20260917_004929-all-2d088b95 --yes
+```
+
+When no local worktree matches, `abandon` looks the branch up on origin and **retires it only
+if every commit on it is already on `origin/main`**, so the delete cannot lose source. The
+delete is a lease (`--force-with-lease=<ref>:<oid>`) read back from origin, then the
+transaction's sidecars are removed. `origin/main`, release tags and published assets are never
+touched. A candidate holding commits that `origin/main` lacks is withheld (exit 4) with the
+`git log` command to inspect them and the manual `git push origin --delete` that would remove
+it. A candidate whose tip is not available locally is reported with the `git fetch` to run.
+A local branch of the same name must be removed first. For a retained worktree whose
+published or ambiguous state `abandon` refuses, the supported path is: confirm the release
+(tag or image) exists, remove the worktree and local branch with `git worktree remove` and
+`git branch -D`, then retire the
+remaining origin ref with this command.
+
 ### Worked example: releasing ciu, nyxloom, and modern-debian-tools-python-debug together
 
 Suppose only these three have real changes this run (`project_order` puts
