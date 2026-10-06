@@ -134,6 +134,26 @@ Behaviour changes a consumer can see:
 
 <!-- cmru: release history -->
 
+## [0.3.0] - 2026-10-06
+<!-- cmru: generated -->
+<!-- cmru: source-end=0321ffc3c7009b31f17b3320611ad74a19567345 -->
+
+### Added
+- feat(cli-extended): name --cli-case-partial in the strict CLI-case coverage error (a63838063)
+- feat(cli-extended): CLI-EXT-19/21/22/24 version_probe, python_args/isolated, dry_run_help, audit precision (code and tests) (7cfe227f3)
+
+### Fixed
+- fix(cli-extended): CX-BACKLOG review round 1 (audit row alignment, exit-code clamp, docs, backlog) (16fdee1f7)
+- fix(cli-extended): CLI-EXT-23/26/27/28/29 library backlog fixes (code and tests) (f6ad8ce0c)
+
+### Documentation
+- docs(cli-extended): CX-BACKLOG 2026-10 report (933402fad)
+- docs(cli-extended): CX-BACKLOG triage, backlog entries 23-29, CHANGES unreleased contract notes, consumer docs (919bafcbe)
+
+### Testing
+- test(cli-extended): sharpen AC-25 separator test; round 1 report (6b56d15b4)
+- test(cli-extended): cover CliOutput policy validation (r0-r1 100% coverage) (318d6735b)
+
 ## [0.2.0] - 2026-10-05
 <!-- cmru: generated -->
 <!-- cmru: source-end=391c06cae51dff7eff93342f579277d7e652ef61 -->
