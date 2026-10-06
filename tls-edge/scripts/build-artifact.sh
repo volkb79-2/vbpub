@@ -152,7 +152,7 @@ if [[ -z "${SOURCE_DATE_EPOCH:-}" ]]; then
     export SOURCE_DATE_EPOCH
 fi
 info "Writing installer manifest (cmru handler bundle-manifest)"
-cmru handler bundle-manifest --project tls-edge --tag "$TAG" --root "$STAGE_DIR"
+cmru handler bundle-manifest --name tls-edge --tag "$TAG" --root "$STAGE_DIR"
 
 # ─── Pack the tarball ─────────────────────────────────────────────────────────
 info "Creating tarball: $TARBALL"

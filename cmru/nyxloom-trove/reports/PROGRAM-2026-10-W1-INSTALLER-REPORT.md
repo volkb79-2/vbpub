@@ -160,3 +160,110 @@ Run at code commit `60a18093e` (lanes refuse a dirty tree; this report update is
 - cmru: a pre-W1 installed host migrates on its next install/update (new release built beside it, atomic swap, then legacy dirs removed); the first migrated host has no rollback target and `rollback` says so.
 - cmru resolve: the primary asset is chosen by the project's `asset_suffix`, and an unreadable or malformed checksum sidecar is now an error instead of `sha256=null` (INS-18).
 ```
+
+## Review fix round 1
+
+Inputs: `REVIEW-ROUND1.md` (REJECT: 7 blockers, controller rulings A-D, nits, 14 surviving mutants)
+and `FIX-ROUND1-BRIEF.md`. All new tests are in `cmru/tests/test_installer_w1_round1.py` (plus
+`test_ins18_resolve_host.py`, and one assertion added to the existing
+`test_failed_migration_leaves_the_legacy_install_working`). The work was done by two implementers
+in sequence (the first was interrupted by an accidental stop; its uncommitted diff was reviewed,
+kept and committed as `7193017cf`).
+
+### Blockers
+
+| # | Fix (file) | Tests | Plant (revert) -> result |
+|---|---|---|---|
+| 1 | `_pre_scan_members`: every non-directory member must be a key of `files` or match a `WHEEL_SPECS` glob; symlink/hardlink only to a listed target; fifo/other types refused; extraction uses `hasattr(tarfile, "data_filter")`, else `_strip_privileges` (no setuid/setgid/group-write, owner ignored) (`get.py.tmpl`) | `TestUnlistedMembers` (7, each with an unchanged-root snapshot), `TestExtractionPrivileges` (3) | coverage rule off -> 4 tests fail; link-target rule off -> `test_symlink_to_unlisted_target_refused` fails; `filter="data"` off -> the trusting-default test fails; `& 0o755` off -> the manual-stripping test fails |
+| 2 | no start-of-transaction prune for a legacy install (`_transact`) | `test_failed_migration_keeps_all_legacy_releases`, extended `test_failed_migration_leaves_the_legacy_install_working`, `test_successful_migration_still_prunes_old_legacy_releases` | `if not legacy` -> `if True`: both migration tests fail |
+| 3 | `if version is not None` (and `_validate_tag` on `rollback --version`) | `test_empty_version_is_a_config_error_never_latest[install/update]`, `test_empty_version_on_rollback_is_refused` (poisoned `resolve_latest_tag`) | back to `if version:` -> install and update variants fail |
+| 4 | `PIP_CONFIG_FILE=os.devnull` after the `PIP_*` filter (`_pip_env`) | `TestPipConfig` (unit + real pip with an `XDG_CONFIG_DIRS` `pip.conf` whose `target` would redirect) | line removed -> both fail |
+| 5 | no-op path applies `--config` and `_write_launchers` | `test_noop_update_still_installs_config`, `test_noop_update_rewrites_missing_launchers` | lines removed -> both fail |
+| 6 | `_verify_files` skips preserved paths that are links into `<root>/shared` (`_preserved_link`) | `TestPreservedAndHashed` (update, repeat, rollback twice, 2nd update, other-symlink still verified) | skip off -> update/repeat/rollback test and the tls-edge preserve test fail |
+| 7 | `docs/CONSUMERS.md` authoring step 4 (chained form leads, pipe form labelled unverified, `python3 -` exits 0 on a 404, no published-checksum claim) | `TestConsumersGuide` (2) | the old sentence put back -> `test_no_claim_of_a_published_get_py_checksum` fails |
+
+### Rulings
+
+- **A (tls-edge stays installable): done, not infeasible.**
+  - `cmru.manifest.bundle_files` / `build_bundle_manifest` emit the schema-1 manifest with `files`
+    (`{relpath: {sha256, size, mode}}`, symlinks refused); `build_manifest(..., bundle_root=DIR)`
+    embeds the same map for wheel bundles. New verb `cmru handler bundle-manifest --name N --tag T
+    --root DIR` (`handlers.py`; the option is `--name` because `test_help_lists_every_public_option`
+    forbids `--project`), registered in SPEC's CLI inventory and semantic audit.
+  - `tls-edge/scripts/build-artifact.sh` calls it after the timestamp clamp and before `tar`
+    (SOURCE_DATE_EPOCH falls back to the last commit time for a standalone run).
+  - Proof: `TestTlsEdgeBundle` stages a tls-edge-shaped tree, builds `manifest.json` with the real
+    handler, tars it, and installs/updates/repeats/rolls back with the get.py rendered from the
+    real `tls-edge/cmru.toml` (preserve paths included: `ciu-stack/ciu.toml.j2` is hashed AND
+    preserved); a file added after the manifest is refused. Plants: builder call removed from the
+    script -> `test_build_artifact_script_calls_the_builder_after_clamping` fails; symlink refusal off
+    -> `test_build_manifest_refuses_a_symlink_in_the_stage` fails.
+  - The real `build-artifact.sh` was NOT executed (it needs a git checkout and the tls-edge render
+    toolchain); its effect is covered by the handler test plus the call-order assertion. ciu
+    publishes a wheel (CIU-99, deferred): no change.
+- **B (root-dir ownership): done.** As euid 0, `<root>`, `releases`, `shared`, `bin` must be real
+  directories owned by the effective uid and not group/world-writable; they are created `0755`;
+  `.lock` is opened `O_NOFOLLOW`. `TestRootDirectories`: world-writable root, group-writable
+  `releases`, `shared -> ext` symlink (target untouched), `.lock` symlink (nothing created), foreign
+  owner. Plants: mode check, owner check, symlink check each off -> their test fails; `O_NOFOLLOW`
+  off -> the lock test fails.
+- **C (downgrade guard): done.** Unpinned update to an older latest: exit 1, message names
+  `--version`; explicit older `--version` allowed with a "Downgrade" notice (`TestDowngradeGuard`).
+  Plants: guard off and notice off -> the respective tests fail.
+- **D (`--require-hashes`): done**, `test_require_hashes_is_enforced_by_pip` (the reviewer's probe:
+  hashes stripped from the lock just before real pip runs; exit 1). It is also the kill for the
+  mutant the first implementer called equivalent.
+
+### Nits and INS-18 leftovers
+
+| Item | Test | Plant -> result |
+|---|---|---|
+| `_verify_minisign` checks `project=` | `test_minisign_trusted_comment_must_name_this_project` | clause off -> fails |
+| `_wheel_version` grammar | `test_wheel_version_grammar_refused` (5) + PEP 440 accept test | back to `not parts[1]` -> 3 fail |
+| `preserve` naming the root (`.`, `a/..`, `./`) refused (`config.py`) | `test_preserve_that_names_the_root_is_refused` | off -> 3 fail |
+| `install_dir_system` in `/`, `/usr`, `/etc`, `/bin`, `/sbin`, `/lib`, `/var`, `/boot`, `/home` (any spelling) refused; `/usr/local/x` fine; `install_dir_user` naming the data dir refused | `test_system_install_dir_*`, `test_user_install_dir_*` | off -> 12 + 2 fail |
+| signal handler never `rmtree`s a staging dir that became `current` | two handler tests | guard off -> the first fails |
+| download / extract / member bounds (512 MiB / 2 GiB / 50,000; documented in SPEC S6.3) | three limit tests | each check off -> its test fails |
+| `status` writes nothing (`_read_state(repair=False)`) | `test_status_never_writes_state`, `test_status_does_not_repair_a_state_that_is_behind_current`, `test_install_heals_a_missing_state` | `repair` dropped -> both status tests fail. Also: a complete release with no `state.json` is reconciled instead of reported as pre-W1 |
+| unsigned INFO line says sidecar+manifest share the bundle's origin | `test_unsigned_notice_says_the_sidecar_shares_the_origin` | (text assertion) |
+| INS-18: `latest.json` sha256 validated (64 hex); missing `.sha256` for an installer release is an error; deterministic primary asset (`<tag>[-<variant>]<suffix>`, else sorted) | 9 tests in `test_ins18_resolve_host.py` | validation off -> 4 fail; missing-sidecar off -> 1 fails; fall-through off -> 1 fails; `sorted` dropped -> 1 fails |
+
+`variant` is plumbed through `resolve()` / `resolve_latest()` for API callers; the `cmru resolve`
+CLI has no variant flag (not asked for), so a multi-variant project resolves its `<tag><suffix>` or
+the first sorted asset there.
+
+### The 14 surviving mutants (re-planted; each killed)
+
+| Mutant | Killing test | Note |
+|---|---|---|
+| M04 duplicate member | `test_m04_duplicate_member_refused` | killed |
+| M05 manifest must be a regular file | `test_m05_manifest_that_is_a_symlink_to_a_valid_manifest_is_refused` | the first attempt (symlink to a non-manifest, or a directory) was hollow: the later guards refuse it anyway. The kill is `manifest.json` -> `manifest.json.minisig` whose bytes are a valid manifest (both names are exempt from the unlisted rule) |
+| M08 recorded digest compare | `test_m08_recorded_manifest_digest_is_compared_on_reuse` | killed |
+| M11 `O_EXCL`/`O_NOFOLLOW` | `test_m11_a_tmp_symlink_planted_in_the_race_window_is_not_followed` (symlink planted between the unlink and the open) | killed |
+| M12 `_regular_file` symlink check | `test_m12_a_listed_file_replaced_by_a_symlink_is_refused` (identical content, so only the symlink check can refuse) | killed |
+| M18 flock | `test_m18_the_lock_excludes_a_second_process` (a real second process holds the flock; `_Lock` must block until it lets go) | killed |
+| M21 `filter="data"` | `test_stripped_even_if_the_interpreter_default_filter_is_trusting` | on Python 3.14 `data` is the default filter, so the test installs a trusting default; archive members are owned by the test uid so the (mocked-root) chown succeeds and the chmod runs |
+| M22 root check | `test_m22_system_scope_without_root_exits_3_and_touches_nothing` (install/update/rollback) | killed |
+| M23 wheel name binding | `test_m23_manifest_wheel_name_must_match_the_bundled_file` | killed |
+| M24 single wheel match | `test_m24_two_wheels_matching_one_glob_refused` | the first attempt was masked by M23's name binding; the kill ships a byte-identical second copy and no `wheel` name in the manifest |
+| M25 rollback adapter | `test_m25_rollback_invokes_the_adapter_with_action_rollback`, `..._a_failing_rollback_adapter_aborts_the_rollback` | killed |
+| M49 one top-level dir | `test_m49_two_top_level_directories_refused` | killed |
+| M55 preserve symlink skip | `test_second_update_does_not_copy_the_symlink_onto_itself` (`SameFileError` without the skip) | killed |
+| M59 reconcile target complete | `test_m59_current_pointing_at_an_incomplete_release_is_refused` | the first attempt was masked by `_verify_release_intact`; the kill gives the half-built release a valid `release.json` with another tag, so only the reconcile check refuses it |
+
+### Results
+
+- Round-1 files: 129 passed (`test_installer_w1_round1.py` 108 + `test_ins18_resolve_host.py` 21).
+- Re-render of `ciu/get.py` / `tls-edge/get.py`: none needed after round 1: the template did not change
+  after the predecessor's re-render (`TestRealProjects` compares the committed files byte for byte and passes).
+- Full cmru suite, ciu enrollment tests and the `coverage` / `canary` lanes: see the final lines
+  below.
+
+### Deviations
+
+- Plants were applied in batches of 8-15 independent locations per run, with every designated test
+  required to appear among the failures, and each plant restored by Edit before the next batch
+  (`git diff` over `cmru/src` was empty after every batch). The doc and `build-artifact.sh` plants
+  were run separately.
+- No shell, sed or script wrote any repository file; all changes were made with Edit/Write.
+- The real `build-artifact.sh` was not executed (see ruling A).

@@ -508,7 +508,7 @@ class TestTlsEdgeBundle:
         """Manifest via the real `cmru handler bundle-manifest`, then tar the stage dir."""
         from cmru.handlers import cmd_bundle_manifest
         tag = stage.name
-        cmd_bundle_manifest(args_ns(project="tls-edge", tag=tag, root=str(stage),
+        cmd_bundle_manifest(args_ns(name="tls-edge", tag=tag, root=str(stage),
                                     manifest_name="manifest.json"))
         out = tmp_path / "bundles"
         out.mkdir(exist_ok=True)
@@ -601,7 +601,7 @@ class TestTlsEdgeBundle:
     def test_build_artifact_script_calls_the_builder_after_clamping(self):
         script = (REPO / "tls-edge" / "scripts" / "build-artifact.sh").read_text()
         assert "handler bundle-manifest" in script
-        call = script.index("cmru handler bundle-manifest --project")
+        call = script.index("cmru handler bundle-manifest --name")
         assert script.rindex("touch -t", 0, call) < call < script.index("tar -C")
 
 

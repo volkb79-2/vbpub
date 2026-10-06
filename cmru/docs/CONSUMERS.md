@@ -286,7 +286,7 @@ The rendered `get.py` is a fail-closed, transactional installer you ship as a re
    EVERY other regular file in the bundle: the installer refuses a bundle with a member that is
    not listed there (wheels are hashed through their distribution entry instead), and a
    symlink or hardlink only when its target is a listed file. A project whose release is a
-   plain tarball writes that manifest with `cmru handler bundle-manifest --project NAME
+   plain tarball writes that manifest with `cmru handler bundle-manifest --name NAME
    --tag TAG --root <staged top-level dir>` as the last step before `tar` (tls-edge's
    `scripts/build-artifact.sh` does); `cmru.manifest.build_manifest(..., bundle_root=DIR)`
    embeds the same `files` map for wheel-based bundles.
