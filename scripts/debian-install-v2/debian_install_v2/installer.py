@@ -80,8 +80,10 @@ APT_LOCK_OPTION = ["-o", f"DPkg::Lock::Timeout={APT_LOCK_TIMEOUT_S}"]
 # DPkg::Lock::Timeout only covers the dpkg frontend lock; `apt-get update`'s
 # lists lock (/var/lib/apt/lists/lock) fails immediately regardless of it, so
 # a lock-contention failure gets a bounded retry (attempts, seconds apart).
-APT_LOCK_RETRY_ATTEMPTS = 3
 APT_LOCK_RETRY_DELAY_S = 30
+# Total retry wait matches APT_LOCK_TIMEOUT_S (20 sleeps x 30 s = 600 s).
+# Running unattended-upgrade is deliberately waited for, never stopped.
+APT_LOCK_RETRY_ATTEMPTS = APT_LOCK_TIMEOUT_S // APT_LOCK_RETRY_DELAY_S + 1
 _APT_LOCK_ERROR_MARKERS = (
     "Could not get lock",
     "Unable to acquire the dpkg frontend lock",
@@ -282,6 +284,7 @@ class Installer:
         except BaseException as exc:
             if not self.actions.dry_run:
                 self.state.save(status="failed", phase="stage1", last_error=str(exc))
+            self._restore_apt_timers_after_failure()
             self._notify(
                 f"<b>Install FAILED</b> during stage1: {_code(str(exc))}",
                 event="install FAILED", status="fail", excerpt=str(exc),
@@ -388,6 +391,7 @@ class Installer:
                 )
         except BaseException as exc:
             self.state.save(status="failed", phase="stage2", last_error=str(exc))
+            self._restore_apt_timers_after_failure()
             try:
                 delivered = self._notify(
                     f"<b>Install FAILED</b> during stage2: {_code(str(exc))}",
@@ -825,13 +829,28 @@ MaxFileSec=1month
     def _release_apt_timers(self) -> None:
         """Last stage2 step (after every apt-get): enable + start the apt timers."""
         timers = list(self._APT_TIMERS)
-        if self.config.apt_auto_upgrade_mode == "notify-only":
+        if self.config.run_apt_auto_upgrade and self.config.apt_auto_upgrade_mode == "notify-only":
             timers.append("vbpub-apt-check.timer")
+        # With auto-upgrade off this restores the Debian default (enabled).
         self._run(
             ["/usr/bin/systemctl", "enable", "--now", *timers],
             "enable apt timers (install finished)", dangerous=True,
         )
         self._mark_step("apt_timers", "success", " ".join(timers))
+
+    def _restore_apt_timers_after_failure(self) -> None:
+        """Best-effort: a failed install must not leave the apt timers disabled.
+        Idempotent (stage2 runs in a new process, so no in-memory flag). Never raises."""
+        if self.actions.dry_run:
+            return
+        try:
+            self._run(
+                ["/usr/bin/systemctl", "enable", "--now", *self._APT_TIMERS],
+                "re-enable apt timers after install failure", dangerous=True,
+            )
+            _LOG.warning("install failed: apt timers re-enabled")
+        except Exception as exc:
+            _LOG.warning("install failed and apt timers could not be re-enabled: %s", exc)
 
     def _configure_cgroup2_flags(self) -> None:
         # Default ON, no config flag — memory_recursiveprot missing silently
@@ -2579,7 +2598,9 @@ MaxFileSec=1month
 
     def _reboot(self) -> None:
         if self.config.never_reboot or not self.config.auto_reboot_after_stage1:
-            self._mark_step("reboot", "deferred", "disabled by configuration")
+            # state.mark_step (silent): the explicit warn notification below is
+            # the informative post; _mark_step would duplicate it in verbose mode.
+            self.state.mark_step("reboot", "deferred", "disabled by configuration")
             self._notify(
                 "<b>Stage1 complete.</b> Reboot is disabled by configuration - stage2 requires a manual resume.",
                 event="complete; reboot disabled, stage2 needs a manual resume", status="warn",
@@ -2589,10 +2610,13 @@ MaxFileSec=1month
             "reboot", "scheduled",
             f"stage2 resumes on next boot (reboot delayed {self._REBOOT_DELAY_SECONDS}s to let cloud-init report completion)",
         )
-        self._notify(
-            "<b>Stage1 complete.</b> Rebooting into stage2.",
-            event="complete; rebooting into stage2", status="ok",
-        )
+        # The "scheduled" step post (with the delay detail) is the informative
+        # one in verbose mode; the milestone post is sent only when it is silent.
+        if not self.config.telegram_verbose_progress:
+            self._notify(
+                "<b>Stage1 complete.</b> Rebooting into stage2.",
+                event="complete; rebooting into stage2", status="ok",
+            )
         # systemd-run schedules a transient, detached unit and returns
         # immediately -- this process (and the customScript/cloud-init
         # runcmd it's a child of) gets to exit normally well before the
@@ -2695,8 +2719,9 @@ MaxFileSec=1month
     def _stage1(self) -> None:
         self._secure_bootstrap_files()
         self._configure_controller_ssh_key()
-        if self.config.run_apt_auto_upgrade:
-            self._hold_apt_timers()
+        # Held regardless of run_apt_auto_upgrade (Debian ships them enabled);
+        # _release_apt_timers() restores them at the end of stage2.
+        self._hold_apt_timers()
         if self.config.run_apt_config:
             self._configure_apt()
         self._packages(["python3"], "stage1")
@@ -2777,8 +2802,7 @@ MaxFileSec=1month
             self._apply_known_swap_shape()
         self._activate_swap_partitions()
         self._health_gate_swap_devices()
-        if self.config.run_apt_auto_upgrade:
-            self._release_apt_timers()
+        self._release_apt_timers()
         self.state.save(phase="done", status="success")
         # _remove_controller_ssh_key() deliberately does NOT happen here --
         # see resume(), which calls it only after the stage2_done marker

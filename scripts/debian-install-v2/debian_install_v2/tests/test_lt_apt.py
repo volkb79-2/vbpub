@@ -89,9 +89,98 @@ def test_notify_only_check_timer_also_deferred_to_the_end(tmp_path):
     assert idx and all(i > last_apt for i in idx)
 
 
-def test_timers_untouched_when_auto_upgrade_step_disabled(tmp_path):
+def test_timers_held_and_restored_even_when_auto_upgrade_step_disabled(tmp_path):
+    """D2: the Debian timers are held for the install and restored enabled+started."""
     _, actions = install_dry(tmp_path, run_apt_auto_upgrade=False)
-    assert not any(any(t in a.argv for t in TIMERS) for a in actions.planned)
+    planned = actions.planned
+    first_apt = min(i for i, a in enumerate(planned) if a.argv[0] == APT)
+    last_apt = max(i for i, a in enumerate(planned) if a.argv[0] == APT)
+    holds = [i for i, a in enumerate(planned) if a.argv[:3] == ("/usr/bin/systemctl", "disable", "--now") and TIMERS[0] in a.argv]
+    assert len(holds) == 1 and holds[0] < first_apt
+    enables = _timer_enables(actions)
+    assert len(enables) == 1 and enables[0][0] > last_apt
+    assert enables[0][1] == ("/usr/bin/systemctl", "enable", "--now", *TIMERS)
+
+
+def test_second_hold_follows_the_unattended_upgrades_package_step(tmp_path):
+    """The unattended-upgrades install may (re)start the timers; hold again after it."""
+    _, actions = install_dry(tmp_path)
+    planned = actions.planned
+    ua = next(i for i, a in enumerate(planned) if a.argv[0] == APT and "unattended-upgrades" in a.argv)
+    holds = [i for i, a in enumerate(planned) if a.argv[:3] == ("/usr/bin/systemctl", "disable", "--now") and TIMERS[0] in a.argv]
+    assert any(h > ua for h in holds)
+    assert holds[0] < ua
+
+
+class _RecordingActions(HostActions):
+    """Non-dry-run actions that record systemctl calls and execute nothing."""
+
+    def __init__(self, fail_enable=False):
+        super().__init__(dry_run=False)
+        self.calls = []
+        self.fail_enable = fail_enable
+
+    def run(self, argv, description="", dangerous=False, **kw):
+        self.calls.append(tuple(argv))
+        if self.fail_enable and argv[1:2] == ["enable"]:
+            raise ActionError("systemctl exploded")
+        return ""
+
+
+def _failing_installer(tmp_path, fail_enable=False):
+    from debian_install_v2.state import StateStore
+
+    config = Config(
+        state_dir=str(tmp_path / "s"), log_dir=str(tmp_path / "l"),
+        telegram_bot_token="", telegram_chat_id="", credential_mode="systemd",
+    )
+    inst = Installer(config, _RecordingActions(fail_enable), inspect_host=False)
+    StateStore(config.state_dir).save_new(StateStore.new(config))
+    return inst
+
+
+def _boom():
+    raise RuntimeError("boom")
+
+
+@pytest.mark.parametrize("phase", ["stage1", "stage2"])
+@pytest.mark.parametrize("fail_enable", [False, True])
+def test_failed_install_reenables_apt_timers_best_effort(tmp_path, monkeypatch, phase, fail_enable):
+    """D1: a failure must not leave the timers disabled; a failing re-enable never masks the cause."""
+    inst = _failing_installer(tmp_path, fail_enable)
+    monkeypatch.setattr(inst, "_stage1" if phase == "stage1" else "_stage2", _boom)
+    with pytest.raises(RuntimeError, match="boom"):
+        inst.install() if phase == "stage1" else inst.resume()
+    assert ("/usr/bin/systemctl", "enable", "--now", *TIMERS) in inst.actions.calls
+
+
+def test_retry_bound_derives_from_the_lock_timeout_constant(tmp_path, monkeypatch):
+    """D3: total sleep across a full retry run equals APT_LOCK_TIMEOUT_S."""
+    assert installer_module.APT_LOCK_RETRY_ATTEMPTS == (
+        installer_module.APT_LOCK_TIMEOUT_S // installer_module.APT_LOCK_RETRY_DELAY_S + 1
+    )
+    msg = "E: Could not get lock /var/lib/apt/lists/lock"
+    inst, sleeps = _retry_installer(tmp_path, [msg] * installer_module.APT_LOCK_RETRY_ATTEMPTS, monkeypatch)
+    with pytest.raises(ActionError):
+        inst._apt_get(["update", "-qq"], "t")
+    assert sum(sleeps) == installer_module.APT_LOCK_TIMEOUT_S
+
+
+@pytest.mark.parametrize("verbose", [True, False])
+@pytest.mark.parametrize("never_reboot", [False, True])
+def test_reboot_step_is_posted_exactly_once(tmp_path, verbose, never_reboot):
+    config = Config(
+        state_dir=str(tmp_path / "s"), log_dir=str(tmp_path / "l"),
+        telegram_verbose_progress=verbose, never_reboot=never_reboot,
+        auto_reboot_after_stage1=True,
+    )
+    inst = Installer(config, HostActions(dry_run=True), inspect_host=False)
+    sent: list[str] = []
+    inst._notify = lambda message, **kw: sent.append(kw.get("event", message))  # type: ignore[method-assign]
+    inst._reboot()
+    assert len(sent) == 1, sent
+    if verbose and not never_reboot:
+        assert "reboot: scheduled" in sent[0] and "60s" in sent[0]
 
 
 @pytest.mark.parametrize(
@@ -166,7 +255,7 @@ def test_lists_lock_contention_is_retried_once_per_attempt_and_bounded(tmp_path,
 
 def test_lock_retry_gives_up_after_the_bound(tmp_path, monkeypatch):
     msg = "E: Could not get lock /var/lib/apt/lists/lock"
-    inst, sleeps = _retry_installer(tmp_path, [msg] * 3, monkeypatch)
+    inst, sleeps = _retry_installer(tmp_path, [msg] * installer_module.APT_LOCK_RETRY_ATTEMPTS, monkeypatch)
     with pytest.raises(ActionError):
         inst._apt_get(["update", "-qq"], "t")
     assert len(inst.actions.calls) == installer_module.APT_LOCK_RETRY_ATTEMPTS
@@ -191,6 +280,18 @@ def test_io_benchmark_result_is_posted_exactly_once(tmp_path):
         posts = [s for s in sent if "io benchmark" in s.lower() or "io_benchmark:" in s]
         posts = [s for s in posts if "rbps" in s]
         assert len(posts) == 1, (verbose, sent)
+
+
+@pytest.mark.parametrize("verbose", [True, False])
+def test_io_benchmark_advisory_failure_is_posted_exactly_once(tmp_path, verbose):
+    installer, disk = make(tmp_path / str(verbose), telegram_verbose_progress=verbose)
+    disk.partial_write_fails = True
+    sent: list[str] = []
+    installer._notify = lambda message, **kw: sent.append(kw.get("event", message))  # type: ignore[method-assign]
+    installer._run_io_benchmark(swap_written=False)
+    assert installer.state.load()["steps"]["io_benchmark"]["status"] == "warned"
+    posts = [s for s in sent if "benchmark failed" in s]
+    assert len(posts) == 1, (verbose, sent)
 
 
 def test_stage1_chmods_custom_script_and_outputs_to_0600(tmp_path, monkeypatch):
