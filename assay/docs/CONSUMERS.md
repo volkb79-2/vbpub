@@ -3641,9 +3641,18 @@ assay: ERROR/FORMAT_MISMATCH: declared coverage format 'coverage-py-json', but t
 Where it goes:
 
 - **From the CLI**, to **stderr**. Machine output is unaffected: stdout still
-  carries the three-line run summary, or the whole verdict document under
+  carries the run summary (three to five lines: headline, optional `R0: FAIL`, commit, argv and an optional appended-argv line; do not read fixed line
+  positions, because the `R0: FAIL` line below is conditional), or the whole verdict document under
   `--verdict-json -`. A gate that captures stderr into its log needs no
-  change to benefit.
+  change to benefit. (B146) When the retained command output names a failing
+  test (pytest, `go test` text or JSON, vitest, jest) and the headline is not
+  `PASS`, the summary gains one `  R0: FAIL (first failing test: NAME)` line
+  after the headline. The headline is still the verdict's own
+  `outcome/reason` pair: a failing suite that dirtied the tree keeps
+  `NO_MEASUREMENT/DIRTY_TREE` there, and the extra line says the command
+  measurably failed. A run whose output names no failing test prints no such
+  line, so a genuine no-measurement is never recast as a test failure. NAME is
+  the first failure visible in the bounded output tail the verdict retains.
 - **From a library caller**, to whatever stream you pass as `diagnostics=` to
   `assay.runner.run_lane`. Nothing is written to the process's stderr behind
   your back; omit the argument and assay stays silent, exactly as before.
