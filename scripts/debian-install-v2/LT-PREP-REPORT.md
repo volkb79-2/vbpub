@@ -143,3 +143,6 @@ Reviewer REJECT of dab136dfa, blocker B1: on a re-run, Docker's own bridge (e.g.
 - Tests: `test_rerun_with_docker_bridge_inside_the_pool_passes` (br-abc123, docker0, veth9f2), `test_non_docker_interface_inside_the_pool_still_fails`, `test_literal_zero_prefix_routes_are_skipped_like_default`, `test_unparseable_ip_route_output_fails_closed`.
 - Mutations planted, each killed, then reverted: docker-interface ignore disabled (3 failed); route parse made fail-open (`pass` instead of raise; 1 failed, the new route test).
 - Own run: debian-install-v2 672 passed, 11 skipped. All edits this round via Edit, no shell writes.
+
+### round 3
+`_is_docker_interface` now fullmatches Docker's own naming: `docker0`, `br-[0-9a-f]{12}`, `veth[0-9a-f]+`. Operator bridges `br0`, `br-lan`, `virbr0` (and near-misses `br-0123456789abc`, `br-0123456789AB`, `vethz`) inside the pool still fail; `br-0123456789ab` passes. Mutation "widen to startswith('br')" planted and killed (5 failed), then reverted. Own run: 678 passed, 11 skipped. Edit only.

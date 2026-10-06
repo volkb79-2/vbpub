@@ -63,8 +63,8 @@ class InstallerError(RuntimeError):
 
 
 def _is_docker_interface(name: object) -> bool:
-    """Docker-owned interfaces (docker0, user bridges br-*, veth*)."""
-    return isinstance(name, str) and (name == "docker0" or name.startswith(("br-", "veth")))
+    """Docker-owned interfaces by Docker's own naming: docker0, br-<12 hex>, veth<hex>."""
+    return isinstance(name, str) and re.fullmatch(r"docker0|br-[0-9a-f]{12}|veth[0-9a-f]+", name) is not None
 
 
 def _split_for_telegram(message: str, limit: int = TELEGRAM_MESSAGE_LIMIT) -> list[str]:

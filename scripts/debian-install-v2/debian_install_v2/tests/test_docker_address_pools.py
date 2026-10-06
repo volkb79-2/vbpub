@@ -239,7 +239,7 @@ def _bridge_host(installer, ifname):
     installer.actions.outputs[ROUTE] = json.dumps([{"dst": "10.240.0.0/24", "dev": ifname}])
 
 
-@pytest.mark.parametrize("ifname", ["br-abc123", "docker0", "veth9f2"])
+@pytest.mark.parametrize("ifname", ["br-0123456789ab", "docker0", "veth9f2"])
 def test_rerun_with_docker_bridge_inside_the_pool_passes(tmp_path, ifname):
     installer = _real(tmp_path)
     _bridge_host(installer, ifname)
@@ -247,11 +247,12 @@ def test_rerun_with_docker_bridge_inside_the_pool_passes(tmp_path, ifname):
     assert json.loads(installer.actions.files["/etc/docker/daemon.json"])["default-address-pools"] == DEFAULT
 
 
-def test_non_docker_interface_inside_the_pool_still_fails(tmp_path):
+@pytest.mark.parametrize("ifname", ["eth1", "br0", "br-lan", "virbr0", "br-0123456789abc", "br-0123456789AB", "vethz"])
+def test_non_docker_interface_inside_the_pool_still_fails(tmp_path, ifname):
     from debian_install_v2.installer import InstallerError
 
     installer = _real(tmp_path)
-    _bridge_host(installer, "eth1")
+    _bridge_host(installer, ifname)
     with pytest.raises(InstallerError, match="10.240.0.0/16"):
         installer._configure_docker_daemon()
 
