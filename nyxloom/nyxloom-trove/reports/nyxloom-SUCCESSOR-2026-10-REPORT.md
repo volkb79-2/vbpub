@@ -65,3 +65,22 @@ Command (worktree source): `PYTHONPATH=<worktree>/nyxloom/src python3 -c "from n
 - Claude Code adapter only (NL-31). No JSON form of ledger/stop state (NL-33). No redaction (decision): the extract can contain whatever the transcript contains.
 - E-020's open items (restart, main-session Ctrl-C, cache repeat) are untested (NL-32).
 - Intent fill-rate numbers in E-020 come from n=1 realistic pair; E-019 (earlier) measured 70.6% on different transcripts; both are prompt-dependent.
+
+## Round 2 (implementers #2 and #3)
+
+Process slips, stated honestly (the `Intent:` line before every Edit/Write, one edit per message, was the rule):
+- Implementer #2: checkpoint 1, the first ~15 edits had no `Intent:` line; checkpoint 2, several edits lacked it and one message held two Edits; checkpoint 3, edits to `follow.py`, the `cli.py` preset constants/application/format check/watch render block/final print and a two-Edit docstring change lacked it. A part of one response was withheld by a safety classifier while a corpus fixture was being prepared; no fixture was written then.
+- Implementer #3 (this round): the edits to `watch.py` (docstring, `items`, `format`), `shellcmd.py`, the `test_session_extract_presets.py` assertion, and the Writes of `test_session_extract_gap_closure.py` and `test_session_extract_real_corpus.py` had NO `Intent:` line; from the `assay.toml` edit onward every edit carried one. No message held two edits.
+
+Done this round:
+- Controller rulings: interviews are kept by `--preset watch` (one assistant line per question from the prompt event, the answer's OPERATOR line from the answer event, nothing printed twice, `watch.items`); `--jsonl` lines carry `"v": 1` (`watch.JSONL_VERSION`), keys and order pinned by `test_watch_jsonl_lines` and `test_watch_jsonl_interview_rows_carry_the_version`; `--preset successor` includes `--stop-state`.
+- Corpus: `tests/fixtures/real_interview_2_1_289.jsonl` = physical lines 308 and 314 of the controller transcript (2.1.289), copied verbatim and verified equal to the source lines, 0 hits of the strict secret scan. `tests/test_session_extract_real_corpus.py` renders it through `--preset watch` (text and `--jsonl`) and has an opt-in whole-transcript smoke test (`NYXLOOM_REAL_TRANSCRIPT`, skipped by default, NOT run). NOT done: the rest of the selected records (interrupt/denial/error triple, task notifications, compaction summary, agent-control calls, subagent file) are not committed as fixtures; `harness.py`'s docstring now says so.
+- Coverage: `tests/test_session_extract_gap_closure.py` closes the branch gaps in harness, shellcmd, successor, watch, render, config, claude_code and cli guards. Two dead guards removed with justification (an empty-segment `continue` in `shellcmd.normalized_segments`, found unreachable by a 22-token brute force over wrapper combinations; a duplicate strip-cd contradiction check in `cli_registry.py` that the earlier loop already covers).
+- Docs: CHANGES, CLI-REFERENCE, CONSUMERS, session_extract README (new section), both skills, E-020 follow-up in `design-context-lifecycle-experiments.md`. Lane argv in `assay.toml` now includes compress, r2_survivors, harness, presets, gap_closure, real_corpus and cli_extract_groups tests.
+- Equivalence argument for `stopstate.py:109` (`name or ""` vs None): `summarize_call` treats None and "" alike for tools without `command`/`file_path`, so the two are equivalent there; not mutation-tested here.
+
+Gates actually run (worktree `nyxloom-successor`, under the gate flock):
+- `tester-unified`: first run at `a04cb6167` FAIL (UNCOVERED_LINES at cli.py 1030-1033, cli_registry.py 343-345 and 382-384, plus one `test_behavioral.py::test_bounded_rejection_notifications_do_not_storm` failure under xdist load; it passes in isolation, and nothing in this branch touches the daemon). At `a1bd314d0`: verdict PASS (exit 0).
+- `session-extract` at `a1bd314d0`: R0 PASS, R1 PASS (100.0%, no missing lines or branches), R3 PASS, R2 BUDGET_EXCEEDED / MUTANT_LIMIT_EXCEEDED (candidate_count 151 = more than the cap of 150; run postponed by the operator anyway).
+
+Remaining: item D count (`assay plan` with a temporary high cap, then set `max_mutants`/budget with a justification; the new modules shellcmd, compress, harness, presets, watch add candidates); E (pytest-timeout use for shellcmd tests, not checked); F (`--successor-brief` size on `a103c786a771029b0` and `acf92723eb6a53199`, watch/ledger samples, not measured); the remaining corpus fixtures; R2 by the controller.
