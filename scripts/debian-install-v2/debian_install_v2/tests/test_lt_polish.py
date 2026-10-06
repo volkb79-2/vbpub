@@ -26,7 +26,7 @@ from debian_install_v2.state import StateStore
 from debian_install_v2.templates import APT_CUSTOM
 
 from .test_gstammtisch_incorporation import install_dry
-from .test_io_benchmark import make, step
+from .test_io_benchmark import LINUX, SECTORS_PER_GIB, make, step
 
 BOOTSTRAP_PATH = Path(__file__).resolve().parents[2] / "bootstrap-remote.py"
 
@@ -189,6 +189,28 @@ def test_io_benchmark_cleanup_failure_is_recorded_as_warned(tmp_path):
         installer._stage2()
     cleanup = step(installer, "io_benchmark_cleanup")
     assert cleanup["status"] == "warned" and "busy" in cleanup["detail"]
+
+
+def test_leftover_partition_removal_records_its_own_cleanup_success(tmp_path):
+    # The normal-path teardown later overwrites the step with its own success, so
+    # the leftover-removal mark is only visible through a spy on _mark_step.
+    installer, disk = make(tmp_path)
+    disk.table[12] = {"start": str(80 * SECTORS_PER_GIB), "size": str(10 * SECTORS_PER_GIB), "type": LINUX.upper(),
+                      "uuid": "LEFT", "name": "vbpub-iobench"}
+    disk.kernel.add(12)
+    disk.mounts["/dev/vda12"] = "/tmp/vbpub-iobench-old"
+    marks = []
+    original = installer._mark_step
+
+    def spy(name, status, detail=""):
+        marks.append((name, status, detail))
+        original(name, status, detail)
+
+    installer._mark_step = spy
+    installer._stage2()
+    leftover = [m for m in marks if m[0] == "io_benchmark_cleanup" and "leftover" in m[2]]
+    assert leftover and leftover[0][1] == "success"
+    assert step(installer, "io_benchmark_cleanup")["status"] == "success"
 
 
 def test_io_benchmark_cleanup_step_absent_when_the_benchmark_is_off(tmp_path):
