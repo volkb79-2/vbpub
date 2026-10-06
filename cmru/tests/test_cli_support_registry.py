@@ -94,7 +94,9 @@ def test_registry_declares_the_time_prefix_once_and_extends_global_options():
 
 
 def test_delegate_built_with_the_factory_inherits_the_global_option(monkeypatch):
-    monkeypatch.delenv(output._TIME_ENV, raising=False)
+    # setenv (not delenv): it records the original state so the "1" the code under
+    # test writes is undone at teardown instead of leaking into later tests.
+    monkeypatch.setenv(output._TIME_ENV, "0")
     monkeypatch.setattr(output, "configure", lambda value: None)
     parent, _child = _parent_and_delegate()
     built = parent.build()
