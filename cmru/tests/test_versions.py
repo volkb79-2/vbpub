@@ -2709,16 +2709,22 @@ def test_versions_main_reports_text_and_maps_domain_failures(monkeypatch, capsys
         (OSError("disk"), versions.exit_codes.FAILURE),
         (ValueError("bad value"), versions.exit_codes.CONFIG_ERROR),
         (SystemExit(7), 7),
-        (SystemExit("non integer"), 2),
+        # The library renders a non-integer SystemExit as one error line, exit 1.
+        (SystemExit("non integer"), 1),
     )
     for error, expected in cases:
         monkeypatch.setattr(versions, "_resolve_all_for_command", lambda *_args, _error=error, **_kwargs: (_ for _ in ()).throw(_error))
         assert versions.main(["check"]) == expected
         output = capsys.readouterr()
-        if isinstance(error, SystemExit):
+        if isinstance(error, SystemExit) and isinstance(error.code, int):
             assert output.err == ""
+        elif isinstance(error, (versions.VersionsOperationError, OSError)):
+            # expected_exceptions: the library renders exit 1 with the message
+            assert f"[ERROR] {error}" in output.err
+        elif isinstance(error, SystemExit):
+            assert "non integer" in output.err
         else:
-            assert output.err.startswith("CMRU versions:")
+            assert "CMRU versions: " + str(error) in output.err
 
 
 def test_resolve_native_writer_guards_and_transaction_rollback(tmp_path, monkeypatch):
@@ -4117,7 +4123,9 @@ def test_custom_template_and_oci_outputs_are_transaction_ready(monkeypatch, tmp_
             return Rendered(source)
 
     strict_undefined = object()
-    monkeypatch.setitem(sys.modules, "jinja2", types.SimpleNamespace(Environment=Environment, StrictUndefined=strict_undefined))
+    monkeypatch.setitem(sys.modules, "jinja2", types.SimpleNamespace(
+        Environment=Environment, StrictUndefined=strict_undefined, TemplateError=Exception,
+    ))
     result = _result(
         "oci.app", "oci", "1.2.0", datetime(2026, 9, 1, tzinfo=timezone.utc), tag="v1.2.0",
     )
@@ -4167,6 +4175,11 @@ def test_template_dependency_and_strict_render_failures(monkeypatch, tmp_path):
             {}, "20260924",
         )
 
+    class TemplateError(Exception):
+        """Stands in for jinja2.TemplateError (undefined names, syntax errors)."""
+
+    raised: list[Exception] = []
+
     class Environment:
         def __init__(self, **_kwargs):
             pass
@@ -4175,14 +4188,20 @@ def test_template_dependency_and_strict_render_failures(monkeypatch, tmp_path):
             return self
 
         def render(self, **_context):
-            raise RuntimeError("undefined value")
+            raise raised[0]
 
-    monkeypatch.setitem(sys.modules, "jinja2", types.SimpleNamespace(Environment=Environment, StrictUndefined=object()))
+    monkeypatch.setitem(sys.modules, "jinja2", types.SimpleNamespace(
+        Environment=Environment, StrictUndefined=object(), TemplateError=TemplateError,
+    ))
+    outputs = {"out": {"template": "template.j2", "path": "out.txt", "dated_path": "out-{date}.txt"}}
+    raised.append(TemplateError("undefined value"))
     with pytest.raises(versions.VersionsError, match="could not render"):
-        versions._template_artifacts(
-            tmp_path, {"out": {"template": "template.j2", "path": "out.txt", "dated_path": "out-{date}.txt"}},
-            {}, "20260924",
-        )
+        versions._template_artifacts(tmp_path, outputs, {}, "20260924")
+    # C: only template/IO failures are re-labelled; a programming error is not
+    # disguised as a configuration problem.
+    raised[0] = RuntimeError("bug in the renderer")
+    with pytest.raises(RuntimeError, match="bug in the renderer"):
+        versions._template_artifacts(tmp_path, outputs, {}, "20260924")
 
 
 def test_python_constraints_compile_uses_age_policy_and_markers(monkeypatch, tmp_path):

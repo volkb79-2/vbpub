@@ -25,15 +25,14 @@ from typing import Dict, List, Optional, Set, Tuple
 
 from cmru.config_names import ORCHESTRATION_CONFIG_FILENAME, PROJECT_CONFIG_FILENAME
 from cli_extended import (
-    ArgumentSpec,
     CliFailure,
-    CliRegistry,
     OptionSpec,
+    Requires,
     VerbGroup,
     VerbSpec,
 )
 
-from cmru.cli_support import cmru_identity, cmru_presentation_options
+from cmru.cli_support import cmru_registry, target_argument
 
 
 _TEMPLATE_RESOURCE = "templates/get.py.tmpl"
@@ -539,27 +538,32 @@ def render_from_config(project_name: str, config_path: Path) -> str:
 
 def getpy_cli():
     """Build the registered grammar for ``cmru get-py``."""
-    registry = CliRegistry(
-        cmru_identity(command="cmru", long_name="Configurable Multi Release Utility"),
-        prog="cmru get-py",
-        description="Emit standalone get.py installers for registered projects.",
+    registry = cmru_registry(
+        "cmru get-py",
+        "Emit standalone get.py installers for registered projects.",
         single_command=True,
         no_args_action=True,
-        logging_logger="cmru",
-        global_options=cmru_presentation_options(),
     )
     registry.register(VerbSpec(
         "get-py",
-        description="Render the configured standalone installer for one or more projects.",
+        description=(
+            "Render the configured standalone installer for one or more projects. "
+            "Without --output/--output-dir it prints one project's installer to "
+            "stdout and writes nothing."
+        ),
         group=VerbGroup.MODIFICATION.value,
+        # Conditionally mutating (D4): only --output/--output-dir write, which
+        # is also the only place --dry-run means anything.
         mutating=True,
+        dry_run=True,
         include_confirmation=False,
-        arguments=(ArgumentSpec(
-            "target",
-            "project target; omitted: the current project, or every orchestrated project at the estate root",
-            metavar="[all|PROJECT[,PROJECT...]]",
-            parser_kwargs={"nargs": "?", "default": None},
-        ),),
+        arguments=(target_argument(),),
+        constraints=(
+            Requires(
+                "--dry-run", ("--output", "--output-dir"),
+                "stdout mode writes nothing, so there is nothing to preview",
+            ),
+        ),
         options=(
             OptionSpec(
                 ("--config",),
@@ -576,7 +580,6 @@ def getpy_cli():
                 metavar="DIR", parser_kwargs={"default": None},
                 mutually_exclusive_group="destination",
             ),
-            OptionSpec(("--dry-run",), "render and validate output destinations without writing files", parser_kwargs={"action": "store_true", "default": False}),
         ),
         include_json=False,
         include_progress=False,
@@ -586,30 +589,25 @@ def getpy_cli():
 
 
 def _run_getpy(args, _runtime) -> None:
-    from cmru.cli_support import TargetSelectionError, select_target_names
     from cmru.cli import _resolve_config, load_config
-    from cmru.config import resolve_invocation_context
+    from cmru.delegate_targets import resolve_target
 
     cfg_path = _resolve_config(args.config)
     loaded = load_config(cfg_path)
     configs, project_order = loaded[1], loaded[2]
-    if args.target is None and cfg_path.name == PROJECT_CONFIG_FILENAME and len(configs) == 1:
-        context_project = next(iter(configs))
-    elif args.target is None:
-        context = resolve_invocation_context(cfg_path)
-        context_project = context.project_name
-    else:
-        context_project = None
-    try:
-        names = select_target_names(
-            args.target, configs, project_order,
-            context_project=context_project,
-        )
-    except TargetSelectionError as exc:
-        raise CliFailure(str(exc), exit_code=2, show_help=True) from exc
+    names = resolve_target(args.target, cfg_path, configs, project_order)
     if args.output and len(names) != 1:
         raise CliFailure(
             "--output FILE is only valid for one project; use --output-dir for multiple projects",
+            exit_code=2,
+            show_help=True,
+        )
+    if len(names) > 1 and not args.output_dir:
+        # CLI-12: concatenated installers on stdout are an unrunnable file that
+        # exits 0 (`cmru get-py > get.py` at the estate root).
+        raise CliFailure(
+            f"{len(names)} projects selected ({', '.join(names)}); stdout carries one "
+            "installer. Select one project, or write each to --output-dir DIR",
             exit_code=2,
             show_help=True,
         )
@@ -621,17 +619,15 @@ def _run_getpy(args, _runtime) -> None:
         if args.output_dir:
             for name in names:
                 print(f"[DRY RUN] Would write {Path(args.output_dir) / (name + '-get.py')}")
-        elif args.output:
-            print(f"[DRY RUN] Would write {args.output}")
         else:
-            print(f"[DRY RUN] Would render {len(scripts)} installer(s) to stdout; no files written.")
+            print(f"[DRY RUN] Would write {args.output}")
         return
     if args.output_dir:
         output_dir = Path(args.output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
         for name in names:
             out = output_dir / f"{name}-get.py"
-            out.write_text(render_from_config(name, cfg_path), encoding="utf-8")
+            out.write_text(scripts[name], encoding="utf-8")
             out.chmod(0o755)
             print(f"[INFO] Written to {out}")
         return
@@ -640,14 +636,8 @@ def _run_getpy(args, _runtime) -> None:
         out.write_text(next(iter(scripts.values())), encoding="utf-8")
         out.chmod(0o755)
         print(f"[INFO] Written to {out}")
-    elif len(scripts) == 1:
-        sys.stdout.write(next(iter(scripts.values())))
     else:
-        for name, script in scripts.items():
-            print(f"===== get.py Project: {name.upper()} =====")
-            sys.stdout.write(script)
-            if not script.endswith("\n"):
-                sys.stdout.write("\n")
+        sys.stdout.write(next(iter(scripts.values())))
 
 
 def getpy_main(argv: Optional[list] = None) -> int:

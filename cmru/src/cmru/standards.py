@@ -13,17 +13,17 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Mapping
 
+from cmru import exit_codes
 from cmru.config_names import ORCHESTRATION_CONFIG_FILENAME, PROJECT_CONFIG_FILENAME
 from cmru.tester_gate import DIND_TESTER_ENV, REQUIRED_TESTER_ENV
 from cli_extended import (
-    ArgumentSpec,
     CliFailure,
-    CliRegistry,
     OptionSpec,
+    Requires,
     VerbGroup,
     VerbSpec,
 )
-from cmru.cli_support import cmru_identity, cmru_presentation_options
+from cmru.cli_support import cmru_registry, target_argument
 
 
 PROJECT_TEMPLATE_REVISION = 5
@@ -184,29 +184,28 @@ def _update_project_revision(config_path: Path, *, dry_run: bool = False) -> boo
 
 
 def standards_cli():
-    registry = CliRegistry(
-        cmru_identity(command="cmru", long_name="Configurable Multi Release Utility"),
-        prog="cmru standards",
-        description=(
-            "Check CMRU project-framework conformance. `--update` changes only CMRU "
-            "template revision markers; it never rewrites project-owned commands."
-        ),
+    registry = cmru_registry(
+        "cmru standards",
+        "Check CMRU project-framework conformance. `--update` changes only CMRU "
+        "template revision markers; it never rewrites project-owned commands.",
         single_command=True,
         no_args_action=True,
-        logging_logger="cmru",
-        global_options=cmru_presentation_options(),
     )
     registry.register(VerbSpec(
         "standards",
         description="Check or update CMRU-owned framework markers for projects.",
         group=VerbGroup.MIXED.value,
+        # Conditionally mutating (D4): read-only unless --update is given.
         mutating=True,
+        dry_run=True,
         include_confirmation=False,
-        arguments=(ArgumentSpec(
-            "target", "project target; omitted: the current project, or every orchestrated project at the estate root",
-            metavar="[all|PROJECT[,PROJECT...]]",
-            parser_kwargs={"nargs": "?", "default": None},
-        ),),
+        arguments=(target_argument(),),
+        constraints=(
+            Requires(
+                "--dry-run", ("--update",),
+                "without --update the check writes nothing, so there is nothing to preview",
+            ),
+        ),
         options=(
             OptionSpec(
                 ("--config",),
@@ -217,12 +216,8 @@ def standards_cli():
                 ("--update",), "update stale CMRU-owned revision markers",
                 parser_kwargs={"action": "store_true", "default": False},
             ),
-            OptionSpec(
-                ("--dry-run",), "preview marker updates without writing them; requires --update",
-                parser_kwargs={"action": "store_true", "default": False},
-            ),
         ),
-        include_json=False,
+        include_json=True,
         include_progress=False,
         handler=_run_standards,
     ))
@@ -233,8 +228,10 @@ def standards_main(argv: list[str] | None = None) -> int:
     return standards_cli().run(argv=argv)
 
 
-def _run_standards(args, _runtime) -> None:
-    from cmru.cli_support import TargetSelectionError, select_target_names
+def _run_standards(args, runtime) -> None:
+    import contextlib
+
+    from cmru.delegate_targets import resolve_target
 
     # Import lazily: cli dispatches this verb, and is itself the configuration
     # model used by the report.
@@ -242,41 +239,30 @@ def _run_standards(args, _runtime) -> None:
 
     config_path = _resolve_config(args.config)
     repo_root, projects, project_order, *_ = load_config(config_path)
-    from cmru.config import resolve_invocation_context
-    if args.target is None and config_path.name == PROJECT_CONFIG_FILENAME and len(projects) == 1:
-        context_project = next(iter(projects))
-    elif args.target is None:
-        context = resolve_invocation_context(config_path)
-        context_project = context.project_name
-    else:
-        context_project = None
-    try:
-        selected = select_target_names(
-            args.target, projects, project_order,
-            context_project=context_project,
-        )
-    except TargetSelectionError as exc:
-        raise CliFailure(str(exc), exit_code=2, show_help=True) from exc
-
-    if args.dry_run and not args.update:
-        raise CliFailure("standards --dry-run requires --update", exit_code=2, show_help=True)
+    selected = resolve_target(args.target, config_path, projects, project_order)
+    json_mode = bool(args.json)
+    # With --json stdout carries ONE document; the human lines move to stderr.
+    human = sys.stderr if json_mode else sys.stdout
 
     if args.update:
         changed = False
-        for name in selected:
-            project_path = getattr(projects[name], "project_root", None)
-            if project_path is None:
-                raise ValueError(
-                    f"{name}: project-local {PROJECT_CONFIG_FILENAME} is required for standards update"
-                )
-            changed = _update_project_revision(
-                Path(project_path) / PROJECT_CONFIG_FILENAME,
-                dry_run=args.dry_run,
-            ) or changed
+        with contextlib.redirect_stdout(human):
+            for name in selected:
+                project_path = getattr(projects[name], "project_root", None)
+                if project_path is None:
+                    raise CliFailure(
+                        f"{name}: project-local {PROJECT_CONFIG_FILENAME} is required "
+                        "for standards update",
+                        exit_code=exit_codes.CONFIG_ERROR,
+                    )
+                changed = _update_project_revision(
+                    Path(project_path) / PROJECT_CONFIG_FILENAME,
+                    dry_run=args.dry_run,
+                ) or changed
         if changed and args.dry_run:
-            print("[DRY RUN] Marker updates were previewed; no files were written.")
+            print("[DRY RUN] Marker updates were previewed; no files were written.", file=human)
         elif changed:
-            print("[INFO] Updated CMRU-owned template revision marker(s).", flush=True)
+            print("[INFO] Updated CMRU-owned template revision marker(s).", file=human, flush=True)
         # Re-read to ensure a malformed update can never be reported as conformant.
         if not args.dry_run:
             repo_root, projects, project_order, *_ = load_config(config_path)
@@ -286,14 +272,27 @@ def _run_standards(args, _runtime) -> None:
     for result in results:
         if result.problems:
             problem_count += len(result.problems)
-            print(f"[WARN] {result.name}: " + "; ".join(result.problems), flush=True)
-        print(f"[INFO] {result.name}: " + "; ".join(result.messages), flush=True)
+            print(f"[WARN] {result.name}: " + "; ".join(result.problems), file=human, flush=True)
+        print(f"[INFO] {result.name}: " + "; ".join(result.messages), file=human, flush=True)
+    if json_mode:
+        runtime.output.primary({
+            "schema_version": 1,
+            "conforms": problem_count == 0,
+            "projects": [
+                {
+                    "name": result.name,
+                    "conforms": not result.problems,
+                    "messages": list(result.messages),
+                    "problems": list(result.problems),
+                }
+                for result in results
+            ],
+        })
     if problem_count:
-        print(
-            f"[ERROR] CMRU standards: {problem_count} issue(s). "
+        # Refused by policy, nothing changed by the check itself (redesign E).
+        raise CliFailure(
+            f"CMRU standards: {problem_count} issue(s). "
             "Run `cmru standards --update` for safe marker updates, then fix any remaining policy issue.",
-            file=sys.stderr,
-            flush=True,
+            exit_code=exit_codes.POLICY_REFUSED,
         )
-        raise SystemExit(2)
-    print(f"[INFO] CMRU standards: {len(results)} project(s) conform.", flush=True)
+    print(f"[INFO] CMRU standards: {len(results)} project(s) conform.", file=human, flush=True)

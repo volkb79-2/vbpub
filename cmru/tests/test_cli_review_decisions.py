@@ -75,9 +75,12 @@ def test_version_overrides_are_exclusive_and_refused_for_untagged_projects(
 
 def test_tool_deps_refresh_rejects_output_and_freshness_flags(monkeypatch, capsys):
     assert cli.main(["tool-deps", "--refresh", "provider", "--json"]) == 2
-    assert "cannot be combined with --json" in capsys.readouterr().err
+    assert "--refresh and --json cannot be used together" in capsys.readouterr().err
     assert cli.main(["tool-deps", "--refresh", "provider", "--allow-stale-tool-deps"]) == 2
-    assert "cannot be combined with --json or --allow-stale-tool-deps" in capsys.readouterr().err
+    assert (
+        "--refresh and --allow-stale-tool-deps cannot be used together"
+        in capsys.readouterr().err
+    )
 
 
 def test_user_parser_rejects_transaction_switch_and_removed_aliases(capsys):
@@ -343,6 +346,6 @@ def test_repack_is_not_accepted_and_nothing_external_runs(monkeypatch, tmp_path,
     )
     assert cli.main([
         "handler", "oci-image-build", "--cwd", str(tmp_path),
-        "--bake-file", "docker-bake.hcl", "--target", "demo", "--repack",
+        "--bake-file", "docker-bake.hcl", "--bake-target", "demo", "--repack",
     ]) == 2
     assert "unrecognized arguments: --repack" in capsys.readouterr().err

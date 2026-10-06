@@ -17,14 +17,12 @@ from typing import Iterable, Mapping, Optional
 
 from cmru.config_names import ORCHESTRATION_CONFIG_FILENAME, PROJECT_CONFIG_FILENAME
 from cli_extended import (
-    ArgumentSpec,
     CliFailure,
-    CliRegistry,
     OptionSpec,
     VerbGroup,
     VerbSpec,
 )
-from cmru.cli_support import cmru_identity, cmru_presentation_options
+from cmru.cli_support import cmru_registry, target_argument
 
 
 
@@ -633,32 +631,34 @@ def run_step(project_config_path: Path, step_name: str) -> None:
 
 
 def runner_cli():
-    registry = CliRegistry(
-        cmru_identity(command="cmru", long_name="Configurable Multi Release Utility"),
-        prog="cmru run-step",
-        description=f"Run one named step from a project {PROJECT_CONFIG_FILENAME}.",
+    """COMPATIBILITY EXPORT: the ``run-step`` delegate.
+
+    Redesign B1 absorbs ``run-step`` into ``run --step``; W2-PKG1 removes the
+    mounting line in ``cli.py`` (and the ``run-step`` verb). Until that merge
+    lands this export keeps the root registry buildable, so it is converted to
+    the shared factory like every other delegate. After the PKG-1 merge nothing
+    calls it: delete this function and ``_run_step_cli`` (keep :func:`run_step`
+    and the executor functions that ``run`` uses).
+    """
+    registry = cmru_registry(
+        "cmru run-step",
+        f"Run one named step from a project {PROJECT_CONFIG_FILENAME}.",
         single_command=True,
         no_args_action=True,
-        logging_logger="cmru",
-        global_options=cmru_presentation_options(),
     )
     registry.register(VerbSpec(
         "run-step",
         description="Execute exactly one declared step for one selected project.",
         group=VerbGroup.MODIFICATION.value,
         mutating=True,
+        dry_run=True,
         include_confirmation=False,
-        arguments=(ArgumentSpec(
-            "target", "registered project target; omitted uses the current project",
-            metavar="[all|PROJECT[,PROJECT...]]",
-            parser_kwargs={"nargs": "?", "default": None},
-        ),),
+        arguments=(target_argument("registered project target; omitted uses the current project"),),
         options=(
             OptionSpec(("--config",), "path to project or orchestration config", metavar="FILE", parser_kwargs={"default": None}),
             OptionSpec(("--step",), "step name to execute", metavar="NAME", parser_kwargs={"required": True}),
             OptionSpec(("--show-run-details",), "stream full subprocess output to this console", parser_kwargs={"action": "store_true", "default": False}),
             OptionSpec(("--log-append",), "append a divider and retain the stable step log", parser_kwargs={"action": "store_true", "default": False}),
-            OptionSpec(("--dry-run",), "show step commands and file cleanup without executing them", parser_kwargs={"action": "store_true", "default": False}),
         ),
         include_json=False,
         include_progress=False,
@@ -672,27 +672,14 @@ def _run_step_cli(args, _runtime) -> int | None:
         os.environ["CMRU_SHOW_RUN_DETAILS"] = "1"
     if args.log_append:
         os.environ["CMRU_LOG_APPEND"] = "1"
-    from cmru.cli_support import TargetSelectionError, select_target_names
     from cmru.cli import _resolve_config, load_config
-    from cmru.config import load_forge_config, resolve_invocation_context
+    from cmru.config import load_forge_config
+    from cmru.delegate_targets import resolve_target
 
     config_path = _resolve_config(args.config)
     loaded = load_config(config_path)
     projects, project_order = loaded[1], loaded[2]
-    if args.target is None and config_path.name == "cmru.toml" and len(projects) == 1:
-        context_project = next(iter(projects))
-    elif args.target is None:
-        context = resolve_invocation_context(config_path)
-        context_project = context.project_name
-    else:
-        context_project = None
-    try:
-        names = select_target_names(
-            args.target, projects, project_order,
-            context_project=context_project,
-        )
-    except TargetSelectionError as exc:
-        raise CliFailure(str(exc), exit_code=2, show_help=True) from exc
+    names = resolve_target(args.target, config_path, projects, project_order)
     if len(names) != 1:
         raise CliFailure("run-step requires exactly one project target", exit_code=2, show_help=True)
     if args.dry_run:

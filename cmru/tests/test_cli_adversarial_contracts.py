@@ -82,7 +82,7 @@ def test_main_run_step_routes_exact_remaining_argv(monkeypatch):
 
     parser = runner_cli().parser
     args = parser.parse_args(["demo", "--step", "test"])
-    assert args.target == "demo"
+    assert args.target == ("demo",)
     assert args.step == "test"
 
 
