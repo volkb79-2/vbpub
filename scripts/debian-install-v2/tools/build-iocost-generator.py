@@ -67,6 +67,16 @@ def render() -> bytes:
     return first_line + b"\n" + header + body
 
 
+def digest_path(output: Path) -> Path:
+    return output.with_name(output.name + ".sha256")
+
+
+def digest_text(data: bytes, output: Path) -> str:
+    # sha256sum format; the installer compares the first token with the
+    # sha256 of the generated artifact's WHOLE body before running it.
+    return f"{sha256(data)}  {output.name}\n"
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -91,11 +101,21 @@ def main() -> int:
             parser.error(
                 f"{args.output} is stale; run {Path(__file__).name} to regenerate it"
             )
+        try:
+            committed_digest = digest_path(args.output).read_text(encoding="utf-8")
+        except OSError as exc:
+            parser.error(f"cannot read digest file {digest_path(args.output)}: {exc}")
+        if committed_digest != digest_text(actual, args.output):
+            parser.error(
+                f"{digest_path(args.output)} does not match {args.output}; "
+                f"run {Path(__file__).name} to regenerate it"
+            )
         print(f"verified shared generator: {args.output}")
         return 0
 
     args.output.write_bytes(expected)
     args.output.chmod(0o755)
+    digest_path(args.output).write_text(digest_text(expected, args.output), encoding="utf-8")
     print(f"wrote shared generator: {args.output}")
     return 0
 

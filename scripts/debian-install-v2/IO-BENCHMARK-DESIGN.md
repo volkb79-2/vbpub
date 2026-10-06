@@ -35,9 +35,43 @@ controller-driven netcup test. The design below was worked out 2026-09-09;
   deleted (via the live table minus that one line) before anything else. A
   partition at that number that is NOT ours is left alone and the step is
   skipped.
-- **Case B:** when the hook already wrote swap, free space is only what remains
-  after the last partition, so the benchmark usually skips; it uses the same
-  sizing with the existing partitions as the "requirement".
+- **Case B (decision 2026-10-06, kept for both cases):** the benchmark always
+  uses the throwaway TAIL partition, never a raw swap partition. In Case B it
+  runs after the hook has written the swap partitions into the table but
+  BEFORE `mkswap` and activation, and only when at least 2 GiB remain after
+  the last existing partition (and the 1 GiB margin); otherwise the step is
+  `skipped`. It uses the same sizing with the existing partitions' end as the
+  "requirement". How often that skips depends on the disk (free tail =
+  disk - root target - swap, which can be several GiB), so "usually skips" is
+  NOT claimed. The swap partitions are untouched and unformatted at that
+  point, so the tail partition is safe.
+- **Resume safety:** `_stage2()` derives "swap partitions already written" from
+  the LIVE table (all planned swap partitions present with the exact start, size
+  and type), not only from `_verify_and_apply_root_shrink()`'s first-pass return
+  value; a re-run after the deliberate cleanup-failure stop therefore skips the
+  swap write instead of tripping `_validate_plan_geometry()`. Partial or
+  mismatching presence still refuses.
+- **Timeouts and the scheduler (fix round 1):** `HostActions.run(timeout=)`
+  runs the command in its own session; on expiry the process GROUP gets
+  SIGTERM, then SIGKILL after a grace period; a child that cannot be reaped
+  (`ActionUnreapable`) is a cleanup failure and stops the install without
+  touching the device. Tool timeout `6 x duration x 3 + testfile_gb x 30 + 120`
+  s (the test-file fill is not covered by `--duration`); `sync`/`umount` 120 s,
+  `mkfs` 300 s, `dd` 120 s. The disk's scheduler and `nomerges` are snapshotted
+  before the tool and restored afterwards (success or failure) with `tee`,
+  because the tool's atexit restore does not run on SIGTERM/SIGKILL.
+- **Cleanup robustness:** `udevadm settle` before the restore; `sfdisk --force
+  --no-reread` for the restore (a deliberate change to the shared rollback
+  path: the `partx -d`/`-u` that follow sync the kernel); `partx -d`/`-u`
+  retried up to 5 times with a 1 s backoff; the first MiB of the throwaway
+  partition is zeroed (`dd`) before deletion so no phantom ext4 signature
+  survives; the post-restore readback also compares uuid and name of the
+  preserved partitions and the disk label-id.
+- **Tool integrity:** besides the header hashes, the sha256 of the whole
+  generated body must equal the committed `tools/iocost_coef_gen.py.sha256`
+  (written by `build-iocost-generator.py`, verified by its `--check`). A
+  mismatch marks the step `warned` ("tool integrity check failed"), skips the
+  benchmark and the install continues.
 - **Tool check:** the artifact's header hashes are compared with the vendored
   source and patches (same formula as `build-iocost-generator.py`); the file is
   not regenerated (that needs `patch` and the repo layout). The tool is run by

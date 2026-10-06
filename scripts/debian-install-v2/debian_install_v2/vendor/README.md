@@ -35,6 +35,8 @@ even for raw-device mode because the generator checks all commands at startup.
 The v2 installer invokes this artifact (when `run_io_benchmark` is set) in
 `--testfile` mode on a throwaway partition it creates, mounts, and deletes
 again before the swap shape is written; it first checks the artifact's header
-hashes against this directory's source and patches (it does not regenerate).
+hashes against this directory's source and patches (it does not regenerate) and
+the whole file's sha256 against the committed `../../tools/iocost_coef_gen.py.sha256`
+(written by the builder, verified by its `--check`).
 It does not write `io.cost.model`/`io.cost.qos`. See
 `../../IO-BENCHMARK-DESIGN.md`.

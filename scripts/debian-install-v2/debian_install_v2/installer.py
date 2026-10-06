@@ -16,7 +16,7 @@ import urllib.parse
 import urllib.request
 
 from . import inuse_partition_editor
-from .actions import HostActions
+from .actions import ActionError, ActionUnreapable, HostActions
 from .config import Config, ConfigError, load_config, resolve_notify_backend
 from .host_facts import _code, collect_host_facts, format_facts_html
 from .notify import NotifyConfigError, format_mattermost_message, post_webhook, redact_text
@@ -64,6 +64,11 @@ IOBENCH_PARTITION_NAME = "vbpub-iobench"
 IOBENCH_FS_TYPE_GUID = "0fc63daf-8483-4772-8e79-3d69d8477de4"
 IOBENCH_MIN_SIZE_GIB = 2
 IOBENCH_SAFETY_MARGIN_GIB = 1
+# Hard limits (seconds) so a hung device can never hang stage2 forever.
+IOBENCH_SYNC_TIMEOUT_S = 120
+IOBENCH_UMOUNT_TIMEOUT_S = 120
+IOBENCH_MKFS_TIMEOUT_S = 300
+IOBENCH_DD_TIMEOUT_S = 120
 IOBENCH_RESULT_KEYS = ("rbps", "rseqiops", "rrandiops", "wbps", "wseqiops", "wrandiops")
 # A terminal step status means cleanup was already verified; resume skips it.
 # "failed" is deliberately NOT terminal: it means cleanup could not be
@@ -122,7 +127,12 @@ class Installer:
             self.root_disk, self.root_partition_path, self.root_number = self._discover_root()
 
     def _run(
-        self, argv: list[str], description: str = "", dangerous: bool = False, input: str | None = None
+        self,
+        argv: list[str],
+        description: str = "",
+        dangerous: bool = False,
+        input: str | None = None,
+        timeout: float | None = None,
     ) -> str:
         # input is forwarded only when actually supplied (not just non-None
         # by default) so the many pre-existing test doubles for
@@ -132,6 +142,9 @@ class Installer:
         kwargs: dict[str, object] = {"description": description, "dangerous": dangerous}
         if input is not None:
             kwargs["input"] = input
+        # timeout likewise: only the io benchmark's sync/umount/mkfs/tool pass one.
+        if timeout is not None:
+            kwargs["timeout"] = timeout
         output = self.actions.run(argv, **kwargs)
         return (output or "").strip()
 
@@ -1442,6 +1455,17 @@ MaxFileSec=1month
                     else:
                         raise InstallerError(f"partition device did not appear after partx/udevadm settle: {path}")
 
+    def _run_with_retries(self, argv: list[str], description: str, attempts: int = 5, backoff: float = 1.0) -> str:
+        """Run a kernel-sync command, retrying on a non-zero exit (udev may still hold the device)."""
+        for attempt in range(1, attempts + 1):
+            try:
+                return self._run(argv, description, dangerous=True)
+            except ActionError:
+                if attempt == attempts:
+                    raise
+                time.sleep(backoff)
+        raise AssertionError("unreachable")  # pragma: no cover
+
     def _restore_partition_table(self, dump: str, drop_numbers: range, why: str) -> None:
         """Write ``dump`` back with sfdisk and retract ``drop_numbers`` from the kernel.
 
@@ -1469,8 +1493,13 @@ MaxFileSec=1month
         # unterminated line fine, but an unintentional divergence
         # from the reference inuse_partition_editor.py, which
         # never strips at all).
+        # udevadm settle FIRST: right after a mkfs/umount udev may still be
+        # probing the device, which makes the partx -d below fail EBUSY.
+        self._run(["/usr/bin/udevadm", "settle"], "wait for udev before restoring the partition table")
+        # --no-reread (like the forward write): the partx -d/-u below sync the
+        # kernel anyway, and a BLKRRPART with the root mounted is the unsafe part.
         self._run(
-            ["/usr/sbin/sfdisk", "--force", f"/dev/{self.root_disk}"],
+            ["/usr/sbin/sfdisk", "--force", "--no-reread", f"/dev/{self.root_disk}"],
             description=why,
             dangerous=True,
             input=dump + "\n",
@@ -1495,15 +1524,17 @@ MaxFileSec=1month
         # treats an already-absent partition as success (ENXIO), so
         # this is safe/idempotent even if the forward path never got
         # as far as registering them.
-        self._run(
+        self._run_with_retries(
             [
                 "/usr/bin/partx", "-d", "--nr",
                 f"{drop_numbers[0]}:{drop_numbers[-1]}",
                 f"/dev/{self.root_disk}",
             ],
-            "retract stale partitions after rollback", dangerous=True,
+            "retract stale partitions after rollback",
         )
-        self._run(["/usr/bin/partx", "-u", f"/dev/{self.root_disk}"], "refresh kernel view after rollback", dangerous=True)
+        self._run_with_retries(
+            ["/usr/bin/partx", "-u", f"/dev/{self.root_disk}"], "refresh kernel view after rollback"
+        )
         self._run(["/usr/bin/udevadm", "settle"], "wait for udev after rollback")
 
     # ------------------------------------------------------------------
@@ -1578,6 +1609,9 @@ MaxFileSec=1month
     def _verify_iocost_generator(self, tool: Path) -> tuple[str, dict[str, str]]:
         """Return (sha256 of the file, header hashes) after checking it is the generated artifact.
 
+        Checks, in order: the committed ``<tool>.sha256`` digest of the whole
+        file (body integrity), then the header hashes below.
+
         Same inputs/formula build-iocost-generator.py hashes into the header
         (source bytes; patch name + NUL + patch bytes + NUL, in order). Checks
         the header against the vendored source+patches; does not regenerate
@@ -1586,6 +1620,19 @@ MaxFileSec=1month
         if not tool.is_file():
             raise InstallerError(f"io.cost generator not found: {tool}")
         data = tool.read_bytes()
+        tool_sha256 = hashlib.sha256(data).hexdigest()
+        # Body integrity: the header check below only vouches for the header
+        # text, so the committed digest of the WHOLE generated artifact
+        # (written by tools/build-iocost-generator.py) must match too.
+        digest_file = tool.with_name(tool.name + ".sha256")
+        try:
+            committed = digest_file.read_text(encoding="utf-8").split()[0]
+        except (OSError, IndexError):
+            raise InstallerError(f"tool integrity check failed: {digest_file} is missing or empty") from None
+        if committed != tool_sha256:
+            raise InstallerError(
+                f"tool integrity check failed: {tool} sha256 {tool_sha256} does not match the committed {digest_file.name}"
+            )
         header = dict(re.findall(rb"^# (source-sha256|patch-series-sha256): ([0-9a-f]{64})$", data[:1024], re.M))
         header_text = {key.decode(): value.decode() for key, value in header.items()}
         if set(header_text) != {"source-sha256", "patch-series-sha256"} or not data.startswith(b"#!"):
@@ -1600,7 +1647,7 @@ MaxFileSec=1month
         series_hash = hashlib.sha256(series).hexdigest()
         if header_text["source-sha256"] != source_hash or header_text["patch-series-sha256"] != series_hash:
             raise InstallerError(f"{tool} header does not match the vendored source/patches; stale generated artifact")
-        return hashlib.sha256(data).hexdigest(), header_text
+        return tool_sha256, header_text
 
     @staticmethod
     def _parse_iocost_result(output: str) -> tuple[str, dict[str, int]]:
@@ -1628,6 +1675,62 @@ MaxFileSec=1month
         findmnt = self._run(["/usr/bin/findmnt", "-rn", "-o", "SOURCE,TARGET,FSTYPE"], "enumerate mounted sources")
         return [line for line in findmnt.splitlines() if line.split() and line.split()[0] == device]
 
+    def _partition_identity(self, dump: str) -> tuple[str | None, dict[int, tuple[str, str | None]]]:
+        """(disk label-id, {number: (uuid, name)}) of a sfdisk dump."""
+        match = re.search(r"^label-id:\s*(\S+)", dump, re.M)
+        label_id = match.group(1).upper() if match else None
+        return label_id, {
+            number: ((attrs.get("uuid") or "").upper(), attrs.get("name"))
+            for number, attrs in self._parse_partition_entries(dump).items()
+        }
+
+    _SYS_BLOCK = Path("/sys/block")
+
+    def _snapshot_queue_tunables(self) -> dict[str, str]:
+        """{sysfs path: current value} for the disk's scheduler and nomerges.
+
+        The generator flips both for the run and only restores them through its
+        own atexit, which a SIGTERM/SIGKILL (our timeout) skips -- so the
+        installer owns the restore. Dry-run reads nothing.
+        """
+        snapshot: dict[str, str] = {}
+        if self.actions.dry_run:
+            return snapshot
+        for name in ("scheduler", "nomerges"):
+            path = self._SYS_BLOCK / self.root_disk / "queue" / name
+            try:
+                value = path.read_text(encoding="utf-8").strip()
+            except OSError:
+                continue
+            if name == "scheduler":
+                active = re.search(r"\[([^\]]+)\]", value)
+                if not active:
+                    continue
+                value = active.group(1)
+            snapshot[str(path)] = value
+        return snapshot
+
+    def _restore_queue_tunables(self, snapshot: dict[str, str]) -> str | None:
+        """Write the snapshot back (tee + input=, never write_file: wrong for sysfs). Error text or None."""
+        errors = []
+        for path, value in snapshot.items():
+            try:
+                self._run(["/usr/bin/tee", path], f"restore {path}", dangerous=True, input=value + "\n")
+            except Exception as exc:  # keep restoring the others
+                errors.append(f"{path}: {exc}")
+        return "; ".join(errors) or None
+
+    @staticmethod
+    def _iocost_tool_timeout(duration_s: int, testfile_gb: float) -> int:
+        """6 x duration x 3 + testfile_gb x 30 + 120 seconds.
+
+        The generator runs six measurements, each up to ``duration`` and (with
+        ramp/settle phases) allowed 3x that; filling the test file from
+        /dev/urandom with dd oflag=direct (up to 16 GiB) is NOT covered by
+        --duration, so it gets 30 s per GiB; plus 120 s of slack.
+        """
+        return int(6 * duration_s * 3 + testfile_gb * 30 + 120)
+
     def _teardown_benchmark_partition(
         self, *, number: int, mount_dir: str | None, mounted: bool, pre_dump: str | None
     ) -> None:
@@ -1641,8 +1744,11 @@ MaxFileSec=1month
         device = f"{self._partition_base}{number}"
         try:
             if mounted or self._benchmark_device_mounted(device):
-                self._run(["/usr/bin/sync"], "flush benchmark filesystem")
-                self._run(["/usr/bin/umount", device], f"unmount {device}", dangerous=True)
+                self._run(["/usr/bin/sync"], "flush benchmark filesystem", timeout=IOBENCH_SYNC_TIMEOUT_S)
+                self._run(
+                    ["/usr/bin/umount", device], f"unmount {device}", dangerous=True,
+                    timeout=IOBENCH_UMOUNT_TIMEOUT_S,
+                )
             if mount_dir and not self.actions.dry_run:
                 try:
                     Path(mount_dir).rmdir()
@@ -1660,6 +1766,14 @@ MaxFileSec=1month
                     line for line in live_dump.splitlines()
                     if not line.split() or line.split()[0] != device
                 )
+            # Zero the first MiB so no phantom ext4 signature survives in the
+            # freed tail (it could later show up as a phantom label/filesystem).
+            if self.actions.dry_run or self.actions.exists(device):
+                self._run(
+                    ["/usr/bin/dd", "if=/dev/zero", f"of={device}", "bs=1M", "count=1", "conv=fsync"],
+                    f"zero the throwaway benchmark partition's first MiB {device}", dangerous=True,
+                    timeout=IOBENCH_DD_TIMEOUT_S,
+                )
             self._restore_partition_table(pre_dump, range(number, number + 1), "delete throwaway io benchmark partition")
             readback = self._run(["/usr/sbin/sfdisk", "--dump", f"/dev/{self.root_disk}"], dangerous=False)
             if not self.actions.dry_run:
@@ -1667,6 +1781,15 @@ MaxFileSec=1month
                 actual = {n: self._geometry_for_comparison(a) for n, a in self._parse_partition_entries(readback).items()}
                 if expected != actual:
                     raise InstallerError(f"layout after cleanup differs from pre-benchmark layout: expected={expected} actual={actual}")
+                # Stricter than geometry: the PRESERVED partitions keep their
+                # uuid and name, and the disk keeps its label-id.
+                expected_identity = self._partition_identity(pre_dump)
+                actual_identity = self._partition_identity(readback)
+                if expected_identity != actual_identity:
+                    raise InstallerError(
+                        f"layout after cleanup differs from pre-benchmark identity (label-id/uuid/name): "
+                        f"expected={expected_identity} actual={actual_identity}"
+                    )
                 for _ in range(50):
                     if not self.actions.exists(device):
                         break
@@ -1713,6 +1836,8 @@ MaxFileSec=1month
         mounted = False
         mount_dir: str | None = None
         failure: Exception | None = None
+        unreapable: ActionUnreapable | None = None
+        sched_error: str | None = None
         results: dict[str, int] | None = None
         skip_reason = ""
         summary = ""
@@ -1757,6 +1882,7 @@ MaxFileSec=1month
                     self._run(
                         ["/usr/sbin/mkfs.ext4", "-F", "-q", "-O", "^has_journal", "-L", IOBENCH_PARTITION_NAME, device],
                         f"format throwaway benchmark partition {device}", dangerous=True,
+                        timeout=IOBENCH_MKFS_TIMEOUT_S,
                     )
                     mount_dir = "/tmp/vbpub-iobench-dry-run" if self.actions.dry_run else tempfile.mkdtemp(prefix="vbpub-iobench-")
                     self._run(
@@ -1766,14 +1892,21 @@ MaxFileSec=1month
                     mounted = True
                     size_gib = size / (1024 ** 3 // 512)
                     testfile_gb = min(16.0, round(size_gib * 0.75, 2))
-                    output = self._run(
-                        [
-                            str(tool), "--testfile", f"{mount_dir}/iocost-coef-fio.testfile",
-                            "--testfile-size-gb", f"{testfile_gb:g}",
-                            "--duration", str(self.config.io_benchmark_duration_s), "--quiet",
-                        ],
-                        "run the io.cost coefficient generator against the throwaway partition", dangerous=True,
-                    )
+                    queue_snapshot = self._snapshot_queue_tunables()
+                    try:
+                        output = self._run(
+                            [
+                                str(tool), "--testfile", f"{mount_dir}/iocost-coef-fio.testfile",
+                                "--testfile-size-gb", f"{testfile_gb:g}",
+                                "--duration", str(self.config.io_benchmark_duration_s), "--quiet",
+                            ],
+                            "run the io.cost coefficient generator against the throwaway partition", dangerous=True,
+                            timeout=self._iocost_tool_timeout(self.config.io_benchmark_duration_s, testfile_gb),
+                        )
+                    finally:
+                        # Always, success or failure or kill: the tool's own
+                        # atexit restore does not run on SIGTERM/SIGKILL.
+                        sched_error = self._restore_queue_tunables(queue_snapshot)
                     if self.actions.dry_run:
                         summary = f"dry-run: would benchmark {device} ({size_gib:.1f} GiB, {self.config.io_benchmark_duration_s}s)"
                     else:
@@ -1797,10 +1930,12 @@ MaxFileSec=1month
                             json.dumps(record, indent=2, sort_keys=True) + "\n",
                             0o600,
                         )
+            except ActionUnreapable as exc:  # fatal: the child still holds the device
+                unreapable = exc
             except Exception as exc:  # advisory: recorded below, after cleanup
                 failure = exc
         finally:
-            if created:
+            if created and unreapable is None:
                 try:
                     self._teardown_benchmark_partition(
                         number=number, mount_dir=mount_dir, mounted=mounted, pre_dump=current_dump
@@ -1809,10 +1944,20 @@ MaxFileSec=1month
                     detail = f"{exc}" + (f" (benchmark had also failed: {failure})" if failure else "")
                     self._mark_step("io_benchmark", "failed", detail)
                     raise InstallerError(detail) from exc
+        if unreapable is not None:
+            # Cleanup is NOT attempted: a child we cannot reap may still be
+            # writing to the mounted partition, so deleting/unmounting would
+            # act on an unknown state. Stop; a resume re-checks (step "failed").
+            detail = f"io benchmark cleanup failed: {unreapable}; partition {device} may still be mounted"
+            self._mark_step("io_benchmark", "failed", detail)
+            raise InstallerError(detail) from unreapable
+        if sched_error:
+            note = f"scheduler/nomerges restore failed: {sched_error}"
+            failure = InstallerError(f"{failure}; {note}" if failure else note)
         if failure is not None:
             self._mark_step("io_benchmark", "warned", f"benchmark failed (advisory), partition removed and layout verified: {failure}")
             self._notify(
-                f"<b>io benchmark</b>: failed (advisory) - {failure}",
+                f"<b>io benchmark</b>: failed (advisory) - {_code(str(failure))}",
                 event=f"io benchmark failed (advisory): {failure}", status="run",
             )
         elif skip_reason:
@@ -2168,12 +2313,47 @@ MaxFileSec=1month
         self._install_stage2()
         self._reboot()
 
+    def _swap_partitions_already_planned_in_table(self) -> bool:
+        """True iff ALL planned swap partitions are in the live table, exactly (start, size, type).
+
+        None present, or any partial/mismatching presence -> False, so
+        _apply_known_swap_shape() runs and its _validate_plan_geometry()
+        refuses a partial/mismatching table exactly as before (that function
+        is untouched). Dry-run never sees a real table -> False.
+        """
+        if self.actions.dry_run:
+            return False
+        partitions, _ = self._plan_swap_partitions()
+        live = self._parse_partition_entries(
+            self._run(["/usr/sbin/sfdisk", "--dump", f"/dev/{self.root_disk}"], dangerous=False)
+        )
+        numbers = range(self.root_number + 1, self.root_number + self.config.swap_file_count + 1)
+        if len(partitions) != len(numbers) or not all(number in live for number in numbers):
+            return False
+        for number, (start, size) in zip(numbers, partitions):
+            entry = live[number]
+            if (
+                entry.get("start") != str(start)
+                or entry.get("size") != str(size)
+                or (entry.get("type") or "").lower() != SWAP_TYPE_GUID
+            ):
+                return False
+        self._mark_step("partitions", "success", "swap partitions already present in the live table, matching the plan")
+        return True
+
     def _stage2(self) -> None:
         self._packages(["e2fsprogs", "util-linux"], "stage2")
         # True iff Case B's own hook already wrote the swap partitions as
         # part of shrinking root -- _apply_known_swap_shape() must then be
         # skipped, not re-run (see _verify_and_apply_root_shrink()'s docstring).
         swap_partitions_already_written = self._verify_and_apply_root_shrink()
+        # Resume-safety: _verify_and_apply_root_shrink() only returns True on
+        # its FIRST pass after the hook succeeded (it then marks root_shrink
+        # "success"); on a re-run -- e.g. after the io benchmark's deliberate
+        # cleanup-failure stop -- it returns False although the swap
+        # partitions are already in the live table. Derive it from the table.
+        if not swap_partitions_already_written:
+            swap_partitions_already_written = self._swap_partitions_already_planned_in_table()
         # Must precede _apply_known_swap_shape(): the throwaway partition is
         # created, measured, deleted and read back before the real swap
         # layout is planned. Failure to benchmark is advisory; failure to

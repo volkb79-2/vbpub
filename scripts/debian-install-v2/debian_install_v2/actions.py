@@ -4,6 +4,7 @@ from dataclasses import dataclass
 import os
 from pathlib import Path, PurePosixPath
 import shlex
+import signal
 import shutil
 import subprocess
 import hashlib
@@ -13,6 +14,21 @@ from typing import Any
 
 class ActionError(RuntimeError):
     pass
+
+
+class ActionTimeout(ActionError):
+    """The command exceeded its timeout; its whole process group was killed and reaped."""
+
+
+class ActionUnreapable(ActionError):
+    """The command timed out and its child could not be reaped even after SIGKILL
+    (e.g. uninterruptible D-state I/O). Whatever it held (a mount, a device) is
+    still in use: callers treat this as a cleanup failure and stop."""
+
+
+# Seconds between SIGTERM and SIGKILL, and how long to wait for the reap after SIGKILL.
+TERM_GRACE_SECONDS = 10.0
+KILL_REAP_SECONDS = 10.0
 
 
 _SAFE_COMMANDS = {
@@ -116,26 +132,93 @@ class HostActions:
             raise ActionError("shell commands are only accepted through write_file templates")
 
     def run(
-        self, argv: list[str], description: str = "", dangerous: bool = False, input: str | None = None
+        self,
+        argv: list[str],
+        description: str = "",
+        dangerous: bool = False,
+        input: str | None = None,
+        timeout: float | None = None,
     ) -> str | None:
         self._validate(list(argv))
         planned = PlannedAction(tuple(argv), description or shlex.join(argv), dangerous)
         self.planned.append(planned)
         if self.dry_run:
             return None
-        result = subprocess.run(
+        if timeout is None:
+            result = subprocess.run(
+                argv,
+                check=False,
+                text=True,
+                input=input,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+            )
+            returncode, stdout = result.returncode, result.stdout
+        else:
+            returncode, stdout = self._run_bounded(argv, input, timeout, planned.description)
+        if returncode != 0:
+            raise ActionError(
+                f"action failed ({returncode}): {planned.description}\n{stdout}"
+            )
+        return stdout
+
+    @staticmethod
+    def _run_bounded(
+        argv: list[str],
+        input: str | None,
+        timeout: float,
+        description: str,
+        term_grace: float | None = None,
+        reap_wait: float | None = None,
+    ) -> tuple[int, str]:
+        """Run ``argv`` in its own session with a hard time limit.
+
+        Deliberately NOT subprocess.run(timeout=): its post-kill wait() blocks
+        forever on an uninterruptible (D-state) child. On expiry the whole
+        process GROUP gets SIGTERM, then SIGKILL after a grace period (so an
+        orphaned grandchild such as fio dies too); a child still not reaped
+        afterwards raises ActionUnreapable.
+        """
+        term_grace = TERM_GRACE_SECONDS if term_grace is None else term_grace
+        reap_wait = KILL_REAP_SECONDS if reap_wait is None else reap_wait
+        proc = subprocess.Popen(
             argv,
-            check=False,
             text=True,
-            input=input,
+            stdin=subprocess.PIPE if input is not None else None,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
+            start_new_session=True,
         )
-        if result.returncode != 0:
-            raise ActionError(
-                f"action failed ({result.returncode}): {planned.description}\n{result.stdout}"
-            )
-        return result.stdout
+        try:
+            # communicate() (not a bare wait()) so a chatty child cannot fill the pipe.
+            stdout, _ = proc.communicate(input, timeout=timeout)
+            return proc.returncode, stdout or ""
+        except subprocess.TimeoutExpired:
+            pass
+        for sig, wait_for in ((signal.SIGTERM, term_grace), (signal.SIGKILL, reap_wait)):
+            try:
+                os.killpg(proc.pid, sig)
+            except ProcessLookupError:
+                pass
+            try:
+                proc.wait(timeout=wait_for)
+            except subprocess.TimeoutExpired:
+                continue
+            try:  # straggling grandchildren that outlived the leader (same group)
+                os.killpg(proc.pid, signal.SIGKILL)
+            except OSError:
+                pass
+            for stream in (proc.stdout, proc.stdin):
+                try:
+                    if stream:
+                        stream.close()
+                except OSError:
+                    pass
+            raise ActionTimeout(f"action timed out after {timeout:g}s and was killed: {description}")
+        raise ActionUnreapable(
+            f"action timed out after {timeout:g}s and the child (pid {proc.pid}) could not be reaped "
+            f"after SIGKILL: {description}"
+        )
 
     def read(self, argv: list[str]) -> str:
         output = self.run(argv, dangerous=False)

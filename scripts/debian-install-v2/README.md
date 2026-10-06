@@ -211,7 +211,10 @@ milestone notification. A benchmark failure is advisory (step `warned`, the
 install continues); a cleanup that cannot be verified stops the install.
 It needs `fio` and `pv` (installed only when the benchmark runs) and, while
 it runs, the tool sets the disk's scheduler to `none` and disables merging
-(restored afterwards). See `IO-BENCHMARK-DESIGN.md` for the full flow.
+(the installer restores both itself, success or failure). Every long command has
+a hard timeout (the whole process group is killed; an unreapable child stops the
+install), and the artifact's body must match `tools/iocost_coef_gen.py.sha256`.
+See `IO-BENCHMARK-DESIGN.md` for the full flow.
 
 Still not done: the result is NOT written to `io.cost.model`/`io.cost.qos`
 and io.cost is not enabled; choosing and applying those is a separate,
