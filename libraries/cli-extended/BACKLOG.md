@@ -337,3 +337,25 @@ This list is the index:
 **Provenance:** controller survey 2026-10-04 of cmru, nyxloom, Netcup,
 debian-install-v2 and the five non-adopting CLIs (ciu, assay, run-gate,
 pwmcp, cgprofile).
+
+## CLI-EXT-23 — error output: identity banner after every error, full help on parser errors
+
+**Status:** Open.
+
+**Problem:** two library behaviours make every error noisy, and a consumer cannot opt out:
+1. `CliOutput.error()` (`src/cli_extended/output.py`, around line 262) prints the tool's identity headline after the
+   first error of a run, so the error is no longer the last line on stderr.
+2. A parser-level usage error, such as a bad positional value (`scp-api.py power bogus`) or a non-integer id, dumps the
+   whole help block instead of the usage line plus a one-line hint like `scp-api.py help <verb>`.
+
+Netcup LT-NC1 (2026-10-06) worked around this at verb level only, for verb-raised usage errors. Parser-level errors and
+the banner still behave as above, because the fix belongs here.
+
+**Acceptance:**
+- An identity-banner policy (`never` / `once-per-run` / `on-usage-error`) settable per `CliIdentity` or `CliOutput`,
+  defaulting to the least noisy choice that existing contract tests allow.
+- Parser errors print `usage: …` plus `error: …` plus a single `help <verb>` hint; full help only with `--help`.
+- Exit codes unchanged (2 for usage).
+- A contract test per behaviour, and migration notes for consumers that assert on the old output.
+
+**Provenance:** netcup live test Phase 0 (2026-10-06), finding F4; LT-NC1 REPORT and review B9.
