@@ -66,3 +66,29 @@ Because pytest failed, the lane's `&&`-chained diff-coverage step did not run. I
 - Not tested: ro common dir; an assay lane end to end in a container; Buildkite flow; nested devcontainer fallback of the temp dir; `config.worktree` overlay (code path exists, no test); container user whose uid differs from the checkout owner.
 - cmru: its masking in `cmru/tools/run_release_gate.py` is removable after this ships; cmru tracks it.
 - nyxloom: `nyxloom-merge-p` post-merge-from-main recipe needs the worktree/opt-in wording (see section 2).
+
+## 6. Round 2 (fresh successor implementer, 2026-10-06)
+
+Everything below is what I ran. Sections 1-5 are the round-1 text; where they disagree (backlog id, CHANGES location, baseline failures, coverage) this section wins.
+
+### Merge and renumbering
+- Merged `origin/main` (`1628c31e3`) into the branch (merge commit `3a212bb19`). Only conflict: `KNOWN_ISSUES_TODO_BACKLOG.md`. Main already owns RG-85 (".run-gate/ must exist before assay lanes launch"), so MY entry is now **RG-86** everywhere (backlog heading and index row, README, CONSUMERS x2, CHANGES, SPEC). Main's RG-85 had no index row; I added one (Minor, OPEN) beside mine.
+- CHANGES: my entry already sat inside the `## [23.10.0]` section (git placed it under "Detailed Changes"); there is NO `[Unreleased]` text of mine. I added one pointer bullet under that section's `### Changed`. The `<!-- cmru: generated -->` heading and the `source rev 55` marker are untouched.
+- `__revision__` NOT bumped (stays 55). Reason: the 23.10.0 marker test (`source rev {__revision__}`, and the `RG-84, filed as RG-83, rev ...` pin) ties the generated section to rev 55, and the section is not yet tagged, so this change ships inside that release without moving the drift marker. Consequence the release owner should weigh: this IS a behavior change, and copies of run-gate at rev 55 from before this package are indistinguishable by revision. Bump `__revision__` together with the marker and tests if that matters.
+- Both round-1 baseline failures (stdlib allowlist, changelog-vs-revision) are fixed on main and no longer fail.
+
+### New tests and one product fix
+- `TestRgNarrowEdges` (6 tests, end of the RG-NARROW block): alias sub-path outside the aliased root (and inside it), `_make_private_dir` fallback when system temp has no host path, `_make_private_dir` with no usable candidate, relative gitfile in `git_mount_plan`, missing common config, and `--allow-main-checkout` applied in-process through `run_gate.main`.
+- **Real defect found by the registered gate, fixed.** The first gate run through `cmru tester-gate` failed (about 80 tests, all `ERROR ... no host-visible private directory for the sanitized git config`): inside that container `/tmp` is not a bind mount (no host path), so `_make_private_dir` fell to `<repo>/.run-gate`, which does not exist in a fresh checkout, so `mkdtemp` raised and the lane died. The fallback now `mkdir -p`s `<repo>/.run-gate`. The earlier ad-hoc round-1 run did not show it because there `/tmp` resolved. The same defect would hit any real nested-devcontainer or fresh-checkout use of the fallback. The "no usable candidate" test now blocks the fallback with a regular file in place of the repo's parent directory; the "falls back" test now starts without `.run-gate`.
+
+### Gate
+- Command (from `run-gate-project/`, tree clean at commit `3291a1059`, one container at a time under `flock ... nice -n 19 ionice -c 3`, run as a tool-managed background job because a foreground call would exceed the tool timeout): `cmru tester-gate --cwd . -- ./run-gate.py selftest`. It needs the `CMRU_TESTER_*` variables that `cmru release` normally supplies; I exported the values from `cmru.orchestration.toml` (image `tester-unified:local`, memory 1g, swap 16g, cpus 2.5, pids 4096, the pinned probe image, cgroup parent `dev-gates.slice`). `cmru --version` prints `5.5.1.dev1401+g1628c31e3` (editable install of main; I did not verify what the 6.0 code reports).
+- Run 1 at `6277a8ae0` (before the fix): verdict FAIL, exit 1, the failure above.
+- Run 2 at `3291a1059`: verdict **PASS**, exit 0, read in a separate step: `1683 passed, 2 skipped, 1 warning`; `diff-coverage OK: 141/141 changed executable lines covered (100.0% >= 100.0% floor); branches 62/62 taken`. The lane's diff-coverage base is the merge-base with `main`, which equals `origin/main` (`1628c31e3`). Logs: scratchpad `narrow-selftest-r2.log` (run 1) and `narrow-selftest-r2b.log` (run 2). The two skips are not individually inspected; one is the real-container smoke (no docker inside tester-unified), which I ran separately from the devcontainer: `RgNarrow` + `TestArgvConstruction` + `TestExtraMounts` selection, `37 passed` there.
+- Mutation (R2) not run (postponed). No plant-and-revert rerun after the merge; the round-1 plants predate the merge.
+
+### SPEC
+SPEC.md documents the dual-mount recipe (`R-15`, `R-23`), so I added normative `R-45` (a-d: linked-worktree mount set, credential-free config overlay, plain-checkout refusal/opt-in, exec out of scope) after `R-44`. `R-15`'s wording ("the repo dual-mounted") is NOT edited; `R-45` states that it supersedes it. A reviewer may prefer an in-place edit of `R-15`.
+
+### Still open
+Unchanged from section 5, except revision/CHANGES/backlog-id items above. Not tested: ro common dir, an assay lane end to end in a container, Buildkite flow, `config.worktree` overlay content, uid mismatch. The `cmru.orchestration.toml`/`cmru tester-gate` env-var requirement is a usability note (the brief said `cmru tester-gate --cwd . -- ./run-gate.py selftest` "should work"; it needs the env first).
