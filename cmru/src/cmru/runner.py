@@ -16,6 +16,7 @@ from time import monotonic
 from typing import Iterable, Mapping, Optional
 
 from cmru.config_names import ORCHESTRATION_CONFIG_FILENAME, PROJECT_CONFIG_FILENAME
+from cmru.errors import StepFailed
 
 
 @dataclass(frozen=True)
@@ -551,14 +552,26 @@ def _execute_step(
                 if aggregate_handle is not None:
                     _write_line(aggregate_handle, command_header)
                 log_info(label)
-                result = run_command(
-                    effective_argv,
-                    cwd,
-                    handle,
-                    quiet=quiet,
-                    log_path=log_file,
-                    mirror_handle=aggregate_handle,
-                )
+                try:
+                    result = run_command(
+                        effective_argv,
+                        cwd,
+                        handle,
+                        quiet=quiet,
+                        log_path=log_file,
+                        mirror_handle=aggregate_handle,
+                    )
+                except subprocess.CalledProcessError as exc:
+                    # A failing project step is an expected outcome, not an
+                    # internal error. ``StepFailed`` is still a
+                    # ``CalledProcessError`` (and a ``RuntimeError``), so every
+                    # existing handler and ``.returncode`` consumer keeps working.
+                    raise StepFailed(
+                        f"step '{step.name}' of project '{project_root.name}' failed "
+                        f"(exit {exc.returncode}); see {log_file}",
+                        returncode=exc.returncode,
+                        cmd=exc.cmd,
+                    ) from exc
                 evidence = f"; {result.evidence}" if result.evidence else ""
                 log_info(
                     f"{label}: succeeded in {result.elapsed_seconds:.1f}s{evidence} "

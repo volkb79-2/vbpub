@@ -1047,8 +1047,9 @@ def test_cleanup_build_output_refuses_a_valid_but_absent_record_before_apply(mon
     assert cli.main([
         "cleanup", "demo", "--delete-build-output",
         "20260101T000000Z_" + "a" * 40, "--yes",
-    ]) == 1
-    assert "retained build record is incomplete or unsafe" in capsys.readouterr().err
+    ]) == 4
+    err = capsys.readouterr().err
+    assert "retained build record is incomplete or unsafe" in err and "unexpected" not in err
     assert calls == []
 
 

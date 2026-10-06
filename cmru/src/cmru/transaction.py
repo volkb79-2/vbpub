@@ -43,6 +43,15 @@ from cmru.git_auth import (
     without_publisher_tokens,
 )
 from cmru.config_names import PROJECT_CONFIG_FILENAME
+# RefusedBeforeChange / ReleaseLockHeld live in the domain-error family
+# (``cmru.errors``); re-exported here because callers know them as
+# ``transaction.RefusedBeforeChange``.
+from cmru.errors import (  # noqa: F401
+    RefusedBeforeChange,
+    ReleaseLockHeld,
+    UnsafeRecord,
+    UsageRefusal,
+)
 
 
 CHILD_ENV = "CMRU_RELEASE_TRANSACTION_CHILD"
@@ -354,14 +363,6 @@ class _SyncLocalMainResult(NamedTuple):
     reason: str = ""
 
 
-class RefusedBeforeChange(RuntimeError):
-    """A refusal made before anything changed; the CLI maps it to exit 4 (REFUSED)."""
-
-
-class ReleaseLockHeld(RefusedBeforeChange):
-    """Another release/build/abandon already holds the repository's release lock."""
-
-
 @contextmanager
 def release_lock(repo_root: Path) -> Iterator[None]:
     """Serialize local release transactions without relying on a mutable checkout."""
@@ -625,7 +626,7 @@ def resume_workspace(
     or legacy nested ``cmru/release/*``)."""
     path = path.resolve()
     if not path.is_dir():
-        raise RuntimeError(f"release worktree does not exist: {path}")
+        raise UsageRefusal(f"release worktree does not exist: {path}")
     shared = _shared_worktree()
     try:
         path_top, path_common, _path_branch, _path_head = shared.discover_git_context(path)
@@ -1358,7 +1359,7 @@ def read_release_scope_for_path(path: Path) -> list[str] | None:
     """
     path = Path(path).expanduser().resolve()
     if not path.is_dir():
-        raise RuntimeError(f"release worktree does not exist: {path}")
+        raise UsageRefusal(f"release worktree does not exist: {path}")
     shared = _shared_worktree()
     try:
         top, _common, branch, head = shared.discover_git_context(path)
@@ -1740,7 +1741,7 @@ def is_build_output_id(value: str) -> bool:
 
 def _require_build_output_id(output_id: str) -> None:
     if not is_build_output_id(output_id):
-        raise RuntimeError(
+        raise UsageRefusal(
             "--delete-build-output must be the exact <commit-date>_<40-hex-commit> "
             "coordinate printed by cmru build"
         )
@@ -2060,10 +2061,10 @@ def _retained_build_output_parent_fds(
             if descriptor is not None:
                 os.close(descriptor)
         if exc.errno == errno.ELOOP:
-            raise RuntimeError(
+            raise UnsafeRecord(
                 f"{project_name}: retained build output path is or crosses a symlink"
             ) from exc
-        raise RuntimeError(
+        raise UnsafeRecord(
             f"{project_name}: retained build record is incomplete or unsafe for {output_id}; "
             "remove it manually after inspection"
         ) from exc
@@ -2122,7 +2123,7 @@ def _read_regular_file_at(
     try:
         before = os.fstat(descriptor)
         if not stat.S_ISREG(before.st_mode):
-            raise RuntimeError(
+            raise UnsafeRecord(
                 f"{project_name}: retained build record is incomplete or unsafe: {path}"
             )
         chunks = []
@@ -2159,10 +2160,10 @@ def _retained_build_output_cleanup_facts(
             if descriptor is not None:
                 os.close(descriptor)
         if exc.errno == errno.ELOOP:
-            raise RuntimeError(
+            raise UnsafeRecord(
                 f"{project_name}: retained build output path is or crosses a symlink"
             ) from exc
-        raise RuntimeError(
+        raise UnsafeRecord(
             f"{project_name}: retained build record is incomplete or unsafe for {output_id}; "
             "remove it manually after inspection"
         ) from exc
@@ -2198,7 +2199,7 @@ def _retained_build_output_identity_from_fds(
             artifact_fd, "build.json", project_name, manifest_path,
         )
     except OSError as exc:
-        raise RuntimeError(
+        raise UnsafeRecord(
             f"{project_name}: retained build record is incomplete or unsafe for {output_id}; "
             "remove it manually after inspection"
         ) from exc

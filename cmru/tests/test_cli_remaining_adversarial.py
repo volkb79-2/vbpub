@@ -109,5 +109,6 @@ def test_main_orchestration_builds_selected_steps_and_refuses_missing_credential
               cli.CleanupConfig([], [], [], []), cli.GitHubConfig("o", "r", "", "org"), cli.ReleaseEnvConfig({}, None))
     monkeypatch.setattr(cli, "_resolve_config", lambda _: tmp_path / "cmru.toml")
     monkeypatch.setattr(cli, "load_config", lambda *_: loaded)
-    assert cli.main(["run", "--step", "push", "--config", "x"]) == 1
-    assert "Publishing requires" in capsys.readouterr().err
+    assert cli.main(["run", "--step", "push", "--config", "x"]) == 3
+    err = capsys.readouterr().err
+    assert "[ERROR] Publishing requires" in err and "unexpected" not in err

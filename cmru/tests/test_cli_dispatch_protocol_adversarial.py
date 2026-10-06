@@ -150,8 +150,9 @@ def test_publish_dispatch_refuses_missing_project_credential_before_runner(monke
     monkeypatch.setattr(cli, "apply_release_env", lambda *args: None)
     ran = []
     monkeypatch.setattr(cli, "_run_project_steps", lambda *args, **kwargs: ran.append(True))
-    assert cli.main(["publish", "--config", str(cfg), "--from-checkout", "demo"]) == 1
-    assert "Publishing requires" in capsys.readouterr().err
+    assert cli.main(["publish", "--config", str(cfg), "--from-checkout", "demo"]) == 3
+    err = capsys.readouterr().err
+    assert "[ERROR] Publishing requires" in err and "unexpected" not in err
     assert ran == []
 
 

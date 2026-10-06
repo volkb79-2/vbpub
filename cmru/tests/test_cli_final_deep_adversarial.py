@@ -145,5 +145,6 @@ def test_main_publish_requires_project_credentials_before_running_push(monkeypat
     loaded = (tmp_path, {"demo": project}, ["demo"], ["demo"], [], "project-first", {}, SimpleNamespace(), cli.GitHubConfig("o", "r", "", "user"), cli.ReleaseEnvConfig({}, None))
     monkeypatch.setattr(cli, "_resolve_config", lambda _: tmp_path / "cmru.toml")
     monkeypatch.setattr(cli, "load_config", lambda _: loaded)
-    assert cli.main(["publish", "demo", "--from-checkout", "--config", str(tmp_path / "cmru.toml")]) == 1
-    assert "Publishing requires" in capsys.readouterr().err
+    assert cli.main(["publish", "demo", "--from-checkout", "--config", str(tmp_path / "cmru.toml")]) == 3
+    err = capsys.readouterr().err
+    assert "[ERROR] Publishing requires" in err and "unexpected" not in err

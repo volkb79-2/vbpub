@@ -15,7 +15,7 @@ import tempfile
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path, PurePosixPath
-from typing import Callable, List, Mapping, Optional, Sequence
+from typing import Callable, List, Mapping, NoReturn, Optional, Sequence
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
@@ -34,6 +34,7 @@ from cmru.cli_support import (
     write_config_diagnostic,
 )
 from cmru.dependencies import build_report, render_text as render_dependency_report
+from cmru.errors import CmruError, CredentialMissing, StepUnavailable
 
 
 # The failures a root verb can legitimately hit (bad config, a refused git or
@@ -310,7 +311,7 @@ def run_project_step(
     )
     step = (project.runner_steps or {}).get(step_name)
     if step is None:
-        raise RuntimeError(f"{project.name}: required declared step {step_name!r} is absent")
+        raise StepUnavailable(f"{project.name}: required declared step {step_name!r} is absent")
     # Detailed records are project-local.  A successful release removes the
     # transaction worktree (and therefore these logs) unless the caller elected
     # to retain them after verified completion.
@@ -429,7 +430,7 @@ def _project_working_directory(project: "ProjectConfig") -> str:
     """Return the project-relative directory derived from its config path."""
     cwd = project.cwd
     if not cwd:
-        raise RuntimeError(f"{project.name}: derived project working directory is absent")
+        raise StepUnavailable(f"{project.name}: derived project working directory is absent")
     return cwd
 
 
@@ -780,7 +781,7 @@ def require_project_publish_credentials(
 ) -> None:
     missing = [name for name in project_names if not configs[name].github_token.strip()]
     if missing:
-        raise RuntimeError(
+        raise CredentialMissing(
             "Publishing requires GITHUB_PUSH_PAT/GITHUB_TOKEN, repository-root "
             "cmru.secret.toml, or an explicit project cmru.secret.toml override "
             "for project(s): " + ", ".join(missing)
@@ -1385,7 +1386,7 @@ def remove_assets(
     repo = github.repo
     token = github.token
     if not token:
-        raise RuntimeError("github.token is required for cleanup")
+        raise CredentialMissing("github.token is required for cleanup")
 
     log_info(f"Removing assets older than {age} (cutoff {cutoff.isoformat()})")
     cleanup_releases(owner, repo, token, cutoff, dry_run, cleanup, plan=plan)
@@ -2066,7 +2067,7 @@ def run_cleanup_verb(
         project_github = github_for_project(github_config, project)
         apply_project_release_env(github_config, env_config, project)
         if not project_github.token:
-            raise RuntimeError(
+            raise CredentialMissing(
                 f"Cleanup for {name!r} requires GITHUB_PUSH_PAT/GITHUB_TOKEN, "
                 "repository-root cmru.secret.toml, or its explicit project override"
             )
@@ -2144,7 +2145,7 @@ def run_cleanup_verb(
         # repository credential rather than choosing one project's override.
         apply_release_env(github_config, env_config)
         if not github_config.token:
-            raise RuntimeError(
+            raise CredentialMissing(
                 "Repository-wide GHCR cleanup requires GITHUB_PUSH_PAT/GITHUB_TOKEN "
                 "or repository-root cmru.secret.toml"
             )
@@ -4460,7 +4461,7 @@ def _dispatch(args, runtime):
                 project = configs[name]
                 step_config = (project.runner_steps or {}).get(step)
                 if step_config is None:
-                    raise RuntimeError(f"{name}: required declared step {step!r} is absent")
+                    raise StepUnavailable(f"{name}: required declared step {step!r} is absent")
                 project_root = resolve_cwd(repo_root, _project_working_directory(project))
                 for line in render_step_plan(step_config, project_root):
                     log_info(f"[DRY RUN] {name}:{step}: {line}")
@@ -4581,11 +4582,11 @@ def _dispatch(args, runtime):
                             f"--delete-build-output {output_id} --yes"
                         )
                     _sys.exit(0)
-            except transaction.RefusedBeforeChange as exc:
-                # Refused before the build changed anything (dirty project paths, a
-                # held release lock): REFUSED, not "failed after start".
-                log_error(str(exc))
-                _sys.exit(exit_codes.REFUSED)
+            except CmruError as exc:
+                # A deliberate domain refusal/failure (refused before the build
+                # changed anything, a missing prerequisite, a failed step): its
+                # taxonomy exit code, never "failed after start" by default.
+                _exit_for_domain_error(exc)
             except _DOMAIN_ERRORS as exc:
                 # The build worktree is only removed after full success above, so a
                 # failure here has already retained it; a programming error (any
@@ -4948,6 +4949,20 @@ def _status(vargs, runtime, repo_root: Path, configs, selected_names: List[str])
         runtime.output.primary(records)
 
 
+def _exit_for_domain_error(exc: CmruError) -> NoReturn:
+    """Process-boundary rendering of a domain error for the legacy exit paths.
+
+    The library renders a ``CmruError`` itself where it propagates; the release
+    and build launchers instead catch everything in ``_DOMAIN_ERRORS`` to print
+    a plain line and ``sys.exit``, so they route the family here to keep its
+    taxonomy exit code (and hint) instead of flattening it to exit 1.
+    """
+    log_error(str(exc))
+    if exc.hint:
+        log_info(exc.hint)
+    sys.exit(exc.exit_code)
+
+
 def _release_launcher(
     rest: List[str], vargs, cfg_path: Path, repo_root: Path, configs, ordered,
     project_order, selected_names: List[str], resume_scope, git_auth,
@@ -4965,6 +4980,8 @@ def _release_launcher(
                 repo_root, configs, release_scope,
                 config_path=cfg_path, git_auth=git_auth,
             )
+        except CmruError as exc:
+            _exit_for_domain_error(exc)
         except _DOMAIN_ERRORS as exc:
             log_error(str(exc))
             sys.exit(1)
@@ -5197,9 +5214,8 @@ def _release_launcher(
                 )
                 _sync_local_main_and_report(transaction_root, git_auth=git_auth)
             sys.exit(rc)
-    except transaction.ReleaseLockHeld as exc:
-        log_error(str(exc))
-        sys.exit(exit_codes.REFUSED)
+    except CmruError as exc:
+        _exit_for_domain_error(exc)
     except _DOMAIN_ERRORS as exc:
         # Retention of the candidate worktree already happened above (a failed
         # child leaves it in place); any other exception type is a bug and

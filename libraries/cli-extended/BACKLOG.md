@@ -446,3 +446,83 @@ cases repeated per route (plus a `--config`/`--dry-run`/`--json` case per verb);
 controls) would remove that repetition.
 
 **Provenance:** cmru W2-PKG5 surface adoption, 2026-10-06.
+
+## CLI-EXT-27 — `cli_extended.testing` prepends its own install directory to `PYTHONPATH`
+
+**Status:** Open (planned)
+**Type:** Defect
+**Area:** Testing helpers
+
+The subprocess helpers in `cli_extended.testing` put cli-extended's own
+install directory at the front of the child's `PYTHONPATH` unless the caller
+passes `python=`. A consumer test that runs its CLI in a subprocess therefore
+imports the library from the test environment's site-packages ahead of the
+consumer's own pinned or wheel-installed copy, which is the opposite of what a
+test of "the CLI as installed" must prove, and it hides a missing or
+mis-floored `cli-extended` dependency. Observed adopting cmru (W2-PKG5,
+2026-10-06): the black-box probe had to pass `python=` explicitly to get an
+honest import path.
+
+Wanted: no implicit `PYTHONPATH` edit (inherit the caller's environment
+unchanged), or an explicit opt-in parameter, documented in `CONSUMERS.md`.
+
+Oracles:
+- A subprocess started without `python=` sees the caller's `PYTHONPATH`
+  unchanged (no library directory prepended).
+- A controlled wrong implementation that still prepends must fail that
+  oracle.
+
+**Provenance:** cmru W2-PKG5 review round 1 (library backlog ask), 2026-10-06.
+
+## CLI-EXT-28 — a test cannot assert the absence of a path hack (audit AC-25)
+
+**Status:** Open (planned)
+**Type:** Feature
+**Area:** Audit, testing
+
+The AC-25 `no-path-hacks` heuristic scans test and source text for
+`sys.path`/`PYTHONPATH` manipulations that name the library. A consumer test
+that asserts the cli-extended source path is ABSENT from the import path (a
+legitimate regression guard) has to spell the needle in the test, which the
+heuristic then reports as a hack. cmru worked around it with
+`tests/_cx_paths.py`, which builds the needle at runtime solely to dodge the
+text scan; that is an honest guard but needs a workaround file and an
+explanation in the findings file.
+
+Wanted: a documented way for a test to assert absence (for example an
+`# cli-extended: allow-path-assertion` marker honoured by AC-25, or a
+`cli_extended.testing.assert_no_path_hack(...)` helper the audit recognises).
+
+Oracles:
+- A test that asserts absence with the sanctioned form passes AC-25.
+- A real `sys.path.insert(...)` naming the library still fails AC-25
+  (controlled wrong implementation: marker accepted anywhere must fail).
+
+**Provenance:** cmru W2-PKG5 review round 1 (library backlog ask), 2026-10-06.
+
+## CLI-EXT-29 — `expected_exceptions` cannot carry an exit code or hint
+
+**Status:** Open (planned)
+**Type:** Feature
+**Area:** Runner, error rendering
+
+`CliRegistry(expected_exceptions=(...))` renders a matching exception as
+`[ERROR] <str(exc)>` and always exits 1 (`parser.py`, the `except
+expected_exceptions` branch); there is no per-type exit code and no hint. A
+consumer with an exit-code taxonomy (cmru: 2 usage, 3 prerequisite missing, 4
+refused by policy) must make its domain errors subclass `CliFailure` instead,
+which also makes them library-specific types. Observed in cmru W2-PKG5 review
+fix round 1 (B1): after the policy flip to `unexpected_exceptions="report"`
+every deliberate refusal that was still a bare `RuntimeError` was labelled
+"unexpected".
+
+Wanted: `expected_exceptions` accepts a mapping `{type: exit_code}` or honours
+an `exit_code`/`hint` attribute on the exception, with the same rendering as
+`CliFailure`.
+
+Oracles:
+- An expected exception with `exit_code = 3` and a `hint` exits 3 and prints
+  the hint, with no "unexpected" label.
+- A controlled wrong implementation that ignores the code (exit 1) must fail.
+
+**Provenance:** cmru W2-PKG5 review fix round 1, 2026-10-06.
