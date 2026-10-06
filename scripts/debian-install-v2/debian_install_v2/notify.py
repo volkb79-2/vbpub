@@ -100,19 +100,25 @@ def validate_webhook_url(url: str) -> None:
         host = parts.hostname
     except ValueError:
         raise NotifyConfigError("mattermost_webhook_url is not a valid URL") from None
-    if parts.scheme not in {"https", "http"} or not host:
-        raise NotifyConfigError("mattermost_webhook_url must be an http(s) URL with a host")
+    if parts.scheme != "https" or not host:
+        raise NotifyConfigError("mattermost_webhook_url must be an https:// URL with a host")
 
 
 def effective_backend(
     notify_backend: str, *, has_telegram: bool, has_mattermost: bool
 ) -> str:
-    """Explicit choice wins; otherwise infer; both credentials -> refuse."""
+    """Explicit choice must match the credentials; unset infers; both -> refuse."""
     if notify_backend:
         if notify_backend not in BACKENDS:
             raise NotifyConfigError(
                 f"notify_backend must be one of {', '.join(BACKENDS)} (or unset)"
             )
+        if notify_backend == "telegram" and has_mattermost:
+            raise NotifyConfigError("mattermost_webhook_url requires notify_backend=mattermost")
+        if notify_backend == "mattermost" and has_telegram:
+            raise NotifyConfigError("Telegram credentials require notify_backend=telegram")
+        if notify_backend == "none" and (has_telegram or has_mattermost):
+            raise NotifyConfigError("notify_backend=none cannot have notification credentials")
         return notify_backend
     if has_telegram and has_mattermost:
         raise NotifyConfigError(

@@ -14,6 +14,7 @@ from debian_install_v2.config import Config, load_config
 from debian_install_v2.customscript import (
     CONTROLLER_SSH_PUBKEY_MARKER,
     build_customscript_bundle,
+    resolve_bootstrap_url,
 )
 
 
@@ -140,11 +141,21 @@ def test_custom_repository_requires_explicit_bootstrap_url():
 
 @pytest.mark.parametrize(
     ("field", "value"),
-    (("repo_url", ""), ("repo_branch", ""), ("bootstrap_url", "")),
+    (("repo_url", ""), ("repo_branch", "")),
 )
 def test_explicit_empty_bootstrap_source_is_rejected(field, value):
     with pytest.raises(ValueError, match="non-empty"):
         build_customscript_bundle(Config(), **{field: value})
+
+
+def test_empty_bootstrap_url_falls_back_to_the_default():
+    """LT-REG item 7: truthiness, as before e3cd117c1."""
+    default = resolve_bootstrap_url()
+    assert resolve_bootstrap_url(bootstrap_url="") == default
+    assert resolve_bootstrap_url(bootstrap_url=None) == default
+    # a custom repository still has to supply a real URL
+    with pytest.raises(ValueError, match="bootstrap_url is required"):
+        resolve_bootstrap_url(repo_url="https://git.example.test/ops/vbpub", bootstrap_url="")
 
 
 def test_cli_build_customscript_prints_a_valid_bundle(capsys, tmp_path):

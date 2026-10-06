@@ -4,6 +4,7 @@ import re
 from dataclasses import replace
 from datetime import datetime, timezone
 import hashlib
+import ipaddress
 import json
 import logging
 import os
@@ -17,7 +18,7 @@ import urllib.request
 
 from . import inuse_partition_editor
 from .actions import ActionError, ActionUnreapable, HostActions
-from .config import Config, ConfigError, load_config, resolve_notify_backend
+from .config import Config, ConfigError, load_config, persisted_config_data, resolve_notify_backend
 from .host_facts import _code, collect_host_facts, format_facts_html
 from .notify import NotifyConfigError, format_mattermost_message, post_webhook, redact_text
 from .state import StateError, StateStore
@@ -78,6 +79,11 @@ IOBENCH_FINAL_STATUSES = {"success", "skipped", "warned"}
 
 class InstallerError(RuntimeError):
     """Expected host-precondition or installer-operation failure."""
+
+
+def _is_docker_interface(name: object) -> bool:
+    """Docker-owned interfaces by Docker's own naming: docker0, br-<12 hex>, veth<hex>."""
+    return isinstance(name, str) and re.fullmatch(r"docker0|br-[0-9a-f]{12}|veth[0-9a-f]+", name) is not None
 
 
 def _split_for_telegram(message: str, limit: int = TELEGRAM_MESSAGE_LIMIT) -> list[str]:
@@ -240,7 +246,7 @@ class Installer:
                 _LOG.warning("could not build/send initial report notification: %s", exc)
         try:
             self._stage1()
-        except Exception as exc:
+        except BaseException as exc:
             if not self.actions.dry_run:
                 self.state.save(status="failed", phase="stage1", last_error=str(exc))
             self._notify(
@@ -256,11 +262,7 @@ class Installer:
         persisted = saved.get("config", {})
         if not isinstance(persisted, dict):
             raise StateError("state manifest does not contain a configuration object")
-        config_data = {
-            key: value
-            for key, value in persisted.items()
-            if key not in {"telegram_bot_token", "telegram_chat_id", "mattermost_webhook_url"}
-        }
+        config_data = persisted_config_data(persisted)
         try:
             persisted_config = load_config(raw_json=json.dumps(config_data))
         except ConfigError as exc:
@@ -329,15 +331,22 @@ class Installer:
             # up to its full timeout (an hour, by default) and then
             # reporting a spurious TimeoutError for an install that had
             # actually already succeeded.
-            self._remove_controller_ssh_key()
+            if self._controller_key_retained():
+                self._mark_step("controller_ssh_key_retained", "success", "configured to retain after successful stage2")
+            else:
+                self._remove_controller_ssh_key()
             if self._notifications_enabled:
                 duration = self._duration_since_start()
                 facts_html = format_facts_html(collect_host_facts(self))
+                retained = self._controller_key_retained()
+                key_note = "\n\nController key retained on host." if retained else ""
+                key_event = ", controller key retained on host" if retained else ""
                 self._notify(
-                    f"<b>Install complete</b> (duration: {duration})\n\n{facts_html}",
-                    event=f"install complete (duration {duration})", status="ok",
+                    f"<b>Install complete</b> (duration: {duration})"
+                    f"{key_note}\n\n{facts_html}",
+                    event=f"install complete (duration {duration}){key_event}", status="ok",
                 )
-        except Exception as exc:
+        except BaseException as exc:
             self.state.save(status="failed", phase="stage2", last_error=str(exc))
             self._notify(
                 f"<b>Install FAILED</b> during stage2: {_code(str(exc))}",
@@ -566,8 +575,56 @@ MaxFileSec=1month
         except json.JSONDecodeError as exc:
             raise InstallerError(f"refusing to merge into an unparseable {path}: {exc}") from exc
 
+    def _host_networks(self) -> list[tuple[str, ipaddress._BaseNetwork]]:
+        """The host's own subnets: (description, network) from `ip -j addr` and `ip -j route`."""
+        found: list[tuple[str, ipaddress._BaseNetwork]] = []
+        addr_out = self._run(["/usr/sbin/ip", "-j", "addr", "show"], "list host addresses (docker pool check)")
+        route_out = self._run(["/usr/sbin/ip", "-j", "route", "show"], "list host routes (docker pool check)")
+        try:
+            for iface in json.loads(addr_out or "[]"):
+                if _is_docker_interface(iface.get("ifname")):
+                    continue  # Docker's own bridges (a re-run) are not conflicts
+                for info in iface.get("addr_info", []):
+                    local, prefix = info.get("local"), info.get("prefixlen")
+                    if local is None or prefix is None:
+                        continue
+                    network = ipaddress.ip_interface(f"{local}/{prefix}").network
+                    found.append((f"address {local}/{prefix} on {iface.get('ifname', '?')}", network))
+        except (ValueError, TypeError, AttributeError) as exc:
+            raise InstallerError(f"cannot parse `ip -j addr` output for the docker pool check: {exc}") from exc
+        # IPv4 routes only: the allowlist admits `ip -j` without `-6`; IPv6
+        # pools are still checked against every inet6 address from `addr`.
+        try:
+            for route in json.loads(route_out or "[]"):
+                dst = route.get("dst")
+                if dst in (None, "default") or _is_docker_interface(route.get("dev")):
+                    continue
+                network = ipaddress.ip_network(dst, strict=False)
+                if network.prefixlen == 0:
+                    continue  # literal 0.0.0.0/0 or ::/0 is a default route
+                found.append((f"route {dst}", network))
+        except (ValueError, TypeError, AttributeError) as exc:
+            raise InstallerError(f"cannot parse `ip -j route` output for the docker pool check: {exc}") from exc
+        return found
+
+    def _check_address_pools_against_host(self) -> None:
+        """Fail if a configured docker pool overlaps the host's own addresses or routes."""
+        pools = self.config.docker_default_address_pools
+        if not pools or self.actions.dry_run:
+            return
+        host = self._host_networks()
+        for pool in pools:
+            base = ipaddress.ip_network(pool["base"])
+            for description, network in host:
+                if base.version == network.version and base.overlaps(network):
+                    raise InstallerError(
+                        f"docker_default_address_pools base {pool['base']} overlaps the host's "
+                        f"{description}; choose a different pool base"
+                    )
+
     def _configure_docker_daemon(self) -> None:
-        # Owns live-restore/log-driver/log-opts only — see the ownership
+        self._check_address_pools_against_host()
+        # Owns live-restore/log-driver/log-opts/default-address-pools only — see the ownership
         # split rationale in _install_docker()'s comment above. mdt
         # host-setup/install.sh owns "cgroup-parent" the same, disjoint way.
         existing = self._read_json_for_merge("/etc/docker/daemon.json")
@@ -588,6 +645,15 @@ MaxFileSec=1month
             # owns log-driver/log-opts together (see comment above), so an
             # idempotent re-run must fully reflect the current driver.
             existing.pop("log-opts", None)
+        # Owned like log-opts: an idempotent re-run reflects the current
+        # config, so an empty list removes a stale pool block.
+        if self.config.docker_default_address_pools:
+            existing["default-address-pools"] = [
+                {"base": pool["base"], "size": pool["size"]}
+                for pool in self.config.docker_default_address_pools
+            ]
+        else:
+            existing.pop("default-address-pools", None)
         self.actions.write_file("/etc/docker/daemon.json", json.dumps(existing, indent=2) + "\n", 0o644)
         self._mark_step("docker_daemon_config", "success", self.config.docker_log_driver)
 
@@ -2041,6 +2107,16 @@ MaxFileSec=1month
         env_file = "/etc/vbpub/bootstrap.env"
         credentials_line = "-"
         backend = self._notify_backend()
+        # vbpub-notify picks its backend from whichever credential file exists,
+        # so a re-run that switches backend (or to `none`) must REMOVE the other
+        # backend's files, or the helper keeps posting through a stale credential.
+        stale = {
+            "mattermost": ("telegram_bot_token", "telegram_chat_id"),
+            "telegram": ("mattermost_webhook_url",),
+        }.get(backend, ("telegram_bot_token", "telegram_chat_id", "mattermost_webhook_url"))
+        for directory in ("/etc/vbpub/credentials", f"{self.config.state_dir}/credentials"):
+            for name in stale:
+                self.actions.remove_file(f"{directory}/{name}")
         if backend == "mattermost":
             self.actions.write_file(
                 "/etc/vbpub/credentials/mattermost_webhook_url",
@@ -2258,6 +2334,12 @@ MaxFileSec=1month
         combined = existing if (not existing or existing.endswith("\n")) else existing + "\n"
         self.actions.write_file(str(authorized_keys), combined + pubkey_line + "\n", 0o600)
         self._mark_step("controller_ssh_key", "success", "controller pubkey installed for stage1/stage2 SSH monitoring")
+
+    def _controller_key_retained(self) -> bool:
+        return bool(
+            self.config.controller_ssh_pubkey.strip()
+            and self.config.retain_controller_ssh_key
+        )
 
     def _remove_controller_ssh_key(self) -> None:
         # Last step of stage2, once everything else has already succeeded --

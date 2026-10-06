@@ -63,7 +63,7 @@ def resolve_bootstrap_url(
     """Resolve a real bootstrap URL; custom repositories must supply one."""
     repo_url = _validate_source(repo_url, "repo_url").rstrip("/")
     repo_branch = _validate_source(repo_branch, "repo_branch", url=False)
-    if bootstrap_url is not None:
+    if bootstrap_url:
         return _validate_source(bootstrap_url, "bootstrap_url")
     if repo_url != REPO_URL_DEFAULT:
         raise ValueError(

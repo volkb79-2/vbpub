@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import ipaddress
 import json
+import logging
 import os
 import re
 import tempfile
@@ -10,6 +12,8 @@ from typing import Any, Literal
 
 from .notify import NotifyConfigError, effective_backend, validate_host_label, validate_webhook_url
 
+_LOG = logging.getLogger("debian_install_v2.config")
+_WARNED_UNKNOWN_KEYS: set[str] = set()
 SCHEMA_VERSION = 1
 OBSOLETE_VARIABLES = {
     "SWAP_ARCH",
@@ -83,6 +87,12 @@ class Config:
     docker_log_max_size: str = "50m"
     docker_log_max_file: str = "3"
     docker_cleanup_max_age_hours: int = 240
+    # daemon.json "default-address-pools" (mdt MDT-002): the ranges Docker
+    # carves per-network subnets from. Each entry is {"base": CIDR, "size":
+    # int}. Empty list = Docker's built-in default (the key is omitted).
+    docker_default_address_pools: list = field(
+        default_factory=lambda: [{"base": "10.240.0.0/16", "size": 24}]
+    )
     apt_auto_upgrade_mode: Literal["full", "security-only", "notify-only"] = "full"
     reboot_window_time: str = "03:00"
     telegram_bot_token: str = field(default="", repr=False)
@@ -108,6 +118,9 @@ class Config:
     # this feature is off; the operator's own persistent key (via sshKeyIds,
     # or however else it got there) is never touched either way.
     controller_ssh_pubkey: str = field(default="", repr=False)
+    # Keep the temporary controller access line after successful stage2.
+    # Failure paths always retain it for diagnosis.
+    retain_controller_ssh_key: bool = False
     # Runs the kernel's own official iocost calibration tool
     # (tools/cgroup/iocost_coef_gen.py, vendored -- not apt-packaged) against
     # a throwaway partition carved from the same free space swap will use,
@@ -148,6 +161,49 @@ def _reject_obsolete(data: dict[str, Any]) -> None:
         raise ConfigError(f"setting(s) are not part of minimal v2: {', '.join(unsupported)}")
 
 
+MAX_ADDRESS_POOLS = 16
+
+
+def validate_address_pools(pools: Any) -> None:
+    """Validate docker_default_address_pools (see Config)."""
+    name = "docker_default_address_pools"
+    if not isinstance(pools, list):
+        raise ConfigError(f"{name} must be a list of {{base, size}} objects")
+    if len(pools) > MAX_ADDRESS_POOLS:
+        raise ConfigError(f"{name} may hold at most {MAX_ADDRESS_POOLS} pools")
+    networks = []
+    for index, pool in enumerate(pools):
+        if not isinstance(pool, dict) or set(pool) != {"base", "size"}:
+            raise ConfigError(f"{name}[{index}] must be an object with exactly base and size")
+        base, size = pool["base"], pool["size"]
+        if not isinstance(base, str):
+            raise ConfigError(f"{name}[{index}].base must be a CIDR string")
+        try:
+            network = ipaddress.ip_network(base, strict=True)
+        except ValueError as exc:
+            raise ConfigError(f"{name}[{index}].base is not a valid network: {exc}") from None
+        if network.version == 6 and network.network_address.ipv4_mapped is not None:
+            raise ConfigError(f"{name}[{index}].base must not be an IPv4-mapped IPv6 network")
+        addr = network.network_address
+        if addr.is_unspecified or addr.is_loopback or addr.is_link_local or addr.is_multicast:
+            raise ConfigError(
+                f"{name}[{index}].base must not be an unspecified, loopback, link-local or multicast range"
+            )
+        if not network.is_private:
+            raise ConfigError(f"{name}[{index}].base must be a private range (RFC 1918 / ULA); public ranges are not allowed")
+        if isinstance(size, bool) or not isinstance(size, int):
+            raise ConfigError(f"{name}[{index}].size must be an integer")
+        upper = 30 if network.version == 4 else 128
+        if not network.prefixlen <= size <= upper:
+            raise ConfigError(
+                f"{name}[{index}].size must be from {network.prefixlen} (the base prefix) to {upper}"
+            )
+        for other_index, other in networks:
+            if other.version == network.version and network.overlaps(other):
+                raise ConfigError(f"{name}[{index}].base overlaps {name}[{other_index}].base")
+        networks.append((index, network))
+
+
 def validate_config(config: Config) -> None:
     """Validate a Config instance with the same rules used by JSON loading."""
     if config.schema_version != SCHEMA_VERSION:
@@ -185,6 +241,7 @@ def validate_config(config: Config) -> None:
         raise ConfigError("zswap_compressor must be zstd, lz4, or lzo-rle")
     if not isinstance(config.zswap_zpool, str) or config.zswap_zpool not in {"z3fold", "zbud", "zsmalloc"}:
         raise ConfigError("zswap_zpool must be z3fold, zbud, or zsmalloc")
+    validate_address_pools(config.docker_default_address_pools)
     if not config.docker_log_driver:
         raise ConfigError("docker_log_driver must not be empty")
     if not _DOCKER_LOG_MAX_SIZE_RE.fullmatch(config.docker_log_max_size):
@@ -285,6 +342,30 @@ def load_config(path: str | None = None, raw_json: str | None = None) -> Config:
     config = Config(**data)
     validate_config(config)
     return config
+
+
+def persisted_config_data(saved: dict[str, Any]) -> dict[str, Any]:
+    """Config dict from persisted state.json, tolerant of unknown keys.
+
+    state.json may have been written by an older or newer field set; resuming
+    must not abort on that (forward/backward compatibility). Unknown keys are
+    dropped with ONE warning naming them (names only, never values). Credential
+    keys are always dropped: they arrive through credential files. Operator
+    supplied config still goes through the strict ``load_config``.
+    """
+    allowed = {item.name for item in fields(Config)}
+    secret = {"telegram_bot_token", "telegram_chat_id", "mattermost_webhook_url"}
+    unknown = sorted(str(key) for key in saved if key not in allowed)
+    # bootstrap._stage2_config and Installer.resume both filter the same state
+    # in one stage2 process: warn once per process for each distinct key name.
+    fresh = [key for key in unknown if key not in _WARNED_UNKNOWN_KEYS]
+    if fresh:
+        _WARNED_UNKNOWN_KEYS.update(fresh)
+        _LOG.warning(
+            "ignoring unknown key(s) in the saved state configuration: %s",
+            ", ".join(fresh),
+        )
+    return {key: value for key, value in saved.items() if key in allowed and key not in secret}
 
 
 def save_config(path: str, config: Config, *, overwrite: bool = False) -> None:

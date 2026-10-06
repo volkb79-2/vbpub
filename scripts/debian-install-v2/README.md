@@ -150,8 +150,23 @@ style timer.
 Full Docker CE install from Docker's own official apt repo
 (`https://download.docker.com/linux/debian`, GPG-key-verified), `daemon.json`
 (`docker_log_driver`, `docker_log_max_size`, `docker_log_max_file`,
-`docker_live_restore`), plus a cleanup timer
+`docker_live_restore`, `docker_default_address_pools`), plus a cleanup timer
 (`docker_cleanup_max_age_hours`) that prunes stale images/containers.
+
+`docker_default_address_pools` (default `[{"base":"10.240.0.0/16","size":24}]`,
+from mdt MDT-002) is rendered as `default-address-pools` in the same
+`daemon.json`. Each pool needs a valid network `base` and an integer `size`
+with `base prefix <= size <= 30` (IPv4) / `<= 128` (IPv6); at most 16 pools,
+no overlapping bases. Bases must be private ranges (RFC 1918 / ULA); unspecified,
+loopback, link-local, multicast, IPv4-mapped IPv6 and public ranges are rejected,
+with no opt-out. The installer owns `default-address-pools` in `daemon.json`
+exactly as it owns `log-opts`: an existing value is overwritten, not preserved
+(installs are fresh). Before writing `daemon.json` the docker step compares every
+pool with the host's own addresses (`ip -j addr`) and IPv4 routes (`ip -j route`)
+and fails, naming the pool and the conflicting address or route, on any overlap.
+An empty list means Docker's built-in default: the key
+is omitted (and removed on an idempotent re-run). The wizard accepts a JSON
+list; the bundle / `--config-json` carry it as a JSON array.
 
 ### Host hygiene
 
@@ -179,9 +194,16 @@ working. Both include host facts. See `nyxloom/mattermost/CONSUMER.md` for the
 producer contract. The webhook URL is never printed (only its host), is
 redacted in `--debug`/`--debug-raw`, and is not written to `state.json`. An ephemeral controller
 SSH pubkey (`controller_ssh_pubkey`) is installed for external monitoring
-during the run and removed again only *after* the stage2-done marker is
-written (removing it earlier can strand an external poller mid-install with
+during the run. By default it is removed only *after* the stage2-done marker
+is written (removing it earlier can strand an external poller mid-install with
 no way back in — a real bug found and fixed live, 2026-09-09).
+`retain_controller_ssh_key=true` (env `RETAIN_CONTROLLER_SSH_KEY=yes|no`)
+deliberately leaves that exact line in `authorized_keys` after successful
+stage2 (step `controller_ssh_key_retained`, and the install-complete message
+says "controller key retained on host"); failure paths retain it for
+diagnosis regardless of this setting. The operator's persistent account key
+is never removed. When netcup `install-host.py` sees host retention in the
+customScript it refuses `--local-controller-key remove`.
 `credential_mode` (`root-storage` / `systemd`) selects how the Telegram
 token / Mattermost webhook URL and controller pubkey are stored on disk.
 

@@ -78,10 +78,11 @@ merged in last (wins over the named vars above):
              controller's own ephemeral, per-host bootstrap key. Installed as
              the very first stage1 step (before this key's own registration
              with the provider is even guaranteed to have taken effect) and
-             removed again as the last stage2 step - no further controller
-             access is needed once the install is done. Leave unset to skip
-             entirely; the operator's own persistent access key is never
-             touched by this either way.
+             removed again after the install COMPLETES (stage2_done) unless
+             RETAIN_CONTROLLER_SSH_KEY=yes (yes|no, default no) keeps it for
+             post-reboot controller access. Never removed on a failed install. Leave unset to skip entirely; the
+             operator's own persistent access key is never touched by this
+             either way.
   Paths:     STATE_DIR, LOG_DIR, STAGE2_OUTPUT
   Library:   CLI_EXTENDED_WHEEL_URL + CLI_EXTENDED_WHEEL_SHA256 pin one exact
              cli-extended wheel (set both or neither; the URL's last path
@@ -176,6 +177,7 @@ _BOOL_FIELDS = {
     "RUN_APT_AUTO_UPGRADE": "run_apt_auto_upgrade",
     "RUN_AUTO_REBOOT": "run_auto_reboot",
     "TELEGRAM_VERBOSE_PROGRESS": "telegram_verbose_progress",
+    "RETAIN_CONTROLLER_SSH_KEY": "retain_controller_ssh_key",
 }
 
 

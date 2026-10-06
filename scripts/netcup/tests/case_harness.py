@@ -179,6 +179,7 @@ SCP_ROUTES = {
         "architecture": "AMD64",
         "serverLiveInfo": {
             "state": "RUNNING",
+            "bootorder": ["HDD", "CDROM", "NETWORK"],
             "cpuCount": 2,
             "currentServerMemoryInMiB": 2048,
             "disks": [{"dev": "vda", "capacityInMiB": 10240}],
@@ -200,10 +201,11 @@ SCP_ROUTES = {
     S42 + "/disks/supported-drivers": ["VIRTIO", "SATA"],
     S42 + "/rescuesystem": {"active": False},
     S42 + "/snapshots": [{"uuid": "snap-1", "name": "before", "state": "READY"}],
-    S42 + "/metrics/cpu": {"metrics": [{"cpu": 1}]},
-    S42 + "/metrics/disk": {"metrics": [{"disk": 1}]},
-    S42 + "/metrics/network": {"metrics": [{"network": 1}]},
-    S42 + "/metrics/network/packet": {"metrics": [{"packet": 1}]},
+    # Live shape (P0.13): {ISO timestamp: {series name: number}}.
+    S42 + "/metrics/cpu": {"2026-10-05T05:10:00Z": {"CPU0": 1316666.5}, "2026-10-05T05:20:00Z": {"CPU0": 1183333.5}},
+    S42 + "/metrics/disk": {"2026-10-05T05:10:00Z": {"vda Read": 0.0, "vda Write": 0.32}},
+    S42 + "/metrics/network": {"2026-10-05T05:10:00Z": {"aa:bb:cc:dd:ee:ff IN": 240.5, "aa:bb:cc:dd:ee:ff OUT": 73.0}},
+    S42 + "/metrics/network/packet": {"2026-10-05T05:10:00Z": {"aa:bb:cc:dd:ee:ff IN": 2.5}},
     S42 + "/guest-agent/status": {"available": True},
     "/api/v1/tasks": [{"uuid": TASK_UUID, "name": "installImage", "state": "FINISHED"}],
     f"/api/v1/tasks/{TASK_UUID}": {"uuid": TASK_UUID, "state": "FINISHED"},

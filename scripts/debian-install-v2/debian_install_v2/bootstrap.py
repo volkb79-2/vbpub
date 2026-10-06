@@ -16,7 +16,9 @@ from cli_extended import (
 )
 
 from .actions import ActionError, HostActions
-from .config import Config, ConfigError, load_config, require_notify_credentials, save_config
+from .config import (
+    Config, ConfigError, load_config, persisted_config_data, require_notify_credentials, save_config,
+)
 from .customscript import build_customscript_bundle
 from .installer import Installer, InstallerError
 from .state import StateError, StateStore
@@ -96,11 +98,7 @@ def _stage2_config(state_dir: str) -> Config:
     # Credentials are delivered separately through systemd credentials or the
     # root-only credentials directory. Older v2 manifests persisted only the
     # Telegram chat id, so discard both halves before strict config validation.
-    config_data = {
-        key: value
-        for key, value in saved.items()
-        if key not in {"telegram_bot_token", "telegram_chat_id", "mattermost_webhook_url"}
-    }
+    config_data = persisted_config_data(saved)
     try:
         config = load_config(raw_json=json.dumps(config_data))
     except ConfigError as exc:

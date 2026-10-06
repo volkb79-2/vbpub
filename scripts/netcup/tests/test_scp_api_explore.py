@@ -170,6 +170,10 @@ def test_login_offers_v_named_servers_and_persists_mode_0600(
 
 # --- subcommands against a FakeClient ------------------------------------------
 
+# Observed live (P0.09c, 2026-10-06): one disk, name "vda".
+LIVE_DISKS = [{"allocationInMiB": 3126, "capacityInMiB": 524288, "name": "vda", "path": None, "storageDriver": "VIRTIO"}]
+
+
 def _ns(**kw):
     return types.SimpleNamespace(json=False, **kw)
 
@@ -430,38 +434,41 @@ def test_cmd_iso_bootable_without_id_enumerates_all_servers(explore_mod, fake_cl
 
 def test_cmd_attached_iso_detach_declined_never_calls_delete(explore_mod, fake_client, monkeypatch):
     monkeypatch.setattr("builtins.input", lambda *a: "n")
-    client = fake_client(allow=())  # any get/post/patch/put/delete raises
+    client = fake_client(get_responses=[[], [], []])  # the three active-task checks; no delete allowed
     pal = explore_mod._Palette(enabled=False)
     explore_mod.cmd_attached_iso(client, _ns(server_id=1, action="detach", yes=False), pal)
-    assert client.calls == []
+    assert [c[0] for c in client.calls] == ["get", "get", "get"]
 
 
 def test_cmd_attached_iso_detach_with_yes_calls_delete(explore_mod, fake_client):
-    client = fake_client(allow=("delete",))
+    client = fake_client(get_responses=[[], [], []], allow=("get", "delete"))
     pal = explore_mod._Palette(enabled=False)
     explore_mod.cmd_attached_iso(client, _ns(server_id=1, action="detach", yes=True), pal)
-    assert client.calls == [("delete", "/api/v1/servers/1/iso", None)]
+    assert client.calls[-1] == ("delete", "/api/v1/servers/1/iso", None)
+    assert [c[0] for c in client.calls[:-1]] == ["get", "get", "get"]
 
 
 def test_cmd_attach_iso_uses_bootable_iso_id_and_confirmation(explore_mod, fake_client, monkeypatch):
     monkeypatch.setattr("builtins.input", lambda *a: "n")
-    declined = fake_client(allow=())
+    live = {"serverLiveInfo": {"bootorder": ["HDD", "CDROM", "NETWORK"]}}
+    declined = fake_client(get_responses=[dict(live)])
     pal = explore_mod._Palette(enabled=False)
     explore_mod.cmd_attach_iso(
         declined,
         _ns(server_id=1, iso_id=10, user_iso_name=None, change_boot_device_to_cdrom=True, yes=False),
         pal,
     )
-    assert declined.calls == []
+    assert [c[0] for c in declined.calls] == ["get"]
 
-    client = fake_client(allow=("post",))
+    client = fake_client(get_responses=[dict(live)], allow=("get", "post"))
     explore_mod.cmd_attach_iso(
         client,
         _ns(server_id=1, iso_id=10, user_iso_name=None, change_boot_device_to_cdrom=True, yes=True),
         pal,
     )
     assert client.calls == [
-        ("post", "/api/v1/servers/1/iso", {"isoId": 10, "changeBootDeviceToCdrom": True})
+        ("get", "/api/v1/servers/1", None),
+        ("post", "/api/v1/servers/1/iso", {"isoId": 10, "changeBootDeviceToCdrom": True}),
     ]
 
 
@@ -859,38 +866,44 @@ def test_cmd_firewall_set_requires_explicit_active_state(explore_mod, fake_clien
 
 
 def test_cmd_snapshots_dryrun_uses_post(explore_mod, fake_client):
-    client = fake_client(allow=("post",))
+    client = fake_client(get_responses=[LIVE_DISKS], post_responses=[[]], allow=("get", "post"))
     pal = explore_mod._Palette(enabled=False)
     explore_mod.cmd_snapshots(client, _ns(server_id=1, action="dryrun", name=None, yes=False), pal)
-    assert client.calls == [("post", "/api/v1/servers/1/snapshots:dryrun", {})]
+    assert client.calls == [
+        ("get", "/api/v1/servers/1/disks", None),
+        ("post", "/api/v1/servers/1/snapshots:dryrun", {"diskName": "vda"}),
+    ]
 
 
 def test_cmd_snapshots_create_declined_never_posts(explore_mod, fake_client, monkeypatch):
     monkeypatch.setattr("builtins.input", lambda *a: "n")
-    client = fake_client(allow=())
+    client = fake_client(get_responses=[LIVE_DISKS])
     pal = explore_mod._Palette(enabled=False)
     explore_mod.cmd_snapshots(client, _ns(server_id=1, action="create", name=None, yes=False), pal)
-    assert client.calls == []
+    assert [c[0] for c in client.calls] == ["get"]  # no POST after a declined prompt
 
 
 def test_cmd_snapshots_create_without_name_gets_a_default(explore_mod, fake_client):
     # ServerSnapshotCreate requires "name" server-side -- omitting --name
     # used to send {} and always fail AFTER the confirm prompt (review
     # finding, 2026-09-09).
-    client = fake_client(allow=("post",))
+    client = fake_client(get_responses=[LIVE_DISKS], allow=("get", "post"))
     pal = explore_mod._Palette(enabled=False)
     explore_mod.cmd_snapshots(client, _ns(server_id=1, action="create", name=None, yes=True), pal)
-    assert len(client.calls) == 1
-    _, endpoint, payload = client.calls[0]
+    assert len(client.calls) == 2
+    _, endpoint, payload = client.calls[1]
     assert endpoint == "/api/v1/servers/1/snapshots"
     assert payload.get("name")
 
 
 def test_cmd_snapshots_create_with_explicit_name(explore_mod, fake_client):
-    client = fake_client(allow=("post",))
+    client = fake_client(get_responses=[LIVE_DISKS], allow=("get", "post"))
     pal = explore_mod._Palette(enabled=False)
     explore_mod.cmd_snapshots(client, _ns(server_id=1, action="create", name="pre-upgrade", yes=True), pal)
-    assert client.calls == [("post", "/api/v1/servers/1/snapshots", {"name": "pre-upgrade"})]
+    assert client.calls == [
+        ("get", "/api/v1/servers/1/disks", None),
+        ("post", "/api/v1/servers/1/snapshots", {"name": "pre-upgrade", "diskName": "vda"}),
+    ]
 
 
 @pytest.mark.parametrize(
