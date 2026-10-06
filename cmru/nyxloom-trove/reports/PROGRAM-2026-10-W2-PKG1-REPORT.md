@@ -122,3 +122,45 @@ CHANGES.md: nothing added here; the controller/W0-REL owns the `[Unreleased]` en
 - `release --ref` is a visible deprecated option (audit rule AC-08 forbids hidden options).
 - `docs/SPEC.md` S-CLI.9 verb grammar rows were updated in the first cut so `test_cli_spec_inventory` passes; the S8 table is not written (above).
 - The `controller/` and `agent/` trees named in the first report no longer exist (W0-RETIRE).
+
+## Review fix round 1
+Fix commit `6aa9964e1` on `cmru-w2-pkg1` (base for the round `ee8228814`). Full suite after the round: **3336 passed, 6 skipped,
+2 failed** (exactly the two seam tests); focused branch coverage of cli, cli_support, manifest, transaction, version stays 100%.
+Lanes not run.
+
+1. **CRITICAL, pre-verb `--dry-run` dropped for the child: fixed.** `cli._forwarded_global_args(parsed, rest)` re-serialises every global
+   the parent PARSED (`--dry-run`, `--log-level`/`--quiet`/`--debug` (one verbosity family), `--debug-raw`, `--color`/`--no-color`,
+   `--log-prefix-time-short`) from the namespace; a flag already in `rest` is never doubled, and a verbosity/colour family is skipped
+   whole when `rest` already chose one. `_child_release_args(..., forward_from=)` appends it, and the three spawn paths pass the parsed
+   namespace: the release launcher, the isolated build, and `_dispatch_independent_git_families(..., forward_from=)` (multi-family
+   subprocess). `run_child` only receives the argv built by `_child_release_args`, so no other spawn rebuilds a command. Grep guard:
+   `runtime.command_argv` is read once (`_dispatch`), `sys.argv` once (`main`); a test pins both counts.
+   Tests (`tests/test_w2_pkg1_review_round1.py`): `cli.main(["--dry-run","release",...])` and `["release",...,"--dry-run"]` give a child
+   argv with exactly one `--dry-run`; a parametrised matrix over {release, build} x {pre, post} x {single family via `run_child`,
+   two families via `subprocess.run`} x {dry-run, log-level, quiet, debug, no-color, log-prefix-time-short} asserts each flag appears once
+   (a dry-run build never spawns a child, so those 4 cells are skipped); a plain release invents no globals; unit test of dedup/families.
+2. **HIGH, empty mode values: fixed.** Cleanup dispatch uses `is not None` for `--delete-unmanaged-release-tag`, `--delete-build-output`,
+   `--remove-assets`, then an explicit `elif vargs.policy:` and a final usage-error `else` (no implicit policy default). Publish
+   validates on `build_output is not None` and fails closed (usage error) when neither `--build-output` nor `--from-checkout` is set.
+   Defence in depth: `cli._non_empty` is the argparse `type` of `--build-output`, `--remove-assets`, `--delete-build-output`,
+   `--delete-unmanaged-release-tag`, so `''`/whitespace exits 2 with "the value must not be empty". Tests: the three cleanup options x
+   `''`/`'   '` exit 2 and never reach policy/assets cleanup; the dispatch-level (parser bypassed) variants; `publish --build-output ''`
+   exits 2 and never runs a step; `--remove-assets 0` still means assets cleanup.
+3. **MEDIUM, `run --step`: tests added.** `run --step lint --step test` executes exactly `[(demo, lint), (demo, test)]` in order even
+   when `default_steps = [build]`; without `--step`, the defaults run.
+4. **Nits:** SPEC S-CLI.9 status row says "every selected project, changed or not"; `cli.py` recovery text names `cleanup --policy` /
+   `--remove-assets AGE`; CHANGES `[Unreleased]` states the compact `--json` change (and the global forwarding);
+   `test_cleanup_no_longer_discards_build_worktrees` now supplies a valid mode and asserts "unrecognized arguments" naming the flag
+   (argparse reports the missing mode group first, which is why the old assertion could pass for the wrong reason); EOF blank lines removed
+   from the three test files; relative `abandon` paths stay refused, message now says "pass the absolute path shown by `cmru worktrees`"
+   (test in `test_cli_abandon.py`).
+5. Rulings applied: the section D renames, S8 table and non-SPEC-S-CLI.9 status sentences stay with W2-INTEG (handoff section kept);
+   the `cmru.toml` PYTHONPATH item is PKG-4's and ignored.
+
+Re-plants (focused: the new test file), each reverted by `git checkout`:
+| # | Plant | Result |
+|---|---|---|
+| M16 | `steps = list(default_steps)` (`--step` ignored) | KILLED `test_run_step_list_is_executed_in_the_given_order_and_overrides_default_steps` |
+| M21 | child drops `--dry-run` (pre-verb position is the only one this affects) | KILLED: `...forwards_each_parsed_global_once[dry-run-release-pre-single]`, `[...-pre-multi]`, `test_release_with_a_root_dry_run_is_a_dry_run_child`, the forwarding unit test; post-verb cells correctly stay green |
+| M39 | cleanup back to truthiness + implicit `else` default (`elif True:`) | KILLED: `test_the_cleanup_dispatch_fails_closed_without_any_mode` and the three `..._slips_past_the_parser_never_reaches_the_policy_cleanup[*]` |
+| M39b | publish validation back to truthiness (`if build_output_id and ...`) | KILLED `test_an_empty_id_that_slips_past_the_parser_still_fails_validation` |
