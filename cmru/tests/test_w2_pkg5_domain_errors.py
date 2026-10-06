@@ -318,6 +318,25 @@ def test_a_build_worktree_outside_the_managed_directory_is_a_usage_error_2(tmp_p
     assert raised.value.exit_code == exit_codes.CONFIG_ERROR
 
 
+def test_a_tampered_or_missing_retained_build_record_is_an_unsafe_record_4(tmp_path):
+    output_id = "20260101T000000Z_" + "a" * 40
+    with _raises(errors.UnsafeRecord, "retained build output is missing or unsafe") as missing:
+        transaction.validate_build_output_tree(tmp_path / output_id, "demo", output_id)
+    root = tmp_path / output_id
+    root.mkdir()
+    (root / "build.json").write_text("{not json", encoding="utf-8")
+    with _raises(errors.UnsafeRecord, "invalid retained build manifest") as broken:
+        transaction.validate_build_output_tree(root, "demo", output_id)
+    assert missing.value.exit_code == broken.value.exit_code == exit_codes.REFUSED
+    assert isinstance(broken.value.__cause__, ValueError) or broken.value.__cause__ is not None
+
+
+def test_a_malformed_build_output_id_is_a_usage_error_2(tmp_path):
+    with _raises(errors.UsageRefusal, "invalid retained build output ID") as raised:
+        transaction.validate_build_output_tree(tmp_path / "x", "demo", "x")
+    assert raised.value.exit_code == exit_codes.CONFIG_ERROR
+
+
 def test_missing_required_step_environment_is_exit_3(monkeypatch):
     monkeypatch.delenv("CMRU_SWEEP_NEEDED", raising=False)
     with _raises(errors.CredentialMissing, "CMRU_SWEEP_NEEDED") as raised:

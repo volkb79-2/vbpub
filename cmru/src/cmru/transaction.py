@@ -47,6 +47,7 @@ from cmru.config_names import PROJECT_CONFIG_FILENAME
 # (``cmru.errors``); re-exported here because callers know them as
 # ``transaction.RefusedBeforeChange``.
 from cmru.errors import (  # noqa: F401
+    CmruError,
     RefusedBeforeChange,
     ReleaseLockHeld,
     UnsafeRecord,
@@ -654,12 +655,12 @@ def resume_workspace(
             if record.purpose == "cmru-legacy":
                 metadata = getattr(record, "metadata", None)
                 if not isinstance(metadata, Mapping):
-                    raise RuntimeError(
+                    raise UnsafeRecord(
                         f"{path} has invalid legacy CMRU workspace metadata; refusing resume"
                     )
                 scope = metadata.get(_LEGACY_RESUME_METADATA_KEY)
                 if scope not in (None, _LEGACY_RESUME_METADATA_VALUE):
-                    raise RuntimeError(
+                    raise UnsafeRecord(
                         f"{path} has an unrecognized legacy CMRU transaction scope; "
                         "refusing resume"
                     )
@@ -1537,10 +1538,23 @@ def validate_build_output_tree(
     """Validate one retained artifact directory against its immutable build manifest.
 
     This shared validator is used by `cmru publish` and the built-in publisher
-    adapters, so the path and digest rules have one implementation.
+    adapters, so the path and digest rules have one implementation. Every way the
+    record can be unsafe, incomplete or tampered with is an ``UnsafeRecord`` (a
+    refusal, exit 4); a malformed ID is a ``UsageRefusal`` (exit 2).
     """
+    try:
+        return _validate_build_output_tree(artifact_root, project_name, output_id)
+    except CmruError:
+        raise
+    except RuntimeError as exc:
+        raise UnsafeRecord(str(exc)) from exc
+
+
+def _validate_build_output_tree(
+    artifact_root: Path, project_name: str, output_id: str,
+) -> dict[str, Any]:
     if not is_build_output_id(output_id):
-        raise RuntimeError(f"invalid retained build output ID: {output_id!r}")
+        raise UsageRefusal(f"invalid retained build output ID: {output_id!r}")
     if artifact_root.name != output_id or artifact_root.is_symlink() or not artifact_root.is_dir():
         raise RuntimeError(f"{project_name}: retained build output is missing or unsafe: {artifact_root}")
     manifest_path = artifact_root / "build.json"
@@ -1695,7 +1709,20 @@ def validate_build_output_tree(
 def validate_retained_build_output(
     project: object, project_name: str, output_id: str,
 ) -> dict[str, Any]:
-    """Validate the complete project build record before any publisher runs."""
+    """Validate the complete project build record before any publisher runs.
+
+    Any way the record is unsafe or incomplete is an ``UnsafeRecord`` (exit 4)."""
+    try:
+        return _validate_retained_build_output(project, project_name, output_id)
+    except CmruError:
+        raise
+    except RuntimeError as exc:
+        raise UnsafeRecord(str(exc)) from exc
+
+
+def _validate_retained_build_output(
+    project: object, project_name: str, output_id: str,
+) -> dict[str, Any]:
     raw_root = getattr(project, "project_root", None)
     if raw_root is None:
         raise RuntimeError(f"{project_name}: cannot resolve a retained build output without project_root")

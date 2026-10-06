@@ -97,11 +97,11 @@ remedy = "Reinstall the cmru wheel (or `pip install -e` again) so dist metadata 
 
 [[findings]]
 id = "semantics-domain-runtimeerror-reported-as-unexpected"
-status = "open"
+status = "fixed"
 severity = "minor"
 category = "semantics"
-summary = "Under the report policy (flipped in W2-PKG5) deliberate domain refusals that are still raised as bare RuntimeError (for example `Publishing requires GITHUB_PUSH_PAT/...` from require_project_publish_credentials, `required declared step ... is absent`, `derived project working directory is absent`, `retained build record is incomplete or unsafe`) are rendered as `unexpected RuntimeError: <message>` with a `rerun with --traceback` hint and exit 1, instead of a plain refusal with the taxonomy exit code (3 missing prerequisite / 4 refused by policy)."
-remedy = "Convert each diagnosed RuntimeError raise site in cli.py/transaction.py into CliFailure(message, exit_code=3 or 4, hint=...) (missing credential -> 3, refused record -> 4); the pinned tests (test_cli_final_deep_adversarial, test_cli_remaining_adversarial, test_cli_dispatch_protocol_adversarial, test_cli_extended_semantics, test_release_candidate_changed_line_gaps) then assert the specific exit code."
+summary = "Under the report policy (flipped in W2-PKG5) deliberate domain refusals that were raised as bare RuntimeError (for example `Publishing requires GITHUB_PUSH_PAT/...` from require_project_publish_credentials, `required declared step ... is absent`, `derived project working directory is absent`, `retained build record is incomplete or unsafe`) are rendered as `unexpected RuntimeError: <message>` with a `rerun with --traceback` hint and exit 1, instead of a plain refusal with the taxonomy exit code (3 missing prerequisite / 4 refused by policy)."
+remedy = "Fixed in review round 1: cmru.errors.CmruError (a RuntimeError AND a cli-extended CliFailure) carries the taxonomy exit code; every user-reachable refusal is converted (credential 3, absent step 3, unsafe record 4, usage 2, refused-before-change 4), a failing project step is StepFailed (exit 1, also a CalledProcessError), and the five pinned tests assert the specific exit code. Failures after start and internal invariants deliberately stay bare RuntimeError (see the REPORT sweep table); the library `expected_exceptions` option cannot carry an exit code (CLI-EXT-29)."
 
 [[findings]]
 id = "adoption-audit-path-hack-heuristic"

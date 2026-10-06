@@ -150,3 +150,114 @@ nothing awaiting review or stale.
 - A fresh-clone / sparse-snapshot run of `cli-extended surface check` outside the canary lane (the canary lane passing
   shows the repo-walking tests are snapshot-safe; the surface check itself was run only in the worktree).
 - Nothing was pushed; the controller merges.
+
+---
+
+# Review fix round 1 (REJECT on B1 plus findings 2-7)
+
+Commits: `2245651f2` (B1 core: the family, first 14 sites, StepFailed, CLI-EXT-27..29), `6dd3a5627` (sweep, T5, guards,
+wording), then the final commit(s) of this round. All edits via Edit/Write. One disclosed deviation from that rule: a
+bash heredoc appended the `_GRAMMAR_ONLY` staleness tests to `tests/test_cli_spec_inventory.py` (content as intended,
+verified by running it; it should have been an Edit). No image built, no `.env`/secret read, no real HOME touched.
+
+LANES-PENDING
+
+## B1 design
+
+- `cmru.errors.CmruError(CliFailure, RuntimeError)` with `exit_code` and `hint`. Members: `UsageRefusal` 2,
+  `CredentialMissing` 3, `StepUnavailable` 3, `UnsafeRecord` 4, `RefusedBeforeChange` 4 (`ReleaseLockHeld` below it),
+  `StepFailed` 1. `RefusedBeforeChange`/`ReleaseLockHeld` moved here and are re-exported from `transaction`.
+- Why `RuntimeError`: the release transaction's `_DOMAIN_ERRORS` cleanup/rollback sites and the other `except RuntimeError`
+  clauses still catch every member, so no rollback is skipped (test: `test_a_domain_error_is_caught_by_the_transaction_cleanup_catch_all`).
+- Why `CliFailure` and not `expected_exceptions`: the library's `expected_exceptions` branch always returns exit 1 and
+  prints no hint, so it cannot carry 2/3/4 (filed as CLI-EXT-29). `CliFailure` is rendered by the library as
+  `[ERROR] <message>` + hint with the exception's own code and no "unexpected" label. Bare `RuntimeError`/`Exception`
+  stay unregistered, so genuine programming errors are still "unexpected" with `--traceback`.
+- Why `StepFailed(CmruError, CalledProcessError)` rather than catching `CalledProcessError`: the release gate's
+  "Release transaction failed; retained ..." path, `transaction.py` and `handlers.py` all inspect `CalledProcessError`
+  and `.returncode`; the subclass keeps every one of them working and adds the message
+  `step 'N' of project 'P' failed (exit N); see <log>` at the one raise site (`runner._execute_step`).
+- Legacy catch-all sites (build, release, multi-family preflight) keep the code through `cli._exit_for_domain_error`;
+  the release parent still returns the child's status unchanged (tested for 1, 2, 3, 4).
+- `--traceback` prints no stack for a deliberate refusal (nothing to expand; controller accepted); it still shows the
+  stack of a genuine internal error. SKILL.md and SPEC S-CLI.10 now say so in one line.
+
+## Sweep table (every `raise RuntimeError(` in `src/cmru` reachable from a user action at the CLI boundary)
+
+Counts are the bare `raise RuntimeError` left at this commit (was 450: cli 162, transaction 221, handlers 18,
+changelog 14, runner 7, version 3, tool_deps 3, bundle 2, one each in config/manifest/resolve/tester_gate; now cli 132,
+transaction 207, changelog 4, runner 3, tool_deps 0, others unchanged). "converted" = refusal now a `CmruError` member.
+Classes: **refusal**, **failure-after-start**, **internal-invariant**.
+
+| Site / cluster | Class | Disposition |
+| --- | --- | --- |
+| cli `require_project_publish_credentials` 783, cleanup 1388/2070/2148 (missing token) | refusal | converted, `CredentialMissing` 3 |
+| cli 313, 4463 (declared step absent), 2619 (requested step not declared), 2642/2675 (`build_step` absent), 2693 (push step absent) | refusal | converted, `StepUnavailable` 3 |
+| cli 432 (derived working directory absent) | refusal | converted, `StepUnavailable` 3 |
+| cli 715/721 (reserved release env keys) | refusal | converted, `UsageRefusal` 2 |
+| cli 2357/2371/2379, 3170 (resume scope/target) | refusal | converted, `UsageRefusal` 2 (2368 malformed scope metadata: `UnsafeRecord` 4) |
+| cli 4049 (no release gate declared), 4174 (prepare changed undeclared paths), 5029 (origin/main moved after preflight), 5061 (resume scope changed under lock) | refusal | converted, `RefusedBeforeChange` 4 |
+| cli 4012/4023/4134 (project root or command cwd outside the Git root) | refusal | converted, `UsageRefusal` 2 |
+| cli `_assert_resume_candidate_is_safe_to_replay` 13 sites (retained-release replay) | refusal | converted, `UnsafeRecord` 4; its 2 git-failure sites (3758, 3775) stay |
+| cli 2684/2711/2717 (build/release step changed the tree), 2967, 2447-2527 (`_push_tags`), 2763-2778 (rollback) | failure-after-start | unchanged (after a tag/step started; renders "unexpected", exit 1) |
+| cli GitHub/GHCR/tag helpers 144-1625 (~75 sites: API errors, malformed responses, tag listing/deletion) | failure-after-start | unchanged |
+| cli `_resolve_git_file_at_commit` 17, `_parse_*` config readers 3292-3592, `_parse_project_release_policy` 4 | failure-after-start | unchanged (malformed committed config/tree reads) |
+| cli `_create_bound_cmru_launcher` 2, `_transaction_workspace_from_env` 2, snapshot handoff 3948/3980, 3205/3221 | internal-invariant | unchanged (child-process plumbing the user never supplies) |
+| cli `_abandon_locked` 27 | refusal | already classified at the boundary: caught by `_DOMAIN_ERRORS` into a "Withheld" blocker or `CliFailure` with exit 2/4 (verified in the code, not changed) |
+| transaction 352 (independent Git families), 2462/2464/2467 (build worktree outside/not retained), 640/651/691 (resume of a non-worktree/non-release branch), 1362/629 (missing worktree), 1744 (bad ID) | refusal | converted, `UsageRefusal` 2 |
+| transaction 409/425 (local main ahead / cannot compare), 575 (worktree path occupied), 739 (uncommitted retained worktree) | refusal | converted, `RefusedBeforeChange` 4 |
+| transaction `validate_build_output_tree` 40 sites, `validate_retained_build_output` 5, 657/662 (legacy metadata), 2064-2202 | refusal | converted: both validators wrap any `RuntimeError` into `UnsafeRecord` 4 (bad ID: `UsageRefusal` 2) |
+| transaction `is_transaction_child` 15, `_require_cmru_record_purpose`, `_validate_legacy_release_progress` 5, `_copy_secret_overlay`, tag snapshot/attempt/scope/result readers and writers (~45), `_safe_digest_tree`, descriptor-relative cleanup helpers | internal-invariant | unchanged (metadata the tool itself wrote; corruption is a bug or tampering past the user's reach) |
+| transaction `retain_*`, `discard_build_workspace` post-checks, `_merge_origin_main_into_candidate`, `promote_workspace` | failure-after-start | unchanged |
+| runner 227, 277, 280, 296 (missing env / registry login credential) | refusal | converted, `CredentialMissing` 3 |
+| runner 152 (BUILD_DATE not derivable), 619/626 (single-project config) | refusal | unchanged: BUILD_DATE and the two config lookups are reached only from a step already running, class failure-after-start |
+| changelog 96, 334, 341, 355, 389, 466 (nothing to log, hand-authored section present, marker missing) | refusal | converted, `RefusedBeforeChange` 4 |
+| changelog 186 (no `release.changelog`) | refusal | converted, `StepUnavailable` 3; 189/196/428 (bad path, bad tag): `UsageRefusal` 2 |
+| changelog 69/109/170/270 (git failures, malformed log record) | failure-after-start | unchanged |
+| handlers 18 sites (build-output context, retained-input checks, host bind source, wheel/tarball matching) | failure-after-start | unchanged (run inside a release step under the runner; the step failure surfaces as `StepFailed`) |
+| tool_deps 493/500/507 (`--refresh` impossible) | refusal | converted to `CmruError` exit 1 (plain message) |
+| version 45/334/343, bundle 124/437, manifest 35, resolve 86, tester_gate 685, config 342 | failure-after-start / internal-invariant | unchanged (git failure, external-version file missing inside a step, SOURCE_DATE_EPOCH mapped to exit 3 by `bundle-manifest`, daemon readiness, packaging) |
+
+The table is a cluster classification from my own enumeration (AST walk of every `raise RuntimeError` grouped by
+enclosing function, then the messages of the user-reachable clusters read), not a per-line proof for the ~380 sites
+left; the "unchanged" clusters were classified from their function and message, not each exercised.
+
+## Findings 2-7
+
+- **#2**: SPEC S-CLI.9 and S-CLI.10 reworded: the catalog is a grammar and early-refusal contract; behaviour past
+  config discovery is pinned by each verb's own tests; no with-config sandbox.
+- **#3**: T5's fixture is now a two-project config (`beta` vendors a tool dependency on `alpha`; the root declares a
+  `pypi.requests` version target). `handler wheel-validate`/`tarball-validate` pass `--prefix`, set the env they need
+  and fake `validate_latest_release`, so they run and print `alpha latest: 1.0.0` (asserted). `tool-deps` prints
+  `integrity PASS` for the vendored file; `versions check` reaches the declared pypi URL and refuses offline (asserted
+  on stderr). Found while doing it: the old fixture patched only `cmru.release.urlopen`, so `tool-deps` and
+  `versions check` reached the REAL network (GitHub 404, pypi). The fixture now patches `cmru.release/tool_deps/cli/ghcr`
+  `urlopen` and `version_registry._urlopen`, and blocks `socket.connect` and `getaddrinfo`.
+- **#4**: three tests in `test_cli_spec_inventory.py`: every verb the "Verb semantics" table names is registered; every
+  registered leaf has a row or is on the explicit `_GRAMMAR_ONLY` list (`skills *`, `doctor`); the list itself may not
+  go stale; a planted ghost verb / dropped row is detected. S-CLI.10 no longer claims the old "semantic audit row" proof.
+- **#5**: the review-case sandbox also blocks `socket.getaddrinfo`; a test asserts the stub raises and that
+  `resolve --repo owner/repo --prefix demo-v` exits non-zero with no lookup answered by a real resolver. I did not
+  determine whether the verb attempts a lookup (the review says it did, via `resolve.py`'s function-local `urlopen`
+  that the sandbox's `cmru.release.urlopen` patch does not cover); the claim is "no DNS leaves the sandbox".
+- **#6**: `test_the_docker_probe_is_bounded_to_five_seconds` pins the timeout actually passed.
+- **#7**: SKILL.md `--json` sentence now lists `doctor`, `skills list`, `skills check`; the guard compares it with the
+  registry in both directions (leaf verbs with `--json` equal the named set), with an in-test plant.
+- Findings file: `semantics-domain-runtimeerror-reported-as-unexpected` marked fixed; generated SPEC region re-synced
+  with `cli-extended surface sync`.
+
+## Plant table (each run on the committed tree, reverted with `git checkout --`, tree clean afterwards)
+
+| Plant | Result |
+| --- | --- |
+| `assert_local_main_not_ahead` back to bare `RuntimeError` | KILLED: `test_a_local_main_ahead_of_origin_is_a_refusal_4` (1 failed, 40 passed) |
+| cli publish credential refusal back to bare `RuntimeError` | KILLED: `test_publish_without_a_token_is_exit_3`, `test_traceback_prints_no_stack_for_a_deliberate_refusal` |
+| `StepFailed.exit_code = 0` (drops the exit code) | KILLED: 3 tests (`test_run_of_a_failing_step_is_exit_1_with_a_plain_message`, step-failed tests) |
+| `StepFailed` drops `returncode` (passes 0) | KILLED: 2 tests (`...raises_step_failed_naming_step_project_and_log`, `test_step_failed_is_a_called_process_error...`) |
+| P6 `cmd_wheel_validate` writes a file | KILLED: T5 `[handler-wheel-validate]` |
+| P7 `cmd_tarball_validate` writes a file | KILLED: T5 `[handler-tarball-validate]` |
+| D5 doctor docker timeout 5 -> 600 | KILLED: `test_the_docker_probe_is_bounded_to_five_seconds` |
+| SKILL `--json` sentence without `doctor` | KILLED: `test_the_skill_names_exactly_the_verbs_that_have_json` (+ the in-test plant test) |
+
+An earlier first attempt at the StepFailed plant (`exit_code = 1 if returncode else 0`) was an equivalent mutant (still
+1) and was discarded, not counted.
