@@ -127,8 +127,18 @@ only the failing-update case pins it.
 
 ## Gates
 
-Filled in by the second commit (the gate lanes refuse a dirty tree, so they ran after the first
-commit). See the "Gate results" section below.
+Run at code commit `60a18093e` (lanes refuse a dirty tree; this report update is the only later change):
+
+- Full cmru suite via `pt.py`, no `--maxfail`, under the test lock: 3042 passed, 2 skipped (read
+  from the saved output, separate step). An earlier full run found 6 failures (a docs TOML-fence
+  count, 4 `SimpleNamespace` fixtures without `installer`, and a test pinning the old
+  `sha256=None` behaviour); all fixed.
+- ciu `test_getpy_enroll.py` + `test_ciu_host_enroll.py` with `PYTHONPATH=<wt>/ciu/src:<wt>/cmru/src:<wt>/libraries/cli-extended/src:<wt>/libraries/worktree/src`:
+  172 passed, 8 skipped; the committed-`get.py` drift guard passes (`ciu/get.py` and `tls-edge/get.py` re-rendered after the template change).
+- `coverage` lane: verdict PASS (the first run FAILED at 99.99% on the `_py_literal` raise branch,
+  `getpy.py:363`; `test_unrenderable_value_type_is_a_render_error` closes it).
+- `canary` lane: verdict PASS.
+- Not run (rules): `mutation`, `gate`, `enroll`, any release/publish.
 
 ## Deviations
 
