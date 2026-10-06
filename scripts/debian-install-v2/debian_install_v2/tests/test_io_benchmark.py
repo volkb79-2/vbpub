@@ -207,7 +207,7 @@ def make(tmp_path: Path, *, disk_gib: int = 100, **overrides) -> tuple[Installer
     disk.planned.clear()  # drop the root-discovery probe made by the constructor
     disk.inputs.clear()
     StateStore(config.state_dir).save_new(StateStore.new(config))
-    for hook in ("_configure_zswap", "_configure_cgroup2_flags", "_activate_swap_partitions", "_health_gate_swap_devices"):
+    for hook in ("_configure_zswap", "_configure_iocost", "_configure_cgroup2_flags", "_activate_swap_partitions", "_health_gate_swap_devices"):
         setattr(installer, hook, lambda *a, **k: None)
     return installer, disk
 

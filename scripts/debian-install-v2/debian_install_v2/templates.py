@@ -106,9 +106,18 @@ Pin-Priority: 50
 """
 
 
+# Mirrors gstammtisch-guide/files/etc/systemd/system/zswap-config.service (the
+# reference implementation): same unit header, same ExecStart order -- load
+# zstd, set compressor, THEN the pool knobs, THEN enabled=1 LAST -- so the
+# first and only pool zswap creates already uses the configured compressor.
+# Each ExecStart writes exactly ONE knob, and only knobs present on BOTH the
+# 6.12 (stable) and 7.x (backports) kernels: there is deliberately no `zpool`
+# knob (absent on 7.x; zsmalloc is the only backend left). Nothing zswap.* ever
+# goes on the kernel command line.
 ZSWAP_SERVICE = """\
 [Unit]
-Description=Configure zswap before swap activation
+Description=Configure & enable zswap before swap activates
+Documentation=https://docs.kernel.org/admin-guide/mm/zswap.html
 DefaultDependencies=no
 After=systemd-modules-load.service
 Before=swap.target
@@ -119,29 +128,140 @@ Type=oneshot
 RemainAfterExit=yes
 ExecStart=/usr/sbin/modprobe zstd
 ExecStart=/bin/sh -c 'echo {compressor} > /sys/module/zswap/parameters/compressor'
-ExecStart=/bin/sh -c 'echo {zpool} > /sys/module/zswap/parameters/zpool'
 ExecStart=/bin/sh -c 'echo {pool_percent} > /sys/module/zswap/parameters/max_pool_percent'
-ExecStart=/bin/sh -c 'echo 90 > /sys/module/zswap/parameters/accept_threshold_percent'
-ExecStart=/bin/sh -c 'echo Y > /sys/module/zswap/parameters/shrinker_enabled'
+ExecStart=/bin/sh -c 'echo {accept_threshold_percent} > /sys/module/zswap/parameters/accept_threshold_percent'
+ExecStart=/bin/sh -c 'echo {shrinker} > /sys/module/zswap/parameters/shrinker_enabled'
 ExecStart=/bin/sh -c 'echo 1 > /sys/module/zswap/parameters/enabled'
-ExecStartPost=/bin/sh -c 'echo "zswap compressor=$$(cat /sys/module/zswap/parameters/compressor)"'
+ExecStartPost=/bin/sh -c 'echo "zswap: compressor=$$(cat /sys/module/zswap/parameters/compressor) pool%=$$(cat /sys/module/zswap/parameters/max_pool_percent) shrinker=$$(cat /sys/module/zswap/parameters/shrinker_enabled) enabled=$$(cat /sys/module/zswap/parameters/enabled)"'
 
 [Install]
 WantedBy=sysinit.target
 """
 
 
-THP_SERVICE = """\
+ZSWAP_MODULES_LOAD = """\
+# Load the zstd compression module early in userspace so zswap can use it.
+# zswap's built-in init runs before modules load and always falls back to the
+# kernel default compressor first; zswap-config.service re-selects the
+# configured one (and only then enables zswap) once this module is available.
+zstd
+"""
+
+
+# tmpfiles.d `w!` entries (gstammtisch-guide/files/etc/tmpfiles.d/{thp,ksm}.conf),
+# replacing the earlier thp-config/ksm-config oneshot units. A line whose knob
+# is absent on a given kernel errors for that line only; the rest still apply.
+# THP is `madvise`, not `always`: with zswap in front of swap, `always` makes the
+# kernel compress/swap 2 MB units, which wastes pool space and hurts the
+# compression ratio under pressure; applications that benefit opt in through
+# madvise(MADV_HUGEPAGE).
+THP_TMPFILES = """\
+# Transparent Huge Pages: madvise (not always) on a zswap-fronted host --
+# always makes the kernel compress/swap 2 MB units, which wastes pool space and
+# hurts the compression ratio under pressure. Applications opt in with
+# madvise(MADV_HUGEPAGE).
+w! /sys/kernel/mm/transparent_hugepage/enabled - - - - madvise
+w! /sys/kernel/mm/transparent_hugepage/defrag  - - - - madvise
+"""
+
+
+# ksmd stays idle and costs ~nothing until a process opts in via
+# prctl(PR_SET_MEMORY_MERGE, 1): this only turns the scanner on, it merges
+# nothing by itself. Read-only image pages are already shared through the
+# page cache; KSM only dedups identical ANONYMOUS pages across opted-in
+# processes.
+KSM_TMPFILES = """\
+# Kernel Samepage Merging: scanner on, idle until a process opts in via
+# prctl(PR_SET_MEMORY_MERGE, 1). If a line errors at boot that knob does not
+# exist on this kernel (check ls /sys/kernel/mm/ksm/).
+w! /sys/kernel/mm/ksm/run                      - - - - 1
+w! /sys/kernel/mm/ksm/advisor_mode             - - - - scan-time
+w! /sys/kernel/mm/ksm/advisor_target_scan_time - - - - 200
+# All-zero anonymous pages map straight to the shared zero page instead of the
+# general merge path, freeing that RAM without waiting for memory pressure.
+w! /sys/kernel/mm/ksm/use_zero_pages           - - - - 1
+"""
+
+
+# Memory/swap sysctls, adapted from gstammtisch-guide's 99-gstammtisch-memory.conf
+# for a general (zswap-fronted) Debian host. Each value carries its own "why".
+SWAP_SYSCTL = """\
+# vbpub debian-install v2 -- memory/swap tuning for a zswap-fronted host.
+
+# With zswap, reclaiming anonymous pages is cheap (they land in a compressed
+# RAM pool, not on disk), so cold anonymous memory is pushed out early and file
+# cache stays resident. Kernel range is 0-200; systemd-oomd is the safety net.
+vm.swappiness = {swappiness}
+
+# Prefer keeping dentry/inode caches (<100): path-heavy work such as container
+# create/teardown and builds does enormous numbers of lookups.
+vm.vfs_cache_pressure = 50
+
+# Wake kswapd earlier so background reclaim starts before pressure is acute --
+# smoother under bursty load. Kernel default is 10.
+vm.watermark_scale_factor = 50
+
+# No swap readahead: wasteful on SSD / thin-provisioned backing and on zswap
+# fault-back, which is random access. 0 means one page per fault.
+vm.page-cluster = 0
+
+# Reserve ~64 MB so root can still log in and act when memory is exhausted.
+vm.admin_reserve_kbytes = 65536
+
+# Cap dirty page-cache lower than the kernel default (20) so a burst of
+# writes cannot stall the whole host on I/O.
+vm.dirty_ratio = 15
+
+# Start background writeback earlier than the kernel default (10).
+vm.dirty_background_ratio = 5
+
+# vm.min_free_kbytes is NOT set here: it is a floor, never a fixed value. See
+# vbpub-min-free-floor.service, which only ever raises the kernel's own value.
+"""
+
+
+# vm.min_free_kbytes floor (operator decision 2026-10-06: 65536 KiB). A static
+# sysctl.d entry could LOWER the kernel's own computed value on a large-RAM
+# host (the kernel scales it with RAM), so this boot-time check only raises it.
+# The script takes the file to adjust as $1 so it is testable without /proc.
+MIN_FREE_FLOOR_SCRIPT = """\
+#!/bin/sh
+# /usr/local/sbin/vbpub-min-free-floor [PROC_FILE]
+# Raise vm.min_free_kbytes to FLOOR_KB only when the kernel's value is lower;
+# never lower it (larger-RAM hosts compute a higher value themselves).
+set -eu
+FILE="${1:-/proc/sys/vm/min_free_kbytes}"
+FLOOR_KB=@FLOOR_KB@
+CUR=$(cat "$FILE")
+case "$CUR" in ''|*[!0-9]*) echo "vbpub-min-free-floor: unreadable value in $FILE" >&2; exit 1 ;; esac
+if [ "$CUR" -lt "$FLOOR_KB" ]; then
+  echo "$FLOOR_KB" > "$FILE"
+  echo "vbpub-min-free-floor: raised vm.min_free_kbytes $CUR -> $FLOOR_KB"
+else
+  echo "vbpub-min-free-floor: kernel value $CUR >= floor $FLOOR_KB, left unchanged"
+fi
+"""
+
+
+MIN_FREE_FLOOR_KB = 65536
+
+
+def render_min_free_floor_script(floor_kb: int = MIN_FREE_FLOOR_KB) -> str:
+    # str.replace, not format(): the script body is full of shell ${...} braces.
+    return MIN_FREE_FLOOR_SCRIPT.replace("@FLOOR_KB@", str(int(floor_kb)))
+
+
+MIN_FREE_FLOOR_SERVICE = """\
 [Unit]
-Description=Configure Transparent Huge Pages
+Description=Raise vm.min_free_kbytes to a floor when the kernel value is lower
 DefaultDependencies=no
-After=sysinit.target
+After=systemd-sysctl.service
+Before=sysinit.target
 
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=/bin/sh -c 'echo madvise > /sys/kernel/mm/transparent_hugepage/enabled || true'
-ExecStart=/bin/sh -c 'echo never > /sys/kernel/mm/transparent_hugepage/defrag || true'
+ExecStart=/usr/local/sbin/vbpub-min-free-floor
 
 [Install]
 WantedBy=sysinit.target
@@ -215,29 +335,151 @@ WantedBy=sysinit.target
 """
 
 
-# Ported from gstammtisch-guide/files/etc/tmpfiles.d/ksm.conf, but as a
-# oneshot service (like ZSWAP_SERVICE/THP_SERVICE) rather than a tmpfiles.d
-# `w` line — debian-install-v2 doesn't use tmpfiles.d anywhere else, and this
-# keeps every early-boot sysfs tuning knob behind the same mechanism.
-# ksmd stays idle and costs ~nothing until a process opts in via
-# prctl(PR_SET_MEMORY_MERGE, 1) — this only turns the scanner on, it merges
-# nothing by itself; not game-specific (the opt-in is what's game-specific).
-KSM_SERVICE = """\
+# Units that earlier installer revisions wrote for THP and KSM. They are
+# replaced by the tmpfiles.d entries above and must not stay enabled.
+LEGACY_TUNING_UNITS = ("thp-config.service", "ksm-config.service")
+
+
+# io.cost (iocost) for the ROOT disk, from the install-time benchmark's
+# persisted coefficients. The device's MAJ:MIN is resolved at BOOT from the
+# root mount, never at install time, so a device rename/renumbering cannot
+# misconfigure another disk. Model first (ctrl=user, linear), then QoS enable.
+# The root cgroup's io.cost.* files take one line per device.
+# QoS parameters follow modern-debian-tools plan-iocost-integration.md D5
+# (rpct/wpct 95.00, vrate bounds min=1.00 max=100.00); rlat/wlat are an open
+# operator choice there, so they stay at the kernel defaults.
+IOCOST_MODEL_PATH = "/etc/vbpub/iocost-model"
+IOCOST_QOS_PARAMS = "rpct=95.00 wpct=95.00 min=1.00 max=100.00"
+
+IOCOST_SCRIPT = """\
+#!/bin/sh
+# /usr/local/sbin/vbpub-iocost-setup
+# Boot-time io.cost setup for the root disk: resolve its MAJ:MIN NOW (from the
+# root mount), write io.cost.model from the persisted benchmark coefficients,
+# then enable io.cost.qos. Refuses (exit 1) on anything it cannot verify.
+# VBPUB_SYS / VBPUB_IOCOST_MODEL exist for tests only.
+set -eu
+
+SYS="${VBPUB_SYS:-/sys}"
+CG="${VBPUB_CGROUP_ROOT:-$SYS/fs/cgroup}"
+MODEL_FILE="${VBPUB_IOCOST_MODEL:-@MODEL_PATH@}"
+QOS_PARAMS="@QOS_PARAMS@"
+
+if [ ! -s "$MODEL_FILE" ]; then
+  echo "vbpub-iocost-setup: no model file $MODEL_FILE" >&2
+  exit 1
+fi
+COEFFS=$(head -n 1 "$MODEL_FILE")
+if ! printf '%s\\n' "$COEFFS" | grep -Eq '^rbps=[0-9]+ rseqiops=[0-9]+ rrandiops=[0-9]+ wbps=[0-9]+ wseqiops=[0-9]+ wrandiops=[0-9]+$'; then
+  echo "vbpub-iocost-setup: malformed model file $MODEL_FILE" >&2
+  exit 1
+fi
+
+# Root block device -> its whole disk (follow parents until none is left).
+SRC=$(findmnt -no SOURCE / 2>/dev/null | head -n 1)
+case "$SRC" in /dev/*) ;; *) echo "vbpub-iocost-setup: cannot resolve the root device (got '$SRC')" >&2; exit 1 ;; esac
+RESOLVED=$(readlink -f "$SRC" 2>/dev/null || true)
+DISK=$(basename "${RESOLVED:-$SRC}")
+for _ in 1 2 3 4 5 6; do
+  PARENT=$(lsblk -dno PKNAME "/dev/$DISK" 2>/dev/null | head -n 1)
+  [ -n "$PARENT" ] || break
+  DISK="$PARENT"
+done
+DEVFILE="$SYS/class/block/$DISK/dev"
+if [ ! -r "$DEVFILE" ]; then
+  echo "vbpub-iocost-setup: no $DEVFILE for root disk $DISK" >&2
+  exit 1
+fi
+MAJMIN=$(head -n 1 "$DEVFILE")
+case "$MAJMIN" in [0-9]*:[0-9]*) ;; *) echo "vbpub-iocost-setup: bad MAJ:MIN '$MAJMIN'" >&2; exit 1 ;; esac
+
+echo "$MAJMIN ctrl=user model=linear $COEFFS" > "$CG/io.cost.model"
+echo "$MAJMIN enable=1 ctrl=user $QOS_PARAMS" > "$CG/io.cost.qos"
+echo "vbpub-iocost-setup: io.cost enabled on $DISK ($MAJMIN)"
+""".replace("@MODEL_PATH@", IOCOST_MODEL_PATH).replace("@QOS_PARAMS@", IOCOST_QOS_PARAMS)
+
+
+IOCOST_SERVICE = """\
 [Unit]
-Description=Enable Kernel Samepage Merging (KSM)
+Description=Configure io.cost for the root disk from the install-time benchmark
+After=local-fs.target
+Before=sysinit.target
 DefaultDependencies=no
-After=sysinit.target
+ConditionPathExists=/sys/fs/cgroup/io.cost.model
+ConditionPathExists=/etc/vbpub/iocost-model
 
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=/bin/sh -c 'echo 1 > /sys/kernel/mm/ksm/run || true'
-ExecStart=/bin/sh -c 'echo scan-time > /sys/kernel/mm/ksm/advisor_mode || true'
-ExecStart=/bin/sh -c 'echo 200 > /sys/kernel/mm/ksm/advisor_target_scan_time || true'
-ExecStart=/bin/sh -c 'echo 1 > /sys/kernel/mm/ksm/use_zero_pages || true'
+ExecStart=/usr/local/sbin/vbpub-iocost-setup
 
 [Install]
 WantedBy=sysinit.target
+"""
+
+
+# One-command swap/zswap view. Works on 6.12 and 7.x: the zswap numbers come
+# from /proc/meminfo + /proc/vmstat (no debugfs needed); debugfs counters are
+# printed as extras only when readable. VBPUB_PROC / VBPUB_SYS are test hooks.
+SWAP_HEALTH_SCRIPT = """\
+#!/usr/bin/env bash
+# /usr/local/sbin/vbpub-swap-health [watch]
+# zswap / swap / memory-pressure snapshot. Watch pgmajfault (real disk reads)
+# and PSI, NOT `vmstat si`, which mixes fast zswap-pool hits with slow disk reads.
+set -uo pipefail
+PROC="${VBPUB_PROC:-/proc}"
+SYS="${VBPUB_SYS:-/sys}"
+ZP="$SYS/module/zswap/parameters"
+ZD="$SYS/kernel/debug/zswap"
+hr() { printf '%s\\n' "------------------------------------------------------------"; }
+param() { cat "$ZP/$1" 2>/dev/null || echo "n/a"; }
+vmstat_val() { awk -v k="$1" '$1 == k { print $2; found = 1 } END { if (!found) print "" }' "$PROC/vmstat" 2>/dev/null; }
+
+snap() {
+  hr
+  if [ -d "$ZP" ]; then
+    echo "ZSWAP  enabled=$(param enabled) compressor=$(param compressor)" \\
+         "max_pool_percent=$(param max_pool_percent)" \\
+         "accept_threshold_percent=$(param accept_threshold_percent)" \\
+         "shrinker_enabled=$(param shrinker_enabled)"
+  else
+    echo "ZSWAP  not available on this kernel ($ZP missing)"
+  fi
+  # /proc/meminfo: Zswap = compressed pool size, Zswapped = uncompressed size of what it holds (kB).
+  pool_kb=$(awk '$1 == "Zswap:" { print $2 }' "$PROC/meminfo" 2>/dev/null)
+  orig_kb=$(awk '$1 == "Zswapped:" { print $2 }' "$PROC/meminfo" 2>/dev/null)
+  if [ -n "${pool_kb:-}" ] && [ -n "${orig_kb:-}" ]; then
+    echo "  pool=${pool_kb} kB  stored(uncompressed)=${orig_kb} kB"
+    awk -v o="$orig_kb" -v p="$pool_kb" 'BEGIN {
+      if (p > 0) printf "  compression ratio: %.2fx\\n", o / p;
+      else print "  compression ratio: n/a (pool empty)" }'
+  else
+    echo "  (Zswap/Zswapped not in meminfo)"
+  fi
+  zout=$(vmstat_val zswpout); zwb=$(vmstat_val zswpwb); zin=$(vmstat_val zswpin)
+  if [ -n "$zout" ]; then
+    echo "  zswpout=$zout zswpin=${zin:-n/a} zswpwb=${zwb:-n/a}"
+    if [ -n "$zwb" ]; then
+      awk -v wb="$zwb" -v out="$zout" 'BEGIN {
+        if (out > 0) printf "  writeback ratio: %.1f%% of pages stored (high = pool too small for the load)\\n", 100 * wb / out;
+        else print "  writeback ratio: n/a (nothing stored yet)" }'
+    fi
+  fi
+  if [ -d "$ZD" ] && [ -r "$ZD/stored_pages" ]; then
+    for r in stored_pages pool_total_size written_back_pages pool_limit_hit reject_compress_poor reject_alloc_fail; do
+      [ -r "$ZD/$r" ] && echo "  debugfs $r=$(cat "$ZD/$r")"
+    done
+  else
+    echo "  (debugfs zswap counters not available: debugfs unmounted or not root -- figures above come from /proc)"
+  fi
+  hr; echo "SWAP DEVICES"; swapon --show 2>/dev/null || echo "  (none active)"
+  hr; echo "SWAP COUNTERS (/proc/vmstat)"; grep -E '^(pgmajfault|pswpin|pswpout|zswpin|zswpout|zswpwb) ' "$PROC/vmstat" 2>/dev/null || echo "  (unavailable)"
+  hr; echo "MEMORY PRESSURE (PSI)"; cat "$PROC/pressure/memory" 2>/dev/null || echo "  (PSI unavailable)"
+  hr; echo "IO PRESSURE (PSI)"; cat "$PROC/pressure/io" 2>/dev/null || echo "  (PSI unavailable)"
+  hr; echo "FREE"; free -h 2>/dev/null || true
+}
+
+if [ "${1:-}" = "watch" ]; then exec watch -n 5 "$0"; else snap; fi
 """
 
 

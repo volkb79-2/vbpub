@@ -529,11 +529,11 @@ def test_configure_zswap_starts_units_this_boot_not_just_enables_them(tmp_path):
     installer = make_installer(tmp_path, dry_run=False)
     installer._configure_zswap()
     argvs = [a.argv for a in installer.actions.planned]
-    assert ("/usr/bin/systemctl", "enable", "--now", "zswap-config.service", "thp-config.service") in argvs
+    assert ("/usr/bin/systemctl", "enable", "--now", "zswap-config.service", "vbpub-min-free-floor.service") in argvs
     # Neither the original bug (bare enable, no --now at all) nor the
     # first, also-wrong fix attempt (the single, non-existent token
     # "enable-now") may reappear.
-    assert ("/usr/bin/systemctl", "enable", "zswap-config.service", "thp-config.service") not in argvs
+    assert ("/usr/bin/systemctl", "enable", "zswap-config.service", "vbpub-min-free-floor.service") not in argvs
     assert not any("enable-now" in argv for argv in argvs)
 
 
@@ -564,12 +564,17 @@ def test_health_gate_compressor_and_log(tmp_path, monkeypatch):
     with pytest.raises(RuntimeError, match="zswap compressor"):
         installer._health_gate_swap_devices()
 
+    zswap_values = {
+        "compressor": "zstd", "enabled": "Y", "max_pool_percent": "25",
+        "accept_threshold_percent": "90", "shrinker_enabled": "Y",
+    }
+
     def fake_read_match(self, *a, **kw):
         s = str(self)
         if s == "/etc/fstab":
             return fstab_content
-        if s.endswith("compressor"):
-            return "zstd\n"
+        if s.startswith("/sys/module/zswap/parameters/"):
+            return zswap_values[s.rsplit("/", 1)[1]] + "\n"
 
     monkeypatch.setattr(Path, "read_text", fake_read_match)
     with pytest.raises(RuntimeError, match="stage2 log does not exist"):
