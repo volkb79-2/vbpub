@@ -74,3 +74,48 @@ inspection raise, stage-one failure (one post), nested guard once-only, parse er
 
 - `scripts/debian-install-v2/run-gate.py --worktree .../lt-upg r0-r1`: PASS, exit 0 (954 passed, 11 skipped).
 - `scripts/netcup/run-gate.py --worktree .../lt-upg suite`: PASS, exit 0 (716 passed).
+
+## Fix round 1 (reviewer verdict REJECT at `67e570e69`; code commit `e067596d3`)
+
+Tests: `tests/test_lt_early_fix1.py` (and `tests/test_lt_upg_fix1.py`, see the LT-UPG report).
+
+- **B2** `failure_notified_at` is written only when the post was delivered AND the state is this run's.
+  New tests on the stage1 guard path (through `main(["install", ...])`): `post_webhook` returning False, `_notify`
+  raising (both leave the mark unset, `recently_notified` false), and a delivered post (mark set).
+- **D1 (controller ruling)** early failure installs the controller key when a pubkey is configured, EXCEPT
+  for a host-identity refusal, which posts only (no state, no key, no `mkdir`, no `systemctl`). Precise list of
+  identity refusals, the new `HostIdentityRefusal(InstallerError)`, raised only in `inspect()`:
+  1. unsupported or undetected Debian release (`UnsupportedHostRelease`, still a `ConfigError`);
+  2. root is not a plain block-device mount; 3. cannot derive root disk and partition number from root.
+  There was no explicit "wrong machine" guard in the code; these are the checks that say "this is not the kind
+  of host the installer targets". Plan-level refusals (`preserve_root_size_gb` below the minimum, disk too
+  small, mounted partitions, 4Kn sectors) are NOT identity refusals and keep the key (tested, the LT-05 case).
+  The post says "nothing was installed or changed on this host".
+- **D2 (controller ruling)** stage2 success: `retain_controller_ssh_key=false` removes this run's key and EVERY
+  `vbpub-controller-ephemeral-*` key (field-start match on the comment, so a lookalike or unmarked key
+  survives); `true` keeps only the current key and removes the stale marked ones (step
+  `controller_ssh_key_pruned`, best-effort: a failure is a "warned" step and never fails the install).
+  A failed stage2 touches no key. Not applied when no pubkey is configured (the early return is kept).
+- **S4** timers: restored on failure only when this run held them (in-memory flag, or the silent state step
+  `apt_timers_held` written by `_hold_apt_timers`, which survives into the stage2 process; not restored if
+  `apt_timers` was already released). An early failure (`show_plan`) makes no `systemctl enable`. In
+  telegram-verbose mode the guard's bookkeeping steps are silent (`_in_failure_handling`), so the ONE failure
+  post is the first message; step posts resume afterwards (tested).
+- **S6** decision: a `state.json` that exists but was not created by this run (different `run_id`, or
+  unreadable) is left strictly untouched (no status flip, no step marks, no notifier mark, its run id is not
+  quoted as this run's) and the post says so, naming the old run id. With no state a fresh one is created for this
+  run (as before). After `install()` has saved its own state, the failure flips that one (tested both ways).
+  Least surprising because the old file may describe an install still running or completed.
+- **S7** test: a parse error with a Telegram-only notify config posts once via `api.telegram.org/.../sendMessage`
+  (HTML, chat id, cause in the text, token not in the text), exit 2, no state.
+- `_mark_step` skips the state write while the state is foreign; `_notify` skips the state's run id and thread id then.
+
+Gates on the committed tree `e067596d3` (foreground, flock/nice/ionice, verdicts read in a separate step):
+- `scripts/debian-install-v2/run-gate.py --worktree .../lt-upg r0-r1`: PASS, exit 0 (1025 passed, 11 skipped).
+- `scripts/netcup/run-gate.py --worktree .../lt-upg suite`: PASS, exit 0 (716 passed).
+
+Plant table (the reviewer's 6 plants plus the B1 `#clear` plant, each against the full suite): NOT YET RUN in this
+session, see `scratchpad/LT-UPG-FIX-CONTINUATION.md`; do not read this section as plants killed.
+
+Process note: three Edit calls were issued in one message once (against the one-edit-per-message rule); the
+content of each edit is in the commit.

@@ -184,3 +184,52 @@ flock/nice/ionice, verdicts read in a separate step from the output files:
 Gates for the rulings (run on the committed tree before this line was added):
 `r0-r1` PASS exit 0, 939 passed / 11 skipped; netcup `suite` PASS exit 0, 716 passed.
 
+## Fix round 1 (reviewer verdict REJECT at `67e570e69`; code commit `e067596d3`)
+
+Facts verified LIVE on v1001 by the controller (unattended-upgrades 2.12, trixie), recorded as ground truth:
+- `/etc/apt/apt.conf.d/50unattended-upgrades` has `Unattended-Upgrade::Origins-Pattern` with
+  `origin=Debian,codename=${distro_codename},label=Debian` (main pocket),
+  `origin=Debian,codename=${distro_codename},label=Debian-Security` and
+  `origin=Debian,codename=${distro_codename}-security,label=Debian-Security`. apt merges list entries across
+  files, so they stay allowed unless cleared.
+- `/usr/bin/unattended-upgrade` takes the apt system lock ONCE via `apt_pkg.pkgsystem_lock()` (~line 2360).
+  On failure it logs `Lock could not be acquired (another package manager running?)`, prints
+  `Cache lock can not be acquired, exiting` and exits. No retry loop of its own. Whether libapt's
+  `DPkg::Lock::Timeout` applies inside `pkgsystem_lock` is NOT verified and nothing here relies on it. It also
+  takes `/var/run/unattended-upgrades.lock` (`Lock file is already taken, exiting`).
+
+What changed (each item has tests in `tests/test_lt_upg_fix1.py` / `tests/test_lt_early_fix1.py`):
+- **B1** the generated 51 file starts with `#clear Unattended-Upgrade::Origins-Pattern;` and
+  `#clear Unattended-Upgrade::Allowed-Origins;` (`templates.py`). The tests model apt's list merge: the real
+  50-file defaults first, then the 51 file. With the clears, security-only allows ONLY `trixie-security`;
+  full allows the four pockets; foreign origins never. A power check shows the 50 defaults alone allow the
+  main pocket and the 51 file without the clears leaks it. A test pins that the clears are the first ops.
+  README states what each mode allows.
+- **B3** `_failure_tail`: step detail and post keep the header plus the last 4 non-empty output lines
+  (each cut at 160 chars, total at 600), webhook/token redacted, `<>&` dropped (safe in the Telegram HTML post).
+  The test uses the real shape `action failed (1): <description>\n<stdout>`.
+- **S1** after `disable --now`, `_wait_apt_services_idle` polls `systemctl show --property=ActiveState --value`
+  for `apt-daily.service` / `apt-daily-upgrade.service` (active, activating, deactivating, reloading are busy),
+  10 s apart, up to 600 s, one log line per wait, never stops a service; at the bound it warns and continues.
+  The install-time `unattended-upgrade` retries on the three u-u markers plus the apt ones, with the same
+  budget as `apt-get update` (`APT_LOCK_RETRY_ATTEMPTS` x `APT_LOCK_RETRY_DELAY_S`), also when the message is
+  printed with exit 0; then it is recorded "warned". A non-lock failure is not retried.
+- **S2** the notify-only simulation failing is "warned" (detail and post carry the cause), not fatal.
+- **S3** the stage2 stale-hook check cannot fail a successful shrink: an error becomes
+  `WARNING could not check initramfs ...` in the step detail.
+- **S5** `_initramfs_hook_state` matches the exact `scripts/local-premount/vbpub-root-shrink` listing entry
+  (a leading `./` is accepted), not a substring.
+- **Plants 5 and 6** tests: `HostActions.run` gives `unattended-upgrade` (and apt-get) `DEBIAN_FRONTEND=noninteractive`
+  and other commands no env override; `auto_reboot_after_stage1=False` with a new kernel gives
+  "reboot required for the new kernel (reboot disabled by configuration)".
+- Existing `test_lt_apt.test_failed_install_reenables_apt_timers_best_effort` now holds the timers in its fake stage
+  (the restore is conditional, see the LT-EARLY report S4).
+
+Gates on the committed tree `e067596d3` (foreground, flock/nice/ionice, verdicts read in a separate step):
+- `scripts/debian-install-v2/run-gate.py --worktree ... r0-r1`: lane verdict PASS, exit 0, 1025 passed / 11 skipped
+  (log `/tmp/run-gate/lanes/r0-r1/4bbbd12d754323912a481805e605e6de.log`).
+- `scripts/netcup/run-gate.py --worktree ... suite`: lane verdict PASS, exit 0, 716 passed
+  (log `/tmp/run-gate/lanes/suite/211c3c2327770c6ff56ae671ef7f4106.log`).
+
+Not run live: nothing here touched a host. The u-u lock behaviour of `DPkg::Lock::Timeout` remains unverified.
+
