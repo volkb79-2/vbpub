@@ -641,3 +641,7 @@ def test_cx23_error_help_usage_covers_unknown_verb_and_missing_verb():
 def test_cx23_invalid_policies_are_refused(kw):
     with pytest.raises(ValueError, match="must be one of"):
         CliRegistry(IDENT, prog="t", description="d", **kw)
+    from cli_extended.output import CliOutput
+
+    with pytest.raises(ValueError, match="must be one of"):
+        CliOutput(IDENT, **kw)
