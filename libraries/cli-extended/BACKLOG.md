@@ -332,12 +332,12 @@ This list is the index:
 | CLI-EXT-19 | `invoke_script`/`invoke_module` take `python_args` (e.g. `-S`, `-I`) or an `isolated=True` switch that also drops the inherited `PYTHONPATH` for an explicit interpreter (status: planned) | W9b debian-install-v2 adoption | Wrapper scripts and `env={"PYTHONPATH": None}` to prove "library not installed" |
 | (CLI-EXT-19 status) | **Fixed `7cfe227f3`** (CX-BACKLOG 2026-10-06): `python_args=` and `isolated=True` (adds `-I`, drops inherited `PYTHONPATH`; refuses `pythonpath`/`library_path`) on `invoke_script`/`invoke_module` | | |
 | CLI-EXT-20 | `Requires`/`Conflicts` on an option that has a default ("differs from its default"), so a defaulted option need not drop its argparse default (status: planned) | W9b debian-install-v2 adoption | `--repo-url` lost its default to be constrainable (F-005) |
-| (CLI-EXT-20 status) | **Open, decision ask** (CX-BACKLOG 2026-10-06): not implemented, see the design note below | | |
+| (CLI-EXT-20 status) | **Ruled 2026-10-06 (operator): implement as an explicit opt-in on the constraint (`present="differs-from-default"`) in the next minor**; the loud default stays; not yet implemented, see the design note below | | |
 | CLI-EXT-21 | Per-verb `--dry-run` help sentence on `VerbSpec(dry_run=...)` (status: planned) | W9b debian-install-v2 adoption | One generic sentence for every verb (F-007) |
 | (CLI-EXT-21 status) | **Fixed `7cfe227f3`**: `VerbSpec(dry_run_help="...")`; default sentence unchanged | | |
 | CLI-EXT-22 | Audit heuristic precision: AC-01 `version-source` ignores test files that build a pinned `CliIdentity(...)`; AC-25 `no-path-hacks` ignores comments (status: planned) | W9b debian-install-v2 adoption | Two false positives fixed by rewording tests, not code |
 | (CLI-EXT-22 status) | **Fixed `7cfe227f3`**: AC-25 ignores comments (tokenizer-based for `.py`); AC-01 ignores test files | | |
-| (CLI-EXT-17, 18 status) | **Open, size L, decision ask**: design notes below; not implemented | | |
+| (CLI-EXT-17, 18 status) | **Ruled 2026-10-06 (operator): scheduled after cmru 6.0 adoption** (17 together with 25; 18 after cmru 6.0); size L; design notes below; not implemented | | |
 
 **Provenance:** controller survey 2026-10-04 of cmru, nyxloom, Netcup,
 debian-install-v2 and the five non-adopting CLIs (ciu, assay, run-gate,
@@ -353,15 +353,15 @@ Per-fix evidence and plants: `docs/CX-BACKLOG-2026-10-REPORT.md`.
 | 01, 03, 04, 05 | done (closed or implemented, see entries) | – | |
 | 02 | done (implemented in W2) | – | |
 | 06 – 16 | done (released in 0.2.0, see CHANGES.md) | – | |
-| 17 | open, decision ask | L | design note below |
-| 18 | open, decision ask | L | design note below |
+| 17 | scheduled after cmru 6.0 (ruled 2026-10-06) | L | design note below |
+| 18 | scheduled after cmru 6.0 (ruled 2026-10-06) | L | design note below |
 | 19 | done `7cfe227f3` | S | |
-| 20 | open, decision ask | M (policy) | design note below; reverses a documented, tested refusal |
+| 20 | ruled 2026-10-06: explicit opt-in on the constraint, next minor | M (policy) | design note below; reverses a documented, tested refusal only for the opt-in |
 | 21 | done `7cfe227f3` | S | |
 | 22 | done `7cfe227f3` | S | |
 | 23 | done `f6ad8ce0c` | M | opt-ins, defaults unchanged |
 | 24 | done `7cfe227f3` | S | |
-| 25 | open, decision ask | L | design note below |
+| 25 | scheduled after cmru 6.0 (ruled 2026-10-06), with 17 | L | design note below |
 | 26 | done `f6ad8ce0c` | S | |
 | 27 | done `f6ad8ce0c` | S | |
 | 28 | done `f6ad8ce0c` | S | |
@@ -477,7 +477,7 @@ at once; cmru uses one shared factory (`cmru.cli_support.cmru_registry`).
 
 ## CLI-EXT-25 — cardinality constraints on a selector
 
-**Status:** Open, size L, decision ask (CX-BACKLOG 2026-10-06). See the shared 17/25 design note in the triage section.
+**Status:** Scheduled after cmru 6.0 adoption, together with CLI-EXT-17 (operator ruling 2026-10-06); size L, not implemented. See the shared 17/25 design note in the triage section.
 **Type:** Feature
 **Area:** Constraints
 
@@ -581,3 +581,40 @@ policy) had to subclass `CliFailure`. Observed in cmru W2-PKG5 review fix
 round 1 (B1).
 
 **Provenance:** cmru W2-PKG5 review fix round 1, 2026-10-06.
+
+## CLI-EXT-30 — `register_skills_verbs` raises `ValueError` with a consumer's legacy global `--dry-run`
+
+**Status:** Open (found in the CX-BACKLOG review, 2026-10-06). Size S.
+**Type:** Defect (migration regression)
+**Area:** Skills, global options
+
+Since CLI-EXT-26 the skills child registry receives the parent's
+`global_options`. The child's `install`/`uninstall` verbs declare
+`dry_run=True`, so a consumer that still declares its own legacy global
+`--dry-run` makes `register_skills_verbs` raise `ValueError` (duplicate
+`--dry-run`). This is a regression only for consumers migrating to the library
+`dry_run`; no in-repo consumer is affected. Related and pre-existing: a
+consumer's global `--json` conflicts with the library's argparse `--json` in
+the same way.
+
+Wanted: either skip forwarding a global option whose flag collides with a
+library-owned control (with a clear error naming the consumer's option), or
+document that the legacy global must be removed before adopting `skills`.
+
+**Provenance:** CX-BACKLOG review round 1 (finding C2), 2026-10-06.
+
+## CLI-EXT-31 — the pytest CLI-case coverage check makes any partial pytest run error
+
+**Status:** Open (found in the CX-BACKLOG review, 2026-10-06). Size S.
+**Type:** Defect (usability)
+**Area:** Pytest plugin
+
+The opt-in pytest plugin's CLI-case coverage check makes ANY partial pytest
+run (for example a single test file) error with "no tests ran" (exit 4)
+unless the review-cases test file is included. That is hostile to focused
+runs.
+
+Proposal: relax the check automatically when not all test paths were
+collected, or provide a documented opt-out (option or environment variable).
+
+**Provenance:** CX-BACKLOG review round 1, 2026-10-06.

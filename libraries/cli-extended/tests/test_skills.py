@@ -674,6 +674,20 @@ def test_harness_agents_and_all_defaults(pkg, isolated_home, monkeypatch, tmp_pa
 # ------------------------------------------------------------------- O11
 
 
+def test_skills_child_forwards_identity_banner_and_error_help(pkg):
+    registry = make_registry(pkg, identity_banner="never", error_help="usage")
+    stdout, stderr = io.StringIO(), io.StringIO()
+    code = registry.build().run(
+        argv=["skills", "list", "--bogus"], stdout=stdout, stderr=stderr
+    )
+    err = stderr.getvalue()
+    assert code == 2
+    assert "MYTOOL" not in err and "My tool" not in err
+    assert "usage: mytool skills list" in err
+    assert err.rstrip().splitlines()[-1] == "Run 'mytool skills list --help' for full help."
+    assert "options:" not in err
+
+
 @pytest.mark.parametrize("verb", ["install", "uninstall", "check", "list"])
 def test_o11_dest_and_harness_are_mutually_exclusive(pkg, tmp_path, verb):
     code, out, err = run(pkg, verb, "--dest", str(tmp_path / "d"), "--harness", "claude")

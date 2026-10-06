@@ -8,6 +8,7 @@ from importlib.metadata import PackageNotFoundError
 import pytest
 
 from cli_extended import (
+    CliFailure,
     CliIdentity,
     CliRegistry,
     OptionSpec,
@@ -579,6 +580,20 @@ def test_cx29_invalid_attributes_fall_back_to_the_plain_rendering():
     code, _out, err = _run(cli, ["go"])
     assert code == 1
     assert "Hint:" not in err
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [(0, 1), (-2, 1), (300, 1), (True, 1), (False, 1), (1, 1), (255, 255), (7, 7)],
+)
+def test_cx29_exit_codes_outside_1_to_255_fall_back_to_one(value, expected):
+    class _Coded(Exception):
+        exit_code = value
+
+    cli = _cli(_raiser(_Coded("x")), expected_exceptions=(_Coded,))
+    assert _run(cli, ["go"])[0] == expected
+    cli = _cli(_raiser(CliFailure("x", exit_code=value)))
+    assert _run(cli, ["go"])[0] == expected
 
 
 # --------------------------- CLI-EXT-23: identity banner and parser-error help

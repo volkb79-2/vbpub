@@ -582,7 +582,7 @@ def _without_allowed_assertions(text: str) -> str:
 
     kept: list[str] = []
     skip_next = False
-    for line in text.splitlines():
+    for line in text.split("\n"):
         stripped = line.strip()
         if skip_next:
             skip_next = False
@@ -604,7 +604,9 @@ def _without_comments(path: Path, text: str) -> str:
     whole-line ``#`` comments.
     """
 
-    lines = text.splitlines()
+    # Split on "\n" only, like the tokenizer: ``splitlines()`` also breaks on
+    # \x0c, \x1c-\x1e, \x85,   and  , which misaligns token rows.
+    lines = text.split("\n")
     if path.suffix == ".py":
         try:
             for token in tokenize.generate_tokens(io.StringIO(text).readline):
@@ -613,7 +615,7 @@ def _without_comments(path: Path, text: str) -> str:
                     lines[row] = lines[row][:column]
             return "\n".join(lines)
         except (tokenize.TokenError, SyntaxError):
-            lines = text.splitlines()
+            lines = text.split("\n")
     return "\n".join(line for line in lines if not line.lstrip().startswith("#"))
 
 

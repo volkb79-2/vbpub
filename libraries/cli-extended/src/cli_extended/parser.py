@@ -61,6 +61,14 @@ class UsageError(Exception):
         return f"[ERROR] {self.parser.prog}: {self.message}\n\n{help_text}"
 
 
+def _valid_exit_code(code: object) -> int:
+    """An exit code is an int in 1..255; anything else (0, bool, ...) is 1."""
+
+    if isinstance(code, int) and not isinstance(code, bool) and 1 <= code <= 255:
+        return code
+    return 1
+
+
 class CliFailure(Exception):
     """An expected runtime failure rendered without a traceback."""
 
@@ -2194,13 +2202,11 @@ def run_cli(
                 runtime.output.debug(f"handled CLI refusal in {verb or parser.prog}")
         else:
             help_output.error(exc.message, hint=exc.hint)
-        return exc.exit_code
+        return _valid_exit_code(exc.exit_code)
     except expected_exceptions as exc:
         # CLI-EXT-29: an expected exception may carry ``exit_code`` (an int)
         # and ``hint`` (a str); anything else keeps the plain ``[ERROR]``/1.
-        code = getattr(exc, "exit_code", 1)
-        if not isinstance(code, int) or isinstance(code, bool):
-            code = 1
+        code = _valid_exit_code(getattr(exc, "exit_code", 1))
         hint = getattr(exc, "hint", None)
         if not isinstance(hint, str) or not hint:
             hint = None

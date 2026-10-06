@@ -11,6 +11,16 @@ know when upgrading; it is not generated.
 
 Library contract version is unchanged (1). Behaviour changes a consumer can see:
 
+- **Release policy (operator ruling 2026-10-06).** The CLI-EXT-27 testing-helper
+  behaviour change below ships in a 0.x minor without a contract-version bump
+  (the contract concerns the CLI controls, not the test helpers); 0.x minors may
+  carry such documented behaviour changes.
+- **Notes.** The CLI-EXT-28 marker is honoured in non-test files too, by design.
+  `CliIdentity.resolve(version_probe=...)` (CLI-EXT-24) has no timeout: a caller
+  wrapping a slow command (for example `git describe`) must bound it itself.
+  An `exit_code` (an expected exception's, or `CliFailure`'s) outside 1..255,
+  including 0, negatives, values above 255 and bools, becomes 1.
+
 - **`cli_extended.testing` no longer edits `PYTHONPATH` implicitly (CLI-EXT-27).**
   `invoke_script`/`invoke_module` used to prepend the imported library's
   directory (a whole `site-packages` when installed), which shadowed a

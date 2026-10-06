@@ -964,6 +964,17 @@ def test_cx28_the_marker_does_not_exempt_a_real_hack(tmp_path):
     assert item.evidence == ("after_marker_only.py", "mixed.py", "plain.py")
 
 
+@pytest.mark.parametrize("sep", ["\x0c", " ", "\x1c", "\x85"])
+def test_cx22_ac25_line_separators_do_not_misalign_comment_stripping(tmp_path, sep):
+    hack = "sys.path.insert(0, 'libraries/cli-extended/src')\n"
+    files = {
+        "ff_line.py": f"x = 1\n{sep}\n{hack}",
+        "in_string.py": f"x = 'a{sep}b'\n# note\n{hack}",
+    }
+    item = _audit(tmp_path, files=files)["no-path-hacks"]
+    assert (item.status, item.evidence) == ("fail", ("ff_line.py", "in_string.py"))
+
+
 def test_cx22_ac25_ignores_comments_but_not_code_or_strings(tmp_path):
     clean = {
         "notes.py": (
